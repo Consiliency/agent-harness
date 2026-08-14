@@ -2358,6 +2358,9 @@ def verify_capture(*, evidence_root: Path, expected_seat_key: str, seal: bool = 
                 stage_authority.get("stage_binding_sha256") != _sha256(_canonical_json(stage_binding))):
             raise AgyCanaryEvidenceError("capture stage authority is malformed")
         authorized_attempts = authority["authorized_attempt_ids"]
+        ledger_attempt_ids = [item.get("attempt_id") if isinstance(item, dict) else None for item in attempts]
+        if ledger_attempt_ids != authorized_attempts[:len(ledger_attempt_ids)]:
+            raise AgyCanaryEvidenceError("capture attempt IDs are not the authorized prefix")
         output_attempts: list[dict[str, Any]] = []
         final_text = ""
         for index, item in enumerate(attempts):

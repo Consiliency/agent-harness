@@ -535,6 +535,160 @@ def _seal_synthetic_provider_results(
     )
 
 
+def _review_stream(*, instructions: str, bundle: str, terminal: str, terminal_only: bool = False, prohibited: bool = False, omit_bundle: bool = False) -> str:
+    if terminal_only:
+        return json.dumps({"sequence": 0, "session_id": "retry", "type": "terminal", "text": terminal})
+    events = [
+        {"sequence": 0, "session_id": "retry", "type": "tool_call", "call_id": "a", "tool": "read_file", "target": "/run/phase-loop-review/review-instructions.md"},
+        {"sequence": 1, "session_id": "retry", "type": "tool_result", "call_id": "a", "outcome": "success", "content": instructions},
+    ]
+    if prohibited:
+        events.extend([
+            {"sequence": 2, "session_id": "retry", "type": "tool_call", "call_id": "bad", "tool": "command", "target": "true"},
+            {"sequence": 3, "session_id": "retry", "type": "tool_result", "call_id": "bad", "outcome": "denied"},
+        ])
+    elif not omit_bundle:
+        events.extend([
+            {"sequence": 2, "session_id": "retry", "type": "tool_call", "call_id": "b", "tool": "read_file", "target": "/run/phase-loop-review/review-bundle.md"},
+            {"sequence": 3, "session_id": "retry", "type": "tool_result", "call_id": "b", "outcome": "success", "content": bundle},
+        ])
+    events.append({"sequence": len(events), "session_id": "retry", "type": "terminal", "text": terminal})
+    return "\n".join(json.dumps(event) for event in events)
+
+
+def _sealed_retry_capture(monkeypatch, tmp_path: Path, *, first_stream: str, second_stream: str, provider_text: str) -> tuple[Path, evidence.AgyCanaryCapture]:
+    root = _private_root(tmp_path)
+    settings = _settings(tmp_path, [])
+    review = tmp_path / "review"
+    review.mkdir()
+    instructions = review / "review-instructions.md"
+    bundle = review / "review-bundle.md"
+    instructions.write_text("read this first\n")
+    bundle.write_text("review this\n")
+    instructions.chmod(0o600)
+    bundle.chmod(0o600)
+    capture = _prepare_production_capture(
+        monkeypatch=monkeypatch, tmp_path=tmp_path, root=root, settings=settings,
+        seat_key="gemini-primary", plan_bytes=bundle.read_bytes(),
+    )
+    _bind_stage(capture, review)
+    staged = evidence.retain_staged_files(capture=capture, review_dir=review)
+    evidence.record_launch(
+        capture=capture, seat_key="gemini-primary", attempt_id="gemini-1",
+        argv=["agy", "-p", "secret"], returncode=9, stdout=first_stream, stderr="retry", staged=staged,
+    )
+    evidence.record_launch(
+        capture=capture, seat_key="gemini-primary", attempt_id="gemini-2",
+        argv=["agy", "-p", "secret"], returncode=0, stdout=second_stream, stderr="", staged=staged,
+    )
+    board = _usable_private_board({"gemini_seat_key": "gemini-primary"})
+    board["legs"][0]["text"] = provider_text
+    _seal_synthetic_provider_results(capture, board)
+    evidence.write_private_board(
+        capture=capture, basename="board.json",
+        payload={**board, "agy_canary_capture": evidence.capture_summary(capture)},
+    )
+    return root, capture
+
+
+def test_capture_reducer_accepts_ordered_retry_and_binds_final_provider_text(monkeypatch, tmp_path):
+    first = _review_stream(instructions="", bundle="", terminal="retry exhausted", terminal_only=True)
+    second = _review_stream(instructions="read this first\n", bundle="review this\n", terminal="AGREE attempt two")
+    root, capture = _sealed_retry_capture(
+        monkeypatch, tmp_path, first_stream=first, second_stream=second, provider_text="AGREE attempt two",
+    )
+    try:
+        capture.close()
+        proof = evidence.verify_capture(evidence_root=root, expected_seat_key="gemini-primary")
+        assert proof["attempt_ids"] == ["gemini-1", "gemini-2"]
+        assert proof["accepted_review_sha256"] == evidence._sha256(b"AGREE attempt two")
+    finally:
+        shutil.rmtree(root)
+
+
+@pytest.mark.parametrize("attempt_ids", [["gemini-2", "gemini-1"], ["gemini-2"]])
+def test_capture_reducer_rejects_reordered_or_skipped_authorized_attempts(monkeypatch, tmp_path, attempt_ids):
+    stream = _review_stream(instructions="read this first\n", bundle="review this\n", terminal="AGREE")
+    root, capture = _sealed_retry_capture(
+        monkeypatch, tmp_path, first_stream=_review_stream(instructions="", bundle="", terminal="retry", terminal_only=True),
+        second_stream=stream, provider_text="AGREE",
+    )
+    try:
+        ledger = evidence._read_json_at(capture.root_fd, "agy-launch-ledger.json")
+        if len(attempt_ids) == 1:
+            ledger["attempts"] = [ledger["attempts"][1]]
+        else:
+            ledger["attempts"] = list(reversed(ledger["attempts"]))
+        evidence._write_replace_at(capture.root_fd, "agy-launch-ledger.json", ledger)
+        capture.close()
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="authorized prefix"):
+            evidence.verify_capture(evidence_root=root, expected_seat_key="gemini-primary")
+    finally:
+        shutil.rmtree(root)
+
+
+@pytest.mark.parametrize(
+    ("first_stream", "second_stream", "provider_text", "message"),
+    [
+        (_review_stream(instructions="read this first\n", bundle="", terminal="retry", prohibited=True), _review_stream(instructions="read this first\n", bundle="review this\n", terminal="AGREE"), "AGREE", "prohibited tool attempt"),
+        (_review_stream(instructions="", bundle="", terminal="retry", terminal_only=True), _review_stream(instructions="read this first\n", bundle="", terminal="AGREE", omit_bundle=True), "AGREE", "did not read review-bundle.md"),
+        (_review_stream(instructions="", bundle="", terminal="retry", terminal_only=True), _review_stream(instructions="read this first\n", bundle="review this\n", terminal="AGREE"), "different provider text", "does not match accepted terminal"),
+    ],
+)
+def test_capture_reducer_rejects_retry_or_final_evidence_mismatch(monkeypatch, tmp_path, first_stream, second_stream, provider_text, message):
+    root, capture = _sealed_retry_capture(
+        monkeypatch, tmp_path, first_stream=first_stream, second_stream=second_stream, provider_text=provider_text,
+    )
+    try:
+        capture.close()
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match=message):
+            evidence.verify_capture(evidence_root=root, expected_seat_key="gemini-primary")
+    finally:
+        shutil.rmtree(root)
+
+
+def test_duplicate_cross_provider_seat_keys_are_rejected_at_every_evidence_boundary(monkeypatch, tmp_path):
+    root = _private_root(tmp_path)
+    capture = _prepare_production_capture(
+        monkeypatch=monkeypatch, tmp_path=tmp_path, root=root, settings=_settings(tmp_path, []), seat_key="gemini-primary",
+    )
+    try:
+        review = tmp_path / "review"
+        review.mkdir()
+        for name, content in (("review-instructions.md", "instructions"), ("review-bundle.md", "review this\n")):
+            path = review / name
+            path.write_text(content)
+            path.chmod(0o600)
+        _bind_stage(capture, review)
+        board = _usable_private_board({"gemini_seat_key": "gemini-primary"})
+        _seal_synthetic_provider_results(capture, board)
+        summary = evidence.capture_summary(capture)
+        board["agy_canary_capture"] = summary
+        provider_results = evidence._verified_provider_results(root_fd=capture.root_fd)
+        registry = evidence._provider_registry(root_fd=capture.root_fd)
+        codex = next(entry for entry in registry["entries"] if entry["provider"] == "codex")
+        codex["seat_key"] = "gemini-primary"
+        codex["result_name"] = evidence._provider_names("codex", "gemini-primary")["result"]
+        evidence._write_replace_at(capture.root_fd, evidence._PROVIDER_REGISTRY_NAME, registry)
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="seat key is duplicated"):
+            evidence._provider_registry(root_fd=capture.root_fd)
+
+        duplicate_summary = json.loads(json.dumps(summary["provider_results"]))
+        duplicate_summary["providers"][1]["seat_key"] = "gemini-primary"
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="provider results are duplicated"):
+            evidence._validate_provider_result_summary(duplicate_summary)
+
+        board["legs"][1]["seat_key"] = "gemini-primary"
+        provider_results[("codex", "gemini-primary")] = provider_results.pop(("codex", "codex"))
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="provider result set is incomplete or substituted"):
+            evidence._validate_private_board_payload(
+                board, summary, require_usable=True, provider_results=provider_results,
+            )
+    finally:
+        capture.close()
+        shutil.rmtree(root)
+
+
 def test_capture_namespace_reopens_auth_and_resolver_for_child_paths(monkeypatch, tmp_path):
     root = _private_root(tmp_path)
     settings = _settings(tmp_path, [])
