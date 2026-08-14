@@ -254,13 +254,13 @@ def test_capture_reducer_requires_complete_sealed_staged_reads(monkeypatch, tmp_
                 {"sequence": 4, "session_id": "s1", "type": "terminal", "text": "Looks good\nAGREE"},
             ]
             evidence.record_launch(capture=capture, seat_key="gemini-primary", attempt_id="gemini-1", argv=["agy", "-p", "secret prompt"], returncode=0, stdout="\n".join(json.dumps(event) for event in events), stderr="", staged=staged)
-            _seal_synthetic_provider_results(
-                capture, _usable_private_board({"gemini_seat_key": "gemini-primary"})
-            )
+            synthetic_board = _usable_private_board({"gemini_seat_key": "gemini-primary"})
+            synthetic_board["legs"][0]["text"] = "Looks good\nAGREE"
+            _seal_synthetic_provider_results(capture, synthetic_board)
             evidence.write_private_board(
                 capture=capture,
                 basename="board.json",
-                payload=_usable_private_board(evidence.capture_summary(capture)),
+                payload={**synthetic_board, "agy_canary_capture": evidence.capture_summary(capture)},
             )
         finally:
             if capture is not None:

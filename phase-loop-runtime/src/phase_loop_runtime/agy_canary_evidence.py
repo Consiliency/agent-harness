@@ -1882,12 +1882,16 @@ def seal_provider_launches(
     stage_binding_sha256 = _sha256(_canonical_json(stage_binding))
     entries: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
+    seat_keys: set[str] = set()
     providers: set[str] = set()
     for provider, seat_key, authority in launches:
         key = (provider, seat_key)
         if key in seen or provider in providers or authority.provider != provider:
             raise AgyCanaryEvidenceError("provider launch registry has duplicate or mismatched authority")
         seen.add(key)
+        if seat_key in seat_keys:
+            raise AgyCanaryEvidenceError("provider launch registry seat key is duplicated")
+        seat_keys.add(seat_key)
         providers.add(provider)
         names = _provider_names(provider, seat_key)
         projection = authority.projected_auth_proof()
@@ -1927,6 +1931,7 @@ def _provider_registry(*, root_fd: int) -> dict[str, Any]:
             not isinstance(registry.get("entries"), list) or len(registry["entries"]) != len(_CAPTURE_PROVIDERS)):
         raise AgyCanaryEvidenceError("provider launch registry is malformed")
     seen: set[tuple[str, str]] = set()
+    seat_keys: set[str] = set()
     providers: set[str] = set()
     for entry in registry["entries"]:
         if (not isinstance(entry, dict) or set(entry) != {"provider", "seat_key", "authority", "result_name"} or
@@ -1939,6 +1944,9 @@ def _provider_registry(*, root_fd: int) -> dict[str, Any]:
         if key in seen:
             raise AgyCanaryEvidenceError("provider launch registry entry is duplicated")
         seen.add(key)
+        if entry["seat_key"] in seat_keys:
+            raise AgyCanaryEvidenceError("provider launch registry seat key is duplicated")
+        seat_keys.add(entry["seat_key"])
         if entry["provider"] in providers:
             raise AgyCanaryEvidenceError("provider launch registry provider is duplicated")
         providers.add(entry["provider"])
@@ -2352,13 +2360,14 @@ def verify_capture(*, evidence_root: Path, expected_seat_key: str, seal: bool = 
         authorized_attempts = authority["authorized_attempt_ids"]
         output_attempts: list[dict[str, Any]] = []
         final_text = ""
-        for item in attempts:
+        for index, item in enumerate(attempts):
             if not isinstance(item, dict) or set(item) != {"attempt_id", "seat_key", "returncode", "argv_sha256", "stream", "diagnostic", "staged", "completed_at"}:
                 raise AgyCanaryEvidenceError("capture attempt schema is malformed")
             if not isinstance(item, dict) or item.get("seat_key") != expected_seat_key:
                 raise AgyCanaryEvidenceError("capture contains an unbound attempt")
-            if not _is_plain_int(item.get("returncode")) or item.get("returncode") != 0:
-                raise AgyCanaryEvidenceError("capture attempt did not exit zero")
+            final_attempt = index == len(attempts) - 1
+            if not _is_plain_int(item.get("returncode")) or (final_attempt and item.get("returncode") != 0):
+                raise AgyCanaryEvidenceError("final capture attempt did not exit zero")
             if (not isinstance(item.get("attempt_id"), str) or not _is_digest(item.get("argv_sha256")) or
                     not isinstance(item.get("completed_at"), str) or not item["completed_at"]):
                 raise AgyCanaryEvidenceError("capture attempt primitives are malformed")
@@ -2421,16 +2430,17 @@ def verify_capture(*, evidence_root: Path, expected_seat_key: str, seal: bool = 
                     raise AgyCanaryEvidenceError("accepted attempt executed a non-read tool")
             if any(counts.values()):
                 raise AgyCanaryEvidenceError("accepted attempt contains a prohibited tool attempt")
-            for name, expected in staged.items():
-                if not isinstance(expected, dict) or len(reads.get(name, [])) != 1:
-                    raise AgyCanaryEvidenceError(f"accepted attempt did not read {name}")
-                matching_reads = [result for result in reads[name] if (
-                    isinstance(result.get("content"), str)
-                    and _sha256(result["content"].encode()) == expected.get("sha256")
-                    and len(result["content"].encode()) == expected.get("bytes")
-                )]
-                if len(matching_reads) != 1:
-                    raise AgyCanaryEvidenceError(f"read result does not cover sealed {name}")
+            if final_attempt:
+                for name, expected in staged.items():
+                    if not isinstance(expected, dict) or len(reads.get(name, [])) != 1:
+                        raise AgyCanaryEvidenceError(f"accepted attempt did not read {name}")
+                    matching_reads = [result for result in reads[name] if (
+                        isinstance(result.get("content"), str)
+                        and _sha256(result["content"].encode()) == expected.get("sha256")
+                        and len(result["content"].encode()) == expected.get("bytes")
+                    )]
+                    if len(matching_reads) != 1:
+                        raise AgyCanaryEvidenceError(f"read result does not cover sealed {name}")
             output_attempts.append({"attempt_id": item.get("attempt_id"), "counts": counts, "terminal_sha256": _sha256(str(terminal["text"]).encode())})
             final_text = str(terminal["text"])
         if not final_text.strip():
@@ -2461,11 +2471,14 @@ def verify_capture(*, evidence_root: Path, expected_seat_key: str, seal: bool = 
         }
         if private_board.get("capture") != expected_summary or not isinstance(board_payload, dict) or board_payload.get("agy_canary_capture") != expected_summary:
             raise AgyCanaryEvidenceError("private board does not bind the sealed capture summary")
+        provider_results = _verified_provider_results(root_fd=root_fd)
+        if provider_results.get(("gemini", expected_seat_key), {}).get("text") != final_text:
+            raise AgyCanaryEvidenceError("sealed Gemini provider result does not match accepted terminal")
         _validate_private_board_payload(
             board_payload,
             expected_summary,
             require_usable=True,
-            provider_results=_verified_provider_results(root_fd=root_fd),
+            provider_results=provider_results,
         )
         proof = {
             "schema": SCHEMA_VERSION,
