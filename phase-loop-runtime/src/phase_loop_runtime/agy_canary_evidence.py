@@ -3694,6 +3694,8 @@ def _finalize_targets_transactionally(plan_target: _FinalTarget, manifest_target
             target.exchanged = True
             os.fsync(target.parent_fd)
             _verify_final_target_exchange(target)
+        for target in targets:
+            _verify_final_target_exchange(target)
         committed = True
         cleanup_errors: list[str] = []
         for target in targets:

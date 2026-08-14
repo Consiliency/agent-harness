@@ -1287,6 +1287,37 @@ def test_finalizer_preserves_concurrent_mutation_after_inputs_receipt(monkeypatc
         shutil.rmtree(root)
 
 
+@pytest.mark.parametrize("mutated_target", ("plan", "manifest"))
+def test_finalizer_revalidates_the_complete_pair_before_commit(monkeypatch, tmp_path, mutated_target):
+    root, repo, plan, manifest = _stub_finalizer(monkeypatch, tmp_path)
+    plan_before = plan.read_bytes()
+    manifest_before = manifest.read_bytes()
+    target_path = plan if mutated_target == "plan" else manifest
+    concurrent_bytes = f"concurrent {mutated_target} edit\n".encode()
+    original_verify = evidence._verify_final_target_exchange
+    mutated = False
+
+    def verify_then_mutate(target):
+        nonlocal mutated
+        original_verify(target)
+        if not mutated and target.name == target_path.name:
+            mutated = True
+            target_path.write_bytes(concurrent_bytes)
+
+    monkeypatch.setattr(evidence, "_verify_final_target_exchange", verify_then_mutate)
+    try:
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="exchanged target failed"):
+            _run_stub_finalizer(root, repo)
+        assert mutated
+        assert plan.read_bytes() == plan_before
+        assert manifest.read_bytes() == manifest_before
+        assert (root / evidence._INPUTS_NAME).is_file()
+        retained = [path for path in plan.parent.iterdir() if path.name.startswith(".phase-loop-agy-finalize-")]
+        assert any(path.read_bytes() == concurrent_bytes for path in retained)
+    finally:
+        shutil.rmtree(root)
+
+
 def test_finalizer_rolls_back_plan_when_manifest_exchange_fails(monkeypatch, tmp_path):
     root, repo, plan, manifest = _stub_finalizer(monkeypatch, tmp_path)
     plan_before = plan.read_bytes()
