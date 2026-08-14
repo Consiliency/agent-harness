@@ -482,6 +482,29 @@ def test_namespace_masks_evidence_root_and_uses_fixed_stage(monkeypatch, tmp_pat
         root.rmdir()
 
 
+def test_namespace_uses_private_fixed_provider_output_mapping_and_pid_namespace(tmp_path):
+    root = _private_root(tmp_path)
+    output = Path("/tmp") / f"phase-loop-provider-output.test-{os.getpid()}-{tmp_path.name}"
+    output.mkdir(mode=0o700)
+    try:
+        namespace = evidence.AgyCanaryNamespace(tmp_path, tmp_path, root, "example.invalid", provider_output=output)
+        command = namespace.command(["agent", "--result", namespace.rewrite_provider_output_path(output / "result.json")])
+        assert "--unshare-pid" in command
+        assert command.index("--unshare-pid") < command.index("--clearenv")
+        output_dir = command.index("/run/phase-loop-output")
+        assert command[output_dir - 1] == "--dir"
+        assert command[output_dir + 1:output_dir + 4] == ["--bind", str(output), "/run/phase-loop-output"]
+        assert str(root) not in command
+        assert command[-1] == "/run/phase-loop-output/result.json"
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="escapes"):
+            namespace.rewrite_provider_output_path(tmp_path / "outside.json")
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="distinct"):
+            evidence.AgyCanaryNamespace(tmp_path, tmp_path, root, "example.invalid", provider_output=root).command(["agent"])
+    finally:
+        shutil.rmtree(output)
+        root.rmdir()
+
+
 def test_minimal_home_keeps_auth_bytes_outside_evidence_and_binds_read_only(tmp_path):
     root = _private_root(tmp_path)
     home = None
@@ -502,125 +525,105 @@ def test_minimal_home_keeps_auth_bytes_outside_evidence_and_binds_read_only(tmp_
         root.rmdir()
 
 
-def test_probe_selects_1_1_13_stream_json_only_after_strict_parse(monkeypatch, tmp_path):
+def _capability_stream(class_name: str, mutation: str | None = None) -> str:
+    capability = next(item for item in evidence._CAPABILITY_CLASSES if item[0] == class_name)
+    _name, tool, target, outcome = capability
+    calls = [("read-a", tool, "/run/phase-loop-review/review-instructions.md", "review-instructions.md")]
+    if class_name == "allowed_read":
+        calls.append(("read-b", tool, "/run/phase-loop-review/review-bundle.md", "review-bundle.md"))
+    else:
+        calls[0] = ("call", tool, target, "READY")
+    events = []
+    for call_id, call_tool, call_target, content in calls:
+        events.extend([
+            {"sequence": len(events), "session_id": class_name, "type": "tool_call", "call_id": call_id, "tool": call_tool, "target": call_target, "attempt": True},
+            {"sequence": len(events) + 1, "session_id": class_name, "type": "tool_result", "call_id": call_id, "outcome": outcome, "content": content, "execution": True},
+        ])
+    if mutation == "omit":
+        events = []
+    elif mutation == "alias":
+        events[2 if class_name == "allowed_read" else 0]["target"] = "/run/phase-loop-review/review-instructions.md"
+    elif mutation == "unpair":
+        events[1]["call_id"] = "other"
+    elif mutation == "wrong_target":
+        events[0]["target"] = "/wrong-target"
+    elif mutation == "wrong_outcome":
+        events[1] = {"sequence": 1, "session_id": class_name, "type": "tool_result", "call_id": events[0]["call_id"], "outcome": "denied", "execution": True}
+    events.append({"sequence": len(events), "session_id": class_name, "type": "terminal", "text": "READY"})
+    return "\n".join(json.dumps(item) for item in events)
+
+
+def _probe_namespace(tmp_path: Path, root: Path) -> evidence.AgyCanaryNamespace:
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    for name in ("review-instructions.md", "review-bundle.md"):
+        (stage / name).write_text(name)
+    home = tmp_path / "home"
+    home.mkdir()
+    return evidence.AgyCanaryNamespace(stage, home, root, "example.invalid")
+
+
+def _install_capability_process(monkeypatch, mutation: tuple[str, str] | None = None):
+    calls = []
+    source = Path("/bin/true").resolve(strict=True)
+    info = source.stat()
+    runtime = evidence._TrustedAgyRuntime(
+        source, info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode),
+        evidence._sha256(source.read_bytes()),
+    )
+    monkeypatch.setattr(evidence, "_trusted_agy_runtime", lambda: runtime)
+
+    class Proc:
+        returncode = 0
+        stderr = ""
+
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs.get("env")))
+        if command[-1:] == ["--version"]:
+            return Proc("1.1.13\n")
+        if command[-1:] == ["--help"]:
+            return Proc("--output-format text, json, stream-json")
+        prompt = command[-1] if command else ""
+        class_name = next((name for name, *_rest in evidence._CAPABILITY_CLASSES if prompt == evidence._capability_prompt(name)), None)
+        return Proc(_capability_stream(class_name, mutation[1] if mutation and mutation[0] == class_name else None) if class_name else "")
+
+    monkeypatch.setattr(evidence.subprocess, "run", fake_run)
+    return calls
+
+
+def test_probe_selects_1_1_13_stream_json_only_after_complete_capability_matrix(monkeypatch, tmp_path):
     root = _private_root(tmp_path)
     try:
-        stage = tmp_path / "stage"
-        stage.mkdir()
-        for name in ("review-instructions.md", "review-bundle.md"):
-            (stage / name).write_text(name)
-        home = tmp_path / "home"
-        home.mkdir()
-        namespace = evidence.AgyCanaryNamespace(stage, home, root, "example.invalid")
-        events = "\n".join(json.dumps(item) for item in [
-            {"sequence": 0, "session_id": "p", "type": "tool_call", "call_id": "a", "tool": "read_file", "target": "/run/phase-loop-review/review-instructions.md"},
-            {"sequence": 1, "session_id": "p", "type": "tool_result", "call_id": "a", "outcome": "success", "content": "review-instructions.md"},
-            {"sequence": 2, "session_id": "p", "type": "tool_call", "call_id": "b", "tool": "read_file", "target": "/run/phase-loop-review/review-bundle.md"},
-            {"sequence": 3, "session_id": "p", "type": "tool_result", "call_id": "b", "outcome": "success", "content": "review-bundle.md"},
-            {"sequence": 4, "session_id": "p", "type": "terminal", "text": "READY"},
-        ])
-        calls = []
-
-        class Proc:
-            returncode = 0
-            stderr = ""
-            def __init__(self, stdout):
-                self.stdout = stdout
-
-        def fake_run(command, **kwargs):
-            calls.append((command, kwargs.get("env")))
-            if command[-1:] == ["--version"]:
-                return Proc("1.1.13\n")
-            if command[-1:] == ["--help"]:
-                return Proc("--output-format text, json, stream-json")
-            return Proc(events if any(str(item).endswith("/agy") for item in command) else "")
-
-        monkeypatch.setattr(evidence.subprocess, "run", fake_run)
-        result = evidence.probe_capability(evidence_root=root, namespace=namespace)
+        calls = _install_capability_process(monkeypatch)
+        result = evidence.probe_capability(evidence_root=root, namespace=_probe_namespace(tmp_path, root))
         assert result["complete"] is True
         assert result["mode"] == "stream_json"
+        assert result["schema"] == "agy_capability_probe.v2"
+        assert [row["class"] for row in result["classes"]] == [item[0] for item in evidence._CAPABILITY_CLASSES]
+        assert all(row["attempt"] and row["execution"] and row["result"] == "text" for row in result["classes"])
         assert any("--output-format" in command for command, _env in calls)
         assert all(env is not None and not any(name.startswith(("LD_", "DYLD_", "PYTHON")) for name in env) for _command, env in calls)
     finally:
-        for path in root.iterdir():
-            path.unlink()
-        root.rmdir()
+        shutil.rmtree(root)
 
 
-def test_probe_rejects_terminal_only_stream_even_when_process_succeeds(monkeypatch, tmp_path):
-    root = _private_root(tmp_path)
-    try:
-        stage = tmp_path / "stage"
-        stage.mkdir()
-        for name in ("review-instructions.md", "review-bundle.md"):
-            (stage / name).write_text(name)
-        home = tmp_path / "home"
-        home.mkdir()
-        namespace = evidence.AgyCanaryNamespace(stage, home, root, "example.invalid")
-
-        class Proc:
-            returncode = 0
-            stderr = ""
-            def __init__(self, stdout):
-                self.stdout = stdout
-
-        def fake_run(command, **_kwargs):
-            if command[-1:] == ["--version"]:
-                return Proc("1.1.13\n")
-            if command[-1:] == ["--help"]:
-                return Proc("--output-format text, json, stream-json")
-            return Proc(json.dumps({"sequence": 0, "session_id": "p", "type": "terminal", "text": "READY"}))
-
-        monkeypatch.setattr(evidence.subprocess, "run", fake_run)
-        result = evidence.probe_capability(evidence_root=root, namespace=namespace)
-        assert result["complete"] is False
-        assert result["mode"] is None
-        assert result["reason"].startswith("stream_json_schema_unproven:")
-    finally:
-        for path in root.iterdir():
-            path.unlink()
-        root.rmdir()
-
-
-def test_probe_rejects_staged_read_content_that_does_not_match_stage(monkeypatch, tmp_path):
-    root = _private_root(tmp_path)
-    try:
-        stage = tmp_path / "stage"
-        stage.mkdir()
-        for name in ("review-instructions.md", "review-bundle.md"):
-            (stage / name).write_text(name)
-        home = tmp_path / "home"
-        home.mkdir()
-        namespace = evidence.AgyCanaryNamespace(stage, home, root, "example.invalid")
-        stream = "\n".join(json.dumps(item) for item in [
-            {"sequence": 0, "session_id": "p", "type": "tool_call", "call_id": "a", "tool": "read_file", "target": "/run/phase-loop-review/review-instructions.md"},
-            {"sequence": 1, "session_id": "p", "type": "tool_result", "call_id": "a", "outcome": "success", "content": "forged"},
-            {"sequence": 2, "session_id": "p", "type": "tool_call", "call_id": "b", "tool": "read_file", "target": "/run/phase-loop-review/review-bundle.md"},
-            {"sequence": 3, "session_id": "p", "type": "tool_result", "call_id": "b", "outcome": "success", "content": "review-bundle.md"},
-            {"sequence": 4, "session_id": "p", "type": "terminal", "text": "READY"},
-        ])
-
-        class Proc:
-            returncode = 0
-            stderr = ""
-            def __init__(self, stdout):
-                self.stdout = stdout
-
-        def fake_run(command, **_kwargs):
-            if command[-1:] == ["--version"]:
-                return Proc("1.1.13\n")
-            if command[-1:] == ["--help"]:
-                return Proc("--output-format text, json, stream-json")
-            return Proc(stream)
-
-        monkeypatch.setattr(evidence.subprocess, "run", fake_run)
-        result = evidence.probe_capability(evidence_root=root, namespace=namespace)
-        assert result["complete"] is False
-        assert result["reason"].startswith("stream_json_schema_unproven:")
-    finally:
-        for path in root.iterdir():
-            path.unlink()
-        root.rmdir()
+def test_probe_rejects_each_missing_aliased_unpaired_or_wrong_capability_class(monkeypatch, tmp_path):
+    for class_name, *_rest in evidence._CAPABILITY_CLASSES:
+        for mutation in ("omit", "alias", "unpair", "wrong_target", "wrong_outcome"):
+            root = _private_root(tmp_path)
+            try:
+                _install_capability_process(monkeypatch, (class_name, mutation))
+                result = evidence.probe_capability(evidence_root=root, namespace=_probe_namespace(tmp_path, root))
+                assert result["complete"] is False
+                assert result["mode"] is None
+                assert result["reason"].startswith(f"stream_json_capability_unproven:{class_name}:")
+            finally:
+                shutil.rmtree(root)
+                shutil.rmtree(tmp_path / "stage")
+                shutil.rmtree(tmp_path / "home")
 
 
 def test_prepare_requires_bootstrap_and_binds_selected_mode(tmp_path, monkeypatch):
@@ -632,7 +635,20 @@ def test_prepare_requires_bootstrap_and_binds_selected_mode(tmp_path, monkeypatc
             settings_path=settings,
             maintenance_lock=tmp_path / "maintenance.lock",
         )
-        (root / "agy_capability_probe.json").write_text(json.dumps({"complete": True, "mode": "stream_json"}))
+        rows = []
+        for class_name, tool, target, outcome in evidence._CAPABILITY_CLASSES:
+            name = f"agy-capability-{class_name}.jsonl"
+            raw = f"private-{class_name}".encode()
+            (root / name).write_bytes(raw)
+            rows.append({
+                "class": class_name, "tool": tool, "target": target,
+                "attempt": True, "execution": True, "result": "text", "outcome": outcome,
+                "stream": {"name": name, "bytes": len(raw), "sha256": evidence._sha256(raw)},
+            })
+        (root / "agy_capability_probe.json").write_text(json.dumps({
+            "schema": "agy_capability_probe.v2", "agy_version": "1.1.13",
+            "help_sha256": "a" * 64, "mode": "stream_json", "complete": True, "classes": rows,
+        }))
         installation = {
             "console_script": "/tool/phase-loop", "interpreter": "/tool/python", "version": "0.7.14",
             "distribution_root": "/tool/site-packages", "module_origin": "/tool/site-packages/phase_loop_runtime/__init__.py",

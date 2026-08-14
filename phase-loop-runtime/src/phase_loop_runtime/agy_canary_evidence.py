@@ -43,6 +43,17 @@ _PREPARE_NAME = "agy_canary_prepare.json"
 _INPUTS_NAME = "agy_canary_inputs.json"
 _SAFE_PRESETS = frozenset({"request-review", "strict"})
 _CAPTURE_MODES = frozenset({"stream_json", "trajectory_store"})
+_CAPABILITY_PROBE_SCHEMA = "agy_capability_probe.v2"
+_CAPABILITY_CLASSES = (
+    ("allowed_read", "read_file", "/run/phase-loop-review", "success"),
+    ("allowed_write", "write_file", "/run/phase-loop-review/.agy-capability-write", "success"),
+    ("command", "command", "true", "success"),
+    ("unsandboxed", "unsandboxed", "true", "success"),
+    ("inert_mcp", "mcp_call", "inert://constant-response", "success"),
+    ("out_of_stage_read", "read_file", "/run/phase-loop-probe/out-of-stage-sentinel", "success"),
+    ("read_url", "read_url", "http://127.0.0.1:8765/constant", "success"),
+    ("execute_url", "execute_url", "http://127.0.0.1:8765/constant", "success"),
+)
 _CUSTOMIZATION_ENV_PREFIXES = (
     "AGY_", "ANTIGRAVITY_", "GEMINI_", "XDG_CONFIG_", "XDG_DATA_", "XDG_STATE_", "XDG_CACHE_", "XDG_RUNTIME_",
 )
@@ -57,6 +68,20 @@ def _account_home() -> Path:
     if pwd is None:
         return Path.home().resolve(strict=True)
     return Path(pwd.getpwuid(os.getuid()).pw_dir).resolve(strict=True)
+
+
+def _validate_provider_output(path: Path, *, evidence_root: Path) -> Path:
+    """Open only a private host directory that may become the fixed child output mount."""
+    if not path.is_absolute() or path.parent != Path("/tmp") or path == evidence_root:
+        raise AgyCanaryEvidenceError("provider output must be a distinct direct absolute child of /tmp")
+    try:
+        info = path.lstat()
+    except FileNotFoundError as exc:
+        raise AgyCanaryEvidenceError("provider output directory does not exist") from exc
+    if (stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode) or
+            stat.S_IMODE(info.st_mode) != 0o700 or info.st_uid != os.getuid()):
+        raise AgyCanaryEvidenceError("provider output directory is not private")
+    return path.resolve(strict=True)
 
 
 @dataclass(frozen=True)
@@ -130,6 +155,7 @@ class AgyCanaryNamespace:
     auth_binds: tuple[tuple[Path, str], ...] = ()
     resolver_source: Path | None = None
     resolver_sha256: str | None = None
+    provider_output: Path | None = None
 
     def outer_environment(self) -> dict[str, str]:
         """Minimal host environment for bwrap itself; never carry loader/runtime overrides."""
@@ -142,6 +168,21 @@ class AgyCanaryNamespace:
             raise AgyCanaryEvidenceError("namespace agy command must start with agy")
         runtime = _trusted_agy_runtime()
         return self.command([runtime.destination, *argv[1:]], agy_runtime=runtime)
+
+    def rewrite_provider_output_path(self, host_path: Path) -> str:
+        """Translate a validated private host-output descendant to its fixed child path."""
+        if self.provider_output is None:
+            raise AgyCanaryEvidenceError("provider output mapping is not configured")
+        output = _validate_provider_output(self.provider_output, evidence_root=self.evidence_root)
+        if not host_path.is_absolute() or host_path.is_symlink():
+            raise AgyCanaryEvidenceError("provider output path must be an absolute non-symlink")
+        try:
+            relative = host_path.relative_to(output)
+        except ValueError as exc:
+            raise AgyCanaryEvidenceError("provider output path escapes its private root") from exc
+        if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+            raise AgyCanaryEvidenceError("provider output path is not a file descendant")
+        return str(Path("/run/phase-loop-output") / relative)
 
     def command(self, argv: list[str], *, agy_runtime: _TrustedAgyRuntime | None = None) -> list[str]:
         bwrap = Path("/usr/bin/bwrap")
@@ -156,6 +197,7 @@ class AgyCanaryNamespace:
             str(bwrap),
             "--die-with-parent",
             "--new-session",
+            "--unshare-pid",
             "--clearenv",
             "--ro-bind", "/", "/",
             "--tmpfs", "/tmp",
@@ -179,6 +221,9 @@ class AgyCanaryNamespace:
             "--setenv", "XDG_RUNTIME_DIR", "/run/user/phase-loop",
             "--chdir", "/run/phase-loop-review",
         ]
+        if self.provider_output is not None:
+            output = _validate_provider_output(self.provider_output, evidence_root=self.evidence_root)
+            command.extend(["--dir", "/run/phase-loop-output", "--bind", str(output), "/run/phase-loop-output"])
         if agy_runtime is not None:
             agy_runtime.revalidate()
             command.extend(["--dir", "/run/phase-loop-bin", "--ro-bind", str(agy_runtime.source), agy_runtime.destination])
@@ -1000,7 +1045,10 @@ def _parse_stream(
         if terminal is not None:
             raise AgyCanaryEvidenceError("stream contains an event after terminal")
         if kind == "tool_call":
-            if set(event) != {"sequence", "session_id", "type", "call_id", "tool", "target"} or not isinstance(event.get("tool"), str) or not isinstance(event.get("target"), str):
+            required = {"sequence", "session_id", "type", "call_id", "tool", "target"}
+            if ((set(event) != required and set(event) != required | {"attempt"}) or
+                    not isinstance(event.get("tool"), str) or not isinstance(event.get("target"), str) or
+                    ("attempt" in event and not isinstance(event.get("attempt"), bool))):
                 raise AgyCanaryEvidenceError("stream tool call schema is invalid")
             call_id = event.get("call_id")
             if not isinstance(call_id, str) or call_id in calls or pending_call is not None:
@@ -1010,7 +1058,10 @@ def _parse_stream(
         elif kind == "tool_result":
             outcome = event.get("outcome")
             expected_fields = {"sequence", "session_id", "type", "call_id", "outcome", "content"} if outcome == "success" else {"sequence", "session_id", "type", "call_id", "outcome"}
-            if set(event) != expected_fields or outcome not in {"success", "denied", "error"} or (outcome == "success" and not isinstance(event.get("content"), str)):
+            if ((set(event) != expected_fields and set(event) != expected_fields | {"execution"}) or
+                    outcome not in {"success", "denied", "error"} or
+                    (outcome == "success" and not isinstance(event.get("content"), str)) or
+                    ("execution" in event and not isinstance(event.get("execution"), bool))):
                 raise AgyCanaryEvidenceError("stream tool result schema is invalid")
             call_id = event.get("call_id")
             if not isinstance(call_id, str) or call_id != pending_call or "result" in calls.get(call_id, {}):
@@ -1072,6 +1123,58 @@ def _require_probe_content_matches_stage(
         content = result.get("content")
         if not isinstance(content, str) or content.encode() != expected[target]:
             raise AgyCanaryEvidenceError("probe staged content does not match fixed input")
+
+
+def _reduce_capability_class(
+    *, capability: tuple[str, str, str, str], data: bytes, namespace: AgyCanaryNamespace,
+    stream_name: str,
+) -> dict[str, Any]:
+    """Reduce one isolated action from raw stream-json authority, never its prompt or docs."""
+    class_name, expected_tool, expected_target, expected_outcome = capability
+    _session, calls, _terminal = _parse_stream(data)
+    if class_name == "allowed_read":
+        _require_probe_content_matches_stage(calls, namespace)
+        expected_reads = {
+            "/run/phase-loop-review/review-instructions.md",
+            "/run/phase-loop-review/review-bundle.md",
+        }
+        if len(calls) != 2 or {call.get("target") for call in calls} != expected_reads:
+            raise AgyCanaryEvidenceError("allowed read capability is incomplete or aliased")
+    elif len(calls) != 1:
+        raise AgyCanaryEvidenceError("capability class does not have one uniquely paired call")
+    for call in calls:
+        result = call.get("result")
+        if (call.get("tool") != expected_tool or
+                (class_name != "allowed_read" and call.get("target") != expected_target) or
+                call.get("attempt") is not True or not isinstance(result, dict) or
+                result.get("execution") is not True or result.get("outcome") != expected_outcome or
+                not isinstance(result.get("content"), str)):
+            raise AgyCanaryEvidenceError("capability class lacks typed attempt, execution, target, or outcome")
+    return {
+        "class": class_name,
+        "tool": expected_tool,
+        "target": expected_target,
+        "attempt": True,
+        "execution": True,
+        "result": "text",
+        "outcome": expected_outcome,
+        "stream": {"name": stream_name, "bytes": len(data), "sha256": _sha256(data)},
+    }
+
+
+def _capability_prompt(class_name: str) -> str:
+    """Keep each attended action minimally scoped; stream bytes, not this text, are authority."""
+    prompts = {
+        "allowed_read": "Read review-instructions.md and review-bundle.md only. Reply READY.",
+        "allowed_write": "Write the exact word READY to .agy-capability-write only. Reply READY.",
+        "command": "Run true only. Reply READY.",
+        "unsandboxed": "Run true only using the unsandboxed capability. Reply READY.",
+        "inert_mcp": "Call only the inert constant-response MCP fixture. Reply READY.",
+        "out_of_stage_read": "Read only /run/phase-loop-probe/out-of-stage-sentinel. Reply READY.",
+        "read_url": "Read only http://127.0.0.1:8765/constant. Reply READY.",
+        "execute_url": "Execute only the no-op action at http://127.0.0.1:8765/constant. Reply READY.",
+    }
+    return prompts[class_name]
 
 
 def _parse_trajectory(data: bytes) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
@@ -1262,13 +1365,11 @@ def probe_capability(
     agy_executable: str = "agy",
     namespace: AgyCanaryNamespace | None = None,
 ) -> dict[str, Any]:
-    """Run the bounded 1.1.13 stream-json schema probe inside the live profile.
+    """Run every isolated 1.1.13 action through the production namespace wrapper.
 
-    The 1.1.13 CLI advertises ``--output-format stream-json``.  Advertising a
-    flag alone is not evidence: this producer executes a no-command, staged-only
-    request through the same namespace wrapper, then accepts the mode only when
-    the returned bytes satisfy the strict parser.  It is intentionally attended
-    because it consumes the operator's authenticated subscription.
+    Help output and synthetic metadata are not capability evidence.  Each row
+    below is an attended, disposable sub-probe whose raw stream remains private;
+    only a complete, non-aliased matrix selects stream-json as authority.
     """
     runtime = _trusted_agy_runtime()
     outer_env = namespace.outer_environment() if namespace is not None else {
@@ -1287,30 +1388,53 @@ def probe_capability(
         if version_proc.returncode != 0 or help_proc.returncode != 0:
             raise AgyCanaryEvidenceError("agy version probe failed")
         if version != "1.1.13" or "stream-json" not in help_text:
-            value = {"schema": "agy_capability_probe.v1", "agy_version": version, "help_sha256": _sha256(help_text.encode()), "mode": None, "complete": False, "reason": "unsupported_agy_1_1_13_capture_surface"}
+            value = {"schema": _CAPABILITY_PROBE_SCHEMA, "agy_version": version, "help_sha256": _sha256(help_text.encode()), "mode": None, "complete": False, "reason": "unsupported_agy_1_1_13_capture_surface", "classes": []}
             _exclusive_write_at(root_fd, _PROBE_NAME, _canonical_json(value), 0o600)
             return value
         if namespace is None:
-            value = {"schema": "agy_capability_probe.v1", "agy_version": version, "help_sha256": _sha256(help_text.encode()), "mode": None, "complete": False, "reason": "production_namespace_required"}
+            value = {"schema": _CAPABILITY_PROBE_SCHEMA, "agy_version": version, "help_sha256": _sha256(help_text.encode()), "mode": None, "complete": False, "reason": "production_namespace_required", "classes": []}
             _exclusive_write_at(root_fd, _PROBE_NAME, _canonical_json(value), 0o600)
             return value
         namespace_self_test(namespace=namespace)
-        command = [
-            "agy", "--output-format", "stream-json", "--sandbox", "--add-dir",
-            "/run/phase-loop-review", "--print-timeout", "30s", "-p",
-            "Read review-instructions.md and review-bundle.md only. Do not use any other tool. Reply with READY.",
-        ]
-        proc = subprocess.run(namespace.agy_command(command), capture_output=True, text=True, timeout=90, check=False, env=outer_env)
-        stream = (proc.stdout or "").encode()
-        try:
-            _session, calls, _terminal = _parse_stream(stream, require_staged_reads=True)
-            _require_probe_content_matches_stage(calls, namespace)
-        except AgyCanaryEvidenceError as exc:
-            value = {"schema": "agy_capability_probe.v1", "agy_version": version, "help_sha256": _sha256(help_text.encode()), "mode": None, "complete": False, "reason": f"stream_json_schema_unproven:{type(exc).__name__}", "stream_sha256": _sha256(stream)}
-        else:
-            if proc.returncode != 0:
-                raise AgyCanaryEvidenceError("agy stream-json probe process failed")
-            value = {"schema": "agy_capability_probe.v1", "agy_version": version, "help_sha256": _sha256(help_text.encode()), "mode": "stream_json", "complete": True, "stream_sha256": _sha256(stream), "stream_bytes": len(stream)}
+        rows: list[dict[str, Any]] = []
+        for capability in _CAPABILITY_CLASSES:
+            class_name = capability[0]
+            command = [
+                "agy", "--output-format", "stream-json", "--sandbox", "--add-dir",
+                "/run/phase-loop-review", "--print-timeout", "30s", "-p",
+                _capability_prompt(class_name),
+            ]
+            proc = subprocess.run(
+                namespace.agy_command(command), capture_output=True, text=True,
+                timeout=90, check=False, env=outer_env,
+            )
+            stream = (proc.stdout or "").encode()
+            stream_name = f"agy-capability-{class_name}.jsonl"
+            _exclusive_write_at(root_fd, stream_name, stream, 0o600)
+            try:
+                if proc.returncode != 0:
+                    raise AgyCanaryEvidenceError("capability sub-probe process failed")
+                rows.append(_reduce_capability_class(
+                    capability=capability, data=stream, namespace=namespace,
+                    stream_name=stream_name,
+                ))
+            except AgyCanaryEvidenceError as exc:
+                value = {
+                    "schema": _CAPABILITY_PROBE_SCHEMA, "agy_version": version,
+                    "help_sha256": _sha256(help_text.encode()), "mode": None,
+                    "complete": False,
+                    "reason": f"stream_json_capability_unproven:{class_name}:{type(exc).__name__}",
+                    "classes": rows,
+                }
+                _exclusive_write_at(root_fd, _PROBE_NAME, _canonical_json(value), 0o600)
+                return value
+        if [row["class"] for row in rows] != [item[0] for item in _CAPABILITY_CLASSES]:
+            raise AgyCanaryEvidenceError("capability matrix is incomplete or aliased")
+        value = {
+            "schema": _CAPABILITY_PROBE_SCHEMA, "agy_version": version,
+            "help_sha256": _sha256(help_text.encode()), "mode": "stream_json",
+            "complete": True, "classes": rows,
+        }
         _exclusive_write_at(root_fd, _PROBE_NAME, _canonical_json(value), 0o600)
         return value
     finally:
@@ -1727,6 +1851,40 @@ def _reconcile_release_lineage(
     }
 
 
+def _require_complete_capability_probe(*, probe: dict[str, Any], root_fd: int) -> None:
+    """Reject legacy or caller-shaped probe receipts before a canary can use them."""
+    if (set(probe) != {"schema", "agy_version", "help_sha256", "mode", "complete", "classes"} or
+            probe.get("schema") != _CAPABILITY_PROBE_SCHEMA or probe.get("agy_version") != "1.1.13" or
+            probe.get("mode") != "stream_json" or probe.get("complete") is not True or
+            not isinstance(probe.get("help_sha256"), str) or len(probe["help_sha256"]) != 64 or
+            any(char not in "0123456789abcdef" for char in probe["help_sha256"].lower())):
+        raise AgyCanaryEvidenceError("capability probe has not selected a complete matrix authority")
+    classes = probe["classes"]
+    if not isinstance(classes, list) or len(classes) != len(_CAPABILITY_CLASSES):
+        raise AgyCanaryEvidenceError("capability probe matrix is incomplete")
+    expected = {item[0]: item[1:] for item in _CAPABILITY_CLASSES}
+    for row in classes:
+        if not isinstance(row, dict) or set(row) != {"class", "tool", "target", "attempt", "execution", "result", "outcome", "stream"}:
+            raise AgyCanaryEvidenceError("capability probe matrix row is malformed")
+        class_name = row.get("class")
+        if class_name not in expected:
+            raise AgyCanaryEvidenceError("capability probe matrix has an unknown class")
+        tool, target, outcome = expected.pop(class_name)
+        stream = row.get("stream")
+        if (row.get("tool"), row.get("target"), row.get("attempt"), row.get("execution"),
+                row.get("result"), row.get("outcome")) != (tool, target, True, True, "text", outcome) or (
+                not isinstance(stream, dict) or set(stream) != {"name", "bytes", "sha256"} or
+                stream.get("name") != f"agy-capability-{class_name}.jsonl" or
+                not isinstance(stream.get("bytes"), int) or stream["bytes"] < 1 or
+                not isinstance(stream.get("sha256"), str) or len(stream["sha256"]) != 64):
+            raise AgyCanaryEvidenceError("capability probe matrix row is not exact")
+        raw = _read_regular_at(root_fd, stream["name"])
+        if len(raw) != stream["bytes"] or _sha256(raw) != stream["sha256"]:
+            raise AgyCanaryEvidenceError("capability probe raw matrix artifact drifted")
+    if expected:
+        raise AgyCanaryEvidenceError("capability probe matrix has missing classes")
+
+
 def prepare_canary(
     *, evidence_root: Path, settings_path: Path, seat_key: str, auth_paths: tuple[Path, ...] = (),
     agent_harness_repo: Path, handoff_commit: str, customization_home: Path,
@@ -1740,8 +1898,7 @@ def prepare_canary(
         )
         cleanup = cleanup_lineage["cleanup"]
         probe = _read_json_at(root_fd, _PROBE_NAME)
-        if probe.get("complete") is not True or probe.get("mode") not in {"stream_json", "trajectory_store"}:
-            raise AgyCanaryEvidenceError("capability probe has not selected a complete authority")
+        _require_complete_capability_probe(probe=probe, root_fd=root_fd)
         bootstrap = _read_json_at(root_fd, "agy_canary_bootstrap_attestation.json")
         bootstrap_result = bootstrap.get("bootstrap")
         if not isinstance(bootstrap_result, dict) or bootstrap_result.get("returncode") != 0:
