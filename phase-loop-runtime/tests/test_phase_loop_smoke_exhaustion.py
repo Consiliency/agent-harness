@@ -22,18 +22,18 @@ class PhaseLoopSmokeExhaustionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             repo = make_two_phase_repo(Path(td))
             roadmap = repo / "specs" / "phase-plans-v1.md"
-            status = subprocess.run([str(BIN), "status", "--repo", str(repo), "--roadmap", str(roadmap), "--json"], text=True, capture_output=True, check=True)
+            status = subprocess.run([*BIN, "status", "--repo", str(repo), "--roadmap", str(roadmap), "--json"], text=True, capture_output=True, check=True)
             data = json.loads(status.stdout)
             self.assertEqual(data["phases"], {"ALPHA": "unplanned", "BETA": "unplanned"})
             self.assertTrue((repo / ".phase-loop" / "state.json").exists())
             self.assertTrue((repo / ".phase-loop" / "tui-handoff.md").exists())
             self.assertFalse((repo / ".phase-loop" / "events.jsonl").exists())
 
-            dry_run = subprocess.run([str(BIN), "dry-run", "--repo", str(repo), "--roadmap", str(roadmap), "--max-phases", "1"], text=True, capture_output=True, check=True)
+            dry_run = subprocess.run([*BIN, "dry-run", "--repo", str(repo), "--roadmap", str(roadmap), "--max-phases", "1"], text=True, capture_output=True, check=True)
             self.assertIn("codex exec", dry_run.stdout)
             self.assertTrue((repo / ".phase-loop" / "state.json").exists())
             self.assertTrue((repo / ".phase-loop" / "events.jsonl").exists())
-            state = subprocess.run([str(BIN), "state", "--repo", str(repo), "--roadmap", str(roadmap), "--json"], text=True, capture_output=True, check=True)
+            state = subprocess.run([*BIN, "state", "--repo", str(repo), "--roadmap", str(roadmap), "--json"], text=True, capture_output=True, check=True)
             self.assertEqual(json.loads(state.stdout)["legacy_count"], 0)
 
     def test_two_terminal_handoffs_exhaust_roadmap_without_extra_selection(self):

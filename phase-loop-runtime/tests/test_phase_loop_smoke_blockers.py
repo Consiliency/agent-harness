@@ -28,7 +28,7 @@ class PhaseLoopSmokeBlockersTest(unittest.TestCase):
             stamp = 1_800_000_000
             os.utime(repo / "specs" / "phase-plans-v1.md", (stamp, stamp))
             os.utime(second, (stamp, stamp))
-            result = subprocess.run([str(BIN), "status", "--repo", str(repo), "--json"], text=True, capture_output=True, check=False)
+            result = subprocess.run([*BIN, "status", "--repo", str(repo), "--json"], text=True, capture_output=True, check=False)
             self.assertEqual(result.returncode, 2)
             data = json.loads(result.stdout)
             self.assertTrue(data["human_required"])

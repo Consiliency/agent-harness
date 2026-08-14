@@ -1,3 +1,13 @@
 # Lead developer — auto-requested as reviewer on all changes.
 # Managed via repo-state consolidation (Phase 2/4). Advisory, not a merge gate.
 * @ViperJuice
+
+# CI surface: the aggregate `gate` check runs from the PR's OWN workflow
+# definition, so a PR that rewrites the workflow or the Dagger module can make
+# `gate` succeed without running any suite -- the required check is
+# self-certifiable unless these paths are owner-reviewed. Listing them here is
+# necessary but NOT sufficient: CODEOWNERS is advisory until a ruleset requires
+# code-owner review. See the maintainer checklist in the plan-2 PR.
+/.github/workflows/ @ViperJuice
+/ci/dagger/ @ViperJuice
+/ci/offload-gate.sh @ViperJuice

@@ -9,6 +9,149 @@ permissions:
   contents: read
 
 jobs:
+  # ---------------------------------------------------------------------------
+  # CI-offload job graph: elig -> {offload | hosted} -> gate
+  #
+  # `elig` computes eligibility IN A STEP, because a job-level `if:` cannot read
+  # `secrets` -- that limitation is what made the earlier "one job, two step
+  # pairs" shapes unimplementable. Exactly one of `offload`/`hosted` then runs,
+  # gated on opposite values, and `gate` aggregates them.
+  #
+  # `gate` exists because a conditionally-skipped job reports `skipped`, and a
+  # SKIPPED JOB SATISFIES A REQUIRED STATUS CHECK. Requiring `offload`/`hosted`
+  # directly would re-create the false-green class one layer up: skip both and
+  # the branch looks green with no suite verdict at all. `gate` cannot be skipped
+  # (`if: always()`) and cannot pass without exactly one real SUCCESS.
+  # ---------------------------------------------------------------------------
+  elig:
+    name: CI-offload eligibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      eligible: ${{ steps.elig.outputs.eligible }}
+    steps:
+      - name: Determine CI-offload eligibility
+        id: elig
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          REPO: ${{ github.repository }}
+          # Secrets are readable in a step context, never in a job-level `if:`.
+          # GitHub also withholds secrets from fork-PR runs, so this is a second,
+          # independent reason a fork can never reach the offload path.
+          TS_AUTHKEY_SET: ${{ secrets.TS_AUTHKEY != '' }}
+        run: |
+          set -euo pipefail
+          trusted=false
+          if [ "$EVENT_NAME" = "push" ] && [ "$REF" = "refs/heads/main" ]; then
+            trusted=true
+          fi
+          if [ "$EVENT_NAME" = "pull_request" ] && [ "$PR_HEAD_REPO" = "$REPO" ]; then
+            trusted=true
+          fi
+          eligible=false
+          if [ "$trusted" = "true" ] && [ "$TS_AUTHKEY_SET" = "true" ]; then
+            eligible=true
+          fi
+          echo "eligible=$eligible" >> "$GITHUB_OUTPUT"
+          echo "trusted=$trusted eligible=$eligible"
+
+  offload:
+    name: suite (offloaded to ai)
+    runs-on: ubuntu-latest
+    needs: elig
+    if: needs.elig.outputs.eligible == 'true'
+    # One job runs ALL the heavy stages, so this budget is not the per-lane 100
+    # the hosted jobs use. The Dagger module runs them concurrently, so the wall
+    # clock is max(py3.10, Gate A) -- ~60 min on a warm engine. 120 leaves room
+    # for a cold-image run and a Gate A slower than the ~58 min its hosted 86:36
+    # scales to. Run 4 timed out at 100 running them SEQUENTIALLY.
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.ref }}
+          # The chronology proof walks real history and reads historical blobs.
+          # A shallow or blob-filtered checkout fails the module's object-database
+          # probe by design -- fetch everything.
+          fetch-depth: 0
+      - name: Offload the suite to the tailnet host
+        # Pinned to a full commit SHA, never a moving tag.
+        uses: Consiliency/ci-actions/dagger-offload@ea4ba36ba29f18ae4f22e65ae4b8b63e7c7468ee
+        with:
+          command: "bash ci/offload-gate.sh"
+          eligible: ${{ needs.elig.outputs.eligible }}
+          ts-authkey: ${{ secrets.TS_AUTHKEY }}
+      - name: Upload offloaded junit evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-offloaded
+          path: junit-offload/**
+          if-no-files-found: error
+
+  hosted:
+    name: suite (hosted fallback)
+    runs-on: ubuntu-latest
+    # The hosted suite of record on the fork/no-secret path is the existing
+    # matrix + clean-room pair below (they carry the two-lane selection, the
+    # retention guard's subject, and the junit uploads). This job collapses their
+    # verdict into ONE result for `gate`, instead of duplicating the suite.
+    #
+    # The opposite of `offload`, never `failure()`/`always()`: this is the
+    # fork/no-secret path, NOT a fallback from a failed offload. A failed offload
+    # must stay failed -- otherwise an unreachable host silently becomes green.
+    needs: [elig, pytest, chronology-retention, cleanroom]
+    if: always() && needs.elig.outputs.eligible != 'true'
+    timeout-minutes: 5
+    steps:
+      - name: Collapse the hosted lanes into one verdict
+        env:
+          PYTEST: ${{ needs.pytest.result }}
+          RETENTION: ${{ needs.chronology-retention.result }}
+          CLEANROOM: ${{ needs.cleanroom.result }}
+        run: |
+          set -euo pipefail
+          echo "pytest=$PYTEST retention=$RETENTION cleanroom=$CLEANROOM"
+          for r in "$PYTEST" "$RETENTION" "$CLEANROOM"; do
+            if [ "$r" != "success" ]; then
+              echo "hosted suite FAILED: a hosted lane did not succeed" >&2
+              exit 1
+            fi
+          done
+          echo "hosted suite: all lanes green"
+
+  gate:
+    name: suite gate
+    runs-on: ubuntu-latest
+    needs: [offload, hosted]
+    # Never skipped: `needs` failing or skipping must still land here.
+    if: always()
+    timeout-minutes: 5
+    steps:
+      - name: Require exactly one real suite verdict
+        env:
+          OFFLOAD: ${{ needs.offload.result }}
+          HOSTED: ${{ needs.hosted.result }}
+        run: |
+          set -euo pipefail
+          echo "offload=$OFFLOAD hosted=$HOSTED"
+          successes=0
+          [ "$OFFLOAD" = "success" ] && successes=$((successes + 1)) || true
+          [ "$HOSTED" = "success" ] && successes=$((successes + 1)) || true
+          if [ "$successes" -ne 1 ]; then
+            echo "" >&2
+            echo "suite gate FAILED: expected exactly one of offload/hosted to succeed," >&2
+            echo "got offload=$OFFLOAD hosted=$HOSTED (successes=$successes)." >&2
+            echo "" >&2
+            echo "A skipped job satisfies a required status check, so this aggregate" >&2
+            echo "gate -- not offload/hosted individually -- is the required check." >&2
+            echo "Both skipped means NO suite ran: that is a red, not a green." >&2
+            exit 1
+          fi
+          echo "suite gate: exactly one real suite verdict (success)"
+
   lint:
     name: lint (pyflakes)
     runs-on: blacksmith-4vcpu-ubuntu-2404
@@ -43,6 +186,12 @@ jobs:
 
   pytest:
     name: pytest (py${{ matrix.python-version }})
+    # Legacy hosted lanes. The offload graph above now owns the suite on the
+    # eligible path; running these too would bill Blacksmith for work that
+    # already ran on `ai` (acceptance criterion: billed minutes). Keep them
+    # for the fork/no-secret path, where `hosted` is the suite of record.
+    needs: elig
+    if: needs.elig.outputs.eligible != 'true'
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 100
     strategy:
@@ -188,6 +337,12 @@ jobs:
 
   cleanroom:
     name: clean-room (standalone-from-wheel, Gate A)
+    # Legacy hosted lanes. The offload graph above now owns the suite on the
+    # eligible path; running these too would bill Blacksmith for work that
+    # already ran on `ai` (acceptance criterion: billed minutes). Keep them
+    # for the fork/no-secret path, where `hosted` is the suite of record.
+    needs: elig
+    if: needs.elig.outputs.eligible != 'true'
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 100
     steps:
