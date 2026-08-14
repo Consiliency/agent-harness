@@ -1895,7 +1895,7 @@ def _validate_final_proof(proof: dict[str, Any]) -> None:
     if (not attempt_ids or len(set(attempt_ids)) != len(attempt_ids) or any(not isinstance(item, str) or not item for item in attempt_ids) or
             len(proof["attempts"]) != len(attempt_ids)):
         raise AgyCanaryEvidenceError("final proof attempt binding is malformed")
-    if any(not isinstance(item, dict) or set(item) != {"attempt_id", "counts", "terminal_sha256"} or item.get("attempt_id") != attempt_ids[index] or not isinstance(item.get("counts"), dict) or set(item["counts"]) != {"command", "unsandboxed", "non_read_tool", "out_of_stage_read"} or any(item["counts"].get(name) != 0 for name in item["counts"]) for index, item in enumerate(proof["attempts"])):
+    if any(not isinstance(item, dict) or set(item) != {"attempt_id", "counts", "terminal_sha256"} or item.get("attempt_id") != attempt_ids[index] or not isinstance(item.get("counts"), dict) or set(item["counts"]) != {"command", "unsandboxed", "non_read_tool", "out_of_stage_read"} or any(item["counts"].get(name) != 0 for name in item["counts"]) or not isinstance(item.get("terminal_sha256"), str) or len(item["terminal_sha256"]) != 64 or any(char not in "0123456789abcdef" for char in item["terminal_sha256"].lower()) for index, item in enumerate(proof["attempts"])):
         raise AgyCanaryEvidenceError("final proof attempts are malformed")
     for name in ("accepted_review_sha256", "private_board_sha256"):
         value = proof.get(name)
