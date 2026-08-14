@@ -693,8 +693,21 @@ def _mock_canonical_bwrap(monkeypatch) -> None:
     monkeypatch.setattr(evidence, "_canonical_bwrap", lambda: Path("/usr/bin/bwrap"))
 
 
+def _mock_trusted_agy_runtime(monkeypatch, tmp_path: Path) -> None:
+    source = tmp_path / "trusted-agy"
+    source.write_bytes(b"trusted-agy")
+    source.chmod(0o700)
+    info = source.stat()
+    runtime = evidence._TrustedAgyRuntime(
+        source, info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode),
+        evidence._sha256(source.read_bytes()),
+    )
+    monkeypatch.setattr(evidence, "_trusted_agy_runtime", lambda: runtime)
+
+
 def test_capture_namespace_reopens_auth_and_resolver_for_child_paths(monkeypatch, tmp_path):
     _mock_canonical_bwrap(monkeypatch)
+    _mock_trusted_agy_runtime(monkeypatch, tmp_path)
     root = _private_root(tmp_path)
     settings = _settings(tmp_path, [])
     auth = tmp_path / "auth.json"
@@ -1163,12 +1176,31 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
                     {"provider": "grok", "seat_key": "grok-primary"},
                 ],
             },
+            **evidence._FINAL_GOVERNANCE_POSTURE,
         }
         missing_provider = json.loads(json.dumps(proof))
         missing_provider["provider_results"]["providers"].pop()
         with pytest.raises(evidence.AgyCanaryEvidenceError, match="provider results"):
             evidence._validate_final_proof(missing_provider)
+        missing_governance = json.loads(json.dumps(proof))
+        del missing_governance["human_required"]
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="governance"):
+            evidence._validate_final_proof(missing_governance)
+        altered_governance = json.loads(json.dumps(proof))
+        altered_governance["external_attestation"] = "present"
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="governance"):
+            evidence._validate_final_proof(altered_governance)
         (root / "agy_canary_proof.json").write_bytes(evidence._canonical_json(proof))
+        monkeypatch.setattr(evidence, "verify_capture", lambda **_kwargs: altered_governance)
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="governance"):
+            evidence.finalize_canary(
+                evidence_root=root,
+                expected_seat_key="gemini-primary",
+                dotfiles_repo=repo,
+                plan_path=Path("plans/canary.md"),
+                manifest_path=Path("plans/manifest.json"),
+                plan_slug="agy-canary",
+            )
         monkeypatch.setattr(evidence, "verify_capture", lambda **_kwargs: proof)
         result = evidence.finalize_canary(
             evidence_root=root,
@@ -1178,7 +1210,10 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
             manifest_path=Path("plans/manifest.json"),
             plan_slug="agy-canary",
         )
+        canonical_proof_sha256 = evidence._sha256(evidence._canonical_json(proof))
         assert result["inputs_sha256"]
+        assert result["canonical_proof_sha256"] == canonical_proof_sha256
+        assert {name: result[name] for name in evidence._FINAL_GOVERNANCE_POSTURE} == evidence._FINAL_GOVERNANCE_POSTURE
         assert "## Execution evidence" in plan.read_text()
         assert json.loads(manifest.read_text())["plans"][0]["updated_at"] != "old"
         assert stat.S_IMODE(plan.stat().st_mode) == 0o640
@@ -1188,20 +1223,36 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
         _prefix, payload = evidence._parse_final_payload(plan.read_bytes())
         assert payload["proof"]["provider_results"] == proof["provider_results"]
         assert payload["attestation"]["proof"]["provider_results"] == proof["provider_results"]
+        assert payload["proof_sha256"] == canonical_proof_sha256
+        assert {name: payload["proof"][name] for name in evidence._FINAL_GOVERNANCE_POSTURE} == evidence._FINAL_GOVERNANCE_POSTURE
+        private_governance = json.loads(json.dumps(proof))
+        private_governance["blocker_class"] = "release_approval"
+        monkeypatch.setattr(evidence, "verify_capture", lambda **_kwargs: private_governance)
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="governance"):
+            evidence.check_private_final(
+                evidence_root=root, expected_seat_key="gemini-primary", dotfiles_repo=repo,
+                plan_path=Path("plans/canary.md"), manifest_path=Path("plans/manifest.json"), plan_slug="agy-canary",
+            )
+        monkeypatch.setattr(evidence, "verify_capture", lambda **_kwargs: proof)
         checked = evidence.check_private_final(
             evidence_root=root, expected_seat_key="gemini-primary", dotfiles_repo=repo,
             plan_path=Path("plans/canary.md"), manifest_path=Path("plans/manifest.json"), plan_slug="agy-canary",
         )
         assert checked["inputs_sha256"] == result["inputs_sha256"]
+        assert checked["canonical_proof_sha256"] == canonical_proof_sha256
+        assert {name: checked[name] for name in evidence._FINAL_GOVERNANCE_POSTURE} == evidence._FINAL_GOVERNANCE_POSTURE
         subprocess.run(["git", "-C", str(repo), "add", "plans/canary.md", "plans/manifest.json"], check=True)
         subprocess.run(["git", "-C", str(repo), "commit", "-qm", "finalize"], check=True)
         committed = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
         monkeypatch.setattr(evidence, "_reconcile_release_lineage", lambda **_kwargs: release)
-        assert evidence.check_committed_final(
+        committed_result = evidence.check_committed_final(
             dotfiles_repo=repo, commit=committed, plan_path=Path("plans/canary.md"),
             manifest_path=Path("plans/manifest.json"), plan_slug="agy-canary",
             agent_harness_repo=repo, handoff_commit=release["handoff_commit"],
-        )["commit"] == committed
+        )
+        assert committed_result["commit"] == committed
+        assert committed_result["canonical_proof_sha256"] == canonical_proof_sha256
+        assert {name: committed_result[name] for name in evidence._FINAL_GOVERNANCE_POSTURE} == evidence._FINAL_GOVERNANCE_POSTURE
         bootstrap = json.loads((root / "agy_canary_bootstrap_attestation.json").read_text())
         with pytest.raises(evidence.AgyCanaryEvidenceError, match="release"):
             evidence._validate_committed_attestation(
@@ -1226,6 +1277,31 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
                 plan_before=subprocess.check_output(["git", "-C", str(repo), "show", "HEAD^:plans/canary.md"]),
                 manifest_before=subprocess.check_output(["git", "-C", str(repo), "show", "HEAD^:plans/manifest.json"]),
             )
+        malformed_identity = json.loads(json.dumps(payload["attestation"]))
+        malformed_identity["proof"]["human_required"] = False
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="proof governance"):
+            evidence._validate_committed_attestation(
+                repo=repo, attestation=malformed_identity, plan_relative="plans/canary.md", manifest_relative="plans/manifest.json",
+                plan_before=subprocess.check_output(["git", "-C", str(repo), "show", "HEAD^:plans/canary.md"]),
+                manifest_before=subprocess.check_output(["git", "-C", str(repo), "show", "HEAD^:plans/manifest.json"]),
+            )
+        malformed_payload = json.loads(json.dumps(payload))
+        malformed_payload["proof"]["external_attestation"] = "present"
+        malformed_payload["proof_sha256"] = evidence._sha256(evidence._canonical_json(malformed_payload["proof"]))
+        plan.write_bytes(
+            _prefix + b"\n## Execution evidence\n\n```json\n" +
+            evidence._canonical_json(malformed_payload) + b"```\n"
+        )
+        manifest.write_bytes(evidence._canonical_json({"plans": [{"slug": "agy-canary", "updated_at": "tampered"}]}))
+        subprocess.run(["git", "-C", str(repo), "add", "plans/canary.md", "plans/manifest.json"], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "malformed governance"], check=True)
+        malformed_commit = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="governance"):
+            evidence.check_committed_final(
+                dotfiles_repo=repo, commit=malformed_commit, plan_path=Path("plans/canary.md"),
+                manifest_path=Path("plans/manifest.json"), plan_slug="agy-canary",
+                agent_harness_repo=repo, handoff_commit=release["handoff_commit"],
+            )
     finally:
         shutil.rmtree(root)
 
@@ -1241,7 +1317,33 @@ def _stub_finalizer(monkeypatch, tmp_path: Path) -> tuple[Path, Path, Path, Path
     manifest.write_bytes(b'{"plans":[{"slug":"agy-canary","updated_at":"old"}]}\n')
     plan.chmod(0o640)
     manifest.chmod(0o600)
-    proof = {"sealed": "proof"}
+    proof = {
+        "schema": evidence.SCHEMA_VERSION,
+        "seat_key": "gemini-primary",
+        "attempt_ids": ["gemini-1"],
+        "capture_mode": "stream_json",
+        "attempts": [{
+            "attempt_id": "gemini-1",
+            "counts": {
+                "command": 0, "unsandboxed": 0,
+                "non_read_tool": 0, "out_of_stage_read": 0,
+            },
+            "terminal_sha256": "1" * 64,
+        }],
+        "accepted_review_sha256": "2" * 64,
+        "private_board_sha256": "3" * 64,
+        "provider_results": {
+            "registry_sha256": "4" * 64,
+            "result_set_sha256": "5" * 64,
+            "providers": [
+                {"provider": "gemini", "seat_key": "gemini-primary"},
+                {"provider": "codex", "seat_key": "codex-primary"},
+                {"provider": "claude", "seat_key": "claude-primary"},
+                {"provider": "grok", "seat_key": "grok-primary"},
+            ],
+        },
+        **evidence._FINAL_GOVERNANCE_POSTURE,
+    }
     release: dict[str, object] = {}
     prepare = {
         "seat_key": "gemini-primary",
@@ -1267,7 +1369,6 @@ def _stub_finalizer(monkeypatch, tmp_path: Path) -> tuple[Path, Path, Path, Path
         "_read_json_at",
         lambda _fd, name: prepare if name == evidence._PREPARE_NAME else proof,
     )
-    monkeypatch.setattr(evidence, "_proof_identity", lambda _proof: {"proof": "identity"})
     monkeypatch.setattr(evidence, "_final_suffix", lambda _proof, _attestation: b"\nproof\n")
     return root, repo, plan, manifest
 

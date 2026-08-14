@@ -177,6 +177,15 @@ def test_gemini_leg_passes_prompt_inline_on_argv_not_stdin(monkeypatch):
 def test_capture_enabled_gemini_translates_host_stage_in_prompt_and_argv(monkeypatch, tmp_path):
     """The production command exposes the host stage only as bwrap's bind source."""
     _mock_canonical_bwrap(monkeypatch)
+    source = tmp_path / "trusted-agy"
+    source.write_bytes(b"trusted-agy")
+    source.chmod(0o700)
+    info = source.stat()
+    runtime = evidence._TrustedAgyRuntime(
+        source, info.st_dev, info.st_ino, info.st_mode & 0o7777,
+        evidence._sha256(source.read_bytes()),
+    )
+    monkeypatch.setattr(evidence, "_trusted_agy_runtime", lambda: runtime)
     root = Path("/tmp") / f"phase-loop-agy-panel-{os.getpid()}-{tmp_path.name}"
     root.mkdir(mode=0o700)
     capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
