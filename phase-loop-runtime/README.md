@@ -43,6 +43,23 @@ python3 -m phase_loop_runtime.roadmap_lint specs/phase-plans-v1.md
 Both wrap `phase_loop_runtime.roadmap_lint` (the single source of truth). Exit 0 =
 clean; non-zero prints each issue on stderr.
 
+## Attended agy canary evidence
+
+The six `phase-loop agy-canary-*` commands are an opt-in, attended evidence
+pipeline for the Gemini/`agy` review seat. They never add an Antigravity allow
+rule or use a permission-bypass flag. `agy-canary-clean-settings` is the sole
+writer for removing the historical `command(pwd)` rule; it requires a direct,
+mode-0700 child of `/tmp`, a quiescent settings tree, and an exclusive maintenance
+lock. The later probe, prepare, verify, and finalize steps fail closed until an
+attended version-specific trajectory probe has selected a complete authority.
+
+When `PHASE_LOOP_AGY_CANARY_EVIDENCE_DIR` is set, `advisor-board --json` consumes
+that variable before spawning any seat. The complete board JSON must be written
+through `--agy-canary-private-board-name <basename>` into that private directory;
+stdout contains only the redacted ledger binding. Capture requires exactly one
+resolved Gemini seat and retains the two staged review inputs using descriptor
+relative, no-follow writes. A normal board has no new output field or capture work.
+
 ## Workflow skills bundle
 
 The runtime also installs the harness-neutral workflow-skills bundle. The skill

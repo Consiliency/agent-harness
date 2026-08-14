@@ -385,6 +385,23 @@ def build_parser() -> argparse.ArgumentParser:
     agy_clean_sub.add_argument("--evidence-root", required=True)
     agy_clean_sub.add_argument("--settings-path", required=True)
     agy_clean_sub.add_argument("--maintenance-lock", required=True)
+    agy_probe_sub = subparsers.add_parser("agy-canary-probe")
+    agy_probe_sub.add_argument("--evidence-root", required=True)
+    agy_probe_sub.add_argument("--agy-executable", default="agy")
+    agy_attest_sub = subparsers.add_parser("agy-canary-bootstrap-attest")
+    agy_attest_sub.add_argument("--evidence-root", required=True)
+    agy_attest_sub.add_argument("--dotfiles-repo", required=True)
+    agy_prepare_sub = subparsers.add_parser("agy-canary-prepare")
+    agy_prepare_sub.add_argument("--evidence-root", required=True)
+    agy_prepare_sub.add_argument("--settings-path", required=True)
+    agy_prepare_sub.add_argument("--seat-key", required=True)
+    agy_verify_sub = subparsers.add_parser("agy-canary-verify")
+    agy_verify_sub.add_argument("--evidence-root", required=True)
+    agy_verify_sub.add_argument("--seat-key", required=True)
+    agy_finalize_sub = subparsers.add_parser("agy-canary-finalize")
+    agy_finalize_sub.add_argument("--evidence-root", required=True)
+    agy_finalize_sub.add_argument("--seat-key", required=True)
+    agy_finalize_sub.add_argument("--check-private-final", action="store_true")
     # DECOUPLE SL-1: the dotfiles-domain commands (adoption-bundle, sync-skills,
     # build-bundle, hotfix) are NOT in this loop. They are registered only by the
     # dotfiles-profile plugin (see _register_profile_commands below), so the
@@ -970,6 +987,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to the review material staged into the board bundle.",
     )
     advisor_board_sub.add_argument("--json", action="store_true", help="Emit the board verdicts as JSON.", default=argparse.SUPPRESS)  # ah#84
+    advisor_board_sub.add_argument(
+        "--agy-canary-private-board-name",
+        help="Capture-only basename for the full board JSON inside the private evidence root.",
+    )
     for name in ("task-message-probe", "task-message-resolve"):
         task_message_sub = subparsers.add_parser(
             name,
@@ -1027,6 +1048,52 @@ def main(argv: list[str] | None = None) -> int:
             )
         except AgyCanaryEvidenceError as exc:
             print(f"phase-loop agy-canary-clean-settings: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(result, sort_keys=True))
+        return 0
+    if command in {
+        "agy-canary-probe",
+        "agy-canary-bootstrap-attest",
+        "agy-canary-prepare",
+        "agy-canary-verify",
+        "agy-canary-finalize",
+    }:
+        from .agy_canary_evidence import (
+            AgyCanaryEvidenceError,
+            bootstrap_attest,
+            finalize_canary,
+            prepare_canary,
+            probe_capability,
+            verify_capture,
+        )
+
+        try:
+            if command == "agy-canary-probe":
+                result = probe_capability(
+                    evidence_root=Path(args.evidence_root), agy_executable=args.agy_executable
+                )
+            elif command == "agy-canary-bootstrap-attest":
+                result = bootstrap_attest(
+                    evidence_root=Path(args.evidence_root), dotfiles_repo=Path(args.dotfiles_repo)
+                )
+            elif command == "agy-canary-prepare":
+                result = prepare_canary(
+                    evidence_root=Path(args.evidence_root),
+                    settings_path=Path(args.settings_path),
+                    seat_key=args.seat_key,
+                )
+            elif command == "agy-canary-verify":
+                result = verify_capture(
+                    evidence_root=Path(args.evidence_root), expected_seat_key=args.seat_key
+                )
+            else:
+                result = finalize_canary(
+                    evidence_root=Path(args.evidence_root),
+                    expected_seat_key=args.seat_key,
+                    check_only=bool(args.check_private_final),
+                )
+        except AgyCanaryEvidenceError as exc:
+            print(f"phase-loop {command}: {exc}", file=sys.stderr)
             return 1
         print(json.dumps(result, sort_keys=True))
         return 0
@@ -1649,6 +1716,11 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
     import tempfile
 
     from .advisor_board.composition import FLOOR_SEATS, board_independence, compose_review_board
+    from .agy_canary_evidence import (
+        AgyCanaryEvidenceError,
+        consume_capture_environment,
+        write_private_board,
+    )
     from .panel_invoker import invoke_board
 
     artifact_path = Path(args.artifact)
@@ -1656,6 +1728,23 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
     # artifact resolver. Fail closed with a recoverable exit, never a traceback.
     if not artifact_path.is_file():
         print(f"advisor-board: artifact not found (not a file): {artifact_path}", file=sys.stderr)
+        return 2
+    try:
+        capture = consume_capture_environment()
+    except AgyCanaryEvidenceError as exc:
+        print(f"advisor-board: invalid agy canary evidence root: {exc}", file=sys.stderr)
+        return 2
+    private_board_name = getattr(args, "agy_canary_private_board_name", None)
+    if capture is not None and not private_board_name:
+        print("advisor-board: capture requires --agy-canary-private-board-name", file=sys.stderr)
+        capture.close()
+        return 2
+    if capture is None and private_board_name:
+        print("advisor-board: private board name requires PHASE_LOOP_AGY_CANARY_EVIDENCE_DIR", file=sys.stderr)
+        return 2
+    if capture is not None and not bool(getattr(args, "json", False)):
+        print("advisor-board: capture requires --json so full board output stays private", file=sys.stderr)
+        capture.close()
         return 2
     # Auth-aware production composition (REVIEWGOV IF-0-REVIEWGOV-1): the BARE call is
     # already auth-aware — with no args, ``compose_review_board`` defaults
@@ -1679,12 +1768,18 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
     try:
         with tempfile.TemporaryDirectory(prefix="advisor-board-") as scratch:
             result = invoke_board(
-                board, "", artifact_ref=str(artifact_path.resolve()), repo_dir=scratch
+                board,
+                "",
+                artifact_ref=str(artifact_path.resolve()),
+                repo_dir=scratch,
+                agy_canary_capture=capture,
             )
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, AgyCanaryEvidenceError) as exc:
         # Artifact staging / resolution failures fail closed with a recoverable exit,
         # not a traceback.
         print(f"advisor-board: could not stage the artifact: {exc}", file=sys.stderr)
+        if capture is not None:
+            capture.close()
         return 2
     independence = board_independence(board)
     usable_count = len(result.usable_legs)
@@ -1755,6 +1850,18 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
                 for leg in result.legs
             ],
         }
+        if capture is not None:
+            try:
+                private = write_private_board(
+                    capture=capture, basename=private_board_name, payload=payload
+                )
+            except AgyCanaryEvidenceError as exc:
+                print(f"advisor-board: private capture sink failed: {exc}", file=sys.stderr)
+                capture.close()
+                return 2
+            print(json.dumps({"agy_canary_capture": getattr(result, "_agy_canary_capture", None), "private_board": private}, sort_keys=True))
+            capture.close()
+            return exit_code
         print(json.dumps(payload, indent=2, sort_keys=True))
         return exit_code
     print(

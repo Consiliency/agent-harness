@@ -207,3 +207,64 @@ def test_clean_settings_blocks_when_agy_process_is_active(tmp_path, monkeypatch)
         for child in root.iterdir():
             child.unlink()
         root.rmdir()
+
+
+def test_capture_reducer_requires_complete_sealed_staged_reads(tmp_path):
+    root = _private_root(tmp_path)
+    try:
+        settings = _settings(tmp_path, [])
+        capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
+        try:
+            evidence.create_capture(capture=capture, settings_path=settings, seat_key="gemini-primary")
+            review = tmp_path / "review"
+            review.mkdir()
+            instructions = review / "review-instructions.md"
+            bundle = review / "review-bundle.md"
+            instructions.write_text("read this first\n")
+            bundle.write_text("review this\n")
+            instructions.chmod(0o600)
+            bundle.chmod(0o600)
+            staged = evidence.retain_staged_files(capture=capture, review_dir=review)
+            events = [
+                {"sequence": 0, "session_id": "s1", "type": "tool_call", "call_id": "a", "tool": "read_file", "target": "/run/phase-loop-review/review-instructions.md"},
+                {"sequence": 1, "session_id": "s1", "type": "tool_result", "call_id": "a", "outcome": "success", "sha256": staged["review-instructions.md"]["sha256"], "bytes": staged["review-instructions.md"]["bytes"]},
+                {"sequence": 2, "session_id": "s1", "type": "tool_call", "call_id": "b", "tool": "read_file", "target": "/run/phase-loop-review/review-bundle.md"},
+                {"sequence": 3, "session_id": "s1", "type": "tool_result", "call_id": "b", "outcome": "success", "sha256": staged["review-bundle.md"]["sha256"], "bytes": staged["review-bundle.md"]["bytes"]},
+                {"sequence": 4, "session_id": "s1", "type": "terminal", "text": "Looks good\nAGREE"},
+            ]
+            evidence.record_launch(capture=capture, seat_key="gemini-primary", attempt_id="gemini-1", argv=["agy", "-p", "secret prompt"], returncode=0, stdout="\n".join(json.dumps(event) for event in events), stderr="", staged=staged)
+        finally:
+            capture.close()
+        proof = evidence.verify_capture(evidence_root=root, expected_seat_key="gemini-primary")
+        assert proof["attempt_ids"] == ["gemini-1"]
+        assert proof["attempts"][0]["counts"] == {"command": 0, "unsandboxed": 0, "non_read_tool": 0, "out_of_stage_read": 0}
+    finally:
+        for path in root.iterdir():
+            path.unlink()
+        root.rmdir()
+
+
+def test_capture_reducer_rejects_unpaired_tool_evidence(tmp_path):
+    root = _private_root(tmp_path)
+    try:
+        settings = _settings(tmp_path, [])
+        capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
+        try:
+            evidence.create_capture(capture=capture, settings_path=settings, seat_key="gemini-primary")
+            review = tmp_path / "review"
+            review.mkdir()
+            for name in ("review-instructions.md", "review-bundle.md"):
+                path = review / name
+                path.write_text(name)
+                path.chmod(0o600)
+            staged = evidence.retain_staged_files(capture=capture, review_dir=review)
+            broken = {"sequence": 0, "session_id": "s1", "type": "tool_call", "call_id": "bad", "tool": "command", "target": "true"}
+            evidence.record_launch(capture=capture, seat_key="gemini-primary", attempt_id="gemini-1", argv=["agy", "-p", "secret prompt"], returncode=0, stdout=json.dumps(broken), stderr="", staged=staged)
+        finally:
+            capture.close()
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="complete"):
+            evidence.verify_capture(evidence_root=root, expected_seat_key="gemini-primary")
+    finally:
+        for path in root.iterdir():
+            path.unlink()
+        root.rmdir()

@@ -11,6 +11,8 @@ import json
 import os
 import secrets
 import stat
+import subprocess
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,6 +23,11 @@ _CLEANUP_STATE_NAME = "cleanup-state.json"
 _SETTINGS_SNAPSHOT_NAME = "agy-settings.pre.json"
 _RULE = "command(pwd)"
 _RENAME_EXCHANGE = 2
+_LEDGER_NAME = "agy-launch-ledger.json"
+_PROBE_NAME = "agy_capability_probe.json"
+_PREPARE_NAME = "agy_canary_prepare.json"
+_INPUTS_NAME = "agy_canary_inputs.json"
+_SAFE_PRESETS = frozenset({"request-review", "strict"})
 
 
 class AgyCanaryEvidenceError(RuntimeError):
@@ -35,6 +42,21 @@ class _OpenedSettings:
     mode: int
     device: int
     inode: int
+
+
+@dataclass(frozen=True)
+class AgyCanaryCapture:
+    """Parent-owned opt-in capture state.
+
+    The evidence root is deliberately represented by a directory descriptor.  It
+    must never be supplied to a model child in an argv, prompt, or environment.
+    """
+
+    root: Path
+    root_fd: int
+
+    def close(self) -> None:
+        os.close(self.root_fd)
 
 
 def _sha256(data: bytes) -> str:
@@ -420,4 +442,375 @@ def clean_settings(*, evidence_root: Path, settings_path: Path, maintenance_lock
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
             finally:
                 os.close(lock_fd)
+        os.close(root_fd)
+
+
+def _read_regular_at(directory_fd: int, name: str) -> bytes:
+    """Read one direct child without following a symlink."""
+    if Path(name).name != name:
+        raise AgyCanaryEvidenceError("private evidence names must be basenames")
+    return _reopen_at(directory_fd, name)[0]
+
+
+def _write_replace_at(directory_fd: int, name: str, value: dict[str, Any]) -> None:
+    """Atomically replace a parent-owned JSON record under a held descriptor."""
+    if Path(name).name != name:
+        raise AgyCanaryEvidenceError("private evidence names must be basenames")
+    temporary = f".{name}.{secrets.token_hex(12)}"
+    _exclusive_write_at(directory_fd, temporary, _canonical_json(value), 0o600)
+    os.rename(temporary, name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+    os.fsync(directory_fd)
+
+
+def _read_json_at(directory_fd: int, name: str) -> dict[str, Any]:
+    try:
+        value = json.loads(_read_regular_at(directory_fd, name))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise AgyCanaryEvidenceError(f"invalid private evidence record: {name}") from exc
+    if not isinstance(value, dict):
+        raise AgyCanaryEvidenceError(f"private evidence record is not an object: {name}")
+    return value
+
+
+def consume_capture_environment(env: dict[str, str] | None = None) -> AgyCanaryCapture | None:
+    """Consume the opt-in root before a board creates child work.
+
+    This intentionally deletes the environment variable even when validation
+    fails.  A later child must never inherit a path to the private evidence
+    tree merely because setup was rejected.
+    """
+    source = os.environ if env is None else env
+    raw = source.pop("PHASE_LOOP_AGY_CANARY_EVIDENCE_DIR", None)
+    if raw is None:
+        return None
+    root, root_fd = _validate_private_root(Path(raw))
+    return AgyCanaryCapture(root=root, root_fd=root_fd)
+
+
+def _policy_facts(settings: dict[str, Any]) -> dict[str, bool]:
+    permissions = settings.get("permissions", {})
+    allow = permissions.get("allow", []) if isinstance(permissions, dict) else None
+    preset = settings.get("toolPermission", "request-review")
+    return {
+        "effective_allow_empty": allow == [],
+        "safe_preset": isinstance(preset, str) and preset in _SAFE_PRESETS,
+        "non_workspace_access_disabled": settings.get("allowNonWorkspaceAccess", False) is False,
+    }
+
+
+def inventory_policy_sources(*, settings_path: Path) -> dict[str, Any]:
+    """Inventory the one supported settings source and derive policy facts.
+
+    A non-existent or symlinked source is not silently treated as safe.  The
+    attended producer supplies its explicit minimal settings file; ordinary
+    boards never enter this code path.
+    """
+    opened = _open_settings(settings_path)
+    try:
+        parsed = _parse_policy(opened.data)
+    finally:
+        os.close(opened.parent_fd)
+    facts = _policy_facts(parsed)
+    if not all(facts.values()):
+        raise AgyCanaryEvidenceError("capture policy is not strict and empty")
+    return {
+        "schema": "agy_policy_inventory.v1",
+        "settings": {
+            "path_sha256": _sha256(str(settings_path.resolve()).encode()),
+            "bytes": len(opened.data),
+            "sha256": _sha256(opened.data),
+        },
+        "sources_complete": True,
+        "customization_inventory": {
+            "hooks": [], "plugins": [], "mcp": [], "environment_overrides": [],
+        },
+        **facts,
+    }
+
+
+def create_capture(*, capture: AgyCanaryCapture, settings_path: Path, seat_key: str) -> dict[str, Any]:
+    """Start a single-seat capture ledger after strict policy inventory."""
+    if not seat_key or "/" in seat_key or "\\" in seat_key:
+        raise AgyCanaryEvidenceError("Gemini seat key must be a nonempty canonical key")
+    policy = inventory_policy_sources(settings_path=settings_path)
+    existing = None
+    try:
+        existing = _read_json_at(capture.root_fd, _LEDGER_NAME)
+    except AgyCanaryEvidenceError:
+        pass
+    if existing is not None:
+        raise AgyCanaryEvidenceError("capture ledger already exists")
+    ledger = {
+        "schema": "agy_canary_launch_ledger.v1",
+        "seat_key": seat_key,
+        "policy": policy,
+        "attempts": [],
+    }
+    _exclusive_write_at(capture.root_fd, _LEDGER_NAME, _canonical_json(ledger), 0o600)
+    return ledger
+
+
+def retain_staged_files(*, capture: AgyCanaryCapture, review_dir: Path) -> dict[str, dict[str, Any]]:
+    """Descriptor-read and retain the two only permitted staged inputs."""
+    records: dict[str, dict[str, Any]] = {}
+    review_fd = os.open(review_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        for name in ("review-instructions.md", "review-bundle.md"):
+            data, info = _reopen_at(review_fd, name)
+            if stat.S_IMODE(info.st_mode) & 0o077:
+                raise AgyCanaryEvidenceError(f"staged file is not private: {name}")
+            retained = f"staged-{name}"
+            _exclusive_write_at(capture.root_fd, retained, data, 0o600)
+            records[name] = {"retained": retained, "bytes": len(data), "sha256": _sha256(data)}
+    finally:
+        os.close(review_fd)
+    return records
+
+
+def record_launch(
+    *,
+    capture: AgyCanaryCapture,
+    seat_key: str,
+    attempt_id: str,
+    argv: list[str],
+    returncode: int,
+    stdout: str,
+    stderr: str,
+    staged: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """Append one complete Gemini process record without recording prompt bytes."""
+    ledger = _read_json_at(capture.root_fd, _LEDGER_NAME)
+    if ledger.get("seat_key") != seat_key:
+        raise AgyCanaryEvidenceError("capture launch seat does not match sealed singleton")
+    attempts = ledger.get("attempts")
+    if not isinstance(attempts, list) or any(item.get("attempt_id") == attempt_id for item in attempts if isinstance(item, dict)):
+        raise AgyCanaryEvidenceError("attempt identifier is missing or duplicated")
+    stream_name = f"agy-stream-{attempt_id}.jsonl"
+    diagnostic_name = f"agy-diagnostic-{attempt_id}.log"
+    _exclusive_write_at(capture.root_fd, stream_name, stdout.encode(), 0o600)
+    _exclusive_write_at(capture.root_fd, diagnostic_name, stderr.encode(), 0o600)
+    normalized = ["<prompt>" if value and index == len(argv) - 1 else value for index, value in enumerate(argv)]
+    record = {
+        "attempt_id": attempt_id,
+        "seat_key": seat_key,
+        "returncode": int(returncode),
+        "argv_sha256": _sha256("\0".join(normalized).encode()),
+        "stream": {"name": stream_name, "bytes": len(stdout.encode()), "sha256": _sha256(stdout.encode())},
+        "diagnostic": {"name": diagnostic_name, "bytes": len(stderr.encode()), "sha256": _sha256(stderr.encode())},
+        "staged": staged,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+    }
+    attempts.append(record)
+    _write_replace_at(capture.root_fd, _LEDGER_NAME, ledger)
+    return record
+
+
+def _parse_stream(data: bytes) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+    """Parse the intentionally narrow, versioned stream-json authority."""
+    calls: dict[str, dict[str, Any]] = {}
+    sequence = -1
+    terminal: dict[str, Any] | None = None
+    session: str | None = None
+    for raw in data.splitlines():
+        try:
+            event = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise AgyCanaryEvidenceError("stream contains invalid JSON") from exc
+        if not isinstance(event, dict):
+            raise AgyCanaryEvidenceError("stream event is not an object")
+        value = event.get("sequence")
+        if not isinstance(value, int) or value != sequence + 1:
+            raise AgyCanaryEvidenceError("stream sequence is incomplete")
+        sequence = value
+        current_session = event.get("session_id")
+        if not isinstance(current_session, str) or not current_session:
+            raise AgyCanaryEvidenceError("stream lacks a session identity")
+        if session is None:
+            session = current_session
+        elif session != current_session:
+            raise AgyCanaryEvidenceError("stream mixes sessions")
+        kind = event.get("type")
+        if kind == "tool_call":
+            call_id = event.get("call_id")
+            if not isinstance(call_id, str) or call_id in calls:
+                raise AgyCanaryEvidenceError("stream tool call identity is invalid")
+            calls[call_id] = event
+        elif kind == "tool_result":
+            call_id = event.get("call_id")
+            if not isinstance(call_id, str) or call_id not in calls or "result" in calls[call_id]:
+                raise AgyCanaryEvidenceError("stream tool result is unmatched")
+            calls[call_id]["result"] = event
+        elif kind == "terminal":
+            if terminal is not None or not isinstance(event.get("text"), str):
+                raise AgyCanaryEvidenceError("stream terminal event is invalid")
+            terminal = event
+        else:
+            raise AgyCanaryEvidenceError("stream event kind is unsupported")
+    if session is None or terminal is None or any("result" not in call for call in calls.values()):
+        raise AgyCanaryEvidenceError("stream does not contain complete calls and terminal result")
+    return session, list(calls.values()), terminal
+
+
+def verify_capture(*, evidence_root: Path, expected_seat_key: str) -> dict[str, Any]:
+    """Strictly reduce all sealed attempts and reject incomplete/forged evidence."""
+    root, root_fd = _validate_private_root(evidence_root)
+    try:
+        ledger = _read_json_at(root_fd, _LEDGER_NAME)
+        if ledger.get("seat_key") != expected_seat_key:
+            raise AgyCanaryEvidenceError("sealed Gemini seat key does not match board")
+        policy = ledger.get("policy")
+        if not isinstance(policy, dict) or not all(policy.get(name) is True for name in ("effective_allow_empty", "safe_preset", "non_workspace_access_disabled", "sources_complete")):
+            raise AgyCanaryEvidenceError("capture policy facts are incomplete")
+        attempts = ledger.get("attempts")
+        if not isinstance(attempts, list) or not attempts:
+            raise AgyCanaryEvidenceError("capture has no Gemini attempts")
+        output_attempts: list[dict[str, Any]] = []
+        final_text = ""
+        for item in attempts:
+            if not isinstance(item, dict) or item.get("seat_key") != expected_seat_key:
+                raise AgyCanaryEvidenceError("capture contains an unbound attempt")
+            stream = item.get("stream")
+            staged = item.get("staged")
+            if not isinstance(stream, dict) or not isinstance(staged, dict):
+                raise AgyCanaryEvidenceError("capture launch record is incomplete")
+            raw = _read_regular_at(root_fd, str(stream.get("name", "")))
+            if len(raw) != stream.get("bytes") or _sha256(raw) != stream.get("sha256"):
+                raise AgyCanaryEvidenceError("sealed stream bytes drifted")
+            _session, calls, terminal = _parse_stream(raw)
+            counts = {"command": 0, "unsandboxed": 0, "non_read_tool": 0, "out_of_stage_read": 0}
+            reads = {"review-instructions.md": [], "review-bundle.md": []}
+            for call in calls:
+                tool = call.get("tool")
+                target = call.get("target")
+                result = call["result"]
+                if not isinstance(tool, str) or not isinstance(target, str) or not isinstance(result, dict):
+                    raise AgyCanaryEvidenceError("tool call is unclassifiable")
+                succeeded = result.get("outcome") == "success"
+                if tool == "read_file":
+                    basename = Path(target).name
+                    if basename in reads and target.endswith(basename):
+                        reads[basename].append(result)
+                    else:
+                        counts["out_of_stage_read"] += 1
+                elif tool in {"command", "unsandboxed"}:
+                    counts[tool] += 1
+                else:
+                    counts["non_read_tool"] += 1
+                if succeeded and tool != "read_file":
+                    raise AgyCanaryEvidenceError("accepted attempt executed a non-read tool")
+            for name, expected in staged.items():
+                if not isinstance(expected, dict) or not reads.get(name):
+                    raise AgyCanaryEvidenceError(f"accepted attempt did not read {name}")
+                if not any(result.get("sha256") == expected.get("sha256") and result.get("bytes") == expected.get("bytes") for result in reads[name]):
+                    raise AgyCanaryEvidenceError(f"read result does not cover sealed {name}")
+            output_attempts.append({"attempt_id": item.get("attempt_id"), "counts": counts, "terminal_sha256": _sha256(str(terminal["text"]).encode())})
+            final_text = str(terminal["text"])
+        if not final_text.strip():
+            raise AgyCanaryEvidenceError("final Gemini review is empty")
+        proof = {
+            "schema": SCHEMA_VERSION,
+            "seat_key": expected_seat_key,
+            "attempt_ids": [item["attempt_id"] for item in output_attempts],
+            "attempts": output_attempts,
+            "accepted_review_sha256": _sha256(final_text.encode()),
+        }
+        _write_replace_at(root_fd, "agy_canary_proof.json", proof)
+        return proof
+    finally:
+        os.close(root_fd)
+
+
+def write_private_board(*, capture: AgyCanaryCapture, basename: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """Create the full board payload only in the validated private root."""
+    if not basename or Path(basename).name != basename:
+        raise AgyCanaryEvidenceError("private board name must be a basename")
+    data = _canonical_json(payload)
+    _exclusive_write_at(capture.root_fd, basename, data, 0o600)
+    return {"name": basename, "bytes": len(data), "sha256": _sha256(data)}
+
+
+def capture_summary(capture: AgyCanaryCapture) -> dict[str, Any]:
+    """Return redacted ledger binding information for the public board envelope."""
+    ledger = _read_json_at(capture.root_fd, _LEDGER_NAME)
+    data = _canonical_json(ledger)
+    attempts = ledger.get("attempts")
+    if not isinstance(attempts, list):
+        raise AgyCanaryEvidenceError("capture ledger has invalid attempts")
+    ids = [item.get("attempt_id") for item in attempts if isinstance(item, dict)]
+    if len(ids) != len(attempts) or any(not isinstance(item, str) for item in ids):
+        raise AgyCanaryEvidenceError("capture ledger has invalid attempt identifiers")
+    return {"gemini_seat_key": ledger.get("seat_key"), "gemini_seat_count": 1, "attempt_ids": ids, "ledger_bytes": len(data), "ledger_sha256": _sha256(data)}
+
+
+def probe_capability(*, evidence_root: Path, agy_executable: str = "agy") -> dict[str, Any]:
+    """Record a conservative capability result without executing a provider turn.
+
+    A live trajectory probe is an attended operation.  This producer therefore
+    refuses to claim a stream mode from a version string alone.
+    """
+    root, root_fd = _validate_private_root(evidence_root)
+    try:
+        proc = subprocess.run([agy_executable, "--version"], capture_output=True, text=True, timeout=15, check=False)
+        if proc.returncode != 0:
+            raise AgyCanaryEvidenceError("agy version probe failed")
+        value = {"schema": "agy_capability_probe.v1", "agy_version": (proc.stdout or proc.stderr).strip(), "mode": None, "complete": False, "reason": "attended_stream_schema_probe_required"}
+        _exclusive_write_at(root_fd, _PROBE_NAME, _canonical_json(value), 0o600)
+        return value
+    finally:
+        os.close(root_fd)
+
+
+def bootstrap_attest(*, evidence_root: Path, dotfiles_repo: Path) -> dict[str, Any]:
+    """Seal only repository-derived bootstrap identities for the later attended gate."""
+    repo = dotfiles_repo.resolve(strict=True)
+    if not (repo / ".git").exists() or not (repo / "bootstrap.sh").is_file():
+        raise AgyCanaryEvidenceError("bootstrap attestation requires a dotfiles checkout")
+    head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, check=False)
+    if head.returncode != 0:
+        raise AgyCanaryEvidenceError("cannot resolve dotfiles HEAD")
+    identities: dict[str, str] = {}
+    for relative in ("bootstrap.sh", "shared/agent-harness.pin", "plans/manifest.json"):
+        proc = subprocess.run(["git", "-C", str(repo), "rev-parse", f"HEAD:{relative}"], capture_output=True, text=True, check=False)
+        if proc.returncode != 0:
+            raise AgyCanaryEvidenceError(f"required bootstrap input is not committed: {relative}")
+        identities[relative] = proc.stdout.strip()
+    root, root_fd = _validate_private_root(evidence_root)
+    try:
+        value = {"schema": "agy_canary_bootstrap_attestation.v1", "repo_head": head.stdout.strip(), "blobs": identities}
+        _exclusive_write_at(root_fd, "agy_canary_bootstrap_attestation.json", _canonical_json(value), 0o600)
+        return value
+    finally:
+        os.close(root_fd)
+
+
+def prepare_canary(*, evidence_root: Path, settings_path: Path, seat_key: str) -> dict[str, Any]:
+    """Bind cleanup lineage and a positively complete capability probe before launch."""
+    root, root_fd = _validate_private_root(evidence_root)
+    try:
+        cleanup = _read_json_at(root_fd, _CLEANUP_STATE_NAME)
+        if cleanup.get("state") != "committed":
+            raise AgyCanaryEvidenceError("settings cleanup has not committed")
+        probe = _read_json_at(root_fd, _PROBE_NAME)
+        if probe.get("complete") is not True or probe.get("mode") not in {"stream_json", "trajectory_store"}:
+            raise AgyCanaryEvidenceError("capability probe has not selected a complete authority")
+        capture = AgyCanaryCapture(root, root_fd)
+        ledger = create_capture(capture=capture, settings_path=settings_path, seat_key=seat_key)
+        value = {"schema": "agy_canary_prepare.v1", "cleanup_sha256": _sha256(_canonical_json(cleanup)), "probe_sha256": _sha256(_canonical_json(probe)), "ledger_sha256": _sha256(_canonical_json(ledger)), "seat_key": seat_key}
+        _exclusive_write_at(root_fd, _PREPARE_NAME, _canonical_json(value), 0o600)
+        return value
+    finally:
+        os.close(root_fd)
+
+
+def finalize_canary(*, evidence_root: Path, expected_seat_key: str, check_only: bool = False) -> dict[str, Any]:
+    """Seal the final reducer payload; this does not modify any tracked file."""
+    proof = verify_capture(evidence_root=evidence_root, expected_seat_key=expected_seat_key)
+    if check_only:
+        return proof
+    root, root_fd = _validate_private_root(evidence_root)
+    try:
+        inputs = {"schema": "agy_canary_inputs.v1", "proof_sha256": _sha256(_canonical_json(proof)), "completed_at": datetime.now(timezone.utc).isoformat()}
+        _write_replace_at(root_fd, _INPUTS_NAME, inputs)
+        return {**proof, "inputs_sha256": _sha256(_canonical_json(inputs))}
+    finally:
         os.close(root_fd)

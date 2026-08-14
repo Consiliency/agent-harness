@@ -46,6 +46,13 @@ from .agent_runtime_provider import (
     HomebrewAgentRuntimeProvider,
     SendTurnRequest,
 )
+from .agy_canary_evidence import (
+    AgyCanaryCapture,
+    AgyCanaryEvidenceError,
+    capture_summary,
+    record_launch,
+    retain_staged_files,
+)
 from .claude_agent_view import ClaudeAgentViewAdapter
 from .launcher import GROK_REVIEW_READONLY_TOOLS
 from .profiles import CLAUDE_IMPLEMENTER_MODEL  # noqa: F401 - public compatibility export
@@ -2907,6 +2914,9 @@ def _exec_leg(
     *,
     deadline_s: int | None = None,
     research_seat: ResearchSeatConfig | None = None,
+    agy_capture: AgyCanaryCapture | None = None,
+    capture_staged: dict[str, dict[str, object]] | None = None,
+    seat_key: str | None = None,
 ) -> tuple[int, str, str]:
     """Run one CLI leg against the staged review dir; return (rc, review_text, log_text).
 
@@ -3108,6 +3118,19 @@ def _exec_leg(
             review_text = proc.stdout or ""
             rc = proc.returncode
             log_text = proc.stderr or ""
+            if agy_capture is not None:
+                if not seat_key or capture_staged is None:
+                    raise AgyCanaryEvidenceError("capture-enabled Gemini launch is missing sealed stage or seat")
+                record_launch(
+                    capture=agy_capture,
+                    seat_key=seat_key,
+                    attempt_id=f"gemini-{_attempt + 1}",
+                    argv=cmd,
+                    returncode=rc,
+                    stdout=review_text,
+                    stderr=log_text,
+                    staged=capture_staged,
+                )
             # HEADLESS TOOL-DENIAL: rc==0 + empty body + the CLI's own auto-denied
             # marker. Retrying reproduces it exactly, and reporting it as an anonymous
             # EMPTY is what let this hide for a whole milestone. Return a NON-ZERO rc
@@ -3238,6 +3261,8 @@ def _default_spawn(
     timeout_s: int | None = None,
     research_seat: ResearchSeatConfig | None = None,
     brief_append: str | None = None,
+    agy_capture: AgyCanaryCapture | None = None,
+    seat_key: str | None = None,
 ) -> tuple[str, str]:
     """Real-exec boundary: spawn a subscription CLI leg over the staged bundle.
 
@@ -3273,6 +3298,13 @@ def _default_spawn(
         (review_dir / "review-instructions.md").write_text(
             resolved_brief, encoding="utf-8"
         )
+        capture_staged: dict[str, dict[str, object]] | None = None
+        if agy_capture is not None:
+            if leg != "gemini" or not seat_key:
+                raise AgyCanaryEvidenceError("capture may be attached only to the singleton Gemini seat")
+            for staged_name in ("review-bundle.md", "review-instructions.md"):
+                (review_dir / staged_name).chmod(0o600)
+            capture_staged = retain_staged_files(capture=agy_capture, review_dir=review_dir)
         # ``timeout_s is None`` ⇒ today's input-scaled timeout (golden-neutral); an
         # explicit override bounds the leg. This is the ONE place that knows whether the
         # override was explicit, so resolve BOTH the retry reference and the hard deadline
@@ -3289,6 +3321,10 @@ def _default_spawn(
             extra["env"] = env
         if research_seat is not None:
             extra["research_seat"] = research_seat
+        if agy_capture is not None:
+            extra["agy_capture"] = agy_capture
+            extra["capture_staged"] = capture_staged
+            extra["seat_key"] = seat_key
         if leg == "claude":
             return _exec_claude_tui_leg(
                 review_dir,
@@ -3357,6 +3393,8 @@ def _default_spawn_via_provider(
     timeout_s: int | None = None,
     research_seat: ResearchSeatConfig | None = None,
     brief_append: str | None = None,
+    agy_capture: AgyCanaryCapture | None = None,
+    seat_key: str | None = None,
 ) -> tuple[str, str] | tuple[str, str, str]:
     # ABDHOME: forward effort/env ONLY when set so the legacy (effort/env-absent)
     # path calls ``_default_spawn`` with its exact frozen signature
@@ -3376,6 +3414,9 @@ def _default_spawn_via_provider(
         extra["research_seat"] = research_seat
     if brief_append is not None:
         extra["brief_append"] = brief_append
+    if agy_capture is not None:
+        extra["agy_capture"] = agy_capture
+        extra["seat_key"] = seat_key
     # The provider seam's `send_turn` unpacks a 2-TUPLE (agent_runtime_provider.py).
     # `_default_spawn` may return a 3-tuple carrying a failure DIAGNOSTIC, so hand the
     # seam the 2-tuple it expects and carry the diagnostic around it in a closure cell.
@@ -3987,6 +4028,7 @@ def invoke_board(
     on_leg_complete: "Callable[[PanelLegResult], None] | None" = None,
     stream_dir: Path | str | None = None,
     research_policy: ResearchPolicy | None = None,
+    agy_canary_capture: AgyCanaryCapture | None = None,
 ) -> PanelResult:
     """Run an Advisor Board's seats through the provider seam, fail-closed.
 
@@ -4102,6 +4144,12 @@ def invoke_board(
     # ceiling effort) and resolve bare-seat lanes BEFORE spawning — the config-time
     # invariant extended to the ad-hoc / seam path (raises SeatValidationError).
     board = _resolve_and_validate_board(board, matrix or default_matrix(env=base_env))
+    gemini_seats = [seat for seat in board.seats if (seat.harness or "").lower() == "gemini"]
+    if agy_canary_capture is not None:
+        if spawn is not None:
+            raise ValueError("capture-enabled board requires the production Gemini spawn path")
+        if len(gemini_seats) != 1:
+            raise ValueError("capture-enabled board requires exactly one resolved Gemini seat")
     host_seat = enforce_native_host_leg(board, host)
     env_source: Mapping[str, str] = os.environ if base_env is None else base_env
     research_run: ResearchRunConfig | None = None
@@ -4244,6 +4292,9 @@ def invoke_board(
                     research_extra["brief_append"] = research_instructions(
                         research_seat
                     )
+                if agy_canary_capture is not None and leg == "gemini":
+                    research_extra["agy_capture"] = agy_canary_capture
+                    research_extra["seat_key"] = seat.seat_key
                 spawned = _default_spawn_via_provider(
                     leg,
                     artifact,
@@ -4375,7 +4426,10 @@ def invoke_board(
                 observer.seat_started(seat)
                 observer.seat_result(seat, result)
             observer.board_completed(results)
-        return PanelResult(legs=tuple(results))
+        panel_result = PanelResult(legs=tuple(results))
+        if agy_canary_capture is not None:
+            object.__setattr__(panel_result, "_agy_canary_capture", capture_summary(agy_canary_capture))
+        return panel_result
     finally:
         if research_run is not None:
             research_run.close()
