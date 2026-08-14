@@ -986,6 +986,11 @@ def test_advisor_board_cli_real_invoker_capture_path(monkeypatch, tmp_path):
     info = source.stat()
     runtime = evidence._TrustedAgyRuntime(source, info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode), evidence._sha256(source.read_bytes()))
     monkeypatch.setattr(evidence, "_trusted_agy_runtime", lambda: runtime)
+    provider_runtime = evidence._TrustedProviderRuntime(
+        "gemini", source, info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode),
+        evidence._sha256(source.read_bytes()),
+    )
+    monkeypatch.setattr(evidence, "_trusted_provider_runtime", lambda provider: provider_runtime)
     monkeypatch.setattr(composition, "compose_review_board", lambda: Board("one", "review", (Seat("gemini-3.6-flash", "high", harness="gemini"),)))
     seen = []
     def fake_liveness(command, *, cwd, **_kwargs):
