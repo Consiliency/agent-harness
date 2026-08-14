@@ -693,6 +693,10 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
             },
             "targets": {"plan": "plans/canary.md", "manifest": "plans/manifest.json"},
         }))
+        release = {"version": "0.7.14", "release_commit": "d" * 40, "artifacts": []}
+        (root / "agy_canary_prepare.json").write_text(json.dumps({
+            "release": release, "release_sha256": evidence._sha256(evidence._canonical_json(release)),
+        }))
         proof = {"schema": evidence.SCHEMA_VERSION, "seat_key": "gemini-primary", "attempt_ids": ["gemini-1"]}
         monkeypatch.setattr(evidence, "verify_capture", lambda **_kwargs: proof)
         result = evidence.finalize_canary(
@@ -740,6 +744,30 @@ def test_real_source_inventory_rejects_environment_override_and_generated_captur
         shutil.rmtree(root)
 
 
+def test_namespace_masks_all_xdg_sources_and_finalizer_requires_tracked_repo(tmp_path):
+    root = _private_root(tmp_path)
+    try:
+        namespace = evidence.AgyCanaryNamespace(tmp_path, tmp_path, root, "example.invalid")
+        command = namespace.command(["agy", "--version"])
+        for name in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "XDG_CONFIG_DIRS", "XDG_RUNTIME_DIR"):
+            assert name in command
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="customization source"):
+            evidence.freeze_customization_inventory(home=tmp_path, project_dir=tmp_path, env={"XDG_CONFIG_HOME": "/tmp/host-config"})
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="bootstrap-attested dotfiles repository"):
+            evidence.finalize_canary(evidence_root=root, expected_seat_key="gemini-primary")
+    finally:
+        shutil.rmtree(root)
+
+
+def test_bootstrap_environment_never_uses_attacker_path(monkeypatch):
+    monkeypatch.setenv("PATH", "/tmp/fake-bin:/usr/bin")
+    environment = evidence._bootstrap_environment(nonce="n", uv_executable=Path("/trusted/uv"))
+    assert environment["PATH"].startswith("/trusted:")
+    assert "/tmp/fake-bin" not in environment["PATH"]
+    assert evidence._canonical_bash() != Path("/tmp/fake-bin/bash")
+    assert evidence._canonical_uv() != Path("/tmp/fake-bin/uv")
+
+
 def test_release_lineage_uses_merged_handoff_and_rehashes_downloads(tmp_path, monkeypatch):
     repo = tmp_path / "agent-harness"
     (repo / "docs" / "releases").mkdir(parents=True)
@@ -761,7 +789,7 @@ def test_release_lineage_uses_merged_handoff_and_rehashes_downloads(tmp_path, mo
         "pypi_metadata_url": "https://pypi.org/pypi/phase-loop-runtime/0.7.14/json",
         "artifacts": [{key: row[key] for key in ("filename", "packagetype", "url")} | {"sha256": row["digests"]["sha256"]} for row in rows],
     }
-    handoff.write_text("<!-- release_evidence.v1:start -->" + json.dumps(record) + "<!-- release_evidence.v1:end -->")
+    handoff.write_bytes(b"<!-- release_evidence.v1:start -->" + evidence._canonical_json(record) + b"<!-- release_evidence.v1:end -->")
     subprocess.run(["git", "-C", str(repo), "add", "docs/releases/outside-agent-release-handoff.md"], check=True)
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", "handoff"], check=True)
     handoff_commit = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
@@ -789,3 +817,21 @@ def test_release_lineage_uses_merged_handoff_and_rehashes_downloads(tmp_path, mo
             repo=repo, handoff_commit=handoff_commit,
             fetch_json=lambda _url: {"urls": rows}, download=lambda _url: b"forged",
         )
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda record: record | {"extra": True},
+    lambda record: {key: value for key, value in record.items() if key != "workflow_url"},
+    lambda record: record | {"artifacts": record["artifacts"] * 2},
+])
+def test_release_handoff_parser_rejects_noncanonical_schema_and_duplicate_artifacts(mutate):
+    record = {
+        "schema": "release_evidence.v1", "version": "0.7.14", "release_commit": "a" * 40,
+        "tag_object": "b" * 40, "tag_peel": "a" * 40,
+        "release_url": "https://example.invalid/release", "workflow_url": "https://example.invalid/workflow",
+        "pypi_metadata_url": "https://pypi.org/pypi/phase-loop-runtime/0.7.14/json",
+        "artifacts": [{"filename": "x.whl", "packagetype": "bdist_wheel", "url": "https://example.invalid/x", "sha256": "c" * 64}],
+    }
+    bad = mutate(record)
+    with pytest.raises(evidence.AgyCanaryEvidenceError):
+        evidence._release_handoff_record(b"<!-- release_evidence.v1:start -->" + evidence._canonical_json(bad) + b"<!-- release_evidence.v1:end -->")
