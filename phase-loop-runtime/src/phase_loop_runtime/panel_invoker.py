@@ -49,6 +49,7 @@ from .agent_runtime_provider import (
 from .agy_canary_evidence import (
     AgyCanaryCapture,
     AgyCanaryEvidenceError,
+    bind_staged_review_inputs,
     capture_summary,
     ProviderLaunchAuthority,
     prepare_provider_launch_authorities,
@@ -3185,6 +3186,10 @@ def _exec_leg(
         if agy_capture is not None:
             if provider_authority is None:
                 raise AgyCanaryEvidenceError("capture-enabled Gemini launch has no prepared namespace")
+            # agy has no non-request auth-status surface.  Revalidate only the
+            # sealed projected credential identity; this deliberately makes no
+            # claim that the provider has accepted a login.
+            provider_authority.projected_auth_proof()
             # 1.1.13's stream-json is the only supported production authority;
             # text stdout is diagnostic-only and cannot satisfy the reducer.
             cmd[1:1] = ["--output-format", "stream-json"]
@@ -3267,11 +3272,12 @@ def _exec_leg(
                 break  # real output OR hard non-transient error → stop (never hammer)
             if _elapsed >= (timeout_s + 60) * _LEG_RETRY_ELAPSED_FRACTION:
                 break  # slow stall (not fast/transient) → don't re-run + double wall-clock
-        out_file.write_text(review_text, encoding="utf-8")
         if agy_capture is not None:
-            review_text = provider_authority.read_expected_output(out_file.name).decode(
-                "utf-8", errors="replace"
-            )
+            review_text = provider_authority.write_expected_output(
+                out_file.name, review_text.encode("utf-8")
+            ).decode("utf-8", errors="replace")
+        else:
+            out_file.write_text(review_text, encoding="utf-8")
         return rc, review_text, log_text
     if leg == "grok":
         out_file = out_dir / "panel-grok.txt"
@@ -3318,6 +3324,9 @@ def _exec_leg(
         if agy_capture is not None:
             if provider_authority is None:
                 raise AgyCanaryEvidenceError("capture-enabled Grok launch has no prepared namespace")
+            # Grok exposes login/logout but no safe non-request status command.
+            # The sealed projection is integrity evidence, never a login claim.
+            provider_authority.projected_auth_proof()
             cmd[cmd.index(str(review_dir))] = "/run/phase-loop-review"
             cmd[1:1] = ["--disable-web-search", "--no-memory", "--no-subagents"]
             cmd = provider_authority.preflight(cmd)
@@ -3356,11 +3365,12 @@ def _exec_leg(
                 break
             if _elapsed >= (timeout_s + 60) * _LEG_RETRY_ELAPSED_FRACTION:
                 break
-        out_file.write_text(review_text, encoding="utf-8")
         if agy_capture is not None:
-            review_text = provider_authority.read_expected_output(out_file.name).decode(
-                "utf-8", errors="replace"
-            )
+            review_text = provider_authority.write_expected_output(
+                out_file.name, review_text.encode("utf-8")
+            ).decode("utf-8", errors="replace")
+        else:
+            out_file.write_text(review_text, encoding="utf-8")
         return rc, review_text, log_text
     # claude uses the TUI-backed subscription route, handled by `_exec_claude_tui_leg`.
     return 0, "", "unavailable"
@@ -4329,12 +4339,19 @@ def invoke_board(
             scratch = Path(tempfile.mkdtemp(prefix="pl-panel-capture-"))
             stage = scratch / "review"
             stage.mkdir(mode=0o700)
-            (stage / "review-bundle.md").write_text(artifact, encoding="utf-8")
-            (stage / "review-instructions.md").write_text(
-                _resolve_brief(mode, brief_ref), encoding="utf-8"
-            )
+            bundle_bytes = artifact.encode("utf-8")
+            instruction_bytes = _resolve_brief(mode, brief_ref).encode("utf-8")
+            (stage / "review-bundle.md").write_bytes(bundle_bytes)
+            (stage / "review-instructions.md").write_bytes(instruction_bytes)
             for name in ("review-bundle.md", "review-instructions.md"):
                 (stage / name).chmod(0o600)
+            bind_staged_review_inputs(
+                capture=agy_canary_capture,
+                review_dir=stage,
+                bundle_bytes=bundle_bytes,
+                instruction_bytes=instruction_bytes,
+                generator_identity="phase_loop_runtime.panel_invoker._resolve_brief.v1",
+            )
             authority = prepare_provider_launch_authorities(
                 capture=agy_canary_capture, stage=stage, providers=(provider,)
             )[provider]
