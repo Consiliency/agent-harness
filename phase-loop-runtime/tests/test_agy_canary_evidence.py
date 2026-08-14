@@ -477,7 +477,10 @@ def _seal_synthetic_provider_results(
                 "provider": provider,
                 "runtime_destination": f"/run/phase-loop-bin/{evidence._PROVIDER_EXECUTABLES[provider]}",
                 "runtime_sha256": "b" * 64,
-                "records": [{"destination": destination, "uid": str(os.getuid()), "mode": "0600", "sha256": "c" * 64} for destination in destinations],
+                "records": ([
+                    {"destination": item["destination"], "uid": item["uid"], "mode": item["mode"], "sha256": item["source_sha256"]}
+                    for item in launch_authority["auth_binds"]
+                ] if provider == "gemini" else [{"destination": destination, "uid": str(os.getuid()), "mode": "0600", "sha256": "c" * 64} for destination in destinations]),
             },
         }
         launch_bytes = evidence._canonical_json(launch)
@@ -1101,6 +1104,43 @@ def test_provider_authority_factory_reclaims_output_when_projection_fails(monkey
     with pytest.raises(evidence.AgyCanaryEvidenceError, match="projection failed"):
         evidence.prepare_provider_launch_authorities(capture=capture, stage=stage, providers=("gemini",))
     assert not output.exists()
+
+
+def test_detached_provider_auth_reduction_binds_rows_and_owner_modes(monkeypatch, tmp_path):
+    root = _private_root(tmp_path)
+    review = tmp_path / "review"; review.mkdir()
+    for name in ("review-bundle.md", "review-instructions.md"):
+        (review / name).write_text(name); (review / name).chmod(0o600)
+    auth1, auth2 = tmp_path / "auth1", tmp_path / "auth2"
+    for auth in (auth1, auth2):
+        auth.write_text("auth"); auth.chmod(0o600)
+    capture = _prepare_production_capture(monkeypatch=monkeypatch, tmp_path=tmp_path, root=root, settings=_settings(tmp_path, []), seat_key="gemini-primary", auth_paths=(auth1, auth2), plan_bytes=(review / "review-bundle.md").read_bytes())
+    try:
+        _bind_stage(capture, review)
+        _seal_synthetic_provider_results(capture, _usable_private_board({"gemini_seat_key": "gemini-primary"}))
+        assert evidence._verified_provider_results(root_fd=capture.root_fd)
+        registry = evidence._provider_registry(root_fd=capture.root_fd)
+        def replace_launch(provider, mutate):
+            entry = next(item for item in registry["entries"] if item["provider"] == provider)
+            launch = evidence._read_json_at(capture.root_fd, entry["authority"]["name"])
+            mutate(launch)
+            data = evidence._canonical_json(launch)
+            evidence._write_replace_at(capture.root_fd, entry["authority"]["name"], launch)
+            entry["authority"].update({"bytes": len(data), "sha256": evidence._sha256(data)})
+            registry_sha = evidence._sha256(evidence._canonical_json(registry))
+            for current in registry["entries"]:
+                result = evidence._read_json_at(capture.root_fd, current["result_name"])
+                result["authority_sha256"] = current["authority"]["sha256"]
+                result["registry_sha256"] = registry_sha
+                evidence._write_replace_at(capture.root_fd, current["result_name"], result)
+            evidence._write_replace_at(capture.root_fd, evidence._PROVIDER_REGISTRY_NAME, registry)
+        replace_launch("codex", lambda launch: launch["projected_auth"]["records"][0].update({"mode": "0400"}))
+        assert evidence._verified_provider_results(root_fd=capture.root_fd)
+        replace_launch("gemini", lambda launch: launch["projected_auth"]["records"][1].update({"sha256": "0" * 64}))
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="authentication proof"):
+            evidence._verified_provider_results(root_fd=capture.root_fd)
+    finally:
+        capture.close(); shutil.rmtree(root)
 
 
 def test_real_source_inventory_rejects_environment_override_and_generated_capture_never_claims_complete(tmp_path):
