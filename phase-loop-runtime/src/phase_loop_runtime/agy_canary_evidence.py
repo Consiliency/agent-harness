@@ -1047,6 +1047,12 @@ def _is_digest(value: Any) -> bool:
             all(character in "0123456789abcdef" for character in value))
 
 
+def _is_owner_only_mode(value: Any) -> bool:
+    return (isinstance(value, str) and len(value) == 4 and
+            all(character in "01234567" for character in value) and
+            not (int(value, 8) & 0o077))
+
+
 def _is_plain_int(value: Any) -> bool:
     """``bool`` is an ``int`` subclass, but never an evidence primitive."""
     return type(value) is int
@@ -2018,8 +2024,7 @@ def _verified_provider_results(*, root_fd: int) -> dict[tuple[str, str], dict[st
         malformed_rows = not isinstance(rows, list) or any(
             not isinstance(row, dict) or set(row) != {"destination", "uid", "mode", "sha256"} or
             not isinstance(row.get("uid"), str) or not row["uid"].isdigit() or
-            not isinstance(row.get("mode"), str) or not row["mode"].isdigit() or
-            int(row["mode"], 8) & 0o077 or not _is_digest(row.get("sha256"))
+            not _is_owner_only_mode(row.get("mode")) or not _is_digest(row.get("sha256"))
             for row in rows or []
         )
         gemini_drift = provider == "gemini" and (
