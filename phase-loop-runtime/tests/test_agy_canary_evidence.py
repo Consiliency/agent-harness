@@ -631,6 +631,19 @@ def test_prepare_requires_bootstrap_and_binds_selected_mode(tmp_path, monkeypatc
         shutil.rmtree(root)
 
 
+def test_bootstrap_attest_rejects_caller_selected_child_command(tmp_path):
+    root = _private_root(tmp_path)
+    try:
+        with pytest.raises(TypeError):
+            evidence.bootstrap_attest(
+                evidence_root=root,
+                dotfiles_repo=tmp_path,
+                bootstrap_command=("sh", "-c", "false"),  # type: ignore[call-arg]
+            )
+    finally:
+        root.rmdir()
+
+
 def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tmp_path, monkeypatch):
     root = _private_root(tmp_path)
     try:

@@ -1212,7 +1212,7 @@ def _installed_phase_loop_identity() -> dict[str, str]:
 
 
 def bootstrap_attest(
-    *, evidence_root: Path, dotfiles_repo: Path, bootstrap_command: tuple[str, ...] = ("bash", "bootstrap.sh")
+    *, evidence_root: Path, dotfiles_repo: Path
 ) -> dict[str, Any]:
     """Directly run committed bootstrap and attest its nonce-bound child result."""
     disallowed_overrides = sorted(
@@ -1249,8 +1249,9 @@ def bootstrap_attest(
     if committed_script.returncode != 0 or committed_script.stdout != script_bytes:
         raise AgyCanaryEvidenceError("bootstrap script bytes differ from committed HEAD")
     before = subprocess.run(["uv", "tool", "list"], capture_output=True, text=True, timeout=30, check=False)
+    bootstrap_argv = ("bash", "bootstrap.sh")
     child_process = subprocess.Popen(
-        list(bootstrap_command), cwd=repo, env=child_env,
+        list(bootstrap_argv), cwd=repo, env=child_env,
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
     try:
@@ -1274,7 +1275,7 @@ def bootstrap_attest(
             "blobs": identities,
             "nonce_sha256": _sha256(nonce.encode()),
             "bootstrap": {
-                "argv": list(bootstrap_command),
+                "argv": list(bootstrap_argv),
                 "pid": child_process.pid,
                 "returncode": child_rc,
                 "script_sha256": _sha256(script_bytes),
