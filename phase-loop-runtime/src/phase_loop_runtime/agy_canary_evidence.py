@@ -131,6 +131,12 @@ class AgyCanaryNamespace:
     resolver_source: Path | None = None
     resolver_sha256: str | None = None
 
+    def outer_environment(self) -> dict[str, str]:
+        """Minimal host environment for bwrap itself; never carry loader/runtime overrides."""
+        return {name: os.environ[name] for name in ("LANG", "LC_ALL", "LC_CTYPE") if name in os.environ} | {
+            "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        }
+
     def agy_command(self, argv: list[str]) -> list[str]:
         if not argv or argv[0] != "agy":
             raise AgyCanaryEvidenceError("namespace agy command must start with agy")
@@ -150,6 +156,7 @@ class AgyCanaryNamespace:
             str(bwrap),
             "--die-with-parent",
             "--new-session",
+            "--clearenv",
             "--ro-bind", "/", "/",
             "--tmpfs", "/tmp",
             "--tmpfs", "/run",
@@ -161,6 +168,7 @@ class AgyCanaryNamespace:
             "--dir", "/home/phase-loop",
             "--ro-bind", str(self.minimal_home), "/home/phase-loop",
             "--setenv", "HOME", "/home/phase-loop",
+            "--setenv", "PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
             "--setenv", "XDG_CONFIG_HOME", "/home/phase-loop/.config",
             "--setenv", "XDG_DATA_HOME", "/home/phase-loop/.local/share",
             "--setenv", "XDG_STATE_HOME", "/home/phase-loop/.local/state",
@@ -816,11 +824,7 @@ def namespace_self_test(*, namespace: AgyCanaryNamespace) -> dict[str, Any]:
         f"s=socket.create_connection(({namespace.provider_hostname!r}, 443), timeout=10); "
         f"ssl.create_default_context().wrap_socket(s, server_hostname={namespace.provider_hostname!r}).close()"
     )
-    child_env = {
-        key: value for key, value in os.environ.items()
-        if not key.startswith(_CUSTOMIZATION_ENV_PREFIXES)
-    }
-    child_env["PL_EVIDENCE_BASENAME"] = namespace.evidence_root.name
+    child_env = namespace.outer_environment() | {"PL_EVIDENCE_BASENAME": namespace.evidence_root.name}
     proc = subprocess.run(
         namespace.command([sys.executable, "-I", "-c", test_program]),
         capture_output=True, text=True, timeout=30, check=False, env=child_env,
@@ -908,6 +912,8 @@ def create_capture(
 
 def retain_staged_files(*, capture: AgyCanaryCapture, review_dir: Path) -> dict[str, dict[str, Any]]:
     """Descriptor-read and retain the two only permitted staged inputs."""
+    if "private_board" in _read_json_at(capture.root_fd, _LEDGER_NAME):
+        raise AgyCanaryEvidenceError("cannot retain staged inputs after private board sealing")
     records: dict[str, dict[str, Any]] = {}
     review_fd = os.open(review_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
@@ -936,6 +942,8 @@ def record_launch(
 ) -> dict[str, Any]:
     """Append one complete Gemini process record without recording prompt bytes."""
     ledger = _read_json_at(capture.root_fd, _LEDGER_NAME)
+    if "private_board" in ledger:
+        raise AgyCanaryEvidenceError("cannot record launch after private board sealing")
     if ledger.get("seat_key") != seat_key:
         raise AgyCanaryEvidenceError("capture launch seat does not match sealed singleton")
     attempts = ledger.get("attempts")
@@ -1089,6 +1097,9 @@ def verify_capture(*, evidence_root: Path, expected_seat_key: str, seal: bool = 
     root, root_fd = _validate_private_root(evidence_root)
     try:
         ledger = _read_json_at(root_fd, _LEDGER_NAME)
+        base_ledger_fields = {"schema", "seat_key", "capture_mode", "policy", "attempts"}
+        if not isinstance(ledger, dict) or (set(ledger) != base_ledger_fields and set(ledger) != base_ledger_fields | {"private_board"}) or ledger.get("schema") != "agy_canary_launch_ledger.v1":
+            raise AgyCanaryEvidenceError("capture ledger schema is malformed")
         if ledger.get("seat_key") != expected_seat_key:
             raise AgyCanaryEvidenceError("sealed Gemini seat key does not match board")
         mode = ledger.get("capture_mode")
@@ -1103,6 +1114,8 @@ def verify_capture(*, evidence_root: Path, expected_seat_key: str, seal: bool = 
         output_attempts: list[dict[str, Any]] = []
         final_text = ""
         for item in attempts:
+            if not isinstance(item, dict) or set(item) != {"attempt_id", "seat_key", "returncode", "argv_sha256", "stream", "diagnostic", "staged", "completed_at"}:
+                raise AgyCanaryEvidenceError("capture attempt schema is malformed")
             if not isinstance(item, dict) or item.get("seat_key") != expected_seat_key:
                 raise AgyCanaryEvidenceError("capture contains an unbound attempt")
             if item.get("returncode") != 0:
@@ -1113,6 +1126,18 @@ def verify_capture(*, evidence_root: Path, expected_seat_key: str, seal: bool = 
                 raise AgyCanaryEvidenceError("capture launch record is incomplete")
             if set(staged) != {"review-instructions.md", "review-bundle.md"}:
                 raise AgyCanaryEvidenceError("capture staged input set is not exact")
+            diagnostic = item.get("diagnostic")
+            if not isinstance(diagnostic, dict) or set(diagnostic) != {"name", "bytes", "sha256"}:
+                raise AgyCanaryEvidenceError("capture diagnostic schema is malformed")
+            diagnostic_bytes = _read_regular_at(root_fd, str(diagnostic.get("name", "")))
+            if len(diagnostic_bytes) != diagnostic.get("bytes") or _sha256(diagnostic_bytes) != diagnostic.get("sha256"):
+                raise AgyCanaryEvidenceError("sealed diagnostic bytes drifted")
+            for staged_name, staged_record in staged.items():
+                if not isinstance(staged_record, dict) or set(staged_record) != {"retained", "bytes", "sha256"}:
+                    raise AgyCanaryEvidenceError("capture retained input schema is malformed")
+                retained = _read_regular_at(root_fd, str(staged_record.get("retained", "")))
+                if len(retained) != staged_record.get("bytes") or _sha256(retained) != staged_record.get("sha256"):
+                    raise AgyCanaryEvidenceError("sealed retained input bytes drifted")
             raw = _read_regular_at(root_fd, str(stream.get("name", "")))
             if len(raw) != stream.get("bytes") or _sha256(raw) != stream.get("sha256"):
                 raise AgyCanaryEvidenceError("sealed stream bytes drifted")
@@ -1171,7 +1196,11 @@ def verify_capture(*, evidence_root: Path, expected_seat_key: str, seal: bool = 
             board_payload = json.loads(board_bytes)
         except json.JSONDecodeError as exc:
             raise AgyCanaryEvidenceError("private board payload is not JSON") from exc
-        if not isinstance(board_payload, dict) or board_payload.get("agy_canary_capture") != private_board.get("capture"):
+        pre_board = dict(ledger)
+        pre_board.pop("private_board")
+        pre_board_data = _canonical_json(pre_board)
+        expected_summary = {"gemini_seat_key": pre_board.get("seat_key"), "gemini_seat_count": 1, "attempt_ids": [item.get("attempt_id") for item in attempts], "ledger_bytes": len(pre_board_data), "ledger_sha256": _sha256(pre_board_data)}
+        if private_board.get("capture") != expected_summary or not isinstance(board_payload, dict) or board_payload.get("agy_canary_capture") != expected_summary:
             raise AgyCanaryEvidenceError("private board does not bind the sealed capture summary")
         proof = {
             "schema": SCHEMA_VERSION,
@@ -1433,19 +1462,35 @@ def bootstrap_attest(
     uv = _canonical_uv()
     child_env = _bootstrap_environment(nonce=nonce, uv_executable=uv, account_home=_account_home())
     script_bytes = inputs["bootstrap.sh"]
+    def revalidate_inputs() -> None:
+        if _clean_dotfiles_repo(repo) != head:
+            raise AgyCanaryEvidenceError("bootstrap inputs drifted from the attested clean HEAD")
+        for relative, expected_blob in identities.items():
+            blob, data = _worktree_blob(repo, relative)
+            if blob != expected_blob or data != inputs[relative]:
+                raise AgyCanaryEvidenceError("bootstrap input bytes drifted from attested blobs")
+    revalidate_inputs()
     before = subprocess.run([str(uv), "tool", "list"], capture_output=True, text=True, timeout=30, check=False)
-    bootstrap_argv = (str(bash), "bootstrap.sh")
-    child_process = subprocess.Popen(
-        list(bootstrap_argv), cwd=repo, env=child_env,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-    )
+    with tempfile.NamedTemporaryFile(prefix="phase-loop-bootstrap-", dir="/tmp", delete=False) as snapshot:
+        snapshot.write(script_bytes)
+        snapshot.flush()
+        os.fchmod(snapshot.fileno(), 0o700)
+        bootstrap_argv = (str(bash), snapshot.name)
     try:
-        _stdout, _stderr = child_process.communicate(timeout=1800)
-    except subprocess.TimeoutExpired as exc:
-        child_process.kill()
-        child_process.communicate()
-        raise AgyCanaryEvidenceError("direct bootstrap child timed out") from exc
+        child_process = subprocess.Popen(
+            list(bootstrap_argv), cwd=repo, env=child_env,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        try:
+            _stdout, _stderr = child_process.communicate(timeout=1800)
+        except subprocess.TimeoutExpired as exc:
+            child_process.kill()
+            child_process.communicate()
+            raise AgyCanaryEvidenceError("direct bootstrap child timed out") from exc
+    finally:
+        os.unlink(bootstrap_argv[1])
     child_rc = child_process.returncode
+    revalidate_inputs()
     after = subprocess.run([str(uv), "tool", "list"], capture_output=True, text=True, timeout=30, check=False)
     if child_rc != 0:
         raise AgyCanaryEvidenceError("direct bootstrap child failed")

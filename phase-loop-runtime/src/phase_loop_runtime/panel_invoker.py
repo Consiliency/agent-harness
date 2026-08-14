@@ -3113,6 +3113,7 @@ def _exec_leg(
             # text stdout is diagnostic-only and cannot satisfy the reducer.
             cmd[1:1] = ["--output-format", "stream-json"]
             cmd = agy_namespace.agy_command(cmd)  # type: ignore[union-attr]
+            env = agy_namespace.outer_environment()  # type: ignore[union-attr]
         # #114: retry ONCE on a transient agy stall, mirroring the codex leg. The
         # single ``subprocess.run`` gave the gemini leg NO retry, so one transient
         # backend stall ("Error: timeout waiting for response", 0-byte) permanently

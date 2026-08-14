@@ -875,6 +875,11 @@ def test_advisor_board_cli_seals_and_verifies_capture_summary(monkeypatch, tmp_p
     assert ledger["private_board"]["sha256"] == evidence._sha256(board_bytes)
     assert json.loads(board_bytes)["agy_canary_capture"] == ledger["private_board"]["capture"]
     assert evidence.verify_capture(evidence_root=root, expected_seat_key="gemini-primary", seal=False)["attempt_ids"] == ["gemini-1"]
+    retained = root / "staged-review-instructions.md"
+    retained.write_text("forged")
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="retained input bytes drifted"):
+        evidence.verify_capture(evidence_root=root, expected_seat_key="gemini-primary", seal=False)
+    retained.write_text(contents["review-instructions.md"])
     (root / "board.json").write_text("{}")
     with pytest.raises(evidence.AgyCanaryEvidenceError, match="drifted"):
         evidence.verify_capture(evidence_root=root, expected_seat_key="gemini-primary", seal=False)
