@@ -3910,28 +3910,32 @@ def check_committed_final(
     plan_relative = _repo_relative_path(repo, plan_path)
     manifest_relative = _repo_relative_path(repo, manifest_path)
     resolved = _git_text(repo, "rev-parse", f"{commit}^{{commit}}")
-    parent = _git_text(repo, "rev-parse", f"{resolved}^")
-    changed = _git_text(repo, "diff", "--name-only", parent, resolved).splitlines()
-    if sorted(changed) != sorted([plan_relative, manifest_relative]):
-        raise AgyCanaryEvidenceError("committed finalizer transform changed unexpected paths")
     after_plan = subprocess.run(["git", "-C", str(repo), "show", f"{resolved}:{plan_relative}"], capture_output=True, check=False).stdout
-    before_plan = subprocess.run(["git", "-C", str(repo), "show", f"{parent}:{plan_relative}"], capture_output=True, check=False).stdout
-    after_manifest = subprocess.run(["git", "-C", str(repo), "show", f"{resolved}:{manifest_relative}"], capture_output=True, check=False).stdout
-    before_manifest = subprocess.run(["git", "-C", str(repo), "show", f"{parent}:{manifest_relative}"], capture_output=True, check=False).stdout
     prefix, payload = _parse_final_payload(after_plan)
-    if prefix != before_plan:
-        raise AgyCanaryEvidenceError("committed plan prefix differs from parent preimage")
+    bootstrap = payload["attestation"].get("bootstrap")
+    candidate = bootstrap.get("repo_head") if isinstance(bootstrap, dict) else None
+    if not isinstance(candidate, str):
+        raise AgyCanaryEvidenceError("committed finalizer payload lacks bootstrap candidate")
+    candidate = _git_text(repo, "rev-parse", f"{candidate}^{{commit}}")
+    before_plan = subprocess.run(["git", "-C", str(repo), "show", f"{candidate}:{plan_relative}"], capture_output=True, check=False).stdout
+    before_manifest = subprocess.run(["git", "-C", str(repo), "show", f"{candidate}:{manifest_relative}"], capture_output=True, check=False).stdout
     _validate_committed_attestation(
         repo=repo, attestation=payload["attestation"], plan_relative=plan_relative,
         manifest_relative=manifest_relative, plan_before=before_plan, manifest_before=before_manifest,
     )
     if payload["attestation"].get("proof") != _proof_identity(payload["proof"]) or payload["attestation"].get("reducer_proof_sha256") != _sha256(_canonical_json(payload["proof"])):
         raise AgyCanaryEvidenceError("committed proof does not match attested reducer identity")
+    changed = _git_text(repo, "diff", "--name-only", candidate, resolved).splitlines()
+    if sorted(changed) != sorted([plan_relative, manifest_relative]):
+        raise AgyCanaryEvidenceError("committed finalizer transform changed unexpected paths")
+    if prefix != before_plan:
+        raise AgyCanaryEvidenceError("committed plan prefix differs from bootstrap candidate preimage")
     release = payload["attestation"]["release"]
     if release != _reconcile_release_lineage(
         repo=agent_harness_repo.resolve(strict=True), handoff_commit=handoff_commit
     ):
         raise AgyCanaryEvidenceError("committed release identity does not reauthenticate immutable handoff lineage")
+    after_manifest = subprocess.run(["git", "-C", str(repo), "show", f"{resolved}:{manifest_relative}"], capture_output=True, check=False).stdout
     try:
         before_value = json.loads(before_manifest)
         after_value = json.loads(after_manifest)

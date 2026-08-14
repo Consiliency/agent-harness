@@ -1140,12 +1140,19 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
         plans.mkdir(parents=True)
         plan = plans / "canary.md"
         manifest = plans / "manifest.json"
-        plan.write_text("# Plan\n")
-        manifest.write_text(json.dumps({"plans": [{"slug": "agy-canary", "updated_at": "old"}]}))
+        plan.write_text("# Base plan\n")
+        manifest.write_text(json.dumps({"plans": [{"slug": "agy-canary", "updated_at": "base"}]}))
         (repo / "bootstrap.sh").write_text("#!/bin/sh\n")
         (repo / "shared").mkdir()
-        (repo / "shared" / "agent-harness.pin").write_text("v0.7.14\n")
+        pin = repo / "shared" / "agent-harness.pin"
+        pin.write_text("v0.7.13\n")
         _git_repo(repo)
+        base = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+        plan.write_text("# Plan\n")
+        manifest.write_text(json.dumps({"plans": [{"slug": "agy-canary", "updated_at": "old"}]}))
+        pin.write_text("v0.7.14\n")
+        subprocess.run(["git", "-C", str(repo), "add", "plans/canary.md", "plans/manifest.json", "shared/agent-harness.pin"], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "candidate"], check=True)
         plan.chmod(0o640)
         manifest.chmod(0o600)
         head = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
@@ -1262,8 +1269,16 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
         assert checked["inputs_sha256"] == result["inputs_sha256"]
         assert checked["canonical_proof_sha256"] == canonical_proof_sha256
         assert {name: checked[name] for name in evidence._FINAL_GOVERNANCE_POSTURE} == evidence._FINAL_GOVERNANCE_POSTURE
+        final_plan = plan.read_bytes()
+        final_manifest = manifest.read_bytes()
         subprocess.run(["git", "-C", str(repo), "add", "plans/canary.md", "plans/manifest.json"], check=True)
-        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "finalize"], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "candidate finalize"], check=True)
+        subprocess.run(["git", "-C", str(repo), "checkout", "-q", base], check=True)
+        plan.write_bytes(final_plan)
+        manifest.write_bytes(final_manifest)
+        pin.write_text("v0.7.14\n")
+        subprocess.run(["git", "-C", str(repo), "add", "plans/canary.md", "plans/manifest.json", "shared/agent-harness.pin"], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "squash finalize"], check=True)
         committed = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
         monkeypatch.setattr(evidence, "_reconcile_release_lineage", lambda **_kwargs: release)
         committed_result = evidence.check_committed_final(
@@ -1274,6 +1289,9 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
         assert committed_result["commit"] == committed
         assert committed_result["canonical_proof_sha256"] == canonical_proof_sha256
         assert {name: committed_result[name] for name in evidence._FINAL_GOVERNANCE_POSTURE} == evidence._FINAL_GOVERNANCE_POSTURE
+        assert "shared/agent-harness.pin" in subprocess.check_output(
+            ["git", "-C", str(repo), "diff", "--name-only", f"{committed}^", committed], text=True,
+        ).splitlines()
         bootstrap = json.loads((root / "agy_canary_bootstrap_attestation.json").read_text())
         with pytest.raises(evidence.AgyCanaryEvidenceError, match="release"):
             evidence._validate_committed_attestation(
@@ -1286,8 +1304,8 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
                     "reducer_proof_sha256": evidence._sha256(evidence._canonical_json(proof)),
                 },
                 plan_relative="plans/canary.md", manifest_relative="plans/manifest.json",
-                plan_before=subprocess.check_output(["git", "-C", str(repo), "show", "HEAD^:plans/canary.md"]),
-                manifest_before=subprocess.check_output(["git", "-C", str(repo), "show", "HEAD^:plans/manifest.json"]),
+                plan_before=subprocess.check_output(["git", "-C", str(repo), "show", f"{head}:plans/canary.md"]),
+                manifest_before=subprocess.check_output(["git", "-C", str(repo), "show", f"{head}:plans/manifest.json"]),
             )
         _prefix, payload = evidence._parse_final_payload(plan.read_bytes())
         tampered = json.loads(json.dumps(payload["attestation"]))
@@ -1295,17 +1313,81 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
         with pytest.raises(evidence.AgyCanaryEvidenceError, match="bootstrap blob"):
             evidence._validate_committed_attestation(
                 repo=repo, attestation=tampered, plan_relative="plans/canary.md", manifest_relative="plans/manifest.json",
-                plan_before=subprocess.check_output(["git", "-C", str(repo), "show", "HEAD^:plans/canary.md"]),
-                manifest_before=subprocess.check_output(["git", "-C", str(repo), "show", "HEAD^:plans/manifest.json"]),
+                plan_before=subprocess.check_output(["git", "-C", str(repo), "show", f"{head}:plans/canary.md"]),
+                manifest_before=subprocess.check_output(["git", "-C", str(repo), "show", f"{head}:plans/manifest.json"]),
             )
         malformed_identity = json.loads(json.dumps(payload["attestation"]))
         malformed_identity["proof"]["human_required"] = False
         with pytest.raises(evidence.AgyCanaryEvidenceError, match="proof governance"):
             evidence._validate_committed_attestation(
                 repo=repo, attestation=malformed_identity, plan_relative="plans/canary.md", manifest_relative="plans/manifest.json",
-                plan_before=subprocess.check_output(["git", "-C", str(repo), "show", "HEAD^:plans/canary.md"]),
-                manifest_before=subprocess.check_output(["git", "-C", str(repo), "show", "HEAD^:plans/manifest.json"]),
+                plan_before=subprocess.check_output(["git", "-C", str(repo), "show", f"{head}:plans/canary.md"]),
+                manifest_before=subprocess.check_output(["git", "-C", str(repo), "show", f"{head}:plans/manifest.json"]),
             )
+        unexpected = repo / "unexpected.txt"
+        unexpected.write_text("unexpected\n")
+        subprocess.run(["git", "-C", str(repo), "add", "unexpected.txt"], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "unrelated drift"], check=True)
+        unrelated = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="unexpected paths"):
+            evidence.check_committed_final(
+                dotfiles_repo=repo, commit=unrelated, plan_path=Path("plans/canary.md"),
+                manifest_path=Path("plans/manifest.json"), plan_slug="agy-canary",
+                agent_harness_repo=repo, handoff_commit=release["handoff_commit"],
+            )
+
+        def commit_payload(payload_value: dict[str, object], message: str) -> str:
+            plan.write_bytes(
+                _prefix + b"\n## Execution evidence\n\n```json\n" +
+                evidence._canonical_json(payload_value) + b"```\n"
+            )
+            subprocess.run(["git", "-C", str(repo), "add", "plans/canary.md"], check=True)
+            subprocess.run(["git", "-C", str(repo), "commit", "-qm", message], check=True)
+            return subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+
+        subprocess.run(["git", "-C", str(repo), "checkout", "-q", head], check=True)
+        plan.write_text("# Candidate plan drift\n")
+        subprocess.run(["git", "-C", str(repo), "add", "plans/canary.md"], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "candidate plan drift"], check=True)
+        drifted_candidate = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+        subprocess.run(["git", "-C", str(repo), "checkout", "-q", committed], check=True)
+        candidate_drift_payload = json.loads(json.dumps(payload))
+        candidate_drift_payload["attestation"]["bootstrap"]["repo_head"] = drifted_candidate
+        candidate_drift_plan = subprocess.check_output(
+            ["git", "-C", str(repo), "show", f"{drifted_candidate}:plans/canary.md"]
+        )
+        candidate_drift_payload["attestation"]["bootstrap"]["blobs"]["plans/canary.md"] = subprocess.check_output(
+            ["git", "-C", str(repo), "rev-parse", f"{drifted_candidate}:plans/canary.md"], text=True,
+        ).strip()
+        candidate_drift_payload["attestation"]["bootstrap"]["input_sha256"]["plans/canary.md"] = evidence._sha256(candidate_drift_plan)
+        candidate_drift = commit_payload(candidate_drift_payload, "candidate payload drift")
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="bootstrap candidate preimage"):
+            evidence.check_committed_final(
+                dotfiles_repo=repo, commit=candidate_drift, plan_path=Path("plans/canary.md"),
+                manifest_path=Path("plans/manifest.json"), plan_slug="agy-canary",
+                agent_harness_repo=repo, handoff_commit=release["handoff_commit"],
+            )
+        subprocess.run(["git", "-C", str(repo), "checkout", "-q", committed], check=True)
+        substituted_payload = json.loads(json.dumps(payload))
+        substituted_payload["attestation"]["bootstrap"]["repo_head"] = base
+        substituted = commit_payload(substituted_payload, "substituted candidate")
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="bootstrap blob"):
+            evidence.check_committed_final(
+                dotfiles_repo=repo, commit=substituted, plan_path=Path("plans/canary.md"),
+                manifest_path=Path("plans/manifest.json"), plan_slug="agy-canary",
+                agent_harness_repo=repo, handoff_commit=release["handoff_commit"],
+            )
+        subprocess.run(["git", "-C", str(repo), "checkout", "-q", committed], check=True)
+        missing_candidate_payload = json.loads(json.dumps(payload))
+        missing_candidate_payload["attestation"]["bootstrap"]["repo_head"] = "0" * 40
+        missing_candidate = commit_payload(missing_candidate_payload, "missing candidate")
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="git command failed: rev-parse"):
+            evidence.check_committed_final(
+                dotfiles_repo=repo, commit=missing_candidate, plan_path=Path("plans/canary.md"),
+                manifest_path=Path("plans/manifest.json"), plan_slug="agy-canary",
+                agent_harness_repo=repo, handoff_commit=release["handoff_commit"],
+            )
+        subprocess.run(["git", "-C", str(repo), "checkout", "-q", committed], check=True)
         malformed_payload = json.loads(json.dumps(payload))
         malformed_payload["proof"]["external_attestation"] = "present"
         malformed_payload["proof_sha256"] = evidence._sha256(evidence._canonical_json(malformed_payload["proof"]))
