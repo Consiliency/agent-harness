@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 import signal
 import shutil
 import subprocess
+import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
 import json
@@ -31,7 +33,15 @@ from phase_loop_test_utils import (
 )
 
 
-BIN = "codex-phase-loop"
+# Drive the CLI through the interpreter running the tests, not through whichever
+# `codex-phase-loop` happens to be on PATH (agent-harness#542). Both console
+# scripts are declared in [project.scripts], so a normal install does put them on
+# PATH -- but that makes these tests depend on pip's script directory being the
+# one PATH resolves, which is an ambient precondition rather than a property of
+# the checkout under test. This is the idiom the rest of the suite already uses
+# (test_phase_loop_cli.py, test_consiliency_ingest.py); `codex-phase-loop`-on-PATH
+# keeps its own coverage in test_console_scripts_are_declared.py.
+BIN = (sys.executable, "-m", "phase_loop_runtime.cli")
 
 
 @dataclass(frozen=True)
@@ -292,11 +302,28 @@ def codex_live_smoke_blocked_by_reentrancy() -> bool:
     return bool(os.environ.get("CODEX_THREAD_ID"))
 
 
+def phase_loop_cli_available() -> bool:
+    """Whether the phase-loop CLI that ``BIN`` invokes can actually be run.
+
+    This replaces a guard that could never execute: the third clause of
+    ``live_smoke_enabled`` used to be ``BIN.exists()`` on a ``str``, which is an
+    ``AttributeError``, not a check. It survived only because the preceding env
+    check short-circuits it in every ordinary run -- set the enable var with the
+    harness binary present and the gate raised instead of gating
+    (agent-harness#542).
+    """
+    return importlib.util.find_spec("phase_loop_runtime.cli") is not None
+
+
 def live_smoke_enabled(executor: str) -> bool:
     harness = live_harness(executor)
     if executor == "codex" and codex_live_smoke_blocked_by_reentrancy():
         return False
-    return os.environ.get(harness.env_var) == "1" and shutil.which(harness.binary) is not None and BIN.exists()
+    return (
+        os.environ.get(harness.env_var) == "1"
+        and shutil.which(harness.binary) is not None
+        and phase_loop_cli_available()
+    )
 
 
 def enabled_live_smoke_executors() -> tuple[str, ...]:
@@ -461,7 +488,7 @@ def make_live_team_fixture(tmp_path: Path) -> PhaseLoopFixture:
 def run_live_smoke(repo: Path, roadmap: Path, phase: str, executor: str) -> subprocess.CompletedProcess[str]:
     timeout = int(os.environ.get("PHASE_LOOP_LIVE_SMOKE_TIMEOUT_SECONDS", "600"))
     args = [
-        str(BIN),
+        *BIN,
         "run",
         "--repo",
         str(repo),
