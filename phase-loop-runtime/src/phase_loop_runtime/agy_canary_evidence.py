@@ -1098,7 +1098,8 @@ def verify_capture(*, evidence_root: Path, expected_seat_key: str, seal: bool = 
     try:
         ledger = _read_json_at(root_fd, _LEDGER_NAME)
         base_ledger_fields = {"schema", "seat_key", "capture_mode", "policy", "attempts"}
-        if not isinstance(ledger, dict) or (set(ledger) != base_ledger_fields and set(ledger) != base_ledger_fields | {"private_board"}) or ledger.get("schema") != "agy_canary_launch_ledger.v1":
+        allowed_ledger_fields = base_ledger_fields | {"private_board", "minimal_home", "auth_binds", "customization_sources"}
+        if not isinstance(ledger, dict) or not base_ledger_fields <= set(ledger) or not set(ledger) <= allowed_ledger_fields or ledger.get("schema") != "agy_canary_launch_ledger.v1":
             raise AgyCanaryEvidenceError("capture ledger schema is malformed")
         if ledger.get("seat_key") != expected_seat_key:
             raise AgyCanaryEvidenceError("sealed Gemini seat key does not match board")

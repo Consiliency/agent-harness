@@ -887,6 +887,43 @@ def test_advisor_board_cli_seals_and_verifies_capture_summary(monkeypatch, tmp_p
     shutil.rmtree(root)
 
 
+def test_advisor_board_cli_real_invoker_capture_path(monkeypatch, tmp_path):
+    from phase_loop_runtime.advisor_board.schema import Board, Seat
+    from phase_loop_runtime.advisor_board import composition
+    from phase_loop_runtime import panel_invoker
+    root = _private_root(tmp_path)
+    home = tmp_path / "minimal-home"; home.mkdir(mode=0o700)
+    capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
+    try:
+        ledger = evidence.create_capture(capture=capture, settings_path=_settings(tmp_path, []), seat_key="gemini:gemini-3.6-flash:high", source_inventory=_source_inventory(tmp_path))
+        ledger.update({"minimal_home": str(home), "auth_binds": []})
+        evidence._write_replace_at(capture.root_fd, "agy-launch-ledger.json", ledger)
+    finally:
+        capture.close()
+    source = tmp_path / "agy"; source.write_bytes(b"agy"); source.chmod(0o700)
+    info = source.stat()
+    runtime = evidence._TrustedAgyRuntime(source, info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode), evidence._sha256(source.read_bytes()))
+    monkeypatch.setattr(evidence, "_trusted_agy_runtime", lambda: runtime)
+    monkeypatch.setattr(composition, "compose_review_board", lambda: Board("one", "review", (Seat("gemini-3.6-flash", "high", harness="gemini"),)))
+    seen = []
+    def fake_liveness(command, *, cwd, **_kwargs):
+        seen.append(command)
+        review = Path(cwd)
+        events = []
+        for index, name in enumerate(("review-instructions.md", "review-bundle.md")):
+            events += [{"sequence": index * 2, "session_id": "s", "type": "tool_call", "call_id": str(index), "tool": "read_file", "target": f"/run/phase-loop-review/{name}"}, {"sequence": index * 2 + 1, "session_id": "s", "type": "tool_result", "call_id": str(index), "outcome": "success", "content": (review / name).read_text()}]
+        events.append({"sequence": 4, "session_id": "s", "type": "terminal", "text": "AGREE"})
+        return panel_invoker._LegRun(0, "\n".join(json.dumps(item) for item in events), "")
+    monkeypatch.setattr(panel_invoker, "_run_leg_with_liveness", fake_liveness)
+    artifact = tmp_path / "artifact.md"; artifact.write_text("review")
+    monkeypatch.setenv("PHASE_LOOP_AGY_CANARY_EVIDENCE_DIR", str(root))
+    assert cli._advisor_board_command(args=argparse.Namespace(artifact=str(artifact), json=True, agy_canary_private_board_name="real.json")) == 1
+    ledger = json.loads((root / "agy-launch-ledger.json").read_text())
+    assert len(ledger["attempts"]) == 1 and seen[0][0] == "/usr/bin/bwrap" and "--clearenv" in seen[0] and "/run/phase-loop-bin/agy" in seen[0]
+    assert evidence.verify_capture(evidence_root=root, expected_seat_key="gemini:gemini-3.6-flash:high", seal=False)["attempt_ids"] == ["gemini-1"]
+    shutil.rmtree(root)
+
+
 def test_bootstrap_environment_never_uses_attacker_path_or_home(monkeypatch, tmp_path):
     monkeypatch.setenv("PATH", "/tmp/fake-bin:/usr/bin")
     account_home = evidence._account_home()
