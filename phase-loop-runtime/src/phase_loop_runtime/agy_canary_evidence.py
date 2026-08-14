@@ -1000,19 +1000,25 @@ def _parse_stream(
         if terminal is not None:
             raise AgyCanaryEvidenceError("stream contains an event after terminal")
         if kind == "tool_call":
+            if set(event) != {"sequence", "session_id", "type", "call_id", "tool", "target"} or not isinstance(event.get("tool"), str) or not isinstance(event.get("target"), str):
+                raise AgyCanaryEvidenceError("stream tool call schema is invalid")
             call_id = event.get("call_id")
             if not isinstance(call_id, str) or call_id in calls or pending_call is not None:
                 raise AgyCanaryEvidenceError("stream tool call identity is invalid")
             calls[call_id] = event
             pending_call = call_id
         elif kind == "tool_result":
+            outcome = event.get("outcome")
+            expected_fields = {"sequence", "session_id", "type", "call_id", "outcome", "content"} if outcome == "success" else {"sequence", "session_id", "type", "call_id", "outcome"}
+            if set(event) != expected_fields or outcome not in {"success", "denied", "error"} or (outcome == "success" and not isinstance(event.get("content"), str)):
+                raise AgyCanaryEvidenceError("stream tool result schema is invalid")
             call_id = event.get("call_id")
             if not isinstance(call_id, str) or call_id != pending_call or "result" in calls.get(call_id, {}):
                 raise AgyCanaryEvidenceError("stream tool result is unmatched")
             calls[call_id]["result"] = event
             pending_call = None
         elif kind == "terminal":
-            if pending_call is not None or terminal is not None or not isinstance(event.get("text"), str):
+            if set(event) != {"sequence", "session_id", "type", "text"} or pending_call is not None or terminal is not None or not isinstance(event.get("text"), str):
                 raise AgyCanaryEvidenceError("stream terminal event is invalid")
             terminal = event
         else:

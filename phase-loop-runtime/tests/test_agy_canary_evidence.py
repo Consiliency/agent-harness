@@ -458,7 +458,7 @@ def test_capture_reducer_derives_staged_proof_from_content_not_reported_digest(t
             evidence.record_launch(capture=capture, seat_key="gemini-primary", attempt_id="gemini-1", argv=["agy", "-p", "secret"], returncode=0, stdout="\n".join(json.dumps(event) for event in events), stderr="", staged=staged)
         finally:
             capture.close()
-        with pytest.raises(evidence.AgyCanaryEvidenceError, match="does not cover sealed"):
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="schema"):
             evidence.verify_capture(evidence_root=root, expected_seat_key="gemini-primary")
     finally:
         shutil.rmtree(root)
