@@ -3474,7 +3474,7 @@ def _default_spawn(
         return "DEGRADED", str(exc)[:200]
     finally:
         if provider_output_dir is not None:
-            shutil.rmtree(provider_output_dir.parent, ignore_errors=True)
+            shutil.rmtree(provider_output_dir, ignore_errors=True)
         if base is not None:
             shutil.rmtree(base, ignore_errors=True)
         if capture_scratch is not None:
@@ -4289,7 +4289,7 @@ def invoke_board(
             raise ValueError("capture-enabled board does not permit research seats")
         capture_seats = [
             seat for seat in board.seats
-            if seat.backing == BACKING_HOMEBREW and (seat.harness or "").lower() in _LEG_CLI
+            if (seat.harness or "").lower() in _LEG_CLI
         ]
         providers = [(seat.harness or "").lower() for seat in capture_seats]
         keys = [str(seat.seat_key) for seat in capture_seats]
