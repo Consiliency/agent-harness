@@ -27,10 +27,13 @@ import time
 import json
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from hashlib import sha256
 from pathlib import Path
 from typing import Callable, Mapping, Sequence, cast
+
+from .proofgate_isolation import BubblewrapIsolationBuilder, ExecuteAndPanelRoute, ProofgateRouteRequest
 
 try:
     import fcntl
@@ -40,6 +43,10 @@ except ImportError:  # Native Windows has no POSIX PTY stack.
     fcntl = None  # type: ignore[assignment]
     pty = None  # type: ignore[assignment]
     termios = None  # type: ignore[assignment]
+
+_PROOFGATE_ROUTE_REQUEST: ContextVar[ProofgateRouteRequest | None] = ContextVar(
+    "proofgate_route_request", default=None
+)
 
 from .agent_runtime_provider import (
     CreateSessionRequest,
@@ -264,6 +271,7 @@ class PanelRequest:
     context_refs: tuple[str, ...] | None = None
     context_refs_soft_warn: bool = False
     research_policy: ResearchPolicy = ResearchPolicy()
+    proofgate_route_request: ProofgateRouteRequest | None = None
 
     def __post_init__(self) -> None:
         if self.redaction_posture != "metadata_only":
@@ -2666,6 +2674,8 @@ def _exec_claude_tui_leg(
     env: Mapping[str, str] | None = None,
     backstop_s: int | None = None,
     research_seat: ResearchSeatConfig | None = None,
+    bwrap_builder: BubblewrapIsolationBuilder | None = None,
+    clone_dir: str | None = None,
 ) -> tuple[str, str]:
     """Run the Claude panel leg through the local Claude Code TUI.
 
@@ -2680,6 +2690,8 @@ def _exec_claude_tui_leg(
     ``resolve_seat_env`` result so per-seat effort + active env scrubbing reach the
     real launch.
     """
+    if bwrap_builder is not None:
+        return "DEGRADED", "proofgate_route_ineligible: claude TUI session cannot run under child bubblewrap isolation"
     env = _subscription_env(env)
     if research_seat is not None:
         env = scrub_research_env(env)
@@ -2907,6 +2919,8 @@ def _exec_leg(
     *,
     deadline_s: int | None = None,
     research_seat: ResearchSeatConfig | None = None,
+    bwrap_builder: BubblewrapIsolationBuilder | None = None,
+    clone_dir: str | None = None,
 ) -> tuple[int, str, str]:
     """Run one CLI leg against the staged review dir; return (rc, review_text, log_text).
 
@@ -2990,16 +3004,17 @@ def _exec_leg(
         # timeout budget (a genuinely slow leg, not a transient stall) — that was a
         # source of the full-concurrent-path near-doubling. Bound the retry to FAST
         # failures via ``_LEG_RETRY_ELAPSED_FRACTION``.
+        exec_cwd = review_dir
+        if bwrap_builder is not None and clone_dir is not None:
+            cmd = bwrap_builder.build_bwrap_command(cmd, clone_dir, extra_ro_binds=[str(review_dir)], extra_rw_binds=[str(out_dir)])
+            exec_cwd = Path(clone_dir)
         rc, review_text, log_text = 1, "", ""
         for _attempt in range(2):
             _t0 = time.monotonic()
             try:
-                # codex streams its transcript to STDERR (stdout is empty until the
-                # final message), so the liveness heartbeat rides stderr. Prompt on
-                # stdin ("-").
                 proc = _run_leg_with_liveness(
                     cmd,
-                    cwd=review_dir,
+                    cwd=exec_cwd,
                     env=env,
                     deadline_s=deadline_s,
                     input_text=prompt,
@@ -3081,6 +3096,10 @@ def _exec_leg(
             "-p",
             _NO_COMMAND_PREAMBLE + prompt,
         ]
+        exec_cwd = review_dir
+        if bwrap_builder is not None and clone_dir is not None:
+            cmd = bwrap_builder.build_bwrap_command(cmd, clone_dir, extra_ro_binds=[str(review_dir)], extra_rw_binds=[str(out_dir)])
+            exec_cwd = Path(clone_dir)
         # #114: retry ONCE on a transient agy stall, mirroring the codex leg. The
         # single ``subprocess.run`` gave the gemini leg NO retry, so one transient
         # backend stall ("Error: timeout waiting for response", 0-byte) permanently
@@ -3098,7 +3117,7 @@ def _exec_leg(
                 # Prompt is inline on argv (see the gemini cmd BUGFIX) — no stdin.
                 proc = _run_leg_with_liveness(
                     cmd,
-                    cwd=review_dir,
+                    cwd=exec_cwd,
                     env=env,
                     deadline_s=deadline_s,
                 )
@@ -3185,6 +3204,10 @@ def _exec_leg(
             "--tools",
             grok_tools,
         ]
+        exec_cwd = review_dir
+        if bwrap_builder is not None and clone_dir is not None:
+            cmd = bwrap_builder.build_bwrap_command(cmd, clone_dir, extra_ro_binds=[str(review_dir)], extra_rw_binds=[str(out_dir)])
+            exec_cwd = Path(clone_dir)
         # Retry ONCE on a transient stall, mirroring codex/gemini: a rc==0 empty turn
         # OR a transient-marker body, but NOT a hard subprocess timeout (124) and NOT
         # an attempt that already burned most of its budget (a slow leg, not a
@@ -3197,7 +3220,7 @@ def _exec_leg(
                 # Prompt is inline on argv (-p) — no stdin.
                 proc = _run_leg_with_liveness(
                     cmd,
-                    cwd=review_dir,
+                    cwd=exec_cwd,
                     env=env,
                     deadline_s=deadline_s,
                 )
@@ -3238,6 +3261,7 @@ def _default_spawn(
     timeout_s: int | None = None,
     research_seat: ResearchSeatConfig | None = None,
     brief_append: str | None = None,
+    proofgate_route_request: ProofgateRouteRequest | None = None,
 ) -> tuple[str, str]:
     """Real-exec boundary: spawn a subscription CLI leg over the staged bundle.
 
@@ -3260,7 +3284,26 @@ def _default_spawn(
     # Best-effort reclaim of crash-residual scratch dirs (never affects this run).
     _gc_stale_panel_scratch()
     base = Path(tempfile.mkdtemp(prefix="pl-panel-"))
+    masked_env = None
     resolved_repo_dir = Path(repo_dir).resolve() if repo_dir is not None else Path.cwd()
+    bwrap_builder = None
+    clone_dir_str = None
+    if proofgate_route_request is not None:
+        route = ExecuteAndPanelRoute()
+        scratch_dir = base / "scratch"
+        scratch_dir.mkdir(exist_ok=True)
+        clone_desc = route.prepare_authoritative_assigned_clone(
+            proofgate_route_request.source_repo,
+            proofgate_route_request.source_head_oid,
+            str(scratch_dir),
+            expected_tree_digest=proofgate_route_request.tree_digest,
+        )
+        bwrap_builder = BubblewrapIsolationBuilder()
+        masked_env = bwrap_builder.mask_credentials_and_config(
+            dict(env) if env is not None else dict(os.environ)
+        )
+        clone_dir_str = clone_desc["clone_dir"]
+        resolved_repo_dir = Path(clone_dir_str)
     review_dir = base / "review"
     out_dir = base / "out"
     review_dir.mkdir()
@@ -3285,10 +3328,15 @@ def _default_spawn(
         extra: dict[str, object] = {}
         if effort is not None:
             extra["effort"] = effort
-        if env is not None:
+        if masked_env is not None:
+            extra["env"] = masked_env
+        elif env is not None:
             extra["env"] = env
         if research_seat is not None:
             extra["research_seat"] = research_seat
+        if bwrap_builder is not None and clone_dir_str is not None:
+            extra["bwrap_builder"] = bwrap_builder
+            extra["clone_dir"] = clone_dir_str
         if leg == "claude":
             return _exec_claude_tui_leg(
                 review_dir,
@@ -3357,6 +3405,7 @@ def _default_spawn_via_provider(
     timeout_s: int | None = None,
     research_seat: ResearchSeatConfig | None = None,
     brief_append: str | None = None,
+    proofgate_route_request: ProofgateRouteRequest | None = None,
 ) -> tuple[str, str] | tuple[str, str, str]:
     # ABDHOME: forward effort/env ONLY when set so the legacy (effort/env-absent)
     # path calls ``_default_spawn`` with its exact frozen signature
@@ -3376,6 +3425,8 @@ def _default_spawn_via_provider(
         extra["research_seat"] = research_seat
     if brief_append is not None:
         extra["brief_append"] = brief_append
+    if proofgate_route_request is not None:
+        extra["proofgate_route_request"] = proofgate_route_request
     # The provider seam's `send_turn` unpacks a 2-TUPLE (agent_runtime_provider.py).
     # `_default_spawn` may return a 3-tuple carrying a failure DIAGNOSTIC, so hand the
     # seam the 2-tuple it expects and carry the diagnostic around it in a closure cell.
@@ -3740,6 +3791,7 @@ def invoke_panel(
             return PanelResult(legs=tuple(research_results))
         finally:
             research_run.close()
+    proofgate_route_request = _PROOFGATE_ROUTE_REQUEST.get()
     if spawn is None:
 
         def runner(leg: str, panel_artifact: str) -> tuple[str, str]:
@@ -3751,6 +3803,7 @@ def invoke_panel(
                 model=leg_models.get(leg),
                 brief_ref=brief_ref,
                 timeout_s=leg_timeouts.get(leg),
+                proofgate_route_request=proofgate_route_request,
             )
     else:
         runner = spawn
@@ -3833,22 +3886,26 @@ def invoke_panel_request(
     effective_research = _effective_research_policy(
         request.research_policy, research_policy
     )
-    return invoke_panel(
-        request.artifact,
-        request.legs,
-        spawn=spawn,
-        repo_dir=repo_dir,
-        mode=mode,
-        models=models,
-        max_concurrency=max_concurrency,
-        artifact_ref=request.artifact_ref,
-        context_refs=request.context_refs,
-        context_refs_soft_warn=request.context_refs_soft_warn,
-        timeouts_by_leg=dict(request.timeout_seconds_by_leg)
-        if request.timeout_seconds_by_leg
-        else None,
-        research_policy=effective_research,
-    )
+    token = _PROOFGATE_ROUTE_REQUEST.set(request.proofgate_route_request)
+    try:
+        return invoke_panel(
+            request.artifact,
+            request.legs,
+            spawn=spawn,
+            repo_dir=repo_dir,
+            mode=mode,
+            models=models,
+            max_concurrency=max_concurrency,
+            artifact_ref=request.artifact_ref,
+            context_refs=request.context_refs,
+            context_refs_soft_warn=request.context_refs_soft_warn,
+            timeouts_by_leg=dict(request.timeout_seconds_by_leg)
+            if request.timeout_seconds_by_leg
+            else None,
+            research_policy=effective_research,
+        )
+    finally:
+        _PROOFGATE_ROUTE_REQUEST.reset(token)
 
 
 # --- ABDHOME: the board seam (seats through the provider backing) ------------
