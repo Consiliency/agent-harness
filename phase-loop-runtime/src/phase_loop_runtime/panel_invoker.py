@@ -2969,7 +2969,13 @@ def _exec_leg(
         if artifact is None
         else artifact
     )
-    prompt = _render_leg_prompt(artifact, review_dir, mode)
+    # A capture-enabled agy child sees the staged review only at this fixed
+    # namespace path.  Keep the host /tmp path out of both the prompt and agy's
+    # own --add-dir argument; it is allowed solely as the bwrap ro-bind source.
+    child_review_dir = (
+        Path("/run/phase-loop-review") if agy_capture is not None else review_dir
+    )
+    prompt = _render_leg_prompt(artifact, child_review_dir, mode)
     if leg == "codex":
         out_file = out_dir / "panel-codex.txt"
         # ABDHOME: effort-absent keeps ``-c model_reasoning_effort=xhigh`` verbatim;
@@ -3094,7 +3100,7 @@ def _exec_leg(
             "--model",
             gemini_model,
             "--add-dir",
-            str(review_dir),
+            str(child_review_dir),
             "--print-timeout",
             f"{timeout_s}s",
             "-p",

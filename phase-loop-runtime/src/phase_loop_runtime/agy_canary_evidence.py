@@ -5,12 +5,10 @@ from __future__ import annotations
 import copy
 import ctypes
 import errno
-import fcntl
 import hashlib
 import json
 import os
 import secrets
-import shutil
 import stat
 import subprocess
 import sys
@@ -19,6 +17,11 @@ from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+try:  # Windows imports the panel module but cannot perform this POSIX operation.
+    import fcntl
+except ImportError:  # pragma: no cover - exercised in a fresh blocked-import subprocess.
+    fcntl = None  # type: ignore[assignment]
 
 
 SCHEMA_VERSION = "agy_canary_evidence.v1"
@@ -74,10 +77,11 @@ class AgyCanaryNamespace:
     provider_hostname: str
     auth_binds: tuple[tuple[Path, str], ...] = ()
     resolver_source: Path | None = None
+    resolver_sha256: str | None = None
 
     def command(self, argv: list[str]) -> list[str]:
-        bwrap = shutil.which("bwrap")
-        if bwrap is None:
+        bwrap = Path("/usr/bin/bwrap")
+        if not bwrap.is_file() or not os.access(bwrap, os.X_OK):
             raise AgyCanaryEvidenceError("capture requires /usr/bin/bwrap")
         if not self.stage.is_absolute() or not self.minimal_home.is_absolute():
             raise AgyCanaryEvidenceError("namespace inputs must be absolute")
@@ -85,7 +89,7 @@ class AgyCanaryNamespace:
         # holding evidence is absent even though the immutable host filesystem is
         # mounted read-only for the provider executable and CA roots.
         command = [
-            bwrap,
+            str(bwrap),
             "--die-with-parent",
             "--new-session",
             "--ro-bind", "/", "/",
@@ -107,6 +111,19 @@ class AgyCanaryNamespace:
         # otherwise leaves the child unable to resolve the provider.  Bind only
         # the resolved regular source back at its expected target.
         if self.resolver_source is not None:
+            resolver_fd = os.open(self.resolver_source, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            try:
+                resolver_info = os.fstat(resolver_fd)
+                resolver_bytes = b""
+                while True:
+                    chunk = os.read(resolver_fd, 65536)
+                    if not chunk:
+                        break
+                    resolver_bytes += chunk
+            finally:
+                os.close(resolver_fd)
+            if not stat.S_ISREG(resolver_info.st_mode) or self.resolver_sha256 != _sha256(resolver_bytes):
+                raise AgyCanaryEvidenceError("resolver source bytes drifted")
             target = Path("/etc/resolv.conf").resolve(strict=True)
             if not target.is_relative_to(Path("/run")):
                 raise AgyCanaryEvidenceError("resolver source is not an expected /run target")
@@ -346,6 +363,8 @@ def _reopen_at(directory_fd: int, name: str) -> tuple[bytes, os.stat_result]:
 def clean_settings(*, evidence_root: Path, settings_path: Path, maintenance_lock: Path) -> dict[str, Any]:
     """Remove exactly the failed-canary ``command(pwd)`` rule under quiescence."""
 
+    if fcntl is None:
+        raise AgyCanaryEvidenceError("settings cleanup requires POSIX fcntl locking")
     root_path, root_fd = _validate_private_root(evidence_root)
     settings: _OpenedSettings | None = None
     lock_fd: int | None = None
@@ -793,7 +812,9 @@ def record_launch(
     return record
 
 
-def _parse_stream(data: bytes) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+def _parse_stream(
+    data: bytes, *, require_staged_reads: bool = False
+) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
     """Parse the intentionally narrow, versioned stream-json authority."""
     calls: dict[str, dict[str, Any]] = {}
     sequence = -1
@@ -836,7 +857,53 @@ def _parse_stream(data: bytes) -> tuple[str, list[dict[str, Any]], dict[str, Any
             raise AgyCanaryEvidenceError("stream event kind is unsupported")
     if session is None or terminal is None or any("result" not in call for call in calls.values()):
         raise AgyCanaryEvidenceError("stream does not contain complete calls and terminal result")
+    if require_staged_reads:
+        expected = {
+            "/run/phase-loop-review/review-instructions.md",
+            "/run/phase-loop-review/review-bundle.md",
+        }
+        staged_calls = list(calls.values())
+        if len(staged_calls) != 2:
+            raise AgyCanaryEvidenceError("stream does not contain exactly two staged reads")
+        actual = {str(call.get("target")) for call in staged_calls}
+        if actual != expected or any(call.get("tool") != "read_file" for call in staged_calls):
+            raise AgyCanaryEvidenceError("stream does not contain exactly two staged reads")
+        for call in staged_calls:
+            result = call.get("result")
+            if not isinstance(result, dict) or result.get("outcome") != "success":
+                raise AgyCanaryEvidenceError("stream staged read did not succeed")
+            # The reducer derives the staged-file proof from raw content.  A
+            # provider-reported digest or byte count alone is not authority.
+            if not isinstance(result.get("content"), str):
+                raise AgyCanaryEvidenceError("stream staged read lacks reconstructable content")
     return session, list(calls.values()), terminal
+
+
+def _require_probe_content_matches_stage(
+    calls: list[dict[str, Any]], namespace: AgyCanaryNamespace
+) -> None:
+    """Bind the probe's raw read content to the two descriptor-opened stage files."""
+    expected: dict[str, bytes] = {}
+    stage_fd = os.open(
+        namespace.stage,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+    )
+    try:
+        for name in ("review-instructions.md", "review-bundle.md"):
+            data, info = _reopen_at(stage_fd, name)
+            if not stat.S_ISREG(info.st_mode):
+                raise AgyCanaryEvidenceError("probe staged input is not a regular file")
+            expected[f"/run/phase-loop-review/{name}"] = data
+    finally:
+        os.close(stage_fd)
+    for call in calls:
+        target = call.get("target")
+        result = call.get("result")
+        if target not in expected or not isinstance(result, dict):
+            raise AgyCanaryEvidenceError("probe staged read is unclassifiable")
+        content = result.get("content")
+        if not isinstance(content, str) or content.encode() != expected[target]:
+            raise AgyCanaryEvidenceError("probe staged content does not match fixed input")
 
 
 def _parse_trajectory(data: bytes) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
@@ -920,7 +987,12 @@ def verify_capture(*, evidence_root: Path, expected_seat_key: str) -> dict[str, 
             for name, expected in staged.items():
                 if not isinstance(expected, dict) or not reads.get(name):
                     raise AgyCanaryEvidenceError(f"accepted attempt did not read {name}")
-                if not any(result.get("sha256") == expected.get("sha256") and result.get("bytes") == expected.get("bytes") for result in reads[name]):
+                if not any(
+                    isinstance(result.get("content"), str)
+                    and _sha256(result["content"].encode()) == expected.get("sha256")
+                    and len(result["content"].encode()) == expected.get("bytes")
+                    for result in reads[name]
+                ):
                     raise AgyCanaryEvidenceError(f"read result does not cover sealed {name}")
             output_attempts.append({"attempt_id": item.get("attempt_id"), "counts": counts, "terminal_sha256": _sha256(str(terminal["text"]).encode())})
             final_text = str(terminal["text"])
@@ -1001,7 +1073,8 @@ def probe_capability(
         proc = subprocess.run(namespace.command(command), capture_output=True, text=True, timeout=90, check=False)
         stream = (proc.stdout or "").encode()
         try:
-            _parse_stream(stream)
+            _session, calls, _terminal = _parse_stream(stream, require_staged_reads=True)
+            _require_probe_content_matches_stage(calls, namespace)
         except AgyCanaryEvidenceError as exc:
             value = {"schema": "agy_capability_probe.v1", "agy_version": version, "help_sha256": _sha256(help_text.encode()), "mode": None, "complete": False, "reason": f"stream_json_schema_unproven:{type(exc).__name__}", "stream_sha256": _sha256(stream)}
         else:
@@ -1018,6 +1091,17 @@ def bootstrap_attest(
     *, evidence_root: Path, dotfiles_repo: Path, bootstrap_command: tuple[str, ...] = ("bash", "bootstrap.sh")
 ) -> dict[str, Any]:
     """Directly run committed bootstrap and attest its nonce-bound child result."""
+    disallowed_overrides = sorted(
+        key for key in os.environ
+        if key in {"DEV_EDITABLE", "PYTHONPATH", "PYTHONHOME"}
+        or key.startswith("PHASE_LOOP_")
+        or key.startswith("AGENT_HARNESS_")
+    )
+    if disallowed_overrides:
+        raise AgyCanaryEvidenceError(
+            "bootstrap attestation rejects environment overrides: "
+            + ",".join(disallowed_overrides)
+        )
     repo = dotfiles_repo.resolve(strict=True)
     if not (repo / ".git").exists() or not (repo / "bootstrap.sh").is_file():
         raise AgyCanaryEvidenceError("bootstrap attestation requires a dotfiles checkout")
@@ -1033,10 +1117,7 @@ def bootstrap_attest(
     pin = (repo / "shared" / "agent-harness.pin").read_text(encoding="utf-8").strip()
     if pin != "v0.7.14":
         raise AgyCanaryEvidenceError("bootstrap attestation requires the v0.7.14 fleet pin")
-    child_env = {
-        key: value for key, value in os.environ.items()
-        if key not in {"PHASE_LOOP_PIN", "PHASE_LOOP_DEFAULT_REF", "PHASE_LOOP_PACKAGE", "PYTHONPATH", "PYTHONHOME"}
-    }
+    child_env = dict(os.environ)
     nonce = secrets.token_hex(24)
     child_env["PHASE_LOOP_AGY_CANARY_BOOTSTRAP_NONCE"] = nonce
     script_bytes = (repo / "bootstrap.sh").read_bytes()
@@ -1114,11 +1195,15 @@ def prepare_canary(
             evidence_root=capture.root, settings_path=settings_path, auth_paths=auth_paths
         )
         ledger["minimal_home"] = str(minimal_home)
-        ledger["auth_binds"] = [
-            {"source": str(source), "destination": destination,
-             "source_sha256": _sha256(_reopen_at(os.open(source.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC), source.name)[0])}
-            for source, destination in auth_binds
-        ]
+        bind_records: list[dict[str, str]] = []
+        for source, destination in auth_binds:
+            parent_fd = os.open(source.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            try:
+                data, _info = _reopen_at(parent_fd, source.name)
+            finally:
+                os.close(parent_fd)
+            bind_records.append({"source": str(source), "destination": destination, "source_sha256": _sha256(data)})
+        ledger["auth_binds"] = bind_records
         _write_replace_at(root_fd, _LEDGER_NAME, ledger)
         value = {"schema": "agy_canary_prepare.v1", "cleanup_sha256": _sha256(_canonical_json(cleanup)), "probe_sha256": _sha256(_canonical_json(probe)), "bootstrap_sha256": _sha256(_canonical_json(bootstrap)), "ledger_sha256": _sha256(_canonical_json(ledger)), "seat_key": seat_key}
         _exclusive_write_at(root_fd, _PREPARE_NAME, _canonical_json(value), 0o600)
@@ -1160,7 +1245,17 @@ def capture_namespace(*, capture: AgyCanaryCapture, stage: Path, provider_hostna
     resolver_info = resolver.lstat()
     if stat.S_ISLNK(resolver_info.st_mode) or not stat.S_ISREG(resolver_info.st_mode):
         raise AgyCanaryEvidenceError("resolved resolver source is not regular")
-    return AgyCanaryNamespace(stage=stage, minimal_home=home, evidence_root=capture.root, provider_hostname=provider_hostname, auth_binds=tuple(auth_binds), resolver_source=resolver)
+    resolver_fd = os.open(resolver, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        resolver_bytes = b""
+        while True:
+            chunk = os.read(resolver_fd, 65536)
+            if not chunk:
+                break
+            resolver_bytes += chunk
+    finally:
+        os.close(resolver_fd)
+    return AgyCanaryNamespace(stage=stage, minimal_home=home, evidence_root=capture.root, provider_hostname=provider_hostname, auth_binds=tuple(auth_binds), resolver_source=resolver, resolver_sha256=_sha256(resolver_bytes))
 
 
 def _replace_regular_file(path: Path, data: bytes) -> None:

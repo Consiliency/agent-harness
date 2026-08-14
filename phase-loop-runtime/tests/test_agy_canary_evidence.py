@@ -228,9 +228,9 @@ def test_capture_reducer_requires_complete_sealed_staged_reads(tmp_path):
             staged = evidence.retain_staged_files(capture=capture, review_dir=review)
             events = [
                 {"sequence": 0, "session_id": "s1", "type": "tool_call", "call_id": "a", "tool": "read_file", "target": "/run/phase-loop-review/review-instructions.md"},
-                {"sequence": 1, "session_id": "s1", "type": "tool_result", "call_id": "a", "outcome": "success", "sha256": staged["review-instructions.md"]["sha256"], "bytes": staged["review-instructions.md"]["bytes"]},
+                {"sequence": 1, "session_id": "s1", "type": "tool_result", "call_id": "a", "outcome": "success", "content": "read this first\n"},
                 {"sequence": 2, "session_id": "s1", "type": "tool_call", "call_id": "b", "tool": "read_file", "target": "/run/phase-loop-review/review-bundle.md"},
-                {"sequence": 3, "session_id": "s1", "type": "tool_result", "call_id": "b", "outcome": "success", "sha256": staged["review-bundle.md"]["sha256"], "bytes": staged["review-bundle.md"]["bytes"]},
+                {"sequence": 3, "session_id": "s1", "type": "tool_result", "call_id": "b", "outcome": "success", "content": "review this\n"},
                 {"sequence": 4, "session_id": "s1", "type": "terminal", "text": "Looks good\nAGREE"},
             ]
             evidence.record_launch(capture=capture, seat_key="gemini-primary", attempt_id="gemini-1", argv=["agy", "-p", "secret prompt"], returncode=0, stdout="\n".join(json.dumps(event) for event in events), stderr="", staged=staged)
@@ -285,7 +285,7 @@ def test_capture_reducer_rejects_denied_command_and_alias_stage_read(tmp_path):
             staged = evidence.retain_staged_files(capture=capture, review_dir=review)
             events = [
                 {"sequence": 0, "session_id": "s", "type": "tool_call", "call_id": "a", "tool": "read_file", "target": "/not-stage/review-instructions.md"},
-                {"sequence": 1, "session_id": "s", "type": "tool_result", "call_id": "a", "outcome": "success", "sha256": staged["review-instructions.md"]["sha256"], "bytes": staged["review-instructions.md"]["bytes"]},
+                {"sequence": 1, "session_id": "s", "type": "tool_result", "call_id": "a", "outcome": "success", "content": "review-instructions.md"},
                 {"sequence": 2, "session_id": "s", "type": "tool_call", "call_id": "b", "tool": "command", "target": "true"},
                 {"sequence": 3, "session_id": "s", "type": "tool_result", "call_id": "b", "outcome": "denied"},
                 {"sequence": 4, "session_id": "s", "type": "terminal", "text": "AGREE"},
@@ -301,6 +301,36 @@ def test_capture_reducer_rejects_denied_command_and_alias_stage_read(tmp_path):
         root.rmdir()
 
 
+def test_capture_reducer_derives_staged_proof_from_content_not_reported_digest(tmp_path):
+    root = _private_root(tmp_path)
+    try:
+        settings = _settings(tmp_path, [])
+        capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
+        try:
+            evidence.create_capture(capture=capture, settings_path=settings, seat_key="gemini-primary")
+            review = tmp_path / "review"
+            review.mkdir()
+            for name in ("review-instructions.md", "review-bundle.md"):
+                path = review / name
+                path.write_text(name)
+                path.chmod(0o600)
+            staged = evidence.retain_staged_files(capture=capture, review_dir=review)
+            events = [
+                {"sequence": 0, "session_id": "s", "type": "tool_call", "call_id": "a", "tool": "read_file", "target": "/run/phase-loop-review/review-instructions.md"},
+                {"sequence": 1, "session_id": "s", "type": "tool_result", "call_id": "a", "outcome": "success", "content": "forged", "sha256": staged["review-instructions.md"]["sha256"], "bytes": staged["review-instructions.md"]["bytes"]},
+                {"sequence": 2, "session_id": "s", "type": "tool_call", "call_id": "b", "tool": "read_file", "target": "/run/phase-loop-review/review-bundle.md"},
+                {"sequence": 3, "session_id": "s", "type": "tool_result", "call_id": "b", "outcome": "success", "content": "review-bundle.md"},
+                {"sequence": 4, "session_id": "s", "type": "terminal", "text": "AGREE"},
+            ]
+            evidence.record_launch(capture=capture, seat_key="gemini-primary", attempt_id="gemini-1", argv=["agy", "-p", "secret"], returncode=0, stdout="\n".join(json.dumps(event) for event in events), stderr="", staged=staged)
+        finally:
+            capture.close()
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="does not cover sealed"):
+            evidence.verify_capture(evidence_root=root, expected_seat_key="gemini-primary")
+    finally:
+        shutil.rmtree(root)
+
+
 def test_namespace_masks_evidence_root_and_uses_fixed_stage(monkeypatch, tmp_path):
     root = _private_root(tmp_path)
     try:
@@ -311,7 +341,6 @@ def test_namespace_masks_evidence_root_and_uses_fixed_stage(monkeypatch, tmp_pat
         home = tmp_path / "home"
         home.mkdir()
         namespace = evidence.AgyCanaryNamespace(stage, home, root, "example.invalid")
-        monkeypatch.setattr(evidence.shutil, "which", lambda _name: "/usr/bin/bwrap")
         command = namespace.command(["agy", "--version"])
         assert "--tmpfs" in command
         assert "/run/phase-loop-review" in command
@@ -351,7 +380,11 @@ def test_probe_selects_1_1_13_stream_json_only_after_strict_parse(monkeypatch, t
         home.mkdir()
         namespace = evidence.AgyCanaryNamespace(stage, home, root, "example.invalid")
         events = "\n".join(json.dumps(item) for item in [
-            {"sequence": 0, "session_id": "p", "type": "terminal", "text": "READY"},
+            {"sequence": 0, "session_id": "p", "type": "tool_call", "call_id": "a", "tool": "read_file", "target": "/run/phase-loop-review/review-instructions.md"},
+            {"sequence": 1, "session_id": "p", "type": "tool_result", "call_id": "a", "outcome": "success", "content": "review-instructions.md"},
+            {"sequence": 2, "session_id": "p", "type": "tool_call", "call_id": "b", "tool": "read_file", "target": "/run/phase-loop-review/review-bundle.md"},
+            {"sequence": 3, "session_id": "p", "type": "tool_result", "call_id": "b", "outcome": "success", "content": "review-bundle.md"},
+            {"sequence": 4, "session_id": "p", "type": "terminal", "text": "READY"},
         ])
         calls = []
 
@@ -370,11 +403,86 @@ def test_probe_selects_1_1_13_stream_json_only_after_strict_parse(monkeypatch, t
             return Proc(events if "agy" in command else "")
 
         monkeypatch.setattr(evidence.subprocess, "run", fake_run)
-        monkeypatch.setattr(evidence.shutil, "which", lambda _name: "/usr/bin/bwrap")
         result = evidence.probe_capability(evidence_root=root, namespace=namespace)
         assert result["complete"] is True
         assert result["mode"] == "stream_json"
         assert any("--output-format" in command for command in calls)
+    finally:
+        for path in root.iterdir():
+            path.unlink()
+        root.rmdir()
+
+
+def test_probe_rejects_terminal_only_stream_even_when_process_succeeds(monkeypatch, tmp_path):
+    root = _private_root(tmp_path)
+    try:
+        stage = tmp_path / "stage"
+        stage.mkdir()
+        for name in ("review-instructions.md", "review-bundle.md"):
+            (stage / name).write_text(name)
+        home = tmp_path / "home"
+        home.mkdir()
+        namespace = evidence.AgyCanaryNamespace(stage, home, root, "example.invalid")
+
+        class Proc:
+            returncode = 0
+            stderr = ""
+            def __init__(self, stdout):
+                self.stdout = stdout
+
+        def fake_run(command, **_kwargs):
+            if command == ["agy", "--version"]:
+                return Proc("1.1.13\n")
+            if command == ["agy", "--help"]:
+                return Proc("--output-format text, json, stream-json")
+            return Proc(json.dumps({"sequence": 0, "session_id": "p", "type": "terminal", "text": "READY"}))
+
+        monkeypatch.setattr(evidence.subprocess, "run", fake_run)
+        result = evidence.probe_capability(evidence_root=root, namespace=namespace)
+        assert result["complete"] is False
+        assert result["mode"] is None
+        assert result["reason"].startswith("stream_json_schema_unproven:")
+    finally:
+        for path in root.iterdir():
+            path.unlink()
+        root.rmdir()
+
+
+def test_probe_rejects_staged_read_content_that_does_not_match_stage(monkeypatch, tmp_path):
+    root = _private_root(tmp_path)
+    try:
+        stage = tmp_path / "stage"
+        stage.mkdir()
+        for name in ("review-instructions.md", "review-bundle.md"):
+            (stage / name).write_text(name)
+        home = tmp_path / "home"
+        home.mkdir()
+        namespace = evidence.AgyCanaryNamespace(stage, home, root, "example.invalid")
+        stream = "\n".join(json.dumps(item) for item in [
+            {"sequence": 0, "session_id": "p", "type": "tool_call", "call_id": "a", "tool": "read_file", "target": "/run/phase-loop-review/review-instructions.md"},
+            {"sequence": 1, "session_id": "p", "type": "tool_result", "call_id": "a", "outcome": "success", "content": "forged"},
+            {"sequence": 2, "session_id": "p", "type": "tool_call", "call_id": "b", "tool": "read_file", "target": "/run/phase-loop-review/review-bundle.md"},
+            {"sequence": 3, "session_id": "p", "type": "tool_result", "call_id": "b", "outcome": "success", "content": "review-bundle.md"},
+            {"sequence": 4, "session_id": "p", "type": "terminal", "text": "READY"},
+        ])
+
+        class Proc:
+            returncode = 0
+            stderr = ""
+            def __init__(self, stdout):
+                self.stdout = stdout
+
+        def fake_run(command, **_kwargs):
+            if command == ["agy", "--version"]:
+                return Proc("1.1.13\n")
+            if command == ["agy", "--help"]:
+                return Proc("--output-format text, json, stream-json")
+            return Proc(stream)
+
+        monkeypatch.setattr(evidence.subprocess, "run", fake_run)
+        result = evidence.probe_capability(evidence_root=root, namespace=namespace)
+        assert result["complete"] is False
+        assert result["reason"].startswith("stream_json_schema_unproven:")
     finally:
         for path in root.iterdir():
             path.unlink()

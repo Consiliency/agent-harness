@@ -9,9 +9,13 @@ These tests pin the input-scaling and the exact command construction (read-only 
 
 from __future__ import annotations
 
+import json
+import os
+import shutil
 import tempfile
 from pathlib import Path
 
+from phase_loop_runtime import agy_canary_evidence as evidence
 from phase_loop_runtime import panel_invoker as pi
 
 
@@ -161,3 +165,78 @@ def test_gemini_leg_passes_prompt_inline_on_argv_not_stdin(monkeypatch):
     # and nothing is fed on stdin (feeding stdin was the empty-prompt bug): the gemini
     # leg passes NO input_text to the liveness seam, which then wires the child to DEVNULL.
     assert captured["input_text"] is None
+
+
+def test_capture_enabled_gemini_translates_host_stage_in_prompt_and_argv(monkeypatch, tmp_path):
+    """The production command exposes the host stage only as bwrap's bind source."""
+    root = Path("/tmp") / f"phase-loop-agy-panel-{os.getpid()}-{tmp_path.name}"
+    root.mkdir(mode=0o700)
+    capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
+    try:
+        review_dir = tmp_path / "host-stage"
+        review_dir.mkdir()
+        instructions = review_dir / "review-instructions.md"
+        bundle = review_dir / "review-bundle.md"
+        instructions.write_text("read instructions\n")
+        bundle.write_text("read bundle\n")
+        instructions.chmod(0o600)
+        bundle.chmod(0o600)
+        settings = tmp_path / "settings.json"
+        settings.write_text(json.dumps({
+            "permissions": {"allow": []},
+            "toolPermission": "request-review",
+            "allowNonWorkspaceAccess": False,
+        }))
+        settings.chmod(0o600)
+        evidence.create_capture(capture=capture, settings_path=settings, seat_key="gemini-primary")
+        staged = evidence.retain_staged_files(capture=capture, review_dir=review_dir)
+        home = tmp_path / "minimal-home"
+        home.mkdir(mode=0o700)
+        namespace = evidence.AgyCanaryNamespace(
+            stage=review_dir,
+            minimal_home=home,
+            evidence_root=root,
+            provider_hostname="example.invalid",
+        )
+        captured: dict[str, object] = {}
+        stream = "\n".join(json.dumps(event) for event in [
+            {"sequence": 0, "session_id": "s", "type": "tool_call", "call_id": "a", "tool": "read_file", "target": "/run/phase-loop-review/review-instructions.md"},
+            {"sequence": 1, "session_id": "s", "type": "tool_result", "call_id": "a", "outcome": "success", "content": "read instructions\n"},
+            {"sequence": 2, "session_id": "s", "type": "tool_call", "call_id": "b", "tool": "read_file", "target": "/run/phase-loop-review/review-bundle.md"},
+            {"sequence": 3, "session_id": "s", "type": "tool_result", "call_id": "b", "outcome": "success", "content": "read bundle\n"},
+            {"sequence": 4, "session_id": "s", "type": "terminal", "text": "AGREE"},
+        ])
+
+        def fake_liveness(cmd, **_kwargs):
+            captured["cmd"] = list(cmd)
+            return pi._LegRun(0, stream, "")
+
+        monkeypatch.setattr(pi, "_leg_auth_ok", lambda *args, **kwargs: (True, ""))
+        monkeypatch.setattr(pi, "_run_leg_with_liveness", fake_liveness)
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        rc, review, _log = pi._exec_leg(
+            "gemini", review_dir, out_dir, artifact="artifact",
+            agy_capture=capture, capture_staged=staged, seat_key="gemini-primary",
+            agy_namespace=namespace,
+        )
+        command = captured["cmd"]
+        assert rc == 0 and review == "AGREE"
+        assert isinstance(command, list)
+        assert command[0] == "/usr/bin/bwrap"
+        add_dir = command.index("--add-dir")
+        assert command[add_dir + 1] == "/run/phase-loop-review"
+        prompt = command[-1]
+        assert "/run/phase-loop-review" in prompt
+        assert str(review_dir) not in prompt
+        # The host path is present exactly once: bwrap's explicit source side.
+        assert command.count(str(review_dir)) == 1
+        bind = next(
+            index for index, token in enumerate(command)
+            if token == "--ro-bind" and command[index + 1] == str(review_dir)
+        )
+        assert command[bind + 1] == str(review_dir)
+        assert command[bind + 2] == "/run/phase-loop-review"
+    finally:
+        capture.close()
+        shutil.rmtree(root)
