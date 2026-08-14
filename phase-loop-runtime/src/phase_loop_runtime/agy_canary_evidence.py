@@ -149,7 +149,7 @@ _NPM_PROVIDER_RUNTIMES = {
         None,
         "",
     ),
-    "grok": (".grok/bin/grok", ".grok/bin/grok-1.0.3", None, ""),
+    "grok": (".grok/bin/grok", ".grok/bin/grok-1.0.3", None, ""),  # model-id-source: provider CLI version path, not a model
 }
 _PROVIDER_AUTH_PATHS = {
     "codex": (".codex/auth.json", "/home/phase-loop/.codex/auth.json"),
@@ -168,7 +168,7 @@ _PROVIDER_TLS_HOSTS = {
 }
 _PROVIDER_LAUNCHER_TARGETS = {
     "codex": "../lib/node_modules/@openai/codex/bin/codex.js",
-    "grok": "grok-1.0.3",
+    "grok": "grok-1.0.3",  # model-id-source: provider CLI version, not a model
 }
 _NATIVE_PROVIDER_ASSETS = {
     "codex": (
@@ -2690,7 +2690,7 @@ def _validate_launch_authority(*, authority: Any, ledger: dict[str, Any], root_f
             authority.get("capture_mode") != "stream_json"):
         raise AgyCanaryEvidenceError("prepare launch authority seat or mode drifted")
     attempt_ids = authority.get("authorized_attempt_ids")
-    if (not isinstance(attempt_ids, list) or attempt_ids != ["gemini-1", "gemini-2"] or
+    if (not isinstance(attempt_ids, list) or attempt_ids != ["gemini-1", "gemini-2"] or  # model-id-source: canary attempt IDs, not models
             len(set(attempt_ids)) != len(attempt_ids)):
         raise AgyCanaryEvidenceError("prepare launch authority attempts are not exact")
     for field in ("cleanup_sha256", "probe_sha256", "bootstrap_sha256", "release_sha256", "policy_sha256", "source_inventory_sha256"):
@@ -2821,7 +2821,7 @@ def prepare_canary(
             "schema": "agy_canary_launch_authority.v1",
             "seat_key": seat_key,
             "capture_mode": str(probe["mode"]),
-            "authorized_attempt_ids": ["gemini-1", "gemini-2"],
+            "authorized_attempt_ids": ["gemini-1", "gemini-2"],  # model-id-source: canary attempt IDs, not models
             "cleanup_sha256": _sha256(_canonical_json(cleanup)),
             "probe_sha256": _sha256(_canonical_json(probe)),
             "bootstrap_sha256": _sha256(_canonical_json(bootstrap)),
