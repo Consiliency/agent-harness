@@ -946,7 +946,31 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
         (root / "agy_canary_prepare.json").write_text(json.dumps({
             "release": release, "release_sha256": evidence._sha256(evidence._canonical_json(release)), "seat_key": "gemini-primary",
         }))
-        proof = {"schema": evidence.SCHEMA_VERSION, "seat_key": "gemini-primary", "attempt_ids": ["gemini-1"], "capture_mode": "stream_json", "attempts": [{"attempt_id": "gemini-1", "counts": {"command": 0, "unsandboxed": 0, "non_read_tool": 0, "out_of_stage_read": 0}, "terminal_sha256": "1" * 64}], "accepted_review_sha256": "2" * 64, "private_board_sha256": "3" * 64}
+        proof = {
+            "schema": evidence.SCHEMA_VERSION,
+            "seat_key": "gemini-primary",
+            "attempt_ids": ["gemini-1"],
+            "capture_mode": "stream_json",
+            "attempts": [{
+                "attempt_id": "gemini-1",
+                "counts": {
+                    "command": 0, "unsandboxed": 0,
+                    "non_read_tool": 0, "out_of_stage_read": 0,
+                },
+                "terminal_sha256": "1" * 64,
+            }],
+            "accepted_review_sha256": "2" * 64,
+            "private_board_sha256": "3" * 64,
+            "provider_results": {
+                "registry_sha256": "4" * 64,
+                "result_set_sha256": "5" * 64,
+                "providers": [
+                    {"provider": "gemini", "seat_key": "gemini-primary"},
+                    {"provider": "codex", "seat_key": "codex-primary"},
+                    {"provider": "grok", "seat_key": "grok-primary"},
+                ],
+            },
+        }
         (root / "agy_canary_proof.json").write_bytes(evidence._canonical_json(proof))
         monkeypatch.setattr(evidence, "verify_capture", lambda **_kwargs: proof)
         result = evidence.finalize_canary(
@@ -961,6 +985,9 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
         assert "## Execution evidence" in plan.read_text()
         assert json.loads(manifest.read_text())["plans"][0]["updated_at"] != "old"
         assert (root / "agy_canary_inputs.json").is_file()
+        _prefix, payload = evidence._parse_final_payload(plan.read_bytes())
+        assert payload["proof"]["provider_results"] == proof["provider_results"]
+        assert payload["attestation"]["proof"]["provider_results"] == proof["provider_results"]
         checked = evidence.check_private_final(
             evidence_root=root, expected_seat_key="gemini-primary", dotfiles_repo=repo,
             plan_path=Path("plans/canary.md"), manifest_path=Path("plans/manifest.json"), plan_slug="agy-canary",

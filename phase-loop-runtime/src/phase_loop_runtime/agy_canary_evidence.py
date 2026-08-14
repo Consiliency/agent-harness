@@ -3553,7 +3553,7 @@ def _parse_final_payload(plan: bytes) -> tuple[bytes, dict[str, Any]]:
 
 
 def _validate_final_proof(proof: dict[str, Any]) -> None:
-    required = {"schema", "seat_key", "attempt_ids", "capture_mode", "attempts", "accepted_review_sha256", "private_board_sha256"}
+    required = {"schema", "seat_key", "attempt_ids", "capture_mode", "attempts", "accepted_review_sha256", "private_board_sha256", "provider_results"}
     if set(proof) != required or proof.get("schema") != SCHEMA_VERSION or proof.get("capture_mode") not in _CAPTURE_MODES:
         raise AgyCanaryEvidenceError("final proof schema is malformed")
     if not isinstance(proof.get("seat_key"), str) or not proof["seat_key"] or not isinstance(proof.get("attempt_ids"), list) or not isinstance(proof.get("attempts"), list):
@@ -3568,11 +3568,41 @@ def _validate_final_proof(proof: dict[str, Any]) -> None:
         value = proof.get(name)
         if not isinstance(value, str) or len(value) != 64 or any(char not in "0123456789abcdef" for char in value.lower()):
             raise AgyCanaryEvidenceError("final proof digest is malformed")
+    _validate_provider_result_summary(proof["provider_results"])
+
+
+def _validate_provider_result_summary(value: Any) -> None:
+    """Validate the redacted, provider-neutral result-set identity."""
+    required = {"registry_sha256", "result_set_sha256", "providers"}
+    if (not isinstance(value, dict) or set(value) != required or
+            not _is_digest(value.get("registry_sha256")) or
+            not _is_digest(value.get("result_set_sha256")) or
+            not isinstance(value.get("providers"), list) or not value["providers"]):
+        raise AgyCanaryEvidenceError("final proof provider results are malformed")
+    identities: set[tuple[str, str]] = set()
+    providers: set[str] = set()
+    for item in value["providers"]:
+        if (not isinstance(item, dict) or set(item) != {"provider", "seat_key"} or
+                item.get("provider") not in _PROVIDER_EXECUTABLES or
+                not isinstance(item.get("seat_key"), str) or not item["seat_key"] or
+                Path(item["seat_key"]).name != item["seat_key"]):
+            raise AgyCanaryEvidenceError("final proof provider result identity is malformed")
+        identity = (item["provider"], item["seat_key"])
+        if identity in identities or item["provider"] in providers:
+            raise AgyCanaryEvidenceError("final proof provider results are duplicated")
+        identities.add(identity)
+        providers.add(item["provider"])
 
 
 def _proof_identity(proof: dict[str, Any]) -> dict[str, Any]:
     _validate_final_proof(proof)
-    return {"seat_key": proof["seat_key"], "attempt_ids": proof["attempt_ids"], "private_board_sha256": proof["private_board_sha256"], "proof_sha256": _sha256(_canonical_json(proof))}
+    return {
+        "seat_key": proof["seat_key"],
+        "attempt_ids": proof["attempt_ids"],
+        "private_board_sha256": proof["private_board_sha256"],
+        "provider_results": proof["provider_results"],
+        "proof_sha256": _sha256(_canonical_json(proof)),
+    }
 
 
 def _attested_final_targets(
@@ -3702,8 +3732,9 @@ def _validate_committed_attestation(
     if not isinstance(attestation, dict) or set(attestation) != {"bootstrap", "release", "release_sha256", "proof", "reducer_proof_sha256"} or not isinstance(bootstrap, dict) or not isinstance(release, dict) or attestation["release_sha256"] != _sha256(_canonical_json(release)):
         raise AgyCanaryEvidenceError("committed finalizer payload lacks attested bootstrap/release identities")
     proof_identity = attestation["proof"]
-    if not isinstance(proof_identity, dict) or set(proof_identity) != {"seat_key", "attempt_ids", "private_board_sha256", "proof_sha256"}:
+    if not isinstance(proof_identity, dict) or set(proof_identity) != {"seat_key", "attempt_ids", "private_board_sha256", "provider_results", "proof_sha256"}:
         raise AgyCanaryEvidenceError("committed finalizer proof identity is malformed")
+    _validate_provider_result_summary(proof_identity["provider_results"])
     if set(bootstrap) != {"repo_head", "blobs", "input_sha256"}:
         raise AgyCanaryEvidenceError("committed finalizer bootstrap identity is malformed")
     repo_head = bootstrap["repo_head"]
