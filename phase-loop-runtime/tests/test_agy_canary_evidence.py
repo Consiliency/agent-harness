@@ -930,9 +930,13 @@ def test_release_lineage_uses_merged_handoff_and_rehashes_downloads(tmp_path, mo
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", "handoff"], check=True)
     handoff_commit = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
     subprocess.run(["git", "-C", str(repo), "update-ref", "refs/remotes/origin/main", handoff_commit], check=True)
+    subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", "https://github.com/Consiliency/agent-harness.git"], check=True)
+    subprocess.run(["git", "-C", str(repo), "update-ref", "refs/remotes/phase-loop/canonical-main", handoff_commit], check=True)
     real_run = evidence.subprocess.run
 
     def fake_run(argv, **kwargs):
+        if argv[:3] == ["git", "-C", str(repo)] and argv[3:5] == ["fetch", "--quiet"]:
+            return subprocess.CompletedProcess(argv, 0, b"", b"")
         if argv[:3] == ["git", "-C", str(repo)] and argv[3:5] == ["verify-tag", "--raw"]:
             return subprocess.CompletedProcess(argv, 0, "", "")
         if argv[:3] == ["gh", "release", "view"]:

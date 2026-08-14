@@ -1628,6 +1628,13 @@ def _reconcile_release_lineage(
         raise AgyCanaryEvidenceError("handoff selector must be an immutable commit OID")
     if _git_text(repo, "status", "--porcelain"):
         raise AgyCanaryEvidenceError("release lineage requires a clean agent-harness worktree")
+    remote = _git_text(repo, "remote", "get-url", "origin")
+    if remote not in {"https://github.com/Consiliency/agent-harness.git", "git@github.com:Consiliency/agent-harness.git"}:
+        raise AgyCanaryEvidenceError("release lineage requires canonical Consiliency/agent-harness origin")
+    canonical_main = "refs/remotes/phase-loop/canonical-main"
+    fetched = subprocess.run(["git", "-C", str(repo), "fetch", "--quiet", "origin", "+refs/heads/main:" + canonical_main, "+refs/tags/v*:refs/tags/v*"], capture_output=True, check=False)
+    if fetched.returncode != 0:
+        raise AgyCanaryEvidenceError("release lineage could not refresh canonical origin")
     resolved = _git_text(repo, "rev-parse", f"{handoff_commit}^{{commit}}")
     if resolved != handoff_commit:
         raise AgyCanaryEvidenceError("handoff selector must not be a movable ref")
@@ -1635,7 +1642,7 @@ def _reconcile_release_lineage(
         raise AgyCanaryEvidenceError("handoff commit changes paths outside the release handoff")
     # A handoff is authoritative only after its commit is reachable from the
     # fetched main branch, never merely present in an arbitrary local branch.
-    if subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", resolved, "origin/main"], capture_output=True, check=False).returncode != 0:
+    if subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", resolved, canonical_main], capture_output=True, check=False).returncode != 0:
         raise AgyCanaryEvidenceError("handoff commit is not merged into origin/main")
     handoff = _release_handoff_record(subprocess.run(
         ["git", "-C", str(repo), "show", f"{resolved}:docs/releases/outside-agent-release-handoff.md"],
