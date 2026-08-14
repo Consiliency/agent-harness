@@ -557,7 +557,9 @@ def _probe_namespace(tmp_path: Path, root: Path) -> evidence.AgyCanaryNamespace:
     stage = tmp_path / "stage"
     stage.mkdir()
     for name in ("review-instructions.md", "review-bundle.md"):
-        (stage / name).write_text(name)
+        path = stage / name
+        path.write_text(name)
+        path.chmod(0o600)
     home = tmp_path / "home"
     home.mkdir()
     return evidence.AgyCanaryNamespace(stage, home, root, "example.invalid")
@@ -636,9 +638,15 @@ def test_prepare_requires_bootstrap_and_binds_selected_mode(tmp_path, monkeypatc
             maintenance_lock=tmp_path / "maintenance.lock",
         )
         rows = []
+        staged = {}
+        for name in ("review-instructions.md", "review-bundle.md"):
+            retained = f"agy-capability-stage-{name}"
+            raw_stage = name.encode()
+            (root / retained).write_bytes(raw_stage)
+            staged[name] = {"name": retained, "bytes": len(raw_stage), "sha256": evidence._sha256(raw_stage)}
         for class_name, tool, target, outcome in evidence._CAPABILITY_CLASSES:
             name = f"agy-capability-{class_name}.jsonl"
-            raw = f"private-{class_name}".encode()
+            raw = _capability_stream(class_name).encode()
             (root / name).write_bytes(raw)
             rows.append({
                 "class": class_name, "tool": tool, "target": target,
@@ -648,6 +656,7 @@ def test_prepare_requires_bootstrap_and_binds_selected_mode(tmp_path, monkeypatc
         (root / "agy_capability_probe.json").write_text(json.dumps({
             "schema": "agy_capability_probe.v2", "agy_version": "1.1.13",
             "help_sha256": "a" * 64, "mode": "stream_json", "complete": True, "classes": rows,
+            "staged": staged,
         }))
         installation = {
             "console_script": "/tool/phase-loop", "interpreter": "/tool/python", "version": "0.7.14",
@@ -848,6 +857,40 @@ def test_probe_revalidates_trusted_executable_before_host_exec(monkeypatch, tmp_
     shutil.rmtree(root)
 
 
+def test_provider_launch_authority_revalidates_runtime_and_exactly_ingests_output(tmp_path):
+    root = _private_root(tmp_path)
+    output = Path("/tmp") / f"phase-loop-provider-output.test-{os.getpid()}-{tmp_path.name}"
+    output.mkdir(mode=0o700)
+    source = tmp_path / "codex"
+    source.write_bytes(b"trusted-codex")
+    source.chmod(0o700)
+    info = source.stat()
+    runtime = evidence._TrustedProviderRuntime(
+        "codex", source, info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode),
+        evidence._sha256(source.read_bytes()),
+    )
+    try:
+        authority = evidence.ProviderLaunchAuthority(
+            "codex", runtime,
+            evidence.AgyCanaryNamespace(tmp_path, tmp_path, root, "example.invalid", provider_output=output),
+            (),
+        )
+        command = authority.command(["codex", "exec", "review"])
+        assert "/run/phase-loop-bin/codex" in command
+        (output / "result.json").write_bytes(b"accepted")
+        assert authority.read_expected_output("result.json") == b"accepted"
+        (output / "extra.log").write_bytes(b"forged")
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="output set"):
+            authority.read_expected_output("result.json")
+        (output / "extra.log").unlink()
+        source.write_bytes(b"replaced")
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="drifted"):
+            authority.command(["codex", "exec", "review"])
+    finally:
+        shutil.rmtree(output)
+        shutil.rmtree(root)
+
+
 def test_advisor_board_cli_seals_and_verifies_capture_summary(monkeypatch, tmp_path):
     """The public command, not its sink helper, must bind the private payload."""
     from phase_loop_runtime.advisor_board.schema import Board, Seat
@@ -913,6 +956,10 @@ def test_advisor_board_cli_real_invoker_capture_path(monkeypatch, tmp_path):
     from phase_loop_runtime import panel_invoker
     root = _private_root(tmp_path)
     home = tmp_path / "minimal-home"; home.mkdir(mode=0o700)
+    (home / ".gemini" / "antigravity-cli").mkdir(parents=True, mode=0o700)
+    settings = home / ".gemini" / "antigravity-cli" / "settings.json"
+    settings.write_bytes(_settings(tmp_path, []).read_bytes())
+    settings.chmod(0o600)
     capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
     try:
         ledger = evidence.create_capture(capture=capture, settings_path=_settings(tmp_path, []), seat_key="gemini:gemini-3.6-flash:high", source_inventory=_source_inventory(tmp_path))
