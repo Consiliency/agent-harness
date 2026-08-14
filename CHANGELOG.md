@@ -6,6 +6,19 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+## [0.7.14] - 2026-08-15
+
+### Fail-closed headless agy review evidence (Consiliency/agent-harness#545, Consiliency/agent-harness#546, ViperJuice/dotfiles#176)
+
+- Preserve the merged no-command preamble, staged-copy boundary, bounded denial
+  diagnostics, and retry compare-and-swap behavior for headless Gemini reviews.
+- Add opt-in agy capability, cleanup, bootstrap, capture, verification, and
+  finalization evidence through the existing `phase-loop` command. These paths
+  fail closed and do not add a persistent Antigravity permission, use a
+  permission-bypass flag, or authorize live provider or fleet claims.
+- Publish only the reviewed source from Consiliency/agent-harness#545; live
+  canary and downstream pin adoption remain separately attended gates.
+
 ### CI: offload heavy execution to the tailnet host `ai` (Consiliency/agent-harness#530, plan `detailed-dagger-offload-ci-20260812`)
 
 - `.github/workflows/test.yml` gains an explicit `elig` -> `{offload | hosted}` -> `gate`

@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: REVIEWTRUTH
 roadmap: specs/phase-plans-v10.md
-roadmap_sha256: 040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e
+roadmap_sha256: 1b2492f2eb6e4b613a09e3dc2612253a2a51239c4f31744a9e4b349cb50c9372
 automation:
   suite_command: 'PYTHONPATH=phase-loop-runtime/src python3 -m pytest phase-loop-runtime/tests -q -m "not dotfiles_integration"'
 ---
