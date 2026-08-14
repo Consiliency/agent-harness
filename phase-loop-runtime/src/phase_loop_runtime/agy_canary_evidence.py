@@ -437,13 +437,13 @@ def prepare_provider_launch_authorities(
         raise AgyCanaryEvidenceError("prepared minimal HOME settings drifted")
     auth_records = authority["auth_binds"]
     resolver, resolver_sha256 = _resolver_snapshot()
-    output_root = Path(tempfile.mkdtemp(prefix="phase-loop-provider-output-", dir="/tmp"))
-    output_root.chmod(0o700)
     result: dict[str, ProviderLaunchAuthority] = {}
     for provider in providers:
         runtime = _trusted_provider_runtime(provider)
-        provider_output = output_root / provider
-        provider_output.mkdir(mode=0o700)
+        provider_output = Path(
+            tempfile.mkdtemp(prefix=f"phase-loop-provider-output-{provider}-", dir="/tmp")
+        )
+        provider_output.chmod(0o700)
         namespace = AgyCanaryNamespace(
             stage=stage, minimal_home=minimal_home, evidence_root=capture.root,
             provider_hostname="antigravity.google", auth_binds=tuple(

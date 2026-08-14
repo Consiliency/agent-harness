@@ -991,6 +991,12 @@ def test_advisor_board_cli_real_invoker_capture_path(monkeypatch, tmp_path):
         evidence._sha256(source.read_bytes()),
     )
     monkeypatch.setattr(evidence, "_trusted_provider_runtime", lambda provider: provider_runtime)
+    self_tests = []
+    monkeypatch.setattr(
+        evidence,
+        "namespace_self_test",
+        lambda **kwargs: self_tests.append(kwargs["namespace"]) or {"synthetic": True},
+    )
     monkeypatch.setattr(composition, "compose_review_board", lambda: Board("one", "review", (Seat("gemini-3.6-flash", "high", harness="gemini"),)))
     seen = []
     def fake_liveness(command, *, cwd, **_kwargs):
@@ -1006,7 +1012,7 @@ def test_advisor_board_cli_real_invoker_capture_path(monkeypatch, tmp_path):
     monkeypatch.setenv("PHASE_LOOP_AGY_CANARY_EVIDENCE_DIR", str(root))
     assert cli._advisor_board_command(args=argparse.Namespace(artifact=str(artifact), json=True, agy_canary_private_board_name="real.json")) == 1
     ledger = json.loads((root / "agy-launch-ledger.json").read_text())
-    assert len(ledger["attempts"]) == 1 and seen[0][0] == "/usr/bin/bwrap" and "--clearenv" in seen[0] and "/run/phase-loop-bin/agy" in seen[0]
+    assert len(ledger["attempts"]) == 1 and self_tests and seen[0][0] == "/usr/bin/bwrap" and "--clearenv" in seen[0] and "/run/phase-loop-bin/agy" in seen[0]
     with pytest.raises(evidence.AgyCanaryEvidenceError, match="usable independence floor"):
         evidence.verify_capture(evidence_root=root, expected_seat_key="gemini:gemini-3.6-flash:high", seal=False)
     shutil.rmtree(root)
