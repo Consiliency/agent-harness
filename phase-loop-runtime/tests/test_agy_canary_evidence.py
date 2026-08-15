@@ -4351,6 +4351,62 @@ def test_provider_full_asset_revalidation_reads_each_mounted_file_once(
     assert reads == {source: 1, asset: 1}
 
 
+def test_provider_full_asset_revalidation_rejects_mutation_during_traversal(
+    monkeypatch, tmp_path,
+):
+    support = tmp_path / "codex-package"
+    source = support / "a-entry"
+    later_asset = support / "z-late.dat"
+    support.mkdir()
+    source.write_bytes(b"entry")
+    source.chmod(0o700)
+    later_asset.write_bytes(b"later")
+    info = source.stat()
+    support_info = support.stat()
+    runtime = evidence._TrustedProviderRuntime(
+        provider="codex", source=source, device=info.st_dev, inode=info.st_ino,
+        mode=stat.S_IMODE(info.st_mode), sha256=evidence._sha256(b"entry"),
+        support_source=support, support_device=support_info.st_dev,
+        support_inode=support_info.st_ino,
+        support_mode=stat.S_IMODE(support_info.st_mode),
+        support_sha256=evidence._runtime_tree_sha256(support),
+        entry_relative="a-entry",
+    )
+    reads: dict[Path, int] = {}
+    real_read = evidence._read_regular_path
+    mutated = False
+
+    def mutate_after_early_read(path):
+        nonlocal mutated
+        resolved = Path(path)
+        reads[resolved] = reads.get(resolved, 0) + 1
+        result = real_read(resolved)
+        if resolved == later_asset:
+            before = source.stat()
+            source.write_bytes(b"EVIL!!")
+            assert source.stat().st_ino == before.st_ino
+            mutated = True
+        return result
+
+    monkeypatch.setattr(evidence, "_read_regular_path", mutate_after_early_read)
+    monkeypatch.setattr(
+        evidence.subprocess, "Popen",
+        lambda *_args, **_kwargs: pytest.fail("provider must not launch after drift"),
+    )
+
+    def launch_after_revalidation():
+        runtime.revalidate(full_assets=True)
+        evidence.subprocess.Popen(["provider"])
+
+    with pytest.raises(
+        evidence.AgyCanaryEvidenceError,
+        match="changed during metadata revalidation",
+    ):
+        launch_after_revalidation()
+    assert mutated
+    assert reads == {source: 1, later_asset: 1}
+
+
 def test_provider_launch_boundaries_hash_once_and_bookkeeping_uses_frozen_runtime(
     monkeypatch, tmp_path,
 ):

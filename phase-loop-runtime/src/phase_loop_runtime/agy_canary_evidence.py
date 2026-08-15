@@ -337,6 +337,58 @@ def _stat_regular_path(path: Path) -> os.stat_result:
         os.close(parent_fd)
 
 
+def _runtime_tree_metadata(root: Path) -> dict[str, tuple[str, tuple[int, ...]]]:
+    try:
+        root_info = root.lstat()
+    except OSError as exc:
+        raise AgyCanaryEvidenceError("trusted provider package is unavailable") from exc
+    if (
+        stat.S_ISLNK(root_info.st_mode)
+        or not stat.S_ISDIR(root_info.st_mode)
+        or root_info.st_uid != os.getuid()
+        or stat.S_IMODE(root_info.st_mode) & 0o002
+    ):
+        raise AgyCanaryEvidenceError("trusted provider package root is unsafe")
+    identities = {".": ("directory", _stable_file_identity(root_info))}
+
+    def walk_error(error: OSError) -> None:
+        raise AgyCanaryEvidenceError(
+            "trusted provider package metadata is unreadable"
+        ) from error
+
+    for current, directories, files in os.walk(
+        root, topdown=True, onerror=walk_error, followlinks=False,
+    ):
+        current_path = Path(current)
+        directories.sort()
+        files.sort()
+        for name in [*directories, *files]:
+            path = current_path / name
+            relative = path.relative_to(root).as_posix()
+            try:
+                info = path.lstat()
+            except OSError as exc:
+                raise AgyCanaryEvidenceError(
+                    "trusted provider package metadata is unreadable"
+                ) from exc
+            if stat.S_ISLNK(info.st_mode):
+                raise AgyCanaryEvidenceError("trusted provider package contains a symlink")
+            if stat.S_ISDIR(info.st_mode):
+                if stat.S_IMODE(info.st_mode) & 0o002:
+                    raise AgyCanaryEvidenceError(
+                        "trusted provider package directory is unsafe"
+                    )
+                kind = "directory"
+            elif stat.S_ISREG(info.st_mode) and not stat.S_IMODE(info.st_mode) & 0o002:
+                kind = "file"
+            else:
+                raise AgyCanaryEvidenceError(
+                    "trusted provider package contains an unsafe file"
+                )
+            identities[relative] = (kind, _stable_file_identity(info))
+    return identities
+
+
 def _runtime_tree_snapshot(
     root: Path, *, capture_relatives: frozenset[str] = frozenset(),
 ) -> tuple[str, dict[str, tuple[bytes, os.stat_result]]]:
@@ -350,7 +402,16 @@ def _runtime_tree_snapshot(
         raise AgyCanaryEvidenceError("trusted provider package root is unsafe")
     digest = hashlib.sha256()
     captured: dict[str, tuple[bytes, os.stat_result]] = {}
-    for current, directories, files in os.walk(root, topdown=True, followlinks=False):
+    identities = {".": ("directory", _stable_file_identity(root_info))}
+
+    def walk_error(error: OSError) -> None:
+        raise AgyCanaryEvidenceError(
+            "trusted provider package content is unreadable"
+        ) from error
+
+    for current, directories, files in os.walk(
+        root, topdown=True, onerror=walk_error, followlinks=False,
+    ):
         current_path = Path(current)
         directories.sort()
         files.sort()
@@ -365,17 +426,25 @@ def _runtime_tree_snapshot(
             if stat.S_ISDIR(info.st_mode):
                 if stat.S_IMODE(info.st_mode) & 0o002:
                     raise AgyCanaryEvidenceError("trusted provider package directory is unsafe")
+                identities[relative_text] = (
+                    "directory", _stable_file_identity(info),
+                )
                 continue
             if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) & 0o002:
                 raise AgyCanaryEvidenceError("trusted provider package contains an unsafe file")
             data, reopened = _read_regular_path(path)
-            if (reopened.st_dev, reopened.st_ino) != (info.st_dev, info.st_ino):
+            if _stable_file_identity(reopened) != _stable_file_identity(info):
                 raise AgyCanaryEvidenceError("trusted provider package changed while hashing")
+            identities[relative_text] = ("file", _stable_file_identity(reopened))
             digest.update(data)
             if relative_text in capture_relatives:
                 captured[relative_text] = (data, reopened)
     if set(captured) != set(capture_relatives):
         raise AgyCanaryEvidenceError("trusted provider package entry is unavailable")
+    if _runtime_tree_metadata(root) != identities:
+        raise AgyCanaryEvidenceError(
+            "trusted provider package changed during metadata revalidation"
+        )
     return digest.hexdigest(), captured
 
 
