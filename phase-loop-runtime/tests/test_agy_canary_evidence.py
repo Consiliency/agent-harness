@@ -2278,7 +2278,7 @@ def test_stage_binding_enforces_exact_full_read_limit(monkeypatch, tmp_path, siz
 
 
 def test_full_read_limit_includes_current_governed_plan_snapshot():
-    current_governed_plan_bytes = 169_598
+    current_governed_plan_bytes = 180_559
     assert current_governed_plan_bytes <= evidence._MAX_FULL_STAGED_READ_BYTES
 
 
@@ -2603,8 +2603,16 @@ def test_release_lineage_uses_merged_handoff_and_rehashes_downloads(tmp_path, mo
     subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", "https://github.com/Consiliency/agent-harness.git"], check=True)
     subprocess.run(["git", "-C", str(repo), "update-ref", "refs/remotes/phase-loop/canonical-main", handoff_commit], check=True)
     real_run = evidence.subprocess.run
-    workflow_runs = [{"head_sha": release_commit, "conclusion": "success", "event": "push", "html_url": record["workflow_url"]}]
-    workflow_pages = [{"workflow_runs": workflow_runs}]
+    workflow_id = 123456
+    workflow_definition = {
+        "id": workflow_id, "path": ".github/workflows/publish-pypi.yml", "state": "active",
+    }
+    workflow_runs = [{
+        "workflow_id": workflow_id, "head_sha": release_commit,
+        "head_branch": "v0.7.14", "status": "completed",
+        "conclusion": "success", "event": "push", "html_url": record["workflow_url"],
+    }]
+    workflow_pages = [{"total_count": 1, "workflow_runs": workflow_runs}]
 
     def fake_run(argv, **kwargs):
         if argv[:3] == ["git", "-C", str(repo)] and argv[3:5] == ["fetch", "--quiet"]:
@@ -2613,6 +2621,8 @@ def test_release_lineage_uses_merged_handoff_and_rehashes_downloads(tmp_path, mo
             return subprocess.CompletedProcess(argv, 0, "", "")
         if argv[:3] == ["gh", "release", "view"]:
             return subprocess.CompletedProcess(argv, 0, json.dumps({"tagName": "v0.7.14", "url": record["release_url"]}), "")
+        if argv[:2] == ["gh", "api"] and "--paginate" not in argv:
+            return subprocess.CompletedProcess(argv, 0, json.dumps(workflow_definition), "")
         if argv[:3] == ["gh", "api", "--paginate"]:
             return subprocess.CompletedProcess(argv, 0, "\n".join(json.dumps(page) for page in workflow_pages), "")
         return real_run(argv, **kwargs)
@@ -2629,15 +2639,42 @@ def test_release_lineage_uses_merged_handoff_and_rehashes_downloads(tmp_path, mo
     )
     assert result["wheel_binding"]["sha256"] == hashlib.sha256(wheel).hexdigest()
     workflow_pages[:] = [
-        {"workflow_runs": workflow_runs * 20},
-        {"workflow_runs": workflow_runs},
+        {"total_count": 21, "workflow_runs": workflow_runs * 20},
+        {"total_count": 21, "workflow_runs": workflow_runs},
     ]
     with pytest.raises(evidence.AgyCanaryEvidenceError, match="publish workflow"):
         evidence._reconcile_release_lineage(
             repo=repo, handoff_commit=handoff_commit,
             fetch_json=lambda _url: {"urls": rows}, download=lambda url: blobs[url],
         )
-    workflow_pages[:] = [{"workflow_runs": workflow_runs}]
+    workflow_pages[:] = [{"total_count": 2, "workflow_runs": workflow_runs}]
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="publish workflow"):
+        evidence._reconcile_release_lineage(
+            repo=repo, handoff_commit=handoff_commit,
+            fetch_json=lambda _url: {"urls": rows}, download=lambda url: blobs[url],
+        )
+    workflow_definition["state"] = "disabled_manually"
+    workflow_pages[:] = [{"total_count": 1, "workflow_runs": workflow_runs}]
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="workflow definition"):
+        evidence._reconcile_release_lineage(
+            repo=repo, handoff_commit=handoff_commit,
+            fetch_json=lambda _url: {"urls": rows}, download=lambda url: blobs[url],
+        )
+    workflow_definition["state"] = "active"
+    for field, value in (
+        ("workflow_id", workflow_id + 1),
+        ("status", "in_progress"),
+        ("head_branch", "main"),
+    ):
+        invalid = dict(workflow_runs[0])
+        invalid[field] = value
+        workflow_pages[:] = [{"total_count": 1, "workflow_runs": [invalid]}]
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="publish workflow"):
+            evidence._reconcile_release_lineage(
+                repo=repo, handoff_commit=handoff_commit,
+                fetch_json=lambda _url: {"urls": rows}, download=lambda url: blobs[url],
+            )
+    workflow_pages[:] = [{"total_count": 1, "workflow_runs": workflow_runs}]
     with pytest.raises(evidence.AgyCanaryEvidenceError, match="downloaded release artifact digest mismatch"):
         evidence._reconcile_release_lineage(
             repo=repo, handoff_commit=handoff_commit,
@@ -2859,6 +2896,10 @@ def test_installed_wheel_binding_rejects_drift_and_tampering(tmp_path, mutation)
     lambda record: record | {"extra": True},
     lambda record: {key: value for key, value in record.items() if key != "workflow_url"},
     lambda record: record | {"artifacts": record["artifacts"] * 2},
+    lambda record: record | {"artifacts": record["artifacts"] + [{
+        "filename": "unexpected.zip", "packagetype": "bdist_wheel",
+        "url": "https://example.invalid/unexpected", "sha256": "d" * 64,
+    }]},
 ])
 def test_release_handoff_parser_rejects_noncanonical_schema_and_duplicate_artifacts(mutate):
     record = {
@@ -2866,8 +2907,30 @@ def test_release_handoff_parser_rejects_noncanonical_schema_and_duplicate_artifa
         "tag_object": "b" * 40, "tag_peel": "a" * 40,
         "release_url": "https://example.invalid/release", "workflow_url": "https://example.invalid/workflow",
         "pypi_metadata_url": "https://pypi.org/pypi/phase-loop-runtime/0.7.14/json",
-        "artifacts": [{"filename": "x.whl", "packagetype": "bdist_wheel", "url": "https://example.invalid/x", "sha256": "c" * 64}],
+        "artifacts": [
+            {
+                "filename": "phase_loop_runtime-0.7.14-py3-none-any.whl",
+                "packagetype": "bdist_wheel", "url": "https://example.invalid/wheel",
+                "sha256": "c" * 64,
+            },
+            {
+                "filename": "phase_loop_runtime-0.7.14.tar.gz",
+                "packagetype": "sdist", "url": "https://example.invalid/sdist",
+                "sha256": "d" * 64,
+            },
+        ],
     }
     bad = mutate(record)
     with pytest.raises(evidence.AgyCanaryEvidenceError):
         evidence._release_handoff_record(b"<!-- release_evidence.v1:start -->" + evidence._canonical_json(bad) + b"<!-- release_evidence.v1:end -->")
+
+
+def test_release_identity_rejects_any_extra_artifact():
+    release = _release_identity()
+    release["artifacts"].append({
+        "filename": "unexpected.zip", "packagetype": "bdist_wheel",
+        "sha256": "1" * 64, "url_sha256": "2" * 64,
+    })
+    release["artifacts"].sort(key=lambda row: (row["filename"], row["packagetype"]))
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="artifacts"):
+        evidence._validate_release_identity(release)

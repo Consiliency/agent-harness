@@ -3676,7 +3676,7 @@ def _validate_release_identity(release: Any) -> dict[str, Any]:
                 character not in "0123456789abcdef" for character in value.lower()):
             raise AgyCanaryEvidenceError("release identity is malformed")
     artifacts = release.get("artifacts")
-    if not isinstance(artifacts, list) or not artifacts:
+    if not isinstance(artifacts, list) or len(artifacts) != 2:
         raise AgyCanaryEvidenceError("release artifacts are malformed")
     if artifacts != sorted(artifacts, key=lambda row: (row.get("filename", ""), row.get("packagetype", "")) if isinstance(row, dict) else ("", "")):
         raise AgyCanaryEvidenceError("release artifacts are not canonical")
@@ -3701,7 +3701,12 @@ def _validate_release_identity(release: Any) -> dict[str, Any]:
             if artifact["packagetype"] != "sdist":
                 raise AgyCanaryEvidenceError("release sdist artifact type is malformed")
             sdist_count += 1
-    if len(wheel_rows) != 1 or sdist_count != 1:
+    expected_artifacts = {
+        (f"phase_loop_runtime-{release['version']}-py3-none-any.whl", "bdist_wheel"),
+        (f"phase_loop_runtime-{release['version']}.tar.gz", "sdist"),
+    }
+    if (len(wheel_rows) != 1 or sdist_count != 1 or
+            identities != expected_artifacts):
         raise AgyCanaryEvidenceError("release requires one wheel and one sdist")
     binding = _validate_wheel_binding(release.get("wheel_binding"), version=release["version"])
     wheel = wheel_rows[0]
@@ -3932,7 +3937,7 @@ def _release_handoff_record(text: bytes) -> dict[str, Any]:
         if parsed is None or parsed.scheme != "https" or not parsed.netloc:
             raise AgyCanaryEvidenceError("merged handoff URL is malformed")
     artifacts = value["artifacts"]
-    if not isinstance(artifacts, list) or not artifacts:
+    if not isinstance(artifacts, list) or len(artifacts) != 2:
         raise AgyCanaryEvidenceError("merged handoff artifacts are malformed")
     identities: set[tuple[str, str, str]] = set()
     for artifact in artifacts:
@@ -3947,6 +3952,12 @@ def _release_handoff_record(text: bytes) -> dict[str, Any]:
         if identity in identities:
             raise AgyCanaryEvidenceError("merged handoff artifact rows are duplicated")
         identities.add(identity)
+    expected_pairs = {
+        (f"phase_loop_runtime-{value['version']}-py3-none-any.whl", "bdist_wheel"),
+        (f"phase_loop_runtime-{value['version']}.tar.gz", "sdist"),
+    }
+    if {(name, kind) for name, kind, _url in identities} != expected_pairs:
+        raise AgyCanaryEvidenceError("merged handoff artifacts are not the canonical pair")
     return value
 
 
@@ -4005,18 +4016,47 @@ def _reconcile_release_lineage(
         raise AgyCanaryEvidenceError("GitHub Release lookup failed") from exc
     if release.returncode != 0 or not isinstance(release_value, dict) or release_value.get("tagName") != tag or release_value.get("url") != handoff.get("release_url"):
         raise AgyCanaryEvidenceError("GitHub Release does not match merged handoff")
+    workflow_definition = subprocess.run(
+        ["gh", "api", "-H", "Accept: application/vnd.github+json",
+         "repos/Consiliency/agent-harness/actions/workflows/publish-pypi.yml"],
+        capture_output=True, text=True, check=False,
+    )
+    try:
+        workflow_value = json.loads(workflow_definition.stdout)
+    except json.JSONDecodeError as exc:
+        raise AgyCanaryEvidenceError("publish workflow definition lookup failed") from exc
+    if (workflow_definition.returncode != 0 or not isinstance(workflow_value, dict) or
+            not _is_plain_int(workflow_value.get("id")) or workflow_value["id"] <= 0 or
+            workflow_value.get("path") != ".github/workflows/publish-pypi.yml" or
+            workflow_value.get("state") != "active"):
+        raise AgyCanaryEvidenceError("publish workflow definition is not active and canonical")
+    workflow_id = workflow_value["id"]
     workflow = subprocess.run(
         ["gh", "api", "--paginate", "-H", "Accept: application/vnd.github+json",
-         f"repos/Consiliency/agent-harness/actions/workflows/publish-pypi.yml/runs?event=push&head_sha={release_commit}&per_page=100"],
+         f"repos/Consiliency/agent-harness/actions/workflows/{workflow_id}/runs?event=push&head_sha={release_commit}&per_page=100"],
         capture_output=True, text=True, check=False,
     )
     try:
         pages = [json.loads(line) for line in workflow.stdout.splitlines() if line]
     except json.JSONDecodeError as exc:
         raise AgyCanaryEvidenceError("publish workflow lookup failed") from exc
-    runs = [row for page in pages if isinstance(page, dict) for row in page.get("workflow_runs", []) if isinstance(row, dict)]
-    matching = [row for row in runs if row.get("head_sha") == release_commit and row.get("conclusion") == "success" and row.get("event") == "push"]
-    if workflow.returncode != 0 or len(matching) != 1 or matching[0].get("html_url") != handoff.get("workflow_url"):
+    if (workflow.returncode != 0 or not pages or
+            any(not isinstance(page, dict) or set(page) != {
+                "total_count", "workflow_runs"
+            } or not _is_plain_int(page.get("total_count")) or
+                page["total_count"] < 0 or not isinstance(page.get("workflow_runs"), list)
+                for page in pages)):
+        raise AgyCanaryEvidenceError("publish workflow pagination is malformed")
+    totals = {page["total_count"] for page in pages}
+    runs = [row for page in pages for row in page["workflow_runs"]]
+    if (len(pages) != 1 or totals != {len(runs)} or len(runs) != 1 or not all(
+            isinstance(row, dict) and row.get("workflow_id") == workflow_id and
+            row.get("event") == "push" and row.get("head_sha") == release_commit and
+            row.get("head_branch") == tag and row.get("status") == "completed" and
+            row.get("conclusion") == "success" and
+            row.get("html_url") == handoff.get("workflow_url")
+            for row in runs
+    )):
         raise AgyCanaryEvidenceError("publish workflow does not match merged handoff")
     metadata_url = f"https://pypi.org/pypi/phase-loop-runtime/{version}/json"
     if handoff.get("pypi_metadata_url") != metadata_url:
