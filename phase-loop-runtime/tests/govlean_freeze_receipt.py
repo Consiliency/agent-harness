@@ -9,7 +9,9 @@ from __future__ import annotations
 import argparse
 import glob
 import hashlib
+import importlib
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -18,6 +20,22 @@ from typing import Any, Sequence
 
 
 SCHEMA = "content_tdd_receipt.v1"
+ACTIVATION_ENV = "PHASE_LOOP_TDD_EXPECT_GOVLEAN"
+
+
+def govlean_forced() -> bool:
+    return os.environ.get(ACTIVATION_ENV) == "1"
+
+
+def govlean_api_available(module_name: str, *attributes: str) -> bool:
+    """Activate frozen tests after their API exists, or during forced RED."""
+    if govlean_forced():
+        return True
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError:
+        return False
+    return all(hasattr(module, attribute) for attribute in attributes)
 
 
 class FreezeReceiptError(RuntimeError):

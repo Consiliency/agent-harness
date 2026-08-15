@@ -3,6 +3,16 @@ from __future__ import annotations
 
 import importlib
 
+import pytest
+
+from .govlean_freeze_receipt import govlean_api_available
+
+
+pytestmark = pytest.mark.skipif(
+    not govlean_api_available("phase_loop_runtime.proof_stages", "LocalStageCache"),
+    reason="GOVLEAN proof-stage capability absent",
+)
+
 
 def _entries(*, setuptools: str = "79.0.1") -> dict[str, dict[str, str]]:
     return {

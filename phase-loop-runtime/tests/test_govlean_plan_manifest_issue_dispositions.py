@@ -16,6 +16,7 @@ from typing import Any
 
 import pytest
 
+from .govlean_freeze_receipt import govlean_api_available
 from phase_loop_runtime import plan_manifest
 from phase_loop_runtime.plan_manifest import (
     DotfilesPlanEntry,
@@ -25,6 +26,12 @@ from phase_loop_runtime.plan_manifest import (
     read_manifest,
     update_lifecycle,
     validate_manifest,
+)
+
+
+pytestmark = pytest.mark.skipif(
+    not govlean_api_available("phase_loop_runtime.plan_manifest", "IssueDisposition"),
+    reason="GOVLEAN issue-disposition capability absent",
 )
 
 

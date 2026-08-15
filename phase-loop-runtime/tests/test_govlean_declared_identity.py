@@ -7,7 +7,14 @@ from pathlib import Path
 
 import pytest
 
+from .govlean_freeze_receipt import govlean_api_available
 from .phase_loop_test_utils import make_repo
+
+
+pytestmark = pytest.mark.skipif(
+    not govlean_api_available("phase_loop_runtime.declared_identity", "DeclaredCommitIdentity"),
+    reason="GOVLEAN declared-identity capability absent",
+)
 
 
 def _git(repo: Path, *args: str) -> str:

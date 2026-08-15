@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from . import govlean_freeze_receipt as freeze
+from .govlean_freeze_receipt import govlean_api_available
 from .phase_loop_test_utils import make_repo
 
 
@@ -101,6 +102,10 @@ def test_bootstrap_writer_refuses_to_freeze_a_green_command(tmp_path):
     assert excinfo.value.code == "red_command_succeeded"
 
 
+@pytest.mark.skipif(
+    not govlean_api_available("phase_loop_runtime.tdd_receipts", "ContentTddReceipt"),
+    reason="GOVLEAN runtime TDD-receipt capability absent",
+)
 def test_runtime_verifier_accepts_untouched_frozen_tests_after_an_unrelated_commit_then_rejects_mutation(tmp_path):
     receipts = importlib.import_module("phase_loop_runtime.tdd_receipts")
     repo = make_repo(tmp_path)
@@ -121,6 +126,10 @@ def test_runtime_verifier_accepts_untouched_frozen_tests_after_an_unrelated_comm
     assert excinfo.value.code == "frozen_test_drift"
 
 
+@pytest.mark.skipif(
+    not govlean_api_available("phase_loop_runtime.tdd_receipts", "ContentTddReceipt"),
+    reason="GOVLEAN runtime TDD-receipt capability absent",
+)
 def test_runtime_verifier_rejects_a_base_tree_not_contained_in_the_declared_landing(tmp_path):
     receipts = importlib.import_module("phase_loop_runtime.tdd_receipts")
     repo = make_repo(tmp_path)

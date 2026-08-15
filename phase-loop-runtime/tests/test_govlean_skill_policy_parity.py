@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+from .govlean_freeze_receipt import govlean_forced
+
 REPO = Path(__file__).resolve().parents[2]
 SKILLS_SRC = REPO / "skills-src"
 GENERATED_BUNDLE = REPO / "phase-loop-skills"
@@ -45,6 +47,20 @@ POLICY_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
         "proof-cost-findings",
         ("five minutes", "multiple failures"),
     ),
+)
+
+
+def _source_policy_present() -> bool:
+    canonical = SKILLS_SRC / "claude" / "claude-plan-phase" / "SKILL.md"
+    if not canonical.is_file():
+        return False
+    text = canonical.read_text(encoding="utf-8").lower()
+    return "content and behavior" in text and "never commit topology" in text
+
+
+pytestmark = pytest.mark.skipif(
+    not govlean_forced() and not _source_policy_present(),
+    reason="GOVLEAN fleet prose policy absent",
 )
 
 
