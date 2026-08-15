@@ -263,12 +263,20 @@ def _read_regular_path(path: Path) -> tuple[bytes, os.stat_result]:
         os.close(parent_fd)
 
 
+def _stable_file_identity(info: os.stat_result) -> tuple[int, ...]:
+    return (
+        info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
+        info.st_uid, info.st_gid, info.st_size, info.st_mtime_ns, info.st_ctime_ns,
+    )
+
+
 def _read_bounded_regular_path(
     path: Path, *, limit: int,
 ) -> tuple[bytes, os.stat_result]:
     """Descriptor-read at most limit + 1 bytes after a pre-read size gate."""
     if not path.is_absolute() or path.is_symlink():
         raise AgyCanaryEvidenceError("trusted runtime path is not a direct regular file")
+    path_before = path.lstat()
     parent_fd = os.open(
         path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
     )
@@ -290,16 +298,23 @@ def _read_bounded_regular_path(
             if (
                 total > limit
                 or after.st_size > limit
-                or after.st_dev != before.st_dev
-                or after.st_ino != before.st_ino
-                or after.st_mode != before.st_mode
+                or total != before.st_size
+                or _stable_file_identity(path_before) != _stable_file_identity(before)
+                or _stable_file_identity(after) != _stable_file_identity(before)
             ):
                 raise AgyCanaryEvidenceError("trusted regular file exceeds read limit")
-            return b"".join(chunks), after
+            data = b"".join(chunks)
         finally:
             os.close(fd)
     finally:
         os.close(parent_fd)
+    try:
+        path_after = path.lstat()
+    except OSError as exc:
+        raise AgyCanaryEvidenceError("trusted regular file identity drifted") from exc
+    if _stable_file_identity(path_after) != _stable_file_identity(after):
+        raise AgyCanaryEvidenceError("trusted regular file identity drifted")
+    return data, after
 
 
 def _stat_regular_path(path: Path) -> os.stat_result:
@@ -4267,13 +4282,15 @@ def _git_environment() -> dict[str, str]:
     return environment
 
 
-def _git_run(repo: Path, *args: str, text: bool = False) -> subprocess.CompletedProcess[Any]:
+def _git_run(
+    repo: Path, *args: str, text: bool = False, input: bytes | str | None = None,
+) -> subprocess.CompletedProcess[Any]:
     return subprocess.run(
         [
             "git", "--no-replace-objects", "-c", "core.hooksPath=/dev/null",
             "-C", str(repo), *args,
         ],
-        capture_output=True, text=text, check=False, env=_git_environment(),
+        capture_output=True, text=text, check=False, env=_git_environment(), input=input,
     )
 
 
@@ -4352,9 +4369,8 @@ def _validate_git_repository_authority(
                 exclude, limit=_MAX_FULL_STAGED_READ_BYTES,
             )
             if (
-                exclude_reopened.st_dev != exclude_stat.st_dev
-                or exclude_reopened.st_ino != exclude_stat.st_ino
-                or exclude_reopened.st_mode != exclude_stat.st_mode
+                _stable_file_identity(exclude_reopened)
+                != _stable_file_identity(exclude_stat)
                 or len(exclude_bytes) > _MAX_FULL_STAGED_READ_BYTES
             ):
                 raise AgyCanaryEvidenceError("Git repository info/exclude authority is unsafe")
@@ -4367,8 +4383,16 @@ def _validate_git_repository_authority(
             raise AgyCanaryEvidenceError(
                 "Git repository info/exclude authority is unsafe"
             ) from exc
+        try:
+            exclude_after = exclude.lstat()
+        except OSError as exc:
+            raise AgyCanaryEvidenceError(
+                "Git repository info/exclude authority is unreadable"
+            ) from exc
+        if _stable_file_identity(exclude_after) != _stable_file_identity(exclude_reopened):
+            raise AgyCanaryEvidenceError("Git repository info/exclude authority is unsafe")
         if require_inert_exclude and any(
-            line.strip() and not line.lstrip().startswith(b"#")
+            line.strip() and not line.startswith(b"#")
             for line in exclude_bytes.splitlines()
         ):
             raise AgyCanaryEvidenceError("Git repository info/exclude authority is unsafe")
@@ -4455,13 +4479,55 @@ def _git_tracked_gitignores_are_exact(repo: Path) -> bool:
     return True
 
 
+def _git_filter_with_committed_gitignores(repo: Path, raw: list[str]) -> list[str]:
+    if not raw:
+        return []
+    head = _git_text(repo, "rev-parse", "HEAD")
+    with tempfile.TemporaryDirectory(prefix="phase-loop-gitignore-", dir="/tmp") as value:
+        snapshot = Path(value).resolve(strict=True)
+        snapshot.chmod(0o700)
+        initialized = _git_run(snapshot, "init", "--quiet", "--template=")
+        if initialized.returncode != 0:
+            raise AgyCanaryEvidenceError("committed gitignore sandbox is unavailable")
+        for mode, object_type, oid, relative in _git_tree_rows(repo, head):
+            path = _snapshot_relative_path(relative)
+            if path.name != ".gitignore":
+                continue
+            if object_type != "blob" or mode not in {"100644", "100755"}:
+                raise AgyCanaryEvidenceError("committed gitignore is not a regular blob")
+            target = snapshot.joinpath(*path.parts)
+            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            target.write_bytes(_git_object_bytes(repo, oid))
+            target.chmod(0o600)
+        payload = b"\0".join(path.encode("utf-8") for path in raw) + b"\0"
+        checked = _git_run(
+            snapshot, "check-ignore", "-z", "--stdin", "--no-index", input=payload,
+        )
+        if checked.returncode not in {0, 1}:
+            raise AgyCanaryEvidenceError("committed gitignore evaluation failed")
+        try:
+            ignored = [
+                value.decode("utf-8", errors="strict")
+                for value in checked.stdout.split(b"\0") if value
+            ]
+        except UnicodeDecodeError as exc:
+            raise AgyCanaryEvidenceError("committed gitignore result is malformed") from exc
+        ignored_set = set(ignored)
+        if len(ignored_set) != len(ignored) or not ignored_set.issubset(raw):
+            raise AgyCanaryEvidenceError("committed gitignore result is malformed")
+        return [path for path in raw if path not in ignored_set]
+
+
 def _git_nonignored_untracked(repo: Path) -> list[str]:
     raw = _git_untracked(repo)
     if any(path == ".gitignore" or path.endswith("/.gitignore") for path in raw):
         return raw
     if not _git_tracked_gitignores_are_exact(repo):
         return [".gitignore authority drift"]
-    return _git_untracked(repo, "--exclude-per-directory=.gitignore")
+    nonignored = _git_filter_with_committed_gitignores(repo, raw)
+    if not _git_tracked_gitignores_are_exact(repo):
+        return [".gitignore authority drift"]
+    return nonignored
 
 
 def _git_worktree_is_dirty(repo: Path) -> bool:

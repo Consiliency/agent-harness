@@ -354,14 +354,18 @@ def test_git_repository_authority_rejects_unapproved_worktree_config(tmp_path):
         evidence._validate_git_repository_authority(repo.resolve())
 
 
-def test_clean_repo_rejects_active_info_exclude_pattern(tmp_path):
+@pytest.mark.parametrize(
+    ("pattern", "filename"),
+    (("unexpected.txt\n", "unexpected.txt"), (" #secret\n", " #secret")),
+)
+def test_clean_repo_rejects_active_info_exclude_pattern(tmp_path, pattern, filename):
     repo = tmp_path / "dotfiles"
     repo.mkdir()
     (repo / "bootstrap.sh").write_text("#!/bin/sh\n")
     _git_repo(repo)
-    (repo / "unexpected.txt").write_text("unexpected\n")
+    (repo / filename).write_text("unexpected\n")
     exclude = repo / ".git" / "info" / "exclude"
-    exclude.write_text("# comments remain inert\nunexpected.txt\n")
+    exclude.write_text("# comments remain inert\n" + pattern)
     assert subprocess.check_output(
         ["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=all"],
         text=True,
@@ -466,6 +470,35 @@ def test_bounded_regular_read_rejects_oversize_before_read_and_growth(
         evidence._read_bounded_regular_path(path, limit=limit)
 
 
+@pytest.mark.parametrize("mutation", ("grow", "truncate", "replace"))
+def test_bounded_regular_read_rejects_within_cap_identity_drift(
+    monkeypatch, tmp_path, mutation,
+):
+    path = (tmp_path / "exclude").resolve()
+    initial = b"# comment\n" if mutation == "truncate" else b"#\n"
+    path.write_bytes(initial)
+    real_read = os.read
+    mutated = False
+
+    def mutate_before_read(fd, count):
+        nonlocal mutated
+        if not mutated:
+            mutated = True
+            if mutation == "grow":
+                path.write_bytes(b"# longer inert comment\n")
+            elif mutation == "truncate":
+                path.write_bytes(b"#\n")
+            else:
+                replacement = path.with_name("replacement")
+                replacement.write_bytes(initial)
+                os.replace(replacement, path)
+        return real_read(fd, count)
+
+    monkeypatch.setattr(evidence.os, "read", mutate_before_read)
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="read limit|identity drifted"):
+        evidence._read_bounded_regular_path(path, limit=64)
+
+
 def test_git_info_exclude_lstat_cap_rejects_before_descriptor_read(
     monkeypatch, tmp_path,
 ):
@@ -482,6 +515,43 @@ def test_git_info_exclude_lstat_cap_rejects_before_descriptor_read(
     )
     with pytest.raises(evidence.AgyCanaryEvidenceError, match="info/exclude authority is unsafe"):
         evidence._clean_dotfiles_repo(repo.resolve())
+
+
+def test_committed_gitignore_snapshot_ignores_transient_worktree_swap(
+    monkeypatch, tmp_path,
+):
+    repo = tmp_path / "dotfiles"
+    repo.mkdir()
+    (repo / "bootstrap.sh").write_text("#!/bin/sh\n")
+    ignore = repo / ".gitignore"
+    ignore.write_text("cache/\n")
+    _git_repo(repo)
+    (repo / "unexpected.txt").write_text("unexpected\n")
+    real_run = evidence._git_run
+    real_text = evidence._git_text
+    mutated = False
+
+    def mutate_at_filter(repo_arg, *args, **kwargs):
+        nonlocal mutated
+        if "check-ignore" in args:
+            mutated = True
+            ignore.write_text("*\n")
+            try:
+                return real_run(repo_arg, *args, **kwargs)
+            finally:
+                ignore.write_text("cache/\n")
+        return real_run(repo_arg, *args, **kwargs)
+
+    monkeypatch.setattr(evidence, "_git_run", mutate_at_filter)
+    monkeypatch.setattr(
+        evidence, "_git_text",
+        lambda repo_arg, *args: ""
+        if args[:2] == ("status", "--porcelain")
+        else real_text(repo_arg, *args),
+    )
+    assert evidence._git_worktree_is_dirty(repo.resolve())
+    assert mutated
+    assert ignore.read_text() == "cache/\n"
 
 
 def test_git_run_neutralizes_reference_transaction_hook_during_fetch(tmp_path):
