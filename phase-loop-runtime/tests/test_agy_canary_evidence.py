@@ -21,6 +21,7 @@ from phase_loop_runtime import cli
 from phase_loop_runtime.cli import main
 
 
+_REAL_ASSERT_QUIESCENT = evidence._assert_quiescent
 _requires_memfd = pytest.mark.skipif(
     not hasattr(os, "memfd_create") or evidence.fcntl is None or
     not getattr(os, "MFD_ALLOW_SEALING", 0),
@@ -59,6 +60,20 @@ def _settings(tmp_path: Path, allow: list[str]) -> Path:
     )
     path.chmod(0o600)
     return path
+
+
+def _use_empty_process_inventory(monkeypatch, tmp_path: Path) -> None:
+    proc_root = tmp_path / "empty-proc"
+    proc_root.mkdir(exist_ok=True)
+
+    def inspect_empty_proc(settings, settings_parent, *, block_all_agy_processes):
+        return _REAL_ASSERT_QUIESCENT(
+            settings, settings_parent,
+            block_all_agy_processes=block_all_agy_processes,
+            proc_root=proc_root,
+        )
+
+    monkeypatch.setattr(evidence, "_assert_quiescent", inspect_empty_proc)
 
 
 def _source_inventory(tmp_path: Path) -> dict[str, object]:
@@ -375,9 +390,12 @@ def test_uv_registry_receipt_binds_normal_tool_install_requirement(tmp_path):
         evidence._uv_registry_provenance(tool_dir=tool_dir, version="0.7.14")
 
 
-def test_clean_settings_cli_removes_exact_rule_and_preserves_structure(tmp_path, capsys):
+def test_clean_settings_cli_removes_exact_rule_and_preserves_structure(
+    tmp_path, capsys, monkeypatch,
+):
     root = _private_root(tmp_path)
     try:
+        _use_empty_process_inventory(monkeypatch, tmp_path)
         settings = _settings(tmp_path, ["command(pwd)"])
         before = json.loads(settings.read_text())
         rc = main(
@@ -418,9 +436,10 @@ def test_clean_settings_cli_removes_exact_rule_and_preserves_structure(tmp_path,
         root.rmdir()
 
 
-def test_clean_settings_cli_records_already_absent(tmp_path, capsys):
+def test_clean_settings_cli_records_already_absent(tmp_path, capsys, monkeypatch):
     root = _private_root(tmp_path)
     try:
+        _use_empty_process_inventory(monkeypatch, tmp_path)
         settings = _settings(tmp_path, [])
         original = settings.read_bytes()
         rc = main(
@@ -497,6 +516,7 @@ def test_clean_settings_rejects_symlinked_evidence_root(tmp_path):
 def test_clean_settings_rolls_back_after_exchange_failure(tmp_path, monkeypatch):
     root = _private_root(tmp_path)
     try:
+        _use_empty_process_inventory(monkeypatch, tmp_path)
         settings = _settings(tmp_path, ["command(pwd)"])
         original = settings.read_bytes()
         real_reopen = evidence._reopen_at
@@ -543,6 +563,107 @@ def test_clean_settings_blocks_when_agy_process_is_active(tmp_path, monkeypatch)
             )
         assert json.loads(settings.read_text())["permissions"]["allow"] == ["command(pwd)"]
         assert not (root / "agy-settings.pre.json").exists()
+    finally:
+        for child in root.iterdir():
+            child.unlink()
+        root.rmdir()
+
+
+@pytest.mark.parametrize(
+    ("surface", "message"),
+    [
+        ("cmdline", "surface=cmdline"),
+        ("fd-directory", "surface=fd-directory"),
+        ("fd-entry", "surface=fd-entry"),
+        ("fd-target", "surface=fd-target"),
+        ("fdinfo", "surface=fdinfo"),
+    ],
+)
+def test_clean_settings_rejects_unreadable_process_inventory_before_mutation(
+    tmp_path, monkeypatch, surface, message,
+):
+    root = _private_root(tmp_path)
+    settings = _settings(tmp_path, ["command(pwd)"])
+    original = settings.read_bytes()
+    proc_root = tmp_path / "proc"
+    pid_dir = proc_root / "424242"
+    fd_dir = pid_dir / "fd"
+    fdinfo_dir = pid_dir / "fdinfo"
+    fd_dir.mkdir(parents=True)
+    fdinfo_dir.mkdir()
+    (pid_dir / "cmdline").write_bytes(b"/usr/bin/other\0")
+    open_target = tmp_path / "open-target"
+    open_target.write_text("open\n")
+    fd_entry = fd_dir / "7"
+    fd_entry.symlink_to(open_target)
+    fdinfo = fdinfo_dir / "7"
+    fdinfo.write_text("flags:\t0100002\n")
+
+    if surface == "cmdline":
+        real_read_bytes = Path.read_bytes
+
+        def deny_read_bytes(path):
+            if path == pid_dir / "cmdline":
+                raise PermissionError("denied cmdline")
+            return real_read_bytes(path)
+
+        monkeypatch.setattr(Path, "read_bytes", deny_read_bytes)
+    elif surface == "fd-directory":
+        real_iterdir = Path.iterdir
+
+        def deny_iterdir(path):
+            if path == fd_dir:
+                raise PermissionError("denied fd directory")
+            return real_iterdir(path)
+
+        monkeypatch.setattr(Path, "iterdir", deny_iterdir)
+    elif surface == "fd-entry":
+        real_stat = Path.stat
+
+        def deny_stat(path, *args, **kwargs):
+            if path == fd_entry:
+                raise PermissionError("denied fd entry")
+            return real_stat(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "stat", deny_stat)
+    elif surface == "fd-target":
+        real_readlink = os.readlink
+
+        def deny_readlink(path, *args, **kwargs):
+            if Path(path) == fd_entry:
+                raise PermissionError("denied fd target")
+            return real_readlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(evidence.os, "readlink", deny_readlink)
+    else:
+        real_read_text = Path.read_text
+
+        def deny_read_text(path, *args, **kwargs):
+            if path == fdinfo:
+                raise PermissionError("denied fdinfo")
+            return real_read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", deny_read_text)
+
+    real_assert_quiescent = evidence._assert_quiescent
+
+    def inspect_fake_proc(settings_value, settings_parent, *, block_all_agy_processes):
+        return real_assert_quiescent(
+            settings_value, settings_parent,
+            block_all_agy_processes=block_all_agy_processes,
+            proc_root=proc_root,
+        )
+
+    monkeypatch.setattr(evidence, "_assert_quiescent", inspect_fake_proc)
+    try:
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match=message):
+            evidence.clean_settings(
+                evidence_root=root, settings_path=settings,
+                maintenance_lock=tmp_path / "maintenance.lock",
+            )
+        assert settings.read_bytes() == original
+        assert not (root / "agy-settings.pre.json").exists()
+        assert not (root / "cleanup-state.json").exists()
     finally:
         for child in root.iterdir():
             child.unlink()
@@ -694,6 +815,7 @@ def _prepare_production_capture(
     auth_paths: tuple[Path, ...] = (), plan_bytes: bytes = b"review this\n",
     agy_runtime: dict[str, object] | None = None, before_prepare=None,
 ) -> evidence.AgyCanaryCapture:
+    _use_empty_process_inventory(monkeypatch, tmp_path)
     evidence.clean_settings(
         evidence_root=root, settings_path=settings,
         maintenance_lock=tmp_path / "prepare-maintenance.lock",
@@ -1435,6 +1557,7 @@ def test_probe_rejects_each_missing_aliased_unpaired_or_wrong_capability_class(m
 def test_prepare_requires_bootstrap_and_binds_selected_mode(tmp_path, monkeypatch):
     root = _private_root(tmp_path)
     try:
+        _use_empty_process_inventory(monkeypatch, tmp_path)
         settings = _settings(tmp_path, [])
         evidence.clean_settings(
             evidence_root=root,

@@ -1358,8 +1358,13 @@ def _derive_replacement(before: dict[str, Any]) -> tuple[dict[str, Any], str]:
 def _fd_is_writable(pid_dir: Path, fd_name: str) -> bool:
     try:
         text = (pid_dir / "fdinfo" / fd_name).read_text()
-    except (FileNotFoundError, PermissionError, ProcessLookupError):
+    except (FileNotFoundError, ProcessLookupError):
         return False
+    except (OSError, UnicodeError) as exc:
+        raise AgyCanaryEvidenceError(
+            "settings process inventory is unreadable: "
+            f"pid={pid_dir.name},fd={fd_name},surface=fdinfo"
+        ) from exc
     for line in text.splitlines():
         if line.startswith("flags:"):
             try:
@@ -1375,18 +1380,29 @@ def _assert_quiescent(
     settings_parent: Path,
     *,
     block_all_agy_processes: bool,
+    proc_root: Path = Path("/proc"),
 ) -> None:
     blockers: list[str] = []
     own_pid = os.getpid()
-    for pid_dir in Path("/proc").iterdir():
+    try:
+        pid_dirs = list(proc_root.iterdir())
+    except OSError as exc:
+        raise AgyCanaryEvidenceError(
+            "settings process inventory is unreadable: surface=proc-root"
+        ) from exc
+    for pid_dir in pid_dirs:
         if not pid_dir.name.isdigit() or int(pid_dir.name) == own_pid:
             continue
         try:
             argv = (pid_dir / "cmdline").read_bytes().split(b"\0")
             executable_name = Path(os.fsdecode(argv[0])).name.lower() if argv and argv[0] else ""
-        except (FileNotFoundError, PermissionError, ProcessLookupError):
-            argv = []
-            executable_name = ""
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        except OSError as exc:
+            raise AgyCanaryEvidenceError(
+                "settings process inventory is unreadable: "
+                f"pid={pid_dir.name},surface=cmdline"
+            ) from exc
         if block_all_agy_processes and (
             executable_name == "agy" or "antigravity" in executable_name
         ):
@@ -1394,14 +1410,32 @@ def _assert_quiescent(
         fd_dir = pid_dir / "fd"
         try:
             entries = list(fd_dir.iterdir())
-        except (FileNotFoundError, PermissionError, ProcessLookupError):
+        except (FileNotFoundError, ProcessLookupError):
             continue
+        except OSError as exc:
+            raise AgyCanaryEvidenceError(
+                "settings process inventory is unreadable: "
+                f"pid={pid_dir.name},surface=fd-directory"
+            ) from exc
         for entry in entries:
             try:
                 info = entry.stat()
-                target = os.readlink(entry)
-            except (FileNotFoundError, PermissionError, ProcessLookupError, OSError):
+            except (FileNotFoundError, ProcessLookupError):
                 continue
+            except OSError as exc:
+                raise AgyCanaryEvidenceError(
+                    "settings process inventory is unreadable: "
+                    f"pid={pid_dir.name},fd={entry.name},surface=fd-entry"
+                ) from exc
+            try:
+                target = os.readlink(entry)
+            except (FileNotFoundError, ProcessLookupError):
+                continue
+            except OSError as exc:
+                raise AgyCanaryEvidenceError(
+                    "settings process inventory is unreadable: "
+                    f"pid={pid_dir.name},fd={entry.name},surface=fd-target"
+                ) from exc
             same_inode = (info.st_dev, info.st_ino) == (settings.device, settings.inode)
             beneath = target == str(settings_parent) or target.startswith(f"{settings_parent}/")
             if same_inode or (beneath and _fd_is_writable(pid_dir, entry.name)):
