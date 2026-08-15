@@ -25,9 +25,13 @@ from phase_loop_runtime.cli import main
 
 
 _REAL_ASSERT_QUIESCENT = evidence._assert_quiescent
+_REAL_ACQUIRE_WRITE_LEASE = evidence._acquire_write_lease
+_REAL_REACQUIRE_WRITE_LEASE = evidence._reacquire_write_lease
+_REAL_RELEASE_WRITE_LEASE = evidence._release_write_lease
 _REAL_BUILD_MINIMAL_HOME = evidence.build_minimal_home
 _REAL_CANONICAL_BWRAP = evidence._canonical_bwrap
-_REAL_EFFECTIVE_UID = os.geteuid()
+_REAL_OS_GETEUID = os.geteuid
+_REAL_EFFECTIVE_UID = _REAL_OS_GETEUID()
 _TEST_SETTINGS_OWNER_UID = 65534 if _REAL_EFFECTIVE_UID == 0 else os.getuid()
 _TEST_SETTINGS_OWNER_GID = 65534 if _REAL_EFFECTIVE_UID == 0 else os.getgid()
 try:
@@ -65,6 +69,39 @@ def _build_synthetic_minimal_home(**kwargs):
     return home, binds
 
 
+def _acquire_synthetic_owner_write_lease(fd: int, *, label: str) -> None:
+    assert _REAL_EFFECTIVE_UID == 0
+    assert _REAL_OS_GETEUID() == 0
+    os.seteuid(_TEST_SETTINGS_OWNER_UID)
+    try:
+        _REAL_ACQUIRE_WRITE_LEASE(fd, label=label)
+    finally:
+        os.seteuid(0)
+    assert _REAL_OS_GETEUID() == 0
+
+
+def _release_synthetic_owner_write_lease(fd: int) -> None:
+    assert _REAL_EFFECTIVE_UID == 0
+    assert _REAL_OS_GETEUID() == 0
+    os.seteuid(_TEST_SETTINGS_OWNER_UID)
+    try:
+        _REAL_RELEASE_WRITE_LEASE(fd)
+    finally:
+        os.seteuid(0)
+    assert _REAL_OS_GETEUID() == 0
+
+
+def _reacquire_synthetic_owner_write_lease(fd: int, *, label: str) -> None:
+    assert _REAL_EFFECTIVE_UID == 0
+    assert _REAL_OS_GETEUID() == 0
+    os.seteuid(_TEST_SETTINGS_OWNER_UID)
+    try:
+        _REAL_REACQUIRE_WRITE_LEASE(fd, label=label)
+    finally:
+        os.seteuid(0)
+    assert _REAL_OS_GETEUID() == 0
+
+
 @pytest.fixture(autouse=True)
 def _canonical_test_account_home(monkeypatch, tmp_path: Path) -> None:
     account_home = tmp_path / "canonical-account-home"
@@ -87,6 +124,18 @@ def _canonical_test_account_home(monkeypatch, tmp_path: Path) -> None:
         )
         monkeypatch.setattr(
             evidence, "build_minimal_home", _build_synthetic_minimal_home,
+        )
+        monkeypatch.setattr(
+            evidence, "_acquire_write_lease",
+            _acquire_synthetic_owner_write_lease,
+        )
+        monkeypatch.setattr(
+            evidence, "_release_write_lease",
+            _release_synthetic_owner_write_lease,
+        )
+        monkeypatch.setattr(
+            evidence, "_reacquire_write_lease",
+            _reacquire_synthetic_owner_write_lease,
         )
     _install_synthetic_bwrap_resolver(
         monkeypatch, available=_CANONICAL_BWRAP_AVAILABLE,
@@ -1064,6 +1113,28 @@ def test_root_test_runner_models_an_exact_nonroot_settings_owner(tmp_path):
     finally:
         os.close(settings.fd)
         os.close(settings.parent_fd)
+
+
+def test_root_test_runner_acquires_real_lease_as_synthetic_owner(tmp_path):
+    if _REAL_EFFECTIVE_UID != 0:
+        pytest.skip("root-runner lease seam is not active")
+    assert evidence.fcntl is not None
+    settings = _settings(tmp_path, [])
+    fd = os.open(settings, os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW)
+    previous = evidence._begin_lease_signal_guard()
+    acquired = False
+    try:
+        evidence._acquire_write_lease(fd, label="synthetic-owner")
+        acquired = True
+        assert evidence.fcntl.fcntl(
+            fd, evidence.fcntl.F_GETLEASE,
+        ) == evidence.fcntl.F_WRLCK
+        assert _REAL_OS_GETEUID() == 0
+    finally:
+        if acquired:
+            evidence._release_write_lease(fd)
+        evidence._end_lease_signal_guard(previous)
+        os.close(fd)
 
 
 def test_write_lease_requires_one_signal_clean_main_thread(monkeypatch):
