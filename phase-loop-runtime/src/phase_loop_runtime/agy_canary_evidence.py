@@ -4342,6 +4342,7 @@ _GIT_EXEC_PATH = Path("/usr/lib/git-core")
 _MAX_TRUSTED_GIT_BYTES = 16 * 1024 * 1024
 _GITHUB_EXECUTABLE = Path("/usr/bin/gh")
 _MAX_TRUSTED_GITHUB_BYTES = 64 * 1024 * 1024
+_GITHUB_TIMEOUT_SECONDS = 60
 
 
 @dataclass(frozen=True)
@@ -4597,18 +4598,25 @@ def _git_run(
 
 def _github_run(*args: str) -> subprocess.CompletedProcess[str]:
     github = _canonical_github_executable()
-    return subprocess.run(
-        [str(github), *args],
-        capture_output=True,
-        text=True,
-        check=False,
-        stdin=subprocess.DEVNULL,
-        env={
-            "HOME": str(_account_home()),
-            "PATH": "/usr/bin",
-            "LC_ALL": "C",
-        },
-    )
+    try:
+        result = subprocess.run(
+            [str(github), *args],
+            capture_output=True,
+            text=True,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            timeout=_GITHUB_TIMEOUT_SECONDS,
+            env={
+                "HOME": str(_account_home()),
+                "PATH": "/usr/bin",
+                "LC_ALL": "C",
+            },
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise AgyCanaryEvidenceError("GitHub client command timed out") from exc
+    if result.returncode != 0:
+        raise AgyCanaryEvidenceError("GitHub client command failed")
+    return result
 
 
 def _allowed_git_config_name(name: str) -> bool:

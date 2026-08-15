@@ -356,6 +356,7 @@ def test_github_run_uses_sealed_executable_and_strict_environment(
         "HOME": str(evidence._account_home()), "PATH": "/usr/bin", "LC_ALL": "C",
     }
     assert seen[0][1]["stdin"] is subprocess.DEVNULL
+    assert seen[0][1]["timeout"] == 60
     assert not marker.exists()
 
     real_read = evidence._read_bounded_regular_path
@@ -371,6 +372,38 @@ def test_github_run_uses_sealed_executable_and_strict_environment(
     ):
         evidence._github_run("--version")
     assert len(seen) == 1
+
+
+def test_github_run_rejects_timeout_and_valid_json_nonzero(monkeypatch):
+    monkeypatch.setattr(
+        evidence, "_canonical_github_executable", lambda: Path("/usr/bin/gh"),
+    )
+
+    def timeout_run(argv, **kwargs):
+        assert kwargs["timeout"] == 60
+        raise subprocess.TimeoutExpired(
+            cmd=argv, timeout=kwargs["timeout"], output='{"valid":true}',
+        )
+
+    monkeypatch.setattr(evidence.subprocess, "run", timeout_run)
+    with pytest.raises(
+        evidence.AgyCanaryEvidenceError,
+        match="GitHub client command timed out",
+    ):
+        evidence._github_run("api", "--hostname", "github.com", "rate_limit")
+
+    monkeypatch.setattr(
+        evidence.subprocess,
+        "run",
+        lambda argv, **_kwargs: subprocess.CompletedProcess(
+            argv, 1, '{"valid":true}', "synthetic failure",
+        ),
+    )
+    with pytest.raises(
+        evidence.AgyCanaryEvidenceError,
+        match="GitHub client command failed",
+    ):
+        evidence._github_run("api", "--hostname", "github.com", "rate_limit")
 
 
 def test_git_environment_accepts_and_revalidates_direct_private_ssh_socket(
