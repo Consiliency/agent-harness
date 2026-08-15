@@ -354,7 +354,7 @@ def test_git_repository_authority_rejects_unapproved_worktree_config(tmp_path):
         evidence._validate_git_repository_authority(repo.resolve())
 
 
-def test_clean_repo_neutralizes_active_info_exclude_pattern(tmp_path):
+def test_clean_repo_rejects_active_info_exclude_pattern(tmp_path):
     repo = tmp_path / "dotfiles"
     repo.mkdir()
     (repo / "bootstrap.sh").write_text("#!/bin/sh\n")
@@ -366,7 +366,121 @@ def test_clean_repo_neutralizes_active_info_exclude_pattern(tmp_path):
         ["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=all"],
         text=True,
     ) == ""
-    with pytest.raises(evidence.AgyCanaryEvidenceError, match="clean dotfiles worktree"):
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="info/exclude authority is unsafe"):
+        evidence._clean_dotfiles_repo(repo.resolve())
+
+
+def test_git_worktree_raw_inventory_closes_untracked_gitignore_composition(tmp_path):
+    repo = tmp_path / "dotfiles"
+    repo.mkdir()
+    (repo / "bootstrap.sh").write_text("#!/bin/sh\n")
+    (repo / ".gitignore").write_text("cache/\nevil/.gitignore\n")
+    _git_repo(repo)
+    (repo / "cache").mkdir()
+    (repo / "cache" / "generated.txt").write_text("expected ignored output\n")
+    assert not evidence._git_worktree_is_dirty(repo.resolve())
+
+    evil = repo / "evil"
+    evil.mkdir()
+    (evil / ".gitignore").write_text("*\n")
+    (evil / "unexpected.txt").write_text("unexpected\n")
+    assert evidence._git_untracked(
+        repo.resolve(), "--exclude-per-directory=.gitignore",
+    ) == []
+    assert sorted(evidence._git_untracked(repo.resolve())) == [
+        "cache/generated.txt", "evil/.gitignore", "evil/unexpected.txt",
+    ]
+    assert evidence._git_worktree_is_dirty(repo.resolve())
+
+
+@pytest.mark.parametrize("flag", ("--assume-unchanged", "--skip-worktree"))
+def test_git_worktree_requires_tracked_gitignore_exact_bytes(tmp_path, flag):
+    repo = tmp_path / "dotfiles"
+    repo.mkdir()
+    (repo / "bootstrap.sh").write_text("#!/bin/sh\n")
+    (repo / ".gitignore").write_text("cache/\n")
+    _git_repo(repo)
+    subprocess.run(
+        ["git", "-C", str(repo), "update-index", flag, ".gitignore"], check=True,
+    )
+    (repo / ".gitignore").write_text("*\n")
+    (repo / "unexpected.txt").write_text("unexpected\n")
+    assert subprocess.check_output(
+        ["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=all"],
+        text=True,
+    ) == ""
+    assert evidence._git_worktree_is_dirty(repo.resolve())
+
+
+def test_git_worktree_composed_info_exclude_and_untracked_gitignore_fails_closed(
+    tmp_path,
+):
+    repo = tmp_path / "dotfiles"
+    repo.mkdir()
+    (repo / "bootstrap.sh").write_text("#!/bin/sh\n")
+    _git_repo(repo)
+    evil = repo / "evil"
+    evil.mkdir()
+    (evil / ".gitignore").write_text("*\n")
+    (evil / "unexpected.txt").write_text("unexpected\n")
+    (repo / ".git" / "info" / "exclude").write_text("evil/\n")
+    assert subprocess.check_output(
+        ["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=all"],
+        text=True,
+    ) == ""
+    assert evidence._git_untracked(
+        repo.resolve(), "--exclude-per-directory=.gitignore",
+    ) == []
+    assert evidence._git_worktree_is_dirty(repo.resolve())
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="info/exclude authority is unsafe"):
+        evidence._clean_dotfiles_repo(repo.resolve())
+
+
+def test_bounded_regular_read_rejects_oversize_before_read_and_growth(
+    monkeypatch, tmp_path,
+):
+    path = (tmp_path / "exclude").resolve()
+    limit = 64
+    path.write_bytes(b"#" * (limit + 1))
+    with monkeypatch.context() as pre_read:
+        pre_read.setattr(
+            evidence.os, "read",
+            lambda *_args: pytest.fail("oversize descriptor must fail before read"),
+        )
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="read limit"):
+            evidence._read_bounded_regular_path(path, limit=limit)
+
+    path.write_bytes(b"#\n")
+    real_read = os.read
+    grown = False
+
+    def grow_before_read(fd, count):
+        nonlocal grown
+        if not grown:
+            grown = True
+            path.write_bytes(b"#" * (limit + 1))
+        return real_read(fd, count)
+
+    monkeypatch.setattr(evidence.os, "read", grow_before_read)
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="read limit"):
+        evidence._read_bounded_regular_path(path, limit=limit)
+
+
+def test_git_info_exclude_lstat_cap_rejects_before_descriptor_read(
+    monkeypatch, tmp_path,
+):
+    repo = tmp_path / "dotfiles"
+    repo.mkdir()
+    (repo / "bootstrap.sh").write_text("#!/bin/sh\n")
+    _git_repo(repo)
+    (repo / ".git" / "info" / "exclude").write_bytes(
+        b"#" * (evidence._MAX_FULL_STAGED_READ_BYTES + 1)
+    )
+    monkeypatch.setattr(
+        evidence, "_read_bounded_regular_path",
+        lambda *_args, **_kwargs: pytest.fail("lstat cap must fail before descriptor read"),
+    )
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="info/exclude authority is unsafe"):
         evidence._clean_dotfiles_repo(repo.resolve())
 
 

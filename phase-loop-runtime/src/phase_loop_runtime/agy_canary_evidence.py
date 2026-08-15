@@ -263,6 +263,45 @@ def _read_regular_path(path: Path) -> tuple[bytes, os.stat_result]:
         os.close(parent_fd)
 
 
+def _read_bounded_regular_path(
+    path: Path, *, limit: int,
+) -> tuple[bytes, os.stat_result]:
+    """Descriptor-read at most limit + 1 bytes after a pre-read size gate."""
+    if not path.is_absolute() or path.is_symlink():
+        raise AgyCanaryEvidenceError("trusted runtime path is not a direct regular file")
+    parent_fd = os.open(
+        path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    )
+    try:
+        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent_fd)
+        try:
+            before = os.fstat(fd)
+            if not stat.S_ISREG(before.st_mode) or before.st_size > limit:
+                raise AgyCanaryEvidenceError("trusted regular file exceeds read limit")
+            chunks: list[bytes] = []
+            total = 0
+            while total <= limit:
+                chunk = os.read(fd, min(64 * 1024, limit + 1 - total))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                total += len(chunk)
+            after = os.fstat(fd)
+            if (
+                total > limit
+                or after.st_size > limit
+                or after.st_dev != before.st_dev
+                or after.st_ino != before.st_ino
+                or after.st_mode != before.st_mode
+            ):
+                raise AgyCanaryEvidenceError("trusted regular file exceeds read limit")
+            return b"".join(chunks), after
+        finally:
+            os.close(fd)
+    finally:
+        os.close(parent_fd)
+
+
 def _stat_regular_path(path: Path) -> os.stat_result:
     """Nofollow metadata check for a regular file without re-reading its bytes."""
     if not path.is_absolute() or path.is_symlink():
@@ -4254,7 +4293,9 @@ def _allowed_git_config_name(name: str) -> bool:
     )
 
 
-def _validate_git_repository_authority(repo: Path) -> None:
+def _validate_git_repository_authority(
+    repo: Path, *, require_inert_exclude: bool = False,
+) -> None:
     canonical = repo.resolve(strict=True)
     metadata = _git_run(
         canonical, "rev-parse", "--path-format=absolute", "--show-toplevel",
@@ -4300,10 +4341,16 @@ def _validate_git_repository_authority(repo: Path) -> None:
     except OSError as exc:
         raise AgyCanaryEvidenceError("Git repository info/exclude authority is unreadable") from exc
     if exclude_stat is not None:
-        if not stat.S_ISREG(exclude_stat.st_mode) or exclude.is_symlink():
+        if (
+            not stat.S_ISREG(exclude_stat.st_mode)
+            or exclude.is_symlink()
+            or exclude_stat.st_size > _MAX_FULL_STAGED_READ_BYTES
+        ):
             raise AgyCanaryEvidenceError("Git repository info/exclude authority is unsafe")
         try:
-            exclude_bytes, exclude_reopened = _read_regular_path(exclude)
+            exclude_bytes, exclude_reopened = _read_bounded_regular_path(
+                exclude, limit=_MAX_FULL_STAGED_READ_BYTES,
+            )
             if (
                 exclude_reopened.st_dev != exclude_stat.st_dev
                 or exclude_reopened.st_ino != exclude_stat.st_ino
@@ -4316,6 +4363,15 @@ def _validate_git_repository_authority(repo: Path) -> None:
             raise AgyCanaryEvidenceError(
                 "Git repository info/exclude authority is unreadable"
             ) from exc
+        except AgyCanaryEvidenceError as exc:
+            raise AgyCanaryEvidenceError(
+                "Git repository info/exclude authority is unsafe"
+            ) from exc
+        if require_inert_exclude and any(
+            line.strip() and not line.lstrip().startswith(b"#")
+            for line in exclude_bytes.splitlines()
+        ):
+            raise AgyCanaryEvidenceError("Git repository info/exclude authority is unsafe")
     local_config = _git_run(
         canonical, "config", "--local", "--no-includes", "--name-only",
         "--null", "--list",
@@ -4354,10 +4410,64 @@ def _git_text(repo: Path, *args: str) -> str:
     return proc.stdout.strip()
 
 
+def _git_untracked(repo: Path, *args: str) -> list[str]:
+    proc = _git_run(repo, "ls-files", "-z", "--others", *args)
+    if proc.returncode != 0:
+        raise AgyCanaryEvidenceError("git command failed: ls-files")
+    try:
+        return [
+            value.decode("utf-8", errors="strict")
+            for value in proc.stdout.split(b"\0") if value
+        ]
+    except UnicodeDecodeError as exc:
+        raise AgyCanaryEvidenceError("git untracked inventory is malformed") from exc
+
+
+def _git_tracked_gitignores_are_exact(repo: Path) -> bool:
+    proc = _git_run(repo, "ls-files", "-z")
+    if proc.returncode != 0:
+        raise AgyCanaryEvidenceError("git command failed: ls-files")
+    try:
+        tracked = [
+            value.decode("utf-8", errors="strict")
+            for value in proc.stdout.split(b"\0") if value
+        ]
+    except UnicodeDecodeError as exc:
+        raise AgyCanaryEvidenceError("git tracked inventory is malformed") from exc
+    for relative in tracked:
+        path = Path(relative)
+        if path.name != ".gitignore":
+            continue
+        if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+            return False
+        try:
+            size = _git_text(repo, "cat-file", "-s", f"HEAD:{relative}")
+            if not size.isdigit() or int(size) > _MAX_FULL_STAGED_READ_BYTES:
+                return False
+            local, _info = _read_bounded_regular_path(
+                (repo / path).absolute(), limit=_MAX_FULL_STAGED_READ_BYTES,
+            )
+        except (OSError, AgyCanaryEvidenceError):
+            return False
+        committed = _git_run(repo, "show", f"HEAD:{relative}")
+        if committed.returncode != 0 or committed.stdout != local:
+            return False
+    return True
+
+
+def _git_nonignored_untracked(repo: Path) -> list[str]:
+    raw = _git_untracked(repo)
+    if any(path == ".gitignore" or path.endswith("/.gitignore") for path in raw):
+        return raw
+    if not _git_tracked_gitignores_are_exact(repo):
+        return [".gitignore authority drift"]
+    return _git_untracked(repo, "--exclude-per-directory=.gitignore")
+
+
 def _git_worktree_is_dirty(repo: Path) -> bool:
     return bool(
         _git_text(repo, "status", "--porcelain", "--untracked-files=all")
-        or _git_text(repo, "ls-files", "--others", "--exclude-per-directory=.gitignore")
+        or _git_nonignored_untracked(repo)
     )
 
 
@@ -4382,7 +4492,7 @@ def _worktree_blob(repo: Path, relative: str) -> tuple[str, bytes]:
 def _clean_dotfiles_repo(repo: Path) -> str:
     if not (repo / ".git").exists() or not (repo / "bootstrap.sh").is_file():
         raise AgyCanaryEvidenceError("bootstrap attestation requires a dotfiles checkout")
-    _validate_git_repository_authority(repo)
+    _validate_git_repository_authority(repo, require_inert_exclude=True)
     if _git_worktree_is_dirty(repo):
         raise AgyCanaryEvidenceError("bootstrap attestation requires a clean dotfiles worktree")
     return _git_text(repo, "rev-parse", "HEAD")
@@ -5741,7 +5851,7 @@ def _reconcile_release_lineage(
     """
     if len(handoff_commit) != 40 or any(ch not in "0123456789abcdef" for ch in handoff_commit.lower()):
         raise AgyCanaryEvidenceError("handoff selector must be an immutable commit OID")
-    _validate_git_repository_authority(repo)
+    _validate_git_repository_authority(repo, require_inert_exclude=True)
     if _git_worktree_is_dirty(repo):
         raise AgyCanaryEvidenceError("release lineage requires a clean agent-harness worktree")
     remote = _git_text(repo, "remote", "get-url", "origin")
@@ -6513,7 +6623,7 @@ def check_private_final(
     root, root_fd = _validate_private_root(evidence_root)
     try:
         repo = dotfiles_repo.resolve(strict=True)
-        _validate_git_repository_authority(repo)
+        _validate_git_repository_authority(repo, require_inert_exclude=True)
         bootstrap_receipt, plan_relative, manifest_relative = _attested_final_targets(
             root_fd=root_fd, repo=repo, plan_path=plan_path, manifest_path=manifest_path, plan_slug=plan_slug,
             require_preimages=False,
@@ -6600,9 +6710,7 @@ def check_private_final(
             staged = _git_text(
                 repo, "diff", "--cached", "--name-only", candidate,
             ).splitlines()
-            untracked = _git_text(
-                repo, "ls-files", "--others", "--exclude-per-directory=.gitignore",
-            ).splitlines()
+            untracked = _git_nonignored_untracked(repo)
             if (sorted(changed) != sorted([plan_relative, manifest_relative]) or
                     any(path not in {plan_relative, manifest_relative} for path in staged) or
                     untracked):
