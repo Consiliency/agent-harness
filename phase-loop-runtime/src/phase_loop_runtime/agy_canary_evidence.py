@@ -3003,11 +3003,26 @@ def _installed_phase_loop_identity(*, uv_executable: Path | None = None) -> dict
     module = Path(value["module_origin"])
     if not module.is_relative_to(root):
         raise AgyCanaryEvidenceError("phase-loop module ownership is invalid")
+    package_root = module.parent
+    dist_infos = sorted(root.glob(f"phase_loop_runtime-{value['version']}.dist-info"))
+    if len(dist_infos) != 1:
+        raise AgyCanaryEvidenceError("phase-loop distribution metadata is not unique")
+    record = dist_infos[0] / "RECORD"
+    try:
+        script_bytes, _script_info = _read_regular_path(script)
+        interpreter_bytes, _interpreter_info = _read_regular_path(interpreter.resolve(strict=True))
+        record_bytes, _record_info = _read_regular_path(record)
+    except (FileNotFoundError, OSError) as exc:
+        raise AgyCanaryEvidenceError("phase-loop installed content is unavailable") from exc
     return {
         "uv_executable": str(uv), "uv_tool_dir": str(tool_dir),
         "console_script": str(script), "interpreter": str(interpreter),
         "version": value["version"], "distribution_root": str(root),
         "module_origin": str(module),
+        "console_script_sha256": _sha256(script_bytes),
+        "interpreter_sha256": _sha256(interpreter_bytes),
+        "package_tree_sha256": _runtime_tree_sha256(package_root),
+        "record_sha256": _sha256(record_bytes),
         "provenance": _uv_registry_provenance(tool_dir=tool_dir, version=value["version"]),
     }
 
@@ -3236,7 +3251,8 @@ def _validate_bootstrap_attestation(
     installed = bootstrap["installation"]
     expected_installation = {
         "uv_executable", "uv_tool_dir", "console_script", "interpreter", "version",
-        "distribution_root", "module_origin", "provenance",
+        "distribution_root", "module_origin", "console_script_sha256", "interpreter_sha256",
+        "package_tree_sha256", "record_sha256", "provenance",
     }
     installation_strings = expected_installation - {"provenance"}
     if (not isinstance(installed, dict) or set(installed) != expected_installation or
@@ -3245,6 +3261,9 @@ def _validate_bootstrap_attestation(
             any(not Path(installed[name]).is_absolute() for name in (
                 "uv_executable", "uv_tool_dir", "console_script", "interpreter",
                 "distribution_root", "module_origin",
+            )) or
+            any(not _is_digest(installed[name]) for name in (
+                "console_script_sha256", "interpreter_sha256", "package_tree_sha256", "record_sha256"
             )) or
             not Path(installed["module_origin"]).is_relative_to(Path(installed["distribution_root"]))):
         raise AgyCanaryEvidenceError("bootstrap attestation installation identity is malformed")

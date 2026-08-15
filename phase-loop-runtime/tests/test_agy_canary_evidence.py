@@ -58,6 +58,8 @@ def _installation_identity() -> dict[str, object]:
         "console_script": "/tool/phase-loop-runtime/bin/phase-loop", "interpreter": "/tool/python",
         "version": "0.7.14", "distribution_root": "/tool/site-packages",
         "module_origin": "/tool/site-packages/phase_loop_runtime/__init__.py",
+        "console_script_sha256": "b" * 64, "interpreter_sha256": "c" * 64,
+        "package_tree_sha256": "d" * 64, "record_sha256": "e" * 64,
         "provenance": {
             "schema": "uv_registry_receipt.v1", "requirement": "phase-loop-runtime==0.7.14",
             "receipt_sha256": "a" * 64,
