@@ -1311,7 +1311,20 @@
         "SL-0",
         "SL-1"
       ],
-      "lifecycle": [],
+      "lifecycle": [
+        {
+          "at": "2026-08-15T08:01:29Z",
+          "by": "codex-execute-phase",
+          "metadata": {
+            "content_tdd_receipt": ".phase-loop/evidence/GOVLEAN/content-tdd-receipt.json",
+            "phase_alias": "GOVLEAN",
+            "run_id": "govlean-sl0-20260815",
+            "tests_only_landing": "1c4e6ca3b8a12914619b6b93512275bc3f2d6e46",
+            "verification_status": "red-retained"
+          },
+          "transition": "executing"
+        }
+      ],
       "owner_skill": "codex-plan-phase",
       "phase_alias": "GOVLEAN",
       "reflection_ref": null,
@@ -1322,10 +1335,10 @@
         "type": "phase"
       },
       "slug": "v10-GOVLEAN",
-      "status": "committed",
+      "status": "executing",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-14T22:46:49Z"
+      "updated_at": "2026-08-15T08:01:29Z"
     },
     {
       "acceptance_criteria_count": null,

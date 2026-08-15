@@ -364,6 +364,24 @@ def _check_frontmatter(src: str, path: Path, repo_root: Optional[Path]) -> Findi
     return out
 
 
+def _check_govlean_plan_pins(src: str, path: Path, repo_root: Optional[Path]) -> Findings:
+    if repo_root is None:
+        return []
+    runtime_src = repo_root / "phase-loop-runtime" / "src"
+    bundled_runtime_src = Path(__file__).resolve().parents[4] / "phase-loop-runtime" / "src"
+    for candidate in (runtime_src, bundled_runtime_src):
+        if candidate.is_dir() and str(candidate) not in sys.path:
+            sys.path.insert(0, str(candidate))
+    try:
+        from phase_loop_runtime.plan_pin_lint import find_plan_pin_violations
+    except ImportError:
+        return []
+    return [
+        f"(GOVLEAN) {finding.category} at line {finding.line}: {finding.text.strip()}"
+        for finding in find_plan_pin_violations(src, repo_root, path)
+    ]
+
+
 def _check_b_lane_index_parses(lanes: List[Lane]) -> Findings:
     out: Findings = []
     if not lanes:
@@ -1161,6 +1179,7 @@ def main(argv: List[str]) -> int:
 
     findings: Findings = []
     findings.extend(_check_frontmatter(src, path, repo_root))
+    findings.extend(_check_govlean_plan_pins(src, path, repo_root))
     findings.extend(_check_a_required_headings(src))
     findings.extend(_check_p_goal_id_coverage(src, path, repo_root))
 
