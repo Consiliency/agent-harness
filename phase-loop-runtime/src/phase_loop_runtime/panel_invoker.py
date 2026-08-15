@@ -26,6 +26,7 @@ import tempfile
 import time
 import json
 import threading
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -126,13 +127,84 @@ class ReviewLandingPolicy:
 ReviewPolicy = ReviewLandingPolicy
 
 
-def review_policy_for_tier(tier: ReviewLandingTier) -> ReviewLandingPolicy:
+def _coerce_review_landing_tier(tier: ReviewLandingTier | str) -> ReviewLandingTier:
+    try:
+        return tier if isinstance(tier, ReviewLandingTier) else ReviewLandingTier(tier)
+    except (TypeError, ValueError) as exc:
+        raise PresidentPolicyError(
+            "review_landing_tier_unknown", f"unknown review landing tier: {tier!r}"
+        ) from exc
+
+
+def review_policy_for_tier(tier: ReviewLandingTier | str) -> ReviewLandingPolicy:
+    tier = _coerce_review_landing_tier(tier)
     if tier in {ReviewLandingTier.PLAN, ReviewLandingTier.PRODUCTION_CODE}:
         return ReviewLandingPolicy(
             required_seats=("fable", "sol", "gemini", "grok"),
             requires_president=True,
         )
     return ReviewLandingPolicy(required_seats=("grounded",), requires_president=False)
+
+
+DEFAULT_REVIEW_SEAT_ALIASES: Mapping[str, str] = {
+    "claude-fable-5": "fable",
+    "gpt-5.6-sol": "sol",
+    "gemini-3.6-flash": "gemini",
+    "grok-4.5": "grok",
+}
+
+
+def _govlean_authority_switched(repo_dir: Path | str | None) -> bool:
+    root = Path.cwd() if repo_dir is None else Path(repo_dir)
+    manifest_path = root / "plans" / "manifest.json"
+    if not manifest_path.exists():
+        return False
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PresidentPolicyError(
+            "review_authority_state_invalid", "plans/manifest.json cannot prove review authority"
+        ) from exc
+    plans = payload.get("plans") if isinstance(payload, dict) else None
+    if not isinstance(plans, list):
+        raise PresidentPolicyError(
+            "review_authority_state_invalid", "plans/manifest.json has no plans array"
+        )
+    for entry in plans:
+        if not isinstance(entry, dict) or entry.get("slug") != "v10-GOVLEAN":
+            continue
+        lifecycle = entry.get("lifecycle", [])
+        if not isinstance(lifecycle, list):
+            raise PresidentPolicyError(
+                "review_authority_state_invalid", "v10-GOVLEAN lifecycle is not an array"
+            )
+        return any(
+            isinstance(event, dict) and event.get("transition") == "authority_switch"
+            for event in lifecycle
+        )
+    return False
+
+
+def _validate_review_board_policy(
+    board: Board,
+    policy: ReviewLandingPolicy,
+    seat_aliases: Mapping[str, str] | None,
+) -> None:
+    if policy.required_seats == ("grounded",):
+        if len(board.seats) != 1:
+            raise PresidentPolicyError(
+                "review_board_policy_mismatch", "grounded review requires exactly one seat"
+            )
+        return
+    aliases = dict(DEFAULT_REVIEW_SEAT_ALIASES)
+    aliases.update(seat_aliases or {})
+    actual = Counter(aliases.get(seat.model, seat.model) for seat in board.seats)
+    required = Counter(policy.required_seats)
+    if actual != required:
+        raise PresidentPolicyError(
+            "review_board_policy_mismatch",
+            f"review board seats {dict(actual)} do not match policy {dict(required)}",
+        )
 
 
 PRESIDENT_LADDER: tuple[str, ...] = (
@@ -212,6 +284,11 @@ def invoke_president(
         if not _valid_president_grammar(text, findings):
             format_reasks = 1
             response = invoke(model, _president_prompt(findings, format_reask=True))
+            if (
+                response.get("status") == "unavailable"
+                and response.get("code") == "president_unavailable"
+            ):
+                continue
             if response.get("status") not in {"ok", "degraded"}:
                 raise PresidentPolicyError(
                     "president_invocation_failed", f"president {model} format reask failed"
@@ -4119,6 +4196,9 @@ def invoke_board(
     on_leg_complete: "Callable[[PanelLegResult], None] | None" = None,
     stream_dir: Path | str | None = None,
     research_policy: ResearchPolicy | None = None,
+    landing_tier: ReviewLandingTier | str | None = None,
+    review_policy: ReviewLandingPolicy | None = None,
+    review_seat_aliases: Mapping[str, str] | None = None,
 ) -> PanelResult:
     """Run an Advisor Board's seats through the provider seam, fail-closed.
 
@@ -4194,6 +4274,18 @@ def invoke_board(
         mode = _mode_for_purpose(board.purpose)
     if mode not in PANEL_MODES:
         raise ValueError(f"unknown panel mode {mode!r}; expected one of {PANEL_MODES}")
+    switched = _govlean_authority_switched(repo_dir)
+    if landing_tier is None and review_policy is None:
+        if switched:
+            raise PresidentPolicyError(
+                "review_landing_tier_required",
+                "post-switch board invocation requires an explicit landing tier or policy",
+            )
+    else:
+        policy = review_policy or review_policy_for_tier(
+            _coerce_review_landing_tier(landing_tier)  # type: ignore[arg-type]
+        )
+        _validate_review_board_policy(board, policy, review_seat_aliases)
     # 'reference, don't inline': resolve the artifact at the TOP (fail-closed on a
     # missing ref path) so every downstream use sees resolved content; warn on a
     # large INLINE artifact only. No ref ⇒ ``artifact`` byte-for-byte (the default

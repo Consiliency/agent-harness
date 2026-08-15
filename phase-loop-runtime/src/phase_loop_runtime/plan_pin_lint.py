@@ -20,7 +20,9 @@ PlanPinViolation = PlanPinFinding
 
 
 _COMMIT_IDENTITY = re.compile(r"\b[0-9a-f]{40}\b|(?<=`)[0-9a-f]{7,39}(?=`)", re.IGNORECASE)
-_CONTENT_DIGEST = re.compile(r"sha256:([0-9a-f]{64})\b", re.IGNORECASE)
+_CONTENT_DIGEST = re.compile(
+    r"(?<![0-9a-f])(?:sha256:\s*)?[0-9a-f]{64}(?![0-9a-f])", re.IGNORECASE
+)
 _PATH = re.compile(r"(?<![\w.-])([\w.-]+(?:/[\w.@+-]+)+)(?![\w.-])")
 _COMMIT_ORDINAL = re.compile(
     r"\b(?:commit\s+(?:number|count|index)\s*\d+|exactly\s+(?:one|two|three|\d+)\s+(?:final\s+)?(?:documentation\s+|repair\s+|implementation\s+|test\s+|production\s+)?commits?)",
