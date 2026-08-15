@@ -61,7 +61,7 @@ def _installation_identity() -> dict[str, object]:
     uv_store_authority = evidence._uv_store_authority(
         account_home=evidence._account_home()
     )
-    tool_dir = Path(uv_store_authority["tool_dir"])
+    tool_dir = Path(uv_store_authority["directories"]["tool"]["path"])
     environment_root = tool_dir / "phase-loop-runtime"
     return {
         "uv_executable": "/tool/bin/uv", "uv_tool_dir": str(tool_dir),
@@ -142,9 +142,13 @@ def _installed_wheel_fixture(
     release = _release_identity(wheel=wheel)
     account_home = tmp_path / "account-home"
     (account_home / ".local" / "share" / "uv" / "tools").mkdir(parents=True)
+    (account_home / ".local" / "share" / "uv" / "python").mkdir(parents=True)
     (account_home / ".local" / "bin").mkdir(parents=True)
-    uv_store_authority = evidence._uv_store_authority(account_home=account_home)
-    tool_dir = Path(uv_store_authority["tool_dir"])
+    (account_home / ".cache" / "uv").mkdir(parents=True)
+    uv_store_authority = evidence._uv_store_authority(
+        account_home=account_home, workspace_root=tmp_path / "no-workspace",
+    )
+    tool_dir = Path(uv_store_authority["directories"]["tool"]["path"])
     environment_root = tool_dir / "phase-loop-runtime"
     root = environment_root / "lib" / "python3.13" / "site-packages"
     paths: dict[str, Path] = {}
@@ -227,8 +231,10 @@ def _bootstrap_receipt(
     uv_environment = {
         "HOME": str(uv_store_authority["account_home"]),
         "PATH": str(uv_executable.parent) + ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        "UV_TOOL_DIR": str(uv_store_authority["tool_dir"]),
-        "UV_TOOL_BIN_DIR": str(uv_store_authority["bin_dir"]),
+        "UV_TOOL_DIR": str(uv_store_authority["directories"]["tool"]["path"]),
+        "UV_TOOL_BIN_DIR": str(uv_store_authority["directories"]["bin"]["path"]),
+        "UV_CACHE_DIR": str(uv_store_authority["directories"]["cache"]["path"]),
+        "UV_PYTHON_INSTALL_DIR": str(uv_store_authority["directories"]["python"]["path"]),
         "UV_PYTHON": str(interpreter_authority["path"]),
         "UV_PYTHON_DOWNLOADS": "never",
     }
@@ -249,7 +255,8 @@ def _bootstrap_receipt(
             "script_sha256": input_sha256["bootstrap.sh"], "script_blob": blobs["bootstrap.sh"],
             "before_uv_tools_sha256": "e" * 64, "after_uv_tools_sha256": "f" * 64,
             "environment_names": [
-                "HOME", "PATH", "UV_PYTHON", "UV_PYTHON_DOWNLOADS",
+                "HOME", "PATH", "UV_CACHE_DIR", "UV_PYTHON",
+                "UV_PYTHON_DOWNLOADS", "UV_PYTHON_INSTALL_DIR",
                 "UV_TOOL_BIN_DIR", "UV_TOOL_DIR",
             ],
             "uv_environment": uv_environment,
@@ -2479,6 +2486,8 @@ def test_advisor_board_cli_real_invoker_capture_path_binds_stage_before_launch(m
 def test_bootstrap_environment_never_uses_attacker_path_or_home(monkeypatch, tmp_path):
     account_home = tmp_path / "kernel-account-home"
     (account_home / ".local" / "share" / "uv" / "tools").mkdir(parents=True)
+    (account_home / ".local" / "share" / "uv" / "python").mkdir(parents=True)
+    (account_home / ".cache" / "uv").mkdir(parents=True)
     trusted_uv = account_home / ".local" / "bin" / "uv"
     trusted_uv.parent.mkdir(parents=True)
     trusted_uv.write_text("#!/bin/sh\nexit 0\n")
@@ -2494,7 +2503,9 @@ def test_bootstrap_environment_never_uses_attacker_path_or_home(monkeypatch, tmp
     monkeypatch.setenv("UV_TOOL_DIR", str(tmp_path / "attacker-tools"))
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "attacker-data"))
     interpreter_authority = evidence._system_interpreter_authority()
-    uv_store_authority = evidence._uv_store_authority(account_home=account_home)
+    uv_store_authority = evidence._uv_store_authority(
+        account_home=account_home, workspace_root=tmp_path / "no-workspace",
+    )
     environment = evidence._bootstrap_environment(
         uv_executable=Path("/trusted/uv"), account_home=account_home,
         interpreter_authority=interpreter_authority,
@@ -2504,12 +2515,15 @@ def test_bootstrap_environment_never_uses_attacker_path_or_home(monkeypatch, tmp
     assert str(attacker_bin) not in environment["PATH"]
     assert environment["UV_PYTHON"] == interpreter_authority["path"]
     assert environment["UV_PYTHON_DOWNLOADS"] == "never"
-    assert environment["UV_TOOL_DIR"] == uv_store_authority["tool_dir"]
-    assert environment["UV_TOOL_BIN_DIR"] == uv_store_authority["bin_dir"]
+    assert environment["UV_TOOL_DIR"] == uv_store_authority["directories"]["tool"]["path"]
+    assert environment["UV_TOOL_BIN_DIR"] == uv_store_authority["directories"]["bin"]["path"]
+    assert environment["UV_CACHE_DIR"] == uv_store_authority["directories"]["cache"]["path"]
+    assert environment["UV_PYTHON_INSTALL_DIR"] == uv_store_authority["directories"]["python"]["path"]
+    assert uv_store_authority["policy"] == "home"
     assert "XDG_DATA_HOME" not in environment
     assert set(environment) == {
-        "HOME", "PATH", "UV_TOOL_DIR", "UV_TOOL_BIN_DIR", "UV_PYTHON",
-        "UV_PYTHON_DOWNLOADS",
+        "HOME", "PATH", "UV_TOOL_DIR", "UV_TOOL_BIN_DIR", "UV_CACHE_DIR",
+        "UV_PYTHON_INSTALL_DIR", "UV_PYTHON", "UV_PYTHON_DOWNLOADS",
     }
     assert not any(name.startswith(("PHASE_LOOP_", "AGENT_HARNESS_")) or "NONCE" in name for name in environment)
     assert evidence._canonical_bash() != attacker_bin / "bash"
@@ -2528,6 +2542,35 @@ def test_bootstrap_environment_never_uses_attacker_path_or_home(monkeypatch, tmp
             interpreter_authority=interpreter_authority,
             uv_store_authority=uv_store_authority,
         )
+
+
+def test_uv_store_authority_matches_committed_workspace_policy(tmp_path):
+    account_home = tmp_path / "account-home"
+    (account_home / ".local" / "bin").mkdir(parents=True)
+    workspace = tmp_path / "workspace"
+    (workspace / "uv-data" / "tools").mkdir(parents=True)
+    (workspace / "uv-data" / "python").mkdir(parents=True)
+    (workspace / "uv-cache").mkdir()
+    authority = evidence._uv_store_authority(
+        account_home=account_home, workspace_root=workspace,
+    )
+    assert authority["policy"] == "workspace"
+    assert authority["workspace"]["selector"] == str(workspace)
+    assert authority["directories"]["tool"]["path"] == str(
+        workspace / "uv-data" / "tools"
+    )
+    assert authority["directories"]["cache"]["path"] == str(workspace / "uv-cache")
+    assert authority["directories"]["python"]["path"] == str(
+        workspace / "uv-data" / "python"
+    )
+    environment = evidence._uv_environment(
+        uv_executable=Path("/trusted/uv"),
+        interpreter_authority=evidence._system_interpreter_authority(),
+        uv_store_authority=authority,
+    )
+    assert environment["UV_TOOL_DIR"] == str(workspace / "uv-data" / "tools")
+    assert environment["UV_CACHE_DIR"] == str(workspace / "uv-cache")
+    assert environment["UV_PYTHON_INSTALL_DIR"] == str(workspace / "uv-data" / "python")
 
 
 @pytest.mark.parametrize("override", ["UV_TOOL_DIR", "XDG_DATA_HOME"])
@@ -2556,14 +2599,20 @@ def test_uv_store_authority_rejects_symlink_and_sealed_identity_drift(tmp_path):
     attacker_tools = tmp_path / "attacker-tools"
     bin_dir.mkdir(parents=True)
     uv_parent.mkdir(parents=True)
+    (account_home / ".cache" / "uv").mkdir(parents=True)
+    (uv_parent / "python").mkdir()
     attacker_tools.mkdir()
     (uv_parent / "tools").symlink_to(attacker_tools, target_is_directory=True)
     with pytest.raises(evidence.AgyCanaryEvidenceError, match="unsafe"):
-        evidence._uv_store_authority(account_home=account_home)
+        evidence._uv_store_authority(
+            account_home=account_home, workspace_root=tmp_path / "no-workspace",
+        )
     (uv_parent / "tools").unlink()
     (uv_parent / "tools").mkdir()
-    authority = evidence._uv_store_authority(account_home=account_home)
-    authority["tool_dir_inode"] += 1
+    authority = evidence._uv_store_authority(
+        account_home=account_home, workspace_root=tmp_path / "no-workspace",
+    )
+    authority["directories"]["tool"]["inode"] += 1
     with pytest.raises(evidence.AgyCanaryEvidenceError, match="drifted"):
         evidence._validate_uv_store_authority(authority, revalidate=True)
 
@@ -2573,10 +2622,16 @@ def test_bootstrap_receipt_rejects_self_consistent_manual_uv_store(tmp_path):
     receipt = _bootstrap_receipt(installation=installation)
     attacker_home = tmp_path / "attacker-home"
     attacker_tool_dir = attacker_home / ".local" / "share" / "uv" / "tools"
+    attacker_python_dir = attacker_home / ".local" / "share" / "uv" / "python"
     attacker_bin_dir = attacker_home / ".local" / "bin"
+    attacker_cache_dir = attacker_home / ".cache" / "uv"
     attacker_tool_dir.mkdir(parents=True)
+    attacker_python_dir.mkdir(parents=True)
     attacker_bin_dir.mkdir(parents=True)
-    attacker_authority = evidence._uv_store_authority(account_home=attacker_home)
+    attacker_cache_dir.mkdir(parents=True)
+    attacker_authority = evidence._uv_store_authority(
+        account_home=attacker_home, workspace_root=tmp_path / "no-workspace",
+    )
     forged_installation = receipt["bootstrap"]["installation"]
     assert isinstance(forged_installation, dict)
     forged_installation["uv_store_authority"] = attacker_authority
@@ -2598,6 +2653,8 @@ def test_bootstrap_receipt_rejects_self_consistent_manual_uv_store(tmp_path):
     forged_environment["HOME"] = str(attacker_home)
     forged_environment["UV_TOOL_DIR"] = str(attacker_tool_dir)
     forged_environment["UV_TOOL_BIN_DIR"] = str(attacker_bin_dir)
+    forged_environment["UV_CACHE_DIR"] = str(attacker_cache_dir)
+    forged_environment["UV_PYTHON_INSTALL_DIR"] = str(attacker_python_dir)
     with pytest.raises(evidence.AgyCanaryEvidenceError, match="account home drifted"):
         evidence._validate_bootstrap_attestation(receipt=receipt)
 
@@ -2636,6 +2693,7 @@ def test_bootstrap_attestation_has_no_parent_only_nonce_claim(monkeypatch, tmp_p
     installation["uv_executable"] = str(uv)
     monkeypatch.setattr(evidence, "_canonical_bash", lambda: Path("/usr/bin/bash"))
     monkeypatch.setattr(evidence, "_canonical_uv", lambda: uv)
+    monkeypatch.setattr(evidence, "_validate_bootstrap_uv_policy", lambda **_kwargs: None)
     monkeypatch.setattr(evidence, "_installed_phase_loop_identity", lambda **_kwargs: installation)
     snapshot = tmp_path / "bootstrap-snapshot"
 
@@ -2859,10 +2917,16 @@ def test_uv_console_launcher_derivation_matches_actual_uv_install(tmp_path):
     wheel.write_bytes(_synthetic_wheel())
     account_home = tmp_path / "account-home"
     tool_dir = account_home / ".local" / "share" / "uv" / "tools"
+    python_dir = account_home / ".local" / "share" / "uv" / "python"
     bin_dir = account_home / ".local" / "bin"
+    cache_dir = account_home / ".cache" / "uv"
     tool_dir.mkdir(parents=True)
+    python_dir.mkdir(parents=True)
     bin_dir.mkdir(parents=True)
-    uv_store_authority = evidence._uv_store_authority(account_home=account_home)
+    cache_dir.mkdir(parents=True)
+    uv_store_authority = evidence._uv_store_authority(
+        account_home=account_home, workspace_root=tmp_path / "no-workspace",
+    )
     interpreter_authority = evidence._system_interpreter_authority()
     uv = Path(shutil.which("uv") or "uv").resolve(strict=True)
     uv_environment = evidence._uv_environment(

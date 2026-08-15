@@ -2990,59 +2990,164 @@ def _canonical_uv() -> Path:
     raise AgyCanaryEvidenceError("bootstrap attestation requires a canonical uv executable")
 
 
-def _uv_store_authority(*, account_home: Path) -> dict[str, Any]:
-    """Seal uv's account-owned default tool and launcher directories."""
+_UV_WORKSPACE_ROOT = Path("/mnt/workspace")
+
+
+def _uv_directory_identity(path: Path, *, uid: int) -> dict[str, Any]:
+    try:
+        info = path.lstat()
+        resolved = path.resolve(strict=True)
+    except (FileNotFoundError, OSError) as exc:
+        raise AgyCanaryEvidenceError("canonical uv store directory is unavailable") from exc
+    mode = stat.S_IMODE(info.st_mode)
+    if (stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode) or
+            info.st_uid != uid or mode & stat.S_IWOTH):
+        raise AgyCanaryEvidenceError("canonical uv store directory is unsafe")
+    return {
+        "path": str(path), "resolved": str(resolved), "dev": info.st_dev,
+        "inode": info.st_ino, "mode": mode, "uid": info.st_uid,
+    }
+
+
+def _uv_store_authority(
+    *, account_home: Path, workspace_root: Path = _UV_WORKSPACE_ROOT,
+) -> dict[str, Any]:
+    """Seal the exact home/workspace storage policy committed in bootstrap.sh."""
     home = account_home.resolve(strict=True)
-    expected = {
-        "tool_dir": home / ".local" / "share" / "uv" / "tools",
-        "bin_dir": home / ".local" / "bin",
-    }
-    value: dict[str, Any] = {
-        "schema": "agy_canary_uv_store_authority.v1",
-        "account_home": str(home),
-        "uid": home.stat().st_uid,
-    }
-    for name, path in expected.items():
+    uid = home.stat().st_uid
+    workspace: dict[str, Any] | None = None
+    if workspace_root.is_dir():
         try:
-            info = path.lstat()
+            selector_info = workspace_root.lstat()
+            resolved_root = workspace_root.resolve(strict=True)
+            root_info = resolved_root.lstat()
         except (FileNotFoundError, OSError) as exc:
-            raise AgyCanaryEvidenceError("canonical uv store directory is unavailable") from exc
-        if (stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode) or
-                path.resolve(strict=True) != path or info.st_uid != value["uid"] or
-                stat.S_IMODE(info.st_mode) & stat.S_IWOTH):
-            raise AgyCanaryEvidenceError("canonical uv store directory is unsafe")
-        value[name] = str(path)
-        value[f"{name}_dev"] = info.st_dev
-        value[f"{name}_inode"] = info.st_ino
-        value[f"{name}_mode"] = stat.S_IMODE(info.st_mode)
-    return value
+            raise AgyCanaryEvidenceError("canonical uv workspace root is unavailable") from exc
+        selector_mode = stat.S_IMODE(selector_info.st_mode)
+        root_mode = stat.S_IMODE(root_info.st_mode)
+        if (not stat.S_ISDIR(root_info.st_mode) or resolved_root.resolve(strict=True) != resolved_root or
+                root_info.st_uid != uid or root_mode & stat.S_IWOTH or
+                (stat.S_ISLNK(selector_info.st_mode) and selector_info.st_uid != 0) or
+                (not stat.S_ISLNK(selector_info.st_mode) and not stat.S_ISDIR(selector_info.st_mode))):
+            raise AgyCanaryEvidenceError("canonical uv workspace root is unsafe")
+        data_identity = _uv_directory_identity(workspace_root / "uv-data", uid=uid)
+        if Path(data_identity["resolved"]) != resolved_root / "uv-data":
+            raise AgyCanaryEvidenceError("canonical uv workspace data root is indirect")
+        workspace = {
+            "selector": str(workspace_root), "resolved": str(resolved_root),
+            "selector_dev": selector_info.st_dev, "selector_inode": selector_info.st_ino,
+            "selector_mode": selector_mode, "selector_uid": selector_info.st_uid,
+            "link_target": os.readlink(workspace_root) if stat.S_ISLNK(selector_info.st_mode) else None,
+            "dev": root_info.st_dev, "inode": root_info.st_ino,
+            "mode": root_mode, "uid": root_info.st_uid,
+            "data": data_identity,
+        }
+        paths = {
+            "tool": workspace_root / "uv-data" / "tools",
+            "bin": home / ".local" / "bin",
+            "cache": workspace_root / "uv-cache",
+            "python": workspace_root / "uv-data" / "python",
+        }
+        policy = "workspace"
+    else:
+        paths = {
+            "tool": home / ".local" / "share" / "uv" / "tools",
+            "bin": home / ".local" / "bin",
+            "cache": home / ".cache" / "uv",
+            "python": home / ".local" / "share" / "uv" / "python",
+        }
+        policy = "home"
+    directories = {
+        name: _uv_directory_identity(path, uid=uid) for name, path in paths.items()
+    }
+    if workspace is not None:
+        resolved_root = Path(workspace["resolved"])
+        expected_resolved = {
+            "tool": resolved_root / "uv-data" / "tools",
+            "cache": resolved_root / "uv-cache",
+            "python": resolved_root / "uv-data" / "python",
+        }
+        for name, expected in expected_resolved.items():
+            if Path(directories[name]["resolved"]) != expected:
+                raise AgyCanaryEvidenceError("canonical uv workspace directory escaped its root")
+    elif any(Path(row["resolved"]) != Path(row["path"]) for row in directories.values()):
+        raise AgyCanaryEvidenceError("canonical home uv store directory is indirect")
+    return {
+        "schema": "agy_canary_uv_store_authority.v1", "policy": policy,
+        "account_home": str(home), "workspace": workspace,
+        "directories": directories,
+    }
 
 
 def _validate_uv_store_authority(
     value: Any, *, revalidate: bool, account_home: Path | None = None,
+    workspace_root: Path | None = None,
 ) -> dict[str, Any]:
-    required = {
-        "schema", "account_home", "uid",
-        "tool_dir", "tool_dir_dev", "tool_dir_inode", "tool_dir_mode",
-        "bin_dir", "bin_dir_dev", "bin_dir_inode", "bin_dir_mode",
+    directory_fields = {"path", "resolved", "dev", "inode", "mode", "uid"}
+    workspace_fields = {
+        "selector", "resolved", "selector_dev", "selector_inode", "selector_mode",
+        "selector_uid", "link_target", "dev", "inode", "mode", "uid",
+        "data",
     }
-    if (not isinstance(value, dict) or set(value) != required or
+    directories = value.get("directories") if isinstance(value, dict) else None
+    workspace = value.get("workspace") if isinstance(value, dict) else None
+    if (not isinstance(value, dict) or set(value) != {
+            "schema", "policy", "account_home", "workspace", "directories"
+    } or
             value.get("schema") != "agy_canary_uv_store_authority.v1" or
+            value.get("policy") not in {"home", "workspace"} or
             not isinstance(value.get("account_home"), str) or
             not Path(value["account_home"]).is_absolute() or
-            any(not _is_plain_int(value.get(name)) or value[name] < 0 for name in (
-                "uid", "tool_dir_dev", "tool_dir_inode", "tool_dir_mode",
-                "bin_dir_dev", "bin_dir_inode", "bin_dir_mode",
-            )) or
-            value["tool_dir_mode"] > 0o7777 or value["bin_dir_mode"] > 0o7777 or
-            value["tool_dir_mode"] & stat.S_IWOTH or value["bin_dir_mode"] & stat.S_IWOTH or
-            value.get("tool_dir") != str(Path(value["account_home"]) / ".local" / "share" / "uv" / "tools") or
-            value.get("bin_dir") != str(Path(value["account_home"]) / ".local" / "bin")):
+            not isinstance(directories, dict) or set(directories) != {
+                "tool", "bin", "cache", "python"
+            } or any(
+                not isinstance(row, dict) or set(row) != directory_fields or
+                not isinstance(row.get("path"), str) or not Path(row["path"]).is_absolute() or
+                not isinstance(row.get("resolved"), str) or not Path(row["resolved"]).is_absolute() or
+                any(not _is_plain_int(row.get(name)) or row[name] < 0 for name in (
+                    "dev", "inode", "mode", "uid"
+                )) or row["mode"] > 0o7777 or row["mode"] & stat.S_IWOTH
+                for row in directories.values()
+            ) or (value["policy"] == "home" and workspace is not None) or
+            (value["policy"] == "workspace" and (
+                not isinstance(workspace, dict) or set(workspace) != workspace_fields or
+                not isinstance(workspace.get("selector"), str) or
+                not Path(workspace["selector"]).is_absolute() or
+                not isinstance(workspace.get("resolved"), str) or
+                not Path(workspace["resolved"]).is_absolute() or
+                not isinstance(workspace.get("data"), dict) or
+                set(workspace["data"]) != directory_fields or
+                not isinstance(workspace["data"].get("path"), str) or
+                not Path(workspace["data"]["path"]).is_absolute() or
+                not isinstance(workspace["data"].get("resolved"), str) or
+                not Path(workspace["data"]["resolved"]).is_absolute() or
+                any(not _is_plain_int(workspace["data"].get(name)) or
+                    workspace["data"][name] < 0 for name in ("dev", "inode", "mode", "uid")) or
+                workspace["data"]["mode"] > 0o7777 or
+                workspace["data"]["mode"] & stat.S_IWOTH or
+                workspace.get("link_target") is not None and
+                not isinstance(workspace.get("link_target"), str) or
+                any(not _is_plain_int(workspace.get(name)) or workspace[name] < 0 for name in (
+                    "selector_dev", "selector_inode", "selector_mode", "selector_uid",
+                    "dev", "inode", "mode", "uid",
+                ))))):
         raise AgyCanaryEvidenceError("uv store authority is malformed")
     if account_home is not None and Path(value["account_home"]) != account_home.resolve(strict=True):
         raise AgyCanaryEvidenceError("uv store authority account home drifted")
-    if revalidate and _uv_store_authority(account_home=Path(value["account_home"])) != value:
-        raise AgyCanaryEvidenceError("canonical uv store authority drifted")
+    if workspace_root is not None:
+        expected_selector = str(workspace_root)
+        if value["policy"] != ("workspace" if workspace_root.is_dir() else "home") or (
+                value["policy"] == "workspace" and workspace["selector"] != expected_selector):
+            raise AgyCanaryEvidenceError("uv store authority workspace policy drifted")
+    if revalidate:
+        selector = (
+            Path(workspace["selector"]) if value["policy"] == "workspace"
+            else workspace_root if workspace_root is not None else Path(value["account_home"]) / ".absent-workspace"
+        )
+        if _uv_store_authority(
+            account_home=Path(value["account_home"]), workspace_root=selector,
+        ) != value:
+            raise AgyCanaryEvidenceError("canonical uv store authority drifted")
     return value
 
 
@@ -3055,8 +3160,10 @@ def _uv_environment(
     return {
         "HOME": authority["account_home"],
         "PATH": str(uv_executable.parent) + ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        "UV_TOOL_DIR": authority["tool_dir"],
-        "UV_TOOL_BIN_DIR": authority["bin_dir"],
+        "UV_TOOL_DIR": authority["directories"]["tool"]["path"],
+        "UV_TOOL_BIN_DIR": authority["directories"]["bin"]["path"],
+        "UV_CACHE_DIR": authority["directories"]["cache"]["path"],
+        "UV_PYTHON_INSTALL_DIR": authority["directories"]["python"]["path"],
         "UV_PYTHON": interpreter["path"],
         "UV_PYTHON_DOWNLOADS": "never",
     }
@@ -3089,7 +3196,7 @@ def _uv_tool_dir(
         timeout=30, check=False, env=environment,
     )
     tool_dir = Path(proc.stdout.strip()) if proc.returncode == 0 and proc.stdout.strip() else None
-    expected = Path(uv_store_authority["tool_dir"])
+    expected = Path(uv_store_authority["directories"]["tool"]["path"])
     if (tool_dir is None or tool_dir != expected or not tool_dir.is_absolute() or
             not tool_dir.is_dir() or tool_dir.is_symlink()):
         raise AgyCanaryEvidenceError("canonical uv tool directory is unavailable")
@@ -3239,6 +3346,34 @@ def _bootstrap_environment(
     )
 
 
+def _validate_bootstrap_uv_policy(
+    *, script_bytes: bytes, uv_store_authority: dict[str, Any],
+) -> None:
+    """Require the attested shell input to enforce the storage policy we sealed."""
+    authority = _validate_uv_store_authority(uv_store_authority, revalidate=True)
+    required = (
+        b'    export UV_CACHE_DIR="/mnt/workspace/uv-cache"\n',
+        b'    export UV_TOOL_DIR="/mnt/workspace/uv-data/tools"\n',
+        b'    export UV_PYTHON_INSTALL_DIR="/mnt/workspace/uv-data/python"\n',
+        b'export UV_CACHE_DIR=/mnt/workspace/uv-cache\n',
+        b'export UV_TOOL_DIR=/mnt/workspace/uv-data/tools\n',
+        b'export UV_PYTHON_INSTALL_DIR=/mnt/workspace/uv-data/python',
+    )
+    if (script_bytes.count(b'if [ -d /mnt/workspace ]; then\n') < 1 or
+            any(script_bytes.count(line) != 1 for line in required)):
+        raise AgyCanaryEvidenceError("bootstrap uv storage policy differs from canonical contract")
+    if authority["policy"] == "workspace":
+        expected = {
+            "tool": "/mnt/workspace/uv-data/tools",
+            "cache": "/mnt/workspace/uv-cache",
+            "python": "/mnt/workspace/uv-data/python",
+        }
+        if (authority["workspace"]["selector"] != "/mnt/workspace" or any(
+                authority["directories"][name]["path"] != path
+                for name, path in expected.items())):
+            raise AgyCanaryEvidenceError("bootstrap uv workspace authority is malformed")
+
+
 def bootstrap_attest(
     *, evidence_root: Path, dotfiles_repo: Path, plan_path: Path
 ) -> dict[str, Any]:
@@ -3283,6 +3418,9 @@ def bootstrap_attest(
         uv_store_authority=uv_store_authority,
     )
     script_bytes = inputs["bootstrap.sh"]
+    _validate_bootstrap_uv_policy(
+        script_bytes=script_bytes, uv_store_authority=uv_store_authority,
+    )
     def revalidate_inputs() -> None:
         if _clean_dotfiles_repo(repo) != head:
             raise AgyCanaryEvidenceError("bootstrap inputs drifted from the attested clean HEAD")
@@ -3376,7 +3514,8 @@ def bootstrap_attest(
                 "uv_environment": {
                     name: child_env[name] for name in (
                         "HOME", "PATH", "UV_TOOL_DIR", "UV_TOOL_BIN_DIR",
-                        "UV_PYTHON", "UV_PYTHON_DOWNLOADS",
+                        "UV_CACHE_DIR", "UV_PYTHON_INSTALL_DIR", "UV_PYTHON",
+                        "UV_PYTHON_DOWNLOADS",
                     )
                 },
                 "interpreter_authority": interpreter_authority,
@@ -3423,8 +3562,9 @@ def _validate_installation_identity(installed: Any) -> dict[str, Any]:
     store_authority = _validate_uv_store_authority(
         installed["uv_store_authority"], revalidate=False
     )
-    if (installed["uv_tool_dir"] != store_authority["tool_dir"] or
-            Path(installed["environment_root"]).parent != Path(store_authority["tool_dir"])):
+    if (installed["uv_tool_dir"] != store_authority["directories"]["tool"]["path"] or
+            Path(installed["environment_root"]).parent !=
+            Path(store_authority["directories"]["tool"]["path"])):
         raise AgyCanaryEvidenceError("bootstrap attestation uv store binding is malformed")
     provenance = installed["provenance"]
     if (not isinstance(provenance, dict) or set(provenance) != {"schema", "requirement", "receipt_sha256"} or
@@ -3490,8 +3630,8 @@ def _validate_bootstrap_attestation(
     if (not isinstance(environment_names, list) or environment_names != sorted(environment_names) or
             len(set(environment_names)) != len(environment_names) or
             environment_names != sorted({
-                "HOME", "PATH", "UV_TOOL_DIR", "UV_TOOL_BIN_DIR", "UV_PYTHON",
-                "UV_PYTHON_DOWNLOADS",
+                "HOME", "PATH", "UV_TOOL_DIR", "UV_TOOL_BIN_DIR", "UV_CACHE_DIR",
+                "UV_PYTHON_INSTALL_DIR", "UV_PYTHON", "UV_PYTHON_DOWNLOADS",
             })):
         raise AgyCanaryEvidenceError("bootstrap attestation child environment is malformed")
     authority = _validate_interpreter_authority(
@@ -3500,6 +3640,7 @@ def _validate_bootstrap_attestation(
     installed = _validate_installation_identity(bootstrap["installation"])
     store_authority = _validate_uv_store_authority(
         bootstrap["uv_store_authority"], revalidate=True, account_home=_account_home(),
+        workspace_root=_UV_WORKSPACE_ROOT,
     )
     expected_uv_environment = _uv_environment(
         uv_executable=Path(installed["uv_executable"]), interpreter_authority=authority,
@@ -4954,6 +5095,7 @@ def _validate_committed_attestation(
     )
     _validate_uv_store_authority(
         installation["uv_store_authority"], revalidate=True, account_home=_account_home(),
+        workspace_root=_UV_WORKSPACE_ROOT,
     )
     if attestation.get("installation_sha256") != _sha256(_canonical_json(installation)):
         raise AgyCanaryEvidenceError("committed finalizer installation binding is malformed")
