@@ -409,6 +409,176 @@ def test_capture_retry_revalidates_sealed_runtime_before_each_attempt(monkeypatc
         shutil.rmtree(output)
 
 
+@pytest.mark.parametrize(
+    ("provider", "mutation", "message"),
+    [
+        ("codex", "support", "package drifted"),
+        ("grok", "source", "executable drifted"),
+        ("grok", "node", "node runtime drifted"),
+    ],
+)
+def test_capture_retry_full_hashes_support_launcher_and_node_assets(
+    monkeypatch, tmp_path, provider, mutation, message,
+):
+    root = Path("/tmp") / f"phase-loop-asset-root-{os.getpid()}-{tmp_path.name}"
+    output = Path("/tmp") / f"phase-loop-asset-output-{os.getpid()}-{tmp_path.name}"
+    root.mkdir(mode=0o700)
+    output.mkdir(mode=0o700)
+    capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
+    review_dir = tmp_path / "review"
+    home = tmp_path / "home"
+    review_dir.mkdir()
+    home.mkdir(mode=0o700)
+
+    support = None
+    node = None
+    launcher = None
+    if mutation == "support":
+        support = tmp_path / "provider-support"
+        source = support / "bin" / "codex"
+        asset = support / "asset.dat"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"sealed-entry")
+        source.chmod(0o700)
+        asset.write_bytes(b"sealed-asset")
+        mutation_target = asset
+    else:
+        source = tmp_path / "grok-target"
+        source.write_bytes(b"sealed-entry")
+        source.chmod(0o700)
+        node = tmp_path / "node"
+        node.write_bytes(b"sealed-node")
+        node.chmod(0o700)
+        launcher = tmp_path / "grok"
+        launcher.symlink_to(source.name)
+        mutation_target = source if mutation == "source" else node
+
+    source_info = source.stat()
+    support_info = support.stat() if support is not None else None
+    node_info = node.stat() if node is not None else None
+    runtime = evidence._TrustedProviderRuntime(
+        provider=provider,
+        source=source,
+        device=source_info.st_dev,
+        inode=source_info.st_ino,
+        mode=source_info.st_mode & 0o7777,
+        sha256=evidence._sha256(source.read_bytes()),
+        support_source=support,
+        support_device=support_info.st_dev if support_info is not None else None,
+        support_inode=support_info.st_ino if support_info is not None else None,
+        support_mode=(support_info.st_mode & 0o7777) if support_info is not None else None,
+        support_sha256=(
+            evidence._runtime_tree_sha256(support) if support is not None else None
+        ),
+        entry_relative="bin/codex" if support is not None else "",
+        node_source=node,
+        node_device=node_info.st_dev if node_info is not None else None,
+        node_inode=node_info.st_ino if node_info is not None else None,
+        node_mode=(node_info.st_mode & 0o7777) if node_info is not None else None,
+        node_sha256=evidence._sha256(node.read_bytes()) if node is not None else None,
+        launcher=launcher,
+        launcher_target=source.name if launcher is not None else None,
+    )
+    customization_sources = {
+        "inventory": evidence.freeze_customization_inventory(
+            home=home, project_dir=review_dir, env={},
+        ),
+        "home": str(home.resolve(strict=True)),
+        "project": str(review_dir.resolve(strict=True)),
+    }
+    minimal_customizations = evidence.freeze_customization_inventory(
+        home=home, project_dir=review_dir, env={},
+    )
+    authority = evidence.ProviderLaunchAuthority(
+        provider=provider,
+        runtime=runtime,
+        namespace=evidence.AgyCanaryNamespace(
+            review_dir, home, root, "example.invalid", provider_output=output,
+        ),
+        auth_records=(),
+        auth_records_sha256=evidence._sha256(evidence._canonical_json(())),
+        customization_sources=customization_sources,
+        customization_sources_sha256=evidence._sha256(
+            evidence._canonical_json(customization_sources)
+        ),
+        minimal_customizations=minimal_customizations,
+        minimal_customizations_sha256=evidence._sha256(
+            evidence._canonical_json(minimal_customizations)
+        ),
+        auth_placeholders=(),
+        auth_placeholders_sha256=evidence._sha256(evidence._canonical_json(())),
+    )
+
+    def fake_preflight(self, argv):
+        command = list(argv)
+        object.__setattr__(
+            self, "review_launch",
+            evidence._provider_launch_identity(command, provider=self.provider),
+        )
+        return command
+
+    launched = 0
+    original_inode = mutation_target.stat().st_ino
+    original_bytes = mutation_target.read_bytes()
+
+    def mutate_after_first_attempt(_command, **_kwargs):
+        nonlocal launched
+        launched += 1
+        mutation_target.write_bytes(b"same-inode-mutation")
+        assert mutation_target.stat().st_ino == original_inode
+        return pi._LegRun(0, "", "timeout waiting for response")
+
+    monkeypatch.setattr(evidence.ProviderLaunchAuthority, "preflight", fake_preflight)
+    monkeypatch.setattr(pi, "_run_leg_with_liveness", mutate_after_first_attempt)
+    try:
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match=message):
+            pi._exec_leg(
+                provider, review_dir, output, artifact="artifact",
+                agy_capture=capture, provider_authority=authority,
+            )
+        assert launched == 1
+        assert len(authority.review_attempts) == 1
+        mutation_target.write_bytes(original_bytes)
+        clean_authority = evidence.ProviderLaunchAuthority(
+            provider=provider,
+            runtime=runtime,
+            namespace=authority.namespace,
+            auth_records=authority.auth_records,
+            auth_records_sha256=authority.auth_records_sha256,
+            customization_sources=authority.customization_sources,
+            customization_sources_sha256=authority.customization_sources_sha256,
+            minimal_customizations=authority.minimal_customizations,
+            minimal_customizations_sha256=authority.minimal_customizations_sha256,
+            auth_placeholders=authority.auth_placeholders,
+            auth_placeholders_sha256=authority.auth_placeholders_sha256,
+        )
+        clean_attempts = 0
+
+        def transient_then_success(_command, **_kwargs):
+            nonlocal clean_attempts
+            clean_attempts += 1
+            if provider == "codex" and clean_attempts == 2:
+                (output / "panel-codex.txt").write_text("AGREE")
+            return pi._LegRun(
+                0, "AGREE" if provider == "grok" and clean_attempts == 2 else "",
+                "timeout waiting for response" if clean_attempts == 1 else "",
+            )
+
+        monkeypatch.setattr(
+            pi, "_run_leg_with_liveness", transient_then_success,
+        )
+        rc, review, _log = pi._exec_leg(
+            provider, review_dir, output, artifact="artifact",
+            agy_capture=capture, provider_authority=clean_authority,
+        )
+        assert (rc, review, clean_attempts) == (0, "AGREE", 2)
+        assert len(clean_authority.review_attempts) == 2
+    finally:
+        capture.close()
+        shutil.rmtree(root)
+        shutil.rmtree(output)
+
+
 def _sibling_namespace(tmp_path: Path):
     """Build a real bwrap namespace without preparing a Gemini ledger entry."""
     root = Path("/tmp") / f"phase-loop-sibling-root-{os.getpid()}-{tmp_path.name}"
@@ -568,6 +738,7 @@ def test_capture_materializes_all_provider_authorities_from_one_bound_stage(monk
     bindings: list[tuple[bytes, bytes]] = []
     prepared: dict[str, tuple[object, Path, tuple[bytes, bytes]]] = {}
     spawned: list[str] = []
+    sealed_results: list[str] = []
 
     def bind_stage(**kwargs):
         assert kwargs["capture"] is expected_capture
@@ -582,7 +753,11 @@ def test_capture_materializes_all_provider_authorities_from_one_bound_stage(monk
         assert capture is expected_capture
         assert len(providers) == 1
         provider = providers[0]
-        authority = object()
+        output = tmp_path / f"provider-output-{provider}"
+        output.mkdir()
+        authority = SimpleNamespace(
+            namespace=SimpleNamespace(provider_output=output),
+        )
         prepared[provider] = (
             authority,
             stage,
@@ -595,14 +770,24 @@ def test_capture_materializes_all_provider_authorities_from_one_bound_stage(monk
         authority, stage, _bytes = prepared[leg]
         assert kwargs["provider_authority"] is authority
         assert kwargs["capture_stage"] == stage
-        shutil.rmtree(kwargs["capture_scratch"])
+        assert kwargs["capture_scratch"].is_dir()
+        assert stage.is_dir()
+        assert authority.namespace.provider_output.is_dir()
         spawned.append(leg)
         return "OK", "AGREE"
+
+    def seal_result(*, provider, authority, **_kwargs):
+        _prepared_authority, stage, _bytes = prepared[provider]
+        assert authority is _prepared_authority
+        assert stage.is_dir()
+        assert authority.namespace.provider_output.is_dir()
+        sealed_results.append(provider)
+        return {"synthetic": True}
 
     monkeypatch.setattr(pi, "bind_staged_review_inputs", bind_stage)
     monkeypatch.setattr(pi, "prepare_provider_launch_authorities", prepare_authority)
     monkeypatch.setattr(pi, "seal_provider_launches", lambda **_kwargs: {"synthetic": True})
-    monkeypatch.setattr(pi, "record_provider_result", lambda **_kwargs: {"synthetic": True})
+    monkeypatch.setattr(pi, "record_provider_result", seal_result)
     monkeypatch.setattr(pi, "_default_spawn_via_provider", spawn_provider)
     monkeypatch.setattr(pi, "capture_summary", lambda _capture: {"synthetic": True})
 
@@ -617,14 +802,128 @@ def test_capture_materializes_all_provider_authorities_from_one_bound_stage(monk
     assert [leg.leg for leg in result.legs] == ["codex", "gemini", "claude", "grok"]
     assert set(prepared) == {"codex", "gemini", "claude", "grok"}
     assert spawned == ["codex", "gemini", "claude", "grok"]
+    assert sealed_results == ["codex", "gemini", "claude", "grok"]
     assert len(bindings) == 1
     assert all(
         staged_bytes == bindings[0]
         for _authority, _stage, staged_bytes in prepared.values()
     )
+    assert all(not stage.parent.exists() for _authority, stage, _bytes in prepared.values())
+    assert all(
+        not authority.namespace.provider_output.exists()
+        for authority, _stage, _bytes in prepared.values()
+    )
 
 
-@pytest.mark.parametrize("failure", ["prepare", "seal", None])
+def test_capture_result_seals_before_coordinator_reclaims_scratch(monkeypatch, tmp_path):
+    root = Path("/tmp") / f"phase-loop-result-root-{os.getpid()}-{tmp_path.name}"
+    root.mkdir(mode=0o700)
+    capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
+    providers = ("codex", "gemini", "claude", "grok")
+    launches = {}
+    registry_entries = []
+
+    class Authority:
+        def __init__(self, provider, output, runtime, placeholders, projection):
+            self.provider = provider
+            self.namespace = SimpleNamespace(provider_output=output)
+            self._runtime = runtime
+            self._placeholders = placeholders
+            self._projection = projection
+
+        def runtime_authority(self):
+            return self._runtime
+
+        def auth_placeholder_proof(self):
+            return self._placeholders
+
+        def projected_auth_proof(self):
+            return self._projection
+
+        def review_attempt_proof(self):
+            return {"launch": None, "attempts": [], "terminal_attempt": None}
+
+    try:
+        for provider in providers:
+            seat_key = f"{provider}-seat"
+            scratch = Path(tempfile.mkdtemp(prefix=f"pl-panel-capture-{provider}-"))
+            stage = scratch / "review"
+            stage.mkdir(mode=0o700)
+            for name in ("review-bundle.md", "review-instructions.md"):
+                (stage / name).write_text(name)
+            output = Path("/tmp") / (
+                f"phase-loop-result-output-{provider}-{os.getpid()}-{tmp_path.name}"
+            )
+            output.mkdir(mode=0o700)
+            runtime = {"provider": provider, "sha256": provider[0] * 64}
+            placeholders = []
+            projection = {"provider": provider, "records": []}
+            authority = Authority(
+                provider, output, runtime, placeholders, projection,
+            )
+            launches[seat_key] = (authority, stage, scratch)
+            names = evidence._provider_names(provider, seat_key)
+            launch = {
+                "schema": "agy_provider_launch.v1",
+                "provider": provider,
+                "seat_key": seat_key,
+                "runtime": runtime,
+                "auth_placeholders": placeholders,
+                "projected_auth": projection,
+            }
+            launch_bytes = evidence._canonical_json(launch)
+            evidence._exclusive_write_at(
+                capture.root_fd, names["authority"], launch_bytes, 0o600,
+            )
+            registry_entries.append({
+                "provider": provider,
+                "seat_key": seat_key,
+                "authority": {
+                    "name": names["authority"],
+                    "bytes": len(launch_bytes),
+                    "sha256": evidence._sha256(launch_bytes),
+                },
+                "result_name": names["result"],
+            })
+        registry = {
+            "schema": "agy_provider_launch_registry.v1",
+            "launch_authority_sha256": "a" * 64,
+            "stage_binding_sha256": "b" * 64,
+            "entries": registry_entries,
+        }
+        evidence._exclusive_write_at(
+            capture.root_fd, evidence._PROVIDER_REGISTRY_NAME,
+            evidence._canonical_json(registry), 0o600,
+        )
+        seat_key = "codex-seat"
+        authority, stage, scratch = launches[seat_key]
+        monkeypatch.setattr(pi, "_exec_leg", lambda *_args, **_kwargs: (0, "", ""))
+        assert pi._default_spawn(
+            "codex", "review", agy_capture=capture, seat_key=seat_key,
+            provider_authority=authority, capture_stage=stage,
+            capture_scratch=scratch,
+        ) == ("EMPTY", "")
+        assert scratch.is_dir() and stage.is_dir()
+        assert authority.namespace.provider_output.is_dir()
+        result = evidence.record_provider_result(
+            capture=capture, provider="codex", seat_key=seat_key,
+            authority=authority, status="EMPTY", text="", detail=None,
+        )
+        assert result["schema"] == "agy_provider_result.v1"
+        assert (root / evidence._provider_names("codex", seat_key)["result"]).is_file()
+        pi._cleanup_capture_launches(launches)
+        assert all(
+            not scratch_path.exists() and
+            not launch_authority.namespace.provider_output.exists()
+            for launch_authority, _stage, scratch_path in launches.values()
+        )
+    finally:
+        capture.close()
+        pi._cleanup_capture_launches(launches)
+        shutil.rmtree(root)
+
+
+@pytest.mark.parametrize("failure", ["prepare", "seal", "result", None])
 def test_capture_setup_always_reclaims_scratch_and_provider_outputs(monkeypatch, tmp_path, failure):
     from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
 
@@ -653,7 +952,12 @@ def test_capture_setup_always_reclaims_scratch_and_provider_outputs(monkeypatch,
         (lambda **_kwargs: (_ for _ in ()).throw(evidence.AgyCanaryEvidenceError("seal failed")))
         if failure == "seal" else lambda **_kwargs: {"synthetic": True},
     )
-    monkeypatch.setattr(pi, "record_provider_result", lambda **_kwargs: {"synthetic": True})
+    monkeypatch.setattr(
+        pi, "record_provider_result",
+        (lambda **_kwargs: (_ for _ in ()).throw(
+            evidence.AgyCanaryEvidenceError("result seal failed")
+        )) if failure == "result" else lambda **_kwargs: {"synthetic": True},
+    )
     monkeypatch.setattr(pi, "capture_summary", lambda _capture: {"synthetic": True})
     monkeypatch.setattr(pi, "_default_spawn_via_provider", lambda *_args, **_kwargs: ("OK", "AGREE"))
 

@@ -3754,11 +3754,11 @@ def _default_spawn(
     except Exception as exc:  # fail-closed
         return "DEGRADED", str(exc)[:200]
     finally:
-        if provider_output_dir is not None:
+        if provider_output_dir is not None and agy_capture is None:
             shutil.rmtree(provider_output_dir, ignore_errors=True)
         if base is not None:
             shutil.rmtree(base, ignore_errors=True)
-        if capture_scratch is not None:
+        if capture_scratch is not None and agy_capture is None:
             shutil.rmtree(capture_scratch, ignore_errors=True)
 
 

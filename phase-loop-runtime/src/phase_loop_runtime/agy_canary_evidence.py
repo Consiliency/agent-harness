@@ -822,13 +822,17 @@ class ProviderLaunchAuthority:
                     ("mode" in record and format(stat.S_IMODE(info.st_mode), "04o") != record["mode"])):
                 raise AgyCanaryEvidenceError(f"{self.provider} authentication bind drifted")
 
-    def command(self, argv: list[str]) -> list[str]:
+    def _command(self, argv: list[str], *, full_assets: bool) -> list[str]:
         if not argv or argv[0] != _PROVIDER_EXECUTABLES[self.provider]:
             raise AgyCanaryEvidenceError("provider authority command has the wrong executable")
-        self._revalidate()
+        self._revalidate(full_assets=full_assets)
         return self.namespace.command(
             self.runtime.child_argv(argv[1:]), runtime_binds=self.runtime.runtime_binds()
         )
+
+    def command(self, argv: list[str]) -> list[str]:
+        """Build a standalone launch command from freshly hashed provider assets."""
+        return self._command(argv, full_assets=True)
 
     def outer_environment(self) -> dict[str, str]:
         return self.namespace.outer_environment()
@@ -842,13 +846,10 @@ class ProviderLaunchAuthority:
 
     def preflight(self, argv: list[str]) -> list[str]:
         """Run the namespace visibility check immediately before returning argv."""
-        # A full runtime/asset digest is expensive for native CLI payloads, so do
-        # it once at the preflight boundary.  Internal status/version probes and
-        # the final argv still revalidate entry, launcher, node, and auth identity
-        # without repeatedly hashing hundreds of MiB.  A same-UID host mutation
-        # after this check remains an unavoidable path-bind TOCTOU limit; all
-        # runtime mounts are read-only to the child and no HOME tree is exposed.
-        self._revalidate(full_assets=True)
+        # The namespace self-test does not execute the provider runtime.  Each
+        # provider probe below uses ``command`` and therefore hashes all mounted
+        # assets exactly once immediately before its subprocess boundary.
+        self._revalidate()
         namespace_self_test(namespace=self.namespace)
         checks = [("version", ["--version"])]
         if self.provider in _PROVIDER_STATUS_COMMANDS:
@@ -866,7 +867,10 @@ class ProviderLaunchAuthority:
                 raise AgyCanaryEvidenceError(
                     f"{self.provider} {label} preflight failed inside capture namespace"
                 )
-        command = self.command(argv)
+        # The review subprocess has not started yet.  Build its immutable argv
+        # after a cheap identity check; ``record_review_attempt`` performs the
+        # full byte revalidation immediately before every actual attempt/retry.
+        command = self._command(argv, full_assets=False)
         launch = _provider_launch_identity(command, provider=self.provider)
         if self.review_launch is None:
             object.__setattr__(self, "review_launch", launch)
@@ -880,8 +884,10 @@ class ProviderLaunchAuthority:
         """Bind one actual preflight-wrapped review attempt in execution order."""
         # This is the per-subprocess boundary: retries reuse the preflight argv,
         # but must never reuse a runtime or projected credential that changed
-        # after an earlier attempt.
-        self._revalidate()
+        # after an earlier attempt.  Full bytes are read every time; the remaining
+        # same-UID race is only the narrow interval after this read and before the
+        # kernel consumes the already-built read-only mount argv.
+        self._revalidate(full_assets=True)
         launch = _provider_launch_identity(command, provider=self.provider)
         if self.review_launch != launch:
             raise AgyCanaryEvidenceError("provider review attempt was not preflight-authorized")
