@@ -249,7 +249,14 @@ def record_content_tdd_receipt(
         )
     nodeids = _collect_nodeids(repo, red_argv)
     collected_paths = {nodeid.split("::", 1)[0] for nodeid in nodeids}
-    missing_paths = sorted(set(expected_test_paths) - collected_paths)
+    missing_paths = sorted(
+        expected
+        for expected in expected_test_paths
+        if not any(
+            observed == expected or expected.endswith(f"/{observed}")
+            for observed in collected_paths
+        )
+    )
     if missing_paths:
         raise FreezeReceiptError(
             "red_test_coverage_incomplete",
