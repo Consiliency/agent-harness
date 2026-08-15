@@ -1349,7 +1349,7 @@
           "transition": "authority_switch"
         },
         {
-          "at": "2026-08-15T15:03:49Z",
+          "at": "2026-08-15T15:13:23Z",
           "by": "clawdbot-agent-harness-codex",
           "metadata": {
             "acceptance_evidence": {
@@ -1371,7 +1371,7 @@
               "issue_dispositions_sha256": "a0505c05098ea24d7d9348be0d9f72629b5a89ffb1a29cd5cc61f665e52dda93",
               "spec_delta_decision": "no_spec_delta",
               "spec_delta_path": ".phase-loop/evidence/GOVLEAN/spec-delta-closeout.json",
-              "spec_delta_sha256": "8e1ee7f67d65265daf5beec77b6edd2822c6200fc9ee0957e8d88de99908cd38"
+              "spec_delta_sha256": "c2a995958f74712c0745861d9584a4311be0eda65bcf8e3b3a3a1727b02e5290"
             },
             "content_tdd_receipt_sha256": "26a6deb564e82a9ff8eb34758b068e0d1661d2b8f8fcbfd056eb145568e3ca43",
             "exact_main_oid": "bb51ffb9a4773e5c2cf98248e8136179eb128e38",
@@ -1416,14 +1416,14 @@
               "agent-harness#554"
             ],
             "phase_metrics": {
-              "elapsed_seconds": 58620,
+              "elapsed_seconds": 59194,
               "future_history_pins": 0,
               "issues_closed": 1,
               "issues_opened": 4,
-              "merged_prs": 4,
+              "merged_prs": 5,
               "plan_words": 2173,
-              "support_prs": 2,
-              "support_share_percent": 50.0,
+              "support_prs": 4,
+              "support_share_percent": 80.0,
               "target_misses": [
                 "support_share",
                 "issues_closed_gte_opened"
@@ -1449,7 +1449,7 @@
       "status": "completed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-15T15:03:49Z"
+      "updated_at": "2026-08-15T15:13:23Z"
     },
     {
       "acceptance_criteria_count": null,
