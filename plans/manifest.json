@@ -1349,7 +1349,7 @@
           "transition": "authority_switch"
         },
         {
-          "at": "2026-08-15T14:53:25Z",
+          "at": "2026-08-15T15:03:49Z",
           "by": "clawdbot-agent-harness-codex",
           "metadata": {
             "acceptance_evidence": {
@@ -1365,6 +1365,14 @@
               "EC-GOVLEAN-9": "covered in producer-manifest group"
             },
             "authority_switch_pr": "agent-harness#556",
+            "closeout_evidence": {
+              "documentation_decision": "no_doc_delta",
+              "issue_dispositions_path": ".phase-loop/evidence/GOVLEAN/issue-dispositions.json",
+              "issue_dispositions_sha256": "a0505c05098ea24d7d9348be0d9f72629b5a89ffb1a29cd5cc61f665e52dda93",
+              "spec_delta_decision": "no_spec_delta",
+              "spec_delta_path": ".phase-loop/evidence/GOVLEAN/spec-delta-closeout.json",
+              "spec_delta_sha256": "8e1ee7f67d65265daf5beec77b6edd2822c6200fc9ee0957e8d88de99908cd38"
+            },
             "content_tdd_receipt_sha256": "26a6deb564e82a9ff8eb34758b068e0d1661d2b8f8fcbfd056eb145568e3ca43",
             "exact_main_oid": "bb51ffb9a4773e5c2cf98248e8136179eb128e38",
             "if_gates_produced": [
@@ -1407,6 +1415,21 @@
               "agent-harness#552",
               "agent-harness#554"
             ],
+            "phase_metrics": {
+              "elapsed_seconds": 58620,
+              "future_history_pins": 0,
+              "issues_closed": 1,
+              "issues_opened": 4,
+              "merged_prs": 4,
+              "plan_words": 2173,
+              "support_prs": 2,
+              "support_share_percent": 50.0,
+              "target_misses": [
+                "support_share",
+                "issues_closed_gte_opened"
+              ],
+              "unrelated_landing_amendments": 0
+            },
             "phase_alias": "GOVLEAN",
             "tests_only_landing": "1c4e6ca3b8a12914619b6b93512275bc3f2d6e46"
           },
@@ -1426,7 +1449,7 @@
       "status": "completed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-15T14:53:25Z"
+      "updated_at": "2026-08-15T15:03:49Z"
     },
     {
       "acceptance_criteria_count": null,
