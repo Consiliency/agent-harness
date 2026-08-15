@@ -2742,6 +2742,28 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
         _prefix, payload = evidence._parse_final_payload(plan.read_bytes())
         assert payload["proof"]["provider_results"] == proof["provider_results"]
         assert payload["attestation"]["proof"]["provider_results"] == proof["provider_results"]
+        inputs = json.loads((root / "agy_canary_inputs.json").read_text())
+        assert payload["attestation"]["completed_at"] == inputs["completed_at"]
+        assert payload["attestation"]["manifest_after_sha256"] == evidence._sha256(
+            manifest.read_bytes()
+        )
+        for invalid_completed_at in (
+            None, "not-a-timestamp", {"unexpected": "object"},
+            payload["attestation"]["completed_at"].replace("+00:00", "Z"),
+        ):
+            malformed_attestation = json.loads(json.dumps(payload["attestation"]))
+            malformed_attestation["completed_at"] = invalid_completed_at
+            with pytest.raises(
+                evidence.AgyCanaryEvidenceError, match="completion time",
+            ):
+                evidence._validate_final_attestation_envelope(malformed_attestation)
+        for invalid_manifest_sha256 in (None, "A" * 64, "0" * 63, {}):
+            malformed_attestation = json.loads(json.dumps(payload["attestation"]))
+            malformed_attestation["manifest_after_sha256"] = invalid_manifest_sha256
+            with pytest.raises(
+                evidence.AgyCanaryEvidenceError, match="manifest digest",
+            ):
+                evidence._validate_final_attestation_envelope(malformed_attestation)
         assert set(payload["attestation"]["bootstrap"]) == {
             "repo_head", "tree_snapshot", "blobs", "input_sha256", "sandbox",
         }
@@ -2844,8 +2866,43 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
             agent_harness_repo=repo, handoff_commit=release["handoff_commit"],
         )
         assert detached_result == committed_result
+        for index, tampered_timestamp in enumerate(
+            ("tampered", None, {"unexpected": "object"}), start=1,
+        ):
+            subprocess.run(
+                ["git", "-C", str(repo), "checkout", "-q", committed], check=True,
+            )
+            manifest.write_bytes(evidence._canonical_json({
+                "plans": [{
+                    "slug": "agy-canary", "updated_at": tampered_timestamp,
+                }],
+            }))
+            subprocess.run(
+                ["git", "-C", str(repo), "add", "plans/manifest.json"], check=True,
+            )
+            subprocess.run(
+                [
+                    "git", "-C", str(repo), "commit", "-qm",
+                    f"manifest timestamp tamper {index}",
+                ],
+                check=True,
+            )
+            timestamp_tamper = subprocess.check_output(
+                ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True,
+            ).strip()
+            with pytest.raises(
+                evidence.AgyCanaryEvidenceError, match="committed manifest",
+            ):
+                evidence.check_committed_final(
+                    dotfiles_repo=repo, commit=timestamp_tamper,
+                    plan_path=Path("plans/canary.md"),
+                    manifest_path=Path("plans/manifest.json"),
+                    plan_slug="agy-canary", agent_harness_repo=repo,
+                    handoff_commit=release["handoff_commit"],
+                )
+        subprocess.run(["git", "-C", str(repo), "checkout", "-q", committed], check=True)
         bootstrap = json.loads((root / "agy_canary_bootstrap_attestation.json").read_text())
-        with pytest.raises(evidence.AgyCanaryEvidenceError, match="release"):
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="attestation schema"):
             evidence._validate_committed_attestation(
                 repo=repo,
                 attestation={

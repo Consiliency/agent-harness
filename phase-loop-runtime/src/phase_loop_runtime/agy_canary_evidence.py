@@ -75,6 +75,11 @@ _FINAL_GOVERNANCE_POSTURE = {
     "human_required": True,
     "blocker_class": "admin_approval",
 }
+_FINAL_ATTESTATION_KEYS = frozenset({
+    "bootstrap", "release", "release_sha256", "wheel_binding_sha256",
+    "installation", "installation_sha256", "proof", "reducer_proof_sha256",
+    "completed_at", "manifest_after_sha256",
+})
 _PRIVATE_BOARD_RESERVED_NAMES = frozenset({
     _CLEANUP_STATE_NAME,
     _SETTINGS_SNAPSHOT_NAME,
@@ -6180,8 +6185,33 @@ def _finalize_targets_transactionally(plan_target: _FinalTarget, manifest_target
         raise
 
 
+def _validate_final_attestation_envelope(attestation: Any) -> dict[str, Any]:
+    if not isinstance(attestation, dict) or set(attestation) != _FINAL_ATTESTATION_KEYS:
+        raise AgyCanaryEvidenceError("final attestation schema is malformed")
+    completed_at = attestation.get("completed_at")
+    try:
+        completed = datetime.fromisoformat(completed_at) if isinstance(completed_at, str) else None
+    except ValueError as exc:
+        raise AgyCanaryEvidenceError("final attestation completion time is malformed") from exc
+    if (
+        completed is None
+        or completed.tzinfo is None
+        or completed.utcoffset() != timezone.utc.utcoffset(completed)
+        or completed.isoformat() != completed_at
+    ):
+        raise AgyCanaryEvidenceError("final attestation completion time is malformed")
+    manifest_sha256 = attestation.get("manifest_after_sha256")
+    if (
+        not isinstance(manifest_sha256, str)
+        or re.fullmatch(r"[0-9a-f]{64}", manifest_sha256) is None
+    ):
+        raise AgyCanaryEvidenceError("final attestation manifest digest is malformed")
+    return attestation
+
+
 def _final_suffix(proof: dict[str, Any], attestation: dict[str, Any]) -> bytes:
     _validate_final_proof(proof)
+    _validate_final_attestation_envelope(attestation)
     payload = {"attestation": attestation, "proof": proof, "proof_sha256": _sha256(_canonical_json(proof)), "schema": "agy_canary_final.v1"}
     return b"\n## Execution evidence\n\n```json\n" + _canonical_json(payload) + b"```\n"
 
@@ -6349,12 +6379,10 @@ def check_private_final(
             raise AgyCanaryEvidenceError("private finalizer receipt is not bound to current proof and targets")
         plan_before = base64.b64decode(str(inputs.get("plan_before_b64", "")), validate=True)
         manifest_before = base64.b64decode(str(inputs.get("manifest_before_b64", "")), validate=True)
-        completed_at = inputs.get("completed_at")
-        if not isinstance(completed_at, str):
-            raise AgyCanaryEvidenceError("private finalizer receipt lacks completion time")
-        attestation = inputs.get("attestation")
-        if not isinstance(attestation, dict):
-            raise AgyCanaryEvidenceError("private finalizer receipt lacks attested identities")
+        attestation = _validate_final_attestation_envelope(inputs.get("attestation"))
+        completed_at = attestation["completed_at"]
+        if inputs.get("completed_at") != completed_at:
+            raise AgyCanaryEvidenceError("private finalizer receipt completion time is malformed")
         release = attestation.get("release")
         installation = attestation.get("installation")
         if (not isinstance(release, dict) or
@@ -6378,6 +6406,8 @@ def check_private_final(
             raise AgyCanaryEvidenceError("private finalizer receipt has an invalid manifest preimage")
         matches[0]["updated_at"] = completed_at
         manifest_after = _canonical_json(manifest_value)
+        if attestation["manifest_after_sha256"] != _sha256(manifest_after):
+            raise AgyCanaryEvidenceError("private finalizer manifest digest is malformed")
         candidate = bootstrap_receipt["repo_head"]
         candidate_plan = subprocess.run(
             ["git", "-C", str(repo), "show", f"{candidate}:{plan_relative}"],
@@ -6457,7 +6487,8 @@ def check_committed_final(
     resolved = _git_text(repo, "rev-parse", f"{commit}^{{commit}}")
     after_plan = subprocess.run(["git", "-C", str(repo), "show", f"{resolved}:{plan_relative}"], capture_output=True, check=False).stdout
     prefix, payload = _parse_final_payload(after_plan)
-    bootstrap = payload["attestation"].get("bootstrap")
+    attestation = _validate_final_attestation_envelope(payload["attestation"])
+    bootstrap = attestation.get("bootstrap")
     candidate = bootstrap.get("repo_head") if isinstance(bootstrap, dict) else None
     if not isinstance(candidate, str):
         raise AgyCanaryEvidenceError("committed finalizer payload lacks bootstrap candidate")
@@ -6465,17 +6496,17 @@ def check_committed_final(
     before_plan = subprocess.run(["git", "-C", str(repo), "show", f"{candidate}:{plan_relative}"], capture_output=True, check=False).stdout
     before_manifest = subprocess.run(["git", "-C", str(repo), "show", f"{candidate}:{manifest_relative}"], capture_output=True, check=False).stdout
     _validate_committed_attestation(
-        repo=repo, attestation=payload["attestation"], plan_relative=plan_relative,
+        repo=repo, attestation=attestation, plan_relative=plan_relative,
         manifest_relative=manifest_relative, plan_before=before_plan, manifest_before=before_manifest,
     )
-    if payload["attestation"].get("proof") != _proof_identity(payload["proof"]) or payload["attestation"].get("reducer_proof_sha256") != _sha256(_canonical_json(payload["proof"])):
+    if attestation.get("proof") != _proof_identity(payload["proof"]) or attestation.get("reducer_proof_sha256") != _sha256(_canonical_json(payload["proof"])):
         raise AgyCanaryEvidenceError("committed proof does not match attested reducer identity")
     changed = _git_text(repo, "diff", "--name-only", candidate, resolved).splitlines()
     if sorted(changed) != sorted([plan_relative, manifest_relative]):
         raise AgyCanaryEvidenceError("committed finalizer transform changed unexpected paths")
     if prefix != before_plan:
         raise AgyCanaryEvidenceError("committed plan prefix differs from bootstrap candidate preimage")
-    release = payload["attestation"]["release"]
+    release = attestation["release"]
     if release != _reconcile_release_lineage(
         repo=agent_harness_repo.resolve(strict=True), handoff_commit=handoff_commit
     ):
@@ -6483,19 +6514,19 @@ def check_committed_final(
     after_manifest = subprocess.run(["git", "-C", str(repo), "show", f"{resolved}:{manifest_relative}"], capture_output=True, check=False).stdout
     try:
         before_value = json.loads(before_manifest)
-        after_value = json.loads(after_manifest)
     except json.JSONDecodeError as exc:
         raise AgyCanaryEvidenceError("committed manifest is not JSON") from exc
     entries_before = before_value.get("plans") if isinstance(before_value, dict) else None
-    entries_after = after_value.get("plans") if isinstance(after_value, dict) else None
     matches_before = [item for item in entries_before or [] if isinstance(item, dict) and item.get("slug") == plan_slug]
-    matches_after = [item for item in entries_after or [] if isinstance(item, dict) and item.get("slug") == plan_slug]
-    if len(matches_before) != 1 or len(matches_after) != 1:
+    if len(matches_before) != 1:
         raise AgyCanaryEvidenceError("committed finalizer transform lacks one target manifest entry")
-    completed_at = matches_after[0].get("updated_at")
-    matches_before[0]["updated_at"] = completed_at
-    if _canonical_json(before_value) != after_manifest:
-        raise AgyCanaryEvidenceError("committed manifest changed outside canonical updated_at transform")
+    matches_before[0]["updated_at"] = attestation["completed_at"]
+    expected_manifest = _canonical_json(before_value)
+    if (
+        expected_manifest != after_manifest
+        or attestation["manifest_after_sha256"] != _sha256(expected_manifest)
+    ):
+        raise AgyCanaryEvidenceError("committed manifest differs from sealed finalizer transform")
     return {
         "commit": resolved,
         "proof_sha256": payload["proof_sha256"],
@@ -6511,12 +6542,10 @@ def _validate_committed_attestation(
     plan_before: bytes, manifest_before: bytes,
 ) -> None:
     """Validate every bootstrap/release identity embedded in a committed suffix."""
-    bootstrap = attestation.get("bootstrap") if isinstance(attestation, dict) else None
-    release = attestation.get("release") if isinstance(attestation, dict) else None
-    if (not isinstance(attestation, dict) or set(attestation) != {
-            "bootstrap", "release", "release_sha256", "wheel_binding_sha256",
-            "installation", "installation_sha256", "proof", "reducer_proof_sha256"
-    } or not isinstance(bootstrap, dict) or not isinstance(release, dict) or
+    attestation = _validate_final_attestation_envelope(attestation)
+    bootstrap = attestation.get("bootstrap")
+    release = attestation.get("release")
+    if (not isinstance(bootstrap, dict) or not isinstance(release, dict) or
             attestation["release_sha256"] != _sha256(_canonical_json(release))):
         raise AgyCanaryEvidenceError("committed finalizer payload lacks attested bootstrap/release identities")
     _validate_release_identity(release)
@@ -6677,9 +6706,13 @@ def finalize_canary(
         matches = [entry for entry in entries or [] if isinstance(entry, dict) and entry.get("slug") == plan_slug]
         if len(matches) != 1:
             raise AgyCanaryEvidenceError("finalizer could not identify one manifest plan")
-        plan_after = plan_before + _final_suffix(proof, inputs["attestation"])
         matches[0]["updated_at"] = completed_at
         manifest_after = _canonical_json(manifest_value)
+        inputs["attestation"].update({
+            "completed_at": completed_at,
+            "manifest_after_sha256": _sha256(manifest_after),
+        })
+        plan_after = plan_before + _final_suffix(proof, inputs["attestation"])
         plan_target.replacement = plan_after
         manifest_target.replacement = manifest_after
         inputs.update({
