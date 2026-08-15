@@ -98,3 +98,10 @@ def test_manifest_rejects_missing_or_unclassified_output_inputs():
         producer.ProducerManifest(entries=missing_archive_tool)
 
     assert excinfo.value.code == "producer_manifest_incomplete"
+
+    unclassified = _entries()
+    unclassified["archive_tool"]["posture"] = "FLOATING"
+    with pytest.raises(producer.ProducerManifestError) as excinfo:
+        producer.ProducerManifest(entries=unclassified)
+
+    assert excinfo.value.code == "producer_manifest_invalid_posture"

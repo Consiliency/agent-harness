@@ -68,6 +68,7 @@ def test_bootstrap_writer_records_sorted_content_bound_red_evidence_and_raw_logs
         }
     ]
     assert payload["red_command"] == _red_command(relative)
+    assert payload["red_argv"] == shlex.split(_red_command(relative))
     assert payload["red_environment"] == {freeze.ACTIVATION_ENV: "1"}
     assert payload["red_nodeids"] == [f"{relative}::test_intentionally_red"]
     assert payload["red_exit_status"] != 0
@@ -138,6 +139,26 @@ def test_bootstrap_writer_requires_the_deliberate_red_anchor(tmp_path: Path) -> 
         )
 
     assert excinfo.value.code == "red_anchor_missing"
+
+
+def test_bootstrap_writer_executes_every_frozen_pytest_file(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    anchor = _write_red_test(repo)
+    second = "test_second_contract.py"
+    (repo / second).write_text(
+        "def test_second_contract():\n    assert False, 'second frozen contract'\n",
+        encoding="utf-8",
+    )
+    _commit(repo, second, "add second frozen contract")
+
+    _receipt, payload = _record_red_receipt(repo, "test_*.py")
+
+    assert anchor in payload["red_argv"]
+    assert second in payload["red_argv"]
+    assert {nodeid.split("::", 1)[0] for nodeid in payload["red_nodeids"]} == {
+        anchor,
+        second,
+    }
 
 
 def test_forced_red_fires_the_intended_govlean_anchor() -> None:

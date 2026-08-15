@@ -33,7 +33,7 @@ def govlean_forced() -> bool:
     return os.environ.get(ACTIVATION_ENV) == "1"
 
 
-def _phase_has_started(repo_root: Path | None = None) -> bool:
+def govlean_phase_started(repo_root: Path | None = None) -> bool:
     root = repo_root or Path(__file__).resolve().parents[2]
     manifest = root / "plans" / "manifest.json"
     try:
@@ -50,7 +50,7 @@ def govlean_api_available(
     module_name: str, *attributes: str, repo_root: Path | None = None
 ) -> bool:
     """Activate frozen tests after their API exists, or during forced RED."""
-    if govlean_forced() or _phase_has_started(repo_root):
+    if govlean_forced() or govlean_phase_started(repo_root):
         return True
     try:
         module = importlib.import_module(module_name)
@@ -141,12 +141,30 @@ def _forced_environment() -> dict[str, str]:
     return {**os.environ, ACTIVATION_ENV: "1"}
 
 
-def _collect_nodeids(repo: Path, red_command: str) -> tuple[str, ...]:
+def _effective_red_argv(
+    repo: Path,
+    red_command: str,
+    test_files: Sequence[tuple[str, str]],
+) -> tuple[list[str], tuple[str, ...]]:
     argv = _command_argv(repo, red_command)
     try:
-        pytest_index = argv.index("pytest")
+        argv.index("pytest")
     except ValueError as exc:
         raise FreezeReceiptError("red_command_not_pytest", "red command must invoke pytest") from exc
+    expected_test_paths = tuple(
+        relative
+        for relative, _digest in test_files
+        if Path(relative).name.startswith("test_") and Path(relative).suffix == ".py"
+    )
+    for relative in expected_test_paths:
+        if relative not in argv:
+            argv.append(relative)
+    return argv, expected_test_paths
+
+
+def _collect_nodeids(repo: Path, red_argv: Sequence[str]) -> tuple[str, ...]:
+    argv = list(red_argv)
+    pytest_index = argv.index("pytest")
     collect_argv = [*argv[: pytest_index + 1], "--collect-only", *argv[pytest_index + 1 :]]
     completed = subprocess.run(
         collect_argv,
@@ -213,8 +231,9 @@ def record_content_tdd_receipt(
                 f"{relative} differs from the declared tests-only landing",
             )
 
+    red_argv, expected_test_paths = _effective_red_argv(repo, red_command, test_files)
     red = subprocess.run(
-        _command_argv(repo, red_command),
+        red_argv,
         cwd=repo,
         check=False,
         capture_output=True,
@@ -228,7 +247,14 @@ def record_content_tdd_receipt(
             "red_anchor_missing",
             "the recorded pytest failure did not fire the GOVLEAN RED anchor",
         )
-    nodeids = _collect_nodeids(repo, red_command)
+    nodeids = _collect_nodeids(repo, red_argv)
+    collected_paths = {nodeid.split("::", 1)[0] for nodeid in nodeids}
+    missing_paths = sorted(set(expected_test_paths) - collected_paths)
+    if missing_paths:
+        raise FreezeReceiptError(
+            "red_test_coverage_incomplete",
+            f"pytest did not collect every frozen test file: {missing_paths}",
+        )
 
     stdout_path = out.with_name(f"{out.stem}.red.stdout.log")
     stderr_path = out.with_name(f"{out.stem}.red.stderr.log")
@@ -240,6 +266,7 @@ def record_content_tdd_receipt(
             {"path": relative, "sha256": digest} for relative, digest in test_files
         ],
         "red_command": red_command,
+        "red_argv": red_argv,
         "red_environment": {ACTIVATION_ENV: "1"},
         "red_nodeids": list(nodeids),
         "red_exit_status": red.returncode,

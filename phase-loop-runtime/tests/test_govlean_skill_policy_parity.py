@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from .govlean_freeze_receipt import govlean_forced
+from .govlean_freeze_receipt import govlean_forced, govlean_phase_started
 
 REPO = Path(__file__).resolve().parents[2]
 SKILLS_SRC = REPO / "skills-src"
@@ -45,7 +45,10 @@ POLICY_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
     (
         "proof-cost-findings",
-        ("five minutes", "multiple failures"),
+        (
+            "single node over roughly five minutes",
+            "unable to report multiple failures",
+        ),
     ),
 )
 
@@ -59,7 +62,7 @@ def _source_policy_present() -> bool:
 
 
 pytestmark = pytest.mark.skipif(
-    not govlean_forced() and not _source_policy_present(),
+    not govlean_forced() and not govlean_phase_started() and not _source_policy_present(),
     reason="GOVLEAN fleet prose policy absent",
 )
 
