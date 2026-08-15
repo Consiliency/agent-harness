@@ -2785,6 +2785,31 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
         assert checked["inputs_sha256"] == result["inputs_sha256"]
         assert checked["canonical_proof_sha256"] == canonical_proof_sha256
         assert {name: checked[name] for name in evidence._FINAL_GOVERNANCE_POSTURE} == evidence._FINAL_GOVERNANCE_POSTURE
+        inputs_path = root / "agy_canary_inputs.json"
+        for replacement, message in (
+            (..., "receipt schema"),
+            ("0" * 64, "manifest digest"),
+            (None, "receipt digest"),
+        ):
+            tampered_inputs = json.loads(json.dumps(inputs))
+            if replacement is ...:
+                del tampered_inputs["manifest_after_sha256"]
+            else:
+                tampered_inputs["manifest_after_sha256"] = replacement
+            inputs_path.write_bytes(evidence._canonical_json(tampered_inputs))
+            with pytest.raises(evidence.AgyCanaryEvidenceError, match=message):
+                evidence.check_private_final(
+                    evidence_root=root, expected_seat_key="gemini-primary",
+                    dotfiles_repo=repo, plan_path=Path("plans/canary.md"),
+                    manifest_path=Path("plans/manifest.json"),
+                    plan_slug="agy-canary",
+                )
+        inputs_path.write_bytes(evidence._canonical_json(inputs))
+        assert evidence.check_private_final(
+            evidence_root=root, expected_seat_key="gemini-primary",
+            dotfiles_repo=repo, plan_path=Path("plans/canary.md"),
+            manifest_path=Path("plans/manifest.json"), plan_slug="agy-canary",
+        ) == checked
         private_runtime_tamper = json.loads(json.dumps(proof))
         private_runtime_tamper["provider_results"]["registry_sha256"] = "0" * 64
         monkeypatch.setattr(

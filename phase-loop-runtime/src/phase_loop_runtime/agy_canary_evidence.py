@@ -80,6 +80,12 @@ _FINAL_ATTESTATION_KEYS = frozenset({
     "installation", "installation_sha256", "proof", "reducer_proof_sha256",
     "completed_at", "manifest_after_sha256",
 })
+_FINAL_INPUT_KEYS = frozenset({
+    "schema", "proof", "proof_sha256", "completed_at", "attestation",
+    "plan_before_sha256", "plan_after_sha256", "manifest_before_sha256",
+    "manifest_after_sha256", "plan", "manifest", "plan_slug",
+    "plan_before_b64", "manifest_before_b64",
+})
 _PRIVATE_BOARD_RESERVED_NAMES = frozenset({
     _CLEANUP_STATE_NAME,
     _SETTINGS_SNAPSHOT_NAME,
@@ -6375,10 +6381,38 @@ def check_private_final(
             require_preimages=False,
         )
         inputs = _read_json_at(root_fd, _INPUTS_NAME)
-        if inputs.get("proof") != proof or inputs.get("plan") != plan_relative or inputs.get("manifest") != manifest_relative or inputs.get("plan_slug") != plan_slug:
+        if (
+            set(inputs) != _FINAL_INPUT_KEYS
+            or inputs.get("schema") != "agy_canary_inputs.v1"
+        ):
+            raise AgyCanaryEvidenceError("private finalizer receipt schema is malformed")
+        digest_names = (
+            "proof_sha256", "plan_before_sha256", "plan_after_sha256",
+            "manifest_before_sha256", "manifest_after_sha256",
+        )
+        if any(
+            not isinstance(inputs.get(name), str)
+            or re.fullmatch(r"[0-9a-f]{64}", inputs[name]) is None
+            for name in digest_names
+        ):
+            raise AgyCanaryEvidenceError("private finalizer receipt digest is malformed")
+        if (
+            inputs.get("proof") != proof
+            or inputs["proof_sha256"] != _sha256(_canonical_json(proof))
+            or inputs.get("plan") != plan_relative
+            or inputs.get("manifest") != manifest_relative
+            or inputs.get("plan_slug") != plan_slug
+        ):
             raise AgyCanaryEvidenceError("private finalizer receipt is not bound to current proof and targets")
-        plan_before = base64.b64decode(str(inputs.get("plan_before_b64", "")), validate=True)
-        manifest_before = base64.b64decode(str(inputs.get("manifest_before_b64", "")), validate=True)
+        if not isinstance(inputs.get("plan_before_b64"), str) or not isinstance(inputs.get("manifest_before_b64"), str):
+            raise AgyCanaryEvidenceError("private finalizer receipt preimages are malformed")
+        plan_before = base64.b64decode(inputs["plan_before_b64"], validate=True)
+        manifest_before = base64.b64decode(inputs["manifest_before_b64"], validate=True)
+        if (
+            inputs["plan_before_sha256"] != _sha256(plan_before)
+            or inputs["manifest_before_sha256"] != _sha256(manifest_before)
+        ):
+            raise AgyCanaryEvidenceError("private finalizer receipt preimage digest is malformed")
         attestation = _validate_final_attestation_envelope(inputs.get("attestation"))
         completed_at = attestation["completed_at"]
         if inputs.get("completed_at") != completed_at:
@@ -6406,7 +6440,12 @@ def check_private_final(
             raise AgyCanaryEvidenceError("private finalizer receipt has an invalid manifest preimage")
         matches[0]["updated_at"] = completed_at
         manifest_after = _canonical_json(manifest_value)
-        if attestation["manifest_after_sha256"] != _sha256(manifest_after):
+        manifest_after_sha256 = _sha256(manifest_after)
+        if (
+            inputs["plan_after_sha256"] != _sha256(plan_after)
+            or inputs["manifest_after_sha256"] != manifest_after_sha256
+            or attestation["manifest_after_sha256"] != manifest_after_sha256
+        ):
             raise AgyCanaryEvidenceError("private finalizer manifest digest is malformed")
         candidate = bootstrap_receipt["repo_head"]
         candidate_plan = subprocess.run(
