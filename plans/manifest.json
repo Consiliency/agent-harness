@@ -1860,13 +1860,13 @@
       "acceptance_criteria_count": null,
       "created_at": "2026-07-30T04:08:46Z",
       "file": "plans/phase-plan-v10-PROOFGATE.md",
-      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260730T035716Z-01-proofgate-plan.md",
+      "handoff_ref": null,
       "if_gates_produced": [
         "IF-0-PROOFGATE-1"
       ],
       "lanes": [
-        "SL-0",
         "SL-1",
+        "SL-0",
         "SL-2"
       ],
       "lifecycle": [
@@ -2468,11 +2468,35 @@
             }
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-15T16:11:50Z",
+          "by": "clawdbot-agent-harness-codex",
+          "metadata": {
+            "fresh_plan_rewrite": {
+              "authored_by": "gpt-5.6-sol",
+              "consumes": [
+                "IF-0-GOVLEAN-1",
+                "IF-0-LEGIBLE-2"
+              ],
+              "future_history_pins": 0,
+              "operator_directive": "substitute-grok-4.6-for-fable",
+              "plan_sha256": "17026f3864bf6340ae98aace3062d954194a88c8a18a45f4d2d27a560b69f66a",
+              "plan_words": 1937,
+              "prior_plan_sha256": "41c4d442f4cd41b68823c5240b61b187d1299f9d6c79cecbec0c19617dd2938e",
+              "ratification_status": "pending",
+              "roadmap_sha256": "c66949236043e46e956caec1c09d0c19d0e8751e4ce2891de1fe2edf24e9fea1",
+              "run_president_override": "grok-4.6",
+              "single_author_vendor": "gemini",
+              "supersedes_prior_execution_choreography": true
+            }
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
       "phase_alias": "PROOFGATE",
-      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/333d0320/codex-v10-plan-proofgate/20260730T035716Z-01-proofgate-plan.md",
+      "reflection_ref": null,
       "roadmap_ref": {
         "file": "specs/phase-plans-v10.md",
         "slug": "phase-plans-v10",
@@ -2483,7 +2507,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-06T02:42:36Z"
+      "updated_at": "2026-08-15T16:11:50Z"
     },
     {
       "acceptance_criteria_count": null,
