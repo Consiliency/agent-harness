@@ -3917,6 +3917,19 @@ def test_provider_retry_revalidates_real_source_inventory_after_preflight(
         authority = evidence.prepare_provider_launch_authorities(
             capture=capture, stage=stage, providers=("gemini",),
         )["gemini"]
+        path_resolve = evidence.Path.resolve
+        resolver_target_path = (
+            Path("/run")
+            / f"phase-loop-resolver-{os.getpid()}-{tmp_path.name}"
+            / "resolv.conf"
+        )
+
+        def resolver_target(path: Path, *, strict: bool = False) -> Path:
+            if path == Path("/etc/resolv.conf"):
+                return resolver_target_path
+            return path_resolve(path, strict=strict)
+
+        monkeypatch.setattr(evidence.Path, "resolve", resolver_target)
         command = authority.command(["agy", "-p", "secret"])
         object.__setattr__(
             authority, "review_launch",
