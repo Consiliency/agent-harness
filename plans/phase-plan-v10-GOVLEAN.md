@@ -76,8 +76,8 @@ SL-1 — Process, skills, and docs sweep
 |---|---|---|---|---|---|
 | `SL0-T0` | `test` | (none) | new SL-0 test/support files plus the existing LEGIBLE digest-mirror test | seven `test_govlean_*` modules, receipt bootstrap, and canonical roadmap-digest consumption | `uv run --project phase-loop-runtime pytest -q phase-loop-runtime/tests/test_govlean_{plan_pin_lint,tdd_receipts,declared_identity,producer_manifest,proof_stages,roadmap_reseal,panel_policy}.py phase-loop-runtime/tests/test_legible_review_repairs.py` |
 | `SL0-I0` | `impl` | `TG-GOVLEAN-0` | SL-0 production/source and seal-representation files | frozen; edits forbidden | same targeted command, now GREEN |
-| `SL0-T1` | `test` | `TG-GOVLEAN-0` | `test_review_policy_govlean_repairs.py` | post-review tier-routing, president-re-ask availability, and tracked-digest bypass falsifiers | `uv run --project phase-loop-runtime pytest -q phase-loop-runtime/tests/test_review_policy_govlean_repairs.py` must fail for the intended assertions before repair |
-| `SL0-I1` | `impl` | `SL0-T1` | `panel_invoker.py`, `plan_pin_lint.py`, and `gate_a_cleanroom.sh` | all original GOVLEAN tests remain frozen; `SL0-T1` becomes repair-frozen | original SL-0 command plus `SL0-T1`, now GREEN |
+| `SL0-T1` | `test` | `SL0-I0` | `test_review_policy_govlean_repairs.py` | post-review tier-routing, president-re-ask availability, and tracked-digest bypass falsifiers | `uv run --project phase-loop-runtime pytest -q phase-loop-runtime/tests/test_review_policy_govlean_repairs.py` must fail for the intended assertions before repair |
+| `SL0-I1` | `impl` | `SL0-I0`, `SL0-T1` | `panel_invoker.py`, `plan_pin_lint.py`, and `gate_a_cleanroom.sh` | all original GOVLEAN tests remain frozen; `SL0-T1` becomes repair-frozen | original SL-0 command plus `SL0-T1`, now GREEN |
 | `SL0-V0` | `verify` | `SL0-I1` | SL-0 owned files | all SL-0 tests plus the repair regression | receipt verification, targeted regression, reseal `--check`, validator controls |
 
 ### SL-1 — Process, skills, and docs sweep
@@ -91,7 +91,7 @@ SL-1 — Process, skills, and docs sweep
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
 | `SL1-T0` | `test` | (none) | two new SL-1 tests plus the existing phase-completion compatibility test | issue omission/schema negatives, agent-harness#548 lossless extension-field roundtrip, fleet-source parity, and frozen existing-caller compatibility | `uv run --project phase-loop-runtime pytest -q phase-loop-runtime/tests/test_govlean_{plan_manifest_issue_dispositions,skill_policy_parity}.py phase-loop-runtime/tests/test_skill_plan_manifest_write.py` |
-| `SL1-I0` | `impl` | `TG-GOVLEAN-0`, `SL0-I0` | `plan_manifest.py` and twelve exact skill sources | all SL-1 tests frozen; edits forbidden | same targeted command, now GREEN |
+| `SL1-I0` | `impl` | `TG-GOVLEAN-0`, `SL0-V0` | `plan_manifest.py` and twelve exact skill sources | all SL-1 tests frozen; edits forbidden | same targeted command, now GREEN |
 | `SL1-I1` | `impl` | `SL1-I0` | generated neutral and packaged skill directories plus the launch-spec golden affected by execute-phase prose | frozen; edits forbidden | run `regenerate_skills_bundle.py`, `sync_skills_bundle.py`, then intentionally regenerate the launch-spec golden |
 | `SL1-V0` | `verify` | `SL1-I1` | all SL-1 owned files and closeout evidence | both SL-1 tests plus existing parity tests | focused and whole-phase commands below |
 
