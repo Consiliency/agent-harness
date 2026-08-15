@@ -9,6 +9,7 @@ import errno
 import hashlib
 import json
 import os
+import re
 import secrets
 import shutil
 import stat
@@ -52,6 +53,7 @@ _REVIEW_INSTRUCTION_GENERATOR = "phase_loop_runtime.panel_invoker._resolve_brief
 _SAFE_PRESETS = frozenset({"request-review", "strict"})
 _CAPTURE_MODES = frozenset({"stream_json", "trajectory_store"})
 _CAPABILITY_PROBE_SCHEMA = "agy_capability_probe.v2"
+_MAX_FULL_STAGED_READ_BYTES = 64 * 1024
 _CAPABILITY_CLASSES = (
     ("allowed_read", "read_file", "/run/phase-loop-review", "success"),
     ("allowed_write", "write_file", "/run/phase-loop-review/.agy-capability-write", "success"),
@@ -1056,6 +1058,8 @@ def bind_staged_review_inputs(
             if (not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600 or
                     data != expected):
                 raise AgyCanaryEvidenceError("staged review bytes differ from parent render")
+            if len(data) > _MAX_FULL_STAGED_READ_BYTES:
+                raise AgyCanaryEvidenceError("staged review file exceeds full-read evidence limit")
             staged[name] = {"bytes": len(data), "sha256": _sha256(data)}
     finally:
         os.close(review_fd)
@@ -2944,7 +2948,28 @@ def _uv_tool_dir(uv_executable: Path) -> Path:
     return tool_dir.resolve(strict=True)
 
 
-def _installed_phase_loop_identity(*, uv_executable: Path | None = None) -> dict[str, str]:
+def _uv_registry_provenance(*, tool_dir: Path, version: str) -> dict[str, str]:
+    """Bind uv's registry-tool receipt; registry installs have no direct_url.json."""
+    receipt = tool_dir / "phase-loop-runtime" / "uv-receipt.toml"
+    try:
+        raw, info = _read_regular_path(receipt)
+    except (FileNotFoundError, OSError) as exc:
+        raise AgyCanaryEvidenceError("canonical uv registry receipt is unavailable") from exc
+    if not stat.S_ISREG(info.st_mode):
+        raise AgyCanaryEvidenceError("canonical uv registry receipt is unsafe")
+    match = re.search(
+        rb'^requirements = \[\{ name = "phase-loop-runtime", specifier = "==([^"\r\n]+)" \}\]$',
+        raw, flags=re.MULTILINE,
+    )
+    if match is None or match.group(1).decode("ascii", errors="strict") != version:
+        raise AgyCanaryEvidenceError("canonical uv registry receipt does not pin phase-loop version")
+    return {
+        "schema": "uv_registry_receipt.v1", "requirement": f"phase-loop-runtime=={version}",
+        "receipt_sha256": _sha256(raw),
+    }
+
+
+def _installed_phase_loop_identity(*, uv_executable: Path | None = None) -> dict[str, Any]:
     """Inspect only uv's canonical managed entrypoint, not an ambient PATH shim."""
     uv = _canonical_uv() if uv_executable is None else uv_executable.resolve(strict=True)
     tool_dir = _uv_tool_dir(uv)
@@ -2961,10 +2986,8 @@ def _installed_phase_loop_identity(*, uv_executable: Path | None = None) -> dict
         "import importlib.metadata as m,json,pathlib,phase_loop_runtime; "
         "d=m.distribution('phase-loop-runtime'); root=pathlib.Path(d.locate_file('')).resolve(); "
         "module=pathlib.Path(phase_loop_runtime.__file__).resolve(); "
-        "direct=next((pathlib.Path(d.locate_file(f)) for f in d.files or [] if f.name=='direct_url.json'),None); "
         "value={'version':d.version,'distribution_root':str(root),'module_origin':str(module),"
-        "'direct_url_sha256':__import__('hashlib').sha256(direct.read_bytes()).hexdigest() if direct else '',"
-        "'direct_url':json.loads(direct.read_text()) if direct else {}}; print(json.dumps(value,sort_keys=True))"
+        "}; print(json.dumps(value,sort_keys=True))"
     )
     proc = subprocess.run(
         [str(interpreter), "-I", "-c", program], capture_output=True, text=True, timeout=30,
@@ -2974,22 +2997,18 @@ def _installed_phase_loop_identity(*, uv_executable: Path | None = None) -> dict
         value = json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
         raise AgyCanaryEvidenceError("phase-loop interpreter did not identify its distribution") from exc
-    if proc.returncode != 0 or not isinstance(value, dict) or not all(isinstance(value.get(key), str) for key in ("version", "distribution_root", "module_origin", "direct_url_sha256")):
+    if proc.returncode != 0 or not isinstance(value, dict) or not all(isinstance(value.get(key), str) for key in ("version", "distribution_root", "module_origin")):
         raise AgyCanaryEvidenceError("phase-loop installed distribution identity is invalid")
     root = Path(value["distribution_root"])
     module = Path(value["module_origin"])
-    direct = value.get("direct_url")
-    if not module.is_relative_to(root) or not isinstance(direct, dict):
+    if not module.is_relative_to(root):
         raise AgyCanaryEvidenceError("phase-loop module ownership is invalid")
-    archive = direct.get("archive_info")
-    if not isinstance(direct.get("url"), str) or not isinstance(archive, dict) or not isinstance(archive.get("hash"), str):
-        raise AgyCanaryEvidenceError("phase-loop direct-wheel provenance is unavailable")
     return {
         "uv_executable": str(uv), "uv_tool_dir": str(tool_dir),
         "console_script": str(script), "interpreter": str(interpreter),
         "version": value["version"], "distribution_root": str(root),
-        "module_origin": str(module), "direct_url_sha256": value["direct_url_sha256"],
-        "archive_hash": archive["hash"], "archive_url_sha256": _sha256(direct["url"].encode()),
+        "module_origin": str(module),
+        "provenance": _uv_registry_provenance(tool_dir=tool_dir, version=value["version"]),
     }
 
 
@@ -3158,7 +3177,7 @@ def bootstrap_attest(
 
 
 def _validate_bootstrap_attestation(
-    *, receipt: Any, repo: Path | None = None, installation: dict[str, str] | None = None,
+    *, receipt: Any, repo: Path | None = None, installation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Accept only a complete, directly-produced bootstrap receipt."""
     if not isinstance(receipt, dict) or set(receipt) != {
@@ -3217,21 +3236,24 @@ def _validate_bootstrap_attestation(
     installed = bootstrap["installation"]
     expected_installation = {
         "uv_executable", "uv_tool_dir", "console_script", "interpreter", "version",
-        "distribution_root", "module_origin", "direct_url_sha256", "archive_hash",
-        "archive_url_sha256",
+        "distribution_root", "module_origin", "provenance",
     }
+    installation_strings = expected_installation - {"provenance"}
     if (not isinstance(installed, dict) or set(installed) != expected_installation or
-            any(not isinstance(installed.get(name), str) or not installed[name] for name in expected_installation) or
-            installed["version"] != "0.7.14" or not _is_digest(installed["direct_url_sha256"]) or
-            not _is_digest(installed["archive_url_sha256"]) or
-            not installed["archive_hash"].startswith("sha256=") or
-            not _is_digest(installed["archive_hash"].removeprefix("sha256=")) or
+            any(not isinstance(installed.get(name), str) or not installed[name] for name in installation_strings) or
+            installed["version"] != "0.7.14" or
             any(not Path(installed[name]).is_absolute() for name in (
                 "uv_executable", "uv_tool_dir", "console_script", "interpreter",
                 "distribution_root", "module_origin",
             )) or
             not Path(installed["module_origin"]).is_relative_to(Path(installed["distribution_root"]))):
         raise AgyCanaryEvidenceError("bootstrap attestation installation identity is malformed")
+    provenance = installed["provenance"]
+    if (not isinstance(provenance, dict) or set(provenance) != {"schema", "requirement", "receipt_sha256"} or
+            provenance.get("schema") != "uv_registry_receipt.v1" or
+            provenance.get("requirement") != "phase-loop-runtime==0.7.14" or
+            not _is_digest(provenance.get("receipt_sha256"))):
+        raise AgyCanaryEvidenceError("bootstrap attestation registry provenance is malformed")
     if installation is not None and installed != installation:
         raise AgyCanaryEvidenceError("bootstrap attestation installation identity drifted")
     if repo is not None:
@@ -3605,8 +3627,10 @@ def prepare_canary(
         if len(wheel_rows) != 1:
             raise AgyCanaryEvidenceError("release lineage has no unique wheel")
         wheel = wheel_rows[0]
-        if installation.get("version") != release["version"] or installation.get("archive_hash") not in {f"sha256={wheel['sha256']}", wheel["sha256"]} or installation.get("archive_url_sha256") != wheel["url_sha256"]:
-            raise AgyCanaryEvidenceError("installed phase-loop provenance does not match verified wheel")
+        if (installation.get("version") != release["version"] or
+                installation.get("provenance", {}).get("requirement") !=
+                f"phase-loop-runtime=={release['version']}"):
+            raise AgyCanaryEvidenceError("installed phase-loop registry receipt does not match verified release")
         capture = AgyCanaryCapture(root, root_fd)
         ledger = create_capture(
             capture=capture,

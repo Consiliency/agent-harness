@@ -52,19 +52,21 @@ def _git_repo(repo: Path) -> None:
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", "initial"], check=True)
 
 
-def _installation_identity() -> dict[str, str]:
+def _installation_identity() -> dict[str, object]:
     return {
         "uv_executable": "/tool/bin/uv", "uv_tool_dir": "/tool",
         "console_script": "/tool/phase-loop-runtime/bin/phase-loop", "interpreter": "/tool/python",
         "version": "0.7.14", "distribution_root": "/tool/site-packages",
         "module_origin": "/tool/site-packages/phase_loop_runtime/__init__.py",
-        "direct_url_sha256": "a" * 64, "archive_hash": "sha256=" + "b" * 64,
-        "archive_url_sha256": "c" * 64,
+        "provenance": {
+            "schema": "uv_registry_receipt.v1", "requirement": "phase-loop-runtime==0.7.14",
+            "receipt_sha256": "a" * 64,
+        },
     }
 
 
 def _bootstrap_receipt(
-    *, installation: dict[str, str], plan_bytes: bytes = b"review this\n",
+    *, installation: dict[str, object], plan_bytes: bytes = b"review this\n",
     repo_head: str = "d" * 40, blobs: dict[str, str] | None = None,
     input_sha256: dict[str, str] | None = None,
 ) -> dict[str, object]:
@@ -97,6 +99,22 @@ def _probe_runtime_record() -> dict[str, object]:
         "mode": stat.S_IMODE(info.st_mode), "sha256": evidence._sha256(source.read_bytes()),
         "version": "1.1.13",
     }
+
+
+def test_uv_registry_receipt_binds_normal_tool_install_requirement(tmp_path):
+    tool_dir = tmp_path / "uv-tools"
+    receipt = tool_dir / "phase-loop-runtime" / "uv-receipt.toml"
+    receipt.parent.mkdir(parents=True)
+    receipt.write_text(
+        '[tool]\nrequirements = [{ name = "phase-loop-runtime", specifier = "==0.7.14" }]\n'
+        'entrypoints = [{ name = "phase-loop", install-path = "/tmp/phase-loop", from = "phase-loop-runtime" }]\n'
+    )
+    provenance = evidence._uv_registry_provenance(tool_dir=tool_dir, version="0.7.14")
+    assert provenance["requirement"] == "phase-loop-runtime==0.7.14"
+    assert provenance["receipt_sha256"] == evidence._sha256(receipt.read_bytes())
+    receipt.write_text('[tool]\nrequirements = [{ name = "phase-loop-runtime", specifier = "==0.7.13" }]\n')
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="does not pin"):
+        evidence._uv_registry_provenance(tool_dir=tool_dir, version="0.7.14")
 
 
 def test_clean_settings_cli_removes_exact_rule_and_preserves_structure(tmp_path, capsys):
@@ -2028,6 +2046,29 @@ def test_stage_binding_rejects_swapped_plan_or_parent_instruction(monkeypatch, t
                 evidence.prepare_provider_launch_authorities(
                     capture=capture, stage=stage, providers=("gemini",)
                 )
+        finally:
+            capture.close()
+    finally:
+        shutil.rmtree(root)
+
+
+def test_stage_binding_rejects_bundle_too_large_for_exact_full_read(monkeypatch, tmp_path):
+    root = _private_root(tmp_path)
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    bundle = b"x" * (evidence._MAX_FULL_STAGED_READ_BYTES + 1)
+    try:
+        (stage / "review-bundle.md").write_bytes(bundle)
+        (stage / "review-instructions.md").write_text("instructions")
+        for name in ("review-bundle.md", "review-instructions.md"):
+            (stage / name).chmod(0o600)
+        capture = _prepare_production_capture(
+            monkeypatch=monkeypatch, tmp_path=tmp_path, root=root,
+            settings=_settings(tmp_path, []), seat_key="gemini-primary", plan_bytes=bundle,
+        )
+        try:
+            with pytest.raises(evidence.AgyCanaryEvidenceError, match="full-read evidence limit"):
+                _bind_stage(capture, stage)
         finally:
             capture.close()
     finally:
