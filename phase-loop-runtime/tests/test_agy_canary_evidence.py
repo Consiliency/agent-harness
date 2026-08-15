@@ -5404,7 +5404,7 @@ def test_tree_snapshot_real_inventory_scale_fits_process_boundary():
 
 
 def test_exact_dotfiles_head_snapshot_boundary_when_checkout_is_available():
-    head = "2fa21195d361ed436c2ccd5bd69d2c6ee76a1203"
+    head = "d06373a502af27707e941358ff814a1a9c5bdaef"
     plan_path = "plans/detailed-replan-176-agy-review-boundary-20260803-0715.md"
     candidates = [
         Path(value) for value in (
@@ -5435,14 +5435,14 @@ def test_exact_dotfiles_head_snapshot_boundary_when_checkout_is_available():
     plan_blob = subprocess.check_output(
         ["git", "-C", str(repo), "rev-parse", f"{head}:{plan_path}"], text=True,
     ).strip()
-    assert plan_blob == "540b6d01989d75ccd428708faa6b108db45a51e9"
-    assert len(plan) == 218_215
+    assert plan_blob == "7fc4fbeacc024f14e53a95f48a4a86ab2e4a39bb"
+    assert len(plan) == 218_851
     assert snapshot.authority == {
         "schema": evidence._TREE_SNAPSHOT_SCHEMA,
         "commit": head,
-        "tree_oid": "fff1ba85380b43804c2a48dafd5101bf2043487c",
+        "tree_oid": "214b207af0da4dda7f3fffb275da6050b3e24fc3",
         "mount_path": str(repo),
-        "inventory_sha256": "58cf77070f1946321362f01c6c31e1dde374012964eace9e96b928e75c94bedb",
+        "inventory_sha256": "ca44349352e069af5d2f15bb2c5d82c4df846eaa1872446fdf06d08ec0f0a254",
         "entry_count": 1_212, "file_count": 1_212,
         "executable_count": 161, "symlink_count": 0,
         "gitlink_count": 1,
