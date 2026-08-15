@@ -21,20 +21,43 @@ from typing import Any, Sequence
 
 SCHEMA = "content_tdd_receipt.v1"
 ACTIVATION_ENV = "PHASE_LOOP_TDD_EXPECT_GOVLEAN"
+RED_ANCHOR_MARKER = "GOVLEAN deliberate RED anchor"
+DEFAULT_FROZEN_SUPPORT_PATHS = (
+    "phase-loop-runtime/tests/govlean_freeze_receipt.py",
+    "phase-loop-runtime/tests/test_legible_review_repairs.py",
+    "phase-loop-runtime/tests/test_skill_plan_manifest_write.py",
+)
 
 
 def govlean_forced() -> bool:
     return os.environ.get(ACTIVATION_ENV) == "1"
 
 
-def govlean_api_available(module_name: str, *attributes: str) -> bool:
+def _phase_has_started(repo_root: Path | None = None) -> bool:
+    root = repo_root or Path(__file__).resolve().parents[2]
+    manifest = root / "plans" / "manifest.json"
+    try:
+        payload = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    for entry in payload.get("plans", ()):
+        if entry.get("slug") == "v10-GOVLEAN":
+            return entry.get("status") in {"executing", "completed"}
+    return False
+
+
+def govlean_api_available(
+    module_name: str, *attributes: str, repo_root: Path | None = None
+) -> bool:
     """Activate frozen tests after their API exists, or during forced RED."""
-    if govlean_forced():
+    if govlean_forced() or _phase_has_started(repo_root):
         return True
     try:
         module = importlib.import_module(module_name)
+    except ModuleNotFoundError as exc:
+        return exc.name != module_name
     except ImportError:
-        return False
+        return True
     return all(hasattr(module, attribute) for attribute in attributes)
 
 
@@ -92,10 +115,16 @@ def _command_argv(repo: Path, command: str) -> list[str]:
     return argv
 
 
-def _test_files(repo: Path, test_glob: str) -> tuple[tuple[str, str], ...]:
+def _test_files(
+    repo: Path,
+    test_glob: str,
+    support_paths: Sequence[str] = (),
+) -> tuple[tuple[str, str], ...]:
     pattern = test_glob if Path(test_glob).is_absolute() else str(repo / test_glob)
+    matched = {Path(match) for match in glob.glob(pattern, recursive=True)}
+    matched.update(repo / path for path in support_paths)
     files: list[tuple[str, str]] = []
-    for raw_path in sorted(Path(match) for match in glob.glob(pattern, recursive=True)):
+    for raw_path in sorted(matched):
         if raw_path.is_symlink() or not raw_path.is_file():
             raise FreezeReceiptError("invalid_test_path", f"test path must be a regular file: {raw_path}")
         try:
@@ -106,6 +135,10 @@ def _test_files(repo: Path, test_glob: str) -> tuple[tuple[str, str], ...]:
     if not files:
         raise FreezeReceiptError("no_test_files", f"test glob matched no files: {test_glob}")
     return tuple(files)
+
+
+def _forced_environment() -> dict[str, str]:
+    return {**os.environ, ACTIVATION_ENV: "1"}
 
 
 def _collect_nodeids(repo: Path, red_command: str) -> tuple[str, ...]:
@@ -121,6 +154,7 @@ def _collect_nodeids(repo: Path, red_command: str) -> tuple[str, ...]:
         check=False,
         capture_output=True,
         text=True,
+        env=_forced_environment(),
     )
     if completed.returncode != 0:
         raise FreezeReceiptError("node_collection_failed", "pytest --collect-only must succeed")
@@ -146,13 +180,14 @@ def record_content_tdd_receipt(
     red_command: str,
     landing_ref: str,
     out: Path,
+    support_paths: Sequence[str] = (),
 ) -> dict[str, Any]:
     """Run a required RED command and write a content-bound receipt plus raw logs."""
     repo = Path(repo).resolve()
     out = Path(out)
     if not out.is_absolute():
         out = repo / out
-    test_files = _test_files(repo, test_glob)
+    test_files = _test_files(repo, test_glob, support_paths)
 
     landing_commit = _git_text(repo, "rev-parse", f"{landing_ref}^{{commit}}")
     landing_tree_digest = _git_text(repo, "rev-parse", f"{landing_commit}^{{tree}}")
@@ -183,9 +218,16 @@ def record_content_tdd_receipt(
         cwd=repo,
         check=False,
         capture_output=True,
+        env=_forced_environment(),
     )
-    if red.returncode == 0:
-        raise FreezeReceiptError("red_command_succeeded", "the recorded command must be RED")
+    if red.returncode != 1:
+        code = "red_command_succeeded" if red.returncode == 0 else "red_command_invalid_exit"
+        raise FreezeReceiptError(code, "the recorded pytest command must exit with test failures")
+    if RED_ANCHOR_MARKER.encode("utf-8") not in red.stdout + red.stderr:
+        raise FreezeReceiptError(
+            "red_anchor_missing",
+            "the recorded pytest failure did not fire the GOVLEAN RED anchor",
+        )
     nodeids = _collect_nodeids(repo, red_command)
 
     stdout_path = out.with_name(f"{out.stem}.red.stdout.log")
@@ -198,6 +240,7 @@ def record_content_tdd_receipt(
             {"path": relative, "sha256": digest} for relative, digest in test_files
         ],
         "red_command": red_command,
+        "red_environment": {ACTIVATION_ENV: "1"},
         "red_nodeids": list(nodeids),
         "red_exit_status": red.returncode,
         "red_stdout_path": stdout_path.relative_to(out.parent).as_posix(),
@@ -235,6 +278,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             red_command=args.red_command,
             landing_ref=args.landing_ref,
             out=args.out,
+            support_paths=DEFAULT_FROZEN_SUPPORT_PATHS,
         )
     except FreezeReceiptError as exc:
         print(f"govlean_freeze_receipt: {exc.code}: {exc}", file=sys.stderr)

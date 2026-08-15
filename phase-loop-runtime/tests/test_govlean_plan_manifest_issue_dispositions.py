@@ -586,8 +586,19 @@ def test_update_lifecycle_preserves_same_entry_lifecycle_events_extension(
         "codex-execute-phase",
         {"run_id": "ah548-probe"},
     )
+    update_lifecycle(
+        repo,
+        "v10-CONFORM",
+        "completed",
+        "codex-execute-phase",
+        {
+            "verification_status": "passed",
+            "issue_inventory": [],
+            "issue_dispositions": [],
+        },
+    )
     preserved = _raw_entry(repo, "v10-CONFORM")
-    assert preserved["status"] == "executing"
+    assert preserved["status"] == "completed"
     assert "lifecycle_events" in preserved, (
         "agent-harness#548: update_lifecycle dropped lifecycle_events"
     )
@@ -597,5 +608,7 @@ def test_update_lifecycle_preserves_same_entry_lifecycle_events_extension(
     assert preserved["lifecycle_events"] == seeded["lifecycle_events"]
     assert preserved["extension_note"] == seeded["extension_note"]
     modeled = read_manifest(repo).plans[0]
-    assert [event.transition for event in modeled.lifecycle][-1] == "executing"
-    assert modeled.lifecycle[-1].metadata["run_id"] == "ah548-probe"
+    assert [event.transition for event in modeled.lifecycle][-2:] == ["executing", "completed"]
+    assert modeled.lifecycle[-2].metadata["run_id"] == "ah548-probe"
+    assert modeled.lifecycle[-1].metadata["issue_inventory"] == []
+    assert modeled.lifecycle[-1].metadata["issue_dispositions"] == []

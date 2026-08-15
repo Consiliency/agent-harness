@@ -102,6 +102,45 @@ def test_president_descends_only_through_typed_availability_failures_and_never_o
     assert blocking.model == "fable"
 
 
+def test_president_ladder_reaches_gemini_without_skipping_a_rung():
+    panel = _panel()
+    attempts: list[str] = []
+    expected = ("fable", "sol", "grok-4.5", "gemini-3.6")
+
+    def invoke(model: str, _prompt: str):
+        attempts.append(model)
+        if model != expected[-1]:
+            return {"status": "unavailable", "code": "president_unavailable"}
+        return {"status": "ok", "text": _valid_ruling("proceed")}
+
+    ruling = panel.invoke_president(
+        findings=("GOV-1: validate evidence",),
+        invoke=invoke,
+        max_substantive_rounds=3,
+    )
+
+    assert tuple(panel.PRESIDENT_LADDER) == expected
+    assert attempts == list(expected)
+    assert ruling.model == "gemini-3.6"
+
+
+def test_president_does_not_descend_on_an_untyped_or_nonavailability_failure():
+    panel = _panel()
+    attempts: list[str] = []
+
+    with pytest.raises(panel.PresidentPolicyError):
+        panel.invoke_president(
+            findings=("GOV-1: validate evidence",),
+            invoke=lambda model, _prompt: (
+                attempts.append(model)
+                or {"status": "error", "code": "provider_protocol_error"}
+            ),
+            max_substantive_rounds=3,
+        )
+
+    assert attempts == ["fable"]
+
+
 def test_degraded_read_only_president_cannot_defer_validation_it_identified_as_necessary():
     panel = _panel()
 
