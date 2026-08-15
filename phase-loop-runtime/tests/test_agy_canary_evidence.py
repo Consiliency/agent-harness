@@ -58,17 +58,23 @@ def _git_repo(repo: Path) -> None:
 
 def _installation_identity() -> dict[str, object]:
     interpreter_authority = evidence._system_interpreter_authority()
+    uv_store_authority = evidence._uv_store_authority(
+        account_home=evidence._account_home()
+    )
+    tool_dir = Path(uv_store_authority["tool_dir"])
+    environment_root = tool_dir / "phase-loop-runtime"
     return {
-        "uv_executable": "/tool/bin/uv", "uv_tool_dir": "/tool",
-        "console_script": "/tool/phase-loop-runtime/bin/phase-loop",
+        "uv_executable": "/tool/bin/uv", "uv_tool_dir": str(tool_dir),
+        "console_script": str(environment_root / "bin" / "phase-loop"),
         "interpreter": interpreter_authority["path"],
         "version": "0.7.14",
-        "distribution_root": "/tool/phase-loop-runtime/lib/python/site-packages",
-        "module_origin": "/tool/phase-loop-runtime/lib/python/site-packages/phase_loop_runtime/__init__.py",
-        "environment_root": "/tool/phase-loop-runtime",
+        "distribution_root": str(environment_root / "lib" / "python" / "site-packages"),
+        "module_origin": str(environment_root / "lib" / "python" / "site-packages" / "phase_loop_runtime" / "__init__.py"),
+        "environment_root": str(environment_root),
         "console_script_sha256": "b" * 64,
         "interpreter_sha256": interpreter_authority["sha256"],
         "interpreter_authority": interpreter_authority,
+        "uv_store_authority": uv_store_authority,
         "package_tree_sha256": "d" * 64, "record_sha256": "e" * 64,
         "provenance": {
             "schema": "uv_registry_receipt.v1", "requirement": "phase-loop-runtime==0.7.14",
@@ -134,7 +140,12 @@ def _installed_wheel_fixture(
 ) -> tuple[dict[str, object], dict[str, object], dict[str, Path]]:
     wheel = _synthetic_wheel() if wheel is None else wheel
     release = _release_identity(wheel=wheel)
-    environment_root = tmp_path / "uv-tools" / "phase-loop-runtime"
+    account_home = tmp_path / "account-home"
+    (account_home / ".local" / "share" / "uv" / "tools").mkdir(parents=True)
+    (account_home / ".local" / "bin").mkdir(parents=True)
+    uv_store_authority = evidence._uv_store_authority(account_home=account_home)
+    tool_dir = Path(uv_store_authority["tool_dir"])
+    environment_root = tool_dir / "phase-loop-runtime"
     root = environment_root / "lib" / "python3.13" / "site-packages"
     paths: dict[str, Path] = {}
     installed_rows: list[list[str]] = []
@@ -182,7 +193,7 @@ def _installed_wheel_fixture(
     module = root / "phase_loop_runtime" / "__init__.py"
     installation = {
         "uv_executable": str(tmp_path / "bin" / "uv"),
-        "uv_tool_dir": str(tmp_path / "uv-tools"),
+        "uv_tool_dir": str(tool_dir),
         "console_script": str(environment_root / "bin" / "phase-loop"),
         "interpreter": interpreter_authority["path"], "version": "0.7.14",
         "distribution_root": str(root), "module_origin": str(module),
@@ -190,6 +201,7 @@ def _installed_wheel_fixture(
         "console_script_sha256": evidence._sha256(generated[environment_root / "bin" / "phase-loop"]),
         "interpreter_sha256": interpreter_authority["sha256"],
         "interpreter_authority": interpreter_authority,
+        "uv_store_authority": uv_store_authority,
         "package_tree_sha256": evidence._runtime_tree_sha256(module.parent),
         "record_sha256": evidence._sha256(record.read_bytes()),
         "provenance": {
@@ -209,6 +221,17 @@ def _bootstrap_receipt(
 ) -> dict[str, object]:
     interpreter_authority = installation["interpreter_authority"]
     assert isinstance(interpreter_authority, dict)
+    uv_store_authority = installation["uv_store_authority"]
+    assert isinstance(uv_store_authority, dict)
+    uv_executable = Path(str(installation["uv_executable"]))
+    uv_environment = {
+        "HOME": str(uv_store_authority["account_home"]),
+        "PATH": str(uv_executable.parent) + ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "UV_TOOL_DIR": str(uv_store_authority["tool_dir"]),
+        "UV_TOOL_BIN_DIR": str(uv_store_authority["bin_dir"]),
+        "UV_PYTHON": str(interpreter_authority["path"]),
+        "UV_PYTHON_DOWNLOADS": "never",
+    }
     paths = ("bootstrap.sh", "shared/agent-harness.pin", "plans/manifest.json", "plans/canary.md")
     blobs = {name: "a" * 40 for name in paths} if blobs is None else blobs
     input_sha256 = {
@@ -227,12 +250,11 @@ def _bootstrap_receipt(
             "before_uv_tools_sha256": "e" * 64, "after_uv_tools_sha256": "f" * 64,
             "environment_names": [
                 "HOME", "PATH", "UV_PYTHON", "UV_PYTHON_DOWNLOADS",
+                "UV_TOOL_BIN_DIR", "UV_TOOL_DIR",
             ],
-            "python_environment": {
-                "UV_PYTHON": interpreter_authority["path"],
-                "UV_PYTHON_DOWNLOADS": "never",
-            },
+            "uv_environment": uv_environment,
             "interpreter_authority": interpreter_authority,
+            "uv_store_authority": uv_store_authority,
             "installation": installation,
         },
     }
@@ -2456,6 +2478,7 @@ def test_advisor_board_cli_real_invoker_capture_path_binds_stage_before_launch(m
 
 def test_bootstrap_environment_never_uses_attacker_path_or_home(monkeypatch, tmp_path):
     account_home = tmp_path / "kernel-account-home"
+    (account_home / ".local" / "share" / "uv" / "tools").mkdir(parents=True)
     trusted_uv = account_home / ".local" / "bin" / "uv"
     trusted_uv.parent.mkdir(parents=True)
     trusted_uv.write_text("#!/bin/sh\nexit 0\n")
@@ -2468,15 +2491,26 @@ def test_bootstrap_environment_never_uses_attacker_path_or_home(monkeypatch, tmp
     monkeypatch.setattr(evidence, "_account_home", lambda: account_home)
     monkeypatch.setenv("PATH", f"{attacker_bin}:/usr/bin")
     monkeypatch.setenv("HOME", str(account_home))
+    monkeypatch.setenv("UV_TOOL_DIR", str(tmp_path / "attacker-tools"))
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "attacker-data"))
     interpreter_authority = evidence._system_interpreter_authority()
+    uv_store_authority = evidence._uv_store_authority(account_home=account_home)
     environment = evidence._bootstrap_environment(
         uv_executable=Path("/trusted/uv"), account_home=account_home,
         interpreter_authority=interpreter_authority,
+        uv_store_authority=uv_store_authority,
     )
     assert environment["PATH"].startswith("/trusted:")
     assert str(attacker_bin) not in environment["PATH"]
     assert environment["UV_PYTHON"] == interpreter_authority["path"]
     assert environment["UV_PYTHON_DOWNLOADS"] == "never"
+    assert environment["UV_TOOL_DIR"] == uv_store_authority["tool_dir"]
+    assert environment["UV_TOOL_BIN_DIR"] == uv_store_authority["bin_dir"]
+    assert "XDG_DATA_HOME" not in environment
+    assert set(environment) == {
+        "HOME", "PATH", "UV_TOOL_DIR", "UV_TOOL_BIN_DIR", "UV_PYTHON",
+        "UV_PYTHON_DOWNLOADS",
+    }
     assert not any(name.startswith(("PHASE_LOOP_", "AGENT_HARNESS_")) or "NONCE" in name for name in environment)
     assert evidence._canonical_bash() != attacker_bin / "bash"
     assert evidence._canonical_uv() == trusted_uv
@@ -2492,7 +2526,80 @@ def test_bootstrap_environment_never_uses_attacker_path_or_home(monkeypatch, tmp
         evidence._bootstrap_environment(
             uv_executable=Path("/trusted/uv"), account_home=account_home,
             interpreter_authority=interpreter_authority,
+            uv_store_authority=uv_store_authority,
         )
+
+
+@pytest.mark.parametrize("override", ["UV_TOOL_DIR", "XDG_DATA_HOME"])
+def test_bootstrap_attest_rejects_prepopulated_uv_store_substitution(
+    monkeypatch, tmp_path, override,
+):
+    attacker = tmp_path / "attacker-store"
+    forged = attacker / "uv" / "tools" / "phase-loop-runtime"
+    forged.mkdir(parents=True)
+    (forged / "uv-receipt.toml").write_text(
+        'requirements = [{ name = "phase-loop-runtime", specifier = "==0.7.14" }]\n'
+    )
+    monkeypatch.setenv(override, str(attacker))
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match=override):
+        evidence.bootstrap_attest(
+            evidence_root=tmp_path / "evidence",
+            dotfiles_repo=tmp_path / "dotfiles",
+            plan_path=Path("plans/canary.md"),
+        )
+
+
+def test_uv_store_authority_rejects_symlink_and_sealed_identity_drift(tmp_path):
+    account_home = tmp_path / "account-home"
+    bin_dir = account_home / ".local" / "bin"
+    uv_parent = account_home / ".local" / "share" / "uv"
+    attacker_tools = tmp_path / "attacker-tools"
+    bin_dir.mkdir(parents=True)
+    uv_parent.mkdir(parents=True)
+    attacker_tools.mkdir()
+    (uv_parent / "tools").symlink_to(attacker_tools, target_is_directory=True)
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="unsafe"):
+        evidence._uv_store_authority(account_home=account_home)
+    (uv_parent / "tools").unlink()
+    (uv_parent / "tools").mkdir()
+    authority = evidence._uv_store_authority(account_home=account_home)
+    authority["tool_dir_inode"] += 1
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="drifted"):
+        evidence._validate_uv_store_authority(authority, revalidate=True)
+
+
+def test_bootstrap_receipt_rejects_self_consistent_manual_uv_store(tmp_path):
+    installation = _installation_identity()
+    receipt = _bootstrap_receipt(installation=installation)
+    attacker_home = tmp_path / "attacker-home"
+    attacker_tool_dir = attacker_home / ".local" / "share" / "uv" / "tools"
+    attacker_bin_dir = attacker_home / ".local" / "bin"
+    attacker_tool_dir.mkdir(parents=True)
+    attacker_bin_dir.mkdir(parents=True)
+    attacker_authority = evidence._uv_store_authority(account_home=attacker_home)
+    forged_installation = receipt["bootstrap"]["installation"]
+    assert isinstance(forged_installation, dict)
+    forged_installation["uv_store_authority"] = attacker_authority
+    forged_installation["uv_tool_dir"] = str(attacker_tool_dir)
+    forged_installation["environment_root"] = str(attacker_tool_dir / "phase-loop-runtime")
+    forged_installation["console_script"] = str(
+        attacker_tool_dir / "phase-loop-runtime" / "bin" / "phase-loop"
+    )
+    forged_installation["distribution_root"] = str(
+        attacker_tool_dir / "phase-loop-runtime" / "lib" / "python" / "site-packages"
+    )
+    forged_installation["module_origin"] = str(
+        Path(forged_installation["distribution_root"]) /
+        "phase_loop_runtime" / "__init__.py"
+    )
+    receipt["bootstrap"]["uv_store_authority"] = attacker_authority
+    forged_environment = receipt["bootstrap"]["uv_environment"]
+    assert isinstance(forged_environment, dict)
+    forged_environment["HOME"] = str(attacker_home)
+    forged_environment["UV_TOOL_DIR"] = str(attacker_tool_dir)
+    forged_environment["UV_TOOL_BIN_DIR"] = str(attacker_bin_dir)
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="account home drifted"):
+        evidence._validate_bootstrap_attestation(receipt=receipt)
 
 
 @pytest.mark.parametrize("mutation", ["symlink", "uid", "mode", "hash"])
@@ -2554,7 +2661,8 @@ def test_bootstrap_attestation_has_no_parent_only_nonce_claim(monkeypatch, tmp_p
     monkeypatch.setattr(evidence, "fcntl", seals)
     monkeypatch.setattr(evidence.sys, "platform", "linux")
     for name in list(os.environ):
-        if name.startswith(("PHASE_LOOP_", "AGENT_HARNESS_")):
+        if (name in {"DEV_EDITABLE", "PYTHONPATH", "PYTHONHOME"} or
+                name.startswith(("PHASE_LOOP_", "AGENT_HARNESS_", "UV_", "XDG_"))):
             monkeypatch.delenv(name)
     try:
         receipt = evidence.bootstrap_attest(
@@ -2749,23 +2857,25 @@ def test_wheel_binding_rejects_missing_aliased_or_extra_console_entry_points(ent
 def test_uv_console_launcher_derivation_matches_actual_uv_install(tmp_path):
     wheel = tmp_path / "phase_loop_runtime-0.7.14-py3-none-any.whl"
     wheel.write_bytes(_synthetic_wheel())
-    tool_storage = tmp_path / "tool-storage"
-    tool_storage.mkdir()
-    tool_dir = tmp_path / "tools"
-    tool_dir.symlink_to(tool_storage, target_is_directory=True)
-    bin_dir = tmp_path / "bin"
+    account_home = tmp_path / "account-home"
+    tool_dir = account_home / ".local" / "share" / "uv" / "tools"
+    bin_dir = account_home / ".local" / "bin"
+    tool_dir.mkdir(parents=True)
+    bin_dir.mkdir(parents=True)
+    uv_store_authority = evidence._uv_store_authority(account_home=account_home)
     interpreter_authority = evidence._system_interpreter_authority()
+    uv = Path(shutil.which("uv") or "uv").resolve(strict=True)
+    uv_environment = evidence._uv_environment(
+        uv_executable=uv, interpreter_authority=interpreter_authority,
+        uv_store_authority=uv_store_authority,
+    )
     proc = subprocess.run(
         [
-            shutil.which("uv") or "uv", "tool", "install", "--no-index",
+            str(uv), "tool", "install", "--no-index",
             "--find-links", str(tmp_path),
             "phase-loop-runtime==0.7.14",
         ],
-        env=os.environ | {
-            "UV_TOOL_DIR": str(tool_dir), "UV_TOOL_BIN_DIR": str(bin_dir),
-            "UV_PYTHON": interpreter_authority["path"],
-            "UV_PYTHON_DOWNLOADS": "never",
-        },
+        env=uv_environment,
         capture_output=True, text=True, check=False,
     )
     assert proc.returncode == 0, proc.stderr
@@ -2779,10 +2889,15 @@ def test_uv_console_launcher_derivation_matches_actual_uv_install(tmp_path):
     assert (environment_root / "bin" / "phase-loop").read_bytes() == expected
     assert (environment_root / "bin" / "codex-phase-loop").read_bytes() == expected
     uv_probe = tmp_path / "uv-probe"
-    uv_probe.write_text(f"#!/bin/sh\nprintf '%s\\n' '{tool_storage}'\n")
+    uv_probe.write_text("#!/bin/sh\nprintf '%s\\n' \"$UV_TOOL_DIR\"\n")
     uv_probe.chmod(0o700)
+    probe_environment = evidence._uv_environment(
+        uv_executable=uv_probe, interpreter_authority=interpreter_authority,
+        uv_store_authority=uv_store_authority,
+    )
     installation = evidence._installed_phase_loop_identity(
         uv_executable=uv_probe, interpreter_authority=interpreter_authority,
+        uv_store_authority=uv_store_authority, uv_environment=probe_environment,
     )
     assert interpreter.resolve() == Path(interpreter_authority["path"])
     evidence._validate_installed_wheel_binding(

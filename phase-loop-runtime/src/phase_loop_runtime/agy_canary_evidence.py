@@ -2990,12 +2990,111 @@ def _canonical_uv() -> Path:
     raise AgyCanaryEvidenceError("bootstrap attestation requires a canonical uv executable")
 
 
-def _uv_tool_dir(uv_executable: Path) -> Path:
-    proc = subprocess.run([str(uv_executable), "tool", "dir"], capture_output=True, text=True, timeout=30, check=False)
+def _uv_store_authority(*, account_home: Path) -> dict[str, Any]:
+    """Seal uv's account-owned default tool and launcher directories."""
+    home = account_home.resolve(strict=True)
+    expected = {
+        "tool_dir": home / ".local" / "share" / "uv" / "tools",
+        "bin_dir": home / ".local" / "bin",
+    }
+    value: dict[str, Any] = {
+        "schema": "agy_canary_uv_store_authority.v1",
+        "account_home": str(home),
+        "uid": home.stat().st_uid,
+    }
+    for name, path in expected.items():
+        try:
+            info = path.lstat()
+        except (FileNotFoundError, OSError) as exc:
+            raise AgyCanaryEvidenceError("canonical uv store directory is unavailable") from exc
+        if (stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode) or
+                path.resolve(strict=True) != path or info.st_uid != value["uid"] or
+                stat.S_IMODE(info.st_mode) & stat.S_IWOTH):
+            raise AgyCanaryEvidenceError("canonical uv store directory is unsafe")
+        value[name] = str(path)
+        value[f"{name}_dev"] = info.st_dev
+        value[f"{name}_inode"] = info.st_ino
+        value[f"{name}_mode"] = stat.S_IMODE(info.st_mode)
+    return value
+
+
+def _validate_uv_store_authority(
+    value: Any, *, revalidate: bool, account_home: Path | None = None,
+) -> dict[str, Any]:
+    required = {
+        "schema", "account_home", "uid",
+        "tool_dir", "tool_dir_dev", "tool_dir_inode", "tool_dir_mode",
+        "bin_dir", "bin_dir_dev", "bin_dir_inode", "bin_dir_mode",
+    }
+    if (not isinstance(value, dict) or set(value) != required or
+            value.get("schema") != "agy_canary_uv_store_authority.v1" or
+            not isinstance(value.get("account_home"), str) or
+            not Path(value["account_home"]).is_absolute() or
+            any(not _is_plain_int(value.get(name)) or value[name] < 0 for name in (
+                "uid", "tool_dir_dev", "tool_dir_inode", "tool_dir_mode",
+                "bin_dir_dev", "bin_dir_inode", "bin_dir_mode",
+            )) or
+            value["tool_dir_mode"] > 0o7777 or value["bin_dir_mode"] > 0o7777 or
+            value["tool_dir_mode"] & stat.S_IWOTH or value["bin_dir_mode"] & stat.S_IWOTH or
+            value.get("tool_dir") != str(Path(value["account_home"]) / ".local" / "share" / "uv" / "tools") or
+            value.get("bin_dir") != str(Path(value["account_home"]) / ".local" / "bin")):
+        raise AgyCanaryEvidenceError("uv store authority is malformed")
+    if account_home is not None and Path(value["account_home"]) != account_home.resolve(strict=True):
+        raise AgyCanaryEvidenceError("uv store authority account home drifted")
+    if revalidate and _uv_store_authority(account_home=Path(value["account_home"])) != value:
+        raise AgyCanaryEvidenceError("canonical uv store authority drifted")
+    return value
+
+
+def _uv_environment(
+    *, uv_executable: Path, interpreter_authority: dict[str, Any],
+    uv_store_authority: dict[str, Any],
+) -> dict[str, str]:
+    authority = _validate_uv_store_authority(uv_store_authority, revalidate=True)
+    interpreter = _validate_interpreter_authority(interpreter_authority, revalidate=True)
+    return {
+        "HOME": authority["account_home"],
+        "PATH": str(uv_executable.parent) + ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "UV_TOOL_DIR": authority["tool_dir"],
+        "UV_TOOL_BIN_DIR": authority["bin_dir"],
+        "UV_PYTHON": interpreter["path"],
+        "UV_PYTHON_DOWNLOADS": "never",
+    }
+
+
+def _validate_uv_environment(
+    environment: Any, *, uv_executable: Path,
+    interpreter_authority: dict[str, Any], uv_store_authority: dict[str, Any],
+) -> dict[str, str]:
+    expected = _uv_environment(
+        uv_executable=uv_executable, interpreter_authority=interpreter_authority,
+        uv_store_authority=uv_store_authority,
+    )
+    if environment != expected:
+        raise AgyCanaryEvidenceError("canonical uv environment is malformed")
+    return environment
+
+
+def _uv_tool_dir(
+    uv_executable: Path, *, environment: dict[str, str],
+    interpreter_authority: dict[str, Any], uv_store_authority: dict[str, Any],
+) -> Path:
+    environment = _validate_uv_environment(
+        environment, uv_executable=uv_executable,
+        interpreter_authority=interpreter_authority,
+        uv_store_authority=uv_store_authority,
+    )
+    proc = subprocess.run(
+        [str(uv_executable), "tool", "dir"], capture_output=True, text=True,
+        timeout=30, check=False, env=environment,
+    )
     tool_dir = Path(proc.stdout.strip()) if proc.returncode == 0 and proc.stdout.strip() else None
-    if tool_dir is None or not tool_dir.is_absolute() or not tool_dir.is_dir() or tool_dir.is_symlink():
+    expected = Path(uv_store_authority["tool_dir"])
+    if (tool_dir is None or tool_dir != expected or not tool_dir.is_absolute() or
+            not tool_dir.is_dir() or tool_dir.is_symlink()):
         raise AgyCanaryEvidenceError("canonical uv tool directory is unavailable")
-    return tool_dir.resolve(strict=True)
+    _validate_uv_store_authority(uv_store_authority, revalidate=True)
+    return tool_dir
 
 
 def _uv_registry_provenance(*, tool_dir: Path, version: str) -> dict[str, str]:
@@ -3020,29 +3119,31 @@ def _uv_registry_provenance(*, tool_dir: Path, version: str) -> dict[str, str]:
 
 
 def _installed_phase_loop_identity(
-    *, interpreter_authority: dict[str, Any], uv_executable: Path | None = None,
+    *, interpreter_authority: dict[str, Any], uv_store_authority: dict[str, Any],
+    uv_environment: dict[str, str], uv_executable: Path | None = None,
 ) -> dict[str, Any]:
     """Inspect only uv's canonical managed entrypoint, not an ambient PATH shim."""
     authority = _validate_interpreter_authority(interpreter_authority, revalidate=True)
     uv = _canonical_uv() if uv_executable is None else uv_executable.resolve(strict=True)
-    tool_dir = _uv_tool_dir(uv)
+    store_authority = _validate_uv_store_authority(uv_store_authority, revalidate=True)
+    tool_dir = _uv_tool_dir(
+        uv, environment=uv_environment, interpreter_authority=authority,
+        uv_store_authority=store_authority,
+    )
+    try:
+        environment_root = (tool_dir / "phase-loop-runtime").resolve(strict=True)
+    except (FileNotFoundError, OSError) as exc:
+        raise AgyCanaryEvidenceError("phase-loop uv environment is unavailable") from exc
     script = tool_dir / "phase-loop-runtime" / "bin" / "phase-loop"
     if not script.is_file() or script.is_symlink():
         raise AgyCanaryEvidenceError("phase-loop console script is not installed in canonical uv tool dir")
-    first_line = script.read_text(encoding="utf-8", errors="strict").splitlines()[0:1]
-    if len(first_line) != 1 or not first_line[0].startswith("#!"):
-        raise AgyCanaryEvidenceError("phase-loop console script has no canonical interpreter")
-    interpreter = Path(first_line[0][2:])
+    interpreter = environment_root / "bin" / "python"
     if not interpreter.is_absolute() or not interpreter.is_file() or not os.access(interpreter, os.X_OK):
         raise AgyCanaryEvidenceError("phase-loop interpreter is not canonical")
     interpreter_source = interpreter.resolve(strict=True)
     if interpreter_source != Path(authority["path"]):
         raise AgyCanaryEvidenceError("phase-loop interpreter differs from sealed system Python")
     _validate_interpreter_authority(authority, revalidate=True)
-    try:
-        environment_root = (tool_dir / "phase-loop-runtime").resolve(strict=True)
-    except (FileNotFoundError, OSError) as exc:
-        raise AgyCanaryEvidenceError("phase-loop uv environment is unavailable") from exc
     roots = sorted(
         (*environment_root.glob("lib/python*/site-packages"),
          *environment_root.glob("lib64/python*/site-packages")),
@@ -3084,6 +3185,7 @@ def _installed_phase_loop_identity(
         "console_script_sha256": _sha256(script_bytes),
         "interpreter_sha256": _sha256(interpreter_bytes),
         "interpreter_authority": authority,
+        "uv_store_authority": store_authority,
         "package_tree_sha256": _runtime_tree_sha256(package_root),
         "record_sha256": _sha256(record_bytes),
         "provenance": _uv_registry_provenance(tool_dir=tool_dir, version="0.7.14"),
@@ -3125,18 +3227,16 @@ def _clean_dotfiles_repo(repo: Path) -> str:
 
 def _bootstrap_environment(
     *, uv_executable: Path, account_home: Path, interpreter_authority: dict[str, Any],
+    uv_store_authority: dict[str, Any],
 ) -> dict[str, str]:
     """Use an explicit allowlist, never the caller's ambient environment."""
     supplied_home = os.environ.get("HOME")
     if supplied_home is not None and Path(supplied_home).resolve(strict=False) != account_home:
         raise AgyCanaryEvidenceError("bootstrap attestation rejects HOME drift")
-    allowed = ("LANG", "LC_ALL", "LC_CTYPE", "TERM", "SHELL", "TMPDIR")
-    env = {name: os.environ[name] for name in allowed if name in os.environ}
-    env["HOME"] = str(account_home)
-    env["PATH"] = str(uv_executable.parent) + ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-    env["UV_PYTHON"] = interpreter_authority["path"]
-    env["UV_PYTHON_DOWNLOADS"] = "never"
-    return env
+    return _uv_environment(
+        uv_executable=uv_executable, interpreter_authority=interpreter_authority,
+        uv_store_authority=uv_store_authority,
+    )
 
 
 def bootstrap_attest(
@@ -3148,6 +3248,8 @@ def bootstrap_attest(
         if key in {"DEV_EDITABLE", "PYTHONPATH", "PYTHONHOME"}
         or key.startswith("PHASE_LOOP_")
         or key.startswith("AGENT_HARNESS_")
+        or key.startswith("UV_")
+        or key.startswith("XDG_")
     )
     if disallowed_overrides:
         raise AgyCanaryEvidenceError(
@@ -3170,9 +3272,15 @@ def bootstrap_attest(
     uv = _canonical_uv()
     interpreter_authority = _system_interpreter_authority()
     _validate_interpreter_authority(interpreter_authority, revalidate=True)
+    account_home = _account_home()
+    uv_store_authority = _uv_store_authority(account_home=account_home)
+    _validate_uv_store_authority(
+        uv_store_authority, revalidate=True, account_home=account_home,
+    )
     child_env = _bootstrap_environment(
-        uv_executable=uv, account_home=_account_home(),
+        uv_executable=uv, account_home=account_home,
         interpreter_authority=interpreter_authority,
+        uv_store_authority=uv_store_authority,
     )
     script_bytes = inputs["bootstrap.sh"]
     def revalidate_inputs() -> None:
@@ -3183,7 +3291,10 @@ def bootstrap_attest(
             if blob != expected_blob or data != inputs[relative]:
                 raise AgyCanaryEvidenceError("bootstrap input bytes drifted from attested blobs")
     revalidate_inputs()
-    before = subprocess.run([str(uv), "tool", "list"], capture_output=True, text=True, timeout=30, check=False)
+    before = subprocess.run(
+        [str(uv), "tool", "list"], capture_output=True, text=True,
+        timeout=30, check=False, env=child_env,
+    )
     if not sys.platform.startswith("linux") or not hasattr(os, "memfd_create"):
         raise AgyCanaryEvidenceError("bootstrap attestation requires Linux memfd support")
     if fcntl is None:
@@ -3232,11 +3343,16 @@ def bootstrap_attest(
     child_rc = child_process.returncode
     revalidate_inputs()
     _validate_interpreter_authority(interpreter_authority, revalidate=True)
-    after = subprocess.run([str(uv), "tool", "list"], capture_output=True, text=True, timeout=30, check=False)
+    _validate_uv_store_authority(uv_store_authority, revalidate=True)
+    after = subprocess.run(
+        [str(uv), "tool", "list"], capture_output=True, text=True,
+        timeout=30, check=False, env=child_env,
+    )
     if child_rc != 0:
         raise AgyCanaryEvidenceError("direct bootstrap child failed")
     installation = _installed_phase_loop_identity(
         uv_executable=uv, interpreter_authority=interpreter_authority,
+        uv_store_authority=uv_store_authority, uv_environment=child_env,
     )
     if installation["version"] != "0.7.14":
         raise AgyCanaryEvidenceError("bootstrap did not install the expected phase-loop version")
@@ -3257,11 +3373,14 @@ def bootstrap_attest(
                 "before_uv_tools_sha256": _sha256((before.stdout or "").encode()),
                 "after_uv_tools_sha256": _sha256((after.stdout or "").encode()),
                 "environment_names": sorted(child_env),
-                "python_environment": {
-                    "UV_PYTHON": child_env["UV_PYTHON"],
-                    "UV_PYTHON_DOWNLOADS": child_env["UV_PYTHON_DOWNLOADS"],
+                "uv_environment": {
+                    name: child_env[name] for name in (
+                        "HOME", "PATH", "UV_TOOL_DIR", "UV_TOOL_BIN_DIR",
+                        "UV_PYTHON", "UV_PYTHON_DOWNLOADS",
+                    )
                 },
                 "interpreter_authority": interpreter_authority,
+                "uv_store_authority": uv_store_authority,
                 "installation": installation,
             },
         }
@@ -3276,9 +3395,12 @@ def _validate_installation_identity(installed: Any) -> dict[str, Any]:
         "uv_executable", "uv_tool_dir", "console_script", "interpreter", "version",
         "distribution_root", "module_origin", "environment_root",
         "console_script_sha256", "interpreter_sha256",
-        "interpreter_authority", "package_tree_sha256", "record_sha256", "provenance",
+        "interpreter_authority", "uv_store_authority",
+        "package_tree_sha256", "record_sha256", "provenance",
     }
-    installation_strings = expected_installation - {"provenance", "interpreter_authority"}
+    installation_strings = expected_installation - {
+        "provenance", "interpreter_authority", "uv_store_authority",
+    }
     if (not isinstance(installed, dict) or set(installed) != expected_installation or
             any(not isinstance(installed.get(name), str) or not installed[name] for name in installation_strings) or
             installed["version"] != "0.7.14" or
@@ -3298,6 +3420,12 @@ def _validate_installation_identity(installed: Any) -> dict[str, Any]:
     if (installed["interpreter"] != authority["path"] or
             installed["interpreter_sha256"] != authority["sha256"]):
         raise AgyCanaryEvidenceError("bootstrap attestation interpreter binding is malformed")
+    store_authority = _validate_uv_store_authority(
+        installed["uv_store_authority"], revalidate=False
+    )
+    if (installed["uv_tool_dir"] != store_authority["tool_dir"] or
+            Path(installed["environment_root"]).parent != Path(store_authority["tool_dir"])):
+        raise AgyCanaryEvidenceError("bootstrap attestation uv store binding is malformed")
     provenance = installed["provenance"]
     if (not isinstance(provenance, dict) or set(provenance) != {"schema", "requirement", "receipt_sha256"} or
             provenance.get("schema") != "uv_registry_receipt.v1" or
@@ -3343,7 +3471,7 @@ def _validate_bootstrap_attestation(
     expected_bootstrap = {
         "argv", "pid", "returncode", "script_sha256", "script_blob",
         "before_uv_tools_sha256", "after_uv_tools_sha256", "environment_names",
-        "python_environment", "interpreter_authority", "installation",
+        "uv_environment", "interpreter_authority", "uv_store_authority", "installation",
     }
     if not isinstance(bootstrap, dict) or set(bootstrap) != expected_bootstrap:
         raise AgyCanaryEvidenceError("bootstrap attestation child record is malformed")
@@ -3359,25 +3487,30 @@ def _validate_bootstrap_attestation(
             ))):
         raise AgyCanaryEvidenceError("bootstrap attestation child identity is malformed")
     environment_names = bootstrap["environment_names"]
-    allowed_environment_names = {
-        "LANG", "LC_ALL", "LC_CTYPE", "TERM", "SHELL", "TMPDIR", "HOME", "PATH",
-        "UV_PYTHON", "UV_PYTHON_DOWNLOADS",
-    }
     if (not isinstance(environment_names, list) or environment_names != sorted(environment_names) or
             len(set(environment_names)) != len(environment_names) or
-            not all(isinstance(name, str) and name in allowed_environment_names for name in environment_names) or
-            not {"HOME", "PATH", "UV_PYTHON", "UV_PYTHON_DOWNLOADS"}.issubset(environment_names)):
+            environment_names != sorted({
+                "HOME", "PATH", "UV_TOOL_DIR", "UV_TOOL_BIN_DIR", "UV_PYTHON",
+                "UV_PYTHON_DOWNLOADS",
+            })):
         raise AgyCanaryEvidenceError("bootstrap attestation child environment is malformed")
     authority = _validate_interpreter_authority(
         bootstrap["interpreter_authority"], revalidate=True
     )
-    if bootstrap.get("python_environment") != {
-            "UV_PYTHON": authority["path"], "UV_PYTHON_DOWNLOADS": "never"
-    }:
-        raise AgyCanaryEvidenceError("bootstrap attestation Python environment is malformed")
     installed = _validate_installation_identity(bootstrap["installation"])
+    store_authority = _validate_uv_store_authority(
+        bootstrap["uv_store_authority"], revalidate=True, account_home=_account_home(),
+    )
+    expected_uv_environment = _uv_environment(
+        uv_executable=Path(installed["uv_executable"]), interpreter_authority=authority,
+        uv_store_authority=store_authority,
+    )
+    if bootstrap.get("uv_environment") != expected_uv_environment:
+        raise AgyCanaryEvidenceError("bootstrap attestation uv environment is malformed")
     if installed["interpreter_authority"] != authority:
         raise AgyCanaryEvidenceError("bootstrap attestation interpreter authority drifted")
+    if installed["uv_store_authority"] != store_authority:
+        raise AgyCanaryEvidenceError("bootstrap attestation uv store authority drifted")
     if installation is not None and installed != installation:
         raise AgyCanaryEvidenceError("bootstrap attestation installation identity drifted")
     if repo is not None:
@@ -3742,8 +3875,9 @@ def _uv_console_script_bytes(*, interpreter: Path, target: str) -> bytes:
     if not interpreter.is_absolute() or match is None:
         raise AgyCanaryEvidenceError("console launcher authority is malformed")
     module, function = match.groups()
-    return (
-        f"#!{interpreter}\n"
+    if "'" in str(interpreter) or "\n" in str(interpreter):
+        raise AgyCanaryEvidenceError("console launcher interpreter path is unsafe")
+    body = (
         "# -*- coding: utf-8 -*-\n"
         "import sys\n"
         f"from {module} import {function}\n"
@@ -3754,25 +3888,31 @@ def _uv_console_script_bytes(*, interpreter: Path, target: str) -> bytes:
         "        sys.argv[0] = sys.argv[0][:-4]\n"
         f"    sys.exit({function}())\n"
     ).encode("utf-8")
+    shebang = f"#!{interpreter}\n".encode("utf-8")
+    if len(shebang) <= 127 and " " not in str(interpreter):
+        return shebang + body
+    return (
+        "#!/bin/sh\n"
+        f"'''exec' '{interpreter}' \"$0\" \"$@\"\n"
+        "' '''\n"
+    ).encode("utf-8") + body
 
 
 def _validate_uv_console_script(
     *, data: bytes, environment_root: Path, interpreter: Path, target: str,
 ) -> None:
-    """Normalize only uv's environment alias, then compare its exact template."""
-    first_line, separator, body = data.partition(b"\n")
+    """Compare uv's exact launcher template against wheel and interpreter authority."""
+    launcher_interpreter = environment_root / "bin" / "python"
     try:
-        shebang = Path(first_line.removeprefix(b"#!").decode("utf-8", errors="strict"))
-        shebang_environment = shebang.parent.parent.resolve(strict=True)
-        shebang_source = shebang.resolve(strict=True)
-    except (UnicodeDecodeError, FileNotFoundError, OSError) as exc:
+        launcher_environment = launcher_interpreter.parent.parent.resolve(strict=True)
+        launcher_source = launcher_interpreter.resolve(strict=True)
+    except (FileNotFoundError, OSError) as exc:
         raise AgyCanaryEvidenceError("installed console launcher interpreter is malformed") from exc
-    if (not first_line.startswith(b"#!") or not separator or not shebang.is_absolute() or
-            shebang.name != "python" or shebang.parent.name != "bin" or
-            shebang_environment != environment_root or shebang_source != interpreter):
+    if (not launcher_interpreter.is_absolute() or launcher_interpreter.name != "python" or
+            launcher_interpreter.parent.name != "bin" or
+            launcher_environment != environment_root or launcher_source != interpreter):
         raise AgyCanaryEvidenceError("installed console launcher interpreter is not trusted")
-    normalized = f"#!{interpreter}\n".encode("utf-8") + body
-    if normalized != _uv_console_script_bytes(interpreter=interpreter, target=target):
+    if data != _uv_console_script_bytes(interpreter=launcher_interpreter, target=target):
         raise AgyCanaryEvidenceError("installed console launcher differs from wheel authority")
 
 
@@ -3804,6 +3944,9 @@ def _validate_installed_wheel_binding(
     _validate_installation_identity(installation)
     _validate_interpreter_authority(
         installation["interpreter_authority"], revalidate=True
+    )
+    _validate_uv_store_authority(
+        installation["uv_store_authority"], revalidate=True
     )
     root = Path(installation["distribution_root"])
     environment_root = Path(installation["environment_root"])
@@ -4266,8 +4409,11 @@ def prepare_canary(
         bootstrap_receipt = _read_json_at(root_fd, "agy_canary_bootstrap_attestation.json")
         bootstrap = _validate_bootstrap_attestation(receipt=bootstrap_receipt)
         interpreter_authority = bootstrap["bootstrap"]["interpreter_authority"]
+        uv_store_authority = bootstrap["bootstrap"]["uv_store_authority"]
         current_installation = _installed_phase_loop_identity(
-            interpreter_authority=interpreter_authority
+            interpreter_authority=interpreter_authority,
+            uv_store_authority=uv_store_authority,
+            uv_environment=bootstrap["bootstrap"]["uv_environment"],
         )
         bootstrap = _validate_bootstrap_attestation(
             receipt=bootstrap_receipt, installation=current_installation,
@@ -4805,6 +4951,9 @@ def _validate_committed_attestation(
     installation = _validate_installation_identity(attestation.get("installation"))
     _validate_interpreter_authority(
         installation["interpreter_authority"], revalidate=True
+    )
+    _validate_uv_store_authority(
+        installation["uv_store_authority"], revalidate=True, account_home=_account_home(),
     )
     if attestation.get("installation_sha256") != _sha256(_canonical_json(installation)):
         raise AgyCanaryEvidenceError("committed finalizer installation binding is malformed")
