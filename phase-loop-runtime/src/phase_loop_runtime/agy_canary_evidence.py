@@ -4340,6 +4340,8 @@ def _installed_phase_loop_identity(
 _GIT_EXECUTABLE = Path("/usr/bin/git")
 _GIT_EXEC_PATH = Path("/usr/lib/git-core")
 _MAX_TRUSTED_GIT_BYTES = 16 * 1024 * 1024
+_GITHUB_EXECUTABLE = Path("/usr/bin/gh")
+_MAX_TRUSTED_GITHUB_BYTES = 64 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -4351,6 +4353,16 @@ class _GitExecutableAuthority:
 
 
 _SEALED_GIT_AUTHORITY: _GitExecutableAuthority | None = None
+
+
+@dataclass(frozen=True)
+class _GitHubExecutableAuthority:
+    identity: tuple[int, ...]
+    sha256: str
+    path_identity: tuple[int, ...]
+
+
+_SEALED_GITHUB_AUTHORITY: _GitHubExecutableAuthority | None = None
 
 
 @dataclass(frozen=True)
@@ -4409,6 +4421,43 @@ def _canonical_git_executable() -> Path:
     elif authority != _SEALED_GIT_AUTHORITY:
         raise AgyCanaryEvidenceError("canonical /usr/bin/git authority drifted")
     return _GIT_EXECUTABLE
+
+
+def _canonical_github_executable() -> Path:
+    global _SEALED_GITHUB_AUTHORITY
+    try:
+        selector = _GITHUB_EXECUTABLE.lstat()
+        if selector.st_size > _MAX_TRUSTED_GITHUB_BYTES:
+            raise AgyCanaryEvidenceError(
+                "canonical GitHub executable exceeds authority cap"
+            )
+        data, reopened = _read_bounded_regular_path(
+            _GITHUB_EXECUTABLE, limit=_MAX_TRUSTED_GITHUB_BYTES,
+        )
+        authority = _GitHubExecutableAuthority(
+            identity=_stable_file_identity(reopened),
+            sha256=_sha256(data),
+            path_identity=_trusted_root_directory_identity(Path("/usr/bin")),
+        )
+    except (FileNotFoundError, OSError, AgyCanaryEvidenceError) as exc:
+        raise AgyCanaryEvidenceError(
+            "canonical /usr/bin/gh authority is unavailable"
+        ) from exc
+    mode = stat.S_IMODE(reopened.st_mode)
+    if (
+        _stable_file_identity(selector) != authority.identity
+        or not stat.S_ISREG(reopened.st_mode)
+        or reopened.st_uid != 0
+        or mode & (stat.S_IWGRP | stat.S_IWOTH)
+        or not mode & stat.S_IXUSR
+        or not os.access(_GITHUB_EXECUTABLE, os.X_OK)
+    ):
+        raise AgyCanaryEvidenceError("canonical /usr/bin/gh authority is unsafe")
+    if _SEALED_GITHUB_AUTHORITY is None:
+        _SEALED_GITHUB_AUTHORITY = authority
+    elif authority != _SEALED_GITHUB_AUTHORITY:
+        raise AgyCanaryEvidenceError("canonical /usr/bin/gh authority drifted")
+    return _GITHUB_EXECUTABLE
 
 
 def _ssh_agent_parent_chain(path: Path) -> tuple[tuple[str, tuple[int, ...]], ...]:
@@ -4543,6 +4592,22 @@ def _git_run(
             "-C", str(repo), *args,
         ],
         capture_output=True, text=text, check=False, env=_git_environment(), input=input,
+    )
+
+
+def _github_run(*args: str) -> subprocess.CompletedProcess[str]:
+    github = _canonical_github_executable()
+    return subprocess.run(
+        [str(github), *args],
+        capture_output=True,
+        text=True,
+        check=False,
+        stdin=subprocess.DEVNULL,
+        env={
+            "HOME": str(_account_home()),
+            "PATH": "/usr/bin",
+            "LC_ALL": "C",
+        },
     )
 
 
@@ -6205,9 +6270,9 @@ def _reconcile_release_lineage(
         raise AgyCanaryEvidenceError("handoff tag identity does not match local signed tag")
     if _git_run(repo, "verify-tag", "--raw", f"refs/tags/{tag}").returncode != 0:
         raise AgyCanaryEvidenceError("release tag signature verification failed")
-    release = subprocess.run(
-        ["gh", "release", "view", tag, "--repo", "Consiliency/agent-harness", "--json", "url,tagName"],
-        capture_output=True, text=True, check=False,
+    release = _github_run(
+        "release", "view", tag, "--repo",
+        "github.com/Consiliency/agent-harness", "--json", "url,tagName",
     )
     try:
         release_value = json.loads(release.stdout)
@@ -6215,10 +6280,10 @@ def _reconcile_release_lineage(
         raise AgyCanaryEvidenceError("GitHub Release lookup failed") from exc
     if release.returncode != 0 or not isinstance(release_value, dict) or release_value.get("tagName") != tag or release_value.get("url") != handoff.get("release_url"):
         raise AgyCanaryEvidenceError("GitHub Release does not match merged handoff")
-    workflow_definition = subprocess.run(
-        ["gh", "api", "-H", "Accept: application/vnd.github+json",
-         "repos/Consiliency/agent-harness/actions/workflows/publish-pypi.yml"],
-        capture_output=True, text=True, check=False,
+    workflow_definition = _github_run(
+        "api", "--hostname", "github.com", "-H",
+        "Accept: application/vnd.github+json",
+        "repos/Consiliency/agent-harness/actions/workflows/publish-pypi.yml",
     )
     try:
         workflow_value = json.loads(workflow_definition.stdout)
@@ -6230,10 +6295,10 @@ def _reconcile_release_lineage(
             workflow_value.get("state") != "active"):
         raise AgyCanaryEvidenceError("publish workflow definition is not active and canonical")
     workflow_id = workflow_value["id"]
-    workflow = subprocess.run(
-        ["gh", "api", "--paginate", "-H", "Accept: application/vnd.github+json",
-         f"repos/Consiliency/agent-harness/actions/workflows/{workflow_id}/runs?event=push&head_sha={release_commit}&per_page=100"],
-        capture_output=True, text=True, check=False,
+    workflow = _github_run(
+        "api", "--hostname", "github.com", "--paginate", "-H",
+        "Accept: application/vnd.github+json",
+        f"repos/Consiliency/agent-harness/actions/workflows/{workflow_id}/runs?event=push&head_sha={release_commit}&per_page=100",
     )
     try:
         pages = [json.loads(line) for line in workflow.stdout.splitlines() if line]

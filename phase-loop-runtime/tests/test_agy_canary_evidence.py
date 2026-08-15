@@ -317,6 +317,62 @@ def test_git_run_uses_sealed_executable_and_strict_environment(
     assert not marker.exists()
 
 
+def test_github_run_uses_sealed_executable_and_strict_environment(
+    monkeypatch, tmp_path,
+):
+    trusted = Path("/usr/bin/true")
+    assert trusted.is_file()
+    monkeypatch.setattr(evidence, "_GITHUB_EXECUTABLE", trusted)
+    monkeypatch.setattr(evidence, "_SEALED_GITHUB_AUTHORITY", None)
+    hostile = tmp_path / "hostile-bin"
+    hostile.mkdir()
+    marker = tmp_path / "ambient-gh-ran"
+    wrapper = hostile / "gh"
+    wrapper.write_text(f'#!/bin/sh\nprintf invoked >> "{marker}"\nexit 0\n')
+    wrapper.chmod(0o755)
+    poison = {
+        "PATH": str(hostile), "HOME": str(hostile),
+        "GH_HOST": "attacker.invalid", "GH_REPO": "attacker/redirected",
+        "GH_CONFIG_DIR": str(hostile), "GH_TOKEN": "synthetic-hostile-token",
+        "GITHUB_TOKEN": "synthetic-hostile-token",
+        "XDG_CONFIG_HOME": str(hostile), "LD_PRELOAD": str(hostile / "loader.so"),
+        "LD_LIBRARY_PATH": str(hostile), "BASH_ENV": str(wrapper),
+        "ENV": str(wrapper), "HTTPS_PROXY": "http://attacker.invalid:8080",
+    }
+    for name, value in poison.items():
+        monkeypatch.setenv(name, value)
+    real_run = evidence.subprocess.run
+    seen: list[tuple[list[str], dict[str, object]]] = []
+
+    def record_run(argv, **kwargs):
+        seen.append((argv, kwargs))
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(evidence.subprocess, "run", record_run)
+    assert evidence._github_run("--version").returncode == 0
+    assert len(seen) == 1
+    assert seen[0][0] == ["/usr/bin/true", "--version"]
+    assert seen[0][1]["env"] == {
+        "HOME": str(evidence._account_home()), "PATH": "/usr/bin", "LC_ALL": "C",
+    }
+    assert seen[0][1]["stdin"] is subprocess.DEVNULL
+    assert not marker.exists()
+
+    real_read = evidence._read_bounded_regular_path
+
+    def forged_read(path, *, limit):
+        data, info = real_read(path, limit=limit)
+        return data + b"forged", info
+
+    monkeypatch.setattr(evidence, "_read_bounded_regular_path", forged_read)
+    with pytest.raises(
+        evidence.AgyCanaryEvidenceError,
+        match="canonical /usr/bin/gh authority drifted",
+    ):
+        evidence._github_run("--version")
+    assert len(seen) == 1
+
+
 def test_git_environment_accepts_and_revalidates_direct_private_ssh_socket(
     monkeypatch, tmp_path,
 ):
@@ -5899,6 +5955,17 @@ def test_release_lineage_uses_merged_handoff_and_rehashes_downloads(tmp_path, mo
         "conclusion": "success", "event": "push", "html_url": record["workflow_url"],
     }]
     workflow_pages = [{"total_count": 1, "workflow_runs": workflow_runs}]
+    hostile_bin = tmp_path / "hostile-bin"
+    hostile_bin.mkdir()
+    hostile_marker = tmp_path / "hostile-gh-executed"
+    hostile_gh = hostile_bin / "gh"
+    hostile_gh.write_text(
+        "#!/bin/sh\nprintf executed > " + str(hostile_marker) + "\nexit 97\n"
+    )
+    hostile_gh.chmod(0o700)
+    monkeypatch.setattr(
+        evidence, "_canonical_github_executable", lambda: Path("/usr/bin/gh"),
+    )
 
     def fake_run(argv, **kwargs):
         git_prefix = [
@@ -5909,11 +5976,32 @@ def test_release_lineage_uses_merged_handoff_and_rehashes_downloads(tmp_path, mo
             return subprocess.CompletedProcess(argv, 0, b"", b"")
         if argv[:7] == git_prefix and argv[7:9] == ["verify-tag", "--raw"]:
             return subprocess.CompletedProcess(argv, 0, "", "")
-        if argv[:3] == ["gh", "release", "view"]:
+        if argv[:4] == ["/usr/bin/gh", "release", "view", "v0.7.14"]:
+            assert kwargs["env"] == {
+                "HOME": str(evidence._account_home()),
+                "PATH": "/usr/bin",
+                "LC_ALL": "C",
+            }
+            assert kwargs["stdin"] is subprocess.DEVNULL
+            assert argv[4:6] == ["--repo", "github.com/Consiliency/agent-harness"]
             return subprocess.CompletedProcess(argv, 0, json.dumps({"tagName": "v0.7.14", "url": record["release_url"]}), "")
-        if argv[:2] == ["gh", "api"] and "--paginate" not in argv:
+        if (argv[:4] == ["/usr/bin/gh", "api", "--hostname", "github.com"] and
+                "--paginate" not in argv):
+            assert kwargs["env"] == {
+                "HOME": str(evidence._account_home()),
+                "PATH": "/usr/bin",
+                "LC_ALL": "C",
+            }
+            assert kwargs["stdin"] is subprocess.DEVNULL
             return subprocess.CompletedProcess(argv, 0, json.dumps(workflow_definition), "")
-        if argv[:3] == ["gh", "api", "--paginate"]:
+        if (argv[:4] == ["/usr/bin/gh", "api", "--hostname", "github.com"] and
+                "--paginate" in argv):
+            assert kwargs["env"] == {
+                "HOME": str(evidence._account_home()),
+                "PATH": "/usr/bin",
+                "LC_ALL": "C",
+            }
+            assert kwargs["stdin"] is subprocess.DEVNULL
             return subprocess.CompletedProcess(argv, 0, "\n".join(json.dumps(page) for page in workflow_pages), "")
         return real_run(argv, **kwargs)
 
@@ -5921,10 +6009,18 @@ def test_release_lineage_uses_merged_handoff_and_rehashes_downloads(tmp_path, mo
     blobs = {row["url"]: wheel if row["url"].endswith("wheel") else sdist for row in rows}
     with monkeypatch.context() as hostile:
         hostile.setenv("GIT_DIR", str(alternate_repo / ".git"))
+        hostile.setenv("PATH", str(hostile_bin))
+        hostile.setenv("GH_HOST", "attacker.invalid")
+        hostile.setenv("GH_REPO", "attacker/redirected")
+        hostile.setenv("GH_CONFIG_DIR", str(tmp_path / "hostile-gh-config"))
+        hostile.setenv("GH_TOKEN", "synthetic-hostile-token")
+        hostile.setenv("GITHUB_TOKEN", "synthetic-hostile-token")
+        hostile.setenv("XDG_CONFIG_HOME", str(tmp_path / "hostile-xdg"))
         result = evidence._reconcile_release_lineage(
             repo=repo, handoff_commit=handoff_commit,
             fetch_json=lambda _url: {"urls": rows}, download=lambda url: blobs[url],
         )
+    assert not hostile_marker.exists()
     assert result["release_commit"] == release_commit
     assert result["wheel_binding"]["record_path"] == (
         "phase_loop_runtime-0.7.14.dist-info/RECORD"
