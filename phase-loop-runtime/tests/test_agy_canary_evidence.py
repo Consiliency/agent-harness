@@ -572,6 +572,8 @@ def test_clean_settings_blocks_when_agy_process_is_active(tmp_path, monkeypatch)
 @pytest.mark.parametrize(
     ("surface", "message"),
     [
+        ("uid-status", "surface=uid-status"),
+        ("uid-classification", "surface=uid-classification"),
         ("cmdline", "surface=cmdline"),
         ("fd-directory", "surface=fd-directory"),
         ("fd-entry", "surface=fd-entry"),
@@ -591,6 +593,8 @@ def test_clean_settings_rejects_unreadable_process_inventory_before_mutation(
     fdinfo_dir = pid_dir / "fdinfo"
     fd_dir.mkdir(parents=True)
     fdinfo_dir.mkdir()
+    status = pid_dir / "status"
+    status.write_text(f"Name:\ttest\nUid:\t{os.getuid()}\t{os.getuid()}\t{os.getuid()}\t{os.getuid()}\n")
     (pid_dir / "cmdline").write_bytes(b"/usr/bin/other\0")
     open_target = tmp_path / "open-target"
     open_target.write_text("open\n")
@@ -599,7 +603,18 @@ def test_clean_settings_rejects_unreadable_process_inventory_before_mutation(
     fdinfo = fdinfo_dir / "7"
     fdinfo.write_text("flags:\t0100002\n")
 
-    if surface == "cmdline":
+    if surface == "uid-status":
+        real_read_text = Path.read_text
+
+        def deny_status(path, *args, **kwargs):
+            if path == status:
+                raise PermissionError("denied status")
+            return real_read_text(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", deny_status)
+    elif surface == "uid-classification":
+        status.write_text("Name:\ttest\nUid:\tmalformed\n")
+    elif surface == "cmdline":
         real_read_bytes = Path.read_bytes
 
         def deny_read_bytes(path):
@@ -668,6 +683,28 @@ def test_clean_settings_rejects_unreadable_process_inventory_before_mutation(
         for child in root.iterdir():
             child.unlink()
         root.rmdir()
+
+
+def test_quiescence_ignores_real_foreign_uid_pid_one(tmp_path):
+    real_pid = Path("/proc/1")
+    process_uids = evidence._process_uids(real_pid)
+    if process_uids is None:
+        pytest.skip("PID 1 exited during read-only inventory test")
+    settings_path = _settings(tmp_path, ["command(pwd)"])
+    settings = evidence._open_settings(settings_path)
+    if settings.uid in process_uids:
+        os.close(settings.parent_fd)
+        pytest.skip("PID 1 is not a foreign-UID process on this host")
+    proc_root = tmp_path / "real-proc"
+    proc_root.mkdir()
+    (proc_root / "1").symlink_to(real_pid, target_is_directory=True)
+    try:
+        evidence._assert_quiescent(
+            settings, tmp_path.resolve(), block_all_agy_processes=True,
+            proc_root=proc_root,
+        )
+    finally:
+        os.close(settings.parent_fd)
 
 
 def test_capture_reducer_requires_complete_sealed_staged_reads(monkeypatch, tmp_path):
@@ -2675,7 +2712,7 @@ def test_stage_binding_enforces_exact_full_read_limit(monkeypatch, tmp_path, siz
 
 
 def test_full_read_limit_includes_current_governed_plan_snapshot():
-    current_governed_plan_bytes = 203_701
+    current_governed_plan_bytes = 205_865
     assert evidence._MAX_FULL_STAGED_READ_BYTES == 262_144
     assert current_governed_plan_bytes <= evidence._MAX_FULL_STAGED_READ_BYTES
 
@@ -3250,7 +3287,7 @@ def test_tree_snapshot_real_inventory_scale_fits_process_boundary():
 
 
 def test_exact_dotfiles_head_snapshot_boundary_when_checkout_is_available():
-    head = "49e367c13d6cefa3d23720c189efd18ae689b123"
+    head = "50966ed30d6a210c8b3006928b41ff2351e10e1b"
     plan_path = "plans/detailed-replan-176-agy-review-boundary-20260803-0715.md"
     candidates = [
         Path(value) for value in (
@@ -3278,13 +3315,17 @@ def test_exact_dotfiles_head_snapshot_boundary_when_checkout_is_available():
         ["git", "-C", str(repo), "show", f"{head}:{plan_path}"],
         capture_output=True, check=True,
     ).stdout
-    assert len(plan) == 203_701
+    plan_blob = subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", f"{head}:{plan_path}"], text=True,
+    ).strip()
+    assert plan_blob == "3fa210e59daa470b1cea25474200ae3a736c8316"
+    assert len(plan) == 205_865
     assert snapshot.authority == {
         "schema": evidence._TREE_SNAPSHOT_SCHEMA,
         "commit": head,
-        "tree_oid": "a24d94b15fe02e3a65acf9f1121a31ee9edc21ab",
+        "tree_oid": "b1fa31dd01dac62863796e6cf944c065aa555ea6",
         "mount_path": str(repo),
-        "inventory_sha256": "ee3a41bbdce9b9f17191a9a2a0bc4b78e9a7dd2643f8b7484f1a368e495969b5",
+        "inventory_sha256": "f5a83e216a8fbb17c1946d7fcb22d3baa401c0da4961205a014bdffebf32e7b2",
         "entry_count": 1_212, "file_count": 1_212,
         "executable_count": 161, "symlink_count": 0,
         "gitlink_count": 1,

@@ -490,6 +490,7 @@ class _OpenedSettings:
     mode: int
     device: int
     inode: int
+    uid: int
 
 
 @dataclass
@@ -1312,6 +1313,7 @@ def _open_settings(path: Path) -> _OpenedSettings:
         mode=stat.S_IMODE(info.st_mode),
         device=info.st_dev,
         inode=info.st_ino,
+        uid=info.st_uid,
     )
 
 
@@ -1375,6 +1377,39 @@ def _fd_is_writable(pid_dir: Path, fd_name: str) -> bool:
     return True
 
 
+def _process_uids(pid_dir: Path) -> tuple[int, int, int, int] | None:
+    try:
+        text = (pid_dir / "status").read_text()
+    except (FileNotFoundError, ProcessLookupError) as exc:
+        try:
+            pid_dir.stat()
+        except (FileNotFoundError, ProcessLookupError):
+            return None
+        except OSError as status_exc:
+            raise AgyCanaryEvidenceError(
+                "settings process inventory is unreadable: "
+                f"pid={pid_dir.name},surface=uid-status"
+            ) from status_exc
+        raise AgyCanaryEvidenceError(
+            "settings process inventory is unreadable: "
+            f"pid={pid_dir.name},surface=uid-status"
+        ) from exc
+    except (OSError, UnicodeError) as exc:
+        raise AgyCanaryEvidenceError(
+            "settings process inventory is unreadable: "
+            f"pid={pid_dir.name},surface=uid-status"
+        ) from exc
+    uid_rows = [line.split() for line in text.splitlines() if line.startswith("Uid:")]
+    if (len(uid_rows) != 1 or len(uid_rows[0]) != 5 or
+            any(not value.isdecimal() for value in uid_rows[0][1:])):
+        raise AgyCanaryEvidenceError(
+            "settings process inventory is unreadable: "
+            f"pid={pid_dir.name},surface=uid-classification"
+        )
+    values = [int(value) for value in uid_rows[0][1:]]
+    return values[0], values[1], values[2], values[3]
+
+
 def _assert_quiescent(
     settings: _OpenedSettings,
     settings_parent: Path,
@@ -1392,6 +1427,11 @@ def _assert_quiescent(
         ) from exc
     for pid_dir in pid_dirs:
         if not pid_dir.name.isdigit() or int(pid_dir.name) == own_pid:
+            continue
+        process_uids = _process_uids(pid_dir)
+        if process_uids is None:
+            continue
+        if settings.uid not in process_uids:
             continue
         try:
             argv = (pid_dir / "cmdline").read_bytes().split(b"\0")
