@@ -52,6 +52,43 @@ def _git_repo(repo: Path) -> None:
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", "initial"], check=True)
 
 
+def _installation_identity() -> dict[str, str]:
+    return {
+        "uv_executable": "/tool/bin/uv", "uv_tool_dir": "/tool",
+        "console_script": "/tool/phase-loop-runtime/bin/phase-loop", "interpreter": "/tool/python",
+        "version": "0.7.14", "distribution_root": "/tool/site-packages",
+        "module_origin": "/tool/site-packages/phase_loop_runtime/__init__.py",
+        "direct_url_sha256": "a" * 64, "archive_hash": "sha256=" + "b" * 64,
+        "archive_url_sha256": "c" * 64,
+    }
+
+
+def _bootstrap_receipt(
+    *, installation: dict[str, str], plan_bytes: bytes = b"review this\n",
+    repo_head: str = "d" * 40, blobs: dict[str, str] | None = None,
+    input_sha256: dict[str, str] | None = None,
+) -> dict[str, object]:
+    paths = ("bootstrap.sh", "shared/agent-harness.pin", "plans/manifest.json", "plans/canary.md")
+    blobs = {name: "a" * 40 for name in paths} if blobs is None else blobs
+    input_sha256 = {
+        "bootstrap.sh": evidence._sha256(b"#!/bin/sh\n"),
+        "shared/agent-harness.pin": evidence._sha256(b"v0.7.14\n"),
+        "plans/manifest.json": evidence._sha256(b"{}\n"),
+        "plans/canary.md": evidence._sha256(plan_bytes),
+    } if input_sha256 is None else input_sha256
+    return {
+        "schema": "agy_canary_bootstrap_attestation.v1", "repo_head": repo_head,
+        "blobs": blobs, "input_sha256": input_sha256,
+        "targets": {"plan": "plans/canary.md", "manifest": "plans/manifest.json"},
+        "bootstrap": {
+            "argv": ["/usr/bin/bash", "/proc/self/fd/9"], "pid": 1, "returncode": 0,
+            "script_sha256": input_sha256["bootstrap.sh"], "script_blob": blobs["bootstrap.sh"],
+            "before_uv_tools_sha256": "e" * 64, "after_uv_tools_sha256": "f" * 64,
+            "environment_names": ["HOME", "PATH"], "installation": installation,
+        },
+    }
+
+
 def _probe_runtime_record() -> dict[str, object]:
     source = Path("/bin/true").resolve(strict=True)
     info = source.stat()
@@ -407,19 +444,11 @@ def _prepare_production_capture(
         "help_sha256": "a" * 64, "mode": "stream_json", "complete": True,
         "classes": rows, "staged": staged,
     }))
-    installation = {
-        "console_script": "/tool/phase-loop", "interpreter": "/tool/python", "version": "0.7.14",
-        "distribution_root": "/tool/site-packages", "module_origin": "/tool/site-packages/phase_loop_runtime/__init__.py",
-        "direct_url_sha256": "a" * 64, "archive_hash": "sha256=" + "b" * 64,
-        "archive_url_sha256": "c" * 64,
-    }
+    installation = _installation_identity()
     monkeypatch.setattr(evidence, "_installed_phase_loop_identity", lambda: installation)
-    (root / "agy_canary_bootstrap_attestation.json").write_text(json.dumps({
-        "bootstrap": {"returncode": 0, "installation": installation},
-        "targets": {"plan": "plans/canary.md", "manifest": "plans/manifest.json"},
-        "blobs": {"plans/canary.md": "a", "plans/manifest.json": "b"},
-        "input_sha256": {"plans/canary.md": evidence._sha256(plan_bytes)},
-    }))
+    (root / "agy_canary_bootstrap_attestation.json").write_text(json.dumps(
+        _bootstrap_receipt(installation=installation, plan_bytes=plan_bytes)
+    ))
     release = {
         "version": "0.7.14",
         "artifacts": [{"filename": "phase_loop_runtime.whl", "sha256": "b" * 64, "url_sha256": "c" * 64}],
@@ -1157,14 +1186,11 @@ def test_prepare_requires_bootstrap_and_binds_selected_mode(tmp_path, monkeypatc
             "help_sha256": "a" * 64, "mode": "stream_json", "complete": True, "classes": rows,
             "staged": staged,
         }))
-        installation = {
-            "console_script": "/tool/phase-loop", "interpreter": "/tool/python", "version": "0.7.14",
-            "distribution_root": "/tool/site-packages", "module_origin": "/tool/site-packages/phase_loop_runtime/__init__.py",
-            "direct_url_sha256": "a" * 64, "archive_hash": "sha256=" + "b" * 64,
-            "archive_url_sha256": "c" * 64,
-        }
+        installation = _installation_identity()
         monkeypatch.setattr(evidence, "_installed_phase_loop_identity", lambda: installation)
-        (root / "agy_canary_bootstrap_attestation.json").write_text(json.dumps({"bootstrap": {"returncode": 0, "installation": installation}, "targets": {"plan": "plans/canary.md", "manifest": "plans/manifest.json"}, "blobs": {"plans/canary.md": "a", "plans/manifest.json": "b"}}))
+        (root / "agy_canary_bootstrap_attestation.json").write_text(json.dumps(
+            _bootstrap_receipt(installation=installation)
+        ))
         release = {"version": "0.7.14", "artifacts": [{"filename": "phase_loop_runtime.whl", "sha256": "b" * 64, "url_sha256": "c" * 64}]}
         monkeypatch.setattr(evidence, "_reconcile_release_lineage", lambda **_kwargs: release)
         harness = tmp_path / "agent-harness"
@@ -1177,6 +1203,42 @@ def test_prepare_requires_bootstrap_and_binds_selected_mode(tmp_path, monkeypatc
         assert prepared["seat_key"] == "gemini-primary"
         ledger = json.loads((root / "agy-launch-ledger.json").read_text())
         assert ledger["capture_mode"] == "stream_json"
+    finally:
+        shutil.rmtree(root)
+
+
+@pytest.mark.parametrize(
+    ("mutation", "match"),
+    [
+        ("minimal", "schema is malformed"),
+        ("extra_nonce", "schema is malformed"),
+        ("script", "child identity is malformed"),
+    ],
+)
+def test_prepare_rejects_hand_authored_or_semantically_mutated_bootstrap_receipt(
+    tmp_path, monkeypatch, mutation, match,
+):
+    root = _private_root(tmp_path)
+    settings = _settings(tmp_path, [])
+
+    def mutate_receipt():
+        path = root / "agy_canary_bootstrap_attestation.json"
+        receipt = json.loads(path.read_text())
+        if mutation == "minimal":
+            receipt = {"bootstrap": {"returncode": 0}}
+        elif mutation == "extra_nonce":
+            receipt["nonce_sha256"] = "0" * 64
+        else:
+            receipt["bootstrap"]["script_sha256"] = "0" * 64
+        path.write_text(json.dumps(receipt))
+
+    try:
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match=match):
+            _prepare_production_capture(
+                monkeypatch=monkeypatch, tmp_path=tmp_path, root=root, settings=settings,
+                seat_key="gemini-primary", before_prepare=mutate_receipt,
+            )
+        assert not (root / "agy-launch-ledger.json").exists()
     finally:
         shutil.rmtree(root)
 
@@ -1222,14 +1284,18 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
             name: subprocess.check_output(["git", "-C", str(repo), "rev-parse", f"HEAD:{name}"], text=True).strip()
             for name in ("bootstrap.sh", "shared/agent-harness.pin", "plans/canary.md", "plans/manifest.json")
         }
-        (root / "agy_canary_bootstrap_attestation.json").write_text(json.dumps({
-            "repo_head": head, "blobs": blobs,
-            "input_sha256": {
-                name: evidence._sha256((repo / name).read_bytes())
-                for name in ("bootstrap.sh", "shared/agent-harness.pin", "plans/canary.md", "plans/manifest.json")
-            },
-            "targets": {"plan": "plans/canary.md", "manifest": "plans/manifest.json"},
-        }))
+        (root / "agy_canary_bootstrap_attestation.json").write_text(json.dumps(
+            _bootstrap_receipt(
+                installation=_installation_identity(), repo_head=head, blobs=blobs,
+                input_sha256={
+                    name: evidence._sha256((repo / name).read_bytes())
+                    for name in (
+                        "bootstrap.sh", "shared/agent-harness.pin", "plans/canary.md",
+                        "plans/manifest.json",
+                    )
+                },
+            )
+        ))
         release = {
             "version": "0.7.14", "handoff_commit": "a" * 40, "release_commit": "b" * 40,
             "tag_object": "c" * 40, "tag_peel": "b" * 40,
@@ -2186,8 +2252,9 @@ def test_bootstrap_attestation_has_no_parent_only_nonce_claim(monkeypatch, tmp_p
     uv = tmp_path / "uv"
     uv.write_text("#!/bin/sh\nexit 0\n")
     uv.chmod(0o700)
-    installation = {"version": "0.7.14", "identity": "trusted"}
-    monkeypatch.setattr(evidence, "_canonical_bash", lambda: Path("/bin/bash"))
+    installation = _installation_identity()
+    installation["uv_executable"] = str(uv)
+    monkeypatch.setattr(evidence, "_canonical_bash", lambda: Path("/usr/bin/bash"))
     monkeypatch.setattr(evidence, "_canonical_uv", lambda: uv)
     monkeypatch.setattr(evidence, "_installed_phase_loop_identity", lambda **_kwargs: installation)
     snapshot = tmp_path / "bootstrap-snapshot"
@@ -2220,6 +2287,9 @@ def test_bootstrap_attestation_has_no_parent_only_nonce_claim(monkeypatch, tmp_p
         receipt = evidence.bootstrap_attest(
             evidence_root=root, dotfiles_repo=repo, plan_path=Path("plans/canary.md")
         )
+        assert evidence._validate_bootstrap_attestation(
+            receipt=receipt, installation=installation
+        ) == receipt
         assert receipt["bootstrap"]["returncode"] == 0
         assert receipt["bootstrap"]["installation"] == installation
         assert "nonce_sha256" not in receipt

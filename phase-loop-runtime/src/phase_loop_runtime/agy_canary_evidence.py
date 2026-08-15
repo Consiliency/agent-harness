@@ -1033,9 +1033,10 @@ def bind_staged_review_inputs(
             not isinstance(instruction_bytes, bytes) or not instruction_bytes or
             generator_identity != _REVIEW_INSTRUCTION_GENERATOR):
         raise AgyCanaryEvidenceError("staged review binding inputs are not canonical")
-    bootstrap = _read_json_at(capture.root_fd, "agy_canary_bootstrap_attestation.json")
-    if (not isinstance(bootstrap, dict) or
-            _sha256(_canonical_json(bootstrap)) != authority["bootstrap_sha256"]):
+    bootstrap = _validate_bootstrap_attestation(
+        receipt=_read_json_at(capture.root_fd, "agy_canary_bootstrap_attestation.json")
+    )
+    if _sha256(_canonical_json(bootstrap)) != authority["bootstrap_sha256"]:
         raise AgyCanaryEvidenceError("staged review binding bootstrap receipt drifted")
     targets = bootstrap.get("targets")
     inputs = bootstrap.get("input_sha256")
@@ -3156,6 +3157,98 @@ def bootstrap_attest(
         os.close(root_fd)
 
 
+def _validate_bootstrap_attestation(
+    *, receipt: Any, repo: Path | None = None, installation: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Accept only a complete, directly-produced bootstrap receipt."""
+    if not isinstance(receipt, dict) or set(receipt) != {
+        "schema", "repo_head", "blobs", "input_sha256", "targets", "bootstrap"
+    } or receipt.get("schema") != "agy_canary_bootstrap_attestation.v1":
+        raise AgyCanaryEvidenceError("bootstrap attestation schema is malformed")
+    targets = receipt["targets"]
+    if (not isinstance(targets, dict) or set(targets) != {"plan", "manifest"} or
+            not isinstance(targets.get("plan"), str) or
+            targets["plan"] in {"", "plans/manifest.json"} or
+            Path(targets["plan"]).is_absolute() or
+            any(part in {"", ".", ".."} for part in Path(targets["plan"]).parts) or
+            targets.get("manifest") != "plans/manifest.json"):
+        raise AgyCanaryEvidenceError("bootstrap attestation targets are malformed")
+    expected_paths = {
+        "bootstrap.sh", "shared/agent-harness.pin", "plans/manifest.json", targets["plan"],
+    }
+    repo_head = receipt["repo_head"]
+    blobs = receipt["blobs"]
+    input_sha256 = receipt["input_sha256"]
+    if (not isinstance(repo_head, str) or len(repo_head) != 40 or
+            any(char not in "0123456789abcdef" for char in repo_head.lower()) or
+            len(expected_paths) != 4 or
+            not isinstance(blobs, dict) or not isinstance(input_sha256, dict) or
+            set(blobs) != expected_paths or set(input_sha256) != expected_paths or
+            any(not isinstance(value, str) or len(value) != 40 or
+                any(char not in "0123456789abcdef" for char in value.lower())
+                for value in blobs.values()) or
+            any(not _is_digest(value) for value in input_sha256.values())):
+        raise AgyCanaryEvidenceError("bootstrap attestation input identities are malformed")
+    bootstrap = receipt["bootstrap"]
+    expected_bootstrap = {
+        "argv", "pid", "returncode", "script_sha256", "script_blob",
+        "before_uv_tools_sha256", "after_uv_tools_sha256", "environment_names", "installation",
+    }
+    if not isinstance(bootstrap, dict) or set(bootstrap) != expected_bootstrap:
+        raise AgyCanaryEvidenceError("bootstrap attestation child record is malformed")
+    argv = bootstrap["argv"]
+    if (not isinstance(argv, list) or len(argv) != 2 or argv[0] != "/usr/bin/bash" or
+            not isinstance(argv[1], str) or not argv[1].startswith("/proc/self/fd/") or
+            not argv[1].removeprefix("/proc/self/fd/").isdigit() or
+            type(bootstrap["pid"]) is not int or bootstrap["pid"] <= 0 or
+            bootstrap["returncode"] != 0 or bootstrap["script_sha256"] != input_sha256["bootstrap.sh"] or
+            bootstrap["script_blob"] != blobs["bootstrap.sh"] or
+            any(not _is_digest(bootstrap[name]) for name in (
+                "before_uv_tools_sha256", "after_uv_tools_sha256"
+            ))):
+        raise AgyCanaryEvidenceError("bootstrap attestation child identity is malformed")
+    environment_names = bootstrap["environment_names"]
+    allowed_environment_names = {"LANG", "LC_ALL", "LC_CTYPE", "TERM", "SHELL", "TMPDIR", "HOME", "PATH"}
+    if (not isinstance(environment_names, list) or environment_names != sorted(environment_names) or
+            len(set(environment_names)) != len(environment_names) or
+            not all(isinstance(name, str) and name in allowed_environment_names for name in environment_names) or
+            not {"HOME", "PATH"}.issubset(environment_names)):
+        raise AgyCanaryEvidenceError("bootstrap attestation child environment is malformed")
+    installed = bootstrap["installation"]
+    expected_installation = {
+        "uv_executable", "uv_tool_dir", "console_script", "interpreter", "version",
+        "distribution_root", "module_origin", "direct_url_sha256", "archive_hash",
+        "archive_url_sha256",
+    }
+    if (not isinstance(installed, dict) or set(installed) != expected_installation or
+            any(not isinstance(installed.get(name), str) or not installed[name] for name in expected_installation) or
+            installed["version"] != "0.7.14" or not _is_digest(installed["direct_url_sha256"]) or
+            not _is_digest(installed["archive_url_sha256"]) or
+            not installed["archive_hash"].startswith("sha256=") or
+            not _is_digest(installed["archive_hash"].removeprefix("sha256=")) or
+            any(not Path(installed[name]).is_absolute() for name in (
+                "uv_executable", "uv_tool_dir", "console_script", "interpreter",
+                "distribution_root", "module_origin",
+            )) or
+            not Path(installed["module_origin"]).is_relative_to(Path(installed["distribution_root"]))):
+        raise AgyCanaryEvidenceError("bootstrap attestation installation identity is malformed")
+    if installation is not None and installed != installation:
+        raise AgyCanaryEvidenceError("bootstrap attestation installation identity drifted")
+    if repo is not None:
+        if _git_text(repo, "rev-parse", f"{repo_head}^{{commit}}") != repo_head:
+            raise AgyCanaryEvidenceError("bootstrap attestation HEAD is not immutable")
+        for relative in expected_paths:
+            actual = subprocess.run(
+                ["git", "-C", str(repo), "show", f"{repo_head}:{relative}"],
+                capture_output=True, check=False,
+            )
+            if (actual.returncode != 0 or blobs[relative] != _git_text(
+                    repo, "rev-parse", f"{repo_head}:{relative}"
+            ) or input_sha256[relative] != _sha256(actual.stdout)):
+                raise AgyCanaryEvidenceError("bootstrap attestation input identity drifted")
+    return receipt
+
+
 def _rederive_cleanup_lineage(*, root_fd: int, settings_path: Path) -> dict[str, Any]:
     """Reopen the sealed preimage and current settings; never trust a cleanup flag."""
     cleanup = _read_json_at(root_fd, _CLEANUP_STATE_NAME)
@@ -3488,17 +3581,11 @@ def prepare_canary(
         cleanup = cleanup_lineage["cleanup"]
         probe = _read_json_at(root_fd, _PROBE_NAME)
         _require_complete_capability_probe(probe=probe, root_fd=root_fd)
-        bootstrap = _read_json_at(root_fd, "agy_canary_bootstrap_attestation.json")
-        bootstrap_result = bootstrap.get("bootstrap")
-        if not isinstance(bootstrap_result, dict) or bootstrap_result.get("returncode") != 0:
-            raise AgyCanaryEvidenceError("direct bootstrap attestation is incomplete")
-        installation = bootstrap_result.get("installation")
-        if not isinstance(installation, dict) or installation != _installed_phase_loop_identity():
-            raise AgyCanaryEvidenceError("direct bootstrap installed identity no longer matches")
-        bootstrap_targets = bootstrap.get("targets")
-        bootstrap_blobs = bootstrap.get("blobs")
-        if not isinstance(bootstrap_targets, dict) or not isinstance(bootstrap_blobs, dict):
-            raise AgyCanaryEvidenceError("bootstrap attestation lacks target identities")
+        bootstrap = _validate_bootstrap_attestation(
+            receipt=_read_json_at(root_fd, "agy_canary_bootstrap_attestation.json"),
+            installation=_installed_phase_loop_identity(),
+        )
+        installation = bootstrap["bootstrap"]["installation"]
         source_environment = dict(os.environ) if source_env is None else dict(source_env)
         source_inventory = freeze_customization_inventory(
             home=customization_home, project_dir=project_dir, env=source_environment
@@ -3865,7 +3952,9 @@ def _attested_final_targets(
     *, root_fd: int, repo: Path, plan_path: Path, manifest_path: Path, plan_slug: str,
     require_preimages: bool = True,
 ) -> tuple[dict[str, Any], str, str]:
-    bootstrap = _read_json_at(root_fd, "agy_canary_bootstrap_attestation.json")
+    bootstrap = _validate_bootstrap_attestation(
+        receipt=_read_json_at(root_fd, "agy_canary_bootstrap_attestation.json"), repo=repo
+    )
     current_head = _clean_dotfiles_repo(repo) if require_preimages else _git_text(repo, "rev-parse", "HEAD")
     if bootstrap.get("repo_head") != current_head:
         raise AgyCanaryEvidenceError("dotfiles worktree no longer matches bootstrap-attested HEAD")
