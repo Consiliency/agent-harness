@@ -1785,6 +1785,18 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
         assert "shared/agent-harness.pin" in subprocess.check_output(
             ["git", "-C", str(repo), "diff", "--name-only", f"{committed}^", committed], text=True,
         ).splitlines()
+        detached_repo = tmp_path / "detached-dotfiles"
+        subprocess.run(
+            ["git", "clone", "-q", "--no-local", str(repo), str(detached_repo)],
+            check=True,
+        )
+        detached_result = evidence.check_committed_final(
+            dotfiles_repo=detached_repo, commit=committed,
+            plan_path=Path("plans/canary.md"),
+            manifest_path=Path("plans/manifest.json"), plan_slug="agy-canary",
+            agent_harness_repo=repo, handoff_commit=release["handoff_commit"],
+        )
+        assert detached_result == committed_result
         bootstrap = json.loads((root / "agy_canary_bootstrap_attestation.json").read_text())
         with pytest.raises(evidence.AgyCanaryEvidenceError, match="release"):
             evidence._validate_committed_attestation(
@@ -1818,11 +1830,45 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
                 plan_before=subprocess.check_output(["git", "-C", str(repo), "show", f"{head}:plans/canary.md"]),
                 manifest_before=subprocess.check_output(["git", "-C", str(repo), "show", f"{head}:plans/manifest.json"]),
             )
+        tampered_snapshot_commit = json.loads(json.dumps(payload["attestation"]))
+        tampered_snapshot_commit["bootstrap"]["tree_snapshot"]["commit"] = "0" * 40
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="snapshot commit drifted"):
+            evidence._validate_committed_attestation(
+                repo=repo, attestation=tampered_snapshot_commit,
+                plan_relative="plans/canary.md", manifest_relative="plans/manifest.json",
+                plan_before=subprocess.check_output(["git", "-C", str(repo), "show", f"{head}:plans/canary.md"]),
+                manifest_before=subprocess.check_output(["git", "-C", str(repo), "show", f"{head}:plans/manifest.json"]),
+            )
+        tampered_snapshot_tree = json.loads(json.dumps(payload["attestation"]))
+        tampered_snapshot_tree["bootstrap"]["tree_snapshot"]["tree_oid"] = "0" * 40
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="snapshot authority drifted"):
+            evidence._validate_committed_attestation(
+                repo=repo, attestation=tampered_snapshot_tree,
+                plan_relative="plans/canary.md", manifest_relative="plans/manifest.json",
+                plan_before=subprocess.check_output(["git", "-C", str(repo), "show", f"{head}:plans/canary.md"]),
+                manifest_before=subprocess.check_output(["git", "-C", str(repo), "show", f"{head}:plans/manifest.json"]),
+            )
         tampered_snapshot = json.loads(json.dumps(payload["attestation"]))
         tampered_snapshot["bootstrap"]["tree_snapshot"]["inventory_sha256"] = "0" * 64
         with pytest.raises(evidence.AgyCanaryEvidenceError, match="snapshot authority drifted"):
             evidence._validate_committed_attestation(
                 repo=repo, attestation=tampered_snapshot,
+                plan_relative="plans/canary.md", manifest_relative="plans/manifest.json",
+                plan_before=subprocess.check_output(["git", "-C", str(repo), "show", f"{head}:plans/canary.md"]),
+                manifest_before=subprocess.check_output(["git", "-C", str(repo), "show", f"{head}:plans/manifest.json"]),
+            )
+        tampered_mount = json.loads(json.dumps(payload["attestation"]))
+        recorded_mount = Path(tampered_mount["bootstrap"]["tree_snapshot"]["mount_path"])
+        decoy_mount = str(recorded_mount.with_name("x" * len(recorded_mount.name)))
+        tampered_mount["bootstrap"]["tree_snapshot"]["mount_path"] = decoy_mount
+        tampered_mount["bootstrap"]["sandbox"]["mount_path"] = decoy_mount
+        tampered_mount["bootstrap"]["sandbox"]["command"][1] = str(
+            Path(decoy_mount) / "bootstrap.sh"
+        )
+        tampered_mount["bootstrap"]["sandbox"]["tmpfs"][2] = decoy_mount
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="sandbox identity drifted"):
+            evidence._validate_committed_attestation(
+                repo=repo, attestation=tampered_mount,
                 plan_relative="plans/canary.md", manifest_relative="plans/manifest.json",
                 plan_before=subprocess.check_output(["git", "-C", str(repo), "show", f"{head}:plans/canary.md"]),
                 manifest_before=subprocess.check_output(["git", "-C", str(repo), "show", f"{head}:plans/manifest.json"]),

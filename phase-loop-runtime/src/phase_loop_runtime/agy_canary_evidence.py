@@ -3694,6 +3694,7 @@ def _git_tree_snapshot(repo: Path, commit: str, *, materialize: bool) -> _GitTre
 
 def _validate_tree_snapshot_authority(
     value: Any, *, repo: Path | None = None, commit: str | None = None,
+    require_execution_path: bool = True,
 ) -> dict[str, Any]:
     required = {
         "schema", "commit", "tree_oid", "mount_path", "inventory_sha256",
@@ -3707,6 +3708,7 @@ def _validate_tree_snapshot_authority(
                 for name in ("commit", "tree_oid")) or
             not isinstance(value.get("mount_path"), str) or
             not Path(value["mount_path"]).is_absolute() or
+            any(part in {"", ".", ".."} for part in Path(value["mount_path"]).parts) or
             not _is_digest(value.get("inventory_sha256")) or
             any(not _is_plain_int(value.get(name)) or value[name] < 0 for name in (
                 "entry_count", "file_count", "executable_count", "symlink_count"
@@ -3736,10 +3738,13 @@ def _validate_tree_snapshot_authority(
         raise AgyCanaryEvidenceError("tracked snapshot commit drifted")
     if repo is not None:
         canonical = repo.resolve(strict=True)
-        if value["mount_path"] != str(canonical):
+        if require_execution_path and value["mount_path"] != str(canonical):
             raise AgyCanaryEvidenceError("tracked snapshot mount path drifted")
         derived = _git_tree_snapshot(canonical, value["commit"], materialize=False)
-        if derived.authority != value:
+        expected = derived.authority
+        if not require_execution_path:
+            expected = {**expected, "mount_path": value["mount_path"]}
+        if expected != value:
             raise AgyCanaryEvidenceError("tracked snapshot authority drifted")
     return value
 
@@ -5694,6 +5699,7 @@ def _validate_committed_attestation(
     input_sha256 = bootstrap["input_sha256"]
     tree_snapshot = _validate_tree_snapshot_authority(
         bootstrap["tree_snapshot"], repo=repo, commit=repo_head,
+        require_execution_path=False,
     )
     expected_paths = {"bootstrap.sh", "shared/agent-harness.pin", "plans/manifest.json", plan_relative}
     if not isinstance(repo_head, str) or len(repo_head) != 40 or not isinstance(blobs, dict) or not isinstance(input_sha256, dict) or set(blobs) != expected_paths or set(input_sha256) != expected_paths:
@@ -5718,7 +5724,14 @@ def _validate_committed_attestation(
         uv_store_authority=installation["uv_store_authority"],
         bash=_canonical_bash(), revalidate_evidence_root=False,
     )
-    snapshot = _git_tree_snapshot(repo, repo_head, materialize=False)
+    candidate_snapshot = _git_tree_snapshot(repo, repo_head, materialize=False)
+    snapshot = _GitTreeSnapshot(
+        authority={
+            **candidate_snapshot.authority,
+            "mount_path": tree_snapshot["mount_path"],
+        },
+        entries=candidate_snapshot.entries,
+    )
     _argv, expected_sandbox = _tree_snapshot_bwrap_argv(
         snapshot=snapshot, bwrap=_canonical_bwrap(), bash=_canonical_bash(),
         environment=environment, account_home=_account_home(),
