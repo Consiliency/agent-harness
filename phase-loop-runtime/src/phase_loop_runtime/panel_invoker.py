@@ -147,10 +147,10 @@ def review_policy_for_tier(tier: ReviewLandingTier | str) -> ReviewLandingPolicy
 
 
 DEFAULT_REVIEW_SEAT_ALIASES: Mapping[str, str] = {
-    "claude-fable-5": "fable",
-    "gpt-5.6-sol": "sol",
-    "gemini-3.6-flash": "gemini",
-    "grok-4.5": "grok",
+    "claude-fable-5": "fable",  # model-id-source: frozen review policy default seat
+    "gpt-5.6-sol": "sol",  # model-id-source: frozen review policy default seat
+    "gemini-3.6-flash": "gemini",  # model-id-source: frozen review policy default seat
+    "grok-4.5": "grok",  # model-id-source: frozen review policy default seat
 }
 
 
