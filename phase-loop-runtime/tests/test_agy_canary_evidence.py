@@ -4264,6 +4264,7 @@ def test_advisor_board_capture_uses_metadata_board_before_any_provider_probe(
     from phase_loop_runtime import panel_invoker
     from phase_loop_runtime.advisor_board import composition
     from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+    from phase_loop_runtime.advisor_board import registries
 
     root = _private_root(tmp_path)
     capture = _prepare_production_capture(
@@ -4279,6 +4280,9 @@ def test_advisor_board_capture_uses_metadata_board_before_any_provider_probe(
     def forbid_compose(*_args, **_kwargs):
         raise AssertionError("capture mode must not run availability/auth composition")
 
+    def forbid_probe(*_args, **_kwargs):
+        raise AssertionError("capture mode must not run registry/auth/PATH probes")
+
     def forbid_subprocess(*_args, **_kwargs):
         if not reached_stage:
             raise AssertionError("provider subprocess ran before staged authority")
@@ -4293,6 +4297,12 @@ def test_advisor_board_capture_uses_metadata_board_before_any_provider_probe(
         raise evidence.AgyCanaryEvidenceError("stop after staged authority")
 
     monkeypatch.setattr(composition, "compose_review_board", forbid_compose)
+    monkeypatch.setattr(composition, "default_board_auth_ok", forbid_probe)
+    monkeypatch.setattr(
+        registries.DEFAULT_HARNESS_REGISTRY, "is_available", forbid_probe,
+    )
+    monkeypatch.setattr(registries.shutil, "which", forbid_probe)
+    monkeypatch.setattr(panel_invoker, "_leg_auth_ok", forbid_probe)
     monkeypatch.setattr(panel_invoker.subprocess, "run", forbid_subprocess)
     monkeypatch.setattr(panel_invoker, "bind_staged_review_inputs", bind_stage)
     monkeypatch.setattr(

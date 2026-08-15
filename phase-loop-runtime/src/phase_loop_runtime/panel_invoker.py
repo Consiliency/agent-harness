@@ -4585,7 +4585,15 @@ def invoke_board(
     # Reject an inexpressible seat (unknown model / cross-vendor pairing / over-
     # ceiling effort) and resolve bare-seat lanes BEFORE spawning — the config-time
     # invariant extended to the ad-hoc / seam path (raises SeatValidationError).
-    board = _resolve_and_validate_board(board, matrix or default_matrix(env=base_env))
+    validation_matrix = (
+        # Capture validates only frozen model/harness metadata.  The static probe
+        # supplies compatibility-lane availability without consulting ambient
+        # PATH, auth, environment keys, or the process-running registry.
+        default_matrix(env={}, probe=_LEG_CLI.__contains__)
+        if agy_canary_capture is not None
+        else (matrix or default_matrix(env=base_env))
+    )
+    board = _resolve_and_validate_board(board, validation_matrix)
     gemini_seats = [seat for seat in board.seats if (seat.harness or "").lower() == "gemini"]
     if agy_canary_capture is not None:
         if spawn is not None:
@@ -4610,7 +4618,14 @@ def invoke_board(
     # Gemini-ledger mutation therefore cannot invalidate a later Codex/Claude/Grok
     # sibling after an earlier thread has begun execution.
     capture_launches: dict[str, tuple[ProviderLaunchAuthority, Path, Path]] = {}
+    capture_scratches: list[Path] = []
     capture_seats: list[Seat] = []
+
+    def _cleanup_capture_resources() -> None:
+        _cleanup_capture_launches(capture_launches)
+        for scratch in capture_scratches:
+            shutil.rmtree(scratch, ignore_errors=True)
+
     if agy_canary_capture is not None:
         if effective_research.enabled:
             raise ValueError("capture-enabled board does not permit research seats")
@@ -4628,27 +4643,27 @@ def invoke_board(
         instruction_bytes = _resolve_brief(mode, brief_ref).encode("utf-8")
         for index, (seat, provider) in enumerate(zip(capture_seats, providers)):
             scratch = Path(tempfile.mkdtemp(prefix="pl-panel-capture-"))
-            stage = scratch / "review"
-            stage.mkdir(mode=0o700)
-            (stage / "review-bundle.md").write_bytes(bundle_bytes)
-            (stage / "review-instructions.md").write_bytes(instruction_bytes)
-            for name in ("review-bundle.md", "review-instructions.md"):
-                (stage / name).chmod(0o600)
-            if index == 0:
-                bind_staged_review_inputs(
-                    capture=agy_canary_capture,
-                    review_dir=stage,
-                    bundle_bytes=bundle_bytes,
-                    instruction_bytes=instruction_bytes,
-                    generator_identity="phase_loop_runtime.panel_invoker._resolve_brief.v1",
-                )
+            capture_scratches.append(scratch)
             try:
+                stage = scratch / "review"
+                stage.mkdir(mode=0o700)
+                (stage / "review-bundle.md").write_bytes(bundle_bytes)
+                (stage / "review-instructions.md").write_bytes(instruction_bytes)
+                for name in ("review-bundle.md", "review-instructions.md"):
+                    (stage / name).chmod(0o600)
+                if index == 0:
+                    bind_staged_review_inputs(
+                        capture=agy_canary_capture,
+                        review_dir=stage,
+                        bundle_bytes=bundle_bytes,
+                        instruction_bytes=instruction_bytes,
+                        generator_identity="phase_loop_runtime.panel_invoker._resolve_brief.v1",
+                    )
                 authority = prepare_provider_launch_authorities(
                     capture=agy_canary_capture, stage=stage, providers=(provider,)
                 )[provider]
             except Exception:
-                _cleanup_capture_launches(capture_launches)
-                shutil.rmtree(scratch, ignore_errors=True)
+                _cleanup_capture_resources()
                 raise
             capture_launches[str(seat.seat_key)] = (authority, stage, scratch)
         try:
@@ -4664,7 +4679,7 @@ def invoke_board(
                 ),
             )
         except Exception:
-            _cleanup_capture_launches(capture_launches)
+            _cleanup_capture_resources()
             raise
 
     def _skip(seat: Seat, leg: str, detail: str) -> PanelLegResult:
@@ -4961,4 +4976,4 @@ def invoke_board(
         if research_run is not None:
             research_run.close()
         if agy_canary_capture is not None:
-            _cleanup_capture_launches(capture_launches)
+            _cleanup_capture_resources()

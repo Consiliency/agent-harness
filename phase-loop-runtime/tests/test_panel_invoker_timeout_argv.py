@@ -923,7 +923,9 @@ def test_capture_result_seals_before_coordinator_reclaims_scratch(monkeypatch, t
         shutil.rmtree(root)
 
 
-@pytest.mark.parametrize("failure", ["prepare", "seal", "result", None])
+@pytest.mark.parametrize(
+    "failure", ["write", "bind", "prepare", "seal", "result", None],
+)
 def test_capture_setup_always_reclaims_scratch_and_provider_outputs(monkeypatch, tmp_path, failure):
     from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
 
@@ -931,13 +933,26 @@ def test_capture_setup_always_reclaims_scratch_and_provider_outputs(monkeypatch,
     scratches: list[Path] = []
     calls = 0
 
+    real_write_bytes = Path.write_bytes
+
+    def capture_mkdtemp(*, prefix):
+        scratch = tmp_path / f"{prefix}{len(scratches)}"
+        scratch.mkdir()
+        scratches.append(scratch)
+        return str(scratch)
+
+    def write_bytes(path, data):
+        if failure == "write" and path.name == "review-bundle.md":
+            raise OSError("stage write failed")
+        return real_write_bytes(path, data)
+
     def bind_stage(**_kwargs):
-        return None
+        if failure == "bind":
+            raise evidence.AgyCanaryEvidenceError("stage bind failed")
 
     def prepare_authority(*, stage: Path, providers: tuple[str, ...], **_kwargs):
         nonlocal calls
         calls += 1
-        scratches.append(stage.parent)
         if failure == "prepare" and calls == 2:
             raise evidence.AgyCanaryEvidenceError("second authority failed")
         output = tmp_path / f"output-{providers[0]}"
@@ -945,6 +960,8 @@ def test_capture_setup_always_reclaims_scratch_and_provider_outputs(monkeypatch,
         outputs.append(output)
         return {providers[0]: SimpleNamespace(namespace=SimpleNamespace(provider_output=output))}
 
+    monkeypatch.setattr(pi.tempfile, "mkdtemp", capture_mkdtemp)
+    monkeypatch.setattr(Path, "write_bytes", write_bytes)
     monkeypatch.setattr(pi, "bind_staged_review_inputs", bind_stage)
     monkeypatch.setattr(pi, "prepare_provider_launch_authorities", prepare_authority)
     monkeypatch.setattr(
@@ -964,9 +981,11 @@ def test_capture_setup_always_reclaims_scratch_and_provider_outputs(monkeypatch,
     if failure is None:
         pi.invoke_board(DEFAULT_BOARD, "review", agy_canary_capture=object(), base_env={}, max_concurrency=1)
     else:
-        with pytest.raises(evidence.AgyCanaryEvidenceError):
+        with pytest.raises((evidence.AgyCanaryEvidenceError, OSError)):
             pi.invoke_board(DEFAULT_BOARD, "review", agy_canary_capture=object(), base_env={}, max_concurrency=1)
-    assert outputs and scratches
+    assert scratches
+    if failure not in {"write", "bind"}:
+        assert outputs
     assert all(not path.exists() for path in outputs)
     assert all(not path.exists() for path in scratches)
 
