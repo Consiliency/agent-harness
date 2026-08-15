@@ -2470,7 +2470,7 @@
           "transition": "committed"
         },
         {
-          "at": "2026-08-15T16:25:48Z",
+          "at": "2026-08-15T16:41:00Z",
           "by": "clawdbot-agent-harness-codex",
           "metadata": {
             "fresh_plan_rewrite": {
@@ -2481,8 +2481,8 @@
               ],
               "future_history_pins": 0,
               "operator_directive": "substitute-grok-4.6-for-fable",
-              "plan_sha256": "70328ed5d4b5ec2ec5003465d392df9bd712697a21521aac8e803d8c72adebdd",
-              "plan_words": 2028,
+              "plan_sha256": "cdd57b564fa3cd5575c3dce6c13c0a6ef664380489e2b13c67823b48c99ebad1",
+              "plan_words": 2207,
               "prior_plan_sha256": "41c4d442f4cd41b68823c5240b61b187d1299f9d6c79cecbec0c19617dd2938e",
               "ratification_status": "pending",
               "roadmap_sha256": "c66949236043e46e956caec1c09d0c19d0e8751e4ce2891de1fe2edf24e9fea1",
@@ -2507,7 +2507,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-15T16:25:48Z"
+      "updated_at": "2026-08-15T16:41:00Z"
     },
     {
       "acceptance_criteria_count": null,
