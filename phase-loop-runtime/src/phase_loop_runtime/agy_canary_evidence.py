@@ -666,6 +666,96 @@ class AgyCanaryNamespace:
         return command
 
 
+def _provider_launch_identity(
+    command: list[str], *, provider: str,
+) -> dict[str, Any]:
+    raw = "\0".join(command).encode()
+    normalized = list(command)
+    if provider == "gemini" and normalized:
+        normalized[-1] = "<prompt>"
+    return {
+        "argv_bytes": len(raw),
+        "argv_sha256": _sha256(raw),
+        "normalized_argv_sha256": _sha256("\0".join(normalized).encode()),
+    }
+
+
+def _provider_runtime_record(runtime: _TrustedProviderRuntime) -> dict[str, Any]:
+    return {
+        "schema": "agy_provider_runtime.v1",
+        "provider": runtime.provider,
+        "source": str(runtime.source),
+        "device": runtime.device,
+        "inode": runtime.inode,
+        "mode": runtime.mode,
+        "sha256": runtime.sha256,
+        "support_source": str(runtime.support_source) if runtime.support_source else None,
+        "support_device": runtime.support_device,
+        "support_inode": runtime.support_inode,
+        "support_mode": runtime.support_mode,
+        "support_sha256": runtime.support_sha256,
+        "entry_relative": runtime.entry_relative,
+        "node_source": str(runtime.node_source) if runtime.node_source else None,
+        "node_device": runtime.node_device,
+        "node_inode": runtime.node_inode,
+        "node_mode": runtime.node_mode,
+        "node_sha256": runtime.node_sha256,
+        "launcher": str(runtime.launcher) if runtime.launcher else None,
+        "launcher_target": runtime.launcher_target,
+        "destination": runtime.destination,
+    }
+
+
+def _validate_provider_runtime_record(
+    value: Any, *, provider: str,
+) -> dict[str, Any]:
+    required = {
+        "schema", "provider", "source", "device", "inode", "mode", "sha256",
+        "support_source", "support_device", "support_inode", "support_mode",
+        "support_sha256", "entry_relative", "node_source", "node_device",
+        "node_inode", "node_mode", "node_sha256", "launcher",
+        "launcher_target", "destination",
+    }
+    if (not isinstance(value, dict) or set(value) != required or
+            value.get("schema") != "agy_provider_runtime.v1" or
+            value.get("provider") != provider or
+            not isinstance(value.get("source"), str) or
+            not Path(value["source"]).is_absolute() or
+            any(not _is_plain_int(value.get(name)) or value[name] < 0
+                for name in ("device", "inode", "mode")) or
+            not _is_digest(value.get("sha256")) or
+            not isinstance(value.get("entry_relative"), str) or
+            Path(value["entry_relative"]).is_absolute() or
+            ".." in Path(value["entry_relative"]).parts or
+            value.get("destination") !=
+            f"/run/phase-loop-bin/{_PROVIDER_EXECUTABLES[provider]}"):
+        raise AgyCanaryEvidenceError("provider runtime authority is malformed")
+    for prefix in ("support", "node"):
+        path = value[f"{prefix}_source"]
+        facts = [
+            value[f"{prefix}_device"], value[f"{prefix}_inode"],
+            value[f"{prefix}_mode"], value[f"{prefix}_sha256"],
+        ]
+        if path is None:
+            if any(item is not None for item in facts):
+                raise AgyCanaryEvidenceError(
+                    "provider runtime authority is malformed"
+                )
+        elif (not isinstance(path, str) or not Path(path).is_absolute() or
+                any(not _is_plain_int(item) or item < 0 for item in facts[:3]) or
+                not _is_digest(facts[3])):
+            raise AgyCanaryEvidenceError("provider runtime authority is malformed")
+    launcher = value["launcher"]
+    launcher_target = value["launcher_target"]
+    if ((launcher is None) != (launcher_target is None) or
+            (launcher is not None and (
+                not isinstance(launcher, str) or not Path(launcher).is_absolute() or
+                not isinstance(launcher_target, str) or not launcher_target
+            ))):
+        raise AgyCanaryEvidenceError("provider runtime authority is malformed")
+    return value
+
+
 @dataclass(frozen=True)
 class ProviderLaunchAuthority:
     """A provider-neutral, immutable launch surface for one captured leg.
@@ -679,12 +769,47 @@ class ProviderLaunchAuthority:
     runtime: _TrustedProviderRuntime
     namespace: AgyCanaryNamespace
     auth_records: tuple[dict[str, str], ...]
+    auth_records_sha256: str
+    customization_sources: dict[str, Any]
+    customization_sources_sha256: str
+    minimal_customizations: dict[str, Any]
+    minimal_customizations_sha256: str
+    auth_placeholders: tuple[dict[str, Any], ...]
+    auth_placeholders_sha256: str
     projected_auth: dict[str, Any] | None = None
     review_launch: dict[str, Any] | None = dataclass_field(default=None, compare=False)
     review_attempts: list[dict[str, Any]] = dataclass_field(default_factory=list, compare=False)
 
     def _revalidate(self, *, full_assets: bool = False) -> None:
+        sealed_values = (
+            (self.auth_records, self.auth_records_sha256),
+            (self.customization_sources, self.customization_sources_sha256),
+            (self.minimal_customizations, self.minimal_customizations_sha256),
+            (self.auth_placeholders, self.auth_placeholders_sha256),
+        )
+        if any(
+            not _is_digest(expected) or
+            _sha256(_canonical_json(value)) != expected
+            for value, expected in sealed_values
+        ):
+            raise AgyCanaryEvidenceError(
+                f"{self.provider} in-memory launch authority drifted"
+            )
         self.runtime.revalidate(full_assets=full_assets)
+        _revalidate_customization_source_authority(self.customization_sources)
+        revalidate_customization_inventory(
+            self.minimal_customizations,
+            home=self.namespace.minimal_home,
+            project_dir=self.namespace.stage,
+            env={},
+        )
+        if _auth_placeholder_authority(
+            minimal_home=self.namespace.minimal_home,
+            records=self.auth_records,
+        ) != self.auth_placeholders:
+            raise AgyCanaryEvidenceError(
+                f"{self.provider} authentication bind target drifted"
+            )
         for record in self.auth_records:
             source = Path(record["source"])
             parent_fd = os.open(source.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
@@ -742,31 +867,34 @@ class ProviderLaunchAuthority:
                     f"{self.provider} {label} preflight failed inside capture namespace"
                 )
         command = self.command(argv)
-        launch = {
-            "argv_bytes": len("\0".join(command).encode()),
-            "argv_sha256": _sha256("\0".join(command).encode()),
-        }
+        launch = _provider_launch_identity(command, provider=self.provider)
         if self.review_launch is None:
             object.__setattr__(self, "review_launch", launch)
         elif self.review_launch != launch:
             raise AgyCanaryEvidenceError("provider authority review command drifted")
         return command
 
-    def record_review_attempt(self, command: list[str]) -> None:
+    def record_review_attempt(
+        self, command: list[str], *, attempt_id: str | None = None,
+    ) -> None:
         """Bind one actual preflight-wrapped review attempt in execution order."""
         # This is the per-subprocess boundary: retries reuse the preflight argv,
         # but must never reuse a runtime or projected credential that changed
         # after an earlier attempt.
         self._revalidate()
-        launch = {
-            "argv_bytes": len("\0".join(command).encode()),
-            "argv_sha256": _sha256("\0".join(command).encode()),
-        }
+        launch = _provider_launch_identity(command, provider=self.provider)
         if self.review_launch != launch:
             raise AgyCanaryEvidenceError("provider review attempt was not preflight-authorized")
         if len(self.review_attempts) >= _MAX_PROVIDER_REVIEW_ATTEMPTS:
             raise AgyCanaryEvidenceError("provider review attempt limit exceeded")
-        self.review_attempts.append({"index": len(self.review_attempts), **launch})
+        expected_id = f"{self.provider}-{len(self.review_attempts) + 1}"
+        if attempt_id is None:
+            attempt_id = expected_id
+        if attempt_id != expected_id:
+            raise AgyCanaryEvidenceError("provider review attempt identity is not exact")
+        self.review_attempts.append({
+            "index": len(self.review_attempts), "attempt_id": attempt_id, **launch,
+        })
 
     def review_attempt_proof(self) -> dict[str, Any]:
         """Return the exact preflight command and each actual invocation."""
@@ -774,7 +902,11 @@ class ProviderLaunchAuthority:
             return {"launch": None, "attempts": [], "terminal_attempt": None}
         attempts = [dict(item) for item in self.review_attempts]
         if any(
-            item != {"index": index, **self.review_launch}
+            item != {
+                "index": index,
+                "attempt_id": f"{self.provider}-{index + 1}",
+                **self.review_launch,
+            }
             for index, item in enumerate(attempts)
         ):
             raise AgyCanaryEvidenceError("provider review attempt proof drifted")
@@ -783,6 +915,14 @@ class ProviderLaunchAuthority:
             "attempts": attempts,
             "terminal_attempt": len(attempts) - 1 if attempts else None,
         }
+
+    def runtime_authority(self) -> dict[str, Any]:
+        self.runtime.revalidate(full_assets=True)
+        return _provider_runtime_record(self.runtime)
+
+    def auth_placeholder_proof(self) -> list[dict[str, Any]]:
+        self._revalidate()
+        return [dict(item) for item in self.auth_placeholders]
 
     def read_expected_output(self, name: str) -> bytes:
         """Read one exact nofollow regular output; reject sibling output artifacts."""
@@ -948,6 +1088,11 @@ def prepare_provider_launch_authorities(
     minimal_home = Path(str(authority["minimal_home"]["path"]))
     if _minimal_home_identity(minimal_home) != authority["minimal_home"]["identity"]:
         raise AgyCanaryEvidenceError("prepared minimal HOME settings drifted")
+    customization_sources = authority["customization_sources"]
+    _revalidate_customization_source_authority(customization_sources)
+    minimal_customizations = freeze_customization_inventory(
+        home=minimal_home, project_dir=stage, env={},
+    )
     gemini_auth_records = tuple(authority["auth_binds"])
     resolver, resolver_sha256 = _resolver_snapshot()
     agy_runtime = _sealed_agy_runtime(authority["agy_runtime"])
@@ -972,7 +1117,31 @@ def prepare_provider_launch_authorities(
                 provider_env=(("CODEX_HOME", "/home/phase-loop/.codex"),) if provider == "codex" else (("GROK_HOME", "/home/phase-loop/.grok"),) if provider == "grok" else (),
             )
             frozen_records = tuple(auth_records)
-            result[provider] = ProviderLaunchAuthority(provider, runtime, namespace, frozen_records, _projected_auth_proof(provider=provider, runtime=runtime, records=frozen_records))
+            placeholders = _auth_placeholder_authority(
+                minimal_home=minimal_home, records=frozen_records,
+            )
+            result[provider] = ProviderLaunchAuthority(
+                provider=provider,
+                runtime=runtime,
+                namespace=namespace,
+                auth_records=frozen_records,
+                auth_records_sha256=_sha256(_canonical_json(frozen_records)),
+                customization_sources=customization_sources,
+                customization_sources_sha256=_sha256(
+                    _canonical_json(customization_sources)
+                ),
+                minimal_customizations=minimal_customizations,
+                minimal_customizations_sha256=_sha256(
+                    _canonical_json(minimal_customizations)
+                ),
+                auth_placeholders=placeholders,
+                auth_placeholders_sha256=_sha256(
+                    _canonical_json(placeholders)
+                ),
+                projected_auth=_projected_auth_proof(
+                    provider=provider, runtime=runtime, records=frozen_records,
+                ),
+            )
         except Exception:
             for output in provider_outputs:
                 shutil.rmtree(output, ignore_errors=True)
@@ -2105,6 +2274,99 @@ def revalidate_customization_inventory(
         raise AgyCanaryEvidenceError("customization-source inventory drifted")
 
 
+def _revalidate_customization_source_authority(value: Any) -> None:
+    if (not isinstance(value, dict) or
+            set(value) != {"inventory", "home", "project"} or
+            not isinstance(value.get("inventory"), dict) or
+            not isinstance(value.get("home"), str) or
+            not isinstance(value.get("project"), str)):
+        raise AgyCanaryEvidenceError(
+            "prepare has malformed customization-source authority"
+        )
+    home = Path(value["home"])
+    project = Path(value["project"])
+    if not home.is_absolute() or not project.is_absolute():
+        raise AgyCanaryEvidenceError(
+            "prepare customization-source roots are not absolute"
+        )
+    revalidate_customization_inventory(
+        value["inventory"], home=home, project_dir=project,
+        env=dict(os.environ),
+    )
+
+
+def _auth_placeholder_authority(
+    *, minimal_home: Path, records: tuple[dict[str, str], ...],
+) -> tuple[dict[str, Any], ...]:
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        destination = record.get("destination")
+        if not isinstance(destination, str):
+            raise AgyCanaryEvidenceError(
+                "provider authentication bind destination is malformed"
+            )
+        try:
+            relative = Path(destination).relative_to("/home/phase-loop")
+        except ValueError as exc:
+            raise AgyCanaryEvidenceError(
+                "provider authentication bind destination escapes minimal HOME"
+            ) from exc
+        target = minimal_home / relative
+        try:
+            data, info = _read_regular_path(target)
+        except (FileNotFoundError, OSError) as exc:
+            raise AgyCanaryEvidenceError(
+                "provider authentication bind target is unavailable"
+            ) from exc
+        if (data or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600):
+            raise AgyCanaryEvidenceError(
+                "provider authentication bind target is not an empty private placeholder"
+            )
+        rows.append({
+            "destination": destination,
+            "path": str(target),
+            "device": info.st_dev,
+            "inode": info.st_ino,
+            "uid": info.st_uid,
+            "gid": info.st_gid,
+            "mode": format(stat.S_IMODE(info.st_mode), "04o"),
+            "sha256": _sha256(data),
+        })
+    return tuple(rows)
+
+
+def _validate_auth_placeholder_proof(
+    value: Any, *, minimal_home: Path, records: list[dict[str, Any]],
+) -> None:
+    if not isinstance(value, list) or len(value) != len(records):
+        raise AgyCanaryEvidenceError(
+            "provider authentication placeholder proof is malformed"
+        )
+    empty_sha256 = _sha256(b"")
+    for row, record in zip(value, records, strict=True):
+        destination = record.get("destination")
+        try:
+            expected_path = minimal_home / Path(str(destination)).relative_to(
+                "/home/phase-loop"
+            )
+        except ValueError as exc:
+            raise AgyCanaryEvidenceError(
+                "provider authentication placeholder proof is malformed"
+            ) from exc
+        if (not isinstance(row, dict) or set(row) != {
+                "destination", "path", "device", "inode", "uid", "gid",
+                "mode", "sha256",
+            } or row.get("destination") != destination or
+                row.get("path") != str(expected_path) or
+                any(not _is_plain_int(row.get(name)) or row[name] < 0
+                    for name in ("device", "inode", "uid", "gid")) or
+                row.get("mode") != "0600" or
+                row.get("sha256") != empty_sha256):
+            raise AgyCanaryEvidenceError(
+                "provider authentication placeholder proof is malformed"
+            )
+
+
 def _validated_auth_binds(auth_paths: tuple[Path, ...], minimal_home: Path) -> tuple[tuple[Path, str], ...]:
     binds: list[tuple[Path, str]] = []
     auth_dir = minimal_home / ".gemini" / "antigravity-cli" / "auth"
@@ -2434,6 +2696,8 @@ def seal_provider_launches(
             "seat_key": seat_key,
             "launch_authority_sha256": _sha256(_canonical_json(launch_authority)),
             "stage_binding_sha256": stage_binding_sha256,
+            "runtime": authority.runtime_authority(),
+            "auth_placeholders": authority.auth_placeholder_proof(),
             "projected_auth": projection,
         }
         data = _canonical_json(launch)
@@ -2509,6 +2773,8 @@ def record_provider_result(
     except json.JSONDecodeError as exc:
         raise AgyCanaryEvidenceError("provider launch authority is not JSON") from exc
     if (not isinstance(launch, dict) or launch.get("provider") != provider or launch.get("seat_key") != seat_key or
+            launch.get("runtime") != authority.runtime_authority() or
+            launch.get("auth_placeholders") != authority.auth_placeholder_proof() or
             launch.get("projected_auth") != authority.projected_auth_proof()):
         raise AgyCanaryEvidenceError("provider launch authority does not match terminal result")
     terminal = text.encode()
@@ -2534,6 +2800,7 @@ def _verified_provider_results(*, root_fd: int) -> dict[tuple[str, str], dict[st
     """Read the exact sealed provider result set without accepting board claims."""
     registry = _provider_registry(root_fd=root_fd)
     authority = _read_json_at(root_fd, _LAUNCH_AUTHORITY_NAME)
+    ledger = _read_json_at(root_fd, _LEDGER_NAME)
     stage_binding = _read_json_at(root_fd, _STAGE_BINDING_NAME)
     if (registry["launch_authority_sha256"] != _sha256(_canonical_json(authority)) or
             registry["stage_binding_sha256"] != _sha256(_canonical_json(stage_binding))):
@@ -2551,7 +2818,11 @@ def _verified_provider_results(*, root_fd: int) -> dict[tuple[str, str], dict[st
             launch = json.loads(launch_bytes)
         except json.JSONDecodeError as exc:
             raise AgyCanaryEvidenceError("provider authority record is not JSON") from exc
-        launch_required = {"schema", "provider", "seat_key", "launch_authority_sha256", "stage_binding_sha256", "projected_auth"}
+        launch_required = {
+            "schema", "provider", "seat_key", "launch_authority_sha256",
+            "stage_binding_sha256", "runtime", "auth_placeholders",
+            "projected_auth",
+        }
         projection = launch.get("projected_auth") if isinstance(launch, dict) else None
         if (not isinstance(launch, dict) or set(launch) != launch_required or
                 launch.get("schema") != "agy_provider_launch.v1" or launch.get("provider") != provider or
@@ -2560,6 +2831,9 @@ def _verified_provider_results(*, root_fd: int) -> dict[tuple[str, str], dict[st
                 not isinstance(projection, dict) or projection.get("provider") != provider or
                 projection.get("schema") != "agy_provider_projected_auth.v1"):
             raise AgyCanaryEvidenceError("provider authority record is malformed")
+        runtime = _validate_provider_runtime_record(
+            launch.get("runtime"), provider=provider,
+        )
         expected_records = authority.get("auth_binds") if provider == "gemini" else None
         rows = projection.get("records") if isinstance(projection, dict) else None
         malformed_rows = not isinstance(rows, list) or any(
@@ -2578,9 +2852,25 @@ def _verified_provider_results(*, root_fd: int) -> dict[tuple[str, str], dict[st
         )
         if (set(projection) != {"schema", "provider", "runtime_destination", "runtime_sha256", "records"} or
                 projection.get("runtime_destination") != f"/run/phase-loop-bin/{_PROVIDER_EXECUTABLES[provider]}" or
-                not _is_digest(projection.get("runtime_sha256")) or malformed_rows or gemini_drift or
+                projection.get("runtime_sha256") != runtime["sha256"] or malformed_rows or gemini_drift or
                 (provider != "gemini" and (not isinstance(rows, list) or len(rows) != 1 or rows[0].get("destination") != _PROVIDER_AUTH_PATHS[provider][1]))):
             raise AgyCanaryEvidenceError("provider projected authentication proof is malformed")
+        if provider == "gemini":
+            sealed_agy = _sealed_agy_runtime(authority.get("agy_runtime"))
+            expected_runtime = _provider_runtime_record(_TrustedProviderRuntime(
+                "gemini", sealed_agy.source, sealed_agy.device, sealed_agy.inode,
+                sealed_agy.mode, sealed_agy.sha256,
+            ))
+            if runtime != expected_runtime:
+                raise AgyCanaryEvidenceError(
+                    "Gemini provider runtime differs from prepare authority"
+                )
+        assert isinstance(rows, list)
+        _validate_auth_placeholder_proof(
+            launch.get("auth_placeholders"),
+            minimal_home=Path(authority["minimal_home"]["path"]),
+            records=rows,
+        )
         result = _read_json_at(root_fd, entry["result_name"])
         required = {"schema", "provider", "seat_key", "registry_sha256", "authority_sha256", "attempts", "status", "terminal", "detail"}
         if (not isinstance(result, dict) or set(result) != required or result.get("schema") != "agy_provider_result.v1" or
@@ -2592,9 +2882,10 @@ def _verified_provider_results(*, root_fd: int) -> dict[tuple[str, str], dict[st
         attempts = result.get("attempts")
         if (not isinstance(attempts, dict) or set(attempts) != {"launch", "attempts", "terminal_attempt"} or
                 (attempts["launch"] is not None and (
-                    not isinstance(attempts["launch"], dict) or set(attempts["launch"]) != {"argv_bytes", "argv_sha256"} or
+                    not isinstance(attempts["launch"], dict) or set(attempts["launch"]) != {"argv_bytes", "argv_sha256", "normalized_argv_sha256"} or
                     not _is_plain_int(attempts["launch"].get("argv_bytes")) or attempts["launch"]["argv_bytes"] < 1 or
-                    not _is_digest(attempts["launch"].get("argv_sha256"))
+                    not _is_digest(attempts["launch"].get("argv_sha256")) or
+                    not _is_digest(attempts["launch"].get("normalized_argv_sha256"))
                 )) or not isinstance(attempts["attempts"], list)):
             raise AgyCanaryEvidenceError("provider review attempt proof is malformed")
         if len(attempts["attempts"]) > _MAX_PROVIDER_REVIEW_ATTEMPTS:
@@ -2604,13 +2895,37 @@ def _verified_provider_results(*, root_fd: int) -> dict[tuple[str, str], dict[st
                 raise AgyCanaryEvidenceError("provider review attempt proof is inconsistent")
         else:
             expected_attempts = [
-                {"index": index, **attempts["launch"]}
+                {
+                    "index": index,
+                    "attempt_id": f"{provider}-{index + 1}",
+                    **attempts["launch"],
+                }
                 for index in range(len(attempts["attempts"]))
             ]
             expected_terminal = len(expected_attempts) - 1 if expected_attempts else None
             if (attempts["attempts"] != expected_attempts or
                     attempts["terminal_attempt"] != expected_terminal):
                 raise AgyCanaryEvidenceError("provider review attempts are malformed")
+        if provider == "gemini":
+            runner_attempts = ledger.get("attempts")
+            if not isinstance(runner_attempts, list):
+                raise AgyCanaryEvidenceError("Gemini runner ledger attempts are malformed")
+            runner_ids = [
+                item.get("attempt_id") if isinstance(item, dict) else None
+                for item in runner_attempts
+            ]
+            provider_attempts = attempts["attempts"]
+            provider_ids = [item["attempt_id"] for item in provider_attempts]
+            if (runner_ids != authority["authorized_attempt_ids"][:len(runner_ids)] or
+                    provider_ids != runner_ids or
+                    any(not isinstance(item, dict) or
+                        not _is_digest(item.get("argv_sha256")) or
+                        provider_attempts[index]["normalized_argv_sha256"] !=
+                        item["argv_sha256"]
+                        for index, item in enumerate(runner_attempts))):
+                raise AgyCanaryEvidenceError(
+                    "Gemini provider attempts do not match the authorized runner ledger"
+                )
         terminal = result.get("terminal")
         if (not isinstance(terminal, dict) or set(terminal) != {"name", "bytes", "sha256"} or
                 terminal.get("name") != names["terminal"] or not _is_plain_int(terminal.get("bytes")) or
@@ -5409,7 +5724,8 @@ def _validate_launch_authority(*, authority: Any, ledger: dict[str, Any], root_f
         "schema", "seat_key", "capture_mode", "authorized_attempt_ids", "cleanup_sha256",
         "probe_sha256", "bootstrap_sha256", "release", "release_sha256",
         "wheel_binding_sha256", "installation_sha256", "settings",
-        "policy_sha256", "source_inventory_sha256", "minimal_home", "auth_binds", "agy_runtime",
+        "policy_sha256", "source_inventory_sha256", "customization_sources",
+        "minimal_home", "auth_binds", "agy_runtime",
     }
     if not isinstance(authority, dict) or set(authority) != required or authority.get("schema") != "agy_canary_launch_authority.v1":
         raise AgyCanaryEvidenceError("prepare launch authority schema is malformed")
@@ -5424,6 +5740,14 @@ def _validate_launch_authority(*, authority: Any, ledger: dict[str, Any], root_f
     for field in ("cleanup_sha256", "probe_sha256", "bootstrap_sha256", "release_sha256", "wheel_binding_sha256", "installation_sha256", "policy_sha256", "source_inventory_sha256"):
         if not _is_digest(authority.get(field)):
             raise AgyCanaryEvidenceError("prepare launch authority digest is malformed")
+    customization_sources = authority.get("customization_sources")
+    _revalidate_customization_source_authority(customization_sources)
+    if (customization_sources != ledger.get("customization_sources") or
+            authority["source_inventory_sha256"] !=
+            _sha256(_canonical_json(customization_sources["inventory"]))):
+        raise AgyCanaryEvidenceError(
+            "prepare launch authority customization sources drifted"
+        )
     release = _validate_release_identity(authority.get("release"))
     if (authority["release_sha256"] != _sha256(_canonical_json(release)) or
             authority["wheel_binding_sha256"] !=
@@ -5577,6 +5901,7 @@ def prepare_canary(
             "settings": {"path": str(settings_path.resolve(strict=True)), "bytes": cleanup_lineage["settings_bytes"], "sha256": cleanup_lineage["settings_sha256"], "mode": cleanup_lineage["settings_mode"]},
             "policy_sha256": minimal_identity["policy_sha256"],
             "source_inventory_sha256": _sha256(_canonical_json(source_inventory)),
+            "customization_sources": ledger["customization_sources"],
             "minimal_home": {"path": str(minimal_home), "identity": minimal_identity},
             "auth_binds": bind_records,
             "agy_runtime": probe["agy_runtime"],
@@ -5623,15 +5948,8 @@ def capture_namespace(*, capture: AgyCanaryCapture, stage: Path, provider_hostna
         raise AgyCanaryEvidenceError("sealed minimal HOME is invalid")
     if _minimal_home_identity(home) != minimal.get("identity"):
         raise AgyCanaryEvidenceError("prepared minimal HOME settings drifted")
-    inventory_customizations(home=home, env={}, project_dir=stage)
-    source_record = ledger.get("customization_sources")
-    if source_record is not None:
-        if not isinstance(source_record, dict) or not isinstance(source_record.get("inventory"), dict) or not isinstance(source_record.get("home"), str) or not isinstance(source_record.get("project"), str):
-            raise AgyCanaryEvidenceError("prepare has malformed customization-source inventory")
-        revalidate_customization_inventory(
-            source_record["inventory"], home=Path(source_record["home"]),
-            project_dir=Path(source_record["project"]), env=dict(os.environ),
-        )
+    freeze_customization_inventory(home=home, project_dir=stage, env={})
+    _revalidate_customization_source_authority(authority["customization_sources"])
     auth_records = authority.get("auth_binds", [])
     if not isinstance(auth_records, list):
         raise AgyCanaryEvidenceError("prepare has malformed authentication binds")

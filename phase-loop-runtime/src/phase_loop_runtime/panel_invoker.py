@@ -2674,11 +2674,12 @@ def _tui_capable(
 
 
 def _record_capture_review_attempt(
-    authority: ProviderLaunchAuthority, command: list[str]
+    authority: ProviderLaunchAuthority, command: list[str], *,
+    attempt_id: str | None = None,
 ) -> None:
     """Record the actual invocation when using the production launch authority."""
     if isinstance(authority, ProviderLaunchAuthority):
-        authority.record_review_attempt(command)
+        authority.record_review_attempt(command, attempt_id=attempt_id)
 
 
 def _cleanup_capture_launches(
@@ -3232,7 +3233,10 @@ def _exec_leg(
             _t0 = time.monotonic()
             try:
                 if agy_capture is not None:
-                    _record_capture_review_attempt(provider_authority, cmd)
+                    _record_capture_review_attempt(
+                        provider_authority, cmd,
+                        attempt_id=f"gemini-{_attempt + 1}",
+                    )
                 # agy streams its review to STDOUT; the liveness heartbeat rides stdout
                 # (with a secondary CPU reset covering the ~20s silent "thinking" phase).
                 # Prompt is inline on argv (see the gemini cmd BUGFIX) — no stdin.

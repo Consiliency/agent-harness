@@ -312,23 +312,44 @@ def test_capture_retry_revalidates_sealed_runtime_before_each_attempt(monkeypatc
     home = tmp_path / "home"
     review_dir.mkdir()
     home.mkdir(mode=0o700)
+    customization_sources = {
+        "inventory": evidence.freeze_customization_inventory(
+            home=home, project_dir=review_dir, env={},
+        ),
+        "home": str(home.resolve(strict=True)),
+        "project": str(review_dir.resolve(strict=True)),
+    }
+    minimal_customizations = evidence.freeze_customization_inventory(
+        home=home, project_dir=review_dir, env={},
+    )
 
     def authority_for(runtime):
         return evidence.ProviderLaunchAuthority(
-            "gemini",
-            runtime,
-            evidence.AgyCanaryNamespace(
+            provider="gemini", runtime=runtime,
+            namespace=evidence.AgyCanaryNamespace(
                 review_dir, home, root, "example.invalid", provider_output=output
             ),
-            (),
+            auth_records=(),
+            auth_records_sha256=evidence._sha256(evidence._canonical_json(())),
+            customization_sources=customization_sources,
+            customization_sources_sha256=evidence._sha256(
+                evidence._canonical_json(customization_sources)
+            ),
+            minimal_customizations=minimal_customizations,
+            minimal_customizations_sha256=evidence._sha256(
+                evidence._canonical_json(minimal_customizations)
+            ),
+            auth_placeholders=(),
+            auth_placeholders_sha256=evidence._sha256(
+                evidence._canonical_json(())
+            ),
         )
 
     def fake_preflight(self, argv):
         command = list(argv)
-        launch = {
-            "argv_bytes": len("\0".join(command).encode()),
-            "argv_sha256": evidence._sha256("\0".join(command).encode()),
-        }
+        launch = evidence._provider_launch_identity(
+            command, provider=self.provider,
+        )
         object.__setattr__(self, "review_launch", launch)
         return command
 

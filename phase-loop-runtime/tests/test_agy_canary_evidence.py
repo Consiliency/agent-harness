@@ -1379,19 +1379,32 @@ def test_capture_reducer_requires_complete_sealed_staged_reads(monkeypatch, tmp_
             gemini = next(entry for entry in registry["entries"] if entry["provider"] == "gemini")
             result = evidence._read_json_at(root_fd, gemini["result_name"])
             retry = json.loads(json.dumps(result))
-            retry["attempts"]["attempts"].append({"index": 1, **retry["attempts"]["launch"]})
+            retry["attempts"]["attempts"].append({
+                "index": 1, "attempt_id": "gemini-2",
+                **retry["attempts"]["launch"],
+            })
             retry["attempts"]["terminal_attempt"] = 1
             evidence._write_replace_at(root_fd, gemini["result_name"], retry)
-            assert evidence._verified_provider_results(root_fd=root_fd)[("gemini", "gemini-primary")]["status"] == "OK"
+            with pytest.raises(
+                evidence.AgyCanaryEvidenceError,
+                match="authorized runner ledger",
+            ):
+                evidence._verified_provider_results(root_fd=root_fd)
             too_many = json.loads(json.dumps(retry))
-            too_many["attempts"]["attempts"].append({"index": 2, **too_many["attempts"]["launch"]})
+            too_many["attempts"]["attempts"].append({
+                "index": 2, "attempt_id": "gemini-3",
+                **too_many["attempts"]["launch"],
+            })
             too_many["attempts"]["terminal_attempt"] = 2
             evidence._write_replace_at(root_fd, gemini["result_name"], too_many)
             with pytest.raises(evidence.AgyCanaryEvidenceError, match="attempt limit"):
                 evidence._verified_provider_results(root_fd=root_fd)
             result["attempts"] = {"launch": None, "attempts": [], "terminal_attempt": None}
             evidence._write_replace_at(root_fd, gemini["result_name"], result)
-            with pytest.raises(evidence.AgyCanaryEvidenceError, match="lacks an actual review attempt"):
+            with pytest.raises(
+                evidence.AgyCanaryEvidenceError,
+                match="authorized runner ledger",
+            ):
                 evidence._verified_provider_results(root_fd=root_fd)
         finally:
             os.close(root_fd)
@@ -1556,6 +1569,7 @@ def _seal_synthetic_provider_results(
 ) -> None:
     """Build exact provider records for reducers that do not launch a CLI."""
     launch_authority = evidence._read_json_at(capture.root_fd, "agy_canary_launch_authority.json")
+    ledger = evidence._read_json_at(capture.root_fd, "agy-launch-ledger.json")
     stage_binding = evidence._read_json_at(capture.root_fd, "agy_canary_stage_binding.json")
     launch_digest = evidence._sha256(evidence._canonical_json(launch_authority))
     stage_digest = evidence._sha256(evidence._canonical_json(stage_binding))
@@ -1569,31 +1583,79 @@ def _seal_synthetic_provider_results(
             [item["destination"] for item in launch_authority["auth_binds"]]
             if provider == "gemini" else [evidence._PROVIDER_AUTH_PATHS[provider][1]]
         )
+        runtime_sha256 = (
+            launch_authority["agy_runtime"]["sha256"]
+            if provider == "gemini" else "b" * 64
+        )
+        runtime = evidence._provider_runtime_record(evidence._TrustedProviderRuntime(
+            provider,
+            Path(launch_authority["agy_runtime"]["path"])
+            if provider == "gemini" else Path(f"/tool/bin/{provider}"),
+            launch_authority["agy_runtime"]["device"] if provider == "gemini" else 1,
+            launch_authority["agy_runtime"]["inode"] if provider == "gemini" else 1,
+            launch_authority["agy_runtime"]["mode"] if provider == "gemini" else 0o700,
+            runtime_sha256,
+        ))
+        projected_records = ([
+            {"destination": item["destination"], "uid": item["uid"], "mode": item["mode"], "sha256": item["source_sha256"]}
+            for item in launch_authority["auth_binds"]
+        ] if provider == "gemini" else [
+            {"destination": destination, "uid": str(os.getuid()), "mode": "0600", "sha256": "c" * 64}
+            for destination in destinations
+        ])
+        minimal_home = Path(launch_authority["minimal_home"]["path"])
+        placeholders = [{
+            "destination": record["destination"],
+            "path": str(minimal_home / Path(record["destination"]).relative_to("/home/phase-loop")),
+            "device": 1,
+            "inode": index + 1,
+            "uid": os.getuid(),
+            "gid": os.getgid(),
+            "mode": "0600",
+            "sha256": evidence._sha256(b""),
+        } for index, record in enumerate(projected_records)]
         launch = {
             "schema": "agy_provider_launch.v1",
             "provider": provider,
             "seat_key": seat_key,
             "launch_authority_sha256": launch_digest,
             "stage_binding_sha256": stage_digest,
+            "runtime": runtime,
+            "auth_placeholders": placeholders,
             "projected_auth": {
                 "schema": "agy_provider_projected_auth.v1",
                 "provider": provider,
                 "runtime_destination": f"/run/phase-loop-bin/{evidence._PROVIDER_EXECUTABLES[provider]}",
-                "runtime_sha256": "b" * 64,
-                "records": ([
-                    {"destination": item["destination"], "uid": item["uid"], "mode": item["mode"], "sha256": item["source_sha256"]}
-                    for item in launch_authority["auth_binds"]
-                ] if provider == "gemini" else [{"destination": destination, "uid": str(os.getuid()), "mode": "0600", "sha256": "c" * 64} for destination in destinations]),
+                "runtime_sha256": runtime_sha256,
+                "records": projected_records,
             },
         }
         launch_bytes = evidence._canonical_json(launch)
         evidence._exclusive_write_at(capture.root_fd, names["authority"], launch_bytes, 0o600)
         terminal = str(leg["text"]).encode()
         evidence._exclusive_write_at(capture.root_fd, names["terminal"], terminal, 0o600)
+        runner_attempts = ledger["attempts"] if provider == "gemini" else [{}]
+        normalized_sha256 = (
+            runner_attempts[0]["argv_sha256"]
+            if provider == "gemini" and runner_attempts else "d" * 64
+        )
+        launch_identity = {
+            "argv_bytes": 1,
+            "argv_sha256": "a" * 64,
+            "normalized_argv_sha256": normalized_sha256,
+        }
+        proof_attempts = [{
+            "index": index,
+            "attempt_id": (
+                runner_attempt["attempt_id"] if provider == "gemini"
+                else f"{provider}-{index + 1}"
+            ),
+            **launch_identity,
+        } for index, runner_attempt in enumerate(runner_attempts)]
         attempts = {
-            "launch": {"argv_bytes": 1, "argv_sha256": "a" * 64},
-            "attempts": [{"index": 0, "argv_bytes": 1, "argv_sha256": "a" * 64}],
-            "terminal_attempt": 0,
+            "launch": launch_identity if proof_attempts else None,
+            "attempts": proof_attempts,
+            "terminal_attempt": len(proof_attempts) - 1 if proof_attempts else None,
         }
         result = {
             "schema": "agy_provider_result.v1",
@@ -1763,6 +1825,15 @@ def test_duplicate_cross_provider_seat_keys_are_rejected_at_every_evidence_bound
             path.write_text(content)
             path.chmod(0o600)
         _bind_stage(capture, review)
+        staged = evidence.retain_staged_files(capture=capture, review_dir=review)
+        evidence.record_launch(
+            capture=capture, seat_key="gemini-primary", attempt_id="gemini-1",
+            argv=["agy", "-p", "secret"], returncode=0,
+            stdout=_review_stream(
+                instructions="instructions", bundle="review this\n", terminal="AGREE",
+            ),
+            stderr="", staged=staged,
+        )
         board = _usable_private_board({"gemini_seat_key": "gemini-primary"})
         _seal_synthetic_provider_results(capture, board)
         summary = evidence.capture_summary(capture)
@@ -2573,6 +2644,18 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
         assert checked["inputs_sha256"] == result["inputs_sha256"]
         assert checked["canonical_proof_sha256"] == canonical_proof_sha256
         assert {name: checked[name] for name in evidence._FINAL_GOVERNANCE_POSTURE} == evidence._FINAL_GOVERNANCE_POSTURE
+        private_runtime_tamper = json.loads(json.dumps(proof))
+        private_runtime_tamper["provider_results"]["registry_sha256"] = "0" * 64
+        monkeypatch.setattr(
+            evidence, "verify_capture", lambda **_kwargs: private_runtime_tamper,
+        )
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="current proof"):
+            evidence.check_private_final(
+                evidence_root=root, expected_seat_key="gemini-primary",
+                dotfiles_repo=repo, plan_path=Path("plans/canary.md"),
+                manifest_path=Path("plans/manifest.json"), plan_slug="agy-canary",
+            )
+        monkeypatch.setattr(evidence, "verify_capture", lambda **_kwargs: proof)
         final_plan = plan.read_bytes()
         final_manifest = manifest.read_bytes()
         subprocess.run(["git", "-C", str(repo), "add", "plans/canary.md", "plans/manifest.json"], check=True)
@@ -2755,6 +2838,23 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
             subprocess.run(["git", "-C", str(repo), "add", "plans/canary.md"], check=True)
             subprocess.run(["git", "-C", str(repo), "commit", "-qm", message], check=True)
             return subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+
+        subprocess.run(["git", "-C", str(repo), "checkout", "-q", committed], check=True)
+        runtime_tamper_payload = json.loads(json.dumps(payload))
+        runtime_tamper_payload["proof"]["provider_results"]["registry_sha256"] = "0" * 64
+        runtime_tamper_payload["proof_sha256"] = evidence._sha256(
+            evidence._canonical_json(runtime_tamper_payload["proof"])
+        )
+        runtime_tamper_commit = commit_payload(
+            runtime_tamper_payload, "provider runtime authority tamper",
+        )
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="committed proof"):
+            evidence.check_committed_final(
+                dotfiles_repo=repo, commit=runtime_tamper_commit,
+                plan_path=Path("plans/canary.md"),
+                manifest_path=Path("plans/manifest.json"), plan_slug="agy-canary",
+                agent_harness_repo=repo, handoff_commit=release["handoff_commit"],
+            )
 
         subprocess.run(["git", "-C", str(repo), "checkout", "-q", committed], check=True)
         release_tamper_payload = json.loads(json.dumps(payload))
@@ -3220,8 +3320,16 @@ def test_provider_authority_factory_reclaims_output_when_projection_fails(monkey
     info = source.stat()
     runtime = evidence._TrustedProviderRuntime("gemini", source, info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode), evidence._sha256(source.read_bytes()))
     capture = type("Capture", (), {"root": tmp_path, "root_fd": -1})()
+    customization_sources = {
+        "inventory": evidence.freeze_customization_inventory(
+            home=tmp_path, project_dir=tmp_path, env={},
+        ),
+        "home": str(tmp_path.resolve(strict=True)),
+        "project": str(tmp_path.resolve(strict=True)),
+    }
     authority = {
         "minimal_home": {"path": str(home), "identity": "ok"}, "auth_binds": [],
+        "customization_sources": customization_sources,
         "agy_runtime": {
             "path": str(source), "device": info.st_dev, "inode": info.st_ino,
             "mode": stat.S_IMODE(info.st_mode), "sha256": evidence._sha256(source.read_bytes()),
@@ -3251,6 +3359,16 @@ def test_detached_provider_auth_reduction_binds_rows_and_owner_modes(monkeypatch
     capture = _prepare_production_capture(monkeypatch=monkeypatch, tmp_path=tmp_path, root=root, settings=_settings(tmp_path, []), seat_key="gemini-primary", auth_paths=(auth1, auth2), plan_bytes=(review / "review-bundle.md").read_bytes())
     try:
         _bind_stage(capture, review)
+        staged = evidence.retain_staged_files(capture=capture, review_dir=review)
+        evidence.record_launch(
+            capture=capture, seat_key="gemini-primary", attempt_id="gemini-1",
+            argv=["agy", "-p", "secret"], returncode=0,
+            stdout=_review_stream(
+                instructions="review-instructions.md",
+                bundle="review-bundle.md", terminal="AGREE",
+            ),
+            stderr="", staged=staged,
+        )
         _seal_synthetic_provider_results(capture, _usable_private_board({"gemini_seat_key": "gemini-primary"}))
         assert evidence._verified_provider_results(root_fd=capture.root_fd)
         registry = evidence._provider_registry(root_fd=capture.root_fd)
@@ -3274,6 +3392,38 @@ def test_detached_provider_auth_reduction_binds_rows_and_owner_modes(monkeypatch
         with pytest.raises(evidence.AgyCanaryEvidenceError, match="authentication proof"):
             evidence._verified_provider_results(root_fd=capture.root_fd)
         replace_launch("codex", lambda launch: launch["projected_auth"]["records"][0].update({"mode": "0400"}))
+
+        board = _usable_private_board({"gemini_seat_key": "gemini-primary"})
+        sealed_summary = evidence.capture_summary(capture)
+        evidence.write_private_board(
+            capture=capture, basename="board.json",
+            payload={**board, "agy_canary_capture": sealed_summary},
+        )
+
+        def replace_gemini_runtime_sha(launch, sha256):
+            launch["runtime"]["sha256"] = sha256
+            launch["projected_auth"]["runtime_sha256"] = sha256
+
+        replace_launch("codex", lambda launch: replace_gemini_runtime_sha(launch, "1" * 64))
+        substituted_summary = evidence.capture_summary(capture)
+        assert substituted_summary["provider_results"] != sealed_summary["provider_results"]
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="private board"):
+            evidence.verify_capture(
+                evidence_root=root, expected_seat_key="gemini-primary", seal=False,
+            )
+        replace_launch("codex", lambda launch: replace_gemini_runtime_sha(launch, "b" * 64))
+        assert evidence.capture_summary(capture) == sealed_summary
+
+        replace_launch("gemini", lambda launch: replace_gemini_runtime_sha(launch, "0" * 64))
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="runtime differs from prepare"):
+            evidence._verified_provider_results(root_fd=capture.root_fd)
+        sealed_runtime_sha = evidence._read_json_at(
+            capture.root_fd, "agy_canary_launch_authority.json",
+        )["agy_runtime"]["sha256"]
+        replace_launch(
+            "gemini",
+            lambda launch: replace_gemini_runtime_sha(launch, sealed_runtime_sha),
+        )
         replace_launch("gemini", lambda launch: launch["projected_auth"]["records"][1].update({"sha256": "0" * 64}))
         with pytest.raises(evidence.AgyCanaryEvidenceError, match="authentication proof"):
             evidence._verified_provider_results(root_fd=capture.root_fd)
@@ -3389,11 +3539,35 @@ def test_provider_launch_authority_revalidates_runtime_and_exactly_ingests_outpu
         "codex", source, info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode),
         evidence._sha256(source.read_bytes()),
     )
+    customization_sources = {
+        "inventory": evidence.freeze_customization_inventory(
+            home=tmp_path, project_dir=tmp_path, env={},
+        ),
+        "home": str(tmp_path.resolve(strict=True)),
+        "project": str(tmp_path.resolve(strict=True)),
+    }
+    minimal_customizations = evidence.freeze_customization_inventory(
+        home=tmp_path, project_dir=tmp_path, env={},
+    )
     try:
         authority = evidence.ProviderLaunchAuthority(
-            "codex", runtime,
-            evidence.AgyCanaryNamespace(tmp_path, tmp_path, root, "example.invalid", provider_output=output),
-            (),
+            provider="codex", runtime=runtime,
+            namespace=evidence.AgyCanaryNamespace(
+                tmp_path, tmp_path, root, "example.invalid",
+                provider_output=output,
+            ),
+            auth_records=(),
+            auth_records_sha256=evidence._sha256(evidence._canonical_json(())),
+            customization_sources=customization_sources,
+            customization_sources_sha256=evidence._sha256(
+                evidence._canonical_json(customization_sources)
+            ),
+            minimal_customizations=minimal_customizations,
+            minimal_customizations_sha256=evidence._sha256(
+                evidence._canonical_json(minimal_customizations)
+            ),
+            auth_placeholders=(),
+            auth_placeholders_sha256=evidence._sha256(evidence._canonical_json(())),
         )
         command = authority.command(["codex", "exec", "review"])
         assert "/run/phase-loop-bin/codex" in command
@@ -3420,6 +3594,187 @@ def test_provider_launch_authority_revalidates_runtime_and_exactly_ingests_outpu
             authority.command(["codex", "exec", "review"])
     finally:
         shutil.rmtree(output)
+        shutil.rmtree(root)
+
+
+def test_gemini_launch_identity_normalizes_only_the_final_prompt_argument():
+    command = [
+        "/usr/bin/bwrap", "--ro-bind", "/", "/", "--",
+        "/run/phase-loop-bin/agy", "--output-format", "stream-json",
+        "-p", "private prompt",
+    ]
+    identity = evidence._provider_launch_identity(command, provider="gemini")
+    normalized = [*command[:-1], "<prompt>"]
+    assert identity == {
+        "argv_bytes": len("\0".join(command).encode()),
+        "argv_sha256": evidence._sha256("\0".join(command).encode()),
+        "normalized_argv_sha256": evidence._sha256(
+            "\0".join(normalized).encode()
+        ),
+    }
+
+
+def _prepared_provider_factory_capture(monkeypatch, tmp_path, *, auth_paths=()):
+    root = _private_root(tmp_path)
+    stage = tmp_path / "provider-stage"
+    stage.mkdir()
+    for name, data in (
+        ("review-bundle.md", b"bundle"),
+        ("review-instructions.md", b"instructions"),
+    ):
+        path = stage / name
+        path.write_bytes(data)
+        path.chmod(0o600)
+    capture = _prepare_production_capture(
+        monkeypatch=monkeypatch, tmp_path=tmp_path, root=root,
+        settings=_settings(tmp_path, []), seat_key="gemini-primary",
+        auth_paths=auth_paths, plan_bytes=b"bundle",
+    )
+    _bind_stage(capture, stage)
+    launch_authority = evidence._read_json_at(
+        capture.root_fd, "agy_canary_launch_authority.json",
+    )
+    return root, capture, stage, Path(launch_authority["minimal_home"]["path"])
+
+
+def test_provider_factory_rejects_minimal_home_customization_added_after_prepare(
+    monkeypatch, tmp_path,
+):
+    root, capture, stage, minimal_home = _prepared_provider_factory_capture(
+        monkeypatch, tmp_path,
+    )
+    try:
+        (minimal_home / ".gemini" / "antigravity-cli" / "hooks").mkdir()
+        with pytest.raises(
+            evidence.AgyCanaryEvidenceError,
+            match="active agy customization source",
+        ):
+            evidence.prepare_provider_launch_authorities(
+                capture=capture, stage=stage, providers=("gemini",),
+            )
+    finally:
+        capture.close()
+        shutil.rmtree(minimal_home)
+        shutil.rmtree(root)
+
+
+def test_provider_retry_revalidates_real_source_inventory_after_preflight(
+    monkeypatch, tmp_path,
+):
+    _mock_canonical_bwrap(monkeypatch)
+    root, capture, stage, minimal_home = _prepared_provider_factory_capture(
+        monkeypatch, tmp_path,
+    )
+    authority = None
+    try:
+        authority = evidence.prepare_provider_launch_authorities(
+            capture=capture, stage=stage, providers=("gemini",),
+        )["gemini"]
+        command = authority.command(["agy", "-p", "secret"])
+        object.__setattr__(
+            authority, "review_launch",
+            evidence._provider_launch_identity(command, provider="gemini"),
+        )
+        authority.record_review_attempt(command, attempt_id="gemini-1")
+        (tmp_path / ".gemini" / "antigravity-cli" / "plugins").mkdir(
+            parents=True,
+        )
+        with pytest.raises(
+            evidence.AgyCanaryEvidenceError,
+            match="active agy customization source",
+        ):
+            authority.record_review_attempt(command, attempt_id="gemini-2")
+    finally:
+        if authority is not None:
+            shutil.rmtree(authority.namespace.provider_output, ignore_errors=True)
+        capture.close()
+        shutil.rmtree(minimal_home)
+        shutil.rmtree(root)
+
+
+def test_provider_command_rejects_post_factory_minimal_home_customization(
+    monkeypatch, tmp_path,
+):
+    _mock_canonical_bwrap(monkeypatch)
+    root, capture, stage, minimal_home = _prepared_provider_factory_capture(
+        monkeypatch, tmp_path,
+    )
+    authority = None
+    try:
+        authority = evidence.prepare_provider_launch_authorities(
+            capture=capture, stage=stage, providers=("gemini",),
+        )["gemini"]
+        (minimal_home / ".gemini" / "antigravity-cli" / "mcp.json").write_text(
+            "{}\n"
+        )
+        with pytest.raises(
+            evidence.AgyCanaryEvidenceError,
+            match="active agy customization source",
+        ):
+            authority.command(["agy", "--version"])
+    finally:
+        if authority is not None:
+            shutil.rmtree(authority.namespace.provider_output, ignore_errors=True)
+        capture.close()
+        shutil.rmtree(minimal_home)
+        shutil.rmtree(root)
+
+
+def test_provider_authority_rejects_matching_in_memory_and_filesystem_mutation(
+    monkeypatch, tmp_path,
+):
+    _mock_canonical_bwrap(monkeypatch)
+    root, capture, stage, minimal_home = _prepared_provider_factory_capture(
+        monkeypatch, tmp_path,
+    )
+    authority = None
+    try:
+        authority = evidence.prepare_provider_launch_authorities(
+            capture=capture, stage=stage, providers=("gemini",),
+        )["gemini"]
+        mcp = minimal_home / ".gemini" / "antigravity-cli" / "mcp.json"
+        mcp.write_text("{}\n")
+        authority.minimal_customizations["inventory"]["mcp"].append(str(mcp))
+        with pytest.raises(
+            evidence.AgyCanaryEvidenceError,
+            match="in-memory launch authority drifted",
+        ):
+            authority.command(["agy", "--version"])
+    finally:
+        if authority is not None:
+            shutil.rmtree(authority.namespace.provider_output, ignore_errors=True)
+        capture.close()
+        shutil.rmtree(minimal_home)
+        shutil.rmtree(root)
+
+
+def test_provider_command_rejects_replaced_auth_placeholder(monkeypatch, tmp_path):
+    _mock_canonical_bwrap(monkeypatch)
+    auth = tmp_path / "auth.json"
+    auth.write_text("auth")
+    auth.chmod(0o600)
+    root, capture, stage, minimal_home = _prepared_provider_factory_capture(
+        monkeypatch, tmp_path, auth_paths=(auth,),
+    )
+    authority = None
+    try:
+        authority = evidence.prepare_provider_launch_authorities(
+            capture=capture, stage=stage, providers=("gemini",),
+        )["gemini"]
+        target = (
+            minimal_home / ".gemini" / "antigravity-cli" / "auth" / auth.name
+        )
+        target.write_text("forged")
+        with pytest.raises(
+            evidence.AgyCanaryEvidenceError,
+            match="bind target",
+        ):
+            authority.command(["agy", "--version"])
+    finally:
+        if authority is not None:
+            shutil.rmtree(authority.namespace.provider_output, ignore_errors=True)
+        capture.close()
+        shutil.rmtree(minimal_home)
         shutil.rmtree(root)
 
 
@@ -3587,7 +3942,7 @@ def test_advisor_board_cli_seals_and_verifies_capture_summary(monkeypatch, tmp_p
         changed_attempts = dict(original_result["attempts"])
         changed_attempts["attempts"] = [
             *changed_attempts["attempts"],
-            {"index": 1, **changed_attempts["launch"]},
+            {"index": 1, "attempt_id": "codex-2", **changed_attempts["launch"]},
         ]
         changed_attempts["terminal_attempt"] = 1
         changed_result["attempts"] = changed_attempts
