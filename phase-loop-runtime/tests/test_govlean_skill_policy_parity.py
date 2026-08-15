@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from .govlean_freeze_receipt import govlean_forced, govlean_phase_started
+from .govlean_freeze_receipt import govlean_api_available
 
 REPO = Path(__file__).resolve().parents[2]
 SKILLS_SRC = REPO / "skills-src"
@@ -63,7 +63,8 @@ def _source_policy_present() -> bool:
 
 
 pytestmark = pytest.mark.skipif(
-    not govlean_forced() and not govlean_phase_started() and not _source_policy_present(),
+    not govlean_api_available("phase_loop_runtime.plan_manifest", "IssueDisposition")
+    and not _source_policy_present(),
     reason="GOVLEAN fleet prose policy absent",
 )
 
