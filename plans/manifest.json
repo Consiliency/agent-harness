@@ -1860,13 +1860,13 @@
       "acceptance_criteria_count": null,
       "created_at": "2026-07-30T04:08:46Z",
       "file": "plans/phase-plan-v10-PROOFGATE.md",
-      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260730T035716Z-01-proofgate-plan.md",
+      "handoff_ref": null,
       "if_gates_produced": [
         "IF-0-PROOFGATE-1"
       ],
       "lanes": [
-        "SL-0",
         "SL-1",
+        "SL-0",
         "SL-2"
       ],
       "lifecycle": [
@@ -2468,11 +2468,57 @@
             }
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-15T17:26:47Z",
+          "by": "clawdbot-agent-harness-codex",
+          "metadata": {
+            "fresh_plan_rewrite": {
+              "authored_by": "gpt-5.6-sol",
+              "consumes": [
+                "IF-0-GOVLEAN-1",
+                "IF-0-LEGIBLE-2"
+              ],
+              "future_history_pins": 0,
+              "operator_directive": "substitute-grok-4.6-for-fable",
+              "plan_sha256": "7d5fc8d13445112a9c83e183d7bc3eb3d3ca0ff1bea2bea67a556c404c6c1f8d",
+              "plan_words": 2423,
+              "prior_plan_sha256": "41c4d442f4cd41b68823c5240b61b187d1299f9d6c79cecbec0c19617dd2938e",
+              "ratification_evidence": {
+                "board_verdict_sha256": [
+                  "064bf1cde863c421bf47f8e8bdc8e174870ffe086dc353a640444ab19dace8ea",
+                  "be5fea998d9b291535df190666b53a6fb2abaffb719734913a1eb4a83743b34e",
+                  "42730a8ad48ac16e75851888eda335b2e3cb3185416408cf94876463abf469bb",
+                  "ed7cd6dad0fb05a409422a17a51123e498b3fd75a19b181df7ae39779ffa0b64"
+                ],
+                "deferred_issue": "agent-harness#558",
+                "president_decision": "LAND",
+                "president_model": "grok-4.6",
+                "president_verdict_sha256": "8e962f73ddb8c32b5fe2e9867068cf1d68e7993e58fb853b7412f0fae107ff39"
+              },
+              "ratification_status": "ratified",
+              "review_policy_override": {
+                "board": [
+                  "claude-opus-5",
+                  "gpt-5.6-sol",
+                  "grok-4.5",
+                  "gemini-3.6-flash"
+                ],
+                "president": "grok-4.6",
+                "scope": "this-run-only"
+              },
+              "roadmap_sha256": "c66949236043e46e956caec1c09d0c19d0e8751e4ce2891de1fe2edf24e9fea1",
+              "run_president_override": "grok-4.6",
+              "single_author_vendor": "gemini",
+              "supersedes_prior_execution_choreography": true
+            }
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
       "phase_alias": "PROOFGATE",
-      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/333d0320/codex-v10-plan-proofgate/20260730T035716Z-01-proofgate-plan.md",
+      "reflection_ref": null,
       "roadmap_ref": {
         "file": "specs/phase-plans-v10.md",
         "slug": "phase-plans-v10",
@@ -2483,7 +2529,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-06T02:42:36Z"
+      "updated_at": "2026-08-15T17:26:47Z"
     },
     {
       "acceptance_criteria_count": null,
