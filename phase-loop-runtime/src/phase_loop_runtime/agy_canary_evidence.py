@@ -12,6 +12,7 @@ import hashlib
 import io
 import json
 import os
+import posixpath
 import re
 import secrets
 import shutil
@@ -26,7 +27,7 @@ import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from datetime import datetime, timezone
 from dataclasses import dataclass, field as dataclass_field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 try:  # Windows imports this module but does not support POSIX account lookups.
@@ -2991,10 +2992,37 @@ def _canonical_uv() -> Path:
 
 
 _UV_WORKSPACE_ROOT = Path("/mnt/workspace")
-_BOOTSTRAP_SOURCE_WRAPPER = 'source -- "$1"'
 _BOOTSTRAP_LOCAL_SOURCE_SEAMS = (
     "bootstrap.local.sh", "hooks/post-bootstrap.local.sh",
 )
+_TREE_SNAPSHOT_SCHEMA = "agy_canary_tree_snapshot.v1"
+_TREE_SANDBOX_SCHEMA = "agy_canary_tree_bwrap.v1"
+
+
+@dataclass(frozen=True)
+class _TreeSnapshotEntry:
+    path: str
+    mode: str
+    oid: str
+    fd: int | None = None
+    link_target: str | None = None
+
+
+@dataclass
+class _GitTreeSnapshot:
+    authority: dict[str, Any]
+    entries: tuple[_TreeSnapshotEntry, ...]
+
+    @property
+    def fds(self) -> tuple[int, ...]:
+        return tuple(entry.fd for entry in self.entries if entry.fd is not None)
+
+    def close(self) -> None:
+        for fd in self.fds:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
 
 
 def _uv_directory_identity(path: Path, *, uid: int) -> dict[str, Any]:
@@ -3378,6 +3406,247 @@ def _validate_bootstrap_uv_policy(
             raise AgyCanaryEvidenceError("bootstrap uv workspace authority is malformed")
 
 
+def _snapshot_relative_path(value: str) -> PurePosixPath:
+    """Accept only a portable, non-escaping Git tree path."""
+    if (not value or value.startswith("/") or "\\" in value or
+            any(ord(char) < 32 or ord(char) == 127 for char in value)):
+        raise AgyCanaryEvidenceError("tracked snapshot path is unsafe")
+    path = PurePosixPath(value)
+    if path.as_posix() != value or any(part in {"", ".", ".."} for part in path.parts):
+        raise AgyCanaryEvidenceError("tracked snapshot path is unsafe")
+    return path
+
+
+def _snapshot_symlink_target(path: PurePosixPath, data: bytes) -> str:
+    try:
+        target = data.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise AgyCanaryEvidenceError("tracked snapshot symlink target is malformed") from exc
+    if (not target or target.startswith("/") or "\x00" in target or "\n" in target or
+            "\r" in target):
+        raise AgyCanaryEvidenceError("tracked snapshot symlink target is unsafe")
+    resolved = posixpath.normpath(posixpath.join(str(path.parent), target))
+    if resolved == ".." or resolved.startswith("../") or resolved.startswith("/"):
+        raise AgyCanaryEvidenceError("tracked snapshot symlink escapes the repository")
+    return target
+
+
+def _git_object_bytes(repo: Path, oid: str) -> bytes:
+    size_text = _git_text(repo, "cat-file", "-s", oid)
+    if not size_text.isdigit() or int(size_text) > _MAX_FULL_STAGED_READ_BYTES:
+        raise AgyCanaryEvidenceError("tracked snapshot blob exceeds the full-read cap")
+    proc = subprocess.run(
+        ["git", "-C", str(repo), "cat-file", "blob", oid],
+        capture_output=True, check=False,
+    )
+    if proc.returncode != 0 or len(proc.stdout) != int(size_text):
+        raise AgyCanaryEvidenceError("tracked snapshot blob is unavailable")
+    if hashlib.sha1(b"blob " + str(len(proc.stdout)).encode() + b"\0" + proc.stdout).hexdigest() != oid:
+        raise AgyCanaryEvidenceError("tracked snapshot blob identity drifted")
+    return proc.stdout
+
+
+def _git_tree_rows(repo: Path, commit: str) -> list[tuple[str, str, str, str]]:
+    proc = subprocess.run(
+        ["git", "-C", str(repo), "ls-tree", "-rz", "--full-tree", commit],
+        capture_output=True, check=False,
+    )
+    if proc.returncode != 0:
+        raise AgyCanaryEvidenceError("tracked snapshot tree is unavailable")
+    rows: list[tuple[str, str, str, str]] = []
+    for raw in proc.stdout.split(b"\0"):
+        if not raw:
+            continue
+        try:
+            header, raw_path = raw.split(b"\t", 1)
+            mode, object_type, oid = header.decode("ascii", errors="strict").split(" ")
+            path = raw_path.decode("utf-8", errors="strict")
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise AgyCanaryEvidenceError("tracked snapshot inventory is malformed") from exc
+        _snapshot_relative_path(path)
+        if (mode, object_type) not in {
+                ("100644", "blob"), ("100755", "blob"),
+                ("120000", "blob"), ("160000", "commit"),
+        } or len(oid) != 40 or any(char not in "0123456789abcdef" for char in oid):
+            raise AgyCanaryEvidenceError("tracked snapshot inventory mode is unsupported")
+        rows.append((mode, object_type, oid, path))
+    if not rows:
+        raise AgyCanaryEvidenceError("tracked snapshot inventory is empty")
+    return rows
+
+
+def _sealed_tree_fd(*, data: bytes, executable: bool, label: str) -> int:
+    if not sys.platform.startswith("linux") or not hasattr(os, "memfd_create") or fcntl is None:
+        raise AgyCanaryEvidenceError("tracked snapshot requires Linux sealed memfds")
+    required_seals = (
+        getattr(fcntl, "F_SEAL_WRITE", 0) | getattr(fcntl, "F_SEAL_GROW", 0) |
+        getattr(fcntl, "F_SEAL_SHRINK", 0) | getattr(fcntl, "F_SEAL_SEAL", 0)
+    )
+    add_seals = getattr(fcntl, "F_ADD_SEALS", None)
+    get_seals = getattr(fcntl, "F_GET_SEALS", None)
+    allow_sealing = getattr(os, "MFD_ALLOW_SEALING", 0)
+    if not required_seals or add_seals is None or get_seals is None or not allow_sealing:
+        raise AgyCanaryEvidenceError("tracked snapshot requires Linux file seals")
+    fd = os.memfd_create(label, os.MFD_CLOEXEC | allow_sealing)
+    try:
+        os.fchmod(fd, 0o755 if executable else 0o644)
+        view = memoryview(data)
+        while view:
+            written = os.write(fd, view)
+            if written <= 0:
+                raise AgyCanaryEvidenceError("tracked snapshot memfd short write")
+            view = view[written:]
+        os.fsync(fd)
+        fcntl.fcntl(fd, add_seals, required_seals)
+        if fcntl.fcntl(fd, get_seals) != required_seals:
+            raise AgyCanaryEvidenceError("tracked snapshot memfd sealing did not hold")
+        os.lseek(fd, 0, os.SEEK_SET)
+        return fd
+    except (OSError, AgyCanaryEvidenceError) as exc:
+        os.close(fd)
+        if isinstance(exc, AgyCanaryEvidenceError):
+            raise
+        raise AgyCanaryEvidenceError("tracked snapshot memfd sealing failed") from exc
+
+
+def _collect_git_tree(
+    *, repo: Path, commit: str, prefix: str = "", seen: set[str] | None = None,
+) -> tuple[list[tuple[str, str, str, str, Path]], list[dict[str, Any]]]:
+    seen = set() if seen is None else seen
+    recursion_key = f"{repo}:{commit}"
+    if recursion_key in seen:
+        raise AgyCanaryEvidenceError("tracked snapshot submodule recursion is cyclic")
+    seen.add(recursion_key)
+    collected: list[tuple[str, str, str, str, Path]] = []
+    submodules: list[dict[str, Any]] = []
+    for mode, object_type, oid, relative in _git_tree_rows(repo, commit):
+        joined = f"{prefix}/{relative}" if prefix else relative
+        _snapshot_relative_path(joined)
+        if mode != "160000":
+            collected.append((mode, object_type, oid, joined, repo))
+            continue
+        subrepo = repo / relative
+        try:
+            info = subrepo.lstat()
+        except FileNotFoundError as exc:
+            raise AgyCanaryEvidenceError("tracked snapshot submodule checkout is unavailable") from exc
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise AgyCanaryEvidenceError("tracked snapshot submodule checkout is unsafe")
+        if _git_text(subrepo, "rev-parse", f"{oid}^{{commit}}") != oid:
+            raise AgyCanaryEvidenceError("tracked snapshot submodule commit is unavailable")
+        child_rows, child_submodules = _collect_git_tree(
+            repo=subrepo, commit=oid, prefix=joined, seen=seen,
+        )
+        child_records = [
+            f"{child_mode} {child_type} {child_oid}\t{child_path}\n"
+            for child_mode, child_type, child_oid, child_path, _source in child_rows
+        ]
+        submodules.append({
+            "path": joined, "commit": oid,
+            "tree_oid": _git_text(subrepo, "rev-parse", f"{oid}^{{tree}}"),
+            "inventory_sha256": _sha256("".join(child_records).encode()),
+            "entry_count": len(child_rows),
+        })
+        submodules.extend(child_submodules)
+        collected.extend(child_rows)
+    seen.remove(recursion_key)
+    return collected, submodules
+
+
+def _git_tree_snapshot(repo: Path, commit: str, *, materialize: bool) -> _GitTreeSnapshot:
+    rows, submodules = _collect_git_tree(repo=repo, commit=commit)
+    paths = [row[3] for row in rows]
+    if len(set(paths)) != len(paths):
+        raise AgyCanaryEvidenceError("tracked snapshot contains duplicate paths")
+    records = [f"{mode} {kind} {oid}\t{path}\n" for mode, kind, oid, path, _repo in rows]
+    entries: list[_TreeSnapshotEntry] = []
+    try:
+        for mode, _kind, oid, path_text, source_repo in rows:
+            data = _git_object_bytes(source_repo, oid)
+            if mode == "120000":
+                target = _snapshot_symlink_target(_snapshot_relative_path(path_text), data)
+                entries.append(_TreeSnapshotEntry(path_text, mode, oid, link_target=target))
+            elif materialize:
+                entries.append(_TreeSnapshotEntry(
+                    path_text, mode, oid,
+                    fd=_sealed_tree_fd(data=data, executable=mode == "100755", label="phase-loop-tree"),
+                ))
+            else:
+                entries.append(_TreeSnapshotEntry(path_text, mode, oid))
+    except Exception:
+        for entry in entries:
+            if entry.fd is not None:
+                os.close(entry.fd)
+        raise
+    authority = {
+        "schema": _TREE_SNAPSHOT_SCHEMA, "commit": commit,
+        "tree_oid": _git_text(repo, "rev-parse", f"{commit}^{{tree}}"),
+        "mount_path": str(repo),
+        "inventory_sha256": _sha256(_canonical_json({
+            "entries": records, "submodules": submodules,
+        })),
+        "entry_count": len(rows),
+        "file_count": sum(mode in {"100644", "100755"} for mode, *_rest in rows),
+        "executable_count": sum(mode == "100755" for mode, *_rest in rows),
+        "symlink_count": sum(mode == "120000" for mode, *_rest in rows),
+        "gitlink_count": len(submodules),
+        "submodules": submodules,
+    }
+    return _GitTreeSnapshot(authority=authority, entries=tuple(entries))
+
+
+def _validate_tree_snapshot_authority(
+    value: Any, *, repo: Path | None = None, commit: str | None = None,
+) -> dict[str, Any]:
+    required = {
+        "schema", "commit", "tree_oid", "mount_path", "inventory_sha256",
+        "entry_count", "file_count", "executable_count", "symlink_count",
+        "gitlink_count", "submodules",
+    }
+    if (not isinstance(value, dict) or set(value) != required or
+            value.get("schema") != _TREE_SNAPSHOT_SCHEMA or
+            any(not isinstance(value.get(name), str) or len(value[name]) != 40 or
+                any(char not in "0123456789abcdef" for char in value[name])
+                for name in ("commit", "tree_oid")) or
+            not isinstance(value.get("mount_path"), str) or
+            not Path(value["mount_path"]).is_absolute() or
+            not _is_digest(value.get("inventory_sha256")) or
+            any(not _is_plain_int(value.get(name)) or value[name] < 0 for name in (
+                "entry_count", "file_count", "executable_count", "symlink_count"
+            )) or value["entry_count"] < 1 or
+            value["file_count"] + value["symlink_count"] != value["entry_count"] or
+            value["executable_count"] > value["file_count"] or
+            not _is_plain_int(value.get("gitlink_count")) or value["gitlink_count"] < 0 or
+            not isinstance(value.get("submodules"), list) or
+            value["gitlink_count"] != len(value["submodules"])):
+        raise AgyCanaryEvidenceError("tracked snapshot authority is malformed")
+    submodule_required = {"path", "commit", "tree_oid", "inventory_sha256", "entry_count"}
+    submodule_paths: list[str] = []
+    for row in value["submodules"]:
+        if (not isinstance(row, dict) or set(row) != submodule_required or
+                not isinstance(row.get("path"), str) or
+                not _is_digest(row.get("inventory_sha256")) or
+                not _is_plain_int(row.get("entry_count")) or row["entry_count"] < 1 or
+                any(not isinstance(row.get(name), str) or len(row[name]) != 40 or
+                    any(char not in "0123456789abcdef" for char in row[name])
+                    for name in ("commit", "tree_oid"))):
+            raise AgyCanaryEvidenceError("tracked snapshot submodule authority is malformed")
+        _snapshot_relative_path(row["path"])
+        submodule_paths.append(row["path"])
+    if submodule_paths != sorted(set(submodule_paths)):
+        raise AgyCanaryEvidenceError("tracked snapshot submodule authority is malformed")
+    if commit is not None and value["commit"] != commit:
+        raise AgyCanaryEvidenceError("tracked snapshot commit drifted")
+    if repo is not None:
+        canonical = repo.resolve(strict=True)
+        if value["mount_path"] != str(canonical):
+            raise AgyCanaryEvidenceError("tracked snapshot mount path drifted")
+        derived = _git_tree_snapshot(canonical, value["commit"], materialize=False)
+        if derived.authority != value:
+            raise AgyCanaryEvidenceError("tracked snapshot authority drifted")
+    return value
+
+
 def _bootstrap_local_source_seams(repo: Path) -> dict[str, str]:
     """Prove gitignored source hooks are absent, including broken symlinks."""
     hooks = repo / "hooks"
@@ -3400,12 +3669,111 @@ def _bootstrap_local_source_seams(repo: Path) -> dict[str, str]:
     return {relative: "absent" for relative in _BOOTSTRAP_LOCAL_SOURCE_SEAMS}
 
 
-def _bootstrap_source_argv(*, bash: Path, bootstrap_path: Path, snapshot_fd: int) -> tuple[str, ...]:
-    """Source sealed bytes while preserving the canonical repo script as Bash $0."""
-    return (
-        str(bash), "-c", _BOOTSTRAP_SOURCE_WRAPPER, str(bootstrap_path),
-        f"/proc/self/fd/{snapshot_fd}",
-    )
+def _tree_snapshot_bwrap_argv(
+    *, snapshot: _GitTreeSnapshot, bwrap: Path, bash: Path,
+    environment: dict[str, str], account_home: Path,
+    uv_store_authority: dict[str, Any], command: tuple[str, ...] | None = None,
+) -> tuple[tuple[str, ...], dict[str, Any]]:
+    """Mount every attested Git blob read-only over the canonical repository path."""
+    repo = Path(snapshot.authority["mount_path"])
+    command = (str(bash), str(repo / "bootstrap.sh")) if command is None else command
+    if not command or any(not isinstance(item, str) or not item for item in command):
+        raise AgyCanaryEvidenceError("tracked snapshot child command is malformed")
+    writable_binds = [str(account_home.resolve(strict=True))]
+    workspace = uv_store_authority["workspace"]
+    if workspace is not None:
+        writable_binds.append(workspace["resolved"])
+    writable_binds = sorted(set(writable_binds))
+    argv = [
+        str(bwrap), "--unshare-all", "--share-net", "--die-with-parent", "--new-session",
+        "--clearenv", "--ro-bind", "/", "/",
+    ]
+    for path in writable_binds:
+        argv.extend(("--bind", path, path))
+    argv.extend((
+        "--tmpfs", "/tmp", "--tmpfs", "/run",
+        "--ro-bind-try", "/run/user", "/run/user",
+        "--proc", "/proc", "--dev-bind", "/dev", "/dev",
+    ))
+    for volatile_root in (Path("/tmp"), Path("/run")):
+        if repo.is_relative_to(volatile_root):
+            relative = repo.relative_to(volatile_root)
+            for depth in range(1, len(relative.parts)):
+                argv.extend(("--dir", str(volatile_root.joinpath(*relative.parts[:depth]))))
+    argv.extend(("--tmpfs", str(repo)))
+    parents = sorted({
+        str(repo.joinpath(*PurePosixPath(entry.path).parts[:depth]))
+        for entry in snapshot.entries
+        for depth in range(1, len(PurePosixPath(entry.path).parts))
+    }, key=lambda value: (len(Path(value).parts), value))
+    for parent in parents:
+        argv.extend(("--dir", parent))
+    for entry in sorted(snapshot.entries, key=lambda row: row.path):
+        destination = str(repo.joinpath(*PurePosixPath(entry.path).parts))
+        if entry.mode == "120000":
+            if entry.link_target is None:
+                raise AgyCanaryEvidenceError("tracked snapshot symlink is incomplete")
+            argv.extend(("--symlink", entry.link_target, destination))
+        else:
+            if entry.fd is None:
+                raise AgyCanaryEvidenceError("tracked snapshot file descriptor is missing")
+            permissions = "0755" if entry.mode == "100755" else "0644"
+            argv.extend(("--perms", permissions, "--ro-bind-data", str(entry.fd), destination))
+    argv.extend(("--remount-ro", str(repo)))
+    for name in sorted(environment):
+        argv.extend(("--setenv", name, environment[name]))
+    argv.extend(("--chdir", str(repo), "--", *command))
+    arg_bytes = sum(len(item.encode()) + 1 for item in argv)
+    try:
+        arg_max = os.sysconf("SC_ARG_MAX")
+        open_max = os.sysconf("SC_OPEN_MAX")
+    except (OSError, ValueError) as exc:
+        raise AgyCanaryEvidenceError("tracked snapshot process limits are unavailable") from exc
+    if arg_bytes >= arg_max or len(snapshot.fds) + 16 >= open_max:
+        raise AgyCanaryEvidenceError("tracked snapshot exceeds process argument or descriptor limits")
+    sandbox = {
+        "schema": _TREE_SANDBOX_SCHEMA, "executable": str(bwrap),
+        "argv_sha256": _sha256(_canonical_json(argv)), "argv_count": len(argv),
+        "argv_bytes": arg_bytes, "passed_fd_count": len(snapshot.fds),
+        "root": "read_only", "network": "shared",
+        "mount_path": str(repo), "command": list(command),
+        "writable_binds": writable_binds,
+        "tmpfs": ["/tmp", "/run", str(repo)],
+        "environment_sha256": _sha256(_canonical_json(environment)),
+    }
+    return tuple(argv), sandbox
+
+
+def _validate_tree_sandbox(
+    value: Any, *, tree: dict[str, Any], environment: dict[str, str],
+    uv_store_authority: dict[str, Any], bash: Path,
+) -> dict[str, Any]:
+    required = {
+        "schema", "executable", "argv_sha256", "argv_count", "argv_bytes",
+        "passed_fd_count", "root", "network", "mount_path", "command",
+        "writable_binds", "tmpfs", "environment_sha256",
+    }
+    account_home = Path(uv_store_authority["account_home"])
+    writable_binds = [str(account_home)]
+    if uv_store_authority["workspace"] is not None:
+        writable_binds.append(uv_store_authority["workspace"]["resolved"])
+    writable_binds = sorted(set(writable_binds))
+    mount_path = tree["mount_path"]
+    if (not isinstance(value, dict) or set(value) != required or
+            value.get("schema") != _TREE_SANDBOX_SCHEMA or
+            value.get("executable") != str(_canonical_bwrap()) or
+            not _is_digest(value.get("argv_sha256")) or
+            any(not _is_plain_int(value.get(name)) or value[name] < 1 for name in (
+                "argv_count", "argv_bytes", "passed_fd_count"
+            )) or value["passed_fd_count"] != tree["file_count"] or
+            value.get("root") != "read_only" or value.get("network") != "shared" or
+            value.get("mount_path") != mount_path or
+            value.get("command") != [str(bash), str(Path(mount_path) / "bootstrap.sh")] or
+            value.get("writable_binds") != writable_binds or
+            value.get("tmpfs") != ["/tmp", "/run", mount_path] or
+            value.get("environment_sha256") != _sha256(_canonical_json(environment))):
+        raise AgyCanaryEvidenceError("tracked snapshot sandbox record is malformed")
+    return value
 
 
 def bootstrap_attest(
@@ -3468,47 +3836,23 @@ def bootstrap_attest(
         [str(uv), "tool", "list"], capture_output=True, text=True,
         timeout=30, check=False, env=child_env,
     )
-    if not sys.platform.startswith("linux") or not hasattr(os, "memfd_create"):
-        raise AgyCanaryEvidenceError("bootstrap attestation requires Linux memfd support")
-    if fcntl is None:
-        raise AgyCanaryEvidenceError("bootstrap attestation requires Linux file seals")
-    required_seals = (
-        getattr(fcntl, "F_SEAL_WRITE", 0)
-        | getattr(fcntl, "F_SEAL_GROW", 0)
-        | getattr(fcntl, "F_SEAL_SHRINK", 0)
-        | getattr(fcntl, "F_SEAL_SEAL", 0)
-    )
-    add_seals = getattr(fcntl, "F_ADD_SEALS", None)
-    get_seals = getattr(fcntl, "F_GET_SEALS", None)
-    allow_sealing = getattr(os, "MFD_ALLOW_SEALING", 0)
-    if not required_seals or add_seals is None or get_seals is None or not allow_sealing:
-        raise AgyCanaryEvidenceError("bootstrap attestation requires Linux file seals")
-    snapshot_fd = os.memfd_create("phase-loop-bootstrap", os.MFD_CLOEXEC | allow_sealing)
-    try:
-        view = memoryview(script_bytes)
-        while view:
-            written = os.write(snapshot_fd, view)
-            if written <= 0:
-                raise AgyCanaryEvidenceError("bootstrap memfd short write")
-            view = view[written:]
-        os.fsync(snapshot_fd)
-        fcntl.fcntl(snapshot_fd, add_seals, required_seals)
-        if fcntl.fcntl(snapshot_fd, get_seals) != required_seals:
-            raise AgyCanaryEvidenceError("bootstrap memfd sealing did not hold")
-        os.lseek(snapshot_fd, 0, os.SEEK_SET)
-    except OSError as exc:
-        os.close(snapshot_fd)
-        raise AgyCanaryEvidenceError("bootstrap memfd sealing failed") from exc
-    bootstrap_argv = _bootstrap_source_argv(
-        bash=bash, bootstrap_path=repo / "bootstrap.sh", snapshot_fd=snapshot_fd,
+    bwrap = _canonical_bwrap()
+    snapshot = _git_tree_snapshot(repo, head, materialize=True)
+    bootstrap_argv, sandbox = _tree_snapshot_bwrap_argv(
+        snapshot=snapshot, bwrap=bwrap, bash=bash, environment=child_env,
+        account_home=account_home, uv_store_authority=uv_store_authority,
     )
     try:
         if _bootstrap_local_source_seams(repo) != local_source_seams:
             raise AgyCanaryEvidenceError("bootstrap local source seam state drifted")
-        child_process = subprocess.Popen(
-            list(bootstrap_argv), cwd=repo, env=child_env,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, pass_fds=(snapshot_fd,),
-        )
+        try:
+            child_process = subprocess.Popen(
+                list(bootstrap_argv), cwd=repo, env={},
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                pass_fds=snapshot.fds,
+            )
+        except OSError as exc:
+            raise AgyCanaryEvidenceError("tracked snapshot child could not start") from exc
         try:
             _stdout, _stderr = child_process.communicate(timeout=1800)
         except subprocess.TimeoutExpired as exc:
@@ -3516,7 +3860,7 @@ def bootstrap_attest(
             child_process.communicate()
             raise AgyCanaryEvidenceError("direct bootstrap child timed out") from exc
     finally:
-        os.close(snapshot_fd)
+        snapshot.close()
     child_rc = child_process.returncode
     if _bootstrap_local_source_seams(repo) != local_source_seams:
         raise AgyCanaryEvidenceError("bootstrap local source seam state drifted")
@@ -3540,11 +3884,12 @@ def bootstrap_attest(
         value = {
             "schema": "agy_canary_bootstrap_attestation.v1",
             "repo_head": head,
+            "tree_snapshot": snapshot.authority,
             "blobs": identities,
             "input_sha256": {name: _sha256(data) for name, data in inputs.items()},
             "targets": {"plan": plan_relative, "manifest": "plans/manifest.json"},
             "bootstrap": {
-                "argv": list(bootstrap_argv),
+                "sandbox": sandbox,
                 "pid": child_process.pid,
                 "returncode": child_rc,
                 "script_sha256": _sha256(script_bytes),
@@ -3622,7 +3967,7 @@ def _validate_bootstrap_attestation(
 ) -> dict[str, Any]:
     """Accept only a complete, directly-produced bootstrap receipt."""
     if not isinstance(receipt, dict) or set(receipt) != {
-        "schema", "repo_head", "blobs", "input_sha256", "targets", "bootstrap"
+        "schema", "repo_head", "tree_snapshot", "blobs", "input_sha256", "targets", "bootstrap"
     } or receipt.get("schema") != "agy_canary_bootstrap_attestation.v1":
         raise AgyCanaryEvidenceError("bootstrap attestation schema is malformed")
     targets = receipt["targets"]
@@ -3651,38 +3996,24 @@ def _validate_bootstrap_attestation(
         raise AgyCanaryEvidenceError("bootstrap attestation input identities are malformed")
     bootstrap = receipt["bootstrap"]
     expected_bootstrap = {
-        "argv", "pid", "returncode", "script_sha256", "script_blob",
+        "sandbox", "pid", "returncode", "script_sha256", "script_blob",
         "before_uv_tools_sha256", "after_uv_tools_sha256", "environment_names",
         "uv_environment", "interpreter_authority", "uv_store_authority",
         "local_source_seams", "installation",
     }
     if not isinstance(bootstrap, dict) or set(bootstrap) != expected_bootstrap:
         raise AgyCanaryEvidenceError("bootstrap attestation child record is malformed")
-    argv = bootstrap["argv"]
-    if (not isinstance(argv, list) or len(argv) != 5 or
-            argv[:3] != ["/usr/bin/bash", "-c", _BOOTSTRAP_SOURCE_WRAPPER] or
-            not isinstance(argv[3], str) or not Path(argv[3]).is_absolute() or
-            Path(argv[3]).name != "bootstrap.sh" or
-            not isinstance(argv[4], str) or not argv[4].startswith("/proc/self/fd/") or
-            not argv[4].removeprefix("/proc/self/fd/").isdigit() or
-            type(bootstrap["pid"]) is not int or bootstrap["pid"] <= 0 or
+    tree = _validate_tree_snapshot_authority(
+        receipt["tree_snapshot"], repo=repo, commit=repo_head,
+    )
+    if (type(bootstrap["pid"]) is not int or bootstrap["pid"] <= 0 or
             bootstrap["returncode"] != 0 or bootstrap["script_sha256"] != input_sha256["bootstrap.sh"] or
             bootstrap["script_blob"] != blobs["bootstrap.sh"] or
             any(not _is_digest(bootstrap[name]) for name in (
                 "before_uv_tools_sha256", "after_uv_tools_sha256"
             ))):
         raise AgyCanaryEvidenceError("bootstrap attestation child identity is malformed")
-    bootstrap_path = Path(argv[3])
-    if repo is not None and bootstrap_path != repo.resolve(strict=True) / "bootstrap.sh":
-        raise AgyCanaryEvidenceError("bootstrap attestation source path differs from canonical repository")
-    try:
-        bootstrap_bytes, bootstrap_info = _read_regular_path(bootstrap_path)
-    except (FileNotFoundError, OSError) as exc:
-        raise AgyCanaryEvidenceError("bootstrap attestation source path is unavailable") from exc
-    if (not stat.S_ISREG(bootstrap_info.st_mode) or bootstrap_path.is_symlink() or
-            bootstrap_path.resolve(strict=True) != bootstrap_path or
-            _sha256(bootstrap_bytes) != bootstrap["script_sha256"]):
-        raise AgyCanaryEvidenceError("bootstrap attestation source path drifted")
+    bootstrap_path = Path(tree["mount_path"]) / "bootstrap.sh"
     local_source_seams = bootstrap["local_source_seams"]
     if (local_source_seams != {
             relative: "absent" for relative in _BOOTSTRAP_LOCAL_SOURCE_SEAMS
@@ -3710,6 +4041,10 @@ def _validate_bootstrap_attestation(
     )
     if bootstrap.get("uv_environment") != expected_uv_environment:
         raise AgyCanaryEvidenceError("bootstrap attestation uv environment is malformed")
+    _validate_tree_sandbox(
+        bootstrap["sandbox"], tree=tree, environment=expected_uv_environment,
+        uv_store_authority=store_authority, bash=_canonical_bash(),
+    )
     if installed["interpreter_authority"] != authority:
         raise AgyCanaryEvidenceError("bootstrap attestation interpreter authority drifted")
     if installed["uv_store_authority"] != store_authority:

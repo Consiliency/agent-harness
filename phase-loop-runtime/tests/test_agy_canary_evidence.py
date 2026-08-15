@@ -10,6 +10,7 @@ import os
 import shutil
 import stat
 import subprocess
+import time
 import zipfile
 from pathlib import Path
 
@@ -251,15 +252,40 @@ def _bootstrap_receipt(
         "plans/manifest.json": evidence._sha256(b"{}\n"),
         "plans/canary.md": evidence._sha256(plan_bytes),
     } if input_sha256 is None else input_sha256
+    if (dotfiles_repo / ".git").exists():
+        tree_snapshot = evidence._git_tree_snapshot(
+            dotfiles_repo.resolve(strict=True), repo_head, materialize=False,
+        ).authority
+    else:
+        tree_snapshot = {
+            "schema": evidence._TREE_SNAPSHOT_SCHEMA, "commit": repo_head,
+            "tree_oid": "b" * 40, "mount_path": str(dotfiles_repo.resolve(strict=True)),
+            "inventory_sha256": "c" * 64, "entry_count": 1, "file_count": 1,
+            "executable_count": 1, "symlink_count": 0, "gitlink_count": 0,
+            "submodules": [],
+        }
     return {
         "schema": "agy_canary_bootstrap_attestation.v1", "repo_head": repo_head,
+        "tree_snapshot": tree_snapshot,
         "blobs": blobs, "input_sha256": input_sha256,
         "targets": {"plan": "plans/canary.md", "manifest": "plans/manifest.json"},
         "bootstrap": {
-            "argv": [
-                "/usr/bin/bash", "-c", evidence._BOOTSTRAP_SOURCE_WRAPPER,
-                str(bootstrap_path.resolve(strict=True)), "/proc/self/fd/9",
-            ],
+            "sandbox": {
+                "schema": evidence._TREE_SANDBOX_SCHEMA, "executable": "/usr/bin/bwrap",
+                "argv_sha256": "d" * 64, "argv_count": 20, "argv_bytes": 500,
+                "passed_fd_count": tree_snapshot["file_count"],
+                "root": "read_only", "network": "shared",
+                "mount_path": str(dotfiles_repo.resolve(strict=True)),
+                "command": ["/usr/bin/bash", str(bootstrap_path.resolve(strict=True))],
+                "writable_binds": sorted({
+                    str(uv_store_authority["account_home"]),
+                    *([] if uv_store_authority["workspace"] is None else [
+                        str(uv_store_authority["workspace"]["resolved"]),
+                    ]),
+                }),
+                "tmpfs": ["/tmp", "/run", str(dotfiles_repo.resolve(strict=True))],
+                "environment_sha256": evidence._sha256(evidence._canonical_json(uv_environment)),
+            },
             "pid": 1, "returncode": 0,
             "script_sha256": input_sha256["bootstrap.sh"], "script_blob": blobs["bootstrap.sh"],
             "before_uv_tools_sha256": "e" * 64, "after_uv_tools_sha256": "f" * 64,
@@ -2612,42 +2638,262 @@ def test_bootstrap_attest_rejects_prepopulated_uv_store_substitution(
         )
 
 
-def test_sealed_bootstrap_source_preserves_repo_zero_and_reads_exact_pin(tmp_path):
+def test_sealed_tree_preserves_repo_zero_and_reads_exact_pin(tmp_path):
     if (not hasattr(os, "memfd_create") or evidence.fcntl is None or
             not getattr(os, "MFD_ALLOW_SEALING", 0)):
         pytest.skip("Linux sealed memfd support required")
     repo = tmp_path / "dotfiles"
     (repo / "shared").mkdir(parents=True)
     bootstrap_path = repo / "bootstrap.sh"
-    bootstrap_path.write_text("#!/bin/sh\nexit 99\n")
-    (repo / "shared" / "agent-harness.pin").write_text("v0.7.14\n")
-    sealed_source = (
-        'DOTFILES_DIR="$(cd "$(dirname "$0")" && pwd)"\n'
+    bootstrap_path.write_text(
+        '#!/usr/bin/bash\nDOTFILES_DIR="$(cd "$(dirname "$0")" && pwd)"\n'
         'printf "%s\\n" "$DOTFILES_DIR"\n'
         'cat "$DOTFILES_DIR/shared/agent-harness.pin"\n'
-    ).encode()
-    fd = os.memfd_create(
-        "bootstrap-source-semantics", os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING
+    )
+    bootstrap_path.chmod(0o755)
+    (repo / "shared" / "agent-harness.pin").write_text("v0.7.14\n")
+    _git_repo(repo)
+    head = subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True,
+    ).strip()
+    snapshot = evidence._git_tree_snapshot(repo.resolve(), head, materialize=True)
+    store = _installation_identity()["uv_store_authority"]
+    environment = {"PATH": "/usr/bin:/bin"}
+    argv, sandbox = evidence._tree_snapshot_bwrap_argv(
+        snapshot=snapshot, bwrap=Path("/usr/bin/bwrap"), bash=Path("/usr/bin/bash"),
+        environment=environment, account_home=evidence._account_home(),
+        uv_store_authority=store,
     )
     try:
-        os.write(fd, sealed_source)
-        seals = (
-            evidence.fcntl.F_SEAL_WRITE | evidence.fcntl.F_SEAL_GROW |
-            evidence.fcntl.F_SEAL_SHRINK | evidence.fcntl.F_SEAL_SEAL
-        )
-        evidence.fcntl.fcntl(fd, evidence.fcntl.F_ADD_SEALS, seals)
-        assert evidence.fcntl.fcntl(fd, evidence.fcntl.F_GET_SEALS) == seals
-        argv = evidence._bootstrap_source_argv(
-            bash=Path("/usr/bin/bash"), bootstrap_path=bootstrap_path,
-            snapshot_fd=fd,
-        )
         proc = subprocess.run(
-            argv, pass_fds=(fd,), capture_output=True, text=True, check=False,
+            argv, pass_fds=snapshot.fds, capture_output=True, text=True, check=False,
         )
     finally:
-        os.close(fd)
+        snapshot.close()
     assert proc.returncode == 0
     assert proc.stdout.splitlines() == [str(repo), "v0.7.14"]
+    assert sandbox["passed_fd_count"] == 2
+    assert "--remount-ro" in argv
+
+
+def test_sealed_tree_ignores_transient_host_mutation_and_untracked_extra(tmp_path):
+    repo = tmp_path / "dotfiles"
+    (repo / "shared").mkdir(parents=True)
+    bootstrap = repo / "bootstrap.sh"
+    helper = repo / "shared" / "helper.sh"
+    pin = repo / "shared" / "agent-harness.pin"
+    bootstrap.write_text(
+        '#!/usr/bin/bash\nsleep 0.5\nDOTFILES_DIR="$(cd "$(dirname "$0")" && pwd)"\n'
+        'cat "$DOTFILES_DIR/shared/agent-harness.pin"\n'
+        'cat "$DOTFILES_DIR/shared/helper.sh"\n'
+        'test -x "$DOTFILES_DIR/shared/helper.sh" && echo executable\n'
+        'test ! -e "$DOTFILES_DIR/untracked-attacker" && echo no-extra\n'
+        'test ! -e "$DOTFILES_DIR/.git" && echo no-git-metadata\n'
+    )
+    bootstrap.chmod(0o755)
+    helper.write_text("trusted-helper\n")
+    helper.chmod(0o755)
+    pin.write_text("v0.7.14\n")
+    (repo / "untracked-attacker").write_text("attacker\n")
+    (repo / ".gitignore").write_text("untracked-attacker\n")
+    _git_repo(repo)
+    head = subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True,
+    ).strip()
+    snapshot = evidence._git_tree_snapshot(repo.resolve(), head, materialize=True)
+    store = _installation_identity()["uv_store_authority"]
+    argv, _sandbox = evidence._tree_snapshot_bwrap_argv(
+        snapshot=snapshot, bwrap=Path("/usr/bin/bwrap"), bash=Path("/usr/bin/bash"),
+        environment={"PATH": "/usr/bin:/bin"}, account_home=evidence._account_home(),
+        uv_store_authority=store,
+    )
+    try:
+        proc = subprocess.Popen(
+            argv, pass_fds=snapshot.fds, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True,
+        )
+        pin.write_text("v9.9.9-attacker\n")
+        helper.write_text("attacker-helper\n")
+        namespace_pid = None
+        for _attempt in range(50):
+            pending = [proc.pid]
+            descendants: list[int] = []
+            while pending:
+                parent_pid = pending.pop()
+                children = Path(f"/proc/{parent_pid}/task/{parent_pid}/children")
+                child_pids = [
+                    int(value) for value in children.read_text().split()
+                ] if children.exists() else []
+                descendants.extend(child_pids)
+                pending.extend(child_pids)
+            for candidate in descendants:
+                candidate_view = Path(f"/proc/{candidate}/root") / helper.relative_to("/")
+                try:
+                    if candidate_view.read_text() == "trusted-helper\n":
+                        namespace_pid = candidate
+                        break
+                except (FileNotFoundError, PermissionError):
+                    continue
+            if namespace_pid is not None:
+                break
+            time.sleep(0.01)
+        assert namespace_pid is not None
+        child_view = Path(f"/proc/{namespace_pid}/root") / helper.relative_to("/")
+        assert child_view.read_text() == "trusted-helper\n"
+        with pytest.raises(OSError):
+            fd = os.open(child_view, os.O_WRONLY | os.O_TRUNC)
+            os.close(fd)
+        pin.write_text("v0.7.14\n")
+        helper.write_text("trusted-helper\n")
+        stdout, stderr = proc.communicate(timeout=10)
+    finally:
+        snapshot.close()
+    assert proc.returncode == 0, stderr
+    assert stdout.splitlines() == [
+        "v0.7.14", "trusted-helper", "executable", "no-extra", "no-git-metadata",
+    ]
+
+
+@pytest.mark.parametrize(
+    "path", ["../escape", "/absolute", "a\\b", "line\nbreak", "a//b", "a/./b"],
+)
+def test_tree_snapshot_rejects_unsafe_inventory_paths(path):
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="path is unsafe"):
+        evidence._snapshot_relative_path(path)
+
+
+@pytest.mark.parametrize("target", [b"/etc/passwd", b"../../escape", b"bad\nname"])
+def test_tree_snapshot_rejects_unsafe_symlink_targets(target):
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="symlink"):
+        evidence._snapshot_symlink_target(Path("shared/link"), target)
+
+
+def test_tree_snapshot_mounts_safe_committed_symlink(tmp_path):
+    repo = tmp_path / "dotfiles"
+    (repo / "shared").mkdir(parents=True)
+    bootstrap = repo / "bootstrap.sh"
+    bootstrap.write_text('#!/usr/bin/bash\ncat "$(dirname "$0")/shared/pin-link"\n')
+    bootstrap.chmod(0o755)
+    (repo / "shared" / "agent-harness.pin").write_text("v0.7.14\n")
+    (repo / "shared" / "pin-link").symlink_to("agent-harness.pin")
+    _git_repo(repo)
+    head = subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True,
+    ).strip()
+    snapshot = evidence._git_tree_snapshot(repo.resolve(), head, materialize=True)
+    store = _installation_identity()["uv_store_authority"]
+    argv, _sandbox = evidence._tree_snapshot_bwrap_argv(
+        snapshot=snapshot, bwrap=Path("/usr/bin/bwrap"), bash=Path("/usr/bin/bash"),
+        environment={"PATH": "/usr/bin:/bin"}, account_home=evidence._account_home(),
+        uv_store_authority=store,
+    )
+    try:
+        proc = subprocess.run(
+            argv, pass_fds=snapshot.fds, capture_output=True, text=True, check=False,
+        )
+    finally:
+        snapshot.close()
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == "v0.7.14\n"
+
+
+@pytest.mark.parametrize("mutation", ["missing", "extra", "digest"])
+def test_tree_snapshot_authority_rejects_missing_extra_or_rebound_inventory(tmp_path, mutation):
+    repo = tmp_path / "dotfiles"
+    repo.mkdir()
+    (repo / "bootstrap.sh").write_text("#!/bin/sh\n")
+    (repo / "tracked.txt").write_text("tracked\n")
+    _git_repo(repo)
+    head = subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True,
+    ).strip()
+    authority = evidence._git_tree_snapshot(repo.resolve(), head, materialize=False).authority
+    authority = json.loads(json.dumps(authority))
+    if mutation == "missing":
+        authority["entry_count"] -= 1
+        authority["file_count"] -= 1
+    elif mutation == "extra":
+        authority["entry_count"] += 1
+        authority["file_count"] += 1
+    else:
+        authority["inventory_sha256"] = "0" * 64
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="authority drifted"):
+        evidence._validate_tree_snapshot_authority(authority, repo=repo, commit=head)
+
+
+def test_tree_snapshot_fails_when_exact_gitlink_checkout_is_unavailable(tmp_path):
+    subrepo = tmp_path / "source-submodule"
+    subrepo.mkdir()
+    (subrepo / "tracked.txt").write_text("tracked\n")
+    _git_repo(subrepo)
+    submodule_commit = subprocess.check_output(
+        ["git", "-C", str(subrepo), "rev-parse", "HEAD"], text=True,
+    ).strip()
+    repo = tmp_path / "dotfiles"
+    repo.mkdir()
+    (repo / "bootstrap.sh").write_text("#!/bin/sh\n")
+    _git_repo(repo)
+    subprocess.run(
+        ["git", "-C", str(repo), "update-index", "--add", "--cacheinfo",
+         f"160000,{submodule_commit},vendor"], check=True,
+    )
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", "gitlink"], check=True)
+    head = subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True,
+    ).strip()
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="submodule checkout"):
+        evidence._git_tree_snapshot(repo.resolve(), head, materialize=False)
+
+
+def test_tree_snapshot_short_write_closes_memfd(monkeypatch):
+    created: list[int] = []
+    real_create = os.memfd_create
+
+    def record_create(name, flags):
+        fd = real_create(name, flags)
+        created.append(fd)
+        return fd
+
+    monkeypatch.setattr(evidence.os, "memfd_create", record_create)
+    monkeypatch.setattr(evidence.os, "write", lambda _fd, _data: 0)
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="short write"):
+        evidence._sealed_tree_fd(data=b"tracked", executable=False, label="test")
+    assert len(created) == 1
+    with pytest.raises(OSError):
+        os.fstat(created[0])
+
+
+def test_tree_snapshot_bwrap_rejects_missing_fd_and_argument_limit(monkeypatch, tmp_path):
+    repo = tmp_path / "dotfiles"
+    repo.mkdir()
+    (repo / "bootstrap.sh").write_text("#!/bin/sh\n")
+    _git_repo(repo)
+    head = subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True,
+    ).strip()
+    store = _installation_identity()["uv_store_authority"]
+    incomplete = evidence._git_tree_snapshot(repo.resolve(), head, materialize=False)
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="descriptor is missing"):
+        evidence._tree_snapshot_bwrap_argv(
+            snapshot=incomplete, bwrap=Path("/usr/bin/bwrap"), bash=Path("/usr/bin/bash"),
+            environment={"PATH": "/usr/bin:/bin"}, account_home=evidence._account_home(),
+            uv_store_authority=store,
+        )
+    snapshot = evidence._git_tree_snapshot(repo.resolve(), head, materialize=True)
+    real_sysconf = os.sysconf
+    monkeypatch.setattr(
+        evidence.os, "sysconf",
+        lambda key: 1 if key == "SC_ARG_MAX" else real_sysconf(key),
+    )
+    try:
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="process argument"):
+            evidence._tree_snapshot_bwrap_argv(
+                snapshot=snapshot, bwrap=Path("/usr/bin/bwrap"), bash=Path("/usr/bin/bash"),
+                environment={"PATH": "/usr/bin:/bin"}, account_home=evidence._account_home(),
+                uv_store_authority=store,
+            )
+    finally:
+        snapshot.close()
 
 
 @pytest.mark.parametrize(
@@ -2700,8 +2946,11 @@ def test_bootstrap_receipt_rejects_matching_decoy_source_path(tmp_path):
     decoy = tmp_path / "decoy" / "bootstrap.sh"
     decoy.parent.mkdir()
     decoy.write_bytes((repo / "bootstrap.sh").read_bytes())
-    receipt["bootstrap"]["argv"][3] = str(decoy)
-    with pytest.raises(evidence.AgyCanaryEvidenceError, match="canonical repository"):
+    receipt["tree_snapshot"]["mount_path"] = str(decoy.parent)
+    receipt["bootstrap"]["sandbox"]["mount_path"] = str(decoy.parent)
+    receipt["bootstrap"]["sandbox"]["command"][1] = str(decoy)
+    receipt["bootstrap"]["sandbox"]["tmpfs"][2] = str(decoy.parent)
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="mount path"):
         evidence._validate_bootstrap_attestation(receipt=receipt, repo=repo)
 
 
@@ -2811,28 +3060,6 @@ def test_bootstrap_attestation_has_no_parent_only_nonce_claim(monkeypatch, tmp_p
     monkeypatch.setattr(evidence, "_canonical_uv", lambda: uv)
     monkeypatch.setattr(evidence, "_validate_bootstrap_uv_policy", lambda **_kwargs: None)
     monkeypatch.setattr(evidence, "_installed_phase_loop_identity", lambda **_kwargs: installation)
-    snapshot = tmp_path / "bootstrap-snapshot"
-
-    def fake_memfd_create(_name, _flags):
-        return os.open(snapshot, os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o600)
-
-    seals = type(
-        "Seals",
-        (),
-        {
-            "F_SEAL_WRITE": 1,
-            "F_SEAL_GROW": 2,
-            "F_SEAL_SHRINK": 4,
-            "F_SEAL_SEAL": 8,
-            "F_ADD_SEALS": 16,
-            "F_GET_SEALS": 17,
-            "fcntl": staticmethod(lambda _fd, command, _arg=None: 15 if command == 17 else 0),
-        },
-    )
-    monkeypatch.setattr(evidence.os, "memfd_create", fake_memfd_create, raising=False)
-    monkeypatch.setattr(evidence.os, "MFD_CLOEXEC", 0, raising=False)
-    monkeypatch.setattr(evidence.os, "MFD_ALLOW_SEALING", 1, raising=False)
-    monkeypatch.setattr(evidence, "fcntl", seals)
     monkeypatch.setattr(evidence.sys, "platform", "linux")
     for name in list(os.environ):
         if (name in {"DEV_EDITABLE", "PYTHONPATH", "PYTHONHOME"} or
