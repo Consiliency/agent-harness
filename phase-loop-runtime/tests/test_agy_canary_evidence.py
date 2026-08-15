@@ -9,6 +9,7 @@ import json
 import hashlib
 import os
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -306,11 +307,96 @@ def test_git_run_uses_sealed_executable_and_strict_environment(
         "GIT_EXEC_PATH": "/usr/lib/git-core", "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_SYSTEM": os.devnull,
         "GIT_TERMINAL_PROMPT": "0",
-        "GIT_SSH_COMMAND": "/usr/bin/ssh -F /dev/null",
+        "GIT_SSH_COMMAND": (
+            "/usr/bin/ssh -F /dev/null -oBatchMode=yes "
+            "-oStrictHostKeyChecking=yes"
+        ),
     }
     assert all(argv[0] == "/usr/bin/git" for argv, _environment in seen)
     assert all(environment == expected_environment for _argv, environment in seen)
     assert not marker.exists()
+
+
+def test_git_environment_accepts_and_revalidates_direct_private_ssh_socket(
+    monkeypatch, tmp_path,
+):
+    parent = tmp_path / "agent"
+    parent.mkdir(mode=0o700)
+    path = parent / "agent.sock"
+    agent = socket.socket(socket.AF_UNIX)
+    try:
+        agent.bind(str(path))
+        path.chmod(0o600)
+        monkeypatch.setenv("SSH_AUTH_SOCK", str(path))
+        assert evidence._git_environment()["SSH_AUTH_SOCK"] == str(path)
+        authority = evidence._SEALED_SSH_AGENT_AUTHORITIES[str(path)]
+        assert authority.socket_identity[:2] == (path.stat().st_dev, path.stat().st_ino)
+        assert evidence._git_environment()["SSH_AUTH_SOCK"] == str(path)
+    finally:
+        agent.close()
+
+
+def test_git_environment_rejects_intermediate_symlink_and_noncanonical_ssh_socket(
+    monkeypatch, tmp_path,
+):
+    real = tmp_path / "real"
+    real.mkdir(mode=0o700)
+    path = real / "agent.sock"
+    agent = socket.socket(socket.AF_UNIX)
+    try:
+        agent.bind(str(path))
+        path.chmod(0o600)
+        link = tmp_path / "link"
+        link.symlink_to(real, target_is_directory=True)
+        monkeypatch.setenv("SSH_AUTH_SOCK", str(link / "agent.sock"))
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="noncanonical"):
+            evidence._git_environment()
+        monkeypatch.setenv(
+            "SSH_AUTH_SOCK", str(real / ".." / real.name / "agent.sock"),
+        )
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="noncanonical"):
+            evidence._git_environment()
+    finally:
+        agent.close()
+
+
+def test_git_environment_rejects_ssh_socket_and_parent_replacement(
+    monkeypatch, tmp_path,
+):
+    parent = tmp_path / "agent"
+    parent.mkdir(mode=0o700)
+    path = parent / "agent.sock"
+    first = socket.socket(socket.AF_UNIX)
+    first.bind(str(path))
+    path.chmod(0o600)
+    monkeypatch.setenv("SSH_AUTH_SOCK", str(path))
+    evidence._git_environment()
+    first.close()
+    path.unlink()
+    replacement = socket.socket(socket.AF_UNIX)
+    try:
+        replacement.bind(str(path))
+        path.chmod(0o600)
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="drifted"):
+            evidence._git_environment()
+    finally:
+        replacement.close()
+
+    parent_two = tmp_path / "agent-two"
+    parent_two.mkdir(mode=0o700)
+    path_two = parent_two / "agent.sock"
+    agent_two = socket.socket(socket.AF_UNIX)
+    try:
+        agent_two.bind(str(path_two))
+        path_two.chmod(0o600)
+        monkeypatch.setenv("SSH_AUTH_SOCK", str(path_two))
+        evidence._git_environment()
+        parent_two.chmod(0o500)
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="authority drifted"):
+            evidence._git_environment()
+    finally:
+        parent_two.chmod(0o700)
+        agent_two.close()
 
 
 @pytest.mark.parametrize("mutation", ("graft", "alternate", "shallow", "config"))

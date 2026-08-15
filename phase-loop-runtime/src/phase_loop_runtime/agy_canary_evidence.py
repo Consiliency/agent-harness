@@ -4284,6 +4284,17 @@ class _GitExecutableAuthority:
 _SEALED_GIT_AUTHORITY: _GitExecutableAuthority | None = None
 
 
+@dataclass(frozen=True)
+class _SshAgentAuthority:
+    path: str
+    socket_identity: tuple[int, ...]
+    parent_identities: tuple[tuple[str, tuple[int, ...]], ...]
+
+
+_SEALED_SSH_AGENT_AUTHORITIES: dict[str, _SshAgentAuthority] = {}
+_SEALED_SSH_AGENT_FDS: dict[str, int] = {}
+
+
 def _trusted_root_directory_identity(path: Path) -> tuple[int, ...]:
     info = path.lstat()
     mode = stat.S_IMODE(info.st_mode)
@@ -4331,6 +4342,106 @@ def _canonical_git_executable() -> Path:
     return _GIT_EXECUTABLE
 
 
+def _ssh_agent_parent_chain(path: Path) -> tuple[tuple[str, tuple[int, ...]], ...]:
+    chain: list[tuple[str, tuple[int, ...]]] = []
+    current_uid = os.getuid()
+    for parent in reversed(path.parent.parents):
+        info = parent.lstat()
+        mode = stat.S_IMODE(info.st_mode)
+        if (
+            parent.is_symlink()
+            or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid not in {0, current_uid}
+            or (
+                mode & (stat.S_IWGRP | stat.S_IWOTH)
+                and not (info.st_uid == 0 and mode & stat.S_ISVTX)
+            )
+        ):
+            raise AgyCanaryEvidenceError("Git SSH agent parent authority is unsafe")
+        chain.append((str(parent), (
+            info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
+        )))
+    parent = path.parent
+    info = parent.lstat()
+    mode = stat.S_IMODE(info.st_mode)
+    if (
+        parent.is_symlink()
+        or not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != current_uid
+        or mode & (stat.S_IWGRP | stat.S_IWOTH)
+    ):
+        raise AgyCanaryEvidenceError("Git SSH agent direct parent authority is unsafe")
+    chain.append((str(parent), (
+        info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
+    )))
+    return tuple(chain)
+
+
+def _canonical_ssh_auth_sock(value: str) -> Path:
+    socket_path = Path(value)
+    if (
+        not socket_path.is_absolute()
+        or value != os.path.normpath(value)
+        or any(part in {"", ".", ".."} for part in socket_path.parts[1:])
+    ):
+        raise AgyCanaryEvidenceError("Git SSH agent path is noncanonical")
+    try:
+        if socket_path.resolve(strict=True) != socket_path:
+            raise AgyCanaryEvidenceError("Git SSH agent path is noncanonical")
+        parents_before = _ssh_agent_parent_chain(socket_path)
+        socket_before = socket_path.lstat()
+        parents_after = _ssh_agent_parent_chain(socket_path)
+        socket_after = socket_path.lstat()
+    except (FileNotFoundError, OSError) as exc:
+        raise AgyCanaryEvidenceError("Git SSH agent authority is unavailable") from exc
+    mode = stat.S_IMODE(socket_after.st_mode)
+    if (
+        parents_before != parents_after
+        or _stable_file_identity(socket_before) != _stable_file_identity(socket_after)
+        or socket_path.is_symlink()
+        or not stat.S_ISSOCK(socket_after.st_mode)
+        or socket_after.st_uid != os.getuid()
+        or mode & (stat.S_IWGRP | stat.S_IWOTH)
+    ):
+        raise AgyCanaryEvidenceError("Git SSH agent authority is unsafe")
+    o_path = getattr(os, "O_PATH", 0)
+    if not o_path:
+        raise AgyCanaryEvidenceError("Git SSH agent descriptor authority is unavailable")
+    authority_fd: int | None = None
+    try:
+        authority_fd = os.open(
+            socket_path, o_path | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+        descriptor_info = os.fstat(authority_fd)
+    except OSError as exc:
+        if authority_fd is not None:
+            os.close(authority_fd)
+        raise AgyCanaryEvidenceError("Git SSH agent descriptor authority is unavailable") from exc
+    assert authority_fd is not None
+    if _stable_file_identity(descriptor_info) != _stable_file_identity(socket_after):
+        os.close(authority_fd)
+        raise AgyCanaryEvidenceError("Git SSH agent authority is unsafe")
+    authority = _SshAgentAuthority(
+        path=value, socket_identity=_stable_file_identity(descriptor_info),
+        parent_identities=parents_after,
+    )
+    sealed = _SEALED_SSH_AGENT_AUTHORITIES.get(value)
+    if sealed is None:
+        _SEALED_SSH_AGENT_AUTHORITIES[value] = authority
+        _SEALED_SSH_AGENT_FDS[value] = authority_fd
+    else:
+        os.close(authority_fd)
+        try:
+            sealed_descriptor = os.fstat(_SEALED_SSH_AGENT_FDS[value])
+        except OSError as exc:
+            raise AgyCanaryEvidenceError("Git SSH agent sealed descriptor is unavailable") from exc
+        if _stable_file_identity(sealed_descriptor) != sealed.socket_identity:
+            raise AgyCanaryEvidenceError("Git SSH agent sealed descriptor drifted")
+    if sealed is not None and sealed != authority:
+        raise AgyCanaryEvidenceError("Git SSH agent authority drifted")
+    return socket_path
+
+
 def _git_environment() -> dict[str, str]:
     environment = {
         "HOME": str(_account_home()),
@@ -4341,23 +4452,14 @@ def _git_environment() -> dict[str, str]:
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_CONFIG_SYSTEM": os.devnull,
         "GIT_TERMINAL_PROMPT": "0",
-        "GIT_SSH_COMMAND": "/usr/bin/ssh -F /dev/null",
+        "GIT_SSH_COMMAND": (
+            "/usr/bin/ssh -F /dev/null -oBatchMode=yes "
+            "-oStrictHostKeyChecking=yes"
+        ),
     }
     auth_sock = os.environ.get("SSH_AUTH_SOCK")
     if auth_sock is not None:
-        socket_path = Path(auth_sock)
-        try:
-            socket_info = socket_path.lstat()
-        except OSError as exc:
-            raise AgyCanaryEvidenceError("Git SSH agent authority is unavailable") from exc
-        if (
-            not socket_path.is_absolute()
-            or socket_path.is_symlink()
-            or not stat.S_ISSOCK(socket_info.st_mode)
-            or socket_info.st_uid != os.getuid()
-        ):
-            raise AgyCanaryEvidenceError("Git SSH agent authority is unsafe")
-        environment["SSH_AUTH_SOCK"] = str(socket_path)
+        environment["SSH_AUTH_SOCK"] = str(_canonical_ssh_auth_sock(auth_sock))
     return environment
 
 
