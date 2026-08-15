@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import base64
 import csv
+import errno
 import io
 import json
 import hashlib
@@ -29,6 +30,20 @@ _requires_memfd = pytest.mark.skipif(
     not getattr(os, "MFD_ALLOW_SEALING", 0),
     reason="Linux sealed memfd support required",
 )
+
+
+@pytest.fixture(autouse=True)
+def _canonical_test_account_home(monkeypatch, tmp_path: Path) -> None:
+    account_home = tmp_path / "canonical-account-home"
+    for relative in (
+        ".local/bin",
+        ".local/share/uv/tools",
+        ".local/share/uv/python",
+        ".cache/uv",
+    ):
+        (account_home / relative).mkdir(parents=True)
+    monkeypatch.setattr(evidence, "_account_home", lambda: account_home)
+    monkeypatch.setenv("HOME", str(account_home))
 
 
 def _private_root(tmp_path: Path) -> Path:
@@ -119,6 +134,18 @@ def _installation_identity() -> dict[str, object]:
 
 def _record_hash(data: bytes) -> str:
     return "sha256=" + base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
+
+
+def test_synthetic_installation_identity_uses_hermetic_canonical_uv_store(tmp_path):
+    installation = _installation_identity()
+    authority = installation["uv_store_authority"]
+    assert authority["account_home"] == str(
+        (tmp_path / "canonical-account-home").resolve(strict=True)
+    )
+    evidence._validate_uv_store_authority(
+        authority, revalidate=True, account_home=evidence._account_home(),
+        workspace_root=evidence._UV_WORKSPACE_ROOT,
+    )
 
 
 def _synthetic_wheel(
@@ -554,6 +581,152 @@ def test_clean_settings_rolls_back_after_exchange_failure(tmp_path, monkeypatch)
         for child in root.iterdir():
             child.unlink()
         root.rmdir()
+
+
+@pytest.mark.parametrize("failed_parent_fsync", (1, 2))
+def test_clean_settings_fsync_failures_name_only_the_durable_recovery_path(
+    tmp_path, monkeypatch, failed_parent_fsync,
+):
+    root = _private_root(tmp_path)
+    _use_empty_process_inventory(monkeypatch, tmp_path)
+    settings = _settings(tmp_path, ["command(pwd)"])
+    original = settings.read_bytes()
+    original_info = settings.stat()
+    real_exchange = evidence._rename_exchange
+    real_fsync = evidence.os.fsync
+    parent_fd = None
+    parent_fsyncs = 0
+
+    def capture_exchange(directory_fd, left, right):
+        nonlocal parent_fd
+        parent_fd = directory_fd
+        return real_exchange(directory_fd, left, right)
+
+    def fail_selected_parent_fsync(fd):
+        nonlocal parent_fsyncs
+        if parent_fd is not None and fd == parent_fd:
+            parent_fsyncs += 1
+            if parent_fsyncs == failed_parent_fsync:
+                raise OSError(errno.EIO, "injected settings directory fsync failure")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(evidence, "_rename_exchange", capture_exchange)
+    monkeypatch.setattr(evidence.os, "fsync", fail_selected_parent_fsync)
+    try:
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="settings cleanup failed"):
+            evidence.clean_settings(
+                evidence_root=root, settings_path=settings,
+                maintenance_lock=tmp_path / "maintenance.lock",
+            )
+        state = json.loads((root / "cleanup-state.json").read_text())
+        recovery = Path(state["recovery_path"])
+        recovery_info = recovery.stat()
+        assert recovery == root / "agy-settings.pre.json"
+        assert recovery.read_bytes() == original
+        assert state["recovery_sha256"] == evidence._sha256(original)
+        assert (
+            recovery_info.st_uid, recovery_info.st_gid,
+            stat.S_IMODE(recovery_info.st_mode), recovery_info.st_dev,
+            recovery_info.st_ino,
+        ) == (
+            state["recovery_uid"], state["recovery_gid"],
+            int(state["recovery_mode"], 8), state["recovery_device"],
+            state["recovery_inode"],
+        )
+        assert (
+            recovery_info.st_uid, recovery_info.st_gid,
+            stat.S_IMODE(recovery_info.st_mode),
+        ) == (
+            original_info.st_uid, original_info.st_gid,
+            stat.S_IMODE(original_info.st_mode),
+        )
+        assert not list(tmp_path.glob(".phase-loop-agy-settings.*.tmp"))
+        if failed_parent_fsync == 1:
+            assert state["state"] == "rolled_back"
+            assert state["transitions"] == [
+                "prepared", "exchanged_unverified",
+                "rollback_required", "rolled_back",
+            ]
+            assert settings.read_bytes() == original
+        else:
+            assert state["state"] == "recovery_retained"
+            assert state["recovery_reason"] == "post_commit_directory_fsync"
+            assert state["transitions"][-2:] == ["committed", "recovery_retained"]
+            assert json.loads(settings.read_text())["permissions"]["allow"] == []
+    finally:
+        shutil.rmtree(root)
+
+
+def test_clean_settings_final_scan_rename_cannot_commit_or_delete_original(
+    tmp_path, monkeypatch,
+):
+    root = _private_root(tmp_path)
+    settings = _settings(tmp_path, ["command(pwd)"])
+    original = settings.read_bytes()
+    moved_destination = tmp_path / "settings.cleaned.moved"
+    scan_count = 0
+
+    def rename_during_final_scan(_opened, *, block_all_agy_processes):
+        nonlocal scan_count
+        del block_all_agy_processes
+        scan_count += 1
+        if scan_count == 3:
+            settings.rename(moved_destination)
+            settings.write_bytes(b'{"attacker": true}\n')
+            settings.chmod(0o600)
+
+    monkeypatch.setattr(evidence, "_assert_quiescent", rename_during_final_scan)
+    try:
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="path identity drifted"):
+            evidence.clean_settings(
+                evidence_root=root, settings_path=settings,
+                maintenance_lock=tmp_path / "maintenance.lock",
+            )
+        state = json.loads((root / "cleanup-state.json").read_text())
+        assert scan_count == 3
+        assert state["state"] == "recovery_retained"
+        assert "committed" not in state["transitions"]
+        assert state["transitions"][-2:] == ["rollback_required", "recovery_retained"]
+        assert (tmp_path / state["temp_name"]).read_bytes() == original
+        assert Path(state["recovery_path"]).read_bytes() == original
+        assert moved_destination.is_file()
+    finally:
+        shutil.rmtree(root)
+
+
+def test_clean_settings_already_absent_final_scan_revalidates_canonical_path(
+    tmp_path, monkeypatch,
+):
+    root = _private_root(tmp_path)
+    settings = _settings(tmp_path, [])
+    original = settings.read_bytes()
+    moved_original = tmp_path / "settings.original.moved"
+    scan_count = 0
+
+    def rename_during_final_scan(_opened, *, block_all_agy_processes):
+        nonlocal scan_count
+        del block_all_agy_processes
+        scan_count += 1
+        if scan_count == 2:
+            settings.rename(moved_original)
+            settings.write_bytes(b'{"attacker": true}\n')
+            settings.chmod(0o600)
+
+    monkeypatch.setattr(evidence, "_assert_quiescent", rename_during_final_scan)
+    try:
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="path identity drifted"):
+            evidence.clean_settings(
+                evidence_root=root, settings_path=settings,
+                maintenance_lock=tmp_path / "maintenance.lock",
+            )
+        state = json.loads((root / "cleanup-state.json").read_text())
+        assert scan_count == 2
+        assert state["state"] == "verified"
+        assert "committed" not in state["transitions"]
+        assert moved_original.read_bytes() == original
+        assert Path(state["recovery_path"]).read_bytes() == original
+    finally:
+        shutil.rmtree(root)
 
 
 def test_clean_settings_rejects_a_preexisting_open_handle(tmp_path, monkeypatch):

@@ -1272,6 +1272,28 @@ def _exclusive_write_at(directory_fd: int, name: str, data: bytes, mode: int) ->
     os.fsync(directory_fd)
 
 
+def _exclusive_write_owned_at(
+    directory_fd: int, name: str, data: bytes, mode: int, *, uid: int, gid: int,
+) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+    fd = os.open(name, flags, mode, dir_fd=directory_fd)
+    try:
+        info = os.fstat(fd)
+        if (info.st_uid, info.st_gid) != (uid, gid):
+            os.fchown(fd, uid, gid)
+        os.fchmod(fd, mode)
+        view = memoryview(data)
+        while view:
+            written = os.write(fd, view)
+            if written <= 0:
+                raise AgyCanaryEvidenceError(f"short write for {name}")
+            view = view[written:]
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.fsync(directory_fd)
+
+
 def _replace_state(directory_fd: int, value: dict[str, Any]) -> None:
     data = _canonical_json(value)
     temporary = f".{_CLEANUP_STATE_NAME}.{secrets.token_hex(12)}"
@@ -1644,12 +1666,14 @@ def clean_settings(*, evidence_root: Path, settings_path: Path, maintenance_lock
     lock_fd: int | None = None
     temporary: str | None = None
     exchanged = False
+    committed = False
     settings_leased = False
     replacement_leased = False
     lease_signal_mask: set[Any] | None = None
     replacement_bytes = b""
     transitions: list[str] = []
     primary_error: BaseException | None = None
+    recovery_authority: dict[str, Any] = {}
 
     def record_state(state: str, **fields: Any) -> None:
         transitions.append(state)
@@ -1657,6 +1681,19 @@ def clean_settings(*, evidence_root: Path, settings_path: Path, maintenance_lock
             root_fd,
             _state_record(state, transitions=list(transitions), **fields),
         )
+
+    def recovery_fields() -> dict[str, Any]:
+        fields = dict(recovery_authority)
+        if settings is not None and temporary is not None:
+            try:
+                _validate_opened_settings(
+                    settings, name=temporary, expected_data=settings.data,
+                )
+            except Exception:
+                pass
+            else:
+                fields["temp_name"] = temporary
+        return fields
 
     try:
         if not maintenance_lock.is_absolute() or maintenance_lock.is_symlink():
@@ -1691,16 +1728,32 @@ def clean_settings(*, evidence_root: Path, settings_path: Path, maintenance_lock
             block_all_agy_processes=block_all_agy_processes,
         )
 
-        _exclusive_write_at(root_fd, _SETTINGS_SNAPSHOT_NAME, settings.data, settings.mode)
+        _exclusive_write_owned_at(
+            root_fd, _SETTINGS_SNAPSHOT_NAME, settings.data, settings.mode,
+            uid=settings.uid, gid=settings.gid,
+        )
         snapshot_bytes, snapshot_info = _reopen_at(root_fd, _SETTINGS_SNAPSHOT_NAME)
-        if snapshot_bytes != settings.data or stat.S_IMODE(snapshot_info.st_mode) != settings.mode:
+        if (snapshot_bytes != settings.data or
+                (snapshot_info.st_uid, snapshot_info.st_gid,
+                 stat.S_IMODE(snapshot_info.st_mode)) !=
+                (settings.uid, settings.gid, settings.mode)):
             raise AgyCanaryEvidenceError("private settings snapshot did not seal exactly")
+        recovery_authority = {
+            "recovery_path": str(root_path / _SETTINGS_SNAPSHOT_NAME),
+            "recovery_sha256": _sha256(snapshot_bytes),
+            "recovery_device": snapshot_info.st_dev,
+            "recovery_inode": snapshot_info.st_ino,
+            "recovery_uid": snapshot_info.st_uid,
+            "recovery_gid": snapshot_info.st_gid,
+            "recovery_mode": format(stat.S_IMODE(snapshot_info.st_mode), "04o"),
+        }
         common = {
             "result": result,
             "settings_path_sha256": _sha256(str(settings_path).encode()),
             "before_sha256": _sha256(settings.data),
             "before_mode": format(settings.mode, "04o"),
             "recovery_snapshot_sha256": _sha256(snapshot_bytes),
+            **recovery_authority,
         }
         record_state("prepared", **common)
 
@@ -1713,6 +1766,10 @@ def clean_settings(*, evidence_root: Path, settings_path: Path, maintenance_lock
             _require_write_lease(settings.fd, label="original")
             _assert_quiescent(
                 settings, block_all_agy_processes=block_all_agy_processes,
+            )
+            _require_write_lease(settings.fd, label="original")
+            _validate_opened_settings(
+                settings, name=settings.name, expected_data=settings.data,
             )
             record_state("committed", **common)
             return {
@@ -1778,10 +1835,19 @@ def clean_settings(*, evidence_root: Path, settings_path: Path, maintenance_lock
         _assert_quiescent(
             replacement, block_all_agy_processes=block_all_agy_processes,
         )
+        _require_write_lease(settings.fd, label="original")
+        _require_write_lease(replacement.fd, label="replacement")
+        _validate_opened_settings(
+            replacement, name=settings.name, expected_data=replacement_bytes,
+        )
+        _validate_opened_settings(
+            settings, name=temporary, expected_data=settings.data,
+        )
         record_state("committed", **common)
+        committed = True
         os.unlink(temporary, dir_fd=settings.parent_fd)
-        os.fsync(settings.parent_fd)
         temporary = None
+        os.fsync(settings.parent_fd)
         return {
             "schema": SCHEMA_VERSION,
             "state": "committed",
@@ -1798,20 +1864,30 @@ def clean_settings(*, evidence_root: Path, settings_path: Path, maintenance_lock
         }
     except Exception as exc:
         primary_error = exc
+        if committed and temporary is None:
+            try:
+                record_state(
+                    "recovery_retained",
+                    error=type(exc).__name__,
+                    recovery_reason="post_commit_directory_fsync",
+                    **recovery_fields(),
+                )
+            except Exception:
+                pass
         if (not exchanged and settings is not None and replacement is not None and
                 temporary is not None):
             try:
                 _require_opened_path_identity(replacement, name=temporary)
                 os.unlink(temporary, dir_fd=settings.parent_fd)
-                os.fsync(settings.parent_fd)
                 temporary = None
+                os.fsync(settings.parent_fd)
             except Exception as cleanup_exc:
                 try:
                     record_state(
                         "recovery_retained",
-                        temp_name=temporary,
                         error=type(exc).__name__,
                         cleanup_error=type(cleanup_exc).__name__,
+                        **recovery_fields(),
                     )
                 except Exception:
                     pass
@@ -1838,20 +1914,24 @@ def clean_settings(*, evidence_root: Path, settings_path: Path, maintenance_lock
                 _require_opened_path_identity(replacement, name=temporary)
                 if _read_open_fd(replacement.fd) == replacement_bytes:
                     os.unlink(temporary, dir_fd=settings.parent_fd)
-                    os.fsync(settings.parent_fd)
-                    record_state("rolled_back", error=type(exc).__name__)
                     temporary = None
+                    os.fsync(settings.parent_fd)
+                    record_state(
+                        "rolled_back", error=type(exc).__name__,
+                        **recovery_fields(),
+                    )
                 else:
                     record_state(
-                        "recovery_retained", temp_name=temporary, error=type(exc).__name__
+                        "recovery_retained", error=type(exc).__name__,
+                        **recovery_fields(),
                     )
             except Exception as rollback_exc:
                 try:
                     record_state(
                         "recovery_retained",
-                        temp_name=temporary,
                         error=type(exc).__name__,
                         rollback_error=type(rollback_exc).__name__,
+                        **recovery_fields(),
                     )
                 except Exception:
                     pass
