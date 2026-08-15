@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import csv
+import io
 import json
 import hashlib
 import os
 import shutil
 import stat
 import subprocess
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -55,9 +59,12 @@ def _git_repo(repo: Path) -> None:
 def _installation_identity() -> dict[str, object]:
     return {
         "uv_executable": "/tool/bin/uv", "uv_tool_dir": "/tool",
-        "console_script": "/tool/phase-loop-runtime/bin/phase-loop", "interpreter": "/tool/python",
-        "version": "0.7.14", "distribution_root": "/tool/site-packages",
-        "module_origin": "/tool/site-packages/phase_loop_runtime/__init__.py",
+        "console_script": "/tool/phase-loop-runtime/bin/phase-loop",
+        "interpreter": "/tool/phase-loop-runtime/bin/python",
+        "version": "0.7.14",
+        "distribution_root": "/tool/phase-loop-runtime/lib/python/site-packages",
+        "module_origin": "/tool/phase-loop-runtime/lib/python/site-packages/phase_loop_runtime/__init__.py",
+        "environment_root": "/tool/phase-loop-runtime",
         "console_script_sha256": "b" * 64, "interpreter_sha256": "c" * 64,
         "package_tree_sha256": "d" * 64, "record_sha256": "e" * 64,
         "provenance": {
@@ -65,6 +72,122 @@ def _installation_identity() -> dict[str, object]:
             "receipt_sha256": "a" * 64,
         },
     }
+
+
+def _record_hash(data: bytes) -> str:
+    return "sha256=" + base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode()
+
+
+def _synthetic_wheel(
+    *, members: dict[str, bytes] | None = None, record_rows: list[list[str]] | None = None,
+) -> bytes:
+    dist_info = "phase_loop_runtime-0.7.14.dist-info"
+    payload = {
+        "phase_loop_runtime/__init__.py": b'__version__ = "0.7.14"\n',
+        f"{dist_info}/METADATA": b"Name: phase-loop-runtime\nVersion: 0.7.14\n",
+        f"{dist_info}/WHEEL": b"Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        f"{dist_info}/entry_points.txt": b"[console_scripts]\nphase-loop = phase_loop_runtime.cli:main\ncodex-phase-loop = phase_loop_runtime.cli:main\n",
+        "phase_loop_runtime-0.7.14.data/data/share/phase-loop-runtime/protocol/protocol.md": b"protocol\n",
+    }
+    if members:
+        payload.update(members)
+    if record_rows is None:
+        record_rows = [
+            [path, _record_hash(data), str(len(data))]
+            for path, data in sorted(payload.items())
+        ] + [[f"{dist_info}/RECORD", "", ""]]
+    output = io.StringIO(newline="")
+    csv.writer(output, lineterminator="\n").writerows(record_rows)
+    payload[f"{dist_info}/RECORD"] = output.getvalue().encode()
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as wheel:
+        for path, data in payload.items():
+            wheel.writestr(path, data)
+    return archive.getvalue()
+
+
+def _release_identity(*, wheel: bytes | None = None) -> dict[str, object]:
+    wheel = _synthetic_wheel() if wheel is None else wheel
+    wheel_filename = "phase_loop_runtime-0.7.14-py3-none-any.whl"
+    wheel_digest = evidence._sha256(wheel)
+    wheel_url_sha256 = evidence._sha256(b"https://example.invalid/wheel")
+    binding = evidence._wheel_binding(
+        wheel_bytes=wheel, filename=wheel_filename, digest=wheel_digest,
+        url_sha256=wheel_url_sha256, version="0.7.14",
+    )
+    return {
+        "version": "0.7.14", "handoff_commit": "a" * 40, "release_commit": "b" * 40,
+        "tag_object": "c" * 40, "tag_peel": "b" * 40,
+        "artifacts": [
+            {"filename": wheel_filename, "packagetype": "bdist_wheel", "sha256": wheel_digest, "url_sha256": wheel_url_sha256},
+            {"filename": "phase_loop_runtime-0.7.14.tar.gz", "packagetype": "sdist", "sha256": "f" * 64, "url_sha256": "0" * 64},
+        ],
+        "wheel_binding": binding,
+    }
+
+
+def _installed_wheel_fixture(
+    tmp_path: Path, *, wheel: bytes | None = None,
+) -> tuple[dict[str, object], dict[str, object], dict[str, Path]]:
+    wheel = _synthetic_wheel() if wheel is None else wheel
+    release = _release_identity(wheel=wheel)
+    environment_root = tmp_path / "uv-tools" / "phase-loop-runtime"
+    root = environment_root / "lib" / "python3.13" / "site-packages"
+    paths: dict[str, Path] = {}
+    installed_rows: list[list[str]] = []
+    binding = release["wheel_binding"]
+    assert isinstance(binding, dict)
+    for row in binding["files"]:
+        base = environment_root if row["scheme"] == "data" else root
+        target = base / row["installed_path"]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(io.BytesIO(wheel)) as archive:
+            data = archive.read(row["wheel_path"])
+        target.write_bytes(data)
+        relative = os.path.relpath(target, root).replace(os.sep, "/")
+        installed_rows.append([relative, _record_hash(data), str(len(data))])
+        paths[row["wheel_path"]] = target
+    dist_info = root / "phase_loop_runtime-0.7.14.dist-info"
+    generated = {
+        dist_info / "INSTALLER": b"uv",
+        dist_info / "REQUESTED": b"",
+        environment_root / "bin" / "phase-loop": b"#!/tool/python\nlauncher\n",
+        environment_root / "bin" / "codex-phase-loop": b"#!/tool/python\nlauncher\n",
+    }
+    for target, data in generated.items():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        target.chmod(0o700 if target.parent.name == "bin" else 0o600)
+        relative = os.path.relpath(target, root).replace(os.sep, "/")
+        installed_rows.append([relative, _record_hash(data), str(len(data))])
+    record = dist_info / "RECORD"
+    installed_rows.append([os.path.relpath(record, root).replace(os.sep, "/"), "", ""])
+    record_output = io.StringIO(newline="")
+    csv.writer(record_output, lineterminator="\n").writerows(installed_rows)
+    record.write_bytes(record_output.getvalue().encode())
+    interpreter = environment_root / "bin" / "python"
+    interpreter.write_bytes(b"interpreter\n")
+    interpreter.chmod(0o700)
+    module = root / "phase_loop_runtime" / "__init__.py"
+    installation = {
+        "uv_executable": str(tmp_path / "bin" / "uv"),
+        "uv_tool_dir": str(tmp_path / "uv-tools"),
+        "console_script": str(environment_root / "bin" / "phase-loop"),
+        "interpreter": str(interpreter), "version": "0.7.14",
+        "distribution_root": str(root), "module_origin": str(module),
+        "environment_root": str(environment_root),
+        "console_script_sha256": evidence._sha256(generated[environment_root / "bin" / "phase-loop"]),
+        "interpreter_sha256": evidence._sha256(interpreter.read_bytes()),
+        "package_tree_sha256": evidence._runtime_tree_sha256(module.parent),
+        "record_sha256": evidence._sha256(record.read_bytes()),
+        "provenance": {
+            "schema": "uv_registry_receipt.v1",
+            "requirement": "phase-loop-runtime==0.7.14",
+            "receipt_sha256": "a" * 64,
+        },
+    }
+    paths.update({"record": record, "console": environment_root / "bin" / "phase-loop"})
+    return release, installation, paths
 
 
 def _bootstrap_receipt(
@@ -469,11 +592,9 @@ def _prepare_production_capture(
     (root / "agy_canary_bootstrap_attestation.json").write_text(json.dumps(
         _bootstrap_receipt(installation=installation, plan_bytes=plan_bytes)
     ))
-    release = {
-        "version": "0.7.14",
-        "artifacts": [{"filename": "phase_loop_runtime.whl", "sha256": "b" * 64, "url_sha256": "c" * 64}],
-    }
+    release = _release_identity()
     monkeypatch.setattr(evidence, "_reconcile_release_lineage", lambda **_kwargs: release)
+    monkeypatch.setattr(evidence, "_validate_installed_wheel_binding", lambda **_kwargs: None)
     harness = tmp_path / "agent-harness"
     harness.mkdir(exist_ok=True)
     if before_prepare is not None:
@@ -1211,8 +1332,9 @@ def test_prepare_requires_bootstrap_and_binds_selected_mode(tmp_path, monkeypatc
         (root / "agy_canary_bootstrap_attestation.json").write_text(json.dumps(
             _bootstrap_receipt(installation=installation)
         ))
-        release = {"version": "0.7.14", "artifacts": [{"filename": "phase_loop_runtime.whl", "sha256": "b" * 64, "url_sha256": "c" * 64}]}
+        release = _release_identity()
         monkeypatch.setattr(evidence, "_reconcile_release_lineage", lambda **_kwargs: release)
+        monkeypatch.setattr(evidence, "_validate_installed_wheel_binding", lambda **_kwargs: None)
         harness = tmp_path / "agent-harness"
         harness.mkdir()
         prepared = evidence.prepare_canary(
@@ -1304,9 +1426,10 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
             name: subprocess.check_output(["git", "-C", str(repo), "rev-parse", f"HEAD:{name}"], text=True).strip()
             for name in ("bootstrap.sh", "shared/agent-harness.pin", "plans/canary.md", "plans/manifest.json")
         }
+        installation = _installation_identity()
         (root / "agy_canary_bootstrap_attestation.json").write_text(json.dumps(
             _bootstrap_receipt(
-                installation=_installation_identity(), repo_head=head, blobs=blobs,
+                installation=installation, repo_head=head, blobs=blobs,
                 input_sha256={
                     name: evidence._sha256((repo / name).read_bytes())
                     for name in (
@@ -1316,16 +1439,17 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
                 },
             )
         ))
-        release = {
-            "version": "0.7.14", "handoff_commit": "a" * 40, "release_commit": "b" * 40,
-            "tag_object": "c" * 40, "tag_peel": "b" * 40,
-            "artifacts": [
-                {"filename": "phase-loop-runtime-0.7.14-py3-none-any.whl", "packagetype": "bdist_wheel", "sha256": "d" * 64, "url_sha256": "e" * 64},
-                {"filename": "phase-loop-runtime-0.7.14.tar.gz", "packagetype": "sdist", "sha256": "f" * 64, "url_sha256": "0" * 64},
-            ],
-        }
+        release = _release_identity()
         (root / "agy_canary_prepare.json").write_text(json.dumps({
-            "release": release, "release_sha256": evidence._sha256(evidence._canonical_json(release)), "seat_key": "gemini-primary",
+            "release": release,
+            "release_sha256": evidence._sha256(evidence._canonical_json(release)),
+            "wheel_binding_sha256": evidence._sha256(
+                evidence._canonical_json(release["wheel_binding"])
+            ),
+            "installation_sha256": evidence._sha256(
+                evidence._canonical_json(installation)
+            ),
+            "seat_key": "gemini-primary",
         }))
         proof = {
             "schema": evidence.SCHEMA_VERSION,
@@ -1342,6 +1466,9 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
             }],
             "accepted_review_sha256": "2" * 64,
             "private_board_sha256": "3" * 64,
+            "release_sha256": evidence._sha256(evidence._canonical_json(release)),
+            "wheel_binding_sha256": evidence._sha256(evidence._canonical_json(release["wheel_binding"])),
+            "installation_sha256": evidence._sha256(evidence._canonical_json(installation)),
             "provider_results": {
                 "registry_sha256": "4" * 64,
                 "result_set_sha256": "5" * 64,
@@ -1493,6 +1620,36 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
             subprocess.run(["git", "-C", str(repo), "commit", "-qm", message], check=True)
             return subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
 
+        subprocess.run(["git", "-C", str(repo), "checkout", "-q", committed], check=True)
+        release_tamper_payload = json.loads(json.dumps(payload))
+        tampered_release = release_tamper_payload["attestation"]["release"]
+        tampered_release["wheel_binding"]["record_sha256"] = "0" * 64
+        tampered_release_sha256 = evidence._sha256(evidence._canonical_json(tampered_release))
+        tampered_wheel_sha256 = evidence._sha256(
+            evidence._canonical_json(tampered_release["wheel_binding"])
+        )
+        release_tamper_payload["proof"]["release_sha256"] = tampered_release_sha256
+        release_tamper_payload["proof"]["wheel_binding_sha256"] = tampered_wheel_sha256
+        release_tamper_payload["proof_sha256"] = evidence._sha256(
+            evidence._canonical_json(release_tamper_payload["proof"])
+        )
+        release_tamper_payload["attestation"]["release_sha256"] = tampered_release_sha256
+        release_tamper_payload["attestation"]["wheel_binding_sha256"] = tampered_wheel_sha256
+        release_tamper_payload["attestation"]["proof"] = evidence._proof_identity(
+            release_tamper_payload["proof"]
+        )
+        release_tamper_payload["attestation"]["reducer_proof_sha256"] = (
+            release_tamper_payload["proof_sha256"]
+        )
+        release_tamper_commit = commit_payload(release_tamper_payload, "release binding tamper")
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="reauthenticate immutable handoff"):
+            evidence.check_committed_final(
+                dotfiles_repo=repo, commit=release_tamper_commit,
+                plan_path=Path("plans/canary.md"), manifest_path=Path("plans/manifest.json"),
+                plan_slug="agy-canary", agent_harness_repo=repo,
+                handoff_commit=release["handoff_commit"],
+            )
+
         subprocess.run(["git", "-C", str(repo), "checkout", "-q", head], check=True)
         plan.write_text("# Candidate plan drift\n")
         subprocess.run(["git", "-C", str(repo), "add", "plans/canary.md"], check=True)
@@ -1595,11 +1752,25 @@ def _stub_finalizer(monkeypatch, tmp_path: Path) -> tuple[Path, Path, Path, Path
         },
         **evidence._FINAL_GOVERNANCE_POSTURE,
     }
-    release: dict[str, object] = {}
+    release = _release_identity()
+    installation = _installation_identity()
+    proof["release_sha256"] = evidence._sha256(evidence._canonical_json(release))
+    proof["wheel_binding_sha256"] = evidence._sha256(
+        evidence._canonical_json(release["wheel_binding"])
+    )
+    proof["installation_sha256"] = evidence._sha256(
+        evidence._canonical_json(installation)
+    )
     prepare = {
         "seat_key": "gemini-primary",
         "release": release,
         "release_sha256": evidence._sha256(evidence._canonical_json(release)),
+        "wheel_binding_sha256": evidence._sha256(
+            evidence._canonical_json(release["wheel_binding"])
+        ),
+        "installation_sha256": evidence._sha256(
+            evidence._canonical_json(installation)
+        ),
     }
 
     monkeypatch.setattr(evidence, "verify_capture", lambda **_kwargs: proof)
@@ -1607,10 +1778,13 @@ def _stub_finalizer(monkeypatch, tmp_path: Path) -> tuple[Path, Path, Path, Path
         evidence,
         "_attested_final_targets",
         lambda **_kwargs: (
-            {"input_sha256": {
-                "plans/canary.md": evidence._sha256(plan.read_bytes()),
-                "plans/manifest.json": evidence._sha256(manifest.read_bytes()),
-            }},
+            {
+                "input_sha256": {
+                    "plans/canary.md": evidence._sha256(plan.read_bytes()),
+                    "plans/manifest.json": evidence._sha256(manifest.read_bytes()),
+                },
+                "bootstrap": {"installation": installation},
+            },
             "plans/canary.md",
             "plans/manifest.json",
         ),
@@ -2362,7 +2536,7 @@ def test_release_lineage_uses_merged_handoff_and_rehashes_downloads(tmp_path, mo
     release_commit = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
     subprocess.run(["git", "-C", str(repo), "tag", "-am", "release", "v0.7.14", release_commit], check=True)
     tag_object = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "refs/tags/v0.7.14"], text=True).strip()
-    wheel, sdist = b"synthetic wheel", b"synthetic sdist"
+    wheel, sdist = _synthetic_wheel(), b"synthetic sdist"
     rows = [
         {"filename": "phase_loop_runtime-0.7.14-py3-none-any.whl", "packagetype": "bdist_wheel", "url": "https://example.invalid/wheel", "digests": {"sha256": hashlib.sha256(wheel).hexdigest()}},
         {"filename": "phase_loop_runtime-0.7.14.tar.gz", "packagetype": "sdist", "url": "https://example.invalid/sdist", "digests": {"sha256": hashlib.sha256(sdist).hexdigest()}},
@@ -2403,6 +2577,10 @@ def test_release_lineage_uses_merged_handoff_and_rehashes_downloads(tmp_path, mo
         fetch_json=lambda _url: {"urls": rows}, download=lambda url: blobs[url],
     )
     assert result["release_commit"] == release_commit
+    assert result["wheel_binding"]["record_path"] == (
+        "phase_loop_runtime-0.7.14.dist-info/RECORD"
+    )
+    assert result["wheel_binding"]["sha256"] == hashlib.sha256(wheel).hexdigest()
     workflow_pages[:] = [
         {"workflow_runs": workflow_runs * 20},
         {"workflow_runs": workflow_runs},
@@ -2417,6 +2595,89 @@ def test_release_lineage_uses_merged_handoff_and_rehashes_downloads(tmp_path, mo
         evidence._reconcile_release_lineage(
             repo=repo, handoff_commit=handoff_commit,
             fetch_json=lambda _url: {"urls": rows}, download=lambda _url: b"forged",
+        )
+
+
+def _wheel_rows(wheel: bytes) -> list[list[str]]:
+    with zipfile.ZipFile(io.BytesIO(wheel)) as archive:
+        raw = archive.read("phase_loop_runtime-0.7.14.dist-info/RECORD").decode()
+    return list(csv.reader(io.StringIO(raw, newline="")))
+
+
+@pytest.mark.parametrize("mutation", ["traversal", "duplicate", "algorithm", "size"])
+def test_wheel_binding_rejects_unsafe_or_malformed_record_rows(mutation):
+    wheel = _synthetic_wheel()
+    rows = _wheel_rows(wheel)
+    if mutation == "traversal":
+        rows[0][0] = "../escape"
+    elif mutation == "duplicate":
+        rows.insert(1, list(rows[0]))
+    elif mutation == "algorithm":
+        rows[0][1] = "sha512=" + rows[0][1].split("=", 1)[1]
+    else:
+        rows[0][2] = "01"
+    malformed = _synthetic_wheel(record_rows=rows)
+    with pytest.raises(evidence.AgyCanaryEvidenceError):
+        evidence._wheel_binding(
+            wheel_bytes=malformed,
+            filename="phase_loop_runtime-0.7.14-py3-none-any.whl",
+            digest=evidence._sha256(malformed), url_sha256="a" * 64,
+            version="0.7.14",
+        )
+
+
+def test_wheel_binding_rejects_archive_path_traversal_and_wrong_wheel():
+    traversal = _synthetic_wheel(members={"../escape": b"escape"})
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="path"):
+        evidence._wheel_binding(
+            wheel_bytes=traversal,
+            filename="phase_loop_runtime-0.7.14-py3-none-any.whl",
+            digest=evidence._sha256(traversal), url_sha256="a" * 64,
+            version="0.7.14",
+        )
+    wheel = _synthetic_wheel()
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="digest mismatch"):
+        evidence._wheel_binding(
+            wheel_bytes=wheel,
+            filename="phase_loop_runtime-0.7.14-py3-none-any.whl",
+            digest="0" * 64, url_sha256="a" * 64, version="0.7.14",
+        )
+
+
+def test_installed_wheel_binding_accepts_normal_uv_registry_layout(tmp_path):
+    release, installation, _paths = _installed_wheel_fixture(tmp_path)
+    evidence._validate_installed_wheel_binding(
+        installation=installation, release=release
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["content", "missing", "extra", "record_traversal", "console", "release"],
+)
+def test_installed_wheel_binding_rejects_drift_and_tampering(tmp_path, mutation):
+    release, installation, paths = _installed_wheel_fixture(tmp_path)
+    package_file = paths["phase_loop_runtime/__init__.py"]
+    if mutation == "content":
+        package_file.write_bytes(b"mutated\n")
+    elif mutation == "missing":
+        package_file.unlink()
+    elif mutation == "extra":
+        extra = package_file.parent / "extra.py"
+        extra.write_bytes(b"extra\n")
+        installation["package_tree_sha256"] = evidence._runtime_tree_sha256(package_file.parent)
+    elif mutation == "record_traversal":
+        record = paths["record"]
+        record.write_bytes(record.read_bytes() + b"../../../../etc/passwd,sha256=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA,1\n")
+        installation["record_sha256"] = evidence._sha256(record.read_bytes())
+    elif mutation == "console":
+        paths["console"].write_bytes(b"mutated launcher\n")
+    else:
+        release = json.loads(json.dumps(release))
+        release["wheel_binding"]["files"][0]["sha256"] = "0" * 64
+    with pytest.raises(evidence.AgyCanaryEvidenceError):
+        evidence._validate_installed_wheel_binding(
+            installation=installation, release=release
         )
 
 

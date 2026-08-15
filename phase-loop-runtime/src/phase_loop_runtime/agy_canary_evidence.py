@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import base64
+import csv
 import copy
 import ctypes
 import errno
 import hashlib
+import io
 import json
 import os
 import re
@@ -19,6 +21,7 @@ import tempfile
 import threading
 import urllib.request
 import urllib.parse
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from datetime import datetime, timezone
 from dataclasses import dataclass, field as dataclass_field
@@ -990,7 +993,7 @@ def _require_prepare_authority(
         "schema", "authority_name", "authority_sha256", "cleanup_sha256",
         "probe_sha256", "bootstrap_sha256", "ledger_sha256", "settings_sha256",
         "settings_bytes", "settings_mode", "seat_key", "release", "release_sha256",
-        "source_inventory_sha256",
+        "wheel_binding_sha256", "installation_sha256", "source_inventory_sha256",
     }
     if (not isinstance(prepare, dict) or set(prepare) != required or
             prepare.get("schema") != "agy_canary_prepare.v1" or
@@ -1008,6 +1011,8 @@ def _require_prepare_authority(
         "seat_key": authority["seat_key"],
         "release": authority["release"],
         "release_sha256": authority["release_sha256"],
+        "wheel_binding_sha256": authority["wheel_binding_sha256"],
+        "installation_sha256": authority["installation_sha256"],
         "source_inventory_sha256": authority["source_inventory_sha256"],
     }
     if any(prepare.get(name) != value for name, value in expected.items()):
@@ -2562,6 +2567,9 @@ def verify_capture(*, evidence_root: Path, expected_seat_key: str, seal: bool = 
             "accepted_review_sha256": _sha256(final_text.encode()),
             "private_board_sha256": private_board["sha256"],
             "provider_results": expected_summary["provider_results"],
+            "release_sha256": authority["release_sha256"],
+            "wheel_binding_sha256": authority["wheel_binding_sha256"],
+            "installation_sha256": authority["installation_sha256"],
             **_FINAL_GOVERNANCE_POSTURE,
         }
         if seal:
@@ -2982,11 +2990,13 @@ def _installed_phase_loop_identity(*, uv_executable: Path | None = None) -> dict
     interpreter = Path(first_line[0][2:])
     if not interpreter.is_absolute() or not interpreter.is_file() or not os.access(interpreter, os.X_OK):
         raise AgyCanaryEvidenceError("phase-loop interpreter is not canonical")
+    interpreter_source = interpreter.resolve(strict=True)
     program = (
-        "import importlib.metadata as m,json,pathlib,phase_loop_runtime; "
+        "import importlib.metadata as m,json,pathlib,phase_loop_runtime,sys; "
         "d=m.distribution('phase-loop-runtime'); root=pathlib.Path(d.locate_file('')).resolve(); "
         "module=pathlib.Path(phase_loop_runtime.__file__).resolve(); "
         "value={'version':d.version,'distribution_root':str(root),'module_origin':str(module),"
+        "'environment_root':str(pathlib.Path(sys.prefix).resolve()),"
         "}; print(json.dumps(value,sort_keys=True))"
     )
     proc = subprocess.run(
@@ -2997,11 +3007,15 @@ def _installed_phase_loop_identity(*, uv_executable: Path | None = None) -> dict
         value = json.loads(proc.stdout)
     except json.JSONDecodeError as exc:
         raise AgyCanaryEvidenceError("phase-loop interpreter did not identify its distribution") from exc
-    if proc.returncode != 0 or not isinstance(value, dict) or not all(isinstance(value.get(key), str) for key in ("version", "distribution_root", "module_origin")):
+    if proc.returncode != 0 or not isinstance(value, dict) or set(value) != {
+            "version", "distribution_root", "module_origin", "environment_root"
+    } or not all(isinstance(value.get(key), str) for key in value):
         raise AgyCanaryEvidenceError("phase-loop installed distribution identity is invalid")
     root = Path(value["distribution_root"])
     module = Path(value["module_origin"])
-    if not module.is_relative_to(root):
+    environment_root = Path(value["environment_root"])
+    if (not root.is_absolute() or not environment_root.is_absolute() or
+            not root.is_relative_to(environment_root) or not module.is_relative_to(root)):
         raise AgyCanaryEvidenceError("phase-loop module ownership is invalid")
     package_root = module.parent
     dist_infos = sorted(root.glob(f"phase_loop_runtime-{value['version']}.dist-info"))
@@ -3010,15 +3024,15 @@ def _installed_phase_loop_identity(*, uv_executable: Path | None = None) -> dict
     record = dist_infos[0] / "RECORD"
     try:
         script_bytes, _script_info = _read_regular_path(script)
-        interpreter_bytes, _interpreter_info = _read_regular_path(interpreter.resolve(strict=True))
+        interpreter_bytes, _interpreter_info = _read_regular_path(interpreter_source)
         record_bytes, _record_info = _read_regular_path(record)
     except (FileNotFoundError, OSError) as exc:
         raise AgyCanaryEvidenceError("phase-loop installed content is unavailable") from exc
     return {
         "uv_executable": str(uv), "uv_tool_dir": str(tool_dir),
-        "console_script": str(script), "interpreter": str(interpreter),
+        "console_script": str(script), "interpreter": str(interpreter_source),
         "version": value["version"], "distribution_root": str(root),
-        "module_origin": str(module),
+        "module_origin": str(module), "environment_root": str(environment_root),
         "console_script_sha256": _sha256(script_bytes),
         "interpreter_sha256": _sha256(interpreter_bytes),
         "package_tree_sha256": _runtime_tree_sha256(package_root),
@@ -3191,6 +3205,36 @@ def bootstrap_attest(
         os.close(root_fd)
 
 
+def _validate_installation_identity(installed: Any) -> dict[str, Any]:
+    expected_installation = {
+        "uv_executable", "uv_tool_dir", "console_script", "interpreter", "version",
+        "distribution_root", "module_origin", "environment_root",
+        "console_script_sha256", "interpreter_sha256",
+        "package_tree_sha256", "record_sha256", "provenance",
+    }
+    installation_strings = expected_installation - {"provenance"}
+    if (not isinstance(installed, dict) or set(installed) != expected_installation or
+            any(not isinstance(installed.get(name), str) or not installed[name] for name in installation_strings) or
+            installed["version"] != "0.7.14" or
+            any(not Path(installed[name]).is_absolute() for name in (
+                "uv_executable", "uv_tool_dir", "console_script", "interpreter",
+                "distribution_root", "module_origin", "environment_root",
+            )) or
+            any(not _is_digest(installed[name]) for name in (
+                "console_script_sha256", "interpreter_sha256", "package_tree_sha256", "record_sha256"
+            )) or
+            not Path(installed["module_origin"]).is_relative_to(Path(installed["distribution_root"])) or
+            not Path(installed["distribution_root"]).is_relative_to(Path(installed["environment_root"]))):
+        raise AgyCanaryEvidenceError("bootstrap attestation installation identity is malformed")
+    provenance = installed["provenance"]
+    if (not isinstance(provenance, dict) or set(provenance) != {"schema", "requirement", "receipt_sha256"} or
+            provenance.get("schema") != "uv_registry_receipt.v1" or
+            provenance.get("requirement") != "phase-loop-runtime==0.7.14" or
+            not _is_digest(provenance.get("receipt_sha256"))):
+        raise AgyCanaryEvidenceError("bootstrap attestation registry provenance is malformed")
+    return installed
+
+
 def _validate_bootstrap_attestation(
     *, receipt: Any, repo: Path | None = None, installation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -3248,31 +3292,7 @@ def _validate_bootstrap_attestation(
             not all(isinstance(name, str) and name in allowed_environment_names for name in environment_names) or
             not {"HOME", "PATH"}.issubset(environment_names)):
         raise AgyCanaryEvidenceError("bootstrap attestation child environment is malformed")
-    installed = bootstrap["installation"]
-    expected_installation = {
-        "uv_executable", "uv_tool_dir", "console_script", "interpreter", "version",
-        "distribution_root", "module_origin", "console_script_sha256", "interpreter_sha256",
-        "package_tree_sha256", "record_sha256", "provenance",
-    }
-    installation_strings = expected_installation - {"provenance"}
-    if (not isinstance(installed, dict) or set(installed) != expected_installation or
-            any(not isinstance(installed.get(name), str) or not installed[name] for name in installation_strings) or
-            installed["version"] != "0.7.14" or
-            any(not Path(installed[name]).is_absolute() for name in (
-                "uv_executable", "uv_tool_dir", "console_script", "interpreter",
-                "distribution_root", "module_origin",
-            )) or
-            any(not _is_digest(installed[name]) for name in (
-                "console_script_sha256", "interpreter_sha256", "package_tree_sha256", "record_sha256"
-            )) or
-            not Path(installed["module_origin"]).is_relative_to(Path(installed["distribution_root"]))):
-        raise AgyCanaryEvidenceError("bootstrap attestation installation identity is malformed")
-    provenance = installed["provenance"]
-    if (not isinstance(provenance, dict) or set(provenance) != {"schema", "requirement", "receipt_sha256"} or
-            provenance.get("schema") != "uv_registry_receipt.v1" or
-            provenance.get("requirement") != "phase-loop-runtime==0.7.14" or
-            not _is_digest(provenance.get("receipt_sha256"))):
-        raise AgyCanaryEvidenceError("bootstrap attestation registry provenance is malformed")
+    installed = _validate_installation_identity(bootstrap["installation"])
     if installation is not None and installed != installation:
         raise AgyCanaryEvidenceError("bootstrap attestation installation identity drifted")
     if repo is not None:
@@ -3337,6 +3357,344 @@ def _fetch_json(url: str) -> dict[str, Any]:
 def _download_bytes(url: str) -> bytes:
     with urllib.request.urlopen(url, timeout=60) as response:  # noqa: S310 - verified handoff URL
         return response.read()
+
+
+def _record_digest(value: str) -> str:
+    """Decode one canonical PEP 376 SHA-256 field to lower-case hex."""
+    if not re.fullmatch(r"sha256=[A-Za-z0-9_-]{43}", value):
+        raise AgyCanaryEvidenceError("wheel RECORD hash is not canonical sha256")
+    encoded = value.removeprefix("sha256=")
+    try:
+        raw = base64.b64decode(encoded + "=", altchars=b"-_", validate=True)
+    except (ValueError, base64.binascii.Error) as exc:
+        raise AgyCanaryEvidenceError("wheel RECORD hash is malformed") from exc
+    if len(raw) != hashlib.sha256().digest_size:
+        raise AgyCanaryEvidenceError("wheel RECORD hash has the wrong size")
+    return raw.hex()
+
+
+def _wheel_record_path(value: str) -> str:
+    """Accept only a normalized relative archive/RECORD path."""
+    if (not value or "\\" in value or "\x00" in value or value.startswith("/") or
+            re.match(r"^[A-Za-z]:", value) is not None or
+            value.endswith("/") or any(part in {"", ".", ".."} for part in value.split("/"))):
+        raise AgyCanaryEvidenceError("wheel RECORD path is unsafe or noncanonical")
+    return value
+
+
+def _record_rows(data: bytes, *, wheel: bool) -> list[tuple[str, str, str]]:
+    try:
+        text = data.decode("utf-8", errors="strict")
+        rows = list(csv.reader(io.StringIO(text, newline=""), strict=True))
+    except (UnicodeDecodeError, csv.Error) as exc:
+        raise AgyCanaryEvidenceError("wheel RECORD is malformed") from exc
+    output: list[tuple[str, str, str]] = []
+    seen: set[str] = set()
+    for row in rows:
+        if len(row) != 3 or not all(isinstance(value, str) for value in row):
+            raise AgyCanaryEvidenceError("wheel RECORD row is malformed")
+        path, digest, size = row
+        if wheel:
+            _wheel_record_path(path)
+        elif not path or "\\" in path or "\x00" in path or path.startswith("/"):
+            raise AgyCanaryEvidenceError("installed RECORD path is malformed")
+        if path in seen:
+            raise AgyCanaryEvidenceError("wheel RECORD path is duplicated")
+        seen.add(path)
+        output.append((path, digest, size))
+    if not output:
+        raise AgyCanaryEvidenceError("wheel RECORD is empty")
+    return output
+
+
+def _wheel_binding(
+    *, wheel_bytes: bytes, filename: str, digest: str, url_sha256: str, version: str,
+) -> dict[str, Any]:
+    """Derive a canonical install map from the exact reauthenticated wheel bytes."""
+    if _sha256(wheel_bytes) != digest:
+        raise AgyCanaryEvidenceError("downloaded release artifact digest mismatch")
+    expected_prefix = f"phase_loop_runtime-{version}"
+    if (not re.fullmatch(rf"{re.escape(expected_prefix)}-py3-none-any\.whl", filename) or
+            not _is_digest(digest) or not _is_digest(url_sha256)):
+        raise AgyCanaryEvidenceError("release wheel identity is not canonical")
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(wheel_bytes))
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise AgyCanaryEvidenceError("release wheel is not a valid archive") from exc
+    with archive:
+        members: dict[str, tuple[zipfile.ZipInfo, bytes]] = {}
+        for info in archive.infolist():
+            name = _wheel_record_path(info.filename)
+            file_type = (info.external_attr >> 16) & 0o170000
+            if (info.is_dir() or info.flag_bits & 0x1 or
+                    file_type not in {0, stat.S_IFREG} or
+                    name in members):
+                raise AgyCanaryEvidenceError("release wheel member is unsafe or duplicated")
+            try:
+                content = archive.read(info)
+            except (OSError, RuntimeError, zipfile.BadZipFile) as exc:
+                raise AgyCanaryEvidenceError("release wheel member could not be verified") from exc
+            if len(content) != info.file_size:
+                raise AgyCanaryEvidenceError("release wheel member size drifted")
+            members[name] = (info, content)
+    dist_info = f"{expected_prefix}.dist-info"
+    record_path = f"{dist_info}/RECORD"
+    if record_path not in members:
+        raise AgyCanaryEvidenceError("release wheel lacks its canonical RECORD")
+    rows = _record_rows(members[record_path][1], wheel=True)
+    if {path for path, _digest, _size in rows} != set(members):
+        raise AgyCanaryEvidenceError("release wheel RECORD does not exactly inventory the archive")
+    wheel_metadata_path = f"{dist_info}/WHEEL"
+    try:
+        wheel_metadata = members[wheel_metadata_path][1].decode("utf-8", errors="strict")
+    except (KeyError, UnicodeDecodeError) as exc:
+        raise AgyCanaryEvidenceError("release wheel metadata is unavailable") from exc
+    purelib_lines = [line for line in wheel_metadata.splitlines() if line.startswith("Root-Is-Purelib:")]
+    if purelib_lines != ["Root-Is-Purelib: true"]:
+        raise AgyCanaryEvidenceError("release wheel root install scheme is not canonical")
+    data_prefix = f"{expected_prefix}.data/"
+    files: list[dict[str, Any]] = []
+    for path, record_hash, record_size in rows:
+        content = members[path][1]
+        if path == record_path:
+            if record_hash or record_size:
+                raise AgyCanaryEvidenceError("release wheel RECORD self-row is not empty")
+            continue
+        if not record_hash or not record_size.isdigit() or str(int(record_size)) != record_size:
+            raise AgyCanaryEvidenceError("release wheel RECORD size is malformed")
+        size = int(record_size)
+        content_sha256 = _record_digest(record_hash)
+        if len(content) != size or _sha256(content) != content_sha256:
+            raise AgyCanaryEvidenceError("release wheel content does not match RECORD")
+        if path.startswith(data_prefix):
+            remainder = path.removeprefix(data_prefix)
+            scheme, separator, installed_path = remainder.partition("/")
+            if separator != "/" or scheme not in {"purelib", "platlib", "data"}:
+                raise AgyCanaryEvidenceError("release wheel install scheme is unsupported")
+            _wheel_record_path(installed_path)
+        else:
+            scheme = "purelib"
+            installed_path = path
+        files.append({
+            "wheel_path": path, "scheme": scheme, "installed_path": installed_path,
+            "sha256": content_sha256, "size": size,
+        })
+    files.sort(key=lambda row: row["wheel_path"])
+    return {
+        "schema": "agy_canary_wheel_binding.v1", "filename": filename,
+        "sha256": digest, "url_sha256": url_sha256,
+        "record_path": record_path, "record_sha256": _sha256(members[record_path][1]),
+        "root_scheme": "purelib", "files": files,
+    }
+
+
+def _validate_wheel_binding(value: Any, *, version: str) -> dict[str, Any]:
+    required = {
+        "schema", "filename", "sha256", "url_sha256", "record_path",
+        "record_sha256", "root_scheme", "files",
+    }
+    if (not isinstance(value, dict) or set(value) != required or
+            value.get("schema") != "agy_canary_wheel_binding.v1" or
+            value.get("filename") != f"phase_loop_runtime-{version}-py3-none-any.whl" or
+            value.get("record_path") != f"phase_loop_runtime-{version}.dist-info/RECORD" or
+            value.get("root_scheme") != "purelib" or
+            any(not _is_digest(value.get(name)) for name in ("sha256", "url_sha256", "record_sha256")) or
+            not isinstance(value.get("files"), list) or not value["files"]):
+        raise AgyCanaryEvidenceError("release wheel binding is malformed")
+    wheel_paths: set[str] = set()
+    targets: set[tuple[str, str]] = set()
+    previous = ""
+    data_prefix = f"phase_loop_runtime-{version}.data/"
+    for row in value["files"]:
+        if (not isinstance(row, dict) or set(row) != {
+                "wheel_path", "scheme", "installed_path", "sha256", "size"
+        } or not isinstance(row.get("wheel_path"), str) or
+                not isinstance(row.get("installed_path"), str) or
+                row.get("scheme") not in {"purelib", "platlib", "data"} or
+                not _is_digest(row.get("sha256")) or not _is_plain_int(row.get("size")) or
+                row["size"] < 0):
+            raise AgyCanaryEvidenceError("release wheel binding file row is malformed")
+        wheel_path = _wheel_record_path(row["wheel_path"])
+        installed_path = _wheel_record_path(row["installed_path"])
+        if wheel_path == value["record_path"]:
+            raise AgyCanaryEvidenceError("release wheel binding includes its mutable RECORD")
+        if wheel_path.startswith(data_prefix):
+            remainder = wheel_path.removeprefix(data_prefix)
+            scheme, separator, expected_installed_path = remainder.partition("/")
+            if (separator != "/" or scheme not in {"purelib", "platlib", "data"} or
+                    row["scheme"] != scheme or installed_path != expected_installed_path):
+                raise AgyCanaryEvidenceError("release wheel binding install map is malformed")
+        elif row["scheme"] != "purelib" or installed_path != wheel_path:
+            raise AgyCanaryEvidenceError("release wheel binding root install map is malformed")
+        target = (row["scheme"], installed_path)
+        if wheel_path <= previous or wheel_path in wheel_paths or target in targets:
+            raise AgyCanaryEvidenceError("release wheel binding files are duplicated or unsorted")
+        previous = wheel_path
+        wheel_paths.add(wheel_path)
+        targets.add(target)
+    if "phase_loop_runtime/__init__.py" not in wheel_paths:
+        raise AgyCanaryEvidenceError("release wheel binding lacks the governed runtime package")
+    return value
+
+
+def _validate_release_identity(release: Any) -> dict[str, Any]:
+    required = {
+        "version", "handoff_commit", "release_commit", "tag_object", "tag_peel",
+        "artifacts", "wheel_binding",
+    }
+    if (not isinstance(release, dict) or set(release) != required or
+            release.get("version") != "0.7.14" or
+            release.get("tag_peel") != release.get("release_commit")):
+        raise AgyCanaryEvidenceError("release identity is malformed")
+    for name in ("handoff_commit", "release_commit", "tag_object", "tag_peel"):
+        value = release.get(name)
+        if not isinstance(value, str) or len(value) != 40 or any(
+                character not in "0123456789abcdef" for character in value.lower()):
+            raise AgyCanaryEvidenceError("release identity is malformed")
+    artifacts = release.get("artifacts")
+    if not isinstance(artifacts, list) or not artifacts:
+        raise AgyCanaryEvidenceError("release artifacts are malformed")
+    if artifacts != sorted(artifacts, key=lambda row: (row.get("filename", ""), row.get("packagetype", "")) if isinstance(row, dict) else ("", "")):
+        raise AgyCanaryEvidenceError("release artifacts are not canonical")
+    identities: set[tuple[str, str]] = set()
+    wheel_rows: list[dict[str, str]] = []
+    sdist_count = 0
+    for artifact in artifacts:
+        if (not isinstance(artifact, dict) or set(artifact) != {
+                "filename", "packagetype", "sha256", "url_sha256"
+        } or not all(isinstance(artifact.get(name), str) for name in artifact) or
+                any(not _is_digest(artifact.get(name)) for name in ("sha256", "url_sha256"))):
+            raise AgyCanaryEvidenceError("release artifact is malformed")
+        identity = (artifact["filename"], artifact["packagetype"])
+        if identity in identities:
+            raise AgyCanaryEvidenceError("release artifacts are duplicated")
+        identities.add(identity)
+        if artifact["filename"].endswith(".whl"):
+            if artifact["packagetype"] != "bdist_wheel":
+                raise AgyCanaryEvidenceError("release wheel artifact type is malformed")
+            wheel_rows.append(artifact)
+        if artifact["filename"].endswith(".tar.gz"):
+            if artifact["packagetype"] != "sdist":
+                raise AgyCanaryEvidenceError("release sdist artifact type is malformed")
+            sdist_count += 1
+    if len(wheel_rows) != 1 or sdist_count != 1:
+        raise AgyCanaryEvidenceError("release requires one wheel and one sdist")
+    binding = _validate_wheel_binding(release.get("wheel_binding"), version=release["version"])
+    wheel = wheel_rows[0]
+    if any(binding[name] != wheel[name] for name in ("filename", "sha256", "url_sha256")):
+        raise AgyCanaryEvidenceError("release wheel binding does not match its artifact")
+    return release
+
+
+def _installed_target(*, root: Path, environment_root: Path, row: dict[str, Any]) -> Path:
+    base = environment_root if row["scheme"] == "data" else root
+    target = base.joinpath(*row["installed_path"].split("/"))
+    try:
+        resolved = target.resolve(strict=True)
+    except (FileNotFoundError, OSError) as exc:
+        raise AgyCanaryEvidenceError("installed wheel file is missing") from exc
+    if resolved != target or (resolved != base and base not in resolved.parents):
+        raise AgyCanaryEvidenceError("installed wheel path escapes its canonical scheme")
+    return target
+
+
+def _record_relative(*, root: Path, target: Path) -> str:
+    relative = os.path.relpath(target, root).replace(os.sep, "/")
+    if not relative or "\\" in relative or relative.startswith("/"):
+        raise AgyCanaryEvidenceError("installed RECORD mapping is malformed")
+    return relative
+
+
+def _validate_installed_wheel_binding(
+    *, installation: dict[str, Any], release: dict[str, Any],
+) -> None:
+    """Prove uv's installed distribution is the exact reauthenticated wheel."""
+    _validate_release_identity(release)
+    _validate_installation_identity(installation)
+    root = Path(installation["distribution_root"])
+    environment_root = Path(installation["environment_root"])
+    package_root = Path(installation["module_origin"]).parent
+    interpreter = Path(installation["interpreter"])
+    if (installation.get("version") != release["version"] or
+            installation.get("provenance", {}).get("requirement") !=
+            f"phase-loop-runtime=={release['version']}" or
+            not root.is_absolute() or not environment_root.is_absolute() or
+            not root.is_relative_to(environment_root) or
+            not package_root.is_relative_to(root)):
+        raise AgyCanaryEvidenceError("installed phase-loop registry receipt does not match verified release")
+    binding = release["wheel_binding"]
+    expected_rows: dict[str, tuple[str, int, Path]] = {}
+    expected_physical: set[Path] = set()
+    for row in binding["files"]:
+        target = _installed_target(root=root, environment_root=environment_root, row=row)
+        relative = _record_relative(root=root, target=target)
+        if relative in expected_rows:
+            raise AgyCanaryEvidenceError("wheel files alias one installed target")
+        data, _info = _read_regular_path(target)
+        if len(data) != row["size"] or _sha256(data) != row["sha256"]:
+            raise AgyCanaryEvidenceError("installed wheel file differs from verified wheel")
+        expected_rows[relative] = (row["sha256"], row["size"], target)
+        expected_physical.add(target)
+    dist_info = root / f"phase_loop_runtime-{release['version']}.dist-info"
+    record = dist_info / "RECORD"
+    installer_targets = {
+        _record_relative(root=root, target=dist_info / "INSTALLER"): dist_info / "INSTALLER",
+        _record_relative(root=root, target=dist_info / "REQUESTED"): dist_info / "REQUESTED",
+        _record_relative(root=root, target=environment_root / "bin" / "phase-loop"):
+            environment_root / "bin" / "phase-loop",
+        _record_relative(root=root, target=environment_root / "bin" / "codex-phase-loop"):
+            environment_root / "bin" / "codex-phase-loop",
+    }
+    record_relative = _record_relative(root=root, target=record)
+    record_bytes, _record_info = _read_regular_path(record)
+    rows = _record_rows(record_bytes, wheel=False)
+    actual: dict[str, tuple[str, int, Path]] = {}
+    allowed = set(expected_rows) | set(installer_targets) | {record_relative}
+    for path, digest_text, size_text in rows:
+        if path not in allowed:
+            raise AgyCanaryEvidenceError("installed RECORD contains an extra governed file")
+        if path == record_relative:
+            if digest_text or size_text:
+                raise AgyCanaryEvidenceError("installed RECORD self-row is not empty")
+            actual[path] = ("", 0, record)
+            continue
+        if not size_text.isdigit() or str(int(size_text)) != size_text:
+            raise AgyCanaryEvidenceError("installed RECORD size is malformed")
+        digest = _record_digest(digest_text)
+        target = expected_rows[path][2] if path in expected_rows else installer_targets[path]
+        data, _info = _read_regular_path(target)
+        size = int(size_text)
+        if len(data) != size or _sha256(data) != digest:
+            raise AgyCanaryEvidenceError("installed RECORD does not authenticate installed bytes")
+        actual[path] = (digest, size, target)
+    if set(actual) != allowed:
+        raise AgyCanaryEvidenceError("installed RECORD is missing governed files")
+    for path, (digest, size, _target) in expected_rows.items():
+        if actual[path][:2] != (digest, size):
+            raise AgyCanaryEvidenceError("installed RECORD differs from verified wheel RECORD")
+    phase_script = environment_root / "bin" / "phase-loop"
+    script_bytes, _script_info = _read_regular_path(phase_script)
+    interpreter_bytes, _interpreter_info = _read_regular_path(interpreter)
+    if (Path(installation["console_script"]) != phase_script or
+            _sha256(script_bytes) != installation["console_script_sha256"] or
+            _sha256(interpreter_bytes) != installation["interpreter_sha256"] or
+            _sha256(record_bytes) != installation["record_sha256"] or
+            _runtime_tree_sha256(package_root) != installation["package_tree_sha256"]):
+        raise AgyCanaryEvidenceError("installed launcher or runtime identity drifted")
+    expected_physical.update({record, dist_info / "INSTALLER", dist_info / "REQUESTED"})
+    for governed_root in (package_root, dist_info):
+        for current, directories, files in os.walk(governed_root, topdown=True, followlinks=False):
+            current_path = Path(current)
+            for directory in tuple(directories):
+                child = current_path / directory
+                if child.is_symlink():
+                    raise AgyCanaryEvidenceError("installed distribution contains a symlink")
+                if directory == "__pycache__":
+                    directories.remove(directory)
+            for name in files:
+                path = current_path / name
+                if path not in expected_physical:
+                    raise AgyCanaryEvidenceError("installed distribution contains an extra governed file")
 
 
 def _release_handoff_record(text: bytes) -> dict[str, Any]:
@@ -3463,7 +3821,10 @@ def _reconcile_release_lineage(
         digest = row.get("digests", {}).get("sha256") if isinstance(row.get("digests"), dict) else None
         if not isinstance(digest, str) or len(digest) != 64:
             raise AgyCanaryEvidenceError("PyPI artifact digest is malformed")
-        expected[(row["filename"], row["packagetype"], row["url"])] = digest
+        identity = (row["filename"], row["packagetype"], row["url"])
+        if identity in expected:
+            raise AgyCanaryEvidenceError("PyPI artifact rows are duplicated")
+        expected[identity] = digest
     recorded: dict[tuple[str, str, str], str] = {}
     for row in artifacts:
         if not isinstance(row, dict) or not all(isinstance(row.get(key), str) for key in ("filename", "packagetype", "url", "sha256")):
@@ -3471,17 +3832,32 @@ def _reconcile_release_lineage(
         recorded[(row["filename"], row["packagetype"], row["url"])] = row["sha256"]
     if expected != recorded or not any(name.endswith(".whl") for name, _kind, _url in expected) or not any(name.endswith(".tar.gz") for name, _kind, _url in expected):
         raise AgyCanaryEvidenceError("handoff artifacts do not exactly match PyPI")
-    for (_filename, _kind, url), digest in expected.items():
-        if _sha256(download(url)) != digest:
+    downloads: dict[tuple[str, str, str], bytes] = {}
+    for identity, digest in expected.items():
+        _filename, _kind, url = identity
+        downloads[identity] = download(url)
+        if _sha256(downloads[identity]) != digest:
             raise AgyCanaryEvidenceError("downloaded release artifact digest mismatch")
-    return {
+    wheel_identities = [identity for identity in expected if identity[0].endswith(".whl")]
+    if len(wheel_identities) != 1:
+        raise AgyCanaryEvidenceError("release lineage has no unique wheel")
+    wheel_identity = wheel_identities[0]
+    wheel_filename, _wheel_kind, wheel_url = wheel_identity
+    wheel_binding = _wheel_binding(
+        wheel_bytes=downloads[wheel_identity], filename=wheel_filename,
+        digest=expected[wheel_identity], url_sha256=_sha256(wheel_url.encode()),
+        version=version,
+    )
+    value = {
         "version": version, "handoff_commit": resolved, "release_commit": release_commit,
         "tag_object": tag_object, "tag_peel": tag_peel,
         "artifacts": [
             {"filename": name, "packagetype": kind, "sha256": digest, "url_sha256": _sha256(url.encode())}
             for (name, kind, url), digest in sorted(expected.items())
         ],
+        "wheel_binding": wheel_binding,
     }
+    return _validate_release_identity(value)
 
 
 def _require_complete_capability_probe(*, probe: dict[str, Any], root_fd: int) -> None:
@@ -3546,7 +3922,8 @@ def _validate_launch_authority(*, authority: Any, ledger: dict[str, Any], root_f
     """Validate immutable prepare authority without consulting mutable attempts."""
     required = {
         "schema", "seat_key", "capture_mode", "authorized_attempt_ids", "cleanup_sha256",
-        "probe_sha256", "bootstrap_sha256", "release", "release_sha256", "settings",
+        "probe_sha256", "bootstrap_sha256", "release", "release_sha256",
+        "wheel_binding_sha256", "installation_sha256", "settings",
         "policy_sha256", "source_inventory_sha256", "minimal_home", "auth_binds", "agy_runtime",
     }
     if not isinstance(authority, dict) or set(authority) != required or authority.get("schema") != "agy_canary_launch_authority.v1":
@@ -3559,9 +3936,14 @@ def _validate_launch_authority(*, authority: Any, ledger: dict[str, Any], root_f
     if (not isinstance(attempt_ids, list) or attempt_ids != ["gemini-1", "gemini-2"] or  # model-id-source: canary attempt IDs, not models
             len(set(attempt_ids)) != len(attempt_ids)):
         raise AgyCanaryEvidenceError("prepare launch authority attempts are not exact")
-    for field in ("cleanup_sha256", "probe_sha256", "bootstrap_sha256", "release_sha256", "policy_sha256", "source_inventory_sha256"):
+    for field in ("cleanup_sha256", "probe_sha256", "bootstrap_sha256", "release_sha256", "wheel_binding_sha256", "installation_sha256", "policy_sha256", "source_inventory_sha256"):
         if not _is_digest(authority.get(field)):
             raise AgyCanaryEvidenceError("prepare launch authority digest is malformed")
+    release = _validate_release_identity(authority.get("release"))
+    if (authority["release_sha256"] != _sha256(_canonical_json(release)) or
+            authority["wheel_binding_sha256"] !=
+            _sha256(_canonical_json(release["wheel_binding"]))):
+        raise AgyCanaryEvidenceError("prepare launch authority release binding drifted")
     settings = authority.get("settings")
     if (not isinstance(settings, dict) or set(settings) != {"path", "bytes", "sha256", "mode"} or
             not isinstance(settings.get("path"), str) or not Path(settings["path"]).is_absolute() or
@@ -3600,6 +3982,13 @@ def _validate_launch_authority(*, authority: Any, ledger: dict[str, Any], root_f
                 not _is_digest(bind.get("source_sha256")) or not isinstance(bind.get("uid"), str) or
                 not bind["uid"].isdigit() or bind.get("mode") != "0600"):
             raise AgyCanaryEvidenceError("prepare launch authority auth binding is malformed")
+    bootstrap = _validate_bootstrap_attestation(
+        receipt=_read_json_at(root_fd, "agy_canary_bootstrap_attestation.json")
+    )
+    if (authority["bootstrap_sha256"] != _sha256(_canonical_json(bootstrap)) or
+            authority["installation_sha256"] !=
+            _sha256(_canonical_json(bootstrap["bootstrap"]["installation"]))):
+        raise AgyCanaryEvidenceError("prepare launch authority installation binding drifted")
     probe = _read_json_at(root_fd, _PROBE_NAME)
     if authority["probe_sha256"] != _sha256(_canonical_json(probe)):
         raise AgyCanaryEvidenceError("prepare launch authority probe drifted")
@@ -3642,14 +4031,8 @@ def prepare_canary(
         revalidate_customization_inventory(
             source_inventory, home=customization_home, project_dir=project_dir, env=source_environment
         )
-        wheel_rows = [row for row in release["artifacts"] if str(row["filename"]).endswith(".whl")]
-        if len(wheel_rows) != 1:
-            raise AgyCanaryEvidenceError("release lineage has no unique wheel")
-        wheel = wheel_rows[0]
-        if (installation.get("version") != release["version"] or
-                installation.get("provenance", {}).get("requirement") !=
-                f"phase-loop-runtime=={release['version']}"):
-            raise AgyCanaryEvidenceError("installed phase-loop registry receipt does not match verified release")
+        _validate_release_identity(release)
+        _validate_installed_wheel_binding(installation=installation, release=release)
         capture = AgyCanaryCapture(root, root_fd)
         ledger = create_capture(
             capture=capture,
@@ -3695,6 +4078,8 @@ def prepare_canary(
             "bootstrap_sha256": _sha256(_canonical_json(bootstrap)),
             "release": release,
             "release_sha256": _sha256(_canonical_json(release)),
+            "wheel_binding_sha256": _sha256(_canonical_json(release["wheel_binding"])),
+            "installation_sha256": _sha256(_canonical_json(installation)),
             "settings": {"path": str(settings_path.resolve(strict=True)), "bytes": cleanup_lineage["settings_bytes"], "sha256": cleanup_lineage["settings_sha256"], "mode": cleanup_lineage["settings_mode"]},
             "policy_sha256": minimal_identity["policy_sha256"],
             "source_inventory_sha256": _sha256(_canonical_json(source_inventory)),
@@ -3712,6 +4097,8 @@ def prepare_canary(
             "settings_sha256": cleanup_lineage["settings_sha256"], "settings_bytes": cleanup_lineage["settings_bytes"],
             "settings_mode": cleanup_lineage["settings_mode"], "seat_key": seat_key, "release": release,
             "release_sha256": authority["release_sha256"],
+            "wheel_binding_sha256": authority["wheel_binding_sha256"],
+            "installation_sha256": authority["installation_sha256"],
             "source_inventory_sha256": authority["source_inventory_sha256"],
         }
         _exclusive_write_at(root_fd, _PREPARE_NAME, _canonical_json(value), 0o600)
@@ -3930,7 +4317,7 @@ def _parse_final_payload(plan: bytes) -> tuple[bytes, dict[str, Any]]:
 
 
 def _validate_final_proof(proof: dict[str, Any]) -> None:
-    required = {"schema", "seat_key", "attempt_ids", "capture_mode", "attempts", "accepted_review_sha256", "private_board_sha256", "provider_results", *_FINAL_GOVERNANCE_POSTURE}
+    required = {"schema", "seat_key", "attempt_ids", "capture_mode", "attempts", "accepted_review_sha256", "private_board_sha256", "provider_results", "release_sha256", "wheel_binding_sha256", "installation_sha256", *_FINAL_GOVERNANCE_POSTURE}
     if any(name not in proof for name in _FINAL_GOVERNANCE_POSTURE):
         raise AgyCanaryEvidenceError("final proof governance posture is malformed")
     if set(proof) != required or proof.get("schema") != SCHEMA_VERSION or proof.get("capture_mode") not in _CAPTURE_MODES:
@@ -3945,7 +4332,7 @@ def _validate_final_proof(proof: dict[str, Any]) -> None:
         raise AgyCanaryEvidenceError("final proof attempt binding is malformed")
     if any(not isinstance(item, dict) or set(item) != {"attempt_id", "counts", "terminal_sha256"} or item.get("attempt_id") != attempt_ids[index] or not isinstance(item.get("counts"), dict) or set(item["counts"]) != {"command", "unsandboxed", "non_read_tool", "out_of_stage_read"} or any(item["counts"].get(name) != 0 for name in item["counts"]) or not isinstance(item.get("terminal_sha256"), str) or len(item["terminal_sha256"]) != 64 or any(char not in "0123456789abcdef" for char in item["terminal_sha256"].lower()) for index, item in enumerate(proof["attempts"])):
         raise AgyCanaryEvidenceError("final proof attempts are malformed")
-    for name in ("accepted_review_sha256", "private_board_sha256"):
+    for name in ("accepted_review_sha256", "private_board_sha256", "release_sha256", "wheel_binding_sha256", "installation_sha256"):
         value = proof.get(name)
         if not isinstance(value, str) or len(value) != 64 or any(char not in "0123456789abcdef" for char in value.lower()):
             raise AgyCanaryEvidenceError("final proof digest is malformed")
@@ -3986,6 +4373,9 @@ def _proof_identity(proof: dict[str, Any]) -> dict[str, Any]:
         "attempt_ids": proof["attempt_ids"],
         "private_board_sha256": proof["private_board_sha256"],
         "provider_results": proof["provider_results"],
+        "release_sha256": proof["release_sha256"],
+        "wheel_binding_sha256": proof["wheel_binding_sha256"],
+        "installation_sha256": proof["installation_sha256"],
         **_FINAL_GOVERNANCE_POSTURE,
         "proof_sha256": _sha256(_canonical_json(proof)),
     }
@@ -4045,6 +4435,19 @@ def check_private_final(
         attestation = inputs.get("attestation")
         if not isinstance(attestation, dict):
             raise AgyCanaryEvidenceError("private finalizer receipt lacks attested identities")
+        release = attestation.get("release")
+        installation = attestation.get("installation")
+        if (not isinstance(release, dict) or
+                attestation.get("release_sha256") != _sha256(_canonical_json(release)) or
+                attestation.get("wheel_binding_sha256") !=
+                _sha256(_canonical_json(release.get("wheel_binding"))) or
+                attestation.get("installation_sha256") !=
+                _sha256(_canonical_json(installation)) or
+                attestation.get("proof") != _proof_identity(proof) or
+                attestation.get("reducer_proof_sha256") != _sha256(_canonical_json(proof))):
+            raise AgyCanaryEvidenceError("private finalizer release/proof binding is malformed")
+        _validate_release_identity(release)
+        _validate_installation_identity(installation)
         plan_after = plan_before + _final_suffix(proof, attestation)
         manifest_value = json.loads(manifest_before)
         entries = manifest_value.get("plans") if isinstance(manifest_value, dict) else None
@@ -4133,14 +4536,28 @@ def _validate_committed_attestation(
     """Validate every bootstrap/release identity embedded in a committed suffix."""
     bootstrap = attestation.get("bootstrap") if isinstance(attestation, dict) else None
     release = attestation.get("release") if isinstance(attestation, dict) else None
-    if not isinstance(attestation, dict) or set(attestation) != {"bootstrap", "release", "release_sha256", "proof", "reducer_proof_sha256"} or not isinstance(bootstrap, dict) or not isinstance(release, dict) or attestation["release_sha256"] != _sha256(_canonical_json(release)):
+    if (not isinstance(attestation, dict) or set(attestation) != {
+            "bootstrap", "release", "release_sha256", "wheel_binding_sha256",
+            "installation", "installation_sha256", "proof", "reducer_proof_sha256"
+    } or not isinstance(bootstrap, dict) or not isinstance(release, dict) or
+            attestation["release_sha256"] != _sha256(_canonical_json(release))):
         raise AgyCanaryEvidenceError("committed finalizer payload lacks attested bootstrap/release identities")
+    _validate_release_identity(release)
+    if attestation.get("wheel_binding_sha256") != _sha256(_canonical_json(release["wheel_binding"])):
+        raise AgyCanaryEvidenceError("committed finalizer wheel binding is malformed")
+    installation = _validate_installation_identity(attestation.get("installation"))
+    if attestation.get("installation_sha256") != _sha256(_canonical_json(installation)):
+        raise AgyCanaryEvidenceError("committed finalizer installation binding is malformed")
     proof_identity = attestation["proof"]
-    if not isinstance(proof_identity, dict) or set(proof_identity) != {"seat_key", "attempt_ids", "private_board_sha256", "provider_results", "proof_sha256", *_FINAL_GOVERNANCE_POSTURE}:
+    if not isinstance(proof_identity, dict) or set(proof_identity) != {"seat_key", "attempt_ids", "private_board_sha256", "provider_results", "release_sha256", "wheel_binding_sha256", "installation_sha256", "proof_sha256", *_FINAL_GOVERNANCE_POSTURE}:
         raise AgyCanaryEvidenceError("committed finalizer proof identity is malformed")
     if any(proof_identity.get(name) != value for name, value in _FINAL_GOVERNANCE_POSTURE.items()):
         raise AgyCanaryEvidenceError("committed finalizer proof governance is malformed")
     _validate_provider_result_summary(proof_identity["provider_results"])
+    if (proof_identity.get("release_sha256") != attestation["release_sha256"] or
+            proof_identity.get("wheel_binding_sha256") != attestation["wheel_binding_sha256"] or
+            proof_identity.get("installation_sha256") != attestation["installation_sha256"]):
+        raise AgyCanaryEvidenceError("committed finalizer proof release binding is malformed")
     if set(bootstrap) != {"repo_head", "blobs", "input_sha256"}:
         raise AgyCanaryEvidenceError("committed finalizer bootstrap identity is malformed")
     repo_head = bootstrap["repo_head"]
@@ -4159,30 +4576,6 @@ def _validate_committed_attestation(
         base_bytes[relative] = actual.stdout
     if base_bytes[plan_relative] != plan_before or base_bytes[manifest_relative] != manifest_before:
         raise AgyCanaryEvidenceError("committed finalizer preimages differ from bootstrap identity")
-    if set(release) != {"version", "handoff_commit", "release_commit", "tag_object", "tag_peel", "artifacts"} or release.get("version") != "0.7.14" or release.get("tag_peel") != release.get("release_commit"):
-        raise AgyCanaryEvidenceError("committed finalizer release identity is malformed")
-    for name in ("handoff_commit", "release_commit", "tag_object", "tag_peel"):
-        value = release.get(name)
-        if not isinstance(value, str) or len(value) != 40 or any(char not in "0123456789abcdef" for char in value.lower()):
-            raise AgyCanaryEvidenceError("committed finalizer release identity is malformed")
-    artifacts = release.get("artifacts")
-    if not isinstance(artifacts, list) or not artifacts:
-        raise AgyCanaryEvidenceError("committed finalizer release artifacts are malformed")
-    identities: set[tuple[str, str]] = set()
-    wheel_count = sdist_count = 0
-    for artifact in artifacts:
-        if not isinstance(artifact, dict) or set(artifact) != {"filename", "packagetype", "sha256", "url_sha256"} or not all(isinstance(artifact.get(name), str) for name in ("filename", "packagetype", "sha256", "url_sha256")):
-            raise AgyCanaryEvidenceError("committed finalizer release artifact is malformed")
-        if any(len(artifact[name]) != 64 or any(char not in "0123456789abcdef" for char in artifact[name].lower()) for name in ("sha256", "url_sha256")):
-            raise AgyCanaryEvidenceError("committed finalizer release artifact digest is malformed")
-        identity = (artifact["filename"], artifact["packagetype"])
-        if identity in identities:
-            raise AgyCanaryEvidenceError("committed finalizer release artifacts are duplicated")
-        identities.add(identity)
-        wheel_count += artifact["filename"].endswith(".whl")
-        sdist_count += artifact["filename"].endswith(".tar.gz")
-    if wheel_count != 1 or sdist_count != 1:
-        raise AgyCanaryEvidenceError("committed finalizer release requires one wheel and one sdist")
 
 
 def finalize_canary(
@@ -4222,12 +4615,25 @@ def finalize_canary(
         if _read_json_at(root_fd, "agy_canary_proof.json") != proof:
             raise AgyCanaryEvidenceError("finalizer proof does not match sealed reducer receipt")
         release = prepare.get("release")
-        if not isinstance(release, dict) or prepare.get("release_sha256") != _sha256(_canonical_json(release)):
+        if (not isinstance(release, dict) or
+                prepare.get("release_sha256") != _sha256(_canonical_json(release)) or
+                prepare.get("wheel_binding_sha256") !=
+                _sha256(_canonical_json(release.get("wheel_binding")))):
             raise AgyCanaryEvidenceError("finalizer requires release identities sealed by prepare")
+        _validate_release_identity(release)
+        installation = _validate_installation_identity(_bootstrap["bootstrap"]["installation"])
+        if (proof["release_sha256"] != prepare["release_sha256"] or
+                proof["wheel_binding_sha256"] != prepare["wheel_binding_sha256"] or
+                proof["installation_sha256"] != prepare["installation_sha256"] or
+                prepare["installation_sha256"] != _sha256(_canonical_json(installation))):
+            raise AgyCanaryEvidenceError("finalizer proof differs from prepare release binding")
         inputs["attestation"] = {
             "bootstrap": {name: _bootstrap.get(name) for name in ("repo_head", "blobs", "input_sha256")},
             "release": release,
             "release_sha256": prepare["release_sha256"],
+            "wheel_binding_sha256": prepare["wheel_binding_sha256"],
+            "installation": installation,
+            "installation_sha256": prepare["installation_sha256"],
             "proof": _proof_identity(proof),
             "reducer_proof_sha256": _sha256(_canonical_json(proof)),
         }
