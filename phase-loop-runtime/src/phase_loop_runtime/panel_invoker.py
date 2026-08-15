@@ -2018,7 +2018,10 @@ def _run_leg_with_liveness(
             # (1) wall-clock backstop — should rarely fire once stall detection works.
             if time.monotonic() - start >= deadline_s:
                 _terminate_process_group(proc)
-                raise subprocess.TimeoutExpired(list(cmd), deadline_s)
+                out_s, err_s = _decode()
+                raise subprocess.TimeoutExpired(
+                    list(cmd), deadline_s, output=out_s, stderr=err_s,
+                )
             # (2) drain available output; any byte is a heartbeat.
             if open_fds:
                 readable, _, _ = select.select(
@@ -3455,7 +3458,34 @@ def _exec_leg(
                     env=env,
                     deadline_s=deadline_s,
                 )
-            except subprocess.TimeoutExpired:
+            except subprocess.TimeoutExpired as exc:
+                if agy_capture is not None:
+                    if not seat_key or capture_staged is None:
+                        raise AgyCanaryEvidenceError(
+                            "capture-enabled Gemini timeout is missing sealed stage or seat"
+                        )
+                    timeout_stdout = getattr(exc, "stdout", None)
+                    if timeout_stdout is None:
+                        timeout_stdout = getattr(exc, "output", None)
+                    timeout_stderr = getattr(exc, "stderr", None)
+                    if isinstance(timeout_stdout, bytes):
+                        timeout_stdout = timeout_stdout.decode(
+                            "utf-8", errors="replace"
+                        )
+                    if isinstance(timeout_stderr, bytes):
+                        timeout_stderr = timeout_stderr.decode(
+                            "utf-8", errors="replace"
+                        )
+                    record_launch(
+                        capture=agy_capture,
+                        seat_key=seat_key,
+                        attempt_id=f"gemini-{_attempt + 1}",
+                        argv=cmd,
+                        returncode=124,
+                        stdout=str(timeout_stdout or ""),
+                        stderr=str(timeout_stderr or ""),
+                        staged=capture_staged,
+                    )
                 return 124, "", f"timeout after {deadline_s}s"
             _elapsed = time.monotonic() - _t0
             raw_stream = proc.stdout or ""

@@ -86,6 +86,19 @@ def test_deadline_backstop_fires_even_when_cpu_active(monkeypatch):
     assert time.monotonic() - t0 < 6
 
 
+def test_deadline_backstop_preserves_best_available_streams():
+    with pytest.raises(subprocess.TimeoutExpired) as captured:
+        _run(
+            [
+                sys.executable, "-c",
+                "print('partial-output', flush=True);\nwhile True: pass",
+            ],
+            deadline_s=2,
+            stall_threshold_s=30,
+        )
+    assert "partial-output" in str(captured.value.stdout)
+
+
 def test_stdin_is_fed_by_writer_thread_without_deadlock():
     # cat echoes stdin then exits on EOF — proves the daemon writer thread feeds stdin
     # and closes it (no deadlock, correct stdout capture).

@@ -272,8 +272,10 @@ def _stat_regular_path(path: Path) -> os.stat_result:
         os.close(parent_fd)
 
 
-def _runtime_tree_sha256(root: Path) -> str:
-    """Hash the exact runnable package tree and reject links/special files."""
+def _runtime_tree_snapshot(
+    root: Path, *, capture_relatives: frozenset[str] = frozenset(),
+) -> tuple[str, dict[str, tuple[bytes, os.stat_result]]]:
+    """Hash one package traversal and retain only explicitly requested files."""
     try:
         root_info = root.lstat()
     except FileNotFoundError as exc:
@@ -282,13 +284,15 @@ def _runtime_tree_sha256(root: Path) -> str:
             root_info.st_uid != os.getuid() or stat.S_IMODE(root_info.st_mode) & 0o002):
         raise AgyCanaryEvidenceError("trusted provider package root is unsafe")
     digest = hashlib.sha256()
+    captured: dict[str, tuple[bytes, os.stat_result]] = {}
     for current, directories, files in os.walk(root, topdown=True, followlinks=False):
         current_path = Path(current)
         directories.sort()
         files.sort()
         for name in [*directories, *files]:
             path = current_path / name
-            relative = path.relative_to(root).as_posix().encode()
+            relative_text = path.relative_to(root).as_posix()
+            relative = relative_text.encode()
             info = path.lstat()
             if stat.S_ISLNK(info.st_mode):
                 raise AgyCanaryEvidenceError("trusted provider package contains a symlink")
@@ -303,7 +307,16 @@ def _runtime_tree_sha256(root: Path) -> str:
             if (reopened.st_dev, reopened.st_ino) != (info.st_dev, info.st_ino):
                 raise AgyCanaryEvidenceError("trusted provider package changed while hashing")
             digest.update(data)
-    return digest.hexdigest()
+            if relative_text in capture_relatives:
+                captured[relative_text] = (data, reopened)
+    if set(captured) != set(capture_relatives):
+        raise AgyCanaryEvidenceError("trusted provider package entry is unavailable")
+    return digest.hexdigest(), captured
+
+
+def _runtime_tree_sha256(root: Path) -> str:
+    """Hash the exact runnable package tree and reject links/special files."""
+    return _runtime_tree_snapshot(root)[0]
 
 
 def _trusted_node_runtime() -> tuple[Path, int, int, int, str]:
@@ -354,11 +367,13 @@ class _TrustedProviderRuntime:
                 f"trusted {self.provider} executable drifted before namespace launch"
             ) from exc
         if ((info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode)) !=
-                (self.device, self.inode, self.mode) or
-                (full_assets and _sha256(_read_regular_path(self.source)[0]) != self.sha256) or
-                (self.launcher is None and self.support_source is None and
-                 _sha256(_read_regular_path(self.source)[0]) != self.sha256)):
+                (self.device, self.inode, self.mode)):
             raise AgyCanaryEvidenceError(f"trusted {self.provider} executable drifted before namespace launch")
+        if (full_assets and self.support_source is None and
+                _sha256(_read_regular_path(self.source)[0]) != self.sha256):
+            raise AgyCanaryEvidenceError(
+                f"trusted {self.provider} executable drifted before namespace launch"
+            )
         if self.launcher is not None:
             try:
                 launcher_info = self.launcher.lstat()
@@ -377,11 +392,32 @@ class _TrustedProviderRuntime:
             info = self.support_source.lstat()
             if (stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode) or
                     (info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode)) !=
-                    (self.support_device, self.support_inode, self.support_mode) or
-                    (full_assets and _runtime_tree_sha256(self.support_source) != self.support_sha256)):
+                    (self.support_device, self.support_inode, self.support_mode)):
                 raise AgyCanaryEvidenceError(
                     f"trusted {self.provider} package drifted before namespace launch"
                 )
+            if full_assets:
+                expected_source = self.support_source / self.entry_relative
+                if self.source != expected_source:
+                    raise AgyCanaryEvidenceError(
+                        f"trusted {self.provider} executable drifted before namespace launch"
+                    )
+                tree_sha256, captured = _runtime_tree_snapshot(
+                    self.support_source,
+                    capture_relatives=frozenset({self.entry_relative}),
+                )
+                entry_data, entry_info = captured[self.entry_relative]
+                if ((entry_info.st_dev, entry_info.st_ino,
+                     stat.S_IMODE(entry_info.st_mode)) !=
+                        (self.device, self.inode, self.mode) or
+                        _sha256(entry_data) != self.sha256):
+                    raise AgyCanaryEvidenceError(
+                        f"trusted {self.provider} executable drifted before namespace launch"
+                    )
+                if tree_sha256 != self.support_sha256:
+                    raise AgyCanaryEvidenceError(
+                        f"trusted {self.provider} package drifted before namespace launch"
+                    )
         if self.node_source is not None:
             info = _stat_regular_path(self.node_source)
             if ((info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode)) !=
@@ -414,8 +450,19 @@ def _trusted_provider_runtime(provider: str) -> _TrustedProviderRuntime:
         support = home / support_relative if support_relative is not None else None
         try:
             launcher_info = launcher.lstat()
-            data, info = _read_regular_path(source)
             support_info = support.lstat() if support is not None else None
+            if support is None:
+                data, info = _read_regular_path(source)
+                support_sha256 = None
+            else:
+                capture_relatives = frozenset({
+                    entry_relative, "codex-package.json",
+                    *_NATIVE_PROVIDER_ASSETS.get(provider, ()),
+                })
+                support_sha256, captured = _runtime_tree_snapshot(
+                    support, capture_relatives=capture_relatives,
+                )
+                data, info = captured[entry_relative]
         except (FileNotFoundError, OSError) as exc:
             raise AgyCanaryEvidenceError(f"trusted {provider} native runtime is unavailable") from exc
         launcher_target = os.readlink(launcher) if stat.S_ISLNK(launcher_info.st_mode) else None
@@ -429,17 +476,12 @@ def _trusted_provider_runtime(provider: str) -> _TrustedProviderRuntime:
             raise AgyCanaryEvidenceError(f"trusted {provider} native runtime is unsafe")
         if support is not None:
             for relative in _NATIVE_PROVIDER_ASSETS.get(provider, ()):
-                try:
-                    _asset_data, asset_info = _read_regular_path(support / relative)
-                except (FileNotFoundError, OSError) as exc:
-                    raise AgyCanaryEvidenceError(
-                        f"trusted {provider} native asset is unavailable"
-                    ) from exc
+                _asset_data, asset_info = captured[relative]
                 if stat.S_IMODE(asset_info.st_mode) & 0o002 or asset_info.st_uid != os.getuid():
                     raise AgyCanaryEvidenceError(f"trusted {provider} native asset is unsafe")
             try:
                 package = json.loads(_read_regular_path(support.parent.parent / "package.json")[0])
-                native_package = json.loads(_read_regular_path(support / "codex-package.json")[0])
+                native_package = json.loads(captured["codex-package.json"][0])
             except (FileNotFoundError, OSError, json.JSONDecodeError) as exc:
                 raise AgyCanaryEvidenceError("trusted Codex package provenance is unavailable") from exc
             if (package.get("name") != "@openai/codex" or
@@ -459,7 +501,7 @@ def _trusted_provider_runtime(provider: str) -> _TrustedProviderRuntime:
             support_info.st_dev if support_info is not None else None,
             support_info.st_ino if support_info is not None else None,
             stat.S_IMODE(support_info.st_mode) if support_info is not None else None,
-            _runtime_tree_sha256(support) if support is not None else None,
+            support_sha256,
             entry_relative, None, None, None, None, None, launcher, launcher_target,
         )
     candidates = (
@@ -779,6 +821,13 @@ class ProviderLaunchAuthority:
     projected_auth: dict[str, Any] | None = None
     review_launch: dict[str, Any] | None = dataclass_field(default=None, compare=False)
     review_attempts: list[dict[str, Any]] = dataclass_field(default_factory=list, compare=False)
+    _runtime_record_bytes: bytes = dataclass_field(init=False, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        record = _validate_provider_runtime_record(
+            _provider_runtime_record(self.runtime), provider=self.provider,
+        )
+        object.__setattr__(self, "_runtime_record_bytes", _canonical_json(record))
 
     def _revalidate(self, *, full_assets: bool = False) -> None:
         sealed_values = (
@@ -791,6 +840,12 @@ class ProviderLaunchAuthority:
             not _is_digest(expected) or
             _sha256(_canonical_json(value)) != expected
             for value, expected in sealed_values
+        ):
+            raise AgyCanaryEvidenceError(
+                f"{self.provider} in-memory launch authority drifted"
+            )
+        if self._runtime_record_bytes != _canonical_json(
+            _provider_runtime_record(self.runtime)
         ):
             raise AgyCanaryEvidenceError(
                 f"{self.provider} in-memory launch authority drifted"
@@ -923,8 +978,22 @@ class ProviderLaunchAuthority:
         }
 
     def runtime_authority(self) -> dict[str, Any]:
-        self.runtime.revalidate(full_assets=True)
-        return _provider_runtime_record(self.runtime)
+        # Registry/result bookkeeping consumes the immutable record frozen when
+        # the authority was prepared.  Only cheap path identity is revalidated
+        # here; full bytes are reserved for actual provider subprocess boundaries.
+        self.runtime.revalidate()
+        expected = _canonical_json(_provider_runtime_record(self.runtime))
+        if self._runtime_record_bytes != expected:
+            raise AgyCanaryEvidenceError(
+                f"{self.provider} in-memory launch authority drifted"
+            )
+        try:
+            record = json.loads(self._runtime_record_bytes)
+        except json.JSONDecodeError as exc:
+            raise AgyCanaryEvidenceError(
+                f"{self.provider} frozen runtime authority is malformed"
+            ) from exc
+        return _validate_provider_runtime_record(record, provider=self.provider)
 
     def auth_placeholder_proof(self) -> list[dict[str, Any]]:
         self._revalidate()

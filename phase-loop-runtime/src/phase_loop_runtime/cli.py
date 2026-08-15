@@ -1765,6 +1765,7 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
     import tempfile
 
     from .advisor_board.composition import FLOOR_SEATS, board_independence, compose_review_board
+    from .advisor_board.fixtures import DEFAULT_BOARD
     from .agy_canary_evidence import (
         AgyCanaryEvidenceError,
         capture_summary,
@@ -1804,7 +1805,11 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
     # pass-through is a test affordance that activates ONLY when ``is_available`` is
     # injected alone. (Pinned by test: bare compose drops an unauthed vendor + the
     # call takes no kwargs.)
-    board = compose_review_board()
+    # Capture is a governed exact-four-provider run.  Select the frozen board as
+    # metadata only: availability/auth composition shells out to ambient provider
+    # CLIs before the staged inputs and provider authorities exist.  Ordinary
+    # non-capture invocation retains the auth-aware production composer.
+    board = DEFAULT_BOARD if capture is not None else compose_review_board()
     if not board.seats:
         print(
             "advisor-board: no vendor is both available and authenticated — nothing to compose.",

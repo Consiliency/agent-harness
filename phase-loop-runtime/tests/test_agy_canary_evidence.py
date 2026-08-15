@@ -1756,6 +1756,125 @@ def _sealed_retry_capture(monkeypatch, tmp_path: Path, *, first_stream: str, sec
     return root, capture
 
 
+@pytest.mark.parametrize("timeout_attempt", [1, 2])
+def test_gemini_timeout_attempt_stays_one_to_one_through_capture_summary(
+    monkeypatch, tmp_path, timeout_attempt,
+):
+    from phase_loop_runtime import panel_invoker
+
+    root = _private_root(tmp_path)
+    review = tmp_path / "review"
+    review.mkdir()
+    for name, data in (
+        ("review-instructions.md", "read this first\n"),
+        ("review-bundle.md", "review this\n"),
+    ):
+        path = review / name
+        path.write_text(data)
+        path.chmod(0o600)
+    capture = _prepare_production_capture(
+        monkeypatch=monkeypatch, tmp_path=tmp_path, root=root,
+        settings=_settings(tmp_path, []), seat_key="gemini-primary",
+        plan_bytes=(review / "review-bundle.md").read_bytes(),
+    )
+    _bind_stage(capture, review)
+    staged = evidence.retain_staged_files(capture=capture, review_dir=review)
+    source = tmp_path / "agy"
+    source.write_bytes(b"sealed-agy")
+    source.chmod(0o700)
+    info = source.stat()
+    runtime = evidence._TrustedProviderRuntime(
+        "gemini", source, info.st_dev, info.st_ino,
+        stat.S_IMODE(info.st_mode), evidence._sha256(source.read_bytes()),
+    )
+    customization_sources = {
+        "inventory": evidence.freeze_customization_inventory(
+            home=tmp_path, project_dir=review, env={},
+        ),
+        "home": str(tmp_path.resolve(strict=True)),
+        "project": str(review.resolve(strict=True)),
+    }
+    authority = evidence.ProviderLaunchAuthority(
+        provider="gemini", runtime=runtime,
+        namespace=evidence.AgyCanaryNamespace(
+            review, tmp_path, root, "example.invalid",
+        ),
+        auth_records=(),
+        auth_records_sha256=evidence._sha256(evidence._canonical_json(())),
+        customization_sources=customization_sources,
+        customization_sources_sha256=evidence._sha256(
+            evidence._canonical_json(customization_sources)
+        ),
+        minimal_customizations=customization_sources["inventory"],
+        minimal_customizations_sha256=evidence._sha256(
+            evidence._canonical_json(customization_sources["inventory"])
+        ),
+        auth_placeholders=(),
+        auth_placeholders_sha256=evidence._sha256(evidence._canonical_json(())),
+    )
+
+    def fake_preflight(self, argv):
+        command = list(argv)
+        object.__setattr__(
+            self, "review_launch",
+            evidence._provider_launch_identity(command, provider="gemini"),
+        )
+        return command
+
+    first_stream = _review_stream(
+        instructions="", bundle="", terminal="retry", terminal_only=True,
+    )
+    calls = 0
+
+    def timeout_runner(command, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == timeout_attempt:
+            raise subprocess.TimeoutExpired(
+                command, 30, output=b"partial-stream", stderr=b"timeout-diagnostic",
+            )
+        return panel_invoker._LegRun(
+            0, first_stream, "timeout waiting for response",
+        )
+
+    monkeypatch.setattr(
+        evidence.ProviderLaunchAuthority, "preflight", fake_preflight,
+    )
+    monkeypatch.setattr(
+        panel_invoker, "_run_leg_with_liveness", timeout_runner,
+    )
+    try:
+        rc, text, detail = panel_invoker._exec_leg(
+            "gemini", review, tmp_path / "output", artifact="review",
+            agy_capture=capture, capture_staged=staged,
+            seat_key="gemini-primary", provider_authority=authority,
+            deadline_s=30,
+        )
+        assert (rc, text, detail) == (124, "", "timeout after 30s")
+        expected_ids = [f"gemini-{index}" for index in range(1, timeout_attempt + 1)]
+        proof = authority.review_attempt_proof()
+        assert [item["attempt_id"] for item in proof["attempts"]] == expected_ids
+        ledger = evidence._read_json_at(capture.root_fd, "agy-launch-ledger.json")
+        assert [item["attempt_id"] for item in ledger["attempts"]] == expected_ids
+        timeout_record = ledger["attempts"][-1]
+        assert timeout_record["returncode"] == 124
+        assert evidence._read_regular_at(
+            capture.root_fd, timeout_record["stream"]["name"]
+        ) == b"partial-stream"
+        assert evidence._read_regular_at(
+            capture.root_fd, timeout_record["diagnostic"]["name"]
+        ) == b"timeout-diagnostic"
+        board = _usable_private_board({"gemini_seat_key": "gemini-primary"})
+        board["legs"][0].update({"status": "TIMEOUT", "text": ""})
+        _seal_synthetic_provider_results(capture, board)
+        summary = evidence.capture_summary(capture)
+        assert summary["attempt_ids"] == expected_ids
+        assert len(summary["provider_results"]["providers"]) == 4
+    finally:
+        capture.close()
+        shutil.rmtree(root)
+
+
 def test_capture_reducer_accepts_ordered_retry_and_binds_final_provider_text(monkeypatch, tmp_path):
     first = _review_stream(instructions="", bundle="", terminal="retry exhausted", terminal_only=True)
     second = _review_stream(instructions="read this first\n", bundle="review this\n", terminal="AGREE attempt two")
@@ -3526,6 +3645,134 @@ def test_native_codex_runtime_requires_fixed_launcher_assets_and_provenance(monk
         runtime.revalidate()
 
 
+def test_provider_full_asset_revalidation_reads_each_mounted_file_once(
+    monkeypatch, tmp_path,
+):
+    support = tmp_path / "codex-package"
+    source = support / "bin" / "codex"
+    asset = support / "asset.dat"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"entry")
+    source.chmod(0o700)
+    asset.write_bytes(b"asset")
+    info = source.stat()
+    support_info = support.stat()
+    runtime = evidence._TrustedProviderRuntime(
+        provider="codex", source=source, device=info.st_dev, inode=info.st_ino,
+        mode=stat.S_IMODE(info.st_mode), sha256=evidence._sha256(b"entry"),
+        support_source=support, support_device=support_info.st_dev,
+        support_inode=support_info.st_ino,
+        support_mode=stat.S_IMODE(support_info.st_mode),
+        support_sha256=evidence._runtime_tree_sha256(support),
+        entry_relative="bin/codex",
+    )
+    reads: dict[Path, int] = {}
+    real_read = evidence._read_regular_path
+
+    def count_read(path):
+        resolved = Path(path)
+        reads[resolved] = reads.get(resolved, 0) + 1
+        return real_read(resolved)
+
+    monkeypatch.setattr(evidence, "_read_regular_path", count_read)
+    runtime.revalidate(full_assets=True)
+    assert reads == {source: 1, asset: 1}
+
+
+def test_provider_launch_boundaries_hash_once_and_bookkeeping_uses_frozen_runtime(
+    monkeypatch, tmp_path,
+):
+    _mock_canonical_bwrap(monkeypatch)
+    root = _private_root(tmp_path)
+    support = tmp_path / "codex-package"
+    source = support / "bin" / "codex"
+    asset = support / "asset.dat"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"entry")
+    source.chmod(0o700)
+    asset.write_bytes(b"asset")
+    source_info = source.stat()
+    support_info = support.stat()
+    runtime = evidence._TrustedProviderRuntime(
+        provider="codex", source=source, device=source_info.st_dev,
+        inode=source_info.st_ino, mode=stat.S_IMODE(source_info.st_mode),
+        sha256=evidence._sha256(b"entry"), support_source=support,
+        support_device=support_info.st_dev, support_inode=support_info.st_ino,
+        support_mode=stat.S_IMODE(support_info.st_mode),
+        support_sha256=evidence._runtime_tree_sha256(support),
+        entry_relative="bin/codex",
+    )
+    stage = tmp_path / "stage"
+    home = tmp_path / "home"
+    stage.mkdir()
+    home.mkdir()
+    inventory = evidence.freeze_customization_inventory(
+        home=home, project_dir=stage, env={},
+    )
+    sources = {
+        "inventory": inventory,
+        "home": str(home.resolve(strict=True)),
+        "project": str(stage.resolve(strict=True)),
+    }
+    authority = evidence.ProviderLaunchAuthority(
+        provider="codex", runtime=runtime,
+        namespace=evidence.AgyCanaryNamespace(
+            stage, home, root, "example.invalid",
+        ),
+        auth_records=(),
+        auth_records_sha256=evidence._sha256(evidence._canonical_json(())),
+        customization_sources=sources,
+        customization_sources_sha256=evidence._sha256(
+            evidence._canonical_json(sources)
+        ),
+        minimal_customizations=inventory,
+        minimal_customizations_sha256=evidence._sha256(
+            evidence._canonical_json(inventory)
+        ),
+        auth_placeholders=(),
+        auth_placeholders_sha256=evidence._sha256(evidence._canonical_json(())),
+    )
+    reads: dict[Path, int] = {}
+    real_read = evidence._read_regular_path
+
+    def count_read(path):
+        resolved = Path(path)
+        reads[resolved] = reads.get(resolved, 0) + 1
+        return real_read(resolved)
+
+    monkeypatch.setattr(evidence, "_read_regular_path", count_read)
+    monkeypatch.setattr(
+        evidence, "namespace_self_test", lambda **_kwargs: {"synthetic": True},
+    )
+    monkeypatch.setattr(
+        evidence.subprocess, "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, "", ""),
+    )
+    try:
+        command = authority.preflight(["codex", "exec", "review"])
+        authority.record_review_attempt(command)
+        before_bookkeeping = dict(reads)
+        assert authority.runtime_authority() == evidence._provider_runtime_record(runtime)
+        assert reads == before_bookkeeping
+        # Codex has two preflight subprocesses (version and login status), plus
+        # the actual review attempt.  Each mounted package file is read once at
+        # each of those three boundaries and never during result bookkeeping.
+        assert reads == {source: 3, asset: 3}
+        tampered = evidence._provider_runtime_record(runtime)
+        tampered["sha256"] = "f" * 64
+        object.__setattr__(
+            authority, "_runtime_record_bytes", evidence._canonical_json(tampered),
+        )
+        with pytest.raises(
+            evidence.AgyCanaryEvidenceError,
+            match="in-memory launch authority drifted",
+        ):
+            authority.runtime_authority()
+        assert reads == before_bookkeeping
+    finally:
+        shutil.rmtree(root)
+
+
 def test_provider_launch_authority_revalidates_runtime_and_exactly_ingests_output(monkeypatch, tmp_path):
     _mock_canonical_bwrap(monkeypatch)
     root = _private_root(tmp_path)
@@ -4008,6 +4255,56 @@ def test_advisor_board_cli_real_invoker_capture_path_binds_stage_before_launch(m
     monkeypatch.setenv("PHASE_LOOP_AGY_CANARY_EVIDENCE_DIR", str(root))
     assert cli._advisor_board_command(args=argparse.Namespace(artifact=str(artifact), json=True, agy_canary_private_board_name="real.json")) == 2
     assert not seen and not self_tests
+    shutil.rmtree(root)
+
+
+def test_advisor_board_capture_uses_metadata_board_before_any_provider_probe(
+    monkeypatch, tmp_path,
+):
+    from phase_loop_runtime import panel_invoker
+    from phase_loop_runtime.advisor_board import composition
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+
+    root = _private_root(tmp_path)
+    capture = _prepare_production_capture(
+        monkeypatch=monkeypatch, tmp_path=tmp_path, root=root,
+        settings=_settings(tmp_path, []),
+        seat_key="gemini:gemini-3.6-flash:high", plan_bytes=b"review",
+    )
+    capture.close()
+    artifact = tmp_path / "artifact.md"
+    artifact.write_text("review")
+    reached_stage = False
+
+    def forbid_compose(*_args, **_kwargs):
+        raise AssertionError("capture mode must not run availability/auth composition")
+
+    def forbid_subprocess(*_args, **_kwargs):
+        if not reached_stage:
+            raise AssertionError("provider subprocess ran before staged authority")
+        return subprocess.CompletedProcess([], 0, "", "")
+
+    def bind_stage(*_args, **_kwargs):
+        nonlocal reached_stage
+        reached_stage = True
+
+    def stop_after_stage(*_args, **_kwargs):
+        assert reached_stage
+        raise evidence.AgyCanaryEvidenceError("stop after staged authority")
+
+    monkeypatch.setattr(composition, "compose_review_board", forbid_compose)
+    monkeypatch.setattr(panel_invoker.subprocess, "run", forbid_subprocess)
+    monkeypatch.setattr(panel_invoker, "bind_staged_review_inputs", bind_stage)
+    monkeypatch.setattr(
+        panel_invoker, "prepare_provider_launch_authorities", stop_after_stage,
+    )
+    monkeypatch.setenv("PHASE_LOOP_AGY_CANARY_EVIDENCE_DIR", str(root))
+    assert cli._advisor_board_command(args=argparse.Namespace(
+        artifact=str(artifact), json=True,
+        agy_canary_private_board_name="private.json",
+    )) == 2
+    assert reached_stage
+    assert DEFAULT_BOARD.seats
     shutil.rmtree(root)
 
 
