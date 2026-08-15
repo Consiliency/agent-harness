@@ -58,46 +58,66 @@ class SkillsBundleDriftTest(unittest.TestCase):
                     )
 
     def test_proofgate_validator_and_guidance_are_generated_without_drift(self):
-        from .proofgate_tdd_guard import ProofgateMissingCapabilityError, guard_proofgate_nodeid, run_proofgate_contract
+        from .proofgate_content_tdd_adapter import ProofgateMissingCapabilityError, guard_proofgate_nodeid, run_proofgate_contract
         nodeid = "phase-loop-runtime/tests/test_skills_bundle_drift.py::SkillsBundleDriftTest::test_proofgate_validator_and_guidance_are_generated_without_drift"
         if not guard_proofgate_nodeid(nodeid):
             return
 
         def _contract():
-            sync = _load_sync()
-            if not hasattr(sync, "verify_proofgate_validator_and_guidance_drift"):
-                raise ProofgateMissingCapabilityError("sync_skills_bundle missing verify_proofgate_validator_and_guidance_drift capability")
+            if SRC_SKILLS.is_dir() and SYNC.is_file():
+                sync = _load_sync()
+                bundled_skill = SRC_SKILLS / "plan-phase" / "SKILL.md"
+                if not bundled_skill.exists():
+                    raise ProofgateMissingCapabilityError(f"Bundled skill doc missing: {bundled_skill}")
+                bundled_text = bundled_skill.read_text(encoding="utf-8")
+                if "falsified by" not in bundled_text and "Falsifier:" not in bundled_text:
+                    raise ProofgateMissingCapabilityError(
+                        f"Bundled skill doc {bundled_skill.name} missing falsifier grammar"
+                    )
 
-            with tempfile.TemporaryDirectory() as td:
-                self.assertTrue(SRC_SKILLS.is_dir(), "phase-loop-skills source directory missing")
+                with tempfile.TemporaryDirectory() as td:
+                    regen = sync.assemble_bundle(SRC_SKILLS, Path(td) / "skills_bundle")
+                    for gen_file in regen.rglob("*"):
+                        if gen_file.is_file() and "__pycache__" not in gen_file.parts and not gen_file.name.endswith(".pyc"):
+                            rel = gen_file.relative_to(regen)
+                            com_file = COMMITTED / rel
+                            self.assertTrue(com_file.is_file(), f"Committed file missing for regenerated {rel}")
+                            self.assertEqual(
+                                gen_file.read_bytes(),
+                                com_file.read_bytes(),
+                                f"Regenerated and committed {rel} must have byte parity",
+                            )
 
-                regen = sync.assemble_bundle(SRC_SKILLS, Path(td) / "skills_bundle")
-                for gen_file in regen.rglob("*"):
-                    if gen_file.is_file() and "__pycache__" not in gen_file.parts and not gen_file.name.endswith(".pyc"):
-                        rel = gen_file.relative_to(regen)
-                        com_file = COMMITTED / rel
-                        self.assertTrue(com_file.is_file(), f"Committed file missing for regenerated {rel}")
-                        self.assertEqual(
-                            gen_file.read_bytes(),
-                            com_file.read_bytes(),
-                            f"Regenerated and committed {rel} must have byte parity",
-                        )
-
-                # Check literals on committed bundle files
-                committed_val_file = COMMITTED / "claude-plan-phase" / "scripts" / "validate_plan_doc.py"
-                self.assertTrue(committed_val_file.is_file(), "validate_plan_doc.py missing in committed skills_bundle")
-                val_txt = committed_val_file.read_text(encoding="utf-8")
-                self.assertTrue(
-                    "missing_falsifier" in val_txt and "vacuous_falsifier" in val_txt and "missing_path_entered_control" in val_txt,
-                    "validate_plan_doc.py missing proofgate reason code literals",
+            # Installed-wheel layouts intentionally omit the source generator and
+            # sibling skill tree, but must still carry the governed literals.
+            committed_val_file = COMMITTED / "claude-plan-phase" / "scripts" / "validate_plan_doc.py"
+            if not committed_val_file.is_file():
+                raise ProofgateMissingCapabilityError(
+                    "validate_plan_doc.py missing in committed skills_bundle"
+                )
+            val_txt = committed_val_file.read_text(encoding="utf-8")
+            if not (
+                "missing_falsifier" in val_txt
+                and "vacuous_falsifier" in val_txt
+                and "missing_path_entered_control" in val_txt
+            ):
+                raise ProofgateMissingCapabilityError(
+                    "validate_plan_doc.py missing proofgate reason code literals"
                 )
 
-                committed_guidance_file = COMMITTED / "claude-plan-phase" / "SKILL.md"
-                self.assertTrue(committed_guidance_file.is_file(), "plan-phase SKILL.md missing in committed skills_bundle")
-                guidance_txt = committed_guidance_file.read_text(encoding="utf-8")
-                self.assertTrue(
-                    "Falsifier:" in guidance_txt or "falsified by" in guidance_txt or "path-entered control" in guidance_txt,
-                    "plan-phase SKILL.md missing proofgate grammar literals",
+            committed_guidance_file = COMMITTED / "claude-plan-phase" / "SKILL.md"
+            if not committed_guidance_file.is_file():
+                raise ProofgateMissingCapabilityError(
+                    "plan-phase SKILL.md missing in committed skills_bundle"
+                )
+            guidance_txt = committed_guidance_file.read_text(encoding="utf-8")
+            if not (
+                "Falsifier:" in guidance_txt
+                or "falsified by" in guidance_txt
+                or "path-entered control" in guidance_txt
+            ):
+                raise ProofgateMissingCapabilityError(
+                    "plan-phase SKILL.md missing proofgate grammar literals"
                 )
 
         run_proofgate_contract(nodeid, _contract)

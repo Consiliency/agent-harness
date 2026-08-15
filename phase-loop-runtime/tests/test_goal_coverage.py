@@ -80,7 +80,7 @@ class GoalCoverageTest(unittest.TestCase):
         self.assertTrue(r.applicable)
 
     def test_acceptance_contracts_classify_valid_invalid_and_grandfathered(self):
-        from .proofgate_tdd_guard import (
+        from .proofgate_content_tdd_adapter import (
             PROOFGATE_GRANDFATHER_CUTOFF_OID,
             PROOFGATE_GRANDFATHER_SERVER_DATE,
             PROOFGATE_GRANDFATHER_SUCCESSOR_OID,
@@ -348,25 +348,25 @@ class GoalCoverageCloseoutTest(unittest.TestCase):
                 os.environ["PHASE_LOOP_ACCEPTANCE_ENFORCE"] = old
 
     def test_gap_blocks_under_enforce_warns_default(self):
-        ev, blk = self._run_closeout(["EC-P1-1 — a", "EC-P1-2 — b"], ["EC-P1-1 — t"], "block")
+        ev, blk = self._run_closeout(["EC-P1-1 — a", "EC-P1-2 — b"], ["EC-P1-1 — proven by t, falsified by fails if t fails"], "block")
         self.assertIsNotNone(blk)
         self.assertFalse(blk["human_required"])
-        ev, blk = self._run_closeout(["EC-P1-1 — a", "EC-P1-2 — b"], ["EC-P1-1 — t"], None)
+        ev, blk = self._run_closeout(["EC-P1-1 — a", "EC-P1-2 — b"], ["EC-P1-1 — proven by t, falsified by fails if t fails"], None)
         self.assertIsNone(blk)  # warn-default
         self.assertIsNotNone(ev)  # but evidence recorded
 
     def test_setup_error_blocks_under_enforce(self):
-        ev, blk = self._run_closeout(["EC-P1-1 — a"], ["EC-P1-1 — t"], "block", break_sha=True)
+        ev, blk = self._run_closeout(["EC-P1-1 — a"], ["EC-P1-1 — proven by t, falsified by fails if t fails"], "block", break_sha=True)
         self.assertIsNotNone(blk)
 
     def test_exception_fails_closed_under_enforce(self):
-        ev, blk = self._run_closeout(["EC-P1-1 — a"], ["EC-P1-1 — t"], "block", patch_exc=True)
+        ev, blk = self._run_closeout(["EC-P1-1 — a"], ["EC-P1-1 — proven by t, falsified by fails if t fails"], "block", patch_exc=True)
         self.assertIsNotNone(blk)
-        ev, blk = self._run_closeout(["EC-P1-1 — a"], ["EC-P1-1 — t"], None, patch_exc=True)
+        ev, blk = self._run_closeout(["EC-P1-1 — a"], ["EC-P1-1 — proven by t, falsified by fails if t fails"], None, patch_exc=True)
         self.assertIsNone(blk)  # warn-default: exception does not block
 
     def test_clean_records_evidence_no_block(self):
-        ev, blk = self._run_closeout(["EC-P1-1 — a"], ["EC-P1-1 — proven by t"], "block")
+        ev, blk = self._run_closeout(["EC-P1-1 — a"], ["EC-P1-1 — proven by t, falsified by fails if t fails"], "block")
         self.assertIsNone(blk)
         self.assertIsNotNone(ev)
 
@@ -409,7 +409,7 @@ class GoalCoveragePerformCloseoutTest(unittest.TestCase):
             # plan owns README.md and references only EC-GC-1 -> EC-GC-2 is a coverage gap
             plan = write_phase_plan(
                 repo, "GC", roadmap,
-                body="# GC\n\n## Acceptance Criteria\n- [ ] EC-GC-1 — proven by `t`\n",
+                body="# GC\n\n## Acceptance Criteria\n- [ ] EC-GC-1 — proven by `t`, falsified by `fails if t fails`\n",
                 owned_files=("README.md",),
             )
             commit_fixture_paths(repo, "add GC plan", plan)

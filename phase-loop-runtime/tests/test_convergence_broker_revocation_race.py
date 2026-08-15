@@ -103,7 +103,7 @@ def _pcb_request(admission_key="adm-1", *, repo="repo", branch="feat/x", head="a
 # admission layer. Mutation to kill: drop `epoch_blocked=evidence_store.epoch_blocked`
 # at either `build_*` site -> these fail.
 
-from .proofgate_tdd_guard import assert_exact_mutation_observable, emit_mutation_observable
+from .proofgate_content_tdd_adapter import assert_exact_mutation_observable, emit_mutation_observable
 
 
 def _assert_ec4_oracle_descriptor(param_id: str, expected_assertion_id: str) -> None:
@@ -145,35 +145,54 @@ def _assert_wired(service, record_property, *, param_id=None):
 
 
 def test_github_broker_admission_store_is_wired_to_evidence_revocation(tmp_path, record_property):
-    from .proofgate_tdd_guard import guard_proofgate_nodeid
+    from .proofgate_content_tdd_adapter import ProofgateMissingCapabilityError, guard_proofgate_nodeid, run_proofgate_contract
     nodeid = "phase-loop-runtime/tests/test_convergence_broker_revocation_race.py::test_github_broker_admission_store_is_wired_to_evidence_revocation"
-    guard_proofgate_nodeid(nodeid)
-    _assert_ec4_oracle_descriptor(
-        "ec-proofgate-4.github-builder-epoch-blocked",
-        "github_builder_epoch_blocked_wiring",
-    )
-    service = build_github_broker_client(tmp_path / "repo", broker_root=tmp_path / "broker")
-    _assert_wired(
-        service,
-        record_property,
-        param_id="ec-proofgate-4.github-builder-epoch-blocked",
-    )
+    if not guard_proofgate_nodeid(nodeid):
+        return
+
+    def _contract():
+        from phase_loop_runtime import verification_evidence
+        if not hasattr(verification_evidence, "verify_proofgate_mutation_bindings"):
+            raise ProofgateMissingCapabilityError("verify_proofgate_mutation_bindings interface missing on verification_evidence")
+
+        service = build_github_broker_client(tmp_path / "repo", broker_root=tmp_path / "broker")
+        _assert_ec4_oracle_descriptor(
+            "ec-proofgate-4.github-builder-epoch-blocked",
+            "github_builder_epoch_blocked_wiring",
+        )
+        _assert_wired(
+            service,
+            record_property,
+            param_id="ec-proofgate-4.github-builder-epoch-blocked",
+        )
+
+    run_proofgate_contract(nodeid, _contract)
 
 
 def test_routing_broker_admission_store_is_wired_to_evidence_revocation(tmp_path, record_property):
-    from .proofgate_tdd_guard import guard_proofgate_nodeid
+    from .proofgate_content_tdd_adapter import ProofgateMissingCapabilityError, guard_proofgate_nodeid, run_proofgate_contract
     nodeid = "phase-loop-runtime/tests/test_convergence_broker_revocation_race.py::test_routing_broker_admission_store_is_wired_to_evidence_revocation"
-    guard_proofgate_nodeid(nodeid)
-    _assert_ec4_oracle_descriptor(
-        "ec-proofgate-4.routing-builder-epoch-blocked",
-        "routing_builder_epoch_blocked_wiring",
-    )
-    client = build_routing_broker_client(broker_root=tmp_path / "broker")
-    _assert_wired(
-        client._service_for(str(tmp_path / "repo")),
-        record_property,
-        param_id="ec-proofgate-4.routing-builder-epoch-blocked",
-    )
+    if not guard_proofgate_nodeid(nodeid):
+        return
+
+    def _contract():
+        from phase_loop_runtime import verification_evidence
+        if not hasattr(verification_evidence, "verify_proofgate_mutation_bindings"):
+            raise ProofgateMissingCapabilityError("verify_proofgate_mutation_bindings interface missing on verification_evidence")
+
+        client = build_routing_broker_client(broker_root=tmp_path / "broker")
+        service = client._service_for(str(tmp_path / "repo"))
+        _assert_ec4_oracle_descriptor(
+            "ec-proofgate-4.routing-builder-epoch-blocked",
+            "routing_builder_epoch_blocked_wiring",
+        )
+        _assert_wired(
+            service,
+            record_property,
+            param_id="ec-proofgate-4.routing-builder-epoch-blocked",
+        )
+
+    run_proofgate_contract(nodeid, _contract)
 
 
 # --- (B) end-to-end: execute refuses a publish when a revocation precedes admit -------

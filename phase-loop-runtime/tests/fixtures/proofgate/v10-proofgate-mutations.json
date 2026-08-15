@@ -9,18 +9,18 @@
       "parameters": [
         {
           "parameter_id": "ec-proofgate-0.chronology-guard",
-          "target_path": "phase-loop-runtime/tests/proofgate_bootstrap_verifier.py",
-          "injection_anchor": "def verify_junit_accounting(junit_xml_str: str, mode: str, *, phase_reports: list[dict[str, Any]] | Path | str | None = None, runner_envelope: dict[str, Any] | None = None, expected_attended_head_identity: str | None = None, expected_attended_stage: str | None = None, expected_attended_module_identity: str | None = None, strict_nodeids: bool = True) -> dict[str, Any]:",
-          "replacement_bytes": "def verify_junit_accounting(junit_xml_str: str, mode: str, *, phase_reports: list[dict[str, Any]] | Path | str | None = None, runner_envelope: dict[str, Any] | None = None, expected_attended_head_identity: str | None = None, expected_attended_stage: str | None = None, expected_attended_module_identity: str | None = None, strict_nodeids: bool = True) -> dict[str, Any]:\n    return {\"mode\": mode, \"collected\": 39, \"passed\": 39, \"skipped\": 0, \"failed\": 0}\ndef _disabled_verify_junit_accounting(junit_xml_str: str, mode: str, *, phase_reports: list[dict[str, Any]] | Path | str | None = None, runner_envelope: dict[str, Any] | None = None, expected_attended_head_identity: str | None = None, expected_attended_stage: str | None = None, expected_attended_module_identity: str | None = None, strict_nodeids: bool = True) -> dict[str, Any]:",
-          "proof_command": ["python3", "-m", "pytest", "phase-loop-runtime/tests/test_tdd_chronology.py::test_junit_lifecycle_requires_exact_nodeids_default_skip_red_failures_and_final_zero_skips", "-p", "proofgate_tdd_guard", "-o", "junit_family=legacy", "--junitxml=$PHASE_LOOP_RUN_DIR/proofgate_junit_ec-proofgate-0.chronology-guard.xml", "-q"],
-          "target_nodeid": "phase-loop-runtime/tests/test_tdd_chronology.py::test_junit_lifecycle_requires_exact_nodeids_default_skip_red_failures_and_final_zero_skips",
+          "target_path": "phase-loop-runtime/tests/proofgate_content_tdd_adapter.py",
+          "injection_anchor": "def verify_proofgate_content_tdd_junit(",
+          "replacement_bytes": "def verify_proofgate_content_tdd_junit(junit_xml_str_or_path: str | Path, expected_nodeids: tuple[str, ...] = (), group_name: str = \"\") -> dict[str, Any]:\n    return {\"ok\": False, \"error\": \"chronology_guard_unwired\", \"passed\": 0, \"failed\": 1, \"skipped\": 0}\ndef _disabled_verify_proofgate_content_tdd_junit(",
+          "proof_command": ["python3", "-m", "pytest", "phase-loop-runtime/tests/test_verification_evidence.py::VerificationEvidenceTest::test_proofgate_v3_chronology_guard_unmatched_anchor_is_mutation_not_applied", "-p", "proofgate_tdd_guard", "-o", "junit_family=legacy", "--junitxml=$PHASE_LOOP_RUN_DIR/proofgate_junit_ec-proofgate-0.chronology-guard.xml", "-q"],
+          "target_nodeid": "phase-loop-runtime/tests/test_verification_evidence.py::VerificationEvidenceTest::test_proofgate_v3_chronology_guard_unmatched_anchor_is_mutation_not_applied",
           "expected_failure_class": "tdd_chronology_rejection",
           "expected_observable": {
             "roadmap_criterion_id": "EC-PROOFGATE-0",
             "roadmap_criterion_sha256": "1c6230d9b116fc9fb758df530f4319d2570c4500fc0f793e960bfffea0beb4b1",
             "rule_id": "ec-proofgate-0.chronology-guard",
             "channel": "pytest_junit_call_property",
-            "target_nodeid": "phase-loop-runtime/tests/test_tdd_chronology.py::test_junit_lifecycle_requires_exact_nodeids_default_skip_red_failures_and_final_zero_skips",
+            "target_nodeid": "phase-loop-runtime/tests/test_verification_evidence.py::VerificationEvidenceTest::test_proofgate_v3_chronology_guard_unmatched_anchor_is_mutation_not_applied",
             "result_code": "chronology_guard_unwired"
           }
         }
@@ -58,8 +58,8 @@
         {
           "parameter_id": "ec-proofgate-2.mutation-application",
           "target_path": "phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py",
-          "injection_anchor": "EXTENSION_NAMESPACE_REGISTRY: dict[str, str] = {\n    \"phase_loop_runtime.legible_evidence\": \"verification_evidence_sidecar.v1\",\n}",
-          "replacement_bytes": "EXTENSION_NAMESPACE_REGISTRY: dict[str, str] = {\n    \"phase_loop_runtime.legible_evidence\": \"mutated_disabled_schema.v1\",\n}",
+          "injection_anchor": "EXTENSION_NAMESPACE_REGISTRY[namespace] = schema",
+          "replacement_bytes": "pass # EXTENSION_NAMESPACE_REGISTRY[namespace] = schema",
           "proof_command": ["python3", "-m", "pytest", "phase-loop-runtime/tests/test_verification_evidence.py::VerificationEvidenceTest::test_proofgate_v3_rejects_candidate_or_command_digest_drift", "-p", "proofgate_tdd_guard", "-o", "junit_family=legacy", "--junitxml=$PHASE_LOOP_RUN_DIR/proofgate_junit_ec-proofgate-2.mutation-application.xml", "-q"],
           "target_nodeid": "phase-loop-runtime/tests/test_verification_evidence.py::VerificationEvidenceTest::test_proofgate_v3_rejects_candidate_or_command_digest_drift",
           "expected_failure_class": "mutation_application_rejection",
