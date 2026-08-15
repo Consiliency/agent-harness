@@ -2652,7 +2652,10 @@ def test_sealed_bootstrap_source_preserves_repo_zero_and_reads_exact_pin(tmp_pat
 
 @pytest.mark.parametrize(
     "mutation",
-    ["bootstrap_file", "bootstrap_symlink", "hook_file", "hook_symlink", "hooks_symlink"],
+    [
+        "bootstrap_file", "bootstrap_symlink", "hook_file", "hook_symlink",
+        "hooks_symlink", "hooks_unsafe_mode",
+    ],
 )
 def test_bootstrap_local_source_seams_reject_files_and_symlinks(tmp_path, mutation):
     repo = tmp_path / "dotfiles"
@@ -2667,11 +2670,14 @@ def test_bootstrap_local_source_seams_reject_files_and_symlinks(tmp_path, mutati
         (repo / "hooks").symlink_to(tmp_path, target_is_directory=True)
     else:
         (repo / "hooks").mkdir()
-        seam = repo / "hooks" / "post-bootstrap.local.sh"
-        if mutation == "hook_file":
-            seam.write_text("attacker\n")
+        if mutation == "hooks_unsafe_mode":
+            (repo / "hooks").chmod(0o777)
         else:
-            seam.symlink_to(target)
+            seam = repo / "hooks" / "post-bootstrap.local.sh"
+            if mutation == "hook_file":
+                seam.write_text("attacker\n")
+            else:
+                seam.symlink_to(target)
     with pytest.raises(evidence.AgyCanaryEvidenceError, match="local source seam"):
         evidence._bootstrap_local_source_seams(repo)
 
@@ -2684,6 +2690,19 @@ def test_bootstrap_receipt_revalidates_local_source_seam_absence(tmp_path):
     (repo / "bootstrap.local.sh").write_text("attacker\n")
     with pytest.raises(evidence.AgyCanaryEvidenceError, match="local source seam"):
         evidence._validate_bootstrap_attestation(receipt=receipt)
+
+
+def test_bootstrap_receipt_rejects_matching_decoy_source_path(tmp_path):
+    repo = tmp_path / "dotfiles"
+    receipt = _bootstrap_receipt(
+        installation=_installation_identity(), dotfiles_repo=repo,
+    )
+    decoy = tmp_path / "decoy" / "bootstrap.sh"
+    decoy.parent.mkdir()
+    decoy.write_bytes((repo / "bootstrap.sh").read_bytes())
+    receipt["bootstrap"]["argv"][3] = str(decoy)
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="canonical repository"):
+        evidence._validate_bootstrap_attestation(receipt=receipt, repo=repo)
 
 
 def test_uv_store_authority_rejects_symlink_and_sealed_identity_drift(tmp_path):

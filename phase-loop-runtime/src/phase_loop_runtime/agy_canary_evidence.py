@@ -3385,9 +3385,12 @@ def _bootstrap_local_source_seams(repo: Path) -> dict[str, str]:
         hooks_info = hooks.lstat()
     except FileNotFoundError:
         hooks_info = None
-    if hooks_info is not None and (
-            stat.S_ISLNK(hooks_info.st_mode) or not stat.S_ISDIR(hooks_info.st_mode)):
-        raise AgyCanaryEvidenceError("bootstrap local source seam parent is unsafe")
+    if hooks_info is not None:
+        hooks_mode = stat.S_IMODE(hooks_info.st_mode)
+        if (stat.S_ISLNK(hooks_info.st_mode) or not stat.S_ISDIR(hooks_info.st_mode) or
+                hooks_info.st_uid != repo.stat().st_uid or
+                hooks_mode & (stat.S_IWGRP | stat.S_IWOTH)):
+            raise AgyCanaryEvidenceError("bootstrap local source seam parent is unsafe")
     for relative in _BOOTSTRAP_LOCAL_SOURCE_SEAMS:
         try:
             (repo / relative).lstat()
@@ -3670,6 +3673,8 @@ def _validate_bootstrap_attestation(
             ))):
         raise AgyCanaryEvidenceError("bootstrap attestation child identity is malformed")
     bootstrap_path = Path(argv[3])
+    if repo is not None and bootstrap_path != repo.resolve(strict=True) / "bootstrap.sh":
+        raise AgyCanaryEvidenceError("bootstrap attestation source path differs from canonical repository")
     try:
         bootstrap_bytes, bootstrap_info = _read_regular_path(bootstrap_path)
     except (FileNotFoundError, OSError) as exc:
