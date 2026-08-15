@@ -2154,13 +2154,10 @@ def test_bootstrap_environment_never_uses_attacker_path_or_home(monkeypatch, tmp
     monkeypatch.setattr(evidence, "_account_home", lambda: account_home)
     monkeypatch.setenv("PATH", f"{attacker_bin}:/usr/bin")
     monkeypatch.setenv("HOME", str(account_home))
-    environment = evidence._bootstrap_environment(nonce="n", uv_executable=Path("/trusted/uv"), account_home=account_home)
+    environment = evidence._bootstrap_environment(uv_executable=Path("/trusted/uv"), account_home=account_home)
     assert environment["PATH"].startswith("/trusted:")
     assert str(attacker_bin) not in environment["PATH"]
-    assert environment["BOOTSTRAP_ATTESTATION_NONCE"] == "n"
-    assert not any(
-        name.startswith(("PHASE_LOOP_", "AGENT_HARNESS_")) for name in environment
-    )
+    assert not any(name.startswith(("PHASE_LOOP_", "AGENT_HARNESS_")) or "NONCE" in name for name in environment)
     assert evidence._canonical_bash() != attacker_bin / "bash"
     assert evidence._canonical_uv() == trusted_uv
     fake_home = tmp_path / "attacker-home"
@@ -2172,7 +2169,66 @@ def test_bootstrap_environment_never_uses_attacker_path_or_home(monkeypatch, tmp
     assert evidence._canonical_uv() == trusted_uv
     assert evidence._canonical_uv() != fake_uv
     with pytest.raises(evidence.AgyCanaryEvidenceError, match="HOME drift"):
-        evidence._bootstrap_environment(nonce="n", uv_executable=Path("/trusted/uv"), account_home=account_home)
+        evidence._bootstrap_environment(uv_executable=Path("/trusted/uv"), account_home=account_home)
+
+
+def test_bootstrap_attestation_has_no_parent_only_nonce_claim(monkeypatch, tmp_path):
+    root = _private_root(tmp_path)
+    repo = tmp_path / "dotfiles"
+    plan = repo / "plans" / "canary.md"
+    plan.parent.mkdir(parents=True)
+    (repo / "shared").mkdir()
+    (repo / "bootstrap.sh").write_text("#!/bin/sh\nexit 0\n")
+    (repo / "shared" / "agent-harness.pin").write_text("v0.7.14\n")
+    plan.write_text("# canary\n")
+    (repo / "plans" / "manifest.json").write_text("{}\n")
+    _git_repo(repo)
+    uv = tmp_path / "uv"
+    uv.write_text("#!/bin/sh\nexit 0\n")
+    uv.chmod(0o700)
+    installation = {"version": "0.7.14", "identity": "trusted"}
+    monkeypatch.setattr(evidence, "_canonical_bash", lambda: Path("/bin/bash"))
+    monkeypatch.setattr(evidence, "_canonical_uv", lambda: uv)
+    monkeypatch.setattr(evidence, "_installed_phase_loop_identity", lambda **_kwargs: installation)
+    snapshot = tmp_path / "bootstrap-snapshot"
+
+    def fake_memfd_create(_name, _flags):
+        return os.open(snapshot, os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o600)
+
+    seals = type(
+        "Seals",
+        (),
+        {
+            "F_SEAL_WRITE": 1,
+            "F_SEAL_GROW": 2,
+            "F_SEAL_SHRINK": 4,
+            "F_SEAL_SEAL": 8,
+            "F_ADD_SEALS": 16,
+            "F_GET_SEALS": 17,
+            "fcntl": staticmethod(lambda _fd, command, _arg=None: 15 if command == 17 else 0),
+        },
+    )
+    monkeypatch.setattr(evidence.os, "memfd_create", fake_memfd_create, raising=False)
+    monkeypatch.setattr(evidence.os, "MFD_CLOEXEC", 0, raising=False)
+    monkeypatch.setattr(evidence.os, "MFD_ALLOW_SEALING", 1, raising=False)
+    monkeypatch.setattr(evidence, "fcntl", seals)
+    monkeypatch.setattr(evidence.sys, "platform", "linux")
+    for name in list(os.environ):
+        if name.startswith(("PHASE_LOOP_", "AGENT_HARNESS_")):
+            monkeypatch.delenv(name)
+    try:
+        receipt = evidence.bootstrap_attest(
+            evidence_root=root, dotfiles_repo=repo, plan_path=Path("plans/canary.md")
+        )
+        assert receipt["bootstrap"]["returncode"] == 0
+        assert receipt["bootstrap"]["installation"] == installation
+        assert "nonce_sha256" not in receipt
+        assert not any(
+            name.startswith(("PHASE_LOOP_", "AGENT_HARNESS_")) or "NONCE" in name
+            for name in receipt["bootstrap"]["environment_names"]
+        )
+    finally:
+        shutil.rmtree(root)
 
 
 def test_release_lineage_uses_merged_handoff_and_rehashes_downloads(tmp_path, monkeypatch):

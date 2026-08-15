@@ -3025,7 +3025,7 @@ def _clean_dotfiles_repo(repo: Path) -> str:
     return _git_text(repo, "rev-parse", "HEAD")
 
 
-def _bootstrap_environment(*, nonce: str, uv_executable: Path, account_home: Path) -> dict[str, str]:
+def _bootstrap_environment(*, uv_executable: Path, account_home: Path) -> dict[str, str]:
     """Use an explicit allowlist, never the caller's ambient environment."""
     supplied_home = os.environ.get("HOME")
     if supplied_home is not None and Path(supplied_home).resolve(strict=False) != account_home:
@@ -3034,14 +3034,13 @@ def _bootstrap_environment(*, nonce: str, uv_executable: Path, account_home: Pat
     env = {name: os.environ[name] for name in allowed if name in os.environ}
     env["HOME"] = str(account_home)
     env["PATH"] = str(uv_executable.parent) + ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-    env["BOOTSTRAP_ATTESTATION_NONCE"] = nonce
     return env
 
 
 def bootstrap_attest(
     *, evidence_root: Path, dotfiles_repo: Path, plan_path: Path
 ) -> dict[str, Any]:
-    """Directly run committed bootstrap and attest its nonce-bound child result."""
+    """Directly run committed bootstrap and attest its direct child result."""
     disallowed_overrides = sorted(
         key for key in os.environ
         if key in {"DEV_EDITABLE", "PYTHONPATH", "PYTHONHOME"}
@@ -3065,10 +3064,9 @@ def bootstrap_attest(
     pin = (repo / "shared" / "agent-harness.pin").read_text(encoding="utf-8").strip()
     if pin != "v0.7.14":
         raise AgyCanaryEvidenceError("bootstrap attestation requires the v0.7.14 fleet pin")
-    nonce = secrets.token_hex(24)
     bash = _canonical_bash()
     uv = _canonical_uv()
-    child_env = _bootstrap_environment(nonce=nonce, uv_executable=uv, account_home=_account_home())
+    child_env = _bootstrap_environment(uv_executable=uv, account_home=_account_home())
     script_bytes = inputs["bootstrap.sh"]
     def revalidate_inputs() -> None:
         if _clean_dotfiles_repo(repo) != head:
@@ -3140,7 +3138,6 @@ def bootstrap_attest(
             "blobs": identities,
             "input_sha256": {name: _sha256(data) for name, data in inputs.items()},
             "targets": {"plan": plan_relative, "manifest": "plans/manifest.json"},
-            "nonce_sha256": _sha256(nonce.encode()),
             "bootstrap": {
                 "argv": list(bootstrap_argv),
                 "pid": child_process.pid,
