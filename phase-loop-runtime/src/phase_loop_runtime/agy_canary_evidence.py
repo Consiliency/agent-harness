@@ -5915,8 +5915,8 @@ def _attested_final_targets(
     bootstrap = _validate_bootstrap_attestation(
         receipt=_read_json_at(root_fd, "agy_canary_bootstrap_attestation.json"), repo=repo
     )
-    current_head = _clean_dotfiles_repo(repo) if require_preimages else _git_text(repo, "rev-parse", "HEAD")
-    if bootstrap.get("repo_head") != current_head:
+    current_head = _clean_dotfiles_repo(repo) if require_preimages else None
+    if require_preimages and bootstrap.get("repo_head") != current_head:
         raise AgyCanaryEvidenceError("dotfiles worktree no longer matches bootstrap-attested HEAD")
     targets = bootstrap.get("targets")
     blobs = bootstrap.get("blobs")
@@ -5985,7 +5985,62 @@ def check_private_final(
             raise AgyCanaryEvidenceError("private finalizer receipt has an invalid manifest preimage")
         matches[0]["updated_at"] = completed_at
         manifest_after = _canonical_json(manifest_value)
-        if (repo / plan_relative).read_bytes() != plan_after or (repo / manifest_relative).read_bytes() != manifest_after:
+        candidate = bootstrap_receipt["repo_head"]
+        candidate_plan = subprocess.run(
+            ["git", "-C", str(repo), "show", f"{candidate}:{plan_relative}"],
+            capture_output=True, check=False,
+        )
+        candidate_manifest = subprocess.run(
+            ["git", "-C", str(repo), "show", f"{candidate}:{manifest_relative}"],
+            capture_output=True, check=False,
+        )
+        if (candidate_plan.returncode != 0 or candidate_manifest.returncode != 0 or
+                candidate_plan.stdout != plan_before or
+                candidate_manifest.stdout != manifest_before):
+            raise AgyCanaryEvidenceError(
+                "private finalizer preimages differ from bootstrap candidate"
+            )
+        current_head = _git_text(repo, "rev-parse", "HEAD")
+        if current_head == candidate:
+            changed = _git_text(repo, "diff", "--name-only", candidate).splitlines()
+            staged = _git_text(
+                repo, "diff", "--cached", "--name-only", candidate,
+            ).splitlines()
+            untracked = _git_text(
+                repo, "ls-files", "--others", "--exclude-standard",
+            ).splitlines()
+            if (sorted(changed) != sorted([plan_relative, manifest_relative]) or
+                    any(path not in {plan_relative, manifest_relative} for path in staged) or
+                    untracked):
+                raise AgyCanaryEvidenceError(
+                    "private finalizer worktree changed unexpected paths"
+                )
+            actual_plan = (repo / plan_relative).read_bytes()
+            actual_manifest = (repo / manifest_relative).read_bytes()
+        else:
+            finalized = _clean_dotfiles_repo(repo)
+            changed = _git_text(
+                repo, "diff", "--name-only", candidate, finalized,
+            ).splitlines()
+            if sorted(changed) != sorted([plan_relative, manifest_relative]):
+                raise AgyCanaryEvidenceError(
+                    "private finalizer committed transition changed unexpected paths"
+                )
+            actual_plan_proc = subprocess.run(
+                ["git", "-C", str(repo), "show", f"{finalized}:{plan_relative}"],
+                capture_output=True, check=False,
+            )
+            actual_manifest_proc = subprocess.run(
+                ["git", "-C", str(repo), "show", f"{finalized}:{manifest_relative}"],
+                capture_output=True, check=False,
+            )
+            if actual_plan_proc.returncode != 0 or actual_manifest_proc.returncode != 0:
+                raise AgyCanaryEvidenceError(
+                    "private finalizer committed outputs are unavailable"
+                )
+            actual_plan = actual_plan_proc.stdout
+            actual_manifest = actual_manifest_proc.stdout
+        if actual_plan != plan_after or actual_manifest != manifest_after:
             raise AgyCanaryEvidenceError("tracked finalizer output drifted from its sealed preimages")
         return {
             **proof,

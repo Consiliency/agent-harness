@@ -2413,6 +2413,34 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
         final_manifest = manifest.read_bytes()
         subprocess.run(["git", "-C", str(repo), "add", "plans/canary.md", "plans/manifest.json"], check=True)
         subprocess.run(["git", "-C", str(repo), "commit", "-qm", "candidate finalize"], check=True)
+        evidence_commit = subprocess.check_output(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        committed_private = evidence.check_private_final(
+            evidence_root=root, expected_seat_key="gemini-primary",
+            dotfiles_repo=repo, plan_path=Path("plans/canary.md"),
+            manifest_path=Path("plans/manifest.json"), plan_slug="agy-canary",
+        )
+        assert committed_private == checked
+        subprocess.run(["git", "-C", str(repo), "checkout", "-q", base], check=True)
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="unexpected paths"):
+            evidence.check_private_final(
+                evidence_root=root, expected_seat_key="gemini-primary",
+                dotfiles_repo=repo, plan_path=Path("plans/canary.md"),
+                manifest_path=Path("plans/manifest.json"), plan_slug="agy-canary",
+            )
+        subprocess.run(
+            ["git", "-C", str(repo), "checkout", "-q", evidence_commit], check=True,
+        )
+        (repo / "unexpected.txt").write_text("unrelated\n")
+        subprocess.run(["git", "-C", str(repo), "add", "unexpected.txt"], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "-qm", "private drift"], check=True)
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="unexpected paths"):
+            evidence.check_private_final(
+                evidence_root=root, expected_seat_key="gemini-primary",
+                dotfiles_repo=repo, plan_path=Path("plans/canary.md"),
+                manifest_path=Path("plans/manifest.json"), plan_slug="agy-canary",
+            )
         subprocess.run(["git", "-C", str(repo), "checkout", "-q", base], check=True)
         plan.write_bytes(final_plan)
         manifest.write_bytes(final_manifest)
@@ -2420,6 +2448,12 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
         subprocess.run(["git", "-C", str(repo), "add", "plans/canary.md", "plans/manifest.json", "shared/agent-harness.pin"], check=True)
         subprocess.run(["git", "-C", str(repo), "commit", "-qm", "squash finalize"], check=True)
         committed = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+        squash_private = evidence.check_private_final(
+            evidence_root=root, expected_seat_key="gemini-primary",
+            dotfiles_repo=repo, plan_path=Path("plans/canary.md"),
+            manifest_path=Path("plans/manifest.json"), plan_slug="agy-canary",
+        )
+        assert squash_private == checked
         monkeypatch.setattr(evidence, "_reconcile_release_lineage", lambda **_kwargs: release)
         committed_result = evidence.check_committed_final(
             dotfiles_repo=repo, commit=committed, plan_path=Path("plans/canary.md"),
