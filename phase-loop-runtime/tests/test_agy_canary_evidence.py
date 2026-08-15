@@ -3281,7 +3281,7 @@ def test_stage_binding_enforces_exact_full_read_limit(monkeypatch, tmp_path, siz
 
 
 def test_full_read_limit_includes_current_governed_plan_snapshot():
-    current_governed_plan_bytes = 209_657
+    current_governed_plan_bytes = 212_906
     assert evidence._MAX_FULL_STAGED_READ_BYTES == 262_144
     assert current_governed_plan_bytes <= evidence._MAX_FULL_STAGED_READ_BYTES
 
@@ -3856,7 +3856,7 @@ def test_tree_snapshot_real_inventory_scale_fits_process_boundary():
 
 
 def test_exact_dotfiles_head_snapshot_boundary_when_checkout_is_available():
-    head = "b5691d06a8b2d3c088fa7456f762a56d33d7b56a"
+    head = "7734cf9dfe8528a30fe80b8fa90f488f4bf0db3f"
     plan_path = "plans/detailed-replan-176-agy-review-boundary-20260803-0715.md"
     candidates = [
         Path(value) for value in (
@@ -3887,14 +3887,14 @@ def test_exact_dotfiles_head_snapshot_boundary_when_checkout_is_available():
     plan_blob = subprocess.check_output(
         ["git", "-C", str(repo), "rev-parse", f"{head}:{plan_path}"], text=True,
     ).strip()
-    assert plan_blob == "1dae9eeed912dc6620d7608d79b81aa5bd26f25c"
-    assert len(plan) == 209_657
+    assert plan_blob == "b76eed8b31798566f4b61e8150661404fbb29703"
+    assert len(plan) == 212_906
     assert snapshot.authority == {
         "schema": evidence._TREE_SNAPSHOT_SCHEMA,
         "commit": head,
-        "tree_oid": "5dad18b001d21346d06b3d007b95c7c530d563cf",
+        "tree_oid": "7a04e19c40eb7aea71faef1a7ff1351fcd25ae13",
         "mount_path": str(repo),
-        "inventory_sha256": "0e5b40871e21b03afe4df557357f516f97a4ed230cddc3600ede2a4de264a5fa",
+        "inventory_sha256": "d4b8a8562fc71784c98ad95952cc9271cdb203c36aa7aaa701fe5976affd92bf",
         "entry_count": 1_212, "file_count": 1_212,
         "executable_count": 161, "symlink_count": 0,
         "gitlink_count": 1,
