@@ -3890,7 +3890,7 @@ def test_tree_snapshot_real_inventory_scale_fits_process_boundary():
 
 
 def test_exact_dotfiles_head_snapshot_boundary_when_checkout_is_available():
-    head = "3ae14b2757c30d190826fdcfcfdac410cd6c572c"
+    head = "2fa21195d361ed436c2ccd5bd69d2c6ee76a1203"
     plan_path = "plans/detailed-replan-176-agy-review-boundary-20260803-0715.md"
     candidates = [
         Path(value) for value in (
