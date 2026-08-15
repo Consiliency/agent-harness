@@ -169,9 +169,11 @@ def test_execute_phase_completed_lifecycle_enrolls_issue_closeout_arrays(
     text = path.read_text(encoding="utf-8")
     lifecycle = text.split("### Manifest lifecycle", 1)[-1].split("\n### ", 1)[0]
     assert lifecycle != text, f"{label} is missing its Manifest lifecycle section"
-    assert "completed" in lifecycle, f"{label} does not describe completed closeout"
+    closeout = lifecycle.split("During closeout", 1)[-1].split("\n\n", 1)[0]
+    assert closeout != lifecycle, f"{label} is missing its closeout caller contract"
+    assert "completed" in closeout, f"{label} does not describe completed closeout"
     for field in ("issue_inventory", "issue_dispositions"):
-        assert field in lifecycle, (
+        assert field in closeout, (
             f"{label} completed lifecycle caller omits mandatory {field}"
         )
 
