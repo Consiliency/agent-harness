@@ -10,6 +10,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -148,11 +149,20 @@ def _installed_wheel_fixture(
         installed_rows.append([relative, _record_hash(data), str(len(data))])
         paths[row["wheel_path"]] = target
     dist_info = root / "phase_loop_runtime-0.7.14.dist-info"
+    interpreter = environment_root / "bin" / "python"
     generated = {
         dist_info / "INSTALLER": b"uv",
         dist_info / "REQUESTED": b"",
-        environment_root / "bin" / "phase-loop": b"#!/tool/python\nlauncher\n",
-        environment_root / "bin" / "codex-phase-loop": b"#!/tool/python\nlauncher\n",
+        dist_info / "uv_cache.json": (
+            b'{"timestamp":{"secs_since_epoch":1,"nanos_since_epoch":0},'
+            b'"commit":null,"tags":null,"env":{},"directories":{}}'
+        ),
+        environment_root / "bin" / "phase-loop": evidence._uv_console_script_bytes(
+            interpreter=interpreter, target="phase_loop_runtime.cli:main"
+        ),
+        environment_root / "bin" / "codex-phase-loop": evidence._uv_console_script_bytes(
+            interpreter=interpreter, target="phase_loop_runtime.cli:main"
+        ),
     }
     for target, data in generated.items():
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -165,7 +175,6 @@ def _installed_wheel_fixture(
     record_output = io.StringIO(newline="")
     csv.writer(record_output, lineterminator="\n").writerows(installed_rows)
     record.write_bytes(record_output.getvalue().encode())
-    interpreter = environment_root / "bin" / "python"
     interpreter.write_bytes(b"interpreter\n")
     interpreter.chmod(0o700)
     module = root / "phase_loop_runtime" / "__init__.py"
@@ -2644,11 +2653,121 @@ def test_wheel_binding_rejects_archive_path_traversal_and_wrong_wheel():
         )
 
 
+@pytest.mark.parametrize("entry_points", [
+    b"[console_scripts]\nphase-loop = phase_loop_runtime.cli:main\n",
+    b"[console_scripts]\nphase-loop = phase_loop_runtime.cli:run\ncodex-phase-loop = phase_loop_runtime.cli:main\n",
+    b"[console_scripts]\nphase-loop = phase_loop_runtime.cli:main\ncodex-phase-loop = phase_loop_runtime.cli:main\nextra = phase_loop_runtime.cli:main\n",
+])
+def test_wheel_binding_rejects_missing_aliased_or_extra_console_entry_points(entry_points):
+    wheel = _synthetic_wheel(members={
+        "phase_loop_runtime-0.7.14.dist-info/entry_points.txt": entry_points,
+    })
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="console entry points"):
+        evidence._wheel_binding(
+            wheel_bytes=wheel,
+            filename="phase_loop_runtime-0.7.14-py3-none-any.whl",
+            digest=evidence._sha256(wheel), url_sha256="a" * 64,
+            version="0.7.14",
+        )
+
+
+def test_uv_console_launcher_derivation_matches_actual_uv_install(tmp_path):
+    wheel = tmp_path / "phase_loop_runtime-0.7.14-py3-none-any.whl"
+    wheel.write_bytes(_synthetic_wheel())
+    tool_storage = tmp_path / "tool-storage"
+    tool_storage.mkdir()
+    tool_dir = tmp_path / "tools"
+    tool_dir.symlink_to(tool_storage, target_is_directory=True)
+    bin_dir = tmp_path / "bin"
+    proc = subprocess.run(
+        [
+            shutil.which("uv") or "uv", "tool", "install", "--no-index",
+            "--find-links", str(tmp_path), "--python", sys.executable,
+            "phase-loop-runtime==0.7.14",
+        ],
+        env=os.environ | {
+            "UV_TOOL_DIR": str(tool_dir), "UV_TOOL_BIN_DIR": str(bin_dir),
+            "UV_PYTHON_DOWNLOADS": "never",
+        },
+        capture_output=True, text=True, check=False,
+    )
+    assert proc.returncode == 0, proc.stderr
+    launcher_environment = tool_dir / "phase-loop-runtime"
+    environment_root = launcher_environment.resolve()
+    launcher_interpreter = launcher_environment / "bin" / "python"
+    interpreter = environment_root / "bin" / "python"
+    expected = evidence._uv_console_script_bytes(
+        interpreter=launcher_interpreter, target="phase_loop_runtime.cli:main"
+    )
+    assert (environment_root / "bin" / "phase-loop").read_bytes() == expected
+    assert (environment_root / "bin" / "codex-phase-loop").read_bytes() == expected
+    roots = list((environment_root / "lib").glob("python*/site-packages"))
+    assert len(roots) == 1
+    root = roots[0]
+    module = root / "phase_loop_runtime" / "__init__.py"
+    record = root / "phase_loop_runtime-0.7.14.dist-info" / "RECORD"
+    receipt = environment_root / "uv-receipt.toml"
+    installation = {
+        "uv_executable": str(Path(shutil.which("uv") or "uv").resolve()),
+        "uv_tool_dir": str(tool_storage),
+        "console_script": str(environment_root / "bin" / "phase-loop"),
+        "interpreter": str(interpreter.resolve()), "version": "0.7.14",
+        "distribution_root": str(root), "module_origin": str(module),
+        "environment_root": str(environment_root),
+        "console_script_sha256": evidence._sha256(expected),
+        "interpreter_sha256": evidence._sha256(interpreter.resolve().read_bytes()),
+        "package_tree_sha256": evidence._runtime_tree_sha256(module.parent),
+        "record_sha256": evidence._sha256(record.read_bytes()),
+        "provenance": {
+            "schema": "uv_registry_receipt.v1",
+            "requirement": "phase-loop-runtime==0.7.14",
+            "receipt_sha256": evidence._sha256(receipt.read_bytes()),
+        },
+    }
+    evidence._validate_installed_wheel_binding(
+        installation=installation, release=_release_identity(wheel=wheel.read_bytes())
+    )
+
+
 def test_installed_wheel_binding_accepts_normal_uv_registry_layout(tmp_path):
     release, installation, _paths = _installed_wheel_fixture(tmp_path)
     evidence._validate_installed_wheel_binding(
         installation=installation, release=release
     )
+
+
+def test_installed_wheel_binding_rejects_forged_launcher_with_recomputed_authority(tmp_path):
+    release, installation, paths = _installed_wheel_fixture(tmp_path)
+    launcher = paths["console"]
+    interpreter = Path(installation["environment_root"]) / "bin" / "python"
+    launcher.write_bytes(
+        f"#!{interpreter}\nimport os\nos.execvp('attacker', ['attacker'])\n".encode()
+    )
+    record = paths["record"]
+    root = Path(installation["distribution_root"])
+    relative = os.path.relpath(launcher, root).replace(os.sep, "/")
+    rows = list(csv.reader(io.StringIO(record.read_text(), newline="")))
+    for row in rows:
+        if row[0] == relative:
+            data = launcher.read_bytes()
+            row[1:] = [_record_hash(data), str(len(data))]
+            break
+    else:
+        raise AssertionError("fixture RECORD lacks phase-loop launcher")
+    output = io.StringIO(newline="")
+    csv.writer(output, lineterminator="\n").writerows(rows)
+    record.write_text(output.getvalue())
+    installation["console_script_sha256"] = evidence._sha256(launcher.read_bytes())
+    installation["record_sha256"] = evidence._sha256(record.read_bytes())
+    bootstrap_receipt = _bootstrap_receipt(installation=installation)
+    recomputed_proof_digest = evidence._sha256(evidence._canonical_json(
+        bootstrap_receipt["bootstrap"]["installation"]
+    ))
+    assert recomputed_proof_digest == evidence._sha256(evidence._canonical_json(installation))
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="wheel authority"):
+        evidence._validate_installed_wheel_binding(
+            installation=installation, release=release
+        )
 
 
 @pytest.mark.parametrize(

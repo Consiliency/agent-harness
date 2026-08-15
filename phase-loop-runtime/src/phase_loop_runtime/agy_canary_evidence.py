@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import configparser
 import csv
 import copy
 import ctypes
@@ -3407,6 +3408,34 @@ def _record_rows(data: bytes, *, wheel: bool) -> list[tuple[str, str, str]]:
     return output
 
 
+def _wheel_console_scripts(data: bytes) -> list[dict[str, str]]:
+    """Parse the authenticated wheel metadata into canonical launcher authority."""
+    try:
+        text = data.decode("utf-8", errors="strict")
+        parser = configparser.ConfigParser(
+            interpolation=None, delimiters=("=",), strict=True,
+            empty_lines_in_values=False,
+        )
+        parser.optionxform = str
+        parser.read_string(text)
+    except (UnicodeDecodeError, configparser.Error) as exc:
+        raise AgyCanaryEvidenceError("release wheel entry points are malformed") from exc
+    if not parser.has_section("console_scripts"):
+        raise AgyCanaryEvidenceError("release wheel lacks governed console entry points")
+    scripts = [
+        {"name": name, "target": target}
+        for name, target in parser.items("console_scripts", raw=True)
+    ]
+    scripts.sort(key=lambda row: row["name"])
+    expected = [
+        {"name": "codex-phase-loop", "target": "phase_loop_runtime.cli:main"},
+        {"name": "phase-loop", "target": "phase_loop_runtime.cli:main"},
+    ]
+    if scripts != expected:
+        raise AgyCanaryEvidenceError("release wheel console entry points are not canonical")
+    return scripts
+
+
 def _wheel_binding(
     *, wheel_bytes: bytes, filename: str, digest: str, url_sha256: str, version: str,
 ) -> dict[str, Any]:
@@ -3445,6 +3474,7 @@ def _wheel_binding(
     if {path for path, _digest, _size in rows} != set(members):
         raise AgyCanaryEvidenceError("release wheel RECORD does not exactly inventory the archive")
     wheel_metadata_path = f"{dist_info}/WHEEL"
+    entry_points_path = f"{dist_info}/entry_points.txt"
     try:
         wheel_metadata = members[wheel_metadata_path][1].decode("utf-8", errors="strict")
     except (KeyError, UnicodeDecodeError) as exc:
@@ -3452,6 +3482,10 @@ def _wheel_binding(
     purelib_lines = [line for line in wheel_metadata.splitlines() if line.startswith("Root-Is-Purelib:")]
     if purelib_lines != ["Root-Is-Purelib: true"]:
         raise AgyCanaryEvidenceError("release wheel root install scheme is not canonical")
+    try:
+        console_scripts = _wheel_console_scripts(members[entry_points_path][1])
+    except KeyError as exc:
+        raise AgyCanaryEvidenceError("release wheel entry points are unavailable") from exc
     data_prefix = f"{expected_prefix}.data/"
     files: list[dict[str, Any]] = []
     for path, record_hash, record_size in rows:
@@ -3484,14 +3518,14 @@ def _wheel_binding(
         "schema": "agy_canary_wheel_binding.v1", "filename": filename,
         "sha256": digest, "url_sha256": url_sha256,
         "record_path": record_path, "record_sha256": _sha256(members[record_path][1]),
-        "root_scheme": "purelib", "files": files,
+        "root_scheme": "purelib", "console_scripts": console_scripts, "files": files,
     }
 
 
 def _validate_wheel_binding(value: Any, *, version: str) -> dict[str, Any]:
     required = {
         "schema", "filename", "sha256", "url_sha256", "record_path",
-        "record_sha256", "root_scheme", "files",
+        "record_sha256", "root_scheme", "console_scripts", "files",
     }
     if (not isinstance(value, dict) or set(value) != required or
             value.get("schema") != "agy_canary_wheel_binding.v1" or
@@ -3499,6 +3533,10 @@ def _validate_wheel_binding(value: Any, *, version: str) -> dict[str, Any]:
             value.get("record_path") != f"phase_loop_runtime-{version}.dist-info/RECORD" or
             value.get("root_scheme") != "purelib" or
             any(not _is_digest(value.get(name)) for name in ("sha256", "url_sha256", "record_sha256")) or
+            value.get("console_scripts") != [
+                {"name": "codex-phase-loop", "target": "phase_loop_runtime.cli:main"},
+                {"name": "phase-loop", "target": "phase_loop_runtime.cli:main"},
+            ] or
             not isinstance(value.get("files"), list) or not value["files"]):
         raise AgyCanaryEvidenceError("release wheel binding is malformed")
     wheel_paths: set[str] = set()
@@ -3534,6 +3572,8 @@ def _validate_wheel_binding(value: Any, *, version: str) -> dict[str, Any]:
         targets.add(target)
     if "phase_loop_runtime/__init__.py" not in wheel_paths:
         raise AgyCanaryEvidenceError("release wheel binding lacks the governed runtime package")
+    if f"phase_loop_runtime-{version}.dist-info/entry_points.txt" not in wheel_paths:
+        raise AgyCanaryEvidenceError("release wheel binding lacks governed entry points")
     return value
 
 
@@ -3605,6 +3645,68 @@ def _record_relative(*, root: Path, target: Path) -> str:
     return relative
 
 
+def _uv_console_script_bytes(*, interpreter: Path, target: str) -> bytes:
+    """Derive uv's deterministic POSIX console launcher from trusted inputs."""
+    match = re.fullmatch(
+        r"([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*):([A-Za-z_]\w*)", target
+    )
+    if not interpreter.is_absolute() or match is None:
+        raise AgyCanaryEvidenceError("console launcher authority is malformed")
+    module, function = match.groups()
+    return (
+        f"#!{interpreter}\n"
+        "# -*- coding: utf-8 -*-\n"
+        "import sys\n"
+        f"from {module} import {function}\n"
+        'if __name__ == "__main__":\n'
+        '    if sys.argv[0].endswith("-script.pyw"):\n'
+        "        sys.argv[0] = sys.argv[0][:-11]\n"
+        '    elif sys.argv[0].endswith(".exe"):\n'
+        "        sys.argv[0] = sys.argv[0][:-4]\n"
+        f"    sys.exit({function}())\n"
+    ).encode("utf-8")
+
+
+def _validate_uv_console_script(
+    *, data: bytes, environment_root: Path, interpreter: Path, target: str,
+) -> None:
+    """Normalize only uv's environment alias, then compare its exact template."""
+    first_line, separator, body = data.partition(b"\n")
+    try:
+        shebang = Path(first_line.removeprefix(b"#!").decode("utf-8", errors="strict"))
+        shebang_environment = shebang.parent.parent.resolve(strict=True)
+        shebang_source = shebang.resolve(strict=True)
+    except (UnicodeDecodeError, FileNotFoundError, OSError) as exc:
+        raise AgyCanaryEvidenceError("installed console launcher interpreter is malformed") from exc
+    if (not first_line.startswith(b"#!") or not separator or not shebang.is_absolute() or
+            shebang.name != "python" or shebang.parent.name != "bin" or
+            shebang_environment != environment_root or shebang_source != interpreter):
+        raise AgyCanaryEvidenceError("installed console launcher interpreter is not trusted")
+    normalized = f"#!{interpreter}\n".encode("utf-8") + body
+    if normalized != _uv_console_script_bytes(interpreter=interpreter, target=target):
+        raise AgyCanaryEvidenceError("installed console launcher differs from wheel authority")
+
+
+def _validate_uv_cache(data: bytes) -> None:
+    """Admit only uv's inert, RECORD-sealed wheel cache metadata."""
+    try:
+        value = json.loads(data)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AgyCanaryEvidenceError("installed uv cache metadata is malformed") from exc
+    timestamp = value.get("timestamp") if isinstance(value, dict) else None
+    if (not isinstance(value, dict) or set(value) != {
+            "timestamp", "commit", "tags", "env", "directories"
+    } or not isinstance(timestamp, dict) or set(timestamp) != {
+            "secs_since_epoch", "nanos_since_epoch"
+    } or not _is_plain_int(timestamp.get("secs_since_epoch")) or
+            timestamp["secs_since_epoch"] < 0 or
+            not _is_plain_int(timestamp.get("nanos_since_epoch")) or
+            not 0 <= timestamp["nanos_since_epoch"] < 1_000_000_000 or
+            value["commit"] is not None or value["tags"] is not None or
+            value["env"] != {} or value["directories"] != {}):
+        raise AgyCanaryEvidenceError("installed uv cache metadata is malformed")
+
+
 def _validate_installed_wheel_binding(
     *, installation: dict[str, Any], release: dict[str, Any],
 ) -> None:
@@ -3637,13 +3739,23 @@ def _validate_installed_wheel_binding(
         expected_physical.add(target)
     dist_info = root / f"phase_loop_runtime-{release['version']}.dist-info"
     record = dist_info / "RECORD"
+    launcher_interpreter = environment_root / "bin" / "python"
+    try:
+        launcher_interpreter_source = launcher_interpreter.resolve(strict=True)
+    except (FileNotFoundError, OSError) as exc:
+        raise AgyCanaryEvidenceError("installed launcher interpreter is unavailable") from exc
+    if launcher_interpreter_source != interpreter:
+        raise AgyCanaryEvidenceError("installed launcher interpreter differs from trusted runtime")
+    console_targets = {
+        _record_relative(root=root, target=environment_root / "bin" / row["name"]):
+            environment_root / "bin" / row["name"]
+        for row in binding["console_scripts"]
+    }
     installer_targets = {
         _record_relative(root=root, target=dist_info / "INSTALLER"): dist_info / "INSTALLER",
         _record_relative(root=root, target=dist_info / "REQUESTED"): dist_info / "REQUESTED",
-        _record_relative(root=root, target=environment_root / "bin" / "phase-loop"):
-            environment_root / "bin" / "phase-loop",
-        _record_relative(root=root, target=environment_root / "bin" / "codex-phase-loop"):
-            environment_root / "bin" / "codex-phase-loop",
+        _record_relative(root=root, target=dist_info / "uv_cache.json"): dist_info / "uv_cache.json",
+        **console_targets,
     }
     record_relative = _record_relative(root=root, target=record)
     record_bytes, _record_info = _read_regular_path(record)
@@ -3672,6 +3784,16 @@ def _validate_installed_wheel_binding(
     for path, (digest, size, _target) in expected_rows.items():
         if actual[path][:2] != (digest, size):
             raise AgyCanaryEvidenceError("installed RECORD differs from verified wheel RECORD")
+    for row in binding["console_scripts"]:
+        script = environment_root / "bin" / row["name"]
+        script_bytes, script_info = _read_regular_path(script)
+        _validate_uv_console_script(
+            data=script_bytes, environment_root=environment_root,
+            interpreter=interpreter, target=row["target"],
+        )
+        if not script_info.st_mode & stat.S_IXUSR:
+            raise AgyCanaryEvidenceError("installed console launcher is not executable")
+    _validate_uv_cache(_read_regular_path(dist_info / "uv_cache.json")[0])
     phase_script = environment_root / "bin" / "phase-loop"
     script_bytes, _script_info = _read_regular_path(phase_script)
     interpreter_bytes, _interpreter_info = _read_regular_path(interpreter)
@@ -3681,7 +3803,10 @@ def _validate_installed_wheel_binding(
             _sha256(record_bytes) != installation["record_sha256"] or
             _runtime_tree_sha256(package_root) != installation["package_tree_sha256"]):
         raise AgyCanaryEvidenceError("installed launcher or runtime identity drifted")
-    expected_physical.update({record, dist_info / "INSTALLER", dist_info / "REQUESTED"})
+    expected_physical.update({
+        record, dist_info / "INSTALLER", dist_info / "REQUESTED",
+        dist_info / "uv_cache.json",
+    })
     for governed_root in (package_root, dist_info):
         for current, directories, files in os.walk(governed_root, topdown=True, followlinks=False):
             current_path = Path(current)
