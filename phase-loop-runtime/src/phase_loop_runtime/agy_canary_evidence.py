@@ -4214,8 +4214,116 @@ def _installed_phase_loop_identity(
     }
 
 
+def _git_environment() -> dict[str, str]:
+    environment = {
+        name: value for name, value in os.environ.items()
+        if not name.startswith("GIT_")
+    }
+    environment.update({
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_TERMINAL_PROMPT": "0",
+    })
+    return environment
+
+
+def _git_run(repo: Path, *args: str, text: bool = False) -> subprocess.CompletedProcess[Any]:
+    return subprocess.run(
+        ["git", "--no-replace-objects", "-C", str(repo), *args],
+        capture_output=True, text=text, check=False, env=_git_environment(),
+    )
+
+
+def _unsafe_git_config_name(name: str) -> bool:
+    lowered = name.lower()
+    return (
+        lowered.startswith(("include.", "includeif.", "url."))
+        or lowered in {
+            "core.alternaterefscommand", "core.askpass", "core.fsmonitor",
+            "core.gitproxy", "core.sshcommand",
+            "credential.helper", "extensions.partialclone", "gpg.format",
+            "gpg.program", "gpg.ssh.program", "protocol.allow",
+            "protocol.ext.allow",
+        }
+        or (
+            lowered.startswith("remote.")
+            and lowered.endswith((".partialclonefilter", ".promisor", ".receivepack", ".uploadpack"))
+        )
+    )
+
+
+def _validate_git_repository_authority(repo: Path) -> None:
+    canonical = repo.resolve(strict=True)
+    metadata = _git_run(
+        canonical, "rev-parse", "--path-format=absolute", "--show-toplevel",
+        "--git-dir", "--git-common-dir", "--is-shallow-repository", text=True,
+    )
+    lines = metadata.stdout.splitlines() if metadata.returncode == 0 else []
+    if len(lines) != 4:
+        raise AgyCanaryEvidenceError("Git repository authority is unavailable")
+    try:
+        top_level = Path(lines[0]).resolve(strict=True)
+        git_dir = Path(lines[1]).resolve(strict=True)
+        common_dir = Path(lines[2]).resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise AgyCanaryEvidenceError("Git repository authority is malformed") from exc
+    if (
+        top_level != canonical
+        or not git_dir.is_dir()
+        or not common_dir.is_dir()
+        or lines[3] != "false"
+    ):
+        raise AgyCanaryEvidenceError("Git repository authority is unsafe")
+    authority_paths = _git_run(
+        canonical, "rev-parse", "--path-format=absolute",
+        "--git-path", "info/grafts", "--git-path", "objects/info/alternates",
+        "--git-path", "shallow", text=True,
+    )
+    paths = authority_paths.stdout.splitlines() if authority_paths.returncode == 0 else []
+    if len(paths) != 3:
+        raise AgyCanaryEvidenceError("Git repository authority paths are unavailable")
+    for value in paths:
+        try:
+            Path(value).lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise AgyCanaryEvidenceError("Git repository authority path is unreadable") from exc
+        raise AgyCanaryEvidenceError("Git repository has active graft, alternate, or shallow authority")
+    local_config = _git_run(
+        canonical, "config", "--local", "--no-includes", "--name-only",
+        "--null", "--list",
+    )
+    if local_config.returncode != 0:
+        raise AgyCanaryEvidenceError("Git repository config authority is unavailable")
+    try:
+        names = [
+            item.decode("utf-8", errors="strict")
+            for item in local_config.stdout.split(b"\0") if item
+        ]
+    except UnicodeDecodeError as exc:
+        raise AgyCanaryEvidenceError("Git repository config authority is malformed") from exc
+    if any(name.lower() == "extensions.worktreeconfig" for name in names):
+        worktree_config = _git_run(
+            canonical, "config", "--worktree", "--no-includes", "--name-only",
+            "--null", "--list",
+        )
+        if worktree_config.returncode != 0:
+            raise AgyCanaryEvidenceError("Git worktree config authority is unavailable")
+        try:
+            names.extend(
+                item.decode("utf-8", errors="strict")
+                for item in worktree_config.stdout.split(b"\0") if item
+            )
+        except UnicodeDecodeError as exc:
+            raise AgyCanaryEvidenceError("Git worktree config authority is malformed") from exc
+    if any(_unsafe_git_config_name(name) for name in names):
+        raise AgyCanaryEvidenceError("Git repository config authority is unsafe")
+
+
 def _git_text(repo: Path, *args: str) -> str:
-    proc = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=False)
+    proc = _git_run(repo, *args, text=True)
     if proc.returncode != 0:
         raise AgyCanaryEvidenceError(f"git command failed: {' '.join(args)}")
     return proc.stdout.strip()
@@ -4232,7 +4340,7 @@ def _repo_relative_path(repo: Path, candidate: Path) -> str:
 
 def _worktree_blob(repo: Path, relative: str) -> tuple[str, bytes]:
     blob = _git_text(repo, "rev-parse", f"HEAD:{relative}")
-    committed = subprocess.run(["git", "-C", str(repo), "show", f"HEAD:{relative}"], capture_output=True, check=False)
+    committed = _git_run(repo, "show", f"HEAD:{relative}")
     local = (repo / relative).read_bytes()
     if committed.returncode != 0 or committed.stdout != local:
         raise AgyCanaryEvidenceError(f"worktree input differs from committed HEAD: {relative}")
@@ -4242,6 +4350,7 @@ def _worktree_blob(repo: Path, relative: str) -> tuple[str, bytes]:
 def _clean_dotfiles_repo(repo: Path) -> str:
     if not (repo / ".git").exists() or not (repo / "bootstrap.sh").is_file():
         raise AgyCanaryEvidenceError("bootstrap attestation requires a dotfiles checkout")
+    _validate_git_repository_authority(repo)
     if _git_text(repo, "status", "--porcelain"):
         raise AgyCanaryEvidenceError("bootstrap attestation requires a clean dotfiles worktree")
     return _git_text(repo, "rev-parse", "HEAD")
@@ -4318,10 +4427,7 @@ def _git_object_bytes(repo: Path, oid: str) -> bytes:
     size_text = _git_text(repo, "cat-file", "-s", oid)
     if not size_text.isdigit() or int(size_text) > _MAX_FULL_STAGED_READ_BYTES:
         raise AgyCanaryEvidenceError("tracked snapshot blob exceeds the full-read cap")
-    proc = subprocess.run(
-        ["git", "-C", str(repo), "cat-file", "blob", oid],
-        capture_output=True, check=False,
-    )
+    proc = _git_run(repo, "cat-file", "blob", oid)
     if proc.returncode != 0 or len(proc.stdout) != int(size_text):
         raise AgyCanaryEvidenceError("tracked snapshot blob is unavailable")
     if hashlib.sha1(b"blob " + str(len(proc.stdout)).encode() + b"\0" + proc.stdout).hexdigest() != oid:
@@ -4330,10 +4436,7 @@ def _git_object_bytes(repo: Path, oid: str) -> bytes:
 
 
 def _git_tree_rows(repo: Path, commit: str) -> list[tuple[str, str, str, str]]:
-    proc = subprocess.run(
-        ["git", "-C", str(repo), "ls-tree", "-rz", "--full-tree", commit],
-        capture_output=True, check=False,
-    )
+    proc = _git_run(repo, "ls-tree", "-rz", "--full-tree", commit)
     if proc.returncode != 0:
         raise AgyCanaryEvidenceError("tracked snapshot tree is unavailable")
     rows: list[tuple[str, str, str, str]] = []
@@ -4390,6 +4493,7 @@ def _sealed_tree_fd(*, data: bytes, executable: bool, label: str) -> int:
 def _collect_git_tree(
     *, repo: Path, commit: str, prefix: str = "", seen: set[str] | None = None,
 ) -> tuple[list[tuple[str, str, str, str, Path]], list[dict[str, Any]]]:
+    _validate_git_repository_authority(repo)
     seen = set() if seen is None else seen
     recursion_key = f"{repo}:{commit}"
     if recursion_key in seen:
@@ -5004,13 +5108,11 @@ def _validate_bootstrap_attestation(
     if installation is not None and installed != installation:
         raise AgyCanaryEvidenceError("bootstrap attestation installation identity drifted")
     if repo is not None:
+        _validate_git_repository_authority(repo)
         if _git_text(repo, "rev-parse", f"{repo_head}^{{commit}}") != repo_head:
             raise AgyCanaryEvidenceError("bootstrap attestation HEAD is not immutable")
         for relative in expected_paths:
-            actual = subprocess.run(
-                ["git", "-C", str(repo), "show", f"{repo_head}:{relative}"],
-                capture_output=True, check=False,
-            )
+            actual = _git_run(repo, "show", f"{repo_head}:{relative}")
             if (actual.returncode != 0 or blobs[relative] != _git_text(
                     repo, "rev-parse", f"{repo_head}:{relative}"
             ) or input_sha256[relative] != _sha256(actual.stdout)):
@@ -5607,13 +5709,17 @@ def _reconcile_release_lineage(
     """
     if len(handoff_commit) != 40 or any(ch not in "0123456789abcdef" for ch in handoff_commit.lower()):
         raise AgyCanaryEvidenceError("handoff selector must be an immutable commit OID")
+    _validate_git_repository_authority(repo)
     if _git_text(repo, "status", "--porcelain"):
         raise AgyCanaryEvidenceError("release lineage requires a clean agent-harness worktree")
     remote = _git_text(repo, "remote", "get-url", "origin")
     if remote not in {"https://github.com/Consiliency/agent-harness.git", "git@github.com:Consiliency/agent-harness.git"}:
         raise AgyCanaryEvidenceError("release lineage requires canonical Consiliency/agent-harness origin")
     canonical_main = "refs/remotes/phase-loop/canonical-main"
-    fetched = subprocess.run(["git", "-C", str(repo), "fetch", "--quiet", "origin", "+refs/heads/main:" + canonical_main, "+refs/tags/v*:refs/tags/v*"], capture_output=True, check=False)
+    fetched = _git_run(
+        repo, "fetch", "--quiet", "origin", "+refs/heads/main:" + canonical_main,
+        "+refs/tags/v*:refs/tags/v*",
+    )
     if fetched.returncode != 0:
         raise AgyCanaryEvidenceError("release lineage could not refresh canonical origin")
     resolved = _git_text(repo, "rev-parse", f"{handoff_commit}^{{commit}}")
@@ -5623,11 +5729,10 @@ def _reconcile_release_lineage(
         raise AgyCanaryEvidenceError("handoff commit changes paths outside the release handoff")
     # A handoff is authoritative only after its commit is reachable from the
     # fetched main branch, never merely present in an arbitrary local branch.
-    if subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", resolved, canonical_main], capture_output=True, check=False).returncode != 0:
+    if _git_run(repo, "merge-base", "--is-ancestor", resolved, canonical_main).returncode != 0:
         raise AgyCanaryEvidenceError("handoff commit is not merged into origin/main")
-    handoff = _release_handoff_record(subprocess.run(
-        ["git", "-C", str(repo), "show", f"{resolved}:docs/releases/outside-agent-release-handoff.md"],
-        capture_output=True, check=False,
+    handoff = _release_handoff_record(_git_run(
+        repo, "show", f"{resolved}:docs/releases/outside-agent-release-handoff.md",
     ).stdout)
     version = handoff.get("version")
     release_commit = handoff.get("release_commit")
@@ -5638,7 +5743,7 @@ def _reconcile_release_lineage(
     tag_peel = _git_text(repo, "rev-parse", f"refs/tags/{tag}^{{}}")
     if tag_peel != release_commit or handoff.get("tag_object") != tag_object or handoff.get("tag_peel") != tag_peel:
         raise AgyCanaryEvidenceError("handoff tag identity does not match local signed tag")
-    if subprocess.run(["git", "-C", str(repo), "verify-tag", "--raw", f"refs/tags/{tag}"], capture_output=True, check=False).returncode != 0:
+    if _git_run(repo, "verify-tag", "--raw", f"refs/tags/{tag}").returncode != 0:
         raise AgyCanaryEvidenceError("release tag signature verification failed")
     release = subprocess.run(
         ["gh", "release", "view", tag, "--repo", "Consiliency/agent-harness", "--json", "url,tagName"],
@@ -6376,6 +6481,7 @@ def check_private_final(
     root, root_fd = _validate_private_root(evidence_root)
     try:
         repo = dotfiles_repo.resolve(strict=True)
+        _validate_git_repository_authority(repo)
         bootstrap_receipt, plan_relative, manifest_relative = _attested_final_targets(
             root_fd=root_fd, repo=repo, plan_path=plan_path, manifest_path=manifest_path, plan_slug=plan_slug,
             require_preimages=False,
@@ -6448,14 +6554,8 @@ def check_private_final(
         ):
             raise AgyCanaryEvidenceError("private finalizer manifest digest is malformed")
         candidate = bootstrap_receipt["repo_head"]
-        candidate_plan = subprocess.run(
-            ["git", "-C", str(repo), "show", f"{candidate}:{plan_relative}"],
-            capture_output=True, check=False,
-        )
-        candidate_manifest = subprocess.run(
-            ["git", "-C", str(repo), "show", f"{candidate}:{manifest_relative}"],
-            capture_output=True, check=False,
-        )
+        candidate_plan = _git_run(repo, "show", f"{candidate}:{plan_relative}")
+        candidate_manifest = _git_run(repo, "show", f"{candidate}:{manifest_relative}")
         if (candidate_plan.returncode != 0 or candidate_manifest.returncode != 0 or
                 candidate_plan.stdout != plan_before or
                 candidate_manifest.stdout != manifest_before):
@@ -6488,14 +6588,8 @@ def check_private_final(
                 raise AgyCanaryEvidenceError(
                     "private finalizer committed transition changed unexpected paths"
                 )
-            actual_plan_proc = subprocess.run(
-                ["git", "-C", str(repo), "show", f"{finalized}:{plan_relative}"],
-                capture_output=True, check=False,
-            )
-            actual_manifest_proc = subprocess.run(
-                ["git", "-C", str(repo), "show", f"{finalized}:{manifest_relative}"],
-                capture_output=True, check=False,
-            )
+            actual_plan_proc = _git_run(repo, "show", f"{finalized}:{plan_relative}")
+            actual_manifest_proc = _git_run(repo, "show", f"{finalized}:{manifest_relative}")
             if actual_plan_proc.returncode != 0 or actual_manifest_proc.returncode != 0:
                 raise AgyCanaryEvidenceError(
                     "private finalizer committed outputs are unavailable"
@@ -6521,10 +6615,11 @@ def check_committed_final(
 ) -> dict[str, Any]:
     """Reverse the fixed transform from immutable git objects without private files."""
     repo = dotfiles_repo.resolve(strict=True)
+    _validate_git_repository_authority(repo)
     plan_relative = _repo_relative_path(repo, plan_path)
     manifest_relative = _repo_relative_path(repo, manifest_path)
     resolved = _git_text(repo, "rev-parse", f"{commit}^{{commit}}")
-    after_plan = subprocess.run(["git", "-C", str(repo), "show", f"{resolved}:{plan_relative}"], capture_output=True, check=False).stdout
+    after_plan = _git_run(repo, "show", f"{resolved}:{plan_relative}").stdout
     prefix, payload = _parse_final_payload(after_plan)
     attestation = _validate_final_attestation_envelope(payload["attestation"])
     bootstrap = attestation.get("bootstrap")
@@ -6532,8 +6627,8 @@ def check_committed_final(
     if not isinstance(candidate, str):
         raise AgyCanaryEvidenceError("committed finalizer payload lacks bootstrap candidate")
     candidate = _git_text(repo, "rev-parse", f"{candidate}^{{commit}}")
-    before_plan = subprocess.run(["git", "-C", str(repo), "show", f"{candidate}:{plan_relative}"], capture_output=True, check=False).stdout
-    before_manifest = subprocess.run(["git", "-C", str(repo), "show", f"{candidate}:{manifest_relative}"], capture_output=True, check=False).stdout
+    before_plan = _git_run(repo, "show", f"{candidate}:{plan_relative}").stdout
+    before_manifest = _git_run(repo, "show", f"{candidate}:{manifest_relative}").stdout
     _validate_committed_attestation(
         repo=repo, attestation=attestation, plan_relative=plan_relative,
         manifest_relative=manifest_relative, plan_before=before_plan, manifest_before=before_manifest,
@@ -6550,7 +6645,7 @@ def check_committed_final(
         repo=agent_harness_repo.resolve(strict=True), handoff_commit=handoff_commit
     ):
         raise AgyCanaryEvidenceError("committed release identity does not reauthenticate immutable handoff lineage")
-    after_manifest = subprocess.run(["git", "-C", str(repo), "show", f"{resolved}:{manifest_relative}"], capture_output=True, check=False).stdout
+    after_manifest = _git_run(repo, "show", f"{resolved}:{manifest_relative}").stdout
     try:
         before_value = json.loads(before_manifest)
     except json.JSONDecodeError as exc:
@@ -6581,6 +6676,7 @@ def _validate_committed_attestation(
     plan_before: bytes, manifest_before: bytes,
 ) -> None:
     """Validate every bootstrap/release identity embedded in a committed suffix."""
+    _validate_git_repository_authority(repo)
     attestation = _validate_final_attestation_envelope(attestation)
     bootstrap = attestation.get("bootstrap")
     release = attestation.get("release")
@@ -6628,7 +6724,7 @@ def _validate_committed_attestation(
         raise AgyCanaryEvidenceError("committed finalizer bootstrap HEAD is not immutable")
     base_bytes: dict[str, bytes] = {}
     for relative in expected_paths:
-        actual = subprocess.run(["git", "-C", str(repo), "show", f"{repo_head}:{relative}"], capture_output=True, check=False)
+        actual = _git_run(repo, "show", f"{repo_head}:{relative}")
         if actual.returncode != 0 or blobs[relative] != _git_text(repo, "rev-parse", f"{repo_head}:{relative}") or input_sha256[relative] != _sha256(actual.stdout):
             raise AgyCanaryEvidenceError("committed finalizer bootstrap blob identity drifted")
         base_bytes[relative] = actual.stdout

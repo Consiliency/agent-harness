@@ -203,6 +203,88 @@ def _git_repo(repo: Path) -> None:
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", "initial"], check=True)
 
 
+def test_git_identity_paths_ignore_all_ambient_git_authority(monkeypatch, tmp_path):
+    repo = tmp_path / "dotfiles"
+    repo.mkdir()
+    (repo / "bootstrap.sh").write_text("#!/bin/sh\n")
+    (repo / "tracked.txt").write_text("trusted\n")
+    _git_repo(repo)
+    head = subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True,
+    ).strip()
+    alternate = tmp_path / "alternate"
+    alternate.mkdir()
+    (alternate / "alternate.txt").write_text("alternate\n")
+    _git_repo(alternate)
+    alternate_head = subprocess.check_output(
+        ["git", "-C", str(alternate), "rev-parse", "HEAD"], text=True,
+    ).strip()
+    assert alternate_head != head
+    grafts = tmp_path / "ambient-grafts"
+    grafts.write_text(f"{head} {alternate_head}\n")
+    shallow = tmp_path / "ambient-shallow"
+    shallow.write_text(f"{head}\n")
+    global_config = tmp_path / "ambient-gitconfig"
+    global_config.write_text(f"[core]\n\tworktree = {alternate}\n")
+    overrides = (
+        {"GIT_DIR": str(alternate / ".git")},
+        {"GIT_WORK_TREE": str(alternate)},
+        {"GIT_COMMON_DIR": str(alternate / ".git")},
+        {"GIT_INDEX_FILE": str(alternate / ".git" / "index")},
+        {"GIT_OBJECT_DIRECTORY": str(alternate / ".git" / "objects")},
+        {"GIT_ALTERNATE_OBJECT_DIRECTORIES": str(alternate / ".git" / "objects")},
+        {"GIT_NAMESPACE": "attacker"},
+        {"GIT_GRAFT_FILE": str(grafts)},
+        {"GIT_SHALLOW_FILE": str(shallow)},
+        {"GIT_CONFIG_GLOBAL": str(global_config)},
+        {
+            "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.worktree",
+            "GIT_CONFIG_VALUE_0": str(alternate),
+        },
+        {"GIT_CONFIG_PARAMETERS": "'core.worktree'='" + str(alternate) + "'"},
+    )
+    for override in overrides:
+        with monkeypatch.context() as hostile:
+            for name, value in override.items():
+                hostile.setenv(name, value)
+            assert evidence._clean_dotfiles_repo(repo.resolve()) == head
+            snapshot = evidence._git_tree_snapshot(
+                repo.resolve(), head, materialize=False,
+            )
+            assert snapshot.authority["commit"] == head
+            assert {entry.path for entry in snapshot.entries} == {
+                "bootstrap.sh", "tracked.txt",
+            }
+
+
+@pytest.mark.parametrize("mutation", ("graft", "alternate", "shallow", "config"))
+def test_git_repository_authority_rejects_local_redirect_surfaces(tmp_path, mutation):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "tracked.txt").write_text("trusted\n")
+    _git_repo(repo)
+    head = subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True,
+    ).strip()
+    if mutation == "graft":
+        grafts = repo / ".git" / "info" / "grafts"
+        grafts.parent.mkdir(exist_ok=True)
+        grafts.write_text(f"{head} {'0' * 40}\n")
+    elif mutation == "alternate":
+        alternates = repo / ".git" / "objects" / "info" / "alternates"
+        alternates.parent.mkdir(exist_ok=True)
+        alternates.write_text(str(tmp_path / "alternate-objects") + "\n")
+    elif mutation == "shallow":
+        (repo / ".git" / "shallow").write_text(f"{head}\n")
+    else:
+        subprocess.run(
+            ["git", "-C", str(repo), "config", "core.fsmonitor", "/tmp/attacker"],
+            check=True,
+        )
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="Git repository"):
+        evidence._git_tree_snapshot(repo.resolve(), head, materialize=False)
+
+
 def _installation_identity() -> dict[str, object]:
     interpreter_authority = evidence._system_interpreter_authority()
     uv_store_authority = evidence._uv_store_authority(
@@ -2628,6 +2710,11 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
         pin = repo / "shared" / "agent-harness.pin"
         pin.write_text("v0.7.13\n")
         _git_repo(repo)
+        alternate_repo = tmp_path / "alternate-git-authority"
+        alternate_repo.mkdir()
+        (alternate_repo / "alternate.txt").write_text("alternate\n")
+        _git_repo(alternate_repo)
+        hostile_git_dir = str(alternate_repo / ".git")
         base = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
         plan.write_text("# Plan\n")
         manifest.write_text(json.dumps({"plans": [{"slug": "agy-canary", "updated_at": "old"}]}))
@@ -2778,10 +2865,13 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
                 plan_path=Path("plans/canary.md"), manifest_path=Path("plans/manifest.json"), plan_slug="agy-canary",
             )
         monkeypatch.setattr(evidence, "verify_capture", lambda **_kwargs: proof)
-        checked = evidence.check_private_final(
-            evidence_root=root, expected_seat_key="gemini-primary", dotfiles_repo=repo,
-            plan_path=Path("plans/canary.md"), manifest_path=Path("plans/manifest.json"), plan_slug="agy-canary",
-        )
+        with monkeypatch.context() as hostile:
+            hostile.setenv("GIT_DIR", hostile_git_dir)
+            checked = evidence.check_private_final(
+                evidence_root=root, expected_seat_key="gemini-primary",
+                dotfiles_repo=repo, plan_path=Path("plans/canary.md"),
+                manifest_path=Path("plans/manifest.json"), plan_slug="agy-canary",
+            )
         assert checked["inputs_sha256"] == result["inputs_sha256"]
         assert checked["canonical_proof_sha256"] == canonical_proof_sha256
         assert {name: checked[name] for name in evidence._FINAL_GOVERNANCE_POSTURE} == evidence._FINAL_GOVERNANCE_POSTURE
@@ -2868,11 +2958,14 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
         )
         assert squash_private == checked
         monkeypatch.setattr(evidence, "_reconcile_release_lineage", lambda **_kwargs: release)
-        committed_result = evidence.check_committed_final(
-            dotfiles_repo=repo, commit=committed, plan_path=Path("plans/canary.md"),
-            manifest_path=Path("plans/manifest.json"), plan_slug="agy-canary",
-            agent_harness_repo=repo, handoff_commit=release["handoff_commit"],
-        )
+        with monkeypatch.context() as hostile:
+            hostile.setenv("GIT_DIR", hostile_git_dir)
+            committed_result = evidence.check_committed_final(
+                dotfiles_repo=repo, commit=committed,
+                plan_path=Path("plans/canary.md"),
+                manifest_path=Path("plans/manifest.json"), plan_slug="agy-canary",
+                agent_harness_repo=repo, handoff_commit=release["handoff_commit"],
+            )
         assert committed_result["commit"] == committed
         assert committed_result["canonical_proof_sha256"] == canonical_proof_sha256
         assert {name: committed_result[name] for name in evidence._FINAL_GOVERNANCE_POSTURE} == evidence._FINAL_GOVERNANCE_POSTURE
@@ -5238,6 +5331,10 @@ def test_release_lineage_uses_merged_handoff_and_rehashes_downloads(tmp_path, mo
     subprocess.run(["git", "-C", str(repo), "update-ref", "refs/remotes/origin/main", handoff_commit], check=True)
     subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", "https://github.com/Consiliency/agent-harness.git"], check=True)
     subprocess.run(["git", "-C", str(repo), "update-ref", "refs/remotes/phase-loop/canonical-main", handoff_commit], check=True)
+    alternate_repo = tmp_path / "alternate-release-authority"
+    alternate_repo.mkdir()
+    (alternate_repo / "alternate.txt").write_text("alternate\n")
+    _git_repo(alternate_repo)
     real_run = evidence.subprocess.run
     workflow_id = 123456
     workflow_definition = {
@@ -5251,9 +5348,10 @@ def test_release_lineage_uses_merged_handoff_and_rehashes_downloads(tmp_path, mo
     workflow_pages = [{"total_count": 1, "workflow_runs": workflow_runs}]
 
     def fake_run(argv, **kwargs):
-        if argv[:3] == ["git", "-C", str(repo)] and argv[3:5] == ["fetch", "--quiet"]:
+        git_prefix = ["git", "--no-replace-objects", "-C", str(repo)]
+        if argv[:4] == git_prefix and argv[4:6] == ["fetch", "--quiet"]:
             return subprocess.CompletedProcess(argv, 0, b"", b"")
-        if argv[:3] == ["git", "-C", str(repo)] and argv[3:5] == ["verify-tag", "--raw"]:
+        if argv[:4] == git_prefix and argv[4:6] == ["verify-tag", "--raw"]:
             return subprocess.CompletedProcess(argv, 0, "", "")
         if argv[:3] == ["gh", "release", "view"]:
             return subprocess.CompletedProcess(argv, 0, json.dumps({"tagName": "v0.7.14", "url": record["release_url"]}), "")
@@ -5265,10 +5363,12 @@ def test_release_lineage_uses_merged_handoff_and_rehashes_downloads(tmp_path, mo
 
     monkeypatch.setattr(evidence.subprocess, "run", fake_run)
     blobs = {row["url"]: wheel if row["url"].endswith("wheel") else sdist for row in rows}
-    result = evidence._reconcile_release_lineage(
-        repo=repo, handoff_commit=handoff_commit,
-        fetch_json=lambda _url: {"urls": rows}, download=lambda url: blobs[url],
-    )
+    with monkeypatch.context() as hostile:
+        hostile.setenv("GIT_DIR", str(alternate_repo / ".git"))
+        result = evidence._reconcile_release_lineage(
+            repo=repo, handoff_commit=handoff_commit,
+            fetch_json=lambda _url: {"urls": rows}, download=lambda url: blobs[url],
+        )
     assert result["release_commit"] == release_commit
     assert result["wheel_binding"]["record_path"] == (
         "phase_loop_runtime-0.7.14.dist-info/RECORD"
