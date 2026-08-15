@@ -25,11 +25,44 @@ from phase_loop_runtime.cli import main
 
 
 _REAL_ASSERT_QUIESCENT = evidence._assert_quiescent
+_REAL_BUILD_MINIMAL_HOME = evidence.build_minimal_home
+_REAL_CANONICAL_BWRAP = evidence._canonical_bwrap
+_REAL_EFFECTIVE_UID = os.geteuid()
+_TEST_SETTINGS_OWNER_UID = 65534 if _REAL_EFFECTIVE_UID == 0 else os.getuid()
+_TEST_SETTINGS_OWNER_GID = 65534 if _REAL_EFFECTIVE_UID == 0 else os.getgid()
+try:
+    _REAL_CANONICAL_BWRAP()
+except evidence.AgyCanaryEvidenceError:
+    _CANONICAL_BWRAP_AVAILABLE = False
+else:
+    _CANONICAL_BWRAP_AVAILABLE = True
 _requires_memfd = pytest.mark.skipif(
     not hasattr(os, "memfd_create") or evidence.fcntl is None or
     not getattr(os, "MFD_ALLOW_SEALING", 0),
     reason="Linux sealed memfd support required",
 )
+_requires_bwrap = pytest.mark.skipif(
+    not _CANONICAL_BWRAP_AVAILABLE or _REAL_EFFECTIVE_UID == 0,
+    reason="canonical /usr/bin/bwrap and a non-root runner are required",
+)
+
+
+def _install_synthetic_bwrap_resolver(monkeypatch, *, available: bool) -> None:
+    if not available:
+        monkeypatch.setattr(
+            evidence, "_canonical_bwrap", lambda: Path("/usr/bin/bwrap"),
+        )
+
+
+def _build_synthetic_minimal_home(**kwargs):
+    home, binds = _REAL_BUILD_MINIMAL_HOME(**kwargs)
+    if _REAL_EFFECTIVE_UID == 0:
+        os.chown(
+            home / ".gemini" / "antigravity-cli" / "settings.json",
+            _TEST_SETTINGS_OWNER_UID,
+            _TEST_SETTINGS_OWNER_GID,
+        )
+    return home, binds
 
 
 @pytest.fixture(autouse=True)
@@ -42,8 +75,22 @@ def _canonical_test_account_home(monkeypatch, tmp_path: Path) -> None:
         ".cache/uv",
     ):
         (account_home / relative).mkdir(parents=True)
+    if evidence._UV_WORKSPACE_ROOT.is_dir():
+        workspace_info = evidence._UV_WORKSPACE_ROOT.resolve(strict=True).stat()
+        for path in (account_home, *account_home.rglob("*")):
+            os.chown(path, workspace_info.st_uid, workspace_info.st_gid)
     monkeypatch.setattr(evidence, "_account_home", lambda: account_home)
     monkeypatch.setenv("HOME", str(account_home))
+    if _REAL_EFFECTIVE_UID == 0:
+        monkeypatch.setattr(
+            evidence.os, "geteuid", lambda: _TEST_SETTINGS_OWNER_UID,
+        )
+        monkeypatch.setattr(
+            evidence, "build_minimal_home", _build_synthetic_minimal_home,
+        )
+    _install_synthetic_bwrap_resolver(
+        monkeypatch, available=_CANONICAL_BWRAP_AVAILABLE,
+    )
 
 
 def _private_root(tmp_path: Path) -> Path:
@@ -76,6 +123,8 @@ def _settings(tmp_path: Path, allow: list[str]) -> Path:
         + "\n"
     )
     path.chmod(0o600)
+    if _REAL_EFFECTIVE_UID == 0:
+        os.chown(path, _TEST_SETTINGS_OWNER_UID, _TEST_SETTINGS_OWNER_GID)
     return path
 
 
@@ -515,9 +564,8 @@ def test_clean_settings_cli_records_already_absent(tmp_path, capsys, monkeypatch
 def test_clean_settings_fails_closed_without_mutation(tmp_path, payload):
     root = _private_root(tmp_path)
     try:
-        settings = tmp_path / "settings.json"
+        settings = _settings(tmp_path, [])
         settings.write_text(json.dumps(payload))
-        settings.chmod(0o600)
         original = settings.read_bytes()
         with pytest.raises(evidence.AgyCanaryEvidenceError):
             evidence.clean_settings(
@@ -1004,6 +1052,20 @@ def test_open_settings_rejects_root_or_nonowner_execution(
         evidence._open_settings(settings)
 
 
+def test_root_test_runner_models_an_exact_nonroot_settings_owner(tmp_path):
+    if _REAL_EFFECTIVE_UID != 0:
+        pytest.skip("root-runner ownership seam is not active")
+    settings_path = _settings(tmp_path, [])
+    assert settings_path.stat().st_uid == _TEST_SETTINGS_OWNER_UID != 0
+    settings = evidence._open_settings(settings_path)
+    try:
+        assert settings.uid == _TEST_SETTINGS_OWNER_UID
+        assert settings.gid == _TEST_SETTINGS_OWNER_GID
+    finally:
+        os.close(settings.fd)
+        os.close(settings.parent_fd)
+
+
 def test_write_lease_requires_one_signal_clean_main_thread(monkeypatch):
     monkeypatch.setattr(evidence.threading, "active_count", lambda: 2)
     with pytest.raises(evidence.AgyCanaryEvidenceError, match="one signal-clean main thread"):
@@ -1087,7 +1149,11 @@ def test_clean_settings_rejects_unreadable_process_inventory_before_mutation(
     pid_dir = proc_root / "424242"
     pid_dir.mkdir(parents=True)
     status = pid_dir / "status"
-    status.write_text(f"Name:\ttest\nUid:\t{os.getuid()}\t{os.getuid()}\t{os.getuid()}\t{os.getuid()}\n")
+    status.write_text(
+        f"Name:\ttest\nUid:\t{_TEST_SETTINGS_OWNER_UID}\t"
+        f"{_TEST_SETTINGS_OWNER_UID}\t{_TEST_SETTINGS_OWNER_UID}\t"
+        f"{_TEST_SETTINGS_OWNER_UID}\n"
+    )
     (pid_dir / "cmdline").write_bytes(b"/usr/bin/other\0")
 
     if surface == "uid-status":
@@ -1767,9 +1833,10 @@ def test_prepare_and_capture_namespace_reject_replaced_probed_agy(monkeypatch, t
         shutil.rmtree(root)
 
 
+@_requires_bwrap
 def test_bwrap_auth_bind_is_visible_only_at_child_lookup_path(tmp_path):
     try:
-        evidence._canonical_bwrap()
+        _REAL_CANONICAL_BWRAP()
     except evidence.AgyCanaryEvidenceError:
         pytest.skip("canonical bwrap is unavailable")
     root = _private_root(tmp_path)
@@ -1800,9 +1867,16 @@ def test_bwrap_auth_bind_is_visible_only_at_child_lookup_path(tmp_path):
 
 
 def test_canonical_bwrap_fails_closed_when_not_executable(monkeypatch):
+    monkeypatch.setattr(evidence, "_canonical_bwrap", _REAL_CANONICAL_BWRAP)
     monkeypatch.setattr(evidence.os, "access", lambda *_args: False)
     with pytest.raises(evidence.AgyCanaryEvidenceError, match="canonical /usr/bin/bwrap"):
         evidence._canonical_bwrap()
+
+
+def test_synthetic_bwrap_resolver_covers_an_absent_host_tool(monkeypatch):
+    monkeypatch.setattr(evidence, "_canonical_bwrap", _REAL_CANONICAL_BWRAP)
+    _install_synthetic_bwrap_resolver(monkeypatch, available=False)
+    assert evidence._canonical_bwrap() == Path("/usr/bin/bwrap")
 
 
 def test_capture_reducer_rejects_unpaired_tool_evidence(monkeypatch, tmp_path):
@@ -1965,6 +2039,25 @@ def test_minimal_home_keeps_auth_bytes_outside_evidence_and_binds_read_only(tmp_
         assert binds == ((auth, "/home/phase-loop/.gemini/antigravity-cli/auth/auth.json"),)
         assert (home / ".gemini" / "antigravity-cli" / "settings.json").is_file()
         assert (home / ".gemini" / "antigravity-cli" / "auth" / "auth.json").read_bytes() == b""
+    finally:
+        if home is not None:
+            shutil.rmtree(home)
+        root.rmdir()
+
+
+def test_root_test_runner_models_minimal_home_settings_nonroot_owner(tmp_path):
+    if _REAL_EFFECTIVE_UID != 0:
+        pytest.skip("root-runner test seam only")
+    root = _private_root(tmp_path)
+    home = None
+    try:
+        home, _binds = evidence.build_minimal_home(
+            evidence_root=root, settings_path=_settings(tmp_path, []),
+        )
+        settings = home / ".gemini" / "antigravity-cli" / "settings.json"
+        assert settings.stat().st_uid == _TEST_SETTINGS_OWNER_UID
+        assert settings.stat().st_gid == _TEST_SETTINGS_OWNER_GID
+        assert evidence._minimal_home_identity(home)["settings_mode"] == "0600"
     finally:
         if home is not None:
             shutil.rmtree(home)
@@ -3602,6 +3695,7 @@ def test_bootstrap_attest_rejects_prepopulated_uv_store_substitution(
         )
 
 
+@_requires_bwrap
 @_requires_memfd
 def test_sealed_tree_preserves_repo_zero_and_reads_exact_pin(tmp_path):
     repo = tmp_path / "dotfiles"
@@ -3638,6 +3732,7 @@ def test_sealed_tree_preserves_repo_zero_and_reads_exact_pin(tmp_path):
     assert "--remount-ro" in argv
 
 
+@_requires_bwrap
 @_requires_memfd
 def test_sealed_tree_ignores_transient_host_mutation_and_untracked_extra(tmp_path):
     repo = tmp_path / "dotfiles"
@@ -3731,6 +3826,7 @@ def test_tree_snapshot_rejects_unsafe_symlink_targets(target):
         evidence._snapshot_symlink_target(Path("shared/link"), target)
 
 
+@_requires_bwrap
 @_requires_memfd
 def test_tree_snapshot_mounts_safe_committed_symlink(tmp_path):
     repo = tmp_path / "dotfiles"
@@ -4235,6 +4331,7 @@ def test_interpreter_authority_rejects_wrong_symlink_owner_mode_or_hash(mutation
         evidence._validate_interpreter_authority(authority, revalidate=True)
 
 
+@_requires_bwrap
 @_requires_memfd
 def test_bootstrap_attestation_has_no_parent_only_nonce_claim(monkeypatch, tmp_path):
     root = _private_root(tmp_path)
