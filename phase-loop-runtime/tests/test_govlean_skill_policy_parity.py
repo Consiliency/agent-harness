@@ -22,6 +22,7 @@ PACKAGED_BUNDLE = (
 
 HARNESSES = ("claude", "codex", "gemini", "opencode")
 PLANNER_ROADMAP_SKILLS = ("plan-phase", "phase-roadmap-builder")
+EXECUTE_PHASE_SKILL = "execute-phase"
 
 # Distinctive IF-0-GOVLEAN-5 / EC-GOVLEAN-7 clauses. Each marker is a set of
 # required substrings that must appear together so a partial paraphrase cannot
@@ -96,6 +97,16 @@ def _source_inventory() -> list[tuple[str, Path]]:
     ]
 
 
+def _execute_phase_source_inventory() -> list[tuple[str, Path]]:
+    return [
+        (
+            f"skills-src/{harness}/{harness}-{EXECUTE_PHASE_SKILL}/SKILL.md",
+            _source_skill(harness, EXECUTE_PHASE_SKILL),
+        )
+        for harness in HARNESSES
+    ]
+
+
 def _generated_inventory() -> list[tuple[str, Path]]:
     return [
         (f"phase-loop-skills/{skill}/SKILL.md", _generated_skill(skill))
@@ -143,6 +154,26 @@ def test_fleet_source_planner_roadmap_skills_state_govlean_policy(
 ) -> None:
     _require_skill_trees()
     _assert_policy_markers(label, path)
+
+
+@pytest.mark.parametrize(
+    ("label", "path"),
+    _execute_phase_source_inventory(),
+    ids=[label for label, _path in _execute_phase_source_inventory()],
+)
+def test_execute_phase_completed_lifecycle_enrolls_issue_closeout_arrays(
+    label: str, path: Path
+) -> None:
+    _require_skill_trees()
+    assert path.is_file(), f"{label} is missing"
+    text = path.read_text(encoding="utf-8")
+    lifecycle = text.split("### Manifest lifecycle", 1)[-1].split("\n### ", 1)[0]
+    assert lifecycle != text, f"{label} is missing its Manifest lifecycle section"
+    assert "completed" in lifecycle, f"{label} does not describe completed closeout"
+    for field in ("issue_inventory", "issue_dispositions"):
+        assert field in lifecycle, (
+            f"{label} completed lifecycle caller omits mandatory {field}"
+        )
 
 
 @pytest.mark.parametrize(
