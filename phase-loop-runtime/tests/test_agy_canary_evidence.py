@@ -3000,6 +3000,39 @@ def test_tree_snapshot_fails_when_exact_gitlink_checkout_is_unavailable(tmp_path
 
 
 @_requires_memfd
+def test_sealed_tree_fd_uses_linux_abi_when_python_omits_fcntl_symbols(monkeypatch):
+    real_fcntl = evidence.fcntl
+    assert real_fcntl is not None
+
+    class SymbolLessFcntl:
+        fcntl = staticmethod(real_fcntl.fcntl)
+
+    monkeypatch.setattr(evidence, "fcntl", SymbolLessFcntl)
+    fd = evidence._sealed_tree_fd(data=b"trusted", executable=True, label="test")
+    try:
+        assert stat.S_IMODE(os.fstat(fd).st_mode) == 0o755
+        assert os.read(fd, 7) == b"trusted"
+        assert real_fcntl.fcntl(fd, 1034) == 0xF
+        with pytest.raises(OSError):
+            os.write(fd, b"mutated")
+    finally:
+        os.close(fd)
+
+
+def test_linux_memfd_abi_rejects_conflicting_python_binding(monkeypatch):
+    class ConflictingFcntl:
+        F_ADD_SEALS = 999
+
+    monkeypatch.setattr(evidence, "fcntl", ConflictingFcntl)
+    monkeypatch.setattr(evidence.os, "memfd_create", lambda *_args: -1, raising=False)
+    monkeypatch.setattr(evidence.os, "MFD_ALLOW_SEALING", 2, raising=False)
+    monkeypatch.setattr(evidence.os, "MFD_CLOEXEC", 1, raising=False)
+    monkeypatch.setattr(evidence.sys, "platform", "linux")
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="conflict"):
+        evidence._linux_memfd_seal_abi()
+
+
+@_requires_memfd
 def test_tree_snapshot_short_write_closes_memfd(monkeypatch):
     created: list[int] = []
     real_create = os.memfd_create

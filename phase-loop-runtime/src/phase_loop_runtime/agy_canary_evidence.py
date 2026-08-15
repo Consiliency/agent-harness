@@ -3073,6 +3073,15 @@ _BOOTSTRAP_LOCAL_SOURCE_SEAMS = (
 )
 _TREE_SNAPSHOT_SCHEMA = "agy_canary_tree_snapshot.v1"
 _TREE_SANDBOX_SCHEMA = "agy_canary_tree_bwrap.v1"
+# Stable Linux UAPI values from asm-generic/fcntl.h and linux/fcntl.h.
+_LINUX_MEMFD_SEAL_ABI = {
+    "F_ADD_SEALS": 1033,
+    "F_GET_SEALS": 1034,
+    "F_SEAL_SEAL": 0x1,
+    "F_SEAL_SHRINK": 0x2,
+    "F_SEAL_GROW": 0x4,
+    "F_SEAL_WRITE": 0x8,
+}
 
 
 @dataclass(frozen=True)
@@ -3099,6 +3108,23 @@ class _GitTreeSnapshot:
                 os.close(fd)
             except OSError:
                 pass
+
+
+def _linux_memfd_seal_abi() -> dict[str, int]:
+    """Return Linux's stable fcntl seal UAPI, rejecting conflicting bindings."""
+    if (
+        not sys.platform.startswith("linux")
+        or fcntl is None
+        or not hasattr(os, "memfd_create")
+        or not getattr(os, "MFD_ALLOW_SEALING", 0)
+        or not getattr(os, "MFD_CLOEXEC", 0)
+    ):
+        raise AgyCanaryEvidenceError("tracked snapshot requires Linux sealed memfds")
+    for name, expected in _LINUX_MEMFD_SEAL_ABI.items():
+        exposed = getattr(fcntl, name, None)
+        if exposed is not None and exposed != expected:
+            raise AgyCanaryEvidenceError("Python fcntl seal constants conflict with Linux UAPI")
+    return dict(_LINUX_MEMFD_SEAL_ABI)
 
 
 def _uv_directory_identity(path: Path, *, uid: int) -> dict[str, Any]:
@@ -3552,18 +3578,13 @@ def _git_tree_rows(repo: Path, commit: str) -> list[tuple[str, str, str, str]]:
 
 
 def _sealed_tree_fd(*, data: bytes, executable: bool, label: str) -> int:
-    if not sys.platform.startswith("linux") or not hasattr(os, "memfd_create") or fcntl is None:
-        raise AgyCanaryEvidenceError("tracked snapshot requires Linux sealed memfds")
+    seal_abi = _linux_memfd_seal_abi()
+    assert fcntl is not None
     required_seals = (
-        getattr(fcntl, "F_SEAL_WRITE", 0) | getattr(fcntl, "F_SEAL_GROW", 0) |
-        getattr(fcntl, "F_SEAL_SHRINK", 0) | getattr(fcntl, "F_SEAL_SEAL", 0)
+        seal_abi["F_SEAL_WRITE"] | seal_abi["F_SEAL_GROW"] |
+        seal_abi["F_SEAL_SHRINK"] | seal_abi["F_SEAL_SEAL"]
     )
-    add_seals = getattr(fcntl, "F_ADD_SEALS", None)
-    get_seals = getattr(fcntl, "F_GET_SEALS", None)
-    allow_sealing = getattr(os, "MFD_ALLOW_SEALING", 0)
-    if not required_seals or add_seals is None or get_seals is None or not allow_sealing:
-        raise AgyCanaryEvidenceError("tracked snapshot requires Linux file seals")
-    fd = os.memfd_create(label, os.MFD_CLOEXEC | allow_sealing)
+    fd = os.memfd_create(label, os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
     try:
         os.fchmod(fd, 0o755 if executable else 0o644)
         view = memoryview(data)
@@ -3573,8 +3594,8 @@ def _sealed_tree_fd(*, data: bytes, executable: bool, label: str) -> int:
                 raise AgyCanaryEvidenceError("tracked snapshot memfd short write")
             view = view[written:]
         os.fsync(fd)
-        fcntl.fcntl(fd, add_seals, required_seals)
-        if fcntl.fcntl(fd, get_seals) != required_seals:
+        fcntl.fcntl(fd, seal_abi["F_ADD_SEALS"], required_seals)
+        if fcntl.fcntl(fd, seal_abi["F_GET_SEALS"]) != required_seals:
             raise AgyCanaryEvidenceError("tracked snapshot memfd sealing did not hold")
         os.lseek(fd, 0, os.SEEK_SET)
         return fd
