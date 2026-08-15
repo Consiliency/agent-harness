@@ -138,8 +138,8 @@ def review_policy_for_tier(tier: ReviewLandingTier) -> ReviewLandingPolicy:
 PRESIDENT_LADDER: tuple[str, ...] = (
     "fable",
     "sol",
-    "grok-4.5",
-    "gemini-3.6",
+    "grok-4.5",  # model-id-source: frozen president availability ladder
+    "gemini-3.6",  # model-id-source: frozen president availability ladder
 )
 
 
