@@ -2470,7 +2470,7 @@
           "transition": "committed"
         },
         {
-          "at": "2026-08-15T16:41:00Z",
+          "at": "2026-08-15T16:56:13Z",
           "by": "clawdbot-agent-harness-codex",
           "metadata": {
             "fresh_plan_rewrite": {
@@ -2481,10 +2481,20 @@
               ],
               "future_history_pins": 0,
               "operator_directive": "substitute-grok-4.6-for-fable",
-              "plan_sha256": "cdd57b564fa3cd5575c3dce6c13c0a6ef664380489e2b13c67823b48c99ebad1",
-              "plan_words": 2207,
+              "plan_sha256": "6b1d244070797c7d231ce898869bbf1ceaa8edb85c1a72d1ef1a9303ae471719",
+              "plan_words": 2267,
               "prior_plan_sha256": "41c4d442f4cd41b68823c5240b61b187d1299f9d6c79cecbec0c19617dd2938e",
               "ratification_status": "pending",
+              "review_policy_override": {
+                "board": [
+                  "claude-opus-5",
+                  "gpt-5.6-sol",
+                  "grok-4.5",
+                  "gemini-3.6-flash"
+                ],
+                "president": "grok-4.6",
+                "scope": "this-run-only"
+              },
               "roadmap_sha256": "c66949236043e46e956caec1c09d0c19d0e8751e4ce2891de1fe2edf24e9fea1",
               "run_president_override": "grok-4.6",
               "single_author_vendor": "gemini",
@@ -2507,7 +2517,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-15T16:41:00Z"
+      "updated_at": "2026-08-15T16:56:13Z"
     },
     {
       "acceptance_criteria_count": null,
