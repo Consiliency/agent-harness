@@ -271,6 +271,9 @@ class SkillPlanManifestWriteTest(unittest.TestCase):
                     "verification_status": "passed",
                     "reflection_ref": "reflections/run-1.md",
                     "produced_if_gates": ["IF-0-PH-1"],
+                    # IF-0-GOVLEAN-4: phase completed supplies explicit enrolled arrays.
+                    "issue_inventory": [],
+                    "issue_dispositions": [],
                 },
             )
 
@@ -285,6 +288,8 @@ class SkillPlanManifestWriteTest(unittest.TestCase):
             self.assertEqual([event.transition for event in entry.lifecycle], ["committed", "executing", "completed"])
             self.assertEqual(entry.lifecycle[-1].metadata["verification_status"], "passed")
             self.assertEqual(entry.lifecycle[-1].metadata["produced_if_gates"], ["IF-0-PH-1"])
+            self.assertEqual(entry.lifecycle[-1].metadata["issue_inventory"], [])
+            self.assertEqual(entry.lifecycle[-1].metadata["issue_dispositions"], [])
 
 
 if __name__ == "__main__":

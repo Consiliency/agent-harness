@@ -26,8 +26,10 @@ import tempfile
 import time
 import json
 import threading
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from hashlib import sha256
 from pathlib import Path
 from typing import Callable, Mapping, Sequence, cast
@@ -119,6 +121,213 @@ LEG_STATUSES: tuple[str, ...] = (
     "DEGRADED",
     "UNAVAILABLE",
 )
+
+
+class ReviewLandingTier(str, Enum):
+    PLAN = "plan"
+    PRODUCTION_CODE = "production_code"
+    TESTS_ONLY = "tests_only"
+    DOCS_ONLY = "docs_only"
+
+
+@dataclass(frozen=True)
+class ReviewLandingPolicy:
+    required_seats: tuple[str, ...]
+    requires_president: bool
+
+
+ReviewPolicy = ReviewLandingPolicy
+
+
+def _coerce_review_landing_tier(tier: ReviewLandingTier | str) -> ReviewLandingTier:
+    try:
+        return tier if isinstance(tier, ReviewLandingTier) else ReviewLandingTier(tier)
+    except (TypeError, ValueError) as exc:
+        raise PresidentPolicyError(
+            "review_landing_tier_unknown", f"unknown review landing tier: {tier!r}"
+        ) from exc
+
+
+def review_policy_for_tier(tier: ReviewLandingTier | str) -> ReviewLandingPolicy:
+    tier = _coerce_review_landing_tier(tier)
+    if tier in {ReviewLandingTier.PLAN, ReviewLandingTier.PRODUCTION_CODE}:
+        return ReviewLandingPolicy(
+            required_seats=("fable", "sol", "gemini", "grok"),
+            requires_president=True,
+        )
+    return ReviewLandingPolicy(required_seats=("grounded",), requires_president=False)
+
+
+DEFAULT_REVIEW_SEAT_ALIASES: Mapping[str, str] = {
+    "claude-fable-5": "fable",  # model-id-source: frozen review policy default seat
+    "gpt-5.6-sol": "sol",  # model-id-source: frozen review policy default seat
+    "gemini-3.6-flash": "gemini",  # model-id-source: frozen review policy default seat
+    "grok-4.5": "grok",  # model-id-source: frozen review policy default seat
+}
+
+
+def _govlean_authority_switched(repo_dir: Path | str | None) -> bool:
+    root = Path.cwd() if repo_dir is None else Path(repo_dir)
+    manifest_path = root / "plans" / "manifest.json"
+    if not manifest_path.exists():
+        return False
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PresidentPolicyError(
+            "review_authority_state_invalid", "plans/manifest.json cannot prove review authority"
+        ) from exc
+    plans = payload.get("plans") if isinstance(payload, dict) else None
+    if not isinstance(plans, list):
+        raise PresidentPolicyError(
+            "review_authority_state_invalid", "plans/manifest.json has no plans array"
+        )
+    for entry in plans:
+        if not isinstance(entry, dict) or entry.get("slug") != "v10-GOVLEAN":
+            continue
+        lifecycle = entry.get("lifecycle", [])
+        if not isinstance(lifecycle, list):
+            raise PresidentPolicyError(
+                "review_authority_state_invalid", "v10-GOVLEAN lifecycle is not an array"
+            )
+        return any(
+            isinstance(event, dict) and event.get("transition") == "authority_switch"
+            for event in lifecycle
+        )
+    return False
+
+
+def _validate_review_board_policy(
+    board: Board,
+    policy: ReviewLandingPolicy,
+    seat_aliases: Mapping[str, str] | None,
+) -> None:
+    if policy.required_seats == ("grounded",):
+        if len(board.seats) != 1:
+            raise PresidentPolicyError(
+                "review_board_policy_mismatch", "grounded review requires exactly one seat"
+            )
+        return
+    aliases = dict(DEFAULT_REVIEW_SEAT_ALIASES)
+    aliases.update(seat_aliases or {})
+    actual = Counter(aliases.get(seat.model, seat.model) for seat in board.seats)
+    required = Counter(policy.required_seats)
+    if actual != required:
+        raise PresidentPolicyError(
+            "review_board_policy_mismatch",
+            f"review board seats {dict(actual)} do not match policy {dict(required)}",
+        )
+
+
+PRESIDENT_LADDER: tuple[str, ...] = (
+    "fable",
+    "sol",
+    "grok-4.5",  # model-id-source: frozen president availability ladder
+    "gemini-3.6",  # model-id-source: frozen president availability ladder
+)
+
+
+class PresidentPolicyError(RuntimeError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+@dataclass(frozen=True)
+class PresidentRuling:
+    model: str
+    text: str
+    substantive_rounds: int
+    format_reasks: int
+
+
+def _president_prompt(findings: Sequence[str], *, format_reask: bool = False) -> str:
+    suffix = (
+        "\nYour prior response omitted the mandatory terminal grammar. Reissue the ruling only."
+        if format_reask
+        else ""
+    )
+    return (
+        "Rule on each board finding using exactly `FINDING <id>: BLOCKING|DEFERRED — <reason>`, "
+        "then end with `FORCING DECISION: <decision>`.\n\n"
+        + "\n".join(findings)
+        + suffix
+    )
+
+
+_PRESIDENT_FINDING_RE = re.compile(
+    r"^FINDING\s+(\S+):\s+(BLOCKING|DEFERRED)\s+[—-]\s+(.+)$"
+)
+
+
+def _valid_president_grammar(text: str, findings: Sequence[str]) -> bool:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    forcing = [line for line in lines if line.startswith("FORCING DECISION:")]
+    finding_lines = [line for line in lines if line.startswith("FINDING ")]
+    if len(forcing) != 1 or lines[-1] != forcing[0] or not forcing[0][len("FORCING DECISION:") :].strip():
+        return False
+    parsed = [_PRESIDENT_FINDING_RE.fullmatch(line) for line in finding_lines]
+    if any(match is None for match in parsed):
+        return False
+    expected_ids = [finding.split(":", 1)[0].strip() for finding in findings]
+    actual_ids = [match.group(1) for match in parsed if match is not None]
+    return actual_ids == expected_ids
+
+
+def invoke_president(
+    *,
+    findings: Sequence[str],
+    invoke: Callable[[str, str], Mapping[str, str]],
+    max_substantive_rounds: int,
+) -> PresidentRuling:
+    if max_substantive_rounds < 1:
+        raise PresidentPolicyError("president_round_limit", "at least one round is required")
+    for model in PRESIDENT_LADDER:
+        response = invoke(model, _president_prompt(findings))
+        status = response.get("status")
+        if status == "unavailable" and response.get("code") == "president_unavailable":
+            continue
+        if status not in {"ok", "degraded"}:
+            raise PresidentPolicyError(
+                "president_invocation_failed", f"president {model} returned {status!r}"
+            )
+        text = response.get("text", "")
+        format_reasks = 0
+        if not _valid_president_grammar(text, findings):
+            format_reasks = 1
+            response = invoke(model, _president_prompt(findings, format_reask=True))
+            if (
+                response.get("status") == "unavailable"
+                and response.get("code") == "president_unavailable"
+            ):
+                continue
+            if response.get("status") not in {"ok", "degraded"}:
+                raise PresidentPolicyError(
+                    "president_invocation_failed", f"president {model} format reask failed"
+                )
+            text = response.get("text", "")
+            if not _valid_president_grammar(text, findings):
+                raise PresidentPolicyError(
+                    "president_ruling_format_missing",
+                    "president omitted mandatory terminal grammar after one same-session re-ask",
+                )
+            status = response.get("status")
+        if status == "degraded" and re.search(
+            r"FINDING\s+\S+:\s+DEFERRED\b.*validation", text, re.IGNORECASE
+        ):
+            raise PresidentPolicyError(
+                "degraded_president_validation_deferred",
+                "a degraded read-only president cannot defer necessary validation",
+            )
+        return PresidentRuling(
+            model=model,
+            text=text,
+            substantive_rounds=1,
+            format_reasks=format_reasks,
+        )
+    raise PresidentPolicyError(
+        "president_unavailable", "no president model in the availability ladder was available"
+    )
 _LEG_STATUS_ALIASES: dict[str, str] = {status: status for status in LEG_STATUSES} | {
     status.lower(): status for status in LEG_STATUSES
 }
@@ -4217,6 +4426,9 @@ def invoke_board(
     stream_dir: Path | str | None = None,
     research_policy: ResearchPolicy | None = None,
     agy_canary_capture: AgyCanaryCapture | None = None,
+    landing_tier: ReviewLandingTier | str | None = None,
+    review_policy: ReviewLandingPolicy | None = None,
+    review_seat_aliases: Mapping[str, str] | None = None,
 ) -> PanelResult:
     """Run an Advisor Board's seats through the provider seam, fail-closed.
 
@@ -4292,6 +4504,18 @@ def invoke_board(
         mode = _mode_for_purpose(board.purpose)
     if mode not in PANEL_MODES:
         raise ValueError(f"unknown panel mode {mode!r}; expected one of {PANEL_MODES}")
+    switched = _govlean_authority_switched(repo_dir)
+    if landing_tier is None and review_policy is None:
+        if switched:
+            raise PresidentPolicyError(
+                "review_landing_tier_required",
+                "post-switch board invocation requires an explicit landing tier or policy",
+            )
+    else:
+        policy = review_policy or review_policy_for_tier(
+            _coerce_review_landing_tier(landing_tier)  # type: ignore[arg-type]
+        )
+        _validate_review_board_policy(board, policy, review_seat_aliases)
     # 'reference, don't inline': resolve the artifact at the TOP (fail-closed on a
     # missing ref path) so every downstream use sees resolved content; warn on a
     # large INLINE artifact only. No ref ⇒ ``artifact`` byte-for-byte (the default

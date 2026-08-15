@@ -206,6 +206,8 @@ PYEOF
       /docs/ \
       /specs/ \
       /plans/phase-plan-v10-CONFORM.md \
+      /plans/phase-plan-v10-GOVLEAN.md \
+      /skills-src/claude/claude-plan-phase/scripts/validate_plan_doc.py \
       /CHANGELOG.md
     git -C "$STANDALONE_ROOT" checkout --quiet --detach "$SOURCE_HEAD"
     SUITE_TREE="$STANDALONE_ROOT/phase-loop-runtime"

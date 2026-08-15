@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from . import roadmap_assumptions
 from .discovery import PLAN_RE
 
 
@@ -27,6 +28,40 @@ TRANSITIONS = {
     "committed": {"executing", "orphaned"},
     "executing": {"completed", "failed", "orphaned"},
 }
+
+
+CLOSED_DISPOSITIONS = frozenset(
+    {"closed", "folded_into_successor", "carried_with_owner"}
+)
+ISSUE_ID_RE = re.compile(r"^(?:[A-Za-z0-9_.-]+/)?[A-Za-z0-9_.-]+#[1-9][0-9]*$")
+
+
+def _require_qualified_issue_id(issue_id: Any) -> str:
+    if not isinstance(issue_id, str) or ISSUE_ID_RE.fullmatch(issue_id) is None:
+        raise ValueError("issue_id must be repository-qualified (e.g. repo#123)")
+    return issue_id
+
+
+@dataclass
+class IssueDisposition:
+    issue_id: str
+    phase: str
+    disposition: str
+    owner: str
+    successor_plan: str | None = None
+
+    def __post_init__(self) -> None:
+        _require_qualified_issue_id(self.issue_id)
+        if not isinstance(self.phase, str) or not self.phase.strip():
+            raise ValueError("phase must be a non-empty string")
+        if self.disposition not in CLOSED_DISPOSITIONS:
+            raise ValueError(f"disposition must be one of {sorted(CLOSED_DISPOSITIONS)}")
+        if self.disposition == "folded_into_successor" and (
+            not isinstance(self.successor_plan, str) or not self.successor_plan.strip()
+        ):
+            raise ValueError("folded_into_successor requires a non-empty successor_plan")
+        if not isinstance(self.owner, str) or not self.owner.strip():
+            raise ValueError("owner must be a non-empty string")
 
 
 @dataclass(frozen=True)
@@ -63,6 +98,7 @@ class DotfilesPlanEntry:
     if_gates_produced: tuple[str, ...] = ()
     lanes: tuple[str, ...] = ()
     lifecycle: tuple[DotfilesPlanLifecycleEvent, ...] = ()
+    extensions: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -150,6 +186,64 @@ def update_lifecycle(repo: Path, slug: str, transition: str, by: str, metadata: 
         allowed = TRANSITIONS.get(entry.status, set())
         if transition not in allowed:
             raise ValueError(f"invalid lifecycle transition for {slug}: {entry.status} -> {transition}")
+
+        if entry.type == "phase" and transition == "completed":
+            if "issue_inventory" not in metadata or not isinstance(metadata["issue_inventory"], list):
+                raise ValueError("issue_inventory is required for phase completed lifecycle")
+            if "issue_dispositions" not in metadata or not isinstance(metadata["issue_dispositions"], list):
+                raise ValueError("issue_dispositions is required for phase completed lifecycle")
+
+            inventory_ids = [_require_qualified_issue_id(item) for item in metadata["issue_inventory"]]
+            if len(inventory_ids) != len(set(inventory_ids)):
+                raise ValueError("duplicate issue_id in issue_inventory")
+
+            expected_phase = entry.phase_alias or metadata.get("phase_alias")
+            disposition_ids: list[str] = []
+            normalized_dispositions: list[dict[str, Any]] = []
+            allowed_fields = {"issue_id", "phase", "disposition", "owner", "successor_plan"}
+
+            for item in metadata["issue_dispositions"]:
+                if isinstance(item, IssueDisposition):
+                    disposition = item
+                    serialized = {
+                        "issue_id": item.issue_id,
+                        "phase": item.phase,
+                        "disposition": item.disposition,
+                        "owner": item.owner,
+                    }
+                    if item.successor_plan is not None:
+                        serialized["successor_plan"] = item.successor_plan
+                elif isinstance(item, dict):
+                    extra_fields = set(item) - allowed_fields
+                    if extra_fields:
+                        raise ValueError(f"unknown field in issue_disposition: {sorted(extra_fields)}")
+                    if "owner" not in item:
+                        raise ValueError("missing owner field in issue_disposition")
+                    try:
+                        disposition = IssueDisposition(**item)
+                    except TypeError as exc:
+                        raise ValueError(f"invalid issue_disposition fields: {exc}") from exc
+                    serialized = dict(item)
+                else:
+                    raise ValueError("issue_dispositions items must be IssueDisposition or dict")
+
+                if expected_phase and disposition.phase != expected_phase:
+                    raise ValueError(
+                        f"phase mismatch in issue_disposition: expected {expected_phase}, got {disposition.phase}"
+                    )
+                disposition_ids.append(disposition.issue_id)
+                normalized_dispositions.append(serialized)
+
+            if len(disposition_ids) != len(set(disposition_ids)):
+                raise ValueError("duplicate issue_id in issue_dispositions")
+            if set(inventory_ids) != set(disposition_ids):
+                raise ValueError(
+                    f"issue_inventory {set(inventory_ids)} and issue_dispositions {set(disposition_ids)} do not match"
+                )
+
+            metadata = dict(metadata)
+            metadata["issue_dispositions"] = normalized_dispositions
+
         event = DotfilesPlanLifecycleEvent(transition=transition, by=by, at=now, metadata=metadata)
         entries.append(
             DotfilesPlanEntry(
@@ -169,6 +263,7 @@ def update_lifecycle(repo: Path, slug: str, transition: str, by: str, metadata: 
                 if_gates_produced=entry.if_gates_produced,
                 lanes=entry.lanes,
                 lifecycle=(*entry.lifecycle, event),
+                extensions=entry.extensions,
             )
         )
         updated = True
@@ -338,7 +433,8 @@ def _manifest_to_json(manifest: DotfilesPlanManifest) -> dict[str, Any]:
 
 
 def _entry_to_json(entry: DotfilesPlanEntry) -> dict[str, Any]:
-    return {
+    out = dict(entry.extensions)
+    out.update({
         "acceptance_criteria_count": entry.acceptance_criteria_count,
         "created_at": entry.created_at,
         "file": entry.file,
@@ -355,7 +451,8 @@ def _entry_to_json(entry: DotfilesPlanEntry) -> dict[str, Any]:
         "task_summary": entry.task_summary,
         "type": entry.type,
         "updated_at": entry.updated_at,
-    }
+    })
+    return out
 
 
 def _event_to_json(event: DotfilesPlanLifecycleEvent) -> dict[str, Any]:
@@ -387,6 +484,25 @@ def _entry_from_json(data: Any) -> DotfilesPlanEntry:
     if not isinstance(data, dict):
         raise ValueError("manifest entry must be an object")
     roadmap_ref = data.get("roadmap_ref")
+    known_keys = {
+        "acceptance_criteria_count",
+        "created_at",
+        "file",
+        "handoff_ref",
+        "if_gates_produced",
+        "lanes",
+        "lifecycle",
+        "owner_skill",
+        "phase_alias",
+        "reflection_ref",
+        "roadmap_ref",
+        "slug",
+        "status",
+        "task_summary",
+        "type",
+        "updated_at",
+    }
+    extensions = {key: value for key, value in data.items() if key not in known_keys}
     return DotfilesPlanEntry(
         slug=str(data.get("slug", "")),
         file=str(data.get("file", "")),
@@ -404,6 +520,7 @@ def _entry_from_json(data: Any) -> DotfilesPlanEntry:
         if_gates_produced=tuple(data.get("if_gates_produced") or ()),
         lanes=tuple(data.get("lanes") or ()),
         lifecycle=tuple(_event_from_json(event) for event in data.get("lifecycle") or ()),
+        extensions=extensions,
     )
 
 
@@ -656,7 +773,7 @@ _LEGIBLE_TEST_PATHS = (
     "phase-loop-runtime/tests/test_legible_evidence.py",
     "phase-loop-runtime/tests/test_legible_roadmap_contract.py",
 )
-_LEGIBLE_ROADMAP_SHA256 = "c66949236043e46e956caec1c09d0c19d0e8751e4ce2891de1fe2edf24e9fea1"
+_LEGIBLE_ROADMAP_SHA256 = roadmap_assumptions.CANONICAL_ROADMAP_SHA256
 _LEGIBLE_PLAN_CONTRACT_FIXED = {
     "absent_registry_selector_falsifier_nodeid": (
         "phase-loop-runtime/tests/test_legible_roadmap_contract.py::"
