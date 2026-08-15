@@ -471,3 +471,11 @@ Roadmap phases must set the expectation that downstream plans include machine-ch
 Closeout payload shape is defined by `EmitPhaseCloseout` in `phase_loop_runtime/baml_src/emit_phase_closeout.baml` (if that path is absent in the checkout, use the operator/prompt-supplied field contract or the installed `phase_loop_runtime` package — the missing vendored BAML source is not a blocker); keep skill text focused on value selection and handoff routing, not duplicated field ceremony.
 
 Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("codex")/claude-phase-roadmap-builder/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
+
+## GOVLEAN Policy
+
+- **Content & Behavior Falsifiers**: Runtime evidence primitives evaluate content and behavior bound properties; never commit topology or future-history pins to plan specifications.
+- **External-Only Pins**: Pinned inputs are restricted strictly to declared external inputs in a dedicated section.
+- **Plan Budget**: Plan size is governed by a 3000-word budget with explicit justification required above it when exceeded.
+- **Review Policy**: Ratified review requires cross-vendor ablation evidence for all Sol-authored plans.
+- **Proof-Cost Findings**: Flag proof-cost findings when evaluation is constrained to a single node over roughly five minutes or when a test run is unable to report multiple failures.

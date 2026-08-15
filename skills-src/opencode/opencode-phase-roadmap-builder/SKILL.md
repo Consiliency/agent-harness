@@ -158,3 +158,11 @@ Resolve closeout writes through the `phase_loop_runtime.skill_paths` resolver as
 - Latest handoff pointer: `<repo>/.dev-skills/handoffs/opencode-phase-roadmap-builder/latest.md`
 
 Handoff frontmatter must include `from: opencode-phase-roadmap-builder`, `timestamp:`, `repo:`, `repo_root:`, `branch:`, `branch_slug:`, `commit:`, `run_id:`, `artifact:`, `artifact_state:`, `next_skill:`, `next_command:`, and `next_phase:`. Update `latest.md` with the same handoff content.
+
+## GOVLEAN Policy
+
+- **Content & Behavior Falsifiers**: Runtime evidence primitives evaluate content and behavior bound properties; never commit topology or future-history pins to plan specifications.
+- **External-Only Pins**: Pinned inputs are restricted strictly to declared external inputs in a dedicated section.
+- **Plan Budget**: Plan size is governed by a 3000-word budget with explicit justification required above it when exceeded.
+- **Review Policy**: Ratified review requires cross-vendor ablation evidence for all Sol-authored plans.
+- **Proof-Cost Findings**: Flag proof-cost findings when evaluation is constrained to a single node over roughly five minutes or when a test run is unable to report multiple failures.
