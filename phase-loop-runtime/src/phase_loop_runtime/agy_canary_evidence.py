@@ -16,6 +16,7 @@ import posixpath
 import re
 import secrets
 import shutil
+import signal
 import stat
 import subprocess
 import sys
@@ -484,6 +485,7 @@ def _trusted_provider_runtime(provider: str) -> _TrustedProviderRuntime:
 
 @dataclass(frozen=True)
 class _OpenedSettings:
+    fd: int
     parent_fd: int
     name: str
     data: bytes
@@ -491,6 +493,7 @@ class _OpenedSettings:
     device: int
     inode: int
     uid: int
+    gid: int
 
 
 @dataclass
@@ -1145,6 +1148,7 @@ def _minimal_home_identity(home: Path) -> dict[str, Any]:
             raise AgyCanaryEvidenceError("minimal HOME settings are not private")
         policy = _parse_policy(opened.data)
     finally:
+        os.close(opened.fd)
         os.close(opened.parent_fd)
     facts = _policy_facts(policy)
     if not all(facts.values()):
@@ -1289,7 +1293,7 @@ def _open_settings(path: Path) -> _OpenedSettings:
         raise AgyCanaryEvidenceError("settings parent must be a real directory")
     parent_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
-        fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent_fd)
+        fd = os.open(path.name, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent_fd)
     except Exception:
         os.close(parent_fd)
         raise
@@ -1297,16 +1301,17 @@ def _open_settings(path: Path) -> _OpenedSettings:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
             raise AgyCanaryEvidenceError("settings path must be a regular file")
-        chunks: list[bytes] = []
-        while True:
-            chunk = os.read(fd, 1 << 20)
-            if not chunk:
-                break
-            chunks.append(chunk)
-        data = b"".join(chunks)
-    finally:
+        if os.geteuid() == 0 or info.st_uid != os.geteuid():
+            raise AgyCanaryEvidenceError(
+                "settings cleanup requires the non-root settings owner"
+            )
+        data = _read_open_fd(fd)
+    except Exception:
         os.close(fd)
+        os.close(parent_fd)
+        raise
     return _OpenedSettings(
+        fd=fd,
         parent_fd=parent_fd,
         name=path.name,
         data=data,
@@ -1314,6 +1319,7 @@ def _open_settings(path: Path) -> _OpenedSettings:
         device=info.st_dev,
         inode=info.st_ino,
         uid=info.st_uid,
+        gid=info.st_gid,
     )
 
 
@@ -1357,24 +1363,148 @@ def _derive_replacement(before: dict[str, Any]) -> tuple[dict[str, Any], str]:
     return after, result
 
 
-def _fd_is_writable(pid_dir: Path, fd_name: str) -> bool:
+def _read_open_fd(fd: int) -> bytes:
+    os.lseek(fd, 0, os.SEEK_SET)
+    chunks: list[bytes] = []
+    while True:
+        chunk = os.read(fd, 1 << 20)
+        if not chunk:
+            break
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+def _validate_opened_settings(
+    opened: _OpenedSettings, *, name: str, expected_data: bytes,
+) -> None:
+    descriptor = os.fstat(opened.fd)
     try:
-        text = (pid_dir / "fdinfo" / fd_name).read_text()
-    except (FileNotFoundError, ProcessLookupError):
-        return False
-    except (OSError, UnicodeError) as exc:
+        path_info = os.stat(
+            name, dir_fd=opened.parent_fd, follow_symlinks=False,
+        )
+    except OSError as exc:
         raise AgyCanaryEvidenceError(
-            "settings process inventory is unreadable: "
-            f"pid={pid_dir.name},fd={fd_name},surface=fdinfo"
+            "settings leased path identity drifted"
         ) from exc
-    for line in text.splitlines():
-        if line.startswith("flags:"):
-            try:
-                flags = int(line.split(":", 1)[1].strip(), 8)
-            except ValueError:
-                return True
-            return flags & os.O_ACCMODE != os.O_RDONLY
-    return True
+    _require_opened_path_identity(opened, name=name, path_info=path_info)
+    expected_identity = (
+        opened.device, opened.inode, opened.mode, opened.uid, opened.gid,
+    )
+    for info in (descriptor, path_info):
+        identity = (
+            info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode),
+            info.st_uid, info.st_gid,
+        )
+        if not stat.S_ISREG(info.st_mode) or identity != expected_identity:
+            raise AgyCanaryEvidenceError("settings leased identity or ownership drifted")
+    if _read_open_fd(opened.fd) != expected_data:
+        raise AgyCanaryEvidenceError("settings leased bytes drifted")
+
+
+def _require_opened_path_identity(
+    opened: _OpenedSettings, *, name: str,
+    path_info: os.stat_result | None = None,
+) -> None:
+    if path_info is None:
+        try:
+            path_info = os.stat(
+                name, dir_fd=opened.parent_fd, follow_symlinks=False,
+            )
+        except OSError as exc:
+            raise AgyCanaryEvidenceError(
+                "settings leased path identity drifted"
+            ) from exc
+    if (not stat.S_ISREG(path_info.st_mode) or
+            (path_info.st_dev, path_info.st_ino) != (opened.device, opened.inode)):
+        raise AgyCanaryEvidenceError("settings leased path identity drifted")
+
+
+def _begin_lease_signal_guard() -> set[Any]:
+    if (not sys.platform.startswith("linux") or
+            threading.current_thread() is not threading.main_thread() or
+            threading.active_count() != 1 or
+            not hasattr(signal, "pthread_sigmask") or
+            not hasattr(signal, "sigtimedwait") or signal.SIGIO in signal.sigpending()):
+        raise AgyCanaryEvidenceError(
+            "settings write lease requires one signal-clean main thread"
+        )
+    previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGIO})
+    if signal.SIGIO in signal.sigpending():
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+        raise AgyCanaryEvidenceError("settings write lease SIGIO state is ambiguous")
+    return previous
+
+
+def _end_lease_signal_guard(previous: set[Any]) -> None:
+    while signal.sigtimedwait({signal.SIGIO}, 0) is not None:
+        pass
+    signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+
+
+def _acquire_write_lease(fd: int, *, label: str) -> None:
+    required = ("F_SETLEASE", "F_GETLEASE", "F_WRLCK", "F_UNLCK")
+    if fcntl is None or any(getattr(fcntl, name, None) is None for name in required):
+        raise AgyCanaryEvidenceError("settings write leases are unavailable")
+    try:
+        fcntl.fcntl(fd, fcntl.F_SETLEASE, fcntl.F_WRLCK)
+    except OSError as exc:
+        raise AgyCanaryEvidenceError(
+            f"settings write lease is unavailable: {label}"
+        ) from exc
+    _require_write_lease(fd, label=label)
+
+
+def _require_write_lease(fd: int, *, label: str) -> None:
+    assert fcntl is not None
+    if fcntl.fcntl(fd, fcntl.F_GETLEASE) != fcntl.F_WRLCK:
+        raise AgyCanaryEvidenceError(f"settings write lease broke: {label}")
+
+
+def _release_write_lease(fd: int) -> None:
+    assert fcntl is not None
+    fcntl.fcntl(fd, fcntl.F_SETLEASE, fcntl.F_UNLCK)
+
+
+def _create_replacement(
+    *, settings: _OpenedSettings, name: str, data: bytes,
+) -> _OpenedSettings:
+    fd = os.open(
+        name, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+        settings.mode, dir_fd=settings.parent_fd,
+    )
+    try:
+        info = os.fstat(fd)
+        if (info.st_uid, info.st_gid) != (settings.uid, settings.gid):
+            os.fchown(fd, settings.uid, settings.gid)
+        os.fchmod(fd, settings.mode)
+        view = memoryview(data)
+        while view:
+            written = os.write(fd, view)
+            if written <= 0:
+                raise AgyCanaryEvidenceError("settings replacement short write")
+            view = view[written:]
+        os.fsync(fd)
+        info = os.fstat(fd)
+        opened = _OpenedSettings(
+            fd=fd, parent_fd=settings.parent_fd, name=name, data=data,
+            mode=stat.S_IMODE(info.st_mode), device=info.st_dev,
+            inode=info.st_ino, uid=info.st_uid, gid=info.st_gid,
+        )
+        if (opened.mode, opened.uid, opened.gid) != (
+            settings.mode, settings.uid, settings.gid,
+        ):
+            raise AgyCanaryEvidenceError(
+                "settings replacement ownership or mode was not preserved"
+            )
+        _validate_opened_settings(opened, name=name, expected_data=data)
+        return opened
+    except Exception:
+        os.close(fd)
+        try:
+            os.unlink(name, dir_fd=settings.parent_fd)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def _process_uids(pid_dir: Path) -> tuple[int, int, int, int] | None:
@@ -1412,7 +1542,6 @@ def _process_uids(pid_dir: Path) -> tuple[int, int, int, int] | None:
 
 def _assert_quiescent(
     settings: _OpenedSettings,
-    settings_parent: Path,
     *,
     block_all_agy_processes: bool,
     proc_root: Path = Path("/proc"),
@@ -1447,39 +1576,6 @@ def _assert_quiescent(
             executable_name == "agy" or "antigravity" in executable_name
         ):
             blockers.append(f"pid={pid_dir.name},process={executable_name}")
-        fd_dir = pid_dir / "fd"
-        try:
-            entries = list(fd_dir.iterdir())
-        except (FileNotFoundError, ProcessLookupError):
-            continue
-        except OSError as exc:
-            raise AgyCanaryEvidenceError(
-                "settings process inventory is unreadable: "
-                f"pid={pid_dir.name},surface=fd-directory"
-            ) from exc
-        for entry in entries:
-            try:
-                info = entry.stat()
-            except (FileNotFoundError, ProcessLookupError):
-                continue
-            except OSError as exc:
-                raise AgyCanaryEvidenceError(
-                    "settings process inventory is unreadable: "
-                    f"pid={pid_dir.name},fd={entry.name},surface=fd-entry"
-                ) from exc
-            try:
-                target = os.readlink(entry)
-            except (FileNotFoundError, ProcessLookupError):
-                continue
-            except OSError as exc:
-                raise AgyCanaryEvidenceError(
-                    "settings process inventory is unreadable: "
-                    f"pid={pid_dir.name},fd={entry.name},surface=fd-target"
-                ) from exc
-            same_inode = (info.st_dev, info.st_ino) == (settings.device, settings.inode)
-            beneath = target == str(settings_parent) or target.startswith(f"{settings_parent}/")
-            if same_inode or (beneath and _fd_is_writable(pid_dir, entry.name)):
-                blockers.append(f"pid={pid_dir.name},fd={entry.name}")
     if blockers:
         raise AgyCanaryEvidenceError(
             "settings tree is not quiescent: " + ", ".join(sorted(set(blockers))[:8])
@@ -1516,17 +1612,27 @@ def _reopen_at(directory_fd: int, name: str) -> tuple[bytes, os.stat_result]:
 
 
 def clean_settings(*, evidence_root: Path, settings_path: Path, maintenance_lock: Path) -> dict[str, Any]:
-    """Remove exactly the failed-canary ``command(pwd)`` rule under quiescence."""
+    """Remove exactly the failed-canary ``command(pwd)`` rule under quiescence.
+
+    Linux write leases cover conflicting opens and truncation. The maintenance
+    lock and path checks cover cooperating rename workflows; a hostile same-UID
+    transient rename-and-restore is outside this owner-only cleanup contract.
+    """
 
     if fcntl is None:
         raise AgyCanaryEvidenceError("settings cleanup requires POSIX fcntl locking")
     root_path, root_fd = _validate_private_root(evidence_root)
     settings: _OpenedSettings | None = None
+    replacement: _OpenedSettings | None = None
     lock_fd: int | None = None
     temporary: str | None = None
     exchanged = False
+    settings_leased = False
+    replacement_leased = False
+    lease_signal_mask: set[Any] | None = None
     replacement_bytes = b""
     transitions: list[str] = []
+    primary_error: BaseException | None = None
 
     def record_state(state: str, **fields: Any) -> None:
         transitions.append(state)
@@ -1548,16 +1654,24 @@ def clean_settings(*, evidence_root: Path, settings_path: Path, maintenance_lock
         except BlockingIOError as exc:
             raise AgyCanaryEvidenceError("settings maintenance lock is unavailable") from exc
 
+        lease_signal_mask = _begin_lease_signal_guard()
         settings = _open_settings(settings_path)
+        _acquire_write_lease(settings.fd, label="original")
+        settings_leased = True
+        _validate_opened_settings(
+            settings, name=settings.name, expected_data=settings.data,
+        )
         before = _parse_policy(settings.data)
         after, result = _derive_replacement(before)
         canonical_settings = (
             _account_home() / ".gemini" / "antigravity-cli" / "settings.json"
         ).resolve(strict=False)
+        block_all_agy_processes = (
+            settings_path.resolve(strict=True) == canonical_settings
+        )
         _assert_quiescent(
             settings,
-            settings_path.parent.resolve(strict=True),
-            block_all_agy_processes=settings_path.resolve(strict=True) == canonical_settings,
+            block_all_agy_processes=block_all_agy_processes,
         )
 
         _exclusive_write_at(root_fd, _SETTINGS_SNAPSHOT_NAME, settings.data, settings.mode)
@@ -1574,7 +1688,15 @@ def clean_settings(*, evidence_root: Path, settings_path: Path, maintenance_lock
         record_state("prepared", **common)
 
         if result == "already_absent":
+            _require_write_lease(settings.fd, label="original")
+            _validate_opened_settings(
+                settings, name=settings.name, expected_data=settings.data,
+            )
             record_state("verified", **common)
+            _require_write_lease(settings.fd, label="original")
+            _assert_quiescent(
+                settings, block_all_agy_processes=block_all_agy_processes,
+            )
             record_state("committed", **common)
             return {
                 "schema": SCHEMA_VERSION,
@@ -1593,35 +1715,52 @@ def clean_settings(*, evidence_root: Path, settings_path: Path, maintenance_lock
         else:
             replacement_bytes = json.dumps(after, indent=2, ensure_ascii=False).encode() + b"\n"
 
-        current, current_info = _reopen_at(settings.parent_fd, settings.name)
-        current_identity = (current_info.st_dev, current_info.st_ino)
-        if (
-            current_identity != (settings.device, settings.inode)
-            or stat.S_IMODE(current_info.st_mode) != settings.mode
-            or len(current) != len(settings.data)
-            or _sha256(current) != _sha256(settings.data)
-        ):
-            raise AgyCanaryEvidenceError("settings identity or bytes drifted before exchange")
-
+        _require_write_lease(settings.fd, label="original")
+        _validate_opened_settings(
+            settings, name=settings.name, expected_data=settings.data,
+        )
         temporary = f".phase-loop-agy-settings.{secrets.token_hex(16)}.tmp"
-        _exclusive_write_at(settings.parent_fd, temporary, replacement_bytes, settings.mode)
+        replacement = _create_replacement(
+            settings=settings, name=temporary, data=replacement_bytes,
+        )
+        _acquire_write_lease(replacement.fd, label="replacement")
+        replacement_leased = True
+        _require_write_lease(settings.fd, label="original")
+        _require_write_lease(replacement.fd, label="replacement")
+        _validate_opened_settings(
+            settings, name=settings.name, expected_data=settings.data,
+        )
+        _validate_opened_settings(
+            replacement, name=temporary, expected_data=replacement_bytes,
+        )
+        _assert_quiescent(
+            settings, block_all_agy_processes=block_all_agy_processes,
+        )
         _rename_exchange(settings.parent_fd, settings.name, temporary)
         exchanged = True
         record_state("exchanged_unverified", temp_name=temporary, **common)
 
-        destination, destination_info = _reopen_at(settings.parent_fd, settings.name)
-        swapped_original, swapped_info = _reopen_at(settings.parent_fd, temporary)
+        _require_write_lease(settings.fd, label="original")
+        _require_write_lease(replacement.fd, label="replacement")
+        _validate_opened_settings(
+            replacement, name=settings.name, expected_data=replacement_bytes,
+        )
+        _validate_opened_settings(
+            settings, name=temporary, expected_data=settings.data,
+        )
+        destination = _read_open_fd(replacement.fd)
         destination_parsed = _parse_policy(destination)
-        if destination_parsed != after or stat.S_IMODE(destination_info.st_mode) != settings.mode:
+        if destination_parsed != after:
             raise AgyCanaryEvidenceError("exchanged destination failed structural or mode validation")
-        if (
-            swapped_original != settings.data
-            or (swapped_info.st_dev, swapped_info.st_ino) != (settings.device, settings.inode)
-            or stat.S_IMODE(swapped_info.st_mode) != settings.mode
-        ):
-            raise AgyCanaryEvidenceError("swapped-out original failed identity validation")
         os.fsync(settings.parent_fd)
+        _require_write_lease(settings.fd, label="original")
+        _require_write_lease(replacement.fd, label="replacement")
         record_state("verified", temp_name=temporary, **common)
+        _require_write_lease(settings.fd, label="original")
+        _require_write_lease(replacement.fd, label="replacement")
+        _assert_quiescent(
+            replacement, block_all_agy_processes=block_all_agy_processes,
+        )
         record_state("committed", **common)
         os.unlink(temporary, dir_fd=settings.parent_fd)
         os.fsync(settings.parent_fd)
@@ -1641,17 +1780,39 @@ def clean_settings(*, evidence_root: Path, settings_path: Path, maintenance_lock
             "removed_rule": _RULE if result == "removed_exact_rule" else None,
         }
     except Exception as exc:
-        if exchanged and settings is not None and temporary is not None:
+        primary_error = exc
+        if (not exchanged and settings is not None and replacement is not None and
+                temporary is not None):
+            try:
+                _require_opened_path_identity(replacement, name=temporary)
+                os.unlink(temporary, dir_fd=settings.parent_fd)
+                os.fsync(settings.parent_fd)
+                temporary = None
+            except Exception as cleanup_exc:
+                try:
+                    record_state(
+                        "recovery_retained",
+                        temp_name=temporary,
+                        error=type(exc).__name__,
+                        cleanup_error=type(cleanup_exc).__name__,
+                    )
+                except Exception:
+                    pass
+        if (exchanged and settings is not None and replacement is not None and
+                temporary is not None):
             try:
                 record_state("rollback_required", error=type(exc).__name__)
+                _require_write_lease(settings.fd, label="original")
+                _require_write_lease(replacement.fd, label="replacement")
+                _require_opened_path_identity(settings, name=temporary)
+                _require_opened_path_identity(replacement, name=settings.name)
                 _rename_exchange(settings.parent_fd, settings.name, temporary)
-                restored, restored_info = _reopen_at(settings.parent_fd, settings.name)
-                own_replacement, _ = _reopen_at(settings.parent_fd, temporary)
-                if (
-                    restored == settings.data
-                    and (restored_info.st_dev, restored_info.st_ino) == (settings.device, settings.inode)
-                    and own_replacement == replacement_bytes
-                ):
+                exchanged = False
+                _validate_opened_settings(
+                    settings, name=settings.name, expected_data=settings.data,
+                )
+                _require_opened_path_identity(replacement, name=temporary)
+                if _read_open_fd(replacement.fd) == replacement_bytes:
                     os.unlink(temporary, dir_fd=settings.parent_fd)
                     os.fsync(settings.parent_fd)
                     record_state("rolled_back", error=type(exc).__name__)
@@ -1676,14 +1837,53 @@ def clean_settings(*, evidence_root: Path, settings_path: Path, maintenance_lock
             raise AgyCanaryEvidenceError(str(exc)) from exc
         raise AgyCanaryEvidenceError(f"settings cleanup failed: {exc}") from exc
     finally:
+        cleanup_errors: list[str] = []
+        if replacement is not None:
+            try:
+                if replacement_leased:
+                    _release_write_lease(replacement.fd)
+            except Exception as exc:
+                cleanup_errors.append(f"replacement-lease:{type(exc).__name__}")
+            try:
+                os.close(replacement.fd)
+            except OSError as exc:
+                cleanup_errors.append(f"replacement-fd:{type(exc).__name__}")
         if settings is not None:
-            os.close(settings.parent_fd)
+            try:
+                if settings_leased:
+                    _release_write_lease(settings.fd)
+            except Exception as exc:
+                cleanup_errors.append(f"original-lease:{type(exc).__name__}")
+            try:
+                os.close(settings.fd)
+            except OSError as exc:
+                cleanup_errors.append(f"original-fd:{type(exc).__name__}")
+            try:
+                os.close(settings.parent_fd)
+            except OSError as exc:
+                cleanup_errors.append(f"settings-parent:{type(exc).__name__}")
+        if lease_signal_mask is not None:
+            try:
+                _end_lease_signal_guard(lease_signal_mask)
+            except Exception as exc:
+                cleanup_errors.append(f"signal-guard:{type(exc).__name__}")
         if lock_fd is not None:
             try:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
-            finally:
+            except Exception as exc:
+                cleanup_errors.append(f"maintenance-unlock:{type(exc).__name__}")
+            try:
                 os.close(lock_fd)
-        os.close(root_fd)
+            except OSError as exc:
+                cleanup_errors.append(f"maintenance-fd:{type(exc).__name__}")
+        try:
+            os.close(root_fd)
+        except OSError as exc:
+            cleanup_errors.append(f"evidence-root:{type(exc).__name__}")
+        if cleanup_errors and primary_error is None:
+            raise AgyCanaryEvidenceError(
+                "settings cleanup finalization failed: " + ", ".join(cleanup_errors)
+            )
 
 
 def _read_regular_at(directory_fd: int, name: str) -> bytes:
@@ -1850,6 +2050,7 @@ def build_minimal_home(
     try:
         data = opened.data
     finally:
+        os.close(opened.fd)
         os.close(opened.parent_fd)
     target.write_bytes(data)
     target.chmod(0o600)
@@ -1945,6 +2146,7 @@ def inventory_policy_sources(
     try:
         parsed = _parse_policy(opened.data)
     finally:
+        os.close(opened.fd)
         os.close(opened.parent_fd)
     facts = _policy_facts(parsed)
     if not all(facts.values()):
@@ -4325,6 +4527,7 @@ def _rederive_cleanup_lineage(*, root_fd: int, settings_path: Path) -> dict[str,
         current = _parse_policy(current_bytes)
         current_mode = opened.mode
     finally:
+        os.close(opened.fd)
         os.close(opened.parent_fd)
     if cleanup.get("settings_path_sha256") != _sha256(str(settings_path).encode()):
         raise AgyCanaryEvidenceError("cleanup settings source does not match prepare source")
@@ -5135,6 +5338,7 @@ def _validate_launch_authority(*, authority: Any, ledger: dict[str, Any], root_f
                 _sha256(_canonical_json(_parse_policy(opened.data))) != authority.get("policy_sha256")):
             raise AgyCanaryEvidenceError("prepare launch authority settings drifted")
     finally:
+        os.close(opened.fd)
         os.close(opened.parent_fd)
     minimal = authority.get("minimal_home")
     if (not isinstance(minimal, dict) or set(minimal) != {"path", "identity"} or
@@ -5500,6 +5704,14 @@ def _parse_final_payload(plan: bytes) -> tuple[bytes, dict[str, Any]]:
         raise AgyCanaryEvidenceError("final execution payload is not canonical")
     _validate_final_proof(payload["proof"])
     return before, payload
+
+
+def _has_canonical_final_suffix(plan: bytes) -> bool:
+    try:
+        _parse_final_payload(plan)
+    except AgyCanaryEvidenceError:
+        return False
+    return True
 
 
 def _validate_final_proof(proof: dict[str, Any]) -> None:
@@ -5888,7 +6100,7 @@ def finalize_canary(
             or _sha256(manifest_target.data) != input_sha256.get(manifest_relative)
         ):
             raise AgyCanaryEvidenceError("finalizer target preimages differ from bootstrap attestation")
-        if b"## Execution evidence" in plan_before:
+        if _has_canonical_final_suffix(plan_before):
             raise AgyCanaryEvidenceError("plan already has execution evidence")
         manifest_before = manifest_target.data
         try:

@@ -10,8 +10,10 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import time
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -66,9 +68,9 @@ def _use_empty_process_inventory(monkeypatch, tmp_path: Path) -> None:
     proc_root = tmp_path / "empty-proc"
     proc_root.mkdir(exist_ok=True)
 
-    def inspect_empty_proc(settings, settings_parent, *, block_all_agy_processes):
+    def inspect_empty_proc(settings, *, block_all_agy_processes):
         return _REAL_ASSERT_QUIESCENT(
-            settings, settings_parent,
+            settings,
             block_all_agy_processes=block_all_agy_processes,
             proc_root=proc_root,
         )
@@ -397,6 +399,7 @@ def test_clean_settings_cli_removes_exact_rule_and_preserves_structure(
     try:
         _use_empty_process_inventory(monkeypatch, tmp_path)
         settings = _settings(tmp_path, ["command(pwd)"])
+        original_info = settings.stat()
         before = json.loads(settings.read_text())
         rc = main(
             [
@@ -417,7 +420,13 @@ def test_clean_settings_cli_removes_exact_rule_and_preserves_structure(
         after = json.loads(settings.read_text())
         before["permissions"]["allow"] = []
         assert after == before
-        assert stat.S_IMODE(settings.stat().st_mode) == 0o600
+        after_info = settings.stat()
+        assert (
+            after_info.st_uid, after_info.st_gid, stat.S_IMODE(after_info.st_mode),
+        ) == (
+            original_info.st_uid, original_info.st_gid,
+            stat.S_IMODE(original_info.st_mode),
+        )
         snapshot = root / "agy-settings.pre.json"
         assert not snapshot.is_symlink()
         assert json.loads(snapshot.read_text())["permissions"]["allow"] == ["command(pwd)"]
@@ -519,17 +528,17 @@ def test_clean_settings_rolls_back_after_exchange_failure(tmp_path, monkeypatch)
         _use_empty_process_inventory(monkeypatch, tmp_path)
         settings = _settings(tmp_path, ["command(pwd)"])
         original = settings.read_bytes()
-        real_reopen = evidence._reopen_at
-        calls = 0
+        real_validate = evidence._validate_opened_settings
+        injected = False
 
-        def fail_destination(directory_fd: int, name: str):
-            nonlocal calls
-            calls += 1
-            if calls == 3:
+        def fail_destination(opened, *, name, expected_data):
+            nonlocal injected
+            if not injected and opened.name != name and name == settings.name:
+                injected = True
                 raise evidence.AgyCanaryEvidenceError("injected post-exchange failure")
-            return real_reopen(directory_fd, name)
+            return real_validate(opened, name=name, expected_data=expected_data)
 
-        monkeypatch.setattr(evidence, "_reopen_at", fail_destination)
+        monkeypatch.setattr(evidence, "_validate_opened_settings", fail_destination)
         with pytest.raises(evidence.AgyCanaryEvidenceError, match="injected"):
             evidence.clean_settings(
                 evidence_root=root,
@@ -537,6 +546,7 @@ def test_clean_settings_rolls_back_after_exchange_failure(tmp_path, monkeypatch)
                 maintenance_lock=tmp_path / "maintenance.lock",
             )
         assert settings.read_bytes() == original
+        assert injected
         state = json.loads((root / "cleanup-state.json").read_text())
         assert state["state"] == "rolled_back"
         assert state["transitions"][-2:] == ["rollback_required", "rolled_back"]
@@ -544,6 +554,143 @@ def test_clean_settings_rolls_back_after_exchange_failure(tmp_path, monkeypatch)
         for child in root.iterdir():
             child.unlink()
         root.rmdir()
+
+
+def test_clean_settings_rejects_a_preexisting_open_handle(tmp_path, monkeypatch):
+    root = _private_root(tmp_path)
+    _use_empty_process_inventory(monkeypatch, tmp_path)
+    settings = _settings(tmp_path, ["command(pwd)"])
+    original = settings.read_bytes()
+    extra_fd = os.open(settings, os.O_RDONLY | os.O_CLOEXEC)
+    try:
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="lease is unavailable: original"):
+            evidence.clean_settings(
+                evidence_root=root, settings_path=settings,
+                maintenance_lock=tmp_path / "maintenance.lock",
+            )
+        assert settings.read_bytes() == original
+        assert not (root / "agy-settings.pre.json").exists()
+    finally:
+        os.close(extra_fd)
+        shutil.rmtree(root)
+
+
+def test_clean_settings_detects_a_conflicting_open_lease_break(tmp_path, monkeypatch):
+    root = _private_root(tmp_path)
+    _use_empty_process_inventory(monkeypatch, tmp_path)
+    settings = _settings(tmp_path, ["command(pwd)"])
+    original = settings.read_bytes()
+    real_create = evidence._create_replacement
+    conflict_returncode = None
+
+    def create_then_conflict(*, settings, name, data):
+        nonlocal conflict_returncode
+        replacement = real_create(settings=settings, name=name, data=data)
+        conflict = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import errno, os, sys; "
+                    "path=sys.argv[1]; "
+                    "\ntry: os.close(os.open(path, os.O_RDONLY | os.O_NONBLOCK))"
+                    "\nexcept OSError as exc: sys.exit(0 if exc.errno in "
+                    "{errno.EAGAIN, errno.EWOULDBLOCK} else 2)"
+                    "\nelse: sys.exit(3)"
+                ),
+                str(settings_path),
+            ],
+            check=False,
+        )
+        conflict_returncode = conflict.returncode
+        return replacement
+
+    settings_path = settings
+    monkeypatch.setattr(evidence, "_create_replacement", create_then_conflict)
+    try:
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="lease broke: original"):
+            evidence.clean_settings(
+                evidence_root=root, settings_path=settings,
+                maintenance_lock=tmp_path / "maintenance.lock",
+            )
+        assert conflict_returncode == 0
+        assert settings.read_bytes() == original
+        assert not list(tmp_path.glob(".phase-loop-agy-settings.*.tmp"))
+    finally:
+        shutil.rmtree(root)
+
+
+def test_clean_settings_rejects_replacement_ownership_drift(tmp_path, monkeypatch):
+    root = _private_root(tmp_path)
+    _use_empty_process_inventory(monkeypatch, tmp_path)
+    settings = _settings(tmp_path, ["command(pwd)"])
+    original = settings.read_bytes()
+    real_create = evidence._create_replacement
+
+    def create_with_wrong_owner_authority(*, settings, name, data):
+        opened = real_create(settings=settings, name=name, data=data)
+        return replace(opened, uid=opened.uid + 1)
+
+    monkeypatch.setattr(
+        evidence, "_create_replacement", create_with_wrong_owner_authority,
+    )
+    try:
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="ownership drifted"):
+            evidence.clean_settings(
+                evidence_root=root, settings_path=settings,
+                maintenance_lock=tmp_path / "maintenance.lock",
+            )
+        assert settings.read_bytes() == original
+        assert not list(tmp_path.glob(".phase-loop-agy-settings.*.tmp"))
+    finally:
+        shutil.rmtree(root)
+
+
+def test_write_lease_contract_detects_persistent_rename_only_drift(
+    tmp_path, monkeypatch,
+):
+    """Transient hostile same-UID rename-and-restore remains outside the contract."""
+    root = _private_root(tmp_path)
+    _use_empty_process_inventory(monkeypatch, tmp_path)
+    settings = _settings(tmp_path, ["command(pwd)"])
+    moved = settings.with_suffix(".moved")
+    real_create = evidence._create_replacement
+
+    def create_then_rename(*, settings, name, data):
+        opened = real_create(settings=settings, name=name, data=data)
+        settings_path.rename(moved)
+        return opened
+
+    settings_path = settings
+    monkeypatch.setattr(evidence, "_create_replacement", create_then_rename)
+    try:
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="path identity drifted"):
+            evidence.clean_settings(
+                evidence_root=root, settings_path=settings,
+                maintenance_lock=tmp_path / "maintenance.lock",
+            )
+        assert moved.is_file()
+        assert not list(tmp_path.glob(".phase-loop-agy-settings.*.tmp"))
+    finally:
+        if moved.exists():
+            moved.rename(settings)
+        shutil.rmtree(root)
+
+
+@pytest.mark.parametrize("effective_uid", (0, os.geteuid() + 1))
+def test_open_settings_rejects_root_or_nonowner_execution(
+    tmp_path, monkeypatch, effective_uid,
+):
+    settings = _settings(tmp_path, [])
+    monkeypatch.setattr(evidence.os, "geteuid", lambda: effective_uid)
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="non-root settings owner"):
+        evidence._open_settings(settings)
+
+
+def test_write_lease_requires_one_signal_clean_main_thread(monkeypatch):
+    monkeypatch.setattr(evidence.threading, "active_count", lambda: 2)
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="one signal-clean main thread"):
+        evidence._begin_lease_signal_guard()
 
 
 def test_clean_settings_blocks_when_agy_process_is_active(tmp_path, monkeypatch):
@@ -570,15 +717,47 @@ def test_clean_settings_blocks_when_agy_process_is_active(tmp_path, monkeypatch)
 
 
 @pytest.mark.parametrize(
+    ("blocked_scan", "last_state"),
+    ((2, "prepared"), (3, "rolled_back")),
+)
+def test_clean_settings_blocks_agy_relaunch_before_commit(
+    tmp_path, monkeypatch, blocked_scan, last_state,
+):
+    root = _private_root(tmp_path)
+    settings = _settings(tmp_path, ["command(pwd)"])
+    original = settings.read_bytes()
+    scans = 0
+
+    def block_relaunch(*_args, **_kwargs):
+        nonlocal scans
+        scans += 1
+        if scans == blocked_scan:
+            raise evidence.AgyCanaryEvidenceError(
+                "settings tree is not quiescent: pid=456,process=agy"
+            )
+
+    monkeypatch.setattr(evidence, "_assert_quiescent", block_relaunch)
+    try:
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="not quiescent"):
+            evidence.clean_settings(
+                evidence_root=root, settings_path=settings,
+                maintenance_lock=tmp_path / "maintenance.lock",
+            )
+        assert scans == blocked_scan
+        assert settings.read_bytes() == original
+        state = json.loads((root / "cleanup-state.json").read_text())
+        assert state["state"] == last_state
+        assert not list(tmp_path.glob(".phase-loop-agy-settings.*.tmp"))
+    finally:
+        shutil.rmtree(root)
+
+
+@pytest.mark.parametrize(
     ("surface", "message"),
     [
         ("uid-status", "surface=uid-status"),
         ("uid-classification", "surface=uid-classification"),
         ("cmdline", "surface=cmdline"),
-        ("fd-directory", "surface=fd-directory"),
-        ("fd-entry", "surface=fd-entry"),
-        ("fd-target", "surface=fd-target"),
-        ("fdinfo", "surface=fdinfo"),
     ],
 )
 def test_clean_settings_rejects_unreadable_process_inventory_before_mutation(
@@ -589,19 +768,10 @@ def test_clean_settings_rejects_unreadable_process_inventory_before_mutation(
     original = settings.read_bytes()
     proc_root = tmp_path / "proc"
     pid_dir = proc_root / "424242"
-    fd_dir = pid_dir / "fd"
-    fdinfo_dir = pid_dir / "fdinfo"
-    fd_dir.mkdir(parents=True)
-    fdinfo_dir.mkdir()
+    pid_dir.mkdir(parents=True)
     status = pid_dir / "status"
     status.write_text(f"Name:\ttest\nUid:\t{os.getuid()}\t{os.getuid()}\t{os.getuid()}\t{os.getuid()}\n")
     (pid_dir / "cmdline").write_bytes(b"/usr/bin/other\0")
-    open_target = tmp_path / "open-target"
-    open_target.write_text("open\n")
-    fd_entry = fd_dir / "7"
-    fd_entry.symlink_to(open_target)
-    fdinfo = fdinfo_dir / "7"
-    fdinfo.write_text("flags:\t0100002\n")
 
     if surface == "uid-status":
         real_read_text = Path.read_text
@@ -623,48 +793,11 @@ def test_clean_settings_rejects_unreadable_process_inventory_before_mutation(
             return real_read_bytes(path)
 
         monkeypatch.setattr(Path, "read_bytes", deny_read_bytes)
-    elif surface == "fd-directory":
-        real_iterdir = Path.iterdir
-
-        def deny_iterdir(path):
-            if path == fd_dir:
-                raise PermissionError("denied fd directory")
-            return real_iterdir(path)
-
-        monkeypatch.setattr(Path, "iterdir", deny_iterdir)
-    elif surface == "fd-entry":
-        real_stat = Path.stat
-
-        def deny_stat(path, *args, **kwargs):
-            if path == fd_entry:
-                raise PermissionError("denied fd entry")
-            return real_stat(path, *args, **kwargs)
-
-        monkeypatch.setattr(Path, "stat", deny_stat)
-    elif surface == "fd-target":
-        real_readlink = os.readlink
-
-        def deny_readlink(path, *args, **kwargs):
-            if Path(path) == fd_entry:
-                raise PermissionError("denied fd target")
-            return real_readlink(path, *args, **kwargs)
-
-        monkeypatch.setattr(evidence.os, "readlink", deny_readlink)
-    else:
-        real_read_text = Path.read_text
-
-        def deny_read_text(path, *args, **kwargs):
-            if path == fdinfo:
-                raise PermissionError("denied fdinfo")
-            return real_read_text(path, *args, **kwargs)
-
-        monkeypatch.setattr(Path, "read_text", deny_read_text)
-
     real_assert_quiescent = evidence._assert_quiescent
 
-    def inspect_fake_proc(settings_value, settings_parent, *, block_all_agy_processes):
+    def inspect_fake_proc(settings_value, *, block_all_agy_processes):
         return real_assert_quiescent(
-            settings_value, settings_parent,
+            settings_value,
             block_all_agy_processes=block_all_agy_processes,
             proc_root=proc_root,
         )
@@ -693,6 +826,7 @@ def test_quiescence_ignores_real_foreign_uid_pid_one(tmp_path):
     settings_path = _settings(tmp_path, ["command(pwd)"])
     settings = evidence._open_settings(settings_path)
     if settings.uid in process_uids:
+        os.close(settings.fd)
         os.close(settings.parent_fd)
         pytest.skip("PID 1 is not a foreign-UID process on this host")
     proc_root = tmp_path / "real-proc"
@@ -700,10 +834,46 @@ def test_quiescence_ignores_real_foreign_uid_pid_one(tmp_path):
     (proc_root / "1").symlink_to(real_pid, target_is_directory=True)
     try:
         evidence._assert_quiescent(
-            settings, tmp_path.resolve(), block_all_agy_processes=True,
+            settings, block_all_agy_processes=True,
             proc_root=proc_root,
         )
     finally:
+        os.close(settings.fd)
+        os.close(settings.parent_fd)
+
+
+def test_quiescence_ignores_unreadable_fd_inventory_for_real_sd_pam(tmp_path):
+    settings_path = _settings(tmp_path, ["command(pwd)"])
+    settings = evidence._open_settings(settings_path)
+    candidate = None
+    try:
+        for pid_dir in Path("/proc").iterdir():
+            if not pid_dir.name.isdigit():
+                continue
+            try:
+                process_uids = evidence._process_uids(pid_dir)
+                command_name = (pid_dir / "comm").read_text().strip()
+            except (OSError, UnicodeError):
+                continue
+            if process_uids is None or settings.uid not in process_uids:
+                continue
+            if command_name not in {"(sd-pam)", "sd-pam"}:
+                continue
+            try:
+                list((pid_dir / "fd").iterdir())
+            except PermissionError:
+                candidate = pid_dir
+                break
+        if candidate is None:
+            pytest.skip("no same-UID sd-pam with unreadable FD inventory on this host")
+        proc_root = tmp_path / "real-proc"
+        proc_root.mkdir()
+        (proc_root / candidate.name).symlink_to(candidate, target_is_directory=True)
+        evidence._assert_quiescent(
+            settings, block_all_agy_processes=True, proc_root=proc_root,
+        )
+    finally:
+        os.close(settings.fd)
         os.close(settings.parent_fd)
 
 
@@ -2263,6 +2433,54 @@ def _run_stub_finalizer(root: Path, repo: Path) -> dict[str, object]:
         manifest_path=Path("plans/manifest.json"),
         plan_slug="agy-canary",
     )
+
+
+def _set_stub_plan_preimage(plan: Path, value: bytes) -> None:
+    plan.write_bytes(value)
+    bootstrap, _plan_relative, _manifest_relative = evidence._attested_final_targets()
+    bootstrap["input_sha256"]["plans/canary.md"] = evidence._sha256(value)
+
+
+@pytest.mark.parametrize(
+    "plan_before",
+    (
+        b"# Plan\n\nThe final step appends ## Execution evidence after acceptance.\n",
+        b"# Plan\n\nExample marker:\n\n````text\n## Execution evidence\n````\n",
+    ),
+)
+def test_finalizer_allows_execution_evidence_phrase_in_prose_or_example(
+    monkeypatch, tmp_path, plan_before,
+):
+    root, repo, plan, _manifest = _stub_finalizer(monkeypatch, tmp_path)
+    _set_stub_plan_preimage(plan, plan_before)
+    try:
+        _run_stub_finalizer(root, repo)
+        assert plan.read_bytes() == plan_before + b"\nproof\n"
+    finally:
+        shutil.rmtree(root)
+
+
+def test_finalizer_rejects_an_existing_canonical_execution_suffix(monkeypatch, tmp_path):
+    root, repo, plan, _manifest = _stub_finalizer(monkeypatch, tmp_path)
+    proof = evidence.verify_capture()
+    payload = {
+        "attestation": {},
+        "proof": proof,
+        "proof_sha256": evidence._sha256(evidence._canonical_json(proof)),
+        "schema": "agy_canary_final.v1",
+    }
+    plan_before = (
+        b"# Plan\n\n## Execution evidence\n\n```json\n"
+        + evidence._canonical_json(payload)
+        + b"```\n"
+    )
+    _set_stub_plan_preimage(plan, plan_before)
+    try:
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="already has execution evidence"):
+            _run_stub_finalizer(root, repo)
+        assert plan.read_bytes() == plan_before
+    finally:
+        shutil.rmtree(root)
 
 
 def test_finalizer_preserves_concurrent_mutation_after_inputs_receipt(monkeypatch, tmp_path):
