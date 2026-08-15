@@ -1163,7 +1163,8 @@ def _validate_private_root(path: Path) -> tuple[Path, int]:
         info = path.lstat()
     except FileNotFoundError as exc:
         raise AgyCanaryEvidenceError("evidence root does not exist") from exc
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+    if (stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode) or
+            info.st_uid != os.getuid()):
         raise AgyCanaryEvidenceError("evidence root must be a real directory")
     if stat.S_IMODE(info.st_mode) != 0o700:
         raise AgyCanaryEvidenceError("evidence root must have mode 0700")
@@ -1172,7 +1173,82 @@ def _validate_private_root(path: Path) -> tuple[Path, int]:
     if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
         os.close(fd)
         raise AgyCanaryEvidenceError("evidence root identity changed during open")
-    return path.resolve(strict=True), fd
+    try:
+        resolved = path.resolve(strict=True)
+        reopened = path.lstat()
+    except (FileNotFoundError, OSError) as exc:
+        os.close(fd)
+        raise AgyCanaryEvidenceError("evidence root identity changed during open") from exc
+    if (resolved != path or
+            (reopened.st_dev, reopened.st_ino) != (opened.st_dev, opened.st_ino)):
+        os.close(fd)
+        raise AgyCanaryEvidenceError("evidence root identity changed during open")
+    return resolved, fd
+
+
+def _evidence_root_masking_authority(root: Path, root_fd: int) -> dict[str, Any]:
+    info = os.fstat(root_fd)
+    try:
+        current = root.lstat()
+    except (FileNotFoundError, OSError) as exc:
+        raise AgyCanaryEvidenceError("bootstrap evidence root identity drifted") from exc
+    if (root != Path("/tmp") / root.name or root.resolve(strict=True) != root or
+            (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino) or
+            current.st_uid != os.getuid() or stat.S_IMODE(current.st_mode) != 0o700):
+        raise AgyCanaryEvidenceError("bootstrap evidence root is not canonical")
+    return {
+        "schema": "agy_canary_evidence_root_mask.v1", "path": str(root),
+        "dev": info.st_dev, "inode": info.st_ino, "uid": info.st_uid,
+        "mode": stat.S_IMODE(info.st_mode), "strategy": "private_tmpfs",
+        "child_visible": False,
+    }
+
+
+def _validate_evidence_root_masking_authority(
+    value: Any, *, revalidate: bool = True,
+) -> dict[str, Any]:
+    required = {
+        "schema", "path", "dev", "inode", "uid", "mode", "strategy",
+        "child_visible",
+    }
+    if (not isinstance(value, dict) or set(value) != required or
+            value.get("schema") != "agy_canary_evidence_root_mask.v1" or
+            not isinstance(value.get("path"), str) or
+            not Path(value["path"]).is_absolute() or
+            Path(value["path"]).parent != Path("/tmp") or
+            any(not _is_plain_int(value.get(name)) or value[name] < 0 for name in (
+                "dev", "inode", "uid", "mode"
+            )) or (revalidate and value["uid"] != os.getuid()) or
+            value["mode"] != 0o700 or
+            value.get("strategy") != "private_tmpfs" or
+            value.get("child_visible") is not False):
+        raise AgyCanaryEvidenceError("bootstrap evidence root masking authority is malformed")
+    if revalidate:
+        root, root_fd = _validate_private_root(Path(value["path"]))
+        try:
+            if _evidence_root_masking_authority(root, root_fd) != value:
+                raise AgyCanaryEvidenceError("bootstrap evidence root masking authority drifted")
+        finally:
+            os.close(root_fd)
+    return value
+
+
+def _validate_bootstrap_evidence_root_isolation(
+    *, root: Path, repo: Path, account_home: Path,
+    uv_store_authority: dict[str, Any],
+) -> None:
+    protected_paths = {
+        repo.resolve(strict=True), account_home.resolve(strict=True),
+        *(Path(row["resolved"]) for row in uv_store_authority["directories"].values()),
+    }
+    if uv_store_authority["workspace"] is not None:
+        protected_paths.add(Path(uv_store_authority["workspace"]["resolved"]))
+    if any(
+            root == path or root in path.parents or path in root.parents
+            for path in protected_paths):
+        raise AgyCanaryEvidenceError(
+            "bootstrap evidence root overlaps a child-visible writable or source path"
+        )
 
 
 def _exclusive_write_at(directory_fd: int, name: str, data: bytes, mode: int) -> None:
@@ -3672,7 +3748,8 @@ def _bootstrap_local_source_seams(repo: Path) -> dict[str, str]:
 def _tree_snapshot_bwrap_argv(
     *, snapshot: _GitTreeSnapshot, bwrap: Path, bash: Path,
     environment: dict[str, str], account_home: Path,
-    uv_store_authority: dict[str, Any], command: tuple[str, ...] | None = None,
+    uv_store_authority: dict[str, Any], evidence_root_masking: dict[str, Any],
+    command: tuple[str, ...] | None = None, identity_only: bool = False,
 ) -> tuple[tuple[str, ...], dict[str, Any]]:
     """Mount every attested Git blob read-only over the canonical repository path."""
     repo = Path(snapshot.authority["mount_path"])
@@ -3684,6 +3761,9 @@ def _tree_snapshot_bwrap_argv(
     if workspace is not None:
         writable_binds.append(workspace["resolved"])
     writable_binds = sorted(set(writable_binds))
+    evidence_root_masking = _validate_evidence_root_masking_authority(
+        evidence_root_masking, revalidate=not identity_only,
+    )
     argv = [
         str(bwrap), "--unshare-all", "--share-net", "--die-with-parent", "--new-session",
         "--clearenv", "--ro-bind", "/", "/",
@@ -3715,31 +3795,53 @@ def _tree_snapshot_bwrap_argv(
                 raise AgyCanaryEvidenceError("tracked snapshot symlink is incomplete")
             argv.extend(("--symlink", entry.link_target, destination))
         else:
-            if entry.fd is None:
+            if entry.fd is None and not identity_only:
                 raise AgyCanaryEvidenceError("tracked snapshot file descriptor is missing")
             permissions = "0755" if entry.mode == "100755" else "0644"
-            argv.extend(("--perms", permissions, "--ro-bind-data", str(entry.fd), destination))
+            descriptor = (
+                f"sealed:{entry.mode}:{entry.oid}" if identity_only else str(entry.fd)
+            )
+            argv.extend(("--perms", permissions, "--ro-bind-data", descriptor, destination))
     argv.extend(("--remount-ro", str(repo)))
     for name in sorted(environment):
         argv.extend(("--setenv", name, environment[name]))
     argv.extend(("--chdir", str(repo), "--", *command))
-    arg_bytes = sum(len(item.encode()) + 1 for item in argv)
+    identity_argv = list(argv)
+    if not identity_only:
+        by_destination = {
+            str(repo.joinpath(*PurePosixPath(entry.path).parts)): entry
+            for entry in snapshot.entries if entry.mode != "120000"
+        }
+        for index, item in enumerate(identity_argv[:-2]):
+            if item != "--ro-bind-data":
+                continue
+            destination = identity_argv[index + 2]
+            entry = by_destination.get(destination)
+            if entry is None:
+                raise AgyCanaryEvidenceError("tracked snapshot argv identity is incomplete")
+            identity_argv[index + 1] = f"sealed:{entry.mode}:{entry.oid}"
+    arg_bytes = sum(len(item.encode()) + 1 for item in identity_argv)
     try:
         arg_max = os.sysconf("SC_ARG_MAX")
         open_max = os.sysconf("SC_OPEN_MAX")
     except (OSError, ValueError) as exc:
         raise AgyCanaryEvidenceError("tracked snapshot process limits are unavailable") from exc
-    if arg_bytes >= arg_max or len(snapshot.fds) + 16 >= open_max:
+    descriptor_count = (
+        snapshot.authority["file_count"] if identity_only else len(snapshot.fds)
+    )
+    if arg_bytes >= arg_max or descriptor_count + 16 >= open_max:
         raise AgyCanaryEvidenceError("tracked snapshot exceeds process argument or descriptor limits")
     sandbox = {
         "schema": _TREE_SANDBOX_SCHEMA, "executable": str(bwrap),
-        "argv_sha256": _sha256(_canonical_json(argv)), "argv_count": len(argv),
-        "argv_bytes": arg_bytes, "passed_fd_count": len(snapshot.fds),
+        "argv_sha256": _sha256(_canonical_json(identity_argv)),
+        "argv_count": len(identity_argv),
+        "argv_bytes": arg_bytes, "passed_fd_count": descriptor_count,
         "root": "read_only", "network": "shared",
         "mount_path": str(repo), "command": list(command),
         "writable_binds": writable_binds,
         "tmpfs": ["/tmp", "/run", str(repo)],
         "environment_sha256": _sha256(_canonical_json(environment)),
+        "evidence_root_masking": evidence_root_masking,
     }
     return tuple(argv), sandbox
 
@@ -3747,11 +3849,13 @@ def _tree_snapshot_bwrap_argv(
 def _validate_tree_sandbox(
     value: Any, *, tree: dict[str, Any], environment: dict[str, str],
     uv_store_authority: dict[str, Any], bash: Path,
+    revalidate_evidence_root: bool = True,
 ) -> dict[str, Any]:
     required = {
         "schema", "executable", "argv_sha256", "argv_count", "argv_bytes",
         "passed_fd_count", "root", "network", "mount_path", "command",
         "writable_binds", "tmpfs", "environment_sha256",
+        "evidence_root_masking",
     }
     account_home = Path(uv_store_authority["account_home"])
     writable_binds = [str(account_home)]
@@ -3771,13 +3875,65 @@ def _validate_tree_sandbox(
             value.get("command") != [str(bash), str(Path(mount_path) / "bootstrap.sh")] or
             value.get("writable_binds") != writable_binds or
             value.get("tmpfs") != ["/tmp", "/run", mount_path] or
-            value.get("environment_sha256") != _sha256(_canonical_json(environment))):
+            value.get("environment_sha256") != _sha256(_canonical_json(environment)) or
+            _validate_evidence_root_masking_authority(
+                value.get("evidence_root_masking"),
+                revalidate=revalidate_evidence_root,
+            ) != value.get("evidence_root_masking")):
         raise AgyCanaryEvidenceError("tracked snapshot sandbox record is malformed")
     return value
 
 
+def _launch_tree_snapshot_child(
+    *, repo: Path, head: str, bwrap: Path, bash: Path,
+    environment: dict[str, str], account_home: Path,
+    uv_store_authority: dict[str, Any], evidence_root_masking: dict[str, Any],
+    local_source_seams: dict[str, str],
+) -> tuple[subprocess.Popen[str], dict[str, Any], dict[str, Any]]:
+    """Own every snapshot FD across argv construction, launch, and communication."""
+    snapshot = _git_tree_snapshot(repo, head, materialize=True)
+    try:
+        bootstrap_argv, sandbox = _tree_snapshot_bwrap_argv(
+            snapshot=snapshot, bwrap=bwrap, bash=bash, environment=environment,
+            account_home=account_home, uv_store_authority=uv_store_authority,
+            evidence_root_masking=evidence_root_masking,
+        )
+        if _bootstrap_local_source_seams(repo) != local_source_seams:
+            raise AgyCanaryEvidenceError("bootstrap local source seam state drifted")
+        try:
+            child_process = subprocess.Popen(
+                list(bootstrap_argv), cwd=repo, env={}, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True, pass_fds=snapshot.fds,
+            )
+        except OSError as exc:
+            raise AgyCanaryEvidenceError("tracked snapshot child could not start") from exc
+        try:
+            child_process.communicate(timeout=1800)
+        except subprocess.TimeoutExpired as exc:
+            child_process.kill()
+            child_process.communicate()
+            raise AgyCanaryEvidenceError("direct bootstrap child timed out") from exc
+        return child_process, sandbox, snapshot.authority
+    finally:
+        snapshot.close()
+
+
 def bootstrap_attest(
     *, evidence_root: Path, dotfiles_repo: Path, plan_path: Path
+) -> dict[str, Any]:
+    """Open the private evidence authority before any subprocess or child."""
+    root, root_fd = _validate_private_root(evidence_root)
+    try:
+        return _bootstrap_attest_opened(
+            root=root, root_fd=root_fd, dotfiles_repo=dotfiles_repo,
+            plan_path=plan_path,
+        )
+    finally:
+        os.close(root_fd)
+
+
+def _bootstrap_attest_opened(
+    *, root: Path, root_fd: int, dotfiles_repo: Path, plan_path: Path,
 ) -> dict[str, Any]:
     """Directly run committed bootstrap and attest its direct child result."""
     disallowed_overrides = sorted(
@@ -3815,6 +3971,11 @@ def bootstrap_attest(
     _validate_uv_store_authority(
         uv_store_authority, revalidate=True, account_home=account_home,
     )
+    evidence_root_masking = _evidence_root_masking_authority(root, root_fd)
+    _validate_bootstrap_evidence_root_isolation(
+        root=root, repo=repo, account_home=account_home,
+        uv_store_authority=uv_store_authority,
+    )
     child_env = _bootstrap_environment(
         uv_executable=uv, account_home=account_home,
         interpreter_authority=interpreter_authority,
@@ -3837,30 +3998,14 @@ def bootstrap_attest(
         timeout=30, check=False, env=child_env,
     )
     bwrap = _canonical_bwrap()
-    snapshot = _git_tree_snapshot(repo, head, materialize=True)
-    bootstrap_argv, sandbox = _tree_snapshot_bwrap_argv(
-        snapshot=snapshot, bwrap=bwrap, bash=bash, environment=child_env,
+    child_process, sandbox, tree_snapshot_authority = _launch_tree_snapshot_child(
+        repo=repo, head=head, bwrap=bwrap, bash=bash, environment=child_env,
         account_home=account_home, uv_store_authority=uv_store_authority,
+        evidence_root_masking=evidence_root_masking,
+        local_source_seams=local_source_seams,
     )
-    try:
-        if _bootstrap_local_source_seams(repo) != local_source_seams:
-            raise AgyCanaryEvidenceError("bootstrap local source seam state drifted")
-        try:
-            child_process = subprocess.Popen(
-                list(bootstrap_argv), cwd=repo, env={},
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                pass_fds=snapshot.fds,
-            )
-        except OSError as exc:
-            raise AgyCanaryEvidenceError("tracked snapshot child could not start") from exc
-        try:
-            _stdout, _stderr = child_process.communicate(timeout=1800)
-        except subprocess.TimeoutExpired as exc:
-            child_process.kill()
-            child_process.communicate()
-            raise AgyCanaryEvidenceError("direct bootstrap child timed out") from exc
-    finally:
-        snapshot.close()
+    if _evidence_root_masking_authority(root, root_fd) != evidence_root_masking:
+        raise AgyCanaryEvidenceError("bootstrap evidence root masking authority drifted")
     child_rc = child_process.returncode
     if _bootstrap_local_source_seams(repo) != local_source_seams:
         raise AgyCanaryEvidenceError("bootstrap local source seam state drifted")
@@ -3879,41 +4024,41 @@ def bootstrap_attest(
     )
     if installation["version"] != "0.7.14":
         raise AgyCanaryEvidenceError("bootstrap did not install the expected phase-loop version")
-    root, root_fd = _validate_private_root(evidence_root)
-    try:
-        value = {
-            "schema": "agy_canary_bootstrap_attestation.v1",
-            "repo_head": head,
-            "tree_snapshot": snapshot.authority,
-            "blobs": identities,
-            "input_sha256": {name: _sha256(data) for name, data in inputs.items()},
-            "targets": {"plan": plan_relative, "manifest": "plans/manifest.json"},
-            "bootstrap": {
-                "sandbox": sandbox,
-                "pid": child_process.pid,
-                "returncode": child_rc,
-                "script_sha256": _sha256(script_bytes),
-                "script_blob": identities["bootstrap.sh"],
-                "before_uv_tools_sha256": _sha256((before.stdout or "").encode()),
-                "after_uv_tools_sha256": _sha256((after.stdout or "").encode()),
-                "environment_names": sorted(child_env),
-                "uv_environment": {
-                    name: child_env[name] for name in (
-                        "HOME", "PATH", "UV_TOOL_DIR", "UV_TOOL_BIN_DIR",
-                        "UV_CACHE_DIR", "UV_PYTHON_INSTALL_DIR", "UV_PYTHON",
-                        "UV_PYTHON_DOWNLOADS",
-                    )
-                },
-                "interpreter_authority": interpreter_authority,
-                "uv_store_authority": uv_store_authority,
-                "local_source_seams": local_source_seams,
-                "installation": installation,
+    value = {
+        "schema": "agy_canary_bootstrap_attestation.v1",
+        "repo_head": head,
+        "tree_snapshot": tree_snapshot_authority,
+        "blobs": identities,
+        "input_sha256": {name: _sha256(data) for name, data in inputs.items()},
+        "targets": {"plan": plan_relative, "manifest": "plans/manifest.json"},
+        "bootstrap": {
+            "sandbox": sandbox,
+            "pid": child_process.pid,
+            "returncode": child_rc,
+            "script_sha256": _sha256(script_bytes),
+            "script_blob": identities["bootstrap.sh"],
+            "before_uv_tools_sha256": _sha256((before.stdout or "").encode()),
+            "after_uv_tools_sha256": _sha256((after.stdout or "").encode()),
+            "environment_names": sorted(child_env),
+            "uv_environment": {
+                name: child_env[name] for name in (
+                    "HOME", "PATH", "UV_TOOL_DIR", "UV_TOOL_BIN_DIR",
+                    "UV_CACHE_DIR", "UV_PYTHON_INSTALL_DIR", "UV_PYTHON",
+                    "UV_PYTHON_DOWNLOADS",
+                )
             },
-        }
-        _exclusive_write_at(root_fd, "agy_canary_bootstrap_attestation.json", _canonical_json(value), 0o600)
-        return value
-    finally:
-        os.close(root_fd)
+            "interpreter_authority": interpreter_authority,
+            "uv_store_authority": uv_store_authority,
+            "local_source_seams": local_source_seams,
+            "installation": installation,
+        },
+    }
+    if _evidence_root_masking_authority(root, root_fd) != evidence_root_masking:
+        raise AgyCanaryEvidenceError("bootstrap evidence root masking authority drifted")
+    _exclusive_write_at(
+        root_fd, "agy_canary_bootstrap_attestation.json", _canonical_json(value), 0o600
+    )
+    return value
 
 
 def _validate_installation_identity(installed: Any) -> dict[str, Any]:
@@ -5322,6 +5467,17 @@ def _proof_identity(proof: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _bootstrap_final_identity(receipt: dict[str, Any]) -> dict[str, Any]:
+    """Project every immutable execution authority required after private cleanup."""
+    return {
+        "repo_head": receipt["repo_head"],
+        "tree_snapshot": copy.deepcopy(receipt["tree_snapshot"]),
+        "blobs": copy.deepcopy(receipt["blobs"]),
+        "input_sha256": copy.deepcopy(receipt["input_sha256"]),
+        "sandbox": copy.deepcopy(receipt["bootstrap"]["sandbox"]),
+    }
+
+
 def _attested_final_targets(
     *, root_fd: int, repo: Path, plan_path: Path, manifest_path: Path, plan_slug: str,
     require_preimages: bool = True,
@@ -5361,7 +5517,7 @@ def check_private_final(
     root, root_fd = _validate_private_root(evidence_root)
     try:
         repo = dotfiles_repo.resolve(strict=True)
-        _bootstrap, plan_relative, manifest_relative = _attested_final_targets(
+        bootstrap_receipt, plan_relative, manifest_relative = _attested_final_targets(
             root_fd=root_fd, repo=repo, plan_path=plan_path, manifest_path=manifest_path, plan_slug=plan_slug,
             require_preimages=False,
         )
@@ -5379,6 +5535,8 @@ def check_private_final(
         release = attestation.get("release")
         installation = attestation.get("installation")
         if (not isinstance(release, dict) or
+                attestation.get("bootstrap") !=
+                _bootstrap_final_identity(bootstrap_receipt) or
                 attestation.get("release_sha256") != _sha256(_canonical_json(release)) or
                 attestation.get("wheel_binding_sha256") !=
                 _sha256(_canonical_json(release.get("wheel_binding"))) or
@@ -5506,11 +5664,16 @@ def _validate_committed_attestation(
             proof_identity.get("wheel_binding_sha256") != attestation["wheel_binding_sha256"] or
             proof_identity.get("installation_sha256") != attestation["installation_sha256"]):
         raise AgyCanaryEvidenceError("committed finalizer proof release binding is malformed")
-    if set(bootstrap) != {"repo_head", "blobs", "input_sha256"}:
+    if set(bootstrap) != {
+            "repo_head", "tree_snapshot", "blobs", "input_sha256", "sandbox"
+    }:
         raise AgyCanaryEvidenceError("committed finalizer bootstrap identity is malformed")
     repo_head = bootstrap["repo_head"]
     blobs = bootstrap["blobs"]
     input_sha256 = bootstrap["input_sha256"]
+    tree_snapshot = _validate_tree_snapshot_authority(
+        bootstrap["tree_snapshot"], repo=repo, commit=repo_head,
+    )
     expected_paths = {"bootstrap.sh", "shared/agent-harness.pin", "plans/manifest.json", plan_relative}
     if not isinstance(repo_head, str) or len(repo_head) != 40 or not isinstance(blobs, dict) or not isinstance(input_sha256, dict) or set(blobs) != expected_paths or set(input_sha256) != expected_paths:
         raise AgyCanaryEvidenceError("committed finalizer bootstrap identity is malformed")
@@ -5524,6 +5687,26 @@ def _validate_committed_attestation(
         base_bytes[relative] = actual.stdout
     if base_bytes[plan_relative] != plan_before or base_bytes[manifest_relative] != manifest_before:
         raise AgyCanaryEvidenceError("committed finalizer preimages differ from bootstrap identity")
+    environment = _uv_environment(
+        uv_executable=Path(installation["uv_executable"]),
+        interpreter_authority=installation["interpreter_authority"],
+        uv_store_authority=installation["uv_store_authority"],
+    )
+    _validate_tree_sandbox(
+        bootstrap["sandbox"], tree=tree_snapshot, environment=environment,
+        uv_store_authority=installation["uv_store_authority"],
+        bash=_canonical_bash(), revalidate_evidence_root=False,
+    )
+    snapshot = _git_tree_snapshot(repo, repo_head, materialize=False)
+    _argv, expected_sandbox = _tree_snapshot_bwrap_argv(
+        snapshot=snapshot, bwrap=_canonical_bwrap(), bash=_canonical_bash(),
+        environment=environment, account_home=_account_home(),
+        uv_store_authority=installation["uv_store_authority"],
+        evidence_root_masking=bootstrap["sandbox"]["evidence_root_masking"],
+        identity_only=True,
+    )
+    if expected_sandbox != bootstrap["sandbox"]:
+        raise AgyCanaryEvidenceError("committed finalizer sandbox identity drifted")
 
 
 def finalize_canary(
@@ -5576,7 +5759,7 @@ def finalize_canary(
                 prepare["installation_sha256"] != _sha256(_canonical_json(installation))):
             raise AgyCanaryEvidenceError("finalizer proof differs from prepare release binding")
         inputs["attestation"] = {
-            "bootstrap": {name: _bootstrap.get(name) for name in ("repo_head", "blobs", "input_sha256")},
+            "bootstrap": _bootstrap_final_identity(_bootstrap),
             "release": release,
             "release_sha256": prepare["release_sha256"],
             "wheel_binding_sha256": prepare["wheel_binding_sha256"],

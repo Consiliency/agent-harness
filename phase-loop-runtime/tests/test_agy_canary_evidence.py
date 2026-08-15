@@ -21,10 +21,26 @@ from phase_loop_runtime import cli
 from phase_loop_runtime.cli import main
 
 
+_requires_memfd = pytest.mark.skipif(
+    not hasattr(os, "memfd_create") or evidence.fcntl is None or
+    not getattr(os, "MFD_ALLOW_SEALING", 0),
+    reason="Linux sealed memfd support required",
+)
+
+
 def _private_root(tmp_path: Path) -> Path:
     root = Path("/tmp") / f"phase-loop-agy-canary.test-{os.getpid()}-{tmp_path.name}"
     root.mkdir(mode=0o700)
     return root
+
+
+def _evidence_masking(tmp_path: Path) -> dict[str, object]:
+    root = _private_root(tmp_path)
+    canonical, root_fd = evidence._validate_private_root(root)
+    try:
+        return evidence._evidence_root_masking_authority(canonical, root_fd)
+    finally:
+        os.close(root_fd)
 
 
 def _settings(tmp_path: Path, allow: list[str]) -> Path:
@@ -221,6 +237,7 @@ def _installed_wheel_fixture(
 
 def _bootstrap_receipt(
     *, installation: dict[str, object], dotfiles_repo: Path,
+    evidence_root: Path | None = None,
     plan_bytes: bytes = b"review this\n",
     repo_head: str = "d" * 40, blobs: dict[str, str] | None = None,
     input_sha256: dict[str, str] | None = None,
@@ -253,9 +270,10 @@ def _bootstrap_receipt(
         "plans/canary.md": evidence._sha256(plan_bytes),
     } if input_sha256 is None else input_sha256
     if (dotfiles_repo / ".git").exists():
-        tree_snapshot = evidence._git_tree_snapshot(
+        snapshot = evidence._git_tree_snapshot(
             dotfiles_repo.resolve(strict=True), repo_head, materialize=False,
-        ).authority
+        )
+        tree_snapshot = snapshot.authority
     else:
         tree_snapshot = {
             "schema": evidence._TREE_SNAPSHOT_SCHEMA, "commit": repo_head,
@@ -264,28 +282,53 @@ def _bootstrap_receipt(
             "executable_count": 1, "symlink_count": 0, "gitlink_count": 0,
             "submodules": [],
         }
+        snapshot = None
+    mask_root = evidence_root or Path("/tmp") / (
+        f"phase-loop-agy-mask-fixture-{os.getpid()}-" +
+        evidence._sha256(str(dotfiles_repo).encode())[:12]
+    )
+    mask_root.mkdir(mode=0o700, exist_ok=True)
+    mask_root.chmod(0o700)
+    canonical_mask_root, mask_fd = evidence._validate_private_root(mask_root)
+    try:
+        evidence_root_masking = evidence._evidence_root_masking_authority(
+            canonical_mask_root, mask_fd,
+        )
+    finally:
+        os.close(mask_fd)
+    if snapshot is not None:
+        _argv, sandbox = evidence._tree_snapshot_bwrap_argv(
+            snapshot=snapshot, bwrap=Path("/usr/bin/bwrap"), bash=Path("/usr/bin/bash"),
+            environment=uv_environment,
+            account_home=Path(str(uv_store_authority["account_home"])),
+            uv_store_authority=uv_store_authority,
+            evidence_root_masking=evidence_root_masking, identity_only=True,
+        )
+    else:
+        sandbox = {
+            "schema": evidence._TREE_SANDBOX_SCHEMA, "executable": "/usr/bin/bwrap",
+            "argv_sha256": "d" * 64, "argv_count": 20, "argv_bytes": 500,
+            "passed_fd_count": tree_snapshot["file_count"],
+            "root": "read_only", "network": "shared",
+            "mount_path": str(dotfiles_repo.resolve(strict=True)),
+            "command": ["/usr/bin/bash", str(bootstrap_path.resolve(strict=True))],
+            "writable_binds": sorted({
+                str(uv_store_authority["account_home"]),
+                *([] if uv_store_authority["workspace"] is None else [
+                    str(uv_store_authority["workspace"]["resolved"]),
+                ]),
+            }),
+            "tmpfs": ["/tmp", "/run", str(dotfiles_repo.resolve(strict=True))],
+            "environment_sha256": evidence._sha256(evidence._canonical_json(uv_environment)),
+            "evidence_root_masking": evidence_root_masking,
+        }
     return {
         "schema": "agy_canary_bootstrap_attestation.v1", "repo_head": repo_head,
         "tree_snapshot": tree_snapshot,
         "blobs": blobs, "input_sha256": input_sha256,
         "targets": {"plan": "plans/canary.md", "manifest": "plans/manifest.json"},
         "bootstrap": {
-            "sandbox": {
-                "schema": evidence._TREE_SANDBOX_SCHEMA, "executable": "/usr/bin/bwrap",
-                "argv_sha256": "d" * 64, "argv_count": 20, "argv_bytes": 500,
-                "passed_fd_count": tree_snapshot["file_count"],
-                "root": "read_only", "network": "shared",
-                "mount_path": str(dotfiles_repo.resolve(strict=True)),
-                "command": ["/usr/bin/bash", str(bootstrap_path.resolve(strict=True))],
-                "writable_binds": sorted({
-                    str(uv_store_authority["account_home"]),
-                    *([] if uv_store_authority["workspace"] is None else [
-                        str(uv_store_authority["workspace"]["resolved"]),
-                    ]),
-                }),
-                "tmpfs": ["/tmp", "/run", str(dotfiles_repo.resolve(strict=True))],
-                "environment_sha256": evidence._sha256(evidence._canonical_json(uv_environment)),
-            },
+            "sandbox": sandbox,
             "pid": 1, "returncode": 0,
             "script_sha256": input_sha256["bootstrap.sh"], "script_blob": blobs["bootstrap.sh"],
             "before_uv_tools_sha256": "e" * 64, "after_uv_tools_sha256": "f" * 64,
@@ -1494,6 +1537,81 @@ def test_bootstrap_attest_rejects_caller_selected_child_command(tmp_path):
         root.rmdir()
 
 
+@pytest.mark.parametrize("location", ["home", "workspace"])
+def test_bootstrap_attest_rejects_child_visible_evidence_root_before_launch(
+    monkeypatch, tmp_path, location,
+):
+    if location == "home":
+        parent = evidence._account_home()
+    else:
+        parent = Path("/mnt/workspace") if Path("/mnt/workspace").is_dir() else tmp_path
+    root = parent / f"phase-loop-invalid-evidence-{os.getpid()}-{tmp_path.name}"
+    root.mkdir(mode=0o700)
+    monkeypatch.setattr(
+        evidence.subprocess, "Popen",
+        lambda *_args, **_kwargs: pytest.fail("bootstrap child launched before root rejection"),
+    )
+    try:
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="direct absolute child of /tmp"):
+            evidence.bootstrap_attest(
+                evidence_root=root, dotfiles_repo=tmp_path / "missing-repo",
+                plan_path=Path("plans/canary.md"),
+            )
+        assert list(root.iterdir()) == []
+    finally:
+        root.rmdir()
+
+
+@pytest.mark.parametrize("overlap", ["repo", "home", "workspace", "uv_tool"])
+def test_bootstrap_evidence_root_isolation_rejects_every_child_visible_overlap(
+    tmp_path, overlap,
+):
+    account_home = evidence._account_home()
+    store = _installation_identity()["uv_store_authority"]
+    if overlap == "workspace" and store["workspace"] is None:
+        pytest.skip("workspace storage policy is not active")
+    evidence_root = _private_root(tmp_path)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    if overlap == "repo":
+        repo = evidence_root / "repo"
+        repo.mkdir()
+        candidate = evidence_root
+    elif overlap == "home":
+        candidate = account_home
+    elif overlap == "workspace":
+        workspace = store["workspace"]
+        assert workspace is not None
+        candidate = Path(workspace["resolved"])
+    else:
+        candidate = Path(store["directories"]["tool"]["resolved"])
+    try:
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="overlaps"):
+            evidence._validate_bootstrap_evidence_root_isolation(
+                root=candidate, repo=repo, account_home=account_home,
+                uv_store_authority=store,
+            )
+    finally:
+        shutil.rmtree(evidence_root)
+
+
+def test_bootstrap_evidence_root_authority_rejects_path_replacement(tmp_path):
+    root = _private_root(tmp_path)
+    canonical, root_fd = evidence._validate_private_root(root)
+    authority = evidence._evidence_root_masking_authority(canonical, root_fd)
+    moved = Path("/tmp") / f"{root.name}.moved"
+    root.rename(moved)
+    root.mkdir(mode=0o700)
+    try:
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="root is not canonical"):
+            evidence._evidence_root_masking_authority(root, root_fd)
+        assert authority["inode"] != root.stat().st_ino
+    finally:
+        os.close(root_fd)
+        root.rmdir()
+        moved.rmdir()
+
+
 def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tmp_path, monkeypatch):
     root = _private_root(tmp_path)
     try:
@@ -1623,6 +1741,9 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
         _prefix, payload = evidence._parse_final_payload(plan.read_bytes())
         assert payload["proof"]["provider_results"] == proof["provider_results"]
         assert payload["attestation"]["proof"]["provider_results"] == proof["provider_results"]
+        assert set(payload["attestation"]["bootstrap"]) == {
+            "repo_head", "tree_snapshot", "blobs", "input_sha256", "sandbox",
+        }
         assert payload["proof_sha256"] == canonical_proof_sha256
         assert {name: payload["proof"][name] for name in evidence._FINAL_GOVERNANCE_POSTURE} == evidence._FINAL_GOVERNANCE_POSTURE
         private_governance = json.loads(json.dumps(proof))
@@ -1685,6 +1806,33 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
         with pytest.raises(evidence.AgyCanaryEvidenceError, match="bootstrap blob"):
             evidence._validate_committed_attestation(
                 repo=repo, attestation=tampered, plan_relative="plans/canary.md", manifest_relative="plans/manifest.json",
+                plan_before=subprocess.check_output(["git", "-C", str(repo), "show", f"{head}:plans/canary.md"]),
+                manifest_before=subprocess.check_output(["git", "-C", str(repo), "show", f"{head}:plans/manifest.json"]),
+            )
+        omitted_snapshot = json.loads(json.dumps(payload["attestation"]))
+        del omitted_snapshot["bootstrap"]["tree_snapshot"]
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="bootstrap identity"):
+            evidence._validate_committed_attestation(
+                repo=repo, attestation=omitted_snapshot,
+                plan_relative="plans/canary.md", manifest_relative="plans/manifest.json",
+                plan_before=subprocess.check_output(["git", "-C", str(repo), "show", f"{head}:plans/canary.md"]),
+                manifest_before=subprocess.check_output(["git", "-C", str(repo), "show", f"{head}:plans/manifest.json"]),
+            )
+        tampered_snapshot = json.loads(json.dumps(payload["attestation"]))
+        tampered_snapshot["bootstrap"]["tree_snapshot"]["inventory_sha256"] = "0" * 64
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="snapshot authority drifted"):
+            evidence._validate_committed_attestation(
+                repo=repo, attestation=tampered_snapshot,
+                plan_relative="plans/canary.md", manifest_relative="plans/manifest.json",
+                plan_before=subprocess.check_output(["git", "-C", str(repo), "show", f"{head}:plans/canary.md"]),
+                manifest_before=subprocess.check_output(["git", "-C", str(repo), "show", f"{head}:plans/manifest.json"]),
+            )
+        tampered_sandbox = json.loads(json.dumps(payload["attestation"]))
+        tampered_sandbox["bootstrap"]["sandbox"]["argv_sha256"] = "0" * 64
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="sandbox identity"):
+            evidence._validate_committed_attestation(
+                repo=repo, attestation=tampered_sandbox,
+                plan_relative="plans/canary.md", manifest_relative="plans/manifest.json",
                 plan_before=subprocess.check_output(["git", "-C", str(repo), "show", f"{head}:plans/canary.md"]),
                 manifest_before=subprocess.check_output(["git", "-C", str(repo), "show", f"{head}:plans/manifest.json"]),
             )
@@ -1763,7 +1911,7 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
         ).strip()
         candidate_drift_payload["attestation"]["bootstrap"]["input_sha256"]["plans/canary.md"] = evidence._sha256(candidate_drift_plan)
         candidate_drift = commit_payload(candidate_drift_payload, "candidate payload drift")
-        with pytest.raises(evidence.AgyCanaryEvidenceError, match="bootstrap candidate preimage"):
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="snapshot commit drifted"):
             evidence.check_committed_final(
                 dotfiles_repo=repo, commit=candidate_drift, plan_path=Path("plans/canary.md"),
                 manifest_path=Path("plans/manifest.json"), plan_slug="agy-canary",
@@ -1773,7 +1921,7 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
         substituted_payload = json.loads(json.dumps(payload))
         substituted_payload["attestation"]["bootstrap"]["repo_head"] = base
         substituted = commit_payload(substituted_payload, "substituted candidate")
-        with pytest.raises(evidence.AgyCanaryEvidenceError, match="bootstrap blob"):
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="snapshot commit drifted"):
             evidence.check_committed_final(
                 dotfiles_repo=repo, commit=substituted, plan_path=Path("plans/canary.md"),
                 manifest_path=Path("plans/manifest.json"), plan_slug="agy-canary",
@@ -1869,19 +2017,24 @@ def _stub_finalizer(monkeypatch, tmp_path: Path) -> tuple[Path, Path, Path, Path
             evidence._canonical_json(installation)
         ),
     }
+    bootstrap_receipt = _bootstrap_receipt(
+        installation=installation,
+        dotfiles_repo=tmp_path / "bootstrap-receipt-dotfiles",
+        evidence_root=root, plan_bytes=plan.read_bytes(),
+    )
+    bootstrap_receipt["input_sha256"]["plans/canary.md"] = evidence._sha256(
+        plan.read_bytes()
+    )
+    bootstrap_receipt["input_sha256"]["plans/manifest.json"] = evidence._sha256(
+        manifest.read_bytes()
+    )
 
     monkeypatch.setattr(evidence, "verify_capture", lambda **_kwargs: proof)
     monkeypatch.setattr(
         evidence,
         "_attested_final_targets",
         lambda **_kwargs: (
-            {
-                "input_sha256": {
-                    "plans/canary.md": evidence._sha256(plan.read_bytes()),
-                    "plans/manifest.json": evidence._sha256(manifest.read_bytes()),
-                },
-                "bootstrap": {"installation": installation},
-            },
+            bootstrap_receipt,
             "plans/canary.md",
             "plans/manifest.json",
         ),
@@ -2630,18 +2783,17 @@ def test_bootstrap_attest_rejects_prepopulated_uv_store_substitution(
         'requirements = [{ name = "phase-loop-runtime", specifier = "==0.7.14" }]\n'
     )
     monkeypatch.setenv(override, str(attacker))
+    root = _private_root(tmp_path)
     with pytest.raises(evidence.AgyCanaryEvidenceError, match=override):
         evidence.bootstrap_attest(
-            evidence_root=tmp_path / "evidence",
+            evidence_root=root,
             dotfiles_repo=tmp_path / "dotfiles",
             plan_path=Path("plans/canary.md"),
         )
 
 
+@_requires_memfd
 def test_sealed_tree_preserves_repo_zero_and_reads_exact_pin(tmp_path):
-    if (not hasattr(os, "memfd_create") or evidence.fcntl is None or
-            not getattr(os, "MFD_ALLOW_SEALING", 0)):
-        pytest.skip("Linux sealed memfd support required")
     repo = tmp_path / "dotfiles"
     (repo / "shared").mkdir(parents=True)
     bootstrap_path = repo / "bootstrap.sh"
@@ -2662,7 +2814,7 @@ def test_sealed_tree_preserves_repo_zero_and_reads_exact_pin(tmp_path):
     argv, sandbox = evidence._tree_snapshot_bwrap_argv(
         snapshot=snapshot, bwrap=Path("/usr/bin/bwrap"), bash=Path("/usr/bin/bash"),
         environment=environment, account_home=evidence._account_home(),
-        uv_store_authority=store,
+        uv_store_authority=store, evidence_root_masking=_evidence_masking(tmp_path),
     )
     try:
         proc = subprocess.run(
@@ -2676,6 +2828,7 @@ def test_sealed_tree_preserves_repo_zero_and_reads_exact_pin(tmp_path):
     assert "--remount-ro" in argv
 
 
+@_requires_memfd
 def test_sealed_tree_ignores_transient_host_mutation_and_untracked_extra(tmp_path):
     repo = tmp_path / "dotfiles"
     (repo / "shared").mkdir(parents=True)
@@ -2705,7 +2858,7 @@ def test_sealed_tree_ignores_transient_host_mutation_and_untracked_extra(tmp_pat
     argv, _sandbox = evidence._tree_snapshot_bwrap_argv(
         snapshot=snapshot, bwrap=Path("/usr/bin/bwrap"), bash=Path("/usr/bin/bash"),
         environment={"PATH": "/usr/bin:/bin"}, account_home=evidence._account_home(),
-        uv_store_authority=store,
+        uv_store_authority=store, evidence_root_masking=_evidence_masking(tmp_path),
     )
     try:
         proc = subprocess.Popen(
@@ -2768,6 +2921,7 @@ def test_tree_snapshot_rejects_unsafe_symlink_targets(target):
         evidence._snapshot_symlink_target(Path("shared/link"), target)
 
 
+@_requires_memfd
 def test_tree_snapshot_mounts_safe_committed_symlink(tmp_path):
     repo = tmp_path / "dotfiles"
     (repo / "shared").mkdir(parents=True)
@@ -2785,7 +2939,7 @@ def test_tree_snapshot_mounts_safe_committed_symlink(tmp_path):
     argv, _sandbox = evidence._tree_snapshot_bwrap_argv(
         snapshot=snapshot, bwrap=Path("/usr/bin/bwrap"), bash=Path("/usr/bin/bash"),
         environment={"PATH": "/usr/bin:/bin"}, account_home=evidence._account_home(),
-        uv_store_authority=store,
+        uv_store_authority=store, evidence_root_masking=_evidence_masking(tmp_path),
     )
     try:
         proc = subprocess.run(
@@ -2845,6 +2999,7 @@ def test_tree_snapshot_fails_when_exact_gitlink_checkout_is_unavailable(tmp_path
         evidence._git_tree_snapshot(repo.resolve(), head, materialize=False)
 
 
+@_requires_memfd
 def test_tree_snapshot_short_write_closes_memfd(monkeypatch):
     created: list[int] = []
     real_create = os.memfd_create
@@ -2863,6 +3018,7 @@ def test_tree_snapshot_short_write_closes_memfd(monkeypatch):
         os.fstat(created[0])
 
 
+@_requires_memfd
 def test_tree_snapshot_bwrap_rejects_missing_fd_and_argument_limit(monkeypatch, tmp_path):
     repo = tmp_path / "dotfiles"
     repo.mkdir()
@@ -2872,12 +3028,13 @@ def test_tree_snapshot_bwrap_rejects_missing_fd_and_argument_limit(monkeypatch, 
         ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True,
     ).strip()
     store = _installation_identity()["uv_store_authority"]
+    evidence_root_masking = _evidence_masking(tmp_path)
     incomplete = evidence._git_tree_snapshot(repo.resolve(), head, materialize=False)
     with pytest.raises(evidence.AgyCanaryEvidenceError, match="descriptor is missing"):
         evidence._tree_snapshot_bwrap_argv(
             snapshot=incomplete, bwrap=Path("/usr/bin/bwrap"), bash=Path("/usr/bin/bash"),
             environment={"PATH": "/usr/bin:/bin"}, account_home=evidence._account_home(),
-            uv_store_authority=store,
+            uv_store_authority=store, evidence_root_masking=evidence_root_masking,
         )
     snapshot = evidence._git_tree_snapshot(repo.resolve(), head, materialize=True)
     real_sysconf = os.sysconf
@@ -2891,9 +3048,60 @@ def test_tree_snapshot_bwrap_rejects_missing_fd_and_argument_limit(monkeypatch, 
                 snapshot=snapshot, bwrap=Path("/usr/bin/bwrap"), bash=Path("/usr/bin/bash"),
                 environment={"PATH": "/usr/bin:/bin"}, account_home=evidence._account_home(),
                 uv_store_authority=store,
+                evidence_root_masking=evidence_root_masking,
             )
     finally:
         snapshot.close()
+
+
+@pytest.mark.parametrize("failure", ["argmax", "popen"])
+def test_bootstrap_snapshot_owner_closes_every_fd_before_child_failure(
+    monkeypatch, tmp_path, failure,
+):
+    repo = tmp_path / "dotfiles"
+    repo.mkdir()
+    (repo / "bootstrap.sh").write_text("#!/bin/sh\n")
+    read_fds: list[int] = []
+    for _index in range(2):
+        read_fd, write_fd = os.pipe()
+        os.close(write_fd)
+        read_fds.append(read_fd)
+    snapshot = evidence._GitTreeSnapshot(
+        authority={"mount_path": str(repo), "file_count": 2},
+        entries=tuple(
+            evidence._TreeSnapshotEntry(
+                path=f"tracked-{index}", mode="100644", oid=str(index + 1) * 40,
+                fd=fd,
+            )
+            for index, fd in enumerate(read_fds)
+        ),
+    )
+    monkeypatch.setattr(evidence, "_git_tree_snapshot", lambda *_args, **_kwargs: snapshot)
+    store = _installation_identity()["uv_store_authority"]
+    if failure == "argmax":
+        real_sysconf = os.sysconf
+        monkeypatch.setattr(
+            evidence.os, "sysconf",
+            lambda key: 1 if key == "SC_ARG_MAX" else real_sysconf(key),
+        )
+        match = "process argument"
+    else:
+        monkeypatch.setattr(
+            evidence.subprocess, "Popen",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("prelaunch")),
+        )
+        match = "could not start"
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match=match):
+        evidence._launch_tree_snapshot_child(
+            repo=repo, head="a" * 40, bwrap=Path("/usr/bin/bwrap"),
+            bash=Path("/usr/bin/bash"), environment={"PATH": "/usr/bin:/bin"},
+            account_home=evidence._account_home(), uv_store_authority=store,
+            evidence_root_masking=_evidence_masking(tmp_path),
+            local_source_seams=evidence._bootstrap_local_source_seams(repo),
+        )
+    for fd in read_fds:
+        with pytest.raises(OSError):
+            os.fstat(fd)
 
 
 @pytest.mark.parametrize(
@@ -3040,13 +3248,18 @@ def test_interpreter_authority_rejects_wrong_symlink_owner_mode_or_hash(mutation
         evidence._validate_interpreter_authority(authority, revalidate=True)
 
 
+@_requires_memfd
 def test_bootstrap_attestation_has_no_parent_only_nonce_claim(monkeypatch, tmp_path):
     root = _private_root(tmp_path)
+    marker = root / "host-secret-marker"
+    marker.write_text("private-evidence-secret\n")
     repo = tmp_path / "dotfiles"
     plan = repo / "plans" / "canary.md"
     plan.parent.mkdir(parents=True)
     (repo / "shared").mkdir()
-    (repo / "bootstrap.sh").write_text("#!/bin/sh\nexit 0\n")
+    (repo / "bootstrap.sh").write_text(
+        f"#!/bin/sh\ntest ! -e {root}/host-secret-marker || exit 91\nexit 0\n"
+    )
     (repo / "shared" / "agent-harness.pin").write_text("v0.7.14\n")
     plan.write_text("# canary\n")
     (repo / "plans" / "manifest.json").write_text("{}\n")
@@ -3074,6 +3287,8 @@ def test_bootstrap_attestation_has_no_parent_only_nonce_claim(monkeypatch, tmp_p
         ) == receipt
         assert receipt["bootstrap"]["returncode"] == 0
         assert receipt["bootstrap"]["installation"] == installation
+        assert receipt["bootstrap"]["sandbox"]["evidence_root_masking"]["path"] == str(root)
+        assert b"private-evidence-secret" not in evidence._canonical_json(receipt)
         assert "nonce_sha256" not in receipt
         assert not any(
             name.startswith(("PHASE_LOOP_", "AGENT_HARNESS_")) or "NONCE" in name
