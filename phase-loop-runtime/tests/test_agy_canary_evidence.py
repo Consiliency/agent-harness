@@ -4641,7 +4641,11 @@ def test_uv_console_launcher_derivation_matches_actual_uv_install(tmp_path):
         account_home=account_home, workspace_root=tmp_path / "no-workspace",
     )
     interpreter_authority = evidence._system_interpreter_authority()
-    uv = Path(shutil.which("uv") or "uv").resolve(strict=True)
+    uv_command = shutil.which("uv")
+    if uv_command is None:
+        pytest.skip("real uv executable required for launcher install smoke")
+    uv = Path(uv_command).resolve(strict=True)
+    assert uv.is_file() and os.access(uv, os.X_OK)
     uv_environment = evidence._uv_environment(
         uv_executable=uv, interpreter_authority=interpreter_authority,
         uv_store_authority=uv_store_authority,
