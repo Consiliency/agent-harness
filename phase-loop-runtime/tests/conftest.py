@@ -46,6 +46,18 @@ os.environ.setdefault(
 )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_implicit_review_authority(monkeypatch):
+    from phase_loop_runtime import panel_invoker
+
+    real_check = panel_invoker._govlean_authority_switched
+    monkeypatch.setattr(
+        panel_invoker,
+        "_govlean_authority_switched",
+        lambda repo_dir: False if repo_dir is None else real_check(repo_dir),
+    )
+
+
 def pytest_configure(config):
     """Register the dotfiles_integration marker from conftest so it is known both
     in-tree (where pyproject.toml's [tool.pytest.ini_options] also registers it)

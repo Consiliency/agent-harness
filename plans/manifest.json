@@ -1323,6 +1323,26 @@
             "verification_status": "red-retained"
           },
           "transition": "executing"
+        },
+        {
+          "at": "2026-08-15T12:48:13Z",
+          "by": "clawdbot-agent-harness-codex",
+          "metadata": {
+            "authority_after": "govlean_tiered_review_policy",
+            "authority_before": "v10_current_governance",
+            "coordinator": "clawdbot-agent-harness-codex",
+            "ec_govlean_5_command": "uv run --project phase-loop-runtime pytest -q phase-loop-runtime/tests/test_govlean_panel_policy.py",
+            "ec_govlean_5_result": "6 passed",
+            "exact_main_oid": "9533f85bfe3e85493675ef99c40e0f28b27431ab",
+            "implementation_pr": "agent-harness#553",
+            "pre_switch_board_digest": "sha256:747f59c9c452f2041ed67d4bb4b6efd5a66f3e559232b26c2def2fbede823ef9",
+            "pre_switch_delta_board_digest": "sha256:bfe7e1a2ece2978fe65c3049071b7f4a07f22f91e7463d2b3fd761c931495b12",
+            "pre_switch_delta_president_digest": "sha256:32f8821e951a2183d6c9439898d4b95e4a9c357ea7336a363bf06cb5806e1773",
+            "pre_switch_president_digest": "sha256:a1a9326fb94f1e238c967e00aa3e414a14e6bf35bc18042a6c2e71100e0796db",
+            "president_operator_substitution": "grok-4.6-for-fable-this-run",
+            "recorded_at": "2026-08-15T12:48:13Z"
+          },
+          "transition": "authority_switch"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -1338,7 +1358,7 @@
       "status": "executing",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-15T08:01:29Z"
+      "updated_at": "2026-08-15T12:48:13Z"
     },
     {
       "acceptance_criteria_count": null,
