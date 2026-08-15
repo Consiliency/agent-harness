@@ -620,6 +620,150 @@ def test_clean_settings_detects_a_conflicting_open_lease_break(tmp_path, monkeyp
         shutil.rmtree(root)
 
 
+def test_clean_settings_reacquires_after_post_exchange_lease_break(
+    tmp_path, monkeypatch,
+):
+    root = _private_root(tmp_path)
+    _use_empty_process_inventory(monkeypatch, tmp_path)
+    settings = _settings(tmp_path, ["command(pwd)"])
+    original = settings.read_bytes()
+    real_validate = evidence._validate_opened_settings
+    conflict_returncode = None
+    triggered = False
+
+    def validate_then_break(opened, *, name, expected_data):
+        nonlocal conflict_returncode, triggered
+        result = real_validate(opened, name=name, expected_data=expected_data)
+        if not triggered and opened.name != name and name == settings.name:
+            triggered = True
+            conflict = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import errno, os, sys; path=sys.argv[1]"
+                        "\ntry: os.close(os.open(path, os.O_RDONLY | os.O_NONBLOCK))"
+                        "\nexcept OSError as exc: sys.exit(0 if exc.errno in "
+                        "{errno.EAGAIN, errno.EWOULDBLOCK} else 2)"
+                        "\nelse: sys.exit(3)"
+                    ),
+                    str(settings),
+                ],
+                check=False,
+            )
+            conflict_returncode = conflict.returncode
+        return result
+
+    monkeypatch.setattr(evidence, "_validate_opened_settings", validate_then_break)
+    try:
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="lease broke: replacement"):
+            evidence.clean_settings(
+                evidence_root=root, settings_path=settings,
+                maintenance_lock=tmp_path / "maintenance.lock",
+            )
+        assert triggered and conflict_returncode == 0
+        state = json.loads((root / "cleanup-state.json").read_text())
+        assert state["state"] == "rolled_back"
+        assert state["transitions"][-2:] == ["rollback_required", "rolled_back"]
+        assert settings.read_bytes() == original
+        assert not list(tmp_path.glob(".phase-loop-agy-settings.*.tmp"))
+    finally:
+        shutil.rmtree(root)
+
+
+def test_clean_settings_retains_recovery_when_post_exchange_opener_persists(
+    tmp_path, monkeypatch,
+):
+    root = _private_root(tmp_path)
+    _use_empty_process_inventory(monkeypatch, tmp_path)
+    settings = _settings(tmp_path, ["command(pwd)"])
+    original = settings.read_bytes()
+    real_validate = evidence._validate_opened_settings
+    real_reacquire = evidence._reacquire_write_lease
+    opened_marker = tmp_path / "conflicting-open.ready"
+    child = None
+
+    def validate_then_hold_open(opened, *, name, expected_data):
+        nonlocal child
+        result = real_validate(opened, name=name, expected_data=expected_data)
+        if child is None and opened.name != name and name == settings.name:
+            child = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import errno, os, pathlib, sys, time; "
+                        "path, marker=sys.argv[1:3]; deadline=time.monotonic()+5"
+                        "\nwhile True:"
+                        "\n try: fd=os.open(path, os.O_RDONLY | os.O_NONBLOCK)"
+                        "\n except OSError as exc:"
+                        "\n  if exc.errno not in {errno.EAGAIN, errno.EWOULDBLOCK}: sys.exit(2)"
+                        "\n  if time.monotonic() >= deadline: sys.exit(3)"
+                        "\n  time.sleep(0.01); continue"
+                        "\n break"
+                        "\npathlib.Path(marker).write_text('ready')"
+                        "\ntime.sleep(2)"
+                        "\nos.close(fd)"
+                    ),
+                    str(settings),
+                    str(opened_marker),
+                ],
+            )
+            assert evidence.fcntl is not None
+            deadline = time.monotonic() + 5
+            while evidence.fcntl.fcntl(
+                opened.fd, evidence.fcntl.F_GETLEASE,
+            ) == evidence.fcntl.F_WRLCK:
+                if child.poll() is not None or time.monotonic() >= deadline:
+                    raise AssertionError("conflicting opener did not break the lease")
+                time.sleep(0.01)
+        return result
+
+    def release_to_persistent_opener(fd, *, label):
+        if label != "replacement":
+            return real_reacquire(fd, label=label)
+        evidence._release_write_lease(fd)
+        deadline = time.monotonic() + 5
+        while not opened_marker.exists():
+            if child is None or child.poll() is not None or time.monotonic() >= deadline:
+                raise AssertionError("conflicting opener did not acquire the released lease")
+            time.sleep(0.01)
+        return real_reacquire(fd, label=label)
+
+    monkeypatch.setattr(evidence, "_validate_opened_settings", validate_then_hold_open)
+    monkeypatch.setattr(evidence, "_reacquire_write_lease", release_to_persistent_opener)
+    try:
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="lease broke: replacement"):
+            evidence.clean_settings(
+                evidence_root=root, settings_path=settings,
+                maintenance_lock=tmp_path / "maintenance.lock",
+            )
+        assert child is not None
+        state = json.loads((root / "cleanup-state.json").read_text())
+        assert state["state"] == "recovery_retained"
+        assert state["transitions"][-2:] == ["rollback_required", "recovery_retained"]
+        assert state["rollback_error"] == "AgyCanaryEvidenceError"
+        assert json.loads(settings.read_text())["permissions"]["allow"] == []
+        temporary = state["temp_name"]
+        assert (tmp_path / temporary).read_bytes() == original
+        assert child.wait(timeout=5) == 0
+        parent_fd = os.open(
+            tmp_path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+        try:
+            evidence._rename_exchange(parent_fd, settings.name, temporary)
+            os.unlink(temporary, dir_fd=parent_fd)
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
+        assert settings.read_bytes() == original
+    finally:
+        if child is not None and child.poll() is None:
+            child.terminate()
+            child.wait(timeout=5)
+        shutil.rmtree(root)
+
+
 def test_clean_settings_rejects_replacement_ownership_drift(tmp_path, monkeypatch):
     root = _private_root(tmp_path)
     _use_empty_process_inventory(monkeypatch, tmp_path)
@@ -2469,8 +2613,12 @@ def test_finalizer_rejects_an_existing_canonical_execution_suffix(monkeypatch, t
         "proof_sha256": evidence._sha256(evidence._canonical_json(proof)),
         "schema": "agy_canary_final.v1",
     }
+    marker = b"\n## Execution evidence\n\n```json\n"
     plan_before = (
-        b"# Plan\n\n## Execution evidence\n\n```json\n"
+        b"# Plan\n\nEarlier exact marker example:"
+        + marker
+        + b'{"example":true}\n```\n\nTerminal evidence follows.\n'
+        + marker
         + evidence._canonical_json(payload)
         + b"```\n"
     )
@@ -2479,6 +2627,36 @@ def test_finalizer_rejects_an_existing_canonical_execution_suffix(monkeypatch, t
         with pytest.raises(evidence.AgyCanaryEvidenceError, match="already has execution evidence"):
             _run_stub_finalizer(root, repo)
         assert plan.read_bytes() == plan_before
+    finally:
+        shutil.rmtree(root)
+
+
+def test_finalizer_rejects_malformed_or_nonterminal_exact_execution_suffix(
+    monkeypatch, tmp_path,
+):
+    root, repo, plan, _manifest = _stub_finalizer(monkeypatch, tmp_path)
+    proof = evidence.verify_capture()
+    payload = {
+        "attestation": {},
+        "proof": proof,
+        "proof_sha256": evidence._sha256(evidence._canonical_json(proof)),
+        "schema": "agy_canary_final.v1",
+    }
+    marker = b"\n## Execution evidence\n\n```json\n"
+    malformed = b"# Plan\n" + marker + b"{}\n```\n"
+    nonterminal = (
+        b"# Plan\n" + marker + evidence._canonical_json(payload)
+        + b"```\ntrailing prose\n"
+    )
+    try:
+        for plan_before, message in (
+            (malformed, "terminal execution payload is malformed"),
+            (nonterminal, "execution payload is not terminal"),
+        ):
+            _set_stub_plan_preimage(plan, plan_before)
+            with pytest.raises(evidence.AgyCanaryEvidenceError, match=message):
+                _run_stub_finalizer(root, repo)
+            assert plan.read_bytes() == plan_before
     finally:
         shutil.rmtree(root)
 
@@ -2930,7 +3108,7 @@ def test_stage_binding_enforces_exact_full_read_limit(monkeypatch, tmp_path, siz
 
 
 def test_full_read_limit_includes_current_governed_plan_snapshot():
-    current_governed_plan_bytes = 205_865
+    current_governed_plan_bytes = 209_657
     assert evidence._MAX_FULL_STAGED_READ_BYTES == 262_144
     assert current_governed_plan_bytes <= evidence._MAX_FULL_STAGED_READ_BYTES
 
@@ -3505,7 +3683,7 @@ def test_tree_snapshot_real_inventory_scale_fits_process_boundary():
 
 
 def test_exact_dotfiles_head_snapshot_boundary_when_checkout_is_available():
-    head = "50966ed30d6a210c8b3006928b41ff2351e10e1b"
+    head = "b5691d06a8b2d3c088fa7456f762a56d33d7b56a"
     plan_path = "plans/detailed-replan-176-agy-review-boundary-20260803-0715.md"
     candidates = [
         Path(value) for value in (
@@ -3536,14 +3714,14 @@ def test_exact_dotfiles_head_snapshot_boundary_when_checkout_is_available():
     plan_blob = subprocess.check_output(
         ["git", "-C", str(repo), "rev-parse", f"{head}:{plan_path}"], text=True,
     ).strip()
-    assert plan_blob == "3fa210e59daa470b1cea25474200ae3a736c8316"
-    assert len(plan) == 205_865
+    assert plan_blob == "1dae9eeed912dc6620d7608d79b81aa5bd26f25c"
+    assert len(plan) == 209_657
     assert snapshot.authority == {
         "schema": evidence._TREE_SNAPSHOT_SCHEMA,
         "commit": head,
-        "tree_oid": "b1fa31dd01dac62863796e6cf944c065aa555ea6",
+        "tree_oid": "5dad18b001d21346d06b3d007b95c7c530d563cf",
         "mount_path": str(repo),
-        "inventory_sha256": "f5a83e216a8fbb17c1946d7fcb22d3baa401c0da4961205a014bdffebf32e7b2",
+        "inventory_sha256": "0e5b40871e21b03afe4df557357f516f97a4ed230cddc3600ede2a4de264a5fa",
         "entry_count": 1_212, "file_count": 1_212,
         "executable_count": 161, "symlink_count": 0,
         "gitlink_count": 1,

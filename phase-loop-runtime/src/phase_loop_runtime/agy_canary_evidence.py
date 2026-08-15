@@ -1465,6 +1465,23 @@ def _release_write_lease(fd: int) -> None:
     fcntl.fcntl(fd, fcntl.F_SETLEASE, fcntl.F_UNLCK)
 
 
+def _reacquire_write_lease(fd: int, *, label: str) -> None:
+    try:
+        _require_write_lease(fd, label=label)
+        return
+    except AgyCanaryEvidenceError:
+        pass
+    assert fcntl is not None
+    try:
+        fcntl.fcntl(fd, fcntl.F_SETLEASE, fcntl.F_UNLCK)
+        fcntl.fcntl(fd, fcntl.F_SETLEASE, fcntl.F_WRLCK)
+    except OSError as exc:
+        raise AgyCanaryEvidenceError(
+            f"settings recovery lease is unavailable: {label}"
+        ) from exc
+    _require_write_lease(fd, label=label)
+
+
 def _create_replacement(
     *, settings: _OpenedSettings, name: str, data: bytes,
 ) -> _OpenedSettings:
@@ -1802,10 +1819,17 @@ def clean_settings(*, evidence_root: Path, settings_path: Path, maintenance_lock
                 temporary is not None):
             try:
                 record_state("rollback_required", error=type(exc).__name__)
-                _require_write_lease(settings.fd, label="original")
-                _require_write_lease(replacement.fd, label="replacement")
+                _reacquire_write_lease(settings.fd, label="original")
+                _reacquire_write_lease(replacement.fd, label="replacement")
                 _require_opened_path_identity(settings, name=temporary)
                 _require_opened_path_identity(replacement, name=settings.name)
+                _validate_opened_settings(
+                    settings, name=temporary, expected_data=settings.data,
+                )
+                _validate_opened_settings(
+                    replacement, name=settings.name,
+                    expected_data=replacement_bytes,
+                )
                 _rename_exchange(settings.parent_fd, settings.name, temporary)
                 exchanged = False
                 _validate_opened_settings(
@@ -5694,23 +5718,37 @@ def _parse_final_payload(plan: bytes) -> tuple[bytes, dict[str, Any]]:
     if plan.count(marker) != 1 or not plan.endswith(b"```\n"):
         raise AgyCanaryEvidenceError("final plan does not contain one canonical execution suffix")
     before, encoded = plan.split(marker, 1)
+    return before, _parse_final_payload_encoding(encoded)
+
+
+def _parse_final_payload_encoding(encoded: bytes) -> dict[str, Any]:
+    if not encoded.endswith(b"```\n"):
+        raise AgyCanaryEvidenceError("final execution payload is not terminal")
     try:
         payload = json.loads(encoded[:-4])
-    except json.JSONDecodeError as exc:
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise AgyCanaryEvidenceError("final execution payload is not JSON") from exc
     if not isinstance(payload, dict) or set(payload) != {"attestation", "proof", "proof_sha256", "schema"} or payload.get("schema") != "agy_canary_final.v1" or not isinstance(payload.get("proof"), dict) or not isinstance(payload.get("attestation"), dict):
         raise AgyCanaryEvidenceError("final execution payload is invalid")
     if payload.get("proof_sha256") != _sha256(_canonical_json(payload["proof"])) or _canonical_json(payload) != encoded[:-4]:
         raise AgyCanaryEvidenceError("final execution payload is not canonical")
     _validate_final_proof(payload["proof"])
-    return before, payload
+    return payload
 
 
 def _has_canonical_final_suffix(plan: bytes) -> bool:
-    try:
-        _parse_final_payload(plan)
-    except AgyCanaryEvidenceError:
+    marker = b"\n## Execution evidence\n\n```json\n"
+    _before, separator, encoded = plan.rpartition(marker)
+    if not separator:
         return False
+    if not plan.endswith(b"```\n"):
+        raise AgyCanaryEvidenceError("existing execution payload is not terminal")
+    try:
+        _parse_final_payload_encoding(encoded)
+    except AgyCanaryEvidenceError as exc:
+        raise AgyCanaryEvidenceError(
+            "existing terminal execution payload is malformed"
+        ) from exc
     return True
 
 
