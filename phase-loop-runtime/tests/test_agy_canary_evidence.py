@@ -219,10 +219,15 @@ def _installed_wheel_fixture(
 
 
 def _bootstrap_receipt(
-    *, installation: dict[str, object], plan_bytes: bytes = b"review this\n",
+    *, installation: dict[str, object], dotfiles_repo: Path,
+    plan_bytes: bytes = b"review this\n",
     repo_head: str = "d" * 40, blobs: dict[str, str] | None = None,
     input_sha256: dict[str, str] | None = None,
 ) -> dict[str, object]:
+    dotfiles_repo.mkdir(parents=True, exist_ok=True)
+    bootstrap_path = dotfiles_repo / "bootstrap.sh"
+    if not bootstrap_path.exists():
+        bootstrap_path.write_bytes(b"#!/bin/sh\n")
     interpreter_authority = installation["interpreter_authority"]
     assert isinstance(interpreter_authority, dict)
     uv_store_authority = installation["uv_store_authority"]
@@ -251,7 +256,11 @@ def _bootstrap_receipt(
         "blobs": blobs, "input_sha256": input_sha256,
         "targets": {"plan": "plans/canary.md", "manifest": "plans/manifest.json"},
         "bootstrap": {
-            "argv": ["/usr/bin/bash", "/proc/self/fd/9"], "pid": 1, "returncode": 0,
+            "argv": [
+                "/usr/bin/bash", "-c", evidence._BOOTSTRAP_SOURCE_WRAPPER,
+                str(bootstrap_path.resolve(strict=True)), "/proc/self/fd/9",
+            ],
+            "pid": 1, "returncode": 0,
             "script_sha256": input_sha256["bootstrap.sh"], "script_blob": blobs["bootstrap.sh"],
             "before_uv_tools_sha256": "e" * 64, "after_uv_tools_sha256": "f" * 64,
             "environment_names": [
@@ -262,6 +271,10 @@ def _bootstrap_receipt(
             "uv_environment": uv_environment,
             "interpreter_authority": interpreter_authority,
             "uv_store_authority": uv_store_authority,
+            "local_source_seams": {
+                "bootstrap.local.sh": "absent",
+                "hooks/post-bootstrap.local.sh": "absent",
+            },
             "installation": installation,
         },
     }
@@ -641,7 +654,10 @@ def _prepare_production_capture(
     installation = _installation_identity()
     monkeypatch.setattr(evidence, "_installed_phase_loop_identity", lambda **_kwargs: installation)
     (root / "agy_canary_bootstrap_attestation.json").write_text(json.dumps(
-        _bootstrap_receipt(installation=installation, plan_bytes=plan_bytes)
+        _bootstrap_receipt(
+            installation=installation, plan_bytes=plan_bytes,
+            dotfiles_repo=tmp_path / "bootstrap-receipt-dotfiles",
+        )
     ))
     release = _release_identity()
     monkeypatch.setattr(evidence, "_reconcile_release_lineage", lambda **_kwargs: release)
@@ -1381,7 +1397,10 @@ def test_prepare_requires_bootstrap_and_binds_selected_mode(tmp_path, monkeypatc
         installation = _installation_identity()
         monkeypatch.setattr(evidence, "_installed_phase_loop_identity", lambda **_kwargs: installation)
         (root / "agy_canary_bootstrap_attestation.json").write_text(json.dumps(
-            _bootstrap_receipt(installation=installation)
+            _bootstrap_receipt(
+                installation=installation,
+                dotfiles_repo=tmp_path / "bootstrap-receipt-dotfiles",
+            )
         ))
         release = _release_identity()
         monkeypatch.setattr(evidence, "_reconcile_release_lineage", lambda **_kwargs: release)
@@ -1480,7 +1499,8 @@ def test_finalizer_only_appends_canonical_proof_and_updates_matching_manifest(tm
         installation = _installation_identity()
         (root / "agy_canary_bootstrap_attestation.json").write_text(json.dumps(
             _bootstrap_receipt(
-                installation=installation, repo_head=head, blobs=blobs,
+                installation=installation, dotfiles_repo=repo,
+                repo_head=head, blobs=blobs,
                 input_sha256={
                     name: evidence._sha256((repo / name).read_bytes())
                     for name in (
@@ -2592,6 +2612,80 @@ def test_bootstrap_attest_rejects_prepopulated_uv_store_substitution(
         )
 
 
+def test_sealed_bootstrap_source_preserves_repo_zero_and_reads_exact_pin(tmp_path):
+    if (not hasattr(os, "memfd_create") or evidence.fcntl is None or
+            not getattr(os, "MFD_ALLOW_SEALING", 0)):
+        pytest.skip("Linux sealed memfd support required")
+    repo = tmp_path / "dotfiles"
+    (repo / "shared").mkdir(parents=True)
+    bootstrap_path = repo / "bootstrap.sh"
+    bootstrap_path.write_text("#!/bin/sh\nexit 99\n")
+    (repo / "shared" / "agent-harness.pin").write_text("v0.7.14\n")
+    sealed_source = (
+        'DOTFILES_DIR="$(cd "$(dirname "$0")" && pwd)"\n'
+        'printf "%s\\n" "$DOTFILES_DIR"\n'
+        'cat "$DOTFILES_DIR/shared/agent-harness.pin"\n'
+    ).encode()
+    fd = os.memfd_create(
+        "bootstrap-source-semantics", os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING
+    )
+    try:
+        os.write(fd, sealed_source)
+        seals = (
+            evidence.fcntl.F_SEAL_WRITE | evidence.fcntl.F_SEAL_GROW |
+            evidence.fcntl.F_SEAL_SHRINK | evidence.fcntl.F_SEAL_SEAL
+        )
+        evidence.fcntl.fcntl(fd, evidence.fcntl.F_ADD_SEALS, seals)
+        assert evidence.fcntl.fcntl(fd, evidence.fcntl.F_GET_SEALS) == seals
+        argv = evidence._bootstrap_source_argv(
+            bash=Path("/usr/bin/bash"), bootstrap_path=bootstrap_path,
+            snapshot_fd=fd,
+        )
+        proc = subprocess.run(
+            argv, pass_fds=(fd,), capture_output=True, text=True, check=False,
+        )
+    finally:
+        os.close(fd)
+    assert proc.returncode == 0
+    assert proc.stdout.splitlines() == [str(repo), "v0.7.14"]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["bootstrap_file", "bootstrap_symlink", "hook_file", "hook_symlink", "hooks_symlink"],
+)
+def test_bootstrap_local_source_seams_reject_files_and_symlinks(tmp_path, mutation):
+    repo = tmp_path / "dotfiles"
+    repo.mkdir()
+    target = tmp_path / "target"
+    target.write_text("attacker\n")
+    if mutation == "bootstrap_file":
+        (repo / "bootstrap.local.sh").write_text("attacker\n")
+    elif mutation == "bootstrap_symlink":
+        (repo / "bootstrap.local.sh").symlink_to(target)
+    elif mutation == "hooks_symlink":
+        (repo / "hooks").symlink_to(tmp_path, target_is_directory=True)
+    else:
+        (repo / "hooks").mkdir()
+        seam = repo / "hooks" / "post-bootstrap.local.sh"
+        if mutation == "hook_file":
+            seam.write_text("attacker\n")
+        else:
+            seam.symlink_to(target)
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="local source seam"):
+        evidence._bootstrap_local_source_seams(repo)
+
+
+def test_bootstrap_receipt_revalidates_local_source_seam_absence(tmp_path):
+    repo = tmp_path / "dotfiles"
+    receipt = _bootstrap_receipt(
+        installation=_installation_identity(), dotfiles_repo=repo,
+    )
+    (repo / "bootstrap.local.sh").write_text("attacker\n")
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="local source seam"):
+        evidence._validate_bootstrap_attestation(receipt=receipt)
+
+
 def test_uv_store_authority_rejects_symlink_and_sealed_identity_drift(tmp_path):
     account_home = tmp_path / "account-home"
     bin_dir = account_home / ".local" / "bin"
@@ -2619,7 +2713,10 @@ def test_uv_store_authority_rejects_symlink_and_sealed_identity_drift(tmp_path):
 
 def test_bootstrap_receipt_rejects_self_consistent_manual_uv_store(tmp_path):
     installation = _installation_identity()
-    receipt = _bootstrap_receipt(installation=installation)
+    receipt = _bootstrap_receipt(
+        installation=installation,
+        dotfiles_repo=tmp_path / "bootstrap-receipt-dotfiles",
+    )
     attacker_home = tmp_path / "attacker-home"
     attacker_tool_dir = attacker_home / ".local" / "share" / "uv" / "tools"
     attacker_python_dir = attacker_home / ".local" / "share" / "uv" / "python"
@@ -2999,7 +3096,10 @@ def test_installed_wheel_binding_rejects_forged_launcher_with_recomputed_authori
     record.write_text(output.getvalue())
     installation["console_script_sha256"] = evidence._sha256(launcher.read_bytes())
     installation["record_sha256"] = evidence._sha256(record.read_bytes())
-    bootstrap_receipt = _bootstrap_receipt(installation=installation)
+    bootstrap_receipt = _bootstrap_receipt(
+        installation=installation,
+        dotfiles_repo=tmp_path / "bootstrap-receipt-dotfiles",
+    )
     recomputed_proof_digest = evidence._sha256(evidence._canonical_json(
         bootstrap_receipt["bootstrap"]["installation"]
     ))
@@ -3029,7 +3129,10 @@ def test_installed_wheel_binding_rejects_replaced_interpreter_before_execution(t
     installation["interpreter"] = str(interpreter)
     installation["interpreter_sha256"] = forged_authority["sha256"]
     installation["interpreter_authority"] = forged_authority
-    bootstrap_receipt = _bootstrap_receipt(installation=installation)
+    bootstrap_receipt = _bootstrap_receipt(
+        installation=installation,
+        dotfiles_repo=tmp_path / "bootstrap-receipt-dotfiles",
+    )
     recomputed_proof_digest = evidence._sha256(evidence._canonical_json(
         bootstrap_receipt["bootstrap"]["installation"]
     ))

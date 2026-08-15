@@ -2991,6 +2991,10 @@ def _canonical_uv() -> Path:
 
 
 _UV_WORKSPACE_ROOT = Path("/mnt/workspace")
+_BOOTSTRAP_SOURCE_WRAPPER = 'source -- "$1"'
+_BOOTSTRAP_LOCAL_SOURCE_SEAMS = (
+    "bootstrap.local.sh", "hooks/post-bootstrap.local.sh",
+)
 
 
 def _uv_directory_identity(path: Path, *, uid: int) -> dict[str, Any]:
@@ -3374,6 +3378,33 @@ def _validate_bootstrap_uv_policy(
             raise AgyCanaryEvidenceError("bootstrap uv workspace authority is malformed")
 
 
+def _bootstrap_local_source_seams(repo: Path) -> dict[str, str]:
+    """Prove gitignored source hooks are absent, including broken symlinks."""
+    hooks = repo / "hooks"
+    try:
+        hooks_info = hooks.lstat()
+    except FileNotFoundError:
+        hooks_info = None
+    if hooks_info is not None and (
+            stat.S_ISLNK(hooks_info.st_mode) or not stat.S_ISDIR(hooks_info.st_mode)):
+        raise AgyCanaryEvidenceError("bootstrap local source seam parent is unsafe")
+    for relative in _BOOTSTRAP_LOCAL_SOURCE_SEAMS:
+        try:
+            (repo / relative).lstat()
+        except FileNotFoundError:
+            continue
+        raise AgyCanaryEvidenceError(f"bootstrap local source seam is present: {relative}")
+    return {relative: "absent" for relative in _BOOTSTRAP_LOCAL_SOURCE_SEAMS}
+
+
+def _bootstrap_source_argv(*, bash: Path, bootstrap_path: Path, snapshot_fd: int) -> tuple[str, ...]:
+    """Source sealed bytes while preserving the canonical repo script as Bash $0."""
+    return (
+        str(bash), "-c", _BOOTSTRAP_SOURCE_WRAPPER, str(bootstrap_path),
+        f"/proc/self/fd/{snapshot_fd}",
+    )
+
+
 def bootstrap_attest(
     *, evidence_root: Path, dotfiles_repo: Path, plan_path: Path
 ) -> dict[str, Any]:
@@ -3393,6 +3424,7 @@ def bootstrap_attest(
         )
     repo = dotfiles_repo.resolve(strict=True)
     head = _clean_dotfiles_repo(repo)
+    local_source_seams = _bootstrap_local_source_seams(repo)
     plan_relative = _repo_relative_path(repo, plan_path)
     identities: dict[str, str] = {}
     inputs: dict[str, bytes] = {}
@@ -3464,8 +3496,12 @@ def bootstrap_attest(
     except OSError as exc:
         os.close(snapshot_fd)
         raise AgyCanaryEvidenceError("bootstrap memfd sealing failed") from exc
-    bootstrap_argv = (str(bash), f"/proc/self/fd/{snapshot_fd}")
+    bootstrap_argv = _bootstrap_source_argv(
+        bash=bash, bootstrap_path=repo / "bootstrap.sh", snapshot_fd=snapshot_fd,
+    )
     try:
+        if _bootstrap_local_source_seams(repo) != local_source_seams:
+            raise AgyCanaryEvidenceError("bootstrap local source seam state drifted")
         child_process = subprocess.Popen(
             list(bootstrap_argv), cwd=repo, env=child_env,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, pass_fds=(snapshot_fd,),
@@ -3479,6 +3515,8 @@ def bootstrap_attest(
     finally:
         os.close(snapshot_fd)
     child_rc = child_process.returncode
+    if _bootstrap_local_source_seams(repo) != local_source_seams:
+        raise AgyCanaryEvidenceError("bootstrap local source seam state drifted")
     revalidate_inputs()
     _validate_interpreter_authority(interpreter_authority, revalidate=True)
     _validate_uv_store_authority(uv_store_authority, revalidate=True)
@@ -3520,6 +3558,7 @@ def bootstrap_attest(
                 },
                 "interpreter_authority": interpreter_authority,
                 "uv_store_authority": uv_store_authority,
+                "local_source_seams": local_source_seams,
                 "installation": installation,
             },
         }
@@ -3611,14 +3650,18 @@ def _validate_bootstrap_attestation(
     expected_bootstrap = {
         "argv", "pid", "returncode", "script_sha256", "script_blob",
         "before_uv_tools_sha256", "after_uv_tools_sha256", "environment_names",
-        "uv_environment", "interpreter_authority", "uv_store_authority", "installation",
+        "uv_environment", "interpreter_authority", "uv_store_authority",
+        "local_source_seams", "installation",
     }
     if not isinstance(bootstrap, dict) or set(bootstrap) != expected_bootstrap:
         raise AgyCanaryEvidenceError("bootstrap attestation child record is malformed")
     argv = bootstrap["argv"]
-    if (not isinstance(argv, list) or len(argv) != 2 or argv[0] != "/usr/bin/bash" or
-            not isinstance(argv[1], str) or not argv[1].startswith("/proc/self/fd/") or
-            not argv[1].removeprefix("/proc/self/fd/").isdigit() or
+    if (not isinstance(argv, list) or len(argv) != 5 or
+            argv[:3] != ["/usr/bin/bash", "-c", _BOOTSTRAP_SOURCE_WRAPPER] or
+            not isinstance(argv[3], str) or not Path(argv[3]).is_absolute() or
+            Path(argv[3]).name != "bootstrap.sh" or
+            not isinstance(argv[4], str) or not argv[4].startswith("/proc/self/fd/") or
+            not argv[4].removeprefix("/proc/self/fd/").isdigit() or
             type(bootstrap["pid"]) is not int or bootstrap["pid"] <= 0 or
             bootstrap["returncode"] != 0 or bootstrap["script_sha256"] != input_sha256["bootstrap.sh"] or
             bootstrap["script_blob"] != blobs["bootstrap.sh"] or
@@ -3626,6 +3669,20 @@ def _validate_bootstrap_attestation(
                 "before_uv_tools_sha256", "after_uv_tools_sha256"
             ))):
         raise AgyCanaryEvidenceError("bootstrap attestation child identity is malformed")
+    bootstrap_path = Path(argv[3])
+    try:
+        bootstrap_bytes, bootstrap_info = _read_regular_path(bootstrap_path)
+    except (FileNotFoundError, OSError) as exc:
+        raise AgyCanaryEvidenceError("bootstrap attestation source path is unavailable") from exc
+    if (not stat.S_ISREG(bootstrap_info.st_mode) or bootstrap_path.is_symlink() or
+            bootstrap_path.resolve(strict=True) != bootstrap_path or
+            _sha256(bootstrap_bytes) != bootstrap["script_sha256"]):
+        raise AgyCanaryEvidenceError("bootstrap attestation source path drifted")
+    local_source_seams = bootstrap["local_source_seams"]
+    if (local_source_seams != {
+            relative: "absent" for relative in _BOOTSTRAP_LOCAL_SOURCE_SEAMS
+    } or _bootstrap_local_source_seams(bootstrap_path.parent) != local_source_seams):
+        raise AgyCanaryEvidenceError("bootstrap attestation local source seams drifted")
     environment_names = bootstrap["environment_names"]
     if (not isinstance(environment_names, list) or environment_names != sorted(environment_names) or
             len(set(environment_names)) != len(environment_names) or
