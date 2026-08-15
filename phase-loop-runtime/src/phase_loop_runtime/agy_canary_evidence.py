@@ -53,7 +53,7 @@ _REVIEW_INSTRUCTION_GENERATOR = "phase_loop_runtime.panel_invoker._resolve_brief
 _SAFE_PRESETS = frozenset({"request-review", "strict"})
 _CAPTURE_MODES = frozenset({"stream_json", "trajectory_store"})
 _CAPABILITY_PROBE_SCHEMA = "agy_capability_probe.v2"
-_MAX_FULL_STAGED_READ_BYTES = 64 * 1024
+_MAX_FULL_STAGED_READ_BYTES = 256 * 1024
 _CAPABILITY_CLASSES = (
     ("allowed_read", "read_file", "/run/phase-loop-review", "success"),
     ("allowed_write", "write_file", "/run/phase-loop-review/.agy-capability-write", "success"),

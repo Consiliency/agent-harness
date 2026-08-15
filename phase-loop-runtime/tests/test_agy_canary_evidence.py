@@ -2052,11 +2052,12 @@ def test_stage_binding_rejects_swapped_plan_or_parent_instruction(monkeypatch, t
         shutil.rmtree(root)
 
 
-def test_stage_binding_rejects_bundle_too_large_for_exact_full_read(monkeypatch, tmp_path):
+@pytest.mark.parametrize("size", [evidence._MAX_FULL_STAGED_READ_BYTES, evidence._MAX_FULL_STAGED_READ_BYTES + 1])
+def test_stage_binding_enforces_exact_full_read_limit(monkeypatch, tmp_path, size):
     root = _private_root(tmp_path)
     stage = tmp_path / "stage"
     stage.mkdir()
-    bundle = b"x" * (evidence._MAX_FULL_STAGED_READ_BYTES + 1)
+    bundle = b"x" * size
     try:
         (stage / "review-bundle.md").write_bytes(bundle)
         (stage / "review-instructions.md").write_text("instructions")
@@ -2067,12 +2068,20 @@ def test_stage_binding_rejects_bundle_too_large_for_exact_full_read(monkeypatch,
             settings=_settings(tmp_path, []), seat_key="gemini-primary", plan_bytes=bundle,
         )
         try:
-            with pytest.raises(evidence.AgyCanaryEvidenceError, match="full-read evidence limit"):
+            if size == evidence._MAX_FULL_STAGED_READ_BYTES:
                 _bind_stage(capture, stage)
+            else:
+                with pytest.raises(evidence.AgyCanaryEvidenceError, match="full-read evidence limit"):
+                    _bind_stage(capture, stage)
         finally:
             capture.close()
     finally:
         shutil.rmtree(root)
+
+
+def test_full_read_limit_includes_current_governed_plan_snapshot():
+    current_governed_plan_bytes = 169_598
+    assert current_governed_plan_bytes <= evidence._MAX_FULL_STAGED_READ_BYTES
 
 
 def test_provider_launch_authority_rejects_legacy_prepare_without_immutable_authority(tmp_path):
