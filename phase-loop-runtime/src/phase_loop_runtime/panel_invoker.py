@@ -28,6 +28,7 @@ import json
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from hashlib import sha256
 from pathlib import Path
 from typing import Callable, Mapping, Sequence, cast
@@ -107,6 +108,137 @@ LEG_STATUSES: tuple[str, ...] = (
     "DEGRADED",
     "UNAVAILABLE",
 )
+
+
+class ReviewLandingTier(str, Enum):
+    PLAN = "plan"
+    PRODUCTION_CODE = "production_code"
+    TESTS_ONLY = "tests_only"
+    DOCS_ONLY = "docs_only"
+
+
+@dataclass(frozen=True)
+class ReviewLandingPolicy:
+    required_seats: tuple[str, ...]
+    requires_president: bool
+
+
+ReviewPolicy = ReviewLandingPolicy
+
+
+def review_policy_for_tier(tier: ReviewLandingTier) -> ReviewLandingPolicy:
+    if tier in {ReviewLandingTier.PLAN, ReviewLandingTier.PRODUCTION_CODE}:
+        return ReviewLandingPolicy(
+            required_seats=("fable", "sol", "gemini", "grok"),
+            requires_president=True,
+        )
+    return ReviewLandingPolicy(required_seats=("grounded",), requires_president=False)
+
+
+PRESIDENT_LADDER: tuple[str, ...] = (
+    "fable",
+    "sol",
+    "grok-4.5",
+    "gemini-3.6",
+)
+
+
+class PresidentPolicyError(RuntimeError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+@dataclass(frozen=True)
+class PresidentRuling:
+    model: str
+    text: str
+    substantive_rounds: int
+    format_reasks: int
+
+
+def _president_prompt(findings: Sequence[str], *, format_reask: bool = False) -> str:
+    suffix = (
+        "\nYour prior response omitted the mandatory terminal grammar. Reissue the ruling only."
+        if format_reask
+        else ""
+    )
+    return (
+        "Rule on each board finding using exactly `FINDING <id>: BLOCKING|DEFERRED — <reason>`, "
+        "then end with `FORCING DECISION: <decision>`.\n\n"
+        + "\n".join(findings)
+        + suffix
+    )
+
+
+_PRESIDENT_FINDING_RE = re.compile(
+    r"^FINDING\s+(\S+):\s+(BLOCKING|DEFERRED)\s+[—-]\s+(.+)$"
+)
+
+
+def _valid_president_grammar(text: str, findings: Sequence[str]) -> bool:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    forcing = [line for line in lines if line.startswith("FORCING DECISION:")]
+    finding_lines = [line for line in lines if line.startswith("FINDING ")]
+    if len(forcing) != 1 or lines[-1] != forcing[0] or not forcing[0][len("FORCING DECISION:") :].strip():
+        return False
+    parsed = [_PRESIDENT_FINDING_RE.fullmatch(line) for line in finding_lines]
+    if any(match is None for match in parsed):
+        return False
+    expected_ids = [finding.split(":", 1)[0].strip() for finding in findings]
+    actual_ids = [match.group(1) for match in parsed if match is not None]
+    return actual_ids == expected_ids
+
+
+def invoke_president(
+    *,
+    findings: Sequence[str],
+    invoke: Callable[[str, str], Mapping[str, str]],
+    max_substantive_rounds: int,
+) -> PresidentRuling:
+    if max_substantive_rounds < 1:
+        raise PresidentPolicyError("president_round_limit", "at least one round is required")
+    for model in PRESIDENT_LADDER:
+        response = invoke(model, _president_prompt(findings))
+        status = response.get("status")
+        if status == "unavailable" and response.get("code") == "president_unavailable":
+            continue
+        if status not in {"ok", "degraded"}:
+            raise PresidentPolicyError(
+                "president_invocation_failed", f"president {model} returned {status!r}"
+            )
+        text = response.get("text", "")
+        format_reasks = 0
+        if not _valid_president_grammar(text, findings):
+            format_reasks = 1
+            response = invoke(model, _president_prompt(findings, format_reask=True))
+            if response.get("status") not in {"ok", "degraded"}:
+                raise PresidentPolicyError(
+                    "president_invocation_failed", f"president {model} format reask failed"
+                )
+            text = response.get("text", "")
+            if not _valid_president_grammar(text, findings):
+                raise PresidentPolicyError(
+                    "president_ruling_format_missing",
+                    "president omitted mandatory terminal grammar after one same-session re-ask",
+                )
+            status = response.get("status")
+        if status == "degraded" and re.search(
+            r"FINDING\s+\S+:\s+DEFERRED\b.*validation", text, re.IGNORECASE
+        ):
+            raise PresidentPolicyError(
+                "degraded_president_validation_deferred",
+                "a degraded read-only president cannot defer necessary validation",
+            )
+        return PresidentRuling(
+            model=model,
+            text=text,
+            substantive_rounds=1,
+            format_reasks=format_reasks,
+        )
+    raise PresidentPolicyError(
+        "president_unavailable", "no president model in the availability ladder was available"
+    )
 _LEG_STATUS_ALIASES: dict[str, str] = {status: status for status in LEG_STATUSES} | {
     status.lower(): status for status in LEG_STATUSES
 }
