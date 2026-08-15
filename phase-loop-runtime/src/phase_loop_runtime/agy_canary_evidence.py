@@ -4268,26 +4268,107 @@ def _installed_phase_loop_identity(
     }
 
 
+_GIT_EXECUTABLE = Path("/usr/bin/git")
+_GIT_EXEC_PATH = Path("/usr/lib/git-core")
+_MAX_TRUSTED_GIT_BYTES = 16 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class _GitExecutableAuthority:
+    identity: tuple[int, ...]
+    sha256: str
+    exec_path_identity: tuple[int, ...]
+    path_identity: tuple[int, ...]
+
+
+_SEALED_GIT_AUTHORITY: _GitExecutableAuthority | None = None
+
+
+def _trusted_root_directory_identity(path: Path) -> tuple[int, ...]:
+    info = path.lstat()
+    mode = stat.S_IMODE(info.st_mode)
+    if (
+        path.resolve(strict=True) != path
+        or not stat.S_ISDIR(info.st_mode)
+        or info.st_uid != 0
+        or mode & (stat.S_IWGRP | stat.S_IWOTH)
+    ):
+        raise AgyCanaryEvidenceError("canonical Git helper directory is unsafe")
+    return info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid
+
+
+def _canonical_git_executable() -> Path:
+    global _SEALED_GIT_AUTHORITY
+    try:
+        selector = _GIT_EXECUTABLE.lstat()
+        if selector.st_size > _MAX_TRUSTED_GIT_BYTES:
+            raise AgyCanaryEvidenceError("canonical Git executable exceeds authority cap")
+        data, reopened = _read_bounded_regular_path(
+            _GIT_EXECUTABLE, limit=_MAX_TRUSTED_GIT_BYTES,
+        )
+        authority = _GitExecutableAuthority(
+            identity=_stable_file_identity(reopened),
+            sha256=_sha256(data),
+            exec_path_identity=_trusted_root_directory_identity(_GIT_EXEC_PATH),
+            path_identity=_trusted_root_directory_identity(Path("/usr/bin")),
+        )
+    except (FileNotFoundError, OSError, AgyCanaryEvidenceError) as exc:
+        raise AgyCanaryEvidenceError("canonical /usr/bin/git authority is unavailable") from exc
+    mode = stat.S_IMODE(reopened.st_mode)
+    if (
+        _stable_file_identity(selector) != authority.identity
+        or not stat.S_ISREG(reopened.st_mode)
+        or reopened.st_uid != 0
+        or mode & (stat.S_IWGRP | stat.S_IWOTH)
+        or not mode & stat.S_IXUSR
+        or not os.access(_GIT_EXECUTABLE, os.X_OK)
+    ):
+        raise AgyCanaryEvidenceError("canonical /usr/bin/git authority is unsafe")
+    if _SEALED_GIT_AUTHORITY is None:
+        _SEALED_GIT_AUTHORITY = authority
+    elif authority != _SEALED_GIT_AUTHORITY:
+        raise AgyCanaryEvidenceError("canonical /usr/bin/git authority drifted")
+    return _GIT_EXECUTABLE
+
+
 def _git_environment() -> dict[str, str]:
     environment = {
-        name: value for name, value in os.environ.items()
-        if not name.startswith("GIT_")
-    }
-    environment.update({
+        "HOME": str(_account_home()),
+        "PATH": "/usr/bin",
+        "LC_ALL": "C",
+        "GIT_EXEC_PATH": str(_GIT_EXEC_PATH),
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_CONFIG_SYSTEM": os.devnull,
         "GIT_TERMINAL_PROMPT": "0",
-    })
+        "GIT_SSH_COMMAND": "/usr/bin/ssh -F /dev/null",
+    }
+    auth_sock = os.environ.get("SSH_AUTH_SOCK")
+    if auth_sock is not None:
+        socket_path = Path(auth_sock)
+        try:
+            socket_info = socket_path.lstat()
+        except OSError as exc:
+            raise AgyCanaryEvidenceError("Git SSH agent authority is unavailable") from exc
+        if (
+            not socket_path.is_absolute()
+            or socket_path.is_symlink()
+            or not stat.S_ISSOCK(socket_info.st_mode)
+            or socket_info.st_uid != os.getuid()
+        ):
+            raise AgyCanaryEvidenceError("Git SSH agent authority is unsafe")
+        environment["SSH_AUTH_SOCK"] = str(socket_path)
     return environment
 
 
 def _git_run(
     repo: Path, *args: str, text: bool = False, input: bytes | str | None = None,
 ) -> subprocess.CompletedProcess[Any]:
+    git = _canonical_git_executable()
     return subprocess.run(
         [
-            "git", "--no-replace-objects", "-c", "core.hooksPath=/dev/null",
+            str(git), "--no-replace-objects", f"--exec-path={_GIT_EXEC_PATH}",
+            "-c", "core.hooksPath=/dev/null",
             "-C", str(repo), *args,
         ],
         capture_output=True, text=text, check=False, env=_git_environment(), input=input,

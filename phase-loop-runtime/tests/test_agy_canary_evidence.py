@@ -257,6 +257,62 @@ def test_git_identity_paths_ignore_all_ambient_git_authority(monkeypatch, tmp_pa
             }
 
 
+def test_git_run_uses_sealed_executable_and_strict_environment(
+    monkeypatch, tmp_path,
+):
+    repo = tmp_path / "dotfiles"
+    repo.mkdir()
+    (repo / "bootstrap.sh").write_text("#!/bin/sh\n")
+    _git_repo(repo)
+    (repo / "unexpected.txt").write_text("unexpected\n")
+    hostile = tmp_path / "hostile-bin"
+    hostile.mkdir()
+    marker = tmp_path / "ambient-helper-ran"
+    for name in ("git", "git-status", "ssh", "gpg", "python", "perl", "ruby"):
+        executable = hostile / name
+        executable.write_text(f'#!/bin/sh\nprintf invoked >> "{marker}"\nexit 0\n')
+        executable.chmod(0o755)
+    poison = {
+        "PATH": str(hostile), "HOME": str(hostile),
+        "LD_PRELOAD": str(hostile / "loader.so"),
+        "LD_LIBRARY_PATH": str(hostile), "DYLD_INSERT_LIBRARIES": str(hostile),
+        "PYTHONPATH": str(hostile), "PYTHONHOME": str(hostile),
+        "PERL5LIB": str(hostile), "PERL5OPT": "-Mhostile",
+        "RUBYLIB": str(hostile), "RUBYOPT": "-rhostile",
+        "BASH_ENV": str(hostile / "git"), "ENV": str(hostile / "git"),
+        "GIT_EXEC_PATH": str(hostile), "GIT_SSH": str(hostile / "ssh"),
+        "GIT_SSH_COMMAND": str(hostile / "ssh"),
+        "GIT_ASKPASS": str(hostile / "git"), "SSH_ASKPASS": str(hostile / "git"),
+        "GIT_EXTERNAL_DIFF": str(hostile / "git"),
+        "GNUPGHOME": str(hostile), "GPG_AGENT_INFO": str(hostile),
+        "PAGER": str(hostile / "git"), "GIT_PAGER": str(hostile / "git"),
+    }
+    for name, value in poison.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("SSH_AUTH_SOCK", raising=False)
+    real_run = evidence.subprocess.run
+    seen: list[tuple[list[str], dict[str, str]]] = []
+
+    def record_run(argv, **kwargs):
+        seen.append((argv, kwargs["env"]))
+        return real_run(argv, **kwargs)
+
+    monkeypatch.setattr(evidence.subprocess, "run", record_run)
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="clean dotfiles worktree"):
+        evidence._clean_dotfiles_repo(repo.resolve())
+    assert seen
+    expected_environment = {
+        "HOME": str(evidence._account_home()), "PATH": "/usr/bin", "LC_ALL": "C",
+        "GIT_EXEC_PATH": "/usr/lib/git-core", "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_SYSTEM": os.devnull,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_SSH_COMMAND": "/usr/bin/ssh -F /dev/null",
+    }
+    assert all(argv[0] == "/usr/bin/git" for argv, _environment in seen)
+    assert all(environment == expected_environment for _argv, environment in seen)
+    assert not marker.exists()
+
+
 @pytest.mark.parametrize("mutation", ("graft", "alternate", "shallow", "config"))
 def test_git_repository_authority_rejects_local_redirect_surfaces(tmp_path, mutation):
     repo = tmp_path / "repo"
@@ -506,12 +562,19 @@ def test_git_info_exclude_lstat_cap_rejects_before_descriptor_read(
     repo.mkdir()
     (repo / "bootstrap.sh").write_text("#!/bin/sh\n")
     _git_repo(repo)
-    (repo / ".git" / "info" / "exclude").write_bytes(
+    exclude = repo / ".git" / "info" / "exclude"
+    exclude.write_bytes(
         b"#" * (evidence._MAX_FULL_STAGED_READ_BYTES + 1)
     )
+    real_read = evidence._read_bounded_regular_path
+
+    def reject_exclude_read(path, **kwargs):
+        if path == exclude:
+            pytest.fail("lstat cap must fail before descriptor read")
+        return real_read(path, **kwargs)
+
     monkeypatch.setattr(
-        evidence, "_read_bounded_regular_path",
-        lambda *_args, **_kwargs: pytest.fail("lstat cap must fail before descriptor read"),
+        evidence, "_read_bounded_regular_path", reject_exclude_read,
     )
     with pytest.raises(evidence.AgyCanaryEvidenceError, match="info/exclude authority is unsafe"):
         evidence._clean_dotfiles_repo(repo.resolve())
@@ -5697,12 +5760,12 @@ def test_release_lineage_uses_merged_handoff_and_rehashes_downloads(tmp_path, mo
 
     def fake_run(argv, **kwargs):
         git_prefix = [
-            "git", "--no-replace-objects", "-c", "core.hooksPath=/dev/null",
-            "-C", str(repo),
+            "/usr/bin/git", "--no-replace-objects", "--exec-path=/usr/lib/git-core",
+            "-c", "core.hooksPath=/dev/null", "-C", str(repo),
         ]
-        if argv[:6] == git_prefix and argv[6:8] == ["fetch", "--quiet"]:
+        if argv[:7] == git_prefix and argv[7:9] == ["fetch", "--quiet"]:
             return subprocess.CompletedProcess(argv, 0, b"", b"")
-        if argv[:6] == git_prefix and argv[6:8] == ["verify-tag", "--raw"]:
+        if argv[:7] == git_prefix and argv[7:9] == ["verify-tag", "--raw"]:
             return subprocess.CompletedProcess(argv, 0, "", "")
         if argv[:3] == ["gh", "release", "view"]:
             return subprocess.CompletedProcess(argv, 0, json.dumps({"tagName": "v0.7.14", "url": record["release_url"]}), "")
