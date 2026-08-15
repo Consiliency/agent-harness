@@ -2552,7 +2552,8 @@ def test_stage_binding_enforces_exact_full_read_limit(monkeypatch, tmp_path, siz
 
 
 def test_full_read_limit_includes_current_governed_plan_snapshot():
-    current_governed_plan_bytes = 180_559
+    current_governed_plan_bytes = 203_701
+    assert evidence._MAX_FULL_STAGED_READ_BYTES == 262_144
     assert current_governed_plan_bytes <= evidence._MAX_FULL_STAGED_READ_BYTES
 
 
@@ -3043,6 +3044,146 @@ def test_tree_snapshot_fails_when_exact_gitlink_checkout_is_unavailable(tmp_path
     ).strip()
     with pytest.raises(evidence.AgyCanaryEvidenceError, match="submodule checkout"):
         evidence._git_tree_snapshot(repo.resolve(), head, materialize=False)
+
+
+def _canonical_dotfiles_snapshot_sandbox(
+    snapshot: evidence._GitTreeSnapshot,
+) -> dict[str, object]:
+    class FixedAccountHome:
+        @staticmethod
+        def resolve(*, strict):
+            assert strict
+            return Path("/home/viperjuice")
+
+    environment = {
+        "HOME": "/home/viperjuice",
+        "PATH": "/home/viperjuice/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "UV_CACHE_DIR": "/mnt/workspace/uv-cache",
+        "UV_PYTHON": "/usr/bin/python3.10",
+        "UV_PYTHON_DOWNLOADS": "never",
+        "UV_PYTHON_INSTALL_DIR": "/mnt/workspace/uv-data/python",
+        "UV_TOOL_BIN_DIR": "/home/viperjuice/.local/bin",
+        "UV_TOOL_DIR": "/mnt/workspace/uv-data/tools",
+    }
+    _argv, sandbox = evidence._tree_snapshot_bwrap_argv(
+        snapshot=snapshot, bwrap=Path("/usr/bin/bwrap"),
+        bash=Path("/usr/bin/bash"), environment=environment,
+        account_home=FixedAccountHome(),  # type: ignore[arg-type]
+        uv_store_authority={
+            "workspace": {"resolved": "/mnt/HC_Volume_105438154"},
+        },
+        evidence_root_masking={
+            "schema": "agy_canary_evidence_root_mask.v1",
+            "path": "/tmp/canonical-fixture", "dev": 1, "inode": 1,
+            "uid": 0, "mode": 0o700, "strategy": "private_tmpfs",
+            "child_visible": False,
+        },
+        identity_only=True,
+    )
+    return sandbox
+
+
+def test_tree_snapshot_real_inventory_scale_fits_process_boundary():
+    mount_path = "/mnt/HC_Volume_105438154/code/dotfiles"
+    parent_lengths = [38] * 209 + [37] * 55
+    parents = [
+        f"p{index:03d}" + "d" * (length - 4)
+        for index, length in enumerate(parent_lengths)
+    ]
+    parent_contribution = sum(
+        len(parents[index % len(parents)]) for index in range(1_212)
+    )
+    filename_bytes = 63_708 - parent_contribution - 1_212
+    baseline_filename_bytes = 5 * 1_212
+    filler_bytes, remainder = divmod(
+        filename_bytes - baseline_filename_bytes, 1_212,
+    )
+    entries = tuple(
+        evidence._TreeSnapshotEntry(
+            path=(
+                f"{parents[index % len(parents)]}/f{index:04d}" +
+                "x" * (filler_bytes + (index < remainder))
+            ),
+            mode="100644", oid="a" * 40,
+        )
+        for index in range(1_212)
+    )
+    snapshot = evidence._GitTreeSnapshot(
+        authority={"mount_path": mount_path, "file_count": 1_212},
+        entries=entries,
+    )
+    sandbox = _canonical_dotfiles_snapshot_sandbox(snapshot)
+    absolute_parents = {
+        str(Path(mount_path) / parent) for parent in parents
+    }
+    assert len(entries) == sandbox["passed_fd_count"] == 1_212
+    assert len(absolute_parents) == 264
+    assert sum(len(entry.path.encode()) for entry in entries) == 63_708
+    assert sum(len(path.encode()) for path in absolute_parents) == 20_273
+    assert sandbox["argv_count"] == 6_648
+    assert sandbox["argv_bytes"] == 235_828
+    assert sandbox["argv_bytes"] < evidence._MAX_FULL_STAGED_READ_BYTES
+    assert evidence._MAX_FULL_STAGED_READ_BYTES < os.sysconf("SC_ARG_MAX")
+
+
+def test_exact_dotfiles_head_snapshot_boundary_when_checkout_is_available():
+    head = "49e367c13d6cefa3d23720c189efd18ae689b123"
+    plan_path = "plans/detailed-replan-176-agy-review-boundary-20260803-0715.md"
+    candidates = [
+        Path(value) for value in (
+            os.environ.get("AGY_CANARY_DOTFILES_REPO", ""),
+            "/home/viperjuice/code/dotfiles",
+            "/mnt/HC_Volume_105438154/code/dotfiles",
+        ) if value
+    ]
+    repo = next((path.resolve() for path in candidates if (path / ".git").exists()), None)
+    if repo is None:
+        pytest.skip("exact dotfiles checkout is unavailable")
+    resolved = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", f"{head}^{{commit}}"],
+        capture_output=True, text=True, check=False,
+    )
+    if resolved.returncode != 0 or resolved.stdout.strip() != head:
+        pytest.skip("exact dotfiles commit is unavailable")
+    try:
+        snapshot = evidence._git_tree_snapshot(repo, head, materialize=False)
+    except evidence.AgyCanaryEvidenceError as exc:
+        if "submodule checkout" in str(exc):
+            pytest.skip("exact dotfiles submodule checkout is unavailable")
+        raise
+    plan = subprocess.run(
+        ["git", "-C", str(repo), "show", f"{head}:{plan_path}"],
+        capture_output=True, check=True,
+    ).stdout
+    assert len(plan) == 203_701
+    assert snapshot.authority == {
+        "schema": evidence._TREE_SNAPSHOT_SCHEMA,
+        "commit": head,
+        "tree_oid": "a24d94b15fe02e3a65acf9f1121a31ee9edc21ab",
+        "mount_path": str(repo),
+        "inventory_sha256": "ee3a41bbdce9b9f17191a9a2a0bc4b78e9a7dd2643f8b7484f1a368e495969b5",
+        "entry_count": 1_212, "file_count": 1_212,
+        "executable_count": 161, "symlink_count": 0,
+        "gitlink_count": 1,
+        "submodules": [{
+            "path": "anthropic-skills",
+            "commit": "57546260929473d4e0d1c1bb75297be2fdfa1949",
+            "tree_oid": "85bb6be91988eb679e3c636f755b91a7d65a680d",
+            "inventory_sha256": "6abe23adc9cadc8223acf9b5ef056fc541a2873e55b54a836f655c411bf2e299",
+            "entry_count": 398,
+        }],
+    }
+    canonical_snapshot = evidence._GitTreeSnapshot(
+        authority={
+            **snapshot.authority,
+            "mount_path": "/mnt/HC_Volume_105438154/code/dotfiles",
+        },
+        entries=snapshot.entries,
+    )
+    sandbox = _canonical_dotfiles_snapshot_sandbox(canonical_snapshot)
+    assert sandbox["passed_fd_count"] == 1_212
+    assert sandbox["argv_count"] == 6_648
+    assert sandbox["argv_bytes"] == 235_828
 
 
 @_requires_memfd
