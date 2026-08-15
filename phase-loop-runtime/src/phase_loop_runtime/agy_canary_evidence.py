@@ -4230,26 +4230,27 @@ def _git_environment() -> dict[str, str]:
 
 def _git_run(repo: Path, *args: str, text: bool = False) -> subprocess.CompletedProcess[Any]:
     return subprocess.run(
-        ["git", "--no-replace-objects", "-C", str(repo), *args],
+        [
+            "git", "--no-replace-objects", "-c", "core.hooksPath=/dev/null",
+            "-C", str(repo), *args,
+        ],
         capture_output=True, text=text, check=False, env=_git_environment(),
     )
 
 
-def _unsafe_git_config_name(name: str) -> bool:
+def _allowed_git_config_name(name: str) -> bool:
     lowered = name.lower()
-    return (
-        lowered.startswith(("include.", "includeif.", "url."))
-        or lowered in {
-            "core.alternaterefscommand", "core.askpass", "core.fsmonitor",
-            "core.gitproxy", "core.sshcommand",
-            "credential.helper", "extensions.partialclone", "gpg.format",
-            "gpg.program", "gpg.ssh.program", "protocol.allow",
-            "protocol.ext.allow",
-        }
-        or (
-            lowered.startswith("remote.")
-            and lowered.endswith((".partialclonefilter", ".promisor", ".receivepack", ".uploadpack"))
-        )
+    if lowered in {
+        "core.repositoryformatversion", "core.filemode", "core.bare",
+        "core.logallrefupdates", "core.worktree", "core.hookspath",
+        "extensions.worktreeconfig", "user.name", "user.email",
+    }:
+        return True
+    parts = lowered.split(".")
+    return len(parts) >= 3 and (
+        (parts[0] == "remote" and parts[-1] in {"url", "fetch"})
+        or (parts[0] == "branch" and parts[-1] in {"remote", "merge"})
+        or (parts[0] == "submodule" and parts[-1] in {"active", "url"})
     )
 
 
@@ -4278,12 +4279,12 @@ def _validate_git_repository_authority(repo: Path) -> None:
     authority_paths = _git_run(
         canonical, "rev-parse", "--path-format=absolute",
         "--git-path", "info/grafts", "--git-path", "objects/info/alternates",
-        "--git-path", "shallow", text=True,
+        "--git-path", "shallow", "--git-path", "info/exclude", text=True,
     )
     paths = authority_paths.stdout.splitlines() if authority_paths.returncode == 0 else []
-    if len(paths) != 3:
+    if len(paths) != 4:
         raise AgyCanaryEvidenceError("Git repository authority paths are unavailable")
-    for value in paths:
+    for value in paths[:3]:
         try:
             Path(value).lstat()
         except FileNotFoundError:
@@ -4291,6 +4292,30 @@ def _validate_git_repository_authority(repo: Path) -> None:
         except OSError as exc:
             raise AgyCanaryEvidenceError("Git repository authority path is unreadable") from exc
         raise AgyCanaryEvidenceError("Git repository has active graft, alternate, or shallow authority")
+    exclude = Path(paths[3])
+    try:
+        exclude_stat = exclude.lstat()
+    except FileNotFoundError:
+        exclude_stat = None
+    except OSError as exc:
+        raise AgyCanaryEvidenceError("Git repository info/exclude authority is unreadable") from exc
+    if exclude_stat is not None:
+        if not stat.S_ISREG(exclude_stat.st_mode) or exclude.is_symlink():
+            raise AgyCanaryEvidenceError("Git repository info/exclude authority is unsafe")
+        try:
+            exclude_bytes, exclude_reopened = _read_regular_path(exclude)
+            if (
+                exclude_reopened.st_dev != exclude_stat.st_dev
+                or exclude_reopened.st_ino != exclude_stat.st_ino
+                or exclude_reopened.st_mode != exclude_stat.st_mode
+                or len(exclude_bytes) > _MAX_FULL_STAGED_READ_BYTES
+            ):
+                raise AgyCanaryEvidenceError("Git repository info/exclude authority is unsafe")
+            exclude_bytes.decode("utf-8", errors="strict")
+        except (OSError, UnicodeError) as exc:
+            raise AgyCanaryEvidenceError(
+                "Git repository info/exclude authority is unreadable"
+            ) from exc
     local_config = _git_run(
         canonical, "config", "--local", "--no-includes", "--name-only",
         "--null", "--list",
@@ -4318,7 +4343,7 @@ def _validate_git_repository_authority(repo: Path) -> None:
             )
         except UnicodeDecodeError as exc:
             raise AgyCanaryEvidenceError("Git worktree config authority is malformed") from exc
-    if any(_unsafe_git_config_name(name) for name in names):
+    if any(not _allowed_git_config_name(name) for name in names):
         raise AgyCanaryEvidenceError("Git repository config authority is unsafe")
 
 
@@ -4327,6 +4352,13 @@ def _git_text(repo: Path, *args: str) -> str:
     if proc.returncode != 0:
         raise AgyCanaryEvidenceError(f"git command failed: {' '.join(args)}")
     return proc.stdout.strip()
+
+
+def _git_worktree_is_dirty(repo: Path) -> bool:
+    return bool(
+        _git_text(repo, "status", "--porcelain", "--untracked-files=all")
+        or _git_text(repo, "ls-files", "--others", "--exclude-per-directory=.gitignore")
+    )
 
 
 def _repo_relative_path(repo: Path, candidate: Path) -> str:
@@ -4351,7 +4383,7 @@ def _clean_dotfiles_repo(repo: Path) -> str:
     if not (repo / ".git").exists() or not (repo / "bootstrap.sh").is_file():
         raise AgyCanaryEvidenceError("bootstrap attestation requires a dotfiles checkout")
     _validate_git_repository_authority(repo)
-    if _git_text(repo, "status", "--porcelain"):
+    if _git_worktree_is_dirty(repo):
         raise AgyCanaryEvidenceError("bootstrap attestation requires a clean dotfiles worktree")
     return _git_text(repo, "rev-parse", "HEAD")
 
@@ -5710,7 +5742,7 @@ def _reconcile_release_lineage(
     if len(handoff_commit) != 40 or any(ch not in "0123456789abcdef" for ch in handoff_commit.lower()):
         raise AgyCanaryEvidenceError("handoff selector must be an immutable commit OID")
     _validate_git_repository_authority(repo)
-    if _git_text(repo, "status", "--porcelain"):
+    if _git_worktree_is_dirty(repo):
         raise AgyCanaryEvidenceError("release lineage requires a clean agent-harness worktree")
     remote = _git_text(repo, "remote", "get-url", "origin")
     if remote not in {"https://github.com/Consiliency/agent-harness.git", "git@github.com:Consiliency/agent-harness.git"}:
@@ -6569,7 +6601,7 @@ def check_private_final(
                 repo, "diff", "--cached", "--name-only", candidate,
             ).splitlines()
             untracked = _git_text(
-                repo, "ls-files", "--others", "--exclude-standard",
+                repo, "ls-files", "--others", "--exclude-per-directory=.gitignore",
             ).splitlines()
             if (sorted(changed) != sorted([plan_relative, manifest_relative]) or
                     any(path not in {plan_relative, manifest_relative} for path in staged) or

@@ -285,6 +285,170 @@ def test_git_repository_authority_rejects_local_redirect_surfaces(tmp_path, muta
         evidence._git_tree_snapshot(repo.resolve(), head, materialize=False)
 
 
+def test_clean_repo_rejects_local_status_config_that_hides_untracked(tmp_path):
+    repo = tmp_path / "dotfiles"
+    repo.mkdir()
+    (repo / "bootstrap.sh").write_text("#!/bin/sh\n")
+    _git_repo(repo)
+    (repo / "unexpected.txt").write_text("unexpected\n")
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "status.showUntrackedFiles", "no"],
+        check=True,
+    )
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="Git repository"):
+        evidence._clean_dotfiles_repo(repo.resolve())
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    (
+        ("core.excludesFile", "/tmp/attacker-excludes"),
+        ("core.sparseCheckout", "true"),
+        ("core.sparseCheckoutCone", "true"),
+        ("filter.hostile.process", "/tmp/attacker-filter"),
+        ("diff.hostile.command", "/tmp/attacker-diff"),
+        ("diff.hostile.textconv", "/tmp/attacker-textconv"),
+        ("merge.hostile.driver", "/tmp/attacker-merge"),
+        ("credential.helper", "!/tmp/attacker-credential"),
+        ("http.proxy", "http://attacker.invalid"),
+        ("remote.origin.uploadpack", "/tmp/attacker-upload-pack"),
+    ),
+)
+def test_git_repository_authority_rejects_unapproved_local_config(
+    tmp_path, name, value,
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "tracked.txt").write_text("trusted\n")
+    _git_repo(repo)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", name, value], check=True,
+    )
+    with pytest.raises(
+        evidence.AgyCanaryEvidenceError,
+        match="Git repository config authority is unsafe",
+    ):
+        evidence._validate_git_repository_authority(repo.resolve())
+
+
+def test_git_repository_authority_rejects_unapproved_worktree_config(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "tracked.txt").write_text("trusted\n")
+    _git_repo(repo)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "extensions.worktreeConfig", "true"],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git", "-C", str(repo), "config", "--worktree",
+            "status.showUntrackedFiles", "no",
+        ],
+        check=True,
+    )
+    with pytest.raises(
+        evidence.AgyCanaryEvidenceError,
+        match="Git repository config authority is unsafe",
+    ):
+        evidence._validate_git_repository_authority(repo.resolve())
+
+
+def test_clean_repo_neutralizes_active_info_exclude_pattern(tmp_path):
+    repo = tmp_path / "dotfiles"
+    repo.mkdir()
+    (repo / "bootstrap.sh").write_text("#!/bin/sh\n")
+    _git_repo(repo)
+    (repo / "unexpected.txt").write_text("unexpected\n")
+    exclude = repo / ".git" / "info" / "exclude"
+    exclude.write_text("# comments remain inert\nunexpected.txt\n")
+    assert subprocess.check_output(
+        ["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=all"],
+        text=True,
+    ) == ""
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="clean dotfiles worktree"):
+        evidence._clean_dotfiles_repo(repo.resolve())
+
+
+def test_git_run_neutralizes_reference_transaction_hook_during_fetch(tmp_path):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "tracked.txt").write_text("source\n")
+    _git_repo(source)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "tracked.txt").write_text("target\n")
+    _git_repo(repo)
+    marker = tmp_path / "hook-ran"
+    hooks = tmp_path / "hooks"
+    hooks.mkdir()
+    hook = hooks / "reference-transaction"
+    hook.write_text(f'#!/bin/sh\nprintf hooked > "{marker}"\n')
+    hook.chmod(0o755)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "core.hooksPath", str(hooks)],
+        check=True,
+    )
+    evidence._validate_git_repository_authority(repo.resolve())
+    fetched = evidence._git_run(
+        repo.resolve(), "fetch", str(source),
+        "HEAD:refs/remotes/test/canonical-head",
+    )
+    assert fetched.returncode == 0
+    assert not marker.exists()
+
+
+def test_git_run_ignores_checked_in_replace_ref(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    tracked = repo / "tracked.txt"
+    tracked.write_text("trusted\n")
+    _git_repo(repo)
+    trusted = subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True,
+    ).strip()
+    tracked.write_text("replacement\n")
+    subprocess.run(["git", "-C", str(repo), "commit", "-qam", "replacement"], check=True)
+    replacement = subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True,
+    ).strip()
+    subprocess.run(
+        ["git", "-C", str(repo), "replace", trusted, replacement], check=True,
+    )
+    assert subprocess.check_output(
+        ["git", "-C", str(repo), "show", f"{trusted}:tracked.txt"],
+    ) == b"replacement\n"
+    result = evidence._git_run(repo.resolve(), "show", f"{trusted}:tracked.txt")
+    assert result.returncode == 0
+    assert result.stdout == b"trusted\n"
+
+
+def test_git_repository_authority_accepts_required_core_worktree_and_linked_checkout(
+    tmp_path,
+):
+    submodule_style = tmp_path / "submodule-style"
+    submodule_style.mkdir()
+    (submodule_style / "tracked.txt").write_text("trusted\n")
+    _git_repo(submodule_style)
+    subprocess.run(
+        ["git", "-C", str(submodule_style), "config", "core.worktree", ".."],
+        check=True,
+    )
+    evidence._validate_git_repository_authority(submodule_style.resolve())
+
+    parent = tmp_path / "parent"
+    parent.mkdir()
+    (parent / "tracked.txt").write_text("parent\n")
+    _git_repo(parent)
+    linked = tmp_path / "linked"
+    subprocess.run(
+        ["git", "-C", str(parent), "worktree", "add", "-q", "--detach", str(linked)],
+        check=True,
+    )
+    evidence._validate_git_repository_authority(linked.resolve())
+    assert evidence._git_text(linked.resolve(), "rev-parse", "HEAD")
+
+
 def _installation_identity() -> dict[str, object]:
     interpreter_authority = evidence._system_interpreter_authority()
     uv_store_authority = evidence._uv_store_authority(
@@ -5348,10 +5512,13 @@ def test_release_lineage_uses_merged_handoff_and_rehashes_downloads(tmp_path, mo
     workflow_pages = [{"total_count": 1, "workflow_runs": workflow_runs}]
 
     def fake_run(argv, **kwargs):
-        git_prefix = ["git", "--no-replace-objects", "-C", str(repo)]
-        if argv[:4] == git_prefix and argv[4:6] == ["fetch", "--quiet"]:
+        git_prefix = [
+            "git", "--no-replace-objects", "-c", "core.hooksPath=/dev/null",
+            "-C", str(repo),
+        ]
+        if argv[:6] == git_prefix and argv[6:8] == ["fetch", "--quiet"]:
             return subprocess.CompletedProcess(argv, 0, b"", b"")
-        if argv[:4] == git_prefix and argv[4:6] == ["verify-tag", "--raw"]:
+        if argv[:6] == git_prefix and argv[6:8] == ["verify-tag", "--raw"]:
             return subprocess.CompletedProcess(argv, 0, "", "")
         if argv[:3] == ["gh", "release", "view"]:
             return subprocess.CompletedProcess(argv, 0, json.dumps({"tagName": "v0.7.14", "url": record["release_url"]}), "")
