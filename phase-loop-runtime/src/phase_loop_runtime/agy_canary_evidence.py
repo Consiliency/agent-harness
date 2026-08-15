@@ -136,6 +136,24 @@ class _TrustedAgyRuntime:
             raise AgyCanaryEvidenceError("trusted agy executable drifted before namespace launch")
 
 
+def _agy_runtime_record(runtime: _TrustedAgyRuntime, version: str) -> dict[str, Any]:
+    return {
+        "path": str(runtime.source), "device": runtime.device, "inode": runtime.inode,
+        "mode": runtime.mode, "sha256": runtime.sha256, "version": version,
+    }
+
+
+def _sealed_agy_runtime(value: Any) -> _TrustedAgyRuntime:
+    if (not isinstance(value, dict) or set(value) != {"path", "device", "inode", "mode", "sha256", "version"} or
+            not isinstance(value.get("path"), str) or not Path(value["path"]).is_absolute() or
+            not all(_is_plain_int(value.get(name)) and value[name] >= 0 for name in ("device", "inode", "mode")) or
+            not _is_digest(value.get("sha256")) or value.get("version") != "1.1.13"):
+        raise AgyCanaryEvidenceError("capability probe agy runtime identity is malformed")
+    return _TrustedAgyRuntime(
+        Path(value["path"]), value["device"], value["inode"], value["mode"], value["sha256"],
+    )
+
+
 def _trusted_agy_runtime() -> _TrustedAgyRuntime:
     """Resolve agy from immutable account/system locations, never HOME or PATH."""
     home = _account_home()
@@ -510,6 +528,7 @@ class AgyCanaryNamespace:
     writable_stage: bool = False
     fixture_binds: tuple[tuple[Path, str], ...] = ()
     provider_env: tuple[tuple[str, str], ...] = ()
+    agy_runtime: _TrustedAgyRuntime | None = None
 
     def outer_environment(self) -> dict[str, str]:
         """Minimal host environment for bwrap itself; never carry loader/runtime overrides."""
@@ -520,7 +539,7 @@ class AgyCanaryNamespace:
     def agy_command(self, argv: list[str]) -> list[str]:
         if not argv or argv[0] != "agy":
             raise AgyCanaryEvidenceError("namespace agy command must start with agy")
-        runtime = _trusted_agy_runtime()
+        runtime = self.agy_runtime or _trusted_agy_runtime()
         return self.command([runtime.destination, *argv[1:]], agy_runtime=runtime)
 
     def rewrite_provider_output_path(self, host_path: Path) -> str:
@@ -916,11 +935,15 @@ def prepare_provider_launch_authorities(
         raise AgyCanaryEvidenceError("prepared minimal HOME settings drifted")
     gemini_auth_records = tuple(authority["auth_binds"])
     resolver, resolver_sha256 = _resolver_snapshot()
+    agy_runtime = _sealed_agy_runtime(authority["agy_runtime"])
     result: dict[str, ProviderLaunchAuthority] = {}
     provider_outputs: list[Path] = []
     for provider in providers:
         try:
-            runtime = _trusted_provider_runtime(provider)
+            runtime = (_TrustedProviderRuntime(
+                "gemini", agy_runtime.source, agy_runtime.device, agy_runtime.inode,
+                agy_runtime.mode, agy_runtime.sha256,
+            ) if provider == "gemini" else _trusted_provider_runtime(provider))
             auth_records = gemini_auth_records if provider == "gemini" else _provider_auth_records(provider, minimal_home)
             provider_output = Path(tempfile.mkdtemp(prefix=f"phase-loop-provider-output-{provider}-", dir="/tmp"))
             provider_outputs.append(provider_output)
@@ -2806,11 +2829,11 @@ def probe_capability(
         if version_proc.returncode != 0 or help_proc.returncode != 0:
             raise AgyCanaryEvidenceError("agy version probe failed")
         if version != "1.1.13" or "stream-json" not in help_text:
-            value = {"schema": _CAPABILITY_PROBE_SCHEMA, "agy_version": version, "help_sha256": _sha256(help_text.encode()), "mode": None, "complete": False, "reason": "unsupported_agy_1_1_13_capture_surface", "classes": []}
+            value = {"schema": _CAPABILITY_PROBE_SCHEMA, "agy_version": version, "agy_runtime": _agy_runtime_record(runtime, version), "help_sha256": _sha256(help_text.encode()), "mode": None, "complete": False, "reason": "unsupported_agy_1_1_13_capture_surface", "classes": []}
             _exclusive_write_at(root_fd, _PROBE_NAME, _canonical_json(value), 0o600)
             return value
         if namespace is None:
-            value = {"schema": _CAPABILITY_PROBE_SCHEMA, "agy_version": version, "help_sha256": _sha256(help_text.encode()), "mode": None, "complete": False, "reason": "production_namespace_required", "classes": []}
+            value = {"schema": _CAPABILITY_PROBE_SCHEMA, "agy_version": version, "agy_runtime": _agy_runtime_record(runtime, version), "help_sha256": _sha256(help_text.encode()), "mode": None, "complete": False, "reason": "production_namespace_required", "classes": []}
             _exclusive_write_at(root_fd, _PROBE_NAME, _canonical_json(value), 0o600)
             return value
         namespace_self_test(namespace=namespace)
@@ -2838,7 +2861,7 @@ def probe_capability(
                     _capability_prompt(class_name),
                 ]
                 proc = subprocess.run(
-                    fixture.namespace.agy_command(command), capture_output=True, text=True,
+                    fixture.namespace.command([runtime.destination, *command[1:]], agy_runtime=runtime), capture_output=True, text=True,
                     timeout=90, check=False, env=outer_env,
                 )
                 stream = (proc.stdout or "").encode()
@@ -2852,7 +2875,7 @@ def probe_capability(
                 ))
             except AgyCanaryEvidenceError as exc:
                 value = {
-                    "schema": _CAPABILITY_PROBE_SCHEMA, "agy_version": version,
+                    "schema": _CAPABILITY_PROBE_SCHEMA, "agy_version": version, "agy_runtime": _agy_runtime_record(runtime, version),
                     "help_sha256": _sha256(help_text.encode()), "mode": None,
                     "complete": False,
                     "reason": f"stream_json_capability_unproven:{class_name}:{type(exc).__name__}",
@@ -2865,7 +2888,7 @@ def probe_capability(
         if [row["class"] for row in rows] != [item[0] for item in _CAPABILITY_CLASSES]:
             raise AgyCanaryEvidenceError("capability matrix is incomplete or aliased")
         value = {
-            "schema": _CAPABILITY_PROBE_SCHEMA, "agy_version": version,
+            "schema": _CAPABILITY_PROBE_SCHEMA, "agy_version": version, "agy_runtime": _agy_runtime_record(runtime, version),
             "help_sha256": _sha256(help_text.encode()), "mode": "stream_json",
             "complete": True, "classes": rows, "staged": staged,
         }
@@ -3278,15 +3301,17 @@ def _reconcile_release_lineage(
     if release.returncode != 0 or not isinstance(release_value, dict) or release_value.get("tagName") != tag or release_value.get("url") != handoff.get("release_url"):
         raise AgyCanaryEvidenceError("GitHub Release does not match merged handoff")
     workflow = subprocess.run(
-        ["gh", "run", "list", "--repo", "Consiliency/agent-harness", "--workflow", "publish-pypi.yml", "--commit", release_commit, "--limit", "20", "--json", "headSha,conclusion,event,url"],
+        ["gh", "api", "--paginate", "-H", "Accept: application/vnd.github+json",
+         f"repos/Consiliency/agent-harness/actions/workflows/publish-pypi.yml/runs?event=push&head_sha={release_commit}&per_page=100"],
         capture_output=True, text=True, check=False,
     )
     try:
-        runs = json.loads(workflow.stdout)
+        pages = [json.loads(line) for line in workflow.stdout.splitlines() if line]
     except json.JSONDecodeError as exc:
         raise AgyCanaryEvidenceError("publish workflow lookup failed") from exc
-    matching = [row for row in runs if isinstance(row, dict) and row.get("headSha") == release_commit and row.get("conclusion") == "success" and row.get("event") == "push"] if isinstance(runs, list) else []
-    if workflow.returncode != 0 or len(matching) != 1 or matching[0].get("url") != handoff.get("workflow_url"):
+    runs = [row for page in pages if isinstance(page, dict) for row in page.get("workflow_runs", []) if isinstance(row, dict)]
+    matching = [row for row in runs if row.get("head_sha") == release_commit and row.get("conclusion") == "success" and row.get("event") == "push"]
+    if workflow.returncode != 0 or len(matching) != 1 or matching[0].get("html_url") != handoff.get("workflow_url"):
         raise AgyCanaryEvidenceError("publish workflow does not match merged handoff")
     metadata_url = f"https://pypi.org/pypi/phase-loop-runtime/{version}/json"
     if handoff.get("pypi_metadata_url") != metadata_url:
@@ -3326,12 +3351,16 @@ def _reconcile_release_lineage(
 
 def _require_complete_capability_probe(*, probe: dict[str, Any], root_fd: int) -> None:
     """Reject legacy or caller-shaped probe receipts before a canary can use them."""
-    if (set(probe) != {"schema", "agy_version", "help_sha256", "mode", "complete", "classes", "staged"} or
+    if (set(probe) != {"schema", "agy_version", "agy_runtime", "help_sha256", "mode", "complete", "classes", "staged"} or
             probe.get("schema") != _CAPABILITY_PROBE_SCHEMA or probe.get("agy_version") != "1.1.13" or
             probe.get("mode") != "stream_json" or probe.get("complete") is not True or
             not isinstance(probe.get("help_sha256"), str) or len(probe["help_sha256"]) != 64 or
             any(char not in "0123456789abcdef" for char in probe["help_sha256"].lower())):
         raise AgyCanaryEvidenceError("capability probe has not selected a complete matrix authority")
+    runtime = _sealed_agy_runtime(probe["agy_runtime"])
+    if probe["agy_runtime"]["version"] != probe["agy_version"]:
+        raise AgyCanaryEvidenceError("capability probe agy runtime version is malformed")
+    runtime.revalidate()
     staged = probe.get("staged")
     if not isinstance(staged, dict) or set(staged) != {"review-instructions.md", "review-bundle.md"}:
         raise AgyCanaryEvidenceError("capability probe staged authority is malformed")
@@ -3383,7 +3412,7 @@ def _validate_launch_authority(*, authority: Any, ledger: dict[str, Any], root_f
     required = {
         "schema", "seat_key", "capture_mode", "authorized_attempt_ids", "cleanup_sha256",
         "probe_sha256", "bootstrap_sha256", "release", "release_sha256", "settings",
-        "policy_sha256", "source_inventory_sha256", "minimal_home", "auth_binds",
+        "policy_sha256", "source_inventory_sha256", "minimal_home", "auth_binds", "agy_runtime",
     }
     if not isinstance(authority, dict) or set(authority) != required or authority.get("schema") != "agy_canary_launch_authority.v1":
         raise AgyCanaryEvidenceError("prepare launch authority schema is malformed")
@@ -3440,6 +3469,8 @@ def _validate_launch_authority(*, authority: Any, ledger: dict[str, Any], root_f
     if authority["probe_sha256"] != _sha256(_canonical_json(probe)):
         raise AgyCanaryEvidenceError("prepare launch authority probe drifted")
     _require_complete_capability_probe(probe=probe, root_fd=root_fd)
+    if authority.get("agy_runtime") != probe.get("agy_runtime"):
+        raise AgyCanaryEvidenceError("prepare launch authority agy runtime drifted")
 
 
 def prepare_canary(
@@ -3538,6 +3569,7 @@ def prepare_canary(
             "source_inventory_sha256": _sha256(_canonical_json(source_inventory)),
             "minimal_home": {"path": str(minimal_home), "identity": minimal_identity},
             "auth_binds": bind_records,
+            "agy_runtime": probe["agy_runtime"],
         }
         _validate_launch_authority(authority=authority, ledger=ledger, root_fd=root_fd)
         _exclusive_write_at(root_fd, _LAUNCH_AUTHORITY_NAME, _canonical_json(authority), 0o600)
@@ -3605,7 +3637,7 @@ def capture_namespace(*, capture: AgyCanaryCapture, stage: Path, provider_hostna
             raise AgyCanaryEvidenceError("authentication bind bytes drifted")
         auth_binds.append((source, str(record["destination"])))
     resolver, resolver_sha256 = _resolver_snapshot()
-    return AgyCanaryNamespace(stage=stage, minimal_home=home, evidence_root=capture.root, provider_hostname=provider_hostname, auth_binds=tuple(auth_binds), resolver_source=resolver, resolver_sha256=resolver_sha256)
+    return AgyCanaryNamespace(stage=stage, minimal_home=home, evidence_root=capture.root, provider_hostname=provider_hostname, auth_binds=tuple(auth_binds), resolver_source=resolver, resolver_sha256=resolver_sha256, agy_runtime=_sealed_agy_runtime(authority["agy_runtime"]))
 
 
 def _open_final_target(path: Path, replacement: bytes) -> _FinalTarget:

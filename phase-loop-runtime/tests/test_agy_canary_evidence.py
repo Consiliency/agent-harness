@@ -52,6 +52,16 @@ def _git_repo(repo: Path) -> None:
     subprocess.run(["git", "-C", str(repo), "commit", "-qm", "initial"], check=True)
 
 
+def _probe_runtime_record() -> dict[str, object]:
+    source = Path("/bin/true").resolve(strict=True)
+    info = source.stat()
+    return {
+        "path": str(source), "device": info.st_dev, "inode": info.st_ino,
+        "mode": stat.S_IMODE(info.st_mode), "sha256": evidence._sha256(source.read_bytes()),
+        "version": "1.1.13",
+    }
+
+
 def test_clean_settings_cli_removes_exact_rule_and_preserves_structure(tmp_path, capsys):
     root = _private_root(tmp_path)
     try:
@@ -369,6 +379,7 @@ def test_stream_rejects_duplicate_staged_read_even_when_one_copy_has_right_conte
 def _prepare_production_capture(
     *, monkeypatch, tmp_path: Path, root: Path, settings: Path, seat_key: str,
     auth_paths: tuple[Path, ...] = (), plan_bytes: bytes = b"review this\n",
+    agy_runtime: dict[str, object] | None = None, before_prepare=None,
 ) -> evidence.AgyCanaryCapture:
     evidence.clean_settings(
         evidence_root=root, settings_path=settings,
@@ -392,6 +403,7 @@ def _prepare_production_capture(
         })
     (root / "agy_capability_probe.json").write_text(json.dumps({
         "schema": "agy_capability_probe.v2", "agy_version": "1.1.13",
+        "agy_runtime": agy_runtime or _probe_runtime_record(),
         "help_sha256": "a" * 64, "mode": "stream_json", "complete": True,
         "classes": rows, "staged": staged,
     }))
@@ -415,6 +427,8 @@ def _prepare_production_capture(
     monkeypatch.setattr(evidence, "_reconcile_release_lineage", lambda **_kwargs: release)
     harness = tmp_path / "agent-harness"
     harness.mkdir(exist_ok=True)
+    if before_prepare is not None:
+        before_prepare()
     evidence.prepare_canary(
         evidence_root=root, settings_path=settings, seat_key=seat_key,
         auth_paths=auth_paths, agent_harness_repo=harness, handoff_commit="d" * 40,
@@ -756,6 +770,51 @@ def test_capture_namespace_reopens_auth_and_resolver_for_child_paths(monkeypatch
         shutil.rmtree(root)
 
 
+def test_prepare_and_capture_namespace_reject_replaced_probed_agy(monkeypatch, tmp_path):
+    _mock_canonical_bwrap(monkeypatch)
+    source = tmp_path / "agy"
+    source.write_bytes(b"probed-agy")
+    source.chmod(0o700)
+    info = source.stat()
+    runtime_record = {
+        "path": str(source), "device": info.st_dev, "inode": info.st_ino,
+        "mode": stat.S_IMODE(info.st_mode), "sha256": evidence._sha256(source.read_bytes()),
+        "version": "1.1.13",
+    }
+    root = _private_root(tmp_path)
+    settings = _settings(tmp_path, [])
+    try:
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="trusted agy executable drifted"):
+            _prepare_production_capture(
+                monkeypatch=monkeypatch, tmp_path=tmp_path, root=root, settings=settings,
+                seat_key="gemini-primary", agy_runtime=runtime_record,
+                before_prepare=lambda: source.write_bytes(b"replacement"),
+            )
+    finally:
+        shutil.rmtree(root)
+
+    source.write_bytes(b"probed-agy")
+    source.chmod(0o700)
+    info = source.stat()
+    runtime_record.update({
+        "device": info.st_dev, "inode": info.st_ino, "mode": stat.S_IMODE(info.st_mode),
+        "sha256": evidence._sha256(source.read_bytes()),
+    })
+    root = _private_root(tmp_path)
+    settings = _settings(tmp_path, [])
+    capture = _prepare_production_capture(
+        monkeypatch=monkeypatch, tmp_path=tmp_path, root=root, settings=settings,
+        seat_key="gemini-primary", agy_runtime=runtime_record,
+    )
+    try:
+        source.write_bytes(b"replacement")
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="trusted agy executable drifted"):
+            evidence.capture_namespace(capture=capture, stage=tmp_path)
+    finally:
+        capture.close()
+        shutil.rmtree(root)
+
+
 def test_bwrap_auth_bind_is_visible_only_at_child_lookup_path(tmp_path):
     try:
         evidence._canonical_bwrap()
@@ -1040,6 +1099,8 @@ def test_probe_selects_1_1_13_stream_json_only_after_complete_capability_matrix(
         assert result["complete"] is True
         assert result["mode"] == "stream_json"
         assert result["schema"] == "agy_capability_probe.v2"
+        assert result["agy_runtime"]["path"] == "/usr/bin/true"
+        assert result["agy_runtime"]["version"] == result["agy_version"]
         assert [row["class"] for row in result["classes"]] == [item[0] for item in evidence._CAPABILITY_CLASSES]
         assert all(row["attempt"] and row["execution"] and row["result"] == "text" for row in result["classes"])
         assert any("--output-format" in command for command, _env in calls)
@@ -1092,6 +1153,7 @@ def test_prepare_requires_bootstrap_and_binds_selected_mode(tmp_path, monkeypatc
             })
         (root / "agy_capability_probe.json").write_text(json.dumps({
             "schema": "agy_capability_probe.v2", "agy_version": "1.1.13",
+            "agy_runtime": _probe_runtime_record(),
             "help_sha256": "a" * 64, "mode": "stream_json", "complete": True, "classes": rows,
             "staged": staged,
         }))
@@ -1675,7 +1737,14 @@ def test_provider_authority_factory_reclaims_output_when_projection_fails(monkey
     info = source.stat()
     runtime = evidence._TrustedProviderRuntime("gemini", source, info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode), evidence._sha256(source.read_bytes()))
     capture = type("Capture", (), {"root": tmp_path, "root_fd": -1})()
-    authority = {"minimal_home": {"path": str(home), "identity": "ok"}, "auth_binds": []}
+    authority = {
+        "minimal_home": {"path": str(home), "identity": "ok"}, "auth_binds": [],
+        "agy_runtime": {
+            "path": str(source), "device": info.st_dev, "inode": info.st_ino,
+            "mode": stat.S_IMODE(info.st_mode), "sha256": evidence._sha256(source.read_bytes()),
+            "version": "1.1.13",
+        },
+    }
     monkeypatch.setattr(evidence, "_require_prepare_authority", lambda **_kwargs: ({}, {}, authority))
     monkeypatch.setattr(evidence, "_validate_stage_binding", lambda **_kwargs: None)
     monkeypatch.setattr(evidence, "_minimal_home_identity", lambda _home: "ok")
@@ -2131,6 +2200,8 @@ def test_release_lineage_uses_merged_handoff_and_rehashes_downloads(tmp_path, mo
     subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", "https://github.com/Consiliency/agent-harness.git"], check=True)
     subprocess.run(["git", "-C", str(repo), "update-ref", "refs/remotes/phase-loop/canonical-main", handoff_commit], check=True)
     real_run = evidence.subprocess.run
+    workflow_runs = [{"head_sha": release_commit, "conclusion": "success", "event": "push", "html_url": record["workflow_url"]}]
+    workflow_pages = [{"workflow_runs": workflow_runs}]
 
     def fake_run(argv, **kwargs):
         if argv[:3] == ["git", "-C", str(repo)] and argv[3:5] == ["fetch", "--quiet"]:
@@ -2139,8 +2210,8 @@ def test_release_lineage_uses_merged_handoff_and_rehashes_downloads(tmp_path, mo
             return subprocess.CompletedProcess(argv, 0, "", "")
         if argv[:3] == ["gh", "release", "view"]:
             return subprocess.CompletedProcess(argv, 0, json.dumps({"tagName": "v0.7.14", "url": record["release_url"]}), "")
-        if argv[:3] == ["gh", "run", "list"]:
-            return subprocess.CompletedProcess(argv, 0, json.dumps([{"headSha": release_commit, "conclusion": "success", "event": "push", "url": record["workflow_url"]}]), "")
+        if argv[:3] == ["gh", "api", "--paginate"]:
+            return subprocess.CompletedProcess(argv, 0, "\n".join(json.dumps(page) for page in workflow_pages), "")
         return real_run(argv, **kwargs)
 
     monkeypatch.setattr(evidence.subprocess, "run", fake_run)
@@ -2150,6 +2221,16 @@ def test_release_lineage_uses_merged_handoff_and_rehashes_downloads(tmp_path, mo
         fetch_json=lambda _url: {"urls": rows}, download=lambda url: blobs[url],
     )
     assert result["release_commit"] == release_commit
+    workflow_pages[:] = [
+        {"workflow_runs": workflow_runs * 20},
+        {"workflow_runs": workflow_runs},
+    ]
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="publish workflow"):
+        evidence._reconcile_release_lineage(
+            repo=repo, handoff_commit=handoff_commit,
+            fetch_json=lambda _url: {"urls": rows}, download=lambda url: blobs[url],
+        )
+    workflow_pages[:] = [{"workflow_runs": workflow_runs}]
     with pytest.raises(evidence.AgyCanaryEvidenceError, match="downloaded release artifact digest mismatch"):
         evidence._reconcile_release_lineage(
             repo=repo, handoff_commit=handoff_commit,
