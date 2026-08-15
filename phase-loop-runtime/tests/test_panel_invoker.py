@@ -120,6 +120,7 @@ class PanelInvokerTest(unittest.TestCase):
                 artifact_ref=str(bundle),
                 context_refs=[str(ref)],
                 spawn=spawn,
+                landing_tier="production_code",
             )
         self.assertIn("FROM_BOARD_REF", seen["codex"])
         self.assertNotIn("PRIVATE_BODY_ABSENT", seen["codex"])
@@ -138,6 +139,7 @@ class PanelInvokerTest(unittest.TestCase):
                 "ARTIFACT",
                 timeouts_by_leg={"gemini": 137},
                 max_concurrency=1,
+                landing_tier="production_code",
             )
 
         self.assertEqual(seen_timeouts["gemini"], 137)
