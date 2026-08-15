@@ -743,6 +743,10 @@ class ProviderLaunchAuthority:
 
     def record_review_attempt(self, command: list[str]) -> None:
         """Bind one actual preflight-wrapped review attempt in execution order."""
+        # This is the per-subprocess boundary: retries reuse the preflight argv,
+        # but must never reuse a runtime or projected credential that changed
+        # after an earlier attempt.
+        self._revalidate()
         launch = {
             "argv_bytes": len("\0".join(command).encode()),
             "argv_sha256": _sha256("\0".join(command).encode()),
@@ -3030,7 +3034,7 @@ def _bootstrap_environment(*, nonce: str, uv_executable: Path, account_home: Pat
     env = {name: os.environ[name] for name in allowed if name in os.environ}
     env["HOME"] = str(account_home)
     env["PATH"] = str(uv_executable.parent) + ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-    env["PHASE_LOOP_AGY_CANARY_BOOTSTRAP_NONCE"] = nonce
+    env["BOOTSTRAP_ATTESTATION_NONCE"] = nonce
     return env
 
 

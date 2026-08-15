@@ -2157,6 +2157,10 @@ def test_bootstrap_environment_never_uses_attacker_path_or_home(monkeypatch, tmp
     environment = evidence._bootstrap_environment(nonce="n", uv_executable=Path("/trusted/uv"), account_home=account_home)
     assert environment["PATH"].startswith("/trusted:")
     assert str(attacker_bin) not in environment["PATH"]
+    assert environment["BOOTSTRAP_ATTESTATION_NONCE"] == "n"
+    assert not any(
+        name.startswith(("PHASE_LOOP_", "AGENT_HARNESS_")) for name in environment
+    )
     assert evidence._canonical_bash() != attacker_bin / "bash"
     assert evidence._canonical_uv() == trusted_uv
     fake_home = tmp_path / "attacker-home"

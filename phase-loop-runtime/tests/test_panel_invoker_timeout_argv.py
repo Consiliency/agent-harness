@@ -293,6 +293,101 @@ def test_capture_enabled_gemini_translates_host_stage_in_prompt_and_argv(monkeyp
         shutil.rmtree(root)
 
 
+def test_capture_retry_revalidates_sealed_runtime_before_each_attempt(monkeypatch, tmp_path):
+    """A transient Gemini retry must not launch a runtime replaced after attempt one."""
+    root = Path("/tmp") / f"phase-loop-retry-root-{os.getpid()}-{tmp_path.name}"
+    output = Path("/tmp") / f"phase-loop-retry-output-{os.getpid()}-{tmp_path.name}"
+    root.mkdir(mode=0o700)
+    output.mkdir(mode=0o700)
+    capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
+    source = tmp_path / "agy"
+    source.write_bytes(b"sealed-agy")
+    source.chmod(0o700)
+    info = source.stat()
+    runtime = evidence._TrustedProviderRuntime(
+        "gemini", source, info.st_dev, info.st_ino, info.st_mode & 0o7777,
+        evidence._sha256(source.read_bytes()),
+    )
+    review_dir = tmp_path / "review"
+    home = tmp_path / "home"
+    review_dir.mkdir()
+    home.mkdir(mode=0o700)
+
+    def authority_for(runtime):
+        return evidence.ProviderLaunchAuthority(
+            "gemini",
+            runtime,
+            evidence.AgyCanaryNamespace(
+                review_dir, home, root, "example.invalid", provider_output=output
+            ),
+            (),
+        )
+
+    def fake_preflight(self, argv):
+        command = list(argv)
+        launch = {
+            "argv_bytes": len("\0".join(command).encode()),
+            "argv_sha256": evidence._sha256("\0".join(command).encode()),
+        }
+        object.__setattr__(self, "review_launch", launch)
+        return command
+
+    monkeypatch.setattr(evidence.ProviderLaunchAuthority, "preflight", fake_preflight)
+    monkeypatch.setattr(pi, "record_launch", lambda **_kwargs: None)
+    try:
+        authority = authority_for(runtime)
+        launched = 0
+        transient_stream = (
+            '{"sequence": 0, "session_id": "s", "type": "terminal", "text": "retry"}'
+        )
+
+        def mutate_after_first_attempt(_command, **_kwargs):
+            nonlocal launched
+            launched += 1
+            source.write_bytes(b"replaced-agy")
+            return pi._LegRun(0, transient_stream, "timeout waiting for response")
+
+        monkeypatch.setattr(pi, "_run_leg_with_liveness", mutate_after_first_attempt)
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="executable drifted"):
+            pi._exec_leg(
+                "gemini", review_dir, output, artifact="artifact",
+                agy_capture=capture, capture_staged={}, seat_key="gemini-primary",
+                provider_authority=authority,
+            )
+        assert launched == 1
+
+        source.write_bytes(b"sealed-agy-again")
+        info = source.stat()
+        clean_runtime = evidence._TrustedProviderRuntime(
+            "gemini", source, info.st_dev, info.st_ino, info.st_mode & 0o7777,
+            evidence._sha256(source.read_bytes()),
+        )
+        attempts = 0
+
+        def transient_then_success(_command, **_kwargs):
+            nonlocal attempts
+            attempts += 1
+            return pi._LegRun(
+                0,
+                transient_stream if attempts == 1 else '{"sequence": 0, "session_id": "s", "type": "terminal", "text": "AGREE"}',
+                "timeout waiting for response" if attempts == 1 else "",
+        )
+
+        monkeypatch.setattr(pi, "_run_leg_with_liveness", transient_then_success)
+        clean_authority = authority_for(clean_runtime)
+        rc, review, _log = pi._exec_leg(
+            "gemini", review_dir, output, artifact="artifact",
+            agy_capture=capture, capture_staged={}, seat_key="gemini-primary",
+            provider_authority=clean_authority,
+        )
+        assert (rc, review, attempts) == (0, "AGREE", 2)
+        assert len(clean_authority.review_attempts) == 2
+    finally:
+        capture.close()
+        shutil.rmtree(root)
+        shutil.rmtree(output)
+
+
 def _sibling_namespace(tmp_path: Path):
     """Build a real bwrap namespace without preparing a Gemini ledger entry."""
     root = Path("/tmp") / f"phase-loop-sibling-root-{os.getpid()}-{tmp_path.name}"
