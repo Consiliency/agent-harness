@@ -289,6 +289,7 @@ class VerificationEvidenceTest(unittest.TestCase):
     def test_proofgate_v3_unmatched_anchor_is_mutation_not_applied(self):
         from .proofgate_content_tdd_adapter import (
             ProofgateMissingCapabilityError,
+            emit_mutation_observable,
             guard_proofgate_nodeid,
             run_proofgate_contract,
         )
@@ -313,11 +314,19 @@ class VerificationEvidenceTest(unittest.TestCase):
                 anchor="NONEXISTENT_ANCHOR_123",
                 replacement_bytes="invalid",
             )
-            assert isinstance(res, dict)
-            assert res.get("status") == "mutation_not_applied"
-            assert res.get("candidate") == cand_oid
-            assert res.get("path") == "phase-loop-runtime/src/phase_loop_runtime/runner.py"
-            assert res.get("anchor_count") == 0
+            cond = (
+                isinstance(res, dict)
+                and res.get("status") == "mutation_not_applied"
+                and res.get("candidate") == cand_oid
+                and res.get("path") == "phase-loop-runtime/src/phase_loop_runtime/runner.py"
+                and res.get("anchor_count") == 0
+            )
+            if not cond:
+                emit_mutation_observable(
+                    "ec-proofgate-2.mutation-application",
+                    getattr(self, "record_property", None),
+                )
+            assert cond, f"unmatched anchor must classify mutation_not_applied, got {res}"
 
         run_proofgate_contract(nodeid, _contract)
 

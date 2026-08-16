@@ -572,8 +572,8 @@ MUTATION_RULES_BY_PARAMETER: dict[str, tuple[str, str, str, str, str, str]] = {
         "f379956954c1096e75b3b81635e171827be747eef7c565a8e6f68e6db4039e7d",
         "ec-proofgate-2.mutation-application",
         "mutation_application_rejection",
-        "phase-loop-runtime/tests/test_verification_evidence.py::VerificationEvidenceTest::test_proofgate_v3_rejects_candidate_or_command_digest_drift",
-        "declared_contract_rejection_is_killed",
+        "phase-loop-runtime/tests/test_verification_evidence.py::VerificationEvidenceTest::test_proofgate_v3_unmatched_anchor_is_mutation_not_applied",
+        "mutation_not_applied_guard_unwired",
     ),
     "ec-proofgate-3.vacuous-falsifier": (
         "EC-PROOFGATE-3",
@@ -1271,14 +1271,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     ver = subparsers.add_parser("verify")
     ver.add_argument("--repo", type=Path, default=Path("."))
     ver.add_argument("--landing-ref", default="HEAD")
-    ver.add_argument("--identity", default="proofgate-tests-freeze")
+    ver.add_argument("--identity", default="proofgate-tests-freeze-amendment-1")
     ver.add_argument("--receipt", type=Path, default=Path(".phase-loop/evidence/PROOFGATE/content-tdd-receipt.json"))
 
     ver_scope = subparsers.add_parser("verify-scope")
     ver_scope.add_argument("--repo", type=Path, default=Path("."))
     ver_scope.add_argument("--landing-remote", default="origin")
     ver_scope.add_argument("--landing-branch", default="main")
-    ver_scope.add_argument("--identity", default="proofgate-tests-freeze")
+    ver_scope.add_argument("--identity", default="proofgate-tests-freeze-amendment-1")
     ver_scope.add_argument("--head", default="HEAD")
     ver_scope.add_argument("--plan", type=Path, default=Path("plans/phase-plan-v10-PROOFGATE.md"))
 

@@ -34,8 +34,8 @@
         {
           "parameter_id": "ec-proofgate-1.missing-falsifier",
           "target_path": "phase-loop-runtime/src/phase_loop_runtime/goal_coverage.py",
-          "injection_anchor": "_ACCEPTANCE_SECTION_RE = re.compile(\n    r\"^##\\s+Acceptance\\s+Criteria\\s*$\\n(?P<body>.*?)(?=^##\\s+\\S|\\Z)\",\n    re.MULTILINE | re.DOTALL | re.IGNORECASE,\n)",
-          "replacement_bytes": "_ACCEPTANCE_SECTION_RE = re.compile(\n    r\"^##\\s+DISABLE_SECTION_RE_FOR_MUTATION$\\n(?P<body>.*?)(?=^##\\s+\\S|\\Z)\",\n    re.MULTILINE | re.DOTALL | re.IGNORECASE,\n)",
+          "injection_anchor": "        if not c.get(\"has_falsifier\"):",
+          "replacement_bytes": "        if False and not c.get(\"has_falsifier\"):",
           "proof_command": ["python3", "-m", "pytest", "phase-loop-runtime/tests/test_acceptance_falsifier_contract.py::test_missing_falsifier_is_invalid", "-p", "proofgate_tdd_guard", "-o", "junit_family=legacy", "--junitxml=$PHASE_LOOP_RUN_DIR/proofgate_junit_ec-proofgate-1.missing-falsifier.xml", "-q"],
           "target_nodeid": "phase-loop-runtime/tests/test_acceptance_falsifier_contract.py::test_missing_falsifier_is_invalid",
           "expected_failure_class": "missing_falsifier_rejection",
@@ -58,18 +58,18 @@
         {
           "parameter_id": "ec-proofgate-2.mutation-application",
           "target_path": "phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py",
-          "injection_anchor": "EXTENSION_NAMESPACE_REGISTRY[namespace] = schema",
-          "replacement_bytes": "pass # EXTENSION_NAMESPACE_REGISTRY[namespace] = schema",
-          "proof_command": ["python3", "-m", "pytest", "phase-loop-runtime/tests/test_verification_evidence.py::VerificationEvidenceTest::test_proofgate_v3_rejects_candidate_or_command_digest_drift", "-p", "proofgate_tdd_guard", "-o", "junit_family=legacy", "--junitxml=$PHASE_LOOP_RUN_DIR/proofgate_junit_ec-proofgate-2.mutation-application.xml", "-q"],
-          "target_nodeid": "phase-loop-runtime/tests/test_verification_evidence.py::VerificationEvidenceTest::test_proofgate_v3_rejects_candidate_or_command_digest_drift",
+          "injection_anchor": "    if count != 1:",
+          "replacement_bytes": "    if False and count != 1:",
+          "proof_command": ["python3", "-m", "pytest", "phase-loop-runtime/tests/test_verification_evidence.py::VerificationEvidenceTest::test_proofgate_v3_unmatched_anchor_is_mutation_not_applied", "-p", "proofgate_tdd_guard", "-o", "junit_family=legacy", "--junitxml=$PHASE_LOOP_RUN_DIR/proofgate_junit_ec-proofgate-2.mutation-application.xml", "-q"],
+          "target_nodeid": "phase-loop-runtime/tests/test_verification_evidence.py::VerificationEvidenceTest::test_proofgate_v3_unmatched_anchor_is_mutation_not_applied",
           "expected_failure_class": "mutation_application_rejection",
           "expected_observable": {
             "roadmap_criterion_id": "EC-PROOFGATE-2",
             "roadmap_criterion_sha256": "f379956954c1096e75b3b81635e171827be747eef7c565a8e6f68e6db4039e7d",
             "rule_id": "ec-proofgate-2.mutation-application",
             "channel": "pytest_junit_call_property",
-            "target_nodeid": "phase-loop-runtime/tests/test_verification_evidence.py::VerificationEvidenceTest::test_proofgate_v3_rejects_candidate_or_command_digest_drift",
-            "result_code": "declared_contract_rejection_is_killed"
+            "target_nodeid": "phase-loop-runtime/tests/test_verification_evidence.py::VerificationEvidenceTest::test_proofgate_v3_unmatched_anchor_is_mutation_not_applied",
+            "result_code": "mutation_not_applied_guard_unwired"
           }
         }
       ]
@@ -82,8 +82,8 @@
         {
           "parameter_id": "ec-proofgate-3.vacuous-falsifier",
           "target_path": "skills-src/claude/claude-plan-phase/scripts/validate_plan_doc.py",
-          "injection_anchor": "def _check_p_goal_id_coverage(src: str, path: Optional[Path], repo_root: Optional[Path]) -> Findings:",
-          "replacement_bytes": "def _check_p_goal_id_coverage(src: str, path: Optional[Path], repo_root: Optional[Path]) -> Findings:\n    return []\ndef _disabled_check_p_goal_id_coverage(src: str, path: Optional[Path], repo_root: Optional[Path]) -> Findings:",
+          "injection_anchor": "    contracts = goal_coverage.extract_acceptance_contracts(src)",
+          "replacement_bytes": "    return []\n    contracts = goal_coverage.extract_acceptance_contracts(src)",
           "proof_command": ["python3", "-m", "pytest", "phase-loop-runtime/tests/test_validate_plan_doc_proofgate.py::ProofgatePlanValidatorTest::test_agent_harness_358_original_is_rejected", "-p", "proofgate_tdd_guard", "-o", "junit_family=legacy", "--junitxml=$PHASE_LOOP_RUN_DIR/proofgate_junit_ec-proofgate-3.vacuous-falsifier.xml", "-q"],
           "target_nodeid": "phase-loop-runtime/tests/test_validate_plan_doc_proofgate.py::ProofgatePlanValidatorTest::test_agent_harness_358_original_is_rejected",
           "expected_failure_class": "vacuous_falsifier_rejection",
