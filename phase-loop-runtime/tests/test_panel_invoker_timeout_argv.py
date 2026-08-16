@@ -990,13 +990,17 @@ def test_capture_root_creation_failure_reclaims_provisional_root(
         if failure == "chmod" and path in created:
             raise OSError("injected chmod failure")
 
-    def fail_seal(path, *, kind):
+    def fail_seal(path, *, kind, quarantine_token=None):
         if failure == "seal":
             raise evidence.AgyCanaryEvidenceError("injected seal failure")
-        return real_seal(path, kind=kind)
+        return real_seal(
+            path, kind=kind, quarantine_token=quarantine_token,
+        )
 
-    def capture_authority(path, *, kind):
-        authority = real_authority(path, kind=kind)
+    def capture_authority(path, *, kind, quarantine_token=None):
+        authority = real_authority(
+            path, kind=kind, quarantine_token=quarantine_token,
+        )
         authorities[(authority.device, authority.inode)] = authority
         return authority
 
@@ -1133,6 +1137,126 @@ def test_capture_cleanup_never_name_deletes_public_root(monkeypatch):
     _cleanup_tombstone_for(authority).rmdir()
 
 
+def test_capture_cleanup_rejects_hostile_held_root_with_secret():
+    root = Path(tempfile.mkdtemp(prefix="pl-panel-capture-held-", dir="/tmp"))
+    root.chmod(0o700)
+    authority = evidence._seal_owned_cleanup_root(root, kind="scratch")
+    secret = root / "secret"
+    secret.write_text("retain\n")
+    held = Path("/tmp") / (
+        f"{evidence._OWNED_CLEANUP_QUARANTINE_PREFIX}scratch-"
+        f"{authority.quarantine_token}"
+    )
+    root.rename(held)
+    try:
+        with pytest.raises(
+            evidence.AgyCanaryEvidenceError, match="cleanup was incomplete",
+        ):
+            evidence._cleanup_owned_roots([authority])
+        assert (held / "secret").read_text() == "retain\n"
+    finally:
+        shutil.rmtree(held)
+
+
+def test_capture_cleanup_repeat_accepts_exact_empty_tombstone():
+    root = Path(tempfile.mkdtemp(prefix="pl-panel-capture-repeat-", dir="/tmp"))
+    root.chmod(0o700)
+    authority = evidence._seal_owned_cleanup_root(root, kind="scratch")
+    (root / "result").write_text("remove\n")
+    evidence._cleanup_owned_roots([authority])
+    tombstone = _cleanup_tombstone_for(authority)
+    evidence._cleanup_owned_roots([authority])
+    assert tombstone.is_dir() and list(tombstone.iterdir()) == []
+    tombstone.rmdir()
+
+
+def test_capture_cleanup_rejects_missing_tombstone_for_absent_root():
+    root = Path(tempfile.mkdtemp(prefix="pl-panel-capture-zero-", dir="/tmp"))
+    root.chmod(0o700)
+    authority = evidence._seal_owned_cleanup_root(root, kind="scratch")
+    root.rmdir()
+    with pytest.raises(
+        evidence.AgyCanaryEvidenceError, match="cleanup was incomplete",
+    ):
+        evidence._cleanup_owned_roots([authority])
+
+
+@pytest.mark.parametrize("mutation", ["malformed", "wrong-kind", "mode"])
+def test_capture_cleanup_rejects_malformed_tombstone(
+    mutation,
+):
+    root = Path(tempfile.mkdtemp(prefix="pl-panel-capture-malformed-", dir="/tmp"))
+    root.chmod(0o700)
+    authority = evidence._seal_owned_cleanup_root(root, kind="scratch")
+    token = authority.quarantine_token
+    if mutation == "malformed":
+        name = f"{evidence._OWNED_CLEANUP_QUARANTINE_PREFIX}scratch-not-hex"
+    elif mutation == "wrong-kind":
+        name = f"{evidence._OWNED_CLEANUP_QUARANTINE_PREFIX}provider_output-{token}"
+    else:
+        name = f"{evidence._OWNED_CLEANUP_QUARANTINE_PREFIX}scratch-{token}"
+    tombstone = Path("/tmp") / name
+    root.rename(tombstone)
+    if mutation == "mode":
+        tombstone.chmod(0o755)
+    try:
+        with pytest.raises(
+            evidence.AgyCanaryEvidenceError, match="cleanup was incomplete",
+        ):
+            evidence._cleanup_owned_roots([authority])
+    finally:
+        tombstone.chmod(0o700)
+        tombstone.rmdir()
+
+
+def test_capture_cleanup_rejects_wrong_identity_tombstone():
+    root = Path(tempfile.mkdtemp(prefix="pl-panel-capture-identity-", dir="/tmp"))
+    root.chmod(0o700)
+    authority = evidence._seal_owned_cleanup_root(root, kind="scratch")
+    tombstone = Path(tempfile.mkdtemp(
+        prefix=f"{evidence._OWNED_CLEANUP_QUARANTINE_PREFIX}scratch-",
+        dir="/tmp",
+    ))
+    replacement = tombstone.with_name(
+        f"{evidence._OWNED_CLEANUP_QUARANTINE_PREFIX}scratch-"
+        f"{authority.quarantine_token}"
+    )
+    tombstone.rename(replacement)
+    root.rmdir()
+    try:
+        with pytest.raises(
+            evidence.AgyCanaryEvidenceError, match="cleanup was incomplete",
+        ):
+            evidence._cleanup_owned_roots([authority])
+    finally:
+        replacement.rmdir()
+
+
+def test_capture_cleanup_rejects_duplicate_tombstone_scan(monkeypatch):
+    root = Path(tempfile.mkdtemp(prefix="pl-panel-capture-cardinality-", dir="/tmp"))
+    root.chmod(0o700)
+    authority = evidence._seal_owned_cleanup_root(root, kind="scratch")
+    evidence._cleanup_owned_roots([authority])
+    tombstone = _cleanup_tombstone_for(authority)
+    tmp_info = Path("/tmp").stat()
+    real_listdir = evidence.os.listdir
+
+    def duplicate_tombstone(path):
+        names = real_listdir(path)
+        if (isinstance(path, int) and
+                (os.fstat(path).st_dev, os.fstat(path).st_ino) ==
+                (tmp_info.st_dev, tmp_info.st_ino)):
+            return [*names, tombstone.name]
+        return names
+
+    monkeypatch.setattr(evidence.os, "listdir", duplicate_tombstone)
+    with pytest.raises(
+        evidence.AgyCanaryEvidenceError, match="cleanup was incomplete",
+    ):
+        evidence._cleanup_owned_roots([authority])
+    tombstone.rmdir()
+
+
 def test_capture_cleanup_rejects_hardlink_without_chmod(tmp_path):
     root = Path(tempfile.mkdtemp(prefix="pl-panel-capture-hardlink-", dir="/tmp"))
     root.chmod(0o700)
@@ -1171,6 +1295,7 @@ def test_capture_cleanup_rejects_invalid_kind_and_prefix():
             path=authority.path, kind="unknown", prefix=authority.prefix,
             device=authority.device, inode=authority.inode,
             uid=authority.uid, gid=authority.gid,
+            quarantine_token=authority.quarantine_token,
         )
         with pytest.raises(
             evidence.AgyCanaryEvidenceError, match="cleanup was incomplete",

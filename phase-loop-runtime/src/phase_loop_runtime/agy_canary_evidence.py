@@ -891,6 +891,7 @@ class _OwnedCleanupRoot:
     inode: int
     uid: int
     gid: int
+    quarantine_token: str
 
 
 _OWNED_CLEANUP_PREFIXES = {
@@ -900,13 +901,17 @@ _OWNED_CLEANUP_PREFIXES = {
 _OWNED_CLEANUP_QUARANTINE_PREFIX = ".phase-loop-cleaned-"
 
 
-def _seal_owned_cleanup_root(path: Path, *, kind: str) -> _OwnedCleanupRoot:
+def _seal_owned_cleanup_root(
+    path: Path, *, kind: str, quarantine_token: str | None = None,
+) -> _OwnedCleanupRoot:
     """Seal one internally created private /tmp root before it is populated."""
-    return _owned_cleanup_root_authority(path, kind=kind)
+    return _owned_cleanup_root_authority(
+        path, kind=kind, quarantine_token=quarantine_token,
+    )
 
 
 def _owned_cleanup_root_authority(
-    path: Path, *, kind: str,
+    path: Path, *, kind: str, quarantine_token: str | None = None,
 ) -> _OwnedCleanupRoot:
     """Authenticate one newly-created cleanup root without mutating it."""
     prefix = _OWNED_CLEANUP_PREFIXES.get(kind)
@@ -921,10 +926,14 @@ def _owned_cleanup_root_authority(
             info.st_uid != os.getuid() or info.st_gid != os.getgid() or
             stat.S_IMODE(info.st_mode) != 0o700):
         raise AgyCanaryEvidenceError("cleanup root is not one private owned directory")
+    token = quarantine_token or secrets.token_hex(16)
+    if re.fullmatch(r"[0-9a-f]{32}", token) is None:
+        raise AgyCanaryEvidenceError("cleanup quarantine token is malformed")
     return _OwnedCleanupRoot(
         path=path, kind=kind, prefix=prefix,
         device=info.st_dev, inode=info.st_ino,
         uid=info.st_uid, gid=info.st_gid,
+        quarantine_token=token,
     )
 
 
@@ -938,7 +947,10 @@ def _create_owned_cleanup_root(*, kind: str) -> tuple[Path, _OwnedCleanupRoot]:
     try:
         authority = _owned_cleanup_root_authority(path, kind=kind)
         path.chmod(0o700)
-        sealed = _seal_owned_cleanup_root(path, kind=kind)
+        sealed = _seal_owned_cleanup_root(
+            path, kind=kind,
+            quarantine_token=authority.quarantine_token,
+        )
         if sealed != authority:
             raise AgyCanaryEvidenceError(
                 "cleanup root identity drifted during creation"
@@ -956,11 +968,11 @@ def _create_owned_cleanup_root(*, kind: str) -> tuple[Path, _OwnedCleanupRoot]:
 def _cleanup_owned_roots(roots: Sequence[_OwnedCleanupRoot]) -> None:
     """Remove public roots and retain only validated empty /tmp tombstones."""
     errors: list[str] = []
-    seen: set[tuple[str, str, int, int]] = set()
+    seen: set[tuple[str, str, int, int, str]] = set()
     for authority in roots:
         key = (
             authority.kind, str(authority.path),
-            authority.device, authority.inode,
+            authority.device, authority.inode, authority.quarantine_token,
         )
         if key in seen:
             continue
@@ -970,7 +982,10 @@ def _cleanup_owned_roots(roots: Sequence[_OwnedCleanupRoot]) -> None:
             if (authority.prefix != _OWNED_CLEANUP_PREFIXES.get(authority.kind) or
                     path.parent != Path("/tmp") or
                     not path.name.startswith(authority.prefix) or
-                    path.name == authority.prefix):
+                    path.name == authority.prefix or
+                    re.fullmatch(
+                        r"[0-9a-f]{32}", authority.quarantine_token,
+                    ) is None):
                 raise AgyCanaryEvidenceError("cleanup root authority is malformed")
             tmp_before = Path("/tmp").lstat()
             tmp_fd = os.open(
@@ -995,6 +1010,9 @@ def _cleanup_owned_roots(roots: Sequence[_OwnedCleanupRoot]) -> None:
                         path.name, dir_fd=tmp_fd, follow_symlinks=False,
                     )
                 except FileNotFoundError:
+                    _find_owned_cleanup_tombstone(
+                        tmp_fd=tmp_fd, authority=authority,
+                    )
                     continue
                 if (stat.S_ISLNK(entry.st_mode) or not stat.S_ISDIR(entry.st_mode) or
                         (entry.st_dev, entry.st_ino, entry.st_uid, entry.st_gid) !=
@@ -1042,21 +1060,11 @@ def _cleanup_owned_roots(roots: Sequence[_OwnedCleanupRoot]) -> None:
                         _remove_owned_cleanup_entries(
                             root_fd, uid=authority.uid, gid=authority.gid,
                         )
-                        final_entry = os.stat(
-                            quarantine_name, dir_fd=tmp_fd,
-                            follow_symlinks=False,
+                        _validate_owned_cleanup_tombstone(
+                            tmp_fd=tmp_fd,
+                            name=quarantine_name,
+                            authority=authority,
                         )
-                        if ((final_entry.st_dev, final_entry.st_ino,
-                             final_entry.st_uid, final_entry.st_gid) !=
-                                (opened.st_dev, opened.st_ino,
-                                 opened.st_uid, opened.st_gid) or
-                                not stat.S_ISDIR(final_entry.st_mode) or
-                                stat.S_IMODE(final_entry.st_mode) != 0o700 or
-                                final_entry.st_nlink != 2 or
-                                os.listdir(root_fd)):
-                            raise AgyCanaryEvidenceError(
-                                "cleanup quarantine changed after reclamation"
-                            )
                         try:
                             os.stat(
                                 path.name, dir_fd=tmp_fd,
@@ -1082,6 +1090,87 @@ def _cleanup_owned_roots(roots: Sequence[_OwnedCleanupRoot]) -> None:
         )
 
 
+def _find_owned_cleanup_tombstone(
+    *, tmp_fd: int, authority: _OwnedCleanupRoot,
+) -> str:
+    """Find exactly one canonical empty tombstone for an absent public root."""
+    expected = (
+        f"{_OWNED_CLEANUP_QUARANTINE_PREFIX}{authority.kind}-"
+        f"{authority.quarantine_token}"
+    )
+    matches: list[str] = []
+    for name in os.listdir(tmp_fd):
+        if not name.startswith(_OWNED_CLEANUP_QUARANTINE_PREFIX):
+            continue
+        try:
+            entry = os.stat(name, dir_fd=tmp_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        if ((entry.st_dev, entry.st_ino, entry.st_uid, entry.st_gid) !=
+                (authority.device, authority.inode,
+                 authority.uid, authority.gid)):
+            continue
+        if name != expected:
+            raise AgyCanaryEvidenceError(
+                "cleanup tombstone name is malformed"
+            )
+        matches.append(name)
+    if len(matches) != 1:
+        raise AgyCanaryEvidenceError(
+            "cleanup tombstone cardinality is invalid"
+        )
+    _validate_owned_cleanup_tombstone(
+        tmp_fd=tmp_fd, name=matches[0], authority=authority,
+    )
+    return matches[0]
+
+
+def _validate_owned_cleanup_tombstone(
+    *, tmp_fd: int, name: str, authority: _OwnedCleanupRoot,
+) -> None:
+    """Validate one empty tombstone through a held no-follow descriptor."""
+    try:
+        entry = os.stat(name, dir_fd=tmp_fd, follow_symlinks=False)
+        tombstone_fd = os.open(
+            name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=tmp_fd,
+        )
+    except OSError as exc:
+        raise AgyCanaryEvidenceError(
+            "cleanup tombstone is unavailable"
+        ) from exc
+    try:
+        opened = os.fstat(tombstone_fd)
+        expected = (
+            authority.device, authority.inode,
+            authority.uid, authority.gid,
+        )
+        if (not stat.S_ISDIR(entry.st_mode) or
+                not stat.S_ISDIR(opened.st_mode) or
+                (entry.st_dev, entry.st_ino, entry.st_uid, entry.st_gid) !=
+                expected or
+                (opened.st_dev, opened.st_ino,
+                 opened.st_uid, opened.st_gid) != expected or
+                stat.S_IMODE(entry.st_mode) != 0o700 or
+                stat.S_IMODE(opened.st_mode) != 0o700 or
+                entry.st_nlink != 2 or opened.st_nlink != 2 or
+                os.listdir(tombstone_fd)):
+            raise AgyCanaryEvidenceError(
+                "cleanup tombstone authority is invalid"
+            )
+        after = os.stat(name, dir_fd=tmp_fd, follow_symlinks=False)
+        if ((after.st_dev, after.st_ino, after.st_mode,
+             after.st_uid, after.st_gid, after.st_nlink) !=
+                (opened.st_dev, opened.st_ino, opened.st_mode,
+                 opened.st_uid, opened.st_gid, opened.st_nlink)):
+            raise AgyCanaryEvidenceError(
+                "cleanup tombstone identity drifted"
+            )
+    finally:
+        os.close(tombstone_fd)
+
+
 def _quarantine_owned_cleanup_root(
     *, tmp_fd: int, public_name: str, authority: _OwnedCleanupRoot,
     anchored: os.stat_result,
@@ -1089,7 +1178,7 @@ def _quarantine_owned_cleanup_root(
     """Atomically move one held root out of service without deleting its name."""
     quarantine_name = (
         f"{_OWNED_CLEANUP_QUARANTINE_PREFIX}{authority.kind}-"
-        f"{secrets.token_hex(16)}"
+        f"{authority.quarantine_token}"
     )
     _rename_noreplace(
         tmp_fd, public_name, tmp_fd, quarantine_name,
