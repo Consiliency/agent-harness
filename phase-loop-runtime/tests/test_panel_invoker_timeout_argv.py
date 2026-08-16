@@ -1297,6 +1297,90 @@ def test_capture_cleanup_repeat_accepts_exact_empty_tombstone():
     descendants[0].unlink()
 
 
+@pytest.mark.parametrize("repeat", [False, True])
+def test_capture_cleanup_revalidates_root_after_descendants(monkeypatch, repeat):
+    root = Path(tempfile.mkdtemp(prefix="pl-panel-capture-root-final-", dir="/tmp"))
+    root.chmod(0o700)
+    authority = evidence._seal_owned_cleanup_root(root, kind="scratch")
+    if repeat:
+        evidence._cleanup_owned_roots([authority])
+    tombstone = _cleanup_tombstone_for(authority) if repeat else Path("/tmp") / (
+        f"{evidence._OWNED_CLEANUP_QUARANTINE_PREFIX}scratch-"
+        f"{authority.quarantine_token}"
+    )
+    real_validate = evidence._validate_owned_cleanup_descendant_tombstones
+    injected = False
+
+    def inject_after_descendants(*, tmp_fd, authority):
+        nonlocal injected
+        result = real_validate(tmp_fd=tmp_fd, authority=authority)
+        if not injected:
+            injected = True
+            (tombstone / "late-secret").write_text("retain\n")
+        return result
+
+    monkeypatch.setattr(
+        evidence, "_validate_owned_cleanup_descendant_tombstones",
+        inject_after_descendants,
+    )
+    try:
+        with pytest.raises(
+            evidence.AgyCanaryEvidenceError, match="cleanup was incomplete",
+        ):
+            evidence._cleanup_owned_roots([authority])
+        assert injected
+        assert (tombstone / "late-secret").read_text() == "retain\n"
+    finally:
+        monkeypatch.setattr(
+            evidence, "_validate_owned_cleanup_descendant_tombstones",
+            real_validate,
+        )
+        shutil.rmtree(tombstone)
+
+
+def test_capture_cleanup_rejects_early_descendant_replacement_during_later_check(
+    monkeypatch,
+):
+    root = Path(tempfile.mkdtemp(prefix="pl-panel-capture-desc-final-", dir="/tmp"))
+    root.chmod(0o700)
+    authority = evidence._seal_owned_cleanup_root(root, kind="scratch")
+    (root / "first").write_text("remove\n")
+    (root / "second").write_text("remove\n")
+    evidence._cleanup_owned_roots([authority])
+    tombstone = _cleanup_tombstone_for(authority)
+    descendants = _cleanup_descendant_tombstones_for(authority)
+    assert len(descendants) == 2
+    early, later = descendants
+    original = early.with_name(early.name + "-original")
+    real_open = evidence.os.open
+    injected = False
+
+    def replace_early_when_later_opens(path, flags, *args, **kwargs):
+        nonlocal injected
+        if (not injected and path == later.name and
+                kwargs.get("dir_fd") is not None):
+            injected = True
+            early.rename(original)
+            early.touch(mode=0o600)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(evidence.os, "open", replace_early_when_later_opens)
+    try:
+        with pytest.raises(
+            evidence.AgyCanaryEvidenceError, match="cleanup was incomplete",
+        ):
+            evidence._cleanup_owned_roots([authority])
+        assert injected
+        assert early.is_file() and early.stat().st_size == 0
+        assert original.is_file() and original.stat().st_size == 0
+    finally:
+        monkeypatch.setattr(evidence.os, "open", real_open)
+        tombstone.rmdir()
+        early.unlink(missing_ok=True)
+        later.unlink(missing_ok=True)
+        original.unlink(missing_ok=True)
+
+
 @pytest.mark.parametrize("kind", ["file", "directory"])
 def test_capture_cleanup_repeat_rejects_nonempty_descendant_tombstone(kind):
     root = Path(tempfile.mkdtemp(prefix="pl-panel-capture-desc-repeat-", dir="/tmp"))

@@ -1010,11 +1010,16 @@ def _cleanup_owned_roots(roots: Sequence[_OwnedCleanupRoot]) -> None:
                         path.name, dir_fd=tmp_fd, follow_symlinks=False,
                     )
                 except FileNotFoundError:
-                    _find_owned_cleanup_tombstone(
+                    quarantine_name = _find_owned_cleanup_tombstone(
                         tmp_fd=tmp_fd, authority=authority,
                     )
                     _validate_owned_cleanup_descendant_tombstones(
                         tmp_fd=tmp_fd, authority=authority,
+                    )
+                    _validate_owned_cleanup_tombstone(
+                        tmp_fd=tmp_fd,
+                        name=quarantine_name,
+                        authority=authority,
                     )
                     try:
                         os.stat(
@@ -1081,6 +1086,11 @@ def _cleanup_owned_roots(roots: Sequence[_OwnedCleanupRoot]) -> None:
                         )
                         _validate_owned_cleanup_descendant_tombstones(
                             tmp_fd=tmp_fd, authority=authority,
+                        )
+                        _validate_owned_cleanup_tombstone(
+                            tmp_fd=tmp_fd,
+                            name=quarantine_name,
+                            authority=authority,
                         )
                         try:
                             os.stat(
@@ -1413,11 +1423,28 @@ def _cleanup_entry_stat_identity(info: os.stat_result) -> tuple[int, ...]:
 def _validate_owned_cleanup_descendant_tombstones(
     *, tmp_fd: int, authority: _OwnedCleanupRoot,
 ) -> None:
-    """Validate every token-bound descendant tombstone as stable and empty."""
+    """Require two identical full traversals of all descendant tombstones."""
+    first = _owned_cleanup_descendant_tombstone_inventory(
+        tmp_fd=tmp_fd, authority=authority,
+    )
+    second = _owned_cleanup_descendant_tombstone_inventory(
+        tmp_fd=tmp_fd, authority=authority,
+    )
+    if first != second:
+        raise AgyCanaryEvidenceError(
+            "cleanup descendant tombstone inventory drifted"
+        )
+
+
+def _owned_cleanup_descendant_tombstone_inventory(
+    *, tmp_fd: int, authority: _OwnedCleanupRoot,
+) -> tuple[tuple[str, str, tuple[int, ...]], ...]:
+    """Traverse token-bound tombstones and return their canonical inventory."""
     prefix = (
         f"{_OWNED_CLEANUP_QUARANTINE_PREFIX}entry-"
         f"{authority.quarantine_token}-"
     )
+    inventory: list[tuple[str, str, tuple[int, ...]]] = []
     for name in sorted(os.listdir(tmp_fd)):
         if not name.startswith(prefix):
             continue
@@ -1483,8 +1510,10 @@ def _validate_owned_cleanup_descendant_tombstones(
                 raise AgyCanaryEvidenceError(
                     "cleanup descendant tombstone is invalid"
                 )
+            inventory.append((name, match.group(1), stable))
         finally:
             os.close(opened_fd)
+    return tuple(inventory)
 
 
 def _chmod_owned_cleanup_directory(anchor_fd: int, *, uid: int, gid: int) -> None:
