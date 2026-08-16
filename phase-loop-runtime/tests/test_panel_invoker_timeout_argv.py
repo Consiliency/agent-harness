@@ -1706,16 +1706,28 @@ def test_default_spawn_preserves_fatal_quiescence_authority(monkeypatch, tmp_pat
     )
 
 
-def test_capture_quiescence_failure_escapes_and_retains_private_roots(
-    monkeypatch,
+@pytest.mark.parametrize(
+    "max_concurrency", [1, 4], ids=["queued-sequential", "running-parallel-barrier"],
+)
+def test_capture_quiescence_failure_stops_siblings_and_retains_private_roots(
+    monkeypatch, max_concurrency,
 ):
     from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
 
     expected_capture = object()
     roots: list[Path] = []
     snapshots: dict[Path, tuple[object, ...]] = {}
+    outputs: dict[str, Path] = {}
+    spawned: list[str] = []
     cleanup_calls = 0
     result_seals = 0
+    siblings_ready = threading.Event()
+    fatal_latched = threading.Event()
+    ready_lock = threading.Lock()
+    ready_count = 0
+    primary_error = pi.ProviderProcessGroupQuiescenceError(
+        "provider process group did not terminate"
+    )
 
     def prepare_authority(*, stage: Path, providers: tuple[str, ...], **_kwargs):
         provider = providers[0]
@@ -1724,6 +1736,7 @@ def test_capture_quiescence_failure_escapes_and_retains_private_roots(
         )
         (output / "sentinel").write_bytes(f"{provider}-sealed".encode())
         roots.extend((stage.parent, output))
+        outputs[provider] = output
         authority = SimpleNamespace(namespace=SimpleNamespace(
             provider_output=output,
             provider_output_cleanup=output_cleanup,
@@ -1731,13 +1744,35 @@ def test_capture_quiescence_failure_escapes_and_retains_private_roots(
         return {provider: authority}
 
     def fatal_spawn(leg, *_args, **_kwargs):
+        spawned.append(leg)
         if leg == "codex":
             for root in roots:
                 snapshots[root] = _private_tree_snapshot(root)
-            raise pi.ProviderProcessGroupQuiescenceError(
-                "provider process group did not terminate"
-            )
+            raise primary_error
+        (outputs[leg] / "later-provider-marker").write_text("must-not-run")
         return "OK", "AGREE"
+
+    real_resolve_seat_env = pi.resolve_seat_env
+
+    def barrier_resolve(seat, base_env, **kwargs):
+        nonlocal ready_count
+        if max_concurrency == 4:
+            if (seat.harness or "").lower() == "codex":
+                assert siblings_ready.wait(5)
+            else:
+                with ready_lock:
+                    ready_count += 1
+                    if ready_count == 3:
+                        siblings_ready.set()
+                assert fatal_latched.wait(5)
+        return real_resolve_seat_env(seat, base_env, **kwargs)
+
+    real_trip = pi._ProviderQuiescenceLatch.trip
+
+    def observe_trip(self, error):
+        primary = real_trip(self, error)
+        fatal_latched.set()
+        return primary
 
     def seal_result(**_kwargs):
         nonlocal result_seals
@@ -1754,21 +1789,25 @@ def test_capture_quiescence_failure_escapes_and_retains_private_roots(
     monkeypatch.setattr(pi, "capture_summary", lambda _capture: {"synthetic": True})
     monkeypatch.setattr(pi, "_default_spawn", fatal_spawn)
     monkeypatch.setattr(pi, "_cleanup_capture_launches", cleanup_spy)
+    monkeypatch.setattr(pi, "resolve_seat_env", barrier_resolve)
+    monkeypatch.setattr(pi._ProviderQuiescenceLatch, "trip", observe_trip)
 
     try:
         with pytest.raises(
             pi.ProviderProcessGroupQuiescenceError,
             match="provider process group did not terminate",
-        ):
+        ) as caught:
             pi.invoke_board(
                 DEFAULT_BOARD,
                 "review",
                 agy_canary_capture=expected_capture,
                 base_env={},
-                max_concurrency=1,
+                max_concurrency=max_concurrency,
             )
         assert cleanup_calls == 0
         assert result_seals == 0
+        assert caught.value is primary_error
+        assert spawned == ["codex"]
         assert len(roots) == 8
         assert snapshots
         assert all(root.is_dir() for root in roots)

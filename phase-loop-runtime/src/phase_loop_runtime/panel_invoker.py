@@ -130,6 +130,36 @@ class ProviderProcessGroupQuiescenceError(AgyCanaryEvidenceError):
     """A provider process group could not be proven absent after termination."""
 
 
+class _ProviderQuiescenceLatch:
+    """Share the first fatal quiescence error across collector and seat workers."""
+
+    def __init__(self) -> None:
+        self._event = threading.Event()
+        self._lock = threading.Lock()
+        self._primary: ProviderProcessGroupQuiescenceError | None = None
+
+    def trip(
+        self, error: ProviderProcessGroupQuiescenceError,
+    ) -> ProviderProcessGroupQuiescenceError:
+        with self._lock:
+            if self._primary is None:
+                self._primary = error
+                self._event.set()
+            return self._primary
+
+    def raise_if_set(self) -> None:
+        if not self._event.is_set():
+            return
+        with self._lock:
+            primary = self._primary
+        if primary is None:  # defensive: trip stores before publishing the event
+            raise RuntimeError("provider quiescence latch published no primary error")
+        raise primary
+
+    def is_set(self) -> bool:
+        return self._event.is_set()
+
+
 class ReviewLandingTier(str, Enum):
     PLAN = "plan"
     PRODUCTION_CODE = "production_code"
@@ -3796,6 +3826,7 @@ def _default_spawn(
     provider_authority: ProviderLaunchAuthority | None = None,
     capture_stage: Path | None = None,
     capture_scratch: Path | None = None,
+    quiescence_latch: _ProviderQuiescenceLatch | None = None,
 ) -> tuple[str, str]:
     """Real-exec boundary: spawn a subscription CLI leg over the staged bundle.
 
@@ -3815,6 +3846,8 @@ def _default_spawn(
     byte (the golden keystone); an explicit value BOUNDS a slow/stalled leg so it
     fails its own leg instead of hanging the whole panel.
     """
+    if quiescence_latch is not None:
+        quiescence_latch.raise_if_set()
     # Best-effort reclaim of crash-residual scratch dirs (never affects this run).
     _gc_stale_panel_scratch()
     if agy_capture is not None and (provider_authority is None or capture_stage is None):
@@ -3828,6 +3861,8 @@ def _default_spawn(
         out_dir.mkdir()
     provider_output_dir: Path | None = out_dir if provider_authority is not None else None
     try:
+        if quiescence_latch is not None:
+            quiescence_latch.raise_if_set()
         if capture_stage is None:
             (review_dir / "review-bundle.md").write_text(artifact, encoding="utf-8")
             resolved_brief = _resolve_brief(mode, brief_ref)
@@ -3838,6 +3873,8 @@ def _default_spawn(
             )
         capture_staged: dict[str, dict[str, object]] | None = None
         if agy_capture is not None:
+            if quiescence_latch is not None:
+                quiescence_latch.raise_if_set()
             if leg == "gemini" and not seat_key:
                 raise AgyCanaryEvidenceError(
                     "capture-enabled Gemini launch is missing its singleton seat"
@@ -3868,7 +3905,9 @@ def _default_spawn(
             extra["agy_capture"] = agy_capture
             extra["provider_authority"] = provider_authority
         if leg == "claude":
-            return _exec_claude_tui_leg(
+            if quiescence_latch is not None:
+                quiescence_latch.raise_if_set()
+            result = _exec_claude_tui_leg(
                 review_dir,
                 out_dir,
                 leg_timeout,
@@ -3879,6 +3918,11 @@ def _default_spawn(
                 backstop_s=leg_deadline,
                 **extra,
             )
+            if quiescence_latch is not None:
+                quiescence_latch.raise_if_set()
+            return result
+        if quiescence_latch is not None:
+            quiescence_latch.raise_if_set()
         rc, review_text, log_text = _exec_leg(
             leg,
             review_dir,
@@ -3895,6 +3939,8 @@ def _default_spawn(
             ),
             **extra,
         )
+        if quiescence_latch is not None:
+            quiescence_latch.raise_if_set()
         status = _classify_leg(rc, review_text, log_text, mode)
         # DIAGNOSTIC PROPAGATION. `_exec_leg` reports WHY a leg failed in `log_text`, and
         # this boundary used to drop it — so a headless tool-denial reached the operator
@@ -3952,6 +3998,7 @@ def _default_spawn_via_provider(
     provider_authority: ProviderLaunchAuthority | None = None,
     capture_stage: Path | None = None,
     capture_scratch: Path | None = None,
+    quiescence_latch: _ProviderQuiescenceLatch | None = None,
 ) -> tuple[str, str] | tuple[str, str, str]:
     # ABDHOME: forward effort/env ONLY when set so the legacy (effort/env-absent)
     # path calls ``_default_spawn`` with its exact frozen signature
@@ -3977,6 +4024,9 @@ def _default_spawn_via_provider(
         extra["provider_authority"] = provider_authority
         extra["capture_stage"] = capture_stage
         extra["capture_scratch"] = capture_scratch
+    if quiescence_latch is not None:
+        quiescence_latch.raise_if_set()
+        extra["quiescence_latch"] = quiescence_latch
     # The provider seam's `send_turn` unpacks a 2-TUPLE (agent_runtime_provider.py).
     # `_default_spawn` may return a 3-tuple carrying a failure DIAGNOSTIC, so hand the
     # seam the 2-tuple it expects and carry the diagnostic around it in a closure cell.
@@ -3988,6 +4038,8 @@ def _default_spawn_via_provider(
     _quiescence_error: list[ProviderProcessGroupQuiescenceError | None] = [None]
 
     def _spawn_2tuple(request, register_process=None):
+        if quiescence_latch is not None:
+            quiescence_latch.raise_if_set()
         try:
             spawned = _default_spawn(
                 leg, artifact, repo_dir=repo_dir, mode=mode, model=model, **extra
@@ -3996,7 +4048,11 @@ def _default_spawn_via_provider(
             # HomebrewAgentRuntimeProvider deliberately turns ordinary spawn
             # exceptions into failed turns.  Process-group quiescence is not an
             # ordinary provider result: retain it out-of-band and re-raise below.
-            _quiescence_error[0] = exc
+            _quiescence_error[0] = (
+                quiescence_latch.trip(exc)
+                if quiescence_latch is not None
+                else exc
+            )
             raise
         if isinstance(spawned, tuple) and len(spawned) == 3:
             status_, text_, _diagnostic[0] = spawned
@@ -4009,6 +4065,8 @@ def _default_spawn_via_provider(
             target_harness=leg, idempotency_key=f"panel-{leg}", title=f"panel-leg-{leg}"
         )
     )
+    if quiescence_latch is not None:
+        quiescence_latch.raise_if_set()
     provider.send_turn(
         SendTurnRequest(
             session_id=session.id, idempotency_key=f"panel-{leg}-turn", message=artifact
@@ -4016,6 +4074,8 @@ def _default_spawn_via_provider(
     )
     if _quiescence_error[0] is not None:
         raise _quiescence_error[0]
+    if quiescence_latch is not None:
+        quiescence_latch.raise_if_set()
     status, text = "DEGRADED", ""
     for event in provider.read_history(session.id).events:
         if event.type == "runtime.text.delta":
@@ -4080,6 +4140,7 @@ def _run_legs_ordered(
     max_concurrency: int | None = None,
     on_leg_complete: "Callable[[PanelLegResult], None] | None" = None,
     review_dir: "Path | None" = None,
+    fatal_latch: _ProviderQuiescenceLatch | None = None,
 ) -> list[PanelLegResult]:
     """Run ``run_one`` for every item CONCURRENTLY, returning results in ITEM ORDER.
 
@@ -4134,16 +4195,34 @@ def _run_legs_ordered(
     streaming = on_leg_complete is not None or review_dir is not None
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = [pool.submit(run_one, item) for item in seq]
+
+        def _cancel_and_raise(
+            error: ProviderProcessGroupQuiescenceError,
+        ) -> None:
+            primary = fatal_latch.trip(error) if fatal_latch is not None else error
+            for pending in futures:
+                pending.cancel()
+            raise primary
+
         if not streaming:
             # DEFAULT PATH — byte-identical: block in submission order, return in order.
-            return [future.result() for future in futures]
+            ordered: list[PanelLegResult] = []
+            try:
+                for future in futures:
+                    ordered.append(future.result())
+            except ProviderProcessGroupQuiescenceError as exc:
+                _cancel_and_raise(exc)
+            return ordered
         # STREAMING PATH — deliver each leg as it LANDS (out of order), then re-sort
         # the consolidated return to submission order.
         index_of = {future: i for i, future in enumerate(futures)}
         results: list[PanelLegResult | None] = [None] * len(seq)
         for future in as_completed(futures):
             i = index_of[future]
-            result = future.result()  # fatal quiescence authority may raise
+            try:
+                result = future.result()
+            except ProviderProcessGroupQuiescenceError as exc:
+                _cancel_and_raise(exc)
             results[i] = result
             if review_dir is not None:
                 _write_incremental_verdict(review_dir, i, result)
@@ -4768,7 +4847,7 @@ def invoke_board(
     ] = {}
     capture_scratches: list[_OwnedCleanupRoot] = []
     capture_seats: list[Seat] = []
-    capture_quiescence_unproven = threading.Event()
+    capture_quiescence = _ProviderQuiescenceLatch()
 
     def _cleanup_capture_resources() -> None:
         _cleanup_capture_launches(capture_launches, capture_scratches)
@@ -4858,6 +4937,7 @@ def invoke_board(
         #
         # Seats are lane-concrete after _resolve_and_validate_board, so a bare seat
         # runs on its default lane instead of skipping on an empty ('') lane.
+        capture_quiescence.raise_if_set()
         if effective_research.enabled:
             index, seat = cast("tuple[int, Seat]", item)
         else:
@@ -4950,6 +5030,7 @@ def invoke_board(
                 seat_key=seat.seat_key,
             )
         try:
+            capture_quiescence.raise_if_set()
             if spawn is not None:
                 spawned = spawn(leg, artifact)
             else:
@@ -4974,6 +5055,8 @@ def invoke_board(
                     research_extra["provider_authority"] = authority
                     research_extra["capture_stage"] = stage
                     research_extra["capture_scratch"] = scratch
+                    research_extra["quiescence_latch"] = capture_quiescence
+                capture_quiescence.raise_if_set()
                 spawned = _default_spawn_via_provider(
                     leg,
                     artifact,
@@ -4986,6 +5069,7 @@ def invoke_board(
                     timeout_s=leg_timeouts.get(leg),
                     **research_extra,
                 )
+            capture_quiescence.raise_if_set()
             # 2-or-3 tuple, same contract as `_run_leg`: a 3-tuple carries a failure
             # DIAGNOSTIC bound for `detail`, never `text` (a diagnostic in text is read
             # by the governed classifier as a nonconforming review and BLOCKS promotion).
@@ -4994,9 +5078,11 @@ def invoke_board(
                 status, text, seat_detail = spawned
             else:
                 status, text = spawned
-        except ProviderProcessGroupQuiescenceError:
-            capture_quiescence_unproven.set()
-            raise
+        except ProviderProcessGroupQuiescenceError as exc:
+            primary = capture_quiescence.trip(exc)
+            if primary is exc:
+                raise
+            raise primary
         except Exception as exc:  # fail-closed: a broken seat degrades, never crashes
             result = PanelLegResult(
                 leg=leg,
@@ -5099,6 +5185,7 @@ def invoke_board(
             max_concurrency=max_concurrency,
             on_leg_complete=on_leg_complete,
             review_dir=Path(stream_dir) if stream_dir is not None else None,
+            fatal_latch=capture_quiescence,
         )
         if agy_canary_capture is not None:
             if len(results) != len(capture_seats):
@@ -5135,5 +5222,5 @@ def invoke_board(
         if research_run is not None:
             research_run.close()
         if (agy_canary_capture is not None and
-                not capture_quiescence_unproven.is_set()):
+                not capture_quiescence.is_set()):
             _cleanup_capture_resources()
