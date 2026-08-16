@@ -186,7 +186,12 @@ class ProofgatePlanValidatorTest(unittest.TestCase):
                 server_attested_date=PROOFGATE_GRANDFATHER_SERVER_DATE,
             )
             if not cutoff_result.get("valid") or cutoff_result.get("disposition") != "grandfathered":
-                raise ProofgateMissingCapabilityError("real multi-item cutoff plan was not grandfathered")
+                emit_mutation_observable(
+                    "ec-proofgate-7.grandfathering",
+                    getattr(self, "record_property", None),
+                )
+            self.assertTrue(cutoff_result.get("valid"))
+            self.assertEqual(cutoff_result.get("disposition"), "grandfathered")
             self.assertEqual(len(cutoff_contracts), 3)
             self.assertEqual(len(cutoff_result.get("grandfather_records", [])), 3)
             self.assertTrue(
