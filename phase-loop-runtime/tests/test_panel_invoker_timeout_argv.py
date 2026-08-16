@@ -27,6 +27,21 @@ def _mock_canonical_bwrap(monkeypatch) -> None:
     monkeypatch.setattr(evidence, "_canonical_bwrap", lambda: Path("/usr/bin/bwrap"))
 
 
+def _cleanup_tombstone_for(authority) -> Path:
+    matches = []
+    for path in Path("/tmp").glob(
+        f"{evidence._OWNED_CLEANUP_QUARANTINE_PREFIX}*"
+    ):
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            continue
+        if (info.st_dev, info.st_ino) == (authority.device, authority.inode):
+            matches.append(path)
+    assert len(matches) == 1
+    return matches[0]
+
+
 def test_leg_timeout_scales_with_review_size():
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
@@ -949,6 +964,56 @@ def test_capture_cleanup_repairs_owned_mode_zero_tree():
     nested.chmod(0o000)
     evidence._cleanup_owned_roots([authority])
     assert not root.exists()
+    tombstone = _cleanup_tombstone_for(authority)
+    assert tombstone.is_dir() and list(tombstone.iterdir()) == []
+    tombstone.rmdir()
+
+
+@pytest.mark.parametrize("failure", ["chmod", "seal"])
+def test_capture_root_creation_failure_reclaims_provisional_root(
+    monkeypatch, failure,
+):
+    created: list[Path] = []
+    authorities: dict[tuple[int, int], object] = {}
+    real_mkdtemp = tempfile.mkdtemp
+    real_chmod = Path.chmod
+    real_seal = evidence._seal_owned_cleanup_root
+    real_authority = evidence._owned_cleanup_root_authority
+
+    def capture_mkdtemp(*, prefix, dir):
+        path = Path(real_mkdtemp(prefix=prefix, dir=dir))
+        created.append(path)
+        return str(path)
+
+    def fail_chmod(path, mode):
+        real_chmod(path, mode)
+        if failure == "chmod" and path in created:
+            raise OSError("injected chmod failure")
+
+    def fail_seal(path, *, kind):
+        if failure == "seal":
+            raise evidence.AgyCanaryEvidenceError("injected seal failure")
+        return real_seal(path, kind=kind)
+
+    def capture_authority(path, *, kind):
+        authority = real_authority(path, kind=kind)
+        authorities[(authority.device, authority.inode)] = authority
+        return authority
+
+    monkeypatch.setattr(evidence.tempfile, "mkdtemp", capture_mkdtemp)
+    monkeypatch.setattr(Path, "chmod", fail_chmod)
+    monkeypatch.setattr(
+        evidence, "_owned_cleanup_root_authority", capture_authority,
+    )
+    monkeypatch.setattr(evidence, "_seal_owned_cleanup_root", fail_seal)
+    with pytest.raises((OSError, evidence.AgyCanaryEvidenceError)):
+        evidence._create_owned_cleanup_root(kind="scratch")
+    assert len(created) == 1
+    assert not created[0].exists()
+    assert len(authorities) == 1
+    tombstone = _cleanup_tombstone_for(next(iter(authorities.values())))
+    assert list(tombstone.iterdir()) == []
+    tombstone.rmdir()
 
 
 def test_capture_cleanup_attempts_all_roots_and_reports_incomplete(monkeypatch):
@@ -975,11 +1040,15 @@ def test_capture_cleanup_attempts_all_roots_and_reports_incomplete(monkeypatch):
             evidence.AgyCanaryEvidenceError, match="cleanup was incomplete",
         ):
             evidence._cleanup_owned_roots(authorities)
-        assert first.is_dir()
+        first_tombstone = _cleanup_tombstone_for(authorities[0])
+        second_tombstone = _cleanup_tombstone_for(authorities[1])
+        assert (first_tombstone / "undeletable").read_text() == "retain\n"
         assert not second.exists()
+        assert list(second_tombstone.iterdir()) == []
     finally:
         monkeypatch.setattr(evidence.os, "unlink", real_unlink)
-        shutil.rmtree(first, ignore_errors=True)
+        for authority in authorities:
+            shutil.rmtree(_cleanup_tombstone_for(authority), ignore_errors=True)
 
 
 def test_capture_cleanup_refuses_substituted_root_and_unrelated_deletion():
@@ -1003,7 +1072,7 @@ def test_capture_cleanup_refuses_substituted_root_and_unrelated_deletion():
         shutil.rmtree(original)
 
 
-def test_capture_cleanup_detects_swap_during_descriptor_delete(monkeypatch):
+def test_capture_cleanup_quarantine_swap_retains_unrelated_data(monkeypatch):
     root = Path(tempfile.mkdtemp(prefix="pl-panel-capture-race-", dir="/tmp"))
     unrelated = Path(tempfile.mkdtemp(
         prefix="pl-panel-capture-unrelated-", dir="/tmp",
@@ -1011,31 +1080,57 @@ def test_capture_cleanup_detects_swap_during_descriptor_delete(monkeypatch):
     root.chmod(0o700)
     unrelated.chmod(0o700)
     authority = evidence._seal_owned_cleanup_root(root, kind="scratch")
-    (root / "trigger").write_text("remove\n")
     marker = unrelated / "unrelated-marker"
     marker.write_text("retain\n")
     original = root.with_name(root.name + "-original")
-    real_unlink = evidence.os.unlink
+    real_rename_noreplace = evidence._rename_noreplace
+    moved_names: list[str] = []
 
-    def swap_after_unlink(name, *args, **kwargs):
-        result = real_unlink(name, *args, **kwargs)
-        if name == "trigger":
+    def swap_inside_rename(source_fd, source, destination_fd, destination):
+        if source == root.name:
             root.rename(original)
             unrelated.rename(root)
-        return result
+            moved_names.append(destination)
+        return real_rename_noreplace(
+            source_fd, source, destination_fd, destination,
+        )
 
-    monkeypatch.setattr(evidence.os, "unlink", swap_after_unlink)
+    monkeypatch.setattr(evidence, "_rename_noreplace", swap_inside_rename)
     try:
         with pytest.raises(
             evidence.AgyCanaryEvidenceError, match="cleanup was incomplete",
         ):
             evidence._cleanup_owned_roots([authority])
-        assert (root / "unrelated-marker").read_text() == "retain\n"
+        assert len(moved_names) == 1
+        moved = Path("/tmp") / moved_names[0]
+        assert (moved / "unrelated-marker").read_text() == "retain\n"
         assert original.is_dir()
     finally:
-        monkeypatch.setattr(evidence.os, "unlink", real_unlink)
+        monkeypatch.setattr(
+            evidence, "_rename_noreplace", real_rename_noreplace,
+        )
         shutil.rmtree(root, ignore_errors=True)
         shutil.rmtree(original, ignore_errors=True)
+        for name in moved_names:
+            shutil.rmtree(Path("/tmp") / name, ignore_errors=True)
+
+
+def test_capture_cleanup_never_name_deletes_public_root(monkeypatch):
+    root = Path(tempfile.mkdtemp(prefix="pl-panel-capture-final-", dir="/tmp"))
+    root.chmod(0o700)
+    authority = evidence._seal_owned_cleanup_root(root, kind="scratch")
+    (root / "result").write_text("remove\n")
+    real_rmdir = evidence.os.rmdir
+
+    def reject_public_rmdir(name, *args, **kwargs):
+        if name == root.name:
+            raise AssertionError("public cleanup root must never be name-deleted")
+        return real_rmdir(name, *args, **kwargs)
+
+    monkeypatch.setattr(evidence.os, "rmdir", reject_public_rmdir)
+    evidence._cleanup_owned_roots([authority])
+    assert not root.exists()
+    _cleanup_tombstone_for(authority).rmdir()
 
 
 def test_capture_cleanup_rejects_hardlink_without_chmod(tmp_path):
@@ -1053,10 +1148,12 @@ def test_capture_cleanup_rejects_hardlink_without_chmod(tmp_path):
             evidence.AgyCanaryEvidenceError, match="cleanup was incomplete",
         ):
             evidence._cleanup_owned_roots([authority])
-        assert linked.is_file() and outside.read_text() == "retain\n"
+        tombstone = _cleanup_tombstone_for(authority)
+        assert (tombstone / "linked").is_file()
+        assert outside.read_text() == "retain\n"
         assert stat.S_IMODE(outside.stat().st_mode) == mode == 0o400
     finally:
-        shutil.rmtree(root)
+        shutil.rmtree(_cleanup_tombstone_for(authority), ignore_errors=True)
 
 
 def test_capture_cleanup_rejects_invalid_kind_and_prefix():
@@ -1101,10 +1198,8 @@ def test_capture_cleanup_failure_preserves_primary_exception_context(tmp_path):
             output, kind="provider_output",
         ),
     ))
-    launches = {"seat": (
-        authority, scratch, scratch,
-        evidence._seal_owned_cleanup_root(scratch, kind="scratch"),
-    )}
+    scratch_cleanup = evidence._seal_owned_cleanup_root(scratch, kind="scratch")
+    launches = {"seat": (authority, scratch, scratch, scratch_cleanup)}
     try:
         with pytest.raises(
             evidence.AgyCanaryEvidenceError, match="cleanup was incomplete",
@@ -1115,10 +1210,16 @@ def test_capture_cleanup_failure_preserves_primary_exception_context(tmp_path):
                 pi._cleanup_capture_launches(launches)
         assert isinstance(caught.value.__context__, evidence.AgyCanaryEvidenceError)
         assert str(caught.value.__context__) == "primary result failure"
-        assert output.is_dir()
+        assert _cleanup_tombstone_for(
+            authority.namespace.provider_output_cleanup
+        ).is_dir()
         assert not scratch.exists()
     finally:
-        shutil.rmtree(output, ignore_errors=True)
+        shutil.rmtree(
+            _cleanup_tombstone_for(authority.namespace.provider_output_cleanup),
+            ignore_errors=True,
+        )
+        _cleanup_tombstone_for(scratch_cleanup).rmdir()
 
 
 @pytest.mark.parametrize(
@@ -1129,15 +1230,19 @@ def test_capture_setup_always_reclaims_scratch_and_provider_outputs(monkeypatch,
 
     outputs: list[Path] = []
     scratches: list[Path] = []
+    cleanup_authorities: list[object] = []
     calls = 0
 
     real_write_bytes = Path.write_bytes
     real_mkdtemp = tempfile.mkdtemp
 
-    def capture_mkdtemp(*, prefix):
-        scratch = Path(real_mkdtemp(prefix=prefix, dir="/tmp"))
+    def capture_mkdtemp(*, prefix, dir="/tmp"):
+        scratch = Path(real_mkdtemp(prefix=prefix, dir=dir))
         scratch.chmod(0o700)
         scratches.append(scratch)
+        cleanup_authorities.append(
+            evidence._seal_owned_cleanup_root(scratch, kind="scratch")
+        )
         return str(scratch)
 
     def write_bytes(path, data):
@@ -1159,11 +1264,13 @@ def test_capture_setup_always_reclaims_scratch_and_provider_outputs(monkeypatch,
         ))
         output.chmod(0o700)
         outputs.append(output)
+        output_cleanup = evidence._seal_owned_cleanup_root(
+            output, kind="provider_output",
+        )
+        cleanup_authorities.append(output_cleanup)
         return {providers[0]: SimpleNamespace(namespace=SimpleNamespace(
             provider_output=output,
-            provider_output_cleanup=evidence._seal_owned_cleanup_root(
-                output, kind="provider_output",
-            ),
+            provider_output_cleanup=output_cleanup,
         ))}
 
     monkeypatch.setattr(pi.tempfile, "mkdtemp", capture_mkdtemp)
@@ -1194,6 +1301,14 @@ def test_capture_setup_always_reclaims_scratch_and_provider_outputs(monkeypatch,
         assert outputs
     assert all(not path.exists() for path in outputs)
     assert all(not path.exists() for path in scratches)
+    tombstones = {
+        _cleanup_tombstone_for(authority)
+        for authority in cleanup_authorities
+    }
+    assert tombstones
+    assert all(list(path.iterdir()) == [] for path in tombstones)
+    for path in tombstones:
+        path.rmdir()
 
 
 def test_capture_enabled_claude_uses_sibling_namespace_and_mapped_output(monkeypatch, tmp_path):

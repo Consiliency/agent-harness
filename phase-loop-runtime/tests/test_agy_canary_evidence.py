@@ -4238,7 +4238,10 @@ def test_provider_authority_factory_reclaims_output_when_projection_fails(monkey
     monkeypatch.setattr(evidence, "_minimal_home_identity", lambda _home: minimal_identity)
     monkeypatch.setattr(evidence, "_resolver_snapshot", lambda: (None, None))
     monkeypatch.setattr(evidence, "_trusted_provider_runtime", lambda _provider: runtime)
-    monkeypatch.setattr(evidence.tempfile, "mkdtemp", lambda **_kwargs: str(output.mkdir() or output))
+    monkeypatch.setattr(
+        evidence.tempfile, "mkdtemp",
+        lambda **_kwargs: str(output.mkdir(mode=0o700) or output),
+    )
     monkeypatch.setattr(evidence, "_projected_auth_proof", lambda **_kwargs: (_ for _ in ()).throw(evidence.AgyCanaryEvidenceError("projection failed")))
     with pytest.raises(evidence.AgyCanaryEvidenceError, match="projection failed"):
         evidence.prepare_provider_launch_authorities(capture=capture, stage=stage, providers=("gemini",))

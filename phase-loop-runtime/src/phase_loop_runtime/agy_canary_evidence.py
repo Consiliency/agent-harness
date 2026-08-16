@@ -46,6 +46,7 @@ SCHEMA_VERSION = "agy_canary_evidence.v1"
 _CLEANUP_STATE_NAME = "cleanup-state.json"
 _SETTINGS_SNAPSHOT_NAME = "agy-settings.pre.json"
 _RULE = "command(pwd)"
+_RENAME_NOREPLACE = 1
 _RENAME_EXCHANGE = 2
 _LEDGER_NAME = "agy-launch-ledger.json"
 _PROBE_NAME = "agy_capability_probe.json"
@@ -896,10 +897,18 @@ _OWNED_CLEANUP_PREFIXES = {
     "provider_output": "phase-loop-provider-output-",
     "scratch": "pl-panel-capture-",
 }
+_OWNED_CLEANUP_QUARANTINE_PREFIX = ".phase-loop-cleaned-"
 
 
 def _seal_owned_cleanup_root(path: Path, *, kind: str) -> _OwnedCleanupRoot:
     """Seal one internally created private /tmp root before it is populated."""
+    return _owned_cleanup_root_authority(path, kind=kind)
+
+
+def _owned_cleanup_root_authority(
+    path: Path, *, kind: str,
+) -> _OwnedCleanupRoot:
+    """Authenticate one newly-created cleanup root without mutating it."""
     prefix = _OWNED_CLEANUP_PREFIXES.get(kind)
     if (prefix is None or not path.is_absolute() or path.parent != Path("/tmp") or
             not path.name.startswith(prefix) or path.name == prefix):
@@ -919,8 +928,33 @@ def _seal_owned_cleanup_root(path: Path, *, kind: str) -> _OwnedCleanupRoot:
     )
 
 
+def _create_owned_cleanup_root(*, kind: str) -> tuple[Path, _OwnedCleanupRoot]:
+    """Create and seal one root, reclaiming it on any authorization failure."""
+    prefix = _OWNED_CLEANUP_PREFIXES.get(kind)
+    if prefix is None:
+        raise AgyCanaryEvidenceError("cleanup root kind is unsupported")
+    path = Path(tempfile.mkdtemp(prefix=prefix, dir="/tmp"))
+    authority: _OwnedCleanupRoot | None = None
+    try:
+        authority = _owned_cleanup_root_authority(path, kind=kind)
+        path.chmod(0o700)
+        sealed = _seal_owned_cleanup_root(path, kind=kind)
+        if sealed != authority:
+            raise AgyCanaryEvidenceError(
+                "cleanup root identity drifted during creation"
+            )
+        return path, sealed
+    except Exception as primary:
+        if authority is not None:
+            try:
+                _cleanup_owned_roots((authority,))
+            except Exception as cleanup_error:
+                raise cleanup_error from primary
+        raise
+
+
 def _cleanup_owned_roots(roots: Sequence[_OwnedCleanupRoot]) -> None:
-    """Attempt every exact-owned cleanup and fail if any root remains."""
+    """Remove public roots and retain only validated empty /tmp tombstones."""
     errors: list[str] = []
     seen: set[tuple[str, str, int, int]] = set()
     for authority in roots:
@@ -999,11 +1033,17 @@ def _cleanup_owned_roots(roots: Sequence[_OwnedCleanupRoot]) -> None:
                             raise AgyCanaryEvidenceError(
                                 "cleanup root descriptor identity drifted"
                             )
+                        quarantine_name = _quarantine_owned_cleanup_root(
+                            tmp_fd=tmp_fd,
+                            public_name=path.name,
+                            authority=authority,
+                            anchored=opened,
+                        )
                         _remove_owned_cleanup_entries(
                             root_fd, uid=authority.uid, gid=authority.gid,
                         )
                         final_entry = os.stat(
-                            path.name, dir_fd=tmp_fd,
+                            quarantine_name, dir_fd=tmp_fd,
                             follow_symlinks=False,
                         )
                         if ((final_entry.st_dev, final_entry.st_ino,
@@ -1011,11 +1051,12 @@ def _cleanup_owned_roots(roots: Sequence[_OwnedCleanupRoot]) -> None:
                                 (opened.st_dev, opened.st_ino,
                                  opened.st_uid, opened.st_gid) or
                                 not stat.S_ISDIR(final_entry.st_mode) or
+                                stat.S_IMODE(final_entry.st_mode) != 0o700 or
+                                final_entry.st_nlink != 2 or
                                 os.listdir(root_fd)):
                             raise AgyCanaryEvidenceError(
-                                "cleanup root changed before final removal"
+                                "cleanup quarantine changed after reclamation"
                             )
-                        os.rmdir(path.name, dir_fd=tmp_fd)
                         try:
                             os.stat(
                                 path.name, dir_fd=tmp_fd,
@@ -1025,7 +1066,7 @@ def _cleanup_owned_roots(roots: Sequence[_OwnedCleanupRoot]) -> None:
                             pass
                         else:
                             raise AgyCanaryEvidenceError(
-                                "cleanup root name was not removed"
+                                "cleanup public root name was recreated"
                             )
                     finally:
                         os.close(root_fd)
@@ -1039,6 +1080,39 @@ def _cleanup_owned_roots(roots: Sequence[_OwnedCleanupRoot]) -> None:
         raise AgyCanaryEvidenceError(
             "capture resource cleanup was incomplete: " + ",".join(errors)
         )
+
+
+def _quarantine_owned_cleanup_root(
+    *, tmp_fd: int, public_name: str, authority: _OwnedCleanupRoot,
+    anchored: os.stat_result,
+) -> str:
+    """Atomically move one held root out of service without deleting its name."""
+    quarantine_name = (
+        f"{_OWNED_CLEANUP_QUARANTINE_PREFIX}{authority.kind}-"
+        f"{secrets.token_hex(16)}"
+    )
+    _rename_noreplace(
+        tmp_fd, public_name, tmp_fd, quarantine_name,
+    )
+    moved = os.stat(
+        quarantine_name, dir_fd=tmp_fd, follow_symlinks=False,
+    )
+    if (not stat.S_ISDIR(moved.st_mode) or
+            (moved.st_dev, moved.st_ino, moved.st_uid, moved.st_gid) !=
+            (anchored.st_dev, anchored.st_ino, anchored.st_uid,
+             anchored.st_gid)):
+        raise AgyCanaryEvidenceError(
+            "cleanup quarantine does not contain the held root"
+        )
+    try:
+        os.stat(public_name, dir_fd=tmp_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        pass
+    else:
+        raise AgyCanaryEvidenceError(
+            "cleanup public root remained after quarantine"
+        )
+    return quarantine_name
 
 
 def _remove_owned_cleanup_entries(
@@ -1800,10 +1874,8 @@ def prepare_provider_launch_authorities(
                 agy_runtime.mode, agy_runtime.sha256,
             ) if provider == "gemini" else _trusted_provider_runtime(provider))
             auth_records = gemini_auth_records if provider == "gemini" else _provider_auth_records(provider, minimal_home)
-            provider_output = Path(tempfile.mkdtemp(prefix=f"phase-loop-provider-output-{provider}-", dir="/tmp"))
-            provider_output.chmod(0o700)
-            provider_output_cleanup = _seal_owned_cleanup_root(
-                provider_output, kind="provider_output",
+            provider_output, provider_output_cleanup = _create_owned_cleanup_root(
+                kind="provider_output",
             )
             provider_outputs.append(provider_output_cleanup)
             namespace = AgyCanaryNamespace(
@@ -2525,6 +2597,26 @@ def _assert_quiescent(
         raise AgyCanaryEvidenceError(
             "settings tree is not quiescent: " + ", ".join(sorted(set(blockers))[:8])
         )
+
+
+def _rename_noreplace(
+    source_fd: int, source: str, destination_fd: int, destination: str,
+) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = getattr(libc, "renameat2", None)
+    if renameat2 is None:
+        raise AgyCanaryEvidenceError("renameat2(RENAME_NOREPLACE) is unavailable")
+    renameat2.argtypes = [
+        ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    renameat2.restype = ctypes.c_int
+    if renameat2(
+        source_fd, os.fsencode(source), destination_fd,
+        os.fsencode(destination), _RENAME_NOREPLACE,
+    ) != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code))
 
 
 def _rename_exchange(directory_fd: int, left: str, right: str) -> None:

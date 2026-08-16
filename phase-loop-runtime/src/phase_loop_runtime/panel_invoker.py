@@ -50,8 +50,8 @@ from .agent_runtime_provider import (
 )
 from .agy_canary_evidence import (
     _OwnedCleanupRoot,
+    _create_owned_cleanup_root,
     _cleanup_owned_roots,
-    _seal_owned_cleanup_root,
     AgyCanaryCapture,
     AgyCanaryEvidenceError,
     bind_staged_review_inputs,
@@ -4657,10 +4657,8 @@ def invoke_board(
         bundle_bytes = artifact.encode("utf-8")
         instruction_bytes = _resolve_brief(mode, brief_ref).encode("utf-8")
         for index, (seat, provider) in enumerate(zip(capture_seats, providers)):
-            scratch = Path(tempfile.mkdtemp(prefix="pl-panel-capture-"))
-            scratch.chmod(0o700)
-            scratch_cleanup = _seal_owned_cleanup_root(
-                scratch, kind="scratch",
+            scratch, scratch_cleanup = _create_owned_cleanup_root(
+                kind="scratch",
             )
             capture_scratches.append(scratch_cleanup)
             try:
