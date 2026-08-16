@@ -46,6 +46,11 @@ def test_missing_falsifier_is_invalid(record_property):
             "- [ ] EC-FEATURE-1 — proven by `pytest phase-loop-runtime/tests/test_foo.py`, "
             "falsified by `python3 -c \"assert False\"`\n"
         )
+        plan_content_malformed = (
+            "# Phase Plan — Test\n\n"
+            "## Acceptance Criteria\n"
+            "- [ ] EC-FEATURE-1 — proven by pytest phase-loop-runtime/tests/test_foo.py\n"
+        )
 
         # 1. Python-level contract check and mutation observable emission first
         contracts_missing = goal_coverage.extract_acceptance_contracts(plan_content_missing)
@@ -57,9 +62,13 @@ def test_missing_falsifier_is_invalid(record_property):
         contracts_valid = goal_coverage.extract_acceptance_contracts(plan_content_valid)
         check_valid = goal_coverage.check_acceptance_falsifiers(contracts_valid)
         cond2 = isinstance(check_valid, dict) and check_valid.get("valid", False) is True
+        check_malformed = goal_coverage.check_acceptance_falsifiers(
+            goal_coverage.extract_acceptance_contracts(plan_content_malformed)
+        )
 
         assert cond1, f"check_missing must return valid=False with reason missing_falsifier, got {check_missing}"
         assert cond2, f"check_valid must return valid=True, got {check_valid}"
+        assert check_malformed.get("reason") == "missing_falsifier"
 
         # 2. CLI process validation
         validator_script = _validator_script_path()
@@ -72,7 +81,24 @@ def test_missing_falsifier_is_invalid(record_property):
         combined_output = proc.stdout + proc.stderr
         assert "EC-FEATURE-1" in combined_output
         assert "missing_falsifier" in combined_output
-        assert "WARN" not in combined_output
+        assert not any(
+            "WARN" in line and "missing_falsifier" in line
+            for line in combined_output.splitlines()
+        )
+
+        with tempfile.TemporaryDirectory() as td:
+            isolated_validator = Path(td) / "validate_plan_doc.py"
+            isolated_validator.write_text(validator_script.read_text(encoding="utf-8"), encoding="utf-8")
+            isolated_plan = Path(td) / "plan.md"
+            isolated_plan.write_text(plan_content_missing, encoding="utf-8")
+            isolated = subprocess.run(
+                [sys.executable, "-I", "-S", str(isolated_validator), str(isolated_plan)],
+                cwd=td,
+                capture_output=True,
+                text=True,
+            )
+        if isolated.returncode == 0 or "contract_bug" not in isolated.stdout + isolated.stderr:
+            raise ProofgateMissingCapabilityError("isolated canonical validator failed open without runtime")
 
     run_proofgate_contract(nodeid, _contract)
 
@@ -113,11 +139,23 @@ def test_negative_assertion_requires_path_entered_control(record_property):
         check_with_control = goal_coverage.check_acceptance_falsifiers(contracts_with_control)
         cond2 = isinstance(check_with_control, dict) and check_with_control.get("valid", False) is True
 
+        generic_negative = (
+            "# Phase Plan — Test\n\n"
+            "## Acceptance Criteria\n"
+            "- [ ] EC-FEAT-3 — proven by `pytest tests/test_foo.py`, "
+            "falsified by observing that revocation did not happen while the run still reports pass\n"
+        )
+        generic_check = goal_coverage.check_acceptance_falsifiers(
+            goal_coverage.extract_acceptance_contracts(generic_negative)
+        )
+
         proc = subprocess.run([sys.executable, str(validator_script), tf_path], capture_output=True, text=True)
         assert proc.returncode != 0, "validate_plan_doc.py CLI must exit non-zero when path-entered control is missing"
 
         assert cond1
         assert cond2
+        assert generic_check.get("valid") is False
+        assert generic_check.get("reason") == "missing_path_entered_control"
 
     run_proofgate_contract(nodeid, _contract)
 

@@ -172,8 +172,8 @@
         {
           "parameter_id": "ec-proofgate-6.missing-path-entered",
           "target_path": "phase-loop-runtime/src/phase_loop_runtime/goal_coverage.py",
-          "injection_anchor": "_CHECKBOX_PREFIX_RE = re.compile(r\"^- \\[[ xX]\\]\\s*\")",
-          "replacement_bytes": "_CHECKBOX_PREFIX_RE = re.compile(r\"^- \\[DISABLED_MUTATION\\]\\s*\")",
+          "injection_anchor": "        if c.get(\"is_negative\") and not c.get(\"has_path_entered_control\"):",
+          "replacement_bytes": "        if False and c.get(\"is_negative\") and not c.get(\"has_path_entered_control\"):",
           "proof_command": ["python3", "-m", "pytest", "phase-loop-runtime/tests/test_acceptance_falsifier_contract.py::test_negative_assertion_requires_path_entered_control", "-p", "proofgate_tdd_guard", "-o", "junit_family=legacy", "--junitxml=$PHASE_LOOP_RUN_DIR/proofgate_junit_ec-proofgate-6.missing-path-entered.xml", "-q"],
           "target_nodeid": "phase-loop-runtime/tests/test_acceptance_falsifier_contract.py::test_negative_assertion_requires_path_entered_control",
           "expected_failure_class": "missing_path_entered_control_rejection",
@@ -196,8 +196,8 @@
         {
           "parameter_id": "ec-proofgate-7.grandfathering",
           "target_path": "phase-loop-runtime/src/phase_loop_runtime/goal_coverage.py",
-          "injection_anchor": "    r\"^##\\s+Acceptance\\s+Criteria\\s*$\\n(?P<body>.*?)(?=^##\\s+\\S|\\Z)\",",
-          "replacement_bytes": "    r\"^##\\s+DISABLED_ACCEPTANCE_CRITERIA_FOR_MUTATION$\\n(?P<body>.*?)(?=^##\\s+\\S|\\Z)\",",
+          "injection_anchor": "            if all_gf:",
+          "replacement_bytes": "            if False and all_gf:",
           "proof_command": ["python3", "-m", "pytest", "phase-loop-runtime/tests/test_validate_plan_doc_proofgate.py::ProofgatePlanValidatorTest::test_grandfathering_uses_exact_cutoff_criterion_bytes_and_warns", "-p", "proofgate_tdd_guard", "-o", "junit_family=legacy", "--junitxml=$PHASE_LOOP_RUN_DIR/proofgate_junit_ec-proofgate-7.grandfathering.xml", "-q"],
           "target_nodeid": "phase-loop-runtime/tests/test_validate_plan_doc_proofgate.py::ProofgatePlanValidatorTest::test_grandfathering_uses_exact_cutoff_criterion_bytes_and_warns",
           "expected_failure_class": "grandfathering_rejection",
