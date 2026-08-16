@@ -408,6 +408,9 @@ _LEG_LIVENESS_CPU_SAMPLE_S = 5.0  # /proc CPU sampling cadence (secondary reset 
 # short idle grace instead of burning the full wall-clock backstop. Reset by any late
 # flush, so a still-streaming descendant is never truncated.
 _LEG_POST_EXIT_GRACE_S = 15.0
+_PROCESS_GROUP_TERM_GRACE_S = 5.0
+_PROCESS_GROUP_KILL_GRACE_S = 5.0
+_PROCESS_GROUP_POLL_S = 0.05
 _CLAUDE_CODE_MIN_VERSION = (2, 1, 197)
 _CLAUDE_CODE_MIN_VERSION_TEXT = "2.1.197"
 _CLAUDE_AGENT_NAME = "advisor-panel-claude"
@@ -1908,26 +1911,126 @@ def _terminate_process_group(
 ) -> None:
     """Terminate the leg's process group (pgid == proc.pid, launched start_new_session).
 
-    Default: no-op once the leader is reaped — the group is presumed empty and its pgid
-    could be reused, so we must NOT ``killpg`` a possibly-recycled group id.
+    POSIX callers preserve the launch-time PGID anchor even if SIGTERM makes the
+    leader exit first.  The whole group receives a grace period, then SIGKILL when
+    still present; the function returns only after the group is proven absent.
+    ``force_group`` remains a compatibility signal from the inherited-pipe path.
 
-    ``force_group=True``: the CALLER has just proven a descendant OUTLIVES the reaped
-    leader (an inherited stdout/stderr pipe is still open), so the group is provably
-    alive — reap it directly. Without this, a leader that exits while a child holds the
-    pipe would never be killed and the leg would burn the full wall-clock backstop.
+    Windows retains the historical leader terminate/wait/kill behavior because it
+    has no POSIX process-group primitive here.
     """
+    if os.name == "nt":
+        _terminate_process_group_windows(proc, force_group=force_group)
+        return
+
+    anchored_pgid = getattr(proc, "_phase_loop_pgid", proc.pid)
+    if (not isinstance(anchored_pgid, int) or anchored_pgid <= 0 or
+            anchored_pgid != proc.pid):
+        raise AgyCanaryEvidenceError(
+            "provider process group anchor is invalid"
+        )
+    pgid = anchored_pgid
     leader_running = proc.poll() is None
-    if not leader_running and not force_group:
+    if leader_running:
+        try:
+            observed_pgid = os.getpgid(proc.pid)
+        except ProcessLookupError:
+            proc.poll()
+        else:
+            if observed_pgid != pgid:
+                raise AgyCanaryEvidenceError(
+                    "provider process group anchor is invalid"
+                )
+    if not _process_group_exists(pgid):
+        proc.poll()
         return
     try:
-        os.killpg(proc.pid, signal.SIGTERM)
+        os.killpg(pgid, signal.SIGTERM)
     except ProcessLookupError:
-        return  # group already gone
-    except Exception:
+        proc.poll()
+        return
+    except Exception as exc:
         try:
             proc.terminate()
         except Exception:
             pass
+        if not _process_group_exists(pgid):
+            proc.poll()
+            return
+        raise AgyCanaryEvidenceError(
+            "provider process group SIGTERM failed"
+        ) from exc
+    if _wait_for_process_group_exit(
+        proc, pgid=pgid, timeout=_PROCESS_GROUP_TERM_GRACE_S,
+    ):
+        return
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        proc.poll()
+        return
+    except Exception as exc:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        if not _process_group_exists(pgid):
+            proc.poll()
+            return
+        raise AgyCanaryEvidenceError(
+            "provider process group SIGKILL failed"
+        ) from exc
+    if not _wait_for_process_group_exit(
+        proc, pgid=pgid, timeout=_PROCESS_GROUP_KILL_GRACE_S,
+    ):
+        raise AgyCanaryEvidenceError(
+            "provider process group did not terminate"
+        )
+
+
+def _process_group_exists(pgid: int) -> bool:
+    """Return whether the preserved POSIX process group is still present."""
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _anchor_process_group(proc: subprocess.Popen[bytes]) -> None:
+    """Retain the PGID guaranteed by this call site's start_new_session=True."""
+    if os.name != "nt":
+        setattr(proc, "_phase_loop_pgid", proc.pid)
+
+
+def _wait_for_process_group_exit(
+    proc: subprocess.Popen[bytes], *, pgid: int, timeout: float,
+) -> bool:
+    """Reap the direct leader while waiting for the entire group to disappear."""
+    deadline = time.monotonic() + timeout
+    while True:
+        proc.poll()
+        if not _process_group_exists(pgid):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(_PROCESS_GROUP_POLL_S, remaining))
+
+
+def _terminate_process_group_windows(
+    proc: subprocess.Popen[bytes], *, force_group: bool,
+) -> None:
+    """Preserve the historical Windows leader-only termination behavior."""
+    leader_running = proc.poll() is None
+    if not leader_running and not force_group:
+        return
+    try:
+        proc.terminate()
+    except Exception:
+        pass
     if leader_running:
         try:
             proc.wait(timeout=5)
@@ -1935,14 +2038,11 @@ def _terminate_process_group(
         except subprocess.TimeoutExpired:
             pass
     else:
-        time.sleep(0.2)  # brief grace for the outliving descendant to handle SIGTERM
+        time.sleep(0.2)
     try:
-        os.killpg(proc.pid, signal.SIGKILL)
+        proc.kill()
     except Exception:
-        try:
-            proc.kill()
-        except Exception:
-            pass
+        pass
 
 
 @dataclass
@@ -1990,6 +2090,7 @@ def _run_leg_with_liveness(
         stderr=subprocess.PIPE,
         start_new_session=True,  # pgid == proc.pid: group CPU sampling + group kill
     )
+    _anchor_process_group(proc)
     if input_text is not None and proc.stdin is not None:
 
         def _feed() -> None:
@@ -2084,13 +2185,15 @@ def _run_leg_with_liveness(
                 marker = f"\n[leg-liveness] stalled: no output/CPU for {int(stall_threshold_s)}s"
                 return _LegRun(proc.returncode or 1, out_s, err_s + marker)
     finally:
-        _terminate_process_group(proc)
-        for pipe in (proc.stdout, proc.stderr):
-            try:
-                if pipe is not None:
-                    pipe.close()
-            except OSError:
-                pass
+        try:
+            _terminate_process_group(proc)
+        finally:
+            for pipe in (proc.stdout, proc.stderr):
+                try:
+                    if pipe is not None:
+                        pipe.close()
+                except OSError:
+                    pass
 
 
 # #188 — de-animation of the Claude TUI's cosmetic status line. While the model
@@ -2356,6 +2459,7 @@ def _run_claude_tui_session(
                 close_fds=True,
                 start_new_session=True,
             )
+            _anchor_process_group(proc)
         finally:
             os.close(slave_fd)
     except FileNotFoundError:
@@ -2587,13 +2691,15 @@ def _run_claude_tui_session(
             124, review_text or transcript_text, f"timeout after {backstop_s}s"
         )
     finally:
-        if proc is not None:
-            _terminate_process_group(proc)
-        if master_fd is not None:
-            try:
-                os.close(master_fd)
-            except OSError:
-                pass
+        try:
+            if proc is not None:
+                _terminate_process_group(proc)
+        finally:
+            if master_fd is not None:
+                try:
+                    os.close(master_fd)
+                except OSError:
+                    pass
 
 
 def _stop_claude_agent(
