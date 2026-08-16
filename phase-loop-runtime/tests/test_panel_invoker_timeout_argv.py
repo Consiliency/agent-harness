@@ -753,10 +753,13 @@ def test_capture_materializes_all_provider_authorities_from_one_bound_stage(monk
         assert capture is expected_capture
         assert len(providers) == 1
         provider = providers[0]
-        output = tmp_path / f"provider-output-{provider}"
-        output.mkdir()
+        output = Path(tempfile.mkdtemp(prefix=f"provider-output-{provider}-"))
+        output.chmod(0o700)
         authority = SimpleNamespace(
-            namespace=SimpleNamespace(provider_output=output),
+            namespace=SimpleNamespace(
+                provider_output=output,
+                provider_output_cleanup=evidence._seal_owned_cleanup_root(output),
+            ),
         )
         prepared[provider] = (
             authority,
@@ -826,7 +829,10 @@ def test_capture_result_seals_before_coordinator_reclaims_scratch(monkeypatch, t
     class Authority:
         def __init__(self, provider, output, runtime, placeholders, projection):
             self.provider = provider
-            self.namespace = SimpleNamespace(provider_output=output)
+            self.namespace = SimpleNamespace(
+                provider_output=output,
+                provider_output_cleanup=evidence._seal_owned_cleanup_root(output),
+            )
             self._runtime = runtime
             self._placeholders = placeholders
             self._projection = projection
@@ -861,7 +867,10 @@ def test_capture_result_seals_before_coordinator_reclaims_scratch(monkeypatch, t
             authority = Authority(
                 provider, output, runtime, placeholders, projection,
             )
-            launches[seat_key] = (authority, stage, scratch)
+            launches[seat_key] = (
+                authority, stage, scratch,
+                evidence._seal_owned_cleanup_root(scratch),
+            )
             names = evidence._provider_names(provider, seat_key)
             launch = {
                 "schema": "agy_provider_launch.v1",
@@ -896,7 +905,7 @@ def test_capture_result_seals_before_coordinator_reclaims_scratch(monkeypatch, t
             evidence._canonical_json(registry), 0o600,
         )
         seat_key = "codex-seat"
-        authority, stage, scratch = launches[seat_key]
+        authority, stage, scratch, _scratch_cleanup = launches[seat_key]
         monkeypatch.setattr(pi, "_exec_leg", lambda *_args, **_kwargs: (0, "", ""))
         assert pi._default_spawn(
             "codex", "review", agy_capture=capture, seat_key=seat_key,
@@ -915,12 +924,74 @@ def test_capture_result_seals_before_coordinator_reclaims_scratch(monkeypatch, t
         assert all(
             not scratch_path.exists() and
             not launch_authority.namespace.provider_output.exists()
-            for launch_authority, _stage, scratch_path in launches.values()
+            for launch_authority, _stage, scratch_path, _cleanup in launches.values()
         )
     finally:
         capture.close()
         pi._cleanup_capture_launches(launches)
         shutil.rmtree(root)
+
+
+def test_capture_cleanup_repairs_owned_mode_zero_tree():
+    root = Path(tempfile.mkdtemp(prefix="phase-loop-cleanup-mode-", dir="/tmp"))
+    root.chmod(0o700)
+    authority = evidence._seal_owned_cleanup_root(root)
+    nested = root / "nested"
+    nested.mkdir(mode=0o700)
+    (nested / "result.json").write_text("{}\n")
+    nested.chmod(0o000)
+    evidence._cleanup_owned_roots([authority])
+    assert not root.exists()
+
+
+def test_capture_cleanup_attempts_all_roots_and_reports_incomplete(monkeypatch):
+    first = Path(tempfile.mkdtemp(prefix="phase-loop-cleanup-fail-", dir="/tmp"))
+    second = Path(tempfile.mkdtemp(prefix="phase-loop-cleanup-next-", dir="/tmp"))
+    first.chmod(0o700)
+    second.chmod(0o700)
+    authorities = [
+        evidence._seal_owned_cleanup_root(first),
+        evidence._seal_owned_cleanup_root(second),
+    ]
+    real_rmtree = evidence.shutil.rmtree
+
+    def injected_failure(path, *args, **kwargs):
+        if Path(path) == first:
+            raise PermissionError("injected undeletable root")
+        return real_rmtree(path, *args, **kwargs)
+
+    injected_failure.avoids_symlink_attacks = real_rmtree.avoids_symlink_attacks
+    monkeypatch.setattr(evidence.shutil, "rmtree", injected_failure)
+    try:
+        with pytest.raises(
+            evidence.AgyCanaryEvidenceError, match="cleanup was incomplete",
+        ):
+            evidence._cleanup_owned_roots(authorities)
+        assert first.is_dir()
+        assert not second.exists()
+    finally:
+        real_rmtree(first, ignore_errors=True)
+
+
+def test_capture_cleanup_refuses_substituted_root_and_unrelated_deletion():
+    root = Path(tempfile.mkdtemp(prefix="phase-loop-cleanup-swap-", dir="/tmp"))
+    root.chmod(0o700)
+    authority = evidence._seal_owned_cleanup_root(root)
+    original = root.with_name(root.name + "-original")
+    root.rename(original)
+    root.mkdir(mode=0o700)
+    marker = root / "unrelated"
+    marker.write_text("retain\n")
+    try:
+        with pytest.raises(
+            evidence.AgyCanaryEvidenceError, match="cleanup was incomplete",
+        ):
+            evidence._cleanup_owned_roots([authority])
+        assert marker.read_text() == "retain\n"
+        assert original.is_dir()
+    finally:
+        shutil.rmtree(root)
+        shutil.rmtree(original)
 
 
 @pytest.mark.parametrize(
@@ -934,10 +1005,11 @@ def test_capture_setup_always_reclaims_scratch_and_provider_outputs(monkeypatch,
     calls = 0
 
     real_write_bytes = Path.write_bytes
+    real_mkdtemp = tempfile.mkdtemp
 
     def capture_mkdtemp(*, prefix):
-        scratch = tmp_path / f"{prefix}{len(scratches)}"
-        scratch.mkdir()
+        scratch = Path(real_mkdtemp(prefix=prefix, dir="/tmp"))
+        scratch.chmod(0o700)
         scratches.append(scratch)
         return str(scratch)
 
@@ -955,10 +1027,15 @@ def test_capture_setup_always_reclaims_scratch_and_provider_outputs(monkeypatch,
         calls += 1
         if failure == "prepare" and calls == 2:
             raise evidence.AgyCanaryEvidenceError("second authority failed")
-        output = tmp_path / f"output-{providers[0]}"
-        output.mkdir()
+        output = Path(real_mkdtemp(
+            prefix=f"phase-loop-provider-output-{providers[0]}-", dir="/tmp",
+        ))
+        output.chmod(0o700)
         outputs.append(output)
-        return {providers[0]: SimpleNamespace(namespace=SimpleNamespace(provider_output=output))}
+        return {providers[0]: SimpleNamespace(namespace=SimpleNamespace(
+            provider_output=output,
+            provider_output_cleanup=evidence._seal_owned_cleanup_root(output),
+        ))}
 
     monkeypatch.setattr(pi.tempfile, "mkdtemp", capture_mkdtemp)
     monkeypatch.setattr(Path, "write_bytes", write_bytes)

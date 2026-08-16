@@ -49,6 +49,9 @@ from .agent_runtime_provider import (
     SendTurnRequest,
 )
 from .agy_canary_evidence import (
+    _OwnedCleanupRoot,
+    _cleanup_owned_roots,
+    _seal_owned_cleanup_root,
     AgyCanaryCapture,
     AgyCanaryEvidenceError,
     bind_staged_review_inputs,
@@ -2895,14 +2898,26 @@ def _record_capture_review_attempt(
 
 
 def _cleanup_capture_launches(
-    launches: Mapping[str, tuple[ProviderLaunchAuthority, Path, Path]]
+    launches: Mapping[
+        str, tuple[ProviderLaunchAuthority, Path, Path, _OwnedCleanupRoot]
+    ],
+    scratch_roots: Sequence[_OwnedCleanupRoot] = (),
 ) -> None:
     """Reclaim pre-thread capture resources after every preparation outcome."""
-    for authority, _stage, scratch in launches.values():
+    roots = list(scratch_roots)
+    for authority, _stage, scratch, scratch_root in launches.values():
+        if scratch != scratch_root.path:
+            raise AgyCanaryEvidenceError("capture scratch cleanup authority drifted")
         output = getattr(getattr(authority, "namespace", None), "provider_output", None)
-        if isinstance(output, Path):
-            shutil.rmtree(output, ignore_errors=True)
-        shutil.rmtree(scratch, ignore_errors=True)
+        output_root = getattr(
+            getattr(authority, "namespace", None), "provider_output_cleanup", None,
+        )
+        if (not isinstance(output, Path) or
+                not isinstance(output_root, _OwnedCleanupRoot) or
+                output != output_root.path):
+            raise AgyCanaryEvidenceError("capture output cleanup authority is missing")
+        roots.extend((output_root, scratch_root))
+    _cleanup_owned_roots(roots)
 
 
 def _exec_claude_tui_leg(
@@ -4617,14 +4632,14 @@ def invoke_board(
     # Capture launches are fully materialized before the thread pool starts.  A
     # Gemini-ledger mutation therefore cannot invalidate a later Codex/Claude/Grok
     # sibling after an earlier thread has begun execution.
-    capture_launches: dict[str, tuple[ProviderLaunchAuthority, Path, Path]] = {}
-    capture_scratches: list[Path] = []
+    capture_launches: dict[
+        str, tuple[ProviderLaunchAuthority, Path, Path, _OwnedCleanupRoot]
+    ] = {}
+    capture_scratches: list[_OwnedCleanupRoot] = []
     capture_seats: list[Seat] = []
 
     def _cleanup_capture_resources() -> None:
-        _cleanup_capture_launches(capture_launches)
-        for scratch in capture_scratches:
-            shutil.rmtree(scratch, ignore_errors=True)
+        _cleanup_capture_launches(capture_launches, capture_scratches)
 
     if agy_canary_capture is not None:
         if effective_research.enabled:
@@ -4643,7 +4658,9 @@ def invoke_board(
         instruction_bytes = _resolve_brief(mode, brief_ref).encode("utf-8")
         for index, (seat, provider) in enumerate(zip(capture_seats, providers)):
             scratch = Path(tempfile.mkdtemp(prefix="pl-panel-capture-"))
-            capture_scratches.append(scratch)
+            scratch.chmod(0o700)
+            scratch_cleanup = _seal_owned_cleanup_root(scratch)
+            capture_scratches.append(scratch_cleanup)
             try:
                 stage = scratch / "review"
                 stage.mkdir(mode=0o700)
@@ -4665,7 +4682,9 @@ def invoke_board(
             except Exception:
                 _cleanup_capture_resources()
                 raise
-            capture_launches[str(seat.seat_key)] = (authority, stage, scratch)
+            capture_launches[str(seat.seat_key)] = (
+                authority, stage, scratch, scratch_cleanup,
+            )
         try:
             seal_provider_launches(
                 capture=agy_canary_capture,
@@ -4814,7 +4833,9 @@ def invoke_board(
                     research_extra["agy_capture"] = agy_canary_capture
                     research_extra["seat_key"] = seat.seat_key
                     try:
-                        authority, stage, scratch = capture_launches[str(seat.seat_key)]
+                        authority, stage, scratch, _scratch_cleanup = capture_launches[
+                            str(seat.seat_key)
+                        ]
                     except KeyError as exc:
                         raise AgyCanaryEvidenceError("capture seat has no frozen authority") from exc
                     research_extra["provider_authority"] = authority
@@ -4950,7 +4971,9 @@ def invoke_board(
                 provider = (seat.harness or "").lower()
                 if (result.leg != provider or str(result.seat_key) != str(seat.seat_key)):
                     raise AgyCanaryEvidenceError("capture provider result identity drifted")
-                authority, _stage, _scratch = capture_launches[str(seat.seat_key)]
+                authority, _stage, _scratch, _scratch_cleanup = capture_launches[
+                    str(seat.seat_key)
+                ]
                 record_provider_result(
                     capture=agy_canary_capture,
                     provider=provider,

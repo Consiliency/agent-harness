@@ -29,7 +29,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from datetime import datetime, timezone
 from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Sequence
 
 try:  # Windows imports this module but does not support POSIX account lookups.
     import pwd
@@ -268,6 +268,187 @@ def _stable_file_identity(info: os.stat_result) -> tuple[int, ...]:
         info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
         info.st_uid, info.st_gid, info.st_size, info.st_mtime_ns, info.st_ctime_ns,
     )
+
+
+def _reopen_bounded_at(
+    directory_fd: int, name: str, *, limit: int,
+) -> tuple[bytes, os.stat_result]:
+    fd = os.open(
+        name, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        dir_fd=directory_fd,
+    )
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_size > limit:
+            raise AgyCanaryEvidenceError(
+                "provider launch file exceeds the full-read limit"
+            )
+        chunks: list[bytes] = []
+        total = 0
+        while total <= limit:
+            chunk = os.read(fd, min(64 * 1024, limit + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+        after = os.fstat(fd)
+        if (total > limit or
+                _stable_file_identity(after) != _stable_file_identity(before)):
+            raise AgyCanaryEvidenceError(
+                "provider launch file changed or exceeded the full-read limit"
+            )
+        return b"".join(chunks), after
+    finally:
+        os.close(fd)
+
+
+def _tree_entry_identity(info: os.stat_result, *, kind: str) -> dict[str, Any]:
+    return {
+        "kind": kind,
+        "dev": info.st_dev,
+        "inode": info.st_ino,
+        "mode": stat.S_IMODE(info.st_mode),
+        "nlink": info.st_nlink,
+        "uid": info.st_uid,
+        "gid": info.st_gid,
+        "size": info.st_size,
+        "mtime_ns": info.st_mtime_ns,
+        "ctime_ns": info.st_ctime_ns,
+    }
+
+
+def _descriptor_tree_inventory(
+    root: Path, *, content: bool = True,
+) -> dict[str, Any]:
+    """Inventory one exact nofollow tree through held directory descriptors."""
+    if not root.is_absolute() or root.is_symlink():
+        raise AgyCanaryEvidenceError("provider launch tree root is unsafe")
+    try:
+        root_before = root.lstat()
+        root_fd = os.open(
+            root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+    except OSError as exc:
+        raise AgyCanaryEvidenceError("provider launch tree is unavailable") from exc
+    entries: list[dict[str, Any]] = []
+
+    def walk(directory_fd: int, relative_parent: Path) -> None:
+        try:
+            names = sorted(os.listdir(directory_fd))
+        except OSError as exc:
+            raise AgyCanaryEvidenceError(
+                "provider launch tree membership is unreadable"
+            ) from exc
+        for name in names:
+            if not name or Path(name).name != name or name in {".", ".."}:
+                raise AgyCanaryEvidenceError("provider launch tree entry is malformed")
+            relative = (relative_parent / name).as_posix()
+            try:
+                before = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            except OSError as exc:
+                raise AgyCanaryEvidenceError(
+                    "provider launch tree entry is unavailable"
+                ) from exc
+            if stat.S_ISLNK(before.st_mode):
+                raise AgyCanaryEvidenceError("provider launch tree contains a symlink")
+            if stat.S_ISDIR(before.st_mode):
+                try:
+                    child_fd = os.open(
+                        name,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                        dir_fd=directory_fd,
+                    )
+                except OSError as exc:
+                    raise AgyCanaryEvidenceError(
+                        "provider launch tree directory is unavailable"
+                    ) from exc
+                try:
+                    opened = os.fstat(child_fd)
+                    if _stable_file_identity(opened) != _stable_file_identity(before):
+                        raise AgyCanaryEvidenceError(
+                            "provider launch tree changed while inventorying"
+                        )
+                    entries.append({
+                        "path": relative,
+                        **_tree_entry_identity(opened, kind="directory"),
+                    })
+                    walk(child_fd, Path(relative))
+                finally:
+                    os.close(child_fd)
+            elif stat.S_ISREG(before.st_mode):
+                if content:
+                    data, opened = _reopen_bounded_at(
+                        directory_fd, name, limit=_MAX_FULL_STAGED_READ_BYTES,
+                    )
+                    if _stable_file_identity(opened) != _stable_file_identity(before):
+                        raise AgyCanaryEvidenceError(
+                            "provider launch tree changed while inventorying"
+                        )
+                    record = {
+                        "path": relative,
+                        **_tree_entry_identity(opened, kind="file"),
+                        "bytes": len(data),
+                        "sha256": _sha256(data),
+                    }
+                else:
+                    record = {
+                        "path": relative,
+                        **_tree_entry_identity(before, kind="file"),
+                    }
+                entries.append(record)
+            else:
+                raise AgyCanaryEvidenceError(
+                    "provider launch tree contains a special file"
+                )
+            try:
+                after = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            except OSError as exc:
+                raise AgyCanaryEvidenceError(
+                    "provider launch tree changed while inventorying"
+                ) from exc
+            if _stable_file_identity(after) != _stable_file_identity(before):
+                raise AgyCanaryEvidenceError(
+                    "provider launch tree changed while inventorying"
+                )
+
+    try:
+        root_opened = os.fstat(root_fd)
+        if (not stat.S_ISDIR(root_opened.st_mode) or
+                _stable_file_identity(root_opened) !=
+                _stable_file_identity(root_before)):
+            raise AgyCanaryEvidenceError("provider launch tree root changed")
+        walk(root_fd, Path())
+        root_after = root.lstat()
+        if (_stable_file_identity(root_after) !=
+                _stable_file_identity(root_opened)):
+            raise AgyCanaryEvidenceError("provider launch tree root changed")
+    finally:
+        os.close(root_fd)
+    return {
+        "schema": "agy_provider_launch_tree.v1",
+        "root": str(root),
+        "root_identity": _tree_entry_identity(root_opened, kind="directory"),
+        "entries": entries,
+    }
+
+
+def _tree_inventory_metadata(value: dict[str, Any]) -> dict[str, Any]:
+    projected = json.loads(json.dumps(value))
+    for entry in projected["entries"]:
+        entry.pop("bytes", None)
+        entry.pop("sha256", None)
+    return projected
+
+
+def _exact_launch_tree_inventory(root: Path) -> dict[str, Any]:
+    inventory = _descriptor_tree_inventory(root)
+    if _tree_inventory_metadata(inventory) != _descriptor_tree_inventory(
+        root, content=False,
+    ):
+        raise AgyCanaryEvidenceError(
+            "provider launch tree changed during metadata revalidation"
+        )
+    return inventory
 
 
 def _read_bounded_regular_path(
@@ -701,6 +882,145 @@ class AgyCanaryCapture:
 
 
 @dataclass(frozen=True)
+class _OwnedCleanupRoot:
+    path: Path
+    device: int
+    inode: int
+    uid: int
+    gid: int
+
+
+def _seal_owned_cleanup_root(path: Path) -> _OwnedCleanupRoot:
+    """Seal one internally created private /tmp root before it is populated."""
+    if not path.is_absolute() or path.parent != Path("/tmp"):
+        raise AgyCanaryEvidenceError("cleanup root must be a direct child of /tmp")
+    try:
+        info = path.lstat()
+    except OSError as exc:
+        raise AgyCanaryEvidenceError("cleanup root is unavailable") from exc
+    if (stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode) or
+            info.st_uid != os.getuid() or info.st_gid != os.getgid() or
+            stat.S_IMODE(info.st_mode) != 0o700):
+        raise AgyCanaryEvidenceError("cleanup root is not one private owned directory")
+    return _OwnedCleanupRoot(
+        path=path, device=info.st_dev, inode=info.st_ino,
+        uid=info.st_uid, gid=info.st_gid,
+    )
+
+
+def _cleanup_owned_roots(roots: Sequence[_OwnedCleanupRoot]) -> None:
+    """Attempt every exact-owned cleanup and fail if any root remains."""
+    errors: list[str] = []
+    seen: set[tuple[str, int, int]] = set()
+    for authority in roots:
+        key = (str(authority.path), authority.device, authority.inode)
+        if key in seen:
+            continue
+        seen.add(key)
+        path = authority.path
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            errors.append(f"{path.name}:lstat:{type(exc).__name__}")
+            continue
+        if (stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode) or
+                (info.st_dev, info.st_ino, info.st_uid, info.st_gid) != (
+                    authority.device, authority.inode, authority.uid, authority.gid
+                )):
+            errors.append(f"{path.name}:identity")
+            continue
+
+        def make_removable(directory_fd: int) -> None:
+            for name in sorted(os.listdir(directory_fd)):
+                before = os.stat(
+                    name, dir_fd=directory_fd, follow_symlinks=False,
+                )
+                if before.st_uid != authority.uid:
+                    raise AgyCanaryEvidenceError(
+                        "cleanup entry ownership drifted"
+                    )
+                if stat.S_ISLNK(before.st_mode):
+                    continue
+                if stat.S_ISDIR(before.st_mode):
+                    os.chmod(
+                        name, 0o700, dir_fd=directory_fd,
+                        follow_symlinks=False,
+                    )
+                    child_fd = os.open(
+                        name,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW |
+                        os.O_CLOEXEC,
+                        dir_fd=directory_fd,
+                    )
+                    try:
+                        opened = os.fstat(child_fd)
+                        if ((opened.st_dev, opened.st_ino, opened.st_uid,
+                             opened.st_gid) !=
+                                (before.st_dev, before.st_ino, before.st_uid,
+                                 before.st_gid)):
+                            raise AgyCanaryEvidenceError(
+                                "cleanup directory identity drifted"
+                            )
+                        make_removable(child_fd)
+                    finally:
+                        os.close(child_fd)
+                elif stat.S_ISREG(before.st_mode):
+                    os.chmod(
+                        name, 0o600, dir_fd=directory_fd,
+                        follow_symlinks=False,
+                    )
+                else:
+                    raise AgyCanaryEvidenceError(
+                        "cleanup root contains a special file"
+                    )
+                after = os.stat(
+                    name, dir_fd=directory_fd, follow_symlinks=False,
+                )
+                if ((after.st_dev, after.st_ino, after.st_uid, after.st_gid,
+                     stat.S_IFMT(after.st_mode)) !=
+                        (before.st_dev, before.st_ino, before.st_uid,
+                         before.st_gid, stat.S_IFMT(before.st_mode))):
+                    raise AgyCanaryEvidenceError(
+                        "cleanup entry identity drifted"
+                    )
+
+        try:
+            if not shutil.rmtree.avoids_symlink_attacks:
+                raise AgyCanaryEvidenceError("descriptor-safe cleanup is unavailable")
+            os.chmod(path, 0o700, follow_symlinks=False)
+            root_fd = os.open(
+                path,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            )
+            try:
+                opened = os.fstat(root_fd)
+                if ((opened.st_dev, opened.st_ino, opened.st_uid, opened.st_gid) !=
+                        (authority.device, authority.inode,
+                         authority.uid, authority.gid)):
+                    raise AgyCanaryEvidenceError(
+                        "cleanup root identity drifted"
+                    )
+                make_removable(root_fd)
+            finally:
+                os.close(root_fd)
+            shutil.rmtree(path)
+            try:
+                remaining = path.lstat()
+            except FileNotFoundError:
+                remaining = None
+            if remaining is not None:
+                raise AgyCanaryEvidenceError("cleanup root still exists")
+        except Exception as exc:
+            errors.append(f"{path.name}:{type(exc).__name__}")
+    if errors:
+        raise AgyCanaryEvidenceError(
+            "capture resource cleanup was incomplete: " + ",".join(errors)
+        )
+
+
+@dataclass(frozen=True)
 class AgyCanaryNamespace:
     """The production-equivalent child boundary for a capture-enabled seat."""
 
@@ -712,6 +1032,7 @@ class AgyCanaryNamespace:
     resolver_source: Path | None = None
     resolver_sha256: str | None = None
     provider_output: Path | None = None
+    provider_output_cleanup: _OwnedCleanupRoot | None = None
     writable_stage: bool = False
     fixture_binds: tuple[tuple[Path, str], ...] = ()
     provider_env: tuple[tuple[str, str], ...] = ()
@@ -953,15 +1274,59 @@ class ProviderLaunchAuthority:
     auth_placeholders: tuple[dict[str, Any], ...]
     auth_placeholders_sha256: str
     projected_auth: dict[str, Any] | None = None
+    stage_inventory: dict[str, Any] | None = None
+    minimal_home_inventory: dict[str, Any] | None = None
     review_launch: dict[str, Any] | None = dataclass_field(default=None, compare=False)
     review_attempts: list[dict[str, Any]] = dataclass_field(default_factory=list, compare=False)
     _runtime_record_bytes: bytes = dataclass_field(init=False, repr=False, compare=False)
+    _stage_inventory_bytes: bytes = dataclass_field(init=False, repr=False, compare=False)
+    _minimal_home_inventory_bytes: bytes = dataclass_field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         record = _validate_provider_runtime_record(
             _provider_runtime_record(self.runtime), provider=self.provider,
         )
         object.__setattr__(self, "_runtime_record_bytes", _canonical_json(record))
+        stage_inventory = self.stage_inventory or _exact_launch_tree_inventory(
+            self.namespace.stage
+        )
+        minimal_home_inventory = (
+            self.minimal_home_inventory or
+            _exact_launch_tree_inventory(self.namespace.minimal_home)
+        )
+        if (stage_inventory.get("root") != str(self.namespace.stage) or
+                minimal_home_inventory.get("root") !=
+                str(self.namespace.minimal_home)):
+            raise AgyCanaryEvidenceError(
+                f"{self.provider} provider filesystem authority is malformed"
+            )
+        object.__setattr__(self, "stage_inventory", stage_inventory)
+        object.__setattr__(self, "minimal_home_inventory", minimal_home_inventory)
+        object.__setattr__(
+            self, "_stage_inventory_bytes", _canonical_json(stage_inventory),
+        )
+        object.__setattr__(
+            self, "_minimal_home_inventory_bytes",
+            _canonical_json(minimal_home_inventory),
+        )
+
+    def _revalidate_filesystems(self) -> None:
+        if (self.stage_inventory is None or self.minimal_home_inventory is None or
+                _canonical_json(self.stage_inventory) !=
+                self._stage_inventory_bytes or
+                _canonical_json(self.minimal_home_inventory) !=
+                self._minimal_home_inventory_bytes):
+            raise AgyCanaryEvidenceError(
+                f"{self.provider} in-memory launch authority drifted"
+            )
+        if (_canonical_json(_exact_launch_tree_inventory(self.namespace.stage)) !=
+                self._stage_inventory_bytes or
+                _canonical_json(_exact_launch_tree_inventory(
+                    self.namespace.minimal_home
+                )) != self._minimal_home_inventory_bytes):
+            raise AgyCanaryEvidenceError(
+                f"{self.provider} provider filesystem authority drifted"
+            )
 
     def _revalidate(self, *, full_assets: bool = False) -> None:
         sealed_values = (
@@ -984,6 +1349,7 @@ class ProviderLaunchAuthority:
             raise AgyCanaryEvidenceError(
                 f"{self.provider} in-memory launch authority drifted"
             )
+        self._revalidate_filesystems()
         self.runtime.revalidate(full_assets=full_assets)
         _revalidate_customization_source_authority(self.customization_sources)
         revalidate_customization_inventory(
@@ -1221,11 +1587,18 @@ def _provider_auth_records(provider: str, minimal_home: Path) -> tuple[dict[str,
         raise AgyCanaryEvidenceError(f"{provider} authentication source is unsafe")
     child_relative = Path(destination).relative_to("/home/phase-loop")
     target = minimal_home / child_relative
-    if target.exists() or target.is_symlink():
-        raise AgyCanaryEvidenceError(f"{provider} authentication bind target already exists")
-    target.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-    target.write_bytes(b"")  # Required bwrap target; credentials are never copied.
-    target.chmod(0o600)
+    try:
+        target_data, target_info = _read_regular_path(target)
+    except (FileNotFoundError, OSError) as exc:
+        raise AgyCanaryEvidenceError(
+            f"{provider} authentication bind target is unavailable"
+        ) from exc
+    if (target_data or target_info.st_nlink != 1 or
+            stat.S_IMODE(target_info.st_mode) != 0o600 or
+            target_info.st_uid != os.getuid()):
+        raise AgyCanaryEvidenceError(
+            f"{provider} authentication bind target is unsafe"
+        )
     return ({
         "source": str(source), "destination": destination, "source_sha256": _sha256(data),
         "uid": str(info.st_uid), "mode": format(stat.S_IMODE(info.st_mode), "04o"),
@@ -1293,10 +1666,16 @@ def prepare_provider_launch_authorities(
     if not providers or len(set(providers)) != len(providers):
         raise AgyCanaryEvidenceError("provider authority set is missing or duplicated")
     _ledger, _prepare, authority = _require_prepare_authority(capture=capture)
-    _validate_stage_binding(capture=capture, review_dir=stage, authority=authority)
+    stage_binding = _validate_stage_binding(
+        capture=capture, review_dir=stage, authority=authority,
+    )
+    stage_inventory = _exact_launch_tree_inventory(stage)
+    _validate_provider_stage_inventory(stage_inventory, binding=stage_binding)
     minimal_home = Path(str(authority["minimal_home"]["path"]))
-    if _minimal_home_identity(minimal_home) != authority["minimal_home"]["identity"]:
+    minimal_home_identity = _minimal_home_identity(minimal_home)
+    if minimal_home_identity != authority["minimal_home"]["identity"]:
         raise AgyCanaryEvidenceError("prepared minimal HOME settings drifted")
+    minimal_home_inventory = minimal_home_identity["tree"]
     customization_sources = authority["customization_sources"]
     _revalidate_customization_source_authority(customization_sources)
     minimal_customizations = freeze_customization_inventory(
@@ -1306,7 +1685,7 @@ def prepare_provider_launch_authorities(
     resolver, resolver_sha256 = _resolver_snapshot()
     agy_runtime = _sealed_agy_runtime(authority["agy_runtime"])
     result: dict[str, ProviderLaunchAuthority] = {}
-    provider_outputs: list[Path] = []
+    provider_outputs: list[_OwnedCleanupRoot] = []
     for provider in providers:
         try:
             runtime = (_TrustedProviderRuntime(
@@ -1315,14 +1694,16 @@ def prepare_provider_launch_authorities(
             ) if provider == "gemini" else _trusted_provider_runtime(provider))
             auth_records = gemini_auth_records if provider == "gemini" else _provider_auth_records(provider, minimal_home)
             provider_output = Path(tempfile.mkdtemp(prefix=f"phase-loop-provider-output-{provider}-", dir="/tmp"))
-            provider_outputs.append(provider_output)
             provider_output.chmod(0o700)
+            provider_output_cleanup = _seal_owned_cleanup_root(provider_output)
+            provider_outputs.append(provider_output_cleanup)
             namespace = AgyCanaryNamespace(
                 stage=stage, minimal_home=minimal_home, evidence_root=capture.root,
                 provider_hostname=_PROVIDER_TLS_HOSTS[provider], auth_binds=tuple(
                     (Path(item["source"]), item["destination"]) for item in auth_records
                 ), resolver_source=resolver, resolver_sha256=resolver_sha256,
                 provider_output=provider_output,
+                provider_output_cleanup=provider_output_cleanup,
                 provider_env=(("CODEX_HOME", "/home/phase-loop/.codex"),) if provider == "codex" else (("GROK_HOME", "/home/phase-loop/.grok"),) if provider == "grok" else (),
             )
             frozen_records = tuple(auth_records)
@@ -1350,10 +1731,14 @@ def prepare_provider_launch_authorities(
                 projected_auth=_projected_auth_proof(
                     provider=provider, runtime=runtime, records=frozen_records,
                 ),
+                stage_inventory=stage_inventory,
+                minimal_home_inventory=minimal_home_inventory,
             )
-        except Exception:
-            for output in provider_outputs:
-                shutil.rmtree(output, ignore_errors=True)
+        except Exception as primary:
+            try:
+                _cleanup_owned_roots(provider_outputs)
+            except Exception as cleanup_error:
+                raise cleanup_error from primary
             raise
     return result
 
@@ -1438,6 +1823,10 @@ def bind_staged_review_inputs(
         raise AgyCanaryEvidenceError("staged review bundle is not the bootstrap-attested plan")
     review_fd = os.open(review_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
+        if sorted(os.listdir(review_fd)) != [
+            "review-bundle.md", "review-instructions.md",
+        ]:
+            raise AgyCanaryEvidenceError("staged review file set is not exact")
         staged: dict[str, dict[str, Any]] = {}
         for name, expected in (
             ("review-bundle.md", bundle_bytes),
@@ -1484,6 +1873,10 @@ def _validate_stage_binding(
         raise AgyCanaryEvidenceError("staged review binding is not exact")
     review_fd = os.open(review_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
+        if sorted(os.listdir(review_fd)) != [
+            "review-bundle.md", "review-instructions.md",
+        ]:
+            raise AgyCanaryEvidenceError("staged review file set drifted")
         for name, record in binding["staged"].items():
             if (not isinstance(record, dict) or set(record) != {"bytes", "sha256"} or
                     not _is_plain_int(record.get("bytes")) or record["bytes"] < 1 or
@@ -1498,6 +1891,31 @@ def _validate_stage_binding(
     finally:
         os.close(review_fd)
     return binding
+
+
+def _validate_provider_stage_inventory(
+    inventory: dict[str, Any], *, binding: dict[str, Any],
+) -> None:
+    """Require the stage to contain only the two sealed parent-rendered files."""
+    if (inventory.get("schema") != "agy_provider_launch_tree.v1" or
+            not isinstance(inventory.get("root_identity"), dict) or
+            not isinstance(inventory.get("entries"), list)):
+        raise AgyCanaryEvidenceError("provider stage inventory is malformed")
+    root = inventory["root_identity"]
+    if (root.get("kind") != "directory" or root.get("uid") != os.getuid() or
+            root.get("mode") != 0o700):
+        raise AgyCanaryEvidenceError("provider stage root is unsafe")
+    expected_names = ["review-bundle.md", "review-instructions.md"]
+    entries = inventory["entries"]
+    if [entry.get("path") for entry in entries] != expected_names:
+        raise AgyCanaryEvidenceError("provider stage inventory is not exact")
+    for entry in entries:
+        record = binding["staged"][entry["path"]]
+        if (entry.get("kind") != "file" or entry.get("uid") != os.getuid() or
+                entry.get("mode") != 0o600 or entry.get("nlink") != 1 or
+                entry.get("bytes") != record["bytes"] or
+                entry.get("sha256") != record["sha256"]):
+            raise AgyCanaryEvidenceError("provider stage file authority drifted")
 
 
 def _is_digest(value: Any) -> bool:
@@ -1518,7 +1936,7 @@ def _is_plain_int(value: Any) -> bool:
 
 
 def _minimal_home_identity(home: Path) -> dict[str, Any]:
-    """Descriptor-read the only executable settings input in a generated HOME."""
+    """Descriptor-seal the complete generated HOME and its strict settings."""
     settings = home / ".gemini" / "antigravity-cli" / "settings.json"
     opened = _open_settings(settings)
     try:
@@ -1536,6 +1954,7 @@ def _minimal_home_identity(home: Path) -> dict[str, Any]:
         "settings_sha256": _sha256(opened.data),
         "settings_mode": format(opened.mode, "04o"),
         "policy_sha256": _sha256(_canonical_json(policy)),
+        "tree": _exact_launch_tree_inventory(home),
     }
 
 
@@ -2630,6 +3049,11 @@ def build_minimal_home(
     target.write_bytes(data)
     target.chmod(0o600)
     binds = _validated_auth_binds(auth_paths, root)
+    for _source_relative, destination in _PROVIDER_AUTH_PATHS.values():
+        placeholder = root / Path(destination).relative_to("/home/phase-loop")
+        placeholder.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+        placeholder.write_bytes(b"")
+        placeholder.chmod(0o600)
     inventory_customizations(home=root, env={})
     return root, binds
 
@@ -4198,6 +4622,7 @@ def _uv_environment(
     return {
         "HOME": authority["account_home"],
         "PATH": str(uv_executable.parent) + ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "PYTHONDONTWRITEBYTECODE": "1",
         "UV_TOOL_DIR": authority["directories"]["tool"]["path"],
         "UV_TOOL_BIN_DIR": authority["directories"]["bin"]["path"],
         "UV_CACHE_DIR": authority["directories"]["cache"]["path"],
@@ -5486,7 +5911,8 @@ def _bootstrap_attest_opened(
             "environment_names": sorted(child_env),
             "uv_environment": {
                 name: child_env[name] for name in (
-                    "HOME", "PATH", "UV_TOOL_DIR", "UV_TOOL_BIN_DIR",
+                    "HOME", "PATH", "PYTHONDONTWRITEBYTECODE",
+                    "UV_TOOL_DIR", "UV_TOOL_BIN_DIR",
                     "UV_CACHE_DIR", "UV_PYTHON_INSTALL_DIR", "UV_PYTHON",
                     "UV_PYTHON_DOWNLOADS",
                 )
@@ -5612,7 +6038,8 @@ def _validate_bootstrap_attestation(
     if (not isinstance(environment_names, list) or environment_names != sorted(environment_names) or
             len(set(environment_names)) != len(environment_names) or
             environment_names != sorted({
-                "HOME", "PATH", "UV_TOOL_DIR", "UV_TOOL_BIN_DIR", "UV_CACHE_DIR",
+                "HOME", "PATH", "PYTHONDONTWRITEBYTECODE",
+                "UV_TOOL_DIR", "UV_TOOL_BIN_DIR", "UV_CACHE_DIR",
                 "UV_PYTHON_INSTALL_DIR", "UV_PYTHON", "UV_PYTHON_DOWNLOADS",
             })):
         raise AgyCanaryEvidenceError("bootstrap attestation child environment is malformed")
@@ -6168,6 +6595,16 @@ def _validate_installed_wheel_binding(
         record, dist_info / "INSTALLER", dist_info / "REQUESTED",
         dist_info / "uv_cache.json",
     })
+    expected_directories: set[Path] = set()
+    for expected_path in expected_physical:
+        for governed_root in (package_root, dist_info):
+            if expected_path.is_relative_to(governed_root):
+                parent = expected_path.parent
+                while parent != governed_root.parent:
+                    expected_directories.add(parent)
+                    if parent == governed_root:
+                        break
+                    parent = parent.parent
     for governed_root in (package_root, dist_info):
         for current, directories, files in os.walk(governed_root, topdown=True, followlinks=False):
             current_path = Path(current)
@@ -6175,8 +6612,11 @@ def _validate_installed_wheel_binding(
                 child = current_path / directory
                 if child.is_symlink():
                     raise AgyCanaryEvidenceError("installed distribution contains a symlink")
-                if directory == "__pycache__":
-                    directories.remove(directory)
+                if (directory == "__pycache__" and
+                        child not in expected_directories):
+                    raise AgyCanaryEvidenceError(
+                        "installed distribution contains unrecorded bytecode"
+                    )
             for name in files:
                 path = current_path / name
                 if path not in expected_physical:
@@ -6498,10 +6938,14 @@ def _validate_launch_authority(*, authority: Any, ledger: dict[str, Any], root_f
             not isinstance(minimal.get("identity"), dict)):
         raise AgyCanaryEvidenceError("prepare launch authority minimal HOME is malformed")
     identity = minimal["identity"]
-    if (set(identity) != {"settings_bytes", "settings_sha256", "settings_mode", "policy_sha256"} or
+    if (set(identity) != {
+            "settings_bytes", "settings_sha256", "settings_mode",
+            "policy_sha256", "tree",
+        } or
             not _is_plain_int(identity.get("settings_bytes")) or identity["settings_bytes"] < 1 or
             not _is_digest(identity.get("settings_sha256")) or identity.get("settings_mode") != "0600" or
             not _is_digest(identity.get("policy_sha256")) or
+            not isinstance(identity.get("tree"), dict) or
             identity["settings_sha256"] != settings["sha256"] or identity["settings_bytes"] != settings["bytes"]):
         raise AgyCanaryEvidenceError("prepare launch authority minimal HOME identity is malformed")
     if _minimal_home_identity(Path(minimal["path"])) != identity:
