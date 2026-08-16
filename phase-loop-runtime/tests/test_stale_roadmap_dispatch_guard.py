@@ -47,7 +47,7 @@ def _build(td: Path, *, break_sha=False, wrong_phase=False):
     plan.write_text(
         f'---\nphase_loop_plan_version: "1"\nphase: {"P2" if wrong_phase else "P1"}\n'
         f"roadmap: {rel}\nroadmap_sha256: {sha}\n---\n# Plan\n\n"
-        f"## Acceptance Criteria\n- [ ] EC-P1-1 — proven by test\n",
+        f"## Acceptance Criteria\n- [ ] EC-P1-1 — proven by test, falsified by fails if test fails\n",
         encoding="utf-8",
     )
     return rm, plan

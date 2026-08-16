@@ -312,7 +312,7 @@ class DelegatedChildCloseoutGateParityTest(unittest.TestCase):
                 repo, "RUNNER", roadmap,
                 body=(
                     "# RUNNER\n\n## Acceptance Criteria\n"
-                    "- [ ] EC-RUNNER-1 — proven by test.\n\n"
+                    "- [ ] EC-RUNNER-1 — proven by test, falsified by fails if test fails.\n\n"
                     "## Verification\n" f"- `{sys.executable} -c \"print('verify')\"`\n"
                 ),
             )
@@ -320,7 +320,10 @@ class DelegatedChildCloseoutGateParityTest(unittest.TestCase):
 
             def _drop_goal_reference():
                 text = plan.read_text(encoding="utf-8")
-                text = text.replace("- [ ] EC-RUNNER-1 — proven by test.\n", "- [ ] unrelated item.\n")
+                text = text.replace(
+                    "- [ ] EC-RUNNER-1 — proven by test, falsified by fails if test fails.\n",
+                    "- [ ] unrelated item, proven by test, falsified by fails if test fails.\n",
+                )
                 plan.write_text(text, encoding="utf-8")
 
             snapshot, results, fake_delegated = self._run_delegated(

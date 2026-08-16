@@ -259,11 +259,15 @@ class GoalCoverageTest(unittest.TestCase):
 
 
 class GoalCoveragePreflightTest(unittest.TestCase):
-    def _blocker(self, enforce):
+    def _blocker(self, enforce, *, exit_lines=None, acceptance_lines=None):
         from phase_loop_runtime.runner import _execute_goal_coverage_preflight
 
         with tempfile.TemporaryDirectory() as t:
-            repo, plan = _build(Path(t), ["EC-P1-1 — a", "EC-P1-2 — b"], ["EC-P1-1 — proven by t"])
+            repo, plan = _build(
+                Path(t),
+                exit_lines or ["EC-P1-1 — a", "EC-P1-2 — b"],
+                ["EC-P1-1 — proven by t"] if acceptance_lines is None else acceptance_lines,
+            )
             roadmap = repo / "specs" / "phase-plans-v1.md"
             old = os.environ.get("PHASE_LOOP_ACCEPTANCE_ENFORCE")
             try:
@@ -279,7 +283,28 @@ class GoalCoveragePreflightTest(unittest.TestCase):
                     os.environ["PHASE_LOOP_ACCEPTANCE_ENFORCE"] = old
 
     def test_warn_default_does_not_block(self):
-        self.assertIsNone(self._blocker(None))
+        from .proofgate_content_tdd_adapter import (
+            ProofgateMissingCapabilityError,
+            guard_proofgate_nodeid,
+            run_proofgate_contract,
+        )
+
+        nodeid = "phase-loop-runtime/tests/test_goal_coverage.py::GoalCoveragePreflightTest::test_warn_default_does_not_block"
+        if not guard_proofgate_nodeid(nodeid):
+            return
+
+        def _contract():
+            blocker = self._blocker(
+                None,
+                exit_lines=["a bare goal"],
+                acceptance_lines=[],
+            )
+            if blocker is None:
+                raise ProofgateMissingCapabilityError("empty acceptance contract still passes preflight")
+            self.assertEqual(blocker.get("blocker_class"), "contract_bug")
+            self.assertIn("missing_falsifier", str(blocker.get("blocker_summary")))
+
+        run_proofgate_contract(nodeid, _contract)
 
     def test_enforce_block_blocks_without_human_required(self):
         blocker = self._blocker("block")
@@ -292,31 +317,41 @@ class GoalCoveragePreflightTest(unittest.TestCase):
         # pass the preflight gate under enforcement — it fails closed.
         from phase_loop_runtime.runner import _execute_goal_coverage_preflight
 
-        old = os.environ.get("PHASE_LOOP_ACCEPTANCE_ENFORCE")
-        try:
-            with tempfile.TemporaryDirectory() as t:
-                repo, plan = _build(Path(t), ["EC-P1-1 — a"], ["EC-P1-1 — proven by t"], break_sha=True)
-                roadmap = repo / "specs" / "phase-plans-v1.md"
-                os.environ["PHASE_LOOP_ACCEPTANCE_ENFORCE"] = "block"
-                blocker = _execute_goal_coverage_preflight(repo, roadmap, plan)
-                self.assertIsNotNone(blocker)  # setup error -> blocked under enforce
-                self.assertFalse(blocker["human_required"])
-                # GOVLEAN amendment (2026-08-13): the stale-sha anchor mismatch now
-                # fails closed even in warn-default mode (stale-roadmap dispatch
-                # guard; see test_stale_roadmap_dispatch_guard.py). Only the
-                # explicit recovery bypass restores the old advisory behaviour.
-                os.environ.pop("PHASE_LOOP_ACCEPTANCE_ENFORCE", None)
-                self.assertIsNotNone(_execute_goal_coverage_preflight(repo, roadmap, plan))
-                os.environ["PHASE_LOOP_ALLOW_STALE_ROADMAP_PLAN"] = "1"
-                try:
-                    self.assertIsNone(_execute_goal_coverage_preflight(repo, roadmap, plan))
-                finally:
-                    os.environ.pop("PHASE_LOOP_ALLOW_STALE_ROADMAP_PLAN", None)
-        finally:
-            if old is None:
-                os.environ.pop("PHASE_LOOP_ACCEPTANCE_ENFORCE", None)
-            else:
-                os.environ["PHASE_LOOP_ACCEPTANCE_ENFORCE"] = old
+        from .proofgate_content_tdd_adapter import (
+            ProofgateMissingCapabilityError,
+            guard_proofgate_nodeid,
+            run_proofgate_contract,
+        )
+
+        nodeid = "phase-loop-runtime/tests/test_goal_coverage.py::GoalCoveragePreflightTest::test_setup_error_fails_closed_under_enforce"
+        if not guard_proofgate_nodeid(nodeid):
+            return
+
+        def _contract():
+            old = os.environ.get("PHASE_LOOP_ACCEPTANCE_ENFORCE")
+            try:
+                with tempfile.TemporaryDirectory() as t:
+                    repo, plan = _build(Path(t), ["EC-P1-1 — a"], ["EC-P1-1 — proven by t"], break_sha=True)
+                    roadmap = repo / "specs" / "phase-plans-v1.md"
+                    os.environ["PHASE_LOOP_ACCEPTANCE_ENFORCE"] = "block"
+                    blocker = _execute_goal_coverage_preflight(repo, roadmap, plan)
+                    self.assertIsNotNone(blocker)
+                    self.assertFalse(blocker["human_required"])
+                    os.environ.pop("PHASE_LOOP_ACCEPTANCE_ENFORCE", None)
+                    self.assertIsNotNone(_execute_goal_coverage_preflight(repo, roadmap, plan))
+                    os.environ["PHASE_LOOP_ALLOW_STALE_ROADMAP_PLAN"] = "1"
+                    blocker = _execute_goal_coverage_preflight(repo, roadmap, plan)
+                    if blocker is None:
+                        raise ProofgateMissingCapabilityError("stale-roadmap bypass also bypassed the falsifier gate")
+                    self.assertIn("missing_falsifier", str(blocker.get("blocker_summary")))
+            finally:
+                os.environ.pop("PHASE_LOOP_ALLOW_STALE_ROADMAP_PLAN", None)
+                if old is None:
+                    os.environ.pop("PHASE_LOOP_ACCEPTANCE_ENFORCE", None)
+                else:
+                    os.environ["PHASE_LOOP_ACCEPTANCE_ENFORCE"] = old
+
+        run_proofgate_contract(nodeid, _contract)
 
 
 class GoalCoverageCloseoutTest(unittest.TestCase):
@@ -371,9 +406,25 @@ class GoalCoverageCloseoutTest(unittest.TestCase):
         self.assertIsNotNone(ev)
 
     def test_legacy_no_ids_no_evidence_no_block(self):
-        ev, blk = self._run_closeout(["a bare goal"], ["did work"], "block")
-        self.assertIsNone(blk)
-        self.assertIsNone(ev)  # not_applicable -> no evidence, no gate
+        from .proofgate_content_tdd_adapter import (
+            ProofgateMissingCapabilityError,
+            guard_proofgate_nodeid,
+            run_proofgate_contract,
+        )
+
+        nodeid = "phase-loop-runtime/tests/test_goal_coverage.py::GoalCoverageCloseoutTest::test_legacy_no_ids_no_evidence_no_block"
+        if not guard_proofgate_nodeid(nodeid):
+            return
+
+        def _contract():
+            evidence, blocker = self._run_closeout(["a bare goal"], [], "block")
+            if blocker is None:
+                raise ProofgateMissingCapabilityError("empty acceptance contract still passes closeout")
+            self.assertIsNone(evidence)
+            self.assertEqual(blocker.get("blocker_class"), "contract_bug")
+            self.assertIn("missing_falsifier", str(blocker.get("blocker_summary")))
+
+        run_proofgate_contract(nodeid, _contract)
 
     def test_incomplete_phase_not_gated(self):
         # a non-complete phase is not gated even with a gap under enforce.
