@@ -1045,6 +1045,7 @@ def _record_red(group_name: str, landing_ref: str = "HEAD") -> int:
 
 EXPECTED_FREEZE_FILES: tuple[str, ...] = (
     "phase-loop-runtime/tests/fixtures/proofgate/v10-proofgate-mutations.json",
+    "phase-loop-runtime/tests/phase_loop_test_utils.py",
     "phase-loop-runtime/tests/proofgate_content_tdd_adapter.py",
     "phase-loop-runtime/tests/test_acceptance_falsifier_contract.py",
     "phase-loop-runtime/tests/test_convergence_broker_revocation_race.py",
@@ -1161,6 +1162,7 @@ EXPECTED_OWNED_UNION: set[str] = {
     "phase-loop-runtime/tests/test_verification_evidence.py",
     "phase-loop-runtime/tests/test_convergence_broker_revocation_race.py",
     "phase-loop-runtime/tests/fixtures/proofgate/v10-proofgate-mutations.json",
+    "phase-loop-runtime/tests/phase_loop_test_utils.py",
     ".phase-loop/evidence/PROOFGATE/content-tdd-receipt.json",
     ".phase-loop/evidence/PROOFGATE/content-tdd-receipt.red.stdout.log",
     ".phase-loop/evidence/PROOFGATE/content-tdd-receipt.red.stderr.log",

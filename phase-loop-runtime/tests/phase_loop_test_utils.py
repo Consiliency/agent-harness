@@ -504,6 +504,11 @@ def write_phase_plan(
             f"### SL-0 - {phase.upper()}\n"
             f"- **Owned files**: {owned}\n"
         )
+    if "## Acceptance Criteria" not in body:
+        body += (
+            "\n## Acceptance Criteria\n"
+            "- [ ] compatibility fixture — proven by test, falsified by fails if test fails\n"
+        )
     plan.write_text(
         "---\n"
         "phase_loop_plan_version: 1\n"
