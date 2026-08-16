@@ -131,7 +131,7 @@ the portable version.
 
 ### 3. Reference goals by ID; never restate them (portable in principle, needs IDs in practice)
 
-Give every exit criterion a stable identifier (`EC-<PHASE>-<N>`). Plans reference the ID; they
+Give every exit criterion a stable identifier (`EC-<ALIAS>-<N>`). Plans reference the ID; they
 do not paraphrase. A paraphrase drifts, and then two documents disagree about what "done"
 means. If you have no roadmap format, a numbered list in one file that everything else cites
 is enough — the property that matters is a single mutable definition with immutable names.
@@ -342,7 +342,7 @@ Everything else in this document is an optimisation on top of it.
 1. Watch plan size; move long contracts into referenced artifacts. *(portable)*
 2. Ban future-history pins, with an allowlist for input pins. *(portable)*
 3. Reference goals by stable ID instead of restating them. *(portable)*
-4. Land tests first and demonstrate each one failing. *(portable)*
+4. Define the proof before declaring a behaviour done, and demonstrate it failing. *(portable)*
 5. Pre-register convergence targets; set an abort threshold; refuse to move either mid-run.
    *(portable)*
 6. Split expensive proofs out of redundant lanes, with both guards. *(portable, needs a CI

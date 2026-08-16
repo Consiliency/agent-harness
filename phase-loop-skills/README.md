@@ -11,8 +11,11 @@ directory is one workflow skill, authored once and installed with a per-harness 
 | `advisor-board` | Run the runtime-owned customizable cross-vendor advisor board (formerly `advisor-panel`, still a working alias) over high-stakes review artifacts |
 | `phase-roadmap-builder` | Turn a plan/conversation into a phased `specs/phase-plans-v<N>.md` roadmap |
 | `plan-phase` | Architect one phase into parallel swim-lanes with frozen interfaces |
-| `execute-phase` | Run a phase's lanes to completion (parallel, auto-merge on green) |
+| `execute-phase` | Run a phase's lanes to completion — the main harness thread by default; parallel workers and merge each require explicit authorization |
 | `plan-detailed` | Plan a single bounded change, no roadmap overhead |
+| `execute-detailed` | Execute a bounded plan produced by `plan-detailed` |
+| `run-train` | Drive a cross-repo release train across dependent nodes |
+| `task-contextualizer` | Brief a subagent with the file paths and architecture it needs |
 | `phase-loop` | Drive the roadmap → plan → execute loop end-to-end |
 | `skill-editor` | Author/edit a skill |
 | `skill-improvement-planner` | Plan improvements to a skill from reflections |

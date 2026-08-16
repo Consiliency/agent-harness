@@ -22,15 +22,17 @@ reference an issue or PR in another repo, qualify it with that repo
 ## Plan discipline (why phases stall)
 
 The failure mode that has cost this repo the most is a plan that pins its own
-future history — exact commit SHAs, commit counts, or the topology of work not
-yet done. Git will not reproduce those identifiers, so the plan becomes
-unsatisfiable and every landing forces another amendment.
+future history — exact commit SHAs, commit counts, or the topology of work not yet
+done. Future SHAs are unknowable when the plan is written, and prescribed counts or
+topology are brittle under rebase, squash, and unrelated landings, so the plan
+becomes unsatisfiable and every landing forces another amendment.
 
 - **Pin inputs, never your own outputs.** Upstream contract digests, schema
   versions, and frozen-artifact hashes are fine. SHAs, counts, or tree shapes of
   commits this plan will create are not.
-- **Reference goals by ID** (`EC-<PHASE>-<N>`); never restate or paraphrase them.
-  A paraphrase drifts and then two documents disagree about "done".
+- **Where the roadmap declares goal IDs** (`EC-<ALIAS>-<N>`), reference them; never
+  restate or paraphrase. A paraphrase drifts and then two documents disagree about
+  "done". Legacy phases without IDs remain supported.
 - **Keep plans short and let frozen artifacts carry the detail.** There is no
   fixed word cap; treat length as a signal to investigate.
 - **Watch the ratio.** If plan amendments start outnumbering implementation, stop

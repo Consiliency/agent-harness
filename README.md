@@ -5,10 +5,13 @@ skills, extracted from a private fleet repo into a public, Apache-2.0 package.
 
 - **`phase-loop-runtime/`** — the orchestration engine + CLIs (`phase-loop`,
   `codex-phase-loop`). Deterministic; it dispatches each roadmap phase to a child
-  executor (codex / claude / gemini / opencode / pi) — it isn't tied to one harness.
-- **`phase-loop-skills/`** — the workflow skill bundle (phase-roadmap-builder,
-  plan/execute-phase, plan/execute-detailed, skill-improvement-planner, skill-editor,
-  phase-loop) with per-harness overrides for claude / codex / gemini / opencode.
+  executor (codex / claude / gemini / grok / opencode / pi) — it isn't tied to one
+  harness.
+- **`phase-loop-skills/`** — the harness-neutral workflow skill bundle covering the
+  roadmap → plan → execute loop, cross-vendor review, and skill authoring, each skill
+  with optional per-harness overrides. See
+  [`phase-loop-skills/README.md`](phase-loop-skills/README.md) for the list; it is the
+  single source of truth, so nothing here can drift out of sync with it.
 
 ## Quickstart (60 seconds)
 
@@ -17,7 +20,26 @@ pip install consiliency-harness   # the install-friendly front door → phase-lo
 phase-loop run                    # autonomous by default: no subscription auth, no dotfiles
 ```
 
-That's it. `consiliency-harness` is a thin **dependency shim** that pulls the
+**`run` needs a roadmap.** It executes `specs/phase-plans-v<N>.md`, so a repo without
+one exits with `no specs/phase-plans-v*.md roadmap found`. Either author that file
+yourself (see `specs/phase-plans-v1.md` in this repo for the shape, and
+`phase-loop validate-roadmap <path>` to check it), or install the workflow skills and
+let the `phase-roadmap-builder` skill write it from a plan or a conversation:
+
+```sh
+git clone https://github.com/Consiliency/agent-harness
+agent-harness/install-agent-harness.sh --harness claude   # or codex | gemini | opencode | all
+```
+
+With a roadmap in place, `phase-loop run` drives it unattended. Two defaults worth
+knowing before that first run:
+
+- **Closeout pushes by default.** A completed phase commits and pushes; `--no-push`
+  falls back to a manual closeout, and `--closeout-mode manual|commit|push` selects
+  explicitly.
+- **"No subscription auth" means the runtime.** The engine makes no model calls and
+  needs no login of its own, but each executor CLI you dispatch to (codex / claude /
+  gemini / grok / opencode / pi) authenticates itself. `consiliency-harness` is a thin **dependency shim** that pulls the
 `phase-loop-runtime` engine (it ships no code and no console script of its own; the
 obvious PyPI name `agent-harness` is an **unrelated third party**). With zero
 configuration you get:
@@ -26,7 +48,7 @@ configuration you get:
   drives phases unattended, with no advisor panel and **no subscription login
   required**. Opt into governed review with `--governed`.
 - **Degraded-CLI tolerant.** Missing or unbilled executor CLIs (codex / claude /
-  gemini / opencode / pi) are **skipped, not fatal** — a run continues on whatever
+  gemini / grok / opencode / pi) are **skipped, not fatal** — a run continues on whatever
   is installed and authed.
 - **Skills already inside the wheel.** `phase-loop run` / `dry-run` resolve their
   workflow skill packs from `skills_bundle/**` shipped **in the wheel** — no
@@ -86,7 +108,9 @@ validator evidence after maintainers publish or pin the runtime.
 
 The runner is built to drive phases **unattended**. Closeout review gates
 (doc-delta, verification-evidence, visual-evidence) default to recording a
-finding and continuing — they never stall a run or require a human. Dial
+finding and continuing rather than halting, and never require a human. (A
+nonzero verification exit is separate and does block — a red suite is not a
+warning.) Dial
 strictness with `PHASE_LOOP_REVIEW`:
 
 - `warn` (default) — record findings to the closeout, the loop continues.
@@ -107,11 +131,8 @@ non-converging phase looks like early, the plan-level mistake that causes most o
 it (plans that pin their own future commit SHAs, counts, or topology), and the
 smallest set of changes that fixed it here.
 
-Read it before your first real phase if you are adopting this in another
-repository. Most of the advice is portable: it needs a text editor and one CI
-job, not a second machine or container CI, and the document says explicitly which
-items presuppose a plan runtime and what to do instead if you have none. It also
-states the limits of its own evidence.
+Worth reading before your first real phase, especially if you are adopting this in
+another repository: most of the advice needs only a text editor and one CI job.
 
 ## Model routing (two axes)
 
@@ -123,8 +144,10 @@ Model selection has two independent axes:
   implementer model); a checkout with no policy keeps the legacy resolution.
 - **`run_mode`** — *how governed*. `autonomous` (default) runs unattended with no
   panel; `governed` (opt-in, `--governed` / `PHASE_LOOP_RUN_MODE=governed`) adds a
-  codex+gemini advisor-panel review at planning and pre-merge, bounded, with a
-  non-human escalation terminal. **Live on the serial path** (model-routing-v2);
+  cross-vendor advisor-board review at planning and pre-merge, bounded, with a
+  non-human escalation terminal. Candidate seats are codex / gemini / claude / grok;
+  a seat joins when its CLI is present on `PATH`, and pre-merge still holds when too
+  few usable, independent reviewers remain. **Live on the serial path** (model-routing-v2);
   concurrent-wave dispatch is not governed yet.
 
 "Autonomous default" means the **run_mode**, not the absence of a policy — the
@@ -134,7 +157,7 @@ tiered `model_policy` is on by default; the panel is what's opt-in. See
 ## Cross-repo release train
 
 The `phase-loop run-train` coordinator orchestrates changes that span multiple
-repos in a single atomic train: draft PRs open in topo order, a train-level
+repos in one coordinated train: draft PRs open in topo order, a train-level
 governed review gates the entire diff, then nodes merge sequentially with each
 downstream re-verified against the upstream **MERGED SHA** before its own merge.
 
@@ -170,7 +193,7 @@ Channel types: `submodule path=<path>` or `pin file=<file> key=<yaml-key>`.
   a rejection is a non-human terminal (`human_required=False`).
 - **False-green killer** — before each downstream merge, `set_upstream_ref` is
   called with the upstream MERGED SHA (not the draft SHA) and the downstream is
-  re-verified. Order is asserted in `tests/test_train_invariants.py`.
+  re-verified. Order is asserted in `phase-loop-runtime/tests/test_train_invariants.py`.
 - **Forward-only** — a downstream re-verify failure halts the train; upstream
   merges stay merged.
 - **Train state off `.phase-loop/`** — the ledger is never written inside any
@@ -185,7 +208,7 @@ Channel types: `submodule path=<path>` or `pin file=<file> key=<yaml-key>`.
 The merged downstream PR carries the **draft-time upstream pin**, not the
 merge-commit SHA. Use expand/contract upstream contracts (additive first,
 backward-compatible) so sequential merges are safe. See
-`_contract_docs/phase-loop/protocol.md` ("Cross-Repo Release Train") for the
+`phase-loop-runtime/protocol/protocol.md` ("Cross-Repo Release Train") for the
 full protocol spec and ledger shape.
 
 ## License
