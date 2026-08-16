@@ -3323,6 +3323,8 @@ def _exec_claude_tui_leg(
         if capture_output_reader is not None
         else {}
     )
+    if quiescence_latch is not None:
+        tui_extra["quiescence_latch"] = quiescence_latch
     rc, review_text, log_text, pty_tail = _run_claude_tui_session(
         command=command,
         cwd=out_dir,
@@ -3332,7 +3334,6 @@ def _exec_claude_tui_leg(
         env=env,
         mode=mode,
         backstop_s=backstop_s,
-        quiescence_latch=quiescence_latch,
         **tui_extra,
     )
     if quiescence_latch is not None:
