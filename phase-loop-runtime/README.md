@@ -15,13 +15,18 @@ git clone https://github.com/Consiliency/agent-harness
 agent-harness/install-agent-harness.sh --harness claude
 ```
 
-To install just this runtime package directly (e.g. as a pinned dependency):
+To install just this runtime package directly:
 
 ```sh
-# isolated tool install:
-uv tool install "git+https://github.com/Consiliency/agent-harness@v0.1.5#subdirectory=phase-loop-runtime"
-# …or into the current environment:
-pip install "git+https://github.com/Consiliency/agent-harness@v0.1.5#subdirectory=phase-loop-runtime"
+pip install phase-loop-runtime              # latest compatible release
+pip install phase-loop-runtime==0.7.13      # …or pin an exact version
+```
+
+To pin a specific tag from source instead, substitute a tag from
+[Releases](https://github.com/Consiliency/agent-harness/releases):
+
+```sh
+uv tool install "git+https://github.com/Consiliency/agent-harness@<TAG>#subdirectory=phase-loop-runtime"
 ```
 
 This exposes two console scripts — `phase-loop` and `codex-phase-loop` — both calling
@@ -46,7 +51,8 @@ clean; non-zero prints each issue on stderr.
 ## Workflow skills bundle
 
 The runtime also installs the harness-neutral workflow-skills bundle. The skill
-sources live in the sibling [`phase-loop-skills/`](../phase-loop-skills) directory,
+sources live in the [`phase-loop-skills/`](https://github.com/Consiliency/agent-harness/tree/main/phase-loop-skills)
+directory of the monorepo,
 with unprefixed base directories and optional `_overrides/<harness>/` overlays.
 
 ```sh
@@ -103,13 +109,14 @@ hold the injected facts.
 self-check (a pre-PR sanity pass the author runs locally) AND as the
 authoritative CR-fence (the real validator). The actor-side result is **never
 authoritative** — the fence always re-runs the check itself. Because it is the
-same function versioned with the same vendored `consiliency_contract`, the honest
+same function versioned with the same `consiliency_contract` dependency, the honest
 actor sees exactly the verdict the fence will; a stale or dishonest actor result
 simply does not matter.
 
-**Scope.** This surface asserts the L0 **shape + governance** tier only. The
-cert-schema tier and authority/provenance verification are explicitly out of
-scope (delegated downstream / to gp).
+**Scope.** The surface spans the shape + governance tier and the certificate /
+projection / outside-agent tiers it re-exports (see the module docstring for the
+authoritative tier list). Authority and provenance *verification* remain out of
+scope, delegated downstream.
 
 ### `consiliency-ingest --check-only`
 
