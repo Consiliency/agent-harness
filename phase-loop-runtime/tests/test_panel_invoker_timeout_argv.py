@@ -11,10 +11,14 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import shutil
 import stat
+import subprocess
+import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1658,6 +1662,164 @@ def test_capture_cleanup_failure_preserves_primary_exception_context(tmp_path):
         _cleanup_tombstone_for(scratch_cleanup).rmdir()
 
 
+def _private_tree_snapshot(path: Path) -> tuple[object, ...]:
+    root = path.lstat()
+    entries: list[object] = [
+        (".", root.st_dev, root.st_ino, stat.S_IMODE(root.st_mode), root.st_uid,
+         root.st_gid),
+    ]
+    for entry in sorted(path.rglob("*")):
+        info = entry.lstat()
+        relative = entry.relative_to(path).as_posix()
+        entries.append((
+            relative,
+            info.st_dev,
+            info.st_ino,
+            stat.S_IMODE(info.st_mode),
+            info.st_uid,
+            info.st_gid,
+            entry.read_bytes() if stat.S_ISREG(info.st_mode) else None,
+        ))
+    return tuple(entries)
+
+
+def test_default_spawn_preserves_fatal_quiescence_authority(monkeypatch, tmp_path):
+    def fatal_exec(*_args, **_kwargs):
+        raise pi.ProviderProcessGroupQuiescenceError(
+            "provider process group did not terminate"
+        )
+
+    monkeypatch.setattr(pi, "_exec_leg", fatal_exec)
+    with pytest.raises(
+        pi.ProviderProcessGroupQuiescenceError,
+        match="provider process group did not terminate",
+    ):
+        pi._default_spawn("codex", "review", repo_dir=tmp_path)
+
+    def ordinary_failure(*_args, **_kwargs):
+        raise OSError("ordinary provider failure")
+
+    monkeypatch.setattr(pi, "_exec_leg", ordinary_failure)
+    assert pi._default_spawn("codex", "review", repo_dir=tmp_path) == (
+        "DEGRADED",
+        "ordinary provider failure",
+    )
+
+
+def test_capture_quiescence_failure_escapes_and_retains_private_roots(
+    monkeypatch,
+):
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+
+    expected_capture = object()
+    roots: list[Path] = []
+    snapshots: dict[Path, tuple[object, ...]] = {}
+    cleanup_calls = 0
+    result_seals = 0
+
+    def prepare_authority(*, stage: Path, providers: tuple[str, ...], **_kwargs):
+        provider = providers[0]
+        output, output_cleanup = evidence._create_owned_cleanup_root(
+            kind="provider_output",
+        )
+        (output / "sentinel").write_bytes(f"{provider}-sealed".encode())
+        roots.extend((stage.parent, output))
+        authority = SimpleNamespace(namespace=SimpleNamespace(
+            provider_output=output,
+            provider_output_cleanup=output_cleanup,
+        ))
+        return {provider: authority}
+
+    def fatal_spawn(leg, *_args, **_kwargs):
+        if leg == "codex":
+            for root in roots:
+                snapshots[root] = _private_tree_snapshot(root)
+            raise pi.ProviderProcessGroupQuiescenceError(
+                "provider process group did not terminate"
+            )
+        return "OK", "AGREE"
+
+    def seal_result(**_kwargs):
+        nonlocal result_seals
+        result_seals += 1
+
+    def cleanup_spy(*_args, **_kwargs):
+        nonlocal cleanup_calls
+        cleanup_calls += 1
+
+    monkeypatch.setattr(pi, "bind_staged_review_inputs", lambda **_kwargs: None)
+    monkeypatch.setattr(pi, "prepare_provider_launch_authorities", prepare_authority)
+    monkeypatch.setattr(pi, "seal_provider_launches", lambda **_kwargs: None)
+    monkeypatch.setattr(pi, "record_provider_result", seal_result)
+    monkeypatch.setattr(pi, "capture_summary", lambda _capture: {"synthetic": True})
+    monkeypatch.setattr(pi, "_default_spawn", fatal_spawn)
+    monkeypatch.setattr(pi, "_cleanup_capture_launches", cleanup_spy)
+
+    try:
+        with pytest.raises(
+            pi.ProviderProcessGroupQuiescenceError,
+            match="provider process group did not terminate",
+        ):
+            pi.invoke_board(
+                DEFAULT_BOARD,
+                "review",
+                agy_canary_capture=expected_capture,
+                base_env={},
+                max_concurrency=1,
+            )
+        assert cleanup_calls == 0
+        assert result_seals == 0
+        assert len(roots) == 8
+        assert snapshots
+        assert all(root.is_dir() for root in roots)
+        assert all(stat.S_IMODE(root.lstat().st_mode) == 0o700 for root in roots)
+        assert all(_private_tree_snapshot(root) == snapshot
+                   for root, snapshot in snapshots.items())
+    finally:
+        for root in roots:
+            shutil.rmtree(root, ignore_errors=True)
+
+
+def _terminate_real_descendant_group_before_capture_cleanup(
+    monkeypatch, marker: Path,
+) -> tuple[int, int]:
+    child_code = (
+        "import os, signal, sys, time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        "open(sys.argv[1], 'w').write(str(os.getpid())); "
+        "time.sleep(600)"
+    )
+    leader_code = (
+        "import signal, subprocess, sys, time; "
+        "subprocess.Popen([sys.executable, '-c', sys.argv[2], sys.argv[1]]); "
+        "signal.signal(signal.SIGTERM, lambda *_: sys.exit(0)); "
+        "time.sleep(600)"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", leader_code, str(marker), child_code],
+        start_new_session=True,
+    )
+    pi._anchor_process_group(proc)
+    monkeypatch.setattr(pi, "_PROCESS_GROUP_TERM_GRACE_S", 0.2)
+    monkeypatch.setattr(pi, "_PROCESS_GROUP_KILL_GRACE_S", 3.0)
+    monkeypatch.setattr(pi, "_PROCESS_GROUP_POLL_S", 0.02)
+    deadline = time.monotonic() + 5
+    try:
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert marker.exists()
+        descendant_pid = int(marker.read_text())
+        pi._terminate_process_group(proc)
+        return proc.pid, descendant_pid
+    except BaseException:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait(timeout=2)
+        raise
+
+
 @pytest.mark.parametrize(
     "failure", ["write", "bind", "prepare", "seal", "result", None],
 )
@@ -1669,6 +1831,7 @@ def test_capture_setup_always_reclaims_scratch_and_provider_outputs(monkeypatch,
     cleanup_authorities: list[object] = []
     worker_threads: list[threading.Thread] = []
     cleanup_worker_states: list[tuple[bool, ...]] = []
+    terminated_groups: list[tuple[int, int]] = []
     calls = 0
 
     real_write_bytes = Path.write_bytes
@@ -1714,6 +1877,12 @@ def test_capture_setup_always_reclaims_scratch_and_provider_outputs(monkeypatch,
 
     def spawn_provider(*_args, **_kwargs):
         worker_threads.append(threading.current_thread())
+        if failure in {"result", None} and not terminated_groups:
+            terminated_groups.append(
+                _terminate_real_descendant_group_before_capture_cleanup(
+                    monkeypatch, tmp_path / "capture-descendant.pid",
+                )
+            )
         return "OK", "AGREE"
 
     def observe_cleanup(*args, **kwargs):
@@ -1721,6 +1890,10 @@ def test_capture_setup_always_reclaims_scratch_and_provider_outputs(monkeypatch,
             cleanup_worker_states.append(tuple(
                 thread.is_alive() for thread in worker_threads
             ))
+        for pgid, descendant_pid in terminated_groups:
+            with pytest.raises(ProcessLookupError):
+                os.kill(descendant_pid, 0)
+            assert not pi._process_group_exists(pgid)
         return real_cleanup(*args, **kwargs)
 
     monkeypatch.setattr(pi.tempfile, "mkdtemp", capture_mkdtemp)

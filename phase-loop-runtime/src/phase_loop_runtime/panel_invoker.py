@@ -126,6 +126,10 @@ LEG_STATUSES: tuple[str, ...] = (
 )
 
 
+class ProviderProcessGroupQuiescenceError(AgyCanaryEvidenceError):
+    """A provider process group could not be proven absent after termination."""
+
+
 class ReviewLandingTier(str, Enum):
     PLAN = "plan"
     PRODUCTION_CODE = "production_code"
@@ -1926,7 +1930,7 @@ def _terminate_process_group(
     anchored_pgid = getattr(proc, "_phase_loop_pgid", proc.pid)
     if (not isinstance(anchored_pgid, int) or anchored_pgid <= 0 or
             anchored_pgid != proc.pid):
-        raise AgyCanaryEvidenceError(
+        raise ProviderProcessGroupQuiescenceError(
             "provider process group anchor is invalid"
         )
     pgid = anchored_pgid
@@ -1938,7 +1942,7 @@ def _terminate_process_group(
             proc.poll()
         else:
             if observed_pgid != pgid:
-                raise AgyCanaryEvidenceError(
+                raise ProviderProcessGroupQuiescenceError(
                     "provider process group anchor is invalid"
                 )
     if not _process_group_exists(pgid):
@@ -1957,7 +1961,7 @@ def _terminate_process_group(
         if not _process_group_exists(pgid):
             proc.poll()
             return
-        raise AgyCanaryEvidenceError(
+        raise ProviderProcessGroupQuiescenceError(
             "provider process group SIGTERM failed"
         ) from exc
     if _wait_for_process_group_exit(
@@ -1977,13 +1981,13 @@ def _terminate_process_group(
         if not _process_group_exists(pgid):
             proc.poll()
             return
-        raise AgyCanaryEvidenceError(
+        raise ProviderProcessGroupQuiescenceError(
             "provider process group SIGKILL failed"
         ) from exc
     if not _wait_for_process_group_exit(
         proc, pgid=pgid, timeout=_PROCESS_GROUP_KILL_GRACE_S,
     ):
-        raise AgyCanaryEvidenceError(
+        raise ProviderProcessGroupQuiescenceError(
             "provider process group did not terminate"
         )
 
@@ -3908,6 +3912,8 @@ def _default_spawn(
         if status != "OK" and not str(review_text).strip() and str(log_text).strip():
             return status, review_text, str(log_text).strip()[:2000]
         return status, review_text
+    except ProviderProcessGroupQuiescenceError:
+        raise
     except Exception as exc:  # fail-closed
         return "DEGRADED", str(exc)[:200]
     finally:
@@ -3979,11 +3985,19 @@ def _default_spawn_via_provider(
     # `governed_review._findings_from_panel` reads as a nonconforming review and turns
     # into a promotion BLOCK for every routine timeout, while the real diagnostic is lost.
     _diagnostic: list[str | None] = [None]
+    _quiescence_error: list[ProviderProcessGroupQuiescenceError | None] = [None]
 
     def _spawn_2tuple(request, register_process=None):
-        spawned = _default_spawn(
-            leg, artifact, repo_dir=repo_dir, mode=mode, model=model, **extra
-        )
+        try:
+            spawned = _default_spawn(
+                leg, artifact, repo_dir=repo_dir, mode=mode, model=model, **extra
+            )
+        except ProviderProcessGroupQuiescenceError as exc:
+            # HomebrewAgentRuntimeProvider deliberately turns ordinary spawn
+            # exceptions into failed turns.  Process-group quiescence is not an
+            # ordinary provider result: retain it out-of-band and re-raise below.
+            _quiescence_error[0] = exc
+            raise
         if isinstance(spawned, tuple) and len(spawned) == 3:
             status_, text_, _diagnostic[0] = spawned
             return status_, text_
@@ -4000,6 +4014,8 @@ def _default_spawn_via_provider(
             session_id=session.id, idempotency_key=f"panel-{leg}-turn", message=artifact
         )
     )
+    if _quiescence_error[0] is not None:
+        raise _quiescence_error[0]
     status, text = "DEGRADED", ""
     for event in provider.read_history(session.id).events:
         if event.type == "runtime.text.delta":
@@ -4086,10 +4102,10 @@ def _run_legs_ordered(
       which leg finishes first (futures are submitted in order and read back by
       index). The resolver re-keys results by position and the golden proof asserts
       order + content, so this is load-bearing.
-    * **Fail-closed per item** — ``run_one`` is itself required to be fail-closed
-      (turn any exception into a DEGRADED ``PanelLegResult``), so a future's
-      ``.result()`` never raises and one broken leg can never crash the pool or the
-      board. Concurrency changes *timing only*, never a leg's outcome.
+    * **Fail-closed per item** — ``run_one`` turns ordinary provider exceptions into
+      a DEGRADED ``PanelLegResult``.  The sole exception is an unproven provider
+      process-group quiescence authority, which must cross the worker boundary and
+      abort before capture-result sealing or private-root cleanup.
     * **Parallel is the default; sequential is opt-in** — ``max_concurrency`` bounds
       the pool: ``None`` (default) fans out up to ``_PANEL_MAX_WORKERS``; ``1`` forces
       sequential (the escape hatch for debugging / rate-limits / a constrained host);
@@ -4127,7 +4143,7 @@ def _run_legs_ordered(
         results: list[PanelLegResult | None] = [None] * len(seq)
         for future in as_completed(futures):
             i = index_of[future]
-            result = future.result()  # run_one is fail-closed ⇒ never raises
+            result = future.result()  # fatal quiescence authority may raise
             results[i] = result
             if review_dir is not None:
                 _write_incremental_verdict(review_dir, i, result)
@@ -4298,6 +4314,8 @@ def invoke_panel(
                     status, text, spawn_detail = spawned
                 else:
                     status, text = spawned
+            except ProviderProcessGroupQuiescenceError:
+                raise
             except Exception as exc:
                 result = PanelLegResult(
                     leg=leg,
@@ -4351,11 +4369,12 @@ def invoke_panel(
         runner = spawn
 
     def _run_leg(leg: str) -> PanelLegResult:
-        # Fail-closed: a broken leg degrades, never crashes the gate (so the pool's
-        # future.result() never raises). This is the exact per-leg body as before —
-        # only the surrounding loop is now a concurrent, order-preserving fan-out.
+        # Ordinary broken legs degrade without crashing the gate.  Unproven
+        # process-group quiescence remains fatal across the worker boundary.
         try:
             spawned = runner(leg, artifact)
+        except ProviderProcessGroupQuiescenceError:
+            raise
         except Exception as exc:
             return PanelLegResult(
                 leg=leg, status="DEGRADED", text="", detail=str(exc)[:200]
@@ -4749,6 +4768,7 @@ def invoke_board(
     ] = {}
     capture_scratches: list[_OwnedCleanupRoot] = []
     capture_seats: list[Seat] = []
+    capture_quiescence_unproven = threading.Event()
 
     def _cleanup_capture_resources() -> None:
         _cleanup_capture_launches(capture_launches, capture_scratches)
@@ -4829,8 +4849,9 @@ def invoke_board(
         # The full per-seat body — backing decision → skip / omnigent / homebrew →
         # render + resolve_seat_env → spawn → normalize — runs INSIDE the pool task,
         # so both the skip decisions and the spawn happen concurrently per seat. It
-        # is fail-closed (every path returns a PanelLegResult, never raises), so the
-        # future's .result() never raises and one broken seat can't crash the board.
+        # is fail-closed for ordinary provider failures.  An unproven provider
+        # process-group quiescence authority is fatal: it crosses the worker
+        # boundary and prevents capture-result sealing and private-root cleanup.
         # The shared reads it closes over — gateway_available, omnigent_catalog,
         # env_source, board, matrix (already resolved) — are read-only; the single
         # gateway-catalog fetch already happened ABOVE, once, before the pool.
@@ -4973,6 +4994,9 @@ def invoke_board(
                 status, text, seat_detail = spawned
             else:
                 status, text = spawned
+        except ProviderProcessGroupQuiescenceError:
+            capture_quiescence_unproven.set()
+            raise
         except Exception as exc:  # fail-closed: a broken seat degrades, never crashes
             result = PanelLegResult(
                 leg=leg,
@@ -5110,5 +5134,6 @@ def invoke_board(
     finally:
         if research_run is not None:
             research_run.close()
-        if agy_canary_capture is not None:
+        if (agy_canary_capture is not None and
+                not capture_quiescence_unproven.is_set()):
             _cleanup_capture_resources()
