@@ -1170,6 +1170,71 @@ def test_capture_cleanup_repeat_accepts_exact_empty_tombstone():
     tombstone.rmdir()
 
 
+def test_capture_cleanup_repeat_rejects_late_tombstone_secret(monkeypatch):
+    root = Path(tempfile.mkdtemp(prefix="pl-panel-capture-late-", dir="/tmp"))
+    root.chmod(0o700)
+    authority = evidence._seal_owned_cleanup_root(root, kind="scratch")
+    evidence._cleanup_owned_roots([authority])
+    tombstone = _cleanup_tombstone_for(authority)
+    real_stat = evidence.os.stat
+    calls = 0
+
+    def inject_secret(path, *args, **kwargs):
+        nonlocal calls
+        if path == tombstone.name and kwargs.get("dir_fd") is not None:
+            calls += 1
+            if calls == 3:
+                (tombstone / "late-secret").write_text("retain\n")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(evidence.os, "stat", inject_secret)
+    try:
+        with pytest.raises(
+            evidence.AgyCanaryEvidenceError, match="cleanup was incomplete",
+        ):
+            evidence._cleanup_owned_roots([authority])
+        assert calls >= 3
+        assert (tombstone / "late-secret").read_text() == "retain\n"
+    finally:
+        monkeypatch.setattr(evidence.os, "stat", real_stat)
+        shutil.rmtree(tombstone)
+
+
+def test_capture_cleanup_repeat_rejects_public_recreation_at_final_stat(
+    monkeypatch,
+):
+    root = Path(tempfile.mkdtemp(prefix="pl-panel-capture-recreate-", dir="/tmp"))
+    root.chmod(0o700)
+    authority = evidence._seal_owned_cleanup_root(root, kind="scratch")
+    evidence._cleanup_owned_roots([authority])
+    tombstone = _cleanup_tombstone_for(authority)
+    real_stat = evidence.os.stat
+    calls = 0
+
+    def recreate_public(path, *args, **kwargs):
+        nonlocal calls
+        if path == tombstone.name and kwargs.get("dir_fd") is not None:
+            calls += 1
+            if calls == 4:
+                root.mkdir(mode=0o700)
+                (root / "unrelated-marker").write_text("retain\n")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(evidence.os, "stat", recreate_public)
+    try:
+        with pytest.raises(
+            evidence.AgyCanaryEvidenceError, match="cleanup was incomplete",
+        ):
+            evidence._cleanup_owned_roots([authority])
+        assert calls >= 4
+        assert (root / "unrelated-marker").read_text() == "retain\n"
+        assert list(tombstone.iterdir()) == []
+    finally:
+        monkeypatch.setattr(evidence.os, "stat", real_stat)
+        shutil.rmtree(root)
+        tombstone.rmdir()
+
+
 def test_capture_cleanup_rejects_missing_tombstone_for_absent_root():
     root = Path(tempfile.mkdtemp(prefix="pl-panel-capture-zero-", dir="/tmp"))
     root.chmod(0o700)

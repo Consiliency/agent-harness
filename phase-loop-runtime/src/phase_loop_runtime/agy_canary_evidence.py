@@ -1013,6 +1013,17 @@ def _cleanup_owned_roots(roots: Sequence[_OwnedCleanupRoot]) -> None:
                     _find_owned_cleanup_tombstone(
                         tmp_fd=tmp_fd, authority=authority,
                     )
+                    try:
+                        os.stat(
+                            path.name, dir_fd=tmp_fd,
+                            follow_symlinks=False,
+                        )
+                    except FileNotFoundError:
+                        pass
+                    else:
+                        raise AgyCanaryEvidenceError(
+                            "cleanup public root name was recreated"
+                        )
                     continue
                 if (stat.S_ISLNK(entry.st_mode) or not stat.S_ISDIR(entry.st_mode) or
                         (entry.st_dev, entry.st_ino, entry.st_uid, entry.st_gid) !=
@@ -1142,33 +1153,51 @@ def _validate_owned_cleanup_tombstone(
         ) from exc
     try:
         opened = os.fstat(tombstone_fd)
-        expected = (
-            authority.device, authority.inode,
-            authority.uid, authority.gid,
+        expected_authority = (
+            authority.device, authority.inode, authority.uid, authority.gid,
+        )
+        stable = _cleanup_tombstone_stat_identity(opened)
+        first_entries = os.listdir(tombstone_fd)
+        first_after = os.fstat(tombstone_fd)
+        after_entry = os.stat(
+            name, dir_fd=tmp_fd, follow_symlinks=False,
+        )
+        second_entries = os.listdir(tombstone_fd)
+        second_after = os.fstat(tombstone_fd)
+        final_entry = os.stat(
+            name, dir_fd=tmp_fd, follow_symlinks=False,
         )
         if (not stat.S_ISDIR(entry.st_mode) or
                 not stat.S_ISDIR(opened.st_mode) or
                 (entry.st_dev, entry.st_ino, entry.st_uid, entry.st_gid) !=
-                expected or
+                expected_authority or
                 (opened.st_dev, opened.st_ino,
-                 opened.st_uid, opened.st_gid) != expected or
+                 opened.st_uid, opened.st_gid) != expected_authority or
                 stat.S_IMODE(entry.st_mode) != 0o700 or
                 stat.S_IMODE(opened.st_mode) != 0o700 or
                 entry.st_nlink != 2 or opened.st_nlink != 2 or
-                os.listdir(tombstone_fd)):
+                first_entries or second_entries or
+                any(
+                    _cleanup_tombstone_stat_identity(info) != stable
+                    for info in (
+                        entry, first_after, after_entry,
+                        second_after, final_entry,
+                    )
+                )):
             raise AgyCanaryEvidenceError(
                 "cleanup tombstone authority is invalid"
             )
-        after = os.stat(name, dir_fd=tmp_fd, follow_symlinks=False)
-        if ((after.st_dev, after.st_ino, after.st_mode,
-             after.st_uid, after.st_gid, after.st_nlink) !=
-                (opened.st_dev, opened.st_ino, opened.st_mode,
-                 opened.st_uid, opened.st_gid, opened.st_nlink)):
-            raise AgyCanaryEvidenceError(
-                "cleanup tombstone identity drifted"
-            )
     finally:
         os.close(tombstone_fd)
+
+
+def _cleanup_tombstone_stat_identity(info: os.stat_result) -> tuple[int, ...]:
+    """Return full stable metadata used across tombstone validation passes."""
+    return (
+        info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
+        info.st_uid, info.st_gid, info.st_size,
+        info.st_mtime_ns, info.st_ctime_ns,
+    )
 
 
 def _quarantine_owned_cleanup_root(
