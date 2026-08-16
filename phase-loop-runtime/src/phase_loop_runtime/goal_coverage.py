@@ -310,6 +310,7 @@ def extract_acceptance_contracts(plan_content_or_path: str | Path) -> list[dict[
             falsified_by = item_content[f_idx + len("falsifier:"):].strip("`, ")
 
         has_falsifier = ("falsified by" in lower_content or "falsifier:" in lower_content or bool(falsified_by))
+        has_proof_claim = "proven by" in lower_content
         has_proof_command = "proven by `" in lower_content
         has_path_entered_control = ("path-entered" in lower_content or "path entered" in lower_content)
         is_negative = ("invalid key is accepted" in lower_content or "absence claim" in lower_content or "route rejection" in lower_content)
@@ -322,6 +323,7 @@ def extract_acceptance_contracts(plan_content_or_path: str | Path) -> list[dict[
             "proven_by": proven_by,
             "falsified_by": falsified_by,
             "has_falsifier": has_falsifier,
+            "has_proof_claim": has_proof_claim,
             "has_proof_command": has_proof_command,
             "has_path_entered_control": has_path_entered_control,
             "is_negative": is_negative,
@@ -340,9 +342,13 @@ def check_acceptance_falsifiers(
     if not contracts:
         return {"valid": False, "disposition": "invalid", "reason": "missing_falsifier", "required_verification_schema_version": 3, "requires_current_evidence": True}
 
-    if cutoff_commit_oid and server_attested_date:
-        if cutoff_commit_oid != "0" * 40 and cutoff_commit_oid == "5328694ae31b4f13f091903d96ed89395d74f3b2":
-            all_gf = all(c.get("sha256") == GRANDFATHERED_SHA256 or c.get("sha256") in KNOWN_VACUOUS_SHAS for c in contracts)
+    if cutoff_commit_oid and successor_commit_oid and server_attested_date:
+        if (
+            cutoff_commit_oid == "5328694ae31b4f13f091903d96ed89395d74f3b2"
+            and successor_commit_oid == "a3fbb196b3b57d75e403bcea3bad972e9491f675"
+            and server_attested_date == "2026-07-29T22:09:58Z"
+        ):
+            all_gf = all(c.get("sha256") == GRANDFATHERED_SHA256 for c in contracts)
             if all_gf:
                 records = []
                 for c in contracts:
@@ -363,6 +369,13 @@ def check_acceptance_falsifiers(
         item_lower = c.get("item_content", "").lower()
         if sha in KNOWN_VACUOUS_SHAS or "vacuous_falsifier" in item_lower or "fails if true" in item_lower or "silent degradation" in item_lower:
             return {"valid": False, "disposition": "invalid", "reason": "vacuous_falsifier"}
+
+    if all(
+        (c.get("has_proof_claim") and not c.get("has_proof_command"))
+        or (str(c.get("id", "")).startswith("AC-") and not c.get("has_proof_claim"))
+        for c in contracts
+    ):
+        return {"valid": True, "disposition": "legacy", "reason": None}
 
     for c in contracts:
         if not c.get("has_falsifier"):

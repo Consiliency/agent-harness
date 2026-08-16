@@ -40,6 +40,7 @@ _EXTENSIONS_FIELD = "extensions"
 # an existing LEGIBLE-only artifact or its plan-aware validation.
 EXTENSION_NAMESPACE_REGISTRY: dict[str, str] = {
     "phase_loop_runtime.legible_evidence": "verification_evidence_sidecar.v1",
+    "phase_loop_runtime.proofgate_evidence": "proofgate_evidence_sidecar.v1",
 }
 _RESERVED_EXTENSION_NAMESPACES = frozenset({"phase_loop_runtime.proofgate_evidence"})
 
@@ -50,6 +51,9 @@ _SIDECAR_RECORD_V1_FIELDS = frozenset(
 # namespace/version check): only the shapes this landing actually knows about.
 _KNOWN_EXTENSION_RECORD_SCHEMAS: dict[str, frozenset[str]] = {
     "verification_evidence_sidecar.v1": _SIDECAR_RECORD_V1_FIELDS,
+    "proofgate_evidence_sidecar.v1": frozenset(
+        {"schema", "candidate_snapshot", "mutations", "chronology"}
+    ),
 }
 
 
@@ -1157,75 +1161,111 @@ def execute_proofgate_mutation_manifest(
         for p in dec.get("parameters", []):
             all_parameters.append(p)
 
+    selected = all_parameters
     if parameter_id is not None:
-        target_param = next((p for p in all_parameters if p.get("parameter_id") == parameter_id), None)
-        if not target_param:
+        selected = [p for p in all_parameters if p.get("parameter_id") == parameter_id]
+        if not selected:
             return {"status": "harness_error", "reason": "parameter_not_found"}
 
-        eff_path = target_path or target_param.get("target_path", "")
-        from .goal_coverage import is_production_construction_site
-        if not is_production_construction_site(eff_path):
+    from .goal_coverage import is_production_construction_site
+
+    def _execute_one(param: Mapping[str, Any]) -> dict[str, Any]:
+        effective_path = target_path or str(param.get("target_path", ""))
+        if not is_production_construction_site(effective_path):
             return {
                 "status": "vacuous_falsifier",
                 "reason": "vacuous_falsifier",
                 "baseline_status": "passed",
                 "applied_replacements": 0,
             }
+        try:
+            repo_root = Path(
+                subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip()
+            )
+            candidate = subprocess.check_output(
+                ["git", "rev-parse", f"{candidate_oid}^{{commit}}"], cwd=repo_root, text=True
+            ).strip()
+            tree = subprocess.check_output(
+                ["git", "rev-parse", f"{candidate}^{{tree}}"], cwd=repo_root, text=True
+            ).strip()
+            blob = subprocess.check_output(
+                ["git", "rev-parse", f"{candidate}:{effective_path}"], cwd=repo_root, text=True
+            ).strip()
+        except (OSError, subprocess.CalledProcessError) as exc:
+            return {"status": "harness_error", "reason": "candidate_resolution_failed", "detail": str(exc)}
 
-        target_nodeid = target_param.get("target_nodeid", "")
-        eobs = target_param.get("expected_observable", {})
-        pcmd = target_param.get("proof_command", [])
-        cmd_str = " ".join(pcmd) if isinstance(pcmd, list) else str(pcmd)
+        worktree_parent = Path("/mnt/workspace/worktrees")
+        if not worktree_parent.is_dir():
+            worktree_parent = repo_root.parent
+        worktree = Path(tempfile.mkdtemp(prefix="proofgate-mutation-", dir=worktree_parent))
+        shutil.rmtree(worktree)
+        try:
+            subprocess.run(
+                ["git", "worktree", "add", "--detach", str(worktree), candidate],
+                cwd=repo_root, check=True, capture_output=True, text=True,
+            )
+            run_dir = worktree / ".phase-loop" / "proofgate-mutation" / str(param.get("parameter_id"))
+            run_dir.mkdir(parents=True, exist_ok=True)
+            argv = [str(arg).replace("$PHASE_LOOP_RUN_DIR", str(run_dir)) for arg in param.get("proof_command", [])]
+            if argv and argv[0] in {"python", "python3"}:
+                argv[0] = sys.executable
+            env = dict(os.environ)
+            env["PHASE_LOOP_RUN_DIR"] = str(run_dir)
+            env["PYTHONPATH"] = os.pathsep.join(
+                [str(worktree / "phase-loop-runtime" / "src"), str(worktree / "phase-loop-runtime" / "tests")]
+            )
+            baseline = subprocess.run(argv, cwd=worktree, env=env, capture_output=True, text=True, timeout=180)
+            bindings = {
+                "candidate": f"git:{candidate}", "candidate_tree": f"git:{tree}",
+                "target_path": effective_path, "target_blob": f"git:{blob}",
+                "tree": f"git:{tree}", "path": effective_path, "blob": f"git:{blob}",
+                "argv": argv, "command": " ".join(argv),
+                "environment": {"PYTHONPATH": env["PYTHONPATH"], "PHASE_LOOP_RUN_DIR": str(run_dir)},
+                "testcase": param.get("target_nodeid", ""),
+                "assertion": param.get("expected_observable", {}).get("result_code", ""),
+                "observable": param.get("expected_observable", {}).get("rule_id", ""),
+            }
+            if baseline.returncode != 0:
+                return {
+                    "status": "baseline_failed", "baseline_status": "failed",
+                    "applied_replacements": 0, "bindings": bindings,
+                    "diagnostic": (baseline.stdout + baseline.stderr)[-4096:],
+                }
+            target = worktree / effective_path
+            content = target.read_text(encoding="utf-8")
+            anchor = str(param.get("injection_anchor", ""))
+            if content.count(anchor) != 1:
+                return {"status": "mutation_not_applied", "baseline_status": "passed", "applied_replacements": 0, "bindings": bindings}
+            target.write_text(content.replace(anchor, str(param.get("replacement_bytes", "")), 1), encoding="utf-8")
+            mutant = subprocess.run(argv, cwd=worktree, env=env, capture_output=True, text=True, timeout=180)
+            observed = mutant.stdout + mutant.stderr
+            observed += "\n".join(path.read_text(encoding="utf-8", errors="replace") for path in run_dir.glob("*.xml"))
+            expected = param.get("expected_observable", {})
+            if mutant.returncode == 0:
+                status = "survived"
+            elif expected.get("result_code") not in observed or expected.get("rule_id") not in observed:
+                status = "evidence_failure"
+            else:
+                status = "killed"
+            return {"status": status, "baseline_status": "passed", "applied_replacements": 1, "bindings": bindings}
+        except (OSError, subprocess.SubprocessError) as exc:
+            return {"status": "execution_failure", "reason": str(exc), "applied_replacements": 0}
+        finally:
+            subprocess.run(["git", "worktree", "remove", "--force", str(worktree)], cwd=repo_root, capture_output=True)
 
-        bindings = {
-            "candidate": f"sha256:{candidate_oid[:12]}",
-            "tree": f"sha256:{candidate_oid[:12]}",
-            "path": eff_path,
-            "blob": f"sha256:{candidate_oid[:12]}",
-            "argv": pcmd,
-            "command": cmd_str,
-            "environment": {"PYTHONPATH": "src:tests"},
-            "testcase": target_nodeid,
-            "assertion": eobs.get("result_code", ""),
-            "observable": eobs.get("rule_id", ""),
-        }
-
-        return {
-            "baseline_status": "passed",
-            "applied_replacements": 1,
-            "status": "killed",
-            "bindings": bindings,
-        }
-
-    classifications = {}
-    bindings = {}
-    for p in all_parameters:
-        pid = p["parameter_id"]
-        classifications[pid] = "killed"
-        pcmd = p.get("proof_command", [])
-        cmd_str = " ".join(pcmd) if isinstance(pcmd, list) else str(pcmd)
-        eobs = p.get("expected_observable", {})
-        bindings[pid] = {
-            "candidate": f"sha256:{candidate_oid[:12]}",
-            "tree": f"sha256:{candidate_oid[:12]}",
-            "path": p.get("target_path", ""),
-            "blob": f"sha256:{candidate_oid[:12]}",
-            "argv": pcmd,
-            "command": cmd_str,
-            "environment": {"PYTHONPATH": "src:tests"},
-            "testcase": p.get("target_nodeid", ""),
-            "assertion": eobs.get("result_code", ""),
-            "observable": eobs.get("rule_id", ""),
-        }
-
+    results = {str(param["parameter_id"]): _execute_one(param) for param in selected}
+    if parameter_id is not None:
+        return results[parameter_id]
+    classifications = {pid: result.get("status", "execution_failure") for pid, result in results.items()}
+    killed = sum(status == "killed" for status in classifications.values())
+    survived = sum(status == "survived" for status in classifications.values())
+    blocked = len(classifications) - killed - survived
     return {
-        "parameters_count": len(all_parameters),
-        "killed_count": len(all_parameters),
-        "survived_count": 0,
-        "block_count": 0,
-        "status": "killed",
+        "parameters_count": len(all_parameters), "killed_count": killed,
+        "survived_count": survived, "block_count": blocked,
+        "status": "killed" if killed == len(all_parameters) else "blocked",
         "classifications": classifications,
-        "bindings": bindings,
+        "bindings": {pid: result.get("bindings", {}) for pid, result in results.items()},
     }
 
 
