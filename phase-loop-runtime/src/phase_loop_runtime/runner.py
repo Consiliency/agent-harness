@@ -6443,15 +6443,16 @@ def _goal_coverage_closeout_outcome(
             "access_attempts": (),
         }
 
-    try:
-        from .goal_coverage import extract_acceptance_contracts, check_acceptance_falsifiers
-        contracts = extract_acceptance_contracts(plan)
-        falsifier_res = check_acceptance_falsifiers(contracts) if contracts else {"valid": True}
-        if not falsifier_res.get("valid", True):
-            reason = falsifier_res.get("reason", "acceptance_falsifier_contract_invalid")
-            return None, _blocker(f"Acceptance falsifier contract failed at closeout: {reason}")
-    except Exception as _falsifier_exc:
-        return None, _blocker(f"Acceptance falsifier contract errored at closeout: {_falsifier_exc}")
+    if is_complete:
+        try:
+            from .goal_coverage import extract_acceptance_contracts, check_acceptance_falsifiers
+            contracts = extract_acceptance_contracts(plan)
+            falsifier_res = check_acceptance_falsifiers(contracts) if contracts else {"valid": True}
+            if not falsifier_res.get("valid", True):
+                reason = falsifier_res.get("reason", "acceptance_falsifier_contract_invalid")
+                return None, _blocker(f"Acceptance falsifier contract failed at closeout: {reason}")
+        except Exception as _falsifier_exc:
+            return None, _blocker(f"Acceptance falsifier contract errored at closeout: {_falsifier_exc}")
 
     try:
         from .goal_coverage import check_goal_coverage
