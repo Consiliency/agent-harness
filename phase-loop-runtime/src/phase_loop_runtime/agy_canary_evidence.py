@@ -1013,6 +1013,9 @@ def _cleanup_owned_roots(roots: Sequence[_OwnedCleanupRoot]) -> None:
                     _find_owned_cleanup_tombstone(
                         tmp_fd=tmp_fd, authority=authority,
                     )
+                    _validate_owned_cleanup_descendant_tombstones(
+                        tmp_fd=tmp_fd, authority=authority,
+                    )
                     try:
                         os.stat(
                             path.name, dir_fd=tmp_fd,
@@ -1068,13 +1071,16 @@ def _cleanup_owned_roots(roots: Sequence[_OwnedCleanupRoot]) -> None:
                             authority=authority,
                             anchored=opened,
                         )
-                        _remove_owned_cleanup_entries(
-                            root_fd, uid=authority.uid, gid=authority.gid,
+                        _quarantine_owned_cleanup_entries(
+                            root_fd, tmp_fd=tmp_fd, authority=authority,
                         )
                         _validate_owned_cleanup_tombstone(
                             tmp_fd=tmp_fd,
                             name=quarantine_name,
                             authority=authority,
+                        )
+                        _validate_owned_cleanup_descendant_tombstones(
+                            tmp_fd=tmp_fd, authority=authority,
                         )
                         try:
                             os.stat(
@@ -1233,22 +1239,76 @@ def _quarantine_owned_cleanup_root(
     return quarantine_name
 
 
-def _remove_owned_cleanup_entries(
-    directory_fd: int, *, uid: int, gid: int,
+def _quarantine_owned_cleanup_entries(
+    directory_fd: int, *, tmp_fd: int, authority: _OwnedCleanupRoot,
 ) -> None:
-    """Remove one verified tree without resolving any descendant host path."""
+    """Quarantine and sanitize entries without deleting substitutable names."""
     for name in sorted(os.listdir(directory_fd)):
         entry = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
-        if (entry.st_uid, entry.st_gid) != (uid, gid):
+        if (entry.st_uid, entry.st_gid) != (authority.uid, authority.gid):
             raise AgyCanaryEvidenceError("cleanup entry ownership drifted")
         if stat.S_ISLNK(entry.st_mode):
-            if entry.st_nlink != 1:
-                raise AgyCanaryEvidenceError("cleanup entry link count is unsafe")
-            os.unlink(name, dir_fd=directory_fd)
+            raise AgyCanaryEvidenceError(
+                "cleanup symlink cannot be sanitized safely"
+            )
         elif stat.S_ISREG(entry.st_mode):
             if entry.st_nlink != 1:
                 raise AgyCanaryEvidenceError("cleanup regular file is hard-linked")
-            os.unlink(name, dir_fd=directory_fd)
+            anchor_fd = os.open(
+                name, os.O_PATH | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=directory_fd,
+            )
+            try:
+                anchored = os.fstat(anchor_fd)
+                if (not stat.S_ISREG(anchored.st_mode) or
+                        anchored.st_nlink != 1 or
+                        (anchored.st_dev, anchored.st_ino,
+                         anchored.st_uid, anchored.st_gid) !=
+                        (entry.st_dev, entry.st_ino,
+                         entry.st_uid, entry.st_gid)):
+                    raise AgyCanaryEvidenceError(
+                        "cleanup regular file anchor drifted"
+                    )
+                os.chmod(f"/proc/self/fd/{anchor_fd}", 0o600)
+                file_fd = os.open(
+                    name, os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=directory_fd,
+                )
+                try:
+                    opened = os.fstat(file_fd)
+                    if (not stat.S_ISREG(opened.st_mode) or
+                            opened.st_nlink != 1 or
+                            (opened.st_dev, opened.st_ino,
+                             opened.st_uid, opened.st_gid) !=
+                            (anchored.st_dev, anchored.st_ino,
+                             anchored.st_uid, anchored.st_gid)):
+                        raise AgyCanaryEvidenceError(
+                            "cleanup regular file identity drifted"
+                        )
+                    os.ftruncate(file_fd, 0)
+                    os.fsync(file_fd)
+                    sanitized = os.fstat(file_fd)
+                    quarantine_name = _quarantine_owned_cleanup_entry(
+                        source_fd=directory_fd, source_name=name,
+                        tmp_fd=tmp_fd, authority=authority,
+                        kind="file", expected=sanitized,
+                    )
+                    moved = os.stat(
+                        quarantine_name, dir_fd=tmp_fd,
+                        follow_symlinks=False,
+                    )
+                    if (not stat.S_ISREG(moved.st_mode) or
+                            moved.st_nlink != 1 or moved.st_size != 0 or
+                            stat.S_IMODE(moved.st_mode) != 0o600 or
+                            _cleanup_entry_stat_identity(moved) !=
+                            _cleanup_entry_stat_identity(os.fstat(file_fd))):
+                        raise AgyCanaryEvidenceError(
+                            "cleanup file tombstone is invalid"
+                        )
+                finally:
+                    os.close(file_fd)
+            finally:
+                os.close(anchor_fd)
         elif stat.S_ISDIR(entry.st_mode):
             anchor_fd = os.open(
                 name,
@@ -1265,7 +1325,7 @@ def _remove_owned_cleanup_entries(
                         "cleanup directory anchor drifted"
                     )
                 _chmod_owned_cleanup_directory(
-                    anchor_fd, uid=uid, gid=gid,
+                    anchor_fd, uid=authority.uid, gid=authority.gid,
                 )
                 child_fd = os.open(
                     name,
@@ -1282,26 +1342,149 @@ def _remove_owned_cleanup_entries(
                         raise AgyCanaryEvidenceError(
                             "cleanup directory identity drifted"
                         )
-                    _remove_owned_cleanup_entries(child_fd, uid=uid, gid=gid)
-                    final_entry = os.stat(
-                        name, dir_fd=directory_fd, follow_symlinks=False,
+                    quarantine_name = _quarantine_owned_cleanup_entry(
+                        source_fd=directory_fd, source_name=name,
+                        tmp_fd=tmp_fd, authority=authority,
+                        kind="directory", expected=opened,
                     )
-                    if ((final_entry.st_dev, final_entry.st_ino,
-                         final_entry.st_uid, final_entry.st_gid) !=
+                    _quarantine_owned_cleanup_entries(
+                        child_fd, tmp_fd=tmp_fd, authority=authority,
+                    )
+                    final_entry = os.stat(
+                        quarantine_name, dir_fd=tmp_fd,
+                        follow_symlinks=False,
+                    )
+                    if (not stat.S_ISDIR(final_entry.st_mode) or
+                            (final_entry.st_dev, final_entry.st_ino,
+                             final_entry.st_uid, final_entry.st_gid) !=
                             (opened.st_dev, opened.st_ino,
                              opened.st_uid, opened.st_gid) or
-                            not stat.S_ISDIR(final_entry.st_mode) or
-                            os.listdir(child_fd)):
+                            stat.S_IMODE(final_entry.st_mode) != 0o700 or
+                            final_entry.st_nlink != 2 or os.listdir(child_fd)):
                         raise AgyCanaryEvidenceError(
-                            "cleanup directory changed before removal"
+                            "cleanup directory tombstone is invalid"
                         )
-                    os.rmdir(name, dir_fd=directory_fd)
                 finally:
                     os.close(child_fd)
             finally:
                 os.close(anchor_fd)
         else:
             raise AgyCanaryEvidenceError("cleanup root contains a special file")
+
+
+def _quarantine_owned_cleanup_entry(
+    *, source_fd: int, source_name: str, tmp_fd: int,
+    authority: _OwnedCleanupRoot, kind: str, expected: os.stat_result,
+) -> str:
+    """Move one descendant atomically and verify the moved inode before use."""
+    quarantine_name = (
+        f"{_OWNED_CLEANUP_QUARANTINE_PREFIX}entry-"
+        f"{authority.quarantine_token}-{kind}-{secrets.token_hex(8)}"
+    )
+    _rename_noreplace(
+        source_fd, source_name, tmp_fd, quarantine_name,
+    )
+    moved = os.stat(
+        quarantine_name, dir_fd=tmp_fd, follow_symlinks=False,
+    )
+    if _cleanup_entry_stat_identity(moved) != _cleanup_entry_stat_identity(expected):
+        raise AgyCanaryEvidenceError(
+            "cleanup descendant quarantine identity drifted"
+        )
+    try:
+        os.stat(source_name, dir_fd=source_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        pass
+    else:
+        raise AgyCanaryEvidenceError(
+            "cleanup descendant public name was recreated"
+        )
+    return quarantine_name
+
+
+def _cleanup_entry_stat_identity(info: os.stat_result) -> tuple[int, ...]:
+    """Return stable descendant metadata unaffected by an in-parent rename."""
+    return (
+        info.st_dev, info.st_ino, info.st_mode, info.st_nlink,
+        info.st_uid, info.st_gid, info.st_size, info.st_mtime_ns,
+    )
+
+
+def _validate_owned_cleanup_descendant_tombstones(
+    *, tmp_fd: int, authority: _OwnedCleanupRoot,
+) -> None:
+    """Validate every token-bound descendant tombstone as stable and empty."""
+    prefix = (
+        f"{_OWNED_CLEANUP_QUARANTINE_PREFIX}entry-"
+        f"{authority.quarantine_token}-"
+    )
+    for name in sorted(os.listdir(tmp_fd)):
+        if not name.startswith(prefix):
+            continue
+        match = re.fullmatch(
+            re.escape(prefix) + r"(file|directory)-[0-9a-f]{16}", name,
+        )
+        if match is None:
+            raise AgyCanaryEvidenceError(
+                "cleanup descendant tombstone name is malformed"
+            )
+        entry = os.stat(name, dir_fd=tmp_fd, follow_symlinks=False)
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+        if match.group(1) == "directory":
+            flags |= os.O_DIRECTORY
+        opened_fd = os.open(name, flags, dir_fd=tmp_fd)
+        try:
+            opened = os.fstat(opened_fd)
+            stable = _cleanup_tombstone_stat_identity(opened)
+            if match.group(1) == "directory":
+                first_content = os.listdir(opened_fd)
+                first_after = os.fstat(opened_fd)
+                after_entry = os.stat(
+                    name, dir_fd=tmp_fd, follow_symlinks=False,
+                )
+                second_content = os.listdir(opened_fd)
+            else:
+                first_content = os.read(opened_fd, 1)
+                first_after = os.fstat(opened_fd)
+                after_entry = os.stat(
+                    name, dir_fd=tmp_fd, follow_symlinks=False,
+                )
+                second_content = os.read(opened_fd, 1)
+            second_after = os.fstat(opened_fd)
+            final_entry = os.stat(
+                name, dir_fd=tmp_fd, follow_symlinks=False,
+            )
+            expected_kind = (
+                stat.S_ISDIR if match.group(1) == "directory"
+                else stat.S_ISREG
+            )
+            expected_mode = 0o700 if match.group(1) == "directory" else 0o600
+            expected_nlink = 2 if match.group(1) == "directory" else 1
+            if (not expected_kind(entry.st_mode) or
+                    not expected_kind(opened.st_mode) or
+                    (entry.st_uid, entry.st_gid) !=
+                    (authority.uid, authority.gid) or
+                    (opened.st_uid, opened.st_gid) !=
+                    (authority.uid, authority.gid) or
+                    stat.S_IMODE(entry.st_mode) != expected_mode or
+                    stat.S_IMODE(opened.st_mode) != expected_mode or
+                    entry.st_nlink != expected_nlink or
+                    opened.st_nlink != expected_nlink or
+                    (match.group(1) == "file" and
+                     (entry.st_size != 0 or opened.st_size != 0)) or
+                    first_content or second_content or
+                    any(
+                        _cleanup_tombstone_stat_identity(info) != stable
+                        for info in (
+                            entry, first_after, after_entry,
+                            second_after, final_entry,
+                        )
+                    )):
+                raise AgyCanaryEvidenceError(
+                    "cleanup descendant tombstone is invalid"
+                )
+        finally:
+            os.close(opened_fd)
 
 
 def _chmod_owned_cleanup_directory(anchor_fd: int, *, uid: int, gid: int) -> None:

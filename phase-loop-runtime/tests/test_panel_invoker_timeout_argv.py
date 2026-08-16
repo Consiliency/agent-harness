@@ -42,6 +42,13 @@ def _cleanup_tombstone_for(authority) -> Path:
     return matches[0]
 
 
+def _cleanup_descendant_tombstones_for(authority) -> list[Path]:
+    return sorted(Path("/tmp").glob(
+        f"{evidence._OWNED_CLEANUP_QUARANTINE_PREFIX}entry-"
+        f"{authority.quarantine_token}-*"
+    ))
+
+
 def test_leg_timeout_scales_with_review_size():
     with tempfile.TemporaryDirectory() as tmp:
         d = Path(tmp)
@@ -966,7 +973,15 @@ def test_capture_cleanup_repairs_owned_mode_zero_tree():
     assert not root.exists()
     tombstone = _cleanup_tombstone_for(authority)
     assert tombstone.is_dir() and list(tombstone.iterdir()) == []
+    descendants = _cleanup_descendant_tombstones_for(authority)
+    assert len(descendants) == 2
+    assert sorted(
+        ("directory", 0) if path.is_dir() else ("file", path.stat().st_size)
+        for path in descendants
+    ) == [("directory", 0), ("file", 0)]
     tombstone.rmdir()
+    for descendant in descendants:
+        descendant.rmdir() if descendant.is_dir() else descendant.unlink()
 
 
 @pytest.mark.parametrize("failure", ["chmod", "seal"])
@@ -1031,14 +1046,16 @@ def test_capture_cleanup_attempts_all_roots_and_reports_incomplete(monkeypatch):
     ]
     (first / "undeletable").write_text("retain\n")
     (second / "removable").write_text("remove\n")
-    real_unlink = evidence.os.unlink
+    real_rename_noreplace = evidence._rename_noreplace
 
-    def injected_failure(name, *args, **kwargs):
-        if name == "undeletable":
+    def injected_failure(source_fd, source, destination_fd, destination):
+        if source == "undeletable":
             raise PermissionError("injected undeletable root")
-        return real_unlink(name, *args, **kwargs)
+        return real_rename_noreplace(
+            source_fd, source, destination_fd, destination,
+        )
 
-    monkeypatch.setattr(evidence.os, "unlink", injected_failure)
+    monkeypatch.setattr(evidence, "_rename_noreplace", injected_failure)
     try:
         with pytest.raises(
             evidence.AgyCanaryEvidenceError, match="cleanup was incomplete",
@@ -1046,11 +1063,14 @@ def test_capture_cleanup_attempts_all_roots_and_reports_incomplete(monkeypatch):
             evidence._cleanup_owned_roots(authorities)
         first_tombstone = _cleanup_tombstone_for(authorities[0])
         second_tombstone = _cleanup_tombstone_for(authorities[1])
-        assert (first_tombstone / "undeletable").read_text() == "retain\n"
+        assert (first_tombstone / "undeletable").is_file()
+        assert (first_tombstone / "undeletable").read_bytes() == b""
         assert not second.exists()
         assert list(second_tombstone.iterdir()) == []
     finally:
-        monkeypatch.setattr(evidence.os, "unlink", real_unlink)
+        monkeypatch.setattr(
+            evidence, "_rename_noreplace", real_rename_noreplace,
+        )
         for authority in authorities:
             shutil.rmtree(_cleanup_tombstone_for(authority), ignore_errors=True)
 
@@ -1119,6 +1139,109 @@ def test_capture_cleanup_quarantine_swap_retains_unrelated_data(monkeypatch):
             shutil.rmtree(Path("/tmp") / name, ignore_errors=True)
 
 
+def test_capture_cleanup_regular_swap_at_quarantine_preserves_replacement(
+    monkeypatch,
+):
+    root = Path(tempfile.mkdtemp(prefix="pl-panel-capture-file-swap-", dir="/tmp"))
+    root.chmod(0o700)
+    authority = evidence._seal_owned_cleanup_root(root, kind="scratch")
+    (root / "victim").write_text("authorized\n")
+    real_rename_noreplace = evidence._rename_noreplace
+    moved_names: list[str] = []
+
+    def swap_inside_rename(source_fd, source, destination_fd, destination):
+        if source == "victim":
+            os.rename(
+                "victim", "authorized-original",
+                src_dir_fd=source_fd, dst_dir_fd=source_fd,
+            )
+            replacement_fd = os.open(
+                "victim", os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o600, dir_fd=source_fd,
+            )
+            try:
+                os.write(replacement_fd, b"unrelated-marker\n")
+            finally:
+                os.close(replacement_fd)
+            moved_names.append(destination)
+        return real_rename_noreplace(
+            source_fd, source, destination_fd, destination,
+        )
+
+    monkeypatch.setattr(evidence, "_rename_noreplace", swap_inside_rename)
+    try:
+        with pytest.raises(
+            evidence.AgyCanaryEvidenceError, match="cleanup was incomplete",
+        ):
+            evidence._cleanup_owned_roots([authority])
+        root_tombstone = _cleanup_tombstone_for(authority)
+        assert (root_tombstone / "authorized-original").read_bytes() == b""
+        assert len(moved_names) == 1
+        assert (Path("/tmp") / moved_names[0]).read_bytes() == b"unrelated-marker\n"
+    finally:
+        monkeypatch.setattr(
+            evidence, "_rename_noreplace", real_rename_noreplace,
+        )
+        shutil.rmtree(_cleanup_tombstone_for(authority), ignore_errors=True)
+        for name in moved_names:
+            (Path("/tmp") / name).unlink(missing_ok=True)
+
+
+def test_capture_cleanup_directory_swap_at_quarantine_preserves_replacement(
+    monkeypatch,
+):
+    root = Path(tempfile.mkdtemp(prefix="pl-panel-capture-dir-swap-", dir="/tmp"))
+    root.chmod(0o700)
+    authority = evidence._seal_owned_cleanup_root(root, kind="scratch")
+    nested = root / "nested"
+    nested.mkdir(mode=0o700)
+    (nested / "authorized").write_text("retain\n")
+    real_rename_noreplace = evidence._rename_noreplace
+    moved_names: list[str] = []
+
+    def swap_inside_rename(source_fd, source, destination_fd, destination):
+        if source == "nested":
+            os.rename(
+                "nested", "authorized-original",
+                src_dir_fd=source_fd, dst_dir_fd=source_fd,
+            )
+            os.mkdir("nested", mode=0o700, dir_fd=source_fd)
+            replacement_fd = os.open(
+                "nested", os.O_RDONLY | os.O_DIRECTORY,
+                dir_fd=source_fd,
+            )
+            try:
+                marker_fd = os.open(
+                    "unrelated-marker", os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                    0o600, dir_fd=replacement_fd,
+                )
+                os.close(marker_fd)
+            finally:
+                os.close(replacement_fd)
+            moved_names.append(destination)
+        return real_rename_noreplace(
+            source_fd, source, destination_fd, destination,
+        )
+
+    monkeypatch.setattr(evidence, "_rename_noreplace", swap_inside_rename)
+    try:
+        with pytest.raises(
+            evidence.AgyCanaryEvidenceError, match="cleanup was incomplete",
+        ):
+            evidence._cleanup_owned_roots([authority])
+        root_tombstone = _cleanup_tombstone_for(authority)
+        assert (root_tombstone / "authorized-original" / "authorized").read_text() == "retain\n"
+        assert len(moved_names) == 1
+        assert (Path("/tmp") / moved_names[0] / "unrelated-marker").is_file()
+    finally:
+        monkeypatch.setattr(
+            evidence, "_rename_noreplace", real_rename_noreplace,
+        )
+        shutil.rmtree(_cleanup_tombstone_for(authority), ignore_errors=True)
+        for name in moved_names:
+            shutil.rmtree(Path("/tmp") / name, ignore_errors=True)
+
+
 def test_capture_cleanup_never_name_deletes_public_root(monkeypatch):
     root = Path(tempfile.mkdtemp(prefix="pl-panel-capture-final-", dir="/tmp"))
     root.chmod(0o700)
@@ -1167,7 +1290,45 @@ def test_capture_cleanup_repeat_accepts_exact_empty_tombstone():
     tombstone = _cleanup_tombstone_for(authority)
     evidence._cleanup_owned_roots([authority])
     assert tombstone.is_dir() and list(tombstone.iterdir()) == []
+    descendants = _cleanup_descendant_tombstones_for(authority)
+    assert len(descendants) == 1
+    assert descendants[0].is_file() and descendants[0].stat().st_size == 0
     tombstone.rmdir()
+    descendants[0].unlink()
+
+
+@pytest.mark.parametrize("kind", ["file", "directory"])
+def test_capture_cleanup_repeat_rejects_nonempty_descendant_tombstone(kind):
+    root = Path(tempfile.mkdtemp(prefix="pl-panel-capture-desc-repeat-", dir="/tmp"))
+    root.chmod(0o700)
+    authority = evidence._seal_owned_cleanup_root(root, kind="scratch")
+    if kind == "file":
+        (root / "result").write_text("remove\n")
+    else:
+        (root / "nested").mkdir(mode=0o700)
+    evidence._cleanup_owned_roots([authority])
+    tombstone = _cleanup_tombstone_for(authority)
+    descendants = _cleanup_descendant_tombstones_for(authority)
+    assert len(descendants) == 1
+    if kind == "file":
+        descendants[0].write_text("late-secret\n")
+    else:
+        (descendants[0] / "late-secret").write_text("retain\n")
+    try:
+        with pytest.raises(
+            evidence.AgyCanaryEvidenceError, match="cleanup was incomplete",
+        ):
+            evidence._cleanup_owned_roots([authority])
+        if kind == "file":
+            assert descendants[0].read_text() == "late-secret\n"
+        else:
+            assert (descendants[0] / "late-secret").read_text() == "retain\n"
+    finally:
+        tombstone.rmdir()
+        if kind == "file":
+            descendants[0].unlink()
+        else:
+            shutil.rmtree(descendants[0])
 
 
 def test_capture_cleanup_repeat_rejects_late_tombstone_secret(monkeypatch):
