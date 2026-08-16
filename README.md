@@ -99,6 +99,20 @@ For periodic human review, bound the run (`--max-phases N`) and read the finding
 summary between runs rather than blocking mid-loop. See `CHANGELOG.md` (rigor-v1)
 for the full list of gates.
 
+## Making phases converge
+
+Running the harness is the easy part; keeping a phase from grinding is the part
+that bites. `docs/agent-phase-convergence.md` is the field guide — what a
+non-converging phase looks like early, the plan-level mistake that causes most of
+it (plans that pin their own future commit SHAs, counts, or topology), and the
+smallest set of changes that fixed it here.
+
+Read it before your first real phase if you are adopting this in another
+repository. Most of the advice is portable: it needs a text editor and one CI
+job, not a second machine or container CI, and the document says explicitly which
+items presuppose a plan runtime and what to do instead if you have none. It also
+states the limits of its own evidence.
+
 ## Model routing (two axes)
 
 Model selection has two independent axes:
