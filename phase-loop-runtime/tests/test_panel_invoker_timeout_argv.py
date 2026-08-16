@@ -1706,6 +1706,56 @@ def test_default_spawn_preserves_fatal_quiescence_authority(monkeypatch, tmp_pat
     )
 
 
+@pytest.mark.parametrize("mutation_kind", ["ledger", "output"])
+def test_capture_mutation_gate_rejects_parent_write_after_trip(
+    monkeypatch, tmp_path, mutation_kind,
+):
+    latch = pi._ProviderQuiescenceLatch()
+    primary = pi.ProviderProcessGroupQuiescenceError("fatal quiescence")
+    checked = threading.Event()
+    resume = threading.Event()
+    mutations: list[str] = []
+    errors: list[BaseException] = []
+    output = tmp_path / "parent-output"
+    authority = object.__new__(evidence.ProviderLaunchAuthority)
+
+    monkeypatch.setattr(
+        evidence.ProviderLaunchAuthority,
+        "record_review_attempt",
+        lambda _self, _command, **_kwargs: mutations.append("ledger"),
+    )
+
+    def worker() -> None:
+        try:
+            # Reproduce the old check-then-mutate window: this check succeeds,
+            # then a sibling trips the fatal latch before the mutation resumes.
+            latch.raise_if_set()
+            checked.set()
+            assert resume.wait(5)
+            if mutation_kind == "ledger":
+                pi._record_capture_review_attempt(
+                    authority, ["codex"], quiescence_latch=latch,
+                )
+            else:
+                pi._capture_mutation(
+                    latch, lambda: output.write_text("parent mutation"),
+                )
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    assert checked.wait(5)
+    assert latch.trip(primary) is primary
+    resume.set()
+    thread.join(5)
+
+    assert not thread.is_alive()
+    assert errors == [primary]
+    assert mutations == []
+    assert not output.exists()
+
+
 @pytest.mark.parametrize(
     "max_concurrency", [1, 4], ids=["queued-sequential", "running-parallel-barrier"],
 )
@@ -1759,16 +1809,24 @@ def test_capture_quiescence_failure_stops_siblings_and_retains_private_roots(
             raise primary_error
         (outputs[leg] / "pre-fatal-partial-output").write_text("retained")
         pid_marker = tmp_path / f"{leg}.pid"
+        sigterm_marker = outputs[leg] / "sigterm-partial-output"
         pi._run_leg_with_liveness(
             [
                 sys.executable,
                 "-c",
                 (
-                    "import os, sys, time; "
-                    "open(sys.argv[1], 'w').write(str(os.getpid())); "
-                    "time.sleep(600)"
+                    "import os, signal, sys, time\n"
+                    "def on_term(_signum, _frame):\n"
+                    "    with open(sys.argv[2], 'w') as marker:\n"
+                    "        marker.write('truthful post-trip private output')\n"
+                    "signal.signal(signal.SIGTERM, on_term)\n"
+                    "with open(sys.argv[1], 'w') as marker:\n"
+                    "    marker.write(str(os.getpid()))\n"
+                    "while True:\n"
+                    "    time.sleep(1)\n"
                 ),
                 str(pid_marker),
+                str(sigterm_marker),
             ],
             cwd=tmp_path,
             env=os.environ,
@@ -1776,7 +1834,7 @@ def test_capture_quiescence_failure_stops_siblings_and_retains_private_roots(
             stall_threshold_s=30,
             quiescence_latch=quiescence_latch,
         )
-        (outputs[leg] / "post-fatal-marker").write_text("must-not-run")
+        (outputs[leg] / "parent-after-quiescence-marker").write_text("must-not-run")
         return "OK", "AGREE"
 
     def seal_result(**_kwargs):
@@ -1832,7 +1890,12 @@ def test_capture_quiescence_failure_stops_siblings_and_retains_private_roots(
                 for provider in ("gemini", "claude", "grok")
             )
             assert all(
-                not (outputs[provider] / "post-fatal-marker").exists()
+                (outputs[provider] / "sigterm-partial-output").read_text()
+                == "truthful post-trip private output"
+                for provider in ("gemini", "claude", "grok")
+            )
+            assert all(
+                not (outputs[provider] / "parent-after-quiescence-marker").exists()
                 for provider in ("gemini", "claude", "grok")
             )
         assert len(roots) == 8

@@ -32,7 +32,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from hashlib import sha256
 from pathlib import Path
-from typing import Callable, Mapping, Sequence, cast
+from typing import Callable, Mapping, Sequence, TypeVar, cast
 
 try:
     import fcntl
@@ -130,8 +130,19 @@ class ProviderProcessGroupQuiescenceError(AgyCanaryEvidenceError):
     """A provider process group could not be proven absent after termination."""
 
 
+_CaptureMutationResult = TypeVar("_CaptureMutationResult")
+
+
 class _ProviderQuiescenceLatch:
-    """Share the first fatal quiescence error across collector and seat workers."""
+    """Share one fatal error while closing launches and sweeping provider groups.
+
+    A trip does not freeze bytes already owned by a running child: its SIGTERM
+    handler may still write truthful partial private output before the group is
+    proven absent.  Fatal callers therefore suppress evidence publication and
+    cleanup, retain the mode-0700 roots, and treat them as stable only after every
+    registered group has been proven absent.  If absence cannot be proven, the
+    roots remain retained under the original fatal authority.
+    """
 
     def __init__(self) -> None:
         self._event = threading.Event()
@@ -157,6 +168,15 @@ class _ProviderQuiescenceLatch:
                 )
             self._processes[proc.pid] = proc
             return proc
+
+    def execute_if_open(
+        self, mutation: Callable[[], _CaptureMutationResult],
+    ) -> _CaptureMutationResult:
+        """Linearize a coordinator mutation before a trip or reject it after."""
+        with self._condition:
+            if self._primary is not None:
+                raise self._primary
+            return mutation()
 
     def release(self, proc: subprocess.Popen[bytes]) -> None:
         """Deregister only after the exact anchored group is proven absent."""
@@ -224,6 +244,15 @@ class _ProviderQuiescenceLatch:
 
     def is_set(self) -> bool:
         return self._event.is_set()
+
+
+def _capture_mutation(
+    quiescence_latch: _ProviderQuiescenceLatch | None,
+    mutation: Callable[[], _CaptureMutationResult],
+) -> _CaptureMutationResult:
+    if quiescence_latch is None:
+        return mutation()
+    return quiescence_latch.execute_if_open(mutation)
 
 
 class ReviewLandingTier(str, Enum):
@@ -3119,10 +3148,14 @@ def _tui_capable(
 def _record_capture_review_attempt(
     authority: ProviderLaunchAuthority, command: list[str], *,
     attempt_id: str | None = None,
+    quiescence_latch: _ProviderQuiescenceLatch | None = None,
 ) -> None:
     """Record the actual invocation when using the production launch authority."""
     if isinstance(authority, ProviderLaunchAuthority):
-        authority.record_review_attempt(command, attempt_id=attempt_id)
+        _capture_mutation(
+            quiescence_latch,
+            lambda: authority.record_review_attempt(command, attempt_id=attempt_id),
+        )
 
 
 def _cleanup_capture_launches(
@@ -3210,7 +3243,10 @@ def _exec_claude_tui_leg(
                 "capture-enabled Claude launch has no prepared namespace"
             )
         try:
-            output_file.touch(mode=0o600, exist_ok=False)
+            _capture_mutation(
+                quiescence_latch,
+                lambda: output_file.touch(mode=0o600, exist_ok=False),
+            )
         except FileExistsError as exc:
             raise AgyCanaryEvidenceError(
                 "capture-enabled Claude output already exists before launch"
@@ -3249,7 +3285,9 @@ def _exec_claude_tui_leg(
             quiescence_latch.raise_if_set()
         command = provider_authority.preflight(command)
         env = provider_authority.outer_environment()
-        _record_capture_review_attempt(provider_authority, command)
+        _record_capture_review_attempt(
+            provider_authority, command, quiescence_latch=quiescence_latch,
+        )
     tui_extra = (
         {"capture_output_reader": capture_output_reader}
         if capture_output_reader is not None
@@ -3588,7 +3626,10 @@ def _exec_leg(
             _t0 = time.monotonic()
             try:
                 if agy_capture is not None:
-                    _record_capture_review_attempt(provider_authority, cmd)
+                    _record_capture_review_attempt(
+                        provider_authority, cmd,
+                        quiescence_latch=quiescence_latch,
+                    )
                 # codex streams its transcript to STDERR (stdout is empty until the
                 # final message), so the liveness heartbeat rides stderr. Prompt on
                 # stdin ("-").
@@ -3717,6 +3758,7 @@ def _exec_leg(
                     _record_capture_review_attempt(
                         provider_authority, cmd,
                         attempt_id=f"gemini-{_attempt + 1}",
+                        quiescence_latch=quiescence_latch,
                     )
                 # agy streams its review to STDOUT; the liveness heartbeat rides stdout
                 # (with a secondary CPU reset covering the ~20s silent "thinking" phase).
@@ -3748,15 +3790,14 @@ def _exec_leg(
                         timeout_stderr = timeout_stderr.decode(
                             "utf-8", errors="replace"
                         )
-                    record_launch(
-                        capture=agy_capture,
-                        seat_key=seat_key,
-                        attempt_id=f"gemini-{_attempt + 1}",
-                        argv=cmd,
-                        returncode=124,
-                        stdout=str(timeout_stdout or ""),
-                        stderr=str(timeout_stderr or ""),
-                        staged=capture_staged,
+                    _capture_mutation(
+                        quiescence_latch,
+                        lambda: record_launch(
+                            capture=agy_capture, seat_key=seat_key,
+                            attempt_id=f"gemini-{_attempt + 1}", argv=cmd,
+                            returncode=124, stdout=str(timeout_stdout or ""),
+                            stderr=str(timeout_stderr or ""), staged=capture_staged,
+                        ),
                     )
                 return 124, "", f"timeout after {deadline_s}s"
             if quiescence_latch is not None:
@@ -3769,15 +3810,14 @@ def _exec_leg(
             if agy_capture is not None:
                 if not seat_key or capture_staged is None:
                     raise AgyCanaryEvidenceError("capture-enabled Gemini launch is missing sealed stage or seat")
-                record_launch(
-                    capture=agy_capture,
-                    seat_key=seat_key,
-                    attempt_id=f"gemini-{_attempt + 1}",
-                    argv=cmd,
-                    returncode=rc,
-                    stdout=raw_stream,
-                    stderr=log_text,
-                    staged=capture_staged,
+                _capture_mutation(
+                    quiescence_latch,
+                    lambda: record_launch(
+                        capture=agy_capture, seat_key=seat_key,
+                        attempt_id=f"gemini-{_attempt + 1}", argv=cmd,
+                        returncode=rc, stdout=raw_stream, stderr=log_text,
+                        staged=capture_staged,
+                    ),
                 )
                 from .agy_canary_evidence import _parse_stream
                 _session, _calls, terminal = _parse_stream(raw_stream.encode())
@@ -3816,9 +3856,14 @@ def _exec_leg(
             if _elapsed >= (timeout_s + 60) * _LEG_RETRY_ELAPSED_FRACTION:
                 break  # slow stall (not fast/transient) → don't re-run + double wall-clock
         if agy_capture is not None:
-            review_text = provider_authority.write_expected_output(
-                out_file.name, review_text.encode("utf-8")
-            ).decode("utf-8", errors="replace")
+            output_bytes = review_text.encode("utf-8")
+            written = _capture_mutation(
+                quiescence_latch,
+                lambda: provider_authority.write_expected_output(
+                    out_file.name, output_bytes,
+                ),
+            )
+            review_text = written.decode("utf-8", errors="replace")
         else:
             out_file.write_text(review_text, encoding="utf-8")
         return rc, review_text, log_text
@@ -3885,7 +3930,10 @@ def _exec_leg(
             _t0 = time.monotonic()
             try:
                 if agy_capture is not None:
-                    _record_capture_review_attempt(provider_authority, cmd)
+                    _record_capture_review_attempt(
+                        provider_authority, cmd,
+                        quiescence_latch=quiescence_latch,
+                    )
                 # grok streams its plain review to STDOUT; heartbeat rides stdout.
                 # Prompt is inline on argv (-p) — no stdin.
                 proc = _run_leg_with_liveness(
@@ -3916,9 +3964,14 @@ def _exec_leg(
             if _elapsed >= (timeout_s + 60) * _LEG_RETRY_ELAPSED_FRACTION:
                 break
         if agy_capture is not None:
-            review_text = provider_authority.write_expected_output(
-                out_file.name, review_text.encode("utf-8")
-            ).decode("utf-8", errors="replace")
+            output_bytes = review_text.encode("utf-8")
+            written = _capture_mutation(
+                quiescence_latch,
+                lambda: provider_authority.write_expected_output(
+                    out_file.name, output_bytes,
+                ),
+            )
+            review_text = written.decode("utf-8", errors="replace")
         else:
             out_file.write_text(review_text, encoding="utf-8")
         return rc, review_text, log_text
@@ -3991,18 +4044,21 @@ def _default_spawn(
             )
         capture_staged: dict[str, dict[str, object]] | None = None
         if agy_capture is not None:
-            if quiescence_latch is not None:
-                quiescence_latch.raise_if_set()
             if leg == "gemini" and not seat_key:
                 raise AgyCanaryEvidenceError(
                     "capture-enabled Gemini launch is missing its singleton seat"
                 )
-            for staged_name in ("review-bundle.md", "review-instructions.md"):
-                (review_dir / staged_name).chmod(0o600)
-            if leg == "gemini":
-                capture_staged = retain_staged_files(
-                    capture=agy_capture, review_dir=review_dir
-                )
+
+            def stage_mutation() -> dict[str, dict[str, object]] | None:
+                for staged_name in ("review-bundle.md", "review-instructions.md"):
+                    (review_dir / staged_name).chmod(0o600)
+                if leg == "gemini":
+                    return retain_staged_files(
+                        capture=agy_capture, review_dir=review_dir,
+                    )
+                return None
+
+            capture_staged = _capture_mutation(quiescence_latch, stage_mutation)
         # ``timeout_s is None`` ⇒ today's input-scaled timeout (golden-neutral); an
         # explicit override bounds the leg. This is the ONE place that knows whether the
         # override was explicit, so resolve BOTH the retry reference and the hard deadline
