@@ -4659,7 +4659,9 @@ def invoke_board(
         for index, (seat, provider) in enumerate(zip(capture_seats, providers)):
             scratch = Path(tempfile.mkdtemp(prefix="pl-panel-capture-"))
             scratch.chmod(0o700)
-            scratch_cleanup = _seal_owned_cleanup_root(scratch)
+            scratch_cleanup = _seal_owned_cleanup_root(
+                scratch, kind="scratch",
+            )
             capture_scratches.append(scratch_cleanup)
             try:
                 stage = scratch / "review"

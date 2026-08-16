@@ -884,15 +884,25 @@ class AgyCanaryCapture:
 @dataclass(frozen=True)
 class _OwnedCleanupRoot:
     path: Path
+    kind: str
+    prefix: str
     device: int
     inode: int
     uid: int
     gid: int
 
 
-def _seal_owned_cleanup_root(path: Path) -> _OwnedCleanupRoot:
+_OWNED_CLEANUP_PREFIXES = {
+    "provider_output": "phase-loop-provider-output-",
+    "scratch": "pl-panel-capture-",
+}
+
+
+def _seal_owned_cleanup_root(path: Path, *, kind: str) -> _OwnedCleanupRoot:
     """Seal one internally created private /tmp root before it is populated."""
-    if not path.is_absolute() or path.parent != Path("/tmp"):
+    prefix = _OWNED_CLEANUP_PREFIXES.get(kind)
+    if (prefix is None or not path.is_absolute() or path.parent != Path("/tmp") or
+            not path.name.startswith(prefix) or path.name == prefix):
         raise AgyCanaryEvidenceError("cleanup root must be a direct child of /tmp")
     try:
         info = path.lstat()
@@ -903,7 +913,8 @@ def _seal_owned_cleanup_root(path: Path) -> _OwnedCleanupRoot:
             stat.S_IMODE(info.st_mode) != 0o700):
         raise AgyCanaryEvidenceError("cleanup root is not one private owned directory")
     return _OwnedCleanupRoot(
-        path=path, device=info.st_dev, inode=info.st_ino,
+        path=path, kind=kind, prefix=prefix,
+        device=info.st_dev, inode=info.st_ino,
         uid=info.st_uid, gid=info.st_gid,
     )
 
@@ -911,113 +922,209 @@ def _seal_owned_cleanup_root(path: Path) -> _OwnedCleanupRoot:
 def _cleanup_owned_roots(roots: Sequence[_OwnedCleanupRoot]) -> None:
     """Attempt every exact-owned cleanup and fail if any root remains."""
     errors: list[str] = []
-    seen: set[tuple[str, int, int]] = set()
+    seen: set[tuple[str, str, int, int]] = set()
     for authority in roots:
-        key = (str(authority.path), authority.device, authority.inode)
+        key = (
+            authority.kind, str(authority.path),
+            authority.device, authority.inode,
+        )
         if key in seen:
             continue
         seen.add(key)
         path = authority.path
         try:
-            info = path.lstat()
-        except FileNotFoundError:
-            continue
-        except OSError as exc:
-            errors.append(f"{path.name}:lstat:{type(exc).__name__}")
-            continue
-        if (stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode) or
-                (info.st_dev, info.st_ino, info.st_uid, info.st_gid) != (
-                    authority.device, authority.inode, authority.uid, authority.gid
-                )):
-            errors.append(f"{path.name}:identity")
-            continue
-
-        def make_removable(directory_fd: int) -> None:
-            for name in sorted(os.listdir(directory_fd)):
-                before = os.stat(
-                    name, dir_fd=directory_fd, follow_symlinks=False,
-                )
-                if before.st_uid != authority.uid:
-                    raise AgyCanaryEvidenceError(
-                        "cleanup entry ownership drifted"
-                    )
-                if stat.S_ISLNK(before.st_mode):
-                    continue
-                if stat.S_ISDIR(before.st_mode):
-                    os.chmod(
-                        name, 0o700, dir_fd=directory_fd,
-                        follow_symlinks=False,
-                    )
-                    child_fd = os.open(
-                        name,
-                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW |
-                        os.O_CLOEXEC,
-                        dir_fd=directory_fd,
-                    )
-                    try:
-                        opened = os.fstat(child_fd)
-                        if ((opened.st_dev, opened.st_ino, opened.st_uid,
-                             opened.st_gid) !=
-                                (before.st_dev, before.st_ino, before.st_uid,
-                                 before.st_gid)):
-                            raise AgyCanaryEvidenceError(
-                                "cleanup directory identity drifted"
-                            )
-                        make_removable(child_fd)
-                    finally:
-                        os.close(child_fd)
-                elif stat.S_ISREG(before.st_mode):
-                    os.chmod(
-                        name, 0o600, dir_fd=directory_fd,
-                        follow_symlinks=False,
-                    )
-                else:
-                    raise AgyCanaryEvidenceError(
-                        "cleanup root contains a special file"
-                    )
-                after = os.stat(
-                    name, dir_fd=directory_fd, follow_symlinks=False,
-                )
-                if ((after.st_dev, after.st_ino, after.st_uid, after.st_gid,
-                     stat.S_IFMT(after.st_mode)) !=
-                        (before.st_dev, before.st_ino, before.st_uid,
-                         before.st_gid, stat.S_IFMT(before.st_mode))):
-                    raise AgyCanaryEvidenceError(
-                        "cleanup entry identity drifted"
-                    )
-
-        try:
-            if not shutil.rmtree.avoids_symlink_attacks:
-                raise AgyCanaryEvidenceError("descriptor-safe cleanup is unavailable")
-            os.chmod(path, 0o700, follow_symlinks=False)
-            root_fd = os.open(
-                path,
+            if (authority.prefix != _OWNED_CLEANUP_PREFIXES.get(authority.kind) or
+                    path.parent != Path("/tmp") or
+                    not path.name.startswith(authority.prefix) or
+                    path.name == authority.prefix):
+                raise AgyCanaryEvidenceError("cleanup root authority is malformed")
+            tmp_before = Path("/tmp").lstat()
+            tmp_fd = os.open(
+                "/tmp",
                 os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
             )
             try:
-                opened = os.fstat(root_fd)
-                if ((opened.st_dev, opened.st_ino, opened.st_uid, opened.st_gid) !=
+                tmp_opened = os.fstat(tmp_fd)
+                if (not stat.S_ISDIR(tmp_opened.st_mode) or tmp_opened.st_uid != 0 or
+                        stat.S_IMODE(tmp_opened.st_mode) != 0o1777 or
+                        (tmp_opened.st_dev, tmp_opened.st_ino,
+                         tmp_opened.st_mode, tmp_opened.st_uid,
+                         tmp_opened.st_gid) !=
+                        (tmp_before.st_dev, tmp_before.st_ino,
+                         tmp_before.st_mode, tmp_before.st_uid,
+                         tmp_before.st_gid)):
+                    raise AgyCanaryEvidenceError(
+                        "trusted /tmp cleanup parent is unsafe"
+                    )
+                try:
+                    entry = os.stat(
+                        path.name, dir_fd=tmp_fd, follow_symlinks=False,
+                    )
+                except FileNotFoundError:
+                    continue
+                if (stat.S_ISLNK(entry.st_mode) or not stat.S_ISDIR(entry.st_mode) or
+                        (entry.st_dev, entry.st_ino, entry.st_uid, entry.st_gid) !=
                         (authority.device, authority.inode,
                          authority.uid, authority.gid)):
-                    raise AgyCanaryEvidenceError(
-                        "cleanup root identity drifted"
+                    raise AgyCanaryEvidenceError("cleanup root identity drifted")
+                anchor_fd = os.open(
+                    path.name,
+                    os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=tmp_fd,
+                )
+                try:
+                    anchored = os.fstat(anchor_fd)
+                    if ((anchored.st_dev, anchored.st_ino, anchored.st_uid,
+                         anchored.st_gid) !=
+                            (authority.device, authority.inode,
+                             authority.uid, authority.gid)):
+                        raise AgyCanaryEvidenceError(
+                            "cleanup root anchor identity drifted"
+                        )
+                    _chmod_owned_cleanup_directory(
+                        anchor_fd, uid=authority.uid, gid=authority.gid,
                     )
-                make_removable(root_fd)
+                    root_fd = os.open(
+                        path.name,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW |
+                        os.O_CLOEXEC,
+                        dir_fd=tmp_fd,
+                    )
+                    try:
+                        opened = os.fstat(root_fd)
+                        if ((opened.st_dev, opened.st_ino, opened.st_uid,
+                             opened.st_gid) !=
+                                (anchored.st_dev, anchored.st_ino,
+                                 anchored.st_uid, anchored.st_gid)):
+                            raise AgyCanaryEvidenceError(
+                                "cleanup root descriptor identity drifted"
+                            )
+                        _remove_owned_cleanup_entries(
+                            root_fd, uid=authority.uid, gid=authority.gid,
+                        )
+                        final_entry = os.stat(
+                            path.name, dir_fd=tmp_fd,
+                            follow_symlinks=False,
+                        )
+                        if ((final_entry.st_dev, final_entry.st_ino,
+                             final_entry.st_uid, final_entry.st_gid) !=
+                                (opened.st_dev, opened.st_ino,
+                                 opened.st_uid, opened.st_gid) or
+                                not stat.S_ISDIR(final_entry.st_mode) or
+                                os.listdir(root_fd)):
+                            raise AgyCanaryEvidenceError(
+                                "cleanup root changed before final removal"
+                            )
+                        os.rmdir(path.name, dir_fd=tmp_fd)
+                        try:
+                            os.stat(
+                                path.name, dir_fd=tmp_fd,
+                                follow_symlinks=False,
+                            )
+                        except FileNotFoundError:
+                            pass
+                        else:
+                            raise AgyCanaryEvidenceError(
+                                "cleanup root name was not removed"
+                            )
+                    finally:
+                        os.close(root_fd)
+                finally:
+                    os.close(anchor_fd)
             finally:
-                os.close(root_fd)
-            shutil.rmtree(path)
-            try:
-                remaining = path.lstat()
-            except FileNotFoundError:
-                remaining = None
-            if remaining is not None:
-                raise AgyCanaryEvidenceError("cleanup root still exists")
+                os.close(tmp_fd)
         except Exception as exc:
             errors.append(f"{path.name}:{type(exc).__name__}")
     if errors:
         raise AgyCanaryEvidenceError(
             "capture resource cleanup was incomplete: " + ",".join(errors)
         )
+
+
+def _remove_owned_cleanup_entries(
+    directory_fd: int, *, uid: int, gid: int,
+) -> None:
+    """Remove one verified tree without resolving any descendant host path."""
+    for name in sorted(os.listdir(directory_fd)):
+        entry = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        if (entry.st_uid, entry.st_gid) != (uid, gid):
+            raise AgyCanaryEvidenceError("cleanup entry ownership drifted")
+        if stat.S_ISLNK(entry.st_mode):
+            if entry.st_nlink != 1:
+                raise AgyCanaryEvidenceError("cleanup entry link count is unsafe")
+            os.unlink(name, dir_fd=directory_fd)
+        elif stat.S_ISREG(entry.st_mode):
+            if entry.st_nlink != 1:
+                raise AgyCanaryEvidenceError("cleanup regular file is hard-linked")
+            os.unlink(name, dir_fd=directory_fd)
+        elif stat.S_ISDIR(entry.st_mode):
+            anchor_fd = os.open(
+                name,
+                os.O_PATH | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=directory_fd,
+            )
+            try:
+                anchored = os.fstat(anchor_fd)
+                if ((anchored.st_dev, anchored.st_ino, anchored.st_uid,
+                     anchored.st_gid) !=
+                        (entry.st_dev, entry.st_ino, entry.st_uid,
+                         entry.st_gid)):
+                    raise AgyCanaryEvidenceError(
+                        "cleanup directory anchor drifted"
+                    )
+                _chmod_owned_cleanup_directory(
+                    anchor_fd, uid=uid, gid=gid,
+                )
+                child_fd = os.open(
+                    name,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW |
+                    os.O_CLOEXEC,
+                    dir_fd=directory_fd,
+                )
+                try:
+                    opened = os.fstat(child_fd)
+                    if ((opened.st_dev, opened.st_ino, opened.st_uid,
+                         opened.st_gid) !=
+                            (anchored.st_dev, anchored.st_ino,
+                             anchored.st_uid, anchored.st_gid)):
+                        raise AgyCanaryEvidenceError(
+                            "cleanup directory identity drifted"
+                        )
+                    _remove_owned_cleanup_entries(child_fd, uid=uid, gid=gid)
+                    final_entry = os.stat(
+                        name, dir_fd=directory_fd, follow_symlinks=False,
+                    )
+                    if ((final_entry.st_dev, final_entry.st_ino,
+                         final_entry.st_uid, final_entry.st_gid) !=
+                            (opened.st_dev, opened.st_ino,
+                             opened.st_uid, opened.st_gid) or
+                            not stat.S_ISDIR(final_entry.st_mode) or
+                            os.listdir(child_fd)):
+                        raise AgyCanaryEvidenceError(
+                            "cleanup directory changed before removal"
+                        )
+                    os.rmdir(name, dir_fd=directory_fd)
+                finally:
+                    os.close(child_fd)
+            finally:
+                os.close(anchor_fd)
+        else:
+            raise AgyCanaryEvidenceError("cleanup root contains a special file")
+
+
+def _chmod_owned_cleanup_directory(anchor_fd: int, *, uid: int, gid: int) -> None:
+    """Repair one directory through its held O_PATH descriptor, never its name."""
+    before = os.fstat(anchor_fd)
+    if (not stat.S_ISDIR(before.st_mode) or
+            (before.st_uid, before.st_gid) != (uid, gid)):
+        raise AgyCanaryEvidenceError("cleanup directory ownership drifted")
+    os.chmod(f"/proc/self/fd/{anchor_fd}", 0o700)
+    after = os.fstat(anchor_fd)
+    if ((after.st_dev, after.st_ino, after.st_uid, after.st_gid) !=
+            (before.st_dev, before.st_ino, before.st_uid, before.st_gid) or
+            not stat.S_ISDIR(after.st_mode) or
+            stat.S_IMODE(after.st_mode) != 0o700):
+        raise AgyCanaryEvidenceError("cleanup directory chmod authority drifted")
 
 
 @dataclass(frozen=True)
@@ -1695,7 +1802,9 @@ def prepare_provider_launch_authorities(
             auth_records = gemini_auth_records if provider == "gemini" else _provider_auth_records(provider, minimal_home)
             provider_output = Path(tempfile.mkdtemp(prefix=f"phase-loop-provider-output-{provider}-", dir="/tmp"))
             provider_output.chmod(0o700)
-            provider_output_cleanup = _seal_owned_cleanup_root(provider_output)
+            provider_output_cleanup = _seal_owned_cleanup_root(
+                provider_output, kind="provider_output",
+            )
             provider_outputs.append(provider_output_cleanup)
             namespace = AgyCanaryNamespace(
                 stage=stage, minimal_home=minimal_home, evidence_root=capture.root,
