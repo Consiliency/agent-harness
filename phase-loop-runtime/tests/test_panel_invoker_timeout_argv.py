@@ -1756,6 +1756,151 @@ def test_capture_mutation_gate_rejects_parent_write_after_trip(
     assert not output.exists()
 
 
+def test_capture_grok_preflight_publish_rejects_after_trip(tmp_path):
+    latch = pi._ProviderQuiescenceLatch()
+    primary = pi.ProviderProcessGroupQuiescenceError("fatal preflight")
+    precommit = threading.Event()
+    resume = threading.Event()
+    errors: list[BaseException] = []
+
+    class PausedGrokAuthority:
+        review_launch = None
+
+        def preflight(self, command, *, probe_runner, publish):
+            assert callable(probe_runner)
+            precommit.set()
+            assert resume.wait(5)
+            publish(lambda: setattr(self, "review_launch", tuple(command)))
+            return command
+
+    authority = PausedGrokAuthority()
+
+    def worker() -> None:
+        try:
+            pi._capture_provider_preflight(authority, ["grok"], latch)
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    assert precommit.wait(5)
+    assert latch.trip(primary) is primary
+    resume.set()
+    thread.join(5)
+
+    assert not thread.is_alive()
+    assert errors == [primary]
+    assert authority.review_launch is None
+
+
+@pytest.mark.skipif(os.name == "nt", reason="preflight registry needs POSIX groups")
+def test_capture_preflight_probe_is_swept_by_fatal_latch(tmp_path):
+    latch = pi._ProviderQuiescenceLatch()
+    primary = pi.ProviderProcessGroupQuiescenceError("fatal preflight")
+    pid_marker = tmp_path / "preflight.pid"
+    errors: list[BaseException] = []
+
+    class BlockingGrokAuthority:
+        review_launch = None
+
+        def preflight(self, command, *, probe_runner, publish):
+            returncode = probe_runner(
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import os, signal, sys, time; "
+                        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                        "open(sys.argv[1], 'w').write(str(os.getpid())); "
+                        "time.sleep(600)"
+                    ),
+                    str(pid_marker),
+                ],
+                os.environ,
+                30,
+            )
+            assert returncode == 0
+            publish(lambda: setattr(self, "review_launch", tuple(command)))
+            return command
+
+    authority = BlockingGrokAuthority()
+
+    def worker() -> None:
+        try:
+            pi._capture_provider_preflight(authority, ["grok"], latch)
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    deadline = time.monotonic() + 5
+    while not pid_marker.exists() and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert pid_marker.exists()
+    pid = int(pid_marker.read_text())
+    assert latch.trip(primary) is primary
+    thread.join(5)
+
+    assert not thread.is_alive()
+    assert errors == [primary]
+    assert authority.review_launch is None
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
+    assert not pi._process_group_exists(pid)
+
+
+@pytest.mark.parametrize("publication_kind", ["stream-file", "callback"])
+def test_capture_stream_publication_rejects_after_paused_gate_trip(
+    monkeypatch, tmp_path, publication_kind,
+):
+    latch = pi._ProviderQuiescenceLatch()
+    primary = pi.ProviderProcessGroupQuiescenceError("fatal stream publication")
+    gate_entered = threading.Event()
+    resume = threading.Event()
+    callbacks: list[str] = []
+    errors: list[BaseException] = []
+    real_gate = pi._capture_mutation
+
+    def paused_gate(gate_latch, mutation):
+        if gate_latch is latch:
+            gate_entered.set()
+            assert resume.wait(5)
+        return real_gate(gate_latch, mutation)
+
+    monkeypatch.setattr(pi, "_capture_mutation", paused_gate)
+    result = pi.PanelLegResult("codex", "OK", "AGREE")
+    stream_dir = tmp_path / "stream"
+
+    def run() -> None:
+        try:
+            pi._run_legs_ordered(
+                [object()],
+                lambda _item: result,
+                max_concurrency=1,
+                on_leg_complete=(
+                    callbacks.append if publication_kind == "callback" else None
+                ),
+                review_dir=(
+                    stream_dir if publication_kind == "stream-file" else None
+                ),
+                fatal_latch=latch,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    assert gate_entered.wait(5)
+    assert latch.trip(primary) is primary
+    resume.set()
+    thread.join(5)
+
+    assert not thread.is_alive()
+    assert errors == [primary]
+    assert callbacks == []
+    assert not stream_dir.exists()
+
+
 @pytest.mark.parametrize(
     "max_concurrency", [1, 4], ids=["queued-sequential", "running-parallel-barrier"],
 )

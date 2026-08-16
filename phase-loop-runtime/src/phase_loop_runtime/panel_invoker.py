@@ -3158,6 +3158,34 @@ def _record_capture_review_attempt(
         )
 
 
+def _capture_provider_preflight(
+    authority: ProviderLaunchAuthority,
+    command: list[str],
+    quiescence_latch: _ProviderQuiescenceLatch | None,
+) -> list[str]:
+    if quiescence_latch is None:
+        return authority.preflight(command)
+
+    def probe_runner(
+        probe_command: list[str], probe_env: Mapping[str, str], timeout_s: int,
+    ) -> int:
+        result = _run_leg_with_liveness(
+            probe_command,
+            cwd=Path.cwd(),
+            env=probe_env,
+            deadline_s=float(timeout_s),
+            stall_threshold_s=float(timeout_s),
+            quiescence_latch=quiescence_latch,
+        )
+        return result.returncode
+
+    return authority.preflight(
+        command,
+        probe_runner=probe_runner,
+        publish=quiescence_latch.execute_if_open,
+    )
+
+
 def _cleanup_capture_launches(
     launches: Mapping[
         str, tuple[ProviderLaunchAuthority, Path, Path, _OwnedCleanupRoot]
@@ -3283,7 +3311,9 @@ def _exec_claude_tui_leg(
     if agy_capture is not None:
         if quiescence_latch is not None:
             quiescence_latch.raise_if_set()
-        command = provider_authority.preflight(command)
+        command = _capture_provider_preflight(
+            provider_authority, command, quiescence_latch,
+        )
         env = provider_authority.outer_environment()
         _record_capture_review_attempt(
             provider_authority, command, quiescence_latch=quiescence_latch,
@@ -3610,7 +3640,9 @@ def _exec_leg(
             child_output = provider_authority.rewrite_provider_output_path(out_file)
             cmd[cmd.index(str(review_dir))] = "/run/phase-loop-review"
             cmd[cmd.index(str(out_file))] = child_output
-            cmd = provider_authority.preflight(cmd)
+            cmd = _capture_provider_preflight(
+                provider_authority, cmd, quiescence_latch,
+            )
             env = provider_authority.outer_environment()
         # #64: retry the transient SOFT empty-turn (rc==0 + empty output) once. Do
         # NOT retry a hard failure (rc!=0 = rate-limit/error) — that would hammer
@@ -3738,7 +3770,9 @@ def _exec_leg(
             # 1.1.13's stream-json is the only supported production authority;
             # text stdout is diagnostic-only and cannot satisfy the reducer.
             cmd[1:1] = ["--output-format", "stream-json"]
-            cmd = provider_authority.preflight(cmd)
+            cmd = _capture_provider_preflight(
+                provider_authority, cmd, quiescence_latch,
+            )
             env = provider_authority.outer_environment()
         # #114: retry ONCE on a transient agy stall, mirroring the codex leg. The
         # single ``subprocess.run`` gave the gemini leg NO retry, so one transient
@@ -3917,7 +3951,9 @@ def _exec_leg(
             provider_authority.projected_auth_proof()
             cmd[cmd.index(str(review_dir))] = "/run/phase-loop-review"
             cmd[1:1] = ["--disable-web-search", "--no-memory", "--no-subagents"]
-            cmd = provider_authority.preflight(cmd)
+            cmd = _capture_provider_preflight(
+                provider_authority, cmd, quiescence_latch,
+            )
             env = provider_authority.outer_environment()
         # Retry ONCE on a transient stall, mirroring codex/gemini: a rc==0 empty turn
         # OR a transient-marker body, but NOT a hard subprocess timeout (124) and NOT
@@ -4401,16 +4437,28 @@ def _run_legs_ordered(
                 _cancel_and_raise(exc)
             results[i] = result
             if review_dir is not None:
-                _write_incremental_verdict(review_dir, i, result)
-            if on_leg_complete is not None:
                 try:
-                    on_leg_complete(result)
-                except Exception:  # fail-open: a raising callback never breaks the pool
-                    logging.getLogger(__name__).warning(
-                        "on_leg_complete callback raised for leg %s",
-                        result.leg,
-                        exc_info=True,
+                    _capture_mutation(
+                        fatal_latch,
+                        lambda: _write_incremental_verdict(review_dir, i, result),
                     )
+                except ProviderProcessGroupQuiescenceError as exc:
+                    _cancel_and_raise(exc)
+            if on_leg_complete is not None:
+                def publish_callback() -> None:
+                    try:
+                        on_leg_complete(result)
+                    except Exception:  # fail-open callback never breaks the pool
+                        logging.getLogger(__name__).warning(
+                            "on_leg_complete callback raised for leg %s",
+                            result.leg,
+                            exc_info=True,
+                        )
+
+                try:
+                    _capture_mutation(fatal_latch, publish_callback)
+                except ProviderProcessGroupQuiescenceError as exc:
+                    _cancel_and_raise(exc)
         # Every future produced a result (run_one is fail-closed). Fail LOUD if a
         # slot stayed None rather than silently shrinking the list — a length change
         # would break the positional ``result[i] ↔ items[i]`` contract worse than a
@@ -5361,7 +5409,9 @@ def invoke_board(
             max_concurrency=max_concurrency,
             on_leg_complete=on_leg_complete,
             review_dir=Path(stream_dir) if stream_dir is not None else None,
-            fatal_latch=capture_quiescence,
+            fatal_latch=(
+                capture_quiescence if agy_canary_capture is not None else None
+            ),
         )
         if agy_canary_capture is not None:
             if len(results) != len(capture_seats):

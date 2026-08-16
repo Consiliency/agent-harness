@@ -29,7 +29,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from datetime import datetime, timezone
 from dataclasses import dataclass, field as dataclass_field
 from pathlib import Path, PurePosixPath
-from typing import Any, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 try:  # Windows imports this module but does not support POSIX account lookups.
     import pwd
@@ -1922,26 +1922,35 @@ class ProviderLaunchAuthority:
         self._revalidate()
         return namespace_self_test(namespace=self.namespace)
 
-    def preflight(self, argv: list[str]) -> list[str]:
+    def preflight(
+        self,
+        argv: list[str],
+        *,
+        probe_runner: Callable[[list[str], Mapping[str, str], int], int] | None = None,
+        publish: Callable[[Callable[[], None]], None] | None = None,
+    ) -> list[str]:
         """Run the namespace visibility check immediately before returning argv."""
         # The namespace self-test does not execute the provider runtime.  Each
         # provider probe below uses ``command`` and therefore hashes all mounted
         # assets exactly once immediately before its subprocess boundary.
         self._revalidate()
-        namespace_self_test(namespace=self.namespace)
+        namespace_self_test(namespace=self.namespace, probe_runner=probe_runner)
         checks = [("version", ["--version"])]
         if self.provider in _PROVIDER_STATUS_COMMANDS:
             checks.append(("authentication", list(_PROVIDER_STATUS_COMMANDS[self.provider])))
         for label, arguments in checks:
-            proc = subprocess.run(
-                self.command([_PROVIDER_EXECUTABLES[self.provider], *arguments]),
-                capture_output=True,
-                text=True,
-                timeout=30,
-                check=False,
-                env=self.outer_environment(),
+            command = self.command([
+                _PROVIDER_EXECUTABLES[self.provider], *arguments,
+            ])
+            returncode = (
+                subprocess.run(
+                    command, capture_output=True, text=True, timeout=30,
+                    check=False, env=self.outer_environment(),
+                ).returncode
+                if probe_runner is None
+                else probe_runner(command, self.outer_environment(), 30)
             )
-            if proc.returncode != 0:
+            if returncode != 0:
                 raise AgyCanaryEvidenceError(
                     f"{self.provider} {label} preflight failed inside capture namespace"
                 )
@@ -1950,10 +1959,18 @@ class ProviderLaunchAuthority:
         # full byte revalidation immediately before every actual attempt/retry.
         command = self._command(argv, full_assets=False)
         launch = _provider_launch_identity(command, provider=self.provider)
-        if self.review_launch is None:
-            object.__setattr__(self, "review_launch", launch)
-        elif self.review_launch != launch:
-            raise AgyCanaryEvidenceError("provider authority review command drifted")
+        def commit() -> None:
+            if self.review_launch is None:
+                object.__setattr__(self, "review_launch", launch)
+            elif self.review_launch != launch:
+                raise AgyCanaryEvidenceError(
+                    "provider authority review command drifted"
+                )
+
+        if publish is None:
+            commit()
+        else:
+            publish(commit)
         return command
 
     def record_review_attempt(
@@ -3636,7 +3653,11 @@ def build_probe_namespace(
     )
 
 
-def namespace_self_test(*, namespace: AgyCanaryNamespace) -> dict[str, Any]:
+def namespace_self_test(
+    *,
+    namespace: AgyCanaryNamespace,
+    probe_runner: Callable[[list[str], Mapping[str, str], int], int] | None = None,
+) -> dict[str, Any]:
     """Prove the fixed stage path and evidence-root masking before provider launch."""
     namespace_python = Path("/usr/bin/python3").resolve(strict=True)
     try:
@@ -3654,12 +3675,16 @@ def namespace_self_test(*, namespace: AgyCanaryNamespace) -> dict[str, Any]:
         f"s=socket.create_connection(({namespace.provider_hostname!r}, 443), timeout=10); "
         f"ssl.create_default_context().wrap_socket(s, server_hostname={namespace.provider_hostname!r}).close()"
     )
-    proc = subprocess.run(
-        namespace.command([str(namespace_python), "-I", "-c", test_program]),
-        capture_output=True, text=True, timeout=30, check=False,
-        env=namespace.outer_environment(),
+    command = namespace.command([str(namespace_python), "-I", "-c", test_program])
+    returncode = (
+        subprocess.run(
+            command, capture_output=True, text=True, timeout=30, check=False,
+            env=namespace.outer_environment(),
+        ).returncode
+        if probe_runner is None
+        else probe_runner(command, namespace.outer_environment(), 30)
     )
-    if proc.returncode != 0:
+    if returncode != 0:
         raise AgyCanaryEvidenceError("bwrap namespace masking self-test failed")
     return {"schema": "agy_namespace_self_test.v1", "stage": "/run/phase-loop-review", "evidence_root_hidden": True, "provider_hostname": namespace.provider_hostname}
 
