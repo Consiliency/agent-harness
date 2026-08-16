@@ -966,7 +966,19 @@ def _create_owned_cleanup_root(*, kind: str) -> tuple[Path, _OwnedCleanupRoot]:
 
 
 def _cleanup_owned_roots(roots: Sequence[_OwnedCleanupRoot]) -> None:
-    """Remove public roots and retain only validated empty /tmp tombstones."""
+    """Sanitize and quarantine coordinator-owned roots after child quiescence.
+
+    Supported callers have joined or terminated every provider child before this
+    boundary.  The roots are unpredictable, coordinator-owned mode-0700 direct
+    children of ``/tmp``.  Descriptor operations and atomic quarantine avoid
+    deleting substituted names; the finite validations detect observed persistent
+    or accidental drift and report it as incomplete cleanup.
+
+    This is not mutual exclusion against another malicious same-UID process.  Such
+    a process can mutate a retained tombstone after the final observation, so a
+    successful return is not a guarantee of perpetual absence or non-sensitive
+    state under concurrent hostile same-UID scheduling.
+    """
     errors: list[str] = []
     seen: set[tuple[str, str, int, int, str]] = set()
     for authority in roots:
@@ -1120,7 +1132,7 @@ def _cleanup_owned_roots(roots: Sequence[_OwnedCleanupRoot]) -> None:
 def _find_owned_cleanup_tombstone(
     *, tmp_fd: int, authority: _OwnedCleanupRoot,
 ) -> str:
-    """Find exactly one canonical empty tombstone for an absent public root."""
+    """Find the exact authority tombstone and validate its observed state."""
     expected = (
         f"{_OWNED_CLEANUP_QUARANTINE_PREFIX}{authority.kind}-"
         f"{authority.quarantine_token}"
@@ -1155,7 +1167,7 @@ def _find_owned_cleanup_tombstone(
 def _validate_owned_cleanup_tombstone(
     *, tmp_fd: int, name: str, authority: _OwnedCleanupRoot,
 ) -> None:
-    """Validate one empty tombstone through a held no-follow descriptor."""
+    """Validate one tombstone's point-in-time state through a held descriptor."""
     try:
         entry = os.stat(name, dir_fd=tmp_fd, follow_symlinks=False)
         tombstone_fd = os.open(
@@ -1423,7 +1435,7 @@ def _cleanup_entry_stat_identity(info: os.stat_result) -> tuple[int, ...]:
 def _validate_owned_cleanup_descendant_tombstones(
     *, tmp_fd: int, authority: _OwnedCleanupRoot,
 ) -> None:
-    """Require two identical full traversals of all descendant tombstones."""
+    """Detect observed descendant drift with two point-in-time traversals."""
     first = _owned_cleanup_descendant_tombstone_inventory(
         tmp_fd=tmp_fd, authority=authority,
     )

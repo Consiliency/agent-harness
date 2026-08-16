@@ -2903,7 +2903,13 @@ def _cleanup_capture_launches(
     ],
     scratch_roots: Sequence[_OwnedCleanupRoot] = (),
 ) -> None:
-    """Reclaim pre-thread capture resources after every preparation outcome."""
+    """Reclaim capture resources after setup failure or joined provider workers.
+
+    ``invoke_board`` reaches its outer cleanup only after ``_run_legs_ordered``
+    has left the thread-pool context, so ordinary provider children have completed
+    or been terminated.  The owned-root cleanup contract does not cover a separate
+    malicious same-UID process that concurrently mutates retained tombstones.
+    """
     roots = list(scratch_roots)
     for authority, _stage, scratch, scratch_root in launches.values():
         if scratch != scratch_root.path:

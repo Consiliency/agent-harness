@@ -14,6 +14,7 @@ import os
 import shutil
 import stat
 import tempfile
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1666,10 +1667,13 @@ def test_capture_setup_always_reclaims_scratch_and_provider_outputs(monkeypatch,
     outputs: list[Path] = []
     scratches: list[Path] = []
     cleanup_authorities: list[object] = []
+    worker_threads: list[threading.Thread] = []
+    cleanup_worker_states: list[tuple[bool, ...]] = []
     calls = 0
 
     real_write_bytes = Path.write_bytes
     real_mkdtemp = tempfile.mkdtemp
+    real_cleanup = pi._cleanup_capture_launches
 
     def capture_mkdtemp(*, prefix, dir="/tmp"):
         scratch = Path(real_mkdtemp(prefix=prefix, dir=dir))
@@ -1708,6 +1712,17 @@ def test_capture_setup_always_reclaims_scratch_and_provider_outputs(monkeypatch,
             provider_output_cleanup=output_cleanup,
         ))}
 
+    def spawn_provider(*_args, **_kwargs):
+        worker_threads.append(threading.current_thread())
+        return "OK", "AGREE"
+
+    def observe_cleanup(*args, **kwargs):
+        if worker_threads:
+            cleanup_worker_states.append(tuple(
+                thread.is_alive() for thread in worker_threads
+            ))
+        return real_cleanup(*args, **kwargs)
+
     monkeypatch.setattr(pi.tempfile, "mkdtemp", capture_mkdtemp)
     monkeypatch.setattr(Path, "write_bytes", write_bytes)
     monkeypatch.setattr(pi, "bind_staged_review_inputs", bind_stage)
@@ -1724,7 +1739,8 @@ def test_capture_setup_always_reclaims_scratch_and_provider_outputs(monkeypatch,
         )) if failure == "result" else lambda **_kwargs: {"synthetic": True},
     )
     monkeypatch.setattr(pi, "capture_summary", lambda _capture: {"synthetic": True})
-    monkeypatch.setattr(pi, "_default_spawn_via_provider", lambda *_args, **_kwargs: ("OK", "AGREE"))
+    monkeypatch.setattr(pi, "_default_spawn_via_provider", spawn_provider)
+    monkeypatch.setattr(pi, "_cleanup_capture_launches", observe_cleanup)
 
     if failure is None:
         pi.invoke_board(DEFAULT_BOARD, "review", agy_canary_capture=object(), base_env={}, max_concurrency=1)
@@ -1734,6 +1750,10 @@ def test_capture_setup_always_reclaims_scratch_and_provider_outputs(monkeypatch,
     assert scratches
     if failure not in {"write", "bind"}:
         assert outputs
+    if failure in {"result", None}:
+        assert worker_threads
+        assert cleanup_worker_states
+        assert all(not alive for states in cleanup_worker_states for alive in states)
     assert all(not path.exists() for path in outputs)
     assert all(not path.exists() for path in scratches)
     tombstones = {
