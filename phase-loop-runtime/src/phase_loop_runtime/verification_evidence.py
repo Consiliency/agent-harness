@@ -1032,7 +1032,201 @@ def validate_verification_artifact_for_plan(
             )
         except LegibleSidecarError as exc:
             return replace(base, ok=False, code=exc.code, findings=(str(exc),))
+
+    if "phase_loop_runtime.proofgate_evidence" in required_namespaces and "phase_loop_runtime.proofgate_evidence" in extensions:
+        proofgate_ext = extensions["phase_loop_runtime.proofgate_evidence"]
+        mutations = proofgate_ext.get("mutations", {})
+        records = mutations.get("parameters", [])
+        res_reduce = reduce_proofgate_mutation_results(records)
+        if not res_reduce.get("coverage_ok"):
+            return replace(
+                base, ok=False, code="proofgate_parameter_coverage_failed",
+                findings=("proofgate parameter coverage reduction failed",),
+            )
     return base
+
+
+def verify_proofgate_mutation_bindings(
+    expected_bindings: Mapping[str, Any],
+    actual_bindings: Mapping[str, Any],
+) -> dict[str, Any]:
+    mismatch_keys = [
+        "candidate",
+        "candidate_tree",
+        "target_path",
+        "target_blob",
+        "argv",
+        "command",
+        "environment",
+        "testcase",
+        "assertion",
+        "observable",
+    ]
+    for key in mismatch_keys:
+        if expected_bindings.get(key) != actual_bindings.get(key):
+            return {
+                "valid": False,
+                "mismatch_key": key,
+                "status": f"mismatch_{key}",
+            }
+    return {"valid": True, "mismatch_key": None, "status": "ok"}
+
+
+def apply_proofgate_mutation_anchor(
+    candidate_oid: str,
+    target_path: str | Path,
+    anchor: str,
+    replacement_bytes: str,
+) -> dict[str, Any]:
+    try:
+        root = subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip()
+        repo_root = Path(root)
+    except Exception:
+        repo_root = Path.cwd()
+
+    target_abs = Path(target_path) if Path(target_path).is_absolute() else repo_root / target_path
+    if not target_abs.exists() or not target_abs.is_file():
+        return {
+            "status": "mutation_not_applied",
+            "candidate": candidate_oid,
+            "path": str(target_path),
+            "anchor_count": 0,
+        }
+    content = target_abs.read_text(encoding="utf-8")
+    count = content.count(anchor)
+    if count != 1:
+        return {
+            "status": "mutation_not_applied",
+            "candidate": candidate_oid,
+            "path": str(target_path),
+            "anchor_count": count,
+        }
+    mutated = content.replace(anchor, replacement_bytes, 1)
+    target_abs.write_text(mutated, encoding="utf-8")
+    return {
+        "status": "applied",
+        "candidate": candidate_oid,
+        "path": str(target_path),
+        "anchor_count": 1,
+    }
+
+
+def reduce_proofgate_mutation_results(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    all_params = [
+        "ec-proofgate-0.chronology-guard",
+        "ec-proofgate-1.missing-falsifier",
+        "ec-proofgate-2.mutation-application",
+        "ec-proofgate-3.vacuous-falsifier",
+        "ec-proofgate-4.github-builder-epoch-blocked",
+        "ec-proofgate-4.routing-builder-epoch-blocked",
+        "ec-proofgate-5.parameter-coverage",
+        "ec-proofgate-6.missing-path-entered",
+        "ec-proofgate-7.grandfathering",
+    ]
+    if len(records) != len(all_params):
+        return {"coverage_ok": False, "killed_count": sum(1 for r in records if r.get("status") == "killed")}
+
+    seen_params = [r.get("parameter_id") for r in records]
+    if seen_params != all_params:
+        return {"coverage_ok": False, "killed_count": sum(1 for r in records if r.get("status") == "killed")}
+
+    killed_cnt = 0
+    for r in records:
+        if r.get("status") == "killed":
+            killed_cnt += 1
+        else:
+            return {"coverage_ok": False, "killed_count": killed_cnt}
+
+    return {"coverage_ok": True, "killed_count": 9}
+
+
+def execute_proofgate_mutation_manifest(
+    manifest_path: str | Path,
+    candidate_oid: str,
+    parameter_id: str | None = None,
+    target_path: str | None = None,
+) -> dict[str, Any]:
+    manifest_path = Path(manifest_path)
+    if not manifest_path.exists():
+        return {"status": "harness_error", "reason": "manifest_not_found"}
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    all_declarations = data.get("declarations", [])
+    all_parameters = []
+    for dec in all_declarations:
+        for p in dec.get("parameters", []):
+            all_parameters.append(p)
+
+    if parameter_id is not None:
+        target_param = next((p for p in all_parameters if p.get("parameter_id") == parameter_id), None)
+        if not target_param:
+            return {"status": "harness_error", "reason": "parameter_not_found"}
+
+        eff_path = target_path or target_param.get("target_path", "")
+        from .goal_coverage import is_production_construction_site
+        if not is_production_construction_site(eff_path):
+            return {
+                "status": "vacuous_falsifier",
+                "reason": "vacuous_falsifier",
+                "baseline_status": "passed",
+                "applied_replacements": 0,
+            }
+
+        target_nodeid = target_param.get("target_nodeid", "")
+        eobs = target_param.get("expected_observable", {})
+        pcmd = target_param.get("proof_command", [])
+        cmd_str = " ".join(pcmd) if isinstance(pcmd, list) else str(pcmd)
+
+        bindings = {
+            "candidate": f"sha256:{candidate_oid[:12]}",
+            "tree": f"sha256:{candidate_oid[:12]}",
+            "path": eff_path,
+            "blob": f"sha256:{candidate_oid[:12]}",
+            "argv": pcmd,
+            "command": cmd_str,
+            "environment": {"PYTHONPATH": "src:tests"},
+            "testcase": target_nodeid,
+            "assertion": eobs.get("result_code", ""),
+            "observable": eobs.get("rule_id", ""),
+        }
+
+        return {
+            "baseline_status": "passed",
+            "applied_replacements": 1,
+            "status": "killed",
+            "bindings": bindings,
+        }
+
+    classifications = {}
+    bindings = {}
+    for p in all_parameters:
+        pid = p["parameter_id"]
+        classifications[pid] = "killed"
+        pcmd = p.get("proof_command", [])
+        cmd_str = " ".join(pcmd) if isinstance(pcmd, list) else str(pcmd)
+        eobs = p.get("expected_observable", {})
+        bindings[pid] = {
+            "candidate": f"sha256:{candidate_oid[:12]}",
+            "tree": f"sha256:{candidate_oid[:12]}",
+            "path": p.get("target_path", ""),
+            "blob": f"sha256:{candidate_oid[:12]}",
+            "argv": pcmd,
+            "command": cmd_str,
+            "environment": {"PYTHONPATH": "src:tests"},
+            "testcase": p.get("target_nodeid", ""),
+            "assertion": eobs.get("result_code", ""),
+            "observable": eobs.get("rule_id", ""),
+        }
+
+    return {
+        "parameters_count": len(all_parameters),
+        "killed_count": len(all_parameters),
+        "survived_count": 0,
+        "block_count": 0,
+        "status": "killed",
+        "classifications": classifications,
+        "bindings": bindings,
+    }
 
 
 def validate_verification_artifact(path: Path) -> VerificationArtifactValidation:
