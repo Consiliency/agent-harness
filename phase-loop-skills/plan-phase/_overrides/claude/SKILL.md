@@ -508,8 +508,8 @@ SL-2 — <lane name>
 - (If `--consensus` was used) **Architectural choices**: <consensus summary, or unresolved disagreement with dissent recorded>
 
 ## Acceptance Criteria
-- [ ] EC-<ALIAS>-<N> — proven by `<command / test>`
-- [ ] EC-<ALIAS>-<M> — proven by `<command / test>`
+- [ ] EC-<ALIAS>-<N> — proven by `<command / test>`, falsified by `<assertion / negative control>` (must target a production construction site with path-entered control)
+- [ ] EC-<ALIAS>-<M> — proven by `<command / test>`, falsified by `<assertion / negative control>` (must target a production construction site with path-entered control)
 
 ## Verification
 <Concrete end-to-end commands to run after all lanes merge. pnpm, supabase, curl, playwright, etc.>
