@@ -136,21 +136,87 @@ class _ProviderQuiescenceLatch:
     def __init__(self) -> None:
         self._event = threading.Event()
         self._lock = threading.Lock()
+        self._condition = threading.Condition(self._lock)
         self._primary: ProviderProcessGroupQuiescenceError | None = None
+        self._processes: dict[int, subprocess.Popen[bytes]] = {}
+        self._sweeping = False
+
+    def launch(
+        self, factory: Callable[[], subprocess.Popen[bytes]],
+    ) -> subprocess.Popen[bytes]:
+        """Create, anchor, and register a provider group under one closed-gate lock."""
+        with self._condition:
+            if self._primary is not None:
+                raise self._primary
+            proc = factory()
+            _anchor_process_group(proc)
+            if proc.pid in self._processes:
+                _terminate_process_group(proc)
+                raise ProviderProcessGroupQuiescenceError(
+                    "provider process group registration collided"
+                )
+            self._processes[proc.pid] = proc
+            return proc
+
+    def release(self, proc: subprocess.Popen[bytes]) -> None:
+        """Deregister only after the exact anchored group is proven absent."""
+        if os.name != "nt" and _process_group_exists(proc.pid):
+            raise ProviderProcessGroupQuiescenceError(
+                "provider process group deregistration preceded quiescence"
+            )
+        proc.poll()
+        with self._condition:
+            registered = self._processes.get(proc.pid)
+            if registered is None:
+                return
+            if registered is not proc:
+                raise ProviderProcessGroupQuiescenceError(
+                    "provider process group registration identity drifted"
+                )
+            del self._processes[proc.pid]
+            self._condition.notify_all()
 
     def trip(
         self, error: ProviderProcessGroupQuiescenceError,
     ) -> ProviderProcessGroupQuiescenceError:
-        with self._lock:
+        with self._condition:
             if self._primary is None:
                 self._primary = error
                 self._event.set()
-            return self._primary
+            primary = self._primary
+            if self._sweeping:
+                while self._sweeping:
+                    self._condition.wait()
+                return primary
+            self._sweeping = True
+            processes = tuple(self._processes.values())
+        try:
+            for proc in processes:
+                try:
+                    _terminate_process_group(proc, force_group=True)
+                except ProviderProcessGroupQuiescenceError:
+                    # The primary already states that quiescence is unproven.  Sweep
+                    # every sibling before returning it; never replace it with a
+                    # later group's diagnostic or stop at the first stubborn group.
+                    continue
+        finally:
+            with self._condition:
+                for pid, proc in tuple(self._processes.items()):
+                    if os.name == "nt":
+                        absent = proc.poll() is not None
+                    else:
+                        absent = not _process_group_exists(pid)
+                    if absent:
+                        proc.poll()
+                        del self._processes[pid]
+                self._sweeping = False
+                self._condition.notify_all()
+        return primary
 
     def raise_if_set(self) -> None:
         if not self._event.is_set():
             return
-        with self._lock:
+        with self._condition:
             primary = self._primary
         if primary is None:  # defensive: trip stores before publishing the event
             raise RuntimeError("provider quiescence latch published no primary error")
@@ -2098,6 +2164,7 @@ def _run_leg_with_liveness(
     deadline_s: float,
     stall_threshold_s: float = _LEG_STALL_THRESHOLD_S,
     input_text: str | None = None,
+    quiescence_latch: _ProviderQuiescenceLatch | None = None,
 ) -> "_LegRun":
     """Run a print-mode CLI leg, killing it on HEARTBEAT EXTINCTION, not a blind clock.
 
@@ -2115,16 +2182,22 @@ def _run_leg_with_liveness(
     fed by a daemon writer thread so a large prompt can't deadlock against the child
     filling its own stdout/stderr pipe buffers.
     """
-    proc = subprocess.Popen(
-        list(cmd),
-        cwd=str(cwd),
-        env=dict(env),
-        stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,  # pgid == proc.pid: group CPU sampling + group kill
-    )
-    _anchor_process_group(proc)
+    def _popen() -> subprocess.Popen[bytes]:
+        return subprocess.Popen(
+            list(cmd),
+            cwd=str(cwd),
+            env=dict(env),
+            stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,  # pgid == proc.pid: group CPU sampling + group kill
+        )
+
+    if quiescence_latch is None:
+        proc = _popen()
+        _anchor_process_group(proc)
+    else:
+        proc = quiescence_latch.launch(_popen)
     if input_text is not None and proc.stdin is not None:
 
         def _feed() -> None:
@@ -2221,6 +2294,8 @@ def _run_leg_with_liveness(
     finally:
         try:
             _terminate_process_group(proc)
+            if quiescence_latch is not None:
+                quiescence_latch.release(proc)
         finally:
             for pipe in (proc.stdout, proc.stderr):
                 try:
@@ -2228,6 +2303,8 @@ def _run_leg_with_liveness(
                         pipe.close()
                 except OSError:
                     pass
+        if quiescence_latch is not None:
+            quiescence_latch.raise_if_set()
 
 
 # #188 — de-animation of the Claude TUI's cosmetic status line. While the model
@@ -2398,6 +2475,7 @@ def _run_claude_tui_session(
     backstop_s: int | None = None,
     stall_threshold_s: float | None = None,
     capture_output_reader: Callable[[], str] | None = None,
+    quiescence_latch: _ProviderQuiescenceLatch | None = None,
 ) -> tuple[int, str, str, str]:
     if fcntl is None or pty is None or termios is None:
         return 1, "", "claude_tui_unsupported_platform", ""
@@ -2482,18 +2560,24 @@ def _run_claude_tui_session(
         except OSError:
             pass
         try:
-            proc = subprocess.Popen(
-                list(command),
-                cwd=str(cwd),
-                env=dict(env),
-                stdin=slave_fd,
-                stdout=slave_fd,
-                stderr=slave_fd,
-                text=False,
-                close_fds=True,
-                start_new_session=True,
-            )
-            _anchor_process_group(proc)
+            def _popen() -> subprocess.Popen[bytes]:
+                return subprocess.Popen(
+                    list(command),
+                    cwd=str(cwd),
+                    env=dict(env),
+                    stdin=slave_fd,
+                    stdout=slave_fd,
+                    stderr=slave_fd,
+                    text=False,
+                    close_fds=True,
+                    start_new_session=True,
+                )
+
+            if quiescence_latch is None:
+                proc = _popen()
+                _anchor_process_group(proc)
+            else:
+                proc = quiescence_latch.launch(_popen)
         finally:
             os.close(slave_fd)
     except FileNotFoundError:
@@ -2728,12 +2812,16 @@ def _run_claude_tui_session(
         try:
             if proc is not None:
                 _terminate_process_group(proc)
+                if quiescence_latch is not None:
+                    quiescence_latch.release(proc)
         finally:
             if master_fd is not None:
                 try:
                     os.close(master_fd)
                 except OSError:
                     pass
+        if quiescence_latch is not None:
+            quiescence_latch.raise_if_set()
 
 
 def _stop_claude_agent(
@@ -3081,6 +3169,7 @@ def _exec_claude_tui_leg(
     research_seat: ResearchSeatConfig | None = None,
     agy_capture: AgyCanaryCapture | None = None,
     provider_authority: ProviderLaunchAuthority | None = None,
+    quiescence_latch: _ProviderQuiescenceLatch | None = None,
 ) -> tuple[str, str]:
     """Run the Claude panel leg through the local Claude Code TUI.
 
@@ -3095,6 +3184,8 @@ def _exec_claude_tui_leg(
     ``resolve_seat_env`` result so per-seat effort + active env scrubbing reach the
     real launch.
     """
+    if quiescence_latch is not None:
+        quiescence_latch.raise_if_set()
     env = _subscription_env(env)
     if research_seat is not None:
         env = scrub_research_env(env)
@@ -3112,6 +3203,8 @@ def _exec_claude_tui_leg(
     child_output_file = output_file
     capture_output_reader: Callable[[], str] | None = None
     if agy_capture is not None:
+        if quiescence_latch is not None:
+            quiescence_latch.raise_if_set()
         if provider_authority is None:
             raise AgyCanaryEvidenceError(
                 "capture-enabled Claude launch has no prepared namespace"
@@ -3152,6 +3245,8 @@ def _exec_claude_tui_leg(
         research_seat,
     )
     if agy_capture is not None:
+        if quiescence_latch is not None:
+            quiescence_latch.raise_if_set()
         command = provider_authority.preflight(command)
         env = provider_authority.outer_environment()
         _record_capture_review_attempt(provider_authority, command)
@@ -3169,8 +3264,11 @@ def _exec_claude_tui_leg(
         env=env,
         mode=mode,
         backstop_s=backstop_s,
+        quiescence_latch=quiescence_latch,
         **tui_extra,
     )
+    if quiescence_latch is not None:
+        quiescence_latch.raise_if_set()
     if agy_capture is not None:
         # The TUI may read its canonical file repeatedly for liveness, but only this
         # final descriptor-relative ingestion is accepted as captured-provider output.
@@ -3370,6 +3468,7 @@ def _exec_leg(
     capture_staged: dict[str, dict[str, object]] | None = None,
     seat_key: str | None = None,
     provider_authority: ProviderLaunchAuthority | None = None,
+    quiescence_latch: _ProviderQuiescenceLatch | None = None,
 ) -> tuple[int, str, str]:
     """Run one CLI leg against the staged review dir; return (rc, review_text, log_text).
 
@@ -3383,6 +3482,8 @@ def _exec_leg(
     renders through ``render_seat_invocation`` (incl. the agy leg, where effort is
     baked into the model string). ``env is None`` keeps ``_subscription_env()``.
     """
+    if quiescence_latch is not None:
+        quiescence_latch.raise_if_set()
     env = _subscription_env() if env is None else dict(env)
     if agy_capture is not None:
         env.pop("PHASE_LOOP_AGY_CANARY_EVIDENCE_DIR", None)
@@ -3482,6 +3583,8 @@ def _exec_leg(
         # failures via ``_LEG_RETRY_ELAPSED_FRACTION``.
         rc, review_text, log_text = 1, "", ""
         for _attempt in range(2):
+            if quiescence_latch is not None:
+                quiescence_latch.raise_if_set()
             _t0 = time.monotonic()
             try:
                 if agy_capture is not None:
@@ -3495,9 +3598,12 @@ def _exec_leg(
                     env=env,
                     deadline_s=deadline_s,
                     input_text=prompt,
+                    quiescence_latch=quiescence_latch,
                 )
             except subprocess.TimeoutExpired:
                 return 124, "", f"timeout after {deadline_s}s"
+            if quiescence_latch is not None:
+                quiescence_latch.raise_if_set()
             _elapsed = time.monotonic() - _t0
             review_text = (
                 provider_authority.read_expected_output(out_file.name).decode(
@@ -3603,6 +3709,8 @@ def _exec_leg(
         # would ~double wall-clock — the full-concurrent-path hang).
         rc, review_text, log_text = 1, "", ""
         for _attempt in range(2):
+            if quiescence_latch is not None:
+                quiescence_latch.raise_if_set()
             _t0 = time.monotonic()
             try:
                 if agy_capture is not None:
@@ -3618,8 +3726,11 @@ def _exec_leg(
                     cwd=review_dir,
                     env=env,
                     deadline_s=deadline_s,
+                    quiescence_latch=quiescence_latch,
                 )
             except subprocess.TimeoutExpired as exc:
+                if quiescence_latch is not None:
+                    quiescence_latch.raise_if_set()
                 if agy_capture is not None:
                     if not seat_key or capture_staged is None:
                         raise AgyCanaryEvidenceError(
@@ -3648,6 +3759,8 @@ def _exec_leg(
                         staged=capture_staged,
                     )
                 return 124, "", f"timeout after {deadline_s}s"
+            if quiescence_latch is not None:
+                quiescence_latch.raise_if_set()
             _elapsed = time.monotonic() - _t0
             raw_stream = proc.stdout or ""
             review_text = raw_stream
@@ -3767,6 +3880,8 @@ def _exec_leg(
         # transient stall — re-running would ~double wall-clock).
         rc, review_text, log_text = 1, "", ""
         for _attempt in range(2):
+            if quiescence_latch is not None:
+                quiescence_latch.raise_if_set()
             _t0 = time.monotonic()
             try:
                 if agy_capture is not None:
@@ -3778,9 +3893,12 @@ def _exec_leg(
                     cwd=review_dir,
                     env=env,
                     deadline_s=deadline_s,
+                    quiescence_latch=quiescence_latch,
                 )
             except subprocess.TimeoutExpired:
                 return 124, "", f"timeout after {deadline_s}s"
+            if quiescence_latch is not None:
+                quiescence_latch.raise_if_set()
             _elapsed = time.monotonic() - _t0
             review_text = proc.stdout or ""
             rc = proc.returncode
@@ -3904,6 +4022,8 @@ def _default_spawn(
         if agy_capture is not None:
             extra["agy_capture"] = agy_capture
             extra["provider_authority"] = provider_authority
+        if quiescence_latch is not None:
+            extra["quiescence_latch"] = quiescence_latch
         if leg == "claude":
             if quiescence_latch is not None:
                 quiescence_latch.raise_if_set()

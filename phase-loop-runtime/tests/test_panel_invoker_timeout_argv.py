@@ -1710,21 +1710,18 @@ def test_default_spawn_preserves_fatal_quiescence_authority(monkeypatch, tmp_pat
     "max_concurrency", [1, 4], ids=["queued-sequential", "running-parallel-barrier"],
 )
 def test_capture_quiescence_failure_stops_siblings_and_retains_private_roots(
-    monkeypatch, max_concurrency,
+    monkeypatch, tmp_path, max_concurrency,
 ):
     from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
 
     expected_capture = object()
     roots: list[Path] = []
-    snapshots: dict[Path, tuple[object, ...]] = {}
     outputs: dict[str, Path] = {}
     spawned: list[str] = []
+    group_pids: dict[str, int] = {}
     cleanup_calls = 0
     result_seals = 0
-    siblings_ready = threading.Event()
-    fatal_latched = threading.Event()
-    ready_lock = threading.Lock()
-    ready_count = 0
+    summary_calls = 0
     primary_error = pi.ProviderProcessGroupQuiescenceError(
         "provider process group did not terminate"
     )
@@ -1743,36 +1740,44 @@ def test_capture_quiescence_failure_stops_siblings_and_retains_private_roots(
         ))
         return {provider: authority}
 
-    def fatal_spawn(leg, *_args, **_kwargs):
+    def fatal_spawn(leg, *_args, quiescence_latch=None, **_kwargs):
         spawned.append(leg)
         if leg == "codex":
-            for root in roots:
-                snapshots[root] = _private_tree_snapshot(root)
+            if max_concurrency == 4:
+                deadline = time.monotonic() + 5
+                sibling_markers = [
+                    tmp_path / f"{provider}.pid"
+                    for provider in ("gemini", "claude", "grok")
+                ]
+                while (not all(path.exists() for path in sibling_markers) and
+                       time.monotonic() < deadline):
+                    time.sleep(0.02)
+                assert all(path.exists() for path in sibling_markers)
+                group_pids.update({
+                    path.stem: int(path.read_text()) for path in sibling_markers
+                })
             raise primary_error
-        (outputs[leg] / "later-provider-marker").write_text("must-not-run")
+        (outputs[leg] / "pre-fatal-partial-output").write_text("retained")
+        pid_marker = tmp_path / f"{leg}.pid"
+        pi._run_leg_with_liveness(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import os, sys, time; "
+                    "open(sys.argv[1], 'w').write(str(os.getpid())); "
+                    "time.sleep(600)"
+                ),
+                str(pid_marker),
+            ],
+            cwd=tmp_path,
+            env=os.environ,
+            deadline_s=30,
+            stall_threshold_s=30,
+            quiescence_latch=quiescence_latch,
+        )
+        (outputs[leg] / "post-fatal-marker").write_text("must-not-run")
         return "OK", "AGREE"
-
-    real_resolve_seat_env = pi.resolve_seat_env
-
-    def barrier_resolve(seat, base_env, **kwargs):
-        nonlocal ready_count
-        if max_concurrency == 4:
-            if (seat.harness or "").lower() == "codex":
-                assert siblings_ready.wait(5)
-            else:
-                with ready_lock:
-                    ready_count += 1
-                    if ready_count == 3:
-                        siblings_ready.set()
-                assert fatal_latched.wait(5)
-        return real_resolve_seat_env(seat, base_env, **kwargs)
-
-    real_trip = pi._ProviderQuiescenceLatch.trip
-
-    def observe_trip(self, error):
-        primary = real_trip(self, error)
-        fatal_latched.set()
-        return primary
 
     def seal_result(**_kwargs):
         nonlocal result_seals
@@ -1782,15 +1787,18 @@ def test_capture_quiescence_failure_stops_siblings_and_retains_private_roots(
         nonlocal cleanup_calls
         cleanup_calls += 1
 
+    def summary_spy(_capture):
+        nonlocal summary_calls
+        summary_calls += 1
+        return {"synthetic": True}
+
     monkeypatch.setattr(pi, "bind_staged_review_inputs", lambda **_kwargs: None)
     monkeypatch.setattr(pi, "prepare_provider_launch_authorities", prepare_authority)
     monkeypatch.setattr(pi, "seal_provider_launches", lambda **_kwargs: None)
     monkeypatch.setattr(pi, "record_provider_result", seal_result)
-    monkeypatch.setattr(pi, "capture_summary", lambda _capture: {"synthetic": True})
+    monkeypatch.setattr(pi, "capture_summary", summary_spy)
     monkeypatch.setattr(pi, "_default_spawn", fatal_spawn)
     monkeypatch.setattr(pi, "_cleanup_capture_launches", cleanup_spy)
-    monkeypatch.setattr(pi, "resolve_seat_env", barrier_resolve)
-    monkeypatch.setattr(pi._ProviderQuiescenceLatch, "trip", observe_trip)
 
     try:
         with pytest.raises(
@@ -1806,14 +1814,34 @@ def test_capture_quiescence_failure_stops_siblings_and_retains_private_roots(
             )
         assert cleanup_calls == 0
         assert result_seals == 0
+        assert summary_calls == 0
         assert caught.value is primary_error
-        assert spawned == ["codex"]
+        if max_concurrency == 1:
+            assert spawned == ["codex"]
+        else:
+            assert len(spawned) == 4
+            assert set(spawned) == {"codex", "gemini", "claude", "grok"}
+            assert set(group_pids) == {"gemini", "claude", "grok"}
+            for pid in group_pids.values():
+                with pytest.raises(ProcessLookupError):
+                    os.kill(pid, 0)
+                assert not pi._process_group_exists(pid)
+            assert all(
+                (outputs[provider] / "pre-fatal-partial-output").read_text()
+                == "retained"
+                for provider in ("gemini", "claude", "grok")
+            )
+            assert all(
+                not (outputs[provider] / "post-fatal-marker").exists()
+                for provider in ("gemini", "claude", "grok")
+            )
         assert len(roots) == 8
-        assert snapshots
         assert all(root.is_dir() for root in roots)
         assert all(stat.S_IMODE(root.lstat().st_mode) == 0o700 for root in roots)
+        retained = {root: _private_tree_snapshot(root) for root in roots}
+        time.sleep(0.1)
         assert all(_private_tree_snapshot(root) == snapshot
-                   for root, snapshot in snapshots.items())
+                   for root, snapshot in retained.items())
     finally:
         for root in roots:
             shutil.rmtree(root, ignore_errors=True)

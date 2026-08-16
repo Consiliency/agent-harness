@@ -19,6 +19,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -272,6 +273,71 @@ def test_process_group_termination_escalates_after_leader_exit(monkeypatch):
     pi._terminate_process_group(ReapedLeader(), force_group=True)
 
     assert signals == [signal.SIGTERM, signal.SIGKILL]
+
+
+@pytest.mark.skipif(not _CPU_AVAILABLE, reason="provider group registry needs POSIX groups")
+def test_quiescence_latch_closes_launch_registration_race(tmp_path):
+    latch = pi._ProviderQuiescenceLatch()
+    primary = pi.ProviderProcessGroupQuiescenceError("fatal quiescence")
+    factory_entered = threading.Event()
+    allow_popen = threading.Event()
+    launched: list[subprocess.Popen[bytes]] = []
+    trip_results: list[BaseException] = []
+
+    def factory() -> subprocess.Popen[bytes]:
+        factory_entered.set()
+        assert allow_popen.wait(5)
+        return subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(600)"],
+            cwd=tmp_path,
+            start_new_session=True,
+        )
+
+    def launch() -> None:
+        launched.append(latch.launch(factory))
+
+    def trip() -> None:
+        try:
+            trip_results.append(latch.trip(primary))
+        except BaseException as exc:  # captured for deterministic thread assertion
+            trip_results.append(exc)
+
+    launch_thread = threading.Thread(target=launch)
+    trip_thread = threading.Thread(target=trip)
+    launch_thread.start()
+    assert factory_entered.wait(5)
+    trip_thread.start()
+    allow_popen.set()
+    launch_thread.join(5)
+    trip_thread.join(5)
+
+    assert not launch_thread.is_alive()
+    assert not trip_thread.is_alive()
+    assert trip_results == [primary]
+    assert len(launched) == 1
+    proc = launched[0]
+    assert proc.poll() is not None
+    assert not pi._process_group_exists(proc.pid)
+    latch.release(proc)
+
+
+@pytest.mark.skipif(not _CPU_AVAILABLE, reason="provider group registry needs POSIX groups")
+def test_quiescence_latch_rejects_deregistering_live_group(tmp_path):
+    latch = pi._ProviderQuiescenceLatch()
+    proc = latch.launch(lambda: subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(600)"],
+        cwd=tmp_path,
+        start_new_session=True,
+    ))
+    try:
+        with pytest.raises(
+            pi.ProviderProcessGroupQuiescenceError,
+            match="deregistration preceded quiescence",
+        ):
+            latch.release(proc)
+    finally:
+        pi._terminate_process_group(proc)
+    latch.release(proc)
 
 
 def test_process_group_termination_fails_if_group_survives_sigkill(monkeypatch):
