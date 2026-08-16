@@ -165,7 +165,36 @@ def test_release_workflows_keep_version_build_and_publish_boundaries_explicit():
     assert "--locked" in publish
     assert "--no-install-project" in publish
     assert "phase_loop_runtime.agy_canary_evidence" in publish
-    assert "agy-canary-finalize" in publish
+    # The canary surface is verified as `phase-loop <subcommand> --help` run from
+    # the INSTALLED wheel, never as standalone console_scripts. A bare
+    # `"agy-canary-finalize" in publish` substring check passed while the workflow
+    # asserted `commands <= entry_points` against `[project.scripts]` -- which
+    # declares only `phase-loop`/`codex-phase-loop`, so the release job would have
+    # failed AFTER the build step, mid-publication. Pin the invocation FORM and the
+    # exact subcommand set so neither can regress silently again.
+    # Assert against EXECUTABLE lines, not raw file text: the workflow comment
+    # explains what is deliberately not used, so a whole-file substring check would
+    # collide with its own rationale (and a negative assertion would be satisfied by
+    # deleting the explanation -- exactly backwards).
+    publish_code = "\n".join(
+        line for line in publish.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "commands <= entry_points" not in publish_code
+    assert "console_scripts" not in publish_code
+    assert '/tmp/phase-loop-release-wheel/bin/phase-loop "$sub" --help' in publish_code
+    for _sub in (
+        "agy-canary-probe",
+        "agy-canary-clean-settings",
+        "agy-canary-bootstrap-attest",
+        "agy-canary-prepare",
+        "agy-canary-verify",
+        "agy-canary-finalize",
+    ):
+        assert _sub in publish_code, _sub
+    # `agy-canary-cleanup` is not a registered subcommand; the CLI registers
+    # `agy-canary-clean-settings`. Guard the name that shipped in the first draft.
+    # Word-boundary match so `clean-settings` does not mask a re-introduced typo.
+    assert not re.search(r"agy-canary-cleanup\b", publish_code)
     assert "sha256sum dist/* | tee release/SHA256SUMS" in publish
     assert "sha256sum --check release/SHA256SUMS" in publish
     assert "if: startsWith(github.ref, 'refs/tags/v')" in publish

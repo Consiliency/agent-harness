@@ -63,21 +63,21 @@ jobs:
           spec = importlib.util.find_spec("phase_loop_runtime.agy_canary_evidence")
           assert spec is not None and spec.origin is not None
           assert pathlib.Path(spec.origin).resolve().is_relative_to(root)
-          commands = {
-              "agy-canary-cleanup",
-              "agy-canary-probe",
-              "agy-canary-bootstrap-attest",
-              "agy-canary-prepare",
-              "agy-canary-verify",
-              "agy-canary-finalize",
-          }
-          entry_points = {
-              entry.name
-              for entry in importlib.metadata.entry_points(group="console_scripts")
-              if entry.dist and entry.dist.name == "phase-loop-runtime"
-          }
-          assert commands <= entry_points, commands - entry_points
           PY
+          # The canary surface ships as SUBCOMMANDS of the `phase-loop` CLI, not as
+          # standalone script entry points: `[project.scripts]` declares exactly
+          # `phase-loop` and `codex-phase-loop`, and the plan specifies six
+          # `phase-loop agy-canary-<subcommand> --help` checks run from the
+          # INSTALLED wheel. An earlier draft asserted the six names were registered
+          # script entry points instead; that could never pass, and would have failed
+          # the release job after the build step, i.e. mid-publication. It also named
+          # the cleanup subcommand incorrectly -- the CLI registers
+          # `agy-canary-clean-settings`.
+          for sub in agy-canary-probe agy-canary-clean-settings \
+                     agy-canary-bootstrap-attest agy-canary-prepare \
+                     agy-canary-verify agy-canary-finalize; do
+            /tmp/phase-loop-release-wheel/bin/phase-loop "$sub" --help >/dev/null
+          done
       - name: Record exact artifact SHA-256 tuples
         run: |
           mkdir -p release
