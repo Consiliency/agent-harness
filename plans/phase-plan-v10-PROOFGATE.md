@@ -107,7 +107,7 @@ SL-2 — Grandfathering, generated skill docs, and terminal reducer
 - plan preferred executors: `codex`
 - execute allowed executors: `gemini`
 - review allowed executors: `claude`, `codex`, `grok`, `gemini`
-- required capabilities: `live_launch`, `structured_output`, `explicit_approval_controls`
+- execute required capabilities: `live_launch`, `context_file_instructions`
 
 ## Execution Policy
 
