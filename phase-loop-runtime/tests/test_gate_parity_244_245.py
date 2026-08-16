@@ -75,7 +75,10 @@ from phase_loop_test_utils import (
 
 
 def _clean_plan(repo: Path, roadmap: Path, *, produces: str | None = None) -> Path:
-    body = "# RUNNER\n\n"
+    body = (
+        "# RUNNER\n\n## Acceptance Criteria\n"
+        "- [ ] compatibility fixture — proven by test, falsified by fails if test fails\n\n"
+    )
     if produces:
         body += f"**Produces**: {produces}\n\n"
     body += "## Verification\n" f"- `{sys.executable} -c \"print('verify')\"`\n"
@@ -112,6 +115,8 @@ def _owned_and_produces_plan(
         "### SL-0 - RUNNER\n"
         f"- **Owned files**: {owned}\n\n"
         f"**Produces**: {produces}\n\n"
+        "## Acceptance Criteria\n"
+        "- [ ] compatibility fixture — proven by test, falsified by fails if test fails\n\n"
         "## Verification\n" f"- `{sys.executable} -c \"print('verify')\"`\n"
     )
     plan = write_phase_plan(repo, "RUNNER", roadmap, body=body)
@@ -150,7 +155,11 @@ class DispatchPreflightGateParityTest(unittest.TestCase):
         roadmap.write_text("# Roadmap\n\n### Phase 0 - Runner (RUNNER)\n", encoding="utf-8")
         plan = write_phase_plan(
             repo, "RUNNER", roadmap,
-            body="# RUNNER\n\n## Verification\n" f"- `{sys.executable} -c \"print('verify')\"`\n",
+            body=(
+                "# RUNNER\n\n## Acceptance Criteria\n"
+                "- [ ] compatibility fixture — proven by test, falsified by fails if test fails\n\n"
+                "## Verification\n" f"- `{sys.executable} -c \"print('verify')\"`\n"
+            ),
         )
         commit_fixture_paths(repo, "add plan", roadmap, plan)
         return roadmap, plan
@@ -168,6 +177,8 @@ class DispatchPreflightGateParityTest(unittest.TestCase):
             "- **Interfaces provided**: `producer.out`\n"
             "- **Interfaces consumed**: none\n"
             "- **Parallel-safe**: yes\n\n"
+            "## Acceptance Criteria\n"
+            "- [ ] compatibility fixture — proven by test, falsified by fails if test fails\n\n"
             "## Verification\n"
             f"- `{sys.executable} -c \"print('verify')\"`\n"
         )
