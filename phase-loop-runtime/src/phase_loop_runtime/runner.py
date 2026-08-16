@@ -6340,7 +6340,7 @@ def _execute_goal_coverage_preflight(repo: Path, roadmap: Path, plan: Path) -> d
     try:
         from .goal_coverage import extract_acceptance_contracts, check_acceptance_falsifiers
         contracts = extract_acceptance_contracts(plan)
-        falsifier_res = check_acceptance_falsifiers(contracts) if contracts else {"valid": True}
+        falsifier_res = check_acceptance_falsifiers(contracts)
         if not falsifier_res.get("valid", True):
             reason = falsifier_res.get("reason", "acceptance_falsifier_contract_invalid")
             return {
@@ -6447,7 +6447,7 @@ def _goal_coverage_closeout_outcome(
         try:
             from .goal_coverage import extract_acceptance_contracts, check_acceptance_falsifiers
             contracts = extract_acceptance_contracts(plan)
-            falsifier_res = check_acceptance_falsifiers(contracts) if contracts else {"valid": True}
+            falsifier_res = check_acceptance_falsifiers(contracts)
             if not falsifier_res.get("valid", True):
                 reason = falsifier_res.get("reason", "acceptance_falsifier_contract_invalid")
                 return None, _blocker(f"Acceptance falsifier contract failed at closeout: {reason}")
