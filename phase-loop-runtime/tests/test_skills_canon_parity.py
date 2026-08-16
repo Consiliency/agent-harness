@@ -347,15 +347,24 @@ class SkillsCanonParityTest(unittest.TestCase):
             )
 
     def test_plan_phase_skills_publish_falsifier_grammar(self):
-        from .proofgate_tdd_guard import ProofgateMissingCapabilityError, guard_proofgate_nodeid, run_proofgate_contract
+        from .proofgate_content_tdd_adapter import ProofgateMissingCapabilityError, guard_proofgate_nodeid, run_proofgate_contract
         nodeid = "phase-loop-runtime/tests/test_skills_canon_parity.py::SkillsCanonParityTest::test_plan_phase_skills_publish_falsifier_grammar"
         if not guard_proofgate_nodeid(nodeid):
             return
 
         def _contract():
-            from phase_loop_runtime import build_bundle as build_bundle_mod
-            if not hasattr(build_bundle_mod, "verify_proofgate_skills_falsifier_grammar"):
-                raise ProofgateMissingCapabilityError("phase_loop_runtime.build_bundle missing verify_proofgate_skills_falsifier_grammar capability")
+            canonical_skills = [
+                SKILLS_SRC["claude"] / "claude-plan-phase" / "SKILL.md",
+                SKILLS_SRC["codex"] / "codex-plan-phase" / "SKILL.md",
+                SKILLS_SRC["gemini"] / "gemini-plan-phase" / "SKILL.md",
+                SKILLS_SRC["opencode"] / "opencode-plan-phase" / "SKILL.md",
+            ]
+            for spath in canonical_skills:
+                if not spath.exists():
+                    raise ProofgateMissingCapabilityError(f"Canonical skill source missing: {spath}")
+                stxt = spath.read_text(encoding="utf-8")
+                if "falsified by" not in stxt and "Falsifier:" not in stxt:
+                    raise ProofgateMissingCapabilityError(f"Canonical skill source {spath.name} missing falsifier grammar")
 
             committed_plan_skill = COMMITTED_BUNDLE / "plan-phase" / "SKILL.md"
             if not committed_plan_skill.exists():

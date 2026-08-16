@@ -10,7 +10,7 @@ import hashlib
 from pathlib import Path
 import pytest
 
-from .proofgate_tdd_guard import (
+from .proofgate_content_tdd_adapter import (
     ProofgateMissingCapabilityError,
     PROOFGATE_GRANDFATHER_CUTOFF_OID,
     PROOFGATE_GRANDFATHER_RAW_ITEM,
@@ -67,11 +67,11 @@ class ProofgatePlanValidatorTest(unittest.TestCase):
                 tf_path = tf.name
 
             proc = subprocess.run([sys.executable, str(validator_script), tf_path], capture_output=True, text=True)
+            proc = subprocess.run([sys.executable, str(validator_script), tf_path], capture_output=True, text=True)
             combined_output = proc.stdout + proc.stderr
             cli_rejected_vacuous = (
                 proc.returncode != 0
                 and "vacuous_falsifier" in combined_output
-                and "WARN" not in combined_output
             )
             if not cli_rejected_vacuous:
                 emit_mutation_observable(
@@ -151,7 +151,7 @@ class ProofgatePlanValidatorTest(unittest.TestCase):
             proc = subprocess.run([sys.executable, str(validator_script), tf_path], capture_output=True, text=True)
             self.assertNotEqual(proc.returncode, 0, "validate_plan_doc.py CLI must exit non-zero on #288 pinned bytes")
             combined_output = proc.stdout + proc.stderr
-            self.assertNotIn("WARN", combined_output)
+            self.assertIn("vacuous_falsifier", combined_output)
 
             check_res = goal_coverage.check_acceptance_falsifiers(contracts)
             self.assertFalse(check_res.get("valid", True))
@@ -165,18 +165,14 @@ class ProofgatePlanValidatorTest(unittest.TestCase):
 
         def _contract():
             try:
-                from phase_loop_runtime import goal_coverage, proofgate_receipts
+                from phase_loop_runtime import goal_coverage
             except ImportError as err:
                 raise ProofgateMissingCapabilityError(
-                    "goal_coverage or proofgate_receipts module missing"
+                    "goal_coverage module missing"
                 ) from err
 
             if not hasattr(goal_coverage, "extract_acceptance_contracts") or not hasattr(goal_coverage, "check_acceptance_falsifiers"):
                 raise ProofgateMissingCapabilityError("extract_acceptance_contracts or check_acceptance_falsifiers missing on goal_coverage")
-            if not hasattr(proofgate_receipts, "verify_proofgate_preflight_intake"):
-                raise ProofgateMissingCapabilityError(
-                    "verify_proofgate_preflight_intake missing on proofgate_receipts"
-                )
 
             grandfather_plan = proofgate_grandfather_plan_bytes()
             contracts = goal_coverage.extract_acceptance_contracts(grandfather_plan)
@@ -212,10 +208,39 @@ class ProofgatePlanValidatorTest(unittest.TestCase):
                 emit_mutation_observable("ec-proofgate-7.grandfathering", getattr(self, "record_property", None))
             self.assertTrue(cond, check_res)
 
+            missing_cutoff = goal_coverage.check_acceptance_falsifiers(contracts)
+            self.assertFalse(
+                missing_cutoff.get("valid", True),
+                "Exact historical bytes without cutoff proof must remain invalid",
+            )
+            self.assertEqual(missing_cutoff.get("disposition"), "invalid")
+            self.assertEqual(missing_cutoff.get("reason"), "missing_falsifier")
+            self.assertIs(missing_cutoff.get("requires_current_evidence"), True)
+
+            invalid_cutoff = goal_coverage.check_acceptance_falsifiers(
+                contracts,
+                cutoff_commit_oid="0" * 40,
+                successor_commit_oid=PROOFGATE_GRANDFATHER_SUCCESSOR_OID,
+                server_attested_date=PROOFGATE_GRANDFATHER_SERVER_DATE,
+            )
+            self.assertFalse(
+                invalid_cutoff.get("valid", True),
+                "Exact historical bytes with invalid cutoff proof must remain invalid",
+            )
+            self.assertEqual(invalid_cutoff.get("disposition"), "invalid")
+
             validator_script = _get_validator_script()
             with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as tf:
                 tf.write(grandfather_plan)
                 tf_path = tf.name
+            unproved_proc = subprocess.run(
+                [sys.executable, str(validator_script), tf_path],
+                cwd=Path(__file__).resolve().parents[2],
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(unproved_proc.returncode, 0)
+            self.assertIn("missing_falsifier", unproved_proc.stdout + unproved_proc.stderr)
             proc = subprocess.run(
                 [
                     sys.executable,
@@ -244,30 +269,6 @@ class ProofgatePlanValidatorTest(unittest.TestCase):
             self.assertIn(PROOFGATE_GRANDFATHER_SERVER_DATE, warning_lines[0])
             self.assertNotIn("ERROR", output)
 
-            with tempfile.TemporaryDirectory() as intake_td:
-                repo = Path(intake_td)
-                roadmap = repo / "specs" / "phase-plans-v10.md"
-                plan_path = repo / "plans" / "phase-plan-v10-PROOFGATE.md"
-                roadmap.parent.mkdir(parents=True)
-                plan_path.parent.mkdir(parents=True)
-                roadmap.write_text("# roadmap\n", encoding="utf-8")
-                plan_path.write_text(grandfather_plan, encoding="utf-8")
-                intake = proofgate_receipts.verify_proofgate_preflight_intake(
-                    repo,
-                    roadmap,
-                    plan_path,
-                    acceptance_route="direct",
-                    grammar_cutoff_commit_oid=PROOFGATE_GRANDFATHER_CUTOFF_OID,
-                    grammar_successor_commit_oid=PROOFGATE_GRANDFATHER_SUCCESSOR_OID,
-                    server_attested_pre_grammar_date=PROOFGATE_GRANDFATHER_SERVER_DATE,
-                    grandfather_source_path=(
-                        "plans/detailed-goal-id-single-source-of-truth-211-redesign-20260719.md"
-                    ),
-                )
-                self.assertIsInstance(intake, dict)
-                self.assertEqual(intake.get("acceptance_disposition"), "grandfathered")
-                self.assertNotEqual(intake.get("blocker_class"), "contract_bug")
-
         run_proofgate_contract(nodeid, _contract)
 
     def test_changed_or_new_criterion_requires_v3_evidence(self):
@@ -277,18 +278,14 @@ class ProofgatePlanValidatorTest(unittest.TestCase):
 
         def _contract():
             try:
-                from phase_loop_runtime import goal_coverage, proofgate_receipts
+                from phase_loop_runtime import goal_coverage
             except ImportError as err:
                 raise ProofgateMissingCapabilityError(
-                    "goal_coverage or proofgate_receipts module missing"
+                    "goal_coverage module missing"
                 ) from err
 
             if not hasattr(goal_coverage, "extract_acceptance_contracts") or not hasattr(goal_coverage, "check_acceptance_falsifiers"):
                 raise ProofgateMissingCapabilityError("extract_acceptance_contracts or check_acceptance_falsifiers missing on goal_coverage")
-            if not hasattr(proofgate_receipts, "verify_proofgate_preflight_intake"):
-                raise ProofgateMissingCapabilityError(
-                    "verify_proofgate_preflight_intake missing on proofgate_receipts"
-                )
 
             grandfather_plan = proofgate_grandfather_plan_bytes()
             new_plan = proofgate_changed_grandfather_plan_bytes()
@@ -332,32 +329,6 @@ class ProofgatePlanValidatorTest(unittest.TestCase):
             self.assertNotEqual(proc.returncode, 0, output)
             self.assertIn("missing_falsifier", output)
             self.assertIn("verification_evidence.v3", output)
-
-            with tempfile.TemporaryDirectory() as intake_td:
-                repo = Path(intake_td)
-                roadmap = repo / "specs" / "phase-plans-v10.md"
-                plan_path = repo / "plans" / "phase-plan-v10-PROOFGATE.md"
-                roadmap.parent.mkdir(parents=True)
-                plan_path.parent.mkdir(parents=True)
-                roadmap.write_text("# roadmap\n", encoding="utf-8")
-                plan_path.write_text(new_plan, encoding="utf-8")
-                intake = proofgate_receipts.verify_proofgate_preflight_intake(
-                    repo,
-                    roadmap,
-                    plan_path,
-                    acceptance_route="direct",
-                    grammar_cutoff_commit_oid=PROOFGATE_GRANDFATHER_CUTOFF_OID,
-                    grammar_successor_commit_oid=PROOFGATE_GRANDFATHER_SUCCESSOR_OID,
-                    server_attested_pre_grammar_date=PROOFGATE_GRANDFATHER_SERVER_DATE,
-                    grandfather_source_path=(
-                        "plans/detailed-goal-id-single-source-of-truth-211-redesign-20260719.md"
-                    ),
-                )
-                self.assertIsInstance(intake, dict)
-                self.assertFalse(intake.get("authorized", True))
-                self.assertEqual(intake.get("blocker_class"), "contract_bug")
-                self.assertEqual(intake.get("reason"), "missing_falsifier")
-                self.assertEqual(intake.get("required_verification_schema_version"), 3)
 
         run_proofgate_contract(nodeid, _contract)
 

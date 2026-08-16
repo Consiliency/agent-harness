@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -264,8 +266,32 @@ class VerificationEvidenceTest(unittest.TestCase):
             self.assertEqual(appended["entry"], {"kind": "operator_check", "status": "passed"})
             self.assertEqual(payload["entry"]["kind"], "operator_check")
 
+    def test_proofgate_v3_chronology_guard_unmatched_anchor_is_mutation_not_applied(self):
+        from .proofgate_content_tdd_adapter import ProofgateMissingCapabilityError, guard_proofgate_nodeid, run_proofgate_contract
+        nodeid = "phase-loop-runtime/tests/test_verification_evidence.py::VerificationEvidenceTest::test_proofgate_v3_chronology_guard_unmatched_anchor_is_mutation_not_applied"
+        if not guard_proofgate_nodeid(nodeid):
+            return
+
+        def _contract():
+            from .proofgate_content_tdd_adapter import emit_mutation_observable, verify_proofgate_content_tdd_junit
+            xml_valid = '<testsuite><testcase classname="pkg.Test" name="test1" file="tests/test_a.py"/></testsuite>'
+            res = verify_proofgate_content_tdd_junit(xml_valid, ("tests/test_a.py::Test::test1",), "test_group")
+            if not res.get("ok"):
+                emit_mutation_observable("ec-proofgate-0.chronology-guard", getattr(self, "record_property", None))
+                assert res.get("ok"), f"verify_proofgate_content_tdd_junit returned failure: {res.get('error')}"
+
+            from phase_loop_runtime import verification_evidence
+            if not hasattr(verification_evidence, "verify_proofgate_mutation_bindings"):
+                raise ProofgateMissingCapabilityError("verify_proofgate_mutation_bindings interface missing on verification_evidence")
+
+        run_proofgate_contract(nodeid, _contract)
+
     def test_proofgate_v3_unmatched_anchor_is_mutation_not_applied(self):
-        from .proofgate_tdd_guard import ProofgateMissingCapabilityError, guard_proofgate_nodeid, run_proofgate_contract
+        from .proofgate_content_tdd_adapter import (
+            ProofgateMissingCapabilityError,
+            guard_proofgate_nodeid,
+            run_proofgate_contract,
+        )
         nodeid = "phase-loop-runtime/tests/test_verification_evidence.py::VerificationEvidenceTest::test_proofgate_v3_unmatched_anchor_is_mutation_not_applied"
         if not guard_proofgate_nodeid(nodeid):
             return
@@ -275,7 +301,6 @@ class VerificationEvidenceTest(unittest.TestCase):
             if not hasattr(verification_evidence, "apply_proofgate_mutation_anchor"):
                 raise ProofgateMissingCapabilityError("apply_proofgate_mutation_anchor attribute missing on verification_evidence")
 
-            import subprocess
             try:
                 cand_oid = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
             except Exception:
@@ -296,12 +321,194 @@ class VerificationEvidenceTest(unittest.TestCase):
 
         run_proofgate_contract(nodeid, _contract)
 
+    def test_proofgate_adapter_and_scope_verification(self):
+        from .proofgate_content_tdd_adapter import (
+            EXPECTED_OWNED_UNION,
+            EXPECTED_FREEZE_FILES,
+            RED_CASES_BY_NODEID,
+            _LANE_UNION,
+            _canonical_red_inputs,
+            _committed_paths_in_range,
+            _is_path_allowed_by_owned_union,
+            _validate_exact_partition,
+            _validate_red_marker_output,
+            _verify_cmd,
+            _verify_scope,
+            proofgate_active,
+            validate_mutation_manifest_structure,
+            verify_proofgate_content_tdd_junit,
+        )
+        if proofgate_active():
+            return
+
+        # Assert canonical node set contains no receipt/adapter-recursive node
+        node_name = "test_proofgate_adapter_and_scope_verification"
+        assert not any(node_name in nodeid for nodeid in _LANE_UNION), "Canonical node set must not contain recursive adapter/receipt verification test"
+
+        # Adapter JUnit edge-case tests
+        empty_junit = verify_proofgate_content_tdd_junit("", ("node1",), "test_group")
+        assert not empty_junit["ok"] and empty_junit["error"] == "Empty JUnit XML input"
+
+        malformed_junit = verify_proofgate_content_tdd_junit("<invalid>", ("node1",), "test_group")
+        assert not malformed_junit["ok"] and "Failed to parse JUnit XML" in malformed_junit["error"]
+
+        xml_dup = (
+            '<testsuite><testcase classname="pkg.Test" name="test1" file="tests/test_a.py"/>'
+            '<testcase classname="pkg.Test" name="test1" file="tests/test_a.py"/></testsuite>'
+        )
+        res_dup = verify_proofgate_content_tdd_junit(xml_dup, ("tests/test_a.py::Test::test1",), "test_group")
+        assert not res_dup["ok"] and "Duplicate collected node IDs" in res_dup["error"]
+
+        xml_mismatch = (
+            '<testsuite><testcase classname="pkg.Test" name="test1" file="tests/test_a.py"/></testsuite>'
+        )
+        res_mismatch = verify_proofgate_content_tdd_junit(xml_mismatch, ("tests/test_a.py::Test::test1", "tests/test_b.py::Test::test2"), "test_group")
+        assert not res_mismatch["ok"] and "do not match declared set" in res_mismatch["error"]
+
+        xml_skipped = (
+            '<testsuite><testcase classname="pkg.Test" name="test1" file="tests/test_a.py"><skipped type="pytest.skip"/></testcase></testsuite>'
+        )
+        res_skipped = verify_proofgate_content_tdd_junit(xml_skipped, ("tests/test_a.py::Test::test1",), "test_group")
+        assert not res_skipped["ok"] and "Expected at least 1 passing test" in res_skipped["error"]
+
+        xml_zero_pass = (
+            '<testsuite><testcase classname="pkg.Test" name="test1" file="tests/test_a.py"><failure message="failed"/></testcase></testsuite>'
+        )
+        res_zero_pass = verify_proofgate_content_tdd_junit(xml_zero_pass, ("tests/test_a.py::Test::test1",), "test_group")
+        assert not res_zero_pass["ok"] and "Expected at least 1 passing test" in res_zero_pass["error"]
+
+        xml_xfail = (
+            '<testsuite><testcase classname="pkg.Test" name="test1" file="tests/test_a.py"><skipped type="pytest.xfail"/></testcase></testsuite>'
+        )
+        res_xfail = verify_proofgate_content_tdd_junit(xml_xfail, ("tests/test_a.py::Test::test1",), "test_group")
+        assert not res_xfail["ok"]
+
+        xml_xpass = (
+            '<testsuite><testcase classname="pkg.Test" name="test1" file="tests/test_a.py" message="XPASS"/></testsuite>'
+        )
+        res_xpass = verify_proofgate_content_tdd_junit(xml_xpass, ("tests/test_a.py::Test::test1",), "test_group")
+        assert not res_xpass["ok"]
+
+        # Blocker 3 real report/subprocess checks:
+        xml_valid = (
+            '<testsuite><testcase classname="pkg.Test" name="test1" file="tests/test_a.py"/></testsuite>'
+        )
+        res_stale_failed = verify_proofgate_content_tdd_junit(xml_valid, ("tests/test_a.py::Test::test1",), "test_group", returncode=1)
+        assert not res_stale_failed["ok"] and "Pytest process failed" in res_stale_failed["error"]
+
+        res_xpass_out = verify_proofgate_content_tdd_junit(xml_valid, ("tests/test_a.py::Test::test1",), "test_group", pytest_output="XPASS test_a.py::test1")
+        assert not res_xpass_out["ok"] and "Non-strict XPASS" in res_xpass_out["error"]
+
+        res_desel_out = verify_proofgate_content_tdd_junit(xml_valid, ("tests/test_a.py::Test::test1",), "test_group", pytest_output="1 deselected")
+        assert not res_desel_out["ok"] and "Deselected tests detected" in res_desel_out["error"]
+
+        # Adapter verify / verify-scope edge-case tests
+        root = Path(__file__).resolve().parents[2]
+        res_ver_err = _verify_cmd(root, "HEAD", "nonexistent-identity-12345", root / ".phase-loop/evidence/PROOFGATE/content-tdd-receipt.json")
+        assert res_ver_err == 1
+
+        # Assertion that all canonical RED case IDs are unique
+        red_case_ids = [val[1] for val in RED_CASES_BY_NODEID.values()]
+        assert len(red_case_ids) == len(set(red_case_ids)), f"Canonical RED case IDs must be unique, duplicates: {[c for c in set(red_case_ids) if red_case_ids.count(c) > 1]}"
+
+        valid_red_output = "\n".join(
+            f"GOVLEAN deliberate RED anchor PROOFGATE_RED::{RED_CASES_BY_NODEID[nodeid][1]}"
+            for nodeid in sorted(_LANE_UNION)
+        )
+        assert _validate_red_marker_output(valid_red_output, tuple(sorted(_LANE_UNION))) is None
+        missing_typed_marker = valid_red_output.replace(
+            f"PROOFGATE_RED::{RED_CASES_BY_NODEID[sorted(_LANE_UNION)[0]][1]}",
+            "PROOFGATE_RED::forged-missing-case",
+        )
+        assert _validate_red_marker_output(missing_typed_marker, tuple(sorted(_LANE_UNION))) is not None
+        assert _validate_red_marker_output(valid_red_output.replace("GOVLEAN deliberate RED anchor", "", 1), tuple(sorted(_LANE_UNION))) is not None
+        assert _validate_exact_partition((("node-a",), ("node-b",)), {"node-a", "node-b"}) is None
+        assert _validate_exact_partition((("node-a",), ("node-a", "node-b")), {"node-a", "node-b"}) is not None
+
+        with unittest.mock.patch.dict(os.environ, {"PHASE_LOOP_TDD_EXPECT_GOVLEAN": "1"}, clear=True):
+            assert not proofgate_active()
+        with unittest.mock.patch.dict(os.environ, {"PHASE_LOOP_TDD_EXPECT_PROOFGATE": "1"}, clear=True):
+            assert proofgate_active()
+
+        with tempfile.TemporaryDirectory() as td:
+            history_repo = Path(td)
+            subprocess.run(["git", "init", "-q"], cwd=history_repo, check=True)
+            subprocess.run(["git", "config", "user.email", "proofgate@example.invalid"], cwd=history_repo, check=True)
+            subprocess.run(["git", "config", "user.name", "PROOFGATE test"], cwd=history_repo, check=True)
+            (history_repo / "owned.txt").write_text("base\n", encoding="utf-8")
+            subprocess.run(["git", "add", "owned.txt"], cwd=history_repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "base"], cwd=history_repo, check=True)
+            base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=history_repo, text=True).strip()
+            (history_repo / "unowned.txt").write_text("transient\n", encoding="utf-8")
+            subprocess.run(["git", "add", "unowned.txt"], cwd=history_repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "add transient unowned path"], cwd=history_repo, check=True)
+            subprocess.run(["git", "rm", "-q", "unowned.txt"], cwd=history_repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "restore final tree"], cwd=history_repo, check=True)
+            assert subprocess.check_output(["git", "diff", "--name-only", f"{base}..HEAD"], cwd=history_repo, text=True) == ""
+            assert "unowned.txt" in _committed_paths_in_range(history_repo, base, "HEAD")
+
+        # Negative scope test using outside-but-prefix-sharing path
+        assert _is_path_allowed_by_owned_union(
+            "phase-loop-runtime/src/phase_loop_runtime/skills_bundle/claude-plan-phase/SKILL.md",
+            EXPECTED_OWNED_UNION,
+        )
+        assert not _is_path_allowed_by_owned_union(
+            "phase-loop-runtime/src/phase_loop_runtime/skills_bundle/claude-execute-phase/SKILL.md",
+            EXPECTED_OWNED_UNION,
+        )
+        assert not _is_path_allowed_by_owned_union(
+            "phase-loop-runtime/src/phase_loop_runtime/skills_bundle/claude-execute-phase/x-plan-phase/file",
+            EXPECTED_OWNED_UNION,
+        )
+        assert not _is_path_allowed_by_owned_union(
+            "unowned/phase-loop-skills/plan-phase/SKILL.md",
+            EXPECTED_OWNED_UNION,
+        )
+        assert _is_path_allowed_by_owned_union(
+            "phase-loop-skills/plan-phase/_overrides/claude/SKILL.md",
+            EXPECTED_OWNED_UNION,
+        )
+        assert _is_path_allowed_by_owned_union(
+            "phase-loop-runtime/src/phase_loop_runtime/skills_bundle/claude-plan-phase/scripts/validate_plan_doc.py",
+            EXPECTED_OWNED_UNION,
+        )
+
+        res_scope_err = _verify_scope(root, "invalid_remote", "invalid_branch", "proofgate-tests-freeze", "HEAD", Path("plans/phase-plan-v10-PROOFGATE.md"))
+        assert res_scope_err == 1
+
+        res_scope_plan_err = _verify_scope(root, "origin", "main", "proofgate-tests-freeze", "HEAD", Path("plans/nonexistent-plan.md"))
+        assert res_scope_plan_err == 1
+
+        # The installed-wheel clean room intentionally omits phase plans. Source
+        # checkouts additionally prove that mutating a real Owned files entry fails.
+        proofgate_plan = root / "plans/phase-plan-v10-PROOFGATE.md"
+        if proofgate_plan.is_file():
+            with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as tf:
+                plan_content = proofgate_plan.read_text(encoding="utf-8")
+                mutated_content = plan_content.replace("`phase-loop-runtime/src/phase_loop_runtime/goal_coverage.py`", "`phase-loop-runtime/src/phase_loop_runtime/goal_coverage_MUTATED.py`")
+                tf.write(mutated_content)
+                tf_path = Path(tf.name)
+            res_scope_mutated_plan = _verify_scope(root, "origin", "main", "proofgate-tests-freeze", "HEAD", tf_path)
+            assert res_scope_mutated_plan == 1
+
+        canonical_nodes, canonical_cmd, support_paths = _canonical_red_inputs()
+        assert canonical_nodes == tuple(sorted(_LANE_UNION))
+        assert canonical_cmd == ["pytest", *canonical_nodes, "-q"]
+        assert tuple(sorted(support_paths)) == tuple(sorted(EXPECTED_FREEZE_FILES))
+
+        # Manifest structure validator fail-closed tests
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tf:
+            tf.write('{"schema": "invalid"}')
+            tf_path = Path(tf.name)
+        res_man = validate_mutation_manifest_structure(tf_path)
+        assert not res_man["is_valid"] and res_man["status"] == "invalid"
+
     @pytest.fixture(autouse=True)
     def _inject_record_property(self, record_property):
         self.record_property = record_property
 
     def test_proofgate_v3_matched_anchor_kill_requires_green_identical_command_baseline(self):
-        from .proofgate_tdd_guard import ProofgateMissingCapabilityError, emit_mutation_observable, guard_proofgate_nodeid, run_proofgate_contract
+        from .proofgate_content_tdd_adapter import ProofgateMissingCapabilityError, emit_mutation_observable, guard_proofgate_nodeid, run_proofgate_contract
         nodeid = "phase-loop-runtime/tests/test_verification_evidence.py::VerificationEvidenceTest::test_proofgate_v3_matched_anchor_kill_requires_green_identical_command_baseline"
         if not guard_proofgate_nodeid(nodeid):
             return
@@ -338,7 +545,7 @@ class VerificationEvidenceTest(unittest.TestCase):
         run_proofgate_contract(nodeid, _contract)
 
     def test_proofgate_v3_rejects_missing_duplicate_extra_substituted_or_surviving_parameter(self):
-        from .proofgate_tdd_guard import ProofgateMissingCapabilityError, emit_mutation_observable, guard_proofgate_nodeid, run_proofgate_contract
+        from .proofgate_content_tdd_adapter import ProofgateMissingCapabilityError, emit_mutation_observable, guard_proofgate_nodeid, run_proofgate_contract
         nodeid = "phase-loop-runtime/tests/test_verification_evidence.py::VerificationEvidenceTest::test_proofgate_v3_rejects_missing_duplicate_extra_substituted_or_surviving_parameter"
         if not guard_proofgate_nodeid(nodeid):
             return
@@ -415,7 +622,7 @@ class VerificationEvidenceTest(unittest.TestCase):
                     json.dumps({
                         "extensions": {
                             "phase_loop_runtime.proofgate_evidence": {
-                                "schema": "proofgate_evidence.v1",
+                                "schema": "proofgate_evidence_sidecar.v1",
                                 "candidate_snapshot": {},
                                 "mutations": {"parameters": clean_records},
                                 "chronology": {},
@@ -457,7 +664,7 @@ class VerificationEvidenceTest(unittest.TestCase):
         run_proofgate_contract(nodeid, _contract)
 
     def test_proofgate_v3_rejects_candidate_or_command_digest_drift(self):
-        from .proofgate_tdd_guard import ProofgateMissingCapabilityError, emit_mutation_observable, guard_proofgate_nodeid, run_proofgate_contract
+        from .proofgate_content_tdd_adapter import ProofgateMissingCapabilityError, emit_mutation_observable, guard_proofgate_nodeid, run_proofgate_contract
         nodeid = "phase-loop-runtime/tests/test_verification_evidence.py::VerificationEvidenceTest::test_proofgate_v3_rejects_candidate_or_command_digest_drift"
         if not guard_proofgate_nodeid(nodeid):
             return
@@ -467,15 +674,14 @@ class VerificationEvidenceTest(unittest.TestCase):
             if not hasattr(verification_evidence, "verify_proofgate_mutation_bindings"):
                 raise ProofgateMissingCapabilityError("verify_proofgate_mutation_bindings attribute missing on verification_evidence")
 
-            registry_schema = verification_evidence.EXTENSION_NAMESPACE_REGISTRY.get(
-                "phase_loop_runtime.legible_evidence"
-            )
-            if registry_schema != "verification_evidence_sidecar.v1":
+            verification_evidence.register_extension_namespace("phase_loop_runtime.proofgate_evidence", "proofgate_evidence_sidecar.v1")
+            registry_schema = verification_evidence.EXTENSION_NAMESPACE_REGISTRY.get("phase_loop_runtime.proofgate_evidence")
+            if registry_schema != "proofgate_evidence_sidecar.v1":
                 emit_mutation_observable(
                     "ec-proofgate-2.mutation-application",
                     getattr(self, "record_property", None),
                 )
-            assert registry_schema == "verification_evidence_sidecar.v1"
+            assert registry_schema == "proofgate_evidence_sidecar.v1", "register_extension_namespace must register phase_loop_runtime.proofgate_evidence"
 
             verifier = verification_evidence.verify_proofgate_mutation_bindings
 

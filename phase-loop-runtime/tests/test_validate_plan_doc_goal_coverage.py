@@ -20,21 +20,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-import pytest
-
-from _dotfiles_tree import skills_bundle_present
-
-# Loads the validator from the sibling phase-loop-skills/ bundle, which is absent in the
-# standalone-from-wheel clean-room (Gate A). Guard at module level (SCRIPT is loaded at
-# import time), matching test_validate_plan_doc_docs_lane.py.
-if not skills_bundle_present():
-    pytest.skip(
-        "requires the sibling phase-loop-skills bundle (absent in the standalone-from-wheel clean-room)",
-        allow_module_level=True,
-    )
-
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "phase-loop-skills" / "plan-phase" / "scripts" / "validate_plan_doc.py"
+if not SCRIPT.is_file():
+    SCRIPT = ROOT / "skills-src" / "claude" / "claude-plan-phase" / "scripts" / "validate_plan_doc.py"
 
 
 def _load():
@@ -91,16 +80,16 @@ class GoalCoverageCheckTest(unittest.TestCase):
             return self.mod._check_p_goal_id_coverage(src, plan_path, repo)
 
     def test_all_declared_ids_referenced_is_clean(self):
-        findings = self._run(_roadmap(_EC_EXIT), "- [ ] EC-P1-1 — proven by `a`\n- [ ] EC-P1-2 — proven by `b`")
+        findings = self._run(_roadmap(_EC_EXIT), "- [ ] EC-P1-1 — proven by `a`, falsified by `fails if a fails`\n- [ ] EC-P1-2 — proven by `b`, falsified by `fails if b fails`")
         self.assertEqual(findings, [])
 
     def test_one_item_may_reference_several_ids(self):
         # 1:many — a single proving command discharges two goals (runtime supports this).
-        findings = self._run(_roadmap(_EC_EXIT), "- [ ] EC-P1-1, EC-P1-2 — proven by `pytest ab`")
+        findings = self._run(_roadmap(_EC_EXIT), "- [ ] EC-P1-1, EC-P1-2 — proven by `pytest ab`, falsified by `fails if ab fails`")
         self.assertEqual(findings, [])
 
     def test_unreferenced_declared_id_warns(self):
-        findings = self._run(_roadmap(_EC_EXIT), "- [ ] EC-P1-1 — proven by `a`")  # EC-P1-2 dropped
+        findings = self._run(_roadmap(_EC_EXIT), "- [ ] EC-P1-1 — proven by `a`, falsified by `fails if a fails`")  # EC-P1-2 dropped
         self.assertEqual(len(findings), 1)
         self.assertIn("(P) WARN", findings[0])
         self.assertIn("EC-P1-2", findings[0])
@@ -109,7 +98,7 @@ class GoalCoverageCheckTest(unittest.TestCase):
     def test_dangling_reference_warns(self):
         findings = self._run(
             _roadmap(_EC_EXIT),
-            "- [ ] EC-P1-1 — proven by `a`\n- [ ] EC-P1-2 — proven by `b`\n- [ ] EC-P1-7 — proven by `c`",
+            "- [ ] EC-P1-1 — proven by `a`, falsified by `fails if a fails`\n- [ ] EC-P1-2 — proven by `b`, falsified by `fails if b fails`\n- [ ] EC-P1-7 — proven by `c`, falsified by `fails if c fails`",
         )
         self.assertEqual(len(findings), 1)
         self.assertIn("dangling", findings[0])
@@ -119,7 +108,7 @@ class GoalCoverageCheckTest(unittest.TestCase):
         # Runtime-accepted heading form `(P1, owner team)` must not be treated as legacy.
         findings = self._run(
             _roadmap(_EC_EXIT, heading="### Phase 1 — Foo (P1, owner team)"),
-            "- [ ] EC-P1-1 — proven by `a`",  # EC-P1-2 dropped -> must still warn
+            "- [ ] EC-P1-1 — proven by `a`, falsified by `fails if a fails`",  # EC-P1-2 dropped -> must still warn
         )
         self.assertEqual(len(findings), 1)
         self.assertIn("EC-P1-2", findings[0])
@@ -127,7 +116,7 @@ class GoalCoverageCheckTest(unittest.TestCase):
     def test_stray_ec_checkbox_in_later_section_not_counted_as_declared(self):
         # The `## Verification` section's EC-P1-9 checkbox must NOT inflate `declared`
         # (phase body ends at the next `## ` heading).
-        findings = self._run(_roadmap(_EC_EXIT), "- [ ] EC-P1-1 — proven by `a`\n- [ ] EC-P1-2 — proven by `b`")
+        findings = self._run(_roadmap(_EC_EXIT), "- [ ] EC-P1-1 — proven by `a`, falsified by `fails if a fails`\n- [ ] EC-P1-2 — proven by `b`, falsified by `fails if b fails`")
         self.assertEqual(findings, [])  # EC-P1-9 is not a declared goal of P1
 
     def test_legacy_phase_no_refs_no_finding(self):
@@ -137,7 +126,7 @@ class GoalCoverageCheckTest(unittest.TestCase):
     def test_legacy_phase_with_ec_refs_is_dangling(self):
         # A plan that references goal IDs against a phase declaring NONE is a dangling
         # contract bug (mirrors the runtime), not a silent pass.
-        findings = self._run(_roadmap(_LEGACY_EXIT), "- [ ] EC-P1-1 — proven by `a`")
+        findings = self._run(_roadmap(_LEGACY_EXIT), "- [ ] EC-P1-1 — proven by `a`, falsified by `fails if a fails`")
         self.assertEqual(len(findings), 1)
         self.assertIn("dangling", findings[0])
         self.assertIn("EC-P1-1", findings[0])
@@ -146,7 +135,7 @@ class GoalCoverageCheckTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             (repo / "plans").mkdir()
-            src = _plan("- [ ] EC-P1-1 — proven by `a`")
+            src = _plan("- [ ] EC-P1-1 — proven by `a`, falsified by `fails if a fails`")
             plan_path = repo / "plans" / "phase-plan-v1-p1.md"
             plan_path.write_text(src, encoding="utf-8")
             self.assertEqual(self.mod._check_p_goal_id_coverage(src, plan_path, repo), [])
@@ -165,8 +154,8 @@ class GoalCoverageCheckTest(unittest.TestCase):
             "## Verification\n- [ ] EC-P1-9 — a stray checkbox in a later section\n"
         )
         # both declared IDs referenced -> clean; drop one -> the unreferenced one warns.
-        self.assertEqual(self._run(roadmap, "- [ ] EC-P1-1 — proven by `a`\n- [ ] EC-P1-2 — proven by `b`"), [])
-        findings = self._run(roadmap, "- [ ] EC-P1-1 — proven by `a`")
+        self.assertEqual(self._run(roadmap, "- [ ] EC-P1-1 — proven by `a`, falsified by `fails if a fails`\n- [ ] EC-P1-2 — proven by `b`, falsified by `fails if b fails`"), [])
+        findings = self._run(roadmap, "- [ ] EC-P1-1 — proven by `a`, falsified by `fails if a fails`")
         self.assertEqual(len(findings), 1)
         self.assertIn("EC-P1-2", findings[0])
 
@@ -178,7 +167,7 @@ class GoalCoverageCheckTest(unittest.TestCase):
             "### Phase 1 — Foo (P1)\n\n**Objective**\no.\n\n**Exit criteria**\n- [ ] EC-P1-1 — `a`\n\n"
             "### Phase 2 — Bar (P1)\n\n**Objective**\no.\n\n**Exit criteria**\n- [ ] EC-P1-2 — `b`\n"
         )
-        findings = self._run(roadmap, "- [ ] EC-P1-1 — proven by `a`")
+        findings = self._run(roadmap, "- [ ] EC-P1-1 — proven by `a`, falsified by `fails if a fails`")
         self.assertEqual(len(findings), 1)
         self.assertIn("un-auditable", findings[0])
         self.assertIn("(P) WARN", findings[0])
