@@ -242,6 +242,20 @@ GRANDFATHERED_RAW_ITEM = (
     "- [ ] EC-P1-1 — proven by `pytest tests/test_closeout.py -k register_validator`"
 )
 GRANDFATHERED_SHA256 = hashlib.sha256(GRANDFATHERED_RAW_ITEM.encode("utf-8")).hexdigest()
+GRANDFATHERED_CRITERION_IDS_BY_SHA256 = {
+    GRANDFATHERED_SHA256: "EC-P1-1",
+    "f4c1b93e369ca49fb3906a9643f3e3da3ef2845e85de47f7363d0fa649a7bde2": "EC-P1-1",
+    "323d95df0dd6c1e989a91a6893c173bc04351aec55b6bcab5d83fde5184ab755": "EC-P1-2",
+    "4bd0fc08338dbd5091c1a9fadaec5ca9f183ce0d878b9ab48d5ef5b37b6728ee": "EC-ID",
+}
+
+_NEGATIVE_FALSIFIER_RE = re.compile(
+    r"\b(?:did|does|do|was|were|is|are|has|have|had)\s+not\b"
+    r"|\bnever\b"
+    r"|\bno\s+\w+(?:\s+\w+){0,4}\s+"
+    r"(?:occurs?|happens?|reaches?|runs?|executes?|writes?|emits?|calls?|appears?|exists?|lands?|fires?)\b"
+    r"|\bwithout\s+(?:entering|reaching|running|executing|writing|emitting|calling|landing|firing)\b"
+)
 
 
 def is_production_construction_site(target_path: str | Path) -> bool:
@@ -313,7 +327,13 @@ def extract_acceptance_contracts(plan_content_or_path: str | Path) -> list[dict[
         has_proof_claim = "proven by" in lower_content
         has_proof_command = "proven by `" in lower_content
         has_path_entered_control = ("path-entered" in lower_content or "path entered" in lower_content)
-        is_negative = ("invalid key is accepted" in lower_content or "absence claim" in lower_content or "route rejection" in lower_content)
+        lower_falsifier = falsified_by.lower()
+        is_negative = bool(
+            _NEGATIVE_FALSIFIER_RE.search(lower_falsifier)
+            or "invalid key is accepted" in lower_falsifier
+            or "absence claim" in lower_falsifier
+            or "route rejection" in lower_falsifier
+        )
 
         contracts.append({
             "id": crit_id,
@@ -348,7 +368,11 @@ def check_acceptance_falsifiers(
             and successor_commit_oid == "a3fbb196b3b57d75e403bcea3bad972e9491f675"
             and server_attested_date == "2026-07-29T22:09:58Z"
         ):
-            all_gf = all(c.get("sha256") == GRANDFATHERED_SHA256 for c in contracts)
+            all_gf = all(
+                GRANDFATHERED_CRITERION_IDS_BY_SHA256.get(str(c.get("sha256", "")))
+                == str(c.get("id", ""))
+                for c in contracts
+            )
             if all_gf:
                 records = []
                 for c in contracts:
@@ -369,13 +393,6 @@ def check_acceptance_falsifiers(
         item_lower = c.get("item_content", "").lower()
         if sha in KNOWN_VACUOUS_SHAS or "vacuous_falsifier" in item_lower or "fails if true" in item_lower or "silent degradation" in item_lower:
             return {"valid": False, "disposition": "invalid", "reason": "vacuous_falsifier"}
-
-    if all(
-        (c.get("has_proof_claim") and not c.get("has_proof_command"))
-        or (str(c.get("id", "")).startswith("AC-") and not c.get("has_proof_claim"))
-        for c in contracts
-    ):
-        return {"valid": True, "disposition": "legacy", "reason": None}
 
     for c in contracts:
         if not c.get("has_falsifier"):

@@ -1183,10 +1183,16 @@ def _check_q_acceptance_falsifiers(
         try:
             from phase_loop_runtime import goal_coverage
         except ImportError:
-            return []
+            return [
+                "(Q) contract_bug: acceptance falsifier runtime is unavailable; "
+                "run this validator with phase_loop_runtime installed"
+            ]
 
     if not hasattr(goal_coverage, "extract_acceptance_contracts") or not hasattr(goal_coverage, "check_acceptance_falsifiers"):
-        return []
+        return [
+            "(Q) contract_bug: acceptance falsifier runtime API is unavailable; "
+            "install the phase_loop_runtime version required by this validator"
+        ]
 
     contracts = goal_coverage.extract_acceptance_contracts(src)
     res = goal_coverage.check_acceptance_falsifiers(

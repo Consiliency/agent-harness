@@ -1047,6 +1047,68 @@ def validate_verification_artifact_for_plan(
                 base, ok=False, code="proofgate_parameter_coverage_failed",
                 findings=("proofgate parameter coverage reduction failed",),
             )
+        candidate_snapshot = proofgate_ext.get("candidate_snapshot")
+        if not isinstance(candidate_snapshot, Mapping):
+            return replace(
+                base, ok=False, code="proofgate_mutation_binding_failed",
+                findings=("proofgate candidate_snapshot must be an object",),
+            )
+        candidate = candidate_snapshot.get("candidate")
+        candidate_tree = candidate_snapshot.get("candidate_tree")
+        if not isinstance(candidate, str) or not candidate or not isinstance(candidate_tree, str) or not candidate_tree:
+            return replace(
+                base, ok=False, code="proofgate_mutation_binding_failed",
+                findings=("proofgate candidate_snapshot must bind candidate and candidate_tree",),
+            )
+        required_result_fields = (
+            "injection_anchor",
+            "expected_failure_class",
+            "baseline_result",
+            "mutation_result",
+        )
+        required_binding_fields = (
+            "candidate",
+            "candidate_tree",
+            "target_path",
+            "target_blob",
+            "argv",
+            "command",
+            "environment",
+            "testcase",
+            "assertion",
+            "observable",
+        )
+        for record in records:
+            parameter_id = str(record.get("parameter_id", ""))
+            missing_result = [key for key in required_result_fields if key not in record]
+            expected_bindings = record.get("expected_bindings")
+            actual_bindings = record.get("bindings")
+            if missing_result or not isinstance(expected_bindings, Mapping) or not isinstance(actual_bindings, Mapping):
+                return replace(
+                    base, ok=False, code="proofgate_mutation_binding_failed",
+                    findings=(f"proofgate parameter {parameter_id!r} has incomplete mutation bindings",),
+                )
+            missing_expected = [key for key in required_binding_fields if key not in expected_bindings]
+            missing_actual = [key for key in required_binding_fields if key not in actual_bindings]
+            if missing_expected or missing_actual:
+                return replace(
+                    base, ok=False, code="proofgate_mutation_binding_failed",
+                    findings=(f"proofgate parameter {parameter_id!r} omits required binding fields",),
+                )
+            if expected_bindings.get("candidate") != candidate or expected_bindings.get("candidate_tree") != candidate_tree:
+                return replace(
+                    base, ok=False, code="proofgate_mutation_binding_failed",
+                    findings=(f"proofgate parameter {parameter_id!r} is not bound to candidate_snapshot",),
+                )
+            binding_result = verify_proofgate_mutation_bindings(expected_bindings, actual_bindings)
+            if not binding_result.get("valid"):
+                return replace(
+                    base, ok=False, code="proofgate_mutation_binding_failed",
+                    findings=(
+                        f"proofgate parameter {parameter_id!r} binding mismatch: "
+                        f"{binding_result.get('mismatch_key')}",
+                    ),
+                )
     return base
 
 
