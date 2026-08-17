@@ -34,7 +34,10 @@ class _Broker:
     def __init__(self): self.requests = []
     def execute(self, request):
         self.requests.append(request)
-        return BrokerExecutionResult(True, BrokerTerminalEvidence(request.admission.idempotency_key, "effect_terminal_observed", "test"), PublishCommittedBranchResult(request.branch, request.head_sha, "https://github.com/owner/repo/pull/99"))
+        key = getattr(request.admission, "idempotency_key", None) or getattr(
+            request.admission, "transaction_id", ""
+        )
+        return BrokerExecutionResult(True, BrokerTerminalEvidence(key, "effect_terminal_observed", "test"), PublishCommittedBranchResult(request.branch, request.head_sha, "https://github.com/owner/repo/pull/99"))
 
 
 def _admission() -> AdmissionRequest:

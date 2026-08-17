@@ -26,10 +26,13 @@ import threading
 
 import pytest
 
-from _fabpub_tdd_guard import fabpub_migrated_activated
+from _fabpub_tdd_guard import fabpub_capability_active, fabpub_migrated_activated
 from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
 from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore, EvidenceRecord
-from phase_loop_runtime.convergence.broker.live import build_github_broker_client, build_routing_broker_client
+from phase_loop_runtime.convergence.broker.live import (
+    build_github_broker_client,
+    build_routing_broker_client,
+)
 from phase_loop_runtime.convergence.broker.verbs import BrokerService
 from phase_loop_runtime.convergence.contracts import (
     AdmissionRequest,
@@ -140,9 +143,19 @@ def _assert_ec4_oracle_descriptor(param_id: str, expected_assertion_id: str) -> 
             )
 
 
-def _assert_wired(service, record_property, *, param_id=None):
+def _assert_wired(service, record_property, *, param_id=None, monkeypatch=None):
     ev = service.evidence_store
     assert service.admission_store.epoch_blocked() is False
+    if fabpub_capability_active():
+        from phase_loop_runtime.convergence.broker import live
+
+        assert monkeypatch is not None
+        monkeypatch.setattr(live, "load_partition_receipt", lambda _root: object())
+        monkeypatch.setattr(
+            live,
+            "require_current_generation",
+            lambda _root, _lease=None, *, strict=True: None,
+        )
     ev.record_intent("k")
     ev.record_terminal(EvidenceRecord("k", TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED, "revoked"))
     assert ev.epoch_blocked is True
@@ -155,7 +168,9 @@ def _assert_wired(service, record_property, *, param_id=None):
     )
 
 
-def test_github_broker_admission_store_is_wired_to_evidence_revocation(tmp_path, record_property):
+def test_github_broker_admission_store_is_wired_to_evidence_revocation(
+    tmp_path, record_property, monkeypatch
+):
     from .proofgate_content_tdd_adapter import ProofgateMissingCapabilityError, guard_proofgate_nodeid, run_proofgate_contract
     nodeid = "phase-loop-runtime/tests/test_convergence_broker_revocation_race.py::test_github_broker_admission_store_is_wired_to_evidence_revocation"
     if not guard_proofgate_nodeid(nodeid):
@@ -163,7 +178,10 @@ def test_github_broker_admission_store_is_wired_to_evidence_revocation(tmp_path,
 
     def _contract():
         from phase_loop_runtime import verification_evidence
-        service = build_github_broker_client(tmp_path / "repo", broker_root=tmp_path / "broker")
+        kwargs = {"_test_only_explicit_root": True} if fabpub_capability_active() else {}
+        service = build_github_broker_client(
+            tmp_path / "repo", broker_root=tmp_path / "broker", **kwargs
+        )
         _assert_ec4_oracle_descriptor(
             "ec-proofgate-4.github-builder-epoch-blocked",
             "github_builder_epoch_blocked_wiring",
@@ -172,6 +190,7 @@ def test_github_broker_admission_store_is_wired_to_evidence_revocation(tmp_path,
             service,
             record_property,
             param_id="ec-proofgate-4.github-builder-epoch-blocked",
+            monkeypatch=monkeypatch,
         )
         if not hasattr(verification_evidence, "verify_proofgate_mutation_bindings"):
             raise ProofgateMissingCapabilityError("verify_proofgate_mutation_bindings interface missing on verification_evidence")
@@ -179,7 +198,9 @@ def test_github_broker_admission_store_is_wired_to_evidence_revocation(tmp_path,
     run_proofgate_contract(nodeid, _contract)
 
 
-def test_routing_broker_admission_store_is_wired_to_evidence_revocation(tmp_path, record_property):
+def test_routing_broker_admission_store_is_wired_to_evidence_revocation(
+    tmp_path, record_property, monkeypatch
+):
     from .proofgate_content_tdd_adapter import ProofgateMissingCapabilityError, guard_proofgate_nodeid, run_proofgate_contract
     nodeid = "phase-loop-runtime/tests/test_convergence_broker_revocation_race.py::test_routing_broker_admission_store_is_wired_to_evidence_revocation"
     if not guard_proofgate_nodeid(nodeid):
@@ -187,7 +208,14 @@ def test_routing_broker_admission_store_is_wired_to_evidence_revocation(tmp_path
 
     def _contract():
         from phase_loop_runtime import verification_evidence
-        client = build_routing_broker_client(broker_root=tmp_path / "broker")
+        if fabpub_capability_active():
+            from phase_loop_runtime.convergence.broker.live import (
+                _test_only_repository_broker_client,
+            )
+
+            client = _test_only_repository_broker_client(tmp_path / "broker")
+        else:
+            client = build_routing_broker_client(broker_root=tmp_path / "broker")
         service = client._service_for(str(tmp_path / "repo"))
         _assert_ec4_oracle_descriptor(
             "ec-proofgate-4.routing-builder-epoch-blocked",
@@ -197,6 +225,7 @@ def test_routing_broker_admission_store_is_wired_to_evidence_revocation(tmp_path
             service,
             record_property,
             param_id="ec-proofgate-4.routing-builder-epoch-blocked",
+            monkeypatch=monkeypatch,
         )
         if not hasattr(verification_evidence, "verify_proofgate_mutation_bindings"):
             raise ProofgateMissingCapabilityError("verify_proofgate_mutation_bindings interface missing on verification_evidence")

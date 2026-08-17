@@ -1572,17 +1572,47 @@ def test_fabpub_fresh_finalized_publish_rejected_before_admission_and_adapter(tm
 
     # Positive control (b): an already-completed terminal publish REPLAYS through a
     # finalized request with neither admission method nor the adapter called.
-    completed_key = f"publish_committed_branch\0{publish_committed_branch_idempotency_key('repo-identity', 'feat/x', 'abc123')}"
     from phase_loop_runtime.convergence.broker.evidence import EvidenceRecord
 
-    service.evidence_store.record_intent(completed_key)
-    service.evidence_store.record_terminal(
-        EvidenceRecord(completed_key, TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED, "https://gh/pr/prior")
+    replay_repo, replay_txn, replay_identity, replay_root = _authorized_publish_fixture(
+        tmp_path, name="fresh-finalized-replay"
     )
-    before = (store.admit_calls, store.admit_next_calls, len(adapter.calls))
-    replay = service.execute(fresh)
+    replay_service = _service(replay_root, _CountingAdapter())
+    replay_request = _publish_request(
+        replay_identity,
+        "feat/x",
+        replay_txn.committed_head_sha,
+        finalized,
+        replay_repo,
+    )
+    completed_key = (
+        "publish_committed_branch\0"
+        + publish_committed_branch_idempotency_key(
+            replay_identity, "feat/x", replay_txn.committed_head_sha
+        )
+    )
+    replay_service.evidence_store.record_intent(completed_key)
+    replay_service.evidence_store.record_terminal(
+        EvidenceRecord(
+            completed_key,
+            TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED,
+            "https://gh/pr/prior",
+        )
+    )
+    replay_store = replay_service.admission_store
+    replay_adapter = replay_service.adapter
+    before = (
+        replay_store.admit_calls,
+        replay_store.admit_next_calls,
+        len(replay_adapter.calls),
+    )
+    replay = replay_service.execute(replay_request)
     assert replay.accepted and replay.publish_result.pr_url == "https://gh/pr/prior"
-    assert (store.admit_calls, store.admit_next_calls, len(adapter.calls)) == before
+    assert (
+        replay_store.admit_calls,
+        replay_store.admit_next_calls,
+        len(replay_adapter.calls),
+    ) == before
 
     # Positive control (c): a fresh ENVELOPE publish reaches admit_next and the
     # adapter with the broker-allocated epoch.
@@ -1836,7 +1866,10 @@ def test_fabpub_shared_adapter_start_fence_blocks_competing_train_before_and_aft
 
         # The production execute/recovery entry promotes the unsealed owner to
         # PERMANENT ambiguity; the test never calls the lower primitive itself.
-        promoted = service_b.evidence_store.replay()[request_a.admission.idempotency_key]
+        promoted_key = getattr(request_a.admission, "idempotency_key", None) or getattr(
+            request_a.admission, "transaction_id", ""
+        )
+        promoted = service_b.evidence_store.replay()[promoted_key]
         assert promoted.state is TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED
         assert any(
             row["state"] == "outcome_ambiguous_blocked" for row in _jsonl(root / "evidence.jsonl")
@@ -3421,9 +3454,8 @@ def test_fabpub_intent_identity_retry_is_deterministic_and_commit_bound_separate
             ["git", "-C", str(current_repo), "hash-object", "-w", "-t", "commit", "--stdin"],
             input=raw,
             capture_output=True,
-            text=True,
             check=True,
-        ).stdout.strip()
+        ).stdout.decode("ascii").strip()
 
     for label in (
         "author_identity",

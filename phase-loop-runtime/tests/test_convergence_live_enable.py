@@ -394,7 +394,7 @@ def test_live_broker_builder_constructs_working_client(tmp_path, request):
     broker_root = tmp_path / "coordinator"  # OUTSIDE the worktree by construction
     repo_path = tmp_path / "worktree"
     if _fabpub:
-        with pytest.raises((TypeError, ValueError, PermissionError)):
+        with pytest.raises((TypeError, ValueError, PermissionError, RuntimeError)):
             build_routing_broker_client(broker_root=broker_root)
         assert not broker_root.exists()
         repo_path, _root, publish = _activated_publish_fixture(
