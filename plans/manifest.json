@@ -1431,6 +1431,74 @@
             "fabpub_plan_contract_record_id": "v10-FABPUB.fabpub-plan-contract.v6"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-17T03:48:21Z",
+          "by": "clawdbot-agent-harness-codex",
+          "metadata": {
+            "fabpub_plan_contract_payload_sha256": "5b69aa0fb943ff14e1a77464f2ecb8819ce0bf9be235628cab37ce5d1674dd25",
+            "fabpub_plan_contract_rebind": {
+              "acceptance_criteria_count": 11,
+              "adapter_start_fence_nodeids_count": 1,
+              "adapter_start_fence_nodeids_sha256": "7dac57ecb3d2d22bfc4bda1ffe5f6330e9a47cee41e33c84134e743655c18497",
+              "coordinator_override_reason": "president_deferred_frozen_direct_adapter_entry_finding_that_conflicts_with_public_effect_boundary",
+              "deferred_followup_issue": "Consiliency/agent-harness#575",
+              "legacy_cutover_nodeids_count": 8,
+              "legacy_cutover_nodeids_sha256": "51b89f38436c06fa7a51120140b508251a39d4a2b42671021b68af5d29e2cafe",
+              "owned_paths": [
+                "CHANGELOG.md",
+                "phase-loop-runtime/src/phase_loop_runtime/cli.py",
+                "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/admission.py",
+                "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/credsep.py",
+                "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/evidence.py",
+                "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/live.py",
+                "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/verbs.py",
+                "phase-loop-runtime/src/phase_loop_runtime/convergence/contracts.py",
+                "phase-loop-runtime/src/phase_loop_runtime/convergence/fencing.py",
+                "phase-loop-runtime/src/phase_loop_runtime/fabpub_capability.py",
+                "phase-loop-runtime/src/phase_loop_runtime/fabpub_tdd_chronology.py",
+                "phase-loop-runtime/src/phase_loop_runtime/publishing.py",
+                "phase-loop-runtime/src/phase_loop_runtime/train_runner.py",
+                "phase-loop-runtime/tests/_fabpub_tdd_guard.py",
+                "phase-loop-runtime/tests/test_convergence_broker_admission.py",
+                "phase-loop-runtime/tests/test_convergence_broker_credsep.py",
+                "phase-loop-runtime/tests/test_convergence_broker_revocation_race.py",
+                "phase-loop-runtime/tests/test_convergence_broker_verbs.py",
+                "phase-loop-runtime/tests/test_convergence_fencing.py",
+                "phase-loop-runtime/tests/test_convergence_live_enable.py",
+                "phase-loop-runtime/tests/test_convergence_train_integration.py",
+                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py",
+                "phase-loop-runtime/tests/test_publishing.py",
+                "phase-loop-runtime/tests/test_train_prebuilt.py",
+                "phase-loop-runtime/tests/test_train_runner.py"
+              ],
+              "owned_paths_count": 25,
+              "owned_paths_sha256": "61daa359547a2672f36a27b0af21a56f5f761cf840d42efce43859b35d3677c3",
+              "plan_sha256": "629bd706e63845c9d818cd51dc70ba4ea3ec8e3fce895a87a9ce8903cb6d0659",
+              "predecessor_contract_record_id": "v10-FABPUB.fabpub-plan-contract.v6",
+              "predecessor_critics_sha256": "298814db92c0bf40b81c4ec46a2642e43519645e57046549724d7ab0e986927d",
+              "predecessor_opus_sha256": "f6997e33cb9291b14db9b80217723dad4c7296de76badd4f1e97f2ba70d7ed4f",
+              "predecessor_plan_sha256": "bfd0bb313145feea6b0e21ecc02b61e49fd4df57fb204c98fcdb4424996f57b2",
+              "predecessor_president_decision": "PROCEED",
+              "predecessor_president_sha256": "d467728822835a57462b470ac4ab5f0c493b6e83f82fe6a0bb20a44cb248365b",
+              "predecessor_substantive_blockers": [
+                "direct_github_broker_adapter_effect_entry_absent_from_owned_paths"
+              ],
+              "required_prover_deviation": "operator_approved_grok46_president_supersedes_fable_for_this_run",
+              "review_status": "coordinator_repaired_round4_frozen_boundary_conflict_requires_fresh_exact_digest_board",
+              "review_topology": "opus_early_then_sol_grok45_gemini_critics_then_grok46_president",
+              "review_transport": "digest_bound_staged_bundle_and_president_artifact_ref",
+              "roadmap_sha256": "c66949236043e46e956caec1c09d0c19d0e8751e4ce2891de1fe2edf24e9fea1",
+              "shared_allocator_nodeids_count": 2,
+              "shared_allocator_nodeids_sha256": "4d2d6a3751424be367696d18abeb316c365e4e7d2028f5fdd4d3898738e2364b",
+              "test_paths_count": 12,
+              "test_paths_sha256": "c7c498a73c76364dee1d02b0ee73eb6b6fae5ed4311d135d82ed17c4fec18e51",
+              "writer_generation_fence_nodeids_count": 1,
+              "writer_generation_fence_nodeids_sha256": "22a35748a15f1109a71965f972b1662042b8779dd383c8a2f267c8b8220c72b5"
+            },
+            "fabpub_plan_contract_record_id": "v10-FABPUB.fabpub-plan-contract.v7"
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -1446,7 +1514,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-17T03:20:39Z"
+      "updated_at": "2026-08-17T03:48:21Z"
     },
     {
       "acceptance_criteria_count": null,
