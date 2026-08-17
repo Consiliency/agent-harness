@@ -6338,6 +6338,28 @@ def _execute_goal_coverage_preflight(repo: Path, roadmap: Path, plan: Path) -> d
     if _hold is not None:
         return _hold
     try:
+        from .goal_coverage import extract_acceptance_contracts, check_acceptance_falsifiers
+        contracts = extract_acceptance_contracts(plan)
+        falsifier_res = check_acceptance_falsifiers(contracts)
+        if not falsifier_res.get("valid", True):
+            reason = falsifier_res.get("reason", "acceptance_falsifier_contract_invalid")
+            return {
+                "human_required": False,
+                "blocker_class": "contract_bug",
+                "blocker_summary": f"Acceptance falsifier contract failed: {reason}",
+                "required_human_inputs": (),
+                "access_attempts": (),
+            }
+    except Exception as _falsifier_exc:
+        return {
+            "human_required": False,
+            "blocker_class": "contract_bug",
+            "blocker_summary": f"Acceptance falsifier contract errored: {_falsifier_exc}",
+            "required_human_inputs": (),
+            "access_attempts": (),
+        }
+
+    try:
         from .goal_coverage import check_goal_coverage
 
         result = check_goal_coverage(repo, plan, roadmap)
@@ -6420,6 +6442,17 @@ def _goal_coverage_closeout_outcome(
             "required_human_inputs": (),
             "access_attempts": (),
         }
+
+    if is_complete:
+        try:
+            from .goal_coverage import extract_acceptance_contracts, check_acceptance_falsifiers
+            contracts = extract_acceptance_contracts(plan)
+            falsifier_res = check_acceptance_falsifiers(contracts)
+            if not falsifier_res.get("valid", True):
+                reason = falsifier_res.get("reason", "acceptance_falsifier_contract_invalid")
+                return None, _blocker(f"Acceptance falsifier contract failed at closeout: {reason}")
+        except Exception as _falsifier_exc:
+            return None, _blocker(f"Acceptance falsifier contract errored at closeout: {_falsifier_exc}")
 
     try:
         from .goal_coverage import check_goal_coverage

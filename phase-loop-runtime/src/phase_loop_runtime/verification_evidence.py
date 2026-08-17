@@ -40,6 +40,7 @@ _EXTENSIONS_FIELD = "extensions"
 # an existing LEGIBLE-only artifact or its plan-aware validation.
 EXTENSION_NAMESPACE_REGISTRY: dict[str, str] = {
     "phase_loop_runtime.legible_evidence": "verification_evidence_sidecar.v1",
+    "phase_loop_runtime.proofgate_evidence": "proofgate_evidence_sidecar.v1",
 }
 _RESERVED_EXTENSION_NAMESPACES = frozenset({"phase_loop_runtime.proofgate_evidence"})
 
@@ -50,6 +51,9 @@ _SIDECAR_RECORD_V1_FIELDS = frozenset(
 # namespace/version check): only the shapes this landing actually knows about.
 _KNOWN_EXTENSION_RECORD_SCHEMAS: dict[str, frozenset[str]] = {
     "verification_evidence_sidecar.v1": _SIDECAR_RECORD_V1_FIELDS,
+    "proofgate_evidence_sidecar.v1": frozenset(
+        {"schema", "candidate_snapshot", "mutations", "chronology"}
+    ),
 }
 
 
@@ -1032,7 +1036,299 @@ def validate_verification_artifact_for_plan(
             )
         except LegibleSidecarError as exc:
             return replace(base, ok=False, code=exc.code, findings=(str(exc),))
+
+    if "phase_loop_runtime.proofgate_evidence" in required_namespaces and "phase_loop_runtime.proofgate_evidence" in extensions:
+        proofgate_ext = extensions["phase_loop_runtime.proofgate_evidence"]
+        mutations = proofgate_ext.get("mutations", {})
+        records = mutations.get("parameters", [])
+        res_reduce = reduce_proofgate_mutation_results(records)
+        if not res_reduce.get("coverage_ok"):
+            return replace(
+                base, ok=False, code="proofgate_parameter_coverage_failed",
+                findings=("proofgate parameter coverage reduction failed",),
+            )
+        candidate_snapshot = proofgate_ext.get("candidate_snapshot")
+        if not isinstance(candidate_snapshot, Mapping):
+            return replace(
+                base, ok=False, code="proofgate_mutation_binding_failed",
+                findings=("proofgate candidate_snapshot must be an object",),
+            )
+        candidate = candidate_snapshot.get("candidate")
+        candidate_tree = candidate_snapshot.get("candidate_tree")
+        if not isinstance(candidate, str) or not candidate or not isinstance(candidate_tree, str) or not candidate_tree:
+            return replace(
+                base, ok=False, code="proofgate_mutation_binding_failed",
+                findings=("proofgate candidate_snapshot must bind candidate and candidate_tree",),
+            )
+        required_result_fields = (
+            "injection_anchor",
+            "expected_failure_class",
+            "baseline_result",
+            "mutation_result",
+        )
+        required_binding_fields = (
+            "candidate",
+            "candidate_tree",
+            "target_path",
+            "target_blob",
+            "argv",
+            "command",
+            "environment",
+            "testcase",
+            "assertion",
+            "observable",
+        )
+        for record in records:
+            parameter_id = str(record.get("parameter_id", ""))
+            missing_result = [key for key in required_result_fields if key not in record]
+            expected_bindings = record.get("expected_bindings")
+            actual_bindings = record.get("bindings")
+            if missing_result or not isinstance(expected_bindings, Mapping) or not isinstance(actual_bindings, Mapping):
+                return replace(
+                    base, ok=False, code="proofgate_mutation_binding_failed",
+                    findings=(f"proofgate parameter {parameter_id!r} has incomplete mutation bindings",),
+                )
+            missing_expected = [key for key in required_binding_fields if key not in expected_bindings]
+            missing_actual = [key for key in required_binding_fields if key not in actual_bindings]
+            if missing_expected or missing_actual:
+                return replace(
+                    base, ok=False, code="proofgate_mutation_binding_failed",
+                    findings=(f"proofgate parameter {parameter_id!r} omits required binding fields",),
+                )
+            if expected_bindings.get("candidate") != candidate or expected_bindings.get("candidate_tree") != candidate_tree:
+                return replace(
+                    base, ok=False, code="proofgate_mutation_binding_failed",
+                    findings=(f"proofgate parameter {parameter_id!r} is not bound to candidate_snapshot",),
+                )
+            binding_result = verify_proofgate_mutation_bindings(expected_bindings, actual_bindings)
+            if not binding_result.get("valid"):
+                return replace(
+                    base, ok=False, code="proofgate_mutation_binding_failed",
+                    findings=(
+                        f"proofgate parameter {parameter_id!r} binding mismatch: "
+                        f"{binding_result.get('mismatch_key')}",
+                    ),
+                )
     return base
+
+
+def verify_proofgate_mutation_bindings(
+    expected_bindings: Mapping[str, Any],
+    actual_bindings: Mapping[str, Any],
+) -> dict[str, Any]:
+    mismatch_keys = [
+        "candidate",
+        "candidate_tree",
+        "target_path",
+        "target_blob",
+        "argv",
+        "command",
+        "environment",
+        "testcase",
+        "assertion",
+        "observable",
+    ]
+    for key in mismatch_keys:
+        if expected_bindings.get(key) != actual_bindings.get(key):
+            return {
+                "valid": False,
+                "mismatch_key": key,
+                "status": f"mismatch_{key}",
+            }
+    return {"valid": True, "mismatch_key": None, "status": "ok"}
+
+
+def apply_proofgate_mutation_anchor(
+    candidate_oid: str,
+    target_path: str | Path,
+    anchor: str,
+    replacement_bytes: str,
+) -> dict[str, Any]:
+    try:
+        root = subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip()
+        repo_root = Path(root)
+    except Exception:
+        repo_root = Path.cwd()
+
+    target_abs = Path(target_path) if Path(target_path).is_absolute() else repo_root / target_path
+    if not target_abs.exists() or not target_abs.is_file():
+        return {
+            "status": "mutation_not_applied",
+            "candidate": candidate_oid,
+            "path": str(target_path),
+            "anchor_count": 0,
+        }
+    content = target_abs.read_text(encoding="utf-8")
+    count = content.count(anchor)
+    if count != 1:
+        return {
+            "status": "mutation_not_applied",
+            "candidate": candidate_oid,
+            "path": str(target_path),
+            "anchor_count": count,
+        }
+    mutated = content.replace(anchor, replacement_bytes, 1)
+    target_abs.write_text(mutated, encoding="utf-8")
+    return {
+        "status": "applied",
+        "candidate": candidate_oid,
+        "path": str(target_path),
+        "anchor_count": 1,
+    }
+
+
+def reduce_proofgate_mutation_results(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    all_params = [
+        "ec-proofgate-0.chronology-guard",
+        "ec-proofgate-1.missing-falsifier",
+        "ec-proofgate-2.mutation-application",
+        "ec-proofgate-3.vacuous-falsifier",
+        "ec-proofgate-4.github-builder-epoch-blocked",
+        "ec-proofgate-4.routing-builder-epoch-blocked",
+        "ec-proofgate-5.parameter-coverage",
+        "ec-proofgate-6.missing-path-entered",
+        "ec-proofgate-7.grandfathering",
+    ]
+    if len(records) != len(all_params):
+        return {"coverage_ok": False, "killed_count": sum(1 for r in records if r.get("status") == "killed")}
+
+    seen_params = [r.get("parameter_id") for r in records]
+    if seen_params != all_params:
+        return {"coverage_ok": False, "killed_count": sum(1 for r in records if r.get("status") == "killed")}
+
+    killed_cnt = 0
+    for r in records:
+        if r.get("status") == "killed":
+            killed_cnt += 1
+        else:
+            return {"coverage_ok": False, "killed_count": killed_cnt}
+
+    return {"coverage_ok": True, "killed_count": 9}
+
+
+def execute_proofgate_mutation_manifest(
+    manifest_path: str | Path,
+    candidate_oid: str,
+    parameter_id: str | None = None,
+    target_path: str | None = None,
+) -> dict[str, Any]:
+    manifest_path = Path(manifest_path)
+    if not manifest_path.exists():
+        return {"status": "harness_error", "reason": "manifest_not_found"}
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    all_declarations = data.get("declarations", [])
+    all_parameters = []
+    for dec in all_declarations:
+        for p in dec.get("parameters", []):
+            all_parameters.append(p)
+
+    selected = all_parameters
+    if parameter_id is not None:
+        selected = [p for p in all_parameters if p.get("parameter_id") == parameter_id]
+        if not selected:
+            return {"status": "harness_error", "reason": "parameter_not_found"}
+
+    from .goal_coverage import is_production_construction_site
+
+    def _execute_one(param: Mapping[str, Any]) -> dict[str, Any]:
+        effective_path = target_path or str(param.get("target_path", ""))
+        if not is_production_construction_site(effective_path):
+            return {
+                "status": "vacuous_falsifier",
+                "reason": "vacuous_falsifier",
+                "baseline_status": "passed",
+                "applied_replacements": 0,
+            }
+        try:
+            repo_root = Path(
+                subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip()
+            )
+            candidate = subprocess.check_output(
+                ["git", "rev-parse", f"{candidate_oid}^{{commit}}"], cwd=repo_root, text=True
+            ).strip()
+            tree = subprocess.check_output(
+                ["git", "rev-parse", f"{candidate}^{{tree}}"], cwd=repo_root, text=True
+            ).strip()
+            blob = subprocess.check_output(
+                ["git", "rev-parse", f"{candidate}:{effective_path}"], cwd=repo_root, text=True
+            ).strip()
+        except (OSError, subprocess.CalledProcessError) as exc:
+            return {"status": "harness_error", "reason": "candidate_resolution_failed", "detail": str(exc)}
+
+        worktree_parent = Path("/mnt/workspace/worktrees")
+        if not worktree_parent.is_dir():
+            worktree_parent = repo_root.parent
+        worktree = Path(tempfile.mkdtemp(prefix="proofgate-mutation-", dir=worktree_parent))
+        shutil.rmtree(worktree)
+        try:
+            subprocess.run(
+                ["git", "worktree", "add", "--detach", str(worktree), candidate],
+                cwd=repo_root, check=True, capture_output=True, text=True,
+            )
+            run_dir = worktree / ".phase-loop" / "proofgate-mutation" / str(param.get("parameter_id"))
+            run_dir.mkdir(parents=True, exist_ok=True)
+            argv = [str(arg).replace("$PHASE_LOOP_RUN_DIR", str(run_dir)) for arg in param.get("proof_command", [])]
+            if argv and argv[0] in {"python", "python3"}:
+                argv[0] = sys.executable
+            env = dict(os.environ)
+            env["PHASE_LOOP_RUN_DIR"] = str(run_dir)
+            env["PYTHONPATH"] = os.pathsep.join(
+                [str(worktree / "phase-loop-runtime" / "src"), str(worktree / "phase-loop-runtime" / "tests")]
+            )
+            baseline = subprocess.run(argv, cwd=worktree, env=env, capture_output=True, text=True, timeout=180)
+            bindings = {
+                "candidate": f"git:{candidate}", "candidate_tree": f"git:{tree}",
+                "target_path": effective_path, "target_blob": f"git:{blob}",
+                "tree": f"git:{tree}", "path": effective_path, "blob": f"git:{blob}",
+                "argv": argv, "command": " ".join(argv),
+                "environment": {"PYTHONPATH": env["PYTHONPATH"], "PHASE_LOOP_RUN_DIR": str(run_dir)},
+                "testcase": param.get("target_nodeid", ""),
+                "assertion": param.get("expected_observable", {}).get("result_code", ""),
+                "observable": param.get("expected_observable", {}).get("rule_id", ""),
+            }
+            if baseline.returncode != 0:
+                return {
+                    "status": "baseline_failed", "baseline_status": "failed",
+                    "applied_replacements": 0, "bindings": bindings,
+                    "diagnostic": (baseline.stdout + baseline.stderr)[-4096:],
+                }
+            target = worktree / effective_path
+            content = target.read_text(encoding="utf-8")
+            anchor = str(param.get("injection_anchor", ""))
+            if content.count(anchor) != 1:
+                return {"status": "mutation_not_applied", "baseline_status": "passed", "applied_replacements": 0, "bindings": bindings}
+            target.write_text(content.replace(anchor, str(param.get("replacement_bytes", "")), 1), encoding="utf-8")
+            mutant = subprocess.run(argv, cwd=worktree, env=env, capture_output=True, text=True, timeout=180)
+            observed = mutant.stdout + mutant.stderr
+            observed += "\n".join(path.read_text(encoding="utf-8", errors="replace") for path in run_dir.glob("*.xml"))
+            expected = param.get("expected_observable", {})
+            if mutant.returncode == 0:
+                status = "survived"
+            elif expected.get("result_code") not in observed or expected.get("rule_id") not in observed:
+                status = "evidence_failure"
+            else:
+                status = "killed"
+            return {"status": status, "baseline_status": "passed", "applied_replacements": 1, "bindings": bindings}
+        except (OSError, subprocess.SubprocessError) as exc:
+            return {"status": "execution_failure", "reason": str(exc), "applied_replacements": 0}
+        finally:
+            subprocess.run(["git", "worktree", "remove", "--force", str(worktree)], cwd=repo_root, capture_output=True)
+
+    results = {str(param["parameter_id"]): _execute_one(param) for param in selected}
+    if parameter_id is not None:
+        return results[parameter_id]
+    classifications = {pid: result.get("status", "execution_failure") for pid, result in results.items()}
+    killed = sum(status == "killed" for status in classifications.values())
+    survived = sum(status == "survived" for status in classifications.values())
+    blocked = len(classifications) - killed - survived
+    return {
+        "parameters_count": len(all_parameters), "killed_count": killed,
+        "survived_count": survived, "block_count": blocked,
+        "status": "killed" if killed == len(all_parameters) else "blocked",
+        "classifications": classifications,
+        "bindings": {pid: result.get("bindings", {}) for pid, result in results.items()},
+    }
 
 
 def validate_verification_artifact(path: Path) -> VerificationArtifactValidation:

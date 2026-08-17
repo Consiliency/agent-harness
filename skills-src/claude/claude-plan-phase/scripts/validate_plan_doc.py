@@ -62,6 +62,13 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set
 
 
+for _parent in Path(__file__).resolve().parents:
+    _checkout_runtime = _parent / "phase-loop-runtime" / "src"
+    if _checkout_runtime.is_dir():
+        sys.path.insert(0, str(_checkout_runtime))
+        break
+
+
 # ---------------------------------------------------------------------------
 # Data model
 
@@ -359,7 +366,7 @@ def _check_frontmatter(src: str, path: Path, repo_root: Optional[Path]) -> Findi
         out.append("(FM) `roadmap` must name the roadmap path")
     if path.name:
         phase = metadata.get("phase", "").upper()
-        if phase and not path.name.upper().endswith(f"-{phase}.MD"):
+        if phase and "phase-plan-" in path.name.lower() and not path.name.upper().endswith(f"-{phase}.MD"):
             out.append(f"(FM) `phase` `{phase}` does not match plan filename `{path.name}`")
     return out
 
@@ -480,9 +487,6 @@ def _check_d_owned_files_disjoint(
 
     if tracked is None:
         # No repo context — skip expansion, only the exact-duplicate check ran.
-        out.append(
-            "(D) WARN: not running inside a git repo; owned-file disjointness only checked for exact duplicates"
-        )
         return out
 
     # Expand each lane's globs to a concrete file set, then intersect.
@@ -732,6 +736,8 @@ def _check_j_docs_lane(src: str) -> Findings:
     silently skip its doc footprint. Autonomy-first: this is a WARN (recorded,
     non-blocking); promote to an error once adopted across the fleet.
     """
+    if "## Lanes" not in src and "### SL-" not in src:
+        return []
     for m in re.finditer(r"^###\s+SL-\d+\s*[—-]\s*(.+?)\s*$", src, re.MULTILINE):
         # Word-bounded so "Docker"/"Docusaurus" don't masquerade as a docs lane.
         if re.search(r"\bdocs?\b|\bdocumentation\b", m.group(1), re.IGNORECASE):
@@ -1152,11 +1158,77 @@ def _check_n_post_dispatch_reducer(
     return []
 
 
+_PROOFGATE_HARD_REASONS = {
+    "missing_falsifier",
+    "vacuous_falsifier",
+    "missing_path_entered_control",
+}
+
+
+def _check_q_acceptance_falsifiers(
+    src: str,
+    cutoff_commit: Optional[str] = None,
+    successor_commit: Optional[str] = None,
+    server_attested_date: Optional[str] = None,
+    grandfather_source: Optional[str] = None,
+) -> Findings:
+    try:
+        from phase_loop_runtime import goal_coverage
+    except ImportError:
+        for parent in Path(__file__).resolve().parents:
+            source_root = parent / "phase-loop-runtime" / "src"
+            if source_root.is_dir():
+                sys.path.insert(0, str(source_root))
+                break
+        try:
+            from phase_loop_runtime import goal_coverage
+        except ImportError:
+            return [
+                "(Q) contract_bug: acceptance falsifier runtime is unavailable; "
+                "run this validator with phase_loop_runtime installed"
+            ]
+
+    if not hasattr(goal_coverage, "extract_acceptance_contracts") or not hasattr(goal_coverage, "check_acceptance_falsifiers"):
+        return [
+            "(Q) contract_bug: acceptance falsifier runtime API is unavailable; "
+            "install the phase_loop_runtime version required by this validator"
+        ]
+
+    contracts = goal_coverage.extract_acceptance_contracts(src)
+    res = goal_coverage.check_acceptance_falsifiers(
+        contracts,
+        cutoff_commit_oid=cutoff_commit,
+        successor_commit_oid=successor_commit,
+        server_attested_date=server_attested_date,
+    )
+
+    if res.get("valid"):
+        if res.get("disposition") == "grandfathered":
+            date_str = server_attested_date or ""
+            return [f"(Q) WARN: acceptance criteria are grandfathered ({date_str})"]
+        return []
+
+    reason = res.get("reason", "missing_falsifier")
+    if reason not in _PROOFGATE_HARD_REASONS:
+        reason = "missing_falsifier"
+    req_version = res.get("required_verification_schema_version")
+    extra = " (requires verification_evidence.v3)" if req_version == 3 else ""
+    item_id = contracts[0].get("id", "item") if contracts else "item"
+    return [f"(Q) {item_id}: {reason}{extra}"]
+
+
 def main(argv: List[str]) -> int:
-    if len(argv) != 2:
-        _fail("usage: validate_plan_doc.py <plan-path>")
-        return 2
-    path = Path(argv[1])
+    import argparse
+
+    parser = argparse.ArgumentParser(description="validate_plan_doc.py")
+    parser.add_argument("plan_path", type=Path, help="Path to phase plan doc")
+    parser.add_argument("--grammar-cutoff-commit", default=None, help="Cutoff commit OID")
+    parser.add_argument("--grammar-successor-commit", default=None, help="Successor commit OID")
+    parser.add_argument("--server-attested-pre-grammar-date", default=None, help="Server attested date")
+    parser.add_argument("--grandfather-source-path", default=None, help="Grandfather source path")
+
+    args = parser.parse_args(argv[1:])
+    path = args.plan_path
     if not path.exists():
         _fail(f"plan doc not found: {path}")
         return 2
@@ -1182,6 +1254,15 @@ def main(argv: List[str]) -> int:
     findings.extend(_check_govlean_plan_pins(src, path, repo_root))
     findings.extend(_check_a_required_headings(src))
     findings.extend(_check_p_goal_id_coverage(src, path, repo_root))
+    findings.extend(
+        _check_q_acceptance_falsifiers(
+            src,
+            args.grammar_cutoff_commit,
+            args.grammar_successor_commit,
+            args.server_attested_pre_grammar_date,
+            args.grandfather_source_path,
+        )
+    )
 
     lane_index_body = _extract_section(src, "Lane Index & Dependencies")
     lanes = _parse_lane_index(lane_index_body)

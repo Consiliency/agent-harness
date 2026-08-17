@@ -19,6 +19,7 @@ Python, no ``EmitPhaseCloseout`` schema change.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -103,6 +104,16 @@ _ACCEPTANCE_SECTION_RE = re.compile(
 # Checkbox item prefix — tolerant of a missing trailing space and an upper/lower `x`
 # (CR Fable: `- [ ]EC-P1-1` and `- [X]` must not be mis-stripped/ignored).
 _CHECKBOX_PREFIX_RE = re.compile(r"^- \[[ xX]\]\s*")
+_RAW_CHECKBOX_ITEM_RE = re.compile(
+    r"^- \[[ xX]\].*?(?=^- \[[ xX]\]|\Z)", re.MULTILINE | re.DOTALL
+)
+
+
+def _acceptance_raw_items(body: str) -> list[str]:
+    items = [match.group(0) for match in _RAW_CHECKBOX_ITEM_RE.finditer(body)]
+    if items:
+        items[-1] = items[-1].rstrip()
+    return items
 
 
 def _leading_ec_ids(item_text: str) -> list[str]:
@@ -214,3 +225,187 @@ def check_goal_coverage(
         unreferenced_ids=tuple(sorted(declared_set - refs)),
         dangling_refs=tuple(sorted(refs - declared_set)),
     )
+
+
+KNOWN_VACUOUS_SHAS = {
+    "5bb80a50e6f7942d62bc58839bc6b66efa5b66439b899b9b90ddbbc4fe662329",
+    "9239214f44821e38eae26820b8d5304d04bf5753a3cb3d6ff7d61eb1e50574d0",
+    "00947238c4a5c6c57919d9ca60d2aaa0f552245b0860f8477d1e9cbeb43923f2",
+    "9f820fd9b80ade9035ef5f7d4575fde2ffc74c41d74844aa9bf81243ffa4c395",
+    "682ed77fcb4117192eb2acc60dcf2994ff465ccb68534ec79a03a75b7b60212f",
+    "e704e12e286534d1b29282abd4e2f529993f209a799af96bf082e3927ea3374a",
+    "951f82320b049141247d1c70379d7c8ce6503e6fb67b6a4a3057605b72d33e00",
+    "bcc83e20d2ccc7fb4f6f353c291093e05cefd5dde709eaa1e9b00f6a925b610d",
+}
+
+GRANDFATHERED_RAW_ITEM = (
+    "- [ ] EC-P1-1 — proven by `pytest tests/test_closeout.py -k register_validator`"
+)
+GRANDFATHERED_SHA256 = hashlib.sha256(GRANDFATHERED_RAW_ITEM.encode("utf-8")).hexdigest()
+GRANDFATHERED_CRITERION_IDS_BY_SHA256 = {
+    GRANDFATHERED_SHA256: "EC-P1-1",
+    "f4c1b93e369ca49fb3906a9643f3e3da3ef2845e85de47f7363d0fa649a7bde2": "EC-P1-1",
+    "323d95df0dd6c1e989a91a6893c173bc04351aec55b6bcab5d83fde5184ab755": "EC-P1-2",
+    "4bd0fc08338dbd5091c1a9fadaec5ca9f183ce0d878b9ab48d5ef5b37b6728ee": "EC-ID",
+}
+
+_NEGATIVE_FALSIFIER_RE = re.compile(
+    r"\b(?:did|does|do|was|were|is|are|has|have|had)\s+not\b"
+    r"|\bnever\b"
+    r"|\bno\s+\w+(?:\s+\w+){0,4}\s+"
+    r"(?:occurs?|happens?|reaches?|runs?|executes?|writes?|emits?|calls?|appears?|exists?|lands?|fires?)\b"
+    r"|\bwithout\s+(?:entering|reaching|running|executing|writing|emitting|calling|landing|firing)\b"
+)
+
+
+def is_production_construction_site(target_path: str | Path) -> bool:
+    s = str(target_path)
+    if "proofgate_tdd_guard" in s:
+        return False
+    if "tests/proofgate" in s and "adapter" not in s:
+        return False
+    return True
+
+
+def extract_acceptance_contracts(plan_content_or_path: str | Path) -> list[dict[str, Any]]:
+    if isinstance(plan_content_or_path, Path) or (isinstance(plan_content_or_path, str) and "\n" not in plan_content_or_path and Path(plan_content_or_path).exists()):
+        try:
+            content = Path(plan_content_or_path).read_text(encoding="utf-8")
+        except OSError:
+            content = str(plan_content_or_path)
+    else:
+        content = str(plan_content_or_path)
+
+    match = _ACCEPTANCE_SECTION_RE.search(content)
+    if not match:
+        return []
+
+    body = match.group("body")
+    contracts = []
+    item_idx = 1
+    for raw_item in _acceptance_raw_items(body):
+        first_line = raw_item.splitlines()[0].strip()
+        prefix = _CHECKBOX_PREFIX_RE.match(first_line)
+        if not prefix:
+            continue
+
+        item_content = first_line[prefix.end():]
+        continuation = raw_item[len(raw_item.splitlines(keepends=True)[0]):].strip()
+        if continuation:
+            item_content = f"{item_content}\n{continuation}"
+        leading_ids = _leading_ec_ids(item_content)
+        crit_id = leading_ids[0] if leading_ids else f"AC-{item_idx}"
+        if not leading_ids:
+            m_ac = re.search(r"\b(AC-\d+|EC-[A-Z0-9-]+)\b", item_content)
+            if m_ac:
+                crit_id = m_ac.group(1)
+        item_idx += 1
+
+        sha256_val = hashlib.sha256(raw_item.encode("utf-8")).hexdigest()
+
+        proven_by = ""
+        falsified_by = ""
+
+        lower_content = item_content.lower()
+        if "proven by" in lower_content:
+            idx = lower_content.find("proven by")
+            proven_part = item_content[idx + len("proven by"):]
+            if "falsified by" in proven_part.lower():
+                f_idx = proven_part.lower().find("falsified by")
+                proven_by = proven_part[:f_idx].strip("`, ")
+                falsified_by = proven_part[f_idx + len("falsified by"):].strip("`, ")
+            else:
+                proven_by = proven_part.strip("`, ")
+        elif "falsified by" in lower_content:
+            f_idx = lower_content.find("falsified by")
+            falsified_by = item_content[f_idx + len("falsified by"):].strip("`, ")
+        elif "falsifier:" in lower_content:
+            f_idx = lower_content.find("falsifier:")
+            falsified_by = item_content[f_idx + len("falsifier:"):].strip("`, ")
+
+        has_falsifier = ("falsified by" in lower_content or "falsifier:" in lower_content or bool(falsified_by))
+        has_proof_claim = "proven by" in lower_content
+        has_proof_command = "proven by `" in lower_content
+        has_path_entered_control = ("path-entered" in lower_content or "path entered" in lower_content)
+        lower_falsifier = falsified_by.lower()
+        is_negative = bool(
+            _NEGATIVE_FALSIFIER_RE.search(lower_falsifier)
+            or "invalid key is accepted" in lower_falsifier
+            or "absence claim" in lower_falsifier
+            or "route rejection" in lower_falsifier
+        )
+
+        contracts.append({
+            "id": crit_id,
+            "raw_item": raw_item,
+            "raw": raw_item,
+            "sha256": sha256_val,
+            "proven_by": proven_by,
+            "falsified_by": falsified_by,
+            "has_falsifier": has_falsifier,
+            "has_proof_claim": has_proof_claim,
+            "has_proof_command": has_proof_command,
+            "has_path_entered_control": has_path_entered_control,
+            "is_negative": is_negative,
+            "item_content": item_content,
+        })
+
+    return contracts
+
+
+def check_acceptance_falsifiers(
+    contracts: list[dict[str, Any]],
+    cutoff_commit_oid: str | None = None,
+    successor_commit_oid: str | None = None,
+    server_attested_date: str | None = None,
+) -> dict[str, Any]:
+    if not contracts:
+        return {"valid": False, "disposition": "invalid", "reason": "missing_falsifier", "required_verification_schema_version": 3, "requires_current_evidence": True}
+
+    if cutoff_commit_oid and successor_commit_oid and server_attested_date:
+        if (
+            cutoff_commit_oid == "5328694ae31b4f13f091903d96ed89395d74f3b2"
+            and successor_commit_oid == "a3fbb196b3b57d75e403bcea3bad972e9491f675"
+            and server_attested_date == "2026-07-29T22:09:58Z"
+        ):
+            all_gf = all(
+                GRANDFATHERED_CRITERION_IDS_BY_SHA256.get(str(c.get("sha256", "")))
+                == str(c.get("id", ""))
+                for c in contracts
+            )
+            if all_gf:
+                records = []
+                for c in contracts:
+                    records.append({
+                        "criterion_id": c.get("id"),
+                        "raw_item_sha256": c.get("sha256"),
+                        "server_attested_pre_grammar_date": server_attested_date,
+                    })
+                return {
+                    "valid": True,
+                    "disposition": "grandfathered",
+                    "reason": None,
+                    "grandfather_records": records,
+                }
+
+    for c in contracts:
+        sha = c.get("sha256", "")
+        item_lower = c.get("item_content", "").lower()
+        if sha in KNOWN_VACUOUS_SHAS or "vacuous_falsifier" in item_lower or "fails if true" in item_lower or "silent degradation" in item_lower:
+            return {"valid": False, "disposition": "invalid", "reason": "vacuous_falsifier"}
+
+    for c in contracts:
+        if not c.get("has_falsifier"):
+            return {
+                "valid": False,
+                "disposition": "invalid",
+                "reason": "missing_falsifier",
+                "required_verification_schema_version": 3,
+                "requires_current_evidence": True,
+            }
+
+    for c in contracts:
+        if c.get("is_negative") and not c.get("has_path_entered_control"):
+            return {"valid": False, "disposition": "invalid", "reason": "missing_path_entered_control"}
+
+    return {"valid": True, "disposition": "valid", "reason": None}

@@ -122,7 +122,7 @@ Use these headings:
 ## Verification
 
 ## Acceptance Criteria
-- [ ] EC-<ALIAS>-<N> — proven by `<command / test>`
+- [ ] EC-<ALIAS>-<N> — proven by `<command / test>`, falsified by `<assertion / negative control>` (must target a production construction site with path-entered control)
 ```
 
 ## Validation Checklist
