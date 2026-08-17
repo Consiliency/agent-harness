@@ -13,6 +13,7 @@ import pytest
 from .proofgate_content_tdd_adapter import (
     ProofgateMissingCapabilityError,
     PROOFGATE_GRANDFATHER_CUTOFF_OID,
+    PROOFGATE_GRANDFATHER_PLAN_PATH,
     PROOFGATE_GRANDFATHER_RAW_ITEM,
     PROOFGATE_GRANDFATHER_SERVER_DATE,
     PROOFGATE_GRANDFATHER_SUCCESSOR_OID,
@@ -66,7 +67,6 @@ class ProofgatePlanValidatorTest(unittest.TestCase):
                 tf.write(bytes_358)
                 tf_path = tf.name
 
-            proc = subprocess.run([sys.executable, str(validator_script), tf_path], capture_output=True, text=True)
             proc = subprocess.run([sys.executable, str(validator_script), tf_path], capture_output=True, text=True)
             combined_output = proc.stdout + proc.stderr
             cli_rejected_vacuous = (
@@ -174,6 +174,32 @@ class ProofgatePlanValidatorTest(unittest.TestCase):
             if not hasattr(goal_coverage, "extract_acceptance_contracts") or not hasattr(goal_coverage, "check_acceptance_falsifiers"):
                 raise ProofgateMissingCapabilityError("extract_acceptance_contracts or check_acceptance_falsifiers missing on goal_coverage")
 
+            cutoff_plan = _load_git_object_bytes(
+                f"{PROOFGATE_GRANDFATHER_CUTOFF_OID}:{PROOFGATE_GRANDFATHER_PLAN_PATH}"
+            )
+            cutoff_contracts = goal_coverage.extract_acceptance_contracts(cutoff_plan)
+            cutoff_result = goal_coverage.check_acceptance_falsifiers(
+                cutoff_contracts,
+                cutoff_commit_oid=PROOFGATE_GRANDFATHER_CUTOFF_OID,
+                successor_commit_oid=PROOFGATE_GRANDFATHER_SUCCESSOR_OID,
+                server_attested_date=PROOFGATE_GRANDFATHER_SERVER_DATE,
+            )
+            if not cutoff_result.get("valid") or cutoff_result.get("disposition") != "grandfathered":
+                emit_mutation_observable(
+                    "ec-proofgate-7.grandfathering",
+                    getattr(self, "record_property", None),
+                )
+            self.assertTrue(cutoff_result.get("valid"))
+            self.assertEqual(cutoff_result.get("disposition"), "grandfathered")
+            self.assertEqual(len(cutoff_contracts), 3)
+            self.assertEqual(len(cutoff_result.get("grandfather_records", [])), 3)
+            self.assertTrue(
+                all(
+                    row.get("server_attested_pre_grammar_date") == PROOFGATE_GRANDFATHER_SERVER_DATE
+                    for row in cutoff_result["grandfather_records"]
+                )
+            )
+
             grandfather_plan = proofgate_grandfather_plan_bytes()
             contracts = goal_coverage.extract_acceptance_contracts(grandfather_plan)
             cutoff_bytes_parsed = bool(contracts)
@@ -230,38 +256,40 @@ class ProofgatePlanValidatorTest(unittest.TestCase):
             self.assertEqual(invalid_cutoff.get("disposition"), "invalid")
 
             validator_script = _get_validator_script()
-            with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as tf:
-                tf.write(grandfather_plan)
-                tf_path = tf.name
-            unproved_proc = subprocess.run(
-                [sys.executable, str(validator_script), tf_path],
-                cwd=Path(__file__).resolve().parents[2],
-                capture_output=True,
-                text=True,
-            )
-            self.assertNotEqual(unproved_proc.returncode, 0)
-            self.assertIn("missing_falsifier", unproved_proc.stdout + unproved_proc.stderr)
-            proc = subprocess.run(
-                [
-                    sys.executable,
-                    str(validator_script),
-                    tf_path,
-                    "--grammar-cutoff-commit",
-                    PROOFGATE_GRANDFATHER_CUTOFF_OID,
-                    "--grammar-successor-commit",
-                    PROOFGATE_GRANDFATHER_SUCCESSOR_OID,
-                    "--server-attested-pre-grammar-date",
-                    PROOFGATE_GRANDFATHER_SERVER_DATE,
-                    "--grandfather-source-path",
-                    "plans/detailed-goal-id-single-source-of-truth-211-redesign-20260719.md",
-                ],
-                cwd=Path(__file__).resolve().parents[2],
-                capture_output=True,
-                text=True,
-            )
+            with tempfile.TemporaryDirectory() as td:
+                tf_path = Path(td) / "phase-plan-v10-PROOFGATE.md"
+                tf_path.write_text(grandfather_plan, encoding="utf-8")
+                unproved_proc = subprocess.run(
+                    [sys.executable, str(validator_script), str(tf_path)],
+                    cwd=Path(__file__).resolve().parents[2],
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertNotEqual(unproved_proc.returncode, 0)
+                self.assertIn("missing_falsifier", unproved_proc.stdout + unproved_proc.stderr)
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        str(validator_script),
+                        str(tf_path),
+                        "--grammar-cutoff-commit",
+                        PROOFGATE_GRANDFATHER_CUTOFF_OID,
+                        "--grammar-successor-commit",
+                        PROOFGATE_GRANDFATHER_SUCCESSOR_OID,
+                        "--server-attested-pre-grammar-date",
+                        PROOFGATE_GRANDFATHER_SERVER_DATE,
+                        "--grandfather-source-path",
+                        "plans/detailed-goal-id-single-source-of-truth-211-redesign-20260719.md",
+                    ],
+                    cwd=Path(__file__).resolve().parents[2],
+                    capture_output=True,
+                    text=True,
+                )
             output = proc.stdout + proc.stderr
             warning_lines = [
-                line for line in output.splitlines() if "WARN" in line
+                line
+                for line in output.splitlines()
+                if "WARN" in line and "grandfathered" in line
             ]
             self.assertEqual(proc.returncode, 0, output)
             self.assertEqual(len(warning_lines), 1, output)

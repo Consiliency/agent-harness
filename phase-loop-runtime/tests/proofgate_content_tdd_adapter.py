@@ -250,8 +250,11 @@ def verify_proofgate_content_tdd_junit(
         "passed": passed_count,
         "failed": 0,
         "skipped": 0,
-                "collected": collected_nodeids,
-            }
+        "errored": 0,
+        "xfailed": 0,
+        "xpassed": 0,
+        "collected": collected_nodeids,
+    }
 
 
 # Closed exact-node-ID groups for SL1, SL0, SL2
@@ -275,6 +278,9 @@ SL0_NODEIDS: tuple[str, ...] = (
     "phase-loop-runtime/tests/test_acceptance_falsifier_contract.py::test_ec4_helper_only_mutation_cannot_be_credited_as_kill",
     "phase-loop-runtime/tests/test_acceptance_falsifier_contract.py::test_mutation_manifest_requires_exact_criterion_parameter_and_command_coverage",
     "phase-loop-runtime/tests/test_goal_coverage.py::GoalCoverageTest::test_acceptance_contracts_classify_valid_invalid_and_grandfathered",
+    "phase-loop-runtime/tests/test_goal_coverage.py::GoalCoveragePreflightTest::test_warn_default_does_not_block",
+    "phase-loop-runtime/tests/test_goal_coverage.py::GoalCoveragePreflightTest::test_setup_error_fails_closed_under_enforce",
+    "phase-loop-runtime/tests/test_goal_coverage.py::GoalCoverageCloseoutTest::test_legacy_no_ids_no_evidence_no_block",
 )
 
 SL2_NODEIDS: tuple[str, ...] = (
@@ -293,6 +299,9 @@ EC0_NODEIDS: tuple[str, ...] = (
 EC1_NODEIDS: tuple[str, ...] = (
     "phase-loop-runtime/tests/test_acceptance_falsifier_contract.py::test_missing_falsifier_is_invalid",
     "phase-loop-runtime/tests/test_acceptance_falsifier_contract.py::test_runner_preflight_gates_enforce_acceptance_falsifiers_on_all_routes",
+    "phase-loop-runtime/tests/test_goal_coverage.py::GoalCoveragePreflightTest::test_warn_default_does_not_block",
+    "phase-loop-runtime/tests/test_goal_coverage.py::GoalCoveragePreflightTest::test_setup_error_fails_closed_under_enforce",
+    "phase-loop-runtime/tests/test_goal_coverage.py::GoalCoverageCloseoutTest::test_legacy_no_ids_no_evidence_no_block",
 )
 
 EC2_NODEIDS: tuple[str, ...] = (
@@ -370,9 +379,9 @@ def _validate_exact_partition(groups: tuple[tuple[str, ...], ...], expected: set
     return None
 
 assert len(SL1_NODEIDS) == 7
-assert len(SL0_NODEIDS) == 9
+assert len(SL0_NODEIDS) == 12
 assert len(SL2_NODEIDS) == 6
-assert len(_LANE_UNION) == 22
+assert len(_LANE_UNION) == 25
 assert len(set(SL1_NODEIDS) & set(SL0_NODEIDS)) == 0
 assert len(set(SL1_NODEIDS) & set(SL2_NODEIDS)) == 0
 assert len(set(SL0_NODEIDS) & set(SL2_NODEIDS)) == 0
@@ -447,6 +456,18 @@ RED_CASES_BY_NODEID: dict[str, tuple[str, str]] = {
     "phase-loop-runtime/tests/test_goal_coverage.py::GoalCoverageTest::test_acceptance_contracts_classify_valid_invalid_and_grandfathered": (
         "PG-A-GOAL",
         "acceptance_contracts_classify_valid_invalid_and_grandfathered",
+    ),
+    "phase-loop-runtime/tests/test_goal_coverage.py::GoalCoveragePreflightTest::test_warn_default_does_not_block": (
+        "PG-A-GOAL",
+        "missing_falsifier_warn_default_must_block",
+    ),
+    "phase-loop-runtime/tests/test_goal_coverage.py::GoalCoveragePreflightTest::test_setup_error_fails_closed_under_enforce": (
+        "PG-A-GOAL",
+        "stale_roadmap_bypass_must_not_bypass_falsifier_gate",
+    ),
+    "phase-loop-runtime/tests/test_goal_coverage.py::GoalCoverageCloseoutTest::test_legacy_no_ids_no_evidence_no_block": (
+        "PG-A-GOAL",
+        "empty_acceptance_closeout_must_block",
     ),
     "phase-loop-runtime/tests/test_validate_plan_doc_proofgate.py::ProofgatePlanValidatorTest::test_agent_harness_358_original_is_rejected": (
         "PG-A-VALIDATOR",
@@ -1027,12 +1048,16 @@ def _record_red(group_name: str, landing_ref: str = "HEAD") -> int:
 
 EXPECTED_FREEZE_FILES: tuple[str, ...] = (
     "phase-loop-runtime/tests/fixtures/proofgate/v10-proofgate-mutations.json",
+    "phase-loop-runtime/tests/phase_loop_test_utils.py",
     "phase-loop-runtime/tests/proofgate_content_tdd_adapter.py",
     "phase-loop-runtime/tests/test_acceptance_falsifier_contract.py",
     "phase-loop-runtime/tests/test_convergence_broker_revocation_race.py",
+    "phase-loop-runtime/tests/test_dispatch_hold_guard.py",
+    "phase-loop-runtime/tests/test_gate_parity_244_245.py",
     "phase-loop-runtime/tests/test_goal_coverage.py",
     "phase-loop-runtime/tests/test_skills_bundle_drift.py",
     "phase-loop-runtime/tests/test_skills_canon_parity.py",
+    "phase-loop-runtime/tests/test_stale_roadmap_dispatch_guard.py",
     "phase-loop-runtime/tests/test_validate_plan_doc_goal_coverage.py",
     "phase-loop-runtime/tests/test_validate_plan_doc_proofgate.py",
     "phase-loop-runtime/tests/test_verification_evidence.py",
@@ -1140,6 +1165,7 @@ EXPECTED_OWNED_UNION: set[str] = {
     "phase-loop-runtime/tests/test_verification_evidence.py",
     "phase-loop-runtime/tests/test_convergence_broker_revocation_race.py",
     "phase-loop-runtime/tests/fixtures/proofgate/v10-proofgate-mutations.json",
+    "phase-loop-runtime/tests/phase_loop_test_utils.py",
     ".phase-loop/evidence/PROOFGATE/content-tdd-receipt.json",
     ".phase-loop/evidence/PROOFGATE/content-tdd-receipt.red.stdout.log",
     ".phase-loop/evidence/PROOFGATE/content-tdd-receipt.red.stderr.log",
@@ -1147,7 +1173,10 @@ EXPECTED_OWNED_UNION: set[str] = {
     "phase-loop-runtime/src/phase_loop_runtime/runner.py",
     "skills-src/claude/claude-plan-phase/scripts/validate_plan_doc.py",
     "phase-loop-runtime/tests/test_acceptance_falsifier_contract.py",
+    "phase-loop-runtime/tests/test_dispatch_hold_guard.py",
+    "phase-loop-runtime/tests/test_gate_parity_244_245.py",
     "phase-loop-runtime/tests/test_goal_coverage.py",
+    "phase-loop-runtime/tests/test_stale_roadmap_dispatch_guard.py",
     "phase-loop-runtime/tests/test_validate_plan_doc_goal_coverage.py",
     "phase-loop-runtime/tests/test_validate_plan_doc_proofgate.py",
     "phase-loop-runtime/tests/test_skills_canon_parity.py",
@@ -1271,14 +1300,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     ver = subparsers.add_parser("verify")
     ver.add_argument("--repo", type=Path, default=Path("."))
     ver.add_argument("--landing-ref", default="HEAD")
-    ver.add_argument("--identity", default="proofgate-tests-freeze-amendment-1")
+    ver.add_argument("--identity", default="proofgate-tests-freeze-amendment-2")
     ver.add_argument("--receipt", type=Path, default=Path(".phase-loop/evidence/PROOFGATE/content-tdd-receipt.json"))
 
     ver_scope = subparsers.add_parser("verify-scope")
     ver_scope.add_argument("--repo", type=Path, default=Path("."))
     ver_scope.add_argument("--landing-remote", default="origin")
     ver_scope.add_argument("--landing-branch", default="main")
-    ver_scope.add_argument("--identity", default="proofgate-tests-freeze-amendment-1")
+    ver_scope.add_argument("--identity", default="proofgate-tests-freeze-amendment-2")
     ver_scope.add_argument("--head", default="HEAD")
     ver_scope.add_argument("--plan", type=Path, default=Path("plans/phase-plan-v10-PROOFGATE.md"))
 

@@ -4,6 +4,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 import pytest
 
@@ -654,7 +655,7 @@ class VerificationEvidenceTest(unittest.TestCase):
                     "reduce_proofgate_mutation_results",
                     wraps=reducer,
                 ) as reduce_spy:
-                    verification_evidence.validate_verification_artifact_for_plan(
+                    plan_validation = verification_evidence.validate_verification_artifact_for_plan(
                         artifact,
                         ("phase_loop_runtime.proofgate_evidence",),
                     )
@@ -669,6 +670,10 @@ class VerificationEvidenceTest(unittest.TestCase):
                         getattr(self, "record_property", None),
                     )
                 assert cond_plan_coverage, "plan-aware validation must reduce the exact nine-parameter table"
+                if plan_validation.ok or plan_validation.code != "proofgate_mutation_binding_failed":
+                    raise ProofgateMissingCapabilityError(
+                        "status-only mutation rows validated without candidate/command/result bindings"
+                    )
 
         run_proofgate_contract(nodeid, _contract)
 

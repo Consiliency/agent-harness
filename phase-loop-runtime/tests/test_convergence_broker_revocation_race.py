@@ -152,9 +152,6 @@ def test_github_broker_admission_store_is_wired_to_evidence_revocation(tmp_path,
 
     def _contract():
         from phase_loop_runtime import verification_evidence
-        if not hasattr(verification_evidence, "verify_proofgate_mutation_bindings"):
-            raise ProofgateMissingCapabilityError("verify_proofgate_mutation_bindings interface missing on verification_evidence")
-
         service = build_github_broker_client(tmp_path / "repo", broker_root=tmp_path / "broker")
         _assert_ec4_oracle_descriptor(
             "ec-proofgate-4.github-builder-epoch-blocked",
@@ -165,6 +162,8 @@ def test_github_broker_admission_store_is_wired_to_evidence_revocation(tmp_path,
             record_property,
             param_id="ec-proofgate-4.github-builder-epoch-blocked",
         )
+        if not hasattr(verification_evidence, "verify_proofgate_mutation_bindings"):
+            raise ProofgateMissingCapabilityError("verify_proofgate_mutation_bindings interface missing on verification_evidence")
 
     run_proofgate_contract(nodeid, _contract)
 
@@ -177,9 +176,6 @@ def test_routing_broker_admission_store_is_wired_to_evidence_revocation(tmp_path
 
     def _contract():
         from phase_loop_runtime import verification_evidence
-        if not hasattr(verification_evidence, "verify_proofgate_mutation_bindings"):
-            raise ProofgateMissingCapabilityError("verify_proofgate_mutation_bindings interface missing on verification_evidence")
-
         client = build_routing_broker_client(broker_root=tmp_path / "broker")
         service = client._service_for(str(tmp_path / "repo"))
         _assert_ec4_oracle_descriptor(
@@ -191,6 +187,8 @@ def test_routing_broker_admission_store_is_wired_to_evidence_revocation(tmp_path
             record_property,
             param_id="ec-proofgate-4.routing-builder-epoch-blocked",
         )
+        if not hasattr(verification_evidence, "verify_proofgate_mutation_bindings"):
+            raise ProofgateMissingCapabilityError("verify_proofgate_mutation_bindings interface missing on verification_evidence")
 
     run_proofgate_contract(nodeid, _contract)
 

@@ -57,7 +57,7 @@ def _build(td: Path, *, with_hold=True, holder_completed=False, plan_phase="P1",
     plan.write_text(
         f'---\nphase_loop_plan_version: "1"\nphase: {plan_phase}\n'
         f"roadmap: {rel}\nroadmap_sha256: {sha}\n---\n# Plan\n\n"
-        f"## Acceptance Criteria\n- [ ] EC-{plan_phase}-1 — proven by test\n",
+        f"## Acceptance Criteria\n- [ ] EC-{plan_phase}-1 — proven by test, falsified by fails if test fails\n",
         encoding="utf-8",
     )
     mdir = td / "plans"
