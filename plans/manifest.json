@@ -1390,6 +1390,47 @@
             "fabpub_plan_contract_record_id": "v10-FABPUB.fabpub-plan-contract.v5"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-17T03:20:39Z",
+          "by": "clawdbot-agent-harness-codex",
+          "metadata": {
+            "fabpub_plan_contract_payload_sha256": "bf59e6ee2b950b6a4d8707b55ca2bd96b104486d9f808c039e98e885584601b9",
+            "fabpub_plan_contract_rebind": {
+              "acceptance_criteria_count": 11,
+              "adapter_start_fence_nodeids_count": 1,
+              "adapter_start_fence_nodeids_sha256": "7dac57ecb3d2d22bfc4bda1ffe5f6330e9a47cee41e33c84134e743655c18497",
+              "legacy_cutover_nodeids_count": 8,
+              "legacy_cutover_nodeids_sha256": "51b89f38436c06fa7a51120140b508251a39d4a2b42671021b68af5d29e2cafe",
+              "owned_paths_count": 24,
+              "owned_paths_sha256": "93f3a95a277ee2e5d2543aed6baea4c839c55e8be32ee1264a0283e1fd829ead",
+              "plan_sha256": "bfd0bb313145feea6b0e21ecc02b61e49fd4df57fb204c98fcdb4424996f57b2",
+              "predecessor_contract_record_id": "v10-FABPUB.fabpub-plan-contract.v5",
+              "predecessor_critics_sha256": "7d7d3a919459ce2485dd5b6d19cff27787b26f6e89f71a6ac1c307f126d1006d",
+              "predecessor_opus_sha256": "664def68b5a416a3e66175e765eec1a292f74323761457e76072ef98e2d85d71",
+              "predecessor_plan_sha256": "f7ffbc3aff73c9b2ede9b96afec059d55591148d669a8113cd58cbe42231baec",
+              "predecessor_president_decision": "REVISE",
+              "predecessor_president_sha256": "0d2d4f0794fd69cc44d5da328113ce747dbd81c24690bfceed707570598d16cc",
+              "predecessor_substantive_blockers": [
+                "post_owner_crash_contract_requires_impossible_adapter_retry",
+                "sl2_red_selector_omits_migrated_first_green_nodes",
+                "mandatory_verification_pins_stale_manifest_record"
+              ],
+              "required_prover_deviation": "operator_approved_grok46_president_supersedes_fable_for_this_run",
+              "review_status": "repaired_after_round3_president_REVISE_requires_fresh_exact_digest_board",
+              "review_topology": "opus_early_then_sol_grok45_gemini_critics_then_grok46_president",
+              "review_transport": "digest_bound_staged_bundle_and_president_artifact_ref",
+              "roadmap_sha256": "c66949236043e46e956caec1c09d0c19d0e8751e4ce2891de1fe2edf24e9fea1",
+              "shared_allocator_nodeids_count": 2,
+              "shared_allocator_nodeids_sha256": "4d2d6a3751424be367696d18abeb316c365e4e7d2028f5fdd4d3898738e2364b",
+              "test_paths_count": 12,
+              "test_paths_sha256": "c7c498a73c76364dee1d02b0ee73eb6b6fae5ed4311d135d82ed17c4fec18e51",
+              "writer_generation_fence_nodeids_count": 1,
+              "writer_generation_fence_nodeids_sha256": "22a35748a15f1109a71965f972b1662042b8779dd383c8a2f267c8b8220c72b5"
+            },
+            "fabpub_plan_contract_record_id": "v10-FABPUB.fabpub-plan-contract.v6"
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -1405,7 +1446,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-17T02:56:18Z"
+      "updated_at": "2026-08-17T03:20:39Z"
     },
     {
       "acceptance_criteria_count": null,
