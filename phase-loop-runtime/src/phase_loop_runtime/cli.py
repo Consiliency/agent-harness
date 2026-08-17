@@ -3830,28 +3830,68 @@ def _run_train_command(*, parser: argparse.ArgumentParser, args: argparse.Namesp
     import hashlib
 
     from .convergence.broker import build_routing_broker_client
+    from .convergence.broker.live import (
+        fabpub_activation_barrier,
+        fabpub_capability_active,
+        release_barrier_leases,
+    )
 
     train_key = hashlib.sha256(str(train_path.resolve()).encode("utf-8")).hexdigest()[:16]
     coordinator_root = ledger_dir / "broker" / train_key
-    coordinator_root.mkdir(parents=True, exist_ok=True)
-    roadmap_digest = hashlib.sha256(train_path.read_bytes()).hexdigest()
-    coordinator_runtime = train_runner.CoordinatorRuntime(
-        train_id=train_path.stem,
-        coordinator_root=coordinator_root,
-        roadmap_path=str(train_path),
-        roadmap_digest=roadmap_digest,
-        workspace_id=train_path.stem,
-        broker_client=build_routing_broker_client(broker_root=coordinator_root),
-    )
+    fabpub_active = fabpub_capability_active()
+    fabpub_barrier: dict = {}
+    if fabpub_active:
+        # SL1-SOL-08/12: the authenticated cutover/generation barrier runs BEFORE
+        # any coordinator or broker directory is created, and workspace
+        # resolution errors are NOT swallowed — a roadmap whose nodes cannot be
+        # resolved must not silently activate over an empty repository set.
+        fabpub_barrier = fabpub_activation_barrier(
+            [_resolve_workspace(node) for node in getattr(roadmap, "nodes", []) or []]
+        )
 
-    result = train_runner.run_train(
-        roadmap,
-        ledger_path,
-        run_mode=run_mode,
-        resolve_workspace=_resolve_workspace,
-        coordinator_runtime=coordinator_runtime,
-        _merge_phase_enabled=True,  # P4 gate: autonomous→drafts_open, governed→merge
-    )
+    # SL1-SOL-12: EVERY post-barrier construction step — coordinator mkdir,
+    # roadmap hashing, client build, runtime build, and the train itself — runs
+    # inside the try, so no failure can strand the barrier's generation leases.
+    # The `finally` guards `close()` so a raise there cannot skip the release.
+    broker_client = None
+    try:
+        coordinator_root.mkdir(parents=True, exist_ok=True)
+        roadmap_digest = hashlib.sha256(train_path.read_bytes()).hexdigest()
+        # FABPUB splits train-local coordinator storage from ALLOCATOR storage.
+        # `coordinator_root` stays exactly `<ledger-dir>/broker/<train-key>` and
+        # keeps train-local transaction/checkpoint state, so two same-stemmed
+        # roadmaps still get distinct checkpoint roots.  It no longer selects the
+        # broker namespace: once activated the routing builder takes NO allocator
+        # root and derives one store per canonical Git common directory.
+        if fabpub_active:
+            broker_client = build_routing_broker_client()
+        else:
+            broker_client = build_routing_broker_client(broker_root=coordinator_root)
+        coordinator_runtime = train_runner.CoordinatorRuntime(
+            train_id=train_path.stem,
+            coordinator_root=coordinator_root,
+            roadmap_path=str(train_path),
+            roadmap_digest=roadmap_digest,
+            workspace_id=train_path.stem,
+            broker_client=broker_client,
+        )
+
+        result = train_runner.run_train(
+            roadmap,
+            ledger_path,
+            run_mode=run_mode,
+            resolve_workspace=_resolve_workspace,
+            coordinator_runtime=coordinator_runtime,
+            _merge_phase_enabled=True,  # P4 gate: autonomous→drafts_open, governed→merge
+        )
+    finally:
+        try:
+            closer = getattr(broker_client, "close", None)
+            if callable(closer):
+                closer()
+        finally:
+            if fabpub_barrier:
+                release_barrier_leases(fabpub_barrier)
 
     if as_json:
         print(json.dumps(result, indent=2))

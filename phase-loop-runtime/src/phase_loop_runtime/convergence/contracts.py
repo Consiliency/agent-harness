@@ -33,11 +33,90 @@ class AdmissionRequest:
 
 
 @dataclass(frozen=True)
+class PreAdmissionEnvelope:
+    """The epoch-free authority a FRESH ``publish_committed_branch`` must carry.
+
+    FABPUB removes the caller's ability to stamp its own fencing identity: the
+    broker allocates the epoch through
+    ``LinearizableAdmissionStore.admit_next`` and derives the attempt/approval
+    bindings itself.  This envelope therefore carries only inputs that exist
+    BEFORE allocation — repository/transaction identity and the exact commit
+    bindings resolved at ``COMMITTED_HEAD_RESOLVED`` — and deliberately has no
+    ``lease_epoch``, ``attempt_id``, ``fence_token``, ``approval_digest``, or
+    ``idempotency_key`` field.  A caller that still wants to supply those uses
+    the finalized :class:`AdmissionRequest`, which remains legal only for
+    non-publish verbs and already-completed terminal replay.
+
+    ``adapter_worktree`` is the validated execution LOCATION.  It is never the
+    repository identity: ``canonical_repository_identity`` is, and the two are
+    compared separately by the activated production route.
+    """
+
+    # --- envelope authority pre-image (canonicalized by the caller, re-derived
+    # --- and compared by production; never an opaque caller-supplied digest).
+    train_id: str
+    node_id: str
+    action: str
+    roadmap_digest: str
+    effective_code_digest: str
+    dependency_digest: str
+    verification_plan_digest: str
+    expected_version_predicate: str
+    authority_domain_scope: str
+    operation_identity: str
+    # --- repository + acyclic transaction identity
+    canonical_repository_identity: str
+    original_commit_message_sha256: str
+    pre_trailer_intent_sha256: str
+    transaction_id: str
+    # --- separately compared post-object bindings
+    final_commit_message_sha256: str
+    expected_commit_oid: str
+    committed_head_sha: str
+    final_commit_object_sha256: str
+    # --- execution location + train-local transaction root
+    adapter_worktree: str
+    checkpoint_root: str
+
+    #: Fencing fields an envelope may NEVER carry; the broker derives them.
+    FORBIDDEN_FIELDS = (
+        "lease_epoch",
+        "attempt_id",
+        "fence_token",
+        "approval_digest",
+        "idempotency_key",
+    )
+
+    def __post_init__(self) -> None:
+        missing = [
+            name
+            for name in (
+                "train_id", "node_id", "action", "roadmap_digest",
+                "effective_code_digest", "dependency_digest",
+                "verification_plan_digest", "expected_version_predicate",
+                "authority_domain_scope", "operation_identity",
+                "canonical_repository_identity", "original_commit_message_sha256",
+                "pre_trailer_intent_sha256", "transaction_id",
+                "final_commit_message_sha256", "expected_commit_oid",
+                "committed_head_sha", "final_commit_object_sha256",
+                "adapter_worktree", "checkpoint_root",
+            )
+            if not getattr(self, name)
+        ]
+        if missing:
+            raise ValueError(f"pre-admission envelopes require every authority field: {missing}")
+
+
+@dataclass(frozen=True)
 class BrokerRequest:
     """A future broker request bound to one shared admission request."""
 
     verb: BrokerVerb
-    admission: AdmissionRequest
+    # FABPUB widens this to a union: a FRESH publish_committed_branch carries the
+    # epoch-free PreAdmissionEnvelope and is allocated through `admit_next`; a
+    # finalized AdmissionRequest stays legal for non-publish verbs and for an
+    # already-completed terminal replay.  SL-2 owns the dispatch/enforcement.
+    admission: "AdmissionRequest | PreAdmissionEnvelope"
     repo: str
     branch: str
     head_sha: str
@@ -48,6 +127,11 @@ class BrokerRequest:
     base: str = "main"
     draft: bool = True
     pr_body: str = ""
+    # The absolute worktree the adapter runs git/gh against.  It is a validated
+    # EXECUTION LOCATION only: it is excluded from repository/transaction/effect
+    # keys and must resolve back to `repo` (CanonicalRepositoryIdentity.v1)
+    # before any effect.  `None` stays accepted only while FABPUB is inactive.
+    adapter_worktree: str | None = None
 
 
 @dataclass(frozen=True)
