@@ -1533,6 +1533,20 @@
             "fabpub_plan_contract_record_id": "v10-FABPUB.fabpub-plan-contract.v8"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-17T22:47:25Z",
+          "by": "clawdbot-agent-harness-codex",
+          "metadata": {
+            "base_sha": "0620b3b44fa7ff499f8d456c48063b3bdf9ea896",
+            "current_stage": "SL1-production-implementation",
+            "fixture_repair_pr": "agent-harness#586",
+            "implementation_author": "claude-opus-5-retained-session",
+            "review_topology": "opus_early_then_sol_grok45_gemini_critics_then_grok46_president",
+            "run_id": "fabpub-sl1-restart-20260817T224413Z",
+            "tests_only_freeze_pr": "agent-harness#578"
+          },
+          "transition": "executing"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -1545,10 +1559,10 @@
         "type": "phase"
       },
       "slug": "v10-FABPUB",
-      "status": "committed",
+      "status": "executing",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-17T09:13:58Z"
+      "updated_at": "2026-08-17T22:47:25Z"
     },
     {
       "acceptance_criteria_count": null,
