@@ -13,6 +13,9 @@ assumed, because each one has a recorded failure mode behind it:
   clone, so the probe below touches every object `rev-list --objects` names.
 * **Exported junit.** The two-lane plan's evidence contract says the retaining
   lanes emit junit; that contract has to survive the move off the hosted runner.
+  It is a byproduct of `all`, never a second `dagger call` -- a separate call is a
+  separate session, and on a cold engine it re-executed the two heaviest stages
+  and blew the job budget (agent-harness#550).
 """
 
 import asyncio
@@ -32,6 +35,11 @@ CHRONOLOGY_NODE = (
 # divergence recorded in agent-harness#382.
 CHRONOLOGY_PYTHON = "3.10"
 PYTHON_VERSIONS = ("3.10", "3.11", "3.12")
+
+# The per-stage verdict roll-up, written into the exported evidence directory
+# alongside the junit. `all` returns a Directory, so this is where the roll-up
+# that used to be its stdout now lives.
+VERDICTS_FILE = "verdicts.txt"
 
 # The suite needs a real git binary (the chronology proof shells out to it) and
 # `git merge-tree --write-tree`, which is git >= 2.38. Debian bookworm ships 2.39.
@@ -219,23 +227,7 @@ bash scripts/gate_a_cleanroom.sh
         )
 
     @function
-    async def junit(self, source: dagger.Directory) -> dagger.Directory:
-        """Export the junit evidence from the retaining stages.
-
-        The two-lane plan requires the chronology node's per-run verdict to be
-        durable. Returning a Directory lets the workflow `export` it and upload it
-        as an artifact, exactly as the hosted lanes do.
-        """
-        py310 = self._suite(source, CHRONOLOGY_PYTHON)
-        gate = self.gate_a(source)
-        return (
-            dag.directory()
-            .with_directory("py310", py310.directory("/junit"))
-            .with_directory("gate-a", gate.directory("/junit"))
-        )
-
-    @function
-    async def all(self, source: dagger.Directory) -> str:
+    async def all(self, source: dagger.Directory) -> dagger.Directory:
         """The full offloaded gate: object-database probe, three suites, Gate A.
 
         The probe runs FIRST and alone: it costs seconds and catches the
@@ -255,25 +247,59 @@ bash scripts/gate_a_cleanroom.sh
         ~45 minutes to surface exactly ONE defect -- and Gate A was never reached
         at all until run 4. Gathering with ``return_exceptions=True`` reports every
         stage's verdict from a single run.
+
+        The junit evidence is a BYPRODUCT of those same stage executions, which is
+        why this returns a Directory rather than a verdict string. It used to be a
+        separate ``junit`` function that re-declared ``suite(source, "3.10")`` and
+        ``gate_a(source)``, and ``ci/offload-gate.sh`` reached it in a SECOND
+        ``dagger call``. A second call is a second session with its own host
+        upload of ``--source``, so the stages dedupe only if the upload hashes
+        identically AND the engine still holds their layers. When both held (warm
+        engine, run 6 and the preflight) the export returned in 5 seconds; when
+        they did not, the export re-ran the two heaviest stages. Run 31751696509
+        is the record: Gate A ran twice (50m59s and 49m44s) and py3.10 twice
+        (41m55s, plus an instance that never completed), and the job hit its
+        120-minute ceiling looking like a hang. Reading ``/junit`` off the
+        containers this function already awaited puts every stage in ONE session
+        as ONE DAG node, so re-execution is impossible by construction instead of
+        prevented by cache luck -- and the exported artifact provably comes from
+        the execution that gated the run.
         """
         results = [await self.git_probe(source)]
 
-        stages: list[tuple[str, dagger.Container]] = [
-            *((f"suite py{v}", self._suite(source, v)) for v in PYTHON_VERSIONS),
-            ("gate-a", self.gate_a(source)),
+        # (label, junit export subdirectory or None, container). Only the two
+        # chronology-retaining stages emit junit; the export names are derived so
+        # they cannot drift from the lane they came from.
+        stages: list[tuple[str, str | None, dagger.Container]] = [
+            *(
+                (
+                    f"suite py{v}",
+                    f"py{v.replace('.', '')}" if v == CHRONOLOGY_PYTHON else None,
+                    self._suite(source, v),
+                )
+                for v in PYTHON_VERSIONS
+            ),
+            ("gate-a", "gate-a", self.gate_a(source)),
         ]
         outcomes = await asyncio.gather(
-            *(container.sync() for _, container in stages),
+            *(container.sync() for _, _, container in stages),
             return_exceptions=True,
         )
 
         failures: list[str] = []
-        for (name, _), outcome in zip(stages, outcomes):
+        # The EVALUATED container per stage, keyed by its export subdirectory.
+        # `sync()` returns the container it forced, so the junit below is read
+        # from the instance whose verdict is recorded above -- not from a
+        # re-declared one that a cold engine would execute again.
+        executed: list[tuple[str, dagger.Container]] = []
+        for (name, junit_dir, _), outcome in zip(stages, outcomes):
             if isinstance(outcome, BaseException):
                 failures.append(f"{name}: FAILED")
                 results.append(f"{name}: FAILED -- {outcome}")
             else:
                 results.append(f"{name}: ok")
+                if junit_dir is not None:
+                    executed.append((junit_dir, outcome))
         if failures:
             # Every verdict is already in `results`; surface the roll-up too, so a
             # multi-stage red is legible from the exception line alone.
@@ -283,4 +309,13 @@ bash scripts/gate_a_cleanroom.sh
                 + "\n"
                 + "\n".join(results)
             )
-        return "\n".join(results)
+
+        # The verdict roll-up used to be this function's stdout. It travels with
+        # the junit now so it is still readable in the job log (offload-gate.sh
+        # prints it) and, unlike stdout, it lands in the uploaded artifact.
+        evidence = dag.directory().with_new_file(
+            VERDICTS_FILE, "\n".join(results) + "\n"
+        )
+        for junit_dir, container in executed:
+            evidence = evidence.with_directory(junit_dir, container.directory("/junit"))
+        return evidence

@@ -34,9 +34,22 @@ fi
 
 # `all` runs the object-database probe first (seconds, catches the incomplete-clone
 # class before any long proof), then the three interpreter suites with the two-lane
-# chronology selection, then Gate A.
-dagger -m "$MODULE" call all --source="$SOURCE"
+# chronology selection, then Gate A. It returns the junit evidence produced BY those
+# stage executions, so the export below is a read, not a second run.
+#
+# ONE `dagger call`, deliberately. This used to be two -- `call all`, then
+# `call junit ... export` -- and the second call re-declared the py3.10 suite and
+# Gate A in a fresh session with its own upload of $SOURCE. That deduped only while
+# the engine still held those layers and the upload hashed identically; when it did
+# not, the export RE-RAN the two heaviest stages. Run 31751696509 ran Gate A twice
+# (50m59s + 49m44s) and py3.10 twice and hit the 120-minute job ceiling looking like
+# a hang (agent-harness#550). Chaining `export` onto `all` keeps both in one session
+# where they are one DAG node, so the artifact cannot be anything other than the
+# output of the execution that gated the run.
+JUNIT_DIR=./junit-offload
+rm -rf "$JUNIT_DIR"
+dagger -m "$MODULE" call all --source="$SOURCE" export --path="$JUNIT_DIR"
 
-# Export the junit evidence so the workflow can upload it as an artifact. The
-# two-lane plan's evidence contract has to survive the move off the hosted runner.
-dagger -m "$MODULE" call junit --source="$SOURCE" export --path=./junit-offload
+# `all`'s per-stage verdict roll-up used to be its stdout; it travels in the
+# evidence directory now, so print it to keep the job log self-describing.
+cat "$JUNIT_DIR/verdicts.txt"
