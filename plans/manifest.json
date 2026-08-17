@@ -2551,6 +2551,47 @@
             }
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-17T01:24:28Z",
+          "by": "clawdbot-agent-harness-codex",
+          "metadata": {
+            "candidate_head": "0b1317a5ba5085ae62c27811f022347f070f8107",
+            "implementation_pr": "Consiliency/agent-harness#572",
+            "merge_commit": "c86f589ba774f749c0a93ac81d10fc0704615ecd",
+            "reason": "reviewed_implementation_merged_and_exact_main_closeout_started",
+            "review_findings_issue": "Consiliency/agent-harness#573"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-08-17T01:24:28Z",
+          "by": "clawdbot-agent-harness-codex",
+          "metadata": {
+            "acceptance_criteria_satisfied": 8,
+            "acceptance_criteria_total": 8,
+            "candidate_head": "0b1317a5ba5085ae62c27811f022347f070f8107",
+            "ci_run": "https://github.com/Consiliency/agent-harness/actions/runs/31982027124",
+            "ci_suite_result": "passed_54m54s",
+            "content_tdd_receipt_sha256": "89f981bc3d78947b5b6817052f15daee266578f79e9a1efae08f2d74d1643543",
+            "exact_main_head": "c86f589ba774f749c0a93ac81d10fc0704615ecd",
+            "exact_main_tree": "60c140cf345ec6e622baf9878a244e1020a13864",
+            "implementation_pr": "Consiliency/agent-harness#572",
+            "lane_results": {
+              "sl0": "12_passed_0_skipped_0_failed",
+              "sl1": "7_passed_0_skipped_0_failed",
+              "sl2": "6_passed_0_skipped_0_failed"
+            },
+            "merge_commit": "c86f589ba774f749c0a93ac81d10fc0704615ecd",
+            "president_ruling": "PARTIALLY_AGREE_no_blocking_defects",
+            "president_ruling_sha256": "207ac5c9363916babdbcd9a16547f23b87ad5668a288265e1f28808fc70a239d",
+            "reason": "exact_canonical_main_attestation_passed",
+            "review_findings_issue": "Consiliency/agent-harness#573",
+            "scope_result": "21_changed_files_all_within_owned_union",
+            "spec_delta_closeout_sha256": "6873d68cb7828ae5fabb2c29d27e03e9c1c76e8bb23939ab50606d45c0fef7ca",
+            "verification_status": "passed"
+          },
+          "transition": "completed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -2563,10 +2604,10 @@
         "type": "phase"
       },
       "slug": "v10-PROOFGATE",
-      "status": "committed",
+      "status": "completed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-16T04:04:15Z"
+      "updated_at": "2026-08-17T01:24:28Z"
     },
     {
       "acceptance_criteria_count": null,
