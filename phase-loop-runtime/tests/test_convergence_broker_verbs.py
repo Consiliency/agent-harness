@@ -1,3 +1,4 @@
+from _fabpub_tdd_guard import fabpub_migrated_activated
 from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
 from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore
 from phase_loop_runtime.convergence.broker.verbs import BrokerService, publish_committed_branch_idempotency_key
@@ -31,6 +32,9 @@ _SUPPORTED_PCB = (
     ),
 )
 
+_CANONICAL_REPOSITORY_IDENTITY = "canonical-repository-identity"
+_ADAPTER_WORKTREE = "repo"
+
 
 class _CountingAdapter:
     def __init__(self):
@@ -53,13 +57,36 @@ def _service(tmp_path, adapter):
     )
 
 
-def _pcb_request(admission_key, *, repo="repo", branch="feat/x", head="abc123"):
+def _pcb_request(
+    admission_key, *, repo=_CANONICAL_REPOSITORY_IDENTITY, branch="feat/x", head="abc123"
+):
     admission = AdmissionRequest("attempt", 1, "fence", "digest", "predicate", "scope", admission_key)
     return BrokerRequest(BrokerVerb.PUBLISH_COMMITTED_BRANCH, admission, repo, branch, head, ("a.py",))
 
 
-def test_same_triple_twice_single_effect_and_identical_result(tmp_path):
+def test_same_triple_twice_single_effect_and_identical_result(tmp_path, request):
     adapter = _CountingAdapter()
+    if fabpub_migrated_activated(
+        request,
+        detail=(
+            "a fresh publish still accepts a finalized AdmissionRequest; FABPUB requires "
+            "PreAdmissionEnvelope plus admit_next for every fresh publish_committed_branch"
+        ),
+    ):
+        from test_convergence_live_enable import _activated_publish_fixture
+
+        # FABPUB replacement branch: canonical-triple de-dup is asserted through the
+        # envelope + transaction handoff, and the caller may not stamp an epoch.
+        _repo, root, publish = _activated_publish_fixture(
+            tmp_path, label="verbs-dedup", branch="feat/x"
+        )
+        svc = _service(root, adapter)
+        r1 = svc.execute(publish)
+        r2 = svc.execute(publish)
+        assert adapter.calls == 1, "canonical triple must de-dup: only a single effect"
+        assert r2.publish_result == r1.publish_result
+        assert r2.accepted
+        return
     svc = _service(tmp_path, adapter)
     # Same (repo, branch, head_sha) under DIFFERENT admission keys.
     r1 = svc.execute(_pcb_request("key-1"))
@@ -70,8 +97,43 @@ def test_same_triple_twice_single_effect_and_identical_result(tmp_path):
     assert r2.accepted
 
 
-def test_replay_after_complete_returns_prior_result_not_none(tmp_path):
+def test_replay_after_complete_returns_prior_result_not_none(tmp_path, request):
     adapter = _CountingAdapter()
+    if fabpub_migrated_activated(
+        request,
+        detail=(
+            "the FRESH arm of this replay still supplies a finalized AdmissionRequest, so the "
+            "mandated TypeError fires before the replay is ever reached; FABPUB requires the "
+            "fresh publish to use PreAdmissionEnvelope while terminal replay stays shape-agnostic"
+        ),
+    ):
+        from test_convergence_live_enable import _activated_publish_fixture
+
+        # Fresh publish uses the envelope; the COMPLETED terminal then replays through
+        # BOTH shapes, because replay returns before authorization and performs no
+        # admission or adapter call.
+        _repo, root, publish = _activated_publish_fixture(
+            tmp_path, label="verbs-replay", branch="feat/x"
+        )
+        svc = _service(root, adapter)
+        first = svc.execute(publish)
+        envelope_replay = svc.execute(publish)
+        finalized_replay = svc.execute(
+            _pcb_request(
+                "key-late",
+                repo=publish.repo,
+                branch=publish.branch,
+                head=publish.head_sha,
+            )
+        )
+        assert adapter.calls == 1
+        for replayed in (envelope_replay, finalized_replay):
+            assert replayed.publish_result is not None, (
+                "replay of a COMPLETED op must return the result, not None"
+            )
+            assert replayed.publish_result == first.publish_result
+            assert replayed.accepted, "idempotent recovery is accepted, not blocked"
+        return
     svc = _service(tmp_path, adapter)
     req = _pcb_request("key-1")
     first = svc.execute(req)

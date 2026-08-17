@@ -211,8 +211,20 @@ class TestPrebuiltSkipsRunLoop:
 
 
 class TestPrebuiltBrokerRouting:
-    def test_prebuilt_publish_passes_the_runtimes_broker_client(self, tmp_path: Path):
+    def test_prebuilt_publish_passes_the_runtimes_broker_client(self, tmp_path: Path, request):
         """A broker-authoritative runtime → publish_fn receives broker_client+admission."""
+        from _fabpub_tdd_guard import fabpub_migrated_activated
+
+        _fabpub = fabpub_migrated_activated(
+            request,
+            symbol=("phase_loop_runtime.train_runner", "PublishAuthorityPreimages"),
+            detail=(
+                "the prebuilt route still hands publish a finalized admission built before "
+                "the commit identity exists; FABPUB routes prebuilt publication through "
+                "PublishAuthorityPreimages plus a train-local checkpoint_root, and freezes "
+                "the supplied head as the exact expected/committed OID without rewriting it"
+            ),
+        )
         roadmap = parse_train_roadmap(PREBUILT_1NODE_MD)
         ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
         ledger = tmp_path / "ledger" / "train.ledger.jsonl"
@@ -220,11 +232,8 @@ class TestPrebuiltBrokerRouting:
 
         sentinel_broker = object()
         runtime = _make_runtime(sentinel_broker)
-        admission_sentinel = object()
 
-        result = run_train(
-            roadmap,
-            ledger,
+        common = dict(
             run_mode="autonomous",
             resolve_workspace=lambda n: ws_map[n.node_id],
             coordinator_runtime=runtime,
@@ -234,8 +243,44 @@ class TestPrebuiltBrokerRouting:
             _preflight_fn=_preflight_pass,
             _pr_is_open=_pr_is_open_false,
             _live_pr_head_sha_fn=lambda ws, br: None,
-            _admission_fn=lambda rt, node, ws, owned: admission_sentinel,
             _prebuilt_owned_paths_fn=lambda ws, base: ["src/x.py"],
+        )
+
+        if _fabpub:
+            # FABPUB replacement handoff: the prebuilt route supplies PRE-commit
+            # authority pre-images plus a train-local checkpoint_root, and NEVER a
+            # broker-legal admission built before the commit identity exists.
+            authority_sentinel = object()
+            result = run_train(
+                roadmap,
+                ledger,
+                _publish_authority_fn=lambda rt, node, ws, owned: authority_sentinel,
+                **common,
+            )
+            assert result["status"] == "completed"
+            rec = published["repo-a"]
+            assert rec["prebuilt"] is True
+            assert rec["broker_client"] is sentinel_broker
+            assert rec["publish_authority"] is authority_sentinel
+            assert "admission" not in rec, (
+                "the retired finalized handoff must not survive into the prebuilt route"
+            )
+            assert "checkpoint_root" in rec, (
+                "prebuilt publication needs its train-local transaction root"
+            )
+            # The superseded builder must be gone, so a conforming implementation
+            # cannot satisfy this node by keeping the legacy seam alive.
+            import phase_loop_runtime.train_runner as _tr
+
+            assert not hasattr(_tr, "_default_build_admission")
+            return
+
+        admission_sentinel = object()
+        result = run_train(
+            roadmap,
+            ledger,
+            _admission_fn=lambda rt, node, ws, owned: admission_sentinel,
+            **common,
         )
 
         assert result["status"] == "completed"
@@ -529,16 +574,46 @@ class TestPrebuiltPreflightRealGit:
     # path still crashed on an owned path git itself accepted. The fix swaps that
     # encode() for os.fsencode (same surrogateescape policy as os.fsdecode), so it
     # must not raise here and must produce a deterministic digest. ---
-    def test_default_build_admission_does_not_raise_on_invalid_utf8_owned_path(self, tmp_path: Path):
+    def test_default_build_admission_does_not_raise_on_invalid_utf8_owned_path(
+        self, tmp_path: Path, request
+    ):
         import os as _os
         from types import SimpleNamespace
 
-        from phase_loop_runtime.train_runner import _default_build_admission
+        from _fabpub_tdd_guard import fabpub_migrated_activated, fabpub_symbol
 
         invalid_bytes = b"invalid-\xffbyte.py"
         owned_paths = [_os.fsdecode(invalid_bytes)]
         runtime = _make_runtime(broker_client=None)
         node = SimpleNamespace(node_id="repo-a")
+
+        if fabpub_migrated_activated(
+            request,
+            symbol=("phase_loop_runtime.train_runner", "_default_build_publish_authority"),
+            detail=(
+                "this node still imports and calls _default_build_admission, which the FABPUB "
+                "handoff freeze requires to be ABSENT; the surrogate-escape owned-path digest "
+                "property moves to _default_build_publish_authority"
+            ),
+        ):
+            # plan:297 — the replacement builder preserves the surrogate-escaped
+            # owned-path digest behaviour, so the same property is asserted there.
+            build_authority = fabpub_symbol(
+                "phase_loop_runtime.train_runner", "_default_build_publish_authority"
+            )
+            authority = build_authority(runtime, node, tmp_path, owned_paths)
+            assert authority is not None
+            assert authority.owned_paths_digest
+            again = build_authority(runtime, node, tmp_path, owned_paths)
+            assert authority.owned_paths_digest == again.owned_paths_digest
+            # The superseded builder must be gone, so this node and the handoff
+            # falsifier can both be green in ONE process.
+            import phase_loop_runtime.train_runner as _tr
+
+            assert not hasattr(_tr, "_default_build_admission")
+            return
+
+        from phase_loop_runtime.train_runner import _default_build_admission
 
         # Must NOT raise UnicodeEncodeError.
         admission = _default_build_admission(runtime, node, tmp_path, owned_paths)
@@ -550,23 +625,46 @@ class TestPrebuiltPreflightRealGit:
         admission2 = _default_build_admission(runtime, node, tmp_path, owned_paths)
         assert admission.approval_digest == admission2.approval_digest
 
-    def test_default_build_admission_digest_unchanged_for_ascii_owned_paths(self, tmp_path: Path):
+    def test_default_build_admission_digest_unchanged_for_ascii_owned_paths(
+        self, tmp_path: Path, request
+    ):
         """os.fsencode(s) == s.encode('utf-8') for ordinary ASCII/UTF-8 paths, so this
         fix must not change the digest (and therefore the approval) for the normal case."""
         import hashlib
         import os as _os
         from types import SimpleNamespace
 
-        from phase_loop_runtime.train_runner import _default_build_admission
+        from _fabpub_tdd_guard import fabpub_migrated_activated, fabpub_symbol
 
         owned_paths = ["a.py", "src/pkg/mod.py"]
         runtime = _make_runtime(broker_client=None)
         node = SimpleNamespace(node_id="repo-a")
-
-        admission = _default_build_admission(runtime, node, tmp_path, owned_paths)
-
         expected_owned_digest = hashlib.sha256(_os.fsencode("\0".join(owned_paths))).hexdigest()
         assert expected_owned_digest == hashlib.sha256("\0".join(owned_paths).encode()).hexdigest()
+
+        if fabpub_migrated_activated(
+            request,
+            symbol=("phase_loop_runtime.train_runner", "_default_build_publish_authority"),
+            detail=(
+                "this node still imports and calls _default_build_admission, which the FABPUB "
+                "handoff freeze requires to be ABSENT; the ASCII owned-path digest property "
+                "moves to _default_build_publish_authority"
+            ),
+        ):
+            build_authority = fabpub_symbol(
+                "phase_loop_runtime.train_runner", "_default_build_publish_authority"
+            )
+            authority = build_authority(runtime, node, tmp_path, owned_paths)
+            # The ASCII digest is byte-identical across the handoff migration.
+            assert authority.owned_paths_digest == expected_owned_digest
+            import phase_loop_runtime.train_runner as _tr
+
+            assert not hasattr(_tr, "_default_build_admission")
+            return
+
+        from phase_loop_runtime.train_runner import _default_build_admission
+
+        admission = _default_build_admission(runtime, node, tmp_path, owned_paths)
         assert admission.approval_digest
 
 
