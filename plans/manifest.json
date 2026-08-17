@@ -1282,6 +1282,223 @@
             "fabpub_plan_contract_record_id": "v10-FABPUB.fabpub-plan-contract.v2"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-17T01:46:51Z",
+          "by": "clawdbot-agent-harness-codex",
+          "metadata": {
+            "fabpub_plan_contract_payload_sha256": "43b8c4922281614ac1135efbc3330e0eb1c19932531cd4fbfc251c034757f096",
+            "fabpub_plan_contract_rebind": {
+              "acceptance_criteria_count": 11,
+              "adapter_start_fence_nodeids_count": 1,
+              "adapter_start_fence_nodeids_sha256": "7dac57ecb3d2d22bfc4bda1ffe5f6330e9a47cee41e33c84134e743655c18497",
+              "legacy_cutover_nodeids_count": 8,
+              "legacy_cutover_nodeids_sha256": "51b89f38436c06fa7a51120140b508251a39d4a2b42671021b68af5d29e2cafe",
+              "owned_paths_count": 24,
+              "owned_paths_sha256": "93f3a95a277ee2e5d2543aed6baea4c839c55e8be32ee1264a0283e1fd829ead",
+              "plan_sha256": "a08ffb9635444d7be1598c3ee5853e7b7674e16e7d863177ba74b0db404506fe",
+              "predecessor_contract_record_id": "v10-FABPUB.fabpub-plan-contract.v2",
+              "predecessor_plan_sha256": "b593ebe1e600a59e226526ce65f85b472826e4c938b9348d409c915a9ba82720",
+              "review_status": "unreviewed_requires_exact_digest_board",
+              "review_topology": "opus_early_then_sol_grok45_gemini_critics_then_grok46_president",
+              "roadmap_sha256": "c66949236043e46e956caec1c09d0c19d0e8751e4ce2891de1fe2edf24e9fea1",
+              "shared_allocator_nodeids_count": 2,
+              "shared_allocator_nodeids_sha256": "4d2d6a3751424be367696d18abeb316c365e4e7d2028f5fdd4d3898738e2364b",
+              "test_paths_count": 12,
+              "test_paths_sha256": "c7c498a73c76364dee1d02b0ee73eb6b6fae5ed4311d135d82ed17c4fec18e51",
+              "writer_generation_fence_nodeids_count": 1,
+              "writer_generation_fence_nodeids_sha256": "22a35748a15f1109a71965f972b1662042b8779dd383c8a2f267c8b8220c72b5"
+            },
+            "fabpub_plan_contract_record_id": "v10-FABPUB.fabpub-plan-contract.v3"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-08-17T02:25:18Z",
+          "by": "clawdbot-agent-harness-codex",
+          "metadata": {
+            "fabpub_plan_contract_payload_sha256": "28c8180e19960270d890bb42476c8738e6aa4faaf122cd9563bf179eea27f48f",
+            "fabpub_plan_contract_rebind": {
+              "acceptance_criteria_count": 11,
+              "adapter_start_fence_nodeids_count": 1,
+              "adapter_start_fence_nodeids_sha256": "7dac57ecb3d2d22bfc4bda1ffe5f6330e9a47cee41e33c84134e743655c18497",
+              "legacy_cutover_nodeids_count": 8,
+              "legacy_cutover_nodeids_sha256": "51b89f38436c06fa7a51120140b508251a39d4a2b42671021b68af5d29e2cafe",
+              "owned_paths_count": 24,
+              "owned_paths_sha256": "93f3a95a277ee2e5d2543aed6baea4c839c55e8be32ee1264a0283e1fd829ead",
+              "plan_sha256": "1e57a0af9dc0bec84f8d05c432b8df5d1bf3122b1c20e3994403b7e9cd8e10b5",
+              "predecessor_contract_record_id": "v10-FABPUB.fabpub-plan-contract.v3",
+              "predecessor_critics_sha256": "49f2631ea2958e95cfdbdb38d11f99f6a9c956030b07120a8fcd25c3b17b7744",
+              "predecessor_gemini_transport_status": "inaccessible_external_context_refs_repair_requires_staged_digest_bound_copies",
+              "predecessor_opus_sha256": "66dca15eb13a65548ed3fcf3976c7f9a6820f69600b5b1e0fcdb9e389905a59a",
+              "predecessor_plan_sha256": "a08ffb9635444d7be1598c3ee5853e7b7674e16e7d863177ba74b0db404506fe",
+              "predecessor_president_decision": "REVISE",
+              "predecessor_president_sha256": "14dc74ec7e2044c8d8a3c752d55ec9248e26b6680b3102390f7464b5e9896ce1",
+              "required_prover_deviation": "operator_approved_grok46_president_supersedes_fable_for_this_run",
+              "review_status": "repaired_after_president_REVISE_requires_fresh_exact_digest_board",
+              "review_topology": "opus_early_then_sol_grok45_gemini_critics_then_grok46_president",
+              "review_transport": "digest_bound_staged_bundle_and_president_artifact_ref",
+              "roadmap_sha256": "c66949236043e46e956caec1c09d0c19d0e8751e4ce2891de1fe2edf24e9fea1",
+              "shared_allocator_nodeids_count": 2,
+              "shared_allocator_nodeids_sha256": "4d2d6a3751424be367696d18abeb316c365e4e7d2028f5fdd4d3898738e2364b",
+              "test_paths_count": 12,
+              "test_paths_sha256": "c7c498a73c76364dee1d02b0ee73eb6b6fae5ed4311d135d82ed17c4fec18e51",
+              "writer_generation_fence_nodeids_count": 1,
+              "writer_generation_fence_nodeids_sha256": "22a35748a15f1109a71965f972b1662042b8779dd383c8a2f267c8b8220c72b5"
+            },
+            "fabpub_plan_contract_record_id": "v10-FABPUB.fabpub-plan-contract.v4"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-08-17T02:56:18Z",
+          "by": "clawdbot-agent-harness-codex",
+          "metadata": {
+            "fabpub_plan_contract_payload_sha256": "d6a7ba96e68b81b69589b530608fc98b56e8a9ee8c1aae5db4ed94f7769a6c90",
+            "fabpub_plan_contract_rebind": {
+              "acceptance_criteria_count": 11,
+              "adapter_start_fence_nodeids_count": 1,
+              "adapter_start_fence_nodeids_sha256": "7dac57ecb3d2d22bfc4bda1ffe5f6330e9a47cee41e33c84134e743655c18497",
+              "legacy_cutover_nodeids_count": 8,
+              "legacy_cutover_nodeids_sha256": "51b89f38436c06fa7a51120140b508251a39d4a2b42671021b68af5d29e2cafe",
+              "owned_paths_count": 24,
+              "owned_paths_sha256": "93f3a95a277ee2e5d2543aed6baea4c839c55e8be32ee1264a0283e1fd829ead",
+              "plan_sha256": "f7ffbc3aff73c9b2ede9b96afec059d55591148d669a8113cd58cbe42231baec",
+              "predecessor_contract_record_id": "v10-FABPUB.fabpub-plan-contract.v4",
+              "predecessor_critics_sha256": "8ea9e3d399f8eeb6d186b7a07f2f0a24de38bb1ec35650b316a64aebac544d57",
+              "predecessor_opus_recovery_status": "canonical_tui_stalled_then_same_session_nudged_twice_without_verdict",
+              "predecessor_opus_sha256": "173b52ed669176037ddd5d2fd46b3c85bbd59779b5695afe6e50018e9f992c8e",
+              "predecessor_plan_sha256": "1e57a0af9dc0bec84f8d05c432b8df5d1bf3122b1c20e3994403b7e9cd8e10b5",
+              "predecessor_president_decision": "REVISE",
+              "predecessor_president_sha256": "dac9779474a89318a11ac5304d2c15cb4cabf4529a251e024d08013f9ad94e39",
+              "predecessor_substantive_blockers": [
+                "sl2_red_selector_omits_first_green_nodes",
+                "shared_adapter_start_owner_persisted_after_admission"
+              ],
+              "required_prover_deviation": "operator_approved_grok46_president_supersedes_fable_for_this_run",
+              "review_status": "repaired_after_round2_president_REVISE_requires_fresh_exact_digest_board",
+              "review_topology": "opus_early_then_sol_grok45_gemini_critics_then_grok46_president",
+              "review_transport": "digest_bound_staged_bundle_and_president_artifact_ref",
+              "roadmap_sha256": "c66949236043e46e956caec1c09d0c19d0e8751e4ce2891de1fe2edf24e9fea1",
+              "shared_allocator_nodeids_count": 2,
+              "shared_allocator_nodeids_sha256": "4d2d6a3751424be367696d18abeb316c365e4e7d2028f5fdd4d3898738e2364b",
+              "test_paths_count": 12,
+              "test_paths_sha256": "c7c498a73c76364dee1d02b0ee73eb6b6fae5ed4311d135d82ed17c4fec18e51",
+              "writer_generation_fence_nodeids_count": 1,
+              "writer_generation_fence_nodeids_sha256": "22a35748a15f1109a71965f972b1662042b8779dd383c8a2f267c8b8220c72b5"
+            },
+            "fabpub_plan_contract_record_id": "v10-FABPUB.fabpub-plan-contract.v5"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-08-17T03:20:39Z",
+          "by": "clawdbot-agent-harness-codex",
+          "metadata": {
+            "fabpub_plan_contract_payload_sha256": "bf59e6ee2b950b6a4d8707b55ca2bd96b104486d9f808c039e98e885584601b9",
+            "fabpub_plan_contract_rebind": {
+              "acceptance_criteria_count": 11,
+              "adapter_start_fence_nodeids_count": 1,
+              "adapter_start_fence_nodeids_sha256": "7dac57ecb3d2d22bfc4bda1ffe5f6330e9a47cee41e33c84134e743655c18497",
+              "legacy_cutover_nodeids_count": 8,
+              "legacy_cutover_nodeids_sha256": "51b89f38436c06fa7a51120140b508251a39d4a2b42671021b68af5d29e2cafe",
+              "owned_paths_count": 24,
+              "owned_paths_sha256": "93f3a95a277ee2e5d2543aed6baea4c839c55e8be32ee1264a0283e1fd829ead",
+              "plan_sha256": "bfd0bb313145feea6b0e21ecc02b61e49fd4df57fb204c98fcdb4424996f57b2",
+              "predecessor_contract_record_id": "v10-FABPUB.fabpub-plan-contract.v5",
+              "predecessor_critics_sha256": "7d7d3a919459ce2485dd5b6d19cff27787b26f6e89f71a6ac1c307f126d1006d",
+              "predecessor_opus_sha256": "664def68b5a416a3e66175e765eec1a292f74323761457e76072ef98e2d85d71",
+              "predecessor_plan_sha256": "f7ffbc3aff73c9b2ede9b96afec059d55591148d669a8113cd58cbe42231baec",
+              "predecessor_president_decision": "REVISE",
+              "predecessor_president_sha256": "0d2d4f0794fd69cc44d5da328113ce747dbd81c24690bfceed707570598d16cc",
+              "predecessor_substantive_blockers": [
+                "post_owner_crash_contract_requires_impossible_adapter_retry",
+                "sl2_red_selector_omits_migrated_first_green_nodes",
+                "mandatory_verification_pins_stale_manifest_record"
+              ],
+              "required_prover_deviation": "operator_approved_grok46_president_supersedes_fable_for_this_run",
+              "review_status": "repaired_after_round3_president_REVISE_requires_fresh_exact_digest_board",
+              "review_topology": "opus_early_then_sol_grok45_gemini_critics_then_grok46_president",
+              "review_transport": "digest_bound_staged_bundle_and_president_artifact_ref",
+              "roadmap_sha256": "c66949236043e46e956caec1c09d0c19d0e8751e4ce2891de1fe2edf24e9fea1",
+              "shared_allocator_nodeids_count": 2,
+              "shared_allocator_nodeids_sha256": "4d2d6a3751424be367696d18abeb316c365e4e7d2028f5fdd4d3898738e2364b",
+              "test_paths_count": 12,
+              "test_paths_sha256": "c7c498a73c76364dee1d02b0ee73eb6b6fae5ed4311d135d82ed17c4fec18e51",
+              "writer_generation_fence_nodeids_count": 1,
+              "writer_generation_fence_nodeids_sha256": "22a35748a15f1109a71965f972b1662042b8779dd383c8a2f267c8b8220c72b5"
+            },
+            "fabpub_plan_contract_record_id": "v10-FABPUB.fabpub-plan-contract.v6"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-08-17T03:48:21Z",
+          "by": "clawdbot-agent-harness-codex",
+          "metadata": {
+            "fabpub_plan_contract_payload_sha256": "5b69aa0fb943ff14e1a77464f2ecb8819ce0bf9be235628cab37ce5d1674dd25",
+            "fabpub_plan_contract_rebind": {
+              "acceptance_criteria_count": 11,
+              "adapter_start_fence_nodeids_count": 1,
+              "adapter_start_fence_nodeids_sha256": "7dac57ecb3d2d22bfc4bda1ffe5f6330e9a47cee41e33c84134e743655c18497",
+              "coordinator_override_reason": "president_deferred_frozen_direct_adapter_entry_finding_that_conflicts_with_public_effect_boundary",
+              "deferred_followup_issue": "Consiliency/agent-harness#575",
+              "legacy_cutover_nodeids_count": 8,
+              "legacy_cutover_nodeids_sha256": "51b89f38436c06fa7a51120140b508251a39d4a2b42671021b68af5d29e2cafe",
+              "owned_paths": [
+                "CHANGELOG.md",
+                "phase-loop-runtime/src/phase_loop_runtime/cli.py",
+                "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/admission.py",
+                "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/credsep.py",
+                "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/evidence.py",
+                "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/live.py",
+                "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/verbs.py",
+                "phase-loop-runtime/src/phase_loop_runtime/convergence/contracts.py",
+                "phase-loop-runtime/src/phase_loop_runtime/convergence/fencing.py",
+                "phase-loop-runtime/src/phase_loop_runtime/fabpub_capability.py",
+                "phase-loop-runtime/src/phase_loop_runtime/fabpub_tdd_chronology.py",
+                "phase-loop-runtime/src/phase_loop_runtime/publishing.py",
+                "phase-loop-runtime/src/phase_loop_runtime/train_runner.py",
+                "phase-loop-runtime/tests/_fabpub_tdd_guard.py",
+                "phase-loop-runtime/tests/test_convergence_broker_admission.py",
+                "phase-loop-runtime/tests/test_convergence_broker_credsep.py",
+                "phase-loop-runtime/tests/test_convergence_broker_revocation_race.py",
+                "phase-loop-runtime/tests/test_convergence_broker_verbs.py",
+                "phase-loop-runtime/tests/test_convergence_fencing.py",
+                "phase-loop-runtime/tests/test_convergence_live_enable.py",
+                "phase-loop-runtime/tests/test_convergence_train_integration.py",
+                "phase-loop-runtime/tests/test_fabpub_shared_epoch.py",
+                "phase-loop-runtime/tests/test_publishing.py",
+                "phase-loop-runtime/tests/test_train_prebuilt.py",
+                "phase-loop-runtime/tests/test_train_runner.py"
+              ],
+              "owned_paths_count": 25,
+              "owned_paths_sha256": "61daa359547a2672f36a27b0af21a56f5f761cf840d42efce43859b35d3677c3",
+              "plan_sha256": "629bd706e63845c9d818cd51dc70ba4ea3ec8e3fce895a87a9ce8903cb6d0659",
+              "predecessor_contract_record_id": "v10-FABPUB.fabpub-plan-contract.v6",
+              "predecessor_critics_sha256": "298814db92c0bf40b81c4ec46a2642e43519645e57046549724d7ab0e986927d",
+              "predecessor_opus_sha256": "f6997e33cb9291b14db9b80217723dad4c7296de76badd4f1e97f2ba70d7ed4f",
+              "predecessor_plan_sha256": "bfd0bb313145feea6b0e21ecc02b61e49fd4df57fb204c98fcdb4424996f57b2",
+              "predecessor_president_decision": "PROCEED",
+              "predecessor_president_sha256": "d467728822835a57462b470ac4ab5f0c493b6e83f82fe6a0bb20a44cb248365b",
+              "predecessor_substantive_blockers": [
+                "direct_github_broker_adapter_effect_entry_absent_from_owned_paths"
+              ],
+              "required_prover_deviation": "operator_approved_grok46_president_supersedes_fable_for_this_run",
+              "review_status": "coordinator_repaired_round4_frozen_boundary_conflict_requires_fresh_exact_digest_board",
+              "review_topology": "opus_early_then_sol_grok45_gemini_critics_then_grok46_president",
+              "review_transport": "digest_bound_staged_bundle_and_president_artifact_ref",
+              "roadmap_sha256": "c66949236043e46e956caec1c09d0c19d0e8751e4ce2891de1fe2edf24e9fea1",
+              "shared_allocator_nodeids_count": 2,
+              "shared_allocator_nodeids_sha256": "4d2d6a3751424be367696d18abeb316c365e4e7d2028f5fdd4d3898738e2364b",
+              "test_paths_count": 12,
+              "test_paths_sha256": "c7c498a73c76364dee1d02b0ee73eb6b6fae5ed4311d135d82ed17c4fec18e51",
+              "writer_generation_fence_nodeids_count": 1,
+              "writer_generation_fence_nodeids_sha256": "22a35748a15f1109a71965f972b1662042b8779dd383c8a2f267c8b8220c72b5"
+            },
+            "fabpub_plan_contract_record_id": "v10-FABPUB.fabpub-plan-contract.v7"
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -1297,7 +1514,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-07-30T19:20:13Z"
+      "updated_at": "2026-08-17T03:48:21Z"
     },
     {
       "acceptance_criteria_count": null,
