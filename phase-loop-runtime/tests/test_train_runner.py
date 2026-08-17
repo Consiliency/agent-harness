@@ -139,6 +139,14 @@ def _git_in(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _init_cli_git_workspaces(root: Path) -> None:
+    """Create the real Git workspaces required by the activated CLI barrier."""
+    for name in ("repo-a", "repo-b"):
+        repo = root / name
+        repo.mkdir(parents=True)
+        _git_in(repo, "init", "-q")
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 
@@ -1124,10 +1132,21 @@ class TestCLIRegistration:
 
         tmp_train = tmp_path / "smoke-train.md"
         tmp_train.write_text(TRAIN_2NODE_MD, encoding="utf-8")
+        workspace_root = tmp_path / "workspaces"
+        if _fabpub:
+            _init_cli_git_workspaces(workspace_root)
 
         with patch("phase_loop_runtime.train_runner.run_train") as mock_run_train:
             mock_run_train.return_value = {"status": "drafts_open", "nodes": {}}
-            exit_code = main(["run-train", "--train", str(tmp_train)])
+            exit_code = main(
+                [
+                    "run-train",
+                    "--train",
+                    str(tmp_train),
+                    "--workspace-root",
+                    str(workspace_root),
+                ]
+            )
 
         if _fabpub:
             # FABPUB: the coordinator root stays train-local (transaction checkpoints
@@ -1186,6 +1205,9 @@ class TestCLIRegistration:
         )
 
         shared_ledger = tmp_path / "shared-ledger"
+        workspace_root = tmp_path / "workspaces"
+        if _fabpub:
+            _init_cli_git_workspaces(workspace_root)
         roots = []
         for sub in ("a", "b"):
             directory = tmp_path / sub
@@ -1194,7 +1216,17 @@ class TestCLIRegistration:
             train.write_text(TRAIN_2NODE_MD, encoding="utf-8")
             with patch("phase_loop_runtime.train_runner.run_train") as mock_run_train:
                 mock_run_train.return_value = {"status": "drafts_open", "nodes": {}}
-                assert main(["run-train", "--train", str(train), "--ledger-dir", str(shared_ledger)]) == 0
+                assert main(
+                    [
+                        "run-train",
+                        "--train",
+                        str(train),
+                        "--ledger-dir",
+                        str(shared_ledger),
+                        "--workspace-root",
+                        str(workspace_root),
+                    ]
+                ) == 0
             roots.append(Path(mock_run_train.call_args.kwargs["coordinator_runtime"].coordinator_root))
 
         assert roots[0] != roots[1], (
