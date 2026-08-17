@@ -1499,6 +1499,40 @@
             "fabpub_plan_contract_record_id": "v10-FABPUB.fabpub-plan-contract.v7"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-17T09:13:58Z",
+          "by": "clawdbot-agent-harness-codex",
+          "metadata": {
+            "fabpub_plan_contract_payload_sha256": "ed3e8bae09b56394c6b35695f9b69120d88d62a72960f78423ecf9d5f1e7fdf9",
+            "fabpub_plan_contract_rebind": {
+              "acceptance_criteria_count": 11,
+              "adapter_start_fence_nodeids_count": 1,
+              "adapter_start_fence_nodeids_sha256": "7dac57ecb3d2d22bfc4bda1ffe5f6330e9a47cee41e33c84134e743655c18497",
+              "contract_correction": "superseded_plan_digest_was_mistyped_as_inventory_digest",
+              "legacy_cutover_nodeids_count": 8,
+              "legacy_cutover_nodeids_sha256": "51b89f38436c06fa7a51120140b508251a39d4a2b42671021b68af5d29e2cafe",
+              "owned_paths_count": 25,
+              "owned_paths_sha256": "61daa359547a2672f36a27b0af21a56f5f761cf840d42efce43859b35d3677c3",
+              "plan_sha256": "4752f97b7456b8546f34667cad86b934a4a1ad547969ea4ac284af1e29a14e3e",
+              "predecessor_contract_record_id": "v10-FABPUB.fabpub-plan-contract.v7",
+              "predecessor_inventory_derivation": "candidate_new_minus_complete_2_1_1_8_subinventories",
+              "predecessor_inventory_nodeids_count": 23,
+              "predecessor_inventory_nodeids_sha256": "f23c2edfbda40b6044c49c82636e02e0cecdffe37fc34869891fa2d1b651f366",
+              "predecessor_plan_sha256": "629bd706e63845c9d818cd51dc70ba4ea3ec8e3fce895a87a9ce8903cb6d0659",
+              "review_status": "unreviewed_requires_exact_digest_board",
+              "review_topology": "opus_early_then_sol_grok45_gemini_critics_then_grok46_president",
+              "roadmap_sha256": "c66949236043e46e956caec1c09d0c19d0e8751e4ce2891de1fe2edf24e9fea1",
+              "shared_allocator_nodeids_count": 2,
+              "shared_allocator_nodeids_sha256": "4d2d6a3751424be367696d18abeb316c365e4e7d2028f5fdd4d3898738e2364b",
+              "test_paths_count": 12,
+              "test_paths_sha256": "c7c498a73c76364dee1d02b0ee73eb6b6fae5ed4311d135d82ed17c4fec18e51",
+              "writer_generation_fence_nodeids_count": 1,
+              "writer_generation_fence_nodeids_sha256": "22a35748a15f1109a71965f972b1662042b8779dd383c8a2f267c8b8220c72b5"
+            },
+            "fabpub_plan_contract_record_id": "v10-FABPUB.fabpub-plan-contract.v8"
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -1514,7 +1548,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-17T03:48:21Z"
+      "updated_at": "2026-08-17T09:13:58Z"
     },
     {
       "acceptance_criteria_count": null,
