@@ -406,7 +406,20 @@ def _counting_store(root: Path, policy=None):
             self.allocated_epochs.append(record.epoch)
             return record
 
-    return _Counting(root, policy or (lambda _request: True))
+    kwargs = {}
+    latch_cls = fabpub_symbol(
+        "phase_loop_runtime.convergence.broker.live", "WriterGenerationLatch"
+    )
+    if latch_cls is not None:
+        latch = latch_cls.for_store_root(root)
+        if latch.exists():
+            generation = latch.read()
+            if generation.generation_state == "ACTIVE":
+                kwargs["generation_lease"] = latch.acquire(
+                    generation=generation.generation
+                )
+
+    return _Counting(root, policy or (lambda _request: True), **kwargs)
 
 
 def _service(root: Path, adapter, *, store=None, verbs=("publish_committed_branch",)):
