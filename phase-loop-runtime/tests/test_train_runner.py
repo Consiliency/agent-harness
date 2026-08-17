@@ -1097,7 +1097,7 @@ class TestCLIRegistration:
             f"call kwargs: {call_kwargs}"
         )
 
-    def test_cli_main_run_train_wires_a_routing_broker(self, tmp_path: Path):
+    def test_cli_main_run_train_wires_a_routing_broker(self, tmp_path: Path, request):
         """run-train must pass a broker-authoritative coordinator_runtime (routing broker).
 
         Without a broker_client, publish_from_worktree fail-closes `broker_required`
@@ -1105,7 +1105,22 @@ class TestCLIRegistration:
         surfaced (agent-harness#205/#206). The runtime must carry a routing broker
         (one client serving every repo) whose durable state lives OUTSIDE any repo.
         """
+        from _fabpub_tdd_guard import fabpub_migrated_activated
         from phase_loop_runtime.cli import main
+
+        _fabpub = fabpub_migrated_activated(
+            request,
+            symbol=(
+                "phase_loop_runtime.convergence.broker.live",
+                "repository_broker_namespace",
+            ),
+            detail=(
+                "the CLI still selects the allocator root from the train-path hash under "
+                "--ledger-dir; FABPUB keeps <ledger-dir>/broker/<train-key> ONLY as the "
+                "train-local coordinator/transaction root and calls the production routing "
+                "builder with no allocator-root argument"
+            ),
+        )
 
         tmp_train = tmp_path / "smoke-train.md"
         tmp_train.write_text(TRAIN_2NODE_MD, encoding="utf-8")
@@ -1113,6 +1128,19 @@ class TestCLIRegistration:
         with patch("phase_loop_runtime.train_runner.run_train") as mock_run_train:
             mock_run_train.return_value = {"status": "drafts_open", "nodes": {}}
             exit_code = main(["run-train", "--train", str(tmp_train)])
+
+        if _fabpub:
+            # FABPUB: the coordinator root stays train-local (transaction checkpoints
+            # only) and the allocator namespace is NOT selected by the caller.
+            runtime = mock_run_train.call_args.kwargs.get("coordinator_runtime")
+            assert exit_code == 0
+            assert runtime is not None and runtime.broker_client is not None
+            coord = Path(runtime.coordinator_root)
+            assert coord.parent == tmp_path / ".train-ledger" / "broker"
+            assert not (coord / "admissions.jsonl").exists(), (
+                "no admission row may live under the train-local coordinator root"
+            )
+            return
 
         assert exit_code == 0, f"Expected exit 0; got {exit_code}"
         runtime = mock_run_train.call_args.kwargs.get("coordinator_runtime")
@@ -1134,13 +1162,28 @@ class TestCLIRegistration:
         expected = hashlib.sha256(str(tmp_train.resolve()).encode("utf-8")).hexdigest()[:16]
         assert coord.name == expected
 
-    def test_cli_same_stem_trains_get_distinct_broker_roots(self, tmp_path: Path):
+    def test_cli_same_stem_trains_get_distinct_broker_roots(self, tmp_path: Path, request):
         """Two same-stemmed roadmaps sharing an explicit --ledger-dir must get DISTINCT
         broker roots. Otherwise one train's PERMANENT ambiguous epoch (durable in
         evidence.jsonl) fail-closes the other — the exact cross-train poison the
         per-repo/per-train isolation set out to prevent (agent-harness#208 re-CR).
         """
+        from _fabpub_tdd_guard import fabpub_migrated_activated
         from phase_loop_runtime.cli import main
+
+        _fabpub = fabpub_migrated_activated(
+            request,
+            symbol=(
+                "phase_loop_runtime.convergence.broker.live",
+                "repository_broker_namespace",
+            ),
+            detail=(
+                "this node still documents PER-TRAIN broker isolation; after FABPUB the "
+                "coordinator/transaction roots stay distinct per train while the ALLOCATOR "
+                "namespace is repository-scoped, so ambiguity blast radius is the canonical "
+                "repository rather than the train"
+            ),
+        )
 
         shared_ledger = tmp_path / "shared-ledger"
         roots = []
@@ -1155,8 +1198,18 @@ class TestCLIRegistration:
             roots.append(Path(mock_run_train.call_args.kwargs["coordinator_runtime"].coordinator_root))
 
         assert roots[0] != roots[1], (
-            "same-stem trains sharing a ledger dir must NOT share a broker root (epoch poison)"
+            "same-stem trains sharing a ledger dir must NOT share a coordinator/transaction "
+            "root (train-local checkpoint collision)"
         )
+        if _fabpub:
+            from phase_loop_runtime.convergence.broker.live import repository_broker_namespace
+
+            # The ratified repository-wide allocator: distinct train-local roots, ONE
+            # allocator namespace per canonical repository.
+            assert not any((Path(r) / "admissions.jsonl").exists() for r in roots), (
+                "allocator state may not live under a train-derived coordinator root"
+            )
+            assert callable(repository_broker_namespace)
 
 
 # ---------------------------------------------------------------------------
@@ -2717,3 +2770,639 @@ class TestMultiPhaseNodeGuard:
             f"blocked reason should mention the non-green phase state; "
             f"got {result['detail'].get('reason')!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# FABPUB (v10) — default-`run_train` post-commit crash recovery.
+#
+# The live crash hole: `publish_from_worktree` commits and THEN enters the
+# broker.  A crash in that gap leaves a CLEAN worktree, so the next normal call
+# exits at `nothing_staged` and never reaches `BrokerService.execute`.  Under
+# object-first construction the pre-CAS arm leaves the transaction-owned tree
+# STAGED, so today's unconditional clean gate returns `preflight_failed` and the
+# execute path would rerun `run_loop` before publishing.
+#
+# This is the sole FABPUB_RUN_TRAIN_RECOVERY_NODEIDS entry.  Per
+# Consiliency/agent-harness#578 F1 it drives the REAL `run_train` with its
+# production `_preflight_fn`, `_run_loop`, and `_publish` defaults selected —
+# no empty preflight, no direct publisher call, no manual cleanup — and asserts
+# ordering anchors PRODUCTION recorded, not constants the test wrote.
+# ---------------------------------------------------------------------------
+
+import hashlib as _fabpub_hashlib  # noqa: E402
+import json as _fabpub_json  # noqa: E402
+import subprocess as _fabpub_subprocess  # noqa: E402
+
+from _fabpub_tdd_guard import (  # noqa: E402
+    FABPUB_SKIP_REASON,
+    fabpub_capability_active,
+    fabpub_require,
+    fabpub_symbol,
+    fabpub_this_nodeid,
+)
+
+FABPUB_CRASH_ANCHORS = (
+    "after_commit_object_checkpoint_before_ref_cas",
+    "after_git_commit_success_before_committed_checkpoint",
+    "after_committed_checkpoint_before_broker_execute",
+    "after_broker_intent_before_adapter_started",
+)
+
+FABPUB_ORDERING_ANCHORS = (
+    "before_default_clean_preflight_transaction_probe",
+    "before_run_loop_publish_transaction_resume",
+    "after_terminal_publish_before_unqualified_clean_recheck",
+)
+
+_FABPUB_TRAIN_MD = """\
+# Release Train: fabpub-resume
+
+## Nodes
+
+### Node: repo-a / specs/plan.md
+
+**Depends on:** (none)
+**Channel:** (none)
+"""
+
+
+def _fabpub_git(repo: Path, *args: str) -> str:
+    completed = _fabpub_subprocess.run(
+        ["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=60
+    )
+    if completed.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args)} failed: {completed.stderr.strip()}")
+    return completed.stdout.strip()
+
+
+def _fabpub_repo(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    _fabpub_subprocess.run(["git", "init", "-q", "-b", "main", str(path)], check=True, timeout=60)
+    _fabpub_git(path, "config", "user.email", "fabpub@example.invalid")
+    _fabpub_git(path, "config", "user.name", "FABPUB Test")
+    _fabpub_git(path, "config", "commit.gpgsign", "false")
+    (path / "seed.txt").write_text("seed\n", encoding="utf-8")
+    _fabpub_git(path, "add", "seed.txt")
+    _fabpub_git(path, "commit", "-q", "-m", "seed")
+    origin = path.parent / f"{path.name}-origin.git"
+    _fabpub_subprocess.run(
+        ["git", "init", "-q", "--bare", str(origin)], check=True, timeout=60
+    )
+    _fabpub_git(path, "remote", "add", "origin", str(origin))
+    _fabpub_git(path, "push", "-q", "-u", "origin", "main")
+    _fabpub_git(path, "checkout", "-q", "-b", "feat/fabpub")
+    return path
+
+
+@pytest.mark.skipif(not fabpub_capability_active(), reason=FABPUB_SKIP_REASON)
+def test_fabpub_train_resume_post_commit_pre_checkpoint(tmp_path: Path, request):
+    """Default production `run_train` recovers an exact pre-ref/post-ref transaction."""
+    nodeid = fabpub_this_nodeid(request)
+    inspect = fabpub_symbol("phase_loop_runtime.publishing", "inspect_publish_resume_candidate")
+    validate_workspace = fabpub_symbol(
+        "phase_loop_runtime.publishing", "validate_transaction_owned_workspace"
+    )
+    prepare = fabpub_symbol("phase_loop_runtime.publishing", "prepare_publish_transaction")
+    ordering = fabpub_symbol("phase_loop_runtime.train_runner", "FABPUB_RESUME_ORDERING_ANCHORS")
+    # `crash_after` is the production kill-point seam the four mandated arms drive;
+    # probing it here keeps this node's RED failure at its own anchor rather than an
+    # AttributeError deep inside arm 2.
+    crash_after = fabpub_symbol("phase_loop_runtime.publishing", "crash_after")
+    fabpub_require(
+        nodeid,
+        inspect is not None
+        and validate_workspace is not None
+        and prepare is not None
+        and ordering is not None
+        and crash_after is not None,
+        "inspect_publish_resume_candidate / validate_transaction_owned_workspace / "
+        "prepare_publish_transaction / FABPUB_RESUME_ORDERING_ANCHORS / crash_after are absent; "
+        "a post-commit crash still exits at nothing_staged (clean tree) or preflight_failed "
+        "(staged transaction-owned tree), and default run_train never resumes publication "
+        "before upstream injection or run_loop across the four frozen kill points",
+    )
+
+    from types import SimpleNamespace
+
+    import phase_loop_runtime.publishing as publishing
+    import phase_loop_runtime.train_runner as train_runner
+    from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore
+    from phase_loop_runtime.convergence.contracts import PreAdmissionEnvelope
+    from phase_loop_runtime.train_ledger import read_ledger
+    from phase_loop_runtime.train_roadmap import parse_train_roadmap
+
+    # The four crash anchors and the three production ordering anchors are frozen
+    # BEFORE any production change: deleting or reordering the probe, the resume,
+    # or the post-terminal clean reconciliation must kill this node.
+    assert tuple(ordering) == FABPUB_ORDERING_ANCHORS
+    assert tuple(publishing.FABPUB_CRASH_ANCHORS) == FABPUB_CRASH_ANCHORS
+
+    # There is no CLI/env allow_dirty escape hatch and no injected empty preflight.
+    assert not hasattr(train_runner, "allow_dirty")
+    assert "allow_dirty" not in train_runner.run_train.__code__.co_varnames
+
+    workspace = _fabpub_repo(tmp_path / "repo-a")
+    (workspace / "specs").mkdir(exist_ok=True)
+    (workspace / "specs" / "plan.md").write_text("# plan\n", encoding="utf-8")
+    _fabpub_git(workspace, "add", "specs/plan.md")
+    _fabpub_git(workspace, "commit", "-q", "-m", "plan")
+
+    roadmap = parse_train_roadmap(_FABPUB_TRAIN_MD)
+    ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+    coordinator_root = tmp_path / "coordinator"
+    broker_root = tmp_path / "broker"
+
+    # ------------------------------------------------------------------
+    # All four mandated arms enter through PRODUCTION-DEFAULT execute-mode
+    # `run_train` (plan:223/:296).  The seed enters the real publisher through
+    # `run_train` with default `_preflight_fn` and default `_publish`; every
+    # RESTART additionally selects the default `_run_loop`, so no empty preflight,
+    # direct publisher call, prebuilt substitution, or manual clean-up is used.
+    # `_pr_is_open` / `_live_pr_head_sha_fn` are remote reads, not the three seams
+    # the plan pins, and are the only stubs a restart supplies.
+    # ------------------------------------------------------------------
+    def _seed_owned_change(repo: Path, text: str) -> None:
+        (repo / "owned.py").write_text(text, encoding="utf-8")
+
+    def _seed_run(anchor: str, *, ledger_path: Path, workspace_path: Path, runtime_obj):
+        """Enter the REAL publisher through run_train and die at `anchor`."""
+        def _seed_run_loop(*_args, **_kwargs):
+            _seed_owned_change(workspace_path, "x = 1\n")
+            return SimpleNamespace(phase_owned_dirty_paths=["owned.py"], phases={}), []
+
+        with publishing.crash_after(anchor):
+            with pytest.raises(Exception):
+                train_runner.run_train(
+                    roadmap,
+                    ledger_path,
+                    run_mode="autonomous",
+                    resolve_workspace=lambda _n: workspace_path,
+                    coordinator_runtime=runtime_obj,
+                    # seed-only: author the owned change after production preflight;
+                    # preflight and the publisher stay at their production defaults.
+                    _run_loop=_seed_run_loop,
+                    _pr_is_open=lambda ws, br: False,
+                    _live_pr_head_sha_fn=lambda ws, br: None,
+                )
+
+    def _default_restart(*, ledger_path: Path, workspace_path: Path, runtime_obj):
+        """Restart with production preflight, run_loop and publisher defaults."""
+        return train_runner.run_train(
+            roadmap,
+            ledger_path,
+            run_mode="autonomous",
+            resolve_workspace=lambda _n: workspace_path,
+            coordinator_runtime=runtime_obj,
+            _pr_is_open=lambda ws, br: False,
+            _live_pr_head_sha_fn=lambda ws, br: None,
+        )
+
+    def _author_work_marker(repo: Path) -> bool:
+        """True when the DEFAULT run_loop actually launched author work.
+
+        Recovery must precede `run_loop`, so after a successful resume the node's
+        per-repo phase-loop state must not exist.
+        """
+        return (repo / ".phase-loop").exists()
+
+    manifest_cls = fabpub_symbol(
+        "phase_loop_runtime.convergence.broker.live", "LegacyBrokerCutoverManifest"
+    )
+    run_cutover = fabpub_symbol(
+        "phase_loop_runtime.convergence.broker.live", "run_legacy_broker_cutover"
+    )
+    canonical_identity = fabpub_symbol(
+        "phase_loop_runtime.convergence.broker.live", "canonical_repository_identity"
+    )
+    canonical_namespace = fabpub_symbol(
+        "phase_loop_runtime.convergence.broker.live", "repository_broker_namespace"
+    )
+    routing_builder = fabpub_symbol(
+        "phase_loop_runtime.convergence.broker.live", "build_routing_broker_client"
+    )
+    fabpub_require(
+        nodeid,
+        all(
+            symbol is not None
+            for symbol in (
+                manifest_cls, run_cutover, canonical_identity,
+                canonical_namespace, routing_builder,
+            )
+        ),
+        "the canonical cutover transaction, repository identity/namespace, and rootless "
+        "routing builder are absent; run_train recovery can still publish through a "
+        "caller-selected broker root instead of the ACTIVE repository generation",
+    )
+
+    def _activate_zero_history(repo: Path, label: str):
+        """Activate the real canonical partition from an empty legacy leaf."""
+        ledger_dir = tmp_path / f"legacy-{label}"
+        train_path = tmp_path / f"legacy-train-{label}.md"
+        train_path.write_text(_FABPUB_TRAIN_MD, encoding="utf-8")
+        serialized = str(repo)
+        train_key = _fabpub_hashlib.sha256(
+            str(train_path.resolve()).encode("utf-8")
+        ).hexdigest()[:16]
+        repo_key = _fabpub_hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:16]
+        legacy_leaf = ledger_dir / "broker" / train_key / repo_key
+        legacy_leaf.mkdir(parents=True)
+        (legacy_leaf / "admissions.jsonl").write_text("", encoding="utf-8")
+        row = {
+            "legacy_root": str(ledger_dir / "broker"),
+            "serialized_repository": serialized,
+            "serialized_repository_bytes_sha256": _fabpub_hashlib.sha256(
+                serialized.encode("utf-8")
+            ).hexdigest(),
+            "invocation_working_directory": str(tmp_path),
+            "resolution_mode": "absolute",
+            "resolved_train_path": str(train_path.resolve()),
+            "expected_train_key": train_key,
+            "expected_repo_key": repo_key,
+            "expected_worktree": str(repo),
+        }
+        cutover = run_cutover(
+            manifest_cls(cutover_id=f"fabpub-train-resume-{label}", rows=(row,))
+        )
+        assert cutover.state == "ARMED"
+        receipt = cutover.receipt_for(repo)
+        assert receipt.legacy_epoch_high_water == 0
+        cutover.activate()
+        assert cutover.state == "ACTIVE"
+        identity = canonical_identity(repo)
+        namespace = Path(canonical_namespace(repo))
+        assert namespace != ledger_dir / "broker"
+        assert list(namespace.glob("partition-receipt*.json")), (
+            "ACTIVE must retain the digest-bound partition receipt"
+        )
+        return identity, namespace
+
+    provider_pushes: dict[str, int] = {}
+    provider_calls: dict[str, int] = {}
+
+    def _provider_run(cmd, **kwargs):
+        """Stub only remote provider effects; local git reads stay authentic."""
+        if cmd[0] == "git":
+            repo = Path(cmd[2])
+            sub = cmd[3:]
+            if sub[:2] == ["remote", "get-url"]:
+                return _fabpub_subprocess.CompletedProcess(
+                    cmd, 0, stdout="https://github.com/Consiliency/agent-harness.git\n", stderr=""
+                )
+            if sub[0] == "push":
+                key = str(repo)
+                provider_pushes[key] = provider_pushes.get(key, 0) + 1
+                return _fabpub_subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if sub[0] == "ls-remote":
+                head = _fabpub_git(repo, "rev-parse", "HEAD")
+                branch = _fabpub_git(repo, "branch", "--show-current")
+                return _fabpub_subprocess.CompletedProcess(
+                    cmd, 0, stdout=f"{head}\trefs/heads/{branch}\n", stderr=""
+                )
+            return _fabpub_subprocess.run(cmd, **kwargs)
+        if cmd[:3] == ["gh", "pr", "create"]:
+            repo = str(Path(kwargs["cwd"]))
+            provider_calls[repo] = provider_calls.get(repo, 0) + 1
+            return _fabpub_subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+        if cmd[:3] == ["gh", "pr", "list"]:
+            repo = Path(kwargs["cwd"])
+            head = _fabpub_git(repo, "rev-parse", "HEAD")
+            branch = _fabpub_git(repo, "branch", "--show-current")
+            body = _fabpub_json.dumps(
+                [{"headRefOid": head, "url": "https://gh/pr/1", "baseRefName": "main"}]
+            )
+            assert "--head" in cmd and cmd[cmd.index("--head") + 1] == branch
+            return _fabpub_subprocess.CompletedProcess(cmd, 0, stdout=body, stderr="")
+        raise AssertionError(f"unexpected provider command: {cmd}")
+
+    def _admissions(namespace: Path) -> list[dict]:
+        path = namespace / "admissions.jsonl"
+        return [
+            _fabpub_json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ] if path.exists() else []
+
+    injected_root = tmp_path / "forbidden-injected-broker-root"
+    with pytest.raises((TypeError, ValueError, PermissionError)):
+        routing_builder(broker_root=injected_root, run=_provider_run)
+    assert not injected_root.exists(), "a refused allocator-root injection creates no state"
+
+    arms = {}
+    for index, anchor in enumerate(FABPUB_CRASH_ANCHORS):
+        arm_ws = _fabpub_repo(tmp_path / f"repo-arm{index}")
+        (arm_ws / "specs").mkdir(exist_ok=True)
+        (arm_ws / "specs" / "plan.md").write_text("# plan\n", encoding="utf-8")
+        _fabpub_git(arm_ws, "add", "specs/plan.md")
+        _fabpub_git(arm_ws, "commit", "-q", "-m", "plan")
+        arm_identity, arm_namespace = _activate_zero_history(arm_ws, f"arm{index}")
+        arm_broker = routing_builder(run=_provider_run)
+        arm_runtime = train_runner.CoordinatorRuntime(
+            "train", tmp_path / f"coordinator-arm{index}", "train.md", "digest", "workspace",
+            broker_client=arm_broker,
+        )
+        arm_ledger = tmp_path / f"ledger-arm{index}" / "train.ledger.jsonl"
+
+        _seed_run(anchor, ledger_path=arm_ledger, workspace_path=arm_ws, runtime_obj=arm_runtime)
+        arms[anchor] = {
+            "workspace": arm_ws, "ledger": arm_ledger, "runtime": arm_runtime,
+            "identity": arm_identity, "namespace": arm_namespace,
+        }
+
+    # ---- arm 1: `after_commit_object_checkpoint_before_ref_cas` --------------
+    arm = arms[FABPUB_CRASH_ANCHORS[0]]
+    ws = arm["workspace"]
+    parent = _fabpub_git(ws, "rev-parse", "refs/heads/feat/fabpub")
+    assert _fabpub_git(ws, "diff", "--cached", "--name-only") == "owned.py", (
+        "the transaction-owned tree is still STAGED at the pre-CAS arm"
+    )
+    result = _default_restart(ledger_path=arm["ledger"], workspace_path=ws, runtime_obj=arm["runtime"])
+    assert result["status"] not in ("preflight_failed",), (
+        f"the staged transaction-owned tree must be admitted before the clean gate; got {result}"
+    )
+    assert _fabpub_git(ws, "rev-parse", "refs/heads/feat/fabpub") != parent, (
+        "recovery must complete the exact CAS"
+    )
+    assert not _author_work_marker(ws), "recovery must precede default run_loop author work"
+    assert provider_pushes[str(ws)] == provider_calls[str(ws)] == 1
+    assert len(_admissions(arm["namespace"])) == 1
+    assert _fabpub_git(ws, "status", "--short") == "", (
+        "the post-terminal unqualified clean re-check must find a reconciled tree"
+    )
+    assert read_ledger(arm["ledger"])["repo-a"].status in ("pr_open", "merged")
+    # A second default restart is a faithful, side-effect-free replay.
+    before = (provider_pushes[str(ws)], provider_calls[str(ws)])
+    _default_restart(ledger_path=arm["ledger"], workspace_path=ws, runtime_obj=arm["runtime"])
+    assert (provider_pushes[str(ws)], provider_calls[str(ws)]) == before
+    assert len(_admissions(arm["namespace"])) == 1
+
+    # ---- arm 2: `after_git_commit_success_before_committed_checkpoint` -------
+    arm = arms[FABPUB_CRASH_ANCHORS[1]]
+    ws = arm["workspace"]
+    commits_before = _fabpub_git(ws, "rev-list", "--count", "feat/fabpub")
+    head_after_cas = _fabpub_git(ws, "rev-parse", "refs/heads/feat/fabpub")
+    result = _default_restart(ledger_path=arm["ledger"], workspace_path=ws, runtime_obj=arm["runtime"])
+    assert result["status"] not in ("preflight_failed",), result
+    assert _fabpub_git(ws, "rev-parse", "refs/heads/feat/fabpub") == head_after_cas, (
+        "the post-CAS arm advances on the EXACT expected OID; it never re-commits"
+    )
+    assert _fabpub_git(ws, "rev-list", "--count", "feat/fabpub") == commits_before
+    assert not _author_work_marker(ws), "the post-CAS arm must skip run_loop author work"
+    assert provider_pushes[str(ws)] == provider_calls[str(ws)] == 1
+    assert len(_admissions(arm["namespace"])) == 1
+
+    # ---- arm 3: `after_committed_checkpoint_before_broker_execute` -----------
+    arm = arms[FABPUB_CRASH_ANCHORS[2]]
+    ws = arm["workspace"]
+    assert provider_pushes.get(str(ws), 0) == provider_calls.get(str(ws), 0) == 0, (
+        "the pre-owner kill lands before the provider effect"
+    )
+    for _ in range(3):  # idempotent under repeated default restarts
+        result = _default_restart(
+            ledger_path=arm["ledger"], workspace_path=ws, runtime_obj=arm["runtime"]
+        )
+        assert result["status"] in ("completed", "drafts_open"), result
+    assert provider_pushes[str(ws)] == provider_calls[str(ws)] == 1, (
+        "the pre-owner arm executes each provider mutation exactly ONCE total"
+    )
+    assert len(_admissions(arm["namespace"])) == 1, "exactly one canonical-store admission"
+    assert not _author_work_marker(ws)
+    assert _fabpub_git(ws, "status", "--short") == ""
+    assert read_ledger(arm["ledger"])["repo-a"].status in ("pr_open", "merged")
+
+    # ---- arm 4: post-owner `after_broker_intent_before_adapter_started` ------
+    arm = arms[FABPUB_CRASH_ANCHORS[3]]
+    ws = arm["workspace"]
+    durable_admissions = len(_admissions(arm["namespace"]))
+    assert durable_admissions == 1, "the owner's admission is already durable at this kill point"
+    assert provider_pushes.get(str(ws), 0) == provider_calls.get(str(ws), 0) == 0, (
+        "the kill lands before adapter entry"
+    )
+    recovered = _default_restart(
+        ledger_path=arm["ledger"], workspace_path=ws, runtime_obj=arm["runtime"]
+    )
+    assert recovered["status"] in ("blocked", "preflight_failed"), recovered
+    assert len(_admissions(arm["namespace"])) == durable_admissions, "recovery appends NO new admission"
+    assert provider_pushes.get(str(ws), 0) == provider_calls.get(str(ws), 0) == 0, (
+        "the adapter is never retried after an unsealed owner"
+    )
+    assert any(
+        record.state.value == "outcome_ambiguous_blocked"
+        for record in BrokerEvidenceStore(arm["namespace"]).replay().values()
+    ), "recovery must promote the unsealed owner to PERMANENT ambiguity"
+    assert read_ledger(arm["ledger"]).get("repo-a") is None or (
+        read_ledger(arm["ledger"])["repo-a"].status != "pr_open"
+    ), "a post-owner kill records no pr_open"
+
+    # A competing DIFFERENT-head train is blocked with zero admission/effect.
+    _fabpub_git(ws, "checkout", "-q", "-b", "feat/competing")
+    (ws / "other.py").write_text("q = 9\n", encoding="utf-8")
+    _fabpub_git(ws, "add", "other.py")
+    _fabpub_git(ws, "commit", "-q", "-m", "competing head")
+    competing = _default_restart(
+        ledger_path=tmp_path / "ledger-competing" / "train.ledger.jsonl",
+        workspace_path=ws, runtime_obj=arm["runtime"],
+    )
+    assert competing["status"] in ("blocked", "preflight_failed"), competing
+    assert len(_admissions(arm["namespace"])) == durable_admissions, "zero competing admissions"
+    assert provider_pushes.get(str(ws), 0) == provider_calls.get(str(ws), 0) == 0, (
+        "zero competing provider effects"
+    )
+
+    # ---- ordinary unrelated dirt with NO transaction still fails closed ------
+    other = _fabpub_repo(tmp_path / "repo-dirty")
+    _activate_zero_history(other, "dirty")
+    (other / "dirt.txt").write_text("dirt\n", encoding="utf-8")
+    dirty_result = _default_restart(
+        ledger_path=tmp_path / "ledger-dirty" / "train.ledger.jsonl",
+        workspace_path=other, runtime_obj=arms[FABPUB_CRASH_ANCHORS[0]]["runtime"],
+    )
+    assert dirty_result["status"] == "preflight_failed", (
+        "unrelated dirt with no transaction must keep the existing preflight_failed behavior"
+    )
+
+    # ---- arm 4: negative table — each perturbation blocks at its frozen boundary,
+    # with zero PR, admission, adapter, injection, and author work.
+    negative_workspace = arms[FABPUB_CRASH_ANCHORS[0]]["workspace"]
+    negative_namespace = arms[FABPUB_CRASH_ANCHORS[0]]["namespace"]
+    negative_parent = _fabpub_git(negative_workspace, "rev-parse", "refs/heads/feat/fabpub^")
+    seeded_candidate = inspect(
+        negative_workspace,
+        checkpoint_root=arms[FABPUB_CRASH_ANCHORS[0]]["runtime"].coordinator_root,
+        node_id="repo-a",
+    )
+    seeded_checkpoint = _fabpub_json.loads(
+        seeded_candidate.checkpoint_path.read_text(encoding="utf-8")
+    )
+    negative_authority_preimage = seeded_checkpoint["envelope_authority_preimage"]
+    assert negative_authority_preimage["train_id"] == "train"
+    assert negative_authority_preimage["node_id"] == "repo-a"
+    assert negative_authority_preimage["action"] == "publish_committed_branch"
+
+    def _fresh_pre_cas_transaction(repo: Path, root: Path):
+        """Re-seed the pre-CAS arm through PRODUCTION, then perturb it."""
+        _fabpub_git(repo, "checkout", "-q", "feat/fabpub")
+        _fabpub_git(repo, "reset", "-q", "--hard", negative_parent)
+        _fabpub_git(repo, "clean", "-qfd")
+        (repo / "owned.py").write_text("x = 1\n", encoding="utf-8")
+        _fabpub_git(repo, "add", "owned.py")
+        return prepare(
+            repo,
+            owned_paths=("owned.py",),
+            checkpoint_root=root,
+            branch="feat/fabpub",
+            envelope_authority_preimage=negative_authority_preimage,
+        )
+
+    def _extra_staged_path(repo: Path, _txn):
+        (repo / "extra.py").write_text("extra = 1\n", encoding="utf-8")
+        _fabpub_git(repo, "add", "extra.py")
+
+    def _altered_staged_byte(repo: Path, _txn):
+        (repo / "owned.py").write_text("x = 2\n", encoding="utf-8")
+        _fabpub_git(repo, "add", "owned.py")
+
+    def _removed_staged_path(repo: Path, _txn):
+        _fabpub_git(repo, "restore", "--staged", "owned.py")
+
+    def _unstaged_dirt(repo: Path, _txn):
+        (repo / "owned.py").write_text("x = 1  # drift\n", encoding="utf-8")
+
+    def _untracked_path(repo: Path, _txn):
+        (repo / "untracked.txt").write_text("dirt\n", encoding="utf-8")
+
+    def _corrupt_expected_digest(repo: Path, txn):
+        payload = _fabpub_json.loads(txn.checkpoint_path.read_text(encoding="utf-8"))
+        payload["final_commit_object_sha256"] = "0" * 64
+        txn.checkpoint_path.write_text(_fabpub_json.dumps(payload, sort_keys=True), encoding="utf-8")
+
+    def _detached_ref(repo: Path, _txn):
+        _fabpub_git(repo, "checkout", "-q", "--detach", negative_parent)
+
+    def _alternate_oid(repo: Path, txn):
+        alternate = _fabpub_git(
+            repo, "-c", "user.name=Other", "-c", "user.email=other@example.invalid",
+            "commit-tree", txn.tree_oid, "-p", negative_parent, "-m",
+            txn.final_commit_message_bytes.decode("utf-8"),
+        )
+        _fabpub_git(
+            repo, "update-ref", "refs/heads/feat/fabpub", alternate, negative_parent
+        )
+
+    def _tombstoned(repo: Path, txn):
+        txn.abandon()
+
+    def _checkpoint_root_mismatch(repo: Path, txn):
+        payload = _fabpub_json.loads(txn.checkpoint_path.read_text(encoding="utf-8"))
+        payload["checkpoint_root"] = str(txn.checkpoint_root.parent / "other-root")
+        txn.checkpoint_path.write_text(_fabpub_json.dumps(payload, sort_keys=True), encoding="utf-8")
+
+    def _node_mismatch(repo: Path, txn):
+        payload = _fabpub_json.loads(txn.checkpoint_path.read_text(encoding="utf-8"))
+        payload["node_id"] = "other-node"
+        txn.checkpoint_path.write_text(_fabpub_json.dumps(payload, sort_keys=True), encoding="utf-8")
+
+    def _repository_mismatch(repo: Path, txn):
+        payload = _fabpub_json.loads(txn.checkpoint_path.read_text(encoding="utf-8"))
+        payload["repository"] = "other-canonical-repository-identity"
+        txn.checkpoint_path.write_text(_fabpub_json.dumps(payload, sort_keys=True), encoding="utf-8")
+
+    def _missing_checkpoint_with_dirt(repo: Path, txn):
+        txn.checkpoint_path.unlink()
+
+    negatives = (
+        ("extra_staged_path", _extra_staged_path),
+        ("altered_staged_byte", _altered_staged_byte),
+        ("removed_staged_path", _removed_staged_path),
+        ("unstaged_dirt", _unstaged_dirt),
+        ("untracked_path", _untracked_path),
+        ("corrupt_expected_object_digest", _corrupt_expected_digest),
+        ("detached_symbolic_ref", _detached_ref),
+        ("alternate_same_semantic_oid", _alternate_oid),
+        ("non_authorizing_tombstone", _tombstoned),
+        ("checkpoint_root_mismatch", _checkpoint_root_mismatch),
+        ("node_mismatch", _node_mismatch),
+        ("repository_mismatch", _repository_mismatch),
+        ("missing_checkpoint_with_dirt", _missing_checkpoint_with_dirt),
+    )
+    checkpoint_bound_labels = {
+        "corrupt_expected_object_digest",
+        "detached_symbolic_ref",
+        "alternate_same_semantic_oid",
+        "non_authorizing_tombstone",
+        "checkpoint_root_mismatch",
+        "node_mismatch",
+        "repository_mismatch",
+    }
+
+    for label, perturb in negatives:
+        negative_root = tmp_path / "negatives" / label
+        negative_runtime = train_runner.CoordinatorRuntime(
+            "train",
+            negative_root,
+            "train.md",
+            "digest",
+            "workspace",
+            broker_client=arms[FABPUB_CRASH_ANCHORS[0]]["runtime"].broker_client,
+        )
+        txn = _fresh_pre_cas_transaction(negative_workspace, negative_root)
+        assert txn.checkpoint_path.is_relative_to(negative_runtime.coordinator_root), (
+            f"{label}: the falsifier checkpoint must live under the runtime discovery root"
+        )
+        perturb(negative_workspace, txn)
+
+        adapter_before = (
+            provider_pushes.get(str(negative_workspace), 0),
+            provider_calls.get(str(negative_workspace), 0),
+        )
+        admissions_before = len(_admissions(negative_namespace))
+        negative_ledger = tmp_path / "ledger-neg" / f"{label}.jsonl"
+
+        outcome = _default_restart(
+            ledger_path=negative_ledger,
+            workspace_path=negative_workspace,
+            runtime_obj=negative_runtime,
+        )
+
+        if label in checkpoint_bound_labels:
+            assert outcome["status"] == "blocked", (
+                f"{label} must be discovered and rejected by transaction recovery; got {outcome}"
+            )
+        else:
+            assert outcome["status"] in ("preflight_failed", "blocked"), (
+                f"{label} must fail closed at its frozen boundary; got {outcome}"
+            )
+        assert (
+            provider_pushes.get(str(negative_workspace), 0),
+            provider_calls.get(str(negative_workspace), 0),
+        ) == adapter_before, (
+            f"{label} reached the provider"
+        )
+        assert len(_admissions(negative_namespace)) == admissions_before, (
+            f"{label} allocated an admission"
+        )
+        assert not _author_work_marker(negative_workspace), f"{label} ran author work"
+        assert not read_ledger(negative_ledger).get("repo-a", None) or (
+            read_ledger(negative_ledger)["repo-a"].status != "pr_open"
+        ), f"{label} recorded a PR"
+
+    # POSITIVE CONTROL: an ordinary CLEAN node with NO transaction still reaches
+    # the default run_loop — the probe must not swallow the normal path.
+    clean_ws = _fabpub_repo(tmp_path / "repo-clean")
+    (clean_ws / "specs").mkdir(exist_ok=True)
+    (clean_ws / "specs" / "plan.md").write_text("# plan\n", encoding="utf-8")
+    _fabpub_git(clean_ws, "add", "specs/plan.md")
+    _fabpub_git(clean_ws, "commit", "-q", "-m", "plan")
+    reached: list = []
+    clean_outcome = train_runner.run_train(
+        roadmap,
+        tmp_path / "ledger-clean" / "train.ledger.jsonl",
+        run_mode="autonomous",
+        resolve_workspace=lambda _n: clean_ws,
+        coordinator_runtime=negative_runtime,
+        _run_loop=lambda *a, **k: (reached.append(a) or (None, [])),
+        _pr_is_open=lambda ws, br: False,
+    )
+    assert reached, (
+        f"a clean no-transaction execute node must still reach run_loop; got {clean_outcome}"
+    )
+    assert PreAdmissionEnvelope is not None and _fabpub_hashlib is not None

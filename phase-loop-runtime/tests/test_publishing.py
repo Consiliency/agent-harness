@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 
+from _fabpub_tdd_guard import fabpub_migrated_activated, fabpub_symbol
 from phase_loop_runtime.publishing import (
     PROTECTED_BRANCHES,
     _is_secret_path,
@@ -38,6 +39,25 @@ class _Broker:
 
 def _admission() -> AdmissionRequest:
     return AdmissionRequest("attempt", 1, "fence", "approval", "head", "repo", "publish-key")
+
+
+def _fabpub_publish_authority(repo: Path, checkpoint_root: Path):
+    """Produce the valid pre-commit authority object the train normally hands off."""
+    authority_type = fabpub_symbol(
+        "phase_loop_runtime.train_runner", "PublishAuthorityPreimages"
+    )
+    build_authority = fabpub_symbol(
+        "phase_loop_runtime.train_runner", "_default_build_publish_authority"
+    )
+    assert authority_type is not None and build_authority is not None
+
+    from phase_loop_runtime.train_runner import CoordinatorRuntime
+
+    runtime = CoordinatorRuntime("train", checkpoint_root, "train.md", "digest", "workspace")
+    node = type("Node", (), {"node_id": "repo-a", "roadmap": "owned.py"})()
+    authority = build_authority(runtime, node, repo, ["owned.py"])
+    assert isinstance(authority, authority_type)
+    return authority
 
 
 # ---------------------------------------------------------------------------
@@ -174,12 +194,6 @@ def test_blocked_dirty_post_commit(tmp_path: Path):
     repo = _make_repo(tmp_path)
     (repo / "owned.py").write_text("x = 1\n", encoding="utf-8")
 
-    push_target_dirty = {
-        "allowed": False,
-        "remote": "origin",
-        "push_ref": "refs/heads/feat/p1-test",
-        "refusal_reason": "post_commit_dirty_worktree",
-    }
 
     result = publish_from_worktree(repo, ["owned.py"])
 
@@ -197,12 +211,6 @@ def test_blocked_unowned_branch_behind_upstream(tmp_path: Path):
     repo = _make_repo(tmp_path)
     (repo / "owned.py").write_text("x = 1\n", encoding="utf-8")
 
-    push_target_behind = {
-        "allowed": False,
-        "remote": "origin",
-        "push_ref": "refs/heads/feat/p1-test",
-        "refusal_reason": "behind_upstream",
-    }
 
     result = publish_from_worktree(repo, ["owned.py"])
 
@@ -257,11 +265,6 @@ def test_blocked_push_rejected(tmp_path: Path):
     repo = _make_repo(tmp_path)
     (repo / "owned.py").write_text("x = 1\n", encoding="utf-8")
 
-    push_target_ok = {
-        "allowed": True,
-        "remote": "origin",
-        "push_ref": "refs/heads/feat/p1-test",
-    }
 
     result = publish_from_worktree(repo, ["owned.py"])
 
@@ -274,46 +277,78 @@ def test_blocked_push_rejected(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_draft_pr_passes_draft_flag(tmp_path: Path):
+def test_draft_pr_passes_draft_flag(tmp_path: Path, request):
     """publish_from_worktree(draft=True) calls _run_gh_pr_create with draft=True."""
     repo = _make_repo(tmp_path)
     (repo / "owned.py").write_text("x = 1\n", encoding="utf-8")
 
-    push_target_ok = {
-        "allowed": True,
-        "remote": "origin",
-        "push_ref": "refs/heads/feat/p1-test",
-    }
-    received_draft: list[bool] = []
 
-    def capture_gh(r: Path, *, draft: bool, title: str | None, body: str | None) -> int:
-        received_draft.append(draft)
-        return 0  # success; URL comes from _gh_pr_metadata stub
 
     broker = _Broker()
+    if fabpub_migrated_activated(
+        request,
+        symbol=("phase_loop_runtime.publishing", "PublishTransactionStore"),
+        detail=(
+            "the draft-flag proof still asserts a fresh FINALIZED publish succeeds; after "
+            "FABPUB that arm is transition-only and forbidden, so draft intent must be proven "
+            "through the publish-authority/checkpoint_root handoff"
+        ),
+    ):
+        authority = _fabpub_publish_authority(repo, tmp_path / "coordinator" / "draft")
+        result = publish_from_worktree(
+            repo,
+            ["owned.py"],
+            draft=True,
+            broker_client=broker,
+            publish_authority=authority,
+            checkpoint_root=authority.checkpoint_root,
+        )
+        assert result["status"] == "published"
+        assert broker.requests[0].draft is True
+        assert not isinstance(broker.requests[0].admission, AdmissionRequest), (
+            "a fresh publish must not reach the broker as a finalized AdmissionRequest"
+        )
+        return
+
     result = publish_from_worktree(repo, ["owned.py"], draft=True, broker_client=broker, admission=_admission())
 
     assert result["status"] == "published"
     assert broker.requests[0].draft is True
 
 
-def test_ready_pr_passes_draft_false(tmp_path: Path):
+def test_ready_pr_passes_draft_false(tmp_path: Path, request):
     """publish_from_worktree(draft=False) calls _run_gh_pr_create with draft=False."""
     repo = _make_repo(tmp_path)
     (repo / "owned.py").write_text("x = 1\n", encoding="utf-8")
 
-    push_target_ok = {
-        "allowed": True,
-        "remote": "origin",
-        "push_ref": "refs/heads/feat/p1-test",
-    }
-    received_draft: list[bool] = []
 
-    def capture_gh(r: Path, *, draft: bool, title: str | None, body: str | None) -> int:
-        received_draft.append(draft)
-        return 0  # success; URL comes from _gh_pr_metadata stub
 
     broker = _Broker()
+    if fabpub_migrated_activated(
+        request,
+        symbol=("phase_loop_runtime.publishing", "PublishTransactionStore"),
+        detail=(
+            "the ready-flag proof still asserts a fresh FINALIZED publish succeeds; after "
+            "FABPUB that arm is transition-only and forbidden, so ready intent must be proven "
+            "through the publish-authority/checkpoint_root handoff"
+        ),
+    ):
+        authority = _fabpub_publish_authority(repo, tmp_path / "coordinator" / "ready")
+        result = publish_from_worktree(
+            repo,
+            ["owned.py"],
+            draft=False,
+            broker_client=broker,
+            publish_authority=authority,
+            checkpoint_root=authority.checkpoint_root,
+        )
+        assert result["status"] == "published"
+        assert broker.requests[0].draft is False
+        assert not isinstance(broker.requests[0].admission, AdmissionRequest), (
+            "a fresh publish must not reach the broker as a finalized AdmissionRequest"
+        )
+        return
+
     result = publish_from_worktree(repo, ["owned.py"], draft=False, broker_client=broker, admission=_admission())
 
     assert result["status"] == "published"
@@ -325,16 +360,32 @@ def test_ready_pr_passes_draft_false(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_successful_publish_returns_if_0_p1_1_shape(tmp_path: Path):
+def test_successful_publish_returns_if_0_p1_1_shape(tmp_path: Path, request):
     """A clean publish returns {branch, head_sha, pr_url, status} (IF-0-P1-1)."""
     repo = _make_repo(tmp_path)
     (repo / "owned.py").write_text("x = 1\n", encoding="utf-8")
 
-    push_target_ok = {
-        "allowed": True,
-        "remote": "origin",
-        "push_ref": "refs/heads/feat/p1-test",
-    }
+
+    if fabpub_migrated_activated(
+        request,
+        symbol=("phase_loop_runtime.publishing", "PublishTransactionStore"),
+        detail=(
+            "publish_from_worktree still takes a caller-built finalized admission; FABPUB "
+            "requires publish authority pre-images plus a checkpoint_root, with the envelope "
+            "constructed post-commit from the resolved transaction"
+        ),
+    ):
+        authority = _fabpub_publish_authority(repo, tmp_path / "coordinator" / "node")
+        result = publish_from_worktree(
+            repo,
+            ["owned.py"],
+            draft=True,
+            broker_client=_Broker(),
+            publish_authority=authority,
+            checkpoint_root=authority.checkpoint_root,
+        )
+        assert result["status"] == "published"
+        return
 
     result = publish_from_worktree(repo, ["owned.py"], draft=True, broker_client=_Broker(), admission=_admission())
 

@@ -154,6 +154,12 @@ def test_pr_head_match_but_base_mismatch_on_non_default_base_fails_closed(tmp_pa
 # content by re-diffing origin/<base>...head_sha itself, instead of trusting the
 # coordinator-supplied owned_paths. ---
 def _request_owning(*owned, base="main"):
+    """Build the adapter-level request.
+
+    Direct ``GitHubBrokerAdapter`` callers keep the finalized ``AdmissionRequest``;
+    the broker has already allocated by that boundary.  The one migrated
+    BrokerService-level node builds a complete transaction-backed envelope.
+    """
     admission = AdmissionRequest("attempt", 1, "fence", "digest", "predicate", "scope", "key")
     return BrokerRequest(BrokerVerb.PUBLISH_COMMITTED_BRANCH, admission, "repo", _BRANCH, _HEAD, tuple(owned), base=base)
 
@@ -193,7 +199,17 @@ def test_nonempty_owned_but_empty_branch_diff_is_rejected(tmp_path):
     assert not any("push" in c for c in run.calls)
 
 
-def test_scope_reject_is_a_valid_terminal_through_the_broker_service(tmp_path):
+def test_scope_reject_is_a_valid_terminal_through_the_broker_service(tmp_path, request):
+    from _fabpub_tdd_guard import fabpub_migrated_activated
+
+    _fabpub = fabpub_migrated_activated(
+        request,
+        detail=(
+            "the _AdmitAll service fake still preserves a fresh publish through admit(); "
+            "after FABPUB it must grow the allocator surface (admit_next) and the request "
+            "must carry a PreAdmissionEnvelope"
+        ),
+    )
     # Regression for the IN_FLIGHT->terminal transition: BrokerService records intent
     # (PROVIDER_CALL_IN_FLIGHT) BEFORE the adapter runs, so the adapter's scope reject must
     # be a state reachable from IN_FLIGHT. no_effect_terminal_proven is; rejected_before_start
@@ -204,21 +220,55 @@ def test_scope_reject_is_a_valid_terminal_through_the_broker_service(tmp_path):
     from phase_loop_runtime.convergence.provider_contracts import PROVIDER_COMPLETION_CLASSIFICATIONS
 
     class _AdmitAll:
+        """A service fake that RECORDS which admission method the broker used."""
+
+        def __init__(self):
+            self.admit_calls = 0
+            self.admit_next_calls = 0
+
         def admit(self, admission):
+            self.admit_calls += 1
             return None
 
+        # FABPUB: a fresh publish allocates through the broker, so a service fake must
+        # expose the allocator surface rather than keep fresh publish on admit().
+        def admit_next(self, make_request, *, attempt_id, precondition=None):
+            self.admit_next_calls += 1
+            return make_request(1, attempt_id)
+
+        def replay(self):
+            return ()
+
+    if _fabpub:
+        from test_convergence_live_enable import _activated_publish_fixture
+
+        worktree, root, publish = _activated_publish_fixture(
+            tmp_path, label="credsep-scope", branch=_BRANCH, owned_file="a.py"
+        )
+        branch, head = publish.branch, publish.head_sha
+    else:
+        worktree, root, publish = tmp_path, tmp_path / "evidence.jsonl", _request_owning("a.py")
+        branch, head = _BRANCH, _HEAD
+
     run = _FakeRun([
-        (("branch", "--show-current"), _BRANCH, 0),
-        (("rev-parse",), _HEAD, 0),
+        (("branch", "--show-current"), branch, 0),
+        (("rev-parse",), head, 0),
         (("diff", "--name-only", "-z", "--no-renames"), b"a.py\0b.py\0", 0),  # b.py outside owned ("a.py",)
     ])
+    admission_fake = _AdmitAll()
     service = BrokerService(
-        _AdmitAll(),
-        BrokerEvidenceStore(tmp_path / "evidence.jsonl"),
-        GitHubBrokerAdapter(tmp_path, run=run),
+        admission_fake,
+        BrokerEvidenceStore(root),
+        GitHubBrokerAdapter(worktree, run=run),
         contracts=PROVIDER_COMPLETION_CLASSIFICATIONS,
     )
-    outcome = service.execute(_request_owning("a.py"))
+    outcome = service.execute(publish)
+    if _fabpub:
+        # The retired finalized handoff must NOT be what a conforming implementation
+        # rewards: a fresh publish allocates through admit_next, never legacy admit().
+        assert (admission_fake.admit_calls, admission_fake.admit_next_calls) == (0, 1), (
+            "a fresh FABPUB publish must reach admit_next and never legacy admit()"
+        )
     assert outcome.accepted is False
     # the reject survives the service intact — NOT converted to adapter-exception/ambiguous.
     assert outcome.evidence.terminal_state == "no_effect_terminal_proven"
@@ -231,7 +281,16 @@ def test_scope_reject_is_a_valid_terminal_through_the_broker_service(tmp_path):
     # admission with drifted owned_paths. Sound because content is head_sha-bound: replay
     # publishes nothing new. Retry of the same commit stays rejected (produce a new head).
     calls_before = len(run.calls)
-    replayed = service.execute(_request_owning("a.py", "b.py"))  # widened owned, same triple
+    replayed = service.execute(
+        BrokerRequest(
+            publish.verb,
+            AdmissionRequest("retry", 99, "untrusted", "untrusted", "untrusted", "untrusted", "retry"),
+            publish.repo,
+            publish.branch,
+            publish.head_sha,
+            ("a.py", "b.py"),
+        )
+    )  # widened owned, same triple; terminal replay returns before authorization
     assert replayed.accepted is False
     assert replayed.evidence.terminal_state == "no_effect_terminal_proven"
     assert len(run.calls) == calls_before  # adapter not re-invoked; pure replay
