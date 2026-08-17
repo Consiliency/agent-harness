@@ -1282,6 +1282,36 @@
             "fabpub_plan_contract_record_id": "v10-FABPUB.fabpub-plan-contract.v2"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-17T01:46:51Z",
+          "by": "clawdbot-agent-harness-codex",
+          "metadata": {
+            "fabpub_plan_contract_payload_sha256": "43b8c4922281614ac1135efbc3330e0eb1c19932531cd4fbfc251c034757f096",
+            "fabpub_plan_contract_rebind": {
+              "acceptance_criteria_count": 11,
+              "adapter_start_fence_nodeids_count": 1,
+              "adapter_start_fence_nodeids_sha256": "7dac57ecb3d2d22bfc4bda1ffe5f6330e9a47cee41e33c84134e743655c18497",
+              "legacy_cutover_nodeids_count": 8,
+              "legacy_cutover_nodeids_sha256": "51b89f38436c06fa7a51120140b508251a39d4a2b42671021b68af5d29e2cafe",
+              "owned_paths_count": 24,
+              "owned_paths_sha256": "93f3a95a277ee2e5d2543aed6baea4c839c55e8be32ee1264a0283e1fd829ead",
+              "plan_sha256": "a08ffb9635444d7be1598c3ee5853e7b7674e16e7d863177ba74b0db404506fe",
+              "predecessor_contract_record_id": "v10-FABPUB.fabpub-plan-contract.v2",
+              "predecessor_plan_sha256": "b593ebe1e600a59e226526ce65f85b472826e4c938b9348d409c915a9ba82720",
+              "review_status": "unreviewed_requires_exact_digest_board",
+              "review_topology": "opus_early_then_sol_grok45_gemini_critics_then_grok46_president",
+              "roadmap_sha256": "c66949236043e46e956caec1c09d0c19d0e8751e4ce2891de1fe2edf24e9fea1",
+              "shared_allocator_nodeids_count": 2,
+              "shared_allocator_nodeids_sha256": "4d2d6a3751424be367696d18abeb316c365e4e7d2028f5fdd4d3898738e2364b",
+              "test_paths_count": 12,
+              "test_paths_sha256": "c7c498a73c76364dee1d02b0ee73eb6b6fae5ed4311d135d82ed17c4fec18e51",
+              "writer_generation_fence_nodeids_count": 1,
+              "writer_generation_fence_nodeids_sha256": "22a35748a15f1109a71965f972b1662042b8779dd383c8a2f267c8b8220c72b5"
+            },
+            "fabpub_plan_contract_record_id": "v10-FABPUB.fabpub-plan-contract.v3"
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -1297,7 +1327,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-07-30T19:20:13Z"
+      "updated_at": "2026-08-17T01:46:51Z"
     },
     {
       "acceptance_criteria_count": null,
