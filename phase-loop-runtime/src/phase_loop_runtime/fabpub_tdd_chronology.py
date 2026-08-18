@@ -620,6 +620,7 @@ def audit_pytest_invocation_receipt(
     expected_test_tree_sha256: str | None,
     expected_activation_env: str | None,
     expected_marker_present: bool,
+    expected_selector: str,
     label: str,
 ) -> dict[str, Any]:
     """Bind a passing pytest artifact to its exact lifecycle stage."""
@@ -655,6 +656,7 @@ def audit_pytest_invocation_receipt(
         joined = " ".join(str(part) for part in argv)
         if "--junitxml" not in joined:
             errors.append(f"the {label} invocation did not emit JUnit")
+        errors.extend(_audit_frozen_selector(argv, expected_selector, label=label))
     if junit is None or not junit.is_file():
         errors.append(f"the {label} JUnit artifact is missing")
     else:
@@ -681,6 +683,18 @@ def audit_pytest_invocation_receipt(
         "artifact_sha256": sha256_file(receipt),
         "errors": errors,
     }
+
+
+def _audit_frozen_selector(argv: list[Any], expected: str, *, label: str) -> list[str]:
+    errors: list[str] = []
+    if argv.count("phase-loop-runtime/tests") != 1:
+        errors.append(f"the {label} invocation did not use the exact frozen test root")
+    positions = [index for index, value in enumerate(argv) if value == "-k"]
+    if len(positions) != 1:
+        errors.append(f"the {label} invocation did not use exactly one frozen selector")
+    elif positions[0] + 1 >= len(argv) or argv[positions[0] + 1] != expected:
+        errors.append(f"the {label} invocation did not use the exact frozen selector")
+    return errors
 
 
 def audit_test_panel_envelope(
@@ -795,6 +809,7 @@ def audit_red_evidence(
     *,
     expected_head: str | None = None,
     expected_test_tree_sha256: str | None = None,
+    expected_selector: str | None = None,
 ) -> dict[str, Any]:
     """The activated-RED reduction.  MANDATORY, and bound to a trusted exit code.
 
@@ -855,6 +870,7 @@ def audit_red_evidence(
             )
         if "--junitxml" not in joined:
             errors.append("the RED invocation argv did not emit the reduced JUnit artifact")
+        errors.extend(_audit_frozen_selector(argv, expected_selector or "", label="RED"))
         stamped_junit = record.get("junit")
         if stamped_junit and Path(stamped_junit).resolve() != junit.resolve():
             errors.append("the RED invocation record names a different JUnit artifact")
@@ -1476,6 +1492,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         stamped_exit,
         expected_head=sections["sl0_git_boundary"].get("tests_only"),
         expected_test_tree_sha256=sections["test_tree"].get("test_tree_sha256"),
+        expected_selector=guard.FABPUB_RED_SELECTOR,
     )
     sections["default_green"] = audit_default_evidence(
         repo, guard, _stamped_path(args.default_junit, EVIDENCE_ENV["default_junit"])
@@ -1487,6 +1504,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         expected_test_tree_sha256=sections["test_tree"].get("test_tree_sha256"),
         expected_activation_env=None,
         expected_marker_present=False,
+        expected_selector=guard.FABPUB_FINAL_SELECTOR,
         label="default-green",
     )
     sections["default_green"]["errors"].extend(
@@ -1511,6 +1529,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             expected_test_tree_sha256=sections["test_tree"].get("test_tree_sha256"),
             expected_activation_env=f"{guard.FABPUB_ACTIVATION_ENV}=1",
             expected_marker_present=False,
+            expected_selector=guard.FABPUB_FINAL_SELECTOR,
             label="preactivation",
         )
         sections["preactivation_junit"]["errors"].extend(
@@ -1530,6 +1549,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             expected_test_tree_sha256=sections["test_tree"].get("test_tree_sha256"),
             expected_activation_env=None,
             expected_marker_present=True,
+            expected_selector=guard.FABPUB_FINAL_SELECTOR,
             label="final",
         )
         sections["final_junit"]["errors"].extend(
