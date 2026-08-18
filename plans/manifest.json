@@ -1547,6 +1547,83 @@
             "tests_only_freeze_pr": "agent-harness#578"
           },
           "transition": "executing"
+        },
+        {
+          "at": "2026-08-18T13:01:45Z",
+          "by": "clawdbot-agent-harness-codex",
+          "metadata": {
+            "acceptance_criteria": {
+              "met": 11,
+              "total": 11
+            },
+            "candidate_head": "fd0708b19e485a2d7035a122d7eb6b2d1f4507a0",
+            "chronology": {
+              "ok": true,
+              "sha256": "e2ed9b77356c19f6ad1e73f95a047cb5eab3b6ee54132b0cd593e400e8734fb3"
+            },
+            "ci_run": "https://github.com/Consiliency/agent-harness/actions/runs/32134242148",
+            "exact_main_head": "710bd73b4b640d8186f9544bb35725983e5b926b",
+            "exact_main_selector": {
+              "invocation_sha256": "f4f4b1c21afbd8d3b991650c15ff9e236e6afaf0e15f8fe03dbf78ea906ae851",
+              "junit_sha256": "c3e8ef3e418ccf7871069b2cc90e4ed894978c3b7be1f6ea9aecf2a17b5e2caf",
+              "passed": 205,
+              "skipped": 23,
+              "test_tree_sha256": "223447a9f575c0ac2fde0f93bb3b71367216819b92404d3c67f90b89b8bc2648"
+            },
+            "if_gates_produced": [
+              "IF-0-FABPUB-1"
+            ],
+            "implementation_pr": "agent-harness#587",
+            "issue_dispositions": [
+              {
+                "disposition": "carried_with_owner",
+                "issue_id": "agent-harness#575",
+                "owner": "Consiliency/agent-harness roadmap coordinator",
+                "phase": "FABPUB"
+              },
+              {
+                "disposition": "carried_with_owner",
+                "issue_id": "agent-harness#585",
+                "owner": "Consiliency/agent-harness roadmap coordinator",
+                "phase": "FABPUB"
+              },
+              {
+                "disposition": "carried_with_owner",
+                "issue_id": "agent-harness#594",
+                "owner": "Consiliency/agent-harness roadmap coordinator",
+                "phase": "FABPUB"
+              },
+              {
+                "disposition": "carried_with_owner",
+                "issue_id": "agent-harness#595",
+                "owner": "Consiliency/agent-harness roadmap coordinator",
+                "phase": "FABPUB"
+              },
+              {
+                "disposition": "carried_with_owner",
+                "issue_id": "agent-harness#596",
+                "owner": "Consiliency/agent-harness roadmap coordinator",
+                "phase": "FABPUB"
+              }
+            ],
+            "issue_inventory": [
+              "agent-harness#575",
+              "agent-harness#585",
+              "agent-harness#594",
+              "agent-harness#595",
+              "agent-harness#596"
+            ],
+            "merge_head": "710bd73b4b640d8186f9544bb35725983e5b926b",
+            "phase_alias": "FABPUB",
+            "review": {
+              "artifact_sha256": "02b04ce71fdf7a9cb4e0a2ef2f54bd6fb7207831669a0e5708eeddbbd1800bed",
+              "decision": "PROCEED",
+              "president": "grok-4.6"
+            },
+            "run_id": "fabpub-sl1-restart-20260817T224413Z",
+            "verification_status": "passed"
+          },
+          "transition": "completed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -1559,10 +1636,10 @@
         "type": "phase"
       },
       "slug": "v10-FABPUB",
-      "status": "executing",
+      "status": "completed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-17T22:47:25Z"
+      "updated_at": "2026-08-18T13:01:45Z"
     },
     {
       "acceptance_criteria_count": null,
