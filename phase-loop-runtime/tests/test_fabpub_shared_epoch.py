@@ -26,6 +26,7 @@ the nodeid-inventory arithmetic honest.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -33,6 +34,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -360,9 +362,15 @@ def _supported_contracts(*verbs: str):
 class _CountingAdapter:
     """Records every provider effect the BROKER actually reached."""
 
-    def __init__(self, *, explode: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        explode: bool = False,
+        terminal_state: str = "effect_terminal_observed",
+    ) -> None:
         self.calls: list = []
         self._explode = explode
+        self._terminal_state = terminal_state
 
     def execute(self, request):
         from phase_loop_runtime.convergence.contracts import (
@@ -376,9 +384,14 @@ class _CountingAdapter:
         key = getattr(request.admission, "idempotency_key", None) or getattr(
             request.admission, "transaction_id", ""
         )
+        result = (
+            PublishCommittedBranchResult(request.branch, request.head_sha, f"https://gh/pr/{len(self.calls)}")
+            if self._terminal_state == "effect_terminal_observed"
+            else None
+        )
         return (
-            PublishCommittedBranchResult(request.branch, request.head_sha, f"https://gh/pr/{len(self.calls)}"),
-            BrokerTerminalEvidence(key, "effect_terminal_observed", "github-observed"),
+            result,
+            BrokerTerminalEvidence(key, self._terminal_state, "github-observed"),
         )
 
 
@@ -2013,6 +2026,133 @@ def test_fabpub_shared_adapter_start_fence_blocks_competing_train_before_and_aft
         "a completed effect must SEAL its owner so the next publish is not fenced"
     )
 
+    # The terminal evidence append and owner seal are one repository-locked
+    # decision.  Hold train A at the production seal seam: train B must wait,
+    # then continue after A seals instead of poisoning A's completed outcome.
+    from phase_loop_runtime.convergence.broker import evidence as evidence_module
+
+    race_repo, race_a, race_identity, race_root = _authorized_publish_fixture(
+        tmp_path, name="terminal-seal-race"
+    )
+    entered_seal = threading.Event()
+    release_seal = threading.Event()
+    contender_lock_attempt = threading.Event()
+    original_seal = evidence_module.seal_adapter_start_owner
+    original_flock = fcntl.flock
+
+    def held_seal(*args, **kwargs):
+        entered_seal.set()
+        assert release_seal.wait(5), "test did not release the held owner seal"
+        return original_seal(*args, **kwargs)
+
+    def observed_flock(fd, operation):
+        if (
+            threading.current_thread().name == "fabpub-contender"
+            and operation & fcntl.LOCK_EX
+        ):
+            contender_lock_attempt.set()
+        return original_flock(fd, operation)
+
+    evidence_module.seal_adapter_start_owner = held_seal
+    fcntl.flock = observed_flock
+    race_results: dict[str, object] = {}
+
+    def execute_a():
+        try:
+            race_results["a"] = _service(race_root, _CountingAdapter()).execute(
+                _publish_transaction_request(race_identity, "feat/x", race_a, race_repo)
+            )
+        except Exception as exc:
+            race_results["a_error"] = exc
+
+    thread_a = threading.Thread(target=execute_a, daemon=True)
+    thread_b = None
+    thread_a.start()
+    try:
+        assert entered_seal.wait(5), "train A never reached the production owner-seal seam"
+
+        race_b = _next_authorized_transaction(
+            tmp_path,
+            race_repo,
+            name="terminal-seal-race-b",
+            branch="feat/terminal-seal-race-b",
+            relative_path="race-b.py",
+        )
+
+        def execute_b():
+            try:
+                race_results["b"] = _service(race_root, _CountingAdapter()).execute(
+                    _publish_transaction_request(
+                        race_identity, "feat/terminal-seal-race-b", race_b, race_repo
+                    )
+                )
+            except Exception as exc:  # captured so the parent can assert the exact outcome
+                race_results["b_error"] = exc
+
+        thread_b = threading.Thread(
+            target=execute_b, name="fabpub-contender", daemon=True
+        )
+        thread_b.start()
+        assert contender_lock_attempt.wait(5), (
+            "train B never attempted the contested repository evidence lock"
+        )
+        thread_b.join(0.25)
+        assert thread_b.is_alive(), (
+            "a contender reached the repository lock but did not wait for the "
+            "terminal-evidence/owner-seal decision"
+        )
+    finally:
+        release_seal.set()
+        thread_a.join(5)
+        if thread_b is not None:
+            thread_b.join(5)
+        evidence_module.seal_adapter_start_owner = original_seal
+        fcntl.flock = original_flock
+    assert thread_b is not None
+    assert not thread_a.is_alive() and not thread_b.is_alive()
+    assert "a_error" not in race_results, race_results.get("a_error")
+    assert "b_error" not in race_results, race_results.get("b_error")
+    assert race_results["a"].accepted and race_results["b"].accepted
+
+    # A proven no-effect terminal is equally final: it must retire the owner so
+    # an unrelated later head is not converted into permanent ambiguity.
+    no_effect_repo, no_effect_txn, no_effect_identity, no_effect_root = (
+        _authorized_publish_fixture(tmp_path, name="known-no-effect")
+    )
+    no_effect_service = _service(
+        no_effect_root,
+        _CountingAdapter(terminal_state="no_effect_terminal_proven"),
+    )
+    no_effect = no_effect_service.execute(
+        _publish_transaction_request(
+            no_effect_identity, "feat/x", no_effect_txn, no_effect_repo
+        )
+    )
+    assert not no_effect.accepted
+    retired = read_owner(no_effect_root, repository_identity=no_effect_identity)
+    assert retired is not None and getattr(retired, "sealed", False), (
+        "NO_EFFECT_TERMINAL_PROVEN must retire the shared owner"
+    )
+    after_no_effect = _next_authorized_transaction(
+        tmp_path,
+        no_effect_repo,
+        name="after-known-no-effect",
+        branch="feat/after-known-no-effect",
+        relative_path="after.py",
+    )
+    after_adapter = _CountingAdapter()
+    after_store = _counting_store(no_effect_root)
+    after_service = _service(no_effect_root, after_adapter, store=after_store)
+    assert after_service.execute(
+        _publish_transaction_request(
+            no_effect_identity,
+            "feat/after-known-no-effect",
+            after_no_effect,
+            no_effect_repo,
+        )
+    ).accepted
+    assert len(after_adapter.calls) == 1 and after_store.admit_next_calls == 1
+
 
 class _CrashInjected(RuntimeError):
     """Marks the deterministic kill point injected by :func:`_execute_with_crash`."""
@@ -3248,6 +3388,20 @@ def test_fabpub_post_activation_writer_generation_fence_blocks_direct_and_old_cl
         )
     stale_entries.append(str(adapter_entry.value))
 
+    # Omitting the lease is not authority to mint a second, adapter-owned lease.
+    # The caller/router must supply the already-current repository lease.
+    with pytest.raises(Exception) as undeclared_adapter_entry:
+        GitHubBrokerAdapter(repo, run=lambda *a, **k: None).execute(
+            _publish_request(
+                "id",
+                "feat/x",
+                "a" * 40,
+                AdmissionRequest("attempt", 1, "fence", "digest", "predicate", "scope", "key"),
+                repo,
+            )
+        )
+    stale_entries.append(str(undeclared_adapter_entry.value))
+
     # (c) a stale CLI/direct run_train restart in a FRESH process
     rc, out, err = _run_python(
         """
@@ -3905,11 +4059,13 @@ def test_fabpub_dual_path_normal_and_prebuilt_share_one_transaction_contract(tmp
 
     prebuilt = prepare_prebuilt(
         prebuilt_repo,
+        owned_paths=("c.py",),
         checkpoint_root=tmp_path / "coordinator" / "prebuilt",
         branch="feat/y",
         envelope_authority_preimage=_transaction_authority(prebuilt_repo, "feat/y"),
     )
     assert prebuilt.expected_commit_oid == head_before == prebuilt.committed_head_sha
+    assert prebuilt.owned_paths == ("c.py",)
     assert _git(prebuilt_repo, "rev-parse", "HEAD") == head_before, "prebuilt must not move the ref"
     assert _git(prebuilt_repo, "rev-list", "--count", "feat/y") == count_before, (
         "prebuilt must not create a commit"
@@ -3923,6 +4079,7 @@ def test_fabpub_dual_path_normal_and_prebuilt_share_one_transaction_contract(tmp
     with pytest.raises(ValueError):
         prepare_prebuilt(
             prebuilt_repo,
+            owned_paths=("d.py",),
             checkpoint_root=tmp_path / "coordinator" / "z",
             branch="feat/z",
             envelope_authority_preimage=_transaction_authority(prebuilt_repo, "feat/z"),
@@ -4232,17 +4389,20 @@ def test_fabpub_train_resume_prebuilt_never_rewrites_a_commit(tmp_path, request)
     authority_preimage = _authority_preimage(identity, "feat/y")
     first = prepare_prebuilt(
         repo,
+        owned_paths=("c.py",),
         checkpoint_root=checkpoint_root,
         branch="feat/y",
         envelope_authority_preimage=authority_preimage,
     )
     resumed = prepare_prebuilt(
         repo,
+        owned_paths=("c.py",),
         checkpoint_root=checkpoint_root,
         branch="feat/y",
         envelope_authority_preimage=authority_preimage,
     )
     assert resumed.transaction_id == first.transaction_id
+    assert resumed.owned_paths == first.owned_paths == ("c.py",)
     assert resumed.expected_commit_oid == resumed.committed_head_sha == head
     assert _git(repo, "rev-parse", "HEAD") == head
     assert _git(repo, "rev-list", "--count", "feat/y") == count, "prebuilt resume created no commit"

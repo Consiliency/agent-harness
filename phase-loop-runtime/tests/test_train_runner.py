@@ -960,11 +960,11 @@ class TestPreflightRealDetection:
             patch(
                 "phase_loop_runtime.train_runner._check_remote_reachable",
                 return_value=None,
-            ),
+            ) as remote_check,
             patch(
                 "phase_loop_runtime.train_runner._check_base_branch_exists",
                 return_value=None,
-            ),
+            ) as base_check,
         ):
             result = run_train(
                 roadmap,
@@ -986,6 +986,8 @@ class TestPreflightRealDetection:
             f"Expected zero publish calls after real preflight failure; "
             f"got {publish_mock.call_count}"
         )
+        assert remote_check.call_count == len(roadmap.nodes)
+        assert base_check.call_count == len(roadmap.nodes)
 
 
 # ---------------------------------------------------------------------------
@@ -3407,8 +3409,8 @@ def test_fabpub_train_resume_post_commit_pre_checkpoint(tmp_path: Path, request)
         )
 
         if label in checkpoint_bound_labels:
-            assert outcome["status"] == "blocked", (
-                f"{label} must be discovered and rejected by transaction recovery; got {outcome}"
+            assert outcome["status"] == "preflight_failed", (
+                f"{label} must close the all-repository preflight before any node runs; got {outcome}"
             )
         else:
             assert outcome["status"] in ("preflight_failed", "blocked"), (
