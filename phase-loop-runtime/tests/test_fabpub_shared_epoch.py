@@ -2895,12 +2895,13 @@ def test_fabpub_post_armed_zero_legacy_repository_onboarding_is_serialized_and_f
         store.admit_next(make, attempt_id="premature", precondition=lambda: True)
     assert not (namespace / "admissions.jsonl").exists() or _jsonl(namespace / "admissions.jsonl") == []
 
-    # TWO RACING NORMAL CLI TRAINS (plan:220, EC-FABPUB-10).  Both are fresh
+        # TWO RACING NORMAL CLI TRAINS (plan:220, EC-FABPUB-10).  Both are fresh
     # processes running the real shipped CLI argv path against the same
     # never-before-seen repository; they must serialize to ONE byte-equivalent
     # zero-high-water receipt and ONE monotonic first epoch.
     import concurrent.futures
 
+    _make_cli_publishable(fresh, "feat/onboard")
     alpha = _write_train(tmp_path / "trains-alpha" / "release.md", str(fresh))
     beta = _write_train(tmp_path / "trains-beta" / "release.md", str(fresh))
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
@@ -3216,9 +3217,10 @@ def test_fabpub_post_activation_writer_generation_fence_blocks_direct_and_old_cl
     )
     assert stale_cli["admissions"] is False, "a fenced entry creates no admission row"
 
-    # (3) POSITIVE ARM — a fresh CURRENT-generation process runs the REAL CLI, onboards,
+        # (3) POSITIVE ARM — a fresh CURRENT-generation process runs the REAL CLI, onboards,
     # and produces exactly ONE admission and ONE provider effect.  An always-block
     # implementation cannot satisfy this reached arm.
+    _make_cli_publishable(repo, "feat/positive")
     positive_train = _write_train(tmp_path / "trains-positive" / "release.md", str(repo))
     probe = _cli_allocator_probe(positive_train, repo, "a" * 40, "b" * 40)
     assert probe["cli_exit"] == 0
