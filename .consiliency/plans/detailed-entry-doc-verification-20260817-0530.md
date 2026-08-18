@@ -185,12 +185,11 @@ a tag push changes arm 2's input, so the check must re-run when it does.
 
 ## Dependencies & order
 
-1. `docs_surfaces.py` taxonomy addition (independent, mechanical).
-2. Suppression mechanism **before** any arm — otherwise the first arm to fire has no remedy.
-3. Arm 1 (paths) with its skip classes and adversarial positives.
-4. Arm 2 (pin freshness) — needs package-context plumbing.
-5. Arm 3 (published rendering).
-6. Workflow last, once `main()` exit codes are stable.
+1. Suppression mechanism **before** any arm — otherwise the first arm to fire has no remedy.
+2. Arm 1 (paths) with its skip classes and adversarial positives.
+3. Arm 2 (pin freshness) — needs package-context plumbing.
+4. Arm 3 (published rendering).
+5. Workflow last, once `main()` exit codes are stable.
 
 No FABPUB or PROOFGATE surface is touched; this can run concurrently.
 
