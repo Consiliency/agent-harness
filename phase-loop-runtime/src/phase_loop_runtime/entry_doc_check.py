@@ -526,6 +526,11 @@ def check_pin_freshness(text: str, doc_path: str, ctx: RepoContext) -> List[Find
     distribution's own ``pyproject.toml`` version; ``@vX.Y.Z`` in a git-install
     URL is compared against the repository's release-tag namespace. Refs that
     are not tag-shaped (``@main``) are branch selectors, not pins.
+
+    Fails **closed**: if a document pins this repository but the release-tag
+    namespace does not resolve, that is reported rather than skipped. Silence
+    there would mean a shallow clone or a fork PR hides every stale git pin
+    behind a green check.
     """
     findings: List[Finding] = []
 
@@ -598,7 +603,32 @@ def check_pin_freshness(text: str, doc_path: str, ctx: RepoContext) -> List[Find
                 # A branch or SHA selector is not a release pin.
                 continue
             latest = ctx.latest_release_tag
-            if latest is None or ref == latest:
+            if latest is None:
+                # FAIL CLOSED. An empty release namespace is not "nothing to
+                # compare against" -- the document makes a live claim about
+                # this repository's latest release and the check could not
+                # evaluate it. Staying silent here would make every stale git
+                # pin invisible under a shallow clone, a fork PR, or anyone
+                # relaxing the workflow's `fetch-depth: 0`, with a green check
+                # implying coverage that does not exist.
+                findings.append(
+                    Finding(
+                        file=doc_path,
+                        line=idx,
+                        arm="pins",
+                        code="release_namespace_unresolved",
+                        token=match.group(0),
+                        message=(
+                            f"`@{ref}` pins this repository, but no tag matches the "
+                            f"release namespace `{_RELEASE_TAG_GLOB}`, so its freshness "
+                            f"could not be evaluated. Fetch tags (`fetch-depth: 0`) "
+                            f"before running this check -- an unevaluated pin is not a "
+                            f"fresh one."
+                        ),
+                    )
+                )
+                continue
+            if ref == latest:
                 continue
             findings.append(
                 Finding(

@@ -331,6 +331,51 @@ class TestArmPinFreshness(unittest.TestCase):
             )
             self.assertEqual(codes(found), [])
 
+    def test_unresolvable_release_namespace_fails_closed(self):
+        """A pin the check could not evaluate is reported, not skipped.
+
+        `latest_release_tag is None` means "I could not do my job", not
+        "nothing to compare against". Skipping made arm 2 silently inert under
+        a shallow clone, a fork PR, or a relaxed `fetch-depth`, hiding every
+        stale git pin behind a green check -- fail-open on the exact defect
+        this arm exists to catch.
+        """
+        pin = (
+            'uv tool install "git+https://github.com/Consiliency/agent-harness'
+            '@v0.1.5#subdirectory=phase-loop-runtime"\n'
+        )
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(tmp, {"phase-loop-runtime/README.md": pin}, tags=())
+            self.assertIsNone(edc.RepoContext(repo).latest_release_tag)
+            found = edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))
+            self.assertEqual(codes(found), [("pins", "release_namespace_unresolved")])
+            self.assertIn("v[0-9]*", found[0].message)
+
+        # The same pin in a repo WITH tags is evaluated normally -- the
+        # fail-closed path must not mask the staleness verdict.
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(tmp, {"phase-loop-runtime/README.md": pin})
+            found = edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))
+            self.assertEqual(codes(found), [("pins", "stale_pin")])
+
+    def test_unresolvable_namespace_is_silent_when_nothing_pins_this_repo(self):
+        # Fail-closed on an unevaluable claim, NOT a blanket failure whenever a
+        # repo has no tags: a document that makes no self-repo release pin has
+        # nothing for the namespace to answer.
+        doc = "\n".join(
+            [
+                "pip install phase-loop-runtime==0.7.13",
+                "pip install git+https://github.com/Consiliency/agent-harness@main",
+                "pip install git+https://github.com/Consiliency/agent-harness@<TAG>",
+                "pip install git+https://github.com/other/project@v0.1.5",
+            ]
+        )
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(tmp, {"phase-loop-runtime/README.md": doc}, tags=())
+            self.assertEqual(
+                codes(edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))), []
+            )
+
     def test_wrong_placeholder_in_ref_position_is_reported(self):
         # The grammar is position-sensitive: a ref position names a tag, so
         # <VERSION> is not meaningful there even though it is in a pin.

@@ -27,6 +27,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `pyproject.toml` version; `@vX.Y.Z` in a git-install URL is compared against the
   repository release-tag namespace (`v[0-9]*`, version-sorted, which excludes another
   package's `consiliency-harness-v0.6.1` release tag).
+- The pins arm **fails closed**: if a document pins this repository but the release-tag
+  namespace does not resolve, that is reported as `release_namespace_unresolved` rather
+  than skipped. An empty namespace means the check could not evaluate the claim, not that
+  there was nothing to check — skipping it would hide every stale git pin behind a green
+  check under a shallow clone, a fork PR, or a relaxed `fetch-depth`.
 - Suppressions are fingerprinted over (file, code, token) rather than line numbers, each
   requires a stated reason, and one that matches nothing is itself reported. The budget
   is **0 at landing** — the live entry docs pass on raw findings.
