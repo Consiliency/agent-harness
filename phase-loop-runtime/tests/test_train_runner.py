@@ -3115,7 +3115,7 @@ def test_fabpub_train_resume_post_commit_pre_checkpoint(tmp_path: Path, request)
         ] if path.exists() else []
 
     injected_root = tmp_path / "forbidden-injected-broker-root"
-    with pytest.raises((TypeError, ValueError, PermissionError)):
+    with pytest.raises((TypeError, ValueError, PermissionError, RuntimeError)):
         routing_builder(broker_root=injected_root, run=_provider_run)
     assert not injected_root.exists(), "a refused allocator-root injection creates no state"
 

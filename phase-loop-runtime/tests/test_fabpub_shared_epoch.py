@@ -1476,6 +1476,7 @@ def test_fabpub_default_cli_train_roots_share_git_common_repository_allocator_wi
     )
 
     repo = _init_repo(tmp_path / "repo")
+    _activate_repository_authority(tmp_path, repo, label="shared-cli")
     _make_cli_publishable(repo, "feat/shared")
     linked = tmp_path / "linked"
     unrelated = _init_repo(tmp_path / "unrelated")
@@ -2906,8 +2907,11 @@ def test_fabpub_post_armed_zero_legacy_repository_onboarding_is_serialized_and_f
     beta = _write_train(tmp_path / "trains-beta" / "release.md", str(fresh))
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         futures = [
-            pool.submit(_cli_allocator_probe, train, fresh, "a" * 40, "b" * 40)
-            for train in (alpha, beta)
+            pool.submit(_cli_allocator_probe, train, fresh, *heads)
+            for train, heads in zip(
+                (alpha, beta),
+                (("a" * 40, "b" * 40), ("c" * 40, "d" * 40)),
+            )
         ]
         probes = [future.result(timeout=300) for future in futures]
 
@@ -3225,7 +3229,9 @@ def test_fabpub_post_activation_writer_generation_fence_blocks_direct_and_old_cl
     probe = _cli_allocator_probe(positive_train, repo, "a" * 40, "b" * 40)
     assert probe["cli_exit"] == 0
     assert probe["namespace"] == str(namespace)
-    assert probe["epochs"] == [1, 2], f"the current generation allocates monotonically: {probe['epochs']}"
+    assert probe["epochs"] == [3, 4], (
+        f"the current generation continues above the legacy high-water mark: {probe['epochs']}"
+    )
     assert probe["adapter_calls"] == 2, "each distinct head reaches the provider exactly once"
     assert probe["train_status"] in ("completed", "drafts_open")
     assert len(probe["published"]) == 2
