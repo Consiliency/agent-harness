@@ -1002,12 +1002,22 @@ def test_fabpub_digest_bound_artifact_requires_external_expected_digest(tmp_path
 
 
 def test_fabpub_pytest_invocation_receipt_binds_stage_head_tree_and_junit(tmp_path):
+    selector = "fabpub_ or test_publishing"
     junit = tmp_path / "stage.junit.xml"
     junit.write_text("<testsuites tests=\"0\"/>\n", encoding="utf-8")
     receipt = tmp_path / "stage.invocation.json"
     payload = {
         "schema": "fabpub_pytest_invocation.v1",
-        "argv": ["env", "PHASE_LOOP_TDD_EXPECT_FABPUB=1", "pytest", "--junitxml", str(junit)],
+        "argv": [
+            "env",
+            "PHASE_LOOP_TDD_EXPECT_FABPUB=1",
+            "pytest",
+            "phase-loop-runtime/tests",
+            "-k",
+            selector,
+            "--junitxml",
+            str(junit),
+        ],
         "exit_code": 0,
         "junit": str(junit),
         "junit_sha256": hashlib.sha256(junit.read_bytes()).hexdigest(),
@@ -1025,6 +1035,7 @@ def test_fabpub_pytest_invocation_receipt_binds_stage_head_tree_and_junit(tmp_pa
         expected_test_tree_sha256="b" * 64,
         expected_activation_env="PHASE_LOOP_TDD_EXPECT_FABPUB=1",
         expected_marker_present=False,
+        expected_selector=selector,
         label="preactivation",
     )
     assert report["errors"] == []
@@ -1032,6 +1043,7 @@ def test_fabpub_pytest_invocation_receipt_binds_stage_head_tree_and_junit(tmp_pa
     payload["head"] = "c" * 40
     payload["activation_env"] = None
     payload["junit_sha256"] = "d" * 64
+    payload["argv"][5] = "fabpub_narrowed"
     receipt.write_text(json.dumps(payload), encoding="utf-8")
     drift = fabpub_chronology.audit_pytest_invocation_receipt(
         receipt,
@@ -1040,14 +1052,17 @@ def test_fabpub_pytest_invocation_receipt_binds_stage_head_tree_and_junit(tmp_pa
         expected_test_tree_sha256="b" * 64,
         expected_activation_env="PHASE_LOOP_TDD_EXPECT_FABPUB=1",
         expected_marker_present=False,
+        expected_selector=selector,
         label="preactivation",
     )
     assert any("head" in error for error in drift["errors"])
     assert any("activation" in error for error in drift["errors"])
     assert any("JUnit digest" in error for error in drift["errors"])
+    assert any("frozen selector" in error for error in drift["errors"])
 
     payload["head"] = "a" * 40
     payload["junit_sha256"] = hashlib.sha256(junit.read_bytes()).hexdigest()
+    payload["argv"][5] = selector
     receipt.write_text(json.dumps(payload), encoding="utf-8")
     false_final = fabpub_chronology.audit_pytest_invocation_receipt(
         receipt,
@@ -1056,9 +1071,81 @@ def test_fabpub_pytest_invocation_receipt_binds_stage_head_tree_and_junit(tmp_pa
         expected_test_tree_sha256="b" * 64,
         expected_activation_env=None,
         expected_marker_present=False,
+        expected_selector=selector,
         label="final",
     )
     assert "the final argv activation does not match its lifecycle stage" in false_final["errors"]
+
+
+def test_fabpub_red_receipt_binds_head_tree_and_junit(monkeypatch, tmp_path):
+    selector = "fabpub_ or test_publishing"
+    junit = tmp_path / "red.junit.xml"
+    junit.write_text("<testsuites tests=\"0\"/>\n", encoding="utf-8")
+    raw_log = tmp_path / "red.raw.log"
+    raw_log.write_text("intentional RED\n", encoding="utf-8")
+    receipt = tmp_path / "red.invocation.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "schema": "fabpub_pytest_invocation.v1",
+                "argv": [
+                    "env",
+                    "PHASE_LOOP_TDD_EXPECT_FABPUB=1",
+                    "pytest",
+                    "phase-loop-runtime/tests",
+                    "-k",
+                    selector,
+                    "--junitxml",
+                    str(junit),
+                ],
+                "exit_code": 1,
+                "junit": str(junit),
+                "junit_sha256": "0" * 64,
+                "head": "a" * 40,
+                "test_tree_sha256": "b" * 64,
+                "raw_log": str(raw_log),
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        fabpub_chronology,
+        "reduce_junit",
+        lambda _repo, _junit: {
+            "artifact": str(junit),
+            "artifact_sha256": hashlib.sha256(junit.read_bytes()).hexdigest(),
+            "failed": {},
+            "passed": set(),
+            "skipped": set(),
+            "errored": {},
+            "xfails": [],
+            "duplicates": [],
+            "declared_totals": {"tests": 0, "failures": 0, "errors": 0, "skipped": 0},
+            "resolved_total": 0,
+            "unresolved_total": 0,
+            "unresolved": [],
+        },
+    )
+    guard = SimpleNamespace(
+        FABPUB_RED_NODEIDS=(),
+        FABPUB_RED_ANCHORS={},
+        FABPUB_ACTIVATION_ENV="PHASE_LOOP_TDD_EXPECT_FABPUB",
+    )
+
+    report = fabpub_chronology.audit_red_evidence(
+        tmp_path,
+        guard,
+        junit,
+        raw_log,
+        receipt,
+        expected_head="c" * 40,
+        expected_test_tree_sha256="d" * 64,
+        expected_selector=selector,
+    )
+
+    assert "the RED invocation head does not match the tests-only stage" in report["errors"]
+    assert "the RED invocation test-tree digest does not match" in report["errors"]
+    assert "the RED invocation JUnit digest does not match" in report["errors"]
 
 
 def test_fabpub_panel_envelope_binds_reviewed_inputs_and_four_usable_seats(tmp_path):
@@ -1114,7 +1201,11 @@ def test_fabpub_final_junit_reduces_the_full_frozen_boundary(monkeypatch, tmp_pa
     monkeypatch.setattr(
         fabpub_chronology,
         "load_guard",
-        lambda _repo: SimpleNamespace(FABPUB_ACTIVATION_ENV="PHASE_LOOP_TDD_EXPECT_FABPUB"),
+        lambda _repo: SimpleNamespace(
+            FABPUB_ACTIVATION_ENV="PHASE_LOOP_TDD_EXPECT_FABPUB",
+            FABPUB_RED_SELECTOR="fabpub_",
+            FABPUB_FINAL_SELECTOR="fabpub_",
+        ),
     )
     monkeypatch.setattr(
         fabpub_chronology,

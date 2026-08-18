@@ -26,7 +26,10 @@ import threading
 
 import pytest
 
-from _fabpub_tdd_guard import fabpub_capability_active, fabpub_migrated_activated
+from _fabpub_tdd_guard import (
+    fabpub_marker_version,
+    fabpub_migrated_activated,
+)
 from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
 from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore, EvidenceRecord
 from phase_loop_runtime.convergence.broker.live import (
@@ -146,7 +149,7 @@ def _assert_ec4_oracle_descriptor(param_id: str, expected_assertion_id: str) -> 
 def _assert_wired(service, record_property, *, param_id=None, monkeypatch=None):
     ev = service.evidence_store
     assert service.admission_store.epoch_blocked() is False
-    if fabpub_capability_active():
+    if fabpub_marker_version() == 1:
         from phase_loop_runtime.convergence.broker import live
 
         assert monkeypatch is not None
@@ -178,7 +181,7 @@ def test_github_broker_admission_store_is_wired_to_evidence_revocation(
 
     def _contract():
         from phase_loop_runtime import verification_evidence
-        kwargs = {"_test_only_explicit_root": True} if fabpub_capability_active() else {}
+        kwargs = {"_test_only_explicit_root": True} if fabpub_marker_version() == 1 else {}
         service = build_github_broker_client(
             tmp_path / "repo", broker_root=tmp_path / "broker", **kwargs
         )
@@ -208,7 +211,7 @@ def test_routing_broker_admission_store_is_wired_to_evidence_revocation(
 
     def _contract():
         from phase_loop_runtime import verification_evidence
-        if fabpub_capability_active():
+        if fabpub_marker_version() == 1:
             from phase_loop_runtime.convergence.broker.live import (
                 _test_only_repository_broker_client,
             )
