@@ -177,6 +177,10 @@ class PublishResumeCandidate:
         return getattr(transaction, name)
 
 
+class PublishCrashInjected(RuntimeError):
+    pass
+
+
 @contextlib.contextmanager
 def crash_after(anchor: str):
     if anchor not in FABPUB_CRASH_ANCHORS:
@@ -191,7 +195,7 @@ def crash_after(anchor: str):
 
 def _crash_at(anchor: str) -> None:
     if getattr(_CRASH_STATE, "anchor", None) == anchor:
-        raise RuntimeError(f"FABPUB crash injected at {anchor}")
+        raise PublishCrashInjected(f"FABPUB crash injected at {anchor}")
 
 
 @dataclass(frozen=True)
@@ -788,6 +792,10 @@ def validate_transaction_owned_workspace(repo: Path, transaction: PublishTransac
     status = _git_bytes(repo, "status", "--porcelain=v1", "-z")
     if status is None:
         raise RuntimeError("cannot inspect transaction workspace")
+    if transaction.state == PublishTransactionState.COMMIT_OBJECT_DURABLE and not status:
+        current = _git_output(repo, "rev-parse", transaction.exact_ref)
+        if current == transaction.expected_commit_oid:
+            return
     if transaction.state in (
         PublishTransactionState.PREPARED,
         PublishTransactionState.COMMIT_OBJECT_DURABLE,
@@ -818,11 +826,31 @@ def inspect_publish_resume_candidate(repo: Path, *, checkpoint_root: Path, node_
         return PublishResumeCandidate(PublishTransactionState.CONFLICTED)
     active = store.load_active()
     if active is None:
+        tombstones = tuple(sorted(store.root.glob("*.tombstone.json"))) if store.root.exists() else ()
+        if len(tombstones) == 1:
+            transaction_id = tombstones[0].name.removesuffix(".tombstone.json")
+            transaction = _load_transaction(
+                Path(repo), Path(checkpoint_root), transaction_id, store.node_id
+            )
+            return PublishResumeCandidate(PublishTransactionState.CONFLICTED, transaction)
         return PublishResumeCandidate(PublishTransactionState.CONFLICTED)
     transaction = _load_transaction(
         Path(repo), Path(checkpoint_root), active.get("transaction_id", ""), store.node_id
     )
     if transaction is None or transaction.tombstone_path.exists():
+        return PublishResumeCandidate(PublishTransactionState.CONFLICTED, transaction)
+    if transaction.canonical_repository_identity != canonical_repository_identity(Path(repo)):
+        return PublishResumeCandidate(PublishTransactionState.CONFLICTED)
+    if (
+        transaction._payload.get("node_id", store.node_id) != store.node_id
+        or transaction._payload.get(
+            "repository", transaction.canonical_repository_identity
+        )
+        != transaction.canonical_repository_identity
+        or transaction.recorded_repo != Path(repo).resolve()
+    ):
+        return PublishResumeCandidate(PublishTransactionState.CONFLICTED, transaction)
+    if transaction.checkpoint_root.resolve() != Path(checkpoint_root).resolve():
         return PublishResumeCandidate(PublishTransactionState.CONFLICTED, transaction)
     if transaction.state in (
         PublishTransactionState.PREPARED,
@@ -971,19 +999,36 @@ def publish_from_worktree(
         return _blocked("branch_protected", f"Cannot publish from protected branch {branch!r}")
     if pr_title is not None:
         return _blocked("custom_title_unsupported", "BrokerRequest has no pr_title field")
+    from .convergence.broker.live import fabpub_capability_active
+
+    active = fabpub_capability_active()
+    authority = publish_authority.envelope_authority_preimage if publish_authority else None
+    node_id = (
+        resolve_transaction_node_id(authority, authority.get("node_id"))
+        if authority is not None
+        else "node"
+    )
+    candidate = (
+        inspect_publish_resume_candidate(
+            repo,
+            checkpoint_root=Path(checkpoint_root),
+            node_id=node_id,
+        )
+        if active and authority is not None and checkpoint_root is not None
+        else PublishResumeCandidate(PublishTransactionState.CONFLICTED)
+    )
+    resuming = candidate.transaction is not None and candidate.state != PublishTransactionState.CONFLICTED
     if not prebuilt and not owned_paths:
         return _blocked("no_owned_paths", "No owned paths to stage; nothing to publish")
-    if not prebuilt and _git(repo, "add", "--", *owned_paths).returncode:
+    if not prebuilt and not resuming and _git(repo, "add", "--", *owned_paths).returncode:
         return _blocked("stage_failed", "git add -- <owned_paths> failed")
-    audit = None if prebuilt else _audit_staged_diff(repo, owned_paths)
+    audit = None if prebuilt or resuming else _audit_staged_diff(repo, owned_paths)
     if audit is not None:
         return audit
     if broker_client is None:
         return _blocked("broker_required", "publish mutation requires an admitted broker client")
 
-    from .convergence.broker.live import fabpub_capability_active
-
-    if not fabpub_capability_active():
+    if not active:
         if admission is None:
             return _blocked("broker_required", "publish mutation requires an admitted broker client")
         if not prebuilt and _git(repo, "commit", "-m", commit_message or "chore: publish plan changes").returncode:
@@ -998,16 +1043,35 @@ def publish_from_worktree(
         authority = publish_authority.envelope_authority_preimage
         if Path(checkpoint_root).resolve() != Path(publish_authority.checkpoint_root).resolve():
             return _blocked("checkpoint_root_mismatch", "checkpoint_root must equal the authority handoff root")
-        transaction = (
-            prepare_prebuilt_transaction(repo, checkpoint_root=Path(checkpoint_root), branch=branch, envelope_authority_preimage=authority, base=base, draft=draft, pr_body=pr_body or "")
-            if prebuilt
-            else prepare_publish_transaction(repo, owned_paths=owned_paths, checkpoint_root=Path(checkpoint_root), branch=branch, envelope_authority_preimage=authority, base=base, draft=draft, pr_body=pr_body or "", commit_message=commit_message)
-        )
+        if candidate.transaction is not None:
+            if candidate.state == PublishTransactionState.CONFLICTED:
+                raise RuntimeError("active publish transaction is conflicted")
+            transaction = candidate.transaction
+            if (
+                transaction.envelope_authority_preimage != authority
+                or transaction.branch != branch
+                or transaction.mode != ("prebuilt" if prebuilt else "normal")
+            ):
+                raise RuntimeError("active publish transaction differs from the requested authority")
+        else:
+            transaction = (
+                prepare_prebuilt_transaction(repo, checkpoint_root=Path(checkpoint_root), branch=branch, envelope_authority_preimage=authority, base=base, draft=draft, pr_body=pr_body or "", node_id=node_id)
+                if prebuilt
+                else prepare_publish_transaction(repo, owned_paths=owned_paths, checkpoint_root=Path(checkpoint_root), branch=branch, envelope_authority_preimage=authority, base=base, draft=draft, pr_body=pr_body or "", commit_message=commit_message, node_id=node_id)
+            )
         transaction.resume()
         _crash_at("after_committed_checkpoint_before_broker_execute")
         envelope = _envelope_from_transaction(transaction, authority, repo)
         execution = broker_client.execute(BrokerRequest(BrokerVerb.PUBLISH_COMMITTED_BRANCH, envelope, transaction.canonical_repository_identity, branch, transaction.committed_head_sha, transaction.owned_paths, base=base, draft=draft, pr_body=pr_body or "", adapter_worktree=str(Path(repo).resolve())))
         if execution.accepted:
+            candidate = inspect_publish_resume_candidate(
+                repo,
+                checkpoint_root=Path(checkpoint_root),
+                node_id=transaction.store.node_id,
+            )
+            if candidate.transaction is None or candidate.state == PublishTransactionState.CONFLICTED:
+                raise RuntimeError("broker accepted publish without a recoverable transaction")
+            transaction = candidate.transaction
             while transaction.state != PublishTransactionState.TERMINAL_SEALED:
                 transaction.project(PublishTransactionState.ORDERED[PublishTransactionState.ORDERED.index(transaction.state) + 1])
     if not execution.accepted or execution.publish_result is None:
