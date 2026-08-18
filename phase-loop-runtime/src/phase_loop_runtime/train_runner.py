@@ -359,6 +359,7 @@ def _default_preflight(
     resolve_workspace: ResolveWorkspace,
     *,
     transaction_workspaces: frozenset[Path] = frozenset(),
+    requires_gh_auth: bool = True,
 ) -> List[str]:
     """Run all preflight checks across all nodes; return list of errors (empty = pass).
 
@@ -378,9 +379,10 @@ def _default_preflight(
     errors: List[str] = []
 
     # gh auth — once globally, before touching any repo
-    auth_err = _check_gh_auth()
-    if auth_err:
-        errors.append(auth_err)
+    if requires_gh_auth:
+        auth_err = _check_gh_auth()
+        if auth_err:
+            errors.append(auth_err)
 
     for node in nodes:
         workspace = resolve_workspace(node)
@@ -2382,10 +2384,18 @@ def _run_train_unfenced(
         }
 
     if preflight_fn is _default_preflight:
+        broker_client = (
+            coordinator_runtime.broker_client
+            if coordinator_runtime is not None
+            else None
+        )
         preflight_errors = preflight_fn(
             topo_order,
             resolve_workspace,
             transaction_workspaces=frozenset(transaction_workspaces),
+            requires_gh_auth=getattr(
+                broker_client, "requires_gh_auth_preflight", True
+            ),
         )
     else:
         preflight_errors = preflight_fn(topo_order, resolve_workspace)

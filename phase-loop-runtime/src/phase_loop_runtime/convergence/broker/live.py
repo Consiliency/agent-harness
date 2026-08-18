@@ -34,6 +34,9 @@ from .credsep import ALLOWED_ORIGIN_HOSTS, GitHubBrokerAdapter
 from .evidence import BrokerEvidenceStore
 from .verbs import BrokerClient, BrokerService
 
+_CANONICAL_GITHUB_BROKER_ADAPTER = GitHubBrokerAdapter
+_CANONICAL_PROVIDER_RUN = subprocess.run
+
 # ---------------------------------------------------------------------------
 # FABPUB activation, domains, and typed blockers
 # ---------------------------------------------------------------------------
@@ -2622,6 +2625,14 @@ class _RepositoryRoutingBrokerService:
         self._services: dict[tuple[str, str], BrokerService] = {}
         self._stores: dict[str, tuple] = {}
         self._leases: dict[str, WriterGenerationLease] = {}
+
+    @property
+    def requires_gh_auth_preflight(self) -> bool:
+        """Whether the configured provider adapter depends on the GitHub CLI."""
+        return (
+            GitHubBrokerAdapter is _CANONICAL_GITHUB_BROKER_ADAPTER
+            and self._run is _CANONICAL_PROVIDER_RUN
+        )
 
     def _stores_for(self, snapshot: RepositorySnapshot):
         """One admission + evidence store per canonical repository, shared.
