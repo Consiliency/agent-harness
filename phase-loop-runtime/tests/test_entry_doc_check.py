@@ -348,27 +348,62 @@ class TestArmPinFreshness(unittest.TestCase):
 
 
 class TestHistoricalPin(unittest.TestCase):
-    """Mutation coupling: the defect that motivated the arm must be caught."""
+    """Mutation coupling: the defects that motivated the arms must be caught.
+
+    The fixture is the **whole** file as it stood at ``8f191d99``. An earlier
+    revision carried only its first 32 lines, which silently dropped the
+    ``../phase-loop-skills`` relative link on line 49 -- the second of the two
+    Consiliency/agent-harness#568 defects living in that same file. The
+    single-arm assertion below then passed only because the truncation had
+    removed the line that would have produced the other arm: the test asserted
+    its own truncation rather than the behaviour.
+    """
+
+    #: Sibling content the historical README's path claims refer to. Without it
+    #: arm 1 reports four findings that are artefacts of an empty fixture repo,
+    #: not properties of the document under test.
+    SCAFFOLD = {
+        "phase-loop-skills/README.md": "skills\n",
+        "phase-loop-skills/advisor-board/_overrides/claude/SKILL.md": "override\n",
+        ".consiliency/manifest.json": "{}\n",
+    }
 
     def test_v015_historical_pin_is_stale(self):
         historical = (FIXTURES / "historical_8f191d99_README.md").read_text(encoding="utf-8")
-        self.assertIn("@v0.1.5", historical)
 
         with TemporaryDirectory() as tmp:
             # A constructed repo preserving the LOGICAL path, so the doc has an
             # owning package and a suppression identity.
-            repo = build_repo(tmp, {"phase-loop-runtime/README.md": historical})
+            repo = build_repo(
+                tmp,
+                {"phase-loop-runtime/README.md": historical, **self.SCAFFOLD},
+            )
             found = edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))
 
-            self.assertTrue(found, "the historical stale pin must be reported")
-            for finding in found:
-                self.assertEqual(finding.arm, "pins")
+            # Exactly the two historical defects, across TWO arms. An equality
+            # assertion, so a fixture that loses a defect fails here rather than
+            # quietly narrowing what the test covers.
+            self.assertEqual(
+                codes(found),
+                [
+                    ("pins", "stale_pin"),
+                    ("pins", "stale_pin"),
+                    ("published_rendering", "relative_link_in_published_readme"),
+                ],
+            )
+
+            pins = [f for f in found if f.arm == "pins"]
+            for finding in pins:
                 # Staleness, NOT nonexistence: v0.1.5 IS a real tag in the
                 # namespace, so an existence rule would pass this defect.
-                self.assertEqual(finding.code, "stale_pin")
                 self.assertIn("@v0.1.5", finding.token)
                 self.assertIn(FIXTURE_LATEST_TAG, finding.message)
                 self.assertIn(edc._RELEASE_TAG_GLOB, finding.message)
+            self.assertEqual([f.line for f in pins], [22, 24])
+
+            link = [f for f in found if f.arm == "published_rendering"][0]
+            self.assertEqual(link.token, "../phase-loop-skills")
+            self.assertEqual(link.line, 49)
 
             # The pinned tag really does exist -- that is the whole point.
             tags = subprocess.run(
@@ -380,6 +415,11 @@ class TestHistoricalPin(unittest.TestCase):
             self.assertEqual(tags, ["v0.1.5"])
 
     def test_fixture_matches_the_commit_it_claims(self):
+        """The fixture must be the commit's file, byte for byte.
+
+        Equality, not containment: ``assertIn`` accepts any prefix, so it
+        cannot fail on the truncation it exists to catch.
+        """
         proc = subprocess.run(
             ["git", "-C", str(REPO_ROOT), "show", "8f191d99:phase-loop-runtime/README.md"],
             capture_output=True,
@@ -389,7 +429,7 @@ class TestHistoricalPin(unittest.TestCase):
         if proc.returncode != 0:
             self.skipTest("commit 8f191d99 not present (shallow clone)")
         fixture = (FIXTURES / "historical_8f191d99_README.md").read_text(encoding="utf-8")
-        self.assertIn(fixture.rstrip("\n"), proc.stdout)
+        self.assertEqual(fixture, proc.stdout)
 
 
 # ---------------------------------------------------------------------------
