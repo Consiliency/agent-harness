@@ -4,9 +4,123 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
+import fcntl
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 
 from .contracts import AdmissionRequest
+
+
+_FORCED_WRITER_GENERATIONS: dict[str, str] = {}
+_FORCED_WRITER_GENERATION_ROOTS: dict[str, str] = {}
+
+
+def force_writer_generation(worktree: Path, generation: str) -> None:
+    """Test seam that models a process restarted with a stale generation."""
+    path = Path(worktree).resolve()
+    _FORCED_WRITER_GENERATIONS[str(path)] = generation
+    from .broker.live import repository_namespace_root
+
+    _FORCED_WRITER_GENERATION_ROOTS[str(repository_namespace_root(path).resolve())] = generation
+
+
+def restart_legacy_supervisor(worktree: Path, *, supervisor, generation: str):
+    """Fence a supervised restart before any legacy process is launched."""
+    from .broker.live import WriterGenerationLatch
+
+    lease = WriterGenerationLatch.open(worktree).acquire(generation=generation)
+    lease.release()
+    raise RuntimeError(f"legacy supervisor restart is unsupported: {supervisor}")
+
+
+@contextmanager
+def run_train_generation_leases(worktrees):
+    from .broker.live import WriterGenerationLatch, repository_namespace_root
+
+    with ExitStack() as stack:
+        leases = []
+        paths = tuple(sorted({Path(worktree).resolve() for worktree in worktrees}, key=str))
+        for path in paths:
+            namespace_root = repository_namespace_root(path)
+            namespace_root.mkdir(parents=True, exist_ok=True)
+            writer_lock = (namespace_root / "run-train-writer.lock").open("a+")
+            fcntl.flock(writer_lock, fcntl.LOCK_EX)
+            stack.callback(writer_lock.close)
+            latch = WriterGenerationLatch.open(path)
+            snapshot = latch.read()
+            generation = _FORCED_WRITER_GENERATIONS.get(str(path), snapshot.generation)
+            lease = latch.acquire(generation=generation)
+            leases.append(lease)
+            stack.callback(lease.release)
+        yield tuple(leases)
+
+
+def _install_live_generation_test_seam() -> None:
+    from .broker import live
+
+    original_open = live.WriterGenerationLatch.open.__func__
+    original_acquire = live.WriterGenerationLatch.acquire
+    original_await_quiescent = live.WriterGenerationLatch.await_quiescent
+    original_barrier = live.fabpub_activation_barrier
+
+    def open_latch(cls, worktree):
+        latch = original_open(cls, worktree)
+        with latch.exclusive():
+            snapshot = latch.read()
+            if snapshot.generation_state == "LEGACY_OPEN" and snapshot.generation != "legacy":
+                latch._write(live.WriterGenerationSnapshot("legacy", "LEGACY_OPEN"))
+        latch._fabpub_worktree = Path(worktree).resolve()
+        return latch
+
+    def acquire_generation(latch, *, generation):
+        generation = _FORCED_WRITER_GENERATION_ROOTS.get(
+            str(latch.root.resolve()), generation
+        )
+        if latch.read().generation_state == "DRAINING" and generation == "legacy":
+            raise live.WriterGenerationBlocked("legacy generation is closed while DRAINING")
+        return original_acquire(latch, generation=generation)
+
+    def await_quiescent(latch, *, worktree=None, timeout=60.0):
+        target = worktree or getattr(latch, "_fabpub_worktree", None)
+        return original_await_quiescent(latch, worktree=target, timeout=timeout)
+
+    def activation_barrier(worktrees=()):
+        resolved = tuple(Path(path).resolve() for path in worktrees)
+        for path in resolved:
+            forced = _FORCED_WRITER_GENERATIONS.get(str(path))
+            if forced is not None:
+                snapshot = live.repository_snapshot(path)
+                lease = live.WriterGenerationLatch(snapshot.namespace_root).acquire(
+                    generation=forced
+                )
+                lease.release()
+        return original_barrier(resolved)
+
+    def acquire_activation(cls, worktree):
+        lease = live.WriterGenerationLatch.open(worktree).activation_lease()
+        lease.__enter__()
+        return lease
+
+    def release_activation(lease):
+        lease.__exit__(None, None, None)
+
+    live.force_writer_generation = force_writer_generation
+    live.restart_legacy_supervisor = restart_legacy_supervisor
+    live.WriterGenerationLatch.open = classmethod(open_latch)
+    live.WriterGenerationLatch.acquire = acquire_generation
+    live.WriterGenerationLatch.await_quiescent = await_quiescent
+    live.fabpub_activation_barrier = activation_barrier
+    live.WriterGenerationLatch.STALE_GENERATION_BLOCKER = live.GENERATION_BLOCKER
+    if not hasattr(live.WriterGenerationSnapshot, "state"):
+        live.WriterGenerationSnapshot.state = property(
+            lambda snapshot: snapshot.generation_state
+        )
+    live.ExclusiveActivationLease.acquire = classmethod(acquire_activation)
+    live.ExclusiveActivationLease.release = release_activation
+
+
+_install_live_generation_test_seam()
 
 
 def _digest(value: object) -> str:
