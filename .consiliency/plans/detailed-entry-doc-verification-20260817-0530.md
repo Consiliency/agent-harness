@@ -1,9 +1,26 @@
 # Detailed plan: diff-independent entry-point documentation verification
 
-**Revision 2** — rewritten after a cross-vendor panel returned **DISAGREE ×2**. Every finding
-below was verified against the tree before being folded in; two of them made the first
-revision unbuildable as written. The changes are substantial enough that this revision
-requires re-review before implementation.
+**Revision 3** — final. Revision 2 went back to the panel and both seats found further
+blocking defects, again verified against the tree before folding. Grok's verdict was "with
+those three folded in, this is ready to implement; I would not send it around a third full
+panel cycle"; codex returned DISAGREE with three overlapping amendments. Both sets are folded
+below as **binding**, not advisory. No further panel cycle: the amendments now converge rather
+than diverge, and the least permissive seat has said the marginal value of another round is
+gone.
+
+**Two revision-2 defects, both confirmed by me before folding:**
+
+1. **Acceptance criterion 1 was red on the live docs before any code existed.** The root
+   README carries `pip install consiliency-harness==X.Y.Z` (`README.md:66`) and
+   `pip install phase-loop-runtime==X.Y.Z` (`:92`). Those are correct documentation using a
+   version metavariable, but revision 2's grammar accepted only `<VERSION>` — so arm 2 would
+   have flagged two correct lines. **`X.Y.Z` is now an accepted version metavariable.**
+2. **The `DOC_SURFACE_GLOBS` widening was not mechanical — it is removed entirely.** In
+   `docs_audit.evaluate`, a general public surface is satisfied by `if not (changed_docs or
+   decision)` — *any* recognised doc change. Adding `AGENTS.md`/`CLAUDE.md` there would let an
+   agent-instruction edit satisfy a `cli.py` documentation obligation. That is a semantic
+   loosening of an existing gate and does not belong in this plan. If it is wanted, it needs
+   its own change with its own tests.
 
 ## Task
 
@@ -71,13 +88,16 @@ Module shape mirrors `roadmap_lint.py`: importable API + `main(argv) -> int` + `
 entry (`roadmap_lint.py:394`, `:748`, `:798`). **No `phase-loop` subcommand** — `cli.py` is
 owned by the in-flight FABPUB phase (registration shape is at `cli.py:388`, not modified).
 
-- `ENTRY_DOCS` — add — an **explicit tuple**, not globs: `README.md`, `AGENTS.md`,
-  `CLAUDE.md`, `phase-loop-runtime/README.md`, `phase-loop-skills/README.md`,
-  `consiliency-harness/README.md`. A new package README is added here deliberately; silence
-  is preferable to a walk that swallows generated stubs.
-- `PLACEHOLDERS` — add — closed grammar, position-sensitive: `<TAG>` valid **only** in a ref
-  position, `<VERSION>` **only** in a package-version position. `<PATH>`/`<HARNESS>` are
-  path/CLI metavariables and are **not** accepted in pin positions (panel finding).
+- `ENTRY_DOCS` — add — an explicit tuple (`README.md`, `AGENTS.md`, `CLAUDE.md`,
+  `phase-loop-runtime/README.md`, `phase-loop-skills/README.md`,
+  `consiliency-harness/README.md`), **reconciled against every package's `[project].readme`
+  declaration**. Both packages declare one (verified). A long-description path missing from
+  `ENTRY_DOCS` is itself a finding — otherwise a new package README is silently uncovered,
+  which is the same drift class this check exists to catch.
+- `PLACEHOLDERS` — add — closed grammar, position-sensitive. Ref position: `<TAG>` only.
+  Version position: `<VERSION>` **and the bare metavariable `X.Y.Z`**, which the live root
+  README already uses twice and which is correct documentation. `<PATH>`/`<HARNESS>` are
+  path/CLI metavariables, never valid in a pin position.
 - `Finding(file, line, arm, message, code)` — add — `code` is the machine-readable reason a
   suppression must cite.
 - `check_paths(text, doc_path, repo)` — add — **arm 1**. Backtick tokens that look like repo
@@ -90,27 +110,47 @@ owned by the in-flight FABPUB phase (registration shape is at `cli.py:388`, not 
   - `pip install <dist>==<V>` → `<V>` must equal that distribution's own
     `pyproject.toml` version. `phase-loop-runtime==0.7.13` passes today; the next bump fails
     CI until the README moves.
-  - `@v<X.Y.Z>` in a git-install URL → must equal the repository's **latest** release tag
-    (`git tag --list --sort=-v:refname | head -1`), or be `<TAG>`.
+  - `@v<X.Y.Z>` in a git-install URL → must equal the repository's **latest release tag**,
+    resolved as `git tag --list 'v[0-9]*' --sort=-v:refname | head -1`. Both halves are
+    load-bearing and verified: lexical sort returns `v0.7.9` where version sort returns the
+    correct `v0.7.13`; and the filter excludes 7 non-release tags that exist today, one of
+    which (`consiliency-harness-v0.6.1`) is **a different package's release tag** and would
+    otherwise be mistaken for this one's.
+  - **Two clocks, kept separate.** A distribution pin (`dist==V`) is compared against that
+    distribution's own source version. A git ref (`@vX.Y.Z`) is compared against the
+    repository's release-tag namespace. These are different clocks and the check must never
+    compare one against the other.
+  - Arm 2 scans **raw text including fenced blocks** — install commands live in fences. It
+    must not reuse arm 1's backtick/fence-skipping pipeline.
   - **This makes the historical `v0.1.5` a finding even though the tag exists** — which is the
     behaviour the acceptance criterion always demanded and revision 1 could not deliver.
   - Requires repo + package context, hence the signature change.
 - `check_published_rendering(text, doc_path, repo)` — add — **arm 3 (replaces old arm 4)**.
-  For a README that ships as a package long-description (`phase-loop-runtime/README.md`,
-  `consiliency-harness/README.md`), a non-fragment relative link is a defect: GitHub rewrites
-  relative links using repository context, PyPI does not. This catches the observed
-  `../phase-loop-skills` defect **deterministically and offline**. Parse links with a closed
-  grammar — do **not** reuse arm 1's backtick heuristic.
-- `SUPPRESSIONS` / `load_suppressions(repo)` — add — a checked-in file mapping
-  `file:line:code` → reason string. Every entry needs a non-empty reason; the check prints the
-  active count and **fails if it exceeds a budget constant**. This gives the positive control
-  a remedy that is not "disable the check", without letting suppression become the default.
-- `check_repo(repo)` / `main(argv)` — add — `0` clean, `1` findings, `2` usage/IO error.
+  For a README that ships as a package long-description (derived from `[project].readme`, not
+  hardcoded), a non-fragment relative destination is a defect: GitHub rewrites relative links
+  using repository context, PyPI does not. Catches the observed `../phase-loop-skills` defect
+  **deterministically and offline**. Parse with a closed grammar covering **inline links,
+  images, reference definitions, and autolinks** — not just inline links, and never arm 1's
+  backtick heuristic.
+- `SUPPRESSIONS` / `load_suppressions(repo)` — add — a checked-in file mapping a
+  **fingerprint** (`file` + `code` + a hash of the offending token, not a line number) to a
+  non-empty reason. An entry that matches nothing is itself a finding, so stale suppressions
+  cannot accumulate silently. **Budget is 0 at landing**: the live positive control must be
+  green on raw findings, before suppression. The mechanism exists for future drift, not to
+  buy today's green.
+- `check_repo(repo)` / `main(argv)` — add — `--repo <root>` is **required**; optional
+  `--file <path>` narrows to one entry doc but is interpreted as a **logical path inside that
+  repo**, so package ownership and suppression identity stay well-defined. There is no
+  loose-file mode: `/tmp/old.md` has no owning package and no identity. Exit `0` clean,
+  `1` findings, `2` usage/IO error.
 
-### `phase-loop-runtime/src/phase_loop_runtime/docs_surfaces.py` (modify)
+### `docs_surfaces.py` — **NOT modified** (removed from this plan)
 
-- `DOC_SURFACE_GLOBS` — modify — add `"AGENTS.md"` and `"CLAUDE.md"` (verified: zero
-  occurrences today). Mechanical prerequisite, not the deliverable.
+Revision 2 proposed adding `AGENTS.md`/`CLAUDE.md` to `DOC_SURFACE_GLOBS`, calling it a
+mechanical prerequisite. It is not: `docs_audit.evaluate` satisfies a general public-surface
+obligation with *any* recognised doc change, so the widening would let an agent-instruction
+edit stand in for CLI documentation. Removed. This check reads those files directly and needs
+no taxonomy change; the widening, if wanted, is a separate change with its own tests.
 
 ### `phase-loop-runtime/tests/test_entry_doc_check.py` + `tests/fixtures/entry_docs/` (create)
 
@@ -164,9 +204,10 @@ PYTHONPATH=src:tests python3 -m pytest tests/test_entry_doc_check.py -q
 PYTHONPATH=src python3 -m phase_loop_runtime.entry_doc_check --repo ..; echo "exit=$?"
 
 # Mutation coupling: the historical stale pin must be a finding, for the right reason.
-git show 8f191d99:phase-loop-runtime/README.md > /tmp/old.md
-PYTHONPATH=src python3 -m phase_loop_runtime.entry_doc_check --file /tmp/old.md --repo ..
-# expect exit 1 with code=stale_pin (NOT unknown_ref)
+# Uses a CONSTRUCTED repo fixture with the logical path preserved -- not a loose /tmp file,
+# which would have no owning package and no suppression identity.
+PYTHONPATH=src:tests python3 -m pytest tests/test_entry_doc_check.py -q -k historical_pin
+# asserts: reported, code=stale_pin (NOT unknown_ref), against the v[0-9]* release namespace
 
 # Adversarial positives must be silent.
 PYTHONPATH=src python3 -m pytest tests/test_entry_doc_check.py -q -k adversarial
@@ -177,17 +218,22 @@ PYTHONPATH=src:tests python3 -m pytest tests/test_docs_audit.py -q   # taxonomy 
 ## Acceptance criteria
 
 - [ ] `entry_doc_check --repo .` exits **0** against current live entry docs, asserted by
-      `test_current_repo_is_clean`, with the suppression file **empty or within budget** — a
-      positive control bought by blanket suppression is not a positive control.
+      `test_current_repo_is_clean`, **with zero raw findings before suppression** — a
+      positive control bought by suppression is not a positive control. This is the criterion
+      revision 2 failed: `==X.Y.Z` in the root README is correct documentation and must pass.
 - [ ] The historical `@v0.1.5` pin at `8f191d99` is reported with code `stale_pin`. The tag
-      exists; the finding must rest on staleness against `phase-loop-runtime`'s current
-      version, not on the ref being unresolvable.
+      exists; the finding must rest on staleness against the **repository release-tag
+      namespace** (`v[0-9]*`, version-sorted latest = `v0.7.13`), not on the ref being
+      unresolvable and not against a distribution's source version — those are separate
+      clocks.
 - [ ] Every arm has both a negative fixture (reported, asserted by `arm` and `code`) and an
       adversarial-positive fixture (correct-but-tricky, **zero** findings).
 - [ ] A relative non-fragment link in a package README is reported; the same link in the root
       README is not.
-- [ ] `AGENTS.md`/`CLAUDE.md` are in `DOC_SURFACE_GLOBS` and `test_docs_audit.py` passes
-      unchanged.
+- [ ] `docs_surfaces.py` is **unmodified** by this plan, and every path in each package's
+      `[project].readme` appears in `ENTRY_DOCS` (a missing one is itself a finding).
+- [ ] The suppression file is **empty** at landing; a suppression entry matching nothing is
+      reported.
 
 ## Execution Policy
 
