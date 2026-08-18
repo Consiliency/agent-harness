@@ -6,6 +6,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Repository-wide FABPUB publication authority
+
+- Retract the earlier publish byte-neutrality claim. FABPUB intentionally renumbers
+  publish admission epochs and derived fence records, adds a deterministic
+  `FABPUB-Intent-ID` commit-message trailer, and binds completed-effect keys to the
+  canonical repository identity.
+- The ratified repository-wide allocator also makes permanent ambiguity
+  repository-scoped by design.
+- This does not deliver FABREADMIT, its dormant activation, or RESIDUAL's unresolved
+  `base` identity carry.
+
 ### CI: offload heavy execution to the tailnet host `ai` (Consiliency/agent-harness#530, plan `detailed-dagger-offload-ci-20260812`)
 
 - `.github/workflows/test.yml` gains an explicit `elig` -> `{offload | hosted}` -> `gate`

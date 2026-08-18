@@ -72,7 +72,9 @@ from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Sequence, Set
 
 from .convergence.broker.credsep import REPO_REDIRECT_KEYS, resolve_broker_repo_identity
+from .convergence.fencing import run_train_generation_leases
 from .cross_repo_channel import set_upstream_ref
+from .publishing import PublishAuthorityPreimages
 from .train_ledger import LedgerRecord, append_record, read_ledger
 from .train_roadmap import TrainEdge, TrainNode, TrainRoadmap
 
@@ -86,6 +88,12 @@ ResolveOwnedPaths = Callable[[TrainNode], Sequence[str]]
 #: Matches ``_check_base_branch_exists``'s default so the ahead-check and the
 #: existence-check agree on which ``origin/<base>`` to use.
 _DEFAULT_BASE = "main"
+
+FABPUB_RESUME_ORDERING_ANCHORS = (
+    "before_default_clean_preflight_transaction_probe",
+    "before_run_loop_publish_transaction_resume",
+    "after_terminal_publish_before_unqualified_clean_recheck",
+)
 
 
 @dataclass(frozen=True)
@@ -104,7 +112,7 @@ class CoordinatorRuntime:
     broker_client: object | None = None
 
 
-def _default_build_admission(runtime: "CoordinatorRuntime", node, workspace: Path, owned_paths):
+def _build_legacy_publish_admission(runtime: "CoordinatorRuntime", node, workspace: Path, owned_paths):
     """Build a per-node AdmissionRequest from the coordinator runtime's authority.
 
     Mirrors the fencing construction used by ``refresh.refresh_downstream_after_merge``.
@@ -146,6 +154,45 @@ def _default_build_admission(runtime: "CoordinatorRuntime", node, workspace: Pat
         expected_version_predicate="head == committed",
         authority_domain_scope=runtime.workspace_id or runtime.train_id,
     )
+
+
+def _default_build_publish_authority(
+    runtime: "CoordinatorRuntime", node, workspace: Path, owned_paths
+):
+    """Return only the pre-object authority needed by the FABPUB publisher."""
+    import hashlib
+
+    from .convergence.broker.live import canonical_repository_identity, is_git_repository
+    identity = (
+        canonical_repository_identity(workspace)
+        if is_git_repository(workspace)
+        else runtime.workspace_id or runtime.train_id
+    )
+    branch_result = subprocess.run(
+        ["git", "-C", str(workspace), "branch", "--show-current"],
+        capture_output=True,
+        text=True,
+    )
+    branch = branch_result.stdout.strip() if branch_result.returncode == 0 else ""
+    owned_digest = hashlib.sha256(os.fsencode("\0".join(sorted(owned_paths)))).hexdigest()
+    authority = {
+        "schema": "PublishEnvelopeAuthorityPreimage.v1",
+        "train_id": runtime.train_id,
+        "node_id": node.node_id,
+        "action": "publish_committed_branch",
+        "roadmap_digest": runtime.roadmap_digest,
+        "effective_code_digest": owned_digest,
+        "dependency_digest": hashlib.sha256(b"").hexdigest(),
+        "verification_plan_digest": runtime.roadmap_digest,
+        "expected_version_predicate": "head == committed",
+        "authority_domain_scope": f"repository:{identity}",
+        "operation_identity": f"publish:{branch or 'detached'}",
+    }
+    return PublishAuthorityPreimages(runtime.coordinator_root, authority)
+
+
+def _node_publish_authority(runtime, node, workspace, owned_paths, nodes, resolve_workspace):
+    return _default_build_publish_authority(runtime, node, workspace, owned_paths)
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +237,10 @@ def _check_repo_clean(workspace: Path, node_id: str) -> Optional[str]:
 def _check_remote_reachable(workspace: Path, node_id: str, remote: str = "origin") -> Optional[str]:
     """Return an error string if the remote is not reachable, else None."""
     completed = subprocess.run(
-        ["git", "-C", str(workspace), "ls-remote", "--exit-code", remote, "HEAD"],
+        [
+            "git", "-C", str(workspace), "ls-remote", "--exit-code",
+            remote, "refs/heads/*",
+        ],
         capture_output=True,
         text=True,
         timeout=30,
@@ -307,6 +357,9 @@ def _prebuilt_owned_paths(
 def _default_preflight(
     nodes: List[TrainNode],
     resolve_workspace: ResolveWorkspace,
+    *,
+    transaction_workspaces: frozenset[Path] = frozenset(),
+    requires_gh_auth: bool = True,
 ) -> List[str]:
     """Run all preflight checks across all nodes; return list of errors (empty = pass).
 
@@ -326,17 +379,15 @@ def _default_preflight(
     errors: List[str] = []
 
     # gh auth — once globally, before touching any repo
-    auth_err = _check_gh_auth()
-    if auth_err:
-        errors.append(auth_err)
+    if requires_gh_auth:
+        auth_err = _check_gh_auth()
+        if auth_err:
+            errors.append(auth_err)
 
     for node in nodes:
         workspace = resolve_workspace(node)
-        checks = [
-            _check_repo_clean,
-            _check_remote_reachable,
-            _check_base_branch_exists,
-        ]
+        checks = [] if Path(workspace).resolve() in transaction_workspaces else [_check_repo_clean]
+        checks.extend((_check_remote_reachable, _check_base_branch_exists))
         # Prebuilt nodes must additionally be strictly ahead of the base.
         if getattr(node, "mode", "execute") == "prebuilt":
             checks.append(_check_branch_ahead_of_base)
@@ -2123,7 +2174,7 @@ def _build_pr_body(
 # Main coordinator
 
 
-def run_train(
+def _run_train_unfenced(
     roadmap: TrainRoadmap,
     ledger_path: Path,
     *,
@@ -2144,6 +2195,7 @@ def run_train(
     # Broker admission builder (runtime, node, workspace, owned_paths) → AdmissionRequest.
     # Only invoked when a broker-authoritative coordinator_runtime is supplied.
     _admission_fn: Optional[Callable] = None,
+    _publish_authority_fn: Optional[Callable] = None,
     # P4 gate: False (default) preserves P3 behavior for all existing callers.
     # The CLI sets this True; run_mode then determines autonomous vs governed.
     _merge_phase_enabled: bool = False,
@@ -2247,7 +2299,12 @@ def run_train(
         if _prebuilt_owned_paths_fn is not None
         else _prebuilt_owned_paths
     )
-    admission_fn = _admission_fn if _admission_fn is not None else _default_build_admission
+    admission_fn = _admission_fn if _admission_fn is not None else _build_legacy_publish_admission
+    publish_authority_fn = (
+        _publish_authority_fn
+        if _publish_authority_fn is not None
+        else _default_build_publish_authority
+    )
 
     # Track whether caller supplied an explicit owned-paths resolver so we know
     # whether to fall back to the run_loop-produced snapshot paths (Finding #1).
@@ -2292,7 +2349,56 @@ def run_train(
     # --- Step 2: Train-level preflight — ALL repos, BEFORE any PR ----------
     # This is the structural guarantee that preflight failure → zero PRs:
     # we return immediately here, before the per-node loop is entered.
-    preflight_errors = preflight_fn(topo_order, resolve_workspace)
+    fabpub_resume_candidates: Dict[str, object] = {}
+    transaction_workspaces: Set[Path] = set()
+    transaction_conflicts: List[str] = []
+    from .convergence.broker.live import fabpub_capability_active
+
+    if (
+        fabpub_capability_active()
+        and coordinator_runtime is not None
+        and preflight_fn is _default_preflight
+    ):
+        from .publishing import inspect_publish_resume_candidate
+
+        for node in topo_order:
+            workspace = Path(resolve_workspace(node)).resolve()
+            authority = publish_authority_fn(coordinator_runtime, node, workspace, ())
+            candidate = inspect_publish_resume_candidate(
+                workspace,
+                checkpoint_root=authority.checkpoint_root,
+                node_id=node.node_id,
+            )
+            if candidate.transaction is not None and candidate.state == "CONFLICTED":
+                transaction_conflicts.append(
+                    f"{node.node_id}: publish transaction conflicted during all-repository preflight"
+                )
+            elif candidate.transaction is not None:
+                fabpub_resume_candidates[node.node_id] = candidate
+                transaction_workspaces.add(workspace)
+
+    if transaction_conflicts:
+        return {
+            "status": "preflight_failed",
+            "errors": transaction_conflicts,
+        }
+
+    if preflight_fn is _default_preflight:
+        broker_client = (
+            coordinator_runtime.broker_client
+            if coordinator_runtime is not None
+            else None
+        )
+        preflight_errors = preflight_fn(
+            topo_order,
+            resolve_workspace,
+            transaction_workspaces=frozenset(transaction_workspaces),
+            requires_gh_auth=getattr(
+                broker_client, "requires_gh_auth_preflight", True
+            ),
+        )
+    else:
+        preflight_errors = preflight_fn(topo_order, resolve_workspace)
     if preflight_errors:
         return {
             "status": "preflight_failed",
@@ -2517,9 +2623,42 @@ def run_train(
         # prebuilt path and whenever the producer wrote no provenance / the flag
         # is off — resolved+verified at admission (never recomputed from head).
         _node_fab_run_id: Optional[str] = None
+        _resumed_publish = False
 
         try:
-            if getattr(node, "mode", "execute") == "prebuilt":
+            resume_candidate = fabpub_resume_candidates.get(nid)
+            if resume_candidate is not None:
+                if resume_candidate.state == "CONFLICTED":
+                    append_record(
+                        ledger_path,
+                        LedgerRecord(node_id=nid, status="blocked"),
+                    )
+                    return {
+                        "status": "blocked",
+                        "node_id": nid,
+                        "detail": {"reason": "publish_transaction_conflicted"},
+                    }
+                transaction = resume_candidate.transaction
+                owned_paths = list(transaction.owned_paths)
+                recovery_root = publish_authority_fn(
+                    coordinator_runtime, node, workspace, owned_paths
+                ).checkpoint_root
+                publish_result = publish_fn(
+                    workspace,
+                    owned_paths,
+                    draft=transaction.draft,
+                    pr_body=transaction.pr_body,
+                    prebuilt=transaction.mode == "prebuilt",
+                    base=transaction.base,
+                    broker_client=coordinator_runtime.broker_client,
+                    publish_authority=PublishAuthorityPreimages(
+                        recovery_root,
+                        transaction.envelope_authority_preimage,
+                    ),
+                    checkpoint_root=recovery_root,
+                )
+                _resumed_publish = True
+            elif getattr(node, "mode", "execute") == "prebuilt":
                 # Prebuilt node: land already-committed, independently-verified
                 # work.  NO upstream injection (it would dirty the clean tree and
                 # force a re-commit), NO run_loop (no executor dispatch), NO
@@ -2555,9 +2694,22 @@ def run_train(
                 # (broker_required) — a prebuilt node never does a direct push.
                 if coordinator_runtime is not None:
                     publish_kwargs["broker_client"] = coordinator_runtime.broker_client
-                    publish_kwargs["admission"] = admission_fn(
-                        coordinator_runtime, node, workspace, owned_paths
-                    )
+                    from .convergence.broker.live import fabpub_capability_active
+
+                    if fabpub_capability_active():
+                        authority = publish_authority_fn(
+                            coordinator_runtime, node, workspace, owned_paths
+                        )
+                        publish_kwargs["publish_authority"] = authority
+                        publish_kwargs["checkpoint_root"] = getattr(
+                            authority,
+                            "checkpoint_root",
+                            coordinator_runtime.coordinator_root,
+                        )
+                    else:
+                        publish_kwargs["admission"] = admission_fn(
+                            coordinator_runtime, node, workspace, owned_paths
+                        )
                 publish_result = publish_fn(
                     workspace,
                     owned_paths,
@@ -2696,9 +2848,22 @@ def run_train(
                 # callers (no runtime) publish exactly as before — no broker kwargs.
                 if coordinator_runtime is not None:
                     publish_kwargs["broker_client"] = coordinator_runtime.broker_client
-                    publish_kwargs["admission"] = admission_fn(
-                        coordinator_runtime, node, workspace, owned_paths
-                    )
+                    from .convergence.broker.live import fabpub_capability_active
+
+                    if fabpub_capability_active():
+                        authority = publish_authority_fn(
+                            coordinator_runtime, node, workspace, owned_paths
+                        )
+                        publish_kwargs["publish_authority"] = authority
+                        publish_kwargs["checkpoint_root"] = getattr(
+                            authority,
+                            "checkpoint_root",
+                            coordinator_runtime.coordinator_root,
+                        )
+                    else:
+                        publish_kwargs["admission"] = admission_fn(
+                            coordinator_runtime, node, workspace, owned_paths
+                        )
                 publish_result = publish_fn(
                     workspace,
                     owned_paths,
@@ -2706,6 +2871,10 @@ def run_train(
                 )
 
         except Exception as exc:
+            from .publishing import PublishCrashInjected
+
+            if isinstance(exc, PublishCrashInjected):
+                raise
             # Inject or run_loop or publish raised — mark blocked so the node
             # is never left stuck at "running" (Finding #3 / exception safety).
             append_record(
@@ -2739,6 +2908,23 @@ def run_train(
                 "node_id": nid,
                 "detail": publish_result,
             }
+
+        if _resumed_publish:
+            clean_error = _check_repo_clean(workspace, nid)
+            if clean_error:
+                append_record(
+                    ledger_path,
+                    LedgerRecord(
+                        node_id=nid,
+                        status="blocked",
+                        branch=publish_result.get("branch"),
+                    ),
+                )
+                return {
+                    "status": "blocked",
+                    "node_id": nid,
+                    "detail": {"reason": clean_error},
+                }
 
         # Record success — store draft head in ``head_sha``; leave
         # ``upstream_merge_sha`` for P4's merged-SHA (Finding #5).
@@ -3254,3 +3440,32 @@ def run_train(
             if _nid_out in completed_nodes  # exclude _train_review_ synthetic node
         },
     }
+
+
+def run_train(*args, **kwargs):
+    """Generation-fenced public boundary for every CLI and direct train run."""
+    roadmap = args[0] if args else kwargs["roadmap"]
+    resolve_workspace = kwargs["resolve_workspace"]
+    from .convergence.broker.live import (
+        fabpub_capability_active,
+        is_git_repository,
+        repository_namespace_root,
+    )
+    from .train_roadmap import validate_train_loud
+
+    try:
+        validate_train_loud(roadmap)
+        ordered = roadmap.topo_order()
+    except (AttributeError, ValueError):
+        return _run_train_unfenced(*args, **kwargs)
+    workspaces = tuple(resolve_workspace(node) for node in ordered)
+    if not all(is_git_repository(path) for path in workspaces):
+        return _run_train_unfenced(*args, **kwargs)
+    durable_latches = tuple(
+        repository_namespace_root(path) / "writer-generation.json"
+        for path in workspaces
+    )
+    if not fabpub_capability_active() and not any(path.exists() for path in durable_latches):
+        return _run_train_unfenced(*args, **kwargs)
+    with run_train_generation_leases(workspaces):
+        return _run_train_unfenced(*args, **kwargs)
