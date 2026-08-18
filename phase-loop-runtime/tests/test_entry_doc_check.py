@@ -23,6 +23,44 @@ from phase_loop_runtime import entry_doc_check as edc
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "entry_docs"
 
+
+def _is_canonical_checkout() -> bool:
+    """True when ``REPO_ROOT`` is the full monorepo.
+
+    Gate A (``scripts/gate_a_cleanroom.sh``) runs this suite from a copied tree
+    containing only ``phase-loop-runtime/`` and ``specs/``, so ``REPO_ROOT``
+    points at a **partial** tree in which `phase-loop-skills/` and
+    `.consiliency/` genuinely do not exist. Assertions about the live entry docs
+    are meaningless there -- not because the check misbehaves, but because it
+    behaves correctly against a different tree.
+
+    Keyed on sibling packages rather than git-ness: the standalone copy's lack
+    of a `.git` is incidental to how Gate A stages the tree and could change,
+    whereas "are the other packages here" is the property that actually decides
+    whether the live entry docs can be resolved.
+    """
+    return (REPO_ROOT / "phase-loop-skills").is_dir() and (
+        REPO_ROOT / "consiliency-harness"
+    ).is_dir()
+
+
+#: Skip marker for assertions that are only meaningful in the full checkout.
+#:
+#: This is NOT a hole in the positive control. `.github/workflows/entry-doc-check.yml`
+#: runs `entry_doc_check --repo .` against the real checkout on every pull request,
+#: push to main, and release tag, and nothing about tree posture can disable it --
+#: that workflow is the load-bearing control. The assertions below are a
+#: convenience duplicate that happens to run inside the test suite, so skipping
+#: them where they cannot be evaluated costs no coverage. Do not "fix" a red
+#: standalone run by widening this marker to the arms themselves: every arm's
+#: behaviour is proven by constructed fixtures, which are posture-independent
+#: and must keep running everywhere.
+CANONICAL_ONLY = unittest.skipUnless(
+    _is_canonical_checkout(),
+    "requires the canonical monorepo checkout (sibling packages absent); the "
+    "entry-doc-check workflow is the load-bearing positive control",
+)
+
 #: Tag namespace of the constructed fixtures. Encodes both halves of the
 #: resolution rule the plan calls load-bearing: ``v0.7.9`` is the *lexical*
 #: maximum where ``v0.7.13`` is the *version* maximum, and
@@ -121,6 +159,7 @@ def codes(findings) -> list:
 class TestPositiveControl(unittest.TestCase):
     """The check must be usable against the docs it ships with."""
 
+    @CANONICAL_ONLY
     def test_current_repo_is_clean(self):
         raw = edc.check_repo(REPO_ROOT)
         self.assertEqual(
@@ -130,8 +169,14 @@ class TestPositiveControl(unittest.TestCase):
             "bought by suppression is not a positive control",
         )
 
+    @CANONICAL_ONLY
     def test_suppression_budget_is_zero_at_landing(self):
         # The mechanism exists for future drift, not to buy today's green.
+        #
+        # Canonical-only because an ABSENT suppression file also loads as [], so
+        # in a partial tree this passes without the checked-in file existing --
+        # it would assert nothing about the budget.
+        self.assertTrue((REPO_ROOT / edc.SUPPRESSIONS).is_file())
         self.assertEqual(edc.load_suppressions(REPO_ROOT), [])
 
     def test_every_package_long_description_is_an_entry_doc(self):
@@ -472,7 +517,13 @@ class TestHistoricalPin(unittest.TestCase):
             check=False,
         )
         if proc.returncode != 0:
-            self.skipTest("commit 8f191d99 not present (shallow clone)")
+            # Not only a shallow clone: Gate A's standalone tree is a plain copy
+            # with no `.git` at all, so this guard SKIPS there rather than
+            # running. Named precisely because "did not fail" is not "ran".
+            self.skipTest(
+                "commit 8f191d99 unreadable at REPO_ROOT (shallow clone, or a "
+                "standalone copy with no git history)"
+            )
         fixture = (FIXTURES / "historical_8f191d99_README.md").read_text(encoding="utf-8")
         self.assertEqual(fixture, proc.stdout)
 
@@ -674,23 +725,45 @@ class TestSuppressions(unittest.TestCase):
 
 
 class TestCli(unittest.TestCase):
-    def test_exit_codes(self):
-        self.assertEqual(edc.main(["entry_doc_check", "--repo", str(REPO_ROOT)]), 0)
+    """Exit codes are split by posture-dependence, not guarded wholesale.
+
+    Only assertions that read the live tree need the canonical checkout. The
+    synthetic-repo and usage-error paths are posture-independent and must keep
+    running everywhere, including the standalone clean room -- blanket-guarding
+    the whole test would silently stop exercising them.
+    """
+
+    def test_exit_code_1_on_findings(self):
         with TemporaryDirectory() as tmp:
             repo = build_repo(
                 tmp, {"phase-loop-runtime/README.md": "pip install phase-loop-runtime==0.7.12\n"}
             )
             self.assertEqual(edc.main(["entry_doc_check", "--repo", str(repo)]), 1)
+
+    def test_exit_code_2_on_usage_error(self):
         self.assertEqual(edc.main(["entry_doc_check", "--repo", "/nonexistent/xyz"]), 2)
 
-    def test_file_narrowing_is_a_logical_path(self):
+    def test_file_narrowing_rejects_a_non_entry_doc(self):
         # There is no loose-file mode: /tmp/old.md has no owning package and no
-        # suppression identity.
+        # suppression identity. Independent of tree posture -- the rejection is
+        # decided by ENTRY_DOCS membership, not by what is on disk.
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(tmp, {"phase-loop-runtime/README.md": "x\n"})
+            self.assertEqual(
+                edc.main(["entry_doc_check", "--repo", str(repo), "--file", "/tmp/old.md"]), 2
+            )
+
+    @CANONICAL_ONLY
+    def test_exit_code_0_on_the_live_repo(self):
+        self.assertEqual(edc.main(["entry_doc_check", "--repo", str(REPO_ROOT)]), 0)
+
+    @CANONICAL_ONLY
+    def test_file_narrowing_accepts_a_live_entry_doc(self):
+        # Canonical-only because narrowing to an ABSENT doc also exits 0 (nothing
+        # is checked), so in a partial tree this would pass vacuously.
+        self.assertTrue((REPO_ROOT / "README.md").is_file())
         self.assertEqual(
             edc.main(["entry_doc_check", "--repo", str(REPO_ROOT), "--file", "README.md"]), 0
-        )
-        self.assertEqual(
-            edc.main(["entry_doc_check", "--repo", str(REPO_ROOT), "--file", "/tmp/old.md"]), 2
         )
 
 
