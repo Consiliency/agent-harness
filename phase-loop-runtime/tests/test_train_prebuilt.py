@@ -86,12 +86,16 @@ def _make_prebuilt_publish_stub(recorder: Optional[dict] = None):
     def _publish(workspace: Path, owned_paths, *, draft: bool, prebuilt: bool = False, **kw):
         assert draft is True, "prebuilt publishes must still be draft"
         if recorder is not None:
-            recorder[workspace.name] = {
+            recorded = {
                 "prebuilt": prebuilt,
                 "owned_paths": list(owned_paths),
                 "broker_client": kw.get("broker_client"),
-                "admission": kw.get("admission"),
+                "publish_authority": kw.get("publish_authority"),
+                "checkpoint_root": kw.get("checkpoint_root"),
             }
+            if "admission" in kw:
+                recorded["admission"] = kw["admission"]
+            recorder[workspace.name] = recorded
         return {
             "status": "published",
             "branch": f"feat/train-{workspace.name}",

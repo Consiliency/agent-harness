@@ -686,7 +686,16 @@ _CLI_ALLOCATOR_PROBE = """
         target.write_text(f"content for {target_head}\\n", encoding="utf-8")
         subprocess.run(["git", "-C", str(workspace), "add", "seed.txt"], check=True)
         from phase_loop_runtime.models import StateSnapshot
-        return (StateSnapshot(phases={"p1": "complete"}, phase_owned_dirty_paths=["seed.txt"]), [])
+        return (
+            StateSnapshot(
+                timestamp="fabpub-cli-probe",
+                repo=str(workspace),
+                roadmap="specs/plan.md",
+                phases={"p1": "complete"},
+                phase_owned_dirty_paths=["seed.txt"],
+            ),
+            [],
+        )
 
     train_runner._default_run_loop = spy_run_loop
     try:
@@ -1467,6 +1476,7 @@ def test_fabpub_default_cli_train_roots_share_git_common_repository_allocator_wi
     )
 
     repo = _init_repo(tmp_path / "repo")
+    _activate_repository_authority(tmp_path, repo, label="shared-cli")
     _make_cli_publishable(repo, "feat/shared")
     linked = tmp_path / "linked"
     unrelated = _init_repo(tmp_path / "unrelated")
@@ -1572,17 +1582,47 @@ def test_fabpub_fresh_finalized_publish_rejected_before_admission_and_adapter(tm
 
     # Positive control (b): an already-completed terminal publish REPLAYS through a
     # finalized request with neither admission method nor the adapter called.
-    completed_key = f"publish_committed_branch\0{publish_committed_branch_idempotency_key('repo-identity', 'feat/x', 'abc123')}"
     from phase_loop_runtime.convergence.broker.evidence import EvidenceRecord
 
-    service.evidence_store.record_intent(completed_key)
-    service.evidence_store.record_terminal(
-        EvidenceRecord(completed_key, TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED, "https://gh/pr/prior")
+    replay_repo, replay_txn, replay_identity, replay_root = _authorized_publish_fixture(
+        tmp_path, name="fresh-finalized-replay"
     )
-    before = (store.admit_calls, store.admit_next_calls, len(adapter.calls))
-    replay = service.execute(fresh)
+    replay_service = _service(replay_root, _CountingAdapter())
+    replay_request = _publish_request(
+        replay_identity,
+        "feat/x",
+        replay_txn.committed_head_sha,
+        finalized,
+        replay_repo,
+    )
+    completed_key = (
+        "publish_committed_branch\0"
+        + publish_committed_branch_idempotency_key(
+            replay_identity, "feat/x", replay_txn.committed_head_sha
+        )
+    )
+    replay_service.evidence_store.record_intent(completed_key)
+    replay_service.evidence_store.record_terminal(
+        EvidenceRecord(
+            completed_key,
+            TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED,
+            "https://gh/pr/prior",
+        )
+    )
+    replay_store = replay_service.admission_store
+    replay_adapter = replay_service.adapter
+    before = (
+        replay_store.admit_calls,
+        replay_store.admit_next_calls,
+        len(replay_adapter.calls),
+    )
+    replay = replay_service.execute(replay_request)
     assert replay.accepted and replay.publish_result.pr_url == "https://gh/pr/prior"
-    assert (store.admit_calls, store.admit_next_calls, len(adapter.calls)) == before
+    assert (
+        replay_store.admit_calls,
+        replay_store.admit_next_calls,
+        len(replay_adapter.calls),
+    ) == before
 
     # Positive control (c): a fresh ENVELOPE publish reaches admit_next and the
     # adapter with the broker-allocated epoch.
@@ -1836,7 +1876,10 @@ def test_fabpub_shared_adapter_start_fence_blocks_competing_train_before_and_aft
 
         # The production execute/recovery entry promotes the unsealed owner to
         # PERMANENT ambiguity; the test never calls the lower primitive itself.
-        promoted = service_b.evidence_store.replay()[request_a.admission.idempotency_key]
+        promoted_key = getattr(request_a.admission, "idempotency_key", None) or getattr(
+            request_a.admission, "transaction_id", ""
+        )
+        promoted = service_b.evidence_store.replay()[promoted_key]
         assert promoted.state is TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED
         assert any(
             row["state"] == "outcome_ambiguous_blocked" for row in _jsonl(root / "evidence.jsonl")
@@ -2811,7 +2854,7 @@ def test_fabpub_legacy_writer_quiescence_blocks_armed_activation_and_fences_supp
 
 @_requires_fabpub
 def test_fabpub_post_armed_zero_legacy_repository_onboarding_is_serialized_and_fail_closed(
-    tmp_path, request
+    tmp_path, request, monkeypatch
 ):
     """A repository first seen after ACTIVE onboards exactly once, never by empty-store fallback."""
     nodeid = fabpub_this_nodeid(request)
@@ -2831,6 +2874,7 @@ def test_fabpub_post_armed_zero_legacy_repository_onboarding_is_serialized_and_f
     known = _init_repo(tmp_path / "known")
     fresh = _init_repo(tmp_path / "fresh")
     ledger = tmp_path / "ledger"
+    monkeypatch.setenv("PHASE_LOOP_FABPUB_LEGACY_ROOTS", str(ledger / "broker"))
     train = _write_train(tmp_path / "trains" / "release.md", "known")
     _seed_legacy_root(ledger, train_path=train, serialized_repo=str(known), epochs=(1, 3))
 
@@ -2853,18 +2897,22 @@ def test_fabpub_post_armed_zero_legacy_repository_onboarding_is_serialized_and_f
         store.admit_next(make, attempt_id="premature", precondition=lambda: True)
     assert not (namespace / "admissions.jsonl").exists() or _jsonl(namespace / "admissions.jsonl") == []
 
-    # TWO RACING NORMAL CLI TRAINS (plan:220, EC-FABPUB-10).  Both are fresh
+        # TWO RACING NORMAL CLI TRAINS (plan:220, EC-FABPUB-10).  Both are fresh
     # processes running the real shipped CLI argv path against the same
     # never-before-seen repository; they must serialize to ONE byte-equivalent
     # zero-high-water receipt and ONE monotonic first epoch.
     import concurrent.futures
 
+    _make_cli_publishable(fresh, "feat/onboard")
     alpha = _write_train(tmp_path / "trains-alpha" / "release.md", str(fresh))
     beta = _write_train(tmp_path / "trains-beta" / "release.md", str(fresh))
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
         futures = [
-            pool.submit(_cli_allocator_probe, train, fresh, "a" * 40, "b" * 40)
-            for train in (alpha, beta)
+            pool.submit(_cli_allocator_probe, train, fresh, *heads)
+            for train, heads in zip(
+                (alpha, beta),
+                (("a" * 40, "b" * 40), ("c" * 40, "d" * 40)),
+            )
         ]
         probes = [future.result(timeout=300) for future in futures]
 
@@ -3174,14 +3222,17 @@ def test_fabpub_post_activation_writer_generation_fence_blocks_direct_and_old_cl
     )
     assert stale_cli["admissions"] is False, "a fenced entry creates no admission row"
 
-    # (3) POSITIVE ARM — a fresh CURRENT-generation process runs the REAL CLI, onboards,
+        # (3) POSITIVE ARM — a fresh CURRENT-generation process runs the REAL CLI, onboards,
     # and produces exactly ONE admission and ONE provider effect.  An always-block
     # implementation cannot satisfy this reached arm.
+    _make_cli_publishable(repo, "feat/positive")
     positive_train = _write_train(tmp_path / "trains-positive" / "release.md", str(repo))
     probe = _cli_allocator_probe(positive_train, repo, "a" * 40, "b" * 40)
     assert probe["cli_exit"] == 0
     assert probe["namespace"] == str(namespace)
-    assert probe["epochs"] == [1, 2], f"the current generation allocates monotonically: {probe['epochs']}"
+    assert probe["epochs"] == [3, 4], (
+        f"the current generation continues above the legacy high-water mark: {probe['epochs']}"
+    )
     assert probe["adapter_calls"] == 2, "each distinct head reaches the provider exactly once"
     assert probe["train_status"] in ("completed", "drafts_open")
     assert len(probe["published"]) == 2
@@ -3421,9 +3472,8 @@ def test_fabpub_intent_identity_retry_is_deterministic_and_commit_bound_separate
             ["git", "-C", str(current_repo), "hash-object", "-w", "-t", "commit", "--stdin"],
             input=raw,
             capture_output=True,
-            text=True,
             check=True,
-        ).stdout.strip()
+        ).stdout.decode("ascii").strip()
 
     for label in (
         "author_identity",
