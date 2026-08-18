@@ -1057,6 +1057,7 @@ class TestCLIRegistration:
         with patch("phase_loop_runtime.train_runner.run_train", side_effect=_capture), patch(
             "phase_loop_runtime.convergence.broker.live.fabpub_activation_barrier",
             return_value={},
+            create=True,
         ):
             main([
                 "run-train", "--train", str(train_file),
@@ -1099,6 +1100,7 @@ class TestCLIRegistration:
         with patch("phase_loop_runtime.train_runner.run_train") as mock_run_train, patch(
             "phase_loop_runtime.convergence.broker.live.fabpub_activation_barrier",
             return_value={},
+            create=True,
         ):
             mock_run_train.return_value = {"status": "completed", "nodes": {}}
             exit_code = main(["run-train", "--train", str(tmp_train), "--governed"])
