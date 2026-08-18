@@ -2133,10 +2133,26 @@ def _prove_zero_source(
             if not train_dir.is_dir():
                 continue
             for leaf in sorted(train_dir.iterdir()):
+                source_id = f"{train_dir.name}__{leaf.name}"
                 if leaf.is_dir() and (leaf / "admissions.jsonl").exists():
-                    legacy_sources += 1
+                    pointer = root / "fabpub-global-cutover" / "ACTIVE_CUTOVER"
+                    if not pointer.exists() or _cutover_source_targets_repository(
+                        root,
+                        _read_pointer_claim(pointer)["cutover_id"],
+                        source_id,
+                        snapshot,
+                    ):
+                        legacy_sources += 1
                 elif leaf.is_file():
-                    tombstones += 1
+                    try:
+                        cutover_id = json.loads(leaf.read_text(encoding="utf-8"))["retired_by"]
+                    except (KeyError, OSError, ValueError, TypeError):
+                        tombstones += 1
+                    else:
+                        if _cutover_source_targets_repository(
+                            root, cutover_id, source_id, snapshot
+                        ):
+                            tombstones += 1
     if legacy_sources or archives or tombstones:
         raise LegacyCutoverConflict(
             f"zero-source onboarding refused for {snapshot.identity}: found "
@@ -2156,10 +2172,36 @@ def _prove_zero_source(
 
 
 def _archive_targets_repository(archive_dir: Path, snapshot: RepositorySnapshot) -> bool:
-    """Best-effort: does an archived source belong to this repository?"""
-    marker = archive_dir.parent.parent.parent / "RETIRED"
-    del marker
-    return True
+    """Return whether a sealed archived source belongs to this repository."""
+    cutover_dir = archive_dir.parent
+    legacy_root = cutover_dir.parent.parent
+    return _cutover_source_targets_repository(
+        legacy_root, cutover_dir.name, archive_dir.name, snapshot
+    )
+
+
+def _cutover_source_targets_repository(
+    legacy_root: Path,
+    cutover_id: str,
+    source_id: str,
+    snapshot: RepositorySnapshot,
+) -> bool:
+    inventory = (
+        legacy_root
+        / "fabpub-global-cutover"
+        / f"{cutover_id}.inventory.json"
+    )
+    try:
+        partitions = json.loads(inventory.read_text(encoding="utf-8"))["partitions"]
+    except (KeyError, OSError, ValueError, TypeError):
+        return True
+    source_owner = None
+    for identity, partition in partitions.items():
+        if any(source.get("source_id") == source_id for source in partition.get("sources", ())):
+            if source_owner is not None and source_owner != identity:
+                return True
+            source_owner = identity
+    return source_owner is None or source_owner == snapshot.identity
 
 
 def onboard_zero_legacy_repository(
@@ -2181,6 +2223,7 @@ def onboard_zero_legacy_repository(
         if (namespace / RECEIPT_FILENAME).exists():
             existing = load_partition_receipt(namespace)
         if existing is not None:
+            _prove_zero_source(snapshot, roots, "before_zero_source_proof")
             return existing
         zero_source_proof = _prove_zero_source(snapshot, roots, "before_zero_source_proof")
         identity = snapshot.identity
