@@ -392,10 +392,24 @@
       "reflection_ref": null,
       "roadmap_ref": null,
       "slug": "detailed-ci-single-lane-chronology-20260812",
-      "status": "committed",
+      "status": "completed",
       "task_summary": "Run the heavy chronology proof in two lanes (py3.10 matrix + Gate A); deselect from py3.11/py3.12",
       "type": "detailed",
-      "updated_at": "2026-08-13T04:34:28.803689+00:00"
+      "updated_at": "2026-08-17T14:40:54.949655+00:00",
+      "lifecycle_events": [
+        {
+          "status": "executing",
+          "at": "2026-08-17T14:40:54.949655+00:00",
+          "by": "claude-coordination-session",
+          "note": "retroactive: execution ran 2026-08-13..2026-08-17"
+        },
+        {
+          "status": "completed",
+          "at": "2026-08-17T14:40:54.949655+00:00",
+          "by": "claude-coordination-session",
+          "note": "delivered by agent-harness#531 (two-lane chronology: heavy node deselected from py3.11/3.12, junit export, lane-removal retention guard as its own job)"
+        }
+      ]
     },
     {
       "acceptance_criteria_count": 5,
@@ -410,10 +424,24 @@
       "reflection_ref": null,
       "roadmap_ref": null,
       "slug": "detailed-dagger-offload-ci-20260812",
-      "status": "committed",
+      "status": "completed",
       "task_summary": "Offload heavy CI to ai via explicit elig/offload/hosted/gate job graph with enforced merge-gate",
       "type": "detailed",
-      "updated_at": "2026-08-13T04:34:28.803689+00:00"
+      "updated_at": "2026-08-17T14:40:54.949655+00:00",
+      "lifecycle_events": [
+        {
+          "status": "executing",
+          "at": "2026-08-17T14:40:54.949655+00:00",
+          "by": "claude-coordination-session",
+          "note": "retroactive: execution ran 2026-08-13..2026-08-17"
+        },
+        {
+          "status": "completed",
+          "at": "2026-08-17T14:40:54.949655+00:00",
+          "by": "claude-coordination-session",
+          "note": "delivered by agent-harness#534 + #543, with the junit-provenance defect it exposed fixed in agent-harness#580 (elig/offload/hosted/gate graph on tailnet host ai; measured 51-65 min offloaded vs ~87 hosted)"
+        }
+      ]
     },
     {
       "acceptance_criteria_count": 6,
