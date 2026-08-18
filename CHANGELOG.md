@@ -6,6 +6,34 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### CI: diff-independent entry-point documentation verification (Consiliency/agent-harness#568)
+
+- New `python -m phase_loop_runtime.entry_doc_check --repo <root>` plus
+  `.github/workflows/entry-doc-check.yml`. `docs-audit` is change-coupled by contract --
+  it classifies *changed paths* and so answers "did the docs change when the code
+  changed?", not "are the docs still true?". Every defect this check targets appeared
+  with no diff touching the doc: a `v0.1.5` install pin that rotted through six releases
+  untouched, a relative link that renders on GitHub and breaks on PyPI.
+- Three arms over an explicit `ENTRY_DOCS` inventory. **paths** — backtick tokens that
+  look like repository paths must resolve, with named skip classes for home paths,
+  `owner/repo#N` issue citations, URL schemes, globs, and install-layout destinations.
+  Metavariables are not blanket-skipped: the concrete parent prefix is still validated,
+  so `spces/<NAME>.md` is caught while `specs/phase-plans-v<N>.md` passes. **pins** — a
+  pin is checked for *staleness*, not existence; `v0.1.5` is a real tag, so an existence
+  rule passes the very defect the arm exists to catch. **published_rendering** — a
+  README declared as a package `[project].readme` may carry no relative link
+  destination, since PyPI has none of the repository context GitHub uses to rewrite one.
+- Two clocks, never crossed: `dist==V` is compared against that distribution's own
+  `pyproject.toml` version; `@vX.Y.Z` in a git-install URL is compared against the
+  repository release-tag namespace (`v[0-9]*`, version-sorted, which excludes another
+  package's `consiliency-harness-v0.6.1` release tag).
+- Suppressions are fingerprinted over (file, code, token) rather than line numbers, each
+  requires a stated reason, and one that matches nothing is itself reported. The budget
+  is **0 at landing** — the live entry docs pass on raw findings.
+- `docs_surfaces.py` is deliberately untouched: widening `DOC_SURFACE_GLOBS` would let an
+  agent-instruction edit satisfy an unrelated documentation obligation through
+  `docs_audit.evaluate`.
+
 ### Repository-wide FABPUB publication authority
 
 - Retract the earlier publish byte-neutrality claim. FABPUB intentionally renumbers

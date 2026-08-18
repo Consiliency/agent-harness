@@ -1,0 +1,51 @@
+name: entry-doc-check
+
+# Diff-independent entry-point documentation verification (Consiliency/agent-harness#568).
+#
+# docs-audit answers "did the docs change when the code changed?". It is change-coupled
+# by contract and structurally cannot answer "are the docs still true?" -- every defect
+# this check targets arose with NO diff touching the doc. So this check reads the entry
+# docs as they stand and verifies properties that hold independently of any diff:
+# path claims resolve, version pins are FRESH (not merely resolvable), and a README
+# published as a package long-description carries no relative link destinations.
+#
+# - pull_request: blocks a merge that introduces stale entry-doc claims.
+# - push: branches [main]: the autonomous loop pushes directly to main (no PR), so the
+#   check also runs here to red-mark a stale-docs commit post-hoc.
+# - push: tags ['v*']: a tag push MOVES the release-tag namespace, which is arm 2's
+#   input -- an install pin that was fresh a second before the tag is stale after it.
+#   The check must re-run when its own input changes.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  entry-doc-check:
+    name: entry-point docs verification
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # fetch-depth: 0, NOT fetch-tags: true. Arm 2 resolves the latest release tag,
+          # and `fetch-tags` at the default depth is a known actions/checkout footgun
+          # (actions/checkout#1781) that can leave the tag namespace incomplete --
+          # which would silently downgrade a staleness comparison.
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install phase-loop-runtime
+        run: python -m pip install ./phase-loop-runtime
+
+      - name: Run entry-doc-check
+        # Exit 0 clean, 1 findings, 2 usage/IO error. A nonzero exit fails the check.
+        run: python -m phase_loop_runtime.entry_doc_check --repo .
