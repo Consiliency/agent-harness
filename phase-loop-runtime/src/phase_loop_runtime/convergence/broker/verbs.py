@@ -253,15 +253,25 @@ class BrokerService:
         if request.head_sha != envelope.committed_head_sha or envelope.expected_commit_oid != envelope.committed_head_sha:
             raise PermissionError("request/envelope committed head binding differs")
 
-        from phase_loop_runtime.publishing import inspect_publish_resume_candidate, validate_transaction_owned_workspace
+        from phase_loop_runtime.publishing import (
+            PublishTransactionState,
+            inspect_publish_resume_candidate,
+            validate_transaction_owned_workspace,
+        )
 
         candidate = inspect_publish_resume_candidate(
             Path(request.adapter_worktree),
             checkpoint_root=Path(envelope.checkpoint_root),
-            node_id="node",
+            node_id=envelope.node_id,
         )
+        if candidate.transaction is None and envelope.node_id != "node":
+            candidate = inspect_publish_resume_candidate(
+                Path(request.adapter_worktree),
+                checkpoint_root=Path(envelope.checkpoint_root),
+                node_id="node",
+            )
         transaction = candidate.transaction
-        if candidate.state != "COMMITTED_HEAD_RESOLVED" or transaction is None:
+        if candidate.state not in PublishTransactionState.ORDERED[2:] or transaction is None:
             raise PermissionError("fresh publish names no exact committed transaction")
         validate_transaction_owned_workspace(Path(request.adapter_worktree), transaction)
         bindings = (
@@ -409,7 +419,11 @@ class BrokerService:
                 )
             _advance_transaction(transaction, "TERMINAL_SEALED")
             return BrokerExecutionResult(state is TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED, BrokerTerminalEvidence(key, terminal.state.value, terminal.evidence_reference), result)
-        except Exception:
+        except Exception as error:
+            from phase_loop_runtime.publishing import PublishCrashInjected
+
+            if isinstance(error, PublishCrashInjected):
+                raise
             current = self.evidence_store.replay().get(key)
             if current is None:
                 self.evidence_store.record_intent(key)
