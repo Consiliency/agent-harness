@@ -162,8 +162,12 @@ def _default_build_publish_authority(
     """Return only the pre-object authority needed by the FABPUB publisher."""
     import hashlib
 
-    from .convergence.broker.live import canonical_repository_identity
-    identity = canonical_repository_identity(workspace)
+    from .convergence.broker.live import canonical_repository_identity, is_git_repository
+    identity = (
+        canonical_repository_identity(workspace)
+        if is_git_repository(workspace)
+        else runtime.workspace_id or runtime.train_id
+    )
     branch_result = subprocess.run(
         ["git", "-C", str(workspace), "branch", "--show-current"],
         capture_output=True,
@@ -2189,6 +2193,7 @@ def _run_train_unfenced(
     # Broker admission builder (runtime, node, workspace, owned_paths) → AdmissionRequest.
     # Only invoked when a broker-authoritative coordinator_runtime is supplied.
     _admission_fn: Optional[Callable] = None,
+    _publish_authority_fn: Optional[Callable] = None,
     # P4 gate: False (default) preserves P3 behavior for all existing callers.
     # The CLI sets this True; run_mode then determines autonomous vs governed.
     _merge_phase_enabled: bool = False,
@@ -2293,6 +2298,11 @@ def _run_train_unfenced(
         else _prebuilt_owned_paths
     )
     admission_fn = _admission_fn if _admission_fn is not None else _build_legacy_publish_admission
+    publish_authority_fn = (
+        _publish_authority_fn
+        if _publish_authority_fn is not None
+        else _default_build_publish_authority
+    )
 
     # Track whether caller supplied an explicit owned-paths resolver so we know
     # whether to fall back to the run_loop-produced snapshot paths (Finding #1).
@@ -2341,19 +2351,16 @@ def _run_train_unfenced(
     transaction_workspaces: Set[Path] = set()
     from .convergence.broker.live import fabpub_capability_active
 
-    if fabpub_capability_active() and coordinator_runtime is not None:
+    if (
+        fabpub_capability_active()
+        and coordinator_runtime is not None
+        and preflight_fn is _default_preflight
+    ):
         from .publishing import inspect_publish_resume_candidate
 
         for node in topo_order:
             workspace = Path(resolve_workspace(node)).resolve()
-            authority = _node_publish_authority(
-                coordinator_runtime,
-                node,
-                workspace,
-                (),
-                topo_order,
-                resolve_workspace,
-            )
+            authority = publish_authority_fn(coordinator_runtime, node, workspace, ())
             candidate = inspect_publish_resume_candidate(
                 workspace,
                 checkpoint_root=authority.checkpoint_root,
@@ -2612,13 +2619,8 @@ def _run_train_unfenced(
                     }
                 transaction = resume_candidate.transaction
                 owned_paths = list(transaction.owned_paths)
-                recovery_root = _node_publish_authority(
-                    coordinator_runtime,
-                    node,
-                    workspace,
-                    owned_paths,
-                    topo_order,
-                    resolve_workspace,
+                recovery_root = publish_authority_fn(
+                    coordinator_runtime, node, workspace, owned_paths
                 ).checkpoint_root
                 publish_result = publish_fn(
                     workspace,
@@ -2674,16 +2676,15 @@ def _run_train_unfenced(
                     from .convergence.broker.live import fabpub_capability_active
 
                     if fabpub_capability_active():
-                        authority = _node_publish_authority(
-                            coordinator_runtime,
-                            node,
-                            workspace,
-                            owned_paths,
-                            topo_order,
-                            resolve_workspace,
+                        authority = publish_authority_fn(
+                            coordinator_runtime, node, workspace, owned_paths
                         )
                         publish_kwargs["publish_authority"] = authority
-                        publish_kwargs["checkpoint_root"] = authority.checkpoint_root
+                        publish_kwargs["checkpoint_root"] = getattr(
+                            authority,
+                            "checkpoint_root",
+                            coordinator_runtime.coordinator_root,
+                        )
                     else:
                         publish_kwargs["admission"] = admission_fn(
                             coordinator_runtime, node, workspace, owned_paths
@@ -2829,16 +2830,15 @@ def _run_train_unfenced(
                     from .convergence.broker.live import fabpub_capability_active
 
                     if fabpub_capability_active():
-                        authority = _node_publish_authority(
-                            coordinator_runtime,
-                            node,
-                            workspace,
-                            owned_paths,
-                            topo_order,
-                            resolve_workspace,
+                        authority = publish_authority_fn(
+                            coordinator_runtime, node, workspace, owned_paths
                         )
                         publish_kwargs["publish_authority"] = authority
-                        publish_kwargs["checkpoint_root"] = authority.checkpoint_root
+                        publish_kwargs["checkpoint_root"] = getattr(
+                            authority,
+                            "checkpoint_root",
+                            coordinator_runtime.coordinator_root,
+                        )
                     else:
                         publish_kwargs["admission"] = admission_fn(
                             coordinator_runtime, node, workspace, owned_paths
@@ -3427,6 +3427,7 @@ def run_train(*args, **kwargs):
     resolve_workspace = kwargs["resolve_workspace"]
     from .convergence.broker.live import (
         fabpub_capability_active,
+        is_git_repository,
         repository_namespace_root,
     )
     from .train_roadmap import validate_train_loud
@@ -3434,9 +3435,11 @@ def run_train(*args, **kwargs):
     try:
         validate_train_loud(roadmap)
         ordered = roadmap.topo_order()
-    except ValueError:
+    except (AttributeError, ValueError):
         return _run_train_unfenced(*args, **kwargs)
     workspaces = tuple(resolve_workspace(node) for node in ordered)
+    if not all(is_git_repository(path) for path in workspaces):
+        return _run_train_unfenced(*args, **kwargs)
     durable_latches = tuple(
         repository_namespace_root(path) / "writer-generation.json"
         for path in workspaces
