@@ -17,10 +17,52 @@ agent-harness/install-agent-harness.sh --harness all   # all four harnesses (or 
 curl -fsSL https://raw.githubusercontent.com/Consiliency/agent-harness/main/install-agent-harness.sh | bash -s -- --harness claude
 ```
 
-Pin a specific release for the whole team with `--ref v0.1.5`.
+Pin a specific release for the whole team with `--ref vX.Y.Z` — take the version from the
+[releases page](https://github.com/Consiliency/agent-harness/releases/latest). Omit `--ref`
+and the installer resolves the current release itself.
 
 **Prereqs:** git, and your harness CLI already installed (Claude Code / Codex / Gemini /
 OpenCode). The installer brings everything else (it installs `uv` if you don't have it).
+
+## Verify the install (agents: parse this)
+
+The harness is usually installed **by an agent**, so the success signal is a machine-readable
+payload, not the installer's console output:
+
+```sh
+phase-loop doctor --json
+```
+
+It emits the versioned `phase-loop-doctor.v1` schema:
+
+```json
+{"schema": "phase-loop-doctor.v1",
+ "summary": "18/18 tools present; BOM 3 current / 1 stale / 2 unknown (0 gating-stale)",
+ "tools": [{"name": "git", "present": true, "authed": null, "unlocks": "version control"}]}
+```
+
+**What to assert, and what not to.**
+
+- `schema == "phase-loop-doctor.v1"` — the install is present and the CLI runs. This is the
+  success signal; assert it rather than grepping the installer's output.
+- Exit `0` from a plain `doctor --json` means the report was produced. It is **not** a claim
+  that every tool is present — read `tools[]` for that.
+- `--fail-on-stale` exits non-zero **only** on a `stale` verdict among the *gating*
+  (repo-owned) targets.
+- **Do not treat `unknown` as failure.** The BOM degrades every unreachable registry to
+  `unknown` by design, so an offline or network-restricted host reports `unknown` and still
+  exits `0`. Failing on `unknown` will make your installer red on a healthy machine.
+
+A missing `phase-loop` on `PATH` is the one failure that surfaces before any of this — see
+Troubleshooting below.
+
+## What next
+
+`phase-loop run` needs a roadmap to run; in a fresh repo with none, it exits with an error
+rather than doing nothing. Author one first — either by hand at `specs/phase-plans-v1.md`, or
+by invoking the roadmap skill in your harness (`/claude-phase-roadmap-builder`, or the
+`codex-` / `gemini-` / `opencode-` prefixed equivalent). Then plan and execute a phase as
+shown under **Use it** below.
 
 ## What you get
 

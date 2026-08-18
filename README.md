@@ -39,10 +39,11 @@ knowing before that first run:
   explicitly.
 - **"No subscription auth" means the runtime.** The engine makes no model calls and
   needs no login of its own, but each executor CLI you dispatch to (codex / claude /
-  gemini / grok / opencode / pi) authenticates itself. `consiliency-harness` is a thin **dependency shim** that pulls the
-`phase-loop-runtime` engine (it ships no code and no console script of its own; the
-obvious PyPI name `agent-harness` is an **unrelated third party**). With zero
-configuration you get:
+  gemini / grok / opencode / pi) authenticates itself.
+
+`consiliency-harness` is a thin **dependency shim** that pulls the `phase-loop-runtime`
+engine (it ships no code and no console script of its own; the obvious PyPI name
+`agent-harness` is an **unrelated third party**). With zero configuration you get:
 
 - **Zero-auth, autonomous by default.** `run_mode` is `autonomous` — the runner
   drives phases unattended, with no advisor panel and **no subscription login
@@ -54,6 +55,12 @@ configuration you get:
   workflow skill packs from `skills_bundle/**` shipped **in the wheel** — no
   dotfiles checkout. (A custom `PHASE_LOOP_SKILL_SOURCE_PLUGINS` provider, if you
   set one, must return **absolute** roots.)
+
+**Verify an install (agents parse this).** `phase-loop doctor --json` emits the versioned
+`phase-loop-doctor.v1` payload — assert its `schema` field rather than grepping installer
+console output. `--fail-on-stale` exits non-zero only on staleness among gating,
+repo-owned targets; an unreachable registry degrades to `unknown` and must **not** be read
+as failure. Full contract and the common failures: `docs/TEAM-ONBOARDING.md`.
 
 ## Install — two surfaces
 
