@@ -2940,6 +2940,7 @@ def test_fabpub_train_resume_post_commit_pre_checkpoint(tmp_path: Path, request)
     _fabpub_git(workspace, "commit", "-q", "-m", "plan")
 
     roadmap = parse_train_roadmap(_FABPUB_TRAIN_MD)
+    train_node_id = roadmap.nodes[0].node_id
     ledger = tmp_path / "ledger" / "train.ledger.jsonl"
     coordinator_root = tmp_path / "coordinator"
     broker_root = tmp_path / "broker"
@@ -3126,6 +3127,7 @@ def test_fabpub_train_resume_post_commit_pre_checkpoint(tmp_path: Path, request)
         (arm_ws / "specs" / "plan.md").write_text("# plan\n", encoding="utf-8")
         _fabpub_git(arm_ws, "add", "specs/plan.md")
         _fabpub_git(arm_ws, "commit", "-q", "-m", "plan")
+        _fabpub_git(arm_ws, "push", "-q", "origin", "HEAD:main")
         arm_identity, arm_namespace = _activate_zero_history(arm_ws, f"arm{index}")
         arm_broker = routing_builder(run=_provider_run)
         arm_runtime = train_runner.CoordinatorRuntime(
@@ -3160,7 +3162,7 @@ def test_fabpub_train_resume_post_commit_pre_checkpoint(tmp_path: Path, request)
     assert _fabpub_git(ws, "status", "--short") == "", (
         "the post-terminal unqualified clean re-check must find a reconciled tree"
     )
-    assert read_ledger(arm["ledger"])["repo-a"].status in ("pr_open", "merged")
+    assert read_ledger(arm["ledger"])[train_node_id].status in ("pr_open", "merged")
     # A second default restart is a faithful, side-effect-free replay.
     before = (provider_pushes[str(ws)], provider_calls[str(ws)])
     _default_restart(ledger_path=arm["ledger"], workspace_path=ws, runtime_obj=arm["runtime"])
@@ -3199,7 +3201,7 @@ def test_fabpub_train_resume_post_commit_pre_checkpoint(tmp_path: Path, request)
     assert len(_admissions(arm["namespace"])) == 1, "exactly one canonical-store admission"
     assert not _author_work_marker(ws)
     assert _fabpub_git(ws, "status", "--short") == ""
-    assert read_ledger(arm["ledger"])["repo-a"].status in ("pr_open", "merged")
+    assert read_ledger(arm["ledger"])[train_node_id].status in ("pr_open", "merged")
 
     # ---- arm 4: post-owner `after_broker_intent_before_adapter_started` ------
     arm = arms[FABPUB_CRASH_ANCHORS[3]]
@@ -3221,8 +3223,8 @@ def test_fabpub_train_resume_post_commit_pre_checkpoint(tmp_path: Path, request)
         record.state.value == "outcome_ambiguous_blocked"
         for record in BrokerEvidenceStore(arm["namespace"]).replay().values()
     ), "recovery must promote the unsealed owner to PERMANENT ambiguity"
-    assert read_ledger(arm["ledger"]).get("repo-a") is None or (
-        read_ledger(arm["ledger"])["repo-a"].status != "pr_open"
+    assert read_ledger(arm["ledger"]).get(train_node_id) is None or (
+        read_ledger(arm["ledger"])[train_node_id].status != "pr_open"
     ), "a post-owner kill records no pr_open"
 
     # A competing DIFFERENT-head train is blocked with zero admission/effect.
@@ -3260,14 +3262,14 @@ def test_fabpub_train_resume_post_commit_pre_checkpoint(tmp_path: Path, request)
     seeded_candidate = inspect(
         negative_workspace,
         checkpoint_root=arms[FABPUB_CRASH_ANCHORS[0]]["runtime"].coordinator_root,
-        node_id="repo-a",
+        node_id=roadmap.nodes[0].node_id,
     )
     seeded_checkpoint = _fabpub_json.loads(
         seeded_candidate.checkpoint_path.read_text(encoding="utf-8")
     )
     negative_authority_preimage = seeded_checkpoint["envelope_authority_preimage"]
     assert negative_authority_preimage["train_id"] == "train"
-    assert negative_authority_preimage["node_id"] == "repo-a"
+    assert negative_authority_preimage["node_id"] == train_node_id
     assert negative_authority_preimage["action"] == "publish_committed_branch"
 
     def _fresh_pre_cas_transaction(repo: Path, root: Path):
@@ -3413,8 +3415,8 @@ def test_fabpub_train_resume_post_commit_pre_checkpoint(tmp_path: Path, request)
             f"{label} allocated an admission"
         )
         assert not _author_work_marker(negative_workspace), f"{label} ran author work"
-        assert not read_ledger(negative_ledger).get("repo-a", None) or (
-            read_ledger(negative_ledger)["repo-a"].status != "pr_open"
+        assert not read_ledger(negative_ledger).get(train_node_id, None) or (
+            read_ledger(negative_ledger)[train_node_id].status != "pr_open"
         ), f"{label} recorded a PR"
 
     # POSITIVE CONTROL: an ordinary CLEAN node with NO transaction still reaches
