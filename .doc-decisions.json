@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "decisions": [
+    {
+      "surface": "general",
+      "decision": "no_doc_delta",
+      "reason": "FABPUB SL-2 changes only the internal broker transaction and recovery implementation; it adds no CLI syntax or public configuration. FABPUB SL-4 owns the changelog and release-facing documentation.",
+      "evidence": [
+        "plans/phase-plan-v10-FABPUB.md#sl-2---shared-broker-service-and-recoverable-publish-transaction"
+      ]
+    }
+  ]
+}

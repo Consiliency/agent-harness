@@ -106,9 +106,50 @@ def resolve_broker_repo_identity(repo_path: Path, run=subprocess.run, allowed_ho
     return resolve_host_qualified_repo_slug(resolve_git_origin_url(repo_path, run=run), allowed_hosts=allowed_hosts)
 
 
+_UNDECLARED_GENERATION = object()
+
+
 class GitHubBrokerAdapter:
-    def __init__(self, repo_path: Path, run=subprocess.run, allowed_hosts: frozenset[str] = ALLOWED_ORIGIN_HOSTS) -> None:
+    def __init__(
+        self,
+        repo_path: Path,
+        run=subprocess.run,
+        allowed_hosts: frozenset[str] = ALLOWED_ORIGIN_HOSTS,
+        generation_lease=_UNDECLARED_GENERATION,
+    ) -> None:
         self.repo_path, self.run, self.allowed_hosts = repo_path, run, allowed_hosts
+        # The activated live router acquires the repository's canonical lease
+        # before constructing us.  Keep an explicit injection only for the
+        # adversarial stale-entry seam; an omitted lease may lazily acquire a
+        # current lease for direct real-worktree use.
+        self.generation_lease = generation_lease
+        self._generation_root = None
+
+    def _revalidate_generation_before_effect(self) -> None:
+        """Fence direct adapter entry immediately before its first mutation."""
+        from .live import WriterGenerationLatch, fabpub_capability_active, repository_broker_namespace, require_current_generation
+
+        if not fabpub_capability_active():
+            return
+        root = self._generation_root
+        if root is None:
+            try:
+                root = repository_broker_namespace(self.repo_path)
+            except Exception:
+                # Unit seams pass a synthetic subprocess runner and a path
+                # that is intentionally not a repository.  They have no
+                # generation namespace to mutate; a declared missing lease,
+                # however, remains a fail-closed real-repository error.
+                if self.generation_lease is _UNDECLARED_GENERATION:
+                    return
+                raise
+            self._generation_root = root
+        if self.generation_lease is _UNDECLARED_GENERATION:
+            latch = WriterGenerationLatch.for_store_root(root)
+            if not latch.exists():
+                raise PermissionError("legacy_writer_after_fabpub_activation")
+            self.generation_lease = latch.acquire(generation=latch.read().generation)
+        require_current_generation(root, self.generation_lease, strict=True)
     def _output(self, *args: str) -> str:
         return self.run(["git", "-C", str(self.repo_path), *args], capture_output=True, text=True, check=True).stdout.strip()
     def _origin_url(self) -> str:
@@ -207,6 +248,11 @@ class GitHubBrokerAdapter:
         return False
 
     def execute(self, request: BrokerRequest):
+        # A caller which explicitly supplied no generation authority is stale
+        # under an ACTIVE repository and fails before even the branch/head
+        # probe, hence before every push or gh provider command.
+        if self.generation_lease is None:
+            self._revalidate_generation_before_effect()
         if self._output("branch", "--show-current") != request.branch or self._output("rev-parse", "HEAD") != request.head_sha: raise ValueError("branch/head mismatch")
         # agent-harness#202 (non-blocking hardening from the #201 panel): reconcile the
         # admitted owned_paths against the branch's ACTUAL content. This gates the FIRST
@@ -266,6 +312,7 @@ class GitHubBrokerAdapter:
         # push (concurrent writer in the same workspace); pinning the source side means the
         # push can only ever publish the validated commit, never whatever the ref points to
         # by the time this runs.
+        self._revalidate_generation_before_effect()
         pushed = self.run(["git", "-C", str(self.repo_path), "push", origin_url, f"{request.head_sha}:{ref}"], capture_output=True, text=True)
         if pushed.returncode: return self._ambiguous(request, "push-unconfirmed")
         # `gh pr create` REQUIRES --title (+ --body) when non-interactive; the bare
