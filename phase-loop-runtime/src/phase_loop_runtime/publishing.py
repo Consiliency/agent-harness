@@ -205,6 +205,10 @@ class PublishAuthorityPreimages:
     checkpoint_root: Path
     envelope_authority_preimage: dict[str, str]
 
+    @property
+    def owned_paths_digest(self) -> str:
+        return self.envelope_authority_preimage["effective_code_digest"]
+
 
 def derive_publish_transaction_id(pre_trailer_intent_bytes: bytes) -> str:
     return _sha256(_TRANSACTION_DOMAIN + pre_trailer_intent_bytes)

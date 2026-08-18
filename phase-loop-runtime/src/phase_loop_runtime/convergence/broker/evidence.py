@@ -64,10 +64,18 @@ class BrokerEvidenceStore:
         return result
     def _authorize(self) -> None:
         """Authenticate BEFORE any directory creation, then create the tree."""
-        from .live import load_partition_receipt
+        from .live import REPOSITORY_NAMESPACE_DIR, load_partition_receipt
 
         _require_generation(self.root, self.generation_lease)
-        if _fabpub_active() and load_partition_receipt(self.root) is None:
+        canonical_store = (
+            self.root.parent.name == "repositories"
+            and self.root.parent.parent.name == REPOSITORY_NAMESPACE_DIR
+        )
+        if (
+            _fabpub_active()
+            and (self.generation_lease is not _UNDECLARED or canonical_store)
+            and load_partition_receipt(self.root) is None
+        ):
             raise PermissionError(
                 f"legacy_cutover_conflict: no authenticated partition receipt governs "
                 f"{self.root}; refusing to create or append canonical evidence"
