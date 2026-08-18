@@ -1,3 +1,4 @@
+from _fabpub_tdd_guard import fabpub_migrated_activated, fabpub_symbol
 from phase_loop_runtime.convergence.contracts import AdmissionRequest
 from phase_loop_runtime.train_roadmap import parse_train_roadmap
 from phase_loop_runtime.train_runner import CoordinatorRuntime, run_train
@@ -43,13 +44,41 @@ def _run_kwargs(tmp_path, captured):
     )
 
 
-def test_broker_and_admission_threaded_into_publish_when_runtime_present(tmp_path):
+def test_broker_and_admission_threaded_into_publish_when_runtime_present(tmp_path, request):
     captured = []
     roadmap, kwargs = _run_kwargs(tmp_path, captured)
-    sentinel_admission = AdmissionRequest("a", 1, "f", "d", "v", "scope", "canned-key")
     broker = object()
     runtime = CoordinatorRuntime("train", tmp_path, "train.md", "digest", "workspace", broker_client=broker)
 
+    if fabpub_migrated_activated(
+        request,
+        symbol=("phase_loop_runtime.train_runner", "PublishAuthorityPreimages"),
+        detail=(
+            "run_train still threads a finalized AdmissionRequest into publish; FABPUB "
+            "requires PublishAuthorityPreimages plus a train-local checkpoint_root, with "
+            "publish_from_worktree alone constructing the envelope post-commit"
+        ),
+    ):
+        preimages_cls = fabpub_symbol("phase_loop_runtime.train_runner", "PublishAuthorityPreimages")
+        sentinel_authority = object()
+        run_train(
+            roadmap,
+            kwargs.pop("ledger_path"),
+            coordinator_runtime=runtime,
+            _publish_authority_fn=lambda *a, **kw: sentinel_authority,
+            **kwargs,
+        )
+        assert captured, "publish must be called"
+        assert all(kw.get("broker_client") is broker for kw in captured)
+        assert all(kw.get("publish_authority") is sentinel_authority for kw in captured)
+        assert all("admission" not in kw for kw in captured), (
+            "the train may not hand a broker-legal admission to publish"
+        )
+        assert all("checkpoint_root" in kw for kw in captured)
+        assert preimages_cls is not None
+        return
+
+    sentinel_admission = AdmissionRequest("a", 1, "f", "d", "v", "scope", "canned-key")
     run_train(
         roadmap,
         kwargs.pop("ledger_path"),
