@@ -2854,7 +2854,7 @@ def test_fabpub_legacy_writer_quiescence_blocks_armed_activation_and_fences_supp
 
 @_requires_fabpub
 def test_fabpub_post_armed_zero_legacy_repository_onboarding_is_serialized_and_fail_closed(
-    tmp_path, request
+    tmp_path, request, monkeypatch
 ):
     """A repository first seen after ACTIVE onboards exactly once, never by empty-store fallback."""
     nodeid = fabpub_this_nodeid(request)
@@ -2874,6 +2874,7 @@ def test_fabpub_post_armed_zero_legacy_repository_onboarding_is_serialized_and_f
     known = _init_repo(tmp_path / "known")
     fresh = _init_repo(tmp_path / "fresh")
     ledger = tmp_path / "ledger"
+    monkeypatch.setenv("PHASE_LOOP_FABPUB_LEGACY_ROOTS", str(ledger / "broker"))
     train = _write_train(tmp_path / "trains" / "release.md", "known")
     _seed_legacy_root(ledger, train_path=train, serialized_repo=str(known), epochs=(1, 3))
 
