@@ -15,11 +15,13 @@ from phase_loop_runtime.convergence.contracts import (
     BrokerVerb,
     PreAdmissionEnvelope,
     PublishCommittedBranchResult,
+    publish_committed_branch_idempotency_key,
 )
 from phase_loop_runtime.convergence.provider_contracts import (
     PROVIDER_COMPLETION_CLASSIFICATIONS,
     ProviderCompletionClassification,
     TerminalOutcomeState,
+    validate_terminal_transition,
 )
 from . import evidence as evidence_module
 from .evidence import BrokerEvidenceStore, EvidenceRecord
@@ -39,11 +41,6 @@ class BrokerExecutionResult:
     evidence: BrokerTerminalEvidence
     publish_result: PublishCommittedBranchResult | None = None
     reason: str = ""
-
-
-def publish_committed_branch_idempotency_key(repo: str, branch: str, head_sha: str) -> str:
-    """The base-free, epoch-free completed-effect key (EC-FABPUB-4)."""
-    return hashlib.sha256(f"{repo}\0{branch}\0{head_sha}".encode()).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -150,24 +147,30 @@ def seal_adapter_start_owner(
     owner: AdapterStartOwnership,
     *,
     authorize=None,
+    lock_held: bool = False,
 ) -> AdapterStartOwnership:
     """Seal exact ownership under the shared store lock."""
     import fcntl
 
+    def seal() -> AdapterStartOwnership:
+        if authorize is not None:
+            authorize()
+        current = read_adapter_start_owner(
+            root, repository_identity=owner.repository_identity
+        )
+        if current != owner or current.sealed:
+            raise PermissionError("adapter-start ownership changed before terminal seal")
+        sealed = AdapterStartOwnership(**{**current.__dict__, "sealed": True})
+        _owner_atomic_write(_owner_path(root), sealed)
+        return sealed
+
+    if lock_held:
+        return seal()
     lock_path = Path(root) / "admissions.lock"
     with lock_path.open("a+", encoding="utf-8") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         try:
-            if authorize is not None:
-                authorize()
-            current = read_adapter_start_owner(
-                root, repository_identity=owner.repository_identity
-            )
-            if current != owner or current.sealed:
-                raise PermissionError("adapter-start ownership changed before terminal seal")
-            sealed = AdapterStartOwnership(**{**current.__dict__, "sealed": True})
-            _owner_atomic_write(_owner_path(root), sealed)
-            return sealed
+            return seal()
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
 
@@ -306,6 +309,10 @@ class BrokerService:
             )
         }
         approval_digest = hashlib.sha256(json.dumps(approval_payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        idempotency_key = (
+            f"{request.verb.value}\0"
+            f"{publish_committed_branch_idempotency_key(request.repo, request.branch, request.head_sha)}"
+        )
         return AdmissionRequest(
             attempt_id,
             epoch,
@@ -313,28 +320,95 @@ class BrokerService:
             approval_digest,
             envelope.expected_version_predicate,
             envelope.authority_domain_scope,
-            envelope.transaction_id,
+            idempotency_key,
         )
 
-    def _block_unsealed_owner(self, owner: AdapterStartOwnership) -> None:
-        # The owner is keyed by the canonical completed-effect identity. Retain
-        # the transaction identity as an authenticated recovery alias because
-        # pre-FABPUB callers persisted/replayed ambiguity under that key.
-        for identity in dict.fromkeys(
-            (owner.effect_key, owner.idempotency_key, owner.transaction_id)
-        ):
-            current = self.evidence_store.replay().get(identity)
-            if current is None:
-                self.evidence_store.record_intent(identity)
-                current = self.evidence_store.replay().get(identity)
-            if current is not None and current.state is TerminalOutcomeState.PROVIDER_CALL_IN_FLIGHT:
-                self.evidence_store.record_terminal(
-                    EvidenceRecord(
-                        identity,
-                        TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED,
-                        "unsealed-adapter-start-owner",
-                    )
+    def _block_unsealed_owner(self, owner: AdapterStartOwnership) -> bool:
+        """Resolve one observed owner under the repository evidence lock.
+
+        Return true only when the owner remains an unknown provider effect and
+        was durably promoted to permanent ambiguity. A terminal already known
+        to be effect or no-effect retires the owner and permits a fresh head.
+        """
+        import fcntl
+
+        self.evidence_store._authorize()
+        with self.evidence_store.lock_path.open("a+", encoding="utf-8") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                self.evidence_store._authorize()
+                current_owner = evidence_module.read_adapter_start_owner(
+                    self.evidence_store.root,
+                    repository_identity=owner.repository_identity,
                 )
+                if current_owner is None or current_owner.sealed:
+                    return False
+                current = self.evidence_store.replay().get(current_owner.effect_key)
+                if current is not None and current.state in (
+                    TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED,
+                    TerminalOutcomeState.NO_EFFECT_TERMINAL_PROVEN,
+                ):
+                    evidence_module.seal_adapter_start_owner(
+                        self.evidence_store.root,
+                        current_owner,
+                        authorize=self.evidence_store._authorize,
+                        lock_held=True,
+                    )
+                    return False
+                if current is None:
+                    current = self.evidence_store._append_locked(
+                        EvidenceRecord(
+                            current_owner.effect_key,
+                            TerminalOutcomeState.PROVIDER_CALL_IN_FLIGHT,
+                        )
+                    )
+                if current.state is TerminalOutcomeState.PROVIDER_CALL_IN_FLIGHT:
+                    self.evidence_store._append_locked(
+                        EvidenceRecord(
+                            current_owner.effect_key,
+                            TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED,
+                            "unsealed-adapter-start-owner",
+                        )
+                    )
+                return True
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+
+    def _record_terminal_and_seal_owner(
+        self,
+        owner: AdapterStartOwnership,
+        record: EvidenceRecord,
+    ) -> EvidenceRecord:
+        """Linearize a known terminal and owner retirement under one lock."""
+        import fcntl
+
+        self.evidence_store._authorize()
+        with self.evidence_store.lock_path.open("a+", encoding="utf-8") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                self.evidence_store._authorize()
+                current = self.evidence_store.replay().get(record.idempotency_key)
+                if current is None:
+                    raise ValueError("intent must precede evidence")
+                if current == record:
+                    terminal = current
+                else:
+                    if not validate_terminal_transition(current.state, record.state):
+                        raise ValueError("invalid terminal transition")
+                    terminal = self.evidence_store._append_locked(record)
+                if terminal.state in (
+                    TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED,
+                    TerminalOutcomeState.NO_EFFECT_TERMINAL_PROVEN,
+                ):
+                    evidence_module.seal_adapter_start_owner(
+                        self.evidence_store.root,
+                        owner,
+                        authorize=self.evidence_store._authorize,
+                        lock_held=True,
+                    )
+                return terminal
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
 
     def _fresh_publish(self, request: BrokerRequest, key: str) -> BrokerExecutionResult:
         envelope, transaction = self._validated_envelope(request)
@@ -343,8 +417,8 @@ class BrokerService:
             repository_identity=request.repo,
         )
         if existing_owner is not None and not existing_owner.sealed:
-            self._block_unsealed_owner(existing_owner)
-            raise PermissionError("unsealed adapter-start owner blocks fresh provider effect")
+            if self._block_unsealed_owner(existing_owner):
+                raise PermissionError("unsealed adapter-start owner blocks fresh provider effect")
         if self.evidence_store.epoch_blocked:
             raise PermissionError("epoch permanently blocked")
         attempt_id = hashlib.sha256(
@@ -369,8 +443,8 @@ class BrokerService:
         )
         if recorded_owner.owner_nonce != owner.owner_nonce:
             if not recorded_owner.sealed:
-                self._block_unsealed_owner(recorded_owner)
-                raise PermissionError("unsealed adapter-start owner blocks fresh provider effect")
+                if self._block_unsealed_owner(recorded_owner):
+                    raise PermissionError("unsealed adapter-start owner blocks fresh provider effect")
             # A sealed owner is a completed prior effect, not a lock on a new head.
             recorded_owner = evidence_module.append_adapter_start_owner(
                 self.evidence_store.root,
@@ -407,16 +481,21 @@ class BrokerService:
             adapter_worktree=request.adapter_worktree,
         )
         try:
-            result, evidence = self.adapter.execute(adapter_request)
+            acquire_lease = getattr(self.adapter, "_acquire_service_generation_lease", None)
+            temporary_lease = (
+                acquire_lease(self.evidence_store.root) if acquire_lease is not None else None
+            )
+            try:
+                result, evidence = self.adapter.execute(adapter_request)
+            finally:
+                release_lease = getattr(self.adapter, "_release_service_generation_lease", None)
+                if release_lease is not None:
+                    release_lease(temporary_lease)
             state = TerminalOutcomeState(evidence.terminal_state)
             reference = result.pr_url if result is not None else evidence.evidence_reference
-            terminal = self.evidence_store.record_terminal(EvidenceRecord(key, state, reference))
-            if state is TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED:
-                evidence_module.seal_adapter_start_owner(
-                    self.evidence_store.root,
-                    recorded_owner,
-                    authorize=self.evidence_store._authorize,
-                )
+            terminal = self._record_terminal_and_seal_owner(
+                recorded_owner, EvidenceRecord(key, state, reference)
+            )
             _advance_transaction(transaction, "TERMINAL_SEALED")
             return BrokerExecutionResult(state is TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED, BrokerTerminalEvidence(key, terminal.state.value, terminal.evidence_reference), result)
         except Exception as error:

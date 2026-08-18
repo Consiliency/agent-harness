@@ -2681,11 +2681,15 @@ class _RepositoryRoutingBrokerService:
         service = self._services.get(cache_key)
         if service is None:
             admission_store, evidence_store = self._stores_for(snapshot)
+            lease = self._leases[snapshot.identity]
             service = BrokerService(
                 admission_store,
                 evidence_store,
                 GitHubBrokerAdapter(
-                    snapshot.worktree, run=self._run, allowed_hosts=self._allowed_hosts
+                    snapshot.worktree,
+                    run=self._run,
+                    allowed_hosts=self._allowed_hosts,
+                    generation_lease=lease,
                 ),
                 contracts=self._contracts,
             )

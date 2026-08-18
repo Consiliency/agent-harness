@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from enum import Enum
 from typing import Tuple
@@ -13,6 +14,11 @@ class BrokerVerb(str, Enum):
     RELEASE = "release"
     PACKAGE = "package"
     PUBLISH_COMMITTED_BRANCH = "publish_committed_branch"
+
+
+def publish_committed_branch_idempotency_key(repo: str, branch: str, head_sha: str) -> str:
+    """Return the base-free, epoch-free completed-effect key."""
+    return hashlib.sha256(f"{repo}\0{branch}\0{head_sha}".encode()).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -86,6 +92,18 @@ class PreAdmissionEnvelope:
         "approval_digest",
         "idempotency_key",
     )
+
+    @property
+    def idempotency_key(self) -> str:
+        """Expose the broker-derived effect key without accepting it as input."""
+        prefix = "publish:"
+        if not self.operation_identity.startswith(prefix):
+            raise AttributeError("idempotency_key")
+        branch = self.operation_identity[len(prefix):]
+        return (
+            f"{BrokerVerb.PUBLISH_COMMITTED_BRANCH.value}\0"
+            f"{publish_committed_branch_idempotency_key(self.canonical_repository_identity, branch, self.committed_head_sha)}"
+        )
 
     def __post_init__(self) -> None:
         missing = [

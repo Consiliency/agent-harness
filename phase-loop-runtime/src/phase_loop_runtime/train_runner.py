@@ -237,7 +237,10 @@ def _check_repo_clean(workspace: Path, node_id: str) -> Optional[str]:
 def _check_remote_reachable(workspace: Path, node_id: str, remote: str = "origin") -> Optional[str]:
     """Return an error string if the remote is not reachable, else None."""
     completed = subprocess.run(
-        ["git", "-C", str(workspace), "ls-remote", "--exit-code", remote, "HEAD"],
+        [
+            "git", "-C", str(workspace), "ls-remote", "--exit-code",
+            remote, "refs/heads/*",
+        ],
         capture_output=True,
         text=True,
         timeout=30,
@@ -381,11 +384,8 @@ def _default_preflight(
 
     for node in nodes:
         workspace = resolve_workspace(node)
-        from .convergence.broker.live import fabpub_capability_active
-
         checks = [] if Path(workspace).resolve() in transaction_workspaces else [_check_repo_clean]
-        if not fabpub_capability_active():
-            checks.extend((_check_remote_reachable, _check_base_branch_exists))
+        checks.extend((_check_remote_reachable, _check_base_branch_exists))
         # Prebuilt nodes must additionally be strictly ahead of the base.
         if getattr(node, "mode", "execute") == "prebuilt":
             checks.append(_check_branch_ahead_of_base)
@@ -2349,6 +2349,7 @@ def _run_train_unfenced(
     # we return immediately here, before the per-node loop is entered.
     fabpub_resume_candidates: Dict[str, object] = {}
     transaction_workspaces: Set[Path] = set()
+    transaction_conflicts: List[str] = []
     from .convergence.broker.live import fabpub_capability_active
 
     if (
@@ -2366,9 +2367,19 @@ def _run_train_unfenced(
                 checkpoint_root=authority.checkpoint_root,
                 node_id=node.node_id,
             )
-            if candidate.transaction is not None:
+            if candidate.transaction is not None and candidate.state == "CONFLICTED":
+                transaction_conflicts.append(
+                    f"{node.node_id}: publish transaction conflicted during all-repository preflight"
+                )
+            elif candidate.transaction is not None:
                 fabpub_resume_candidates[node.node_id] = candidate
                 transaction_workspaces.add(workspace)
+
+    if transaction_conflicts:
+        return {
+            "status": "preflight_failed",
+            "errors": transaction_conflicts,
+        }
 
     if preflight_fn is _default_preflight:
         preflight_errors = preflight_fn(

@@ -735,6 +735,7 @@ def prepare_publish_transaction(
 def prepare_prebuilt_transaction(
     repo: Path,
     *,
+    owned_paths: Sequence[str],
     checkpoint_root: Path,
     branch: str,
     envelope_authority_preimage: dict,
@@ -753,11 +754,13 @@ def prepare_prebuilt_transaction(
     tree = _git_output(Path(repo), "rev-parse", f"{head}^{{tree}}")
     if not tree:
         raise ValueError("prebuilt tree cannot be resolved")
-    # Prebuilt has no staged mutation.  Its identity binds the existing exact head.
+    # Prebuilt has no staged mutation.  Its identity binds the existing exact head
+    # and the coordinator-derived branch diff that the broker must enforce.
     original = _git_bytes(Path(repo), "log", "-1", "--format=%B", head) or b"prebuilt"
     payload = _transaction_payload(
         repo=Path(repo), checkpoint_root=Path(checkpoint_root), branch=branch, base=base,
-        owned_paths=(), draft=draft, pr_body=pr_body, authority=dict(envelope_authority_preimage),
+        owned_paths=tuple(sorted(owned_paths)), draft=draft, pr_body=pr_body,
+        authority=dict(envelope_authority_preimage),
         original_message=original, mode="prebuilt",
     )
     payload.update(
@@ -1059,7 +1062,7 @@ def publish_from_worktree(
                 raise RuntimeError("active publish transaction differs from the requested authority")
         else:
             transaction = (
-                prepare_prebuilt_transaction(repo, checkpoint_root=Path(checkpoint_root), branch=branch, envelope_authority_preimage=authority, base=base, draft=draft, pr_body=pr_body or "", node_id=node_id)
+                prepare_prebuilt_transaction(repo, owned_paths=owned_paths, checkpoint_root=Path(checkpoint_root), branch=branch, envelope_authority_preimage=authority, base=base, draft=draft, pr_body=pr_body or "", node_id=node_id)
                 if prebuilt
                 else prepare_publish_transaction(repo, owned_paths=owned_paths, checkpoint_root=Path(checkpoint_root), branch=branch, envelope_authority_preimage=authority, base=base, draft=draft, pr_body=pr_body or "", commit_message=commit_message, node_id=node_id)
             )
