@@ -3285,6 +3285,7 @@ def test_fabpub_train_resume_post_commit_pre_checkpoint(tmp_path: Path, request)
             checkpoint_root=root,
             branch="feat/fabpub",
             envelope_authority_preimage=negative_authority_preimage,
+            node_id=train_node_id,
         )
 
     def _extra_staged_path(repo: Path, _txn):
