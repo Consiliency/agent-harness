@@ -686,7 +686,16 @@ _CLI_ALLOCATOR_PROBE = """
         target.write_text(f"content for {target_head}\\n", encoding="utf-8")
         subprocess.run(["git", "-C", str(workspace), "add", "seed.txt"], check=True)
         from phase_loop_runtime.models import StateSnapshot
-        return (StateSnapshot(phases={"p1": "complete"}, phase_owned_dirty_paths=["seed.txt"]), [])
+        return (
+            StateSnapshot(
+                timestamp="fabpub-cli-probe",
+                repo=str(workspace),
+                roadmap="specs/plan.md",
+                phases={"p1": "complete"},
+                phase_owned_dirty_paths=["seed.txt"],
+            ),
+            [],
+        )
 
     train_runner._default_run_loop = spy_run_loop
     try:
