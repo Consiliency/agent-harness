@@ -792,6 +792,9 @@ def audit_red_evidence(
     raw_log: Path | None,
     invocation: Path | None = None,
     exit_code: int | None = None,
+    *,
+    expected_head: str | None = None,
+    expected_test_tree_sha256: str | None = None,
 ) -> dict[str, Any]:
     """The activated-RED reduction.  MANDATORY, and bound to a trusted exit code.
 
@@ -821,6 +824,16 @@ def audit_red_evidence(
                 record = json.loads(invocation.read_text(encoding="utf-8"))
             except Exception as exc:  # pragma: no cover - malformed stamp
                 errors.append(f"the RED invocation record is unreadable: {exc}")
+    if record.get("schema") != "fabpub_pytest_invocation.v1":
+        errors.append("the RED invocation record has the wrong schema")
+    if expected_head is None:
+        errors.append("the expected tests-only head was not runner-stamped")
+    elif record.get("head") != expected_head:
+        errors.append("the RED invocation head does not match the tests-only stage")
+    if record.get("test_tree_sha256") != expected_test_tree_sha256:
+        errors.append("the RED invocation test-tree digest does not match")
+    if record.get("junit_sha256") != sha256_file(junit):
+        errors.append("the RED invocation JUnit digest does not match")
     stamped_exit = exit_code if exit_code is not None else record.get("exit_code")
     if stamped_exit is None:
         errors.append(
@@ -1461,6 +1474,8 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         _stamped_path(args.red_raw_log, EVIDENCE_ENV["red_raw_log"]),
         _stamped_path(args.red_invocation, EVIDENCE_ENV["red_invocation"]),
         stamped_exit,
+        expected_head=sections["sl0_git_boundary"].get("tests_only"),
+        expected_test_tree_sha256=sections["test_tree"].get("test_tree_sha256"),
     )
     sections["default_green"] = audit_default_evidence(
         repo, guard, _stamped_path(args.default_junit, EVIDENCE_ENV["default_junit"])

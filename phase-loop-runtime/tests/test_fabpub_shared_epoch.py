@@ -1061,6 +1061,72 @@ def test_fabpub_pytest_invocation_receipt_binds_stage_head_tree_and_junit(tmp_pa
     assert "the final argv activation does not match its lifecycle stage" in false_final["errors"]
 
 
+def test_fabpub_red_receipt_binds_head_tree_and_junit(monkeypatch, tmp_path):
+    junit = tmp_path / "red.junit.xml"
+    junit.write_text("<testsuites tests=\"0\"/>\n", encoding="utf-8")
+    raw_log = tmp_path / "red.raw.log"
+    raw_log.write_text("intentional RED\n", encoding="utf-8")
+    receipt = tmp_path / "red.invocation.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "schema": "fabpub_pytest_invocation.v1",
+                "argv": [
+                    "env",
+                    "PHASE_LOOP_TDD_EXPECT_FABPUB=1",
+                    "pytest",
+                    "--junitxml",
+                    str(junit),
+                ],
+                "exit_code": 1,
+                "junit": str(junit),
+                "junit_sha256": "0" * 64,
+                "head": "a" * 40,
+                "test_tree_sha256": "b" * 64,
+                "raw_log": str(raw_log),
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        fabpub_chronology,
+        "reduce_junit",
+        lambda _repo, _junit: {
+            "artifact": str(junit),
+            "artifact_sha256": hashlib.sha256(junit.read_bytes()).hexdigest(),
+            "failed": {},
+            "passed": set(),
+            "skipped": set(),
+            "errored": {},
+            "xfails": [],
+            "duplicates": [],
+            "declared_totals": {"tests": 0, "failures": 0, "errors": 0, "skipped": 0},
+            "resolved_total": 0,
+            "unresolved_total": 0,
+            "unresolved": [],
+        },
+    )
+    guard = SimpleNamespace(
+        FABPUB_RED_NODEIDS=(),
+        FABPUB_RED_ANCHORS={},
+        FABPUB_ACTIVATION_ENV="PHASE_LOOP_TDD_EXPECT_FABPUB",
+    )
+
+    report = fabpub_chronology.audit_red_evidence(
+        tmp_path,
+        guard,
+        junit,
+        raw_log,
+        receipt,
+        expected_head="c" * 40,
+        expected_test_tree_sha256="d" * 64,
+    )
+
+    assert "the RED invocation head does not match the tests-only stage" in report["errors"]
+    assert "the RED invocation test-tree digest does not match" in report["errors"]
+    assert "the RED invocation JUnit digest does not match" in report["errors"]
+
+
 def test_fabpub_panel_envelope_binds_reviewed_inputs_and_four_usable_seats(tmp_path):
     panel = tmp_path / "panel.json"
     bindings = {
