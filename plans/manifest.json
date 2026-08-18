@@ -444,6 +444,24 @@
       ]
     },
     {
+      "acceptance_criteria_count": 5,
+      "created_at": "2026-08-17T05:27:33.049343+00:00",
+      "file": ".consiliency/plans/detailed-entry-doc-verification-20260817-0530.md",
+      "handoff_ref": null,
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [],
+      "owner_skill": "claude-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "detailed-entry-doc-verification-20260817-0530",
+      "status": "committed",
+      "task_summary": "Diff-independent entry-point doc verification (paths, version pins, inventories, command contract) with positive control and fixture negatives; agent-harness#568",
+      "type": "detailed",
+      "updated_at": "2026-08-17T05:27:33.049343+00:00"
+    },
+    {
       "acceptance_criteria_count": 6,
       "created_at": "2026-06-30T20:35:00Z",
       "file": "plans/detailed-fix-issue-33-background-subprocess-liveness-20260630-2035.md",
@@ -1117,6 +1135,20 @@
           "transition": "committed"
         }
       ],
+      "lifecycle_events": [
+        {
+          "at": "2026-08-13T01:15:00+00:00",
+          "by": "claude-coordination-session",
+          "note": "retroactive executing record: execution ran 2026-08-04..2026-08-13 (agent-harness#477 lineage)",
+          "status": "executing"
+        },
+        {
+          "at": "2026-08-13T01:15:00+00:00",
+          "by": "claude-coordination-session",
+          "note": "maintainer-ratified 2026-08-13: landing 7bd0c01a + fix-forward 8adb0281; main fully green (run 31656650147); attestation corpus incl. ATTESTATION-BLOCKED derivation; deferrals in agent-harness#519/#527",
+          "status": "completed"
+        }
+      ],
       "owner_skill": "codex-plan-phase",
       "phase_alias": "CONFORM",
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/99e37ba2/codex-v10-plan-conform/20260730T041108Z-65fd85.md",
@@ -1130,21 +1162,7 @@
       "status": "completed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-13T01:15:00+00:00",
-      "lifecycle_events": [
-        {
-          "status": "executing",
-          "at": "2026-08-13T01:15:00+00:00",
-          "by": "claude-coordination-session",
-          "note": "retroactive executing record: execution ran 2026-08-04..2026-08-13 (agent-harness#477 lineage)"
-        },
-        {
-          "status": "completed",
-          "at": "2026-08-13T01:15:00+00:00",
-          "by": "claude-coordination-session",
-          "note": "maintainer-ratified 2026-08-13: landing 7bd0c01a + fix-forward 8adb0281; main fully green (run 31656650147); attestation corpus incl. ATTESTATION-BLOCKED derivation; deferrals in agent-harness#519/#527"
-        }
-      ]
+      "updated_at": "2026-08-13T01:15:00+00:00"
     },
     {
       "acceptance_criteria_count": null,
@@ -1708,6 +1726,7 @@
               "agent-harness#552",
               "agent-harness#554"
             ],
+            "phase_alias": "GOVLEAN",
             "phase_metrics": {
               "elapsed_seconds": 59194,
               "future_history_pins": 0,
@@ -1723,7 +1742,6 @@
               ],
               "unrelated_landing_amendments": 0
             },
-            "phase_alias": "GOVLEAN",
             "tests_only_landing": "1c4e6ca3b8a12914619b6b93512275bc3f2d6e46"
           },
           "transition": "completed"
