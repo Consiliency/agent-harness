@@ -3559,7 +3559,7 @@
           "transition": "committed"
         },
         {
-          "at": "2026-08-19T19:12:08Z",
+          "at": "2026-08-19T19:31:09Z",
           "by": "codex-plan-phase",
           "metadata": {
             "acceptance_criteria_count": 21,
@@ -3592,14 +3592,18 @@
                 "phase-loop-runtime/src/phase_loop_runtime/skills_bundle/*-advisor-panel/**"
               ]
             },
-            "plan_sha256": "1fc23a870dd91d23bd9a9fc378d6ec8914168c106eac9cda43be427354c8d60a",
+            "plan_sha256": "1f8d6071dffbdbca0b1d37fffb103d30fa9cf73346d0219b084159b2c4065105",
             "predecessor_plan_sha256": "1359cdeddb609999b21dcbe71d2759e050009a329e191a40e5f7cfd7ec34b3c8",
             "reason": "universal_native_first_routing_authority",
             "review_reconciliation": {
               "finding": "missing_literal_native_first_red_green_verification_commands",
               "predecessor_head": "70488c8da0bc211f502bb84bf746956540fb143a",
               "predecessor_plan_sha256": "4f74dac00ada967fef7e587918e39f122f98527bb94ac19fbb017affd97617de",
-              "resolution": "add_exact_forced_red_and_unforced_green_six_node_commands_and_align_sl2_verification_scope"
+              "resolution": "add_exact_forced_red_and_lane_owned_unforced_green_commands_and_align_sl2_sl5_verification_scope",
+              "successor_findings": [
+                "split_sl2_runtime_green_from_sl5_host_skill_green",
+                "make_claude_native_vs_subscription_tui_transport_explicitly_host_relative"
+              ]
             },
             "repaired_digest_review_status": "unreviewed_not_approved",
             "roadmap_bytes_posture": "frozen_v10_roadmap_bytes_unchanged; amendment_is_plan_and_manifest_local_only",
@@ -3637,7 +3641,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-19T19:12:08Z"
+      "updated_at": "2026-08-19T19:31:09Z"
     },
     {
       "acceptance_criteria_count": null,
