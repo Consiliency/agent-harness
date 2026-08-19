@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import itertools
 import json
 import re
 import subprocess
@@ -639,6 +640,31 @@ _DIST_PIN_RE = re.compile(
 _GIT_REF_PIN_RE = re.compile(
     r"github\.com[:/](?P<owner>[\w.-]+)/(?P<repo>[\w.-]+?)(?:\.git)?@(?P<ref>[^\s\"'`#)\]]+)"
 )
+#: The same claim in URL form. `@ref` is only one way to name a release; a doc
+#: pointing at `/releases/tag/vX`, `/tree/vX` or `/archive/refs/tags/vX.tar.gz`
+#: asserts exactly the same thing about the repository's current release and
+#: rots exactly the same way. A different GRAMMAR for one clock, not a
+#: different clock -- so it reuses the release-namespace comparison rather than
+#: introducing a second notion of freshness.
+_URL_TAG_PIN_RE = re.compile(
+    r"github\.com[:/](?P<owner>[\w.-]+)/(?P<repo>[\w.-]+?)(?:\.git)?/"
+    r"(?:releases/tag|tree|archive/refs/tags)/"
+    r"(?P<ref>v[0-9][0-9A-Za-z._-]*)"
+)
+
+#: Archive suffixes and sentence punctuation that ride along on a URL-form ref.
+_REF_SUFFIX_RE = re.compile(r"(?:\.tar\.gz|\.tgz|\.zip)$", re.IGNORECASE)
+
+
+def _normalize_url_ref(ref: str) -> str:
+    """Strip an archive extension and trailing sentence punctuation.
+
+    `/archive/refs/tags/v0.7.13.tar.gz` names tag `v0.7.13`, and a URL ending a
+    sentence picks up the full stop. Neither belongs in the tag compared against
+    the release namespace.
+    """
+    cleaned = _REF_SUFFIX_RE.sub("", ref)
+    return cleaned.rstrip(".")
 
 
 def check_pin_freshness(text: str, doc_path: str, ctx: RepoContext) -> List[Finding]:
@@ -725,13 +751,17 @@ def check_pin_freshness(text: str, doc_path: str, ctx: RepoContext) -> List[Find
                     )
                 )
 
-        for match in _GIT_REF_PIN_RE.finditer(line):
+        # Both spellings of the same claim, evaluated by the same rule against
+        # the same clock -- a release-URL pin rots identically to an `@ref` one.
+        for match in itertools.chain(
+            _GIT_REF_PIN_RE.finditer(line), _URL_TAG_PIN_RE.finditer(line)
+        ):
             owner = match.group("owner").lower()
             name = match.group("repo").lower().removesuffix(".git")
             if (owner, name) not in ctx.repo_identities:
                 # A pin at somebody else's repository is on somebody else's clock.
                 continue
-            ref = match.group("ref")
+            ref = _normalize_url_ref(match.group("ref"))
             if ref in REF_PLACEHOLDERS:
                 continue
             if _METAVAR_RE.search(ref):

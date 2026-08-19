@@ -719,6 +719,48 @@ class TestArmPinFreshness(unittest.TestCase):
                 codes(edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))), []
             )
 
+    def test_release_url_forms_are_pins_too(self):
+        """`@ref` is only one spelling of a release claim.
+
+        A doc pointing at `/releases/tag/vX`, `/tree/vX` or an archive tarball
+        asserts the same thing about the repository's current release and rots
+        the same way. This is a different GRAMMAR for one clock, not a second
+        clock -- it reuses the release-namespace comparison rather than
+        introducing another notion of freshness.
+        """
+        docs = ("phase-loop-runtime/README.md",)
+        for url in (
+            "https://github.com/Consiliency/agent-harness/releases/tag/v0.1.5",
+            "https://github.com/Consiliency/agent-harness/tree/v0.1.5",
+            "https://github.com/Consiliency/agent-harness/archive/refs/tags/v0.1.5.tar.gz",
+            "See https://github.com/Consiliency/agent-harness/releases/tag/v0.1.5.",
+        ):
+            with self.subTest(url=url), TemporaryDirectory() as tmp:
+                repo = build_repo(tmp, {"phase-loop-runtime/README.md": url + "\n"})
+                found = edc.check_repo(repo, entry_docs=docs)
+                self.assertEqual(codes(found), [("pins", "stale_pin")])
+                self.assertIn(FIXTURE_LATEST_TAG, found[0].message)
+
+    def test_release_url_adversarial_positives_are_silent(self):
+        # The archive suffix and a trailing full stop are not part of the tag;
+        # `latest` names no tag; a branch is not a pin; another repo is another
+        # clock. Any of these misread would fire on correct documentation.
+        doc = "\n".join(
+            [
+                "https://github.com/Consiliency/agent-harness/releases/tag/v0.7.13",
+                "https://github.com/Consiliency/agent-harness/archive/refs/tags/v0.7.13.tar.gz",
+                "https://github.com/Consiliency/agent-harness/releases/latest",
+                "https://github.com/Consiliency/agent-harness/tree/main",
+                "https://github.com/Consiliency/agent-harness/tree/main/phase-loop-skills",
+                "https://github.com/other/project/releases/tag/v0.1.5",
+            ]
+        )
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(tmp, {"phase-loop-runtime/README.md": doc})
+            self.assertEqual(
+                codes(edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))), []
+            )
+
     def test_wrong_placeholder_in_ref_position_is_reported(self):
         # The grammar is position-sensitive: a ref position names a tag, so
         # <VERSION> is not meaningful there even though it is in a pin.
