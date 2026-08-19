@@ -366,6 +366,32 @@ class TestArmPaths(unittest.TestCase):
             found = edc.check_repo(repo, entry_docs=("README.md",))
             self.assertEqual(codes(found), [("paths", "missing_path")])
 
+    def test_a_colon_in_a_real_filename_is_not_stripped(self):
+        # Stripping the citation suffix unconditionally turns a real file whose
+        # NAME contains a colon into a phantom missing path. The literal token
+        # is tried first, so the citation rule only ever adds a fallback.
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp, {"README.md": "See `data/log:2024`.\n"}, packages=self.PATHS_ONLY
+            )
+            (repo / "data").mkdir()
+            (repo / "data" / "log:2024").write_text("x", encoding="utf-8")
+            self.assertEqual(codes(edc.check_repo(repo, entry_docs=("README.md",))), [])
+
+    def test_a_citation_must_point_at_a_file(self):
+        # `src/pkg:42` where src/pkg is a DIRECTORY is nonsense. Accepting any
+        # resolvable stripped target would silently drop a finding the
+        # unstripped check used to make -- trading a false positive for a
+        # quiet miss rather than fixing it.
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp, {"README.md": "See `src/pkg:42`.\n"}, packages=self.PATHS_ONLY
+            )
+            (repo / "src" / "pkg").mkdir(parents=True)
+            found = edc.check_repo(repo, entry_docs=("README.md",))
+            self.assertEqual(codes(found), [("paths", "missing_path")])
+            self.assertEqual(found[0].token, "src/pkg:42")
+
     def test_install_layout_skip_self_disables(self):
         # The class is a class, not an allowlist: a repo that really has a
         # `share/` directory resolves `share/...` paths normally.
@@ -535,6 +561,43 @@ class TestArmPinFreshness(unittest.TestCase):
                 found = edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))
                 self.assertEqual(codes(found), [("pins", "stale_pin")])
                 self.assertIn("0.7.13", found[0].message)
+
+    def test_a_fenced_comparison_is_not_a_pin(self):
+        """`if dist == other:` in a code sample is not a version claim.
+
+        Arm 2 scans fences deliberately, so an unconstrained right-hand side
+        combined with whitespace tolerance turns a PEP-8-spaced Python
+        comparison into a `stale_pin`. The whitespace tolerance is needed for
+        unquoted requirements samples, so the RHS is constrained to
+        version-shaped-or-placeholder instead. Both halves asserted in the same
+        fence: the comparison is silent, the real pin beside it still reports.
+        """
+        doc = "\n".join(
+            [
+                "```python",
+                "if phase_loop_runtime == other:",
+                "    pass",
+                "```",
+            ]
+        )
+        pkgs = {"phase-loop-runtime": ("phase-loop-runtime", "0.7.13", "README.md")}
+        docs = ("phase-loop-runtime/README.md",)
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(tmp, {"phase-loop-runtime/README.md": doc}, packages=pkgs)
+            self.assertEqual(codes(edc.check_repo(repo, entry_docs=docs)), [])
+
+        with_pin = (
+            "```python\n"
+            "if phase_loop_runtime == other:\n"
+            "    pass\n"
+            "# pip install phase_loop_runtime==0.1.0\n"
+            "```\n"
+        )
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(tmp, {"phase-loop-runtime/README.md": with_pin}, packages=pkgs)
+            found = edc.check_repo(repo, entry_docs=docs)
+            self.assertEqual(codes(found), [("pins", "stale_pin")])
+            self.assertEqual(found[0].token, "phase_loop_runtime==0.1.0")
 
     def test_ranges_are_not_pins_under_any_spelling(self):
         # `>=` and `~=` are ranges, not claims about a current version, so they

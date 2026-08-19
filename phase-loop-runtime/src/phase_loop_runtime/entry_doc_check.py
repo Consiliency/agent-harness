@@ -465,7 +465,7 @@ def _concrete_prefix(token: str) -> str:
     return "/".join(concrete)
 
 
-def _resolves(ctx: RepoContext, doc_dir: str, rel: str) -> bool:
+def _resolves(ctx: RepoContext, doc_dir: str, rel: str, require_file: bool = False) -> bool:
     """Repo-root first, then the document's own directory.
 
     A trailing extension-less basename also resolves against a same-stem
@@ -486,7 +486,9 @@ def _resolves(ctx: RepoContext, doc_dir: str, rel: str) -> bool:
     for base in bases:
         candidate = f"{base}/{cleaned}" if base else cleaned
         if ctx.exists(candidate):
-            return True
+            if not require_file or (ctx.repo / candidate).is_file():
+                return True
+            continue
         if "." not in Path(cleaned).name:
             parent = (ctx.repo / candidate).parent
             stem = Path(candidate).name
@@ -564,8 +566,16 @@ def check_paths(text: str, doc_path: str, ctx: RepoContext) -> List[Finding]:
                     )
                 )
                 continue
+            # Literal FIRST: a real file may legitimately have a colon in its
+            # name (`data/log:2024`), and stripping unconditionally turns it
+            # into a phantom missing path.
+            if _resolves(ctx, doc_dir, token):
+                continue
             target = _strip_line_citation(token)
-            if _resolves(ctx, doc_dir, target):
+            # A citation must point at a FILE. `src/pkg:42` where `src/pkg` is a
+            # directory is nonsense, and accepting any resolvable target would
+            # silently drop a finding the unstripped check used to make.
+            if target != token and _resolves(ctx, doc_dir, target, require_file=True):
                 continue
             findings.append(
                 Finding(
@@ -590,9 +600,15 @@ def check_paths(text: str, doc_path: str, ctx: RepoContext) -> List[Finding]:
 #: ``dist==V``, tolerating PEP 508 extras and whitespace around the operator.
 #: Deliberately ``==`` only: ``>=`` and ``~=`` are ranges, not claims about a
 #: current version, so they have nothing to be stale against.
+#: The right-hand side must be **version-shaped or a placeholder**, not any
+#: bare token. Tolerating whitespace around ``==`` is required for unquoted
+#: requirements samples, but combined with an unconstrained RHS it reads a
+#: fenced Python comparison (``if phase_loop_runtime == other:``) as a pin --
+#: and arm 2 scans fences deliberately, so that reaches the output.
 _DIST_PIN_RE = re.compile(
     r"(?<![\w.-])(?P<dist>[A-Za-z][A-Za-z0-9._-]*[A-Za-z0-9])"
-    r"(?:\[[A-Za-z0-9._,-]+\])?\s*==\s*(?P<version>[^\s\"'`,;)\]]+)"
+    r"(?:\[[A-Za-z0-9._,-]+\])?\s*==\s*"
+    r"(?P<version>[0-9][^\s\"'`,;)\]]*|X\.Y\.Z|<[^<>\s]+>)"
 )
 _GIT_REF_PIN_RE = re.compile(
     r"github\.com[:/](?P<owner>[\w.-]+)/(?P<repo>[\w.-]+?)(?:\.git)?@(?P<ref>[^\s\"'`#)\]]+)"
