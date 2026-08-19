@@ -1,190 +1,187 @@
 # Detailed plan: make missing evidence fail loudly (agent-harness#607 + agent-harness#601)
 
+**Revision 2.** Revision 1 was reviewed by a three-seat panel; codex and grok both returned
+DISAGREE with overlapping blocking defects. Rev 1's own errors are recorded in
+"What revision 1 got wrong" below, because two of them were instances of the very class this
+plan exists to close.
+
 ## Task
 
 Close one defect class with three observed instances: **the absence of evidence renders
 identically to the presence of a positive result.** A check that never ran, a test that was
-never collected, and a job that was skipped all read as "green" in every surface we consult.
-
-Two issues, planned together because their fixes are the same primitive:
+never collected, and a job that was skipped all read as "green".
 
 - **agent-harness#607** — a newly added workflow never runs against already-open PRs, so the
   first change to violate a brand-new gate can merge with the gate having never executed.
-- **agent-harness#601** — tests that go inert in a CI lane are indistinguishable from tests
-  that pass there.
+- **agent-harness#601** — tests inert in a CI lane are indistinguishable from tests that pass.
+
+## What revision 1 got wrong
+
+Recorded rather than silently corrected, because the errors are the plan's own subject matter.
+
+1. **It gated on existence, not success — reproducing the class it closes.** Rev 1 failed only
+   when a workflow had *no run*. A **failed, cancelled, or skipped** run *exists*, so the
+   aggregate would have gone green over it. `suite gate` never had this defect: it requires
+   `successes -ne 1` to fail (`.github/workflows/test.yml:138-152`), i.e. an actual SUCCESS.
+   Rev 1 copied that job's **name and shape but not its contract.**
+2. **The new gate would itself never run on already-open PRs.** Landing
+   `evidence-gate.yml` does not trigger `pull_request` for PRs whose last push predates it —
+   which is *precisely* agent-harness#607. Rev 1 proposed a gate with the defect it was built
+   to detect, and its verification step only *observed* the hole rather than closing it.
+3. **The agent-harness#601 half was wired to a seam that cannot supply its inputs.** Rev 1
+   changed `gate_a_cleanroom.sh` to emit the canonical-lane junit. Gate A cannot: the
+   canonical junit comes from a different stage. **The pairing already exists** —
+   `ci/offload-gate.sh:49-51` exports `./junit-offload` from one DAG node, containing
+   `py310/junit-py310.xml` and `gate-a/junit-gate-a.xml`. On the eligible path
+   `pytest`/`cleanroom` are skipped, so offload *is* the suite of record. Rev 1 also attached
+   the consumer to `suite gate`, which downloads no artifacts.
+4. **`absent_from_collection` gated on *growth*** — the identical cardinality hole the plan
+   explicitly rejects for skip counts. One test goes inert while another becomes live, the
+   count is flat, the gate is green.
+5. **Branch-keyed observation.** Rev 1's verification used `headBranch`; the correct key is
+   **`head_sha`**, which is stable under force-push.
 
 ## Research summary
 
-**This repository has already solved this class once, correctly, for one workflow.** The
-`suite gate` job in `.github/workflows/test.yml:126-152` exists precisely because a *skipped*
-GitHub job satisfies a *required* status check. It is `if: always()`, `needs: [offload,
-hosted]`, and asserts **exactly one** real verdict, failing with:
+`suite gate` (`.github/workflows/test.yml:125-153`) is the correct precedent and this plan
+still anchors on it — but on its **contract**, not its shape: `if: always()`,
+`needs: [offload, hosted]`, and a demand for **exactly one SUCCESS**, failing with "Both
+skipped means NO suite ran: that is a red, not a green." Its mechanism is an *intra-workflow*
+`needs:` roll-up, which structurally cannot express "a different workflow produced no run".
 
-> "A skipped job satisfies a required status check, so this aggregate gate -- not
-> offload/hosted individually -- is the required check. Both skipped means NO suite ran:
-> that is a red, not a green."
+The repo already has the right pattern for the cross-workflow case:
+`agy_canary_evidence.py:7314-7337` requires `head_sha` + `completed` + `conclusion == success`.
+agent-harness#607's half should be modeled on **that**, not on `suite gate`.
 
-That is this plan's thesis in the repo's own words, already shipped and load-bearing. The
-work is to **generalise a proven pattern**, not to invent a mechanism.
-
-Measured facts backing each half:
-
-- **agent-harness#607** — `entry-doc-check.yml` landed on `main` at `b2659a7a` (2026-08-19
-  00:00:06Z). agent-harness#545's last commit was 2026-08-16, three days earlier, so no
-  `pull_request` event ever fired while the workflow existed and **GitHub created zero runs**
-  for it. It merged 18:12:00Z and produced the workflow's first red on `main` six seconds
-  later. Of 15 total runs, **0** were on its branch. A sweep found **13 of 17 open PRs have
-  never run the check**; simulating each merge result gave **8 would-pass, 5 conflict,
-  0 would-fail** — so the hole is currently *latent, not realised*, which sets the urgency
-  but not the priority.
-- **agent-harness#601** — comparing lanes in one offloaded run: Gate A skipped **138**, the
-  canonical lanes **61**. Per-test junit diff: **78** skipped in Gate A but live in canonical
-  (73 legitimately posture-dependent, 5 unclassified, **0 confirmed accidentally inert**),
-  **41** present in the canonical collection and *absent from Gate A's* with **no reason
-  string at all**, **88** that run only in Gate A, and **61** that skip in *both* lanes —
-  of which **23** carry the bare reason `collection skipped`.
-
-Gate A's tree is a sparse checkout staged by `phase-loop-runtime/scripts/gate_a_cleanroom.sh`,
-which already emits junit via `GATE_A_JUNIT` (`:54-56`, `:189`). **The evidence needed for the
-agent-harness#601 half already exists as an artifact**; nothing currently reads it.
-
-## The class, stated once
-
-Our tooling reports **what happened**. We read it as **what was verified**. Those diverge
-exactly when *nothing happened*:
-
-| instance | absent thing | renders as |
-|---|---|---|
-| branch protection | skipped job | required check satisfied |
-| agent-harness#601 | uncollected / inert test | passing test |
-| agent-harness#607 | non-existent workflow run | passing check |
-
-The remedy in all three is the same: **assert the evidence exists, separately from asserting
-it is positive.** `suite gate` does this for one workflow; this plan does it for workflow
-*runs* and for test *collection*.
+Measured inputs (all against `main` at `2344d030`; **they expire on any merge** — reseed
+before implementing): agent-harness#545 had **0 of 15** runs and merged 18 h after the gate
+landed; **13 of 17** open PRs have never run the check (merge-simulated: 8 pass, 5 conflict,
+**0 fail** — the hole is *latent, not realised*); Gate A junit diff gives **78**
+skipped-here-live-there (73 legitimate / 5 unclassified / **0 confirmed accidental**), **41**
+absent from collection with **no reason string**, **61** skipped in both lanes.
 
 ## Changes
 
-### `.github/workflows/evidence-gate.yml` (create)
-
-- `evidence-gate` job — add — **the agent-harness#607 half.** A required aggregate check,
-  `if: always()`, that fails when a workflow this repo declares mandatory has **no run** for
-  the PR head. Models `suite gate`'s shape: the *aggregate* is the required check, not the
-  individual workflows, because an individual one cannot report its own non-existence.
-- Resolve required workflows from a **checked-in list**, not from branch protection (the API
-  needs admin scope and would make the gate's own correctness depend on a setting no reviewer
-  sees in the diff).
-- Failure message must name the remedy explicitly ("push an empty commit or re-run the
-  workflow on this head"), matching `suite gate`'s precedent of explaining *why* a red is
-  correct rather than only that it is red.
-
 ### `phase-loop-runtime/src/phase_loop_runtime/evidence_gate.py` (create)
 
-- `required_runs_missing(...)` — add — pure function over `(declared_workflows,
-  observed_runs)` returning the missing set. Pure so it is unit-testable without GitHub, the
-  same design rule `native_agent_leg_request` follows.
-- `inert_delta(canonical_junit, lane_junit)` — add — the **agent-harness#601 half**: returns
-  three *separate* sets — `skipped_here_live_there`, `absent_from_collection`, and
-  `skipped_in_both`. **Never a single total.** Summing them re-introduces exactly the
-  conflation this plan exists to remove: a skip carries a reason and is auditable; an
-  uncollected test carries nothing.
-- `classify_inert(entry, allowlist)` — add — `legitimate` (matches a declared, reasoned
-  allowlist entry), `unclassified`, or `accidental`.
+- `missing_or_unsuccessful(declared, observed, head_sha)` — add — pure. Returns each declared
+  workflow whose run for **this `head_sha`** is absent, not `completed`, or whose
+  `conclusion != "success"`. **Existence is necessary and not sufficient** — the rev-1 defect.
+- `inert_delta(canonical_junit, lane_junit)` — add — returns three **separate identity sets**:
+  `skipped_here_live_there`, `absent_from_collection`, `skipped_in_both`. Never summed, and
+  **never reduced to cardinality** — sets, so an add/drop pair cannot cancel out.
+- `classify_inert(entry, allowlist)` — add — `legitimate` / `unclassified` / `accidental`.
+  **`unclassified` fails**, matching the acceptance rule; rev 1 failed only `accidental`
+  while knowingly retaining 5 unclassified.
 
-### `.github/inert-tests-allowlist.json` (create)
+### `.github/workflows/evidence-gate.yml` (create)
 
-- Declared inert set — add — one entry per legitimately posture-dependent test, each with a
-  **reason string**. The measured baseline is 73 legitimate / 5 unclassified. Seed it with the
-  73; the 5 unclassified are recorded as unclassified rather than silently admitted.
-- Chosen over a bare skip *count* because 73 of 78 are stable, and a count says nothing about
-  **which** test went inert — the count stays constant when one test goes inert and another
-  becomes live.
+- `evidence-gate` job — add — required aggregate, `if: always()`, `permissions: actions: read`
+  (sufficient; **admin scope is not required** — this was the panel's answer to "is it even
+  buildable", and the answer is yes, but not as rev 1 specified it).
+- Keyed on `head_sha`. Polls `queued`/`in_progress` to a bounded deadline rather than reading
+  "not finished yet" as missing.
+- **Excludes path-filtered workflows** from the declared set — they legitimately do not run,
+  and treating that as missing evidence is the false-positive that would block every PR.
+- Failure message names the remedy (empty commit / re-run on this head), following
+  `suite gate`'s precedent of explaining why the red is correct.
 
-### `phase-loop-runtime/scripts/gate_a_cleanroom.sh` (modify)
+### `.github/workflows/evidence-reconcile.yml` (create)
 
-- Emit the **canonical-lane** junit path alongside the existing `GATE_A_JUNIT` so the two
-  lanes can be diffed in CI — add — the artifact already exists per lane (`:54-56`, `:189`);
-  only the pairing is missing.
+- Scheduled + `workflow_dispatch` reconciler — add — **closes rev-1 defect 2.** Enumerates
+  open PRs and re-evaluates each head against the current declared set, so landing a new
+  requirement reaches PRs that will never emit a `pull_request` event. Without this the gate
+  has the hole it exists to detect.
+
+### `.github/required-workflows.json` (create)
+
+- Declared required set — add — checked in, so the gate's correctness is reviewable in a
+  diff rather than depending on a branch-protection setting no reviewer sees.
+
+### `.github/inert-tests-baseline.json` (create)
+
+- Two identity-keyed sets — add — allowed skips (seeded from the 73, each with a reason) and
+  the **expected-collection baseline** for `absent_from_collection`. Identity-keyed, not
+  counts, per rev-1 defect 4.
 
 ### `.github/workflows/test.yml` (modify)
 
-- Add an `inert-delta` step consuming both junit artifacts and failing on any
-  `accidental` classification, or on growth in `absent_from_collection` — modify — placed
-  with the existing gate rather than as a new required check, so the required-check set does
-  not grow.
+- Add an `inert-delta` step **at the offload aggregation seam**, consuming the already-paired
+  `junit-offload/py310` and `junit-offload/gate-a`, with a hosted-path mirror — modify.
+  Not attached to `suite gate` (no artifact download) and **not** in `gate_a_cleanroom.sh`.
+- Note: the canonical junit currently excludes the two LEGIBLE files, which run in a separate
+  invocation emitting no junit (`test.yml:253`, `ci/dagger/src/agent_harness_ci/main.py:168`).
+  Inertness there is invisible; either emit junit for them or record them as a declared blind
+  spot. **Do not leave it undocumented** — an unrecorded blind spot is this plan's own class.
 
-### `docs/` (modify)
+### `CHANGELOG.md` (modify)
 
-- `docs/TEAM-ONBOARDING.md` — no change (installer-facing, not CI).
-- **Documentation impact:** `CHANGELOG.md` — add — a new required check is a public surface;
-  the docs-audit gate blocks a public-surface change without a committed CHANGELOG entry.
+- Add — a new required check is a public surface; the docs-audit gate blocks a public-surface
+  change without a committed CHANGELOG entry.
 
 ## Dependencies & order
 
-1. `evidence_gate.py` pure functions **first** — everything else consumes them, and they are
-   the only part testable without CI round-trips.
-2. The allowlist must be seeded from a **fresh** measurement, not the numbers in this plan.
-   Those were taken against `main` at `2344d030` and **expire on any merge** — that is
-   agent-harness#607's own shelf-life property applying to this plan's inputs.
-3. `evidence-gate.yml` lands **before** it is made a required check. A gate that is required
-   before it is proven correct converts a false positive into a repo-wide outage.
-4. **Blocking external dependency:** `ci/` and `.github/workflows/test.yml` are the
-   offload/Dagger surface (agent-harness#534/#543 territory). This plan must be paneled and
-   the design ratified before those files are edited.
+1. Pure functions in `evidence_gate.py` first — the only part testable without CI round-trips.
+2. Reseed **all** measured inputs; the numbers above expire on any merge.
+3. `evidence-gate.yml` lands and runs **advisory** before becoming required. A gate made
+   required before it is proven converts a false positive into a repo-wide outage.
+4. `evidence-reconcile.yml` must land **with or before** the gate becomes required, or the
+   gate cannot reach the 13 PRs that motivated it.
+5. **Blocking external dependency:** `ci/` and `test.yml` are offload/Dagger territory
+   (agent-harness#534/#543). Ratify this design before editing them.
 
 ## Verification
 
 ```sh
-# Pure cores, no CI dependency
 PYTHONPATH=src:tests python3 -m pytest tests/test_evidence_gate.py -q
 
-# agent-harness#607 half, against the real hole: a branch whose last push predates a workflow
-gh run list --workflow=<new-workflow>.yml --limit 100 --json headBranch --jq '.[].headBranch' | sort -u
-# then set-difference against `gh pr list --json headRefName` -- the same method that
-# measured 13 of 17, re-run to confirm the gate now reports them
+# agent-harness#607, keyed on head_sha (NOT branch)
+gh api "repos/Consiliency/agent-harness/actions/runs?head_sha=<sha>" \
+  --jq '.workflow_runs[] | "\(.name) \(.status) \(.conclusion)"'
 
-# agent-harness#601 half, both directions
-python3 -m phase_loop_runtime.evidence_gate --canonical junit-py310.xml --lane junit-gate-a.xml
-# expect: three separate counts, never summed
+# agent-harness#601, at the seam where both files already exist
+python3 -m phase_loop_runtime.evidence_gate \
+  --canonical junit-offload/py310/junit-py310.xml \
+  --lane junit-offload/gate-a/junit-gate-a.xml
+# expect three separate identity sets, never summed, never cardinality-reduced
 
-# Falsifier -- REQUIRED, not optional
-# 1. Mark a test skip-only-in-Gate-A that is NOT in the allowlist -> must classify `accidental`
-# 2. Delete a workflow run's existence for a PR head -> evidence-gate must go red
+# FALSIFIERS — required, and each must be RUN, not reasoned about
+# 1. A declared workflow whose run FAILED  -> gate red (rev 1 would have gone green)
+# 2. A declared workflow with no run       -> gate red
+# 3. Inert test absent from the baseline   -> red;  present with a reason -> green
+# 4. Add one uncollected test AND restore another -> identity sets differ -> red
+#    (a cardinality gate is green here; this is the rev-1 defect)
 ```
 
 ## Acceptance criteria
 
-- [ ] A PR whose head has **no run** for a declared-required workflow makes `evidence-gate`
-      **red**, and the message names the remedy. Proven on a real branch, not a fixture.
-- [ ] `inert_delta` reports `skipped_here_live_there`, `absent_from_collection`, and
-      `skipped_in_both` as **three separate values**; no code path sums them.
-- [ ] A test that goes inert in Gate A **and is not in the allowlist** fails the build;
-      one that is in the allowlist, with a reason, does not.
-- [ ] Each half is **mutation-verified against its own fixture**: neutering the missing-run
-      detection fails only the agent-harness#607 test; neutering `classify_inert` fails only
-      the agent-harness#601 test. A fix whose test passes with the fix removed is vacuous.
-- [ ] The new check reaches the **entry point**: assert through the workflow/CLI verdict, not
-      only the pure function. (Learned from agent-harness#604, where a builder was patched,
-      the unit tests passed, and the board path was never reached.)
-- [ ] `suite gate` behaviour is unchanged — this generalises the pattern, it does not
-      replace the instance that already works.
+- [ ] A declared workflow whose run **exists but did not succeed** makes `evidence-gate`
+      **red**. Proven by running it, not by inspection — this is rev 1's primary defect.
+- [ ] A PR head with **no run** for a declared workflow makes the gate red, with the remedy
+      named.
+- [ ] The reconciler makes a **stale open PR** (last push predating the requirement) report,
+      demonstrated on a real branch. Without this the gate has agent-harness#607's own defect.
+- [ ] `inert_delta` returns three **identity sets**; an add/drop pair that preserves counts
+      still fails. No code path sums or counts them.
+- [ ] A non-allowlisted inert test fails, **including `unclassified`**.
+- [ ] Path-filtered workflows do **not** trip the gate.
+- [ ] Each half mutation-verified against **its own** fixture, asserted through the
+      **entry point** (workflow verdict / CLI exit), not only the pure function.
+- [ ] `suite gate` behaviour unchanged.
 
 ## Execution Policy
 
-- execute: effort=high, reason=CI gate correctness; a false positive here blocks every PR in
-  the repo, and the failure mode being fixed is silent.
+- execute: effort=high, reason=CI gate correctness; a false positive blocks every PR, and the
+  failure being fixed is silent.
 
 ## Out of scope
 
-- Branch-protection settings (`strict`, required contexts). Changing them is an operator
-  action, not a code change, and this gate must prove itself before anything requires it.
-- The 5 conflicted PRs from the agent-harness#607 sweep — unmergeable today, and their
-  resolution produces a tree nobody has checked. That is the same latent shape, tracked
-  separately rather than solved here.
-- agent-harness#600 (entry-doc inventory scope) — unrelated surface.
+- Branch-protection settings — an operator action; the gate proves itself first.
+- The 5 conflicted PRs from the sweep — unmergeable today; their resolution produces an
+  unchecked tree, tracked separately.
+- agent-harness#600 — unrelated surface.
 
 ## Manifest note
 
-`plans/manifest.json` is **deliberately not appended** by this plan: agent-harness#606,
-agent-harness#546, and agent-harness#383 all currently modify that file, and a fourth
-concurrent edit would conflict three ways. Append the entry when those settle.
+`plans/manifest.json` **deliberately not appended**: agent-harness#606, agent-harness#546 and
+agent-harness#383 all modify it concurrently. Append when they settle.
