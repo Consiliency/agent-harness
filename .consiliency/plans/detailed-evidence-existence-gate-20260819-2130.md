@@ -1,7 +1,8 @@
 # Detailed plan: make missing evidence fail loudly (agent-harness#607 + agent-harness#601)
 
-**Revision 2.** Revision 1 was reviewed by a three-seat panel; codex and grok both returned
-DISAGREE with overlapping blocking defects. Rev 1's own errors are recorded in
+**Revision 3.** Revision 1 was reviewed by a three-seat panel: codex DISAGREE, grok DISAGREE,
+fable PARTIALLY AGREE. Rev 2 answered codex and grok; rev 3 answers fable, whose central finding
+reframes the plan — see "Do this first". Earlier errors are recorded in
 "What revision 1 got wrong" below, because two of them were instances of the very class this
 plan exists to close.
 
@@ -14,6 +15,45 @@ never collected, and a job that was skipped all read as "green".
 - **agent-harness#607** — a newly added workflow never runs against already-open PRs, so the
   first change to violate a brand-new gate can merge with the gate having never executed.
 - **agent-harness#601** — tests inert in a CI lane are indistinguishable from tests that pass.
+
+## Do this first — it is one operator action and it closes the observed instance
+
+**Recommended before any of the work below.** `entry-point docs verification` is **not in the
+required contexts** (verified live: `["suite gate","lint (pyflakes)","chronology retention
+guard","docs-freshness audit","gitleaks","check"]`). That — not the absence of a gate — is why
+agent-harness#545 merged ungated.
+
+A required check that has **never reported** blocks merge as *"Expected — waiting for status
+to be reported."* So had `entry-point docs verification` been required, GitHub's own mechanism
+would have blocked agent-harness#545, and all 13 ungated PRs would be blocked today. **The
+native platform already implements "no run ≠ pass."**
+
+This is an operator action on branch protection, not a code change, and it is deliberately
+**not** something this plan performs.
+
+### So why build anything?
+
+Stated because revision 2 omitted it and it is the load-bearing design decision:
+
+| | native required-context | checked-in aggregate |
+|---|---|---|
+| closes the observed instance | **yes, immediately** | yes, after build + reconciler |
+| covers agent-harness#601 (inert tests) | **no** | yes |
+| required-context set | grows per workflow | stays minimal |
+| `skipped satisfies required` pitfall | **still present** | avoided by demanding SUCCESS |
+| reviewable in a diff | no — a setting no reviewer sees | yes |
+| new failure modes | none | polling, congestion false-reds |
+
+**Recommendation: take the operator action now, and scope the build to what it cannot do** —
+the agent-harness#601 half, the `skipped satisfies required` pitfall, and diff-reviewable
+declaration. Do not justify the gate by the instance the setting already fixes.
+
+### Resolving a contradiction in revision 2
+
+Rev 2 listed branch-protection changes as out of scope while proposing a gate with **zero
+enforcement power until that same operator action makes it required**. Both halves cannot be
+true. Resolved: the operator action is **in scope as a prerequisite and a recommendation**;
+this plan simply does not perform it.
 
 ## What revision 1 got wrong
 
@@ -62,11 +102,29 @@ absent from collection with **no reason string**, **61** skipped in both lanes.
 
 ## Changes
 
-### `phase-loop-runtime/src/phase_loop_runtime/evidence_gate.py` (create)
+### `.github/workflows/evidence-gate.yml` — completeness guard step (create, load-bearing)
+
+- **Workflows-as-data guard** — add — parse `.github/workflows/*.yml` and fail when a workflow
+  that triggers unconditionally on `pull_request` is **absent from the declared list**.
+  Without it, workflow N+1 is invisible to the gate and **the agent-harness#607 class recurs
+  one meta-level up, permanently** — a gate that only protects what someone remembered to
+  declare. Precedent for reading workflow YAML as data already exists in this repo:
+  `chronology-retention` (`test.yml:311-336`).
+- The same guard enforces the invariant that declared workflows must be **unconditional** on
+  `pull_request` — a path-filtered workflow legitimately does not run, and treating that as
+  missing evidence is the false positive that would block every PR.
+
+### `phase-loop-runtime/scripts/evidence_gate.py` (create)
+
+> Placed in `scripts/`, **not** the published package. Repo precedent for CI-only helpers is
+> `phase-loop-runtime/scripts/` (e.g. `check_model_id_sources.py`); putting it in
+> `src/phase_loop_runtime/` would grow the published public surface for a CI-only concern.
 
 - `missing_or_unsuccessful(declared, observed, head_sha)` — add — pure. Returns each declared
   workflow whose run for **this `head_sha`** is absent, not `completed`, or whose
   `conclusion != "success"`. **Existence is necessary and not sufficient** — the rev-1 defect.
+  `cancelled` and `startup_failure` are runs that exist and produced **no evidence**; they
+  must be red.
 - `inert_delta(canonical_junit, lane_junit)` — add — returns three **separate identity sets**:
   `skipped_here_live_there`, `absent_from_collection`, `skipped_in_both`. Never summed, and
   **never reduced to cardinality** — sets, so an add/drop pair cannot cancel out.
@@ -83,8 +141,12 @@ absent from collection with **no reason string**, **61** skipped in both lanes.
   "not finished yet" as missing.
 - **Excludes path-filtered workflows** from the declared set — they legitimately do not run,
   and treating that as missing evidence is the false-positive that would block every PR.
-- Failure message names the remedy (empty commit / re-run on this head), following
-  `suite gate`'s precedent of explaining why the red is correct.
+- Failure message names the remedy: **an empty commit**. "Re-run the workflow" is impossible
+  when no run exists, and `entry-doc-check.yml` has no `workflow_dispatch` trigger
+  (`:19-22`) — so the obvious remedy text would be advice that cannot be followed.
+- **Bounded retry for the first-push race.** Workflows for one `pull_request` event are
+  created near-simultaneously but **not transactionally**, so an immediate read can see a
+  genuinely-coming run as missing and false-red a fresh push.
 
 ### `.github/workflows/evidence-reconcile.yml` (create)
 
@@ -103,12 +165,24 @@ absent from collection with **no reason string**, **61** skipped in both lanes.
 - Two identity-keyed sets — add — allowed skips (seeded from the 73, each with a reason) and
   the **expected-collection baseline** for `absent_from_collection`. Identity-keyed, not
   counts, per rev-1 defect 4.
+- **Pruning rule** — add — an allowlist entry matching **no collected test** is itself a
+  finding. Without it the allowlist rots into a rubber stamp: entries accumulate, nothing ever
+  removes them, and a stale entry silently excuses a test that no longer exists. Seeding 73
+  wholesale is a rubber stamp at birth; the fresh-measurement requirement plus pruning is what
+  keeps it honest.
 
 ### `.github/workflows/test.yml` (modify)
 
 - Add an `inert-delta` step **at the offload aggregation seam**, consuming the already-paired
-  `junit-offload/py310` and `junit-offload/gate-a`, with a hosted-path mirror — modify.
-  Not attached to `suite gate` (no artifact download) and **not** in `gate_a_cleanroom.sh`.
+  `junit-offload/py310` and `junit-offload/gate-a` — modify. Not attached to `suite gate` (no
+  artifact download) and **not** in `gate_a_cleanroom.sh`.
+- **Dual-path, fail-closed on exactly one evidence set.** The hosted jobs (`pytest`,
+  `cleanroom`) are **skipped on the offload path** (`test.yml:191-192`, `:345-346`), which is
+  the *common* path, and the two paths produce different artifact layouts
+  (`junit-offloaded` vs `chronology-junit-*`). Wiring only the hosted layout makes the
+  inertness detector **itself inert on the majority path** — this plan's own class, third
+  occurrence. Assert **exactly one** evidence set is present and fail closed otherwise,
+  mirroring `suite gate`'s exactly-one-verdict contract.
 - Note: the canonical junit currently excludes the two LEGIBLE files, which run in a separate
   invocation emitting no junit (`test.yml:253`, `ci/dagger/src/agent_harness_ci/main.py:168`).
   Inertness there is invisible; either emit junit for them or record them as a declared blind
