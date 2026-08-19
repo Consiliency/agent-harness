@@ -94,7 +94,10 @@ The repo already has the right pattern for the cross-workflow case:
 agent-harness#607's half should be modeled on **that**, not on `suite gate`.
 
 Measured inputs (all against `main` at `2344d030`; **they expire on any merge** — reseed
-before implementing): agent-harness#545 had **0 of 15** runs and merged 18 h after the gate
+before implementing). **They have already expired twice while this plan was under review:**
+`main` moved `2344d030` → `650c35ca` (agent-harness#603) → `ad48930e` (agent-harness#606).
+The 13-ungated figure in particular is a property of a moment, not of the repo. Treat every
+number below as an illustration of shape and re-measure before seeding anything: agent-harness#545 had **0 of 15** runs and merged 18 h after the gate
 landed; **13 of 17** open PRs have never run the check (merge-simulated: 8 pass, 5 conflict,
 **0 fail** — the hole is *latent, not realised*); Gate A junit diff gives **78**
 skipped-here-live-there (73 legitimate / 5 unclassified / **0 confirmed accidental**), **41**
