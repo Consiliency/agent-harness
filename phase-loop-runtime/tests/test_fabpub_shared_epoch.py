@@ -2940,7 +2940,16 @@ def test_fabpub_legacy_writer_quiescence_blocks_armed_activation_and_fences_supp
             def hold_current_predecessor(*args, **kwargs):
                 ready = Path(os.environ["FABPUB_WRITER_READY"])
                 release = Path(os.environ["FABPUB_WRITER_RELEASE"])
-                ready.write_text(str(os.getpid()) + "\\n", encoding="ascii")
+                # Publish atomically: write a sibling temp file, then rename it
+                # into place. `write_text` would create `ready` at size 0 and fill
+                # it afterwards, so a reader polling existence can observe the
+                # empty window (Consiliency/agent-harness#613). `os.replace` is
+                # atomic within a directory, so `ready` becomes visible only once
+                # it already holds the pid -- which keeps every reader safe, not
+                # just the one that happened to be fixed.
+                _tmp = ready.with_name(ready.name + ".partial")
+                _tmp.write_text(str(os.getpid()) + "\\n", encoding="ascii")
+                os.replace(_tmp, ready)
                 while not release.exists():
                     time.sleep(0.02)
                 return ["intentional predecessor probe stop"]
@@ -2967,13 +2976,23 @@ def test_fabpub_legacy_writer_quiescence_blocks_armed_activation_and_fences_supp
         stderr=subprocess.PIPE,
     )
     try:
+        # Poll the CONTENT, not the path. `write_text` creates the file and then
+        # writes it, so `exists()` goes true while the file is still empty and the
+        # read below raced it to `int("")` (Consiliency/agent-harness#613). The
+        # writer now publishes atomically, so this loop should never observe the
+        # empty window -- it polls content anyway, because a readiness file whose
+        # bytes are the thing we need is not "ready" merely by existing.
+        pid_text = ""
         for _ in range(500):
             if writer_ready.exists():
-                break
+                pid_text = writer_ready.read_text(encoding="ascii").strip()
+                if pid_text:
+                    break
             assert writer.poll() is None, writer.stderr.read() if writer.stderr else "writer exited"
             __import__("time").sleep(0.01)
         assert writer_ready.exists(), "the predecessor CLI did not reach its production run_train entry"
-        writer_pid = int(writer_ready.read_text(encoding="ascii").strip())
+        assert pid_text, "the predecessor CLI created its readiness file but never wrote a pid"
+        writer_pid = int(pid_text)
 
         inventory = quiescence.inventory(repo)
         matching = [
