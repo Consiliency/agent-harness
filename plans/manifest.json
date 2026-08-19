@@ -3557,6 +3557,65 @@
             "reason": "canonicalize_agent_harness_442_goals_in_plan_and_manifest_only_without_mutating_frozen_v10_roadmap_bytes"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-19T18:24:58Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "acceptance_criteria_count": 21,
+            "base_merge_commit": "2344d030ab0658edcef1c7c8641b1a589430de2b",
+            "issue": "Consiliency/agent-harness#396",
+            "maintainer_authorities": [
+              "https://github.com/Consiliency/agent-harness/issues/396#issuecomment-5308819363",
+              "https://github.com/Consiliency/agent-harness/issues/396#issuecomment-5308839625"
+            ],
+            "owned_path_deltas": {
+              "sl1_tests": [
+                "phase-loop-runtime/tests/test_reviewtruth_phase.py"
+              ],
+              "sl2_runtime": [
+                "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
+                "phase-loop-runtime/src/phase_loop_runtime/launcher.py",
+                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/schema.py",
+                "phase-loop-runtime/src/phase_loop_runtime/advisor_board/composition.py"
+              ],
+              "sl5_host_integrations": [
+                "phase-loop-runtime/src/phase_loop_runtime/cli.py",
+                "phase-loop-runtime/src/phase_loop_runtime/skill_install.py",
+                "phase-loop-runtime/src/phase_loop_runtime/skill_inventory.py",
+                "phase-loop-runtime/src/phase_loop_runtime/skill_paths.py",
+                "phase-loop-skills/README.md",
+                "phase-loop-skills/advisor-board/**",
+                "skills-src/*/*-advisor-board/**",
+                "skills-src/*/*-advisor-panel/**",
+                "phase-loop-runtime/src/phase_loop_runtime/skills_bundle/*-advisor-board/**",
+                "phase-loop-runtime/src/phase_loop_runtime/skills_bundle/*-advisor-panel/**"
+              ]
+            },
+            "plan_sha256": "4f74dac00ada967fef7e587918e39f122f98527bb94ac19fbb017affd97617de",
+            "predecessor_plan_sha256": "1359cdeddb609999b21dcbe71d2759e050009a329e191a40e5f7cfd7ec34b3c8",
+            "reason": "universal_native_first_routing_authority",
+            "repaired_digest_review_status": "unreviewed_not_approved",
+            "roadmap_bytes_posture": "frozen_v10_roadmap_bytes_unchanged; amendment_is_plan_and_manifest_local_only",
+            "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
+            "routing_matrix": {
+              "antigravity_gemini": "gemini_google_native",
+              "claude_code": "claude_anthropic_native",
+              "codex": "codex_openai_native",
+              "grok": "grok_xai_native",
+              "standalone": "all_adapters_explicit"
+            },
+            "schema": "v10.reviewtruth-native-first-routing-amendment.v1",
+            "test_nodeids": [
+              "phase-loop-runtime/tests/test_reviewtruth_phase.py::test_reviewtruth_native_first_routes_each_host_vendor_family_without_external_spawn",
+              "phase-loop-runtime/tests/test_reviewtruth_phase.py::test_reviewtruth_native_first_routes_all_duplicate_matching_seats",
+              "phase-loop-runtime/tests/test_reviewtruth_phase.py::test_reviewtruth_native_first_keeps_non_native_adapters_and_standalone_topology",
+              "phase-loop-runtime/tests/test_reviewtruth_phase.py::test_reviewtruth_native_first_request_report_exact_once_identity_matrix",
+              "phase-loop-runtime/tests/test_reviewtruth_phase.py::test_reviewtruth_native_first_host_integrations_reject_missing_explicit_context",
+              "phase-loop-runtime/tests/test_reviewtruth_phase.py::test_reviewtruth_native_first_skill_contracts_use_typed_rendezvous"
+            ]
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -3572,7 +3631,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-04T20:07:40Z"
+      "updated_at": "2026-08-19T18:24:58Z"
     },
     {
       "acceptance_criteria_count": null,
