@@ -62,7 +62,10 @@ than grepping installer console output. Stdout stays parseable JSON even when th
 fails, so `schema` alone will green-light a failure. `--fail-on-stale` exits non-zero only
 on staleness among gating, repo-owned targets; an unreachable registry degrades to
 `unknown` and must **not** be read as failure. `schema` proves the CLI, not the skills —
-check `install_surfaces[]` for that. Full contract: `docs/TEAM-ONBOARDING.md`.
+check `install_surfaces[]` for that, and check **the entry matching how you installed**: a
+`wheel-bundled-skills` entry reads `present` after a plain `pip install` even when the
+interactive harness skills are missing, so asserting the wrong one is its own false green.
+Full contract, including the per-install-mode pass condition: `docs/TEAM-ONBOARDING.md`.
 
 ## Install — two surfaces
 

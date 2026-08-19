@@ -21,8 +21,15 @@ Pin a specific release for the whole team with `--ref vX.Y.Z` — take the versi
 [releases page](https://github.com/Consiliency/agent-harness/releases/latest). Omit `--ref`
 and the installer resolves the current release itself.
 
-**Prereqs:** git, and your harness CLI already installed (Claude Code / Codex / Gemini /
-OpenCode). The installer brings everything else (it installs `uv` if you don't have it).
+**Prereqs:** git, `curl` (the installer uses it to resolve the release pin, and the one-liner
+form is delivered by it), and your harness CLI already installed (Claude Code / Codex / Gemini
+/ OpenCode). The installer brings everything else (it installs `uv` if you don't have it).
+
+> **On the `curl … | bash` one-liner:** a pipeline reports the exit status of its *last*
+> command, so if the download fails, `bash` receives empty input and exits `0`. The
+> installer's own `set -euo pipefail` never gets to run, because it was never fetched. If you
+> are scripting this, prefer the clone-then-run form, or fetch to a file and check that fetch
+> before executing it.
 
 ## Verify the install (agents: parse this)
 
@@ -51,11 +58,13 @@ It emits the versioned `phase-loop-doctor.v1` schema:
   `status == "present"` (`partial` / `missing` mean the skill files aren't where the
   harness will look). Without this an install whose skill links dangle — say the clone
   they pointed at was deleted — still reports `schema` and exit 0.
-- **`schema` alone is not a pass. Always check the exit code too.** Stdout stays pure,
-  parseable JSON *even when the command fails*, so the payload still carries
-  `schema == "phase-loop-doctor.v1"` on a `--fail-on-stale` failure (exit 1, diagnostic on
-  stderr). An installer that asserts only `schema` will report success on a gating-stale
-  repo. Treat `schema` as "the CLI ran", and the exit code as "the verdict".
+- **Never infer the verdict from `schema` alone.** Stdout stays pure, parseable JSON *even
+  when the command fails*, so the payload still carries `schema == "phase-loop-doctor.v1"`
+  alongside a non-zero exit (diagnostic on stderr). For the plain command shown above the two
+  agree, so checking both is merely redundant — but the moment you add a flag that can fail,
+  such as `--fail-on-stale`, `schema` stops tracking the verdict and an installer asserting
+  only `schema` reports success over a failure. Check the exit code because it is the verdict,
+  not because `schema` is unreliable.
 - Exit `0` from a plain `doctor --json` means the report was produced. It is **not** a claim
   that every tool is present — read `tools[]` for that.
 - `--fail-on-stale` exits non-zero **only** on a `stale` verdict among the *gating*
@@ -65,14 +74,33 @@ It emits the versioned `phase-loop-doctor.v1` schema:
   exits `0`. Failing on `unknown` will make your installer red on a healthy machine.
 
 **The whole pass condition, in one place** — copy this rather than assembling it from the
-bullets above:
+bullets above. **It depends on which install you ran**, so pick the matching surface line:
 
-> **installed** = exit code `0`
+> **installed** = the installer itself exited `0`
+> **and** `phase-loop doctor --json` exited `0`
 > **and** `schema == "phase-loop-doctor.v1"`
-> **and** the `install_surfaces[]` entry for `interactive-harness-skills` + your harness has
-> `status == "present"`.
+> **and** the matching `install_surfaces[]` entry has `status == "present"`:
 >
-> `unknown` BOM verdicts are **not** failures. A non-zero exit from `--fail-on-stale` is.
+> | how you installed | required surface |
+> |---|---|
+> | `pip install` / `uv tool install` only | `wheel-bundled-skills` |
+> | `install-agent-harness.sh --harness <one>` | `interactive-harness-skills` for **that** harness |
+> | `install-agent-harness.sh --harness all` | `interactive-harness-skills` for **all four** |
+>
+> `unknown` BOM verdicts are **not** failures.
+
+**Two things the pass condition deliberately does not include.**
+
+- **Pin currency is not install success.** `--fail-on-stale` compares gating pins against the
+  registry's *latest*; a floor legitimately lags latest, so a healthy install can exit
+  non-zero under that flag. Run it if you want to know whether your pins are current — that
+  is a **separate question** from whether the install worked, and treating it as install
+  failure will red a working machine.
+- **`doctor` inspects state, not the run that produced it.** It cannot tell a fresh install
+  from a stale one that was already there, so a *failed upgrade* over a working older install
+  still satisfies every clause above. That is why the installer's own exit code is the first
+  conjunct, and why you should verify the version you asked for actually landed
+  (`phase-loop --version`) when you pinned a `--ref`.
 
 A missing `phase-loop` on `PATH` is the one failure that surfaces before any of this — see
 Troubleshooting below.
