@@ -318,6 +318,54 @@ class TestArmPaths(unittest.TestCase):
             self.assertEqual(codes(found), [("paths", "missing_path")])
             self.assertEqual(found[0].token, "src/pkg/ghost.py:42")
 
+    def test_absolute_system_paths_are_not_repo_claims(self):
+        """`/tmp`, `/run`, `/proc` are host runtime locations, not repo paths.
+
+        Verbatim from `phase-loop-runtime/README.md:57,61` as it stands on
+        `main` after Consiliency/agent-harness#545, which turned the merged
+        check red in production. The live regression, not a paraphrase.
+        """
+        doc = (
+            "it requires a direct, mode-0700 child of `/tmp`, a quiescent settings tree.\n"
+            "That probe uses `/usr/bin/bwrap`, a fresh `/tmp`, `/run`, and `/proc`, "
+            "the fixed `/run/phase-loop-review` stage mapping.\n"
+        )
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(tmp, {"README.md": doc}, packages=self.PATHS_ONLY)
+            self.assertEqual(codes(edc.check_repo(repo, entry_docs=("README.md",))), [])
+
+    def test_absolute_root_relative_paths_are_still_checked(self):
+        """A leading slash is not a blanket skip.
+
+        `/README.md` is a repo-ROOT-relative reference -- a real way to write a
+        path from a doc in a subdirectory -- so it must still resolve, and must
+        resolve from the root rather than the document's own directory.
+        """
+        doc = "Root readme: `/README.md`. Ghost: `/docs/absent.md`.\n"
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp,
+                {"README.md": "root\n", "phase-loop-runtime/README.md": doc},
+                packages=self.PATHS_ONLY,
+            )
+            found = edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))
+            self.assertEqual(codes(found), [("paths", "missing_path")])
+            self.assertEqual(found[0].token, "/docs/absent.md")
+
+    def test_absolute_system_root_skip_self_disables(self):
+        # Same self-disabling property as the install-layout class: a repo that
+        # genuinely contains the directory resolves it normally.
+        doc = "See `/var/config.yml`.\n"
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(tmp, {"README.md": doc}, packages=self.PATHS_ONLY)
+            self.assertEqual(codes(edc.check_repo(repo, entry_docs=("README.md",))), [])
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp, {"README.md": doc, "var/keep.txt": "x"}, packages=self.PATHS_ONLY
+            )
+            found = edc.check_repo(repo, entry_docs=("README.md",))
+            self.assertEqual(codes(found), [("paths", "missing_path")])
+
     def test_install_layout_skip_self_disables(self):
         # The class is a class, not an allowlist: a repo that really has a
         # `share/` directory resolves `share/...` paths normally.
@@ -889,8 +937,9 @@ class TestCli(unittest.TestCase):
 
     @CANONICAL_ONLY
     def test_file_narrowing_accepts_a_live_entry_doc(self):
-        # Canonical-only because narrowing to an ABSENT doc also exits 0 (nothing
-        # is checked), so in a partial tree this would pass vacuously.
+        # Canonical-only because a partial tree has no root README.md, and a
+        # declared-but-absent entry doc is now REPORTED (exit 1) rather than
+        # skipped -- so this asserts the clean path only where the doc exists.
         self.assertTrue((REPO_ROOT / "README.md").is_file())
         self.assertEqual(
             edc.main(["entry_doc_check", "--repo", str(REPO_ROOT), "--file", "README.md"]), 0

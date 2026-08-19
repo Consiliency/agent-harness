@@ -81,6 +81,25 @@ INSTALL_LAYOUT_ROOTS: frozenset = frozenset(
     {"bin", "sbin", "lib", "lib64", "libexec", "share", "include", "etc", "var", "opt", "usr"}
 )
 
+#: POSIX system roots. An **absolute** token rooted at one of these names a
+#: runtime location on the host -- ``/tmp``, ``/run``, ``/proc`` -- not a path
+#: in this repository.
+#:
+#: Deliberately NOT "skip everything starting with ``/``". A token like
+#: ``/README.md`` is a repo-**root**-relative reference, a real way to write a
+#: path when a doc lives in a subdirectory, and it should still be checked.
+#: So a leading slash changes *where* a path resolves from (repo root only,
+#: never the document's own directory) and only a recognised system root makes
+#: it a non-repo claim. Self-disabling like :data:`INSTALL_LAYOUT_ROOTS`: a
+#: repository that really contains ``tmp/`` resolves ``/tmp`` normally.
+ABSOLUTE_SYSTEM_ROOTS: frozenset = frozenset(
+    {
+        "tmp", "run", "proc", "dev", "sys", "etc", "var", "usr", "opt",
+        "boot", "mnt", "media", "srv", "lib", "lib64", "bin", "sbin",
+        "home", "root",
+    }
+)
+
 #: Where suppressions live, relative to ``--repo``.
 SUPPRESSIONS = ".github/entry-doc-suppressions.json"
 
@@ -456,10 +475,14 @@ def _resolves(ctx: RepoContext, doc_dir: str, rel: str) -> bool:
     cleaned = rel.strip()
     while cleaned.startswith("./"):
         cleaned = cleaned[2:]
-    cleaned = cleaned.rstrip("/")
+    # A leading slash means repo-ROOT-relative, so the document's own directory
+    # is not a candidate base -- `/README.md` in a package README refers to the
+    # root README, not a sibling of the file it appears in.
+    absolute = cleaned.startswith("/")
+    cleaned = cleaned.lstrip("/").rstrip("/")
     if not cleaned:
         return False
-    bases = [""] if not doc_dir else ["", doc_dir]
+    bases = [""] if (absolute or not doc_dir) else ["", doc_dir]
     for base in bases:
         candidate = f"{base}/{cleaned}" if base else cleaned
         if ctx.exists(candidate):
@@ -513,7 +536,10 @@ def check_paths(text: str, doc_path: str, ctx: RepoContext) -> List[Finding]:
             if any(ch in token for ch in "*?"):
                 continue
             root = token.strip("/").split("/", 1)[0]
-            if root in INSTALL_LAYOUT_ROOTS and not ctx.exists(root):
+            if token.startswith("/"):
+                if root in ABSOLUTE_SYSTEM_ROOTS and not ctx.exists(root):
+                    continue
+            elif root in INSTALL_LAYOUT_ROOTS and not ctx.exists(root):
                 continue
             if _METAVAR_RE.search(token):
                 prefix = _concrete_prefix(token)
@@ -1034,9 +1060,10 @@ def main(argv: List[str]) -> int:
 
 
 def _docs_checked(repo: Path, only: Optional[str]) -> List[str]:
-    if only:
-        return [only]
-    return [doc for doc in ENTRY_DOCS if (Path(repo) / doc).is_file()]
+    # No existence filter: a declared doc that is missing is now a finding, so
+    # a clean run means every one of these was actually read. Filtering here
+    # would let the OK line under-report the inventory it just verified.
+    return [only] if only else list(ENTRY_DOCS)
 
 
 if __name__ == "__main__":
