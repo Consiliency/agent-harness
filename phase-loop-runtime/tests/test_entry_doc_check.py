@@ -273,6 +273,125 @@ class TestArmPaths(unittest.TestCase):
             _git(repo, "commit", "-q", "-m", "content")
             self.assertEqual(codes(edc.check_repo(repo, entry_docs=("README.md",))), [])
 
+    def test_nested_fence_is_not_closed_by_a_shorter_run(self):
+        """A ``` line must not close a ```` fence (CommonMark).
+
+        This one fixture distinguishes both failure directions at once. With
+        the length check, the only finding is the token AFTER the block. Losing
+        it inverts the mask: the inner token is reported (a false positive on
+        fenced content) and the outer one is missed (a quiet miss), so the
+        assertion below fails on the token identity either way.
+
+        Asserted on a constructed nested fence rather than "the live docs still
+        pass" -- no entry doc has a nested fence, so that input cannot
+        distinguish the two behaviours at all.
+        """
+        doc = "\n".join(
+            [
+                "````",
+                "```",
+                "`docs/inside/absent.md`",
+                "````",
+                "",
+                "Then `docs/outside/absent.md` here.",
+            ]
+        )
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(tmp, {"README.md": doc}, packages=self.PATHS_ONLY)
+            found = edc.check_repo(repo, entry_docs=("README.md",))
+            self.assertEqual(codes(found), [("paths", "missing_path")])
+            self.assertEqual(found[0].token, "docs/outside/absent.md")
+
+    def test_file_line_citation_resolves_to_the_path(self):
+        # This repo's own convention: `src/.../cli.py:42`. Kept a CHECK, not a
+        # skip -- only the line suffix is stripped, so a citation of a file that
+        # does not exist is still reported.
+        doc = (
+            "See `src/pkg/cli.py:42` and `src/pkg/cli.py:42:7`, "
+            "but `src/pkg/ghost.py:42` does not exist.\n"
+        )
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(tmp, {"README.md": doc}, packages=self.PATHS_ONLY)
+            (repo / "src" / "pkg").mkdir(parents=True)
+            (repo / "src" / "pkg" / "cli.py").write_text("x", encoding="utf-8")
+            found = edc.check_repo(repo, entry_docs=("README.md",))
+            self.assertEqual(codes(found), [("paths", "missing_path")])
+            self.assertEqual(found[0].token, "src/pkg/ghost.py:42")
+
+    def test_absolute_system_paths_are_not_repo_claims(self):
+        """`/tmp`, `/run`, `/proc` are host runtime locations, not repo paths.
+
+        Verbatim from `phase-loop-runtime/README.md:57,61` as it stands on
+        `main` after Consiliency/agent-harness#545, which turned the merged
+        check red in production. The live regression, not a paraphrase.
+        """
+        doc = (
+            "it requires a direct, mode-0700 child of `/tmp`, a quiescent settings tree.\n"
+            "That probe uses `/usr/bin/bwrap`, a fresh `/tmp`, `/run`, and `/proc`, "
+            "the fixed `/run/phase-loop-review` stage mapping.\n"
+        )
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(tmp, {"README.md": doc}, packages=self.PATHS_ONLY)
+            self.assertEqual(codes(edc.check_repo(repo, entry_docs=("README.md",))), [])
+
+    def test_absolute_root_relative_paths_are_still_checked(self):
+        """A leading slash is not a blanket skip.
+
+        `/README.md` is a repo-ROOT-relative reference -- a real way to write a
+        path from a doc in a subdirectory -- so it must still resolve, and must
+        resolve from the root rather than the document's own directory.
+        """
+        doc = "Root readme: `/README.md`. Ghost: `/docs/absent.md`.\n"
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp,
+                {"README.md": "root\n", "phase-loop-runtime/README.md": doc},
+                packages=self.PATHS_ONLY,
+            )
+            found = edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))
+            self.assertEqual(codes(found), [("paths", "missing_path")])
+            self.assertEqual(found[0].token, "/docs/absent.md")
+
+    def test_absolute_system_root_skip_self_disables(self):
+        # Same self-disabling property as the install-layout class: a repo that
+        # genuinely contains the directory resolves it normally.
+        doc = "See `/var/config.yml`.\n"
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(tmp, {"README.md": doc}, packages=self.PATHS_ONLY)
+            self.assertEqual(codes(edc.check_repo(repo, entry_docs=("README.md",))), [])
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp, {"README.md": doc, "var/keep.txt": "x"}, packages=self.PATHS_ONLY
+            )
+            found = edc.check_repo(repo, entry_docs=("README.md",))
+            self.assertEqual(codes(found), [("paths", "missing_path")])
+
+    def test_a_colon_in_a_real_filename_is_not_stripped(self):
+        # Stripping the citation suffix unconditionally turns a real file whose
+        # NAME contains a colon into a phantom missing path. The literal token
+        # is tried first, so the citation rule only ever adds a fallback.
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp, {"README.md": "See `data/log:2024`.\n"}, packages=self.PATHS_ONLY
+            )
+            (repo / "data").mkdir()
+            (repo / "data" / "log:2024").write_text("x", encoding="utf-8")
+            self.assertEqual(codes(edc.check_repo(repo, entry_docs=("README.md",))), [])
+
+    def test_a_citation_must_point_at_a_file(self):
+        # `src/pkg:42` where src/pkg is a DIRECTORY is nonsense. Accepting any
+        # resolvable stripped target would silently drop a finding the
+        # unstripped check used to make -- trading a false positive for a
+        # quiet miss rather than fixing it.
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp, {"README.md": "See `src/pkg:42`.\n"}, packages=self.PATHS_ONLY
+            )
+            (repo / "src" / "pkg").mkdir(parents=True)
+            found = edc.check_repo(repo, entry_docs=("README.md",))
+            self.assertEqual(codes(found), [("paths", "missing_path")])
+            self.assertEqual(found[0].token, "src/pkg:42")
+
     def test_install_layout_skip_self_disables(self):
         # The class is a class, not an allowlist: a repo that really has a
         # `share/` directory resolves `share/...` paths normally.
@@ -417,6 +536,81 @@ class TestArmPinFreshness(unittest.TestCase):
         )
         with TemporaryDirectory() as tmp:
             repo = build_repo(tmp, {"phase-loop-runtime/README.md": doc}, tags=())
+            self.assertEqual(
+                codes(edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))), []
+            )
+
+    def test_distribution_names_are_matched_under_pep503(self):
+        """Every legal spelling of the same distribution is one clock.
+
+        A literal match silently skipped the underscore and mixed-case forms --
+        and underscore is the module's own spelling, so it is the one most
+        likely to appear in a doc. A silently skipped pin is worse than no
+        check: the green implies coverage that does not exist.
+        """
+        for spelling in (
+            "phase-loop-runtime==0.1.0",
+            "phase_loop_runtime==0.1.0",
+            "Phase-Loop-Runtime==0.1.0",
+            "phase.loop.runtime==0.1.0",
+            "phase-loop-runtime[extra]==0.1.0",
+            "phase-loop-runtime == 0.1.0",
+        ):
+            with self.subTest(spelling=spelling), TemporaryDirectory() as tmp:
+                repo = build_repo(tmp, {"phase-loop-runtime/README.md": f"pip install {spelling}\n"})
+                found = edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))
+                self.assertEqual(codes(found), [("pins", "stale_pin")])
+                self.assertIn("0.7.13", found[0].message)
+
+    def test_a_fenced_comparison_is_not_a_pin(self):
+        """`if dist == other:` in a code sample is not a version claim.
+
+        Arm 2 scans fences deliberately, so an unconstrained right-hand side
+        combined with whitespace tolerance turns a PEP-8-spaced Python
+        comparison into a `stale_pin`. The whitespace tolerance is needed for
+        unquoted requirements samples, so the RHS is constrained to
+        version-shaped-or-placeholder instead. Both halves asserted in the same
+        fence: the comparison is silent, the real pin beside it still reports.
+        """
+        doc = "\n".join(
+            [
+                "```python",
+                "if phase_loop_runtime == other:",
+                "    pass",
+                "```",
+            ]
+        )
+        pkgs = {"phase-loop-runtime": ("phase-loop-runtime", "0.7.13", "README.md")}
+        docs = ("phase-loop-runtime/README.md",)
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(tmp, {"phase-loop-runtime/README.md": doc}, packages=pkgs)
+            self.assertEqual(codes(edc.check_repo(repo, entry_docs=docs)), [])
+
+        with_pin = (
+            "```python\n"
+            "if phase_loop_runtime == other:\n"
+            "    pass\n"
+            "# pip install phase_loop_runtime==0.1.0\n"
+            "```\n"
+        )
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(tmp, {"phase-loop-runtime/README.md": with_pin}, packages=pkgs)
+            found = edc.check_repo(repo, entry_docs=docs)
+            self.assertEqual(codes(found), [("pins", "stale_pin")])
+            self.assertEqual(found[0].token, "phase_loop_runtime==0.1.0")
+
+    def test_ranges_are_not_pins_under_any_spelling(self):
+        # `>=` and `~=` are ranges, not claims about a current version, so they
+        # have nothing to be stale against. Normalisation must not sweep them in.
+        doc = "\n".join(
+            [
+                "Sole dependency: `phase_loop_runtime>=0.6.1`.",
+                "Compatible release: `phase_loop_runtime~=0.7.0`.",
+                "Correct pin: `phase_loop_runtime==0.7.13`.",
+            ]
+        )
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(tmp, {"phase-loop-runtime/README.md": doc})
             self.assertEqual(
                 codes(edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))), []
             )
@@ -635,6 +829,53 @@ class TestArmPublishedRendering(unittest.TestCase):
 # Coverage reconciliation
 
 
+class TestDeletedEntryDoc(unittest.TestCase):
+    """A check whose green survives deleting the thing it checks is vacuous."""
+
+    def test_declared_but_absent_entry_doc_is_reported(self):
+        # The RED direction, asserted directly. "The suite still passes after
+        # flipping the behaviour on" shows nothing broke, not that the new
+        # finding exists.
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp, {"README.md": "root\n"}, packages={"": ("demo", "1.0.0", None)}
+            )
+            found = edc.check_repo(repo, entry_docs=("README.md", "AGENTS.md"))
+            self.assertEqual(codes(found), [("coverage", "missing_entry_doc")])
+            self.assertEqual(found[0].file, "AGENTS.md")
+
+    def test_deleting_a_doc_flips_the_verdict(self):
+        # Same repo, same inventory, one file removed -- the only variable.
+        docs = ("README.md", "AGENTS.md")
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp,
+                {"README.md": "root\n", "AGENTS.md": "agents\n"},
+                packages={"": ("demo", "1.0.0", None)},
+            )
+            self.assertEqual(codes(edc.check_repo(repo, entry_docs=docs)), [])
+            (repo / "AGENTS.md").unlink()
+            _git(repo, "add", "-A")
+            _git(repo, "commit", "-q", "-m", "delete AGENTS.md")
+            # Committed, which is what CI and a merge commit see -- the case a
+            # "present in HEAD" discriminator cannot distinguish from a repo
+            # that never had the file.
+            self.assertEqual(
+                codes(edc.check_repo(repo, entry_docs=docs)),
+                [("coverage", "missing_entry_doc")],
+            )
+
+    def test_a_repo_checked_against_its_own_inventory_stays_silent(self):
+        # The parameter IS the discriminator: a consumer or fixture that passes
+        # its own list is never held to docs it does not own. This is what makes
+        # requiring existence safe without any git probing.
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp, {"README.md": "root\n"}, packages={"": ("demo", "1.0.0", None)}
+            )
+            self.assertEqual(codes(edc.check_repo(repo, entry_docs=("README.md",))), [])
+
+
 class TestCoverageReconciliation(unittest.TestCase):
     def test_uncovered_package_readme_is_a_finding(self):
         with TemporaryDirectory() as tmp:
@@ -759,8 +1000,9 @@ class TestCli(unittest.TestCase):
 
     @CANONICAL_ONLY
     def test_file_narrowing_accepts_a_live_entry_doc(self):
-        # Canonical-only because narrowing to an ABSENT doc also exits 0 (nothing
-        # is checked), so in a partial tree this would pass vacuously.
+        # Canonical-only because a partial tree has no root README.md, and a
+        # declared-but-absent entry doc is now REPORTED (exit 1) rather than
+        # skipped -- so this asserts the clean path only where the doc exists.
         self.assertTrue((REPO_ROOT / "README.md").is_file())
         self.assertEqual(
             edc.main(["entry_doc_check", "--repo", str(REPO_ROOT), "--file", "README.md"]), 0

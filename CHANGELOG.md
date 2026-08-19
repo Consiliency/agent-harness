@@ -6,6 +6,33 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### entry-doc-check: close four false-positive and quiet-miss classes (Consiliency/agent-harness#599)
+
+- **Distribution names match under PEP 503.** `phase_loop_runtime==` and `Phase-Loop-Runtime==`
+  were silently skipped where `phase-loop-runtime==` was checked — and underscore is the
+  module's own spelling, so it is the form most likely to appear in a doc. Extras and
+  whitespace around `==` are tolerated too. `>=`/`~=` remain excluded: they are ranges, not
+  claims about a current version, so they have nothing to be stale against.
+- **`file:line` citations resolve to their path.** `` `src/pkg/cli.py:42` `` was reported as a
+  missing path even when the file existed, firing on this repository's own citation
+  convention. Still a check, not a skip: only the line suffix is stripped, so a citation of a
+  file that does not exist is reported as before.
+- **Fenced blocks honour fence length.** A three-backtick line no longer closes a
+  four-backtick block, per CommonMark, which requires a closer of the same character and at
+  least equal length. Discarding the opener's length inverted the mask from that point on, so
+  arm 1 reported tokens *inside* a code block while arm 3 stopped scanning real link
+  destinations — one bug producing both a false positive and a quiet miss in the helper both
+  arms share.
+- **Absolute system paths are not repository claims.** `/tmp`, `/run` and `/proc` are host
+  runtime locations, and reporting them turned this check red on `main` after
+  Consiliency/agent-harness#545. A leading slash is not a blanket skip: it means
+  repo-root-relative (never the document's own directory), so `/README.md` is still checked,
+  and the class is self-disabling like the install-layout one — a repository that really
+  contains `tmp/` resolves `/tmp` normally.
+- **A declared entry doc that does not exist is reported.** Skipping it meant deleting an
+  entry doc turned the check green. Safe to require because the inventory is the `entry_docs`
+  parameter: a consumer or fixture passing its own list is never held to docs it does not own.
+
 ### CI: diff-independent entry-point documentation verification (Consiliency/agent-harness#568)
 
 - New `python -m phase_loop_runtime.entry_doc_check --repo <root>` plus

@@ -81,6 +81,25 @@ INSTALL_LAYOUT_ROOTS: frozenset = frozenset(
     {"bin", "sbin", "lib", "lib64", "libexec", "share", "include", "etc", "var", "opt", "usr"}
 )
 
+#: POSIX system roots. An **absolute** token rooted at one of these names a
+#: runtime location on the host -- ``/tmp``, ``/run``, ``/proc`` -- not a path
+#: in this repository.
+#:
+#: Deliberately NOT "skip everything starting with ``/``". A token like
+#: ``/README.md`` is a repo-**root**-relative reference, a real way to write a
+#: path when a doc lives in a subdirectory, and it should still be checked.
+#: So a leading slash changes *where* a path resolves from (repo root only,
+#: never the document's own directory) and only a recognised system root makes
+#: it a non-repo claim. Self-disabling like :data:`INSTALL_LAYOUT_ROOTS`: a
+#: repository that really contains ``tmp/`` resolves ``/tmp`` normally.
+ABSOLUTE_SYSTEM_ROOTS: frozenset = frozenset(
+    {
+        "tmp", "run", "proc", "dev", "sys", "etc", "var", "usr", "opt",
+        "boot", "mnt", "media", "srv", "lib", "lib64", "bin", "sbin",
+        "home", "root",
+    }
+)
+
 #: Where suppressions live, relative to ``--repo``.
 SUPPRESSIONS = ".github/entry-doc-suppressions.json"
 
@@ -144,19 +163,34 @@ def _fence_mask(lines: Sequence[str]) -> List[bool]:
     """Return per-line flags: ``True`` where the line is inside a fenced block.
 
     The fence markers themselves are flagged too -- nothing on them is prose.
+
+    Per CommonMark a fence closes only on a run of the **same character** that
+    is **at least as long** as the opener, so a ``` line does not close a ````
+    block. Discarding the opener's length inverts the mask from that point on:
+    arm 1 then scans fenced content (a false positive on a token inside a code
+    block) while arm 3 stops scanning real link destinations. Nested fences are
+    exactly what a README quoting a fenced example contains.
     """
     inside = [False] * len(lines)
-    opener: Optional[str] = None
+    opener_char: Optional[str] = None
+    opener_len = 0
     for idx, line in enumerate(lines):
         match = _FENCE_RE.match(line)
-        if opener is None:
+        if opener_char is None:
             if match:
-                opener = match.group(2)[0] * 3
+                opener_char = match.group(2)[0]
+                opener_len = len(match.group(2))
                 inside[idx] = True
             continue
         inside[idx] = True
-        if match and match.group(2).startswith(opener) and not match.group(3).strip():
-            opener = None
+        if (
+            match
+            and match.group(2)[0] == opener_char
+            and len(match.group(2)) >= opener_len
+            and not match.group(3).strip()
+        ):
+            opener_char = None
+            opener_len = 0
     return inside
 
 
@@ -179,6 +213,7 @@ class RepoContext:
         self._latest_tag: Optional[str] = None
         self._latest_tag_resolved = False
         self._packages: Optional[Dict[str, "PackageInfo"]] = None
+        self._packages_by_norm: Optional[Dict[str, "PackageInfo"]] = None
         self._identities: Optional[Set[Tuple[str, str]]] = None
 
     # -- filesystem -----------------------------------------------------
@@ -260,6 +295,14 @@ class RepoContext:
             self._packages = _discover_packages(self.repo)
         return self._packages
 
+    def package_for_distribution(self, dist: str) -> Optional["PackageInfo"]:
+        """Look a distribution up under PEP 503 normalisation, not literally."""
+        if self._packages_by_norm is None:
+            self._packages_by_norm = {
+                normalize_dist_name(name): pkg for name, pkg in self.packages.items()
+            }
+        return self._packages_by_norm.get(normalize_dist_name(dist))
+
     @property
     def repo_identities(self) -> Set[Tuple[str, str]]:
         """``(owner, repo)`` pairs that denote *this* repository.
@@ -301,6 +344,19 @@ class PackageInfo:
 
 
 _GITHUB_SLUG_RE = re.compile(r"github\.com[:/]([\w.-]+)/([\w.-]+)")
+_NORMALIZE_DIST_RE = re.compile(r"[-_.]+")
+
+
+def normalize_dist_name(name: str) -> str:
+    """PEP 503 normalisation: runs of ``-_.`` collapse to ``-``, lowercased.
+
+    ``phase-loop-runtime``, ``phase_loop_runtime`` and ``Phase-Loop-Runtime``
+    are the same distribution to pip, so a literal match silently skips two of
+    the three -- and the underscore form is the module's own spelling, making
+    it the one most likely to appear in a doc. A pin that is silently skipped
+    is worse than no check: the green implies coverage that does not exist.
+    """
+    return _NORMALIZE_DIST_RE.sub("-", name).lower()
 
 
 def _parse_pyproject(text: str) -> Dict[str, str]:
@@ -381,6 +437,21 @@ _PATH_TOKEN_RE = re.compile(r"^[\w.~<>*?/@:#+%-]+$")
 _ISSUE_CITATION_RE = re.compile(r"^[\w.-]+/[\w.-]+#\d+$")
 _URL_SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.\-]*:")
 _METAVAR_RE = re.compile(r"<[^<>]*>")
+#: ``path/to/file.py:42`` and ``path/to/file.py:42:7`` -- this repo's own
+#: citation convention, used throughout its docs, issues and reviews.
+_FILE_LINE_CITATION_RE = re.compile(r"^(?P<path>.+?):(?P<line>\d+)(?::\d+)?$")
+
+
+def _strip_line_citation(token: str) -> str:
+    """Return the path part of a ``file:line`` citation, else ``token``.
+
+    A *check*, not a skip: the path still has to resolve. Only the line-number
+    suffix is removed, so a citation of a file that does not exist is still
+    reported -- what changes is that a citation of a file that DOES exist stops
+    being a false positive.
+    """
+    match = _FILE_LINE_CITATION_RE.match(token)
+    return match.group("path") if match else token
 
 
 def _concrete_prefix(token: str) -> str:
@@ -394,7 +465,7 @@ def _concrete_prefix(token: str) -> str:
     return "/".join(concrete)
 
 
-def _resolves(ctx: RepoContext, doc_dir: str, rel: str) -> bool:
+def _resolves(ctx: RepoContext, doc_dir: str, rel: str, require_file: bool = False) -> bool:
     """Repo-root first, then the document's own directory.
 
     A trailing extension-less basename also resolves against a same-stem
@@ -404,14 +475,20 @@ def _resolves(ctx: RepoContext, doc_dir: str, rel: str) -> bool:
     cleaned = rel.strip()
     while cleaned.startswith("./"):
         cleaned = cleaned[2:]
-    cleaned = cleaned.rstrip("/")
+    # A leading slash means repo-ROOT-relative, so the document's own directory
+    # is not a candidate base -- `/README.md` in a package README refers to the
+    # root README, not a sibling of the file it appears in.
+    absolute = cleaned.startswith("/")
+    cleaned = cleaned.lstrip("/").rstrip("/")
     if not cleaned:
         return False
-    bases = [""] if not doc_dir else ["", doc_dir]
+    bases = [""] if (absolute or not doc_dir) else ["", doc_dir]
     for base in bases:
         candidate = f"{base}/{cleaned}" if base else cleaned
         if ctx.exists(candidate):
-            return True
+            if not require_file or (ctx.repo / candidate).is_file():
+                return True
+            continue
         if "." not in Path(cleaned).name:
             parent = (ctx.repo / candidate).parent
             stem = Path(candidate).name
@@ -461,7 +538,10 @@ def check_paths(text: str, doc_path: str, ctx: RepoContext) -> List[Finding]:
             if any(ch in token for ch in "*?"):
                 continue
             root = token.strip("/").split("/", 1)[0]
-            if root in INSTALL_LAYOUT_ROOTS and not ctx.exists(root):
+            if token.startswith("/"):
+                if root in ABSOLUTE_SYSTEM_ROOTS and not ctx.exists(root):
+                    continue
+            elif root in INSTALL_LAYOUT_ROOTS and not ctx.exists(root):
                 continue
             if _METAVAR_RE.search(token):
                 prefix = _concrete_prefix(token)
@@ -486,7 +566,16 @@ def check_paths(text: str, doc_path: str, ctx: RepoContext) -> List[Finding]:
                     )
                 )
                 continue
+            # Literal FIRST: a real file may legitimately have a colon in its
+            # name (`data/log:2024`), and stripping unconditionally turns it
+            # into a phantom missing path.
             if _resolves(ctx, doc_dir, token):
+                continue
+            target = _strip_line_citation(token)
+            # A citation must point at a FILE. `src/pkg:42` where `src/pkg` is a
+            # directory is nonsense, and accepting any resolvable target would
+            # silently drop a finding the unstripped check used to make.
+            if target != token and _resolves(ctx, doc_dir, target, require_file=True):
                 continue
             findings.append(
                 Finding(
@@ -508,8 +597,18 @@ def check_paths(text: str, doc_path: str, ctx: RepoContext) -> List[Finding]:
 # Arm 2 -- pin freshness
 
 
+#: ``dist==V``, tolerating PEP 508 extras and whitespace around the operator.
+#: Deliberately ``==`` only: ``>=`` and ``~=`` are ranges, not claims about a
+#: current version, so they have nothing to be stale against.
+#: The right-hand side must be **version-shaped or a placeholder**, not any
+#: bare token. Tolerating whitespace around ``==`` is required for unquoted
+#: requirements samples, but combined with an unconstrained RHS it reads a
+#: fenced Python comparison (``if phase_loop_runtime == other:``) as a pin --
+#: and arm 2 scans fences deliberately, so that reaches the output.
 _DIST_PIN_RE = re.compile(
-    r"(?<![\w.-])(?P<dist>[A-Za-z][A-Za-z0-9._-]*[A-Za-z0-9])==(?P<version>[^\s\"'`,;)\]]+)"
+    r"(?<![\w.-])(?P<dist>[A-Za-z][A-Za-z0-9._-]*[A-Za-z0-9])"
+    r"(?:\[[A-Za-z0-9._,-]+\])?\s*==\s*"
+    r"(?P<version>[0-9][^\s\"'`,;)\]]*|X\.Y\.Z|<[^<>\s]+>)"
 )
 _GIT_REF_PIN_RE = re.compile(
     r"github\.com[:/](?P<owner>[\w.-]+)/(?P<repo>[\w.-]+?)(?:\.git)?@(?P<ref>[^\s\"'`#)\]]+)"
@@ -538,7 +637,7 @@ def check_pin_freshness(text: str, doc_path: str, ctx: RepoContext) -> List[Find
         for match in _DIST_PIN_RE.finditer(line):
             dist = match.group("dist")
             version = match.group("version")
-            package = ctx.packages.get(dist)
+            package = ctx.package_for_distribution(dist)
             if package is None or not package.version:
                 # A third-party pin has no clock in this repo to check against.
                 continue
@@ -868,8 +967,21 @@ def check_repo(
 
     ``only`` narrows to one entry doc, interpreted as a logical path inside
     ``repo`` so package ownership and suppression identity stay well defined.
-    An entry doc that does not exist is skipped: ``ENTRY_DOCS`` is this
-    repository's inventory, and package coverage is reconciled separately.
+
+    A declared entry doc that does not exist is **reported**, not skipped.
+    Skipping it meant deleting an entry doc turned the check green -- a check
+    whose green survives the deletion of the thing it checks. This is safe to
+    require because the inventory arrives as the ``entry_docs`` **parameter**:
+    the CLI passes this repository's ``ENTRY_DOCS``, while a consumer or a test
+    fixture passes its own list and is never held to docs it does not own. So
+    the requirement binds this repository without constraining anyone else, and
+    making it green after a real deletion means editing ``ENTRY_DOCS`` -- an
+    explicit, reviewable act rather than silence.
+
+    (A git-based "absent from disk but present in HEAD" discriminator was
+    tried and rejected: once the deletion is committed -- which is what CI and
+    a merge commit see -- the file is absent from both, so it only ever caught
+    a dirty working tree.)
     """
     ctx = RepoContext(Path(repo))
     targets = list(entry_docs)
@@ -886,6 +998,19 @@ def check_repo(
     for doc in targets:
         path = ctx.repo / doc
         if not path.is_file():
+            findings.append(
+                Finding(
+                    file=doc,
+                    line=0,
+                    arm="coverage",
+                    code="missing_entry_doc",
+                    token=doc,
+                    message=(
+                        f"`{doc}` is declared an entry doc but does not exist. If it was "
+                        f"removed on purpose, drop it from ENTRY_DOCS in the same change."
+                    ),
+                )
+            )
             continue
         findings.extend(check_document(path.read_text(encoding="utf-8"), doc, ctx))
     if only is None:
@@ -951,9 +1076,10 @@ def main(argv: List[str]) -> int:
 
 
 def _docs_checked(repo: Path, only: Optional[str]) -> List[str]:
-    if only:
-        return [only]
-    return [doc for doc in ENTRY_DOCS if (Path(repo) / doc).is_file()]
+    # No existence filter: a declared doc that is missing is now a finding, so
+    # a clean run means every one of these was actually read. Filtering here
+    # would let the OK line under-report the inventory it just verified.
+    return [only] if only else list(ENTRY_DOCS)
 
 
 if __name__ == "__main__":
