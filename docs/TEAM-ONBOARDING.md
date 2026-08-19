@@ -43,8 +43,13 @@ It emits the versioned `phase-loop-doctor.v1` schema:
 
 **What to assert, and what not to.**
 
-- `schema == "phase-loop-doctor.v1"` — the install is present and the CLI runs. This is the
-  success signal; assert it rather than grepping the installer's output.
+- `schema == "phase-loop-doctor.v1"` — the install is present and the CLI runs. Assert it
+  rather than grepping the installer's output.
+- **`schema` alone is not a pass. Always check the exit code too.** Stdout stays pure,
+  parseable JSON *even when the command fails*, so the payload still carries
+  `schema == "phase-loop-doctor.v1"` on a `--fail-on-stale` failure (exit 1, diagnostic on
+  stderr). An installer that asserts only `schema` will report success on a gating-stale
+  repo. Treat `schema` as "the CLI ran", and the exit code as "the verdict".
 - Exit `0` from a plain `doctor --json` means the report was produced. It is **not** a claim
   that every tool is present — read `tools[]` for that.
 - `--fail-on-stale` exits non-zero **only** on a `stale` verdict among the *gating*
