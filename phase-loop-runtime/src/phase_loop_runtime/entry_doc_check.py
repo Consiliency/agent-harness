@@ -429,8 +429,8 @@ def check_paths(text: str, doc_path: str, ctx: RepoContext) -> List[Finding]:
     Skip classes, each of which describes a *kind* of token rather than a
     specific string, so none of them can be used to launder a real defect:
     fenced code blocks, ``~``-prefixed home paths, ``owner/repo#N`` issue
-    citations (this repo's own convention), URL schemes, ``*`` globs, and
-    install-layout destinations.
+    citations (this repo's own convention), URL schemes, absolute POSIX
+    runtime paths, ``*`` globs, and install-layout destinations.
 
     Metavariable tokens are **not** blanket-skipped: the concrete parent prefix
     is still validated, so ``spces/<NAME>.md`` is caught while
@@ -453,6 +453,11 @@ def check_paths(text: str, doc_path: str, ctx: RepoContext) -> List[Finding]:
                 # Multi-word spans are prose or shell commands, not path claims.
                 continue
             if _URL_SCHEME_RE.match(token) or token.startswith("//"):
+                continue
+            if token.startswith("/"):
+                # An absolute POSIX path names a runtime/filesystem location,
+                # not a path rooted in this repository. Repository claims are
+                # intentionally relative so they remain checkout-independent.
                 continue
             if token.startswith("~"):
                 continue

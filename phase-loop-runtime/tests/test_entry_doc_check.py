@@ -243,6 +243,7 @@ class TestArmPaths(unittest.TestCase):
                 "Bundled skills resolve from `skills_bundle/**`.",
                 "Secrets (`secrets/**`) are never break-glassable.",
                 "Installed to `share/phase-loop-runtime/protocol/protocol.md`.",
+                "Runtime paths: `/tmp`, `/run`, `/proc`, `/run/phase-loop-review`.",
                 "Un-adopted repos have no `.consiliency/manifest`.",
                 "Source: `https://github.com/Consiliency/agent-harness`.",
                 "A repo without one exits with `no specs/phase-plans-v*.md roadmap found`.",
@@ -272,6 +273,23 @@ class TestArmPaths(unittest.TestCase):
             _git(repo, "add", "-A")
             _git(repo, "commit", "-q", "-m", "content")
             self.assertEqual(codes(edc.check_repo(repo, entry_docs=("README.md",))), [])
+
+    def test_absolute_posix_runtime_paths_are_not_repository_claims(self):
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp,
+                {
+                    "README.md": (
+                        "Uses `/tmp`, `/run`, `/proc`, and "
+                        "`/run/phase-loop-review`.\n"
+                        "But `tmp/missing.md` is a repository claim.\n"
+                    )
+                },
+                packages=self.PATHS_ONLY,
+            )
+            found = edc.check_repo(repo, entry_docs=("README.md",))
+            self.assertEqual(codes(found), [("paths", "missing_path")])
+            self.assertEqual(found[0].token, "tmp/missing.md")
 
     def test_install_layout_skip_self_disables(self):
         # The class is a class, not an allowlist: a repo that really has a
