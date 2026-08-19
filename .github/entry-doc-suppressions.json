@@ -1,0 +1,20 @@
+{
+  "_about": [
+    "Suppressions for python -m phase_loop_runtime.entry_doc_check.",
+    "",
+    "BUDGET IS 0 AT LANDING. The live entry docs pass on RAW findings, before any",
+    "suppression -- a positive control bought by suppression is not a positive",
+    "control. This mechanism exists for future drift, not to buy today's green.",
+    "",
+    "Each entry needs file, code, token and a NON-EMPTY reason. Identity is a",
+    "fingerprint over (file, code, token), never a line number, so a suppression",
+    "survives edits above it but does not survive the defect changing shape.",
+    "An entry that matches no finding is itself reported: stale suppressions",
+    "cannot accumulate silently behind a green check.",
+    "",
+    "Example:",
+    "  {\"file\": \"README.md\", \"code\": \"stale_pin\",",
+    "   \"token\": \"phase-loop-runtime==0.7.13\", \"reason\": \"why this is acceptable\"}"
+  ],
+  "suppressions": []
+}

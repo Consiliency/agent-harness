@@ -129,6 +129,18 @@ people to grep out the digests you also tell them to record.
 A CI check that flags 40-hex literals **outside an allowlist of known input-pin fields** is
 the portable version.
 
+The same "be careful with the lint" problem shows up one level out, in the *documentation*
+that records your pins. `phase_loop_runtime.entry_doc_check` is the worked implementation
+here (`.github/workflows/entry-doc-check.yml`): it verifies entry-point docs against
+properties that hold with no diff in sight. Two of its design constraints transfer
+directly. First, a pin is checked for **staleness, not existence** — this repository's own
+`v0.1.5` install pin rotted through six releases while remaining a perfectly resolvable
+tag, so an existence rule passes the exact defect. Second, the false-positive classes are
+load-bearing rather than optional: of the 32 path-like tokens in these entry docs, 17 are
+deliberately not repository paths — home directories, issue citations, version
+metavariables, install destinations — and a check without named classes for them is red on
+day one and switched off by day two.
+
 ### 3. Reference goals by ID; never restate them (portable in principle, needs IDs in practice)
 
 Give every exit criterion a stable identifier (`EC-<ALIAS>-<N>`). Plans reference the ID; they
