@@ -16,8 +16,10 @@ production keeps 5s << 180s so CPU is sampled dozens of times per stall window.
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
+import threading
 import time
 
 import pytest
@@ -84,6 +86,19 @@ def test_deadline_backstop_fires_even_when_cpu_active(monkeypatch):
     with pytest.raises(subprocess.TimeoutExpired):
         _run([sys.executable, "-c", "while True: pass"], deadline_s=2, stall_threshold_s=30)
     assert time.monotonic() - t0 < 6
+
+
+def test_deadline_backstop_preserves_best_available_streams():
+    with pytest.raises(subprocess.TimeoutExpired) as captured:
+        _run(
+            [
+                sys.executable, "-c",
+                "print('partial-output', flush=True);\nwhile True: pass",
+            ],
+            deadline_s=2,
+            stall_threshold_s=30,
+        )
+    assert "partial-output" in str(captured.value.stdout)
 
 
 def test_stdin_is_fed_by_writer_thread_without_deadlock():
@@ -179,3 +194,200 @@ def test_leader_exit_with_child_holding_pipe_is_reclaimed_not_deadline(monkeypat
     elapsed = time.monotonic() - t0
     assert "started" in result.stdout
     assert elapsed < 15, f"took {elapsed:.1f}s — should reclaim ~post-exit-grace, not the 60s deadline"
+
+
+@pytest.mark.skipif(not _CPU_AVAILABLE, reason="process-group kill needs a POSIX process group")
+def test_termination_kills_ignoring_descendant_before_cleanup(monkeypatch, tmp_path):
+    marker = tmp_path / "descendant.pid"
+    child_code = (
+        "import os, signal, sys, time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        "open(sys.argv[1], 'w').write(str(os.getpid())); "
+        "time.sleep(600)"
+    )
+    leader_code = (
+        "import signal, subprocess, sys, time; "
+        "subprocess.Popen([sys.executable, '-c', sys.argv[2], sys.argv[1]]); "
+        "signal.signal(signal.SIGTERM, lambda *_: sys.exit(0)); "
+        "time.sleep(600)"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", leader_code, str(marker), child_code],
+        start_new_session=True,
+    )
+    pi._anchor_process_group(proc)
+    monkeypatch.setattr(pi, "_PROCESS_GROUP_TERM_GRACE_S", 0.2)
+    monkeypatch.setattr(pi, "_PROCESS_GROUP_KILL_GRACE_S", 3.0)
+    monkeypatch.setattr(pi, "_PROCESS_GROUP_POLL_S", 0.02)
+    deadline = time.monotonic() + 5
+    try:
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert marker.exists()
+        descendant_pid = int(marker.read_text())
+        cleanup_called = False
+
+        pi._terminate_process_group(proc)
+
+        def cleanup_callback() -> None:
+            nonlocal cleanup_called
+            cleanup_called = True
+            with pytest.raises(ProcessLookupError):
+                os.kill(descendant_pid, 0)
+            assert not pi._process_group_exists(proc.pid)
+
+        cleanup_callback()
+        assert cleanup_called
+        assert proc.poll() == 0
+    finally:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2)
+
+
+def test_process_group_termination_escalates_after_leader_exit(monkeypatch):
+    class ReapedLeader:
+        pid = 12345
+
+        @staticmethod
+        def poll():
+            return 0
+
+    signals: list[int] = []
+    waits = iter((False, True))
+    monkeypatch.setattr(pi, "_process_group_exists", lambda _pgid: True)
+    monkeypatch.setattr(
+        pi, "_wait_for_process_group_exit",
+        lambda *_args, **_kwargs: next(waits),
+    )
+    monkeypatch.setattr(
+        pi.os, "killpg", lambda _pgid, sent: signals.append(sent),
+    )
+
+    pi._terminate_process_group(ReapedLeader(), force_group=True)
+
+    assert signals == [signal.SIGTERM, signal.SIGKILL]
+
+
+@pytest.mark.skipif(not _CPU_AVAILABLE, reason="provider group registry needs POSIX groups")
+def test_quiescence_latch_closes_launch_registration_race(tmp_path):
+    latch = pi._ProviderQuiescenceLatch()
+    primary = pi.ProviderProcessGroupQuiescenceError("fatal quiescence")
+    factory_entered = threading.Event()
+    allow_popen = threading.Event()
+    launched: list[subprocess.Popen[bytes]] = []
+    trip_results: list[BaseException] = []
+
+    def factory() -> subprocess.Popen[bytes]:
+        factory_entered.set()
+        assert allow_popen.wait(5)
+        return subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(600)"],
+            cwd=tmp_path,
+            start_new_session=True,
+        )
+
+    def launch() -> None:
+        launched.append(latch.launch(factory))
+
+    def trip() -> None:
+        try:
+            trip_results.append(latch.trip(primary))
+        except BaseException as exc:  # captured for deterministic thread assertion
+            trip_results.append(exc)
+
+    launch_thread = threading.Thread(target=launch)
+    trip_thread = threading.Thread(target=trip)
+    launch_thread.start()
+    assert factory_entered.wait(5)
+    trip_thread.start()
+    allow_popen.set()
+    launch_thread.join(5)
+    trip_thread.join(5)
+
+    assert not launch_thread.is_alive()
+    assert not trip_thread.is_alive()
+    assert trip_results == [primary]
+    assert len(launched) == 1
+    proc = launched[0]
+    assert proc.poll() is not None
+    assert not pi._process_group_exists(proc.pid)
+    latch.release(proc)
+
+
+@pytest.mark.skipif(not _CPU_AVAILABLE, reason="provider group registry needs POSIX groups")
+def test_quiescence_latch_rejects_deregistering_live_group(tmp_path):
+    latch = pi._ProviderQuiescenceLatch()
+    proc = latch.launch(lambda: subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(600)"],
+        cwd=tmp_path,
+        start_new_session=True,
+    ))
+    try:
+        with pytest.raises(
+            pi.ProviderProcessGroupQuiescenceError,
+            match="deregistration preceded quiescence",
+        ):
+            latch.release(proc)
+    finally:
+        pi._terminate_process_group(proc)
+    latch.release(proc)
+
+
+def test_process_group_termination_fails_if_group_survives_sigkill(monkeypatch):
+    class ReapedLeader:
+        pid = 12345
+
+        @staticmethod
+        def poll():
+            return 0
+
+    monkeypatch.setattr(pi, "_process_group_exists", lambda _pgid: True)
+    monkeypatch.setattr(
+        pi, "_wait_for_process_group_exit",
+        lambda *_args, **_kwargs: False,
+    )
+    monkeypatch.setattr(pi.os, "killpg", lambda *_args: None)
+
+    with pytest.raises(
+        pi.AgyCanaryEvidenceError,
+        match="provider process group did not terminate",
+    ):
+        pi._terminate_process_group(ReapedLeader(), force_group=True)
+
+
+@pytest.mark.parametrize("disappears", ["before_term", "at_term"])
+def test_process_group_termination_accepts_disappearance_races(
+    monkeypatch, disappears,
+):
+    class ReapedLeader:
+        pid = 12345
+        polls = 0
+
+        def poll(self):
+            self.polls += 1
+            return 0
+
+    proc = ReapedLeader()
+    signals: list[int] = []
+    monkeypatch.setattr(
+        pi, "_process_group_exists",
+        lambda _pgid: disappears != "before_term",
+    )
+
+    def disappearing_killpg(_pgid, sent):
+        signals.append(sent)
+        raise ProcessLookupError
+
+    monkeypatch.setattr(pi.os, "killpg", disappearing_killpg)
+
+    pi._terminate_process_group(proc, force_group=True)
+
+    assert signals == ([] if disappears == "before_term" else [signal.SIGTERM])
+    assert proc.polls >= 2

@@ -32,7 +32,7 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from hashlib import sha256
 from pathlib import Path
-from typing import Callable, Mapping, Sequence, cast
+from typing import Callable, Mapping, Sequence, TypeVar, cast
 
 try:
     import fcntl
@@ -47,6 +47,21 @@ from .agent_runtime_provider import (
     CreateSessionRequest,
     HomebrewAgentRuntimeProvider,
     SendTurnRequest,
+)
+from .agy_canary_evidence import (
+    _OwnedCleanupRoot,
+    _create_owned_cleanup_root,
+    _cleanup_owned_roots,
+    AgyCanaryCapture,
+    AgyCanaryEvidenceError,
+    bind_staged_review_inputs,
+    capture_summary,
+    ProviderLaunchAuthority,
+    prepare_provider_launch_authorities,
+    record_launch,
+    record_provider_result,
+    retain_staged_files,
+    seal_provider_launches,
 )
 from .claude_agent_view import ClaudeAgentViewAdapter
 from .launcher import GROK_REVIEW_READONLY_TOOLS
@@ -109,6 +124,135 @@ LEG_STATUSES: tuple[str, ...] = (
     "DEGRADED",
     "UNAVAILABLE",
 )
+
+
+class ProviderProcessGroupQuiescenceError(AgyCanaryEvidenceError):
+    """A provider process group could not be proven absent after termination."""
+
+
+_CaptureMutationResult = TypeVar("_CaptureMutationResult")
+
+
+class _ProviderQuiescenceLatch:
+    """Share one fatal error while closing launches and sweeping provider groups.
+
+    A trip does not freeze bytes already owned by a running child: its SIGTERM
+    handler may still write truthful partial private output before the group is
+    proven absent.  Fatal callers therefore suppress evidence publication and
+    cleanup, retain the mode-0700 roots, and treat them as stable only after every
+    registered group has been proven absent.  If absence cannot be proven, the
+    roots remain retained under the original fatal authority.
+    """
+
+    def __init__(self) -> None:
+        self._event = threading.Event()
+        self._lock = threading.Lock()
+        self._condition = threading.Condition(self._lock)
+        self._primary: ProviderProcessGroupQuiescenceError | None = None
+        self._processes: dict[int, subprocess.Popen[bytes]] = {}
+        self._sweeping = False
+
+    def launch(
+        self, factory: Callable[[], subprocess.Popen[bytes]],
+    ) -> subprocess.Popen[bytes]:
+        """Create, anchor, and register a provider group under one closed-gate lock."""
+        with self._condition:
+            if self._primary is not None:
+                raise self._primary
+            proc = factory()
+            _anchor_process_group(proc)
+            if proc.pid in self._processes:
+                _terminate_process_group(proc)
+                raise ProviderProcessGroupQuiescenceError(
+                    "provider process group registration collided"
+                )
+            self._processes[proc.pid] = proc
+            return proc
+
+    def execute_if_open(
+        self, mutation: Callable[[], _CaptureMutationResult],
+    ) -> _CaptureMutationResult:
+        """Linearize a coordinator mutation before a trip or reject it after."""
+        with self._condition:
+            if self._primary is not None:
+                raise self._primary
+            return mutation()
+
+    def release(self, proc: subprocess.Popen[bytes]) -> None:
+        """Deregister only after the exact anchored group is proven absent."""
+        if os.name != "nt" and _process_group_exists(proc.pid):
+            raise ProviderProcessGroupQuiescenceError(
+                "provider process group deregistration preceded quiescence"
+            )
+        proc.poll()
+        with self._condition:
+            registered = self._processes.get(proc.pid)
+            if registered is None:
+                return
+            if registered is not proc:
+                raise ProviderProcessGroupQuiescenceError(
+                    "provider process group registration identity drifted"
+                )
+            del self._processes[proc.pid]
+            self._condition.notify_all()
+
+    def trip(
+        self, error: ProviderProcessGroupQuiescenceError,
+    ) -> ProviderProcessGroupQuiescenceError:
+        with self._condition:
+            if self._primary is None:
+                self._primary = error
+                self._event.set()
+            primary = self._primary
+            if self._sweeping:
+                while self._sweeping:
+                    self._condition.wait()
+                return primary
+            self._sweeping = True
+            processes = tuple(self._processes.values())
+        try:
+            for proc in processes:
+                try:
+                    _terminate_process_group(proc, force_group=True)
+                except ProviderProcessGroupQuiescenceError:
+                    # The primary already states that quiescence is unproven.  Sweep
+                    # every sibling before returning it; never replace it with a
+                    # later group's diagnostic or stop at the first stubborn group.
+                    continue
+        finally:
+            with self._condition:
+                for pid, proc in tuple(self._processes.items()):
+                    if os.name == "nt":
+                        absent = proc.poll() is not None
+                    else:
+                        absent = not _process_group_exists(pid)
+                    if absent:
+                        proc.poll()
+                        del self._processes[pid]
+                self._sweeping = False
+                self._condition.notify_all()
+        return primary
+
+    def raise_if_set(self) -> None:
+        if not self._event.is_set():
+            return
+        with self._condition:
+            primary = self._primary
+        if primary is None:  # defensive: trip stores before publishing the event
+            raise RuntimeError("provider quiescence latch published no primary error")
+        raise primary
+
+    def is_set(self) -> bool:
+        return self._event.is_set()
+
+
+def _capture_mutation(
+    quiescence_latch: _ProviderQuiescenceLatch | None,
+    mutation: Callable[[], _CaptureMutationResult],
+) -> _CaptureMutationResult:
+    if quiescence_latch is None:
+        return mutation()
+    return quiescence_latch.execute_if_open(mutation)
 
 
 class ReviewLandingTier(str, Enum):
@@ -393,6 +537,9 @@ _LEG_LIVENESS_CPU_SAMPLE_S = 5.0  # /proc CPU sampling cadence (secondary reset 
 # short idle grace instead of burning the full wall-clock backstop. Reset by any late
 # flush, so a still-streaming descendant is never truncated.
 _LEG_POST_EXIT_GRACE_S = 15.0
+_PROCESS_GROUP_TERM_GRACE_S = 5.0
+_PROCESS_GROUP_KILL_GRACE_S = 5.0
+_PROCESS_GROUP_POLL_S = 0.05
 _CLAUDE_CODE_MIN_VERSION = (2, 1, 197)
 _CLAUDE_CODE_MIN_VERSION_TEXT = "2.1.197"
 _CLAUDE_AGENT_NAME = "advisor-panel-claude"
@@ -1893,26 +2040,126 @@ def _terminate_process_group(
 ) -> None:
     """Terminate the leg's process group (pgid == proc.pid, launched start_new_session).
 
-    Default: no-op once the leader is reaped — the group is presumed empty and its pgid
-    could be reused, so we must NOT ``killpg`` a possibly-recycled group id.
+    POSIX callers preserve the launch-time PGID anchor even if SIGTERM makes the
+    leader exit first.  The whole group receives a grace period, then SIGKILL when
+    still present; the function returns only after the group is proven absent.
+    ``force_group`` remains a compatibility signal from the inherited-pipe path.
 
-    ``force_group=True``: the CALLER has just proven a descendant OUTLIVES the reaped
-    leader (an inherited stdout/stderr pipe is still open), so the group is provably
-    alive — reap it directly. Without this, a leader that exits while a child holds the
-    pipe would never be killed and the leg would burn the full wall-clock backstop.
+    Windows retains the historical leader terminate/wait/kill behavior because it
+    has no POSIX process-group primitive here.
     """
+    if os.name == "nt":
+        _terminate_process_group_windows(proc, force_group=force_group)
+        return
+
+    anchored_pgid = getattr(proc, "_phase_loop_pgid", proc.pid)
+    if (not isinstance(anchored_pgid, int) or anchored_pgid <= 0 or
+            anchored_pgid != proc.pid):
+        raise ProviderProcessGroupQuiescenceError(
+            "provider process group anchor is invalid"
+        )
+    pgid = anchored_pgid
     leader_running = proc.poll() is None
-    if not leader_running and not force_group:
+    if leader_running:
+        try:
+            observed_pgid = os.getpgid(proc.pid)
+        except ProcessLookupError:
+            proc.poll()
+        else:
+            if observed_pgid != pgid:
+                raise ProviderProcessGroupQuiescenceError(
+                    "provider process group anchor is invalid"
+                )
+    if not _process_group_exists(pgid):
+        proc.poll()
         return
     try:
-        os.killpg(proc.pid, signal.SIGTERM)
+        os.killpg(pgid, signal.SIGTERM)
     except ProcessLookupError:
-        return  # group already gone
-    except Exception:
+        proc.poll()
+        return
+    except Exception as exc:
         try:
             proc.terminate()
         except Exception:
             pass
+        if not _process_group_exists(pgid):
+            proc.poll()
+            return
+        raise ProviderProcessGroupQuiescenceError(
+            "provider process group SIGTERM failed"
+        ) from exc
+    if _wait_for_process_group_exit(
+        proc, pgid=pgid, timeout=_PROCESS_GROUP_TERM_GRACE_S,
+    ):
+        return
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        proc.poll()
+        return
+    except Exception as exc:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        if not _process_group_exists(pgid):
+            proc.poll()
+            return
+        raise ProviderProcessGroupQuiescenceError(
+            "provider process group SIGKILL failed"
+        ) from exc
+    if not _wait_for_process_group_exit(
+        proc, pgid=pgid, timeout=_PROCESS_GROUP_KILL_GRACE_S,
+    ):
+        raise ProviderProcessGroupQuiescenceError(
+            "provider process group did not terminate"
+        )
+
+
+def _process_group_exists(pgid: int) -> bool:
+    """Return whether the preserved POSIX process group is still present."""
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _anchor_process_group(proc: subprocess.Popen[bytes]) -> None:
+    """Retain the PGID guaranteed by this call site's start_new_session=True."""
+    if os.name != "nt":
+        setattr(proc, "_phase_loop_pgid", proc.pid)
+
+
+def _wait_for_process_group_exit(
+    proc: subprocess.Popen[bytes], *, pgid: int, timeout: float,
+) -> bool:
+    """Reap the direct leader while waiting for the entire group to disappear."""
+    deadline = time.monotonic() + timeout
+    while True:
+        proc.poll()
+        if not _process_group_exists(pgid):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(_PROCESS_GROUP_POLL_S, remaining))
+
+
+def _terminate_process_group_windows(
+    proc: subprocess.Popen[bytes], *, force_group: bool,
+) -> None:
+    """Preserve the historical Windows leader-only termination behavior."""
+    leader_running = proc.poll() is None
+    if not leader_running and not force_group:
+        return
+    try:
+        proc.terminate()
+    except Exception:
+        pass
     if leader_running:
         try:
             proc.wait(timeout=5)
@@ -1920,14 +2167,11 @@ def _terminate_process_group(
         except subprocess.TimeoutExpired:
             pass
     else:
-        time.sleep(0.2)  # brief grace for the outliving descendant to handle SIGTERM
+        time.sleep(0.2)
     try:
-        os.killpg(proc.pid, signal.SIGKILL)
+        proc.kill()
     except Exception:
-        try:
-            proc.kill()
-        except Exception:
-            pass
+        pass
 
 
 @dataclass
@@ -1949,6 +2193,7 @@ def _run_leg_with_liveness(
     deadline_s: float,
     stall_threshold_s: float = _LEG_STALL_THRESHOLD_S,
     input_text: str | None = None,
+    quiescence_latch: _ProviderQuiescenceLatch | None = None,
 ) -> "_LegRun":
     """Run a print-mode CLI leg, killing it on HEARTBEAT EXTINCTION, not a blind clock.
 
@@ -1966,15 +2211,22 @@ def _run_leg_with_liveness(
     fed by a daemon writer thread so a large prompt can't deadlock against the child
     filling its own stdout/stderr pipe buffers.
     """
-    proc = subprocess.Popen(
-        list(cmd),
-        cwd=str(cwd),
-        env=dict(env),
-        stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        start_new_session=True,  # pgid == proc.pid: group CPU sampling + group kill
-    )
+    def _popen() -> subprocess.Popen[bytes]:
+        return subprocess.Popen(
+            list(cmd),
+            cwd=str(cwd),
+            env=dict(env),
+            stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,  # pgid == proc.pid: group CPU sampling + group kill
+        )
+
+    if quiescence_latch is None:
+        proc = _popen()
+        _anchor_process_group(proc)
+    else:
+        proc = quiescence_latch.launch(_popen)
     if input_text is not None and proc.stdin is not None:
 
         def _feed() -> None:
@@ -2006,7 +2258,10 @@ def _run_leg_with_liveness(
             # (1) wall-clock backstop — should rarely fire once stall detection works.
             if time.monotonic() - start >= deadline_s:
                 _terminate_process_group(proc)
-                raise subprocess.TimeoutExpired(list(cmd), deadline_s)
+                out_s, err_s = _decode()
+                raise subprocess.TimeoutExpired(
+                    list(cmd), deadline_s, output=out_s, stderr=err_s,
+                )
             # (2) drain available output; any byte is a heartbeat.
             if open_fds:
                 readable, _, _ = select.select(
@@ -2066,13 +2321,19 @@ def _run_leg_with_liveness(
                 marker = f"\n[leg-liveness] stalled: no output/CPU for {int(stall_threshold_s)}s"
                 return _LegRun(proc.returncode or 1, out_s, err_s + marker)
     finally:
-        _terminate_process_group(proc)
-        for pipe in (proc.stdout, proc.stderr):
-            try:
-                if pipe is not None:
-                    pipe.close()
-            except OSError:
-                pass
+        try:
+            _terminate_process_group(proc)
+            if quiescence_latch is not None:
+                quiescence_latch.release(proc)
+        finally:
+            for pipe in (proc.stdout, proc.stderr):
+                try:
+                    if pipe is not None:
+                        pipe.close()
+                except OSError:
+                    pass
+        if quiescence_latch is not None:
+            quiescence_latch.raise_if_set()
 
 
 # #188 — de-animation of the Claude TUI's cosmetic status line. While the model
@@ -2242,6 +2503,8 @@ def _run_claude_tui_session(
     mode: str = "review",
     backstop_s: int | None = None,
     stall_threshold_s: float | None = None,
+    capture_output_reader: Callable[[], str] | None = None,
+    quiescence_latch: _ProviderQuiescenceLatch | None = None,
 ) -> tuple[int, str, str, str]:
     if fcntl is None or pty is None or termios is None:
         return 1, "", "claude_tui_unsupported_platform", ""
@@ -2295,6 +2558,13 @@ def _run_claude_tui_session(
         cwd
     )  # run-unique FULL-path tokens (not the bare basename)
 
+    def _current_output() -> str:
+        return (
+            capture_output_reader()
+            if capture_output_reader is not None
+            else _read_review_output(output_file)
+        )
+
     def _finish(rc: int, text: str, log: str) -> tuple[int, str, str, str]:
         # Attach a bounded, redacted, control-stripped PTY tail to every NON-OK
         # return so a startup/liveness failure is diagnosable (ah#196/#223); an OK
@@ -2319,17 +2589,24 @@ def _run_claude_tui_session(
         except OSError:
             pass
         try:
-            proc = subprocess.Popen(
-                list(command),
-                cwd=str(cwd),
-                env=dict(env),
-                stdin=slave_fd,
-                stdout=slave_fd,
-                stderr=slave_fd,
-                text=False,
-                close_fds=True,
-                start_new_session=True,
-            )
+            def _popen() -> subprocess.Popen[bytes]:
+                return subprocess.Popen(
+                    list(command),
+                    cwd=str(cwd),
+                    env=dict(env),
+                    stdin=slave_fd,
+                    stdout=slave_fd,
+                    stderr=slave_fd,
+                    text=False,
+                    close_fds=True,
+                    start_new_session=True,
+                )
+
+            if quiescence_latch is None:
+                proc = _popen()
+                _anchor_process_group(proc)
+            else:
+                proc = quiescence_latch.launch(_popen)
         finally:
             os.close(slave_fd)
     except FileNotFoundError:
@@ -2385,7 +2662,7 @@ def _run_claude_tui_session(
                         # (`proc.poll() or 1`) so _classify_leg fails closed — matching
                         # the proc.poll()/deadline sibling paths. Promoting a transcript
                         # verdict to OK here would be a race-dependent false-green.
-                        review_text = _read_review_output(output_file)
+                        review_text = _current_output()
                         if _completion_ok(review_text, mode):
                             return _finish(0, review_text, "claude_tui_file_output")
                         transcript_text = (
@@ -2479,7 +2756,7 @@ def _run_claude_tui_session(
                         prompt_sent = True
                     except OSError:
                         return _finish(1, "", "claude_tui_submit_failed")
-            review_text = _read_review_output(output_file)
+            review_text = _current_output()
             # #188: canonical review OUTPUT growing is unambiguous reviewer progress.
             if len(review_text) > last_review_len:
                 last_review_len = len(review_text)
@@ -2507,7 +2784,7 @@ def _run_claude_tui_session(
                 if _completion_ok(transcript_text, mode):
                     transcript_salvage = transcript_text
             if proc.poll() is not None:
-                review_text = _read_review_output(output_file)
+                review_text = _current_output()
                 transcript_text = transcript_salvage or _latest_claude_transcript_text(
                     str(cwd), since=start_wall
                 )
@@ -2527,7 +2804,7 @@ def _run_claude_tui_session(
             # canonical verdict is the review FILE (checked above); nothing to nudge for a
             # wedged TUI, so fail closed (rc forced non-zero, like the #48/deadline paths).
             if now - last_heartbeat >= stall_threshold_s:
-                review_text = _read_review_output(output_file)
+                review_text = _current_output()
                 if _completion_ok(review_text, mode):
                     return _finish(0, review_text, "claude_tui_file_output")
                 # agent-harness#343: an unmatched tool_use means the reviewer is
@@ -2553,7 +2830,7 @@ def _run_claude_tui_session(
                     review_text or transcript_text,
                     "claude_tui_stalled",
                 )
-        review_text = _read_review_output(output_file)
+        review_text = _current_output()
         transcript_text = transcript_salvage or _latest_claude_transcript_text(
             str(cwd), since=start_wall
         )
@@ -2561,13 +2838,19 @@ def _run_claude_tui_session(
             124, review_text or transcript_text, f"timeout after {backstop_s}s"
         )
     finally:
-        if proc is not None:
-            _terminate_process_group(proc)
-        if master_fd is not None:
-            try:
-                os.close(master_fd)
-            except OSError:
-                pass
+        try:
+            if proc is not None:
+                _terminate_process_group(proc)
+                if quiescence_latch is not None:
+                    quiescence_latch.release(proc)
+        finally:
+            if master_fd is not None:
+                try:
+                    os.close(master_fd)
+                except OSError:
+                    pass
+        if quiescence_latch is not None:
+            quiescence_latch.raise_if_set()
 
 
 def _stop_claude_agent(
@@ -2862,6 +3145,76 @@ def _tui_capable(
         return False
 
 
+def _record_capture_review_attempt(
+    authority: ProviderLaunchAuthority, command: list[str], *,
+    attempt_id: str | None = None,
+    quiescence_latch: _ProviderQuiescenceLatch | None = None,
+) -> None:
+    """Record the actual invocation when using the production launch authority."""
+    if isinstance(authority, ProviderLaunchAuthority):
+        _capture_mutation(
+            quiescence_latch,
+            lambda: authority.record_review_attempt(command, attempt_id=attempt_id),
+        )
+
+
+def _capture_provider_preflight(
+    authority: ProviderLaunchAuthority,
+    command: list[str],
+    quiescence_latch: _ProviderQuiescenceLatch | None,
+) -> list[str]:
+    if quiescence_latch is None:
+        return authority.preflight(command)
+
+    def probe_runner(
+        probe_command: list[str], probe_env: Mapping[str, str], timeout_s: int,
+    ) -> int:
+        result = _run_leg_with_liveness(
+            probe_command,
+            cwd=Path.cwd(),
+            env=probe_env,
+            deadline_s=float(timeout_s),
+            stall_threshold_s=float(timeout_s),
+            quiescence_latch=quiescence_latch,
+        )
+        return result.returncode
+
+    return authority.preflight(
+        command,
+        probe_runner=probe_runner,
+        publish=quiescence_latch.execute_if_open,
+    )
+
+
+def _cleanup_capture_launches(
+    launches: Mapping[
+        str, tuple[ProviderLaunchAuthority, Path, Path, _OwnedCleanupRoot]
+    ],
+    scratch_roots: Sequence[_OwnedCleanupRoot] = (),
+) -> None:
+    """Reclaim capture resources after setup failure or joined provider workers.
+
+    ``invoke_board`` reaches its outer cleanup only after ``_run_legs_ordered``
+    has left the thread-pool context, so ordinary provider children have completed
+    or been terminated.  The owned-root cleanup contract does not cover a separate
+    malicious same-UID process that concurrently mutates retained tombstones.
+    """
+    roots = list(scratch_roots)
+    for authority, _stage, scratch, scratch_root in launches.values():
+        if scratch != scratch_root.path:
+            raise AgyCanaryEvidenceError("capture scratch cleanup authority drifted")
+        output = getattr(getattr(authority, "namespace", None), "provider_output", None)
+        output_root = getattr(
+            getattr(authority, "namespace", None), "provider_output_cleanup", None,
+        )
+        if (not isinstance(output, Path) or
+                not isinstance(output_root, _OwnedCleanupRoot) or
+                output != output_root.path):
+            raise AgyCanaryEvidenceError("capture output cleanup authority is missing")
+        roots.extend((output_root, scratch_root))
+    _cleanup_owned_roots(roots)
+
+
 def _exec_claude_tui_leg(
     review_dir: Path,
     out_dir: Path,
@@ -2875,6 +3228,9 @@ def _exec_claude_tui_leg(
     env: Mapping[str, str] | None = None,
     backstop_s: int | None = None,
     research_seat: ResearchSeatConfig | None = None,
+    agy_capture: AgyCanaryCapture | None = None,
+    provider_authority: ProviderLaunchAuthority | None = None,
+    quiescence_latch: _ProviderQuiescenceLatch | None = None,
 ) -> tuple[str, str]:
     """Run the Claude panel leg through the local Claude Code TUI.
 
@@ -2889,6 +3245,8 @@ def _exec_claude_tui_leg(
     ``resolve_seat_env`` result so per-seat effort + active env scrubbing reach the
     real launch.
     """
+    if quiescence_latch is not None:
+        quiescence_latch.raise_if_set()
     env = _subscription_env(env)
     if research_seat is not None:
         env = scrub_research_env(env)
@@ -2901,24 +3259,74 @@ def _exec_claude_tui_leg(
         )
         return "UNAVAILABLE", "tui_adapter_required"
 
-    supported, support_detail = _claude_code_support_status()
-    if not supported:
-        return "UNAVAILABLE", support_detail
-
-    authed, auth_detail = _claude_subscription_auth_ok(env)
-    if not authed:
-        return "UNAVAILABLE", auth_detail
-
     output_file = out_dir / "panel-claude.txt"
-    prompt = _render_claude_tui_prompt(artifact, review_dir, output_file, mode)
+    child_review_dir = review_dir
+    child_output_file = output_file
+    capture_output_reader: Callable[[], str] | None = None
+    if agy_capture is not None:
+        if quiescence_latch is not None:
+            quiescence_latch.raise_if_set()
+        if provider_authority is None:
+            raise AgyCanaryEvidenceError(
+                "capture-enabled Claude launch has no prepared namespace"
+            )
+        try:
+            _capture_mutation(
+                quiescence_latch,
+                lambda: output_file.touch(mode=0o600, exist_ok=False),
+            )
+        except FileExistsError as exc:
+            raise AgyCanaryEvidenceError(
+                "capture-enabled Claude output already exists before launch"
+            ) from exc
+        # The capture child sees neither the host staging path nor its private
+        # output directory.  Claude writes through the fixed bwrap output mount;
+        # the parent continues to consume the corresponding host file.
+        child_review_dir = Path("/run/phase-loop-review")
+        child_output_file = Path(
+            provider_authority.rewrite_provider_output_path(output_file)
+        )
+        capture_output_reader = lambda: provider_authority.read_expected_output(
+            output_file.name
+        ).decode("utf-8", errors="replace")
+    else:
+        supported, support_detail = _claude_code_support_status()
+        if not supported:
+            return "UNAVAILABLE", support_detail
+
+        authed, auth_detail = _claude_subscription_auth_ok(env)
+        if not authed:
+            return "UNAVAILABLE", auth_detail
+
+    prompt = _render_claude_tui_prompt(
+        artifact, child_review_dir, child_output_file, mode
+    )
+    command = _claude_tui_command(
+        child_review_dir,
+        child_review_dir if agy_capture is not None else (repo_dir or Path.cwd()),
+        model,
+        effort,
+        research_seat,
+    )
+    if agy_capture is not None:
+        if quiescence_latch is not None:
+            quiescence_latch.raise_if_set()
+        command = _capture_provider_preflight(
+            provider_authority, command, quiescence_latch,
+        )
+        env = provider_authority.outer_environment()
+        _record_capture_review_attempt(
+            provider_authority, command, quiescence_latch=quiescence_latch,
+        )
+    tui_extra = (
+        {"capture_output_reader": capture_output_reader}
+        if capture_output_reader is not None
+        else {}
+    )
+    if quiescence_latch is not None:
+        tui_extra["quiescence_latch"] = quiescence_latch
     rc, review_text, log_text, pty_tail = _run_claude_tui_session(
-        command=_claude_tui_command(
-            review_dir,
-            repo_dir or Path.cwd(),
-            model,
-            effort,
-            research_seat,
-        ),
+        command=command,
         cwd=out_dir,
         prompt=prompt,
         output_file=output_file,
@@ -2926,7 +3334,16 @@ def _exec_claude_tui_leg(
         env=env,
         mode=mode,
         backstop_s=backstop_s,
+        **tui_extra,
     )
+    if quiescence_latch is not None:
+        quiescence_latch.raise_if_set()
+    if agy_capture is not None:
+        # The TUI may read its canonical file repeatedly for liveness, but only this
+        # final descriptor-relative ingestion is accepted as captured-provider output.
+        review_text = provider_authority.read_expected_output(output_file.name).decode(
+            "utf-8", errors="replace"
+        )
     # #188 + ah#196/#223: a heartbeat-reclaimed wedge, an uncleared workspace-trust
     # gate, and a never-ready editor are all TYPED reviewer-liveness failures — surfaced
     # DEGRADED (not a bare ERROR). The diagnostic handling for these follows below (empty
@@ -3116,6 +3533,11 @@ def _exec_leg(
     *,
     deadline_s: int | None = None,
     research_seat: ResearchSeatConfig | None = None,
+    agy_capture: AgyCanaryCapture | None = None,
+    capture_staged: dict[str, dict[str, object]] | None = None,
+    seat_key: str | None = None,
+    provider_authority: ProviderLaunchAuthority | None = None,
+    quiescence_latch: _ProviderQuiescenceLatch | None = None,
 ) -> tuple[int, str, str]:
     """Run one CLI leg against the staged review dir; return (rc, review_text, log_text).
 
@@ -3129,7 +3551,16 @@ def _exec_leg(
     renders through ``render_seat_invocation`` (incl. the agy leg, where effort is
     baked into the model string). ``env is None`` keeps ``_subscription_env()``.
     """
+    if quiescence_latch is not None:
+        quiescence_latch.raise_if_set()
     env = _subscription_env() if env is None else dict(env)
+    if agy_capture is not None:
+        env.pop("PHASE_LOOP_AGY_CANARY_EVIDENCE_DIR", None)
+        env = {
+            key: value
+            for key, value in env.items()
+            if not key.startswith(("AGY_", "ANTIGRAVITY_", "GEMINI_"))
+        }
     if research_seat is not None:
         env = scrub_research_env(env)
         if leg not in RESEARCH_CAPABLE_LANES:
@@ -3138,9 +3569,10 @@ def _exec_leg(
     # fails obliquely (empty-turn, then rate-limit errors) and the panel silently
     # degrades. Fail fast + fail-closed as DEGRADED (the detail carries an auth
     # signature), never a silent empty leg.
-    authed, auth_detail = _leg_auth_ok(leg, env)
-    if not authed:
-        return 1, "", auth_detail
+    if agy_capture is None:
+        authed, auth_detail = _leg_auth_ok(leg, env)
+        if not authed:
+            return 1, "", auth_detail
     # Leg-liveness: ``timeout_s`` stays the fast-vs-slow retry-fraction reference; the
     # real kill is stall detection inside ``_run_leg_with_liveness``. The wall-clock
     # DEADLINE honors an EXPLICIT caller override as-is and only raises the input-scaled
@@ -3159,7 +3591,13 @@ def _exec_leg(
         if artifact is None
         else artifact
     )
-    prompt = _render_leg_prompt(artifact, review_dir, mode)
+    # A capture-enabled agy child sees the staged review only at this fixed
+    # namespace path.  Keep the host /tmp path out of both the prompt and agy's
+    # own --add-dir argument; it is allowed solely as the bwrap ro-bind source.
+    child_review_dir = (
+        Path("/run/phase-loop-review") if agy_capture is not None else review_dir
+    )
+    prompt = _render_leg_prompt(artifact, child_review_dir, mode)
     if leg == "codex":
         out_file = out_dir / "panel-codex.txt"
         # ABDHOME: effort-absent keeps ``-c model_reasoning_effort=xhigh`` verbatim;
@@ -3192,6 +3630,21 @@ def _exec_leg(
             str(out_file),
             "-",
         ]
+        if agy_capture is not None:
+            if provider_authority is None:
+                raise AgyCanaryEvidenceError("capture-enabled Codex launch has no prepared namespace")
+            cmd[cmd.index("exec") + 1:cmd.index("exec") + 1] = [
+                "--ignore-user-config",
+                "--ignore-rules",
+                "--ephemeral",
+            ]
+            child_output = provider_authority.rewrite_provider_output_path(out_file)
+            cmd[cmd.index(str(review_dir))] = "/run/phase-loop-review"
+            cmd[cmd.index(str(out_file))] = child_output
+            cmd = _capture_provider_preflight(
+                provider_authority, cmd, quiescence_latch,
+            )
+            env = provider_authority.outer_environment()
         # #64: retry the transient SOFT empty-turn (rc==0 + empty output) once. Do
         # NOT retry a hard failure (rc!=0 = rate-limit/error) — that would hammer
         # a rate-limited backend; classification handles it downstream.
@@ -3201,8 +3654,15 @@ def _exec_leg(
         # failures via ``_LEG_RETRY_ELAPSED_FRACTION``.
         rc, review_text, log_text = 1, "", ""
         for _attempt in range(2):
+            if quiescence_latch is not None:
+                quiescence_latch.raise_if_set()
             _t0 = time.monotonic()
             try:
+                if agy_capture is not None:
+                    _record_capture_review_attempt(
+                        provider_authority, cmd,
+                        quiescence_latch=quiescence_latch,
+                    )
                 # codex streams its transcript to STDERR (stdout is empty until the
                 # final message), so the liveness heartbeat rides stderr. Prompt on
                 # stdin ("-").
@@ -3212,12 +3672,19 @@ def _exec_leg(
                     env=env,
                     deadline_s=deadline_s,
                     input_text=prompt,
+                    quiescence_latch=quiescence_latch,
                 )
             except subprocess.TimeoutExpired:
                 return 124, "", f"timeout after {deadline_s}s"
+            if quiescence_latch is not None:
+                quiescence_latch.raise_if_set()
             _elapsed = time.monotonic() - _t0
             review_text = (
-                out_file.read_text(encoding="utf-8") if out_file.exists() else ""
+                provider_authority.read_expected_output(out_file.name).decode(
+                    "utf-8", errors="replace"
+                )
+                if agy_capture is not None and out_file.exists()
+                else (out_file.read_text(encoding="utf-8") if out_file.exists() else "")
             )
             rc = proc.returncode
             # ah#252: codex echoes BOTH the user prompt and its own final message
@@ -3236,6 +3703,10 @@ def _exec_leg(
                 break  # hard failure OR real output → stop (never hammer, never waste)
             if _elapsed >= timeout_s * _LEG_RETRY_ELAPSED_FRACTION:
                 break  # slow empty turn (not transient) → don't re-run + double wall-clock
+        if agy_capture is not None:
+            review_text = provider_authority.read_expected_output(out_file.name).decode(
+                "utf-8", errors="replace"
+            )
         return rc, review_text, log_text
     if leg == "gemini":
         # ah#335: this leg executes `agy`, NOT the gemini CLI (see `_LEG_CLI`). The health
@@ -3284,12 +3755,26 @@ def _exec_leg(
             "--model",
             gemini_model,
             "--add-dir",
-            str(review_dir),
+            str(child_review_dir),
             "--print-timeout",
             f"{timeout_s}s",
             "-p",
             _NO_COMMAND_PREAMBLE + prompt,
         ]
+        if agy_capture is not None:
+            if provider_authority is None:
+                raise AgyCanaryEvidenceError("capture-enabled Gemini launch has no prepared namespace")
+            # agy has no non-request auth-status surface.  Revalidate only the
+            # sealed projected credential identity; this deliberately makes no
+            # claim that the provider has accepted a login.
+            provider_authority.projected_auth_proof()
+            # 1.1.13's stream-json is the only supported production authority;
+            # text stdout is diagnostic-only and cannot satisfy the reducer.
+            cmd[1:1] = ["--output-format", "stream-json"]
+            cmd = _capture_provider_preflight(
+                provider_authority, cmd, quiescence_latch,
+            )
+            env = provider_authority.outer_environment()
         # #114: retry ONCE on a transient agy stall, mirroring the codex leg. The
         # single ``subprocess.run`` gave the gemini leg NO retry, so one transient
         # backend stall ("Error: timeout waiting for response", 0-byte) permanently
@@ -3300,8 +3785,16 @@ def _exec_leg(
         # would ~double wall-clock — the full-concurrent-path hang).
         rc, review_text, log_text = 1, "", ""
         for _attempt in range(2):
+            if quiescence_latch is not None:
+                quiescence_latch.raise_if_set()
             _t0 = time.monotonic()
             try:
+                if agy_capture is not None:
+                    _record_capture_review_attempt(
+                        provider_authority, cmd,
+                        attempt_id=f"gemini-{_attempt + 1}",
+                        quiescence_latch=quiescence_latch,
+                    )
                 # agy streams its review to STDOUT; the liveness heartbeat rides stdout
                 # (with a secondary CPU reset covering the ~20s silent "thinking" phase).
                 # Prompt is inline on argv (see the gemini cmd BUGFIX) — no stdin.
@@ -3310,13 +3803,60 @@ def _exec_leg(
                     cwd=review_dir,
                     env=env,
                     deadline_s=deadline_s,
+                    quiescence_latch=quiescence_latch,
                 )
-            except subprocess.TimeoutExpired:
+            except subprocess.TimeoutExpired as exc:
+                if quiescence_latch is not None:
+                    quiescence_latch.raise_if_set()
+                if agy_capture is not None:
+                    if not seat_key or capture_staged is None:
+                        raise AgyCanaryEvidenceError(
+                            "capture-enabled Gemini timeout is missing sealed stage or seat"
+                        )
+                    timeout_stdout = getattr(exc, "stdout", None)
+                    if timeout_stdout is None:
+                        timeout_stdout = getattr(exc, "output", None)
+                    timeout_stderr = getattr(exc, "stderr", None)
+                    if isinstance(timeout_stdout, bytes):
+                        timeout_stdout = timeout_stdout.decode(
+                            "utf-8", errors="replace"
+                        )
+                    if isinstance(timeout_stderr, bytes):
+                        timeout_stderr = timeout_stderr.decode(
+                            "utf-8", errors="replace"
+                        )
+                    _capture_mutation(
+                        quiescence_latch,
+                        lambda: record_launch(
+                            capture=agy_capture, seat_key=seat_key,
+                            attempt_id=f"gemini-{_attempt + 1}", argv=cmd,
+                            returncode=124, stdout=str(timeout_stdout or ""),
+                            stderr=str(timeout_stderr or ""), staged=capture_staged,
+                        ),
+                    )
                 return 124, "", f"timeout after {deadline_s}s"
+            if quiescence_latch is not None:
+                quiescence_latch.raise_if_set()
             _elapsed = time.monotonic() - _t0
-            review_text = proc.stdout or ""
+            raw_stream = proc.stdout or ""
+            review_text = raw_stream
             rc = proc.returncode
             log_text = proc.stderr or ""
+            if agy_capture is not None:
+                if not seat_key or capture_staged is None:
+                    raise AgyCanaryEvidenceError("capture-enabled Gemini launch is missing sealed stage or seat")
+                _capture_mutation(
+                    quiescence_latch,
+                    lambda: record_launch(
+                        capture=agy_capture, seat_key=seat_key,
+                        attempt_id=f"gemini-{_attempt + 1}", argv=cmd,
+                        returncode=rc, stdout=raw_stream, stderr=log_text,
+                        staged=capture_staged,
+                    ),
+                )
+                from .agy_canary_evidence import _parse_stream
+                _session, _calls, terminal = _parse_stream(raw_stream.encode())
+                review_text = str(terminal["text"])
             # HEADLESS TOOL-DENIAL: rc==0 + empty body + the CLI's own auto-denied
             # marker. Retrying reproduces it exactly, and reporting it as an anonymous
             # EMPTY is what let this hide for a whole milestone. Return a NON-ZERO rc
@@ -3350,7 +3890,17 @@ def _exec_leg(
                 break  # real output OR hard non-transient error → stop (never hammer)
             if _elapsed >= (timeout_s + 60) * _LEG_RETRY_ELAPSED_FRACTION:
                 break  # slow stall (not fast/transient) → don't re-run + double wall-clock
-        out_file.write_text(review_text, encoding="utf-8")
+        if agy_capture is not None:
+            output_bytes = review_text.encode("utf-8")
+            written = _capture_mutation(
+                quiescence_latch,
+                lambda: provider_authority.write_expected_output(
+                    out_file.name, output_bytes,
+                ),
+            )
+            review_text = written.decode("utf-8", errors="replace")
+        else:
+            out_file.write_text(review_text, encoding="utf-8")
         return rc, review_text, log_text
     if leg == "grok":
         out_file = out_dir / "panel-grok.txt"
@@ -3394,14 +3944,33 @@ def _exec_leg(
             "--tools",
             grok_tools,
         ]
+        if agy_capture is not None:
+            if provider_authority is None:
+                raise AgyCanaryEvidenceError("capture-enabled Grok launch has no prepared namespace")
+            # Grok exposes login/logout but no safe non-request status command.
+            # The sealed projection is integrity evidence, never a login claim.
+            provider_authority.projected_auth_proof()
+            cmd[cmd.index(str(review_dir))] = "/run/phase-loop-review"
+            cmd[1:1] = ["--disable-web-search", "--no-memory", "--no-subagents"]
+            cmd = _capture_provider_preflight(
+                provider_authority, cmd, quiescence_latch,
+            )
+            env = provider_authority.outer_environment()
         # Retry ONCE on a transient stall, mirroring codex/gemini: a rc==0 empty turn
         # OR a transient-marker body, but NOT a hard subprocess timeout (124) and NOT
         # an attempt that already burned most of its budget (a slow leg, not a
         # transient stall — re-running would ~double wall-clock).
         rc, review_text, log_text = 1, "", ""
         for _attempt in range(2):
+            if quiescence_latch is not None:
+                quiescence_latch.raise_if_set()
             _t0 = time.monotonic()
             try:
+                if agy_capture is not None:
+                    _record_capture_review_attempt(
+                        provider_authority, cmd,
+                        quiescence_latch=quiescence_latch,
+                    )
                 # grok streams its plain review to STDOUT; heartbeat rides stdout.
                 # Prompt is inline on argv (-p) — no stdin.
                 proc = _run_leg_with_liveness(
@@ -3409,9 +3978,12 @@ def _exec_leg(
                     cwd=review_dir,
                     env=env,
                     deadline_s=deadline_s,
+                    quiescence_latch=quiescence_latch,
                 )
             except subprocess.TimeoutExpired:
                 return 124, "", f"timeout after {deadline_s}s"
+            if quiescence_latch is not None:
+                quiescence_latch.raise_if_set()
             _elapsed = time.monotonic() - _t0
             review_text = proc.stdout or ""
             rc = proc.returncode
@@ -3428,7 +4000,17 @@ def _exec_leg(
                 break
             if _elapsed >= (timeout_s + 60) * _LEG_RETRY_ELAPSED_FRACTION:
                 break
-        out_file.write_text(review_text, encoding="utf-8")
+        if agy_capture is not None:
+            output_bytes = review_text.encode("utf-8")
+            written = _capture_mutation(
+                quiescence_latch,
+                lambda: provider_authority.write_expected_output(
+                    out_file.name, output_bytes,
+                ),
+            )
+            review_text = written.decode("utf-8", errors="replace")
+        else:
+            out_file.write_text(review_text, encoding="utf-8")
         return rc, review_text, log_text
     # claude uses the TUI-backed subscription route, handled by `_exec_claude_tui_leg`.
     return 0, "", "unavailable"
@@ -3447,6 +4029,12 @@ def _default_spawn(
     timeout_s: int | None = None,
     research_seat: ResearchSeatConfig | None = None,
     brief_append: str | None = None,
+    agy_capture: AgyCanaryCapture | None = None,
+    seat_key: str | None = None,
+    provider_authority: ProviderLaunchAuthority | None = None,
+    capture_stage: Path | None = None,
+    capture_scratch: Path | None = None,
+    quiescence_latch: _ProviderQuiescenceLatch | None = None,
 ) -> tuple[str, str]:
     """Real-exec boundary: spawn a subscription CLI leg over the staged bundle.
 
@@ -3466,22 +4054,48 @@ def _default_spawn(
     byte (the golden keystone); an explicit value BOUNDS a slow/stalled leg so it
     fails its own leg instead of hanging the whole panel.
     """
+    if quiescence_latch is not None:
+        quiescence_latch.raise_if_set()
     # Best-effort reclaim of crash-residual scratch dirs (never affects this run).
     _gc_stale_panel_scratch()
-    base = Path(tempfile.mkdtemp(prefix="pl-panel-"))
+    if agy_capture is not None and (provider_authority is None or capture_stage is None):
+        raise AgyCanaryEvidenceError("capture launch requires a pre-frozen provider authority")
+    base = Path(tempfile.mkdtemp(prefix="pl-panel-")) if capture_stage is None else None
     resolved_repo_dir = Path(repo_dir).resolve() if repo_dir is not None else Path.cwd()
-    review_dir = base / "review"
-    out_dir = base / "out"
-    review_dir.mkdir()
-    out_dir.mkdir()
+    review_dir = capture_stage if capture_stage is not None else base / "review"
+    out_dir = provider_authority.namespace.provider_output if provider_authority is not None else base / "out"
+    if capture_stage is None:
+        review_dir.mkdir()
+        out_dir.mkdir()
+    provider_output_dir: Path | None = out_dir if provider_authority is not None else None
     try:
-        (review_dir / "review-bundle.md").write_text(artifact, encoding="utf-8")
-        resolved_brief = _resolve_brief(mode, brief_ref)
-        if brief_append is not None:
-            resolved_brief += brief_append
-        (review_dir / "review-instructions.md").write_text(
-            resolved_brief, encoding="utf-8"
-        )
+        if quiescence_latch is not None:
+            quiescence_latch.raise_if_set()
+        if capture_stage is None:
+            (review_dir / "review-bundle.md").write_text(artifact, encoding="utf-8")
+            resolved_brief = _resolve_brief(mode, brief_ref)
+            if brief_append is not None:
+                resolved_brief += brief_append
+            (review_dir / "review-instructions.md").write_text(
+                resolved_brief, encoding="utf-8"
+            )
+        capture_staged: dict[str, dict[str, object]] | None = None
+        if agy_capture is not None:
+            if leg == "gemini" and not seat_key:
+                raise AgyCanaryEvidenceError(
+                    "capture-enabled Gemini launch is missing its singleton seat"
+                )
+
+            def stage_mutation() -> dict[str, dict[str, object]] | None:
+                for staged_name in ("review-bundle.md", "review-instructions.md"):
+                    (review_dir / staged_name).chmod(0o600)
+                if leg == "gemini":
+                    return retain_staged_files(
+                        capture=agy_capture, review_dir=review_dir,
+                    )
+                return None
+
+            capture_staged = _capture_mutation(quiescence_latch, stage_mutation)
         # ``timeout_s is None`` ⇒ today's input-scaled timeout (golden-neutral); an
         # explicit override bounds the leg. This is the ONE place that knows whether the
         # override was explicit, so resolve BOTH the retry reference and the hard deadline
@@ -3498,8 +4112,15 @@ def _default_spawn(
             extra["env"] = env
         if research_seat is not None:
             extra["research_seat"] = research_seat
+        if agy_capture is not None:
+            extra["agy_capture"] = agy_capture
+            extra["provider_authority"] = provider_authority
+        if quiescence_latch is not None:
+            extra["quiescence_latch"] = quiescence_latch
         if leg == "claude":
-            return _exec_claude_tui_leg(
+            if quiescence_latch is not None:
+                quiescence_latch.raise_if_set()
+            result = _exec_claude_tui_leg(
                 review_dir,
                 out_dir,
                 leg_timeout,
@@ -3510,6 +4131,11 @@ def _default_spawn(
                 backstop_s=leg_deadline,
                 **extra,
             )
+            if quiescence_latch is not None:
+                quiescence_latch.raise_if_set()
+            return result
+        if quiescence_latch is not None:
+            quiescence_latch.raise_if_set()
         rc, review_text, log_text = _exec_leg(
             leg,
             review_dir,
@@ -3519,8 +4145,15 @@ def _default_spawn(
             mode,
             model,
             deadline_s=leg_deadline,
+            **(
+                {"capture_staged": capture_staged, "seat_key": seat_key}
+                if capture_staged is not None
+                else {}
+            ),
             **extra,
         )
+        if quiescence_latch is not None:
+            quiescence_latch.raise_if_set()
         status = _classify_leg(rc, review_text, log_text, mode)
         # DIAGNOSTIC PROPAGATION. `_exec_leg` reports WHY a leg failed in `log_text`, and
         # this boundary used to drop it — so a headless tool-denial reached the operator
@@ -3538,10 +4171,17 @@ def _default_spawn(
         if status != "OK" and not str(review_text).strip() and str(log_text).strip():
             return status, review_text, str(log_text).strip()[:2000]
         return status, review_text
+    except ProviderProcessGroupQuiescenceError:
+        raise
     except Exception as exc:  # fail-closed
         return "DEGRADED", str(exc)[:200]
     finally:
-        shutil.rmtree(base, ignore_errors=True)
+        if provider_output_dir is not None and agy_capture is None:
+            shutil.rmtree(provider_output_dir, ignore_errors=True)
+        if base is not None:
+            shutil.rmtree(base, ignore_errors=True)
+        if capture_scratch is not None and agy_capture is None:
+            shutil.rmtree(capture_scratch, ignore_errors=True)
 
 
 # CS-0.8: routes the `_default_spawn` real-exec boundary through the
@@ -3566,6 +4206,12 @@ def _default_spawn_via_provider(
     timeout_s: int | None = None,
     research_seat: ResearchSeatConfig | None = None,
     brief_append: str | None = None,
+    agy_capture: AgyCanaryCapture | None = None,
+    seat_key: str | None = None,
+    provider_authority: ProviderLaunchAuthority | None = None,
+    capture_stage: Path | None = None,
+    capture_scratch: Path | None = None,
+    quiescence_latch: _ProviderQuiescenceLatch | None = None,
 ) -> tuple[str, str] | tuple[str, str, str]:
     # ABDHOME: forward effort/env ONLY when set so the legacy (effort/env-absent)
     # path calls ``_default_spawn`` with its exact frozen signature
@@ -3585,6 +4231,15 @@ def _default_spawn_via_provider(
         extra["research_seat"] = research_seat
     if brief_append is not None:
         extra["brief_append"] = brief_append
+    if agy_capture is not None:
+        extra["agy_capture"] = agy_capture
+        extra["seat_key"] = seat_key
+        extra["provider_authority"] = provider_authority
+        extra["capture_stage"] = capture_stage
+        extra["capture_scratch"] = capture_scratch
+    if quiescence_latch is not None:
+        quiescence_latch.raise_if_set()
+        extra["quiescence_latch"] = quiescence_latch
     # The provider seam's `send_turn` unpacks a 2-TUPLE (agent_runtime_provider.py).
     # `_default_spawn` may return a 3-tuple carrying a failure DIAGNOSTIC, so hand the
     # seam the 2-tuple it expects and carry the diagnostic around it in a closure cell.
@@ -3593,11 +4248,25 @@ def _default_spawn_via_provider(
     # `governed_review._findings_from_panel` reads as a nonconforming review and turns
     # into a promotion BLOCK for every routine timeout, while the real diagnostic is lost.
     _diagnostic: list[str | None] = [None]
+    _quiescence_error: list[ProviderProcessGroupQuiescenceError | None] = [None]
 
     def _spawn_2tuple(request, register_process=None):
-        spawned = _default_spawn(
-            leg, artifact, repo_dir=repo_dir, mode=mode, model=model, **extra
-        )
+        if quiescence_latch is not None:
+            quiescence_latch.raise_if_set()
+        try:
+            spawned = _default_spawn(
+                leg, artifact, repo_dir=repo_dir, mode=mode, model=model, **extra
+            )
+        except ProviderProcessGroupQuiescenceError as exc:
+            # HomebrewAgentRuntimeProvider deliberately turns ordinary spawn
+            # exceptions into failed turns.  Process-group quiescence is not an
+            # ordinary provider result: retain it out-of-band and re-raise below.
+            _quiescence_error[0] = (
+                quiescence_latch.trip(exc)
+                if quiescence_latch is not None
+                else exc
+            )
+            raise
         if isinstance(spawned, tuple) and len(spawned) == 3:
             status_, text_, _diagnostic[0] = spawned
             return status_, text_
@@ -3609,11 +4278,17 @@ def _default_spawn_via_provider(
             target_harness=leg, idempotency_key=f"panel-{leg}", title=f"panel-leg-{leg}"
         )
     )
+    if quiescence_latch is not None:
+        quiescence_latch.raise_if_set()
     provider.send_turn(
         SendTurnRequest(
             session_id=session.id, idempotency_key=f"panel-{leg}-turn", message=artifact
         )
     )
+    if _quiescence_error[0] is not None:
+        raise _quiescence_error[0]
+    if quiescence_latch is not None:
+        quiescence_latch.raise_if_set()
     status, text = "DEGRADED", ""
     for event in provider.read_history(session.id).events:
         if event.type == "runtime.text.delta":
@@ -3678,6 +4353,7 @@ def _run_legs_ordered(
     max_concurrency: int | None = None,
     on_leg_complete: "Callable[[PanelLegResult], None] | None" = None,
     review_dir: "Path | None" = None,
+    fatal_latch: _ProviderQuiescenceLatch | None = None,
 ) -> list[PanelLegResult]:
     """Run ``run_one`` for every item CONCURRENTLY, returning results in ITEM ORDER.
 
@@ -3700,10 +4376,10 @@ def _run_legs_ordered(
       which leg finishes first (futures are submitted in order and read back by
       index). The resolver re-keys results by position and the golden proof asserts
       order + content, so this is load-bearing.
-    * **Fail-closed per item** — ``run_one`` is itself required to be fail-closed
-      (turn any exception into a DEGRADED ``PanelLegResult``), so a future's
-      ``.result()`` never raises and one broken leg can never crash the pool or the
-      board. Concurrency changes *timing only*, never a leg's outcome.
+    * **Fail-closed per item** — ``run_one`` turns ordinary provider exceptions into
+      a DEGRADED ``PanelLegResult``.  The sole exception is an unproven provider
+      process-group quiescence authority, which must cross the worker boundary and
+      abort before capture-result sealing or private-root cleanup.
     * **Parallel is the default; sequential is opt-in** — ``max_concurrency`` bounds
       the pool: ``None`` (default) fans out up to ``_PANEL_MAX_WORKERS``; ``1`` forces
       sequential (the escape hatch for debugging / rate-limits / a constrained host);
@@ -3732,28 +4408,58 @@ def _run_legs_ordered(
     streaming = on_leg_complete is not None or review_dir is not None
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = [pool.submit(run_one, item) for item in seq]
+
+        def _cancel_and_raise(
+            error: ProviderProcessGroupQuiescenceError,
+        ) -> None:
+            primary = fatal_latch.trip(error) if fatal_latch is not None else error
+            for pending in futures:
+                pending.cancel()
+            raise primary
+
         if not streaming:
             # DEFAULT PATH — byte-identical: block in submission order, return in order.
-            return [future.result() for future in futures]
+            ordered: list[PanelLegResult] = []
+            try:
+                for future in futures:
+                    ordered.append(future.result())
+            except ProviderProcessGroupQuiescenceError as exc:
+                _cancel_and_raise(exc)
+            return ordered
         # STREAMING PATH — deliver each leg as it LANDS (out of order), then re-sort
         # the consolidated return to submission order.
         index_of = {future: i for i, future in enumerate(futures)}
         results: list[PanelLegResult | None] = [None] * len(seq)
         for future in as_completed(futures):
             i = index_of[future]
-            result = future.result()  # run_one is fail-closed ⇒ never raises
+            try:
+                result = future.result()
+            except ProviderProcessGroupQuiescenceError as exc:
+                _cancel_and_raise(exc)
             results[i] = result
             if review_dir is not None:
-                _write_incremental_verdict(review_dir, i, result)
-            if on_leg_complete is not None:
                 try:
-                    on_leg_complete(result)
-                except Exception:  # fail-open: a raising callback never breaks the pool
-                    logging.getLogger(__name__).warning(
-                        "on_leg_complete callback raised for leg %s",
-                        result.leg,
-                        exc_info=True,
+                    _capture_mutation(
+                        fatal_latch,
+                        lambda: _write_incremental_verdict(review_dir, i, result),
                     )
+                except ProviderProcessGroupQuiescenceError as exc:
+                    _cancel_and_raise(exc)
+            if on_leg_complete is not None:
+                def publish_callback() -> None:
+                    try:
+                        on_leg_complete(result)
+                    except Exception:  # fail-open callback never breaks the pool
+                        logging.getLogger(__name__).warning(
+                            "on_leg_complete callback raised for leg %s",
+                            result.leg,
+                            exc_info=True,
+                        )
+
+                try:
+                    _capture_mutation(fatal_latch, publish_callback)
+                except ProviderProcessGroupQuiescenceError as exc:
+                    _cancel_and_raise(exc)
         # Every future produced a result (run_one is fail-closed). Fail LOUD if a
         # slot stayed None rather than silently shrinking the list — a length change
         # would break the positional ``result[i] ↔ items[i]`` contract worse than a
@@ -3912,6 +4618,8 @@ def invoke_panel(
                     status, text, spawn_detail = spawned
                 else:
                     status, text = spawned
+            except ProviderProcessGroupQuiescenceError:
+                raise
             except Exception as exc:
                 result = PanelLegResult(
                     leg=leg,
@@ -3965,11 +4673,12 @@ def invoke_panel(
         runner = spawn
 
     def _run_leg(leg: str) -> PanelLegResult:
-        # Fail-closed: a broken leg degrades, never crashes the gate (so the pool's
-        # future.result() never raises). This is the exact per-leg body as before —
-        # only the surrounding loop is now a concurrent, order-preserving fan-out.
+        # Ordinary broken legs degrade without crashing the gate.  Unproven
+        # process-group quiescence remains fatal across the worker boundary.
         try:
             spawned = runner(leg, artifact)
+        except ProviderProcessGroupQuiescenceError:
+            raise
         except Exception as exc:
             return PanelLegResult(
                 leg=leg, status="DEGRADED", text="", detail=str(exc)[:200]
@@ -4196,6 +4905,7 @@ def invoke_board(
     on_leg_complete: "Callable[[PanelLegResult], None] | None" = None,
     stream_dir: Path | str | None = None,
     research_policy: ResearchPolicy | None = None,
+    agy_canary_capture: AgyCanaryCapture | None = None,
     landing_tier: ReviewLandingTier | str | None = None,
     review_policy: ReviewLandingPolicy | None = None,
     review_seat_aliases: Mapping[str, str] | None = None,
@@ -4325,7 +5035,21 @@ def invoke_board(
     # Reject an inexpressible seat (unknown model / cross-vendor pairing / over-
     # ceiling effort) and resolve bare-seat lanes BEFORE spawning — the config-time
     # invariant extended to the ad-hoc / seam path (raises SeatValidationError).
-    board = _resolve_and_validate_board(board, matrix or default_matrix(env=base_env))
+    validation_matrix = (
+        # Capture validates only frozen model/harness metadata.  The static probe
+        # supplies compatibility-lane availability without consulting ambient
+        # PATH, auth, environment keys, or the process-running registry.
+        default_matrix(env={}, probe=_LEG_CLI.__contains__)
+        if agy_canary_capture is not None
+        else (matrix or default_matrix(env=base_env))
+    )
+    board = _resolve_and_validate_board(board, validation_matrix)
+    gemini_seats = [seat for seat in board.seats if (seat.harness or "").lower() == "gemini"]
+    if agy_canary_capture is not None:
+        if spawn is not None:
+            raise ValueError("capture-enabled board requires the production Gemini spawn path")
+        if len(gemini_seats) != 1:
+            raise ValueError("capture-enabled board requires exactly one resolved Gemini seat")
     host_seat = enforce_native_host_leg(board, host)
     env_source: Mapping[str, str] = os.environ if base_env is None else base_env
     research_run: ResearchRunConfig | None = None
@@ -4339,6 +5063,79 @@ def invoke_board(
             )
         except ResearchUnavailable as exc:
             research_unavailable_detail = f"research_profile_unavailable:{exc}"
+
+    # Capture launches are fully materialized before the thread pool starts.  A
+    # Gemini-ledger mutation therefore cannot invalidate a later Codex/Claude/Grok
+    # sibling after an earlier thread has begun execution.
+    capture_launches: dict[
+        str, tuple[ProviderLaunchAuthority, Path, Path, _OwnedCleanupRoot]
+    ] = {}
+    capture_scratches: list[_OwnedCleanupRoot] = []
+    capture_seats: list[Seat] = []
+    capture_quiescence = _ProviderQuiescenceLatch()
+
+    def _cleanup_capture_resources() -> None:
+        _cleanup_capture_launches(capture_launches, capture_scratches)
+
+    if agy_canary_capture is not None:
+        if effective_research.enabled:
+            raise ValueError("capture-enabled board does not permit research seats")
+        capture_seats = [
+            seat for seat in board.seats
+            if (seat.harness or "").lower() in _LEG_CLI
+        ]
+        if len(capture_seats) != len(board.seats):
+            raise ValueError("capture-enabled board requires a provider authority for every seat")
+        providers = [(seat.harness or "").lower() for seat in capture_seats]
+        keys = [str(seat.seat_key) for seat in capture_seats]
+        if len(providers) != len(set(providers)) or len(keys) != len(set(keys)):
+            raise ValueError("capture-enabled board requires unique provider and seat identities")
+        bundle_bytes = artifact.encode("utf-8")
+        instruction_bytes = _resolve_brief(mode, brief_ref).encode("utf-8")
+        for index, (seat, provider) in enumerate(zip(capture_seats, providers)):
+            scratch, scratch_cleanup = _create_owned_cleanup_root(
+                kind="scratch",
+            )
+            capture_scratches.append(scratch_cleanup)
+            try:
+                stage = scratch / "review"
+                stage.mkdir(mode=0o700)
+                (stage / "review-bundle.md").write_bytes(bundle_bytes)
+                (stage / "review-instructions.md").write_bytes(instruction_bytes)
+                for name in ("review-bundle.md", "review-instructions.md"):
+                    (stage / name).chmod(0o600)
+                if index == 0:
+                    bind_staged_review_inputs(
+                        capture=agy_canary_capture,
+                        review_dir=stage,
+                        bundle_bytes=bundle_bytes,
+                        instruction_bytes=instruction_bytes,
+                        generator_identity="phase_loop_runtime.panel_invoker._resolve_brief.v1",
+                    )
+                authority = prepare_provider_launch_authorities(
+                    capture=agy_canary_capture, stage=stage, providers=(provider,)
+                )[provider]
+            except Exception:
+                _cleanup_capture_resources()
+                raise
+            capture_launches[str(seat.seat_key)] = (
+                authority, stage, scratch, scratch_cleanup,
+            )
+        try:
+            seal_provider_launches(
+                capture=agy_canary_capture,
+                launches=tuple(
+                    (
+                        provider,
+                        str(seat.seat_key),
+                        capture_launches[str(seat.seat_key)][0],
+                    )
+                    for seat, provider in zip(capture_seats, providers, strict=True)
+                ),
+            )
+        except Exception:
+            _cleanup_capture_resources()
+            raise
 
     def _skip(seat: Seat, leg: str, detail: str) -> PanelLegResult:
         return PanelLegResult(
@@ -4356,14 +5153,16 @@ def invoke_board(
         # The full per-seat body — backing decision → skip / omnigent / homebrew →
         # render + resolve_seat_env → spawn → normalize — runs INSIDE the pool task,
         # so both the skip decisions and the spawn happen concurrently per seat. It
-        # is fail-closed (every path returns a PanelLegResult, never raises), so the
-        # future's .result() never raises and one broken seat can't crash the board.
+        # is fail-closed for ordinary provider failures.  An unproven provider
+        # process-group quiescence authority is fatal: it crosses the worker
+        # boundary and prevents capture-result sealing and private-root cleanup.
         # The shared reads it closes over — gateway_available, omnigent_catalog,
         # env_source, board, matrix (already resolved) — are read-only; the single
         # gateway-catalog fetch already happened ABOVE, once, before the pool.
         #
         # Seats are lane-concrete after _resolve_and_validate_board, so a bare seat
         # runs on its default lane instead of skipping on an empty ('') lane.
+        capture_quiescence.raise_if_set()
         if effective_research.enabled:
             index, seat = cast("tuple[int, Seat]", item)
         else:
@@ -4456,6 +5255,7 @@ def invoke_board(
                 seat_key=seat.seat_key,
             )
         try:
+            capture_quiescence.raise_if_set()
             if spawn is not None:
                 spawned = spawn(leg, artifact)
             else:
@@ -4468,6 +5268,20 @@ def invoke_board(
                     research_extra["brief_append"] = research_instructions(
                         research_seat
                     )
+                if agy_canary_capture is not None:
+                    research_extra["agy_capture"] = agy_canary_capture
+                    research_extra["seat_key"] = seat.seat_key
+                    try:
+                        authority, stage, scratch, _scratch_cleanup = capture_launches[
+                            str(seat.seat_key)
+                        ]
+                    except KeyError as exc:
+                        raise AgyCanaryEvidenceError("capture seat has no frozen authority") from exc
+                    research_extra["provider_authority"] = authority
+                    research_extra["capture_stage"] = stage
+                    research_extra["capture_scratch"] = scratch
+                    research_extra["quiescence_latch"] = capture_quiescence
+                capture_quiescence.raise_if_set()
                 spawned = _default_spawn_via_provider(
                     leg,
                     artifact,
@@ -4480,6 +5294,7 @@ def invoke_board(
                     timeout_s=leg_timeouts.get(leg),
                     **research_extra,
                 )
+            capture_quiescence.raise_if_set()
             # 2-or-3 tuple, same contract as `_run_leg`: a 3-tuple carries a failure
             # DIAGNOSTIC bound for `detail`, never `text` (a diagnostic in text is read
             # by the governed classifier as a nonconforming review and BLOCKS promotion).
@@ -4488,6 +5303,11 @@ def invoke_board(
                 status, text, seat_detail = spawned
             else:
                 status, text = spawned
+        except ProviderProcessGroupQuiescenceError as exc:
+            primary = capture_quiescence.trip(exc)
+            if primary is exc:
+                raise
+            raise primary
         except Exception as exc:  # fail-closed: a broken seat degrades, never crashes
             result = PanelLegResult(
                 leg=leg,
@@ -4590,7 +5410,29 @@ def invoke_board(
             max_concurrency=max_concurrency,
             on_leg_complete=on_leg_complete,
             review_dir=Path(stream_dir) if stream_dir is not None else None,
+            fatal_latch=(
+                capture_quiescence if agy_canary_capture is not None else None
+            ),
         )
+        if agy_canary_capture is not None:
+            if len(results) != len(capture_seats):
+                raise AgyCanaryEvidenceError("capture provider result set is incomplete")
+            for seat, result in zip(capture_seats, results, strict=True):
+                provider = (seat.harness or "").lower()
+                if (result.leg != provider or str(result.seat_key) != str(seat.seat_key)):
+                    raise AgyCanaryEvidenceError("capture provider result identity drifted")
+                authority, _stage, _scratch, _scratch_cleanup = capture_launches[
+                    str(seat.seat_key)
+                ]
+                record_provider_result(
+                    capture=agy_canary_capture,
+                    provider=provider,
+                    seat_key=str(seat.seat_key),
+                    authority=authority,
+                    status=result.status,
+                    text=result.text,
+                    detail=result.detail,
+                )
         # Observability emit is a SEPARATE pass over the (unchanged) run results, in
         # seat order — 1 result per seat — so the run control-flow above is untouched
         # (byte-neutral) and best-effort forwarding stays off the leg's spawn path.
@@ -4599,7 +5441,13 @@ def invoke_board(
                 observer.seat_started(seat)
                 observer.seat_result(seat, result)
             observer.board_completed(results)
-        return PanelResult(legs=tuple(results))
+        panel_result = PanelResult(legs=tuple(results))
+        if agy_canary_capture is not None:
+            object.__setattr__(panel_result, "_agy_canary_capture", capture_summary(agy_canary_capture))
+        return panel_result
     finally:
         if research_run is not None:
             research_run.close()
+        if (agy_canary_capture is not None and
+                not capture_quiescence.is_set()):
+            _cleanup_capture_resources()

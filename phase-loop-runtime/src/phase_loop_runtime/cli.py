@@ -381,6 +381,44 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicitly bypass the cross-phase dirty start gate. Requires a non-empty operator reason.",
     )
     subparsers = parser.add_subparsers(dest="command")
+    agy_clean_sub = subparsers.add_parser("agy-canary-clean-settings")
+    agy_clean_sub.add_argument("--evidence-root", required=True)
+    agy_clean_sub.add_argument("--settings-path", required=True)
+    agy_clean_sub.add_argument("--maintenance-lock", required=True)
+    agy_probe_sub = subparsers.add_parser("agy-canary-probe")
+    agy_probe_sub.add_argument("--evidence-root", required=True)
+    agy_probe_sub.add_argument("--agy-executable", default="agy")
+    agy_probe_sub.add_argument("--stage", help="Private staged review directory for the attended probe.")
+    agy_probe_sub.add_argument("--settings-path", help="Already-cleaned settings source used to derive the minimal HOME.")
+    agy_probe_sub.add_argument("--auth-bind", action="append", default=[], help="Explicit read-only authentication source for the attended probe.")
+    agy_probe_sub.add_argument("--provider-host", default="antigravity.google")
+    agy_attest_sub = subparsers.add_parser("agy-canary-bootstrap-attest")
+    agy_attest_sub.add_argument("--evidence-root", required=True)
+    agy_attest_sub.add_argument("--dotfiles-repo", required=True)
+    agy_attest_sub.add_argument("--plan", required=True, help="Canonical target plan path relative to the clean dotfiles checkout.")
+    agy_prepare_sub = subparsers.add_parser("agy-canary-prepare")
+    agy_prepare_sub.add_argument("--evidence-root", required=True)
+    agy_prepare_sub.add_argument("--settings-path", required=True)
+    agy_prepare_sub.add_argument("--seat-key", required=True)
+    agy_prepare_sub.add_argument("--auth-bind", action="append", default=[])
+    agy_prepare_sub.add_argument("--agent-harness-repo", required=True)
+    agy_prepare_sub.add_argument("--handoff-commit", required=True)
+    agy_prepare_sub.add_argument("--customization-home", required=True)
+    agy_prepare_sub.add_argument("--project-dir", required=True)
+    agy_verify_sub = subparsers.add_parser("agy-canary-verify")
+    agy_verify_sub.add_argument("--evidence-root", required=True)
+    agy_verify_sub.add_argument("--seat-key", required=True)
+    agy_finalize_sub = subparsers.add_parser("agy-canary-finalize")
+    agy_finalize_sub.add_argument("--evidence-root", required=True)
+    agy_finalize_sub.add_argument("--seat-key", required=True)
+    agy_finalize_sub.add_argument("--check-private-final", action="store_true")
+    agy_finalize_sub.add_argument("--dotfiles-repo")
+    agy_finalize_sub.add_argument("--plan")
+    agy_finalize_sub.add_argument("--manifest")
+    agy_finalize_sub.add_argument("--plan-slug")
+    agy_finalize_sub.add_argument("--check-committed", help="Read-only reverse validation against an immutable dotfiles commit.")
+    agy_finalize_sub.add_argument("--agent-harness-repo")
+    agy_finalize_sub.add_argument("--handoff-commit")
     # DECOUPLE SL-1: the dotfiles-domain commands (adoption-bundle, sync-skills,
     # build-bundle, hotfix) are NOT in this loop. They are registered only by the
     # dotfiles-profile plugin (see _register_profile_commands below), so the
@@ -966,6 +1004,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to the review material staged into the board bundle.",
     )
     advisor_board_sub.add_argument("--json", action="store_true", help="Emit the board verdicts as JSON.", default=argparse.SUPPRESS)  # ah#84
+    advisor_board_sub.add_argument(
+        "--agy-canary-private-board-name",
+        help="Capture-only basename for the full board JSON inside the private evidence root.",
+    )
     for name in ("task-message-probe", "task-message-resolve"):
         task_message_sub = subparsers.add_parser(
             name,
@@ -1012,6 +1054,98 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     command = args.command or ("dry-run" if args.dry_run else "run")
+    if command == "agy-canary-clean-settings":
+        from .agy_canary_evidence import AgyCanaryEvidenceError, clean_settings
+
+        try:
+            result = clean_settings(
+                evidence_root=Path(args.evidence_root),
+                settings_path=Path(args.settings_path),
+                maintenance_lock=Path(args.maintenance_lock),
+            )
+        except AgyCanaryEvidenceError as exc:
+            print(f"phase-loop agy-canary-clean-settings: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(result, sort_keys=True))
+        return 0
+    if command in {
+        "agy-canary-probe",
+        "agy-canary-bootstrap-attest",
+        "agy-canary-prepare",
+        "agy-canary-verify",
+        "agy-canary-finalize",
+    }:
+        from .agy_canary_evidence import (
+            AgyCanaryEvidenceError,
+            bootstrap_attest,
+            finalize_canary,
+            prepare_canary,
+            probe_capability,
+            verify_capture,
+        )
+
+        try:
+            if command == "agy-canary-probe":
+                namespace = None
+                if args.stage or args.settings_path:
+                    if not args.stage or not args.settings_path:
+                        raise AgyCanaryEvidenceError("--stage and --settings-path must be supplied together")
+                    from .agy_canary_evidence import build_probe_namespace
+                    namespace = build_probe_namespace(
+                        evidence_root=Path(args.evidence_root), stage=Path(args.stage),
+                        settings_path=Path(args.settings_path),
+                        auth_paths=tuple(Path(path) for path in args.auth_bind),
+                        provider_hostname=args.provider_host,
+                    )
+                result = probe_capability(
+                    evidence_root=Path(args.evidence_root), agy_executable=args.agy_executable,
+                    namespace=namespace,
+                )
+            elif command == "agy-canary-bootstrap-attest":
+                result = bootstrap_attest(
+                    evidence_root=Path(args.evidence_root), dotfiles_repo=Path(args.dotfiles_repo),
+                    plan_path=Path(args.plan),
+                )
+            elif command == "agy-canary-prepare":
+                result = prepare_canary(
+                    evidence_root=Path(args.evidence_root),
+                    settings_path=Path(args.settings_path),
+                    seat_key=args.seat_key,
+                    auth_paths=tuple(Path(path) for path in args.auth_bind),
+                    agent_harness_repo=Path(args.agent_harness_repo),
+                    handoff_commit=args.handoff_commit,
+                    customization_home=Path(args.customization_home),
+                    project_dir=Path(args.project_dir),
+                )
+            elif command == "agy-canary-verify":
+                result = verify_capture(
+                    evidence_root=Path(args.evidence_root), expected_seat_key=args.seat_key
+                )
+            else:
+                if args.check_committed:
+                    if not args.dotfiles_repo or not args.plan or not args.manifest or not args.plan_slug or not args.agent_harness_repo or not args.handoff_commit:
+                        raise AgyCanaryEvidenceError("--check-committed requires dotfiles and immutable agent-harness handoff inputs")
+                    from .agy_canary_evidence import check_committed_final
+                    result = check_committed_final(
+                        dotfiles_repo=Path(args.dotfiles_repo), commit=args.check_committed,
+                        plan_path=Path(args.plan), manifest_path=Path(args.manifest), plan_slug=args.plan_slug,
+                        agent_harness_repo=Path(args.agent_harness_repo), handoff_commit=args.handoff_commit,
+                    )
+                else:
+                    result = finalize_canary(
+                        evidence_root=Path(args.evidence_root),
+                        expected_seat_key=args.seat_key,
+                        check_only=bool(args.check_private_final),
+                        dotfiles_repo=Path(args.dotfiles_repo) if args.dotfiles_repo else None,
+                        plan_path=Path(args.plan) if args.plan else None,
+                        manifest_path=Path(args.manifest) if args.manifest else None,
+                        plan_slug=args.plan_slug,
+                    )
+        except AgyCanaryEvidenceError as exc:
+            print(f"phase-loop {command}: {exc}", file=sys.stderr)
+            return 1
+        print(json.dumps(result, sort_keys=True))
+        return 0
     try:
         # Issue #83: --allow-branchgov opts into the convention-branch switch even when
         # it would orphan a locally-committed roadmap, by exporting the explicit
@@ -1631,6 +1765,13 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
     import tempfile
 
     from .advisor_board.composition import FLOOR_SEATS, board_independence, compose_review_board
+    from .advisor_board.fixtures import DEFAULT_BOARD
+    from .agy_canary_evidence import (
+        AgyCanaryEvidenceError,
+        capture_summary,
+        consume_capture_environment,
+        write_private_board,
+    )
     from .panel_invoker import invoke_board
 
     artifact_path = Path(args.artifact)
@@ -1638,6 +1779,23 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
     # artifact resolver. Fail closed with a recoverable exit, never a traceback.
     if not artifact_path.is_file():
         print(f"advisor-board: artifact not found (not a file): {artifact_path}", file=sys.stderr)
+        return 2
+    try:
+        capture = consume_capture_environment()
+    except AgyCanaryEvidenceError as exc:
+        print(f"advisor-board: invalid agy canary evidence root: {exc}", file=sys.stderr)
+        return 2
+    private_board_name = getattr(args, "agy_canary_private_board_name", None)
+    if capture is not None and not private_board_name:
+        print("advisor-board: capture requires --agy-canary-private-board-name", file=sys.stderr)
+        capture.close()
+        return 2
+    if capture is None and private_board_name:
+        print("advisor-board: private board name requires PHASE_LOOP_AGY_CANARY_EVIDENCE_DIR", file=sys.stderr)
+        return 2
+    if capture is not None and not bool(getattr(args, "json", False)):
+        print("advisor-board: capture requires --json so full board output stays private", file=sys.stderr)
+        capture.close()
         return 2
     # Auth-aware production composition (REVIEWGOV IF-0-REVIEWGOV-1): the BARE call is
     # already auth-aware — with no args, ``compose_review_board`` defaults
@@ -1647,7 +1805,11 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
     # pass-through is a test affordance that activates ONLY when ``is_available`` is
     # injected alone. (Pinned by test: bare compose drops an unauthed vendor + the
     # call takes no kwargs.)
-    board = compose_review_board()
+    # Capture is a governed exact-four-provider run.  Select the frozen board as
+    # metadata only: availability/auth composition shells out to ambient provider
+    # CLIs before the staged inputs and provider authorities exist.  Ordinary
+    # non-capture invocation retains the auth-aware production composer.
+    board = DEFAULT_BOARD if capture is not None else compose_review_board()
     if not board.seats:
         print(
             "advisor-board: no vendor is both available and authenticated — nothing to compose.",
@@ -1661,15 +1823,22 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
     try:
         with tempfile.TemporaryDirectory(prefix="advisor-board-") as scratch:
             result = invoke_board(
-                board, "", artifact_ref=str(artifact_path.resolve()), repo_dir=scratch
+                board,
+                "",
+                artifact_ref=str(artifact_path.resolve()),
+                repo_dir=scratch,
+                agy_canary_capture=capture,
             )
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, AgyCanaryEvidenceError) as exc:
         # Artifact staging / resolution failures fail closed with a recoverable exit,
         # not a traceback.
         print(f"advisor-board: could not stage the artifact: {exc}", file=sys.stderr)
+        if capture is not None:
+            capture.close()
         return 2
     independence = board_independence(board)
     usable_count = len(result.usable_legs)
+    usable_vendors = {leg.leg for leg in result.usable_legs}
     # A runnable review command must signal when the result is NOT a usable review.
     # Tie the exit code to the board's own contract: it targets 4 independent
     # reviewers with a HARD FLOOR of ``FLOOR_SEATS`` (3). If fewer than the floor of
@@ -1717,8 +1886,10 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
             "shortfall": shortfall,
             "independence": {
                 "level": independence.level,
-                "distinct_vendors": independence.distinct_vendors,
-                "seats": independence.seats,
+                # The sealed evidence floor derives these from concrete leg
+                # records, never from composition's requested-seat counters.
+                "distinct_vendors": len(usable_vendors),
+                "seats": usable_count,
             },
             # ``text`` is the leg's actual review (findings + AGREE/PARTIALLY
             # AGREE/DISAGREE verdict) — the whole point of running a board — so it
@@ -1737,6 +1908,24 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
                 for leg in result.legs
             ],
         }
+        if capture is not None:
+            expected_capture = capture_summary(capture)
+            if getattr(result, "_agy_canary_capture", None) != expected_capture:
+                print("advisor-board: capture summary was not bound by invocation", file=sys.stderr)
+                capture.close()
+                return 2
+            payload["agy_canary_capture"] = expected_capture
+            try:
+                private = write_private_board(
+                    capture=capture, basename=private_board_name, payload=payload
+                )
+            except AgyCanaryEvidenceError as exc:
+                print(f"advisor-board: private capture sink failed: {exc}", file=sys.stderr)
+                capture.close()
+                return 2
+            print(json.dumps({"agy_canary_capture": getattr(result, "_agy_canary_capture", None), "private_board": private}, sort_keys=True))
+            capture.close()
+            return exit_code
         print(json.dumps(payload, indent=2, sort_keys=True))
         return exit_code
     print(

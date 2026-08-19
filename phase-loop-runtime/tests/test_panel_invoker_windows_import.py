@@ -62,3 +62,34 @@ def test_claude_tui_fails_closed_without_posix_pty(
         timeout_s=1,
         env={},
     ) == (1, "", "claude_tui_unsupported_platform", "")
+
+
+def test_windows_process_termination_keeps_leader_only_wait_behavior() -> None:
+    class Process:
+        terminated = False
+        killed = False
+        waits: list[int] = []
+
+        @staticmethod
+        def poll():
+            return None
+
+        def terminate(self):
+            self.terminated = True
+
+        def wait(self, *, timeout):
+            self.waits.append(timeout)
+            return 0
+
+        def kill(self):
+            self.killed = True
+
+    process = Process()
+
+    panel_invoker._terminate_process_group_windows(
+        process, force_group=False,
+    )
+
+    assert process.terminated
+    assert process.waits == [5]
+    assert not process.killed
