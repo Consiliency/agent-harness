@@ -6,6 +6,30 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Fixed: the Fable/Opus advisor seat was unfillable under Claude Code (Consiliency/agent-harness#396, band-aid)
+
+- `native_agent_leg_request()` refused to build a native-fill request for
+  `claude-fable-*` / `claude-opus-*` — the *only* default claude seat models. Under a
+  native Claude harness that made the seat structurally unfillable: `_exec_claude_tui_leg`
+  defers with `under_claude_code` **precisely so the driving session fills it with its own
+  native sub-agent**, and the builder then refused to produce that request. Boards ran one
+  seat short of their independence floor while reporting the seat merely `UNAVAILABLE`,
+  which reads as degraded rather than as *below quorum*.
+- **The rule is per-harness, not per-model.** A native Claude harness fills the seat with
+  the driving session's own sub-agent — that session already *is* the first-party
+  subscription, so the policy the TUI requirement exists to enforce (no gateway, API key,
+  SDK, direct HTTP, alternate endpoint, or cloud-provider selector) is satisfied, and there
+  is no second TUI to drive. The self-PTY TUI adapter remains **mandatory on non-native
+  hosts** (codex / gemini / opencode), where a sub-agent would not be a first-party Claude
+  session; that path is unchanged and still fails closed.
+- Claude advisor skill prose corrected in lockstep (`skills-src/claude/...`,
+  `phase-loop-skills/advisor-board/_overrides/claude/`, and both bundled claude advisor
+  skills). It previously read "Never fill the seat with a native Task Agent … the seat
+  fails closed as `UNAVAILABLE/tui_adapter_required`", which instructed every agent on a
+  native harness to leave the seat empty. Non-native harness prose is untouched.
+- Band-aid scope: the deferral/backing policy is not redesigned here, only the native-host
+  exclusion that inverted it.
+
 ### CI: diff-independent entry-point documentation verification (Consiliency/agent-harness#568)
 
 - New `python -m phase_loop_runtime.entry_doc_check --repo <root>` plus

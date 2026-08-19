@@ -3084,10 +3084,26 @@ def native_agent_leg_request(
     (#125 callers/tests unaffected).
     """
     resolved_model = model or DEFAULT_LEG_MODELS.get(leg, DEFAULT_LEG_MODELS["claude"])
-    if leg == "claude" and _claude_tui_policy_model(resolved_model):
+    # ah#396 BAND-AID: the TUI adapter is for NON-NATIVE harnesses only. Inside a
+    # native Claude harness the seat is filled by the driving session's own native
+    # sub-agent -- that IS the first-party subscription session, so the policy the
+    # TUI requirement exists to enforce (no gateway / API / SDK / direct-HTTP
+    # substitution) is already satisfied, with no second TUI to drive.
+    #
+    # Forbidding native fill for exactly `claude-fable-*` / `claude-opus-*` -- the
+    # only default claude seat models -- made the seat unfillable under Claude Code:
+    # `_exec_claude_tui_leg` defers with `under_claude_code` precisely so the driver
+    # fills it natively, and this raise then refused to build that request. The board
+    # silently ran a seat short of its independence floor. Keep the restriction for
+    # non-native hosts, where a native sub-agent would NOT be a first-party session.
+    if (
+        leg == "claude"
+        and _claude_tui_policy_model(resolved_model)
+        and not _under_claude_code(env)
+    ):
         raise ValueError(
-            "Fable and Opus seats require the Claude Code subscription TUI adapter; "
-            "native agent fulfillment is forbidden"
+            "Fable and Opus seats require the Claude Code subscription TUI adapter "
+            "on a non-native host; native agent fulfillment is forbidden there"
         )
     reason, detail = _claude_leg_deferred_reason(env)
     verdict_required = mode != "advisory"

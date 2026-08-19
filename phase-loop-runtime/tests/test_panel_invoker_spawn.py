@@ -365,9 +365,31 @@ class ClaudeLegNativeAdapterRequestTest(unittest.TestCase):
         )
 
     def test_native_agent_leg_request_rejects_fable_and_opus(self):
+        # NON-NATIVE host only: there a native sub-agent would not be a first-party
+        # subscription session, so the TUI adapter stays mandatory.
         for model in (None, "claude-fable-5", "claude-opus-5"):
             with self.assertRaisesRegex(ValueError, "subscription TUI adapter"):
                 pi.native_agent_leg_request(env={}, model=model)
+
+    def test_native_agent_leg_request_allows_fable_and_opus_under_claude_code(self):
+        # ah#396 BAND-AID. Inside a native Claude harness the seat is filled by the
+        # driving session's own native sub-agent, which IS the first-party
+        # subscription session -- so the request must BUILD rather than raise.
+        #
+        # Regression guard: `_exec_claude_tui_leg` defers with `under_claude_code`
+        # precisely so the driver fills the seat natively. Refusing to build that
+        # request made the default claude seat (`claude-fable-5`) unfillable under
+        # Claude Code, and the board then ran one seat short of its independence
+        # floor with no loud signal.
+        for model in (None, "claude-fable-5", "claude-opus-5"):
+            req = pi.native_agent_leg_request(env={"CLAUDECODE": "1"}, model=model)
+            self.assertEqual(req.leg, "claude")
+            self.assertEqual(req.reason, "under_claude_code")
+            self.assertTrue(req.verdict_required)
+            self.assertTrue(req.instructions)
+        # The default model really is a policy model -- otherwise this test would
+        # pass without exercising the band-aid at all.
+        self.assertTrue(pi._claude_tui_policy_model(pi.DEFAULT_LEG_MODELS["claude"]))
 
 
 class StatusMappingTest(unittest.TestCase):
