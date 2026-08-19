@@ -57,10 +57,12 @@ engine (it ships no code and no console script of its own; the obvious PyPI name
   set one, must return **absolute** roots.)
 
 **Verify an install (agents parse this).** `phase-loop doctor --json` emits the versioned
-`phase-loop-doctor.v1` payload — assert its `schema` field rather than grepping installer
-console output. `--fail-on-stale` exits non-zero only on staleness among gating,
-repo-owned targets; an unreachable registry degrades to `unknown` and must **not** be read
-as failure. Full contract and the common failures: `docs/TEAM-ONBOARDING.md`.
+`phase-loop-doctor.v1` payload — assert its `schema` field **and the exit code**, rather
+than grepping installer console output. Stdout stays parseable JSON even when the command
+fails, so `schema` alone will green-light a failure. `--fail-on-stale` exits non-zero only
+on staleness among gating, repo-owned targets; an unreachable registry degrades to
+`unknown` and must **not** be read as failure. `schema` proves the CLI, not the skills —
+check `install_surfaces[]` for that. Full contract: `docs/TEAM-ONBOARDING.md`.
 
 ## Install — two surfaces
 

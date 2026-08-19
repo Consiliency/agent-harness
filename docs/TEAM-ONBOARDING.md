@@ -43,8 +43,14 @@ It emits the versioned `phase-loop-doctor.v1` schema:
 
 **What to assert, and what not to.**
 
-- `schema == "phase-loop-doctor.v1"` — the install is present and the CLI runs. Assert it
-  rather than grepping the installer's output.
+- `schema == "phase-loop-doctor.v1"` — **the CLI runs.** Assert it rather than grepping the
+  installer's output. It does *not* prove the whole install: the installer places a CLI
+  **and** your harness's skills, and this field speaks only for the CLI.
+- **`install_surfaces[]` is the skills half.** Find the entry with
+  `surface == "interactive-harness-skills"` for your harness and require
+  `status == "present"` (`partial` / `missing` mean the skill files aren't where the
+  harness will look). Without this an install whose skill links dangle — say the clone
+  they pointed at was deleted — still reports `schema` and exit 0.
 - **`schema` alone is not a pass. Always check the exit code too.** Stdout stays pure,
   parseable JSON *even when the command fails*, so the payload still carries
   `schema == "phase-loop-doctor.v1"` on a `--fail-on-stale` failure (exit 1, diagnostic on
@@ -57,6 +63,16 @@ It emits the versioned `phase-loop-doctor.v1` schema:
 - **Do not treat `unknown` as failure.** The BOM degrades every unreachable registry to
   `unknown` by design, so an offline or network-restricted host reports `unknown` and still
   exits `0`. Failing on `unknown` will make your installer red on a healthy machine.
+
+**The whole pass condition, in one place** — copy this rather than assembling it from the
+bullets above:
+
+> **installed** = exit code `0`
+> **and** `schema == "phase-loop-doctor.v1"`
+> **and** the `install_surfaces[]` entry for `interactive-harness-skills` + your harness has
+> `status == "present"`.
+>
+> `unknown` BOM verdicts are **not** failures. A non-zero exit from `--fail-on-stale` is.
 
 A missing `phase-loop` on `PATH` is the one failure that surfaces before any of this — see
 Troubleshooting below.
