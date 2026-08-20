@@ -29,7 +29,8 @@ form is delivered by it), and your harness CLI already installed (Claude Code / 
 > command, so if the download fails, `bash` receives empty input and exits `0`. The
 > installer's own `set -euo pipefail` never gets to run, because it was never fetched. If you
 > are scripting this, prefer the clone-then-run form, or fetch to a file and check that fetch
-> before executing it.
+> before executing it. A mid-transfer drop is worse than a failed one: bash receives a
+> **prefix** of the script and partially executes it.
 
 ## Verify the install (agents: parse this)
 
@@ -77,6 +78,8 @@ It emits the versioned `phase-loop-doctor.v1` schema:
 bullets above. **It depends on which install you ran**, so pick the matching surface line:
 
 > **installed** = the installer itself exited `0`
+> *(under the `curl … | bash` one-liner the pipeline's exit is **bash's**, not the
+> installer's — see the caveat above; scripted installs should clone-then-run)*
 > **and** `phase-loop doctor --json` exited `0`
 > **and** `schema == "phase-loop-doctor.v1"`
 > **and** the matching `install_surfaces[]` entry has `status == "present"`:
@@ -88,6 +91,11 @@ bullets above. **It depends on which install you ran**, so pick the matching sur
 > | `install-agent-harness.sh --harness all` | `interactive-harness-skills` for **all four** |
 >
 > `unknown` BOM verdicts are **not** failures.
+>
+> **The table presumes the default skill roots.** If you installed with
+> `AGENT_HARNESS_SKILL_DEST` or run with `PHASE_LOOP_SKILL_BUNDLE` set, the surfaces are
+> probed at the defaults and will read `missing`/`partial` on a perfectly good install.
+> Assert against the root you actually installed to.
 
 **Two things the pass condition deliberately does not include.**
 
@@ -100,7 +108,9 @@ bullets above. **It depends on which install you ran**, so pick the matching sur
   from a stale one that was already there, so a *failed upgrade* over a working older install
   still satisfies every clause above. That is why the installer's own exit code is the first
   conjunct, and why you should verify the version you asked for actually landed
-  (`phase-loop --version`) when you pinned a `--ref`.
+  (`phase-loop --version`) on **any update or re-run**, not only when you pinned a
+  `--ref`. The silent case: an unpinned one-liner update whose download fails exits `0`,
+  doctor stays green against the *old* install, and nothing was updated.
 
 A missing `phase-loop` on `PATH` is the one failure that surfaces before any of this — see
 Troubleshooting below.
