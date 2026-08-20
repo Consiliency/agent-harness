@@ -38,7 +38,6 @@ resolve_ref() {
     if [ -f "$0" ]; then
         here="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || here=""
         if [ -n "$here" ] && [ -f "$here/RELEASE_PIN" ]; then
-            REF_FROM_LOCAL_PIN="$here/RELEASE_PIN"   # consumed by the update-advice footer
             tr -d '[:space:]' < "$here/RELEASE_PIN"; return 0
         fi
     fi
@@ -68,6 +67,16 @@ done
 
 # No explicit --ref? Auto-resolve from RELEASE_PIN (sibling file, else fetched).
 if [ -z "$REF" ]; then
+    # Determine the ref SOURCE here, in the parent shell. `REF="$(resolve_ref)"` runs in a
+    # subshell, so any variable resolve_ref sets is discarded -- the update-advice footer
+    # must not depend on one. Mirror resolve_ref's compound rule exactly: a file-backed $0
+    # AND a sibling RELEASE_PIN.
+    if [ -f "$0" ]; then
+        _here="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _here=""
+        if [ -n "$_here" ] && [ -f "$_here/RELEASE_PIN" ]; then
+            REF_FROM_LOCAL_PIN="$_here/RELEASE_PIN"
+        fi
+    fi
     REF="$(resolve_ref)" || exit 1
 fi
 

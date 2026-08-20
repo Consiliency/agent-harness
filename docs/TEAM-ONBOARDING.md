@@ -175,15 +175,25 @@ integration exists but is entirely optional; you don't need it.
   `RELEASE_PIN` before consulting the remote, so it re-installs the same old ref. (The
   `curl … | bash` one-liner has no local pin and does resolve the current release — but
   see the pipeline-exit caveat above before scripting it.)
-- **Update (only if you installed with `pip` / `uv` YOURSELF, not via the installer
-  script):** `uv tool upgrade phase-loop-runtime` — or `pip install -U
+- **Update (pip / uv install):** `uv tool upgrade phase-loop-runtime` — or `pip install -U
   phase-loop-runtime`. Name the **engine**, not `consiliency-harness`: that shim pins a
   floor (`phase-loop-runtime>=0.6.1`), so upgrading the shim can leave the old engine in
   place and report success.
-  **If the installer script put it there, `uv tool upgrade` will NOT move you.** The
-  script installs from a tag-pinned URL, so uv stores that exact spec in its receipt and
-  re-resolving it reinstalls the same version — a silent non-update. Re-run the installer
-  instead (see the two bullets above for which form actually advances the ref).
+
+  **`uv tool upgrade` only moves you if the stored requirement is UNPINNED.** The
+  deciding factor is what uv recorded, not who ran the install. Check it:
+
+  ```sh
+  grep requirements ~/.local/share/uv/tools/phase-loop-runtime/uv-receipt.toml
+  ```
+
+  A bare `{ name = "phase-loop-runtime" }` upgrades normally. Anything pinned —
+  `specifier = "==0.7.13"`, or a `git+…@vX.Y.Z` URL — is re-resolved to **the same
+  version**, so `uv tool upgrade` reports success and moves nothing. That covers the
+  installer script (it installs from a tag-pinned URL) **and** a hand-run pinned install
+  such as `uv tool install "git+…@<TAG>#subdirectory=phase-loop-runtime"`, which
+  `phase-loop-runtime/README.md` documents. To advance a pinned install, re-install at the
+  new ref or re-run the installer — see the two bullets above.
 - **Pin a version:** `--ref vX.Y.Z` (everyone on the same release).
 - **Uninstall:** `uv tool uninstall phase-loop-runtime` and remove the
   `*-phase-*` skill symlinks from your skill root.
