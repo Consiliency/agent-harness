@@ -1,6 +1,6 @@
 # Detailed plan: make missing evidence fail loudly (agent-harness#607 + agent-harness#601)
 
-**Revision 6 — the body now matches the cut.** Rev 3 was re-reviewed: codex DISAGREE, grok DISAGREE,
+**Revision 7 — the retro window, and a guard that can actually be falsified.** Rev 3 was re-reviewed: codex DISAGREE, grok DISAGREE,
 fable PARTIALLY AGREE. All three said the `evidence-gate` aggregate must go. Rev 4 cut it; rev 5
 adds the decisive reason (which I did not have), un-cuts one piece rev 4 removed by mistake, and
 records two defects that would otherwise have been rebuilt.
@@ -211,6 +211,22 @@ absent from collection with **no reason string**, **61** skipped in both lanes.
   close the skipped-job hole, and nothing in this plan does — that remains open and is not
   claimed as covered.
 
+### `phase-loop-runtime/scripts/check_declared_pr_workflows.py` (create)
+
+- The guard as a **standalone script** (`check_model_id_sources.py` precedent), taking
+  `--workflows-dir` and `--declared` so it can be pointed at a **fixture directory**. The
+  in-file precedent (`chronology-retention`, `test.yml:311-336`) is an inline heredoc, which
+  **cannot be falsified** — falsifiers 1–4 require the guard be RUN, and an inline step gives
+  them no executable path. Without this, acceptance criteria 1–2 are unmeetable as written.
+  Invoke it from the `lint (pyflakes)` step.
+- **Handle `on`-value polymorphism.** Every workflow here uses the mapping form today, but
+  `on: [push, pull_request]` and `on: pull_request` are legal. A dict-assuming guard either
+  **crashes in a required job — a repo-wide false red** — or silently misses the workflow.
+- **Define "unconditional":** `paths:` / `types:` make a workflow conditional; `branches:`
+  alone does not. Today's unconditional set is `docs-audit`, `entry-doc-check`,
+  `release-consistency`, `scrub`, `test`; `skills-parity` and `publish-consiliency-harness` are
+  path-filtered and stay out.
+
 ### `.github/declared-pr-workflows.json` (create)
 
 - The checked-in declared list the guard reads. Named here because the guard needs one and the
@@ -228,6 +244,16 @@ absent from collection with **no reason string**, **61** skipped in both lanes.
   whose red blocks nothing is this plan's own class.
 - Placement matters: the offload seam alone never runs on the hosted/fork path, so a
   seam-local step would silently not exist there.
+- **Download by ARTIFACT NAME.** The offload artifact is `junit-offloaded` (`test.yml:90`);
+  `junit-offload/{py310,gate-a}` is the path family *inside* it. Hosted names are
+  `chronology-junit-py310` (`:283`) and `chronology-junit-gate-a` (`:387`).
+- **Family completeness, not presence:** a *partial* hosted family (py310 present, gate-a
+  absent) must be **red**.
+- **Known baseline entry — do not prune as stale:** the canonical py310 junit does not cover
+  the second LEGIBLE pytest invocation (`test.yml:271-274`, no `--junitxml`), so LEGIBLE tests
+  legitimately read as absent-from-collection versus Gate A.
+- **Verify artifact download under `permissions: contents: read`** (`test.yml:8-9`) at
+  implementation time. The withdrawn reconciler died partly on a permissions mis-spec.
 
 ### `phase-loop-runtime/scripts/inert_delta.py` (create)
 
@@ -245,7 +271,9 @@ absent from collection with **no reason string**, **61** skipped in both lanes.
 
 - Identity-keyed allowed-skip set (seeded from a **fresh** measurement) and the
   expected-collection baseline. **Pruning rule:** an entry matching no collected test is
-  itself a finding, or the allowlist rots into a rubber stamp.
+  itself a finding, or the allowlist rots into a rubber stamp. **Apply the same rule
+  symmetrically to `.github/declared-pr-workflows.json`** — a deleted workflow otherwise leaves
+  a stale declared entry forever and the human-mirror step drifts silently.
 
 ### `CHANGELOG.md` (modify)
 
@@ -276,6 +304,9 @@ python3 scripts/inert_delta.py \
 # 2. same fixture, path-filtered                                                    -> guard GREEN
 # 3. a .yaml (not .yml) unconditional workflow absent from the list                 -> guard RED
 # 4. guard reading the string key "on" instead of boolean True                      -> must FAIL
+#    (verified live: ALL 9 workflows in this repo parse `on` as boolean True)
+# 4b. undeclared workflow using the LIST form `on: [push, pull_request]`             -> guard RED
+#     (a dict-assuming guard CRASHES here: repo-wide false red in a required job)
 #    (proves the vacuity footgun is closed, not merely noted)
 # 5. inert test absent from the baseline -> RED; present with a reason -> GREEN
 # 6. add one uncollected test AND restore another (counts unchanged)   -> RED
@@ -298,6 +329,23 @@ python3 scripts/inert_delta.py \
 ## Out of scope
 
 - Branch-protection settings — an operator action.
+- **The already-open-PR retro window.** `strict` (require branches up to date) is **false** on
+  `main` — verified live. A PR whose head already carries green `lint (pyflakes)` and `suite
+  gate` from runs predating this change therefore **merges with the guard and the inert-delta
+  never having executed on it**. Sharpest bite: a PR opened *before* the guard lands, which
+  itself adds an undeclared unconditional workflow, merges ungated — the exact
+  agent-harness#607 shape this plan exists to close.
+
+  Stated precisely rather than overclaimed: **not** a permanent false green. `test.yml` also
+  triggers on `push: branches: [main]`, and both surviving pieces run unconditionally there, so
+  the merge reds on `main` post-hoc and a landed undeclared workflow reds every subsequent PR's
+  lint. **The window converts prevention into post-hoc alarm.**
+
+  This is rev 1's defect 2, recorded above for the *withdrawn* aggregate and never carried to
+  the survivors. **Ordered remedy, not a note:** after the guard lands, sweep the open-PR queue
+  with an empty commit or re-trigger, so every open head has executed both pieces before it can
+  merge.
+
 - **The skipped-job hole.** A conditionally skipped required job satisfies branch protection;
   nothing here closes it. Stated as open rather than implied covered.
 - The 5 conflicted PRs from the agent-harness#607 sweep.
