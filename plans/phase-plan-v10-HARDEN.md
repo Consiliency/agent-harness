@@ -167,9 +167,13 @@ domain-separated digest of the canonical handoff object excluding only that dige
 must receive a fresh exact-digest native-first four-seat board review; dissent, timeout, a missing
 seat, or digest drift blocks. Only after convergence may single-parent receipt head `R` add solely
 `plans/evidence/v10-SCHED-HARDEN-review.json`, binding `C` commit/tree, exact plan and manifest
-blob identities, the handoff digest, and four usable terminal `AGREE` native artifacts. HARDEN
-preflight proves `R^ == C`, the exact one-file receipt delta, unchanged plan/manifest blobs,
-non-null SL-2 identities, the exact SL-2 path set, and canonical receipt semantics. The
+blob identities, the handoff digest, and four usable terminal `AGREE` native artifacts under
+the exact `v10.sched-harden-review-receipt.v1` request/artifact schema frozen in the SCHED
+plan. HARDEN preflight executes the literal Git-object verifier in `## Verification` and proves
+`R^ == C`, the exact one-file receipt delta, unchanged plan/manifest blobs, non-null SL-2
+identities, the exact SL-2 path set, canonical request/artifact bytes, exact unique seat and
+seat-instance sets, artifact/request binding to `C`, and four non-aliased usable `AGREE`
+artifacts. The
 coordinator then fetches that canonical base, reruns the
 real disposable manifest lifecycle
 simulation, rechecks every owned-path/source anchor and all 16-key sibling rows, and regenerates
@@ -1299,6 +1303,183 @@ commit/push/merge operations.
 proof mode, distinct-JUnit contract, and five-stage proof list. The frontmatter
 and manifest verification commands bind one payload SHA while independently
 recomputing the current plan digest.
+
+Before any `SL-0` write, the external coordinator exports exact full commit IDs
+`SCHED_HARDEN_C` and `SCHED_HARDEN_R` and runs this literal fail-closed Git-object
+preflight from the repository root:
+
+```bash
+python3 - "$SCHED_HARDEN_C" "$SCHED_HARDEN_R" <<'PY'
+import hashlib
+import json
+import re
+import subprocess
+import sys
+
+PLAN = "plans/phase-plan-v10-HARDEN.md"
+MANIFEST = "plans/manifest.json"
+RECEIPT = "plans/evidence/v10-SCHED-HARDEN-review.json"
+PATHS = [
+    "phase-loop-runtime/src/phase_loop_runtime/lane_scheduler.py",
+    "phase-loop-runtime/src/phase_loop_runtime/launcher.py",
+    "phase-loop-runtime/src/phase_loop_runtime/runner.py",
+    "phase-loop-runtime/src/phase_loop_runtime/worker_pool.py",
+]
+SEATS = ["native_codex", "claude", "gemini", "grok"]
+HANDOFF_KEYS = {
+    "actual_sl2_commit", "actual_sl2_tree", "handoff_status", "harden_plan_sha256",
+    "manifest_contract_digest_domain", "manifest_contract_sha256", "required_path_set",
+    "required_review_seats", "review_receipt_path", "review_receipt_schema",
+    "review_request_digest_domain", "roadmap_sha256", "schema", "sched_plan_sha256",
+}
+REQUEST_KEYS = {
+    "candidate_commit", "candidate_tree", "harden_plan_blob", "harden_plan_sha256",
+    "manifest_blob", "manifest_contract_sha256", "manifest_sha256", "required_path_set",
+    "required_review_seats", "roadmap_sha256", "schema", "sched_plan_sha256",
+}
+ARTIFACT_KEYS = {
+    "candidate_commit", "candidate_tree", "harden_plan_sha256", "harness",
+    "manifest_contract_sha256", "manifest_sha256", "report", "request_sha256",
+    "schema", "seat", "seat_instance_id", "status", "terminal_verdict",
+}
+HEX40 = re.compile(r"[0-9a-f]{40}\Z")
+HEX64 = re.compile(r"[0-9a-f]{64}\Z")
+
+def git(*args):
+    return subprocess.check_output(["git", *args])
+
+def no_float(value):
+    raise ValueError(f"floats forbidden: {value}")
+
+def no_dupes(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate key: {key}")
+        result[key] = value
+    return result
+
+def decode(data):
+    return json.loads(
+        data.decode("utf-8"),
+        object_pairs_hook=no_dupes,
+        parse_float=no_float,
+        parse_constant=no_float,
+    )
+
+def canonical(value):
+    return (json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+
+def sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+assert len(sys.argv) == 3
+c = git("rev-parse", f"{sys.argv[1]}^{{commit}}").decode().strip()
+r = git("rev-parse", f"{sys.argv[2]}^{{commit}}").decode().strip()
+assert HEX40.fullmatch(c) and HEX40.fullmatch(r) and c != r
+parents = git("rev-list", "--parents", "-n", "1", r).decode().split()
+assert parents == [r, c], parents
+changed = sorted(filter(None, git("diff-tree", "--no-commit-id", "--name-only", "-r", c, r).decode().splitlines()))
+assert changed == [RECEIPT], changed
+
+plan_blob = git("rev-parse", f"{c}:{PLAN}").decode().strip()
+manifest_blob = git("rev-parse", f"{c}:{MANIFEST}").decode().strip()
+assert git("rev-parse", f"{r}:{PLAN}").decode().strip() == plan_blob
+assert git("rev-parse", f"{r}:{MANIFEST}").decode().strip() == manifest_blob
+plan_bytes = git("show", f"{c}:{PLAN}")
+manifest_bytes = git("show", f"{c}:{MANIFEST}")
+manifest = decode(manifest_bytes)
+rows = [row for row in manifest["plans"] if row.get("phase_alias") == "HARDEN"]
+assert len(rows) == 1
+handoffs = [
+    event["metadata"]["sched_harden_handoff"]
+    for event in rows[0]["lifecycle"]
+    if isinstance(event.get("metadata"), dict) and "sched_harden_handoff" in event["metadata"]
+]
+assert len(handoffs) == 1
+handoff = handoffs[0]
+assert set(handoff) == HANDOFF_KEYS
+assert handoff["schema"] == "v10.sched-harden-handoff.v1"
+assert handoff["handoff_status"] == "candidate_awaiting_review"
+assert handoff["review_receipt_path"] == RECEIPT
+assert handoff["review_receipt_schema"] == "v10.sched-harden-review-receipt.v1"
+assert handoff["review_request_digest_domain"] == "v10.sched-harden-review-request.v1\n"
+assert handoff["required_path_set"] == PATHS
+assert handoff["required_review_seats"] == SEATS
+assert HEX40.fullmatch(handoff["actual_sl2_commit"])
+assert HEX40.fullmatch(handoff["actual_sl2_tree"])
+assert HEX64.fullmatch(handoff["harden_plan_sha256"])
+assert HEX64.fullmatch(handoff["roadmap_sha256"])
+assert HEX64.fullmatch(handoff["sched_plan_sha256"])
+assert git("rev-parse", f'{handoff["actual_sl2_commit"]}^{{tree}}').decode().strip() == handoff["actual_sl2_tree"]
+sl2_parents = git("rev-list", "--parents", "-n", "1", handoff["actual_sl2_commit"]).decode().split()
+assert len(sl2_parents) == 2
+sl2_changed = sorted(filter(None, git("diff-tree", "--no-commit-id", "--name-only", "-r", sl2_parents[1], sl2_parents[0]).decode().splitlines()))
+assert sl2_changed == PATHS, sl2_changed
+contract_payload = {key: value for key, value in handoff.items() if key != "manifest_contract_sha256"}
+assert sha(handoff["manifest_contract_digest_domain"].encode("utf-8") + canonical(contract_payload)) == handoff["manifest_contract_sha256"]
+
+receipt_bytes = git("show", f"{r}:{RECEIPT}")
+receipt = decode(receipt_bytes)
+assert receipt_bytes == canonical(receipt)
+assert set(receipt) == {"request", "request_sha256", "reviews", "schema"}
+assert receipt["schema"] == "v10.sched-harden-review-receipt.v1"
+request = receipt["request"]
+assert set(request) == REQUEST_KEYS
+assert request["schema"] == "v10.sched-harden-review-request.v1"
+assert receipt["request_sha256"] == sha(handoff["review_request_digest_domain"].encode("utf-8") + canonical(request))
+assert HEX64.fullmatch(receipt["request_sha256"])
+expected_request = {
+    "candidate_commit": c,
+    "candidate_tree": git("rev-parse", f"{c}^{{tree}}").decode().strip(),
+    "harden_plan_blob": plan_blob,
+    "harden_plan_sha256": sha(plan_bytes),
+    "manifest_blob": manifest_blob,
+    "manifest_contract_sha256": handoff["manifest_contract_sha256"],
+    "manifest_sha256": sha(manifest_bytes),
+    "required_path_set": PATHS,
+    "required_review_seats": SEATS,
+    "roadmap_sha256": handoff["roadmap_sha256"],
+    "schema": "v10.sched-harden-review-request.v1",
+    "sched_plan_sha256": handoff["sched_plan_sha256"],
+}
+assert request == expected_request
+assert request["harden_plan_sha256"] == handoff["harden_plan_sha256"]
+
+reviews = receipt["reviews"]
+assert isinstance(reviews, list) and len(reviews) == len(SEATS)
+seen_instances = set()
+seen_digests = set()
+seen_reports = set()
+for expected_seat, review in zip(SEATS, reviews):
+    assert set(review) == {"artifact", "artifact_sha256"}
+    artifact = review["artifact"]
+    assert set(artifact) == ARTIFACT_KEYS
+    assert artifact["schema"] == "v10.sched-harden-review-artifact.v1"
+    assert artifact["seat"] == expected_seat
+    assert isinstance(artifact["seat_instance_id"], str) and artifact["seat_instance_id"]
+    assert isinstance(artifact["harness"], str) and artifact["harness"]
+    assert artifact["status"] == "usable"
+    assert artifact["terminal_verdict"] == "AGREE"
+    assert isinstance(artifact["report"], str) and artifact["report"].rstrip().splitlines()[-1] == "AGREE"
+    assert artifact["candidate_commit"] == c
+    assert artifact["candidate_tree"] == request["candidate_tree"]
+    assert artifact["harden_plan_sha256"] == request["harden_plan_sha256"]
+    assert artifact["manifest_sha256"] == request["manifest_sha256"]
+    assert artifact["manifest_contract_sha256"] == request["manifest_contract_sha256"]
+    assert artifact["request_sha256"] == receipt["request_sha256"]
+    digest = sha(b"v10.sched-harden-review-artifact.v1\n" + canonical(artifact))
+    report_digest = sha(artifact["report"].encode("utf-8"))
+    assert HEX64.fullmatch(review["artifact_sha256"]) and review["artifact_sha256"] == digest
+    assert artifact["seat_instance_id"] not in seen_instances
+    assert digest not in seen_digests
+    assert report_digest not in seen_reports
+    seen_instances.add(artifact["seat_instance_id"])
+    seen_digests.add(digest)
+    seen_reports.add(report_digest)
+assert len(seen_instances) == len(seen_digests) == len(seen_reports) == len(SEATS)
+PY
+```
 
 - `PYTHONPATH=phase-loop-runtime/src python3 skills-src/claude/claude-plan-phase/scripts/validate_plan_doc.py plans/phase-plan-v10-HARDEN.md`
 - `PYTHONPATH=phase-loop-runtime/src python3 -m phase_loop_runtime.cli validate-roadmap specs/phase-plans-v10.md`

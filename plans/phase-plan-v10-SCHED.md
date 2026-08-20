@@ -242,17 +242,35 @@ SL-6 — Documentation, disposition, and completion evidence
     Duplicate keys, floats, surrogates, and non-UTF-8 data reject. Its exact key set is
     `actual_sl2_commit`, `actual_sl2_tree`, `handoff_status`, `harden_plan_sha256`,
     `manifest_contract_digest_domain`, `manifest_contract_sha256`, `required_path_set`,
-    `required_review_seats`, `review_receipt_path`, `roadmap_sha256`, `schema`, and
-    `sched_plan_sha256`; candidate values are non-null and status is `candidate_awaiting_review`.
+    `required_review_seats`, `review_receipt_path`, `review_receipt_schema`,
+    `review_request_digest_domain`, `roadmap_sha256`, `schema`, and `sched_plan_sha256`;
+    candidate values are non-null and status is `candidate_awaiting_review`.
   - verify: recompute the roadmap, SCHED, HARDEN, and manifest contract digests, validate
     both plans and the manifest at `C`, then obtain a fresh exact-digest native-first
     four-seat board over `C`. Any dissent, timeout, missing seat, or digest drift blocks.
   - impl: only after convergence, create single-parent receipt head `R` whose sole diff
-    from `C` is `plans/evidence/v10-SCHED-HARDEN-review.json`. The canonical receipt binds
-    `C` commit/tree, exact HARDEN plan and manifest blob/digests, the domain-separated
-    manifest contract digest, every seat's native artifact identity/status/verdict, and
-    requires all four usable terminal verdicts to be `AGREE`. The receipt contains no
-    self-digest; its Git blob OID is the retained identity.
+    from `C` is `plans/evidence/v10-SCHED-HARDEN-review.json`. The receipt is exact UTF-8
+    canonical JSON (sorted keys, compact separators, one terminal LF; duplicate keys,
+    floats, surrogates, invalid UTF-8, and extra/missing keys reject) with schema
+    `v10.sched-harden-review-receipt.v1` and exact top-level keys `request`,
+    `request_sha256`, `reviews`, and `schema`. `request` has exact keys
+    `candidate_commit`, `candidate_tree`, `harden_plan_blob`, `harden_plan_sha256`,
+    `manifest_blob`, `manifest_contract_sha256`, `manifest_sha256`, `required_path_set`,
+    `required_review_seats`, `roadmap_sha256`, `schema`, and `sched_plan_sha256`; its
+    schema is `v10.sched-harden-review-request.v1` and its digest is SHA-256 over the
+    literal UTF-8 `review_request_digest_domain` followed by canonical request bytes.
+    `reviews` is ordered exactly like `required_review_seats` and contains four objects
+    with exact keys `artifact` and `artifact_sha256`. Each `artifact` has exact keys
+    `candidate_commit`, `candidate_tree`, `harden_plan_sha256`, `harness`,
+    `manifest_contract_sha256`, `manifest_sha256`, `report`, `request_sha256`, `schema`,
+    `seat`, `seat_instance_id`, `status`, and `terminal_verdict`; schema is
+    `v10.sched-harden-review-artifact.v1`, digest is SHA-256 over the literal UTF-8
+    `v10.sched-harden-review-artifact.v1\n` followed by canonical artifact bytes, status
+    is `usable`, the report's last non-empty line and `terminal_verdict` are both exactly
+    `AGREE`, and every candidate/request/plan/manifest/contract identity equals the
+    request. Seat names, seat-instance IDs, artifact digests, and report-byte digests are
+    independently unique; duplicate/aliased artifacts or copied reports reject. The receipt
+    contains no self-digest; its Git blob OID is the retained identity.
   - verify: HARDEN preflight requires `R^ == C`, `C..R` exactly the receipt path, unchanged
     plan/manifest blobs, non-null actual SL-2 identities, exact four-path SL-2 diff, valid
     contract digest, and a canonical converged receipt before any overlapping write.
@@ -347,13 +365,24 @@ PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q 
   phase-loop-runtime/tests/test_phase_loop_v45_schedharden.py
 ```
 
-The worker-pool integration gate must run in a host checkout with a reachable dotfiles
-fleet tree; a skipped test is a failure:
+The host-capable integration gate must run the complete thirteen-module owned suite in a
+checkout with a reachable dotfiles fleet tree; a skipped test anywhere in that suite is a
+failure:
 
 ```bash
 tmp_junit="$(mktemp)"
 PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q \
   --junitxml="$tmp_junit" \
+  phase-loop-runtime/tests/test_phase_worktree_executor.py \
+  phase-loop-runtime/tests/test_phase_loop_lane_scheduler.py \
+  phase-loop-runtime/tests/test_phase_loop_concurrent_phase_dispatch.py \
+  phase-loop-runtime/tests/test_dispatch_lock_reentrancy.py \
+  phase-loop-runtime/tests/test_phase_loop_work_unit_runner.py \
+  phase-loop-runtime/tests/test_phase_loop_runner.py \
+  phase-loop-runtime/tests/test_phase_loop_launcher.py \
+  phase-loop-runtime/tests/test_workerpool_failure_isolation.py \
+  phase-loop-runtime/tests/test_workerpool_parallel.py \
+  phase-loop-runtime/tests/test_workerpool_worktree_alloc.py \
   phase-loop-runtime/tests/test_v34_parallel_dispatch_soak.py \
   phase-loop-runtime/tests/test_phase_loop_v45_sched.py \
   phase-loop-runtime/tests/test_phase_loop_v45_schedharden.py
