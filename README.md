@@ -93,7 +93,8 @@ curl -fsSL https://raw.githubusercontent.com/Consiliency/agent-harness/main/inst
 
 This installs the `phase-loop`/`codex-phase-loop` CLIs (via `uv tool`) **and** the
 harness workflow skills into your skill root. It auto-resolves the current release
-(no hardcoded ref); `--ref vX.Y.Z` pins one explicitly. Re-run to update.
+(no hardcoded ref); `--ref vX.Y.Z` pins one explicitly. To update a **clone**, `git pull`
+first — re-running a stale checkout reinstalls its own `RELEASE_PIN`, not the current release.
 
 > [!IMPORTANT]
 > **The install-friendly name is `consiliency-harness`; the engine is

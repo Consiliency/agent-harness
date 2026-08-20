@@ -165,7 +165,11 @@ integration exists but is entirely optional; you don't need it.
 
 ## Update / pin / uninstall
 
-- **Update:** re-run the installer (it fetches the pinned ref and re-applies).
+- **Update:** `git pull` in your clone **first**, then re-run the installer. Re-running a
+  stale clone does **not** update you: `resolve_ref` trusts the clone's own sibling
+  `RELEASE_PIN` before consulting the remote, so it re-installs the same old ref. (The
+  `curl … | bash` one-liner has no local pin and does resolve the current release — but
+  see the pipeline-exit caveat above before scripting it.)
 - **Pin a version:** `--ref vX.Y.Z` (everyone on the same release).
 - **Uninstall:** `uv tool uninstall phase-loop-runtime` and remove the
   `*-phase-*` skill symlinks from your skill root.
