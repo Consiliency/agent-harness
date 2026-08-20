@@ -104,7 +104,12 @@ bullets above. **It depends on which install you ran**, so pick the matching sur
 >   harness's entry. Do **not** write `"$AGENT_HARNESS_SKILL_DEST"` unless it is still
 >   set in *this* shell — a command-scoped assignment on the installer line does not
 >   persist, and an empty value is ignored by the resolver, which silently drops you back
->   to the default roots. After `--harness all`, do not bridge at all: assert the defaults.
+>   to the default roots. After `--harness all`, do **not** bridge — but if
+>   `PHASE_LOOP_SKILL_BUNDLE` is already exported in your shell it redirects **all four**
+>   harness probes to that one path regardless of how you installed, so clear it for the
+>   check: `PHASE_LOOP_SKILL_BUNDLE= phase-loop doctor --json` (an empty value is ignored
+>   by the resolver, which is exactly what restores the defaults; works in `sh`, `bash`
+>   and `zsh`).
 > - `PHASE_LOOP_SKILL_BUNDLE` is **honored by `doctor`** — it probes *that* path, not the
 >   defaults. So `missing` / `partial` under it is a **true finding about the root you
 >   pointed at**, and must not be waved away as a default-root artifact.
@@ -170,6 +175,9 @@ integration exists but is entirely optional; you don't need it.
   `RELEASE_PIN` before consulting the remote, so it re-installs the same old ref. (The
   `curl … | bash` one-liner has no local pin and does resolve the current release — but
   see the pipeline-exit caveat above before scripting it.)
+- **Update (pip / uv only, no clone):** `uv tool upgrade phase-loop-runtime` — or
+  `pip install -U phase-loop-runtime`. The installer script is not involved, so none of
+  the clone caveats apply.
 - **Pin a version:** `--ref vX.Y.Z` (everyone on the same release).
 - **Uninstall:** `uv tool uninstall phase-loop-runtime` and remove the
   `*-phase-*` skill symlinks from your skill root.

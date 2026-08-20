@@ -133,5 +133,11 @@ done
 say "Done — phase-loop CLI + skills (${HARNESSES}) installed from public agent-harness ${REF}."
 echo "  runtime : $(command -v phase-loop)  ($(phase-loop --version 2>/dev/null))"
 echo "  bundle  : ${HOME_DIR}/phase-loop-skills"
-echo "  update  : re-run this script (it fetches ${REF} and re-applies)."
+if [ -f "$0" ]; then
+    # A cloned checkout resolves REF from its OWN sibling RELEASE_PIN, so re-running
+    # this script WITHOUT pulling first reinstalls the same ref forever.
+    echo "  update  : git pull in this clone FIRST, then re-run (a stale clone reinstalls ${REF})."
+else
+    echo "  update  : re-run the one-liner (it resolves the current release)."
+fi
 echo "No fleet / 1Password / tailnet / dotfiles clone required."
