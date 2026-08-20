@@ -39,10 +39,11 @@ knowing before that first run:
   explicitly.
 - **"No subscription auth" means the runtime.** The engine makes no model calls and
   needs no login of its own, but each executor CLI you dispatch to (codex / claude /
-  gemini / grok / opencode / pi) authenticates itself. `consiliency-harness` is a thin **dependency shim** that pulls the
-`phase-loop-runtime` engine (it ships no code and no console script of its own; the
-obvious PyPI name `agent-harness` is an **unrelated third party**). With zero
-configuration you get:
+  gemini / grok / opencode / pi) authenticates itself.
+
+`consiliency-harness` is a thin **dependency shim** that pulls the `phase-loop-runtime`
+engine (it ships no code and no console script of its own; the obvious PyPI name
+`agent-harness` is an **unrelated third party**). With zero configuration you get:
 
 - **Zero-auth, autonomous by default.** `run_mode` is `autonomous` — the runner
   drives phases unattended, with no advisor panel and **no subscription login
@@ -54,6 +55,17 @@ configuration you get:
   workflow skill packs from `skills_bundle/**` shipped **in the wheel** — no
   dotfiles checkout. (A custom `PHASE_LOOP_SKILL_SOURCE_PLUGINS` provider, if you
   set one, must return **absolute** roots.)
+
+**Verify an install (agents parse this).** `phase-loop doctor --json` emits the versioned
+`phase-loop-doctor.v1` payload — assert its `schema` field **and the exit code**, rather
+than grepping installer console output. Stdout stays parseable JSON even when the command
+fails, so `schema` alone will green-light a failure. `--fail-on-stale` exits non-zero only
+on staleness among gating, repo-owned targets; an unreachable registry degrades to
+`unknown` and must **not** be read as failure. `schema` proves the CLI, not the skills —
+check `install_surfaces[]` for that, and check **the entry matching how you installed**: a
+`wheel-bundled-skills` entry reads `present` after a plain `pip install` even when the
+interactive harness skills are missing, so asserting the wrong one is its own false green.
+Full contract, including the per-install-mode pass condition: `docs/TEAM-ONBOARDING.md`.
 
 ## Install — two surfaces
 
@@ -81,7 +93,8 @@ curl -fsSL https://raw.githubusercontent.com/Consiliency/agent-harness/main/inst
 
 This installs the `phase-loop`/`codex-phase-loop` CLIs (via `uv tool`) **and** the
 harness workflow skills into your skill root. It auto-resolves the current release
-(no hardcoded ref); `--ref vX.Y.Z` pins one explicitly. Re-run to update.
+(no hardcoded ref); `--ref vX.Y.Z` pins one explicitly. To update a **clone**, `git pull`
+first — re-running a stale checkout reinstalls its own `RELEASE_PIN`, not the current release.
 
 > [!IMPORTANT]
 > **The install-friendly name is `consiliency-harness`; the engine is

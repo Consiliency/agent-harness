@@ -51,13 +51,15 @@ resolve_ref() {
     return 1
 }
 REF=""  # populated after arg parsing (an explicit --ref overrides RELEASE_PIN)
+REF_EXPLICIT=""          # set when --ref was passed; drives the update-advice footer
+REF_FROM_LOCAL_PIN=""    # set by resolve_ref when the ref came from a sibling RELEASE_PIN
 HARNESS="${AGENT_HARNESS_HARNESS:-claude}"
 HOME_DIR="${AGENT_HARNESS_HOME:-$HOME/.local/share/agent-harness}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --harness) HARNESS="$2"; shift 2 ;;
-        --ref)     REF="$2"; shift 2 ;;
+        --ref)     REF="$2"; REF_EXPLICIT=1; shift 2 ;;
         -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
         *) echo "unknown arg: $1 (see --help)" >&2; exit 2 ;;
     esac
@@ -65,6 +67,16 @@ done
 
 # No explicit --ref? Auto-resolve from RELEASE_PIN (sibling file, else fetched).
 if [ -z "$REF" ]; then
+    # Determine the ref SOURCE here, in the parent shell. `REF="$(resolve_ref)"` runs in a
+    # subshell, so any variable resolve_ref sets is discarded -- the update-advice footer
+    # must not depend on one. Mirror resolve_ref's compound rule exactly: a file-backed $0
+    # AND a sibling RELEASE_PIN.
+    if [ -f "$0" ]; then
+        _here="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || _here=""
+        if [ -n "$_here" ] && [ -f "$_here/RELEASE_PIN" ]; then
+            REF_FROM_LOCAL_PIN="$_here/RELEASE_PIN"
+        fi
+    fi
     REF="$(resolve_ref)" || exit 1
 fi
 
@@ -133,5 +145,15 @@ done
 say "Done — phase-loop CLI + skills (${HARNESSES}) installed from public agent-harness ${REF}."
 echo "  runtime : $(command -v phase-loop)  ($(phase-loop --version 2>/dev/null))"
 echo "  bundle  : ${HOME_DIR}/phase-loop-skills"
-echo "  update  : re-run this script (it fetches ${REF} and re-applies)."
+# Report the update path from where THIS run's ref actually came, not from a proxy.
+# resolve_ref's local-pin branch needs BOTH a file-backed $0 AND a sibling RELEASE_PIN;
+# testing only [ -f "$0" ] misreports the documented fetch-to-a-file form (a real file
+# with no RELEASE_PIN beside it), and an explicit --ref/AGENT_HARNESS_REF outranks both.
+if [ -n "${AGENT_HARNESS_REF:-}" ] || [ -n "${REF_EXPLICIT:-}" ]; then
+    echo "  update  : you pinned ${REF}; re-running keeps it. Drop the pin to follow releases."
+elif [ -n "${REF_FROM_LOCAL_PIN:-}" ]; then
+    echo "  update  : this ref came from ${REF_FROM_LOCAL_PIN}. git pull there FIRST, or re-running reinstalls ${REF}."
+else
+    echo "  update  : re-run (this run resolved ${REF} from the remote release pin)."
+fi
 echo "No fleet / 1Password / tailnet / dotfiles clone required."
