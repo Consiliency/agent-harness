@@ -387,6 +387,20 @@
       "if_gates_produced": [],
       "lanes": [],
       "lifecycle": [],
+      "lifecycle_events": [
+        {
+          "at": "2026-08-17T14:40:54.949655+00:00",
+          "by": "claude-coordination-session",
+          "note": "retroactive: execution ran 2026-08-13..2026-08-17",
+          "status": "executing"
+        },
+        {
+          "at": "2026-08-17T14:40:54.949655+00:00",
+          "by": "claude-coordination-session",
+          "note": "delivered by agent-harness#531 (two-lane chronology: heavy node deselected from py3.11/3.12, junit export, lane-removal retention guard as its own job)",
+          "status": "completed"
+        }
+      ],
       "owner_skill": "claude-plan-detailed",
       "phase_alias": null,
       "reflection_ref": null,
@@ -395,21 +409,7 @@
       "status": "completed",
       "task_summary": "Run the heavy chronology proof in two lanes (py3.10 matrix + Gate A); deselect from py3.11/py3.12",
       "type": "detailed",
-      "updated_at": "2026-08-17T14:40:54.949655+00:00",
-      "lifecycle_events": [
-        {
-          "status": "executing",
-          "at": "2026-08-17T14:40:54.949655+00:00",
-          "by": "claude-coordination-session",
-          "note": "retroactive: execution ran 2026-08-13..2026-08-17"
-        },
-        {
-          "status": "completed",
-          "at": "2026-08-17T14:40:54.949655+00:00",
-          "by": "claude-coordination-session",
-          "note": "delivered by agent-harness#531 (two-lane chronology: heavy node deselected from py3.11/3.12, junit export, lane-removal retention guard as its own job)"
-        }
-      ]
+      "updated_at": "2026-08-17T14:40:54.949655+00:00"
     },
     {
       "acceptance_criteria_count": 5,
@@ -419,6 +419,20 @@
       "if_gates_produced": [],
       "lanes": [],
       "lifecycle": [],
+      "lifecycle_events": [
+        {
+          "at": "2026-08-17T14:40:54.949655+00:00",
+          "by": "claude-coordination-session",
+          "note": "retroactive: execution ran 2026-08-13..2026-08-17",
+          "status": "executing"
+        },
+        {
+          "at": "2026-08-17T14:40:54.949655+00:00",
+          "by": "claude-coordination-session",
+          "note": "delivered by agent-harness#534 + #543, with the junit-provenance defect it exposed fixed in agent-harness#580 (elig/offload/hosted/gate graph on tailnet host ai; measured 51-65 min offloaded vs ~87 hosted)",
+          "status": "completed"
+        }
+      ],
       "owner_skill": "claude-plan-detailed",
       "phase_alias": null,
       "reflection_ref": null,
@@ -427,21 +441,7 @@
       "status": "completed",
       "task_summary": "Offload heavy CI to ai via explicit elig/offload/hosted/gate job graph with enforced merge-gate",
       "type": "detailed",
-      "updated_at": "2026-08-17T14:40:54.949655+00:00",
-      "lifecycle_events": [
-        {
-          "status": "executing",
-          "at": "2026-08-17T14:40:54.949655+00:00",
-          "by": "claude-coordination-session",
-          "note": "retroactive: execution ran 2026-08-13..2026-08-17"
-        },
-        {
-          "status": "completed",
-          "at": "2026-08-17T14:40:54.949655+00:00",
-          "by": "claude-coordination-session",
-          "note": "delivered by agent-harness#534 + #543, with the junit-provenance defect it exposed fixed in agent-harness#580 (elig/offload/hosted/gate graph on tailnet host ai; measured 51-65 min offloaded vs ~87 hosted)"
-        }
-      ]
+      "updated_at": "2026-08-17T14:40:54.949655+00:00"
     },
     {
       "acceptance_criteria_count": 5,
@@ -1681,6 +1681,101 @@
         "status": "imported",
         "type": "phase"
       },
+      "sl0_repairs": [
+        {
+          "carried_gap": {
+            "finding": "no writer for fabpub_pytest_invocation.v1 exists anywhere in src/; the reducer's runner-stamped receipt requirement is therefore unsatisfiable by any author without forging the field",
+            "handling": "a truthful post-hoc record was produced and explicitly labelled AUTHOR_POST_HOC_NOT_RUNNER; it must never be presented as runner-stamped",
+            "owner": "roadmap coordinator",
+            "post_hoc_record_locus": "the AUTHOR_POST_HOC_NOT_RUNNER-labelled record exists ONLY as a local scratch artifact from the repair session and is NOT committed anywhere in this repo. This field is the citation; without it the surrounding claim would assert an artifact the record cannot witness.",
+            "status": "carried"
+          },
+          "closeout_event_preserved": "2026-08-18T13:01:45Z closeout left byte-identical; this record supersedes only the CURRENT binding, never the historical run record",
+          "counts_unchanged": {
+            "adapter_start_fence": 1,
+            "expected": 56,
+            "identity": 2,
+            "legacy_cutover": 8,
+            "migrated": 21,
+            "new_production": 35,
+            "red": 56,
+            "run_train_recovery": 1,
+            "shared_allocator": 2,
+            "writer_generation_fence": 1
+          },
+          "differential_scope_correction": "The comparison row is a SINGLE-FILE swap (only test_fabpub_shared_epoch.py at the main blob over B production), NOT 'current main tests' -- proven by deselected constant at 4558. It is a ceteris-paribus control. The differential CANNOT observe the patched region: under RED the node dies at fabpub_require (test_fabpub_shared_epoch.py:2902) because B production lacks LegacyWriterQuiescence, so lines 2940-2995 are unreachable. The RED anchor is therefore preserved trivially -- the patch sits downstream of the anchor. Efficacy is proven by the marker-present default-green run, not by this differential.",
+          "evidence": {
+            "B_production_checkout": "0620b3b44fa7ff499f8d456c48063b3bdf9ea896 (marker absent, attested by ImportError on phase_loop_runtime.fabpub_capability)",
+            "default_green_marker_present_repaired_head": {
+              "counts": "205 passed / 23 skipped / 4907 deselected / 0 failed",
+              "junit_sha256": "fb43f53e23a96199623ac46691c1c9f342eb3c101b9ac77146147990e82d2f65",
+              "note": "the lane that actually exercises the repaired region",
+              "raw_log_sha256": "6b64a8e2681e6569cd9622dcc22cda6e2d41ba06f288620de60901339da1ba19"
+            },
+            "row_repaired_blob_over_B": {
+              "counts": "58 failed / 147 passed / 23 skipped / 4558 deselected",
+              "junit_sha256": "7dd7958725bb85458754dd3fbbf5ab0f17da159329e2f8bf756cb938f4bf0114",
+              "raw_log_sha256": "da0289b2bc1fe0e4591a845301f46fb533a207391282772fff5c17439865d1ac"
+            },
+            "row_single_file_swap_main_blob_over_B": {
+              "counts": "58 failed / 147 passed / 23 skipped / 4558 deselected",
+              "junit_sha256": "b8eb8fb98a0ef1be8f0f0e285e92501c683d120dd142ea965218bf890acede68"
+            }
+          },
+          "evidence_locus": {
+            "junit_and_raw_logs": "local run artifacts, not committed; reproducible via the commands in the PR agent-harness#614 evidence comment",
+            "note": "These digests were computed locally during the repair; this repo holds no artifact for them. Recorded so a future auditor knows WHERE to look rather than assuming a witness exists.",
+            "recomputable_without_artifacts": [
+              "test_tree_sha256_previous",
+              "test_tree_sha256_current",
+              "exact_patch_sha256",
+              "counts_unchanged"
+            ],
+            "seat_reports": "PR agent-harness#614 review thread (panel run), not committed to this repo"
+          },
+          "exact_base_sha": "ad48930e523ebf8bba125a16f6a0601ae16fc09c",
+          "exact_head_sha": "306e9004509566f040571366e337570fb85910de",
+          "exact_patch_sha256": "cffd0f6cc7c506e808c1e9bf83d50239768c3fcb5013e8dcfb91ab50e9c10287",
+          "issue": "Consiliency/agent-harness#613",
+          "landed_merge_commit": "23648014c30e131466b97416ba8a45e1bcab033e",
+          "panel": {
+            "landing_precedent": "none -- Consiliency/agent-harness#586 is PRE-closeout and governs repair shape only; this is the first post-closeout SL-0 repair",
+            "president": "native Fable; round 1 HOLD, round 2 FORCING DECISION: PROCEED on the complete record",
+            "seat_version_drift": "plan names Fable 5 / GPT-5.6 Sol / Gemini 3.6 Flash / Grok 4.5; this panel ran Gemini 3.7 Flash and Grok 4.6",
+            "seats": {
+              "fable_native_critic": {
+                "report_sha256": "8cee5e3ac888899c4224ae2def0f7538ffbca61b1f3297772fdb1e8271d9ffbc",
+                "verdict": "AGREE"
+              },
+              "gemini_3_7_flash": {
+                "report_sha256": null,
+                "verdict": "ERROR_ABSENT"
+              },
+              "grok_4_6": {
+                "report_sha256": "345c371980fe473180de6003a0692b88bfb3d95bb8d76c2666a7aeb0b24a3b12",
+                "verdict": "AGREE"
+              },
+              "sol_codex": {
+                "report_sha256": "f0148b9fa4cf2884de89a515855c2cb73fe5b985843d1a7b5af6b5e6d4359ca1",
+                "verdict": "DISAGREE"
+              }
+            },
+            "topology": "four requested critic seats + native Fable president; effective critics 3 (Gemini leg ERROR, absent seat NOT assent, deferred to Consiliency/agent-harness#525)"
+          },
+          "plus_two_attribution": [
+            "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_red_receipt_binds_head_tree_and_junit -- TypeError: audit_red_evidence() unexpected keyword 'expected_head'",
+            "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_pytest_invocation_receipt_binds_stage_head_tree_and_junit -- TypeError: audit_pytest_invocation_receipt() unexpected keyword 'expected_selector'"
+          ],
+          "plus_two_cause": "signature drift of B-era fabpub_tdd_chronology pinned in the mixed tree; main-evolution outside the frozen set, not RED movement",
+          "pr": "Consiliency/agent-harness#614",
+          "reason": "post_closeout_SL0_test_repair_readiness_file_content_race_int_empty_string",
+          "record_id": "fabpub_sl0_repair_rebind.v1",
+          "scope": "tests_only_single_path phase-loop-runtime/tests/test_fabpub_shared_epoch.py; no nodeid, count, anchor, selector, guard, reducer, plan, or production change",
+          "test_tree_sha256_current": "d97a190301cac34d3dd0858f16a1657fa8f02102b4ac39785135ff8c941c9d7f",
+          "test_tree_sha256_previous": "223447a9f575c0ac2fde0f93bb3b71367216819b92404d3c67f90b89b8bc2648",
+          "updated_at_ruling": "OPERATOR RULING (2026-08-20): the row's `updated_at` stays at the closeout date (2026-08-18) and is NOT advanced when an sl0_repairs entry is appended. Rationale: the row's existing fields are exactly what append-never-mutate protects, and advancing `updated_at` would edit one of them. The repair's own date is carried inside this entry, so nothing is lost. PRECEDENT for the next post-closeout repair: append your entry, leave every pre-existing field byte-identical, including `updated_at`."
+        }
+      ],
       "slug": "v10-FABPUB",
       "status": "completed",
       "task_summary": null,
@@ -3595,6 +3690,7 @@
             "plan_sha256": "326b7e481c2d2b73daeba5bc26f24d2d7ef8bdb6033709f6111416aa79064cc5",
             "predecessor_plan_sha256": "1359cdeddb609999b21dcbe71d2759e050009a329e191a40e5f7cfd7ec34b3c8",
             "reason": "universal_native_first_routing_authority",
+            "repaired_digest_review_status": "unreviewed_not_approved",
             "review_reconciliation": {
               "finding": "missing_literal_native_first_red_green_verification_commands",
               "predecessor_head": "70488c8da0bc211f502bb84bf746956540fb143a",
@@ -3606,7 +3702,6 @@
                 "replace_narrow_native_fill_documentation_handoff_with_universal_host_relative_routing"
               ]
             },
-            "repaired_digest_review_status": "unreviewed_not_approved",
             "roadmap_bytes_posture": "frozen_v10_roadmap_bytes_unchanged; amendment_is_plan_and_manifest_local_only",
             "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
             "routing_matrix": {
