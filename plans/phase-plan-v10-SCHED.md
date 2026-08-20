@@ -254,9 +254,9 @@ SL-6 — Documentation, disposition, and completion evidence
     `review_request_digest_domain`, `roadmap_sha256`, `schema`, and `sched_plan_sha256`;
     candidate values are non-null and status is `candidate_awaiting_review`.
   - verify: before resolving `C`, `R`, or any other Git object, the literal HARDEN
-    preflight rejects raw local `include.*`/`includeIf.*` directives without following
-    them and then rejects the complete effective forbidden redirect/helper configuration
-    set with includes enabled. It requires the handoff domain to equal exactly
+    preflight rejects raw `include.*`/`includeIf.*` directives across all enabled
+    repository scopes without following them and then rejects the complete effective
+    forbidden redirect/helper configuration set with includes enabled. It requires the handoff domain to equal exactly
     `v10.sched-harden-handoff.v1\n`; a caller-selected domain is never authoritative.
   - verify: recompute the roadmap, SCHED, HARDEN, and manifest contract digests, validate
     both plans and the manifest at `C`, then obtain a fresh exact-digest native-first
