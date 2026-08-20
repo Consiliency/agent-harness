@@ -6,6 +6,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### CI: cancel superseded test runs (Consiliency/agent-harness#619, Consiliency/agent-harness#621)
+
+- The test workflow now cancels an older in-progress run when a newer commit is
+  pushed to the same pull request or ref. Concurrency groups are isolated by pull
+  request number (or ref outside pull requests), so one pull request cannot cancel
+  another pull request's suite on the shared offload host.
+
 ### entry-doc-check: close four false-positive and quiet-miss classes (Consiliency/agent-harness#599)
 
 - **Distribution names match under PEP 503.** `phase_loop_runtime==` and `Phase-Loop-Runtime==`
