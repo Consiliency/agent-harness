@@ -3035,6 +3035,30 @@
             "run_id": "20260820T003600Z-01-sched-plan"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-20T01:09:12Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "external_board_artifact_sha256": "bc3e336d2d77c60ca0586479ed010b251cee2363c193ad0998140c4864861840",
+            "external_board_statuses": {
+              "claude": "DEGRADED_no_verdict",
+              "gemini": "AGREE",
+              "grok": "DISAGREE"
+            },
+            "native_codex_status": "DISAGREE",
+            "plan_sha256": "0adb168e8aa26aeb31d6c8220dcb4fed523b627206da77f03563005230bdd8d7",
+            "predecessor_plan_sha256": "aa6983d0416b6bee4cfa1319c580421d843e1d14b1da3b78816bae723d508e8a",
+            "reconciled_findings": [
+              "writer_safe_sched_lane_b_before_harden",
+              "dirty_generation_bytes_not_branch_only",
+              "both_declared_work_unit_kind_directions_at_both_sites",
+              "ec_sched_7_unmet_accepted_residual",
+              "launcher_and_worker_pool_run_identity_ownership"
+            ],
+            "review_status": "dissent_reconciled_requires_fresh_exact_digest_review"
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -3050,7 +3074,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-20T00:36:00Z"
+      "updated_at": "2026-08-20T01:09:12Z"
     },
     {
       "acceptance_criteria_count": null,
