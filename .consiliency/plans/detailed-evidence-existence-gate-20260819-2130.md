@@ -1,55 +1,86 @@
 # Detailed plan: make missing evidence fail loudly (agent-harness#607 + agent-harness#601)
 
-**Revision 4 — SCOPE CUT.** Rev 3 was re-reviewed (codex DISAGREE, grok DISAGREE). Both found
-that the proposed `evidence-gate` **recreates the plan's own defect class** and cannot meet its
-own acceptance. Rev 4 therefore **deletes the agent-harness#607 build entirely** and keeps the
-operator action, scoping the remaining plan to agent-harness#601.
+**Revision 5 — SCOPE CUT, corrected.** Rev 3 was re-reviewed: codex DISAGREE, grok DISAGREE,
+fable PARTIALLY AGREE. All three said the `evidence-gate` aggregate must go. Rev 4 cut it; rev 5
+adds the decisive reason (which I did not have), un-cuts one piece rev 4 removed by mistake, and
+records two defects that would otherwise have been rebuilt.
 
-## Why the gate is cut rather than fixed again
+## Why the aggregate is cut — the decisive reason
 
-Three revisions, each containing instances of the class it exists to close. That is a signal
-about the design, not a run of bad luck. The specific findings:
+**It converts a live gate into a snapshot.** `evidence-gate` samples sibling runs at time T and
+concludes; nothing re-triggers it. `entry-doc-check` is time-dependent *by design* — a tag push
+makes a previously-fresh pin stale. If it is re-run on the same head and **fails**, the
+aggregate stays green and the merge proceeds, because under this design the individual
+workflows are deliberately **not** required. Native required contexts flip that context red and
+block.
 
-1. **Self-dependency deadlock.** The completeness guard requires every unconditional
-   `pull_request` workflow to be declared. `evidence-gate.yml` must run on PRs to be a required
-   check, so it is one. Declaring it makes the gate wait on its own `in_progress` run to the
-   deadline, then fail — permanent false red. Omitting it fails the guard.
+So the aggregate is not merely redundant with the platform — it is **strictly weaker on a live
+axis**, and it reports a stale absence-of-failure as present success. That is the plan's own
+class, and it is architectural: no amount of polling discipline fixes it.
+
+The supporting defects (any one sufficient):
+
+1. **Self-dependency deadlock.** The completeness guard demands every unconditional
+   `pull_request` workflow be declared; `evidence-gate.yml` is one. Declaring it makes the gate
+   wait on its own `in_progress` run to the deadline, then fail. Omitting it fails the guard.
 2. **It does not close the defect it names.** GitHub treats a conditionally skipped **job** as
-   success for required-check purposes. A workflow-level `conclusion == success` therefore
-   passes while the intended evidence job never ran. The gate is *strictly weaker* than the
-   `skipped satisfies required` pitfall it was written to fix. `head_sha` alone also accepts a
-   `push` or `dispatch` run in place of the missing `pull_request` run — event identity is
-   required and was not specified.
-3. **The reconciler cannot make a stale PR report.** Scheduled workflows run against the
-   default-branch head; a required context must report on the PR's head SHA. Enumerating PR
-   heads attaches nothing. Closing it needs `checks:write` + the Check Runs API, or head-bound
-   dispatch, none of which rev 3 specified — the same "cannot reach already-open PRs" hole it
-   claimed to close.
-4. **Poll budget vs wall clock.** The declared set must include `test`, whose offload job alone
-   allows **120 minutes**. Any parallel poller with a normal job budget false-reds every PR
-   while the suite is still running.
-5. Verification invoked `python3 -m phase_loop_runtime.evidence_gate` while placing the helper
-   in `scripts/` (outside the package), and never listed its own test file under Changes.
+   success for required-check purposes, so workflow-level `conclusion == success` passes while
+   the intended evidence job never ran. `head_sha` alone also accepts a `push`/`dispatch` run in
+   place of the missing `pull_request` run.
+3. **The reconciler cannot make a stale PR report** — scheduled runs use the default-branch
+   head; a required context must report on the PR head. It also specced only `actions: read`,
+   while reporting needs `checks:`/`statuses: write`. It falls with the aggregate: native
+   contexts reach event-less PRs for free, blocking as "Expected", with the same empty-commit
+   remedy.
+4. **Poll budget vs wall clock.** The declared set must include `test`, whose offload job allows
+   **120 minutes** — a poller with a normal budget false-reds every PR during a busy window, on
+   a *required* check, i.e. repo-wide.
 
-**The native mechanism is better than what I designed.** A required context that has never
-reported blocks merge as *"Expected — waiting for status to be reported"*, at **job identity**,
-with no polling, no self-dependency, and no new failure modes. My aggregate was a weaker
-reimplementation of a platform feature.
+## What rev 4 got wrong: the completeness guard survives
+
+Rev 4 withdrew the completeness guard along with the aggregate. That was an over-cut. It is the
+**one piece that closes the meta-hole** (workflow N+1 lands undeclared and is invisible), and no
+branch-protection setting covers it. Keep it — but **host it in an already-required job**
+(e.g. `lint (pyflakes)`: required, unconditional, already has a checkout) rather than in a new
+workflow. Data-only: no polling, no API, no race, no self-dependency.
+
+Honesty note to carry: without admin API the guard can only assert membership in the checked-in
+declared list. **Declared-list == branch-protection remains a human mirror step.**
+
+## Two defects that would otherwise have been rebuilt
+
+- **The PyYAML `on:` footgun — vacuity inside the guard itself.** YAML 1.1 parses the bare key
+  `on` as boolean `True`, so `wf.get("on")` is `None` for every workflow. A naive guard sees
+  **zero** `pull_request` workflows, computes an empty unconditional set, and **passes
+  vacuously** — absence-as-success, hiding in the very mechanism meant to detect it. Read
+  `wf.get(True) or wf.get("on")`, or use a YAML 1.2 loader.
+- **The completeness guard had no falsifier.** It was labelled load-bearing while nothing
+  exercised it — the exact shape rev 1 shipped twice. **Required:** a fixture workflow
+  unconditional on `pull_request` and absent from the declared list → guard **red**; the same
+  fixture path-filtered → **green**.
+
+## The agent-harness#601 half: placement was contradictory, and a red that blocks nothing is the class again
+
+Rev 3 specified the inert-delta step "at the offload aggregation seam". Those paths exist only
+in the offload job's workspace, so the step **never runs on the hosted/fork path** — the
+detector silently does not exist for fork PRs, and an exactly-one-evidence-set assert cannot
+rescue a step that never executes.
+
+Respecify as an **`if: always()` job** with `needs: [offload, pytest, cleanroom]`, downloading
+both artifact families (`junit-offload/{py310,gate-a}` from offload; `chronology-junit-py310` /
+`chronology-junit-gate-a` from hosted), asserting **exactly one family present**, then running
+`inert_delta`. **Wire it into `suite gate`'s `needs` and verdict** so its red actually blocks —
+a detector whose red blocks nothing is the class again — while leaving the required-context set
+unchanged.
 
 ## What remains
 
-- **agent-harness#607 — operator action only.** Add `entry-point docs verification` to main's
-  required contexts. No code. See "Do this first" below, which rev 3 already got right.
-- **agent-harness#601 — the genuinely uncovered half.** Inert tests are invisible to branch
-  protection at any setting. This is the only part that still needs building, and it needs the
-  hosted-path consumer wired explicitly (offload emits `junit-offload/{py310,gate-a}`; hosted
-  emits `chronology-junit-*` on jobs that are **skipped on the eligible path**, so a
-  hosted-only wiring leaves the detector inert on the common path — the plan's own class,
-  which rev 3 asserted in prose without naming a consumer job).
+- **agent-harness#607 — operator action only.** Add the per-workflow required contexts. No code.
+- **The completeness guard**, hosted in an already-required job, with the falsifier above.
+- **agent-harness#601 inert-delta**, as respecified.
 
-The sections below are retained from rev 3 for the agent-harness#601 half and the operator
-action. **Every `evidence-gate.yml` / `evidence-reconcile.yml` / `required-workflows.json` /
-completeness-guard change is withdrawn.**
+**Withdrawn:** `evidence-gate.yml`, `evidence-reconcile.yml`, `required-workflows.json`, and the
+polling/aggregate design in every section below. Sections are retained for the surviving halves.
 
 ## Task
 
