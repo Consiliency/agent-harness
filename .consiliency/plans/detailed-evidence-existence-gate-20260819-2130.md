@@ -1,6 +1,6 @@
 # Detailed plan: make missing evidence fail loudly (agent-harness#607 + agent-harness#601)
 
-**Revision 5 — SCOPE CUT, corrected.** Rev 3 was re-reviewed: codex DISAGREE, grok DISAGREE,
+**Revision 6 — the body now matches the cut.** Rev 3 was re-reviewed: codex DISAGREE, grok DISAGREE,
 fable PARTIALLY AGREE. All three said the `evidence-gate` aggregate must go. Rev 4 cut it; rev 5
 adds the decisive reason (which I did not have), un-cuts one piece rev 4 removed by mistake, and
 records two defects that would otherwise have been rebuilt.
@@ -181,160 +181,129 @@ absent from collection with **no reason string**, **61** skipped in both lanes.
 
 ## Changes
 
-### `.github/workflows/evidence-gate.yml` — completeness guard step (create, load-bearing)
+> **Scope note.** Revision 5 withdrew `evidence-gate.yml`, `evidence-reconcile.yml`, and
+> `required-workflows.json`, but left this section still creating them — so an implementer
+> following the acceptance contract would have rebuilt the defect class the revision cut.
+> Revision 6 rewrites the section to match. Nothing below creates a polling aggregate.
 
-- **Workflows-as-data guard** — add — parse `.github/workflows/*.yml` and fail when a workflow
-  that triggers unconditionally on `pull_request` is **absent from the declared list**.
-  Without it, workflow N+1 is invisible to the gate and **the agent-harness#607 class recurs
-  one meta-level up, permanently** — a gate that only protects what someone remembered to
-  declare. Precedent for reading workflow YAML as data already exists in this repo:
-  `chronology-retention` (`test.yml:311-336`).
-- The same guard enforces the invariant that declared workflows must be **unconditional** on
-  `pull_request` — a path-filtered workflow legitimately does not run, and treating that as
-  missing evidence is the false positive that would block every PR.
+### Operator action — no code (closes the observed agent-harness#607 instance)
 
-### `phase-loop-runtime/scripts/evidence_gate.py` (create)
+- Add the **per-workflow required contexts** to `main`'s branch protection. A required
+  context that has never reported blocks merge as *"Expected — waiting for status to be
+  reported"*, at **job identity**, with no polling and no new failure modes. This is an
+  operator action; the plan does not perform it.
 
-> Placed in `scripts/`, **not** the published package. Repo precedent for CI-only helpers is
-> `phase-loop-runtime/scripts/` (e.g. `check_model_id_sources.py`); putting it in
-> `src/phase_loop_runtime/` would grow the published public surface for a CI-only concern.
+### `.github/workflows/test.yml` — completeness guard, hosted in an already-required job
 
-- `missing_or_unsuccessful(declared, observed, head_sha)` — add — pure. Returns each declared
-  workflow whose run for **this `head_sha`** is absent, not `completed`, or whose
-  `conclusion != "success"`. **Existence is necessary and not sufficient** — the rev-1 defect.
-  `cancelled` and `startup_failure` are runs that exist and produced **no evidence**; they
-  must be red.
-- `inert_delta(canonical_junit, lane_junit)` — add — returns three **separate identity sets**:
-  `skipped_here_live_there`, `absent_from_collection`, `skipped_in_both`. Never summed, and
-  **never reduced to cardinality** — sets, so an add/drop pair cannot cancel out.
-- `classify_inert(entry, allowlist)` — add — `legitimate` / `unclassified` / `accidental`.
-  **`unclassified` fails**, matching the acceptance rule; rev 1 failed only `accidental`
-  while knowingly retaining 5 unclassified.
+- Add a **workflows-as-data** step to `lint (pyflakes)` (required, unconditional, already has
+  a checkout) — modify. It fails when a workflow that triggers unconditionally on
+  `pull_request` is absent from a checked-in declared list. Data-only: no polling, no API, no
+  self-dependency, no race.
+- **Scan `*.yml` AND `*.yaml`.** GitHub accepts both; scanning one extension is a direct
+  false green in the guard itself.
+- **PyYAML footgun.** YAML 1.1 parses the bare key `on` as boolean `True`, so a lookup of the
+  string `"on"` returns `None` for every workflow: the guard then sees zero `pull_request`
+  workflows and **passes vacuously**. Read `wf.get(True) or wf.get("on")`, or use a 1.2 loader.
+- **Honest scope, recorded rather than implied:** branch protection requires **job/check
+  contexts**, while this guard declares **workflow files**. A new gating *job* added inside an
+  already-declared workflow stays invisible to it, and a conditional required job can still
+  skip and satisfy protection. The guard closes the *new-workflow* meta-hole only. It does not
+  close the skipped-job hole, and nothing in this plan does — that remains open and is not
+  claimed as covered.
 
-### `.github/workflows/evidence-gate.yml` (create)
+### `.github/declared-pr-workflows.json` (create)
 
-- `evidence-gate` job — add — required aggregate, `if: always()`, `permissions: actions: read`
-  (sufficient; **admin scope is not required** — this was the panel's answer to "is it even
-  buildable", and the answer is yes, but not as rev 1 specified it).
-- Keyed on `head_sha`. Polls `queued`/`in_progress` to a bounded deadline rather than reading
-  "not finished yet" as missing.
-- **Excludes path-filtered workflows** from the declared set — they legitimately do not run,
-  and treating that as missing evidence is the false-positive that would block every PR.
-- Failure message names the remedy: **an empty commit**. "Re-run the workflow" is impossible
-  when no run exists, and `entry-doc-check.yml` has no `workflow_dispatch` trigger
-  (`:19-22`) — so the obvious remedy text would be advice that cannot be followed.
-- **Bounded retry for the first-push race.** Workflows for one `pull_request` event are
-  created near-simultaneously but **not transactionally**, so an immediate read can see a
-  genuinely-coming run as missing and false-red a fresh push.
+- The checked-in declared list the guard reads. Named here because the guard needs one and the
+  previously specified `required-workflows.json` was withdrawn with the aggregate.
+- Without admin API this asserts membership in a checked-in list only; **declared-list ==
+  branch-protection stays a human mirror step.**
 
-### `.github/workflows/evidence-reconcile.yml` (create)
+### `.github/workflows/test.yml` — agent-harness#601 inert-delta
 
-- Scheduled + `workflow_dispatch` reconciler — add — **closes rev-1 defect 2.** Enumerates
-  open PRs and re-evaluates each head against the current declared set, so landing a new
-  requirement reaches PRs that will never emit a `pull_request` event. Without this the gate
-  has the hole it exists to detect.
+- New **`if: always()`** job with `needs: [offload, pytest, cleanroom]` — add. Downloads both
+  artifact families (`junit-offload/{py310,gate-a}` from offload; `chronology-junit-py310` /
+  `chronology-junit-gate-a` from hosted), asserts **exactly one family present**, then runs
+  the inert-delta reduction.
+- **Wired into `suite gate`'s `needs` and verdict**, so its red actually blocks. A detector
+  whose red blocks nothing is this plan's own class.
+- Placement matters: the offload seam alone never runs on the hosted/fork path, so a
+  seam-local step would silently not exist there.
 
-### `.github/required-workflows.json` (create)
+### `phase-loop-runtime/scripts/inert_delta.py` (create)
 
-- Declared required set — add — checked in, so the gate's correctness is reviewable in a
-  diff rather than depending on a branch-protection setting no reviewer sees.
+- `inert_delta(canonical_junit, lane_junit)` — returns three **identity sets**:
+  `skipped_here_live_there`, `absent_from_collection`, `skipped_in_both`. Never summed, never
+  reduced to cardinality — an add/drop pair that preserves counts must still fail.
+- `classify_inert(entry, allowlist)` — `legitimate` / `unclassified` / `accidental`.
+  **`unclassified` fails.**
+- In `scripts/`, **not** the published package, per the repo's CI-only-helper precedent
+  (`check_model_id_sources.py`). **Invoke it as `python3 scripts/inert_delta.py`** — the
+  earlier `python3 -m phase_loop_runtime.evidence_gate` form was impossible against this
+  placement.
 
 ### `.github/inert-tests-baseline.json` (create)
 
-- Two identity-keyed sets — add — allowed skips (seeded from the 73, each with a reason) and
-  the **expected-collection baseline** for `absent_from_collection`. Identity-keyed, not
-  counts, per rev-1 defect 4.
-- **Pruning rule** — add — an allowlist entry matching **no collected test** is itself a
-  finding. Without it the allowlist rots into a rubber stamp: entries accumulate, nothing ever
-  removes them, and a stale entry silently excuses a test that no longer exists. Seeding 73
-  wholesale is a rubber stamp at birth; the fresh-measurement requirement plus pruning is what
-  keeps it honest.
-
-### `.github/workflows/test.yml` (modify)
-
-- Add an `inert-delta` step **at the offload aggregation seam**, consuming the already-paired
-  `junit-offload/py310` and `junit-offload/gate-a` — modify. Not attached to `suite gate` (no
-  artifact download) and **not** in `gate_a_cleanroom.sh`.
-- **Dual-path, fail-closed on exactly one evidence set.** The hosted jobs (`pytest`,
-  `cleanroom`) are **skipped on the offload path** (`test.yml:191-192`, `:345-346`), which is
-  the *common* path, and the two paths produce different artifact layouts
-  (`junit-offloaded` vs `chronology-junit-*`). Wiring only the hosted layout makes the
-  inertness detector **itself inert on the majority path** — this plan's own class, third
-  occurrence. Assert **exactly one** evidence set is present and fail closed otherwise,
-  mirroring `suite gate`'s exactly-one-verdict contract.
-- Note: the canonical junit currently excludes the two LEGIBLE files, which run in a separate
-  invocation emitting no junit (`test.yml:253`, `ci/dagger/src/agent_harness_ci/main.py:168`).
-  Inertness there is invisible; either emit junit for them or record them as a declared blind
-  spot. **Do not leave it undocumented** — an unrecorded blind spot is this plan's own class.
+- Identity-keyed allowed-skip set (seeded from a **fresh** measurement) and the
+  expected-collection baseline. **Pruning rule:** an entry matching no collected test is
+  itself a finding, or the allowlist rots into a rubber stamp.
 
 ### `CHANGELOG.md` (modify)
 
-- Add — a new required check is a public surface; the docs-audit gate blocks a public-surface
-  change without a committed CHANGELOG entry.
+- A new required check is a public surface; the docs-audit gate blocks a public-surface change
+  without a committed entry.
 
 ## Dependencies & order
 
-1. Pure functions in `evidence_gate.py` first — the only part testable without CI round-trips.
-2. Reseed **all** measured inputs; the numbers above expire on any merge.
-3. `evidence-gate.yml` lands and runs **advisory** before becoming required. A gate made
-   required before it is proven converts a false positive into a repo-wide outage.
-4. `evidence-reconcile.yml` must land **with or before** the gate becomes required, or the
-   gate cannot reach the 13 PRs that motivated it.
-5. **Blocking external dependency:** `ci/` and `test.yml` are offload/Dagger territory
-   (agent-harness#534/#543). Ratify this design before editing them.
+1. Pure functions in `scripts/inert_delta.py` first — the only part testable without CI.
+2. Reseed every measured input; the numbers in this plan expired twice during review.
+3. The completeness guard and the inert-delta job land **advisory** before anything gates on
+   them.
+4. **Blocking external dependency:** `ci/` and `test.yml` are offload/Dagger territory
+   (agent-harness#534/#543). Ratify before editing.
 
 ## Verification
 
 ```sh
-PYTHONPATH=src:tests python3 -m pytest tests/test_evidence_gate.py -q
+PYTHONPATH=src:tests python3 -m pytest tests/test_inert_delta.py -q
 
-# agent-harness#607, keyed on head_sha (NOT branch)
-gh api "repos/Consiliency/agent-harness/actions/runs?head_sha=<sha>" \
-  --jq '.workflow_runs[] | "\(.name) \(.status) \(.conclusion)"'
-
-# agent-harness#601, at the seam where both files already exist
-python3 -m phase_loop_runtime.evidence_gate \
+python3 scripts/inert_delta.py \
   --canonical junit-offload/py310/junit-py310.xml \
   --lane junit-offload/gate-a/junit-gate-a.xml
-# expect three separate identity sets, never summed, never cardinality-reduced
+# expect three separate identity sets, never summed
 
-# FALSIFIERS — required, and each must be RUN, not reasoned about
-# 1. A declared workflow whose run FAILED  -> gate red (rev 1 would have gone green)
-# 2. A declared workflow with no run       -> gate red
-# 3. Inert test absent from the baseline   -> red;  present with a reason -> green
-# 4. Add one uncollected test AND restore another -> identity sets differ -> red
-#    (a cardinality gate is green here; this is the rev-1 defect)
+# FALSIFIERS — each must be RUN, not reasoned about
+# 1. fixture workflow, unconditional on pull_request, absent from the declared list -> guard RED
+# 2. same fixture, path-filtered                                                    -> guard GREEN
+# 3. a .yaml (not .yml) unconditional workflow absent from the list                 -> guard RED
+# 4. guard reading the string key "on" instead of boolean True                      -> must FAIL
+#    (proves the vacuity footgun is closed, not merely noted)
+# 5. inert test absent from the baseline -> RED; present with a reason -> GREEN
+# 6. add one uncollected test AND restore another (counts unchanged)   -> RED
 ```
 
 ## Acceptance criteria
 
-- [ ] A declared workflow whose run **exists but did not succeed** makes `evidence-gate`
-      **red**. Proven by running it, not by inspection — this is rev 1's primary defect.
-- [ ] A PR head with **no run** for a declared workflow makes the gate red, with the remedy
-      named.
-- [ ] The reconciler makes a **stale open PR** (last push predating the requirement) report,
-      demonstrated on a real branch. Without this the gate has agent-harness#607's own defect.
-- [ ] `inert_delta` returns three **identity sets**; an add/drop pair that preserves counts
-      still fails. No code path sums or counts them.
-- [ ] A non-allowlisted inert test fails, **including `unclassified`**.
-- [ ] Path-filtered workflows do **not** trip the gate.
-- [ ] Each half mutation-verified against **its own** fixture, asserted through the
-      **entry point** (workflow verdict / CLI exit), not only the pure function.
-- [ ] `suite gate` behaviour unchanged.
-
-## Execution Policy
-
-- execute: effort=high, reason=CI gate correctness; a false positive blocks every PR, and the
-  failure being fixed is silent.
+- [ ] The completeness guard fails on an undeclared unconditional `pull_request` workflow, and
+      passes on a path-filtered one. Proven by running falsifiers 1–2.
+- [ ] The guard detects a `.yaml` workflow (falsifier 3) and cannot pass vacuously under the
+      PyYAML `on` footgun (falsifier 4).
+- [ ] `inert_delta` returns three **identity sets**; a count-preserving add/drop still fails.
+- [ ] A non-allowlisted inert test fails the build, **including `unclassified`**.
+- [ ] The inert-delta job runs on **both** the offload and hosted paths, asserts exactly one
+      evidence family, and its red **blocks** via `suite gate`.
+- [ ] Each half mutation-verified against **its own** fixture, asserted through the **entry
+      point** (workflow verdict), not only the pure function.
+- [ ] `suite gate` behaviour is otherwise unchanged; the required-context set is unchanged.
 
 ## Out of scope
 
-- Branch-protection settings — an operator action; the gate proves itself first.
-- The 5 conflicted PRs from the sweep — unmergeable today; their resolution produces an
-  unchecked tree, tracked separately.
+- Branch-protection settings — an operator action.
+- **The skipped-job hole.** A conditionally skipped required job satisfies branch protection;
+  nothing here closes it. Stated as open rather than implied covered.
+- The 5 conflicted PRs from the agent-harness#607 sweep.
 - agent-harness#600 — unrelated surface.
 
 ## Manifest note
 
-`plans/manifest.json` **deliberately not appended**: agent-harness#606, agent-harness#546 and
-agent-harness#383 all modify it concurrently. Append when they settle.
+`plans/manifest.json` deliberately not appended: agent-harness#606, agent-harness#546 and
+agent-harness#383 all modify it concurrently.
