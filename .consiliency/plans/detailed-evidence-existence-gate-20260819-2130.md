@@ -1,10 +1,55 @@
 # Detailed plan: make missing evidence fail loudly (agent-harness#607 + agent-harness#601)
 
-**Revision 3.** Revision 1 was reviewed by a three-seat panel: codex DISAGREE, grok DISAGREE,
-fable PARTIALLY AGREE. Rev 2 answered codex and grok; rev 3 answers fable, whose central finding
-reframes the plan — see "Do this first". Earlier errors are recorded in
-"What revision 1 got wrong" below, because two of them were instances of the very class this
-plan exists to close.
+**Revision 4 — SCOPE CUT.** Rev 3 was re-reviewed (codex DISAGREE, grok DISAGREE). Both found
+that the proposed `evidence-gate` **recreates the plan's own defect class** and cannot meet its
+own acceptance. Rev 4 therefore **deletes the agent-harness#607 build entirely** and keeps the
+operator action, scoping the remaining plan to agent-harness#601.
+
+## Why the gate is cut rather than fixed again
+
+Three revisions, each containing instances of the class it exists to close. That is a signal
+about the design, not a run of bad luck. The specific findings:
+
+1. **Self-dependency deadlock.** The completeness guard requires every unconditional
+   `pull_request` workflow to be declared. `evidence-gate.yml` must run on PRs to be a required
+   check, so it is one. Declaring it makes the gate wait on its own `in_progress` run to the
+   deadline, then fail — permanent false red. Omitting it fails the guard.
+2. **It does not close the defect it names.** GitHub treats a conditionally skipped **job** as
+   success for required-check purposes. A workflow-level `conclusion == success` therefore
+   passes while the intended evidence job never ran. The gate is *strictly weaker* than the
+   `skipped satisfies required` pitfall it was written to fix. `head_sha` alone also accepts a
+   `push` or `dispatch` run in place of the missing `pull_request` run — event identity is
+   required and was not specified.
+3. **The reconciler cannot make a stale PR report.** Scheduled workflows run against the
+   default-branch head; a required context must report on the PR's head SHA. Enumerating PR
+   heads attaches nothing. Closing it needs `checks:write` + the Check Runs API, or head-bound
+   dispatch, none of which rev 3 specified — the same "cannot reach already-open PRs" hole it
+   claimed to close.
+4. **Poll budget vs wall clock.** The declared set must include `test`, whose offload job alone
+   allows **120 minutes**. Any parallel poller with a normal job budget false-reds every PR
+   while the suite is still running.
+5. Verification invoked `python3 -m phase_loop_runtime.evidence_gate` while placing the helper
+   in `scripts/` (outside the package), and never listed its own test file under Changes.
+
+**The native mechanism is better than what I designed.** A required context that has never
+reported blocks merge as *"Expected — waiting for status to be reported"*, at **job identity**,
+with no polling, no self-dependency, and no new failure modes. My aggregate was a weaker
+reimplementation of a platform feature.
+
+## What remains
+
+- **agent-harness#607 — operator action only.** Add `entry-point docs verification` to main's
+  required contexts. No code. See "Do this first" below, which rev 3 already got right.
+- **agent-harness#601 — the genuinely uncovered half.** Inert tests are invisible to branch
+  protection at any setting. This is the only part that still needs building, and it needs the
+  hosted-path consumer wired explicitly (offload emits `junit-offload/{py310,gate-a}`; hosted
+  emits `chronology-junit-*` on jobs that are **skipped on the eligible path**, so a
+  hosted-only wiring leaves the detector inert on the common path — the plan's own class,
+  which rev 3 asserted in prose without naming a consumer job).
+
+The sections below are retained from rev 3 for the agent-harness#601 half and the operator
+action. **Every `evidence-gate.yml` / `evidence-reconcile.yml` / `required-workflows.json` /
+completeness-guard change is withdrawn.**
 
 ## Task
 
