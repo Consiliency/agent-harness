@@ -95,11 +95,16 @@ bullets above. **It depends on which install you ran**, so pick the matching sur
 > **Custom skill roots — the two env vars behave differently, and conflating them will
 > make you dismiss a real failure.**
 >
-> - `AGENT_HARNESS_SKILL_DEST` is **installer-only**. `doctor` never reads it and probes
->   the default roots, so a good install to a custom destination reads `missing` /
->   `partial`. That one *is* a false red. Bridge it:
->   `PHASE_LOOP_SKILL_BUNDLE="$AGENT_HARNESS_SKILL_DEST" phase-loop doctor --json`,
->   then assert your harness's entry.
+> - `AGENT_HARNESS_SKILL_DEST` is **installer-only, and only honored for a SINGLE
+>   harness** — `--harness all` ignores it and installs to the default roots. `doctor`
+>   never reads it either, so a good single-harness install to a custom destination reads
+>   `missing` / `partial`. That one *is* a false red. Bridge it **only for a
+>   single-harness install**, passing the **literal path** you installed to:
+>   `PHASE_LOOP_SKILL_BUNDLE=/your/custom/root phase-loop doctor --json`, then assert your
+>   harness's entry. Do **not** write `"$AGENT_HARNESS_SKILL_DEST"` unless it is still
+>   set in *this* shell — a command-scoped assignment on the installer line does not
+>   persist, and an empty value is ignored by the resolver, which silently drops you back
+>   to the default roots. After `--harness all`, do not bridge at all: assert the defaults.
 > - `PHASE_LOOP_SKILL_BUNDLE` is **honored by `doctor`** — it probes *that* path, not the
 >   defaults. So `missing` / `partial` under it is a **true finding about the root you
 >   pointed at**, and must not be waved away as a default-root artifact.
