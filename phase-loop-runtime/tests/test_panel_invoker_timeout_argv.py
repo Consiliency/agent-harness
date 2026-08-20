@@ -1811,7 +1811,7 @@ def test_capture_preflight_probe_is_swept_by_fatal_latch(tmp_path):
                     (
                         "import os, signal, sys, time; "
                         "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-                        "open(sys.argv[1], 'w').write(str(os.getpid())); "
+                        "import os as _o; _t=sys.argv[1]+'.partial'; open(_t,'w').write(str(os.getpid())); _o.replace(_t, sys.argv[1]); "
                         "time.sleep(600)"
                     ),
                     str(pid_marker),
@@ -1965,8 +1965,10 @@ def test_capture_quiescence_failure_stops_siblings_and_retains_private_roots(
                     "    with open(sys.argv[2], 'w') as marker:\n"
                     "        marker.write('truthful post-trip private output')\n"
                     "signal.signal(signal.SIGTERM, on_term)\n"
-                    "with open(sys.argv[1], 'w') as marker:\n"
+                    "_t = sys.argv[1] + '.partial'\n"
+                    "with open(_t, 'w') as marker:\n"
                     "    marker.write(str(os.getpid()))\n"
+                    "os.replace(_t, sys.argv[1])\n"
                     "while True:\n"
                     "    time.sleep(1)\n"
                 ),
@@ -2061,7 +2063,7 @@ def _terminate_real_descendant_group_before_capture_cleanup(
     child_code = (
         "import os, signal, sys, time; "
         "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-        "open(sys.argv[1], 'w').write(str(os.getpid())); "
+        "import os as _o; _t=sys.argv[1]+'.partial'; open(_t,'w').write(str(os.getpid())); _o.replace(_t, sys.argv[1]); "
         "time.sleep(600)"
     )
     leader_code = (

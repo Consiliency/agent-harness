@@ -202,7 +202,7 @@ def test_termination_kills_ignoring_descendant_before_cleanup(monkeypatch, tmp_p
     child_code = (
         "import os, signal, sys, time; "
         "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-        "open(sys.argv[1], 'w').write(str(os.getpid())); "
+        "import os as _o; _t=sys.argv[1]+'.partial'; open(_t,'w').write(str(os.getpid())); _o.replace(_t, sys.argv[1]); "
         "time.sleep(600)"
     )
     leader_code = (
