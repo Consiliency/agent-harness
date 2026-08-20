@@ -92,10 +92,17 @@ bullets above. **It depends on which install you ran**, so pick the matching sur
 >
 > `unknown` BOM verdicts are **not** failures.
 >
-> **The table presumes the default skill roots.** If you installed with
-> `AGENT_HARNESS_SKILL_DEST` or run with `PHASE_LOOP_SKILL_BUNDLE` set, the surfaces are
-> probed at the defaults and will read `missing`/`partial` on a perfectly good install.
-> Assert against the root you actually installed to.
+> **Custom skill roots — the two env vars behave differently, and conflating them will
+> make you dismiss a real failure.**
+>
+> - `AGENT_HARNESS_SKILL_DEST` is **installer-only**. `doctor` never reads it and probes
+>   the default roots, so a good install to a custom destination reads `missing` /
+>   `partial`. That one *is* a false red. Bridge it:
+>   `PHASE_LOOP_SKILL_BUNDLE="$AGENT_HARNESS_SKILL_DEST" phase-loop doctor --json`,
+>   then assert your harness's entry.
+> - `PHASE_LOOP_SKILL_BUNDLE` is **honored by `doctor`** — it probes *that* path, not the
+>   defaults. So `missing` / `partial` under it is a **true finding about the root you
+>   pointed at**, and must not be waved away as a default-root artifact.
 
 **Two things the pass condition deliberately does not include.**
 
