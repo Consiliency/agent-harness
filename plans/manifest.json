@@ -1772,7 +1772,8 @@
           "record_id": "fabpub_sl0_repair_rebind.v1",
           "scope": "tests_only_single_path phase-loop-runtime/tests/test_fabpub_shared_epoch.py; no nodeid, count, anchor, selector, guard, reducer, plan, or production change",
           "test_tree_sha256_current": "d97a190301cac34d3dd0858f16a1657fa8f02102b4ac39785135ff8c941c9d7f",
-          "test_tree_sha256_previous": "223447a9f575c0ac2fde0f93bb3b71367216819b92404d3c67f90b89b8bc2648"
+          "test_tree_sha256_previous": "223447a9f575c0ac2fde0f93bb3b71367216819b92404d3c67f90b89b8bc2648",
+          "updated_at_ruling": "OPERATOR RULING (2026-08-20): the row's `updated_at` stays at the closeout date (2026-08-18) and is NOT advanced when an sl0_repairs entry is appended. Rationale: the row's existing fields are exactly what append-never-mutate protects, and advancing `updated_at` would edit one of them. The repair's own date is carried inside this entry, so nothing is lost. PRECEDENT for the next post-closeout repair: append your entry, leave every pre-existing field byte-identical, including `updated_at`."
         }
       ],
       "slug": "v10-FABPUB",
