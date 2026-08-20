@@ -1685,7 +1685,89 @@
       "status": "completed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-18T13:01:45Z"
+      "updated_at": "2026-08-18T13:01:45Z",
+      "sl0_repairs": [
+        {
+          "record_id": "fabpub_sl0_repair_rebind.v1",
+          "reason": "post_closeout_SL0_test_repair_readiness_file_content_race_int_empty_string",
+          "pr": "Consiliency/agent-harness#614",
+          "issue": "Consiliency/agent-harness#613",
+          "exact_base_sha": "ad48930e523ebf8bba125a16f6a0601ae16fc09c",
+          "exact_head_sha": "306e9004509566f040571366e337570fb85910de",
+          "exact_patch_sha256": "cffd0f6cc7c506e808c1e9bf83d50239768c3fcb5013e8dcfb91ab50e9c10287",
+          "test_tree_sha256_previous": "223447a9f575c0ac2fde0f93bb3b71367216819b92404d3c67f90b89b8bc2648",
+          "test_tree_sha256_current": "d97a190301cac34d3dd0858f16a1657fa8f02102b4ac39785135ff8c941c9d7f",
+          "closeout_event_preserved": "2026-08-18T13:01:45Z closeout left byte-identical; this record supersedes only the CURRENT binding, never the historical run record",
+          "scope": "tests_only_single_path phase-loop-runtime/tests/test_fabpub_shared_epoch.py; no nodeid, count, anchor, selector, guard, reducer, plan, or production change",
+          "counts_unchanged": {
+            "expected": 56,
+            "red": 56,
+            "new_production": 35,
+            "migrated": 21,
+            "legacy_cutover": 8,
+            "identity": 2,
+            "shared_allocator": 2,
+            "adapter_start_fence": 1,
+            "writer_generation_fence": 1,
+            "run_train_recovery": 1
+          },
+          "evidence": {
+            "default_green_marker_present_repaired_head": {
+              "counts": "205 passed / 23 skipped / 4907 deselected / 0 failed",
+              "junit_sha256": "fb43f53e23a96199623ac46691c1c9f342eb3c101b9ac77146147990e82d2f65",
+              "raw_log_sha256": "6b64a8e2681e6569cd9622dcc22cda6e2d41ba06f288620de60901339da1ba19",
+              "note": "the lane that actually exercises the repaired region"
+            },
+            "row_single_file_swap_main_blob_over_B": {
+              "counts": "58 failed / 147 passed / 23 skipped / 4558 deselected",
+              "junit_sha256": "b8eb8fb98a0ef1be8f0f0e285e92501c683d120dd142ea965218bf890acede68"
+            },
+            "row_repaired_blob_over_B": {
+              "counts": "58 failed / 147 passed / 23 skipped / 4558 deselected",
+              "junit_sha256": "7dd7958725bb85458754dd3fbbf5ab0f17da159329e2f8bf756cb938f4bf0114",
+              "raw_log_sha256": "da0289b2bc1fe0e4591a845301f46fb533a207391282772fff5c17439865d1ac"
+            },
+            "B_production_checkout": "0620b3b44fa7ff499f8d456c48063b3bdf9ea896 (marker absent, attested by ImportError on phase_loop_runtime.fabpub_capability)"
+          },
+          "differential_scope_correction": "The comparison row is a SINGLE-FILE swap (only test_fabpub_shared_epoch.py at the main blob over B production), NOT 'current main tests' -- proven by deselected constant at 4558. It is a ceteris-paribus control. The differential CANNOT observe the patched region: under RED the node dies at fabpub_require (test_fabpub_shared_epoch.py:2902) because B production lacks LegacyWriterQuiescence, so lines 2940-2995 are unreachable. The RED anchor is therefore preserved trivially -- the patch sits downstream of the anchor. Efficacy is proven by the marker-present default-green run, not by this differential.",
+          "plus_two_attribution": [
+            "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_red_receipt_binds_head_tree_and_junit -- TypeError: audit_red_evidence() unexpected keyword 'expected_head'",
+            "phase-loop-runtime/tests/test_fabpub_shared_epoch.py::test_fabpub_pytest_invocation_receipt_binds_stage_head_tree_and_junit -- TypeError: audit_pytest_invocation_receipt() unexpected keyword 'expected_selector'"
+          ],
+          "plus_two_cause": "signature drift of B-era fabpub_tdd_chronology pinned in the mixed tree; main-evolution outside the frozen set, not RED movement",
+          "panel": {
+            "topology": "four requested critic seats + native Fable president; effective critics 3 (Gemini leg ERROR, absent seat NOT assent, deferred to Consiliency/agent-harness#525)",
+            "seat_version_drift": "plan names Fable 5 / GPT-5.6 Sol / Gemini 3.6 Flash / Grok 4.5; this panel ran Gemini 3.7 Flash and Grok 4.6",
+            "seats": {
+              "sol_codex": {
+                "verdict": "DISAGREE",
+                "report_sha256": "f0148b9fa4cf2884de89a515855c2cb73fe5b985843d1a7b5af6b5e6d4359ca1"
+              },
+              "grok_4_6": {
+                "verdict": "AGREE",
+                "report_sha256": "345c371980fe473180de6003a0692b88bfb3d95bb8d76c2666a7aeb0b24a3b12"
+              },
+              "fable_native_critic": {
+                "verdict": "AGREE",
+                "report_sha256": "8cee5e3ac888899c4224ae2def0f7538ffbca61b1f3297772fdb1e8271d9ffbc"
+              },
+              "gemini_3_7_flash": {
+                "verdict": "ERROR_ABSENT",
+                "report_sha256": null
+              }
+            },
+            "president": "native Fable; round 1 HOLD, round 2 FORCING DECISION: PROCEED on the complete record",
+            "landing_precedent": "none -- Consiliency/agent-harness#586 is PRE-closeout and governs repair shape only; this is the first post-closeout SL-0 repair"
+          },
+          "landed_merge_commit": "23648014",
+          "carried_gap": {
+            "finding": "no writer for fabpub_pytest_invocation.v1 exists anywhere in src/; the reducer's runner-stamped receipt requirement is therefore unsatisfiable by any author without forging the field",
+            "handling": "a truthful post-hoc record was produced and explicitly labelled AUTHOR_POST_HOC_NOT_RUNNER; it must never be presented as runner-stamped",
+            "owner": "roadmap coordinator",
+            "status": "carried"
+          }
+        }
+      ]
     },
     {
       "acceptance_criteria_count": null,
