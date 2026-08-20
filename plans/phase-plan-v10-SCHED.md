@@ -66,8 +66,9 @@ not modify them.
 - [ ] IF-0-SCHED-6 — the SCHED disposition records the two surviving historical branch
   tips and the accepted possible loss from the removed `phase/abdresolve` worktree
   without claiming that unknown work was recovered.
-- [ ] IF-0-SCHED-7 — `SCHED_HARDEN_HANDOFF` binds the actual SL-2 landing commit, tree,
-  exact production path set, reviewed SCHED plan/roadmap digests, successor HARDEN plan
+- [ ] IF-0-SCHED-7 — `SCHED_HARDEN_HANDOFF` binds the actual canonical SL-2 landing merge
+  commit with exactly two ordered parents, its tree, exact first-parent production path set,
+  reviewed SCHED plan/roadmap digests, successor HARDEN plan
   digest, and a domain-separated digest of the canonical handoff object stored in the
   successor manifest. A separate receipt head binds the exact reviewed candidate manifest
   blob without self-reference. HARDEN may not begin an overlapping write until that
@@ -230,9 +231,12 @@ SL-6 — Documentation, disposition, and completion evidence
   the current HARDEN contract record (pre-existing).
 - **Parallel-safe**: no.
 - **Tasks**:
-  - impl: fetch canonical main and require the exact reviewed SL-2 landing to be its
-    ancestor; record the landing commit/tree and require its diff to equal only
-    `lane_scheduler.py`, `runner.py`, `launcher.py`, and `worker_pool.py`.
+  - impl: fetch canonical main and require `git rev-list --parents -n 1` for the exact
+    reviewed SL-2 landing to return, in order, the merge, pre-SL-2 canonical main, and the
+    reviewed SL-2 implementation head;
+    record that merge commit/tree, require its first-parent diff to equal only
+    `lane_scheduler.py`, `runner.py`, `launcher.py`, and `worker_pool.py`, and require the
+    merge to be an ancestor of candidate `C`.
   - impl: create candidate `C` by amending HARDEN context, consumed interfaces, overlap
     inventory, and preflight so they require the actual SL-2 landing before any `runner.py`
     or `launcher.py` write. Append one manifest lifecycle event whose domain-separated
@@ -273,7 +277,9 @@ SL-6 — Documentation, disposition, and completion evidence
     contains no self-digest; its Git blob OID is the retained identity.
   - verify: HARDEN preflight requires `R^ == C`, `C..R` exactly the receipt path, unchanged
     plan/manifest blobs, non-null actual SL-2 identities, exact four-path SL-2 diff, valid
-    contract digest, and a canonical converged receipt before any overlapping write.
+    contract digest, and a canonical converged receipt before any overlapping write. It
+    freshly fetches canonical main, authenticates the canonical origin, and also requires
+    receipt head `R` to be an ancestor of that fetched tip before admitting HARDEN.
 
 ### SL-4 — Worktree lease, generation, and conservative reclamation
 
@@ -445,7 +451,8 @@ PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q 
 - [ ] EC-SCHED-0 — proven by `git diff --name-only "$SCHED_SL1_BASE..$SCHED_SL1_LANDING"`
   equaling the thirteen SL-1 paths and by two independent production landing proofs. For the
   scheduler writer, require `git merge-base --is-ancestor "$SCHED_SL1_LANDING"
-  "$SCHED_SL2_LANDING^1"` and an exact four-path SL-2 diff. For the reclamation writer,
+  "$SCHED_SL2_LANDING^1"`, require exactly two ordered merge parents with the reviewed
+  implementation head second, and an exact four-path first-parent SL-2 diff. For the reclamation writer,
   require `git merge-base --is-ancestor "$SCHED_SL1_LANDING" "$SCHED_SL4_LANDING^1"`
   and an exact one-path SL-4 diff. Neither diff may contain an SL-1 path; both proofs feed
   the `verification_evidence.v3` reducer. Falsified by either production landing preceding

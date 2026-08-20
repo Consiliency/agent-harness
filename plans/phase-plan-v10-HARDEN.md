@@ -171,7 +171,8 @@ blob identities, the handoff digest, and four usable terminal `AGREE` native art
 the exact `v10.sched-harden-review-receipt.v1` request/artifact schema frozen in the SCHED
 plan. HARDEN preflight executes the literal Git-object verifier in `## Verification` and proves
 `R^ == C`, the exact one-file receipt delta, unchanged plan/manifest blobs, non-null SL-2
-identities, the exact SL-2 path set, canonical request/artifact bytes, exact unique seat and
+identities, the exact ordered two-parent SL-2 merge and first-parent path set, ancestry from
+that merge through `C`, admission of `R` into freshly fetched canonical main, canonical request/artifact bytes, exact unique seat and
 seat-instance sets, artifact/request binding to `C`, and four non-aliased usable `AGREE`
 artifacts. The
 coordinator then fetches that canonical base, reruns the
@@ -1312,6 +1313,8 @@ preflight from the repository root:
 python3 - "$SCHED_HARDEN_C" "$SCHED_HARDEN_R" <<'PY'
 import hashlib
 import json
+import os
+import pwd
 import re
 import subprocess
 import sys
@@ -1319,6 +1322,11 @@ import sys
 PLAN = "plans/phase-plan-v10-HARDEN.md"
 MANIFEST = "plans/manifest.json"
 RECEIPT = "plans/evidence/v10-SCHED-HARDEN-review.json"
+ORIGINS = {
+    "git@github.com:Consiliency/agent-harness.git",
+    "ssh://git@github.com/Consiliency/agent-harness.git",
+    "https://github.com/Consiliency/agent-harness.git",
+}
 PATHS = [
     "phase-loop-runtime/src/phase_loop_runtime/lane_scheduler.py",
     "phase-loop-runtime/src/phase_loop_runtime/launcher.py",
@@ -1344,9 +1352,28 @@ ARTIFACT_KEYS = {
 }
 HEX40 = re.compile(r"[0-9a-f]{40}\Z")
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")
+GIT = "/usr/bin/git"
+GIT_ENV = {
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_TERMINAL_PROMPT": "0",
+    "HOME": pwd.getpwuid(os.getuid()).pw_dir,
+    "LC_ALL": "C",
+    "PATH": "/usr/bin:/bin",
+}
 
 def git(*args):
-    return subprocess.check_output(["git", *args])
+    return subprocess.check_output(
+        [GIT, "--no-replace-objects", "-c", "core.hooksPath=/dev/null", *args],
+        env=GIT_ENV,
+    )
+
+def is_ancestor(older, newer):
+    return subprocess.run(
+        [GIT, "--no-replace-objects", "-c", "core.hooksPath=/dev/null", "merge-base", "--is-ancestor", older, newer],
+        check=False,
+        env=GIT_ENV,
+    ).returncode == 0
 
 def no_float(value):
     raise ValueError(f"floats forbidden: {value}")
@@ -1377,6 +1404,20 @@ assert len(sys.argv) == 3
 c = git("rev-parse", f"{sys.argv[1]}^{{commit}}").decode().strip()
 r = git("rev-parse", f"{sys.argv[2]}^{{commit}}").decode().strip()
 assert HEX40.fullmatch(c) and HEX40.fullmatch(r) and c != r
+assert os.path.isfile(GIT) and os.access(GIT, os.X_OK)
+unsafe_config = subprocess.run(
+    [GIT, "config", "--local", "--get-regexp", r"^(url\..*\.insteadof|https?\.|credential\.|core\.(gitproxy|sshcommand)|protocol\.|remote\..*\.(uploadpack|receivepack|proxy))$"],
+    check=False,
+    env=GIT_ENV,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+)
+assert unsafe_config.returncode == 1 and unsafe_config.stdout == b"", unsafe_config.stdout
+origin = git("config", "--local", "--get", "remote.origin.url").decode().strip()
+assert origin in ORIGINS, origin
+git("fetch", "--quiet", "--no-tags", "https://github.com/Consiliency/agent-harness.git", "+refs/heads/main:refs/remotes/origin/main")
+canonical_main = git("rev-parse", "refs/remotes/origin/main^{commit}").decode().strip()
+assert HEX40.fullmatch(canonical_main) and is_ancestor(r, canonical_main)
 parents = git("rev-list", "--parents", "-n", "1", r).decode().split()
 assert parents == [r, c], parents
 changed = sorted(filter(None, git("diff-tree", "--no-commit-id", "--name-only", "-r", c, r).decode().splitlines()))
@@ -1412,8 +1453,9 @@ assert HEX64.fullmatch(handoff["harden_plan_sha256"])
 assert HEX64.fullmatch(handoff["roadmap_sha256"])
 assert HEX64.fullmatch(handoff["sched_plan_sha256"])
 assert git("rev-parse", f'{handoff["actual_sl2_commit"]}^{{tree}}').decode().strip() == handoff["actual_sl2_tree"]
+assert is_ancestor(handoff["actual_sl2_commit"], c)
 sl2_parents = git("rev-list", "--parents", "-n", "1", handoff["actual_sl2_commit"]).decode().split()
-assert len(sl2_parents) == 2
+assert len(sl2_parents) == 3
 sl2_changed = sorted(filter(None, git("diff-tree", "--no-commit-id", "--name-only", "-r", sl2_parents[1], sl2_parents[0]).decode().splitlines()))
 assert sl2_changed == PATHS, sl2_changed
 contract_payload = {key: value for key, value in handoff.items() if key != "manifest_contract_sha256"}
