@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import itertools
 import json
 import re
 import subprocess
@@ -254,6 +255,17 @@ class RepoContext:
                 self._tracked = [line for line in out.splitlines() if line]
         return self._tracked
 
+    def is_ignored(self, rel: str) -> bool:
+        """True when the repo's own gitignore declares ``rel`` an artifact.
+
+        The discriminator for runtime-created paths (`.phase-loop/state.json`)
+        is the repository's own configuration, not a hardcoded list: if git
+        says the path is ignored, the repo has already declared it generated
+        rather than tracked, so documenting it is correct even though it is
+        absent from a clean checkout.
+        """
+        return self._git("check-ignore", "-q", "--", rel) is not None
+
     def has_directory_prefix(self, prefix: str) -> bool:
         """True if ``prefix`` occurs as a directory-path component sequence.
 
@@ -434,7 +446,13 @@ def _discover_packages(repo: Path) -> Dict[str, PackageInfo]:
 #: syntax (``[x](../y)``) or shell punctuation is not a path claim, and letting
 #: it through would report a defect the document never asserted.
 _PATH_TOKEN_RE = re.compile(r"^[\w.~<>*?/@:#+%-]+$")
-_ISSUE_CITATION_RE = re.compile(r"^[\w.-]+/[\w.-]+#\d+$")
+#: ``owner/repo#123`` and the metavariable form ``owner/repo#<N>`` that this
+#: repo's own AGENTS.md uses when describing the convention rather than citing.
+_ISSUE_CITATION_RE = re.compile(r"^[\w.-]+/[\w.-]+#(?:\d+|<[^<>]+>)$")
+#: A dotted hostname as the first segment -- a URL written without its scheme
+#: (``github.com/Consiliency/agent-harness``). Self-disabling: only applies when
+#: no such directory exists in the repo.
+_SCHEMELESS_HOST_RE = re.compile(r"^[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)+$", re.IGNORECASE)
 _URL_SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.\-]*:")
 _METAVAR_RE = re.compile(r"<[^<>]*>")
 #: ``path/to/file.py:42`` and ``path/to/file.py:42:7`` -- this repo's own
@@ -538,6 +556,12 @@ def check_paths(text: str, doc_path: str, ctx: RepoContext) -> List[Finding]:
             if any(ch in token for ch in "*?"):
                 continue
             root = token.strip("/").split("/", 1)[0]
+            if _SCHEMELESS_HOST_RE.match(root) and not ctx.exists(root):
+                # A URL written without its scheme, not a repo path.
+                continue
+            if (root.lower(), token.split("/", 1)[-1].lower()) in ctx.repo_identities:
+                # A bare `owner/repo` slug naming this repository.
+                continue
             if token.startswith("/"):
                 if root in ABSOLUTE_SYSTEM_ROOTS and not ctx.exists(root):
                     continue
@@ -577,6 +601,9 @@ def check_paths(text: str, doc_path: str, ctx: RepoContext) -> List[Finding]:
             # silently drop a finding the unstripped check used to make.
             if target != token and _resolves(ctx, doc_dir, target, require_file=True):
                 continue
+            if ctx.is_ignored(token.lstrip("/")):
+                # A generated/runtime artifact by the repo's own declaration.
+                continue
             findings.append(
                 Finding(
                     file=doc_path,
@@ -613,6 +640,31 @@ _DIST_PIN_RE = re.compile(
 _GIT_REF_PIN_RE = re.compile(
     r"github\.com[:/](?P<owner>[\w.-]+)/(?P<repo>[\w.-]+?)(?:\.git)?@(?P<ref>[^\s\"'`#)\]]+)"
 )
+#: The same claim in URL form. `@ref` is only one way to name a release; a doc
+#: pointing at `/releases/tag/vX`, `/tree/vX` or `/archive/refs/tags/vX.tar.gz`
+#: asserts exactly the same thing about the repository's current release and
+#: rots exactly the same way. A different GRAMMAR for one clock, not a
+#: different clock -- so it reuses the release-namespace comparison rather than
+#: introducing a second notion of freshness.
+_URL_TAG_PIN_RE = re.compile(
+    r"github\.com[:/](?P<owner>[\w.-]+)/(?P<repo>[\w.-]+?)(?:\.git)?/"
+    r"(?:releases/tag|tree|archive/refs/tags)/"
+    r"(?P<ref>v[0-9][0-9A-Za-z._-]*)"
+)
+
+#: Archive suffixes and sentence punctuation that ride along on a URL-form ref.
+_REF_SUFFIX_RE = re.compile(r"(?:\.tar\.gz|\.tgz|\.zip)$", re.IGNORECASE)
+
+
+def _normalize_url_ref(ref: str) -> str:
+    """Strip an archive extension and trailing sentence punctuation.
+
+    `/archive/refs/tags/v0.7.13.tar.gz` names tag `v0.7.13`, and a URL ending a
+    sentence picks up the full stop. Neither belongs in the tag compared against
+    the release namespace.
+    """
+    cleaned = _REF_SUFFIX_RE.sub("", ref)
+    return cleaned.rstrip(".")
 
 
 def check_pin_freshness(text: str, doc_path: str, ctx: RepoContext) -> List[Finding]:
@@ -638,8 +690,33 @@ def check_pin_freshness(text: str, doc_path: str, ctx: RepoContext) -> List[Find
             dist = match.group("dist")
             version = match.group("version")
             package = ctx.package_for_distribution(dist)
-            if package is None or not package.version:
-                # A third-party pin has no clock in this repo to check against.
+            if package is None:
+                # A third-party pin is on somebody else's clock. Nothing to
+                # evaluate, and nothing claimed about this repository.
+                continue
+            if not package.version:
+                # FAIL CLOSED. The distribution IS ours, so the document makes a
+                # live claim about it -- the check simply could not resolve the
+                # version to compare against (dynamic versioning, or a
+                # pyproject this parser cannot read). Skipping made arm 2
+                # silently inert for that distribution, which is fail-open on
+                # the class this arm exists to catch.
+                findings.append(
+                    Finding(
+                        file=doc_path,
+                        line=idx,
+                        arm="pins",
+                        code="package_version_unresolved",
+                        token=match.group(0),
+                        message=(
+                            f"`{dist}=={version}` pins a distribution defined in this "
+                            f"repository, but no static version could be read from "
+                            f"{package.directory or '.'}/pyproject.toml, so its freshness "
+                            f"could not be evaluated. An unevaluated pin is not a fresh "
+                            f"one."
+                        ),
+                    )
+                )
                 continue
             if version in VERSION_PLACEHOLDERS:
                 continue
@@ -674,13 +751,17 @@ def check_pin_freshness(text: str, doc_path: str, ctx: RepoContext) -> List[Find
                     )
                 )
 
-        for match in _GIT_REF_PIN_RE.finditer(line):
+        # Both spellings of the same claim, evaluated by the same rule against
+        # the same clock -- a release-URL pin rots identically to an `@ref` one.
+        for match in itertools.chain(
+            _GIT_REF_PIN_RE.finditer(line), _URL_TAG_PIN_RE.finditer(line)
+        ):
             owner = match.group("owner").lower()
             name = match.group("repo").lower().removesuffix(".git")
             if (owner, name) not in ctx.repo_identities:
                 # A pin at somebody else's repository is on somebody else's clock.
                 continue
-            ref = match.group("ref")
+            ref = _normalize_url_ref(match.group("ref"))
             if ref in REF_PLACEHOLDERS:
                 continue
             if _METAVAR_RE.search(ref):
@@ -754,6 +835,17 @@ def check_pin_freshness(text: str, doc_path: str, ctx: RepoContext) -> List[Find
 _INLINE_LINK_RE = re.compile(r"!?\[[^\]\n]*\]\(\s*(?P<dest><[^>\n]*>|[^\s)]+)")
 _REF_DEFINITION_RE = re.compile(r"^\s{0,3}\[[^\]\n]+\]:\s*(?P<dest><[^>\n]*>|\S+)")
 _AUTOLINK_RE = re.compile(r"<(?P<dest>[a-zA-Z][a-zA-Z0-9+.\-]*:[^>\s]*)>")
+#: Inline HTML destinations. Markdown permits raw HTML, and a badge -- the most
+#: common relative-destination in a real README -- is written as `<img src=...>`
+#: rather than as a markdown image, so a grammar covering only markdown misses
+#: the most likely instance of this arm's own defect class. Tag list is closed,
+#: matching the rest of arm 3.
+_HTML_DEST_RE = re.compile(
+    r"<(?:img|a|source|video|audio|iframe|embed|link|object)\b[^>]*?"
+    r"\b(?:src|href|data)\s*=\s*"
+    r"(?:\"(?P<dq>[^\"]*)\"|'(?P<sq>[^']*)'|(?P<bare>[^\s>]+))",
+    re.IGNORECASE,
+)
 
 
 def _is_absolute_destination(dest: str) -> bool:
@@ -796,6 +888,10 @@ def check_published_rendering(text: str, doc_path: str, ctx: RepoContext) -> Lis
         if ref_def:
             destinations.append(ref_def.group("dest"))
         destinations.extend(m.group("dest") for m in _AUTOLINK_RE.finditer(scannable))
+        for match in _HTML_DEST_RE.finditer(scannable):
+            dest = match.group("dq") or match.group("sq") or match.group("bare")
+            if dest is not None:
+                destinations.append(dest)
         for dest in destinations:
             if _is_absolute_destination(dest):
                 continue

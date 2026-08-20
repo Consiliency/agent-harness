@@ -392,6 +392,53 @@ class TestArmPaths(unittest.TestCase):
             self.assertEqual(codes(found), [("paths", "missing_path")])
             self.assertEqual(found[0].token, "src/pkg:42")
 
+    def test_remaining_false_positive_constructs_are_silent(self):
+        """Four shapes that fired on correct documentation.
+
+        Each is skipped by a *self-disabling* rule keyed on repository facts
+        rather than a hardcoded string, so none can launder a real defect --
+        asserted by the counter-cases below.
+        """
+        doc = "\n".join(
+            [
+                "State lives at `.phase-loop/state.json`.",
+                "Cite as `Consiliency/agent-harness#<N>`, never a bare number.",
+                "The repo is `Consiliency/agent-harness`.",
+                "See `github.com/Consiliency/agent-harness`.",
+            ]
+        )
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(tmp, {"README.md": doc}, packages=self.PATHS_ONLY)
+            (repo / ".gitignore").write_text(".phase-loop/state.json\n", encoding="utf-8")
+            _git(repo, "add", "-A")
+            _git(repo, "commit", "-q", "-m", "gitignore the runtime artifact")
+            self.assertEqual(codes(edc.check_repo(repo, entry_docs=("README.md",))), [])
+
+    def test_those_skips_cannot_launder_a_real_defect(self):
+        # Counter-case for each: the rule is keyed on a repository fact, so it
+        # stops applying the moment that fact changes.
+        cases = {
+            # not gitignored -> not a declared artifact -> still reported
+            "State lives at `.phase-loop/state.json`.\n": ".phase-loop/state.json",
+            # a slug for some OTHER repo is not this repo's identity
+            "See `someone/else`.\n": "someone/else",
+        }
+        for doc, token in cases.items():
+            with self.subTest(token=token), TemporaryDirectory() as tmp:
+                repo = build_repo(tmp, {"README.md": doc}, packages=self.PATHS_ONLY)
+                found = edc.check_repo(repo, entry_docs=("README.md",))
+                self.assertEqual(codes(found), [("paths", "missing_path")])
+                self.assertEqual(found[0].token, token)
+
+        # host-shaped first segment that DOES exist resolves normally again
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp, {"README.md": "See `example.com/x.md`.\n"}, packages=self.PATHS_ONLY
+            )
+            (repo / "example.com").mkdir()
+            found = edc.check_repo(repo, entry_docs=("README.md",))
+            self.assertEqual(codes(found), [("paths", "missing_path")])
+
     def test_install_layout_skip_self_disables(self):
         # The class is a class, not an allowlist: a repo that really has a
         # `share/` directory resolves `share/...` paths normally.
@@ -522,6 +569,63 @@ class TestArmPinFreshness(unittest.TestCase):
             found = edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))
             self.assertEqual(codes(found), [("pins", "stale_pin")])
 
+    def _dynamic_version_repo(self, tmp, doc):
+        repo = build_repo(tmp, {"phase-loop-runtime/README.md": doc})
+        pyproject = repo / "phase-loop-runtime" / "pyproject.toml"
+        pyproject.write_text(
+            pyproject.read_text(encoding="utf-8").replace(
+                'version = "0.7.13"\n', 'dynamic = ["version"]\n'
+            ),
+            encoding="utf-8",
+        )
+        _git(repo, "add", "-A")
+        _git(repo, "commit", "-q", "-m", "switch to dynamic versioning")
+        return repo
+
+    def test_unresolvable_package_version_fails_closed(self):
+        """A pin the check could not evaluate is reported, not skipped.
+
+        `package is None` and "package found but version unreadable" were
+        conflated. The first is somebody else's clock; the second is OUR
+        distribution with a claim the check could not check -- fail-open on
+        exactly the class this arm exists to catch, and silent per-distribution
+        rather than repo-wide, so nothing else goes red to reveal it.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = self._dynamic_version_repo(tmp, "pip install phase-loop-runtime==0.1.0\n")
+            self.assertEqual(
+                edc.RepoContext(repo).package_for_distribution("phase-loop-runtime").version,
+                "",
+            )
+            found = edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))
+            self.assertEqual(codes(found), [("pins", "package_version_unresolved")])
+            self.assertIn("pyproject.toml", found[0].message)
+
+            # Through the REAL entry point, not just the unit under edit: a
+            # finding that never changes the CLI verdict has not been wired in.
+            self.assertEqual(edc.main(["entry_doc_check", "--repo", str(repo)]), 1)
+
+    def test_a_third_party_pin_stays_silent(self):
+        # The other half of the split: a distribution this repo does not define
+        # is on somebody else's clock, so there is genuinely nothing to
+        # evaluate. Fail-closed must not become "fail on every pin".
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp, {"phase-loop-runtime/README.md": "pip install some-third-party==1.2.3\n"}
+            )
+            self.assertEqual(
+                codes(edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))), []
+            )
+
+    def test_a_resolvable_version_still_reports_staleness(self):
+        # The fail-closed path must not mask the verdict it stands in for.
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp, {"phase-loop-runtime/README.md": "pip install phase-loop-runtime==0.1.0\n"}
+            )
+            found = edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))
+            self.assertEqual(codes(found), [("pins", "stale_pin")])
+
     def test_unresolvable_namespace_is_silent_when_nothing_pins_this_repo(self):
         # Fail-closed on an unevaluable claim, NOT a blanket failure whenever a
         # repo has no tags: a document that makes no self-repo release pin has
@@ -607,6 +711,48 @@ class TestArmPinFreshness(unittest.TestCase):
                 "Sole dependency: `phase_loop_runtime>=0.6.1`.",
                 "Compatible release: `phase_loop_runtime~=0.7.0`.",
                 "Correct pin: `phase_loop_runtime==0.7.13`.",
+            ]
+        )
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(tmp, {"phase-loop-runtime/README.md": doc})
+            self.assertEqual(
+                codes(edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))), []
+            )
+
+    def test_release_url_forms_are_pins_too(self):
+        """`@ref` is only one spelling of a release claim.
+
+        A doc pointing at `/releases/tag/vX`, `/tree/vX` or an archive tarball
+        asserts the same thing about the repository's current release and rots
+        the same way. This is a different GRAMMAR for one clock, not a second
+        clock -- it reuses the release-namespace comparison rather than
+        introducing another notion of freshness.
+        """
+        docs = ("phase-loop-runtime/README.md",)
+        for url in (
+            "https://github.com/Consiliency/agent-harness/releases/tag/v0.1.5",
+            "https://github.com/Consiliency/agent-harness/tree/v0.1.5",
+            "https://github.com/Consiliency/agent-harness/archive/refs/tags/v0.1.5.tar.gz",
+            "See https://github.com/Consiliency/agent-harness/releases/tag/v0.1.5.",
+        ):
+            with self.subTest(url=url), TemporaryDirectory() as tmp:
+                repo = build_repo(tmp, {"phase-loop-runtime/README.md": url + "\n"})
+                found = edc.check_repo(repo, entry_docs=docs)
+                self.assertEqual(codes(found), [("pins", "stale_pin")])
+                self.assertIn(FIXTURE_LATEST_TAG, found[0].message)
+
+    def test_release_url_adversarial_positives_are_silent(self):
+        # The archive suffix and a trailing full stop are not part of the tag;
+        # `latest` names no tag; a branch is not a pin; another repo is another
+        # clock. Any of these misread would fire on correct documentation.
+        doc = "\n".join(
+            [
+                "https://github.com/Consiliency/agent-harness/releases/tag/v0.7.13",
+                "https://github.com/Consiliency/agent-harness/archive/refs/tags/v0.7.13.tar.gz",
+                "https://github.com/Consiliency/agent-harness/releases/latest",
+                "https://github.com/Consiliency/agent-harness/tree/main",
+                "https://github.com/Consiliency/agent-harness/tree/main/phase-loop-skills",
+                "https://github.com/other/project/releases/tag/v0.1.5",
             ]
         )
         with TemporaryDirectory() as tmp:
@@ -794,6 +940,72 @@ class TestArmPublishedRendering(unittest.TestCase):
             self.assertEqual(
                 sorted(f.token for f in found), ["../phase-loop-skills", "img/build.svg"]
             )
+
+    def test_html_destinations_are_parsed(self):
+        """Markdown permits raw HTML, and badges are written as `<img src=...>`.
+
+        A grammar covering only markdown links misses the single most common
+        relative destination in a real README -- this arm's own defect class,
+        in its most likely form.
+        """
+        doc = "\n".join(
+            [
+                '<img src="docs/logo.png" alt="logo">',
+                '<a href="../phase-loop-skills">skills</a>',
+                "[markdown too](../also-relative)",
+            ]
+        )
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(tmp, {"phase-loop-runtime/README.md": doc})
+            found = edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))
+            self.assertEqual(
+                sorted(f.token for f in found),
+                ["../also-relative", "../phase-loop-skills", "docs/logo.png"],
+            )
+            self.assertTrue(all(f.arm == "published_rendering" for f in found))
+            # Through the real entry point, not only the unit under edit.
+            self.assertEqual(edc.main(["entry_doc_check", "--repo", str(repo)]), 1)
+
+    def test_html_adversarial_positives_are_silent(self):
+        doc = "\n".join(
+            [
+                '<img src="https://img.shields.io/badge/build-passing.svg" alt="badge">',
+                "<a href='#install'>install</a>",
+                '<a href="https://github.com/Consiliency/agent-harness">repo</a>',
+                '<img src="//cdn.example.com/x.png">',
+                "",
+                "```html",
+                '<img src="docs/sample.png">',
+                "```",
+                "",
+                'Write it as `<img src="docs/inline.png">` in your README.',
+            ]
+        )
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(tmp, {"phase-loop-runtime/README.md": doc})
+            self.assertEqual(
+                codes(edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))), []
+            )
+
+    def test_html_in_the_root_readme_is_not_reported(self):
+        # Same destination, both docs checked in one run: only the published
+        # one is a defect, exactly as for markdown links.
+        docs = ("README.md", "phase-loop-runtime/README.md")
+        html = '<img src="docs/logo.png">\n'
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp, {"README.md": html, "phase-loop-runtime/README.md": "no links\n"}
+            )
+            self.assertEqual(codes(edc.check_repo(repo, entry_docs=docs)), [])
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp, {"README.md": "no links\n", "phase-loop-runtime/README.md": html}
+            )
+            found = edc.check_repo(repo, entry_docs=docs)
+            self.assertEqual(
+                codes(found), [("published_rendering", "relative_link_in_published_readme")]
+            )
+            self.assertEqual(found[0].file, "phase-loop-runtime/README.md")
 
     def test_adversarial_positives_are_silent(self):
         doc = "\n".join(
