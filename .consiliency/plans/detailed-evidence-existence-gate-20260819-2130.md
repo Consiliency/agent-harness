@@ -1,6 +1,6 @@
 # Detailed plan: make missing evidence fail loudly (agent-harness#607 + agent-harness#601)
 
-**Revision 7 — the retro window, and a guard that can actually be falsified.** Rev 3 was re-reviewed: codex DISAGREE, grok DISAGREE,
+**Revision 8 — the operator action is DECLINED; what that leaves open.** Rev 3 was re-reviewed: codex DISAGREE, grok DISAGREE,
 fable PARTIALLY AGREE. All three said the `evidence-gate` aggregate must go. Rev 4 cut it; rev 5
 adds the decisive reason (which I did not have), un-cuts one piece rev 4 removed by mistake, and
 records two defects that would otherwise have been rebuilt.
@@ -75,7 +75,8 @@ unchanged.
 
 ## What remains
 
-- **agent-harness#607 — operator action only.** Add the per-workflow required contexts. No code.
+- **agent-harness#607 — DECLINED by operator ruling; no action.** The observed instance stays
+  open. Detection is post-hoc via `push: branches: [main]`, not prevention. Recorded above.
 - **The completeness guard**, hosted in an already-required job, with the falsifier above.
 - **agent-harness#601 inert-delta**, as respecified.
 
@@ -92,7 +93,42 @@ never collected, and a job that was skipped all read as "green".
   first change to violate a brand-new gate can merge with the gate having never executed.
 - **agent-harness#601** — tests inert in a CI lane are indistinguishable from tests that pass.
 
-## Do this first — it is one operator action and it closes the observed instance
+## OPERATOR RULING (2026-08-20): the branch-protection change is DECLINED
+
+**Do not add `entry-point docs verification` (or per-workflow contexts) to `main`'s required
+status checks.** The maintainer's standing position: *panel review is the quality gate; a
+separate git-user/required-check review layer is not wanted.*
+
+That is a coherent policy and this plan does not argue with it. But it changes what this plan
+can honestly claim, so the consequence is stated here rather than left implied.
+
+### What the ruling leaves OPEN — say it plainly
+
+**A panel reviews content. A required check catches "the check never ran."** Those are
+different failure modes, and the panel does not cover the second one. agent-harness#545 merged
+with `entry-doc-check` having produced **zero runs** — a panel reviewing that diff would have
+seen nothing wrong, because nothing in the diff *was* wrong. The gate simply never executed.
+
+So with the ruling in force:
+
+- **agent-harness#607's observed instance stays open.** Nothing in this plan closes it. The
+  detection path is the `push: branches: [main]` trigger, which reds *after* the merge — the
+  post-hoc alarm described below, not prevention.
+- The **13-of-17 ungated-PR condition** measured earlier is unaddressed and will recur for any
+  future workflow.
+- The plan is now scoped to what it can actually deliver: the **completeness guard** (a new
+  workflow cannot go undeclared) and the **agent-harness#601 inert-delta** (a test cannot go
+  inert unnoticed). Both are real and neither depends on branch protection.
+
+### Why the aggregate stays cut regardless
+
+The `evidence-gate` aggregate was withdrawn on defects **independent** of branch protection:
+it samples sibling runs and concludes (a snapshot of a live gate), it self-deadlocks, a
+conditionally skipped *job* still satisfies protection, and its reconciler cannot make a stale
+PR report. Declining the operator action does **not** resurrect it — a strictly-weaker
+mechanism is not made correct by the absence of the stronger one.
+
+## The operator action this ruling declines (retained for context)
 
 **Recommended before any of the work below.** `entry-point docs verification` is **not in the
 required contexts** (verified live: `["suite gate","lint (pyflakes)","chronology retention
@@ -328,7 +364,8 @@ python3 scripts/inert_delta.py \
 
 ## Out of scope
 
-- Branch-protection settings — an operator action.
+- Branch-protection settings — **declined by operator ruling 2026-08-20**: panel review is
+  the gate; a separate required-check layer is not wanted. This plan does not revisit it.
 - **The already-open-PR retro window.** `strict` (require branches up to date) is **false** on
   `main` — verified live. A PR whose head already carries green `lint (pyflakes)` and `suite
   gate` from runs predating this change therefore **merges with the guard and the inert-delta
