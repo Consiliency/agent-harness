@@ -175,9 +175,15 @@ integration exists but is entirely optional; you don't need it.
   `RELEASE_PIN` before consulting the remote, so it re-installs the same old ref. (The
   `curl … | bash` one-liner has no local pin and does resolve the current release — but
   see the pipeline-exit caveat above before scripting it.)
-- **Update (pip / uv only, no clone):** `uv tool upgrade phase-loop-runtime` — or
-  `pip install -U phase-loop-runtime`. The installer script is not involved, so none of
-  the clone caveats apply.
+- **Update (only if you installed with `pip` / `uv` YOURSELF, not via the installer
+  script):** `uv tool upgrade phase-loop-runtime` — or `pip install -U
+  phase-loop-runtime`. Name the **engine**, not `consiliency-harness`: that shim pins a
+  floor (`phase-loop-runtime>=0.6.1`), so upgrading the shim can leave the old engine in
+  place and report success.
+  **If the installer script put it there, `uv tool upgrade` will NOT move you.** The
+  script installs from a tag-pinned URL, so uv stores that exact spec in its receipt and
+  re-resolving it reinstalls the same version — a silent non-update. Re-run the installer
+  instead (see the two bullets above for which form actually advances the ref).
 - **Pin a version:** `--ref vX.Y.Z` (everyone on the same release).
 - **Uninstall:** `uv tool uninstall phase-loop-runtime` and remove the
   `*-phase-*` skill symlinks from your skill root.
