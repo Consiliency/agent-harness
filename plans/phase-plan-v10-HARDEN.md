@@ -1335,13 +1335,13 @@ PATHS = [
 ]
 SEATS = ["native_codex", "claude", "gemini", "grok"]
 HANDOFF_KEYS = {
-    "actual_sl2_commit", "actual_sl2_tree", "handoff_status", "harden_plan_sha256",
+    "actual_sl2_commit", "actual_sl2_reviewed_head", "actual_sl2_tree", "handoff_status", "harden_plan_sha256",
     "manifest_contract_digest_domain", "manifest_contract_sha256", "required_path_set",
     "required_review_seats", "review_receipt_path", "review_receipt_schema",
     "review_request_digest_domain", "roadmap_sha256", "schema", "sched_plan_sha256",
 }
 REQUEST_KEYS = {
-    "candidate_commit", "candidate_tree", "harden_plan_blob", "harden_plan_sha256",
+    "actual_sl2_reviewed_head", "candidate_commit", "candidate_tree", "harden_plan_blob", "harden_plan_sha256",
     "manifest_blob", "manifest_contract_sha256", "manifest_sha256", "required_path_set",
     "required_review_seats", "roadmap_sha256", "schema", "sched_plan_sha256",
 }
@@ -1401,21 +1401,29 @@ def sha(data):
     return hashlib.sha256(data).hexdigest()
 
 assert len(sys.argv) == 3
-c = git("rev-parse", f"{sys.argv[1]}^{{commit}}").decode().strip()
-r = git("rev-parse", f"{sys.argv[2]}^{{commit}}").decode().strip()
-assert HEX40.fullmatch(c) and HEX40.fullmatch(r) and c != r
 assert os.path.isfile(GIT) and os.access(GIT, os.X_OK)
+local_includes = subprocess.run(
+    [GIT, "config", "--local", "--no-includes", "--get-regexp", r"^include(if)?\."],
+    check=False,
+    env=GIT_ENV,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+)
+assert local_includes.returncode == 1 and local_includes.stdout == b"", local_includes.stdout
 unsafe_config = subprocess.run(
-    [GIT, "config", "--local", "--get-regexp", r"^(url\..*\.insteadof|https?\.|credential\.|core\.(gitproxy|sshcommand)|protocol\.|remote\..*\.(uploadpack|receivepack|proxy))$"],
+    [GIT, "config", "--local", "--includes", "--get-regexp", r"^(url\..*\.insteadof|https?\..*|credential\..*|core\.(gitproxy|sshcommand)|protocol\..*|remote\..*\.(uploadpack|receivepack|proxy))$"],
     check=False,
     env=GIT_ENV,
     stdout=subprocess.PIPE,
     stderr=subprocess.PIPE,
 )
 assert unsafe_config.returncode == 1 and unsafe_config.stdout == b"", unsafe_config.stdout
-origin = git("config", "--local", "--get", "remote.origin.url").decode().strip()
+origin = git("config", "--local", "--no-includes", "--get", "remote.origin.url").decode().strip()
 assert origin in ORIGINS, origin
 git("fetch", "--quiet", "--no-tags", "https://github.com/Consiliency/agent-harness.git", "+refs/heads/main:refs/remotes/origin/main")
+c = git("rev-parse", f"{sys.argv[1]}^{{commit}}").decode().strip()
+r = git("rev-parse", f"{sys.argv[2]}^{{commit}}").decode().strip()
+assert HEX40.fullmatch(c) and HEX40.fullmatch(r) and c != r
 canonical_main = git("rev-parse", "refs/remotes/origin/main^{commit}").decode().strip()
 assert HEX40.fullmatch(canonical_main) and is_ancestor(r, canonical_main)
 parents = git("rev-list", "--parents", "-n", "1", r).decode().split()
@@ -1442,12 +1450,14 @@ handoff = handoffs[0]
 assert set(handoff) == HANDOFF_KEYS
 assert handoff["schema"] == "v10.sched-harden-handoff.v1"
 assert handoff["handoff_status"] == "candidate_awaiting_review"
+assert handoff["manifest_contract_digest_domain"] == "v10.sched-harden-handoff.v1\n"
 assert handoff["review_receipt_path"] == RECEIPT
 assert handoff["review_receipt_schema"] == "v10.sched-harden-review-receipt.v1"
 assert handoff["review_request_digest_domain"] == "v10.sched-harden-review-request.v1\n"
 assert handoff["required_path_set"] == PATHS
 assert handoff["required_review_seats"] == SEATS
 assert HEX40.fullmatch(handoff["actual_sl2_commit"])
+assert HEX40.fullmatch(handoff["actual_sl2_reviewed_head"])
 assert HEX40.fullmatch(handoff["actual_sl2_tree"])
 assert HEX64.fullmatch(handoff["harden_plan_sha256"])
 assert HEX64.fullmatch(handoff["roadmap_sha256"])
@@ -1456,6 +1466,11 @@ assert git("rev-parse", f'{handoff["actual_sl2_commit"]}^{{tree}}').decode().str
 assert is_ancestor(handoff["actual_sl2_commit"], c)
 sl2_parents = git("rev-list", "--parents", "-n", "1", handoff["actual_sl2_commit"]).decode().split()
 assert len(sl2_parents) == 3
+assert sl2_parents[2] == handoff["actual_sl2_reviewed_head"]
+first_parent_chain = git("rev-list", "--first-parent", c).decode().splitlines()
+sl2_index = first_parent_chain.index(handoff["actual_sl2_commit"])
+assert sl2_index + 1 < len(first_parent_chain)
+assert first_parent_chain[sl2_index + 1] == sl2_parents[1]
 sl2_changed = sorted(filter(None, git("diff-tree", "--no-commit-id", "--name-only", "-r", sl2_parents[1], sl2_parents[0]).decode().splitlines()))
 assert sl2_changed == PATHS, sl2_changed
 contract_payload = {key: value for key, value in handoff.items() if key != "manifest_contract_sha256"}
@@ -1472,6 +1487,7 @@ assert request["schema"] == "v10.sched-harden-review-request.v1"
 assert receipt["request_sha256"] == sha(handoff["review_request_digest_domain"].encode("utf-8") + canonical(request))
 assert HEX64.fullmatch(receipt["request_sha256"])
 expected_request = {
+    "actual_sl2_reviewed_head": handoff["actual_sl2_reviewed_head"],
     "candidate_commit": c,
     "candidate_tree": git("rev-parse", f"{c}^{{tree}}").decode().strip(),
     "harden_plan_blob": plan_blob,

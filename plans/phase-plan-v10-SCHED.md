@@ -67,7 +67,9 @@ not modify them.
   tips and the accepted possible loss from the removed `phase/abdresolve` worktree
   without claiming that unknown work was recovered.
 - [ ] IF-0-SCHED-7 — `SCHED_HARDEN_HANDOFF` binds the actual canonical SL-2 landing merge
-  commit with exactly two ordered parents, its tree, exact first-parent production path set,
+  commit with exactly two ordered parents, the reviewed implementation head named by its
+  ordered parent tuple, its tree, exact first-parent production path set and canonical
+  first-parent membership,
   reviewed SCHED plan/roadmap digests, successor HARDEN plan
   digest, and a domain-separated digest of the canonical handoff object stored in the
   successor manifest. A separate receipt head binds the exact reviewed candidate manifest
@@ -236,7 +238,9 @@ SL-6 — Documentation, disposition, and completion evidence
     reviewed SL-2 implementation head;
     record that merge commit/tree, require its first-parent diff to equal only
     `lane_scheduler.py`, `runner.py`, `launcher.py`, and `worker_pool.py`, and require the
-    merge to be an ancestor of candidate `C`.
+    merge to occur on candidate `C`'s canonical first-parent chain. Record the reviewed
+    implementation head separately and require it to equal the ordered parent tuple's
+    reviewed-head position.
   - impl: create candidate `C` by amending HARDEN context, consumed interfaces, overlap
     inventory, and preflight so they require the actual SL-2 landing before any `runner.py`
     or `launcher.py` write. Append one manifest lifecycle event whose domain-separated
@@ -244,11 +248,16 @@ SL-6 — Documentation, disposition, and completion evidence
     `sched_harden_handoff` object with that digest field excluded: SHA-256 over the UTF-8
     `manifest_contract_digest_domain` bytes followed by the compact JSON bytes and one LF.
     Duplicate keys, floats, surrogates, and non-UTF-8 data reject. Its exact key set is
-    `actual_sl2_commit`, `actual_sl2_tree`, `handoff_status`, `harden_plan_sha256`,
+    `actual_sl2_commit`, `actual_sl2_reviewed_head`, `actual_sl2_tree`, `handoff_status`, `harden_plan_sha256`,
     `manifest_contract_digest_domain`, `manifest_contract_sha256`, `required_path_set`,
     `required_review_seats`, `review_receipt_path`, `review_receipt_schema`,
     `review_request_digest_domain`, `roadmap_sha256`, `schema`, and `sched_plan_sha256`;
     candidate values are non-null and status is `candidate_awaiting_review`.
+  - verify: before resolving `C`, `R`, or any other Git object, the literal HARDEN
+    preflight rejects raw local `include.*`/`includeIf.*` directives without following
+    them and then rejects the complete effective forbidden redirect/helper configuration
+    set with includes enabled. It requires the handoff domain to equal exactly
+    `v10.sched-harden-handoff.v1\n`; a caller-selected domain is never authoritative.
   - verify: recompute the roadmap, SCHED, HARDEN, and manifest contract digests, validate
     both plans and the manifest at `C`, then obtain a fresh exact-digest native-first
     four-seat board over `C`. Any dissent, timeout, missing seat, or digest drift blocks.
@@ -258,7 +267,7 @@ SL-6 — Documentation, disposition, and completion evidence
     floats, surrogates, invalid UTF-8, and extra/missing keys reject) with schema
     `v10.sched-harden-review-receipt.v1` and exact top-level keys `request`,
     `request_sha256`, `reviews`, and `schema`. `request` has exact keys
-    `candidate_commit`, `candidate_tree`, `harden_plan_blob`, `harden_plan_sha256`,
+    `actual_sl2_reviewed_head`, `candidate_commit`, `candidate_tree`, `harden_plan_blob`, `harden_plan_sha256`,
     `manifest_blob`, `manifest_contract_sha256`, `manifest_sha256`, `required_path_set`,
     `required_review_seats`, `roadmap_sha256`, `schema`, and `sched_plan_sha256`; its
     schema is `v10.sched-harden-review-request.v1` and its digest is SHA-256 over the
@@ -452,7 +461,8 @@ PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q 
   equaling the thirteen SL-1 paths and by two independent production landing proofs. For the
   scheduler writer, require `git merge-base --is-ancestor "$SCHED_SL1_LANDING"
   "$SCHED_SL2_LANDING^1"`, require exactly two ordered merge parents with the reviewed
-  implementation head second, and an exact four-path first-parent SL-2 diff. For the reclamation writer,
+  implementation head in the reviewed-head position, require the merge on the candidate's
+  canonical first-parent chain, and require an exact four-path first-parent SL-2 diff. For the reclamation writer,
   require `git merge-base --is-ancestor "$SCHED_SL1_LANDING" "$SCHED_SL4_LANDING^1"`
   and an exact one-path SL-4 diff. Neither diff may contain an SL-1 path; both proofs feed
   the `verification_evidence.v3` reducer. Falsified by either production landing preceding
