@@ -1861,20 +1861,20 @@
               "event_metadata_key": "phase_completion_landing",
               "event_self_reference": "forbidden",
               "phase_alias": "HARDEN",
-              "plan_sha256": "926c94aae7bd394e36f156d40d7c0b6285d7414a9a69aae3070095aec11d7975",
+              "plan_sha256": "c9f436550553d136870ad0b5828afd9bd199086d33b27449a84aec6d7d7e5fdb",
               "repaired_digest_review_status": "unreviewed_not_approved",
               "required_agree_seats": [
                 "gpt-5.6-sol",
                 "fable"
               ],
-              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
+              "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68",
               "role": "producer",
               "schema": "v10.phase-completion-landing.v1",
               "topology": "F_parents_ordered_M_FH_and_FH_parent_M"
             },
             "digest_rebind": {
               "historical_dissent_verdict": "GROK_DISAGREE_SOL_AGREE_GEMINI_UNUSABLE_DEGRADED",
-              "plan_sha256": "926c94aae7bd394e36f156d40d7c0b6285d7414a9a69aae3070095aec11d7975",
+              "plan_sha256": "c9f436550553d136870ad0b5828afd9bd199086d33b27449a84aec6d7d7e5fdb",
               "predecessor_plan_sha256": "3ffb5b466ab45943827c7beb12c49cbc32af20f94a2acf56f9e56048de8d6617",
               "reason": "semantic_repair_for_strict_phase_completion_producer_record",
               "repaired_digest_review_status": "unreviewed_not_approved",
@@ -1884,7 +1884,7 @@
               "reviewed_panel_sha256": "6d18cbedf3e793c839dcd4a89883c2b5e82281e98e23fce7e0cfc68419cae7f5",
               "reviewed_plan_sha256": "f60b9373066b9537f0ea5e78b78b2462dc535cbb04d86e1fa384a14f4bee48da",
               "reviewed_roadmap_sha256": "158c9f28857ef1df02a6b8ca72aef93f3a8a2acc8e591ca6adc70dd53ddb854d",
-              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e"
+              "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68"
             },
             "harden_plan_contract": {
               "acceptance_criteria_count": 6,
@@ -1918,6 +1918,7 @@
                 "FABPUB",
                 "LEGIBLE",
                 "PROOFGATE",
+                "SCHED",
                 "REVIEWTRUTH"
               ],
               "cross_phase_serialization_required": true,
@@ -1995,10 +1996,11 @@
               "owned_paths_count": 46,
               "owned_paths_sha256": "453bbecfdbcc6570e8cd04d68b45097a1c05022691919b5296ae0c36d7f0eb47",
               "phase_dependencies": [
-                "FABPUB"
+                "FABPUB",
+                "SCHED"
               ],
               "phase_scheduler_mode": "off",
-              "plan_sha256": "926c94aae7bd394e36f156d40d7c0b6285d7414a9a69aae3070095aec11d7975",
+              "plan_sha256": "c9f436550553d136870ad0b5828afd9bd199086d33b27449a84aec6d7d7e5fdb",
               "pre_auth_ordering_nodeids": [
                 "phase-loop-runtime/tests/test_advisor_board_cli_legacy.py::AdvisorBoardCliTest::test_cli_harden_preflight_authorizes_before_compose_and_invoke",
                 "phase-loop-runtime/tests/test_advisor_board_composition.py::AuthAwareCompositionTests::test_harden_preflight_authorizes_before_every_capability_auth_ok"
@@ -2040,7 +2042,7 @@
                 "canonical_m"
               ],
               "release_tag_policy": "no_release_no_tag_no_publish",
-              "roadmap_sha256": "040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e",
+              "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68",
               "sl1_nodeids": 115,
               "sl2_nodeids": 7,
               "sl3_evidence_nodeids": 4,
@@ -2080,6 +2082,34 @@
             "harden_plan_contract_record_id": "v10-HARDEN.harden-plan-contract.v1"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-20T01:38:27Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "sched_harden_handoff_amendment": {
+              "actual_sl2_commit": null,
+              "actual_sl2_tree": null,
+              "handoff_status": "template_declared_actual_sl2_rebind_required",
+              "harden_plan_sha256": "c9f436550553d136870ad0b5828afd9bd199086d33b27449a84aec6d7d7e5fdb",
+              "required_path_set": [
+                "phase-loop-runtime/src/phase_loop_runtime/lane_scheduler.py",
+                "phase-loop-runtime/src/phase_loop_runtime/launcher.py",
+                "phase-loop-runtime/src/phase_loop_runtime/runner.py",
+                "phase-loop-runtime/src/phase_loop_runtime/worker_pool.py"
+              ],
+              "required_review_seats": [
+                "native_codex",
+                "claude",
+                "gemini",
+                "grok"
+              ],
+              "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68",
+              "schema": "v10.sched-harden-handoff.v1",
+              "sched_plan_sha256": "820bc052067463d0d230cb8701f741d7f74e2840443aa67eb17b79cc05c897a6"
+            }
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -2095,7 +2125,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-07-30T16:19:25Z"
+      "updated_at": "2026-08-20T01:38:27Z"
     },
     {
       "acceptance_criteria_count": null,
@@ -3008,14 +3038,16 @@
         "IF-0-SCHED-3",
         "IF-0-SCHED-4",
         "IF-0-SCHED-5",
-        "IF-0-SCHED-6"
+        "IF-0-SCHED-6",
+        "IF-0-SCHED-7"
       ],
       "lanes": [
         "SL-0",
         "SL-1",
         "SL-2",
         "SL-3",
-        "SL-4"
+        "SL-4",
+        "SL-5"
       ],
       "lifecycle": [
         {
@@ -3059,6 +3091,30 @@
             "review_status": "dissent_reconciled_requires_fresh_exact_digest_review"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-20T01:39:28Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "external_board_artifact_sha256": "a0a38621f3041d2818560491efcd1424c43e1986b7c94c3917a3dba7caf17cde",
+            "external_board_statuses": {
+              "claude": "TIMEOUT_no_verdict",
+              "gemini": "AGREE",
+              "grok": "AGREE"
+            },
+            "native_codex_status": "DISAGREE",
+            "plan_sha256": "820bc052067463d0d230cb8701f741d7f74e2840443aa67eb17b79cc05c897a6",
+            "predecessor_plan_sha256": "0adb168e8aa26aeb31d6c8220dcb4fed523b627206da77f03563005230bdd8d7",
+            "reconciled_findings": [
+              "independent_scheduler_and_reclamation_landing_proofs",
+              "worker_pool_test_ownership_and_verification",
+              "executable_sched_to_harden_digest_handoff",
+              "roadmap_overlap_and_spec_delta_truthfulness"
+            ],
+            "review_status": "second_dissent_reconciled_requires_fresh_exact_digest_review",
+            "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68"
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -3074,7 +3130,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-20T01:09:12Z"
+      "updated_at": "2026-08-20T01:39:28Z"
     },
     {
       "acceptance_criteria_count": null,
