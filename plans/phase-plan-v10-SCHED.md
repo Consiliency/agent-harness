@@ -4,7 +4,7 @@ phase: SCHED
 roadmap: specs/phase-plans-v10.md
 roadmap_sha256: 6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68
 automation:
-  suite_command: 'PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q phase-loop-runtime/tests/test_phase_worktree_executor.py phase-loop-runtime/tests/test_phase_loop_lane_scheduler.py phase-loop-runtime/tests/test_phase_loop_concurrent_phase_dispatch.py phase-loop-runtime/tests/test_dispatch_lock_reentrancy.py phase-loop-runtime/tests/test_phase_loop_work_unit_runner.py phase-loop-runtime/tests/test_phase_loop_runner.py phase-loop-runtime/tests/test_phase_loop_launcher.py phase-loop-runtime/tests/test_workerpool_failure_isolation.py phase-loop-runtime/tests/test_workerpool_parallel.py phase-loop-runtime/tests/test_workerpool_worktree_alloc.py'
+  suite_command: 'PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q phase-loop-runtime/tests/test_phase_worktree_executor.py phase-loop-runtime/tests/test_phase_loop_lane_scheduler.py phase-loop-runtime/tests/test_phase_loop_concurrent_phase_dispatch.py phase-loop-runtime/tests/test_dispatch_lock_reentrancy.py phase-loop-runtime/tests/test_phase_loop_work_unit_runner.py phase-loop-runtime/tests/test_phase_loop_runner.py phase-loop-runtime/tests/test_phase_loop_launcher.py phase-loop-runtime/tests/test_workerpool_failure_isolation.py phase-loop-runtime/tests/test_workerpool_parallel.py phase-loop-runtime/tests/test_workerpool_worktree_alloc.py phase-loop-runtime/tests/test_v34_parallel_dispatch_soak.py phase-loop-runtime/tests/test_phase_loop_v45_sched.py phase-loop-runtime/tests/test_phase_loop_v45_schedharden.py'
 ---
 
 # SCHED: Scheduler and Worktree Reclamation
@@ -67,9 +67,12 @@ not modify them.
   tips and the accepted possible loss from the removed `phase/abdresolve` worktree
   without claiming that unknown work was recovered.
 - [ ] IF-0-SCHED-7 — `SCHED_HARDEN_HANDOFF` binds the actual SL-2 landing commit, tree,
-  exact production path set, reviewed SCHED plan/roadmap digests, and a successor HARDEN
-  plan/manifest digest that explicitly consumes SL-2. HARDEN may not begin an overlapping
-  write until that successor has a fresh exact-digest native-first board review.
+  exact production path set, reviewed SCHED plan/roadmap digests, successor HARDEN plan
+  digest, and a domain-separated digest of the canonical handoff object stored in the
+  successor manifest. A separate receipt head binds the exact reviewed candidate manifest
+  blob without self-reference. HARDEN may not begin an overlapping write until that
+  candidate has a fresh converged exact-digest native-first board review and the receipt
+  topology validates.
 
 ## Lane Index & Dependencies
 
@@ -90,16 +93,21 @@ SL-2 — Scheduler kind, artifact transport, and no-diff dispatch
 
 SL-3 — Bind scheduler landing into HARDEN
   Depends on: SL-2
-  Blocks: SL-5, HARDEN
+  Blocks: SL-5
   Parallel-safe: no
 
 SL-4 — Worktree lease, generation, and conservative reclamation
   Depends on: SL-0, SL-1
-  Blocks: SL-5
+  Blocks: SL-6
   Parallel-safe: yes (with SL-2 after SL-1)
 
-SL-5 — Documentation, disposition, and completion evidence
-  Depends on: SL-0, SL-1, SL-2, SL-3, SL-4
+SL-5 — Admit exact HARDEN completion
+  Depends on: SL-3
+  Blocks: SL-6
+  Parallel-safe: yes (with SL-4)
+
+SL-6 — Documentation, disposition, and completion evidence
+  Depends on: SL-0, SL-1, SL-2, SL-3, SL-4, SL-5
   Blocks: (none)
   Parallel-safe: no
 
@@ -109,7 +117,7 @@ SL-5 — Documentation, disposition, and completion evidence
 2. The SL-0 closeout records a record-only changed-path set and the reviewed canonical
    main ancestry before test authorship begins.
 3. The SL-1 closeout records a tests-only changed-path set and panelled RED evidence.
-   Its test paths are immutable for SL-2 through SL-5.
+   Its test paths are immutable for SL-2 through SL-6.
 4. The SL-2 scheduler closeout records a production-only changed-path set and precedes
    HARDEN. HARDEN consumes that exact landing before touching any overlapping writer.
 5. The SL-3 governance closeout records the actual SL-2 commit/tree/path set in a
@@ -117,7 +125,8 @@ SL-5 — Documentation, disposition, and completion evidence
    HARDEN cannot start an overlapping write before that review converges.
 6. The SL-4 reclamation closeout records a production-only changed-path set disjoint
    from HARDEN and may proceed independently after SL-0 and SL-1.
-7. The SL-5 closeout runs only after SL-2, SL-3, SL-4, and HARDEN completion; it records
+7. The SL-5 control closeout admits only an exact validated HARDEN completion landing.
+8. The SL-6 closeout runs only after SL-2, SL-3, SL-4, and SL-5; it records
    exact-main replay, the accepted historical residual, and every changed-path boundary.
 
 ## Lanes
@@ -153,7 +162,10 @@ SL-5 — Documentation, disposition, and completion evidence
   `phase-loop-runtime/tests/test_phase_loop_launcher.py`,
   `phase-loop-runtime/tests/test_workerpool_failure_isolation.py`,
   `phase-loop-runtime/tests/test_workerpool_parallel.py`,
-  `phase-loop-runtime/tests/test_workerpool_worktree_alloc.py`
+  `phase-loop-runtime/tests/test_workerpool_worktree_alloc.py`,
+  `phase-loop-runtime/tests/test_v34_parallel_dispatch_soak.py`,
+  `phase-loop-runtime/tests/test_phase_loop_v45_sched.py`,
+  `phase-loop-runtime/tests/test_phase_loop_v45_schedharden.py`
 - **Interfaces provided**: `SCHED_RED_SUITE`.
 - **Interfaces consumed**: `SCHED_RECOVERY_DECISION`.
 - **Parallel-safe**: no.
@@ -173,7 +185,7 @@ SL-5 — Documentation, disposition, and completion evidence
   - test: run every mutation against the exact pre-production base, require the injection
     anchor to execute, record expected RED, restore the source, and record unchanged
     positive controls.
-  - verify: run the ten owned modules plus Ruff and `git diff --check`; require the new
+  - verify: run the thirteen owned modules plus Ruff and `git diff --check`; require the new
     falsifiers RED for the intended reason and all unrelated existing tests green.
 
 ### SL-2 — Scheduler kind, artifact transport, and no-diff dispatch
@@ -211,7 +223,8 @@ SL-5 — Documentation, disposition, and completion evidence
 
 - **Scope**: Turn the actual reviewed SL-2 landing into an executable downstream
   dependency before HARDEN touches either overlapping runtime file.
-- **Owned files**: `plans/phase-plan-v10-HARDEN.md`, `plans/manifest.json`
+- **Owned files**: `plans/phase-plan-v10-HARDEN.md`, `plans/manifest.json`,
+  `plans/evidence/v10-SCHED-HARDEN-review.json`
 - **Interfaces provided**: `SCHED_HARDEN_HANDOFF`.
 - **Interfaces consumed**: `SCHED_SCHEDULER_RUNTIME`, exact canonical Git objects, and
   the current HARDEN contract record (pre-existing).
@@ -220,12 +233,29 @@ SL-5 — Documentation, disposition, and completion evidence
   - impl: fetch canonical main and require the exact reviewed SL-2 landing to be its
     ancestor; record the landing commit/tree and require its diff to equal only
     `lane_scheduler.py`, `runner.py`, `launcher.py`, and `worker_pool.py`.
-  - impl: amend HARDEN context, consumed interfaces, overlap inventory, and preflight so
-    they require that exact landing before any `runner.py` or `launcher.py` write; append
-    one manifest lifecycle event carrying the handoff identity and successor digests.
+  - impl: create candidate `C` by amending HARDEN context, consumed interfaces, overlap
+    inventory, and preflight so they require the actual SL-2 landing before any `runner.py`
+    or `launcher.py` write. Append one manifest lifecycle event whose domain-separated
+    `manifest_contract_sha256` covers canonical compact sorted-key JSON of only the
+    `sched_harden_handoff` object with that digest field excluded: SHA-256 over the UTF-8
+    `manifest_contract_digest_domain` bytes followed by the compact JSON bytes and one LF.
+    Duplicate keys, floats, surrogates, and non-UTF-8 data reject. Its exact key set is
+    `actual_sl2_commit`, `actual_sl2_tree`, `handoff_status`, `harden_plan_sha256`,
+    `manifest_contract_digest_domain`, `manifest_contract_sha256`, `required_path_set`,
+    `required_review_seats`, `review_receipt_path`, `roadmap_sha256`, `schema`, and
+    `sched_plan_sha256`; candidate values are non-null and status is `candidate_awaiting_review`.
   - verify: recompute the roadmap, SCHED, HARDEN, and manifest contract digests, validate
-    both plans and the manifest, then obtain a fresh exact-digest native-first four-seat
-    board. Any dissent, timeout, missing seat, or digest drift blocks HARDEN.
+    both plans and the manifest at `C`, then obtain a fresh exact-digest native-first
+    four-seat board over `C`. Any dissent, timeout, missing seat, or digest drift blocks.
+  - impl: only after convergence, create single-parent receipt head `R` whose sole diff
+    from `C` is `plans/evidence/v10-SCHED-HARDEN-review.json`. The canonical receipt binds
+    `C` commit/tree, exact HARDEN plan and manifest blob/digests, the domain-separated
+    manifest contract digest, every seat's native artifact identity/status/verdict, and
+    requires all four usable terminal verdicts to be `AGREE`. The receipt contains no
+    self-digest; its Git blob OID is the retained identity.
+  - verify: HARDEN preflight requires `R^ == C`, `C..R` exactly the receipt path, unchanged
+    plan/manifest blobs, non-null actual SL-2 identities, exact four-path SL-2 diff, valid
+    contract digest, and a canonical converged receipt before any overlapping write.
 
 ### SL-4 — Worktree lease, generation, and conservative reclamation
 
@@ -252,14 +282,33 @@ SL-5 — Documentation, disposition, and completion evidence
   - verify: make the SL-1 worktree tests green without changing them; run all existing
     phase-worktree and worktree-index regressions.
 
-### SL-5 — Documentation, disposition, and completion evidence
+### SL-5 — Admit exact HARDEN completion
+
+- **Scope**: Turn the external HARDEN completion landing into an explicit internal SCHED
+  dependency without making full SCHED a prerequisite of HARDEN.
+- **Owned files**: `plans/evidence/v10-SCHED-HARDEN-completion.json`
+- **Interfaces provided**: `SCHED_HARDEN_COMPLETION`.
+- **Interfaces consumed**: `SCHED_HARDEN_HANDOFF` and the exact canonical HARDEN
+  completion landing.
+- **Parallel-safe**: yes, with SL-4 after SL-3.
+- **Tasks**:
+  - verify: fetch canonical main and require the HARDEN completion topology, plan/roadmap
+    digests, manifest lifecycle, final audit/evidence, and mandatory review receipt to pass
+    the unmodified HARDEN verifier; reject branch-local or self-authored summaries.
+  - impl: write canonical metadata-only evidence binding the fetched HARDEN landing commit,
+    tree, completion event digest, verifier identity, and successful exit status.
+  - verify: re-open the evidence, recompute every Git object and digest, and require its
+    landing ancestry to contain receipt head `R` before SL-6 may start.
+
+### SL-6 — Documentation, disposition, and completion evidence
 
 - **Scope**: Reconcile public scheduler documentation and reduce exact-main evidence after
   both implementation landings.
 - **Owned files**: `docs/research/sched-worktree-reclamation-evidence.md`
 - **Interfaces provided**: `SCHED_COMPLETION_EVIDENCE`.
 - **Interfaces consumed**: `SCHED_RECOVERY_DECISION`, `SCHED_RED_SUITE`,
-  `SCHED_WORKTREE_AUTHORITY`, `SCHED_SCHEDULER_RUNTIME`, `SCHED_HARDEN_HANDOFF`, HARDEN completion, and exact
+  `SCHED_WORKTREE_AUTHORITY`, `SCHED_SCHEDULER_RUNTIME`, `SCHED_HARDEN_HANDOFF`,
+  `SCHED_HARDEN_COMPLETION`, and exact
   canonical commits (pre-existing).
 - **Parallel-safe**: no.
 - **Tasks**:
@@ -292,7 +341,30 @@ PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q 
   phase-loop-runtime/tests/test_phase_loop_launcher.py \
   phase-loop-runtime/tests/test_workerpool_failure_isolation.py \
   phase-loop-runtime/tests/test_workerpool_parallel.py \
-  phase-loop-runtime/tests/test_workerpool_worktree_alloc.py
+  phase-loop-runtime/tests/test_workerpool_worktree_alloc.py \
+  phase-loop-runtime/tests/test_v34_parallel_dispatch_soak.py \
+  phase-loop-runtime/tests/test_phase_loop_v45_sched.py \
+  phase-loop-runtime/tests/test_phase_loop_v45_schedharden.py
+```
+
+The worker-pool integration gate must run in a host checkout with a reachable dotfiles
+fleet tree; a skipped test is a failure:
+
+```bash
+tmp_junit="$(mktemp)"
+PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q \
+  --junitxml="$tmp_junit" \
+  phase-loop-runtime/tests/test_v34_parallel_dispatch_soak.py \
+  phase-loop-runtime/tests/test_phase_loop_v45_sched.py \
+  phase-loop-runtime/tests/test_phase_loop_v45_schedharden.py
+python3 - "$tmp_junit" <<'PY'
+import sys
+import xml.etree.ElementTree as ET
+root = ET.parse(sys.argv[1]).getroot()
+suites = [root] if root.tag == "testsuite" else list(root.findall("testsuite"))
+totals = {key: sum(int(s.get(key, "0")) for s in suites) for key in ("tests", "failures", "errors", "skipped")}
+assert totals["tests"] > 0 and totals["failures"] == totals["errors"] == totals["skipped"] == 0, totals
+PY
 ```
 
 ```bash
@@ -321,7 +393,7 @@ PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q 
 
 ## Execution Notes
 
-- SL-0 through SL-4 produce distinct review-boundary receipts. The coordinator
+- SL-0 through SL-6 produce distinct review-boundary receipts. The coordinator
   records each canonical target tip, reviewed head, resulting ancestry, and exact
   changed-path set before advancing.
 - The SL-1 RED evidence uses `verification_evidence.v3`. Each mutation record carries
@@ -331,9 +403,9 @@ PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q 
   new separately reviewed tests-only successor before further production edits.
 - SL-2 is the roadmap's lane B and must be reviewed and integrated before SL-3 binds its
   exact landing into HARDEN. HARDEN may begin an overlapping writer only after the SL-3
-  successor plan/manifest also receives a fresh exact-digest review. SL-5 requires an
-  exact HARDEN completion receipt. SL-4 is the disjoint roadmap lane A and does not wait
-  for SL-2.
+  successor plan/manifest also receives a fresh exact-digest review. SL-5 admits the
+  exact HARDEN completion as an internal gate for SL-6. SL-4 is the disjoint roadmap lane
+  A and does not wait for SL-2.
 - The final reducer replays the exact merged bytes from canonical main; branch-local
   evidence, self-authored summaries, or a stale worktree cannot complete SCHED. It
   reports seven satisfied criteria plus EC-SCHED-7 as an accepted unmet residual, never
@@ -342,7 +414,7 @@ PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q 
 ## Acceptance Criteria
 
 - [ ] EC-SCHED-0 — proven by `git diff --name-only "$SCHED_SL1_BASE..$SCHED_SL1_LANDING"`
-  equaling the ten SL-1 paths and by two independent production landing proofs. For the
+  equaling the thirteen SL-1 paths and by two independent production landing proofs. For the
   scheduler writer, require `git merge-base --is-ancestor "$SCHED_SL1_LANDING"
   "$SCHED_SL2_LANDING^1"` and an exact four-path SL-2 diff. For the reclamation writer,
   require `git merge-base --is-ancestor "$SCHED_SL1_LANDING" "$SCHED_SL4_LANDING^1"`
@@ -395,6 +467,8 @@ PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q 
   `plans/manifest.json`, `docs/research/sched-worktree-recovery-ratification.md`,
   `docs/research/sched-worktree-reclamation-evidence.md`
 - evidence paths: `plans/phase-plan-v10-SCHED.md`,
+  `plans/evidence/v10-SCHED-HARDEN-review.json`,
+  `plans/evidence/v10-SCHED-HARDEN-completion.json`,
   `docs/research/sched-worktree-reclamation-evidence.md`
 - redaction posture: `metadata_only`
 - downstream handling: SL-3 must rebind the actual SL-2 landing into HARDEN and obtain a
