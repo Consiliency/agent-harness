@@ -27,6 +27,7 @@ participates in merge-back.
 from __future__ import annotations
 
 import subprocess
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -302,6 +303,21 @@ def _gc_stale_phase_worktrees(
                     )
                     continue
                 _remove_worktree(repo, wt_path)
+                # VERIFY the removal before recording it or deleting the branch.
+                # `_remove_worktree` is best-effort (check=False) and git legitimately
+                # REFUSES on a locked worktree, so an unverified "removed" record is a
+                # lie, and a branch -D after a failed removal would delete the only
+                # handle on a worktree that still exists.
+                if wt_path.exists():
+                    records.append(
+                        {
+                            "path": str(wt_path),
+                            "branch": branch,
+                            "action": "skipped",
+                            "reason": "removal refused (locked or in use)",
+                        }
+                    )
+                    continue
                 if _branch_exists(repo, branch):
                     _git(repo, "branch", "-D", branch, check=False)
                 records.append(
@@ -341,7 +357,20 @@ def create_phase_worktree(
 
     # Best-effort reclaim of crash-residual worktrees leaked by killed runs
     # (teardown's finally never ran). Advisory only — never affects this run.
-    _gc_stale_phase_worktrees(repo)
+    # Surface what the sweep destroyed. A destructive op that leaves no trace is
+    # indistinguishable from one that never ran, and the caller previously discarded
+    # these records entirely. Guarded + stderr: this must never break creation, and
+    # the module has no logger of its own.
+    try:
+        for _rec in _gc_stale_phase_worktrees(repo) or ():
+            if _rec.get("action") == "removed":
+                print(
+                    f"phase-worktree gc: removed {_rec.get('path')} "
+                    f"(branch {_rec.get('branch')}; {_rec.get('reason')})",
+                    file=sys.stderr,
+                )
+    except Exception:
+        pass
 
     phase = phase.upper()
     worktree_path = lane_worktree_path(

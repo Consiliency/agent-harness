@@ -334,6 +334,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   forever. `teardown_phase_worktree` is only reachable from a `finally`, which survives an
   exception but **not** a kill — so a hard-killed run's isolated per-phase worktree was
   never removed and accumulated on disk indefinitely.
+- **Scope: this NARROWS Consiliency/agent-harness#353, it does not close it.** The sweep
+  reclaims only *clean, merged, stale* residuals. A run killed mid-work leaves
+  **uncommitted** changes (the transport model in `transfer_phase_worktree_dirty` means a
+  killed child's verified work is uncommitted by design), and those are preserved
+  **indefinitely** — they still need manual triage. Every guard fails closed: a git error
+  is treated as dirty, an unresolvable merge target preserves, and `branch -D` fires only
+  after HEAD is proven an ancestor, so no commit becomes unreachable.
+- A removal is **verified** before it is recorded: git legitimately refuses to remove a
+  locked or in-use worktree, so an unverified `"removed"` record would be false and a
+  branch delete after a failed removal would strand a live worktree. Refusals now record
+  `skipped` with the reason, and removals are printed to stderr — a destructive op that
+  leaves no trace is indistinguishable from one that never ran.
 - `create_phase_worktree` now runs a best-effort, age-gated sweep
   (`_gc_stale_phase_worktrees`) at the top of the function — mirroring the existing
   crash-reclamation pattern for panel scratch dirs (`_gc_stale_panel_scratch`), so you

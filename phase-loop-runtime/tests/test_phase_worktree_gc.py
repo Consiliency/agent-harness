@@ -258,3 +258,35 @@ def test_create_phase_worktree_reclaims_stale_and_creates(tmp_path):
     assert not _worktree_registered(repo, stale.worktree_path)
 
     teardown_phase_worktree(repo, fresh)
+
+
+def test_locked_worktree_records_skipped_not_removed(tmp_path):
+    """A refused removal must NOT be recorded as "removed", and must NOT delete the branch.
+
+    git legitimately refuses to remove a locked worktree. Before the removal was
+    verified, the sweep appended ``action: "removed"`` regardless and then ran
+    ``branch -D`` -- a false record, and a branch delete that would strand a
+    worktree still on disk. The branch is the only handle on that work.
+    """
+    repo = make_repo(tmp_path)
+    branch = _current_branch(repo)
+    base = resolve_base_sha(repo)
+    stale = create_phase_worktree(
+        repo, phase="extract", target_branch=branch, base_sha=base, **_NO_MOUNT_KW
+    )
+    _make_stale(stale.worktree_path)
+    # Lock it: git will now refuse --force removal.
+    subprocess.run(["git","-C",str(repo),"worktree","lock",str(stale.worktree_path)], check=True)
+
+    records = _gc_stale_phase_worktrees(repo)
+
+    entry = next((r for r in records if r["path"] == str(stale.worktree_path)), None)
+    assert entry is not None, "the locked candidate must still be reported"
+    assert entry["action"] == "skipped", f"refused removal recorded as {entry['action']!r}"
+    # The worktree survived, so its recovery branch must survive too.
+    assert stale.worktree_path.exists()
+    branches = subprocess.run(["git","-C",str(repo),"branch","--list",stale.temp_branch],
+                              capture_output=True, text=True).stdout
+    assert stale.temp_branch in branches, "branch deleted despite failed removal"
+
+    subprocess.run(["git","-C",str(repo),"worktree","unlock",str(stale.worktree_path)], check=False)
