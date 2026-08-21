@@ -382,11 +382,54 @@ def create_phase_worktree(
     temp_branch = phase_temp_branch(target_branch, phase)
 
     # Clear stale state from an interrupted prior run before recreating.
+    #
+    # ah#624: this used to force-remove UNCONDITIONALLY and then `branch -D`, with no
+    # dirty check and no ancestor proof. A run killed mid-work leaves its verified work
+    # UNCOMMITTED (see `transfer_phase_worktree_dirty`), so recreating the same phase
+    # silently deleted that work AND the branch that could have recovered it. Same guards
+    # the reclamation sweep already applies -- preserve, do not destroy.
     if worktree_path.exists():
-        _remove_worktree(repo, worktree_path)
+        if _worktree_has_uncommitted_changes(worktree_path):
+            # Move it aside instead of deleting it. Loud, recoverable, and it frees the
+            # path so creation still succeeds.
+            salvage = worktree_path.with_name(
+                f"{worktree_path.name}.salvage-{int(time.time())}"
+            )
+            _git(repo, "worktree", "move", str(worktree_path), str(salvage), check=False)
+            if worktree_path.exists():
+                # git refused the move (locked / in use). Do NOT force-delete: fail
+                # loudly rather than destroy uncommitted work.
+                raise RuntimeError(
+                    f"refusing to clobber a dirty phase worktree at {worktree_path}: "
+                    f"it holds uncommitted work from an interrupted run and could not be "
+                    f"moved aside. Inspect and remove it manually."
+                )
+            print(
+                f"phase-worktree: preserved dirty crash residual -> {salvage}",
+                file=sys.stderr,
+            )
+        else:
+            _remove_worktree(repo, worktree_path)
     _git(repo, "worktree", "prune", check=False)
     if _branch_exists(repo, temp_branch):
-        _git(repo, "branch", "-D", temp_branch, check=False)
+        # Only delete the branch once its commits are provably reachable elsewhere.
+        # `_is_ancestor` returns False on ANY git error, so an unresolvable merge target
+        # preserves the branch -- fail closed. A log does not protect orphaned SHAs.
+        head = _git(repo, "rev-parse", temp_branch, check=False).stdout.strip()
+        merge_ref = default_base_ref(repo)
+        if head and merge_ref and _is_ancestor(repo, head, merge_ref):
+            _git(repo, "branch", "-D", temp_branch, check=False)
+        else:
+            # Unmerged commits: preserving them is mandatory, but the name must be freed
+            # or `worktree add -b` below fails outright. RENAME rather than delete -- the
+            # commits stay reachable under a salvage ref, and creation still succeeds.
+            salvage_branch = f"{temp_branch}.salvage-{int(time.time())}"
+            _git(repo, "branch", "-m", temp_branch, salvage_branch, check=False)
+            print(
+                f"phase-worktree: preserved unmerged crash-residual commits as "
+                f"{salvage_branch} (was {temp_branch})",
+                file=sys.stderr,
+            )
 
     worktree_path.parent.mkdir(parents=True, exist_ok=True)
     created = _git(

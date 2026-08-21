@@ -206,8 +206,23 @@ def test_create_is_idempotent_after_stale_worktree(tmp_path):
 
     assert second.worktree_path == first.worktree_path
     assert second.worktree_path.exists()
-    # Recreated fresh at base: the stale commit's file is gone.
+    # Recreated fresh at base: the stale commit's file is not in the NEW worktree.
     assert not (second.worktree_path / "src" / "extract.py").exists()
+    # ah#624: but the work must remain RECOVERABLE. The prior run's commits were never
+    # merged, so its branch must survive -- deleting it would orphan those commits with
+    # no handle. This assertion is the one that previously pinned the data loss: the old
+    # code ran `branch -D` unconditionally here.
+    all_branches = subprocess.run(
+        ["git", "-C", str(repo), "branch", "--list", f"{first.temp_branch}*"],
+        capture_output=True, text=True,
+    ).stdout
+    salvaged = [b.strip("* ").strip() for b in all_branches.splitlines() if ".salvage-" in b]
+    assert salvaged, f"unmerged crash-residual commits were orphaned: {all_branches!r}"
+    blob = subprocess.run(
+        ["git", "-C", str(repo), "show", f"{salvaged[0]}:src/extract.py"],
+        capture_output=True, text=True,
+    )
+    assert blob.returncode == 0 and "x = 1" in blob.stdout, "stale work unrecoverable"
     teardown_phase_worktree(repo, second)
 
 
@@ -359,3 +374,47 @@ def test_handle_roundtrips_fields(tmp_path):
     )
     assert handle.phase == "EXTRACT"
     assert handle.target_branch == "main"
+
+
+def test_recreate_preserves_dirty_crash_residual(tmp_path):
+    """ah#624: a same-path recreate must NOT force-delete UNCOMMITTED work.
+
+    This is the shape a real killed run leaves: `transfer_phase_worktree_dirty` means
+    a killed child's verified work is uncommitted by design. The old code ran
+    `_remove_worktree(..., --force)` unconditionally here, destroying it silently.
+
+    Mutation that must kill this: restore the unconditional `_remove_worktree` call --
+    the salvage directory never appears and the content is gone.
+    """
+    repo = make_repo(tmp_path)
+    branch = _current_branch(repo)
+    base = resolve_base_sha(repo)
+
+    # ISOLATE the worktree root. Without this the worktree lands in the SHARED
+    # /mnt/workspace/worktrees and the salvage glob below matches leftovers from other
+    # runs -- the assertion then passes even with the fix removed (verified: it did).
+    with _isolated_worktree_root(tmp_path):
+        first = create_phase_worktree(
+            repo, phase="extract", target_branch=branch, base_sha=base
+        )
+        # Dirty, never committed -- exactly what a SIGKILL leaves behind.
+        (first.worktree_path / "src").mkdir(parents=True, exist_ok=True)
+        (first.worktree_path / "src" / "unsaved.py").write_text("unsaved = True\n")
+
+        second = create_phase_worktree(
+            repo, phase="extract", target_branch=branch, base_sha=base
+        )
+
+        # Creation still succeeded at the canonical path.
+        assert second.worktree_path == first.worktree_path
+        assert second.worktree_path.exists()
+        # The uncommitted work was MOVED ASIDE, not deleted.
+        salvaged = sorted(
+            first.worktree_path.parent.glob(f"{first.worktree_path.name}.salvage-*")
+        )
+        assert salvaged, "dirty crash residual was destroyed instead of preserved"
+        recovered = salvaged[0] / "src" / "unsaved.py"
+        assert recovered.exists(), f"salvage dir exists but work is missing: {salvaged[0]}"
+        assert "unsaved = True" in recovered.read_text()
+
+        teardown_phase_worktree(repo, second)
