@@ -27,10 +27,18 @@ participates in merge-back.
 from __future__ import annotations
 
 import subprocess
+import sys
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .runtime_paths import lane_worktree_path
+from .worktree_index import _is_ancestor, default_base_ref, list_worktrees
+
+# Namespace prefix for the throwaway per-phase temp branches. Kept as a single
+# source of truth so the crash-residual GC can recognise exactly the branches
+# ``phase_temp_branch`` mints — never a human's branch or a foreign worktree.
+_TEMP_BRANCH_PREFIX = "phase-loop/sched/"
 
 
 @dataclass(frozen=True)
@@ -164,7 +172,7 @@ def phase_temp_branch(target_branch: str, phase: str) -> str:
     sweeps can recognize them.
     """
 
-    return f"phase-loop/sched/{target_branch}/{phase.upper()}"
+    return f"{_TEMP_BRANCH_PREFIX}{target_branch}/{phase.upper()}"
 
 
 def _branch_exists(repo: Path, branch: str) -> bool:
@@ -173,6 +181,195 @@ def _branch_exists(repo: Path, branch: str) -> bool:
 
 def _remove_worktree(repo: Path, path: Path) -> None:
     _git(repo, "worktree", "remove", "--force", str(path), check=False)
+
+
+def _worktree_target_branch(temp_branch: str) -> str | None:
+    """Recover the pipeline branch a sched temp branch integrates back onto.
+
+    ``phase-loop/sched/<target_branch>/<PHASE>`` — ``<target_branch>`` may itself
+    contain slashes (e.g. ``feat/foo``), ``<PHASE>`` never does, so strip the
+    prefix then drop the final segment. Returns ``None`` when ``temp_branch`` is
+    not one of our sched temp branches.
+    """
+
+    if not temp_branch.startswith(_TEMP_BRANCH_PREFIX):
+        return None
+    remainder = temp_branch[len(_TEMP_BRANCH_PREFIX):]
+    target, sep, _phase = remainder.rpartition("/")
+    if not sep or not target:
+        return None
+    return target
+
+
+
+def _branch_is_checked_out(repo: Path, branch: str) -> bool:
+    """True if any worktree has ``branch`` checked out.
+
+    git refuses to delete such a branch, so this decides between delete and rename.
+    Fails CLOSED: on any parse/exec error it reports True, which routes to the
+    rename path -- renaming is always safe, deleting is not.
+    """
+    try:
+        for ref in list_worktrees(repo):
+            if ref.branch == branch:
+                return True
+        return False
+    except Exception:
+        return True
+
+
+def _unique_salvage_name(is_free, stem: str) -> str:
+    """A salvage name that does not collide.
+
+    ``int(time.time())`` alone collides when two recreates land in the same second --
+    plausible in a concurrent wave -- which made ``worktree move``/``branch -m`` fail
+    and wedged creation. Probe until free, then fall back to a monotonic suffix.
+    """
+    base = f"{stem}-{int(time.time())}"
+    if is_free(base):
+        return base
+    for n in range(1, 1000):
+        cand = f"{base}.{n}"
+        if is_free(cand):
+            return cand
+    return f"{base}.{time.monotonic_ns()}"
+
+def _worktree_has_uncommitted_changes(worktree_path: Path) -> bool:
+    """True if the worktree holds any dirty state we must not destroy.
+
+    ``git status --porcelain --untracked-files=all`` reports tracked
+    modifications, staged changes, AND untracked new files — the three ways a
+    crashed child leaves real work behind (the transport model leaves verified
+    work UNCOMMITTED in the worktree; the parent's closeout, which never ran on a
+    kill, is what would have staged+committed it). Any failure to read status is
+    treated as "dirty" so GC preserves the worktree (fail toward not deleting).
+
+    Deliberately NOT ``--ignored``: gitignored content in a phase worktree is
+    regenerable build artifacts (``__pycache__``, ``build/``), never work.
+    Preserving on ignored files would skip essentially every worktree and neuter
+    the reclaim. (Contrast ah#215, which concerned TRACKED-then-ignored files —
+    those still surface as tracked modifications here.)
+    """
+
+    result = _git(
+        worktree_path, "status", "--porcelain", "--untracked-files=all", check=False
+    )
+    if result.returncode != 0:
+        return True
+    return bool(result.stdout.strip())
+
+
+def _gc_stale_phase_worktrees(
+    repo: Path,
+    *,
+    max_age_s: int = 24 * 3600,
+    now: float | None = None,
+) -> list[dict[str, str]]:
+    """Best-effort reclaim of crash-residual per-phase worktrees.
+
+    ``teardown_phase_worktree`` only runs from a ``finally`` — it survives an
+    exception but NOT a SIGKILL/OOM/timeout/lost-SSH kill, so a hard-killed run
+    leaks its worktree DIRECTORY forever. This sweeps those, mirroring
+    ``_gc_stale_panel_scratch`` (age-gated, advisory) — but a scratch dir holds
+    nothing while a worktree can hold real work, so it adds two never-delete-work
+    guards with no precedent to copy.
+
+    A worktree is removed only when ALL hold:
+      * its branch is one of our ``phase-loop/sched/`` temp branches (identity —
+        a human's worktree or a foreign sibling clone is never a candidate);
+      * its directory mtime is older than ``max_age_s`` (a CONCURRENT run's fresh
+        worktree must never be touched);
+      * its working tree is clean (no uncommitted/untracked work); AND
+      * its HEAD is already contained in the branch it integrates back onto (no
+        unmerged commits to lose).
+
+    Enumeration is via ``list_worktrees(repo)`` (git-registered, so scoped to
+    THIS repo's object store) rather than globbing the worktree root — the root
+    can be ``repo.parent`` shared with unrelated clones, which globbing would
+    wrongly sweep. Wrapped so any failure (permissions, a racing removal, an
+    unreadable mtime) can NEVER affect the run. Returns per-candidate
+    skip/removal records for logging/tests; never raises.
+    """
+
+    records: list[dict[str, str]] = []
+    try:
+        base_ref = default_base_ref(repo)
+        cutoff = (time.time() if now is None else now) - max_age_s
+        for ref in list_worktrees(repo):
+            try:
+                branch = ref.branch
+                if not branch or not branch.startswith(_TEMP_BRANCH_PREFIX):
+                    continue  # not a phase worktree — never touch
+                wt_path = Path(ref.path)
+                try:
+                    mtime = wt_path.stat().st_mtime
+                except OSError:
+                    continue
+                if mtime >= cutoff:
+                    continue  # fresh — could belong to a concurrent run
+                if _worktree_has_uncommitted_changes(wt_path):
+                    records.append(
+                        {
+                            "path": str(wt_path),
+                            "branch": branch,
+                            "action": "skipped",
+                            "reason": "uncommitted changes",
+                        }
+                    )
+                    continue
+                target = _worktree_target_branch(branch)
+                merge_ref = (
+                    target if (target and _branch_exists(repo, target)) else base_ref
+                )
+                head = ref.head_sha
+                if not head or not _is_ancestor(repo, head, merge_ref):
+                    # HEAD carries commits not yet in the integration target —
+                    # unmerged work. (_is_ancestor also returns False on any git
+                    # error, so an indeterminate check preserves the worktree.)
+                    records.append(
+                        {
+                            "path": str(wt_path),
+                            "branch": branch,
+                            "action": "skipped",
+                            "reason": "unmerged commits",
+                        }
+                    )
+                    continue
+                _remove_worktree(repo, wt_path)
+                # VERIFY the removal before recording it or deleting the branch.
+                # `_remove_worktree` is best-effort (check=False) and git legitimately
+                # REFUSES on a locked worktree, so an unverified "removed" record is a
+                # lie, and a branch -D after a failed removal would delete the only
+                # handle on a worktree that still exists.
+                if wt_path.exists():
+                    records.append(
+                        {
+                            "path": str(wt_path),
+                            "branch": branch,
+                            "action": "skipped",
+                            "reason": "removal refused (locked or in use)",
+                        }
+                    )
+                    continue
+                if _branch_exists(repo, branch):
+                    _git(repo, "branch", "-D", branch, check=False)
+                records.append(
+                    {
+                        "path": str(wt_path),
+                        "branch": branch,
+                        "action": "removed",
+                        "reason": "crash-residual: clean, merged, stale",
+                    }
+                )
+            except Exception:
+                continue
+        # Reclaims admin records for any directory removed above (and for any
+        # already-vanished directory). Prune alone frees no bytes — it is the
+        # follow-up to the removals, not the mechanism.
+        _git(repo, "worktree", "prune", check=False)
+    except Exception:
+        return records
+    return records
 
 
 def create_phase_worktree(
@@ -191,6 +388,23 @@ def create_phase_worktree(
     from the same pipeline-branch tip.
     """
 
+    # Best-effort reclaim of crash-residual worktrees leaked by killed runs
+    # (teardown's finally never ran). Advisory only — never affects this run.
+    # Surface what the sweep destroyed. A destructive op that leaves no trace is
+    # indistinguishable from one that never ran, and the caller previously discarded
+    # these records entirely. Guarded + stderr: this must never break creation, and
+    # the module has no logger of its own.
+    try:
+        for _rec in _gc_stale_phase_worktrees(repo) or ():
+            if _rec.get("action") == "removed":
+                print(
+                    f"phase-worktree gc: removed {_rec.get('path')} "
+                    f"(branch {_rec.get('branch')}; {_rec.get('reason')})",
+                    file=sys.stderr,
+                )
+    except Exception:
+        pass
+
     phase = phase.upper()
     worktree_path = lane_worktree_path(
         repo,
@@ -201,11 +415,74 @@ def create_phase_worktree(
     temp_branch = phase_temp_branch(target_branch, phase)
 
     # Clear stale state from an interrupted prior run before recreating.
+    #
+    # ah#624: this used to force-remove UNCONDITIONALLY and then `branch -D`, with no
+    # dirty check and no ancestor proof. A run killed mid-work leaves its verified work
+    # UNCOMMITTED (see `transfer_phase_worktree_dirty`), so recreating the same phase
+    # silently deleted that work AND the branch that could have recovered it. Same guards
+    # the reclamation sweep already applies -- preserve, do not destroy.
     if worktree_path.exists():
-        _remove_worktree(repo, worktree_path)
+        if _worktree_has_uncommitted_changes(worktree_path):
+            # Move it aside instead of deleting it. Loud, recoverable, and it frees the
+            # path so creation still succeeds.
+            salvage = worktree_path.with_name(
+                _unique_salvage_name(
+                    lambda n: not worktree_path.with_name(n).exists(),
+                    f"{worktree_path.name}.salvage",
+                )
+            )
+            _git(repo, "worktree", "move", str(worktree_path), str(salvage), check=False)
+            if worktree_path.exists():
+                # git refused the move (locked / in use). Do NOT force-delete: fail
+                # loudly rather than destroy uncommitted work.
+                raise RuntimeError(
+                    f"refusing to clobber a dirty phase worktree at {worktree_path}: "
+                    f"it holds uncommitted work from an interrupted run and could not be "
+                    f"moved aside. Inspect and remove it manually."
+                )
+            print(
+                f"phase-worktree: preserved dirty crash residual -> {salvage}",
+                file=sys.stderr,
+            )
+        else:
+            _remove_worktree(repo, worktree_path)
     _git(repo, "worktree", "prune", check=False)
     if _branch_exists(repo, temp_branch):
-        _git(repo, "branch", "-D", temp_branch, check=False)
+        # Only delete the branch once its commits are provably reachable elsewhere.
+        # `_is_ancestor` returns False on ANY git error, so an unresolvable merge target
+        # preserves the branch -- fail closed. A log does not protect orphaned SHAs.
+        head = _git(repo, "rev-parse", temp_branch, check=False).stdout.strip()
+        merge_ref = default_base_ref(repo)
+        merged = bool(head and merge_ref and _is_ancestor(repo, head, merge_ref))
+        # A salvaged worktree still has temp_branch CHECKED OUT, so `branch -D` is
+        # refused ("used by worktree at ...") and, with check=False, silently ignored --
+        # then `worktree add -b` below fails because the name was never freed, wedging
+        # every retry. Rename ALWAYS frees the name; it works on a checked-out branch.
+        # Deleting is only an optimisation for the merged case, so do it only when the
+        # branch is not checked out anywhere.
+        if merged and not _branch_is_checked_out(repo, temp_branch):
+            _git(repo, "branch", "-D", temp_branch, check=False)
+        else:
+            # Unmerged commits: preserving them is mandatory, but the name must be freed
+            # or `worktree add -b` below fails outright. RENAME rather than delete -- the
+            # commits stay reachable under a salvage ref, and creation still succeeds.
+            salvage_branch = _unique_salvage_name(
+                lambda n: not _branch_exists(repo, n), f"{temp_branch}.salvage"
+            )
+            _git(repo, "branch", "-m", temp_branch, salvage_branch, check=False)
+            if _branch_exists(repo, temp_branch):
+                # The rename did not take. Do NOT print a preservation message that is
+                # false, and do not let `worktree add -b` fail with a confusing error.
+                raise RuntimeError(
+                    f"refusing to proceed: could not free branch {temp_branch} "
+                    f"(rename to {salvage_branch} failed). It holds crash-residual "
+                    f"commits; resolve manually."
+                )
+            print(
+                f"phase-worktree: preserved crash-residual commits as "
+                f"{salvage_branch} (was {temp_branch})",
+                file=sys.stderr,
+            )
 
     worktree_path.parent.mkdir(parents=True, exist_ok=True)
     created = _git(
