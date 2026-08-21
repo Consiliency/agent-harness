@@ -557,6 +557,34 @@
       "updated_at": "2026-06-30T21:06:48Z"
     },
     {
+      "acceptance_criteria_count": 10,
+      "created_at": "2026-07-29T04:59:43.736588+00:00",
+      "file": "plans/detailed-fab-376-post-commit-resume-seam-20260729.md",
+      "handoff_ref": null,
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-07-29T04:59:43.736588+00:00",
+          "by": "claude-plan-detailed",
+          "metadata": {
+            "depends_on": "Consiliency/agent-harness#368 (AC-376-4 only; core AC-376-1/2/3/5..9 independent)",
+            "issue": "Consiliency/agent-harness#376"
+          },
+          "transition": "committed"
+        }
+      ],
+      "owner_skill": "claude-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "fab-376-post-commit-resume-seam",
+      "status": "committed",
+      "task_summary": "Post-commit crash-resume seam (agent-harness#376): durable committing markers (pre-commit Record A + POST-commit Record B carrying committed_head_sha) + recovery-aware preflight (exemption keyed on committed_head_sha) + prebuilt-path routing for a node that crashes AFTER commit but before terminal broker evidence. Identity = EXACT committed_head_sha (round-3 finding 2). Round-4 (Z): the crash-BEFORE-commit companion arm is scoped OUT \u2014 it BLOCKS-and-PRESERVES at preflight (existing behaviour, strictly non-regressive, byte-survival by inaction); the round-3 quarantine ref was not crash-safe, so auto-resume of a pre-commit crash is deferred to agent-harness#388 with a proven temp-index + tree-sha design. Core AC-376-1/2/3 (+ CR-fold AC-376-5..10; AC-376-11 retired into AC-376-2) INDEPENDENT of #368; only AC-376-4 (cross-epoch rebuild identity) is #368-gated. One standing scope increase: publishing.py on_committed callback (POST-commit identity).",
+      "type": "detailed",
+      "updated_at": "2026-07-29T09:47:11.140822+00:00"
+    },
+    {
       "acceptance_criteria_count": 5,
       "created_at": "2026-07-18T03:20:00Z",
       "file": "plans/detailed-fable-tui-workspace-trust-stall-20260718.md",
