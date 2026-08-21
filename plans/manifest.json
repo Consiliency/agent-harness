@@ -347,6 +347,41 @@
       "updated_at": "2026-07-26T03:45:17Z"
     },
     {
+      "acceptance_criteria_count": 9,
+      "created_at": "2026-08-14T05:54:00Z",
+      "file": "plans/detailed-432-release-v0.7.14-20260814.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260814T055400Z-agent-harness-model-releases.md",
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-08-14T05:54:00Z",
+          "by": "codex-plan-detailed",
+          "metadata": {},
+          "transition": "committed"
+        },
+        {
+          "at": "2026-08-14T06:19:57Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "plan_file": "plans/detailed-432-release-v0.7.14-20260814.md",
+            "run_id": "20260814T0610Z-release-v0714",
+            "worktree": "/mnt/workspace/worktrees/agent-harness-release-v0714"
+          },
+          "transition": "executing"
+        }
+      ],
+      "owner_skill": "codex-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-detailed/reflections/d3c59d00/plan-model-defaults-20260814/20260814T055400Z-agent-harness-model-releases.md",
+      "roadmap_ref": null,
+      "slug": "432-release-v0.7.14-20260814",
+      "status": "executing",
+      "task_summary": "Publish the narrow v0.7.14 headless agy fixes and close agent-harness#432.",
+      "type": "detailed",
+      "updated_at": "2026-08-14T06:19:57Z"
+    },
+    {
       "acceptance_criteria_count": 4,
       "created_at": "2026-07-18T06:20:00Z",
       "file": "plans/detailed-available-panel-legs-grok-171-20260718.md",
@@ -588,6 +623,31 @@
       "task_summary": "Fix Fable/Claude advisor-board TUI leg silent stall (workspace-trust gate; ah#196+#223)",
       "type": "detailed",
       "updated_at": "2026-07-28T22:28:34Z"
+    },
+    {
+      "acceptance_criteria_count": 10,
+      "created_at": "2026-08-14T05:54:00Z",
+      "file": "plans/detailed-gemini37-grok46-defaults-v0.7.15-20260814.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260814T055400Z-agent-harness-model-releases.md",
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-08-14T05:54:00Z",
+          "by": "codex-plan-detailed",
+          "metadata": {},
+          "transition": "committed"
+        }
+      ],
+      "owner_skill": "codex-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-detailed/reflections/d3c59d00/plan-model-defaults-20260814/20260814T055400Z-agent-harness-model-releases.md",
+      "roadmap_ref": null,
+      "slug": "gemini37-grok46-defaults-v0.7.15-20260814",
+      "status": "committed",
+      "task_summary": "Adopt Gemini 3.7 Flash and Grok 4.6 defaults and release v0.7.15.",
+      "type": "detailed",
+      "updated_at": "2026-08-14T05:54:00Z"
     },
     {
       "acceptance_criteria_count": 4,
