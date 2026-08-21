@@ -328,6 +328,45 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   revocation-poison flag only — no `admit_next`, no `lease_epoch`/fence change, no
   re-admission verb. The unresolved publish-vs-readmit epoch-space decision is untouched.
 
+### Scheduler: crash-residual per-phase worktrees are now reclaimed (Consiliency/agent-harness#353)
+
+- Killed runs (SIGKILL/OOM/timeout/lost SSH) leaked their git worktree **directories**
+  forever. `teardown_phase_worktree` is only reachable from a `finally`, which survives an
+  exception but **not** a kill — so a hard-killed run's isolated per-phase worktree was
+  never removed and accumulated on disk indefinitely.
+- **Scope: this NARROWS Consiliency/agent-harness#353, it does not close it.** The sweep
+  reclaims only *clean, merged, stale* residuals. A run killed mid-work leaves
+  **uncommitted** changes (the transport model in `transfer_phase_worktree_dirty` means a
+  killed child's verified work is uncommitted by design), and those are preserved
+  **indefinitely** — they still need manual triage. Every guard fails closed: a git error
+  is treated as dirty, an unresolvable merge target preserves, and `branch -D` fires only
+  after HEAD is proven an ancestor, so no commit becomes unreachable.
+- A removal is **verified** before it is recorded: git legitimately refuses to remove a
+  locked or in-use worktree, so an unverified `"removed"` record would be false and a
+  branch delete after a failed removal would strand a live worktree. Refusals now record
+  `skipped` with the reason, and removals are printed to stderr — a destructive op that
+  leaves no trace is indistinguishable from one that never ran.
+- `create_phase_worktree` now runs a best-effort, age-gated sweep
+  (`_gc_stale_phase_worktrees`) at the top of the function — mirroring the existing
+  crash-reclamation pattern for panel scratch dirs (`_gc_stale_panel_scratch`), so you
+  cannot create a worktree without first reclaiming leaked ones. It is **advisory only**:
+  wrapped so any failure (permissions, a racing removal, an unreadable mtime) can never
+  affect the run.
+- **It never deletes work.** Unlike a scratch dir (which holds nothing), a worktree can
+  hold real work, so a candidate is removed only when ALL hold: its branch is one of our
+  `phase-loop/sched/` temp branches (identity — a human's worktree or a foreign sibling
+  clone is never touched); its directory is older than the age gate (a **concurrent** run's
+  fresh worktree is never swept); its working tree is clean (no uncommitted/untracked
+  work); and its HEAD is already contained in the branch it integrates back onto (no
+  unmerged commits to lose). Any indeterminate check preserves the worktree.
+- The check deliberately does **not** consult `--ignored`: gitignored content in a phase
+  worktree is regenerable build artifacts (`__pycache__`, `build/`), not work — preserving
+  on it would skip essentially every worktree and neuter the reclaim. (Tracked-then-ignored
+  files, the ah#215 class, still surface as tracked modifications and are preserved.)
+- Enumeration reuses `worktree_index.list_worktrees` (git-registered, so scoped to this
+  repo's object store) rather than globbing the worktree root — the root can be a shared
+  parent directory full of unrelated clones, which globbing would wrongly sweep.
+
 ### Panel: the headless agy leg no longer dies on out-of-workspace reads (Consiliency/agent-harness#345)
 
 - The `gemini` panel leg (which drives the Antigravity `agy` CLI) returned a silent 0-byte
