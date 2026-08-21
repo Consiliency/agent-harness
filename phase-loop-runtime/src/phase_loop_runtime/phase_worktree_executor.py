@@ -201,6 +201,39 @@ def _worktree_target_branch(temp_branch: str) -> str | None:
     return target
 
 
+
+def _branch_is_checked_out(repo: Path, branch: str) -> bool:
+    """True if any worktree has ``branch`` checked out.
+
+    git refuses to delete such a branch, so this decides between delete and rename.
+    Fails CLOSED: on any parse/exec error it reports True, which routes to the
+    rename path -- renaming is always safe, deleting is not.
+    """
+    try:
+        for ref in list_worktrees(repo):
+            if ref.branch == branch:
+                return True
+        return False
+    except Exception:
+        return True
+
+
+def _unique_salvage_name(is_free, stem: str) -> str:
+    """A salvage name that does not collide.
+
+    ``int(time.time())`` alone collides when two recreates land in the same second --
+    plausible in a concurrent wave -- which made ``worktree move``/``branch -m`` fail
+    and wedged creation. Probe until free, then fall back to a monotonic suffix.
+    """
+    base = f"{stem}-{int(time.time())}"
+    if is_free(base):
+        return base
+    for n in range(1, 1000):
+        cand = f"{base}.{n}"
+        if is_free(cand):
+            return cand
+    return f"{base}.{time.monotonic_ns()}"
+
 def _worktree_has_uncommitted_changes(worktree_path: Path) -> bool:
     """True if the worktree holds any dirty state we must not destroy.
 
@@ -393,7 +426,10 @@ def create_phase_worktree(
             # Move it aside instead of deleting it. Loud, recoverable, and it frees the
             # path so creation still succeeds.
             salvage = worktree_path.with_name(
-                f"{worktree_path.name}.salvage-{int(time.time())}"
+                _unique_salvage_name(
+                    lambda n: not worktree_path.with_name(n).exists(),
+                    f"{worktree_path.name}.salvage",
+                )
             )
             _git(repo, "worktree", "move", str(worktree_path), str(salvage), check=False)
             if worktree_path.exists():
@@ -417,16 +453,33 @@ def create_phase_worktree(
         # preserves the branch -- fail closed. A log does not protect orphaned SHAs.
         head = _git(repo, "rev-parse", temp_branch, check=False).stdout.strip()
         merge_ref = default_base_ref(repo)
-        if head and merge_ref and _is_ancestor(repo, head, merge_ref):
+        merged = bool(head and merge_ref and _is_ancestor(repo, head, merge_ref))
+        # A salvaged worktree still has temp_branch CHECKED OUT, so `branch -D` is
+        # refused ("used by worktree at ...") and, with check=False, silently ignored --
+        # then `worktree add -b` below fails because the name was never freed, wedging
+        # every retry. Rename ALWAYS frees the name; it works on a checked-out branch.
+        # Deleting is only an optimisation for the merged case, so do it only when the
+        # branch is not checked out anywhere.
+        if merged and not _branch_is_checked_out(repo, temp_branch):
             _git(repo, "branch", "-D", temp_branch, check=False)
         else:
             # Unmerged commits: preserving them is mandatory, but the name must be freed
             # or `worktree add -b` below fails outright. RENAME rather than delete -- the
             # commits stay reachable under a salvage ref, and creation still succeeds.
-            salvage_branch = f"{temp_branch}.salvage-{int(time.time())}"
+            salvage_branch = _unique_salvage_name(
+                lambda n: not _branch_exists(repo, n), f"{temp_branch}.salvage"
+            )
             _git(repo, "branch", "-m", temp_branch, salvage_branch, check=False)
+            if _branch_exists(repo, temp_branch):
+                # The rename did not take. Do NOT print a preservation message that is
+                # false, and do not let `worktree add -b` fail with a confusing error.
+                raise RuntimeError(
+                    f"refusing to proceed: could not free branch {temp_branch} "
+                    f"(rename to {salvage_branch} failed). It holds crash-residual "
+                    f"commits; resolve manually."
+                )
             print(
-                f"phase-worktree: preserved unmerged crash-residual commits as "
+                f"phase-worktree: preserved crash-residual commits as "
                 f"{salvage_branch} (was {temp_branch})",
                 file=sys.stderr,
             )

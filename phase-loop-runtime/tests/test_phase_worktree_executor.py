@@ -418,3 +418,51 @@ def test_recreate_preserves_dirty_crash_residual(tmp_path):
         assert "unsaved = True" in recovered.read_text()
 
         teardown_phase_worktree(repo, second)
+
+
+def test_recreate_with_real_origin_does_not_wedge(tmp_path):
+    """ah#624 regression: the MERGED-branch shape must not wedge creation.
+
+    Production-shaped, and the reason the other tests missed this: `make_repo` has no
+    `origin/main`, so `_is_ancestor` fail-closes to False and every other test takes
+    the RENAME path by luck. With a real `origin/main` the branch tip IS reachable, so
+    the code reaches the delete path -- and a salvaged worktree still has that branch
+    CHECKED OUT, so `git branch -D` is refused, the error is swallowed by check=False,
+    and `worktree add -b` then fails with "a branch named ... already exists".
+
+    Mutation that must kill this: drop the `_branch_is_checked_out` guard so the
+    merged case calls `branch -D` unconditionally -- creation raises.
+    """
+    repo = make_repo(tmp_path)
+    branch = _current_branch(repo)
+    base = resolve_base_sha(repo)
+    # Give the repo a real merge target, as the GC tests do.
+    subprocess.run(
+        ["git", "-C", str(repo), "update-ref", "refs/remotes/origin/main", "HEAD"],
+        check=True,
+    )
+
+    with _isolated_worktree_root(tmp_path):
+        first = create_phase_worktree(
+            repo, phase="extract", target_branch=branch, base_sha=base
+        )
+        # Dirty but NOT committed: the tip stays at base, so it IS an ancestor of
+        # origin/main -- the merged shape that triggers the delete path.
+        (first.worktree_path / "src").mkdir(parents=True, exist_ok=True)
+        (first.worktree_path / "src" / "unsaved.py").write_text("unsaved = True\n")
+
+        # Must not raise.
+        second = create_phase_worktree(
+            repo, phase="extract", target_branch=branch, base_sha=base
+        )
+
+        assert second.worktree_path.exists()
+        assert _current_branch(second.worktree_path) == second.temp_branch
+        # And the uncommitted work is still recoverable.
+        salvaged = sorted(
+            first.worktree_path.parent.glob(f"{first.worktree_path.name}.salvage-*")
+        )
+        assert salvaged, "dirty work destroyed on the merged path"
+        assert (salvaged[0] / "src" / "unsaved.py").exists()
+
+        teardown_phase_worktree(repo, second)
