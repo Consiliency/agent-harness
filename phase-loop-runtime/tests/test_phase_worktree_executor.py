@@ -20,6 +20,7 @@ from unittest.mock import patch
 import pytest
 
 from phase_loop_runtime.phase_worktree_executor import (
+    PhaseWorktreeError,
     PhaseWorktreeHandle,
     create_phase_worktree,
     integrate_phase_worktree,
@@ -497,6 +498,49 @@ def test_recreate_with_real_origin_does_not_wedge(tmp_path):
         assert (salvaged[0] / "src" / "unsaved.py").exists()
 
         teardown_phase_worktree(repo, second)
+
+
+def test_recreate_refuses_locked_dirty_worktree_and_preserves_work(tmp_path):
+    """ah#624: a dirty worktree whose move is REFUSED (locked) must fail loudly.
+
+    Covers the source-still-exists raise in create's dirty branch, which no test
+    reached (it sat in the coverage missing-lines report). git refuses `worktree move`
+    on a locked worktree, so the salvage cannot free the path -- the only correct
+    outcome is a raise with the work untouched.
+
+    A locked worktree is still a VALID worktree, so `git status` succeeds and reports
+    real dirt: this exercises the determinate-dirty wording, not the indeterminate
+    branch added for the empty-leftover case.
+
+    Mutation that must kill this: replace the raise with the old `_remove_worktree`
+    force-delete -- no exception is raised and the uncommitted file is destroyed.
+    """
+    repo = make_repo(tmp_path)
+    branch = _current_branch(repo)
+    base = resolve_base_sha(repo)
+    with _isolated_worktree_root(tmp_path):
+        first = create_phase_worktree(
+            repo, phase="extract", target_branch=branch, base_sha=base
+        )
+        (first.worktree_path / "src").mkdir(parents=True, exist_ok=True)
+        (first.worktree_path / "src" / "unsaved.py").write_text("unsaved = True\n")
+        _git(repo, "worktree", "lock", str(first.worktree_path))
+        try:
+            with pytest.raises(PhaseWorktreeError, match="refusing to clobber"):
+                create_phase_worktree(
+                    repo, phase="extract", target_branch=branch, base_sha=base
+                )
+            # The dirty work is untouched at the ORIGINAL path -- refused, not relocated.
+            assert (
+                first.worktree_path / "src" / "unsaved.py"
+            ).read_text() == "unsaved = True\n"
+            # And no salvage directory was fabricated for a move that never happened.
+            assert not list(
+                first.worktree_path.parent.glob(f"{first.worktree_path.name}.salvage-*")
+            )
+        finally:
+            _git(repo, "worktree", "unlock", str(first.worktree_path))
+        teardown_phase_worktree(repo, first)
 
 
 def test_recreate_deletes_a_merged_unreferenced_branch(tmp_path):
