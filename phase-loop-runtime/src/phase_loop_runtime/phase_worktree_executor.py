@@ -459,6 +459,18 @@ def create_phase_worktree(
                     f"it holds uncommitted work from an interrupted run and could not be "
                     f"moved aside. Inspect and remove it manually."
                 )
+            if not salvage.exists():
+                # The source is gone but the destination was never written, so the move
+                # did NOT do what the message below would claim. Verify the DESTINATION:
+                # inferring success from a vanished source is the same false-clean shape
+                # as trusting an empty git probe (ah#628 -- a concurrent same-phase
+                # recreate can move the source out from under this one).
+                raise RuntimeError(
+                    f"refusing to report a preservation that did not happen: the dirty "
+                    f"worktree at {worktree_path} is gone but {salvage} was not created. "
+                    f"Its uncommitted work may have been taken by a concurrent recreate; "
+                    f"look for sibling {worktree_path.name}.salvage-* directories."
+                )
             print(
                 f"phase-worktree: preserved dirty crash residual -> {salvage}",
                 file=sys.stderr,

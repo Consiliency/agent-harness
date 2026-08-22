@@ -11,10 +11,13 @@ concurrent cross-phase dispatch safe:
 """
 from __future__ import annotations
 
+import shutil
 import subprocess
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from phase_loop_runtime.phase_worktree_executor import (
     PhaseWorktreeHandle,
@@ -473,6 +476,51 @@ def test_recreate_with_real_origin_does_not_wedge(tmp_path):
         assert (salvaged[0] / "src" / "unsaved.py").exists()
 
         teardown_phase_worktree(repo, second)
+
+
+def test_recreate_refuses_to_claim_a_preservation_that_did_not_happen(tmp_path):
+    """ah#628: success must be proven at the DESTINATION, not inferred from the source.
+
+    The salvage guard used to accept "the source path is gone" as proof the move
+    worked. Under a concurrent same-phase recreate the source can be moved away by
+    the OTHER caller, so this one would print
+    ``preserved dirty crash residual -> <path>`` for a directory it never wrote --
+    a destructive-op log claiming a preservation that did not happen, which is worse
+    than no log at all.
+
+    Mutation that must kill this: drop the ``salvage.exists()`` check -- creation
+    proceeds and emits the false preservation message instead of raising.
+    """
+    from phase_loop_runtime import phase_worktree_executor as pwe
+
+    repo = make_repo(tmp_path)
+    branch = _current_branch(repo)
+    base = resolve_base_sha(repo)
+
+    with _isolated_worktree_root(tmp_path):
+        first = create_phase_worktree(
+            repo, phase="extract", target_branch=branch, base_sha=base
+        )
+        (first.worktree_path / "src").mkdir(parents=True, exist_ok=True)
+        (first.worktree_path / "src" / "unsaved.py").write_text("unsaved = True\n")
+
+        real_git = pwe._git
+
+        def fake_git(target, *args, **kwargs):
+            # `worktree move` fails, but the source disappears anyway -- exactly what a
+            # concurrent recreate that won the race leaves behind.
+            if args[:2] == ("worktree", "move"):
+                shutil.rmtree(first.worktree_path, ignore_errors=True)
+                return subprocess.CompletedProcess(
+                    args=list(args), returncode=1, stdout="", stderr="fatal: simulated"
+                )
+            return real_git(target, *args, **kwargs)
+
+        with patch.object(pwe, "_git", side_effect=fake_git):
+            with pytest.raises(RuntimeError, match="preservation that did not happen"):
+                create_phase_worktree(
+                    repo, phase="extract", target_branch=branch, base_sha=base
+                )
 
 
 def test_recreate_pins_orphaned_detached_head(tmp_path):
