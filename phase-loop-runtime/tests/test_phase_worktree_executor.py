@@ -233,6 +233,15 @@ def test_create_is_idempotent_after_stale_worktree(tmp_path):
             capture_output=True, text=True,
         )
         assert blob.returncode == 0 and "x = 1" in blob.stdout, "stale work unrecoverable"
+        # The orphan pin must stay SILENT here. This IS the clean-removal path (the work
+        # was committed, so the worktree is clean), but the renamed salvage BRANCH already
+        # reaches those commits -- nothing is orphaned. Pinning anyway would add a
+        # refs/salvage/ ref on every ordinary recreate and make the accumulation of ah#627
+        # worse than linear, so the ABSENCE of the ref is the property under test.
+        # Mutation that must kill this: pin unconditionally (drop the reachability test).
+        assert not _git(
+            repo, "for-each-ref", "--format=%(refname)", "refs/salvage/"
+        ).stdout.strip(), "spurious salvage ref pinned on an already-reachable commit"
         teardown_phase_worktree(repo, second)
 
 
