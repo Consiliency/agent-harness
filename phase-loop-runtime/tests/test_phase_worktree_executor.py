@@ -487,6 +487,96 @@ def test_recreate_with_real_origin_does_not_wedge(tmp_path):
         teardown_phase_worktree(repo, second)
 
 
+def test_recreate_heals_an_empty_leftover_directory(tmp_path):
+    """An EMPTY leftover dir must not wedge creation forever.
+
+    Orphaned by `worktree prune`, or left by a partially failed `worktree add`: it is
+    not a registered worktree, so `git status` fails there, the dirty check
+    fail-closes to "dirty", `worktree move` is refused, and the raise repeats on
+    every retry -- about a directory that provably holds nothing.
+
+    `main` self-heals this shape (`worktree add` accepts an existing empty dir), so
+    without this the ah#624 guards turn a self-healing state into a permanent
+    operator stop. Found by the round-2 review panel, executed in both directions.
+
+    Mutation that must kill this: drop the empty-dir rmdir -- creation raises.
+    """
+    repo = make_repo(tmp_path)
+    branch = _current_branch(repo)
+    base = resolve_base_sha(repo)
+
+    with _isolated_worktree_root(tmp_path):
+        # Mirrors the path `_isolated_worktree_root` pins creation to.
+        planned = tmp_path / "wt" / f"{branch}-EXTRACT"
+        planned.mkdir(parents=True, exist_ok=True)
+        assert planned.exists() and not any(planned.iterdir())
+
+        # Must not raise.
+        handle = create_phase_worktree(
+            repo, phase="extract", target_branch=branch, base_sha=base
+        )
+        assert handle.worktree_path == planned
+        assert (handle.worktree_path / ".git").exists()
+        teardown_phase_worktree(repo, handle)
+
+
+def test_recreate_pins_orphan_even_when_branch_rename_fails(tmp_path):
+    """ah#624 round-2: the pin must not be preempted by the branch-rename raise.
+
+    Both raises in the branch-handling block fire AFTER `_remove_worktree` has already
+    run. With the pin ordered after that block it is unreachable in exactly the case
+    that needs it -- a detached HEAD on a chain DISJOINT from the temp branch, with
+    the rename failing -- so the worktree is removed, the raise fires, and the sha is
+    pinned nowhere. That violates the invariant the pin exists to uphold: preserve AT
+    REMOVAL TIME.
+
+    Found by the round-2 review panel. The rename failure is forced synthetically
+    (the trigger is rare); the ORDERING hole it exposes is structural.
+
+    Mutation that must kill this: move the pin block back after branch handling --
+    the raise still fires but the commit is reachable from nothing.
+    """
+    from phase_loop_runtime import phase_worktree_executor as pwe
+
+    repo = make_repo(tmp_path)
+    branch = _current_branch(repo)
+    base = resolve_base_sha(repo)
+
+    with _isolated_worktree_root(tmp_path):
+        first = create_phase_worktree(
+            repo, phase="extract", target_branch=branch, base_sha=base
+        )
+        # Unmerged commit ON the temp branch.
+        _commit_in_worktree(first.worktree_path, "src/on_branch.py", "b = 1\n", "branch work")
+        # Detach onto a DISJOINT chain: sibling of the branch tip, not reachable from it.
+        _git(first.worktree_path, "checkout", "-q", "--detach", base)
+        _commit_in_worktree(first.worktree_path, "src/detached.py", "d = 1\n", "detached work")
+        orphan_sha = _git(first.worktree_path, "rev-parse", "HEAD").stdout.strip()
+
+        # Force the branch rename to collide with an existing name so it fails.
+        _git(repo, "branch", "collide", base)
+        real_unique = pwe._unique_salvage_name
+
+        def colliding(is_free, stem):
+            return "collide" if stem.startswith(first.temp_branch) else real_unique(is_free, stem)
+
+        with patch.object(pwe, "_unique_salvage_name", side_effect=colliding):
+            with pytest.raises(RuntimeError, match="could not free branch"):
+                create_phase_worktree(
+                    repo, phase="extract", target_branch=branch, base_sha=base
+                )
+
+        # The raise is expected -- but the detached work must NOT have been orphaned.
+        containing = _git(
+            repo, "for-each-ref", "--contains", orphan_sha, "--format=%(refname)"
+        ).stdout.split()
+        assert containing, (
+            f"commit {orphan_sha[:12]} orphaned: the worktree was removed and the "
+            f"rename raise preempted the pin"
+        )
+        assert any(r.startswith("refs/salvage/") for r in containing), containing
+
+
 def test_recreate_refuses_to_claim_a_preservation_that_did_not_happen(tmp_path):
     """ah#628: success must be proven at the DESTINATION, not inferred from the source.
 
