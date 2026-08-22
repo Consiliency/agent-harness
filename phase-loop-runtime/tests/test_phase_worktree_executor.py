@@ -473,3 +473,65 @@ def test_recreate_with_real_origin_does_not_wedge(tmp_path):
         assert (salvaged[0] / "src" / "unsaved.py").exists()
 
         teardown_phase_worktree(repo, second)
+
+
+def test_recreate_pins_orphaned_detached_head(tmp_path):
+    """ah#624 round-2: a CLEAN worktree can still be the last handle on real commits.
+
+    "Clean" only means nothing UNCOMMITTED. An executor is arbitrary agent-run code
+    inside the worktree; if it commits, detaches HEAD, and drops the temp branch, the
+    branch-handling block below has nothing to rename and the recreate removes the
+    worktree -- which was the only thing pointing at those commits. They become
+    unreachable and gc eventually collects them.
+
+    Found by the round-2 review panel and reproduced against the pre-fix code: the
+    commit was reachable from NO ref after the recreate.
+
+    Mutation that must kill this: drop the `_commit_is_reachable` pin -- `contains`
+    comes back empty and the commit is orphaned.
+    """
+    repo = make_repo(tmp_path)
+    branch = _current_branch(repo)
+    base = resolve_base_sha(repo)
+    subprocess.run(
+        ["git", "-C", str(repo), "update-ref", "refs/remotes/origin/main", "HEAD"],
+        check=True,
+    )
+
+    with _isolated_worktree_root(tmp_path):
+        first = create_phase_worktree(
+            repo, phase="extract", target_branch=branch, base_sha=base
+        )
+        # Commit real work, then detach and drop the branch that referenced it.
+        (first.worktree_path / "src").mkdir(parents=True, exist_ok=True)
+        (first.worktree_path / "src" / "committed.py").write_text("value = 1\n")
+        _git(first.worktree_path, "add", "-A")
+        _git(first.worktree_path, "commit", "-q", "-m", "committed work")
+        orphan_sha = _git(
+            first.worktree_path, "rev-parse", "HEAD"
+        ).stdout.strip()
+        _git(first.worktree_path, "checkout", "-q", "--detach", orphan_sha)
+        _git(repo, "branch", "-D", first.temp_branch)
+
+        # The worktree is CLEAN now -- the removal path, not the salvage path.
+        # Asserted directly rather than via the runtime helper, so the test pins the
+        # actual precondition instead of trusting the code under review to report it.
+        assert not _git(
+            first.worktree_path, "status", "--porcelain", "--untracked-files=all"
+        ).stdout.strip()
+
+        second = create_phase_worktree(
+            repo, phase="extract", target_branch=branch, base_sha=base
+        )
+        assert second.worktree_path.exists()
+
+        # The commit must still be reachable from SOME ref.
+        containing = _git(
+            repo, "for-each-ref", "--contains", orphan_sha, "--format=%(refname)"
+        ).stdout.split()
+        assert containing, (
+            f"commit {orphan_sha[:12]} was orphaned by the recreate: no ref reaches it"
+        )
+        assert any(r.startswith("refs/salvage/") for r in containing), containing
+
+        teardown_phase_worktree(repo, second)

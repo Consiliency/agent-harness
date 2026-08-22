@@ -234,6 +234,24 @@ def _unique_salvage_name(is_free, stem: str) -> str:
             return cand
     return f"{base}.{time.monotonic_ns()}"
 
+def _commit_is_reachable(repo: Path, sha: str) -> bool:
+    """True if ``sha`` is reachable from at least one ref in ``repo``.
+
+    Used to decide whether a removed worktree's HEAD still has a handle on it. Fails
+    CLOSED in the direction that PRESERVES: on any git error it reports False, which
+    makes the caller pin a salvage ref. A redundant ref costs a few bytes; a missing
+    one costs the commits.
+    """
+
+    result = _git(
+        repo, "for-each-ref", "--count=1", "--contains", sha, "--format=%(refname)",
+        check=False,
+    )
+    if result.returncode != 0:
+        return False
+    return bool(result.stdout.strip())
+
+
 def _worktree_has_uncommitted_changes(worktree_path: Path) -> bool:
     """True if the worktree holds any dirty state we must not destroy.
 
@@ -421,6 +439,7 @@ def create_phase_worktree(
     # UNCOMMITTED (see `transfer_phase_worktree_dirty`), so recreating the same phase
     # silently deleted that work AND the branch that could have recovered it. Same guards
     # the reclamation sweep already applies -- preserve, do not destroy.
+    clean_head_sha = ""
     if worktree_path.exists():
         if _worktree_has_uncommitted_changes(worktree_path):
             # Move it aside instead of deleting it. Loud, recoverable, and it frees the
@@ -445,6 +464,15 @@ def create_phase_worktree(
                 file=sys.stderr,
             )
         else:
+            # Clean tree, but "clean" only means nothing UNCOMMITTED -- the worktree can
+            # still be the sole handle on committed work. If its HEAD is detached (an
+            # executor is arbitrary code; it may `checkout --detach`, and the runtime
+            # already models detached phase worktrees in `worktree_index`), removing the
+            # worktree drops the last thing pointing at those commits. Capture the sha
+            # BEFORE removal and pin it below if nothing else ends up reaching it.
+            clean_head_sha = _git(
+                worktree_path, "rev-parse", "HEAD", check=False
+            ).stdout.strip()
             _remove_worktree(repo, worktree_path)
     _git(repo, "worktree", "prune", check=False)
     if _branch_exists(repo, temp_branch):
@@ -483,6 +511,28 @@ def create_phase_worktree(
                 f"{salvage_branch} (was {temp_branch})",
                 file=sys.stderr,
             )
+
+    # The removed-clean worktree's HEAD may now be unreachable: a detached HEAD is not
+    # covered by the branch handling above (there is no branch to rename), and once the
+    # worktree is gone nothing points at those commits, so gc eventually drops them.
+    # Pin them AT REMOVAL TIME -- a log line does not protect an orphaned sha.
+    if clean_head_sha and not _commit_is_reachable(repo, clean_head_sha):
+        salvage_ref = _unique_salvage_name(
+            lambda n: _git(repo, "rev-parse", "--verify", n, check=False).returncode != 0,
+            f"refs/salvage/{phase}",
+        )
+        pinned = _git(repo, "update-ref", salvage_ref, clean_head_sha, check=False)
+        if pinned.returncode != 0:
+            raise RuntimeError(
+                f"refusing to orphan crash-residual commit {clean_head_sha[:12]} from "
+                f"phase {phase}: the worktree was removed and {salvage_ref} could not be "
+                f"written. Recover it with `git update-ref` before re-running."
+            )
+        print(
+            f"phase-worktree: pinned orphaned crash-residual commit "
+            f"{clean_head_sha[:12]} as {salvage_ref}",
+            file=sys.stderr,
+        )
 
     worktree_path.parent.mkdir(parents=True, exist_ok=True)
     created = _git(
