@@ -445,9 +445,21 @@ def test_recreate_with_real_origin_does_not_wedge(tmp_path):
     Production-shaped, and the reason the other tests missed this: `make_repo` has no
     `origin/main`, so `_is_ancestor` fail-closes to False and every other test takes
     the RENAME path by luck. With a real `origin/main` the branch tip IS reachable, so
-    the code reaches the delete path -- and a salvaged worktree still has that branch
-    CHECKED OUT, so `git branch -D` is refused, the error is swallowed by check=False,
-    and `worktree add -b` then fails with "a branch named ... already exists".
+    `merged` is True -- which is what makes the round-1 mechanism reachable at all.
+
+    What this test pins is the GUARD on the delete, not the delete itself. The
+    worktree here is dirty, so it gets salvaged with `temp_branch` still CHECKED OUT;
+    `_branch_is_checked_out` is therefore True and the `merged and not checked_out`
+    conjunction is False, so control takes the rename path. Drop the guard and the
+    merged case calls `branch -D` on a checked-out branch: git refuses, the error is
+    swallowed by check=False, the name is never freed, and `worktree add -b` fails
+    with "a branch named ... already exists". That is the round-1 wedge.
+
+    So this test does NOT execute `branch -D` -- see
+    `test_recreate_deletes_a_merged_unreferenced_branch` for the fires-at-all
+    direction. (An earlier version of this docstring claimed it "reaches the delete
+    path", which was false and is exactly the kind of prose that misleads the next
+    person into putting an assertion where it cannot bite.)
 
     Mutation that must kill this: drop the `_branch_is_checked_out` guard so the
     merged case calls `branch -D` unconditionally -- creation raises.
@@ -483,6 +495,65 @@ def test_recreate_with_real_origin_does_not_wedge(tmp_path):
         )
         assert salvaged, "dirty work destroyed on the merged path"
         assert (salvaged[0] / "src" / "unsaved.py").exists()
+
+        teardown_phase_worktree(repo, second)
+
+
+def test_recreate_deletes_a_merged_unreferenced_branch(tmp_path):
+    """The merged fast path must actually FIRE, and must stay quiet when it does.
+
+    Found by a line-coverage sweep: `branch -D` was executed by ZERO tests across all
+    three worktree files. Every existing test reaches the rename path -- either
+    because `make_repo` has no `origin/main` (so `_is_ancestor` fail-closes) or
+    because the worktree is dirty (so the branch is checked out in the salvage). The
+    delete side was pinned only in the safety direction: nothing would have caught a
+    mutation replacing the fast path with "always rename", which is pure ah#627
+    accumulation and completely silent.
+
+    The shape that reaches it: real `origin/main`, and a worktree with NO commits and
+    NO dirt -- so the branch tip is `base` (merged), the clean path removes the
+    worktree, and the branch is checked out nowhere.
+
+    Also pins the no-noise claim on the TRUE delete path: today the absence of
+    salvage material is only asserted on the rename path.
+
+    Mutation that must kill this: replace the fast path with an unconditional rename.
+    """
+    repo = make_repo(tmp_path)
+    branch = _current_branch(repo)
+    base = resolve_base_sha(repo)
+    subprocess.run(
+        ["git", "-C", str(repo), "update-ref", "refs/remotes/origin/main", "HEAD"],
+        check=True,
+    )
+
+    with _isolated_worktree_root(tmp_path):
+        first = create_phase_worktree(
+            repo, phase="extract", target_branch=branch, base_sha=base
+        )
+        # No commits, no dirt: tip == base, so the branch IS merged.
+        assert not _git(
+            first.worktree_path, "status", "--porcelain", "--untracked-files=all"
+        ).stdout.strip()
+
+        second = create_phase_worktree(
+            repo, phase="extract", target_branch=branch, base_sha=base
+        )
+        assert second.worktree_path.exists()
+
+        # The stale branch was DELETED, not renamed -- nothing needed preserving.
+        branches = _git(
+            repo, "branch", "--list", f"{first.temp_branch}*", "--format=%(refname:short)"
+        ).stdout.split()
+        assert not [b for b in branches if ".salvage-" in b], (
+            f"merged branch was salvaged instead of deleted: {branches}"
+        )
+        assert not _git(
+            repo, "for-each-ref", "--format=%(refname)", "refs/salvage/"
+        ).stdout.strip(), "merged fast path left salvage refs behind"
+        assert not sorted(
+            first.worktree_path.parent.glob(f"{first.worktree_path.name}.salvage-*")
+        ), "merged fast path left a salvage directory behind"
 
         teardown_phase_worktree(repo, second)
 
