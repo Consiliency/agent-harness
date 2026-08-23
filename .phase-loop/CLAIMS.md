@@ -35,21 +35,29 @@ it makes the next agent route around work that finished.
 - **Claimed by:** Claude session (ad-hoc), 2026-08-23
 - **Branches:** `claude/624-no-clobber-dirty-worktree` (Consiliency/agent-harness#625),
   `claude/354-worktree-gc-rebase` (Consiliency/agent-harness#626)
-- **Status:** ⚠️ **CONFLICTS WITH ROADMAP — disposition pending**
+- **Status:** ❌ **SUPERSEDED — recommended not to merge. This is NOT a live claim.**
 
-  This file is **Phase 5 (SCHED) lane A** in `specs/phase-plans-v10.md`. The roadmap
-  states lane A is **BLOCKED**: the Consiliency/agent-harness#354 design fork was paneled
-  twice, options (a)/(b)/(c) were rejected 3/3, and *"a third framing is required before
-  lane A starts."*
+  This file is **Phase 5 (SCHED) lane A** in `specs/phase-plans-v10.md`. I built lane A's
+  work without reading the roadmap first — the mistake this file exists to prevent. Two
+  things I missed, both written down before I started:
 
-  I built lane A's work without reading the roadmap first. That was the mistake this file
-  exists to prevent. Consiliency/agent-harness#625 additionally cannot satisfy **EC-SCHED-0**
-  (tests must land first, paneled and RED, with the implementation PR not modifying them) —
-  its commits interleave tests and implementation and rewrite an existing test.
+  1. Consiliency/agent-harness#354 (2026-08-20): *"No SCHED runtime edits are authorized."*
+  2. Consiliency/agent-harness#616 already contains `plans/phase-plan-v10-SCHED.md` with
+     the ratifiable third framing the roadmap was waiting for — a **leased,
+     generation-addressed lifecycle**.
 
-  Disposition is with an advisory panel. **Do not plan or execute SCHED lane A until this
-  claim is resolved** — the work already exists on those two branches and would be
-  duplicated.
+  A 4-vendor advisory panel recommends these not merge (3–1). The designs are incompatible
+  at the foundation: Consiliency/agent-harness#616 abolishes canonical-path reuse, which
+  my salvage model depends on, and `IF-0-SCHED-1` forbids reconstructing a path from
+  phase/branch strings — exactly what this code does. Consiliency/agent-harness#616 also
+  counts *ignored and handoff state* as work; mine does not, which is a live data-loss
+  path I verified and had previously dismissed.
+
+  **SCHED lane A is NOT blocked by this claim.** Plan and execute it against
+  Consiliency/agent-harness#616's design. The falsifier evidence these branches produced
+  is posted on Consiliency/agent-harness#616 — nine reproduced, mutation-verified defects
+  at the recreate boundary that any implementation must survive. Use the evidence; do not
+  build on the code.
 
 - **Not claimed:** `lane_scheduler.py` and `runner.py` (SCHED **lane B**) are untouched by
   this work and free.
