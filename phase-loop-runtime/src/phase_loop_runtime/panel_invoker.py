@@ -3759,16 +3759,34 @@ def _exec_leg(
         # Reproduced directly: identical bundle, flag absent -> denial; flag present ->
         # a complete review.
         #
-        # This does NOT weaken the review sandbox, because omitting the flag never
-        # provided the sandbox. `launcher.py` (which omits it for `review`) states the
-        # model outright: "omission alone is NOT a read-only guarantee (agy exposes no
-        # honored read-only lever), so the security-load-bearing constraint for a
-        # `review` leg is the STAGED-COPY workspace". Here that constraint is stronger
-        # than in the launcher: ``child_review_dir`` is a ``mkdtemp(prefix='pl-panel-')``
-        # scratch holding only the staged bundle -- the repo is never mounted, so the
-        # worst an auto-approved write can touch is a throwaway copy (IF-0-SANDBOX-1).
-        # The gemini EXECUTOR already passes this flag for the same headless reason;
-        # the panel leg omitting it was an inconsistency, not a posture.
+        # !! DANGER -- READ BEFORE ENABLING. This flag makes the leg UNCONFINED on the
+        # non-capture path. It auto-approves EVERY tool permission, not just workspace
+        # file I/O, and ``--add-dir`` selects workspace CONTEXT, not a containment
+        # boundary. DEMONSTRATED against live agy with a staged workspace holding only
+        # the review bundle: shell (`id`) ran rc=0 and a file was written to /tmp,
+        # OUTSIDE --add-dir. Adding ``--sandbox`` did not contain it; ``--mode plan``
+        # did not contain it. Without this flag the leg is denied and returns empty.
+        # So there is NO honored agy read-only lever: confined and functional are not
+        # simultaneously reachable from agy flags alone.
+        #
+        # An earlier version of this comment claimed the staged copy bounded the blast
+        # radius (citing IF-0-SANDBOX-1). That was FALSE and is removed rather than
+        # softened. The staging claim itself is true -- ``child_review_dir`` really is
+        # always a throwaway, never the repo -- but it bounds file writes only, which is
+        # the smaller concern; shell, network and spawn are unbounded by it.
+        #
+        # Threat model: a review leg consumes UNTRUSTED material (the diff under review,
+        # including outside-agent submissions). A prompt injection can drive an
+        # auto-approved leg to shell out. The EXECUTOR passing this flag is not a
+        # precedent -- an executor is deliberately write-authorized; a reviewer is not
+        # (`launcher.py` distinguishes the two actions on purpose). Sibling review legs
+        # are confined: grok by a read-only ``--tools`` allow-list, codex by
+        # ``--sandbox read-only``. agy would be the only unconfined one.
+        #
+        # Enabling this needs real confinement -- e.g. routing unconditionally through
+        # the existing bwrap capture jail (``agy_canary_evidence.py``, ``--ro-bind / /``
+        # with the stage read-only bound), which is currently OPT-IN and NOT used by the
+        # bare production panel path. An env/config opt-in is not confinement (ah#525).
         cmd = [
             "agy",
             "--model",

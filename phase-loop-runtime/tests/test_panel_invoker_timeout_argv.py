@@ -189,12 +189,20 @@ def test_gemini_leg_passes_headless_permission_flag(monkeypatch):
     permission``) and the run dies in 8-13s with an empty body. Measured directly:
     identical staged bundle, flag absent -> denial; flag present -> a full review.
 
-    This is NOT a sandbox relaxation. Omitting the flag never provided the sandbox --
-    `launcher.py` says so explicitly ("omission alone is NOT a read-only guarantee").
-    The load-bearing control is the staged workspace, and for a panel leg that is a
-    `mkdtemp(prefix='pl-panel-')` scratch holding only the bundle, so the repo is never
-    reachable. The gemini EXECUTOR already passes this flag headlessly; the panel leg
-    omitting it was an inconsistency.
+    THIS TEST DOES NOT ASSERT A SECURITY PROPERTY. It asserts argv construction and
+    nothing more. An earlier docstring here concluded that the staged `--add-dir` made
+    the repository unreachable; that was false and is corrected rather than softened.
+
+    The flag makes the leg UNCONFINED on the non-capture path: it auto-approves every
+    tool permission, and `--add-dir` selects workspace context, not containment.
+    Demonstrated against live agy -- shell ran and a file was written outside
+    `--add-dir`; neither `--sandbox` nor `--mode plan` contained it (ah#525). The
+    staging fact is true but bounds file writes only, which is the smaller concern.
+
+    Nothing in this file exercises real agy, so a green run here is scope-green, not
+    property-green. Host-path, shell, process, network and credential isolation are
+    NOT covered by any test; asserting the flag's presence must never be read as
+    evidence that enabling it is safe.
 
     Mutation that must kill this: drop the flag from the gemini cmd.
     """
@@ -209,8 +217,9 @@ def test_gemini_leg_passes_headless_permission_flag(monkeypatch):
         "the gemini leg cannot complete a headless review without this flag; every "
         "tool call is auto-denied and the leg returns EMPTY/ERROR (ah#525)"
     )
-    # The workspace agy is granted must remain the STAGED dir, never a repo path --
-    # that, not the flag's absence, is what bounds an auto-approved write.
+    # The workspace agy is granted must remain the STAGED dir, never a repo path. This
+    # is worth pinning on its own merits -- but it is NOT containment: it bounds where
+    # the leg is pointed, not what an auto-approved tool call can reach.
     assert cmd[cmd.index("--add-dir") + 1] == str(rdp)
 
 
