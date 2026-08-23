@@ -548,6 +548,16 @@ def _resolves(ctx: RepoContext, doc_dir: str, rel: str, require_file: bool = Fal
     return False
 
 
+#: Harness skill invocations: `/claude-plan-phase`, `/codex-advisor-panel`. Docs tell
+#: you to RUN these, so they are pervasive in an onboarding doc, but they are not
+#: paths. Keyed on this repo's actual skill-naming convention (`<harness>-<name>`)
+#: rather than on SHAPE: an earlier version skipped any single-segment extensionless
+#: absolute, which laundered `/LICENCE` and `/docs-does-not-exist` -- both reported
+#: by the base code, both silent under the shape rule. A skip class must name a KIND
+#: of token narrowly enough that a typo cannot wear its costume.
+_SLASH_COMMAND_RE = re.compile(r"^/(?:claude|codex|gemini|opencode)-[a-z0-9]+(?:-[a-z0-9]+)*$")
+
+
 def check_paths(text: str, doc_path: str, ctx: RepoContext) -> List[Finding]:
     """Arm 1: backtick tokens that look like repo paths must resolve.
 
@@ -595,19 +605,8 @@ def check_paths(text: str, doc_path: str, ctx: RepoContext) -> List[Finding]:
             if token.startswith("/"):
                 if root in ABSOLUTE_SYSTEM_ROOTS and not ctx.exists(root):
                     continue
-                if "/" not in token[1:] and "." not in token[1:]:
-                    # A SLASH-COMMAND, not a path: `/claude-plan-phase`. One
-                    # segment, no extension. Harness docs are full of these --
-                    # invoking a skill is the main thing an onboarding doc tells
-                    # you to do -- so this is a recurring KIND of token, which is
-                    # what arm 1 skips on (never a specific string).
-                    #
-                    # It cannot launder a real path defect: this repo's docs cite
-                    # files relatively (`docs/x.md`, `specs/x.md`), never as a
-                    # single-segment absolute. A genuine `/docs` reference still
-                    # resolves and never reaches here; only a non-resolving
-                    # single-segment absolute is skipped, and that shape is not
-                    # how any file in this repo is referenced.
+                if _SLASH_COMMAND_RE.match(token):
+                    # A skill invocation, not a path -- see _SLASH_COMMAND_RE.
                     continue
             elif root in INSTALL_LAYOUT_ROOTS and not ctx.exists(root):
                 continue

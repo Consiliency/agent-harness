@@ -475,6 +475,23 @@ class TestSlashCommandTokens(unittest.TestCase):
             found = edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))
             self.assertEqual(codes(found), [])
 
+    def test_skill_invocations_across_harnesses_are_skipped(self):
+        for cmd in (
+            "/claude-plan-phase",
+            "/codex-advisor-panel",
+            "/gemini-execute-phase",
+            "/opencode-phase-loop",
+        ):
+            with self.subTest(cmd=cmd):
+                with TemporaryDirectory() as tmp:
+                    repo = build_repo(
+                        tmp, {"phase-loop-runtime/README.md": f"Run `{cmd}`.\n"}
+                    )
+                    found = edc.check_repo(
+                        repo, entry_docs=("phase-loop-runtime/README.md",)
+                    )
+                    self.assertEqual(codes(found), [])
+
     def test_the_skip_cannot_launder_a_real_broken_path(self):
         """The guard that keeps the skip class honest.
 
@@ -484,7 +501,18 @@ class TestSlashCommandTokens(unittest.TestCase):
 
         Mutation that must kill this: widen the skip to any leading-slash token.
         """
-        for broken in ("/docs/does-not-exist.md", "/specs/missing/"):
+        # SAME-SHAPE cases first -- these are the ones that matter. An earlier
+        # version of this skip keyed on SHAPE (single segment, no extension) and
+        # laundered both of these: base code reports `missing_path`, the shape
+        # rule reported nothing. A guard listing only multi-segment/dotted paths
+        # never entered the skip at all, so it guarded nothing -- caught by the
+        # review panel, and the third instance of that vacuity class in one day.
+        for broken in (
+            "/LICENCE",              # single segment, no extension: a real typo
+            "/docs-does-not-exist",  # same shape as a slash-command, isn't one
+            "/docs/does-not-exist.md",
+            "/specs/missing/",
+        ):
             with self.subTest(token=broken):
                 with TemporaryDirectory() as tmp:
                     repo = build_repo(
