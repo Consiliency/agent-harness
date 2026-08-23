@@ -188,9 +188,19 @@ def test_fabreadmit_governed_premerge_readiness_interlock(request, monkeypatch):
 
     importlib.reload(gp)
 
-    # Clean positive control
-    assert getattr(cap, "FABREADMIT_CAPABILITY_VERSION", None) == 1
-    assert getattr(gp, "_FAB_DELTA_BROKER_READMIT_READY", True) is True
+    ready_symbol = fabreadmit_symbol(
+        "phase_loop_runtime.governed_premerge", "_FAB_DELTA_BROKER_READMIT_READY"
+    )
+    fabreadmit_require(
+        fabreadmit_this_nodeid(request),
+        ready_symbol is not None,
+        "_FAB_DELTA_BROKER_READMIT_READY missing in phase_loop_runtime.governed_premerge",
+    )
+
+    # Clean positive control under the production readiness predicate.
+    assert cap.FABREADMIT_CAPABILITY_VERSION == 1
+    assert ready_symbol is True
+    assert gp.fab_delta_shortcut_enabled(True, env={gp.FAB_PROMOTION_ENV: "1"}) is True
 
     # Negative conjunct arm 1: Publisher scan returns False -> shortcut enablement must evaluate False (FR-R3-10)
     with _mock.patch.object(gp, "_has_no_hardcoded_epoch_publishers", return_value=False):
