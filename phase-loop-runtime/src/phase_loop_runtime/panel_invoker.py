@@ -3804,10 +3804,47 @@ def _exec_leg(
         # every run. Inline it exactly like the grok leg (`-p prompt`); the prompt is
         # the small staged-bundle POINTER (files live under --add-dir), so argv length
         # is bounded.
+        # ah#525: WITHOUT ``--dangerously-skip-permissions`` this leg cannot review at
+        # all. agy's permission check has no headless approver, so the FIRST tool call
+        # the model makes is auto-denied --
+        #     permission check failed for command "...": user denied permission
+        # -- and the run dies in 8-13s with an empty body. That is the leg's observed
+        # ERROR/EMPTY status, and it is why this seat has delivered zero usable reviews.
+        # Reproduced directly: identical bundle, flag absent -> denial; flag present ->
+        # a complete review.
+        #
+        # ah#525: without this flag the leg cannot review AT ALL. agy's permission check
+        # has no headless approver, so the first tool call is auto-denied
+        # ("permission check failed for command ...: user denied permission") and the run
+        # dies in 8-13s with an empty body. That is why this seat delivered zero usable
+        # reviews across four boards.
+        #
+        # WHAT IT GRANTS, stated accurately: it auto-approves EVERY tool permission --
+        # shell, network and spawn included, not just workspace file I/O. ``--add-dir``
+        # selects workspace CONTEXT, not a containment boundary. Verified against live
+        # agy: with this flag, shell ran and a file was written OUTSIDE ``--add-dir``;
+        # neither ``--sandbox`` nor ``--mode plan`` contained it. So agy offers no
+        # honored read-only lever -- unlike grok (read-only ``--tools`` allow-list) or
+        # codex (``--sandbox read-only``).
+        #
+        # WHY THAT IS ACCEPTED HERE: this fleet runs its agents unconfined by standing
+        # operator decision (executors already run --yolo), and the repo takes no
+        # third-party submissions -- the material a review leg sees is our own. The
+        # exposure is therefore the fleet's existing posture, not a new one introduced
+        # by this leg. Real confinement is wanted eventually and tracked on ah#525:
+        # a bwrap jail already exists (``agy_canary_evidence.py``, ``--ro-bind / /`` with
+        # the stage read-only bound) but is opt-in and unused by the bare panel path.
+        #
+        # Do NOT re-add a claim that the staged workspace bounds this. An earlier version
+        # of this comment said so, citing IF-0-SANDBOX-1. The staging fact is true --
+        # ``child_review_dir`` is always a throwaway, never the repo -- but it bounds
+        # file writes only, which is not what this flag opens up. True premise, false
+        # conclusion; it read as authoritative and was wrong.
         cmd = [
             "agy",
             "--model",
             gemini_model,
+            "--dangerously-skip-permissions",
             "--add-dir",
             str(child_review_dir),
             "--print-timeout",

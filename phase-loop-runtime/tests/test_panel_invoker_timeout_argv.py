@@ -181,6 +181,51 @@ def test_gemini_leg_argv_uses_add_dir_and_scaled_print_timeout(monkeypatch):
     assert captured["stall_threshold_s"] is None
 
 
+def test_gemini_leg_passes_headless_permission_flag(monkeypatch):
+    """ah#525: without ``--dangerously-skip-permissions`` this leg cannot review at all.
+
+    agy's permission check has no headless approver, so the FIRST tool call the model
+    makes is auto-denied (``permission check failed for command ...: user denied
+    permission``) and the run dies in 8-13s with an empty body. Measured directly:
+    identical staged bundle, flag absent -> denial; flag present -> a full review.
+
+    Without it the leg cannot review at all: agy's permission check has no headless
+    approver, the first tool call is auto-denied, and the run dies in 8-13s empty --
+    which is why this seat delivered zero usable reviews across four boards.
+
+    THIS TEST ASSERTS ARGV, NOT A SECURITY PROPERTY. An earlier docstring here
+    concluded that the staged `--add-dir` made the repository unreachable. That was
+    false: the flag auto-approves every tool permission (shell, network, spawn), and
+    `--add-dir` selects workspace context, not containment -- verified against live
+    agy, where shell ran and a file was written outside `--add-dir`.
+
+    Running unconfined is a standing operator decision for this fleet (executors
+    already run --yolo, and the repo takes no third-party submissions), so this leg
+    matches the existing posture rather than introducing a new exposure. Confinement
+    is wanted eventually and tracked on ah#525.
+
+    Nothing here exercises real agy, so a green run is scope-green, not property-green.
+    Do not read the flag's presence as evidence about isolation in either direction.
+
+    Mutation that must kill this: drop the flag from the gemini cmd.
+    """
+    captured = _capture_run(monkeypatch, stdout="AGREE")
+    with tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
+        rdp = Path(rd)
+        (rdp / "artifact.py").write_text("some code to review")
+        pi._exec_leg("gemini", rdp, Path(od), artifact="REVIEW THIS", mode="review")
+    cmd = captured["cmd"]
+    assert cmd[0] == "agy"
+    assert "--dangerously-skip-permissions" in cmd, (
+        "the gemini leg cannot complete a headless review without this flag; every "
+        "tool call is auto-denied and the leg returns EMPTY/ERROR (ah#525)"
+    )
+    # The workspace agy is granted must remain the STAGED dir, never a repo path. This
+    # is worth pinning on its own merits -- but it is NOT containment: it bounds where
+    # the leg is pointed, not what an auto-approved tool call can reach.
+    assert cmd[cmd.index("--add-dir") + 1] == str(rdp)
+
+
 def test_gemini_leg_passes_prompt_inline_on_argv_not_stdin(monkeypatch):
     """Regression: ``agy -p -`` IGNORES stdin and runs an EMPTY prompt (it prints its
     "How can I help you today?" greeting), so the gemini leg silently returned a
