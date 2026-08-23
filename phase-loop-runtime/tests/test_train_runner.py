@@ -3461,28 +3461,44 @@ def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request, 
         FABREADMIT_SKIP_REASON,
         fabreadmit_capability_active,
         fabreadmit_require,
-        fabreadmit_symbol,
         fabreadmit_this_nodeid,
     )
 
     if not fabreadmit_capability_active():
         skip(FABREADMIT_SKIP_REASON)
 
-    readmit_routing = fabreadmit_symbol(
-        "phase_loop_runtime.train_runner", "_commit_broker_readmitted_head"
-    )
+    def _run_test():
+        from phase_loop_runtime import train_runner as tr
+        from phase_loop_runtime.convergence.broker.live import build_routing_broker_client
 
-    valid_routing = False
-    if readmit_routing is not None:
-        try:
-            import inspect
-            sig = inspect.signature(readmit_routing)
-            valid_routing = "receipt" in sig.parameters or len(sig.parameters) >= 2
-        except Exception:
-            valid_routing = False
+        broker_client = build_routing_broker_client(broker_root=tmp_path / "broker")
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        ledger_path = tmp_path / "ledger" / "train.ledger.jsonl"
+
+        result = tr.run_train(
+            roadmap,
+            ledger_path,
+            run_mode="governed",
+            resolve_workspace=lambda n: ws_map[n.node_id],
+            coordinator_runtime=broker_client,
+            _run_loop=lambda *a, **kw: (None, []),
+            _publish=_make_publish_stub({}),
+            _pr_is_open=lambda ws, br: False,
+        )
+
+        assert hasattr(tr, "_commit_broker_readmitted_head")
+        assert result.get("status") == "merged"
+
+    valid = False
+    try:
+        _run_test()
+        valid = True
+    except Exception:
+        valid = False
 
     fabreadmit_require(
         fabreadmit_this_nodeid(request),
-        valid_routing,
+        valid,
         "_commit_broker_readmitted_head missing or unvalidated in train_runner",
     )

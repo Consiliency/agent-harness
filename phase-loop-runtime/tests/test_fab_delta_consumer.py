@@ -973,32 +973,40 @@ def _scan_append_sites_in_source(source_text: str) -> list[dict]:
 
 def test_fabreadmit_commit_points_reach_commit_broker_readmitted_head(request):
     """Commit points reach _commit_broker_readmitted_head."""
+    from pathlib import Path
     from pytest import skip
 
     from _fabreadmit_tdd_guard import (
         FABREADMIT_SKIP_REASON,
         fabreadmit_capability_active,
         fabreadmit_require,
-        fabreadmit_symbol,
         fabreadmit_this_nodeid,
     )
 
     if not fabreadmit_capability_active():
         skip(FABREADMIT_SKIP_REASON)
 
-    commit_helper = fabreadmit_symbol("phase_loop_runtime.train_runner", "_commit_broker_readmitted_head")
-    valid_commit_point = False
-    if commit_helper is not None:
-        try:
-            import inspect
-            sig = inspect.signature(commit_helper)
-            valid_commit_point = "receipt" in sig.parameters or len(sig.parameters) >= 2
-        except Exception:
-            valid_commit_point = False
+    def _run_test():
+        train_runner_file = Path(__file__).resolve().parent.parent / "src" / "phase_loop_runtime" / "train_runner.py"
+        source = train_runner_file.read_text(encoding="utf-8")
+        sites = _scan_append_sites_in_source(source)
+
+        commit_helper_sites = [s for s in sites if s["function"] == "_commit_broker_readmitted_head"]
+        other_readmit_sites = [s for s in sites if s["function"] == "_fab_delta_readmit"]
+
+        assert len(commit_helper_sites) == 1, "_commit_broker_readmitted_head must exist as sole readmission commit helper"
+        assert len(other_readmit_sites) == 0, "_fab_delta_readmit must not perform direct ledger appends"
+
+    valid = False
+    try:
+        _run_test()
+        valid = True
+    except Exception:
+        valid = False
 
     fabreadmit_require(
         fabreadmit_this_nodeid(request),
-        valid_commit_point,
+        valid,
         "_commit_broker_readmitted_head helper missing or unvalidated in train_runner",
     )
 
@@ -1012,27 +1020,34 @@ def test_fabreadmit_append_site_inventory(request):
         FABREADMIT_SKIP_REASON,
         fabreadmit_capability_active,
         fabreadmit_require,
-        fabreadmit_symbol,
         fabreadmit_this_nodeid,
     )
 
     if not fabreadmit_capability_active():
         skip(FABREADMIT_SKIP_REASON)
 
-    train_runner_file = Path(__file__).resolve().parent.parent / "src" / "phase_loop_runtime" / "train_runner.py"
-    source = train_runner_file.read_text(encoding="utf-8")
-    sites = _scan_append_sites_in_source(source)
+    def _run_test():
+        train_runner_file = Path(__file__).resolve().parent.parent / "src" / "phase_loop_runtime" / "train_runner.py"
+        source = train_runner_file.read_text(encoding="utf-8")
+        sites = _scan_append_sites_in_source(source)
 
-    readmit_sites = [s for s in sites if s["function"] == "_commit_broker_readmitted_head"]
-    other_readmit_sites = [s for s in sites if s["function"] == "_fab_delta_readmit"]
+        readmit_sites = [s for s in sites if s["function"] == "_commit_broker_readmitted_head"]
+        legacy_sites = [s for s in sites if s["function"] == "_fab_delta_readmit"]
 
-    valid_inventory = (len(readmit_sites) == 1 and len(other_readmit_sites) == 0)
-    inventory_report = f"sites: {sites}"
+        assert len(readmit_sites) == 1, "_commit_broker_readmitted_head must be present as sole readmission append site"
+        assert len(legacy_sites) == 0, "_fab_delta_readmit direct appends must be abolished"
+
+    valid = False
+    try:
+        _run_test()
+        valid = True
+    except Exception:
+        valid = False
 
     fabreadmit_require(
         fabreadmit_this_nodeid(request),
-        valid_inventory,
-        f"_commit_broker_readmitted_head must be sole readmission append site in train_runner.py — {inventory_report}",
+        valid,
+        "_commit_broker_readmitted_head must be sole readmission append site in train_runner.py",
     )
 
 
@@ -1045,29 +1060,36 @@ def test_fabreadmit_append_site_inventory_detects_third_site(request, tmp_path):
         FABREADMIT_SKIP_REASON,
         fabreadmit_capability_active,
         fabreadmit_require,
-        fabreadmit_symbol,
         fabreadmit_this_nodeid,
     )
 
     if not fabreadmit_capability_active():
         skip(FABREADMIT_SKIP_REASON)
 
-    train_runner_file = Path(__file__).resolve().parent.parent / "src" / "phase_loop_runtime" / "train_runner.py"
-    source = train_runner_file.read_text(encoding="utf-8")
+    def _run_test():
+        train_runner_file = Path(__file__).resolve().parent.parent / "src" / "phase_loop_runtime" / "train_runner.py"
+        source = train_runner_file.read_text(encoding="utf-8")
 
-    # Splice extra append site into synthetic source
-    synthetic_source = source + "\ndef _extra_unauthorized_append_site(ledger_path, nid):\n    append_record(ledger_path, LedgerRecord(node_id=nid, status='pr_open', head_sha='sha_third'))\n"
-    synthetic_sites = _scan_append_sites_in_source(synthetic_source)
-    detected_extra = any(s["function"] == "_extra_unauthorized_append_site" for s in synthetic_sites)
+        synthetic_source = source + "\ndef _extra_unauthorized_append_site(ledger_path, nid):\n    append_record(ledger_path, LedgerRecord(node_id=nid, status='pr_open', head_sha='sha_third'))\n"
+        synthetic_sites = _scan_append_sites_in_source(synthetic_source)
+        detected_extra = any(s["function"] == "_extra_unauthorized_append_site" for s in synthetic_sites)
 
-    real_sites = _scan_append_sites_in_source(source)
-    readmit_sites = [s for s in real_sites if s["function"] == "_commit_broker_readmitted_head"]
+        real_sites = _scan_append_sites_in_source(source)
+        readmit_sites = [s for s in real_sites if s["function"] == "_commit_broker_readmitted_head"]
 
-    valid_detection = detected_extra and len(readmit_sites) == 1
+        assert detected_extra is True, "AST scanner must flag synthetic third append site"
+        assert len(readmit_sites) == 1, "_commit_broker_readmitted_head must be sole readmission append site"
+
+    valid = False
+    try:
+        _run_test()
+        valid = True
+    except Exception:
+        valid = False
 
     fabreadmit_require(
         fabreadmit_this_nodeid(request),
-        valid_detection,
+        valid,
         "append_site_inventory must detect unauthorized 3rd append site in train_runner.py",
     )
 
@@ -1080,26 +1102,69 @@ def test_fabreadmit_fresh_revocation_blocks_delta_merge(request, tmp_path):
         FABREADMIT_SKIP_REASON,
         fabreadmit_capability_active,
         fabreadmit_require,
-        fabreadmit_symbol,
         fabreadmit_this_nodeid,
     )
 
     if not fabreadmit_capability_active():
         skip(FABREADMIT_SKIP_REASON)
 
-    rev_check = fabreadmit_symbol("phase_loop_runtime.train_runner", "_check_readmission_revocation")
-    valid_revocation = False
-    if rev_check is not None:
+    def _run_test():
+        from phase_loop_runtime import train_runner as tr
+        from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
+        from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore, EvidenceRecord
+        from phase_loop_runtime.convergence.provider_contracts import TerminalOutcomeState
+        from phase_loop_runtime.train_ledger import read_ledger
+
+        fixture = DeltaReadmitTransactionTest()
+        fixture.tmp_path = tmp_path
+        fixture.setUp()
         try:
-            import inspect
-            sig = inspect.signature(rev_check)
-            valid_revocation = len(sig.parameters) >= 1
-        except Exception:
-            valid_revocation = False
+            ledger_path, base, candidate_head, delta_head = fixture._setup_candidate_and_advance()
+            store = LinearizableAdmissionStore(tmp_path / "admissions", lambda _: True)
+            evidence = BrokerEvidenceStore(tmp_path / "evidence")
+
+            # 1. Unrevoked fresh arm: allocates epoch N+1, appends once, merges
+            new_head = tr._fab_delta_readmit(
+                fixture.repo, ledger_path, node_id="n1", run_id=fixture.RUN, branch="feat/pr1", pr_url="u",
+                merge_order=0, admitted_head_sha=candidate_head, live_head_sha=delta_head,
+                delta_review_fn=fixture._review_fn, owned_paths=fixture.OWNED, fab_fetch_origin="fetchsrc",
+                broker_store=store,
+            )
+            assert new_head == delta_head
+            rec = read_ledger(ledger_path)["n1"]
+            assert rec.head_sha == delta_head
+            replayed = store.replay()
+            assert len(replayed) == 1
+            assert replayed[0].allocated_epoch > 0
+
+            # 2. Revoked-under-lock fresh arm: inject revocation, assert zero append/adapter
+            evidence.record_intent("rev-key")
+            evidence.record_terminal(EvidenceRecord("rev-key", TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED, "revocation"))
+
+            delta_head2 = fixture._vendor_commit("c3 advance 2", vendor="Codex")
+            cnt_before = len(read_ledger(ledger_path))
+
+            result = tr._fab_delta_readmit(
+                fixture.repo, ledger_path, node_id="n1", run_id=fixture.RUN, branch="feat/pr1", pr_url="u",
+                merge_order=0, admitted_head_sha=delta_head, live_head_sha=delta_head2,
+                delta_review_fn=fixture._review_fn, owned_paths=fixture.OWNED, fab_fetch_origin="fetchsrc",
+                broker_store=store, evidence_store=evidence,
+            )
+            assert result is None, "revoked delta readmission must return None"
+            assert read_ledger(ledger_path)["n1"].head_sha == delta_head, "ledger head must remain unchanged"
+        finally:
+            fixture.tearDown()
+
+    valid = False
+    try:
+        _run_test()
+        valid = True
+    except Exception:
+        valid = False
 
     fabreadmit_require(
         fabreadmit_this_nodeid(request),
-        valid_revocation,
+        valid,
         "_check_readmission_revocation missing or unvalidated in train_runner",
     )
 
@@ -1112,52 +1177,187 @@ def test_fabreadmit_crash_resume_revocation_rechecked_blocks(request, tmp_path):
         FABREADMIT_SKIP_REASON,
         fabreadmit_capability_active,
         fabreadmit_require,
-        fabreadmit_symbol,
         fabreadmit_this_nodeid,
     )
 
     if not fabreadmit_capability_active():
         skip(FABREADMIT_SKIP_REASON)
 
-    recheck = fabreadmit_symbol("phase_loop_runtime.train_runner", "_recheck_crash_resume_revocation")
-    valid_recheck = False
-    if recheck is not None:
+    def _run_test():
+        from phase_loop_runtime import train_runner as tr
+        from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
+        from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore, EvidenceRecord
+        from phase_loop_runtime.convergence.provider_contracts import TerminalOutcomeState
+        from phase_loop_runtime.train_ledger import read_ledger
+
+        fixture = DeltaReadmitTransactionTest()
+        fixture.tmp_path = tmp_path
+        fixture.setUp()
         try:
-            import inspect
-            sig = inspect.signature(recheck)
-            valid_recheck = len(sig.parameters) >= 1
-        except Exception:
-            valid_recheck = False
+            ledger_path, base, candidate_head, delta_head = fixture._setup_candidate_and_advance()
+            store = LinearizableAdmissionStore(tmp_path / "admissions", lambda _: True)
+            evidence = BrokerEvidenceStore(tmp_path / "evidence")
+
+            # 1. Unrevoked crash-resume arm
+            import phase_loop_runtime.train_runner as _trmod
+            real_append = _trmod.append_record
+            state = {"crash": True}
+
+            def crashing_append(path, record, **kwargs):
+                if state["crash"] and record.status == "pr_open" and record.head_sha == delta_head:
+                    raise OSError("crash after broker grant before ledger append")
+                return real_append(path, record, **kwargs)
+
+            _trmod.append_record = crashing_append
+            try:
+                with pytest.raises(OSError):
+                    tr._fab_delta_readmit(
+                        fixture.repo, ledger_path, node_id="n1", run_id=fixture.RUN, branch="feat/pr1", pr_url="u",
+                        merge_order=0, admitted_head_sha=candidate_head, live_head_sha=delta_head,
+                        delta_review_fn=fixture._review_fn, owned_paths=fixture.OWNED, fab_fetch_origin="fetchsrc",
+                        broker_store=store,
+                    )
+            finally:
+                _trmod.append_record = real_append
+
+            state["crash"] = False
+            grant_count_before = len(store.replay())
+
+            resumed_head = tr._fab_delta_readmit(
+                fixture.repo, ledger_path, node_id="n1", run_id=fixture.RUN, branch="feat/pr1", pr_url="u",
+                merge_order=0, admitted_head_sha=candidate_head, live_head_sha=delta_head,
+                delta_review_fn=fixture._review_fn, owned_paths=fixture.OWNED, fab_fetch_origin="fetchsrc",
+                broker_store=store,
+            )
+            assert resumed_head == delta_head
+            assert len(store.replay()) == grant_count_before, "resume must deduplicate prior grant"
+
+            # 2. Revoked-before-resume arm
+            delta_head2 = fixture._vendor_commit("c3 advance 2", vendor="Codex")
+            evidence.record_intent("rev-key-resume")
+            evidence.record_terminal(EvidenceRecord("rev-key-resume", TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED, "revocation"))
+
+            resumed_blocked = tr._fab_delta_readmit(
+                fixture.repo, ledger_path, node_id="n1", run_id=fixture.RUN, branch="feat/pr1", pr_url="u",
+                merge_order=0, admitted_head_sha=delta_head, live_head_sha=delta_head2,
+                delta_review_fn=fixture._review_fn, owned_paths=fixture.OWNED, fab_fetch_origin="fetchsrc",
+                broker_store=store, evidence_store=evidence,
+            )
+            assert resumed_blocked is None, "revoked crash-resume must block with zero append"
+        finally:
+            fixture.tearDown()
+
+    valid = False
+    try:
+        _run_test()
+        valid = True
+    except Exception:
+        valid = False
 
     fabreadmit_require(
         fabreadmit_this_nodeid(request),
-        valid_recheck,
+        valid,
         "_recheck_crash_resume_revocation missing or unvalidated in train_runner",
     )
 
 
 def test_fabreadmit_real_git_shortcut_end_to_end(request, tmp_path):
     """Real-Git end-to-end delta shortcut with broker readmission."""
+    import unittest.mock as _mock
     from pytest import skip
 
     from _fabreadmit_tdd_guard import (
         FABREADMIT_SKIP_REASON,
         fabreadmit_capability_active,
         fabreadmit_require,
-        fabreadmit_symbol,
         fabreadmit_this_nodeid,
     )
 
     if not fabreadmit_capability_active():
         skip(FABREADMIT_SKIP_REASON)
 
-    capability_ver = fabreadmit_symbol("phase_loop_runtime.fabreadmit_capability", "FABREADMIT_CAPABILITY_VERSION")
-    readiness = fabreadmit_symbol("phase_loop_runtime.governed_premerge", "_FAB_DELTA_BROKER_READMIT_READY")
+    def _run_test():
+        from phase_loop_runtime import train_runner as tr
+        from phase_loop_runtime.train_ledger import read_ledger
+        from phase_loop_runtime.train_roadmap import parse_train_roadmap
+        import phase_loop_runtime.governed_premerge as gpmod
 
-    valid_shortcut_e2e = (capability_ver == 1 and readiness is True)
+        fixture = DeltaReadmitTransactionTest()
+        fixture.tmp_path = tmp_path
+        fixture.setUp()
+        try:
+            ledger_path, base, candidate_head, delta_head = fixture._setup_candidate_and_advance()
+
+            # 1. Positive E2E Arm with production default resolve_owned_paths=None
+            roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+            ws_map = {"repo-a/specs/plan-a.md": fixture.repo, "repo-b/specs/plan-b.md": fixture.repo}
+
+            result = tr.run_train(
+                roadmap,
+                ledger_path,
+                run_mode="governed",
+                resolve_workspace=lambda n: ws_map[n.node_id],
+                resolve_owned_paths=None,
+                _run_loop=lambda *a, **kw: (None, []),
+                _publish=_make_publish_stub({}),
+                _pr_is_open=lambda ws, br: True,
+                _live_pr_head_sha_fn=lambda ws, br: delta_head,
+                _merge_phase_enabled=True,
+                _reverify_fn=_reverify_pass,
+                _train_review_fn=fixture._review_fn,
+                fab_fetch_origin="fetchsrc",
+            )
+            assert result["status"] == "merged"
+            rec = read_ledger(ledger_path)["repo-a/specs/plan-a.md"]
+            assert rec.head_sha == delta_head, "ledger must advance to exact admitted delta head"
+
+            # 2. Kill arm (a): Reverting readiness False -> shortcut does NOT engage
+            with _mock.patch.object(gpmod, "_FAB_DELTA_BROKER_READMIT_READY", False):
+                result_readiness_off = tr.run_train(
+                    roadmap, ledger_path, run_mode="governed",
+                    resolve_workspace=lambda n: ws_map[n.node_id],
+                    resolve_owned_paths=None,
+                    _run_loop=lambda *a, **kw: (None, []),
+                    _publish=_make_publish_stub({}),
+                    _pr_is_open=lambda ws, br: True,
+                    _live_pr_head_sha_fn=lambda ws, br: delta_head,
+                    _merge_phase_enabled=True,
+                )
+                assert result_readiness_off["status"] != "merged" or rec.head_sha != delta_head
+
+            # 3. Kill arm (b): Injecting custom resolver -> scope must come from durable state
+            with pytest.raises((RuntimeError, PermissionError)):
+                tr.run_train(
+                    roadmap, ledger_path, run_mode="governed",
+                    resolve_workspace=lambda n: ws_map[n.node_id],
+                    resolve_owned_paths=lambda n: ["unauthorized_injected_scope"],
+                    _run_loop=lambda *a, **kw: (None, []),
+                    _publish=_make_publish_stub({}),
+                    _pr_is_open=lambda ws, br: True,
+                    _live_pr_head_sha_fn=lambda ws, br: delta_head,
+                    _merge_phase_enabled=True,
+                )
+
+            # 4. Kill arm (c): Broker bypass -> direct ledger append without broker fails closed
+            with pytest.raises((RuntimeError, PermissionError)):
+                tr._fab_delta_readmit(
+                    fixture.repo, ledger_path, node_id="n1", run_id=fixture.RUN, branch="feat/pr1", pr_url="u",
+                    merge_order=0, admitted_head_sha=candidate_head, live_head_sha=delta_head,
+                    delta_review_fn=fixture._review_fn, owned_paths=fixture.OWNED, fab_fetch_origin="fetchsrc",
+                    broker_store=None,
+                )
+        finally:
+            fixture.tearDown()
+
+    valid = False
+    try:
+        _run_test()
+        valid = True
+    except Exception:
+        valid = False
 
     fabreadmit_require(
         fabreadmit_this_nodeid(request),
-        valid_shortcut_e2e,
+        valid,
         "Real-Git end-to-end delta shortcut with broker readmission capability/readiness not active",
     )

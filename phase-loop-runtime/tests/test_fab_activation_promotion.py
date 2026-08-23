@@ -1468,9 +1468,17 @@ class TestPiece3aRegateEndToEnd:
         assert "fab-promotion-reassertion" in json.dumps(result, default=str)
 
 
+_SUPPORTED_PUBLISHERS_FROZEN_SET = (
+    "phase_loop_runtime.convergence.broker.live.BrokerClient.publish_committed_branch",
+    "phase_loop_runtime.convergence.broker.verbs.publish_committed_branch",
+)
+_SUPPORTED_PUBLISHERS_DIGEST = "a2f84b60e6e7370a273e970b8f411b9514742a0b178ef9c7e0e5a87a2bd2903a"
+
+
 def test_fabreadmit_hardcoded_epoch_publisher_interlock(request, tmp_path):
     """Interlock arm: any supported publisher stamping hardcoded epoch blocks readiness."""
     import ast
+    import hashlib
     from pathlib import Path
     from pytest import skip
 
@@ -1478,65 +1486,100 @@ def test_fabreadmit_hardcoded_epoch_publisher_interlock(request, tmp_path):
         FABREADMIT_SKIP_REASON,
         fabreadmit_capability_active,
         fabreadmit_require,
-        fabreadmit_symbol,
         fabreadmit_this_nodeid,
     )
 
     if not fabreadmit_capability_active():
         skip(FABREADMIT_SKIP_REASON)
 
-    src_dir = Path(__file__).resolve().parent.parent / "src" / "phase_loop_runtime"
-    hardcoded_sites = []
+    def _run_test():
+        # 1. Verify frozen supported publisher classification digest
+        computed_digest = hashlib.sha256(
+            ("\n".join(sorted(_SUPPORTED_PUBLISHERS_FROZEN_SET)) + "\n").encode("utf-8")
+        ).hexdigest()
+        assert computed_digest == _SUPPORTED_PUBLISHERS_DIGEST, "supported publisher classification digest mismatch"
 
-    for p in src_dir.rglob("*.py"):
-        tree = ast.parse(p.read_text(encoding="utf-8"), filename=str(p))
-        for node in ast.walk(tree):
+        # 2. Test-owned AST scan over phase-loop-runtime source tree
+        src_dir = Path(__file__).resolve().parent.parent / "src" / "phase_loop_runtime"
+        hardcoded_publish_sites = []
+
+        for py_file in src_dir.rglob("*.py"):
+            tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call):
+                    for kw in node.keywords:
+                        if kw.arg == "epoch" and isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, int):
+                            hardcoded_publish_sites.append(f"{py_file.name}:{node.lineno}")
+
+        assert len(hardcoded_publish_sites) == 0, f"Found hardcoded-epoch publish sites: {hardcoded_publish_sites}"
+
+        # 3. Synthetic violation detection
+        synthetic_source = (
+            "from phase_loop_runtime.convergence.broker.verbs import publish_committed_branch\n"
+            "def legacy_publish(req):\n"
+            "    return publish_committed_branch(req, epoch=1)\n"
+        )
+        synthetic_file = tmp_path / "synthetic_legacy_publisher.py"
+        synthetic_file.write_text(synthetic_source, encoding="utf-8")
+
+        syn_tree = ast.parse(synthetic_file.read_text(encoding="utf-8"))
+        syn_detected = False
+        for node in ast.walk(syn_tree):
             if isinstance(node, ast.Call):
                 for kw in node.keywords:
                     if kw.arg == "epoch" and isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, int):
-                        hardcoded_sites.append(f"{p.name}:{node.lineno}")
+                        syn_detected = True
 
-    synthetic_file = tmp_path / "hardcoded_publisher.py"
-    synthetic_file.write_text("def publish(): return do_publish(epoch=1)\n", encoding="utf-8")
-    syn_tree = ast.parse(synthetic_file.read_text(encoding="utf-8"))
-    syn_hardcoded = False
-    for node in ast.walk(syn_tree):
-        if isinstance(node, ast.Call):
-            for kw in node.keywords:
-                if kw.arg == "epoch" and isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, int):
-                    syn_hardcoded = True
+        assert syn_detected is True, "test-owned AST scanner must detect synthetic hardcoded epoch publisher"
 
-    check_fn = fabreadmit_symbol("phase_loop_runtime.governed_premerge", "_has_no_hardcoded_epoch_publishers")
-    no_hardcoded_prod = check_fn() if callable(check_fn) else False
+        # 4. Secondary control: check production predicate
+        from phase_loop_runtime.governed_premerge import _has_no_hardcoded_epoch_publishers
+        assert _has_no_hardcoded_epoch_publishers() is True
 
-    valid_interlock = (len(hardcoded_sites) == 0 and syn_hardcoded and no_hardcoded_prod)
+    valid = False
+    try:
+        _run_test()
+        valid = True
+    except Exception:
+        valid = False
 
     fabreadmit_require(
         fabreadmit_this_nodeid(request),
-        valid_interlock,
-        f"Hardcoded epoch publishers present or interlock unvalidated: {hardcoded_sites}",
+        valid,
+        "Hardcoded epoch publishers present or interlock unvalidated",
     )
 
 
 def test_fabreadmit_flag_reversal_kills_shortcut(request, tmp_path):
     """Reverting readiness interlock kills real-git shortcut."""
+    import unittest.mock as _mock
     from pytest import skip
 
     from _fabreadmit_tdd_guard import (
         FABREADMIT_SKIP_REASON,
         fabreadmit_capability_active,
         fabreadmit_require,
-        fabreadmit_symbol,
         fabreadmit_this_nodeid,
     )
 
     if not fabreadmit_capability_active():
         skip(FABREADMIT_SKIP_REASON)
 
-    readiness = fabreadmit_symbol("phase_loop_runtime.governed_premerge", "_FAB_DELTA_BROKER_READMIT_READY")
+    def _run_test():
+        from phase_loop_runtime import governed_premerge as gp
+        assert getattr(gp, "_FAB_DELTA_BROKER_READMIT_READY", None) is True
+        with _mock.patch.object(gp, "_FAB_DELTA_BROKER_READMIT_READY", False):
+            assert gp._FAB_DELTA_BROKER_READMIT_READY is False
+
+    valid = False
+    try:
+        _run_test()
+        valid = True
+    except Exception:
+        valid = False
 
     fabreadmit_require(
         fabreadmit_this_nodeid(request),
-        readiness is True,
+        valid,
         "_FAB_DELTA_BROKER_READMIT_READY is False in governed_premerge",
     )

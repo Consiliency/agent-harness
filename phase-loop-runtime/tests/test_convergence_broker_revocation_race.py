@@ -366,32 +366,92 @@ def test_concurrent_revocation_cannot_land_during_the_admission_lock(tmp_path, r
 
 def test_fabreadmit_revocation_race_under_admission_lock(request, tmp_path):
     """Revocation race under admission lock during readmission."""
+    import threading
     from pytest import skip
 
     from _fabreadmit_tdd_guard import (
         FABREADMIT_SKIP_REASON,
         fabreadmit_capability_active,
         fabreadmit_require,
-        fabreadmit_symbol,
         fabreadmit_this_nodeid,
     )
 
     if not fabreadmit_capability_active():
         skip(FABREADMIT_SKIP_REASON)
 
-    readmit_verb = fabreadmit_symbol("phase_loop_runtime.convergence.broker.verbs", "BrokerService.readmit_advanced_head")
+    def _run_test():
+        from phase_loop_runtime.convergence.broker.verbs import BrokerService
+        from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
+        from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore, EvidenceRecord
+        from phase_loop_runtime.convergence.contracts import DeltaReadmitAuthority
+        from phase_loop_runtime.convergence.provider_contracts import TerminalOutcomeState
 
-    valid_race_guard = False
-    if readmit_verb is not None:
-        try:
-            import inspect
-            sig = inspect.signature(readmit_verb)
-            valid_race_guard = "authority" in sig.parameters or len(sig.parameters) >= 2
-        except Exception:
-            valid_race_guard = False
+        adapter = _CountingAdapter()
+        evidence_store = BrokerEvidenceStore(tmp_path / "evidence")
+        admission_store = LinearizableAdmissionStore(
+            tmp_path / "admissions", lambda _: True, epoch_blocked=lambda: evidence_store.epoch_blocked
+        )
+        service = BrokerService(admission_store, evidence_store, adapter, contracts=())
+
+        auth = DeltaReadmitAuthority(
+            repository="Consiliency/agent-harness",
+            adapter_worktree=str(tmp_path / "repo"),
+            checkpoint_root=str(tmp_path / "ckpt"),
+            branch="feat/x",
+            base="main",
+            prior_head_sha="a" * 40,
+            proposed_head_sha="b" * 40,
+            train_id="train1",
+            node_id="n1",
+            fab_run_id="run1",
+            roadmap_digest="d" * 64,
+            provenance_digest="p" * 64,
+            owned_scope=("pkg",),
+        )
+
+        entered = threading.Event()
+        landed = threading.Event()
+        observed = {}
+
+        def _revoke():
+            entered.wait(timeout=5)
+            evidence_store.record_intent("racing-key")
+            evidence_store.record_terminal(
+                EvidenceRecord("racing-key", TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED, "concurrent-revocation")
+            )
+            landed.set()
+
+        writer = threading.Thread(target=_revoke, daemon=True)
+        writer.start()
+
+        real_admit_next = admission_store.admit_next
+
+        def _instrumented_admit_next(authority, *args, **kwargs):
+            entered.set()
+            landed.wait(timeout=0.5)
+            observed["landed_in_window"] = landed.is_set()
+            return real_admit_next(authority, *args, **kwargs)
+
+        admission_store.admit_next = _instrumented_admit_next
+
+        receipt = service.readmit_advanced_head(auth)
+        writer.join(timeout=5)
+
+        assert observed.get("landed_in_window") is False, (
+            "revocation landed while readmission lock was held — evidence and admission writers not sharing boundary"
+        )
+        assert receipt is not None
+        assert adapter.calls == 0
+
+    valid = False
+    try:
+        _run_test()
+        valid = True
+    except Exception:
+        valid = False
 
     fabreadmit_require(
         fabreadmit_this_nodeid(request),
-        valid_race_guard,
+        valid,
         "Revocation race under admission lock during readmission missing or unvalidated",
     )

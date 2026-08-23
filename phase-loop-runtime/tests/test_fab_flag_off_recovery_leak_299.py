@@ -128,27 +128,31 @@ def test_fabreadmit_flag_off_recovery_leak_guard(request, tmp_path, monkeypatch)
         FABREADMIT_SKIP_REASON,
         fabreadmit_capability_active,
         fabreadmit_require,
-        fabreadmit_symbol,
         fabreadmit_this_nodeid,
     )
 
     if not fabreadmit_capability_active():
         skip(FABREADMIT_SKIP_REASON)
 
-    monkeypatch.delenv(gp.FAB_PROMOTION_ENV, raising=False)
-    recovery_calls = []
-    result = _resume_train(tmp_path, monkeypatch, recovery_calls=recovery_calls)
+    def _run_test():
+        monkeypatch.delenv(gp.FAB_PROMOTION_ENV, raising=False)
+        recovery_calls = []
+        result = _resume_train(tmp_path, monkeypatch, recovery_calls=recovery_calls)
 
-    commit_helper = fabreadmit_symbol("phase_loop_runtime.train_runner", "_commit_broker_readmitted_head")
+        from phase_loop_runtime import train_runner as tr
+        assert hasattr(tr, "_commit_broker_readmitted_head")
+        assert len(recovery_calls) == 0, "flag-off resume must execute zero torn-recovery calls"
+        assert result.get("status") == "merged"
 
-    valid_guard = (
-        len(recovery_calls) == 0
-        and result.get("status") == "merged"
-        and commit_helper is not None
-    )
+    valid = False
+    try:
+        _run_test()
+        valid = True
+    except Exception:
+        valid = False
 
     fabreadmit_require(
         fabreadmit_this_nodeid(request),
-        valid_guard,
+        valid,
         "_commit_broker_readmitted_head missing in train_runner for flag-off recovery leak guard",
     )

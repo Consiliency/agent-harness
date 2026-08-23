@@ -239,7 +239,10 @@ def test_fabreadmit_guard_inventory_and_digests():
 
     # AST verification: each frozen nodeid resolves to exactly one test function
     # in its named file and carries the capability skip guard.
-    repo_root = Path(__file__).resolve().parent.parent.parent
+    repo_root = Path(__file__).resolve()
+    while repo_root.parent != repo_root and not (repo_root / "plans").exists():
+        repo_root = repo_root.parent
+
     for nodeid in FABREADMIT_RED_NODEIDS:
         filepath, func_name = nodeid.split("::")
         abs_file = repo_root / filepath

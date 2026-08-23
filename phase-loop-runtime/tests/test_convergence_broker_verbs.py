@@ -159,20 +159,50 @@ def test_fabreadmit_readmit_advanced_head_verb(request, tmp_path):
     if not fabreadmit_capability_active():
         skip(FABREADMIT_SKIP_REASON)
 
-    broker_service_cls = fabreadmit_symbol("phase_loop_runtime.convergence.broker.verbs", "BrokerService")
-    readmit_verb = fabreadmit_symbol("phase_loop_runtime.convergence.broker.verbs", "BrokerService.readmit_advanced_head")
+    def _run_test():
+        from phase_loop_runtime.convergence.broker.verbs import BrokerService
+        from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
+        from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore
+        from phase_loop_runtime.convergence.contracts import DeltaReadmitAuthority, DeltaReadmitReceipt
 
-    valid_verb = False
-    if broker_service_cls is not None and readmit_verb is not None:
-        try:
-            import inspect
-            sig = inspect.signature(readmit_verb)
-            valid_verb = "authority" in sig.parameters or len(sig.parameters) >= 2
-        except Exception:
-            valid_verb = False
+        adapter = _CountingAdapter()
+        store = LinearizableAdmissionStore(tmp_path / "admissions", lambda _: True)
+        evidence = BrokerEvidenceStore(tmp_path / "evidence")
+        service = BrokerService(store, evidence, adapter, contracts=())
+
+        auth = DeltaReadmitAuthority(
+            repository="Consiliency/agent-harness",
+            adapter_worktree=str(tmp_path / "repo"),
+            checkpoint_root=str(tmp_path / "ckpt"),
+            branch="feat/x",
+            base="main",
+            prior_head_sha="a" * 40,
+            proposed_head_sha="b" * 40,
+            train_id="train1",
+            node_id="n1",
+            fab_run_id="run1",
+            roadmap_digest="d" * 64,
+            provenance_digest="p" * 64,
+            owned_scope=("pkg",),
+        )
+
+        receipt = service.readmit_advanced_head(auth)
+
+        assert isinstance(receipt, DeltaReadmitReceipt)
+        assert receipt.repository == "Consiliency/agent-harness"
+        assert receipt.proposed_head_sha == "b" * 40
+        assert receipt.allocated_epoch > 0
+        assert adapter.calls == 0, "readmit_advanced_head verb must call zero provider adapters"
+
+    valid = False
+    try:
+        _run_test()
+        valid = True
+    except Exception:
+        valid = False
 
     fabreadmit_require(
         fabreadmit_this_nodeid(request),
-        valid_verb,
+        valid,
         "BrokerService.readmit_advanced_head verb missing or unvalidated",
     )
