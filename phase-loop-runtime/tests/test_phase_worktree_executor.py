@@ -500,6 +500,133 @@ def test_recreate_with_real_origin_does_not_wedge(tmp_path):
         teardown_phase_worktree(repo, second)
 
 
+def test_failed_pin_leaves_the_worktree_intact_so_a_retry_converges(tmp_path):
+    """Round-2 third seat: pinning AFTER removal is non-convergent, not merely late.
+
+    If the pin is ordered after `_remove_worktree` and `update-ref` fails, we raise --
+    but the worktree is already gone. The retry then finds no worktree, captures no
+    sha, skips the pin entirely and SUCCEEDS, silently dropping the very commit the
+    raise was protecting. Pinning first means a failed pin leaves the worktree intact,
+    so the retry sees the same state and can try again.
+
+    Mutation that must kill this: move the pin after `_remove_worktree` -- the first
+    call still raises, but the worktree is gone and the retry succeeds while the
+    commit becomes unreachable.
+    """
+    from phase_loop_runtime import phase_worktree_executor as pwe
+
+    repo = make_repo(tmp_path)
+    branch = _current_branch(repo)
+    base = resolve_base_sha(repo)
+
+    with _isolated_worktree_root(tmp_path):
+        first = create_phase_worktree(
+            repo, phase="extract", target_branch=branch, base_sha=base
+        )
+        _commit_in_worktree(first.worktree_path, "src/work.py", "w = 1\n", "real work")
+        orphan_sha = _git(first.worktree_path, "rev-parse", "HEAD").stdout.strip()
+        _git(first.worktree_path, "checkout", "-q", "--detach", orphan_sha)
+        _git(repo, "branch", "-D", first.temp_branch)
+
+        real_git = pwe._git
+
+        def failing_pin(target, *args, **kwargs):
+            if args[:1] == ("update-ref",):
+                return subprocess.CompletedProcess(
+                    args=list(args), returncode=1, stdout="", stderr="fatal: simulated"
+                )
+            return real_git(target, *args, **kwargs)
+
+        with patch.object(pwe, "_git", side_effect=failing_pin):
+            with pytest.raises(PhaseWorktreeError, match="could not be written"):
+                create_phase_worktree(
+                    repo, phase="extract", target_branch=branch, base_sha=base
+                )
+
+        # The worktree survives the failed pin -- that is what makes the retry able to
+        # preserve the commit rather than silently skip it.
+        assert first.worktree_path.exists(), (
+            "worktree was removed despite the pin failing: a retry can no longer "
+            "recover the commit"
+        )
+
+        # And the retry (pin now working) does preserve it.
+        second = create_phase_worktree(
+            repo, phase="extract", target_branch=branch, base_sha=base
+        )
+        containing = _git(
+            repo, "for-each-ref", "--contains", orphan_sha, "--format=%(refname)"
+        ).stdout.split()
+        assert any(r.startswith("refs/salvage/") for r in containing), containing
+        teardown_phase_worktree(repo, second)
+
+
+def test_recreate_moves_aside_an_unrecognized_leftover_directory(tmp_path):
+    """A NON-EMPTY, non-git leftover at the path must not wedge creation forever.
+
+    The empty-dir heal does not cover this: a partial `worktree add`, or foreign
+    content dropped at the path, leaves a non-empty directory git cannot stat. The
+    dirty check fail-closes to "unknown", `git worktree move` will NEVER move something
+    that is not a registered worktree, and every retry raises identically.
+
+    The fallback is gated on "not a registered worktree" -- renaming a REAL worktree
+    behind git's back would corrupt its registry, so a locked one must still refuse.
+
+    Mutation that must kill this: drop the `Path.rename` fallback -- creation raises.
+    """
+    repo = make_repo(tmp_path)
+    branch = _current_branch(repo)
+    base = resolve_base_sha(repo)
+
+    with _isolated_worktree_root(tmp_path):
+        planned = tmp_path / "wt" / f"{branch}-EXTRACT"
+        planned.mkdir(parents=True, exist_ok=True)
+        (planned / "half-written.py").write_text("partial = True\n")
+
+        # Must not raise.
+        handle = create_phase_worktree(
+            repo, phase="extract", target_branch=branch, base_sha=base
+        )
+        assert handle.worktree_path == planned
+        assert (handle.worktree_path / ".git").exists()
+
+        # The foreign content was PRESERVED, not deleted.
+        moved = sorted(planned.parent.glob(f"{planned.name}.salvage-*"))
+        assert moved, "unrecognized leftover was destroyed instead of moved aside"
+        assert (moved[0] / "half-written.py").read_text() == "partial = True\n"
+        teardown_phase_worktree(repo, handle)
+
+
+def test_recreate_reports_a_locked_clean_worktree_honestly(tmp_path):
+    """A locked CLEAN worktree must fail with its real cause, not "already exists".
+
+    git refuses to remove a locked worktree even with --force, and `_remove_worktree`
+    swallows that. Without an explicit check the path survives and `worktree add`
+    fails with an opaque "already exists" that names neither the lock nor the fix.
+    The dirty path already reports this honestly; the clean path must match.
+
+    Mutation that must kill this: drop the post-removal existence check -- creation
+    still fails, but with the opaque worktree-add error instead.
+    """
+    repo = make_repo(tmp_path)
+    branch = _current_branch(repo)
+    base = resolve_base_sha(repo)
+
+    with _isolated_worktree_root(tmp_path):
+        first = create_phase_worktree(
+            repo, phase="extract", target_branch=branch, base_sha=base
+        )
+        _git(repo, "worktree", "lock", str(first.worktree_path))
+        try:
+            with pytest.raises(PhaseWorktreeError, match="locked or in use"):
+                create_phase_worktree(
+                    repo, phase="extract", target_branch=branch, base_sha=base
+                )
+        finally:
+            _git(repo, "worktree", "unlock", str(first.worktree_path))
+        teardown_phase_worktree(repo, first)
+
+
 def test_recreate_refuses_locked_dirty_worktree_and_preserves_work(tmp_path):
     """ah#624: a dirty worktree whose move is REFUSED (locked) must fail loudly.
 
