@@ -61,7 +61,20 @@ def test_fabreadmit_prior_record_predicate_and_chained_readmit_binding(request, 
     store_root = live.repository_broker_namespace(repo_dir)
     store = LinearizableAdmissionStore(store_root, lambda _: True)
 
-    # 3. Create durable first-hop publish transaction at checkpoint root
+    # 3. Create real durable first-hop publish transaction at checkpoint root (FR-R4-05)
+    from phase_loop_runtime.publishing import prepare_publish_transaction, _transaction_authority
+    from phase_loop_runtime.convergence.broker.verbs import publish_committed_branch_idempotency_key
+
+    pub_txn = prepare_publish_transaction(
+        repo_dir,
+        owned_paths=("pkg/",),
+        checkpoint_root=ckpt,
+        branch="feat/x",
+        envelope_authority_preimage=_transaction_authority(repo_dir, "feat/x"),
+        node_id="n1",
+    )
+    idempotency_key = publish_committed_branch_idempotency_key("Consiliency/agent-harness", "feat/x", base_sha)
+
     pub_req = AdmissionRequest(
         attempt_id="att1",
         epoch=1,
@@ -69,10 +82,67 @@ def test_fabreadmit_prior_record_predicate_and_chained_readmit_binding(request, 
         approval_digest="d" * 64,
         prior_predicate=base_sha,
         owned_scope="pkg",
-        idempotency_key="key1",
+        idempotency_key=idempotency_key,
     )
     store.admit(pub_req)
     initial_count = len(store.replay())
+
+    # Negative arm: Absent publish transaction at valid checkpoint root (FR-R4-05)
+    ckpt_no_txn = tmp_path / "ckpt_no_txn"
+    ckpt_no_txn.mkdir()
+    (ckpt_no_txn / "train.json").write_text('{"train_id": "train1", "repository": "Consiliency/agent-harness"}', encoding="utf-8")
+    (ckpt_no_txn / "n1.json").write_text('{"node_id": "n1"}', encoding="utf-8")
+    auth_no_txn = DeltaReadmitAuthority(
+        repository="Consiliency/agent-harness", adapter_worktree=str(repo_dir),
+        checkpoint_root=str(ckpt_no_txn), branch="feat/x", base="main",
+        prior_head_sha=base_sha, proposed_head_sha="b" * 40, train_id="train1",
+        node_id="n1", fab_run_id="run1", roadmap_digest="d" * 64, provenance_digest="p" * 64,
+        owned_scope=("pkg",)
+    )
+    with pytest.raises(PermissionError, match=r"(?i)transaction|absent|missing|publish"):
+        store.admit_next(auth_no_txn)
+    assert len(store.replay()) == initial_count
+
+    # Negative arm: Key mismatch at valid checkpoint root (FR-R4-05)
+    ckpt_key_mismatch = tmp_path / "ckpt_key_mismatch"
+    ckpt_key_mismatch.mkdir()
+    (ckpt_key_mismatch / "train.json").write_text('{"train_id": "train1", "repository": "Consiliency/agent-harness"}', encoding="utf-8")
+    (ckpt_key_mismatch / "n1.json").write_text('{"node_id": "n1"}', encoding="utf-8")
+    prepare_publish_transaction(
+        repo_dir, owned_paths=("pkg/",), checkpoint_root=ckpt_key_mismatch, branch="feat/other",
+        envelope_authority_preimage=_transaction_authority(repo_dir, "feat/other"), node_id="n1"
+    )
+    auth_key_mismatch = DeltaReadmitAuthority(
+        repository="Consiliency/agent-harness", adapter_worktree=str(repo_dir),
+        checkpoint_root=str(ckpt_key_mismatch), branch="feat/x", base="main",
+        prior_head_sha=base_sha, proposed_head_sha="b" * 40, train_id="train1",
+        node_id="n1", fab_run_id="run1", roadmap_digest="d" * 64, provenance_digest="p" * 64,
+        owned_scope=("pkg",)
+    )
+    with pytest.raises(PermissionError, match=r"(?i)key|mismatch|idempotency|branch"):
+        store.admit_next(auth_key_mismatch)
+    assert len(store.replay()) == initial_count
+
+    # Negative arm: Node mismatch at valid checkpoint root (FR-R4-05)
+    ckpt_node_mismatch = tmp_path / "ckpt_node_mismatch"
+    ckpt_node_mismatch.mkdir()
+    (ckpt_node_mismatch / "train.json").write_text('{"train_id": "train1", "repository": "Consiliency/agent-harness"}', encoding="utf-8")
+    (ckpt_node_mismatch / "other_node.json").write_text('{"node_id": "other_node"}', encoding="utf-8")
+    prepare_publish_transaction(
+        repo_dir, owned_paths=("pkg/",), checkpoint_root=ckpt_node_mismatch, branch="feat/x",
+        envelope_authority_preimage=_transaction_authority(repo_dir, "feat/x"), node_id="other_node"
+    )
+    auth_node_mismatch = DeltaReadmitAuthority(
+        repository="Consiliency/agent-harness", adapter_worktree=str(repo_dir),
+        checkpoint_root=str(ckpt_node_mismatch), branch="feat/x", base="main",
+        prior_head_sha=base_sha, proposed_head_sha="b" * 40, train_id="train1",
+        node_id="n1", fab_run_id="run1", roadmap_digest="d" * 64, provenance_digest="p" * 64,
+        owned_scope=("pkg",)
+    )
+    with pytest.raises(PermissionError, match=r"(?i)node"):
+        store.admit_next(auth_node_mismatch)
+    assert len(store.replay()) == initial_count
+
 
     # 4. Valid first-hop readmission
     auth_hop1 = DeltaReadmitAuthority(

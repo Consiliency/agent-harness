@@ -3482,8 +3482,11 @@ def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request, 
     from phase_loop_runtime import train_runner as tr
     from phase_loop_runtime.train_runner import CoordinatorRuntime
     from phase_loop_runtime.convergence.broker import live
+    from phase_loop_runtime.convergence.broker.live import _RepositoryRoutingBrokerService, build_routing_broker_client
     from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
     from phase_loop_runtime.train_ledger import append_record, LedgerRecord, read_ledger
+    from phase_loop_runtime.train_roadmap import parse_train_roadmap
+    from test_fab_activation_promotion import TRAIN_2NODE_MD, _make_publish_stub, _reverify_pass, _capturing_merge_stub
 
     # Setup real Git repo workspace (FR-SL0-12)
     repo_dir = tmp_path / "repo"
@@ -3502,20 +3505,23 @@ def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request, 
     subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", "advance"], check=True)
     delta_head = subprocess.check_output(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True).strip()
 
-    # Real FABPUB onboarding & store_root namespace (FR-R3-01, FR-R3-02, FR-R3-03)
+    # Real FABPUB onboarding & store_root namespace (FR-R3-01, FR-R3-02, FR-R4-06)
     live.onboard_zero_legacy_repository(repo_dir)
     live.fabpub_activation_barrier([repo_dir])
     store_root = live.repository_broker_namespace(repo_dir)
     store = LinearizableAdmissionStore(store_root, lambda _: True)
 
-    broker_client = live._test_only_repository_broker_client(Path(store_root).parent)
+    # FR-R4-06: Production build_routing_broker_client with NO root argument
+    routing_client = build_routing_broker_client()
+    assert isinstance(routing_client, _RepositoryRoutingBrokerService)
+
     coord_runtime = CoordinatorRuntime(
         train_id="train1",
         coordinator_root=tmp_path / "coord",
         roadmap_path="train.md",
         roadmap_digest="d" * 64,
         workspace_id=str(repo_dir),
-        broker_client=broker_client,
+        broker_client=routing_client,
     )
 
     roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
