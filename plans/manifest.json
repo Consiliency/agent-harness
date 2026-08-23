@@ -3331,6 +3331,30 @@
             "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-23T23:39:36Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "external_board_statuses": {
+              "claude": "STALE_requires_fresh_exact_digest_review",
+              "gemini": "AGREE_stale_after_material_grok_dissent",
+              "grok": "DISAGREE"
+            },
+            "harden_plan_sha256": "b46805dec76792ddb066d9891fb5c731585576d9439270053e98013f28a480ee",
+            "native_codex_status": "AGREE_stale_after_material_grok_dissent",
+            "plan_sha256": "19df6996aae646c761d9c844bbd09f9d117685f77dc20e0d7daeb7ac80335ed4",
+            "predecessor_harden_plan_sha256": "b46805dec76792ddb066d9891fb5c731585576d9439270053e98013f28a480ee",
+            "predecessor_plan_sha256": "be571ee0c0c0669b5c634b673412edd777596bcf66d6fd3faccc17be8e918041",
+            "reconciled_findings": [
+              "typed_lease_descriptor_authority_crosses_real_spawn_path",
+              "launcher_and_worker_pool_pass_fds_obligation",
+              "real_spawn_parent_dead_child_alive_grandchild_falsifier"
+            ],
+            "review_status": "twelfth_external_dissent_reconciled_requires_fresh_exact_digest_review",
+            "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68"
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -3346,7 +3370,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-23T23:29:45Z"
+      "updated_at": "2026-08-23T23:39:36Z"
     },
     {
       "acceptance_criteria_count": null,

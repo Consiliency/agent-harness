@@ -49,7 +49,11 @@ not modify them.
 
 - [ ] IF-0-SCHED-1 — `PhaseWorktreeHandle` carries the exact generation, path,
   temporary branch, target branch, base SHA, and active lease authority returned by
-  creation; callers never reconstruct an active path from phase/branch strings.
+  creation; callers never reconstruct an active path from phase/branch strings. The
+  authority includes the live lease descriptor capability, which is passed explicitly
+  through runner and worker-pool records into every owned `launch_with_spec`/`launch`
+  boundary and ultimately `subprocess.Popen(pass_fds=...)`; it is never serialized into
+  environment variables or reconstructed from a pathname.
 - [ ] IF-0-SCHED-2 — worktree cleanup is preserve-by-default and requires an acquired
   inactive lease plus two stable inventories proving no tracked, untracked, ignored,
   committed, handoff, or special-file state before removal. Errors, drift, and live
@@ -189,8 +193,12 @@ SL-6 — Documentation, disposition, and completion evidence
   - test: add falsifiers for same-phase committed work, dirty/untracked state, an ignored
     `.dev-skills/handoffs/`-only candidate, a held live lease, post-scan mutation, lease
     identity drift, generation/path/branch collision, and a parent that exits while a
-    child retains the inherited lease descriptor. Assert that each preserves the old
-    generation, its ref, and byte-exact recoverable content.
+    child retains the inherited lease descriptor. The parent-dead/child-alive control must
+    traverse the real runner → `PhaseWorkerJob` → `launch_with_spec` → `launch` →
+    `subprocess.Popen` path and a helper grandchild, not an in-module-only `fork`; a
+    mutation removing `pass_fds` must make reclamation acquire the lease while that helper
+    is still live. Assert that each preserved case retains the old generation, its ref,
+    and byte-exact recoverable content.
   - test: add a positive control proving a released-lease candidate with an exact empty
     inventory can be reclaimed and a fresh generation can launch.
   - test: add production-path tests proving declared `lane_execute` overrides a reducer
@@ -223,8 +231,9 @@ SL-6 — Documentation, disposition, and completion evidence
   `phase-loop-runtime/src/phase_loop_runtime/worker_pool.py`
 - **Interfaces provided**: `SCHED_SCHEDULER_RUNTIME`.
 - **Interfaces consumed**: `SCHED_RED_SUITE`, `PhaseWorktreeHandle` (pre-existing),
-  `DispatchLock.caller_run_id` (pre-existing), `child_executor_env` (pre-existing), and
-  ownership-gated closeout (pre-existing).
+  including its frozen active lease descriptor authority, `DispatchLock.caller_run_id`
+  (pre-existing), `child_executor_env` (pre-existing), and ownership-gated closeout
+  (pre-existing).
 - **Parallel-safe**: no.
 - **Tasks**:
   - impl: prefer a valid declared `lane_execute`/`phase_reducer` kind at both scheduler
@@ -234,6 +243,14 @@ SL-6 — Documentation, disposition, and completion evidence
     environment; genuine competing runs retain normal contention.
   - impl: consume the exact `PhaseWorktreeHandle` path/branch returned by creation and
     never reconstruct a live assignment from phase, branch, or lane strings.
+  - impl: propagate the handle's lease descriptor as a typed, non-serialized capability
+    through the serial runner path and `PhaseWorkerJob` into `launch_with_spec` and
+    `launch`, then include it in the POSIX `pass_fds` set for both captured and streamed
+    `subprocess` paths. The launched executor and its descendants retain the same open file
+    description; no owned spawn boundary may drop it. Reject live launch on unsupported
+    platforms or when inheritance cannot be proven, without leaking or closing the
+    SL-4-owned descriptor from a non-owner. Dry-run records the requirement without
+    inheriting a descriptor.
   - impl: transport staged/dirty planning output before parent reduction only under
     commit/push closeout; on manual closeout, transport conflict, block, or failed adoption,
     skip teardown, preserve the exact generation and branch with a stable byte inventory,
@@ -242,6 +259,9 @@ SL-6 — Documentation, disposition, and completion evidence
     an exact no-diff; retain normal verification for any real diff or ambiguous result.
   - verify: make the SL-1 scheduler tests green without changing them; run lane scheduler,
     concurrent dispatch, work-unit, launcher, worker-pool, dispatch-lock, and runner suites.
+    The SL-2 zero-skip tuple includes the real-spawn parent-dead/child-alive mutation and
+    proves the helper grandchild still blocks nonblocking lease acquisition after the
+    coordinator-side launcher parent exits.
 
 ### SL-3 — Bind scheduler landing into HARDEN
 
@@ -330,6 +350,10 @@ SL-6 — Documentation, disposition, and completion evidence
     sharing process has closed it. Parent-only locking is invalid. Do not rely on PID,
     mtime, directory age, or handoff presence as liveness authority, and preserve when the
     same-kernel local-filesystem or descriptor-inheritance proof is unavailable.
+  - impl: expose the live descriptor only through the frozen `PhaseWorktreeHandle` lease
+    authority consumed by SL-2; SL-4 remains the sole owner that acquires and closes it.
+    A missing propagation receipt from any real launcher/worker boundary preserves the
+    generation and blocks reclamation.
   - impl: enumerate tracked, untracked, ignored, committed, symlink, and special-file
     state without following links; compare stable pre/post identities and fail closed on
     unreadable or changing paths.
