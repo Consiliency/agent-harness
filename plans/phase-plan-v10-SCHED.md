@@ -184,6 +184,8 @@ SL-6 — Documentation, disposition, and completion evidence
     SCHED assertions, while absence of that exact value skips only those new assertions
     with the exact reason `SCHED RED suite inactive; set PHASE_LOOP_TDD_EXPECT_SCHED=1`.
     The other twelve owned modules import this guard; no fourteenth guard path is added.
+    The helper freezes disjoint exact `SCHED_SL2_NODEIDS` and `SCHED_SL4_NODEIDS` tuples;
+    their union is exactly every new SCHED assertion in the thirteen owned modules.
   - test: add falsifiers for same-phase committed work, dirty/untracked state, an ignored
     `.dev-skills/handoffs/`-only candidate, a held live lease, post-scan mutation, lease
     identity drift, generation/path/branch collision, and a parent that exits while a
@@ -204,8 +206,11 @@ SL-6 — Documentation, disposition, and completion evidence
     unrelated existing tests green with only the exact new-SCHED skips. Then set
     `PHASE_LOOP_TDD_EXPECT_SCHED=1`, run every mutation against the pre-production base,
     and require each new falsifier RED for its intended reason. The zero-skip host gate is
-    not applicable at SL-1 because the activated suite is intentionally RED. Run Ruff and
-    `git diff --check` in both evidence records.
+    not applicable at SL-1 because the activated suite is intentionally RED. After SL-2,
+    run only the immutable `SCHED_SL2_NODEIDS` tuple activated and require zero failures,
+    errors, or skips; after SL-4, do the same for `SCHED_SL4_NODEIDS`. The complete
+    activated thirteen-module zero-skip gate applies only after both production landings
+    exist. Run Ruff and `git diff --check` in every evidence record.
 
 ### SL-2 — Scheduler kind, artifact transport, and no-diff dispatch
 
@@ -492,12 +497,15 @@ PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q 
   the tests landing, a non-biting RED mutation, a wrong production path set, or any SL-1
   path in either production diff;
   path-entered control: `PHASE_LOOP_TDD_EXPECT_SCHED=1` is absent for canonical default
-  CI, is set for the SL-1 mutation run and every SL-2/SL-4 host-capable gate, and guards
-  only the new SCHED assertions through the shared helper in
+  CI and is set for the SL-1 mutation run and production gates. It guards only the new
+  SCHED assertions through the shared helper in
   `test_phase_worktree_executor.py`. At SL-1 the unchanged tests-only candidate traverses
   the intentionally failing activated RED chronology, restores every injection, and
-  reaches the default-green positive controls; from SL-2 onward the activated thirteen-
-  module host gate requires zero failures, errors, or skips.
+  reaches the default-green positive controls. The SL-2 landing runs the exact immutable
+  `SCHED_SL2_NODEIDS` tuple with zero failures, errors, or skips while the SL-4 tuple
+  remains intentionally RED; the SL-4 landing symmetrically runs only
+  `SCHED_SL4_NODEIDS`. Only their joined state runs the complete activated thirteen-module
+  host gate with zero failures, errors, or skips.
 - [ ] EC-SCHED-1 — proven by `PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests
   python3 -m pytest -q phase-loop-runtime/tests/test_phase_worktree_executor.py -k
   create_preserves_recoverable_generation`; falsified by a path-entered mutation restoring

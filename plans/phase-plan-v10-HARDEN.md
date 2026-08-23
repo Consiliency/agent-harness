@@ -1321,8 +1321,11 @@ import subprocess
 import sys
 
 PLAN = "plans/phase-plan-v10-HARDEN.md"
+SCHED_PLAN = "plans/phase-plan-v10-SCHED.md"
 MANIFEST = "plans/manifest.json"
+ROADMAP = "specs/phase-plans-v10.md"
 RECEIPT = "plans/evidence/v10-SCHED-HARDEN-review.json"
+TEMPLATE_MANIFEST_CONTRACT_SHA256 = "be3f88e8eaba4eba7d2f5e150d37a85899b5267e14b5d1552d49cebaf5bd157c"
 ORIGINS = {
     "git@github.com:Consiliency/agent-harness.git",
     "ssh://git@github.com/Consiliency/agent-harness.git",
@@ -1437,6 +1440,8 @@ manifest_blob = git("rev-parse", f"{c}:{MANIFEST}").decode().strip()
 assert git("rev-parse", f"{r}:{PLAN}").decode().strip() == plan_blob
 assert git("rev-parse", f"{r}:{MANIFEST}").decode().strip() == manifest_blob
 plan_bytes = git("show", f"{c}:{PLAN}")
+roadmap_bytes = git("show", f"{c}:{ROADMAP}")
+sched_plan_bytes = git("show", f"{c}:{SCHED_PLAN}")
 manifest_bytes = git("show", f"{c}:{MANIFEST}")
 manifest = decode(manifest_bytes)
 rows = [row for row in manifest["plans"] if row.get("phase_alias") == "HARDEN"]
@@ -1460,6 +1465,7 @@ assert template["required_review_seats"] == SEATS
 assert template["actual_sl2_commit"] is None
 assert template["actual_sl2_reviewed_head"] is None
 assert template["actual_sl2_tree"] is None
+assert template["manifest_contract_sha256"] == TEMPLATE_MANIFEST_CONTRACT_SHA256
 template_payload = {key: value for key, value in template.items() if key != "manifest_contract_sha256"}
 assert sha(template["manifest_contract_digest_domain"].encode("utf-8") + canonical(template_payload)) == template["manifest_contract_sha256"]
 assert set(handoff) == HANDOFF_KEYS
@@ -1477,6 +1483,9 @@ assert HEX40.fullmatch(handoff["actual_sl2_tree"])
 assert HEX64.fullmatch(handoff["harden_plan_sha256"])
 assert HEX64.fullmatch(handoff["roadmap_sha256"])
 assert HEX64.fullmatch(handoff["sched_plan_sha256"])
+assert handoff["harden_plan_sha256"] == sha(plan_bytes)
+assert handoff["roadmap_sha256"] == sha(roadmap_bytes)
+assert handoff["sched_plan_sha256"] == sha(sched_plan_bytes)
 assert git("rev-parse", f'{handoff["actual_sl2_commit"]}^{{tree}}').decode().strip() == handoff["actual_sl2_tree"]
 assert is_ancestor(handoff["actual_sl2_commit"], c)
 sl2_parents = git("rev-list", "--parents", "-n", "1", handoff["actual_sl2_commit"]).decode().split()
