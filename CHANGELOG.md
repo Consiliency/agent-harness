@@ -6,6 +6,26 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### entry-doc check: close two coverage gaps (Consiliency/agent-harness#600)
+
+- **Flag-form pins are now checked.** Arm 2 matched `owner/repo@ref` and the URL
+  tag forms but not `--ref <tag>` or `AGENT_HARNESS_REF=<tag>` — the installer's own
+  documented interface, and therefore the spelling most likely to appear in an install
+  doc. A `--ref v0.1.5`, six minors stale, reached `main` in `docs/TEAM-ONBOARDING.md`
+  and no arm could see it. All three ref grammars now route through one shared
+  evaluator, so there is still exactly one notion of freshness.
+- **The onboarding docs are now checked.** `docs/TEAM-ONBOARDING.md` and
+  `docs/outside-worker-quickstart.md` are entry points by function — what a new human or
+  agent is pointed at — but are not package long-descriptions, so nothing read them.
+  `ENTRY_DOCS` is now the union of two named roles rather than one conflated tuple.
+- **Found immediately by the widening:** `docs/outside-worker-quickstart.md` pinned
+  `phase-loop-runtime==0.7.9` (four patches stale) inside a `pip install --upgrade`,
+  which contradicts itself. Now unpinned, a form that cannot rot.
+- **Slash-commands are no longer read as paths.** `/claude-phase-roadmap-builder` is a
+  skill invocation; arm 1 reported it as an unresolvable repository path. The skip is
+  narrow — one segment, no extension — so a multi-segment absolute path is still
+  required to resolve.
+
 ### CI: cancel superseded test runs (Consiliency/agent-harness#619, Consiliency/agent-harness#621)
 
 - The test workflow now cancels an older in-progress run when a newer commit is

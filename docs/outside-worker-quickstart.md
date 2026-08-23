@@ -18,7 +18,7 @@ just "plan the first phase, execute it" — fast, not a corpus-wide crawl.
 If you install the runtime directly:
 
 ```bash
-pip install --upgrade "phase-loop-runtime==0.7.9"
+pip install --upgrade phase-loop-runtime
 # or via the friendly-name shim (pulls the latest runtime automatically):
 pip install --upgrade consiliency-harness
 ```
