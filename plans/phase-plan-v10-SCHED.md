@@ -22,11 +22,14 @@ ignored handoffs are durable state, and a path-based age/status check has a dele
 TOCTOU. Its block/reuse/transfer proposals also lacked an active-owner exclusion and
 treated closeout handoffs as session checkpoints.
 
-The ratifiable third framing is a leased, generation-addressed lifecycle. The parent
-acquires a POSIX `flock` lease whose open file description is deliberately inherited by
-the entire phase process tree for every active phase worktree. Parent exit alone does not
-release the lease while any descendant still shares that description; the kernel releases
-it only after the last sharing process exits or closes its descriptor. Reclamation may
+The ratifiable third framing is a leased, generation-addressed lifecycle. The creator
+acquires a POSIX `flock` lease and passes the same open file description to a launcher-owned
+lease supervisor for every active phase worktree. That independent supervisor creates the
+executor session, acts as its subreaper, and retains the descriptor until it has reaped the
+complete executor process tree. Coordinator or executor-parent exit alone therefore does
+not release the lease, even if the executor closes its own descriptor or launches a
+non-cooperative descendant; the kernel releases it only after the supervisor closes on a
+proved empty process tree. Reclamation may
 acquire the released lease only non-blockingly on a proven same-kernel local filesystem
 and may delete only a fully authenticated, stable candidate with no
 tracked, untracked, ignored, committed, or handoff state. Any uncertainty preserves the
@@ -51,16 +54,20 @@ not modify them.
   temporary branch, target branch, base SHA, and active lease authority returned by
   creation; callers never reconstruct an active path from phase/branch strings. The
   authority includes the live lease descriptor capability, which is passed explicitly
-  through runner and worker-pool records into every owned `launch_with_spec`/`launch`
-  boundary and ultimately `subprocess.Popen(pass_fds=...)`; it is never serialized into
-  environment variables or reconstructed from a pathname.
+  through runner and worker-pool records into `launch_with_spec`/`launch` and ultimately
+  to the launcher-owned supervisor with `subprocess.Popen(pass_fds=...)`; it is never
+  serialized into environment variables or reconstructed from a pathname. The supervisor,
+  not cooperative executor behavior, is the process-tree lifetime authority.
 - [ ] IF-0-SCHED-2 — worktree cleanup is preserve-by-default and requires an acquired
   inactive lease plus two stable inventories proving no tracked, untracked, ignored,
   committed, handoff, or special-file state before removal. Errors, drift, and live
-  leases preserve. The lease is a POSIX `flock` open-file-description lease inherited by
-  the entire phase process tree, not a parent-PID lease; parent death while a child retains
-  the descriptor remains active. Reclamation is limited to a proven same-kernel local
-  filesystem, and an unsupported filesystem or unprovable inheritance preserves.
+  leases preserve. Normal owner-authorized teardown is a distinct path: after a supervisor
+  receipt proves the executor tree fully reaped, the owner removes the authenticated empty
+  worktree while retaining its original active lease, then closes only after removal.
+  Crash-residual reclamation instead acquires the released lease nonblockingly and holds it
+  through removal. Closing an active lease before removal or requiring its owner to reacquire
+  it is forbidden. Reclamation is limited to a proven same-kernel local filesystem, and an
+  unsupported supervisor/subreaper/filesystem proof preserves.
 - [ ] IF-0-SCHED-3 — an occupied deterministic generation never triggers `--force`
   removal. Creation selects a collision-resistant generation-specific path/branch and
   returns it to every phase/lane assignment consumer.
@@ -188,17 +195,27 @@ SL-6 — Documentation, disposition, and completion evidence
     SCHED assertions, while absence of that exact value skips only those new assertions
     with the exact reason `SCHED RED suite inactive; set PHASE_LOOP_TDD_EXPECT_SCHED=1`.
     The other twelve owned modules import this guard; no fourteenth guard path is added.
-    The helper freezes disjoint exact `SCHED_SL2_NODEIDS` and `SCHED_SL4_NODEIDS` tuples;
-    their union is exactly every new SCHED assertion in the thirteen owned modules.
+    The helper freezes disjoint exact `SCHED_SL2_NODEIDS`, `SCHED_SL4_NODEIDS`, and
+    `SCHED_JOINED_NODEIDS` tuples; their union is exactly every new SCHED assertion in the
+    thirteen owned modules. Cross-lane controls belong only to `SCHED_JOINED_NODEIDS`.
   - test: add falsifiers for same-phase committed work, dirty/untracked state, an ignored
     `.dev-skills/handoffs/`-only candidate, a held live lease, post-scan mutation, lease
     identity drift, generation/path/branch collision, and a parent that exits while a
-    child retains the inherited lease descriptor. The parent-dead/child-alive control must
+    child remains in the supervised executor tree. The parent-dead/child-alive control must
     traverse the real runner → `PhaseWorkerJob` → `launch_with_spec` → `launch` →
-    `subprocess.Popen` path and a helper grandchild, not an in-module-only `fork`; a
-    mutation removing `pass_fds` must make reclamation acquire the lease while that helper
-    is still live. Assert that each preserved case retains the old generation, its ref,
-    and byte-exact recoverable content.
+    supervisor → `subprocess.Popen` path and a helper grandchild, not an in-module-only
+    `fork`. The helper executor must close its inherited lease copy before spawning the
+    grandchild, proving safety comes from the supervisor. Mutations removing `pass_fds`,
+    disabling subreaper/session ownership, or letting the supervisor exit after only its
+    direct child must make reclamation acquire the lease while the grandchild is still live.
+    Assert that each preserved case retains the old generation, its ref, and byte-exact
+    recoverable content. This real launcher-plus-reclamation control is classified only in
+    `SCHED_JOINED_NODEIDS`; neither lane-local landing gate claims it.
+  - test: freeze separate lane-local lease controls: SL-2 injects a non-production locked
+    descriptor directly and proves the supervisor retains it through helper-grandchild
+    reaping without invoking reclamation; SL-4 proves owner teardown and crash-reclamation
+    lease/inventory behavior without invoking the launcher. Each mutation bites its own
+    lane tuple before the joined integration control is evaluated.
   - test: add a positive control proving a released-lease candidate with an exact empty
     inventory can be reclaimed and a fresh generation can launch.
   - test: add production-path tests proving declared `lane_execute` overrides a reducer
@@ -217,8 +234,9 @@ SL-6 — Documentation, disposition, and completion evidence
     not applicable at SL-1 because the activated suite is intentionally RED. After SL-2,
     run only the immutable `SCHED_SL2_NODEIDS` tuple activated and require zero failures,
     errors, or skips; after SL-4, do the same for `SCHED_SL4_NODEIDS`. The complete
-    activated thirteen-module zero-skip gate applies only after both production landings
-    exist. Run Ruff and `git diff --check` in every evidence record.
+    activated `SCHED_JOINED_NODEIDS` tuple and thirteen-module zero-skip gate apply only
+    after both production landings exist. Run Ruff and `git diff --check` in every evidence
+    record.
 
 ### SL-2 — Scheduler kind, artifact transport, and no-diff dispatch
 
@@ -245,12 +263,21 @@ SL-6 — Documentation, disposition, and completion evidence
     never reconstruct a live assignment from phase, branch, or lane strings.
   - impl: propagate the handle's lease descriptor as a typed, non-serialized capability
     through the serial runner path and `PhaseWorkerJob` into `launch_with_spec` and
-    `launch`, then include it in the POSIX `pass_fds` set for both captured and streamed
-    `subprocess` paths. The launched executor and its descendants retain the same open file
-    description; no owned spawn boundary may drop it. Reject live launch on unsupported
-    platforms or when inheritance cannot be proven, without leaking or closing the
-    SL-4-owned descriptor from a non-owner. Dry-run records the requirement without
-    inheriting a descriptor.
+    `launch`. When authority is present, both captured and streamed paths start an
+    independent same-kernel lease supervisor with the descriptor in POSIX `pass_fds`; the
+    supervisor creates the executor session, enables subreaper semantics, reaps adopted
+    descendants, retains the shared open file description until the process tree is empty,
+    and emits a bound completion receipt before closing. Executor FD retention is defense
+    in depth, not authority. Reject live activation on unsupported platforms or when
+    supervisor, subreaper, session, or process-tree reaping cannot be proven, without
+    leaking or closing the SL-4-owned descriptor from a non-owner. Dry-run records the
+    requirement without inheriting a descriptor.
+  - impl: lane B lands this consumer/supervisor plumbing before lane A without pretending
+    the current pre-SL-4 handle already produces an authority. Tests inject the frozen
+    typed capability directly. Until SL-4 publishes `SCHED_LEASE_AUTHORITY_VERSION=1`, the
+    ordinary runtime takes an explicit `lease_authority_unavailable_pre_sl4` compatibility
+    branch and performs no reclamation; after that marker exists, a missing/malformed
+    handle authority is a hard preserve/block, never a defaulted `getattr` fallback.
   - impl: transport staged/dirty planning output before parent reduction only under
     commit/push closeout; on manual closeout, transport conflict, block, or failed adoption,
     skip teardown, preserve the exact generation and branch with a stable byte inventory,
@@ -259,9 +286,10 @@ SL-6 — Documentation, disposition, and completion evidence
     an exact no-diff; retain normal verification for any real diff or ambiguous result.
   - verify: make the SL-1 scheduler tests green without changing them; run lane scheduler,
     concurrent dispatch, work-unit, launcher, worker-pool, dispatch-lock, and runner suites.
-    The SL-2 zero-skip tuple includes the real-spawn parent-dead/child-alive mutation and
-    proves the helper grandchild still blocks nonblocking lease acquisition after the
-    coordinator-side launcher parent exits.
+    The SL-2 zero-skip tuple uses only the injected descriptor probe and proves the
+    supervisor retains the lock after the coordinator-side launcher parent and direct
+    executor exit and after the executor closes its descriptor copy. It does not invoke
+    SL-4 reclamation or claim the joined control before lane A lands.
 
 ### SL-3 — Bind scheduler landing into HARDEN
 
@@ -297,6 +325,12 @@ SL-6 — Documentation, disposition, and completion evidence
     candidate values are non-null and status is `candidate_awaiting_review`. HARDEN selects
     the final candidate event and requires every earlier handoff event to be exactly the
     one immutable null-identity template; it never updates that template in place.
+  - impl: in the same candidate commit, atomically refresh the unique HARDEN current-
+    authority fields `completion_record_contract.plan_sha256`,
+    `digest_rebind.plan_sha256`, and `harden_plan_contract.plan_sha256` to the amended
+    HARDEN bytes, preserving their historical reviewed/predecessor fields and the stable
+    contract payload seal. The appended candidate handoff binds that same digest. A partial
+    refresh, template rewrite, or stale current-authority field blocks candidate `C`.
   - verify: before resolving `C`, `R`, or any other Git object, the literal HARDEN
     preflight rejects raw `include.*`/`includeIf.*` directives across all enabled
     repository scopes without following them and then rejects the complete effective
@@ -344,27 +378,32 @@ SL-6 — Documentation, disposition, and completion evidence
   Git worktree index and path primitives (pre-existing).
 - **Parallel-safe**: yes, after SL-1 and disjoint from SL-2 and SL-3.
 - **Tasks**:
-  - impl: acquire a POSIX `flock` lease before exposing an active handle and intentionally
-    preserve the same open file description across the complete phase process tree;
-    release it only after successful teardown or a preservation receipt and after the last
-    sharing process has closed it. Parent-only locking is invalid. Do not rely on PID,
-    mtime, directory age, or handoff presence as liveness authority, and preserve when the
-    same-kernel local-filesystem or descriptor-inheritance proof is unavailable.
+  - impl: acquire a POSIX `flock` lease before exposing an active handle and publish
+    `SCHED_LEASE_AUTHORITY_VERSION=1` with the frozen typed descriptor capability consumed
+    by the already-landed SL-2 supervisor plumbing. Parent-only locking is invalid. Do not
+    rely on PID, mtime, directory age, or handoff presence as liveness authority, and
+    preserve when the same-kernel local-filesystem or supervisor receipt is unavailable.
   - impl: expose the live descriptor only through the frozen `PhaseWorktreeHandle` lease
-    authority consumed by SL-2; SL-4 remains the sole owner that acquires and closes it.
-    A missing propagation receipt from any real launcher/worker boundary preserves the
-    generation and blocks reclamation.
+    authority consumed by SL-2; SL-4 remains the sole authority owner that acquires and
+    closes the original descriptor. The supervisor may close only its inherited duplicate
+    after emitting the complete-tree receipt. A missing propagation or supervisor receipt
+    from any real launcher/worker boundary preserves the generation and blocks reclamation.
   - impl: enumerate tracked, untracked, ignored, committed, symlink, and special-file
     state without following links; compare stable pre/post identities and fail closed on
     unreadable or changing paths.
-  - impl: preserve every candidate carrying any recoverable state. Reclaim only a proven
-    inactive, empty generation and revalidate immediately before removal; never use
-    `--force` as a substitute for the lease/inventory proof.
+  - impl: preserve every candidate carrying any recoverable state. For normal successful
+    teardown, require the authenticated supervisor receipt, retain the original active
+    lease through final inventory and removal, and close only after removal. For a crash
+    residual, reclaim only after acquiring its released lease and proving an empty stable
+    inventory; hold that acquired lease through removal. Revalidate immediately before
+    removal and never use `--force` as a substitute for either authority/inventory proof.
   - impl: when the canonical generation is occupied or preserved, mint a collision-resistant
     path and temporary branch inside this module and return those exact values. Preserve all
     older generations and branches; a branch ref never substitutes for dirty bytes.
   - verify: make the SL-1 worktree tests green without changing them; run all existing
-    phase-worktree and worktree-index regressions.
+    phase-worktree and worktree-index regressions. The SL-4 zero-skip tuple covers only its
+    in-module owner-teardown and crash-reclamation controls; the real launcher integration
+    remains RED until the joined gate.
 
 ### SL-5 — Admit exact HARDEN completion
 
@@ -526,10 +565,12 @@ PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q 
   `test_phase_worktree_executor.py`. At SL-1 the unchanged tests-only candidate traverses
   the intentionally failing activated RED chronology, restores every injection, and
   reaches the default-green positive controls. The SL-2 landing runs the exact immutable
-  `SCHED_SL2_NODEIDS` tuple with zero failures, errors, or skips while the SL-4 tuple
-  remains intentionally RED; the SL-4 landing symmetrically runs only
-  `SCHED_SL4_NODEIDS`. Only their joined state runs the complete activated thirteen-module
-  host gate with zero failures, errors, or skips.
+  `SCHED_SL2_NODEIDS` tuple with zero failures, errors, or skips while the SL-4 and joined
+  tuples remain intentionally RED; the SL-4 landing symmetrically runs only
+  `SCHED_SL4_NODEIDS` while the joined tuple remains RED. Only their joined state runs
+  `SCHED_JOINED_NODEIDS` and then the complete activated thirteen-module host gate with
+  zero failures, errors, or skips. The real runner/supervisor/grandchild/reclamation
+  parent-death control exists only in that joined tuple.
 - [ ] EC-SCHED-1 — proven by `PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests
   python3 -m pytest -q phase-loop-runtime/tests/test_phase_worktree_executor.py -k
   create_preserves_recoverable_generation`; falsified by a path-entered mutation restoring

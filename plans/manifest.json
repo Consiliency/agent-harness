@@ -3355,6 +3355,54 @@
             "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-23T23:47:31Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "external_board_statuses": {
+              "claude": "STALE_requires_fresh_exact_digest_review",
+              "gemini": "AGREE_stale_after_material_native_dissent",
+              "grok": "IN_PROGRESS_result_superseded_by_native_dissent"
+            },
+            "harden_plan_sha256": "b46805dec76792ddb066d9891fb5c731585576d9439270053e98013f28a480ee",
+            "native_codex_status": "DISAGREE",
+            "plan_sha256": "41a524a77426d362c89685ea654cd1d49cb49b527391ace87939499a8c1892d1",
+            "predecessor_harden_plan_sha256": "b46805dec76792ddb066d9891fb5c731585576d9439270053e98013f28a480ee",
+            "predecessor_plan_sha256": "19df6996aae646c761d9c844bbd09f9d117685f77dc20e0d7daeb7ac80335ed4",
+            "reconciled_findings": [
+              "lane_b_supervisor_consumer_precedes_lane_a_authority_activation",
+              "owner_teardown_and_crash_reclamation_are_distinct_lease_paths",
+              "subreaper_supervisor_retains_lease_until_complete_tree_reaped"
+            ],
+            "review_status": "thirteenth_native_dissent_reconciled_requires_fresh_exact_digest_review",
+            "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-08-23T23:49:06Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "external_board_statuses": {
+              "claude": "STALE_requires_fresh_exact_digest_review",
+              "gemini": "AGREE_stale_after_material_grok_dissent",
+              "grok": "DISAGREE"
+            },
+            "harden_plan_sha256": "b46805dec76792ddb066d9891fb5c731585576d9439270053e98013f28a480ee",
+            "native_codex_status": "DISAGREE_stale_same_material_class_reconciled",
+            "plan_sha256": "7bdab8155c945666f750e19085686dfc10024717dc39a493f47d168cd725c5e6",
+            "predecessor_harden_plan_sha256": "b46805dec76792ddb066d9891fb5c731585576d9439270053e98013f28a480ee",
+            "predecessor_plan_sha256": "41a524a77426d362c89685ea654cd1d49cb49b527391ace87939499a8c1892d1",
+            "reconciled_findings": [
+              "sl2_sl4_and_joined_nodeid_partitions_are_disjoint",
+              "cross_lane_parent_death_falsifier_runs_only_after_both_landings",
+              "sl3_atomically_refreshes_harden_current_authority_plan_digests"
+            ],
+            "review_status": "fourteenth_external_dissent_reconciled_requires_fresh_exact_digest_review",
+            "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68"
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -3370,7 +3418,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-23T23:39:36Z"
+      "updated_at": "2026-08-23T23:49:06Z"
     },
     {
       "acceptance_criteria_count": null,
