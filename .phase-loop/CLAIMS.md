@@ -1,14 +1,27 @@
-# Active file claims
+# Active file claims — a Claude-session handoff log
 
-Cross-agent coordination surface. Two agents work this repo concurrently (a Codex agent
-executing the roadmap, and Claude sessions doing ad-hoc work) and there is currently **no
-live channel between them** — the Codex agent's message-board membership is stuck in
-`invited`, so it can neither be reached nor report its own state (see
-Consiliency/agent-harness#630).
+**Read this before believing the title.** This is a durable log of what Claude sessions
+are touching. It is **not** cross-agent coordination today, and it is **not** the fix for
+roadmap-ownership mistakes. Both of those were the original framing and both were
+overstated; a review panel called it and was right.
 
-Until that is fixed, this file is the coordination mechanism. It is deliberately crude:
-plain text in the repo, so it survives either agent restarting and needs nothing to be
-healthy.
+**Why it is not cross-agent:** the agent most likely to collide with — the Codex agent —
+cannot participate. Its message-board membership is stuck in `invited`
+(Consiliency/agent-harness#630), and nothing obliges it to read a file in the repo. It will
+neither read nor write here. This becomes real cross-agent coordination only once
+Consiliency/agent-harness#630 lands.
+
+**Why it would not have caught the mistake that prompted it:** that failure was building
+into Phase 5 (SCHED) without reading the roadmap — which *already* recorded the ownership,
+and Consiliency/agent-harness#354 *already* said "No SCHED runtime edits are authorized."
+A claim table only helps someone who reads it first, which is the same discipline that
+would have had them read the roadmap. The lever for that class is a **pre-flight
+roadmap-ownership check** that fails closed, not an advisory list.
+
+What it *is* genuinely good for: a persisted record between Claude sessions (which have no
+memory of each other), and the duplicate-work class — two sessions independently
+hand-cancelling the same CI runs, which happened. Cheap, tracked, survives restarts,
+needs no service to be healthy.
 
 ## How to use it
 
