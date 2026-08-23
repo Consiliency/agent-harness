@@ -3750,10 +3750,30 @@ def _exec_leg(
         # every run. Inline it exactly like the grok leg (`-p prompt`); the prompt is
         # the small staged-bundle POINTER (files live under --add-dir), so argv length
         # is bounded.
+        # ah#525: WITHOUT ``--dangerously-skip-permissions`` this leg cannot review at
+        # all. agy's permission check has no headless approver, so the FIRST tool call
+        # the model makes is auto-denied --
+        #     permission check failed for command "...": user denied permission
+        # -- and the run dies in 8-13s with an empty body. That is the leg's observed
+        # ERROR/EMPTY status, and it is why this seat has delivered zero usable reviews.
+        # Reproduced directly: identical bundle, flag absent -> denial; flag present ->
+        # a complete review.
+        #
+        # This does NOT weaken the review sandbox, because omitting the flag never
+        # provided the sandbox. `launcher.py` (which omits it for `review`) states the
+        # model outright: "omission alone is NOT a read-only guarantee (agy exposes no
+        # honored read-only lever), so the security-load-bearing constraint for a
+        # `review` leg is the STAGED-COPY workspace". Here that constraint is stronger
+        # than in the launcher: ``child_review_dir`` is a ``mkdtemp(prefix='pl-panel-')``
+        # scratch holding only the staged bundle -- the repo is never mounted, so the
+        # worst an auto-approved write can touch is a throwaway copy (IF-0-SANDBOX-1).
+        # The gemini EXECUTOR already passes this flag for the same headless reason;
+        # the panel leg omitting it was an inconsistency, not a posture.
         cmd = [
             "agy",
             "--model",
             gemini_model,
+            "--dangerously-skip-permissions",
             "--add-dir",
             str(child_review_dir),
             "--print-timeout",
