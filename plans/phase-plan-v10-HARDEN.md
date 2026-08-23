@@ -161,7 +161,8 @@ ownership from the complete live corpus rather than adding a compatibility bypas
 HARDEN now begins only after the exact FABPUB landing whose merge has exactly two ordered parents, which transitively contains the
 LEGIBLE, PROOFGATE, and CONFORM landings, and after SCHED SL-2 lands its scheduler cluster.
 Before any lifecycle transition or SL-0 write, SCHED SL-3 must create candidate `C` by amending
-this plan and the unique HARDEN manifest row with a `SCHED_HARDEN_HANDOFF` binding the actual
+this plan and appending a `SCHED_HARDEN_HANDOFF` candidate to the unique HARDEN manifest row,
+after the immutable null-identity template, binding the actual
 SL-2 commit, tree, exact four-path production diff, SCHED plan digest, roadmap digest, and a
 domain-separated digest of the canonical handoff object excluding only that digest field. `C`
 must receive a fresh exact-digest native-first four-seat board review; dissent, timeout, a missing
@@ -1445,8 +1446,22 @@ handoffs = [
     for event in rows[0]["lifecycle"]
     if isinstance(event.get("metadata"), dict) and "sched_harden_handoff" in event["metadata"]
 ]
-assert len(handoffs) == 1
-handoff = handoffs[0]
+assert len(handoffs) == 2
+template, handoff = handoffs
+assert set(template) == HANDOFF_KEYS
+assert template["schema"] == "v10.sched-harden-handoff.v1"
+assert template["handoff_status"] == "template_declared_actual_sl2_rebind_required"
+assert template["manifest_contract_digest_domain"] == "v10.sched-harden-handoff.v1\n"
+assert template["review_receipt_path"] == RECEIPT
+assert template["review_receipt_schema"] == "v10.sched-harden-review-receipt.v1"
+assert template["review_request_digest_domain"] == "v10.sched-harden-review-request.v1\n"
+assert template["required_path_set"] == PATHS
+assert template["required_review_seats"] == SEATS
+assert template["actual_sl2_commit"] is None
+assert template["actual_sl2_reviewed_head"] is None
+assert template["actual_sl2_tree"] is None
+template_payload = {key: value for key, value in template.items() if key != "manifest_contract_sha256"}
+assert sha(template["manifest_contract_digest_domain"].encode("utf-8") + canonical(template_payload)) == template["manifest_contract_sha256"]
 assert set(handoff) == HANDOFF_KEYS
 assert handoff["schema"] == "v10.sched-harden-handoff.v1"
 assert handoff["handoff_status"] == "candidate_awaiting_review"

@@ -23,9 +23,12 @@ TOCTOU. Its block/reuse/transfer proposals also lacked an active-owner exclusion
 treated closeout handoffs as session checkpoints.
 
 The ratifiable third framing is a leased, generation-addressed lifecycle. The parent
-holds an exclusive lifetime lease for every active phase worktree. A crashed parent
-releases that lease at the kernel boundary. Reclamation may acquire the released lease
-only non-blockingly and may delete only a fully authenticated, stable candidate with no
+acquires a POSIX `flock` lease whose open file description is deliberately inherited by
+the entire phase process tree for every active phase worktree. Parent exit alone does not
+release the lease while any descendant still shares that description; the kernel releases
+it only after the last sharing process exits or closes its descriptor. Reclamation may
+acquire the released lease only non-blockingly on a proven same-kernel local filesystem
+and may delete only a fully authenticated, stable candidate with no
 tracked, untracked, ignored, committed, or handoff state. Any uncertainty preserves the
 candidate and its branch. Creation never force-removes a preserved generation: it mints
 a fresh generation-specific path and branch, and the scheduler consumes the returned
@@ -50,7 +53,10 @@ not modify them.
 - [ ] IF-0-SCHED-2 — worktree cleanup is preserve-by-default and requires an acquired
   inactive lease plus two stable inventories proving no tracked, untracked, ignored,
   committed, handoff, or special-file state before removal. Errors, drift, and live
-  leases preserve.
+  leases preserve. The lease is a POSIX `flock` open-file-description lease inherited by
+  the entire phase process tree, not a parent-PID lease; parent death while a child retains
+  the descriptor remains active. Reclamation is limited to a proven same-kernel local
+  filesystem, and an unsupported filesystem or unprovable inheritance preserves.
 - [ ] IF-0-SCHED-3 — an occupied deterministic generation never triggers `--force`
   removal. Creation selects a collision-resistant generation-specific path/branch and
   returns it to every phase/lane assignment consumer.
@@ -173,10 +179,16 @@ SL-6 — Documentation, disposition, and completion evidence
 - **Interfaces consumed**: `SCHED_RECOVERY_DECISION`.
 - **Parallel-safe**: no.
 - **Tasks**:
+  - test: define the shared activation guard in
+    `test_phase_worktree_executor.py`: `PHASE_LOOP_TDD_EXPECT_SCHED=1` activates the new
+    SCHED assertions, while absence of that exact value skips only those new assertions
+    with the exact reason `SCHED RED suite inactive; set PHASE_LOOP_TDD_EXPECT_SCHED=1`.
+    The other twelve owned modules import this guard; no fourteenth guard path is added.
   - test: add falsifiers for same-phase committed work, dirty/untracked state, an ignored
     `.dev-skills/handoffs/`-only candidate, a held live lease, post-scan mutation, lease
-    identity drift, and generation/path/branch collision. Assert that each preserves the
-    old generation, its ref, and byte-exact recoverable content.
+    identity drift, generation/path/branch collision, and a parent that exits while a
+    child retains the inherited lease descriptor. Assert that each preserves the old
+    generation, its ref, and byte-exact recoverable content.
   - test: add a positive control proving a released-lease candidate with an exact empty
     inventory can be reclaimed and a fresh generation can launch.
   - test: add production-path tests proving declared `lane_execute` overrides a reducer
@@ -188,8 +200,12 @@ SL-6 — Documentation, disposition, and completion evidence
   - test: run every mutation against the exact pre-production base, require the injection
     anchor to execute, record expected RED, restore the source, and record unchanged
     positive controls.
-  - verify: run the thirteen owned modules plus Ruff and `git diff --check`; require the new
-    falsifiers RED for the intended reason and all unrelated existing tests green.
+  - verify: first run the thirteen owned modules without activation and require all
+    unrelated existing tests green with only the exact new-SCHED skips. Then set
+    `PHASE_LOOP_TDD_EXPECT_SCHED=1`, run every mutation against the pre-production base,
+    and require each new falsifier RED for its intended reason. The zero-skip host gate is
+    not applicable at SL-1 because the activated suite is intentionally RED. Run Ruff and
+    `git diff --check` in both evidence records.
 
 ### SL-2 — Scheduler kind, artifact transport, and no-diff dispatch
 
@@ -243,7 +259,8 @@ SL-6 — Documentation, disposition, and completion evidence
     reviewed-head position.
   - impl: create candidate `C` by amending HARDEN context, consumed interfaces, overlap
     inventory, and preflight so they require the actual SL-2 landing before any `runner.py`
-    or `launcher.py` write. Append one manifest lifecycle event whose domain-separated
+    or `launcher.py` write. Preserve the existing template lifecycle event byte-for-byte
+    and append one later candidate lifecycle event whose domain-separated
     `manifest_contract_sha256` covers canonical compact sorted-key JSON of only the
     `sched_harden_handoff` object with that digest field excluded: SHA-256 over the UTF-8
     `manifest_contract_digest_domain` bytes followed by the compact JSON bytes and one LF.
@@ -252,7 +269,9 @@ SL-6 — Documentation, disposition, and completion evidence
     `manifest_contract_digest_domain`, `manifest_contract_sha256`, `required_path_set`,
     `required_review_seats`, `review_receipt_path`, `review_receipt_schema`,
     `review_request_digest_domain`, `roadmap_sha256`, `schema`, and `sched_plan_sha256`;
-    candidate values are non-null and status is `candidate_awaiting_review`.
+    candidate values are non-null and status is `candidate_awaiting_review`. HARDEN selects
+    the final candidate event and requires every earlier handoff event to be exactly the
+    one immutable null-identity template; it never updates that template in place.
   - verify: before resolving `C`, `R`, or any other Git object, the literal HARDEN
     preflight rejects raw `include.*`/`includeIf.*` directives across all enabled
     repository scopes without following them and then rejects the complete effective
@@ -300,9 +319,12 @@ SL-6 — Documentation, disposition, and completion evidence
   Git worktree index and path primitives (pre-existing).
 - **Parallel-safe**: yes, after SL-1 and disjoint from SL-2 and SL-3.
 - **Tasks**:
-  - impl: acquire and retain a kernel lifetime lease before exposing an active handle;
-    release it only after successful teardown or a preservation receipt. Do not rely on
-    PID, mtime, directory age, or handoff presence as liveness authority.
+  - impl: acquire a POSIX `flock` lease before exposing an active handle and intentionally
+    preserve the same open file description across the complete phase process tree;
+    release it only after successful teardown or a preservation receipt and after the last
+    sharing process has closed it. Parent-only locking is invalid. Do not rely on PID,
+    mtime, directory age, or handoff presence as liveness authority, and preserve when the
+    same-kernel local-filesystem or descriptor-inheritance proof is unavailable.
   - impl: enumerate tracked, untracked, ignored, committed, symlink, and special-file
     state without following links; compare stable pre/post identities and fail closed on
     unreadable or changing paths.
@@ -381,11 +403,12 @@ PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q 
 ```
 
 The host-capable integration gate must run the complete thirteen-module owned suite in a
-checkout with a reachable dotfiles fleet tree; a skipped test anywhere in that suite is a
-failure:
+checkout with a reachable dotfiles fleet tree after SL-2 and SL-4 production are present.
+It activates the SCHED guard, and a skipped test anywhere in that suite is a failure:
 
 ```bash
 tmp_junit="$(mktemp)"
+export PHASE_LOOP_TDD_EXPECT_SCHED=1
 PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q \
   --junitxml="$tmp_junit" \
   phase-loop-runtime/tests/test_phase_worktree_executor.py \
@@ -468,8 +491,13 @@ PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q 
   the `verification_evidence.v3` reducer. Falsified by either production landing preceding
   the tests landing, a non-biting RED mutation, a wrong production path set, or any SL-1
   path in either production diff;
-  path-entered control: the unchanged tests-only candidate traverses the activated RED
-  chronology, restores every injection, and reaches the default-green positive controls.
+  path-entered control: `PHASE_LOOP_TDD_EXPECT_SCHED=1` is absent for canonical default
+  CI, is set for the SL-1 mutation run and every SL-2/SL-4 host-capable gate, and guards
+  only the new SCHED assertions through the shared helper in
+  `test_phase_worktree_executor.py`. At SL-1 the unchanged tests-only candidate traverses
+  the intentionally failing activated RED chronology, restores every injection, and
+  reaches the default-green positive controls; from SL-2 onward the activated thirteen-
+  module host gate requires zero failures, errors, or skips.
 - [ ] EC-SCHED-1 — proven by `PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests
   python3 -m pytest -q phase-loop-runtime/tests/test_phase_worktree_executor.py -k
   create_preserves_recoverable_generation`; falsified by a path-entered mutation restoring
