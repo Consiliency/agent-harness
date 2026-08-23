@@ -1543,13 +1543,13 @@ def test_fabreadmit_flag_reversal_kills_shortcut(request, tmp_path):
     if not fabreadmit_capability_active():
         skip(FABREADMIT_SKIP_REASON)
 
-    ready_symbol = fabreadmit_symbol(
-        "phase_loop_runtime.governed_premerge", "_FAB_DELTA_BROKER_READMIT_READY"
+    capability_version = fabreadmit_symbol(
+        "phase_loop_runtime.fabreadmit_capability", "FABREADMIT_CAPABILITY_VERSION"
     )
     fabreadmit_require(
         fabreadmit_this_nodeid(request),
-        ready_symbol is not None,
-        "_FAB_DELTA_BROKER_READMIT_READY missing in phase_loop_runtime.governed_premerge",
+        capability_version == 1,
+        "FABREADMIT_CAPABILITY_VERSION missing in phase_loop_runtime.fabreadmit_capability",
     )
 
     from phase_loop_runtime import governed_premerge as gp
