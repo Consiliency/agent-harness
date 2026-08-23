@@ -57,6 +57,7 @@ def test_fabreadmit_prior_record_predicate_and_chained_readmit_binding(request, 
     # 2. Seed prior publish admission through real BrokerService.execute(PreAdmissionEnvelope)
     branch = "feat/x"
     pub_req = _publish_transaction_request(identity, branch, transaction, repo_dir)
+    envelope = pub_req.admission
     pub_outcome = svc.execute(pub_req)
     assert pub_outcome.accepted, "prior publish transaction must be admitted"
     initial_count = len(store.replay())
@@ -67,12 +68,22 @@ def test_fabreadmit_prior_record_predicate_and_chained_readmit_binding(request, 
     recomputed_key = publish_committed_branch_idempotency_key(
         identity, branch, transaction.committed_head_sha
     )
-    assert prior_admission.idempotency_key == recomputed_key
+    assert prior_admission.request.idempotency_key == (
+        f"publish_committed_branch\0{recomputed_key}"
+    )
 
     # 4. Bind checkpoint root and create real descendant proposed commit
-    ckpt = transaction.store.checkpoint_root
-    (ckpt / "train.json").write_text(f'{{"train_id": "train1", "repository": "{identity}"}}', encoding="utf-8")
-    (ckpt / "n1.json").write_text('{"node_id": "n1"}', encoding="utf-8")
+    ckpt = transaction.checkpoint_root
+    train_id = envelope.train_id
+    node_id = envelope.node_id
+    roadmap_digest = envelope.roadmap_digest
+    (ckpt / "train.json").write_text(
+        f'{{"train_id": "{train_id}", "repository": "{identity}"}}',
+        encoding="utf-8",
+    )
+    (ckpt / f"{node_id}.json").write_text(
+        f'{{"node_id": "{node_id}"}}', encoding="utf-8"
+    )
 
     (repo_dir / "a.py").write_text("v2 advance\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(repo_dir), "add", "."], check=True)
@@ -82,13 +93,13 @@ def test_fabreadmit_prior_record_predicate_and_chained_readmit_binding(request, 
     # Negative arms: absent-transaction, key mismatch, node mismatch (structural validation)
     ckpt_no_txn = tmp_path / "ckpt_no_txn"
     ckpt_no_txn.mkdir()
-    (ckpt_no_txn / "train.json").write_text(f'{{"train_id": "train1", "repository": "{identity}"}}', encoding="utf-8")
-    (ckpt_no_txn / "n1.json").write_text('{"node_id": "n1"}', encoding="utf-8")
+    (ckpt_no_txn / "train.json").write_text(f'{{"train_id": "{train_id}", "repository": "{identity}"}}', encoding="utf-8")
+    (ckpt_no_txn / f"{node_id}.json").write_text(f'{{"node_id": "{node_id}"}}', encoding="utf-8")
     auth_no_txn = DeltaReadmitAuthority(
         repository=identity, adapter_worktree=str(repo_dir),
         checkpoint_root=str(ckpt_no_txn), branch=branch, base="main",
-        prior_head_sha=transaction.committed_head_sha, proposed_head_sha=proposed_head_sha1, train_id="train1",
-        node_id="n1", fab_run_id="run1", roadmap_digest="d" * 64, provenance_digest="p" * 64,
+        prior_head_sha=transaction.committed_head_sha, proposed_head_sha=proposed_head_sha1, train_id=train_id,
+        node_id=node_id, fab_run_id="run1", roadmap_digest=roadmap_digest, provenance_digest="p" * 64,
         owned_scope=("a.py",)
     )
     with pytest.raises(PermissionError, match=r"(?i)transaction|absent|missing|publish"):
@@ -97,17 +108,17 @@ def test_fabreadmit_prior_record_predicate_and_chained_readmit_binding(request, 
 
     ckpt_key_mismatch = tmp_path / "ckpt_key_mismatch"
     ckpt_key_mismatch.mkdir()
-    (ckpt_key_mismatch / "train.json").write_text(f'{{"train_id": "train1", "repository": "{identity}"}}', encoding="utf-8")
-    (ckpt_key_mismatch / "n1.json").write_text('{"node_id": "n1"}', encoding="utf-8")
+    (ckpt_key_mismatch / "train.json").write_text(f'{{"train_id": "{train_id}", "repository": "{identity}"}}', encoding="utf-8")
+    (ckpt_key_mismatch / f"{node_id}.json").write_text(f'{{"node_id": "{node_id}"}}', encoding="utf-8")
     prepare_publish_transaction(
         repo_dir, owned_paths=("a.py",), checkpoint_root=ckpt_key_mismatch, branch="feat/other",
-        envelope_authority_preimage=_authority_preimage(identity, "feat/other"), node_id="n1"
+        envelope_authority_preimage=_authority_preimage(identity, "feat/other"), node_id=node_id
     )
     auth_key_mismatch = DeltaReadmitAuthority(
         repository=identity, adapter_worktree=str(repo_dir),
         checkpoint_root=str(ckpt_key_mismatch), branch=branch, base="main",
-        prior_head_sha=transaction.committed_head_sha, proposed_head_sha=proposed_head_sha1, train_id="train1",
-        node_id="n1", fab_run_id="run1", roadmap_digest="d" * 64, provenance_digest="p" * 64,
+        prior_head_sha=transaction.committed_head_sha, proposed_head_sha=proposed_head_sha1, train_id=train_id,
+        node_id=node_id, fab_run_id="run1", roadmap_digest=roadmap_digest, provenance_digest="p" * 64,
         owned_scope=("a.py",)
     )
     with pytest.raises(PermissionError, match=r"(?i)key|mismatch|idempotency|branch"):
@@ -116,17 +127,18 @@ def test_fabreadmit_prior_record_predicate_and_chained_readmit_binding(request, 
 
     ckpt_node_mismatch = tmp_path / "ckpt_node_mismatch"
     ckpt_node_mismatch.mkdir()
-    (ckpt_node_mismatch / "train.json").write_text(f'{{"train_id": "train1", "repository": "{identity}"}}', encoding="utf-8")
-    (ckpt_node_mismatch / "other_node.json").write_text('{"node_id": "other_node"}', encoding="utf-8")
+    other_node = "other_node"
+    (ckpt_node_mismatch / "train.json").write_text(f'{{"train_id": "{train_id}", "repository": "{identity}"}}', encoding="utf-8")
+    (ckpt_node_mismatch / f"{other_node}.json").write_text(f'{{"node_id": "{other_node}"}}', encoding="utf-8")
     prepare_publish_transaction(
         repo_dir, owned_paths=("a.py",), checkpoint_root=ckpt_node_mismatch, branch=branch,
-        envelope_authority_preimage=_authority_preimage(identity, branch), node_id="other_node"
+        envelope_authority_preimage=_authority_preimage(identity, branch), node_id=other_node
     )
     auth_node_mismatch = DeltaReadmitAuthority(
         repository=identity, adapter_worktree=str(repo_dir),
         checkpoint_root=str(ckpt_node_mismatch), branch=branch, base="main",
-        prior_head_sha=transaction.committed_head_sha, proposed_head_sha=proposed_head_sha1, train_id="train1",
-        node_id="n1", fab_run_id="run1", roadmap_digest="d" * 64, provenance_digest="p" * 64,
+        prior_head_sha=transaction.committed_head_sha, proposed_head_sha=proposed_head_sha1, train_id=train_id,
+        node_id=other_node, fab_run_id="run1", roadmap_digest=roadmap_digest, provenance_digest="p" * 64,
         owned_scope=("a.py",)
     )
     with pytest.raises(PermissionError, match=r"(?i)node"):
@@ -142,10 +154,10 @@ def test_fabreadmit_prior_record_predicate_and_chained_readmit_binding(request, 
         base="main",
         prior_head_sha=transaction.committed_head_sha,
         proposed_head_sha=proposed_head_sha1,
-        train_id="train1",
-        node_id="n1",
+        train_id=train_id,
+        node_id=node_id,
         fab_run_id="run1",
-        roadmap_digest="d" * 64,
+        roadmap_digest=roadmap_digest,
         provenance_digest="p" * 64,
         owned_scope=("a.py",),
     )
@@ -155,7 +167,7 @@ def test_fabreadmit_prior_record_predicate_and_chained_readmit_binding(request, 
     assert rec1.binding == ReadmitAdmissionBinding(
         prior_head_sha=transaction.committed_head_sha,
         proposed_head_sha=proposed_head_sha1,
-        node_id="n1",
+        node_id=node_id,
         owned_scope=("a.py",),
         authority_digest=auth_hop1.authority_digest,
     )
@@ -174,10 +186,10 @@ def test_fabreadmit_prior_record_predicate_and_chained_readmit_binding(request, 
         base="main",
         prior_head_sha=proposed_head_sha1,
         proposed_head_sha=proposed_head_sha2,
-        train_id="train1",
-        node_id="n1",
+        train_id=train_id,
+        node_id=node_id,
         fab_run_id="run1",
-        roadmap_digest="d" * 64,
+        roadmap_digest=roadmap_digest,
         provenance_digest="p" * 64,
         owned_scope=("a.py",),
     )
@@ -195,15 +207,16 @@ def test_fabreadmit_prior_record_predicate_and_chained_readmit_binding(request, 
     svc_iso.execute(_publish_transaction_request(identity_iso, branch, txn_iso, repo_iso))
     cnt_iso = len(store_iso.replay())
 
-    ckpt_iso = txn_iso.store.checkpoint_root
-    (ckpt_iso / "train.json").write_text(f'{{"train_id": "train1", "repository": "{identity_iso}"}}', encoding="utf-8")
-    (ckpt_iso / "n1.json").write_text('{"node_id": "n1"}', encoding="utf-8")
+    envelope_iso = _publish_transaction_request(identity_iso, branch, txn_iso, repo_iso).admission
+    ckpt_iso = txn_iso.checkpoint_root
+    (ckpt_iso / "train.json").write_text(f'{{"train_id": "{envelope_iso.train_id}", "repository": "{identity_iso}"}}', encoding="utf-8")
+    (ckpt_iso / "wrong_node.json").write_text('{"node_id": "wrong_node"}', encoding="utf-8")
 
     auth_first_wrong_node = DeltaReadmitAuthority(
         repository=identity_iso, adapter_worktree=str(repo_iso),
         checkpoint_root=str(ckpt_iso), branch=branch, base="main",
-        prior_head_sha=txn_iso.committed_head_sha, proposed_head_sha="f" * 40, train_id="train1",
-        node_id="wrong_node", fab_run_id="run1", roadmap_digest="d" * 64, provenance_digest="p" * 64,
+        prior_head_sha=txn_iso.committed_head_sha, proposed_head_sha="f" * 40, train_id=envelope_iso.train_id,
+        node_id="wrong_node", fab_run_id="run1", roadmap_digest=envelope_iso.roadmap_digest, provenance_digest="p" * 64,
         owned_scope=("a.py",)
     )
     with pytest.raises(PermissionError, match=r"(?i)node"):
@@ -214,8 +227,8 @@ def test_fabreadmit_prior_record_predicate_and_chained_readmit_binding(request, 
     auth_chained_wrong_node = DeltaReadmitAuthority(
         repository=identity, adapter_worktree=str(repo_dir),
         checkpoint_root=str(ckpt), branch=branch, base="main",
-        prior_head_sha=proposed_head_sha2, proposed_head_sha="f" * 40, train_id="train1",
-        node_id="wrong_node", fab_run_id="run1", roadmap_digest="d" * 64, provenance_digest="p" * 64,
+        prior_head_sha=proposed_head_sha2, proposed_head_sha="f" * 40, train_id=train_id,
+        node_id="wrong_node", fab_run_id="run1", roadmap_digest=roadmap_digest, provenance_digest="p" * 64,
         owned_scope=("a.py",)
     )
     with pytest.raises(PermissionError, match=r"(?i)node"):
@@ -226,8 +239,8 @@ def test_fabreadmit_prior_record_predicate_and_chained_readmit_binding(request, 
     auth_wrong_branch = DeltaReadmitAuthority(
         repository=identity, adapter_worktree=str(repo_dir),
         checkpoint_root=str(ckpt), branch="feat/wrong", base="main",
-        prior_head_sha=proposed_head_sha2, proposed_head_sha="f" * 40, train_id="train1",
-        node_id="n1", fab_run_id="run1", roadmap_digest="d" * 64, provenance_digest="p" * 64,
+        prior_head_sha=proposed_head_sha2, proposed_head_sha="f" * 40, train_id=train_id,
+        node_id=node_id, fab_run_id="run1", roadmap_digest=roadmap_digest, provenance_digest="p" * 64,
         owned_scope=("a.py",)
     )
     with pytest.raises(PermissionError, match=r"(?i)branch"):
@@ -238,8 +251,8 @@ def test_fabreadmit_prior_record_predicate_and_chained_readmit_binding(request, 
     auth_wrong_scope = DeltaReadmitAuthority(
         repository=identity, adapter_worktree=str(repo_dir),
         checkpoint_root=str(ckpt), branch=branch, base="main",
-        prior_head_sha=proposed_head_sha2, proposed_head_sha="f" * 40, train_id="train1",
-        node_id="n1", fab_run_id="run1", roadmap_digest="d" * 64, provenance_digest="p" * 64,
+        prior_head_sha=proposed_head_sha2, proposed_head_sha="f" * 40, train_id=train_id,
+        node_id=node_id, fab_run_id="run1", roadmap_digest=roadmap_digest, provenance_digest="p" * 64,
         owned_scope=("unadmitted_scope",)
     )
     with pytest.raises(PermissionError, match=r"(?i)scope"):
@@ -250,8 +263,8 @@ def test_fabreadmit_prior_record_predicate_and_chained_readmit_binding(request, 
     auth_stale = DeltaReadmitAuthority(
         repository=identity, adapter_worktree=str(repo_dir),
         checkpoint_root=str(ckpt), branch=branch, base="main",
-        prior_head_sha=transaction.committed_head_sha, proposed_head_sha="f" * 40, train_id="train1",
-        node_id="n1", fab_run_id="run1", roadmap_digest="d" * 64, provenance_digest="p" * 64,
+        prior_head_sha=transaction.committed_head_sha, proposed_head_sha="f" * 40, train_id=train_id,
+        node_id=node_id, fab_run_id="run1", roadmap_digest=roadmap_digest, provenance_digest="p" * 64,
         owned_scope=("a.py",)
     )
     with pytest.raises(PermissionError, match=r"(?i)stale|prior"):
@@ -262,8 +275,8 @@ def test_fabreadmit_prior_record_predicate_and_chained_readmit_binding(request, 
     auth_forged = DeltaReadmitAuthority(
         repository=identity, adapter_worktree=str(repo_dir),
         checkpoint_root=str(ckpt), branch=branch, base="main",
-        prior_head_sha="f" * 40, proposed_head_sha="g" * 40, train_id="train1",
-        node_id="n1", fab_run_id="run1", roadmap_digest="d" * 64, provenance_digest="p" * 64,
+        prior_head_sha="f" * 40, proposed_head_sha="g" * 40, train_id=train_id,
+        node_id=node_id, fab_run_id="run1", roadmap_digest=roadmap_digest, provenance_digest="p" * 64,
         owned_scope=("a.py",)
     )
     with pytest.raises(PermissionError, match=r"(?i)prior|unadmitted|unknown|forged"):
