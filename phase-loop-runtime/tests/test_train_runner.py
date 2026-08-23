@@ -3451,3 +3451,28 @@ def test_fabpub_train_resume_post_commit_pre_checkpoint(tmp_path: Path, request)
         f"a clean no-transaction execute node must still reach run_loop; got {clean_outcome}"
     )
     assert PreAdmissionEnvelope is not None and _fabpub_hashlib is not None
+
+
+def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request):
+    """run_train routes readmission through real repository routing broker client."""
+    from pytest import skip
+
+    from _fabreadmit_tdd_guard import (
+        FABREADMIT_SKIP_REASON,
+        fabreadmit_capability_active,
+        fabreadmit_require,
+        fabreadmit_symbol,
+        fabreadmit_this_nodeid,
+    )
+
+    if not fabreadmit_capability_active():
+        skip(FABREADMIT_SKIP_REASON)
+
+    readmit_routing = fabreadmit_symbol(
+        "phase_loop_runtime.train_runner", "_commit_broker_readmitted_head"
+    )
+    fabreadmit_require(
+        fabreadmit_this_nodeid(request),
+        readmit_routing is not None,
+        "_commit_broker_readmitted_head missing in train_runner",
+    )

@@ -142,3 +142,24 @@ def test_replay_after_complete_returns_prior_result_not_none(tmp_path, request):
     assert replay.publish_result is not None, "replay of COMPLETED op must return the result, not None"
     assert replay.publish_result == first.publish_result
     assert replay.accepted, "idempotent recovery is accepted, not blocked"
+
+
+def test_fabreadmit_readmit_advanced_head_verb(request):
+    """BrokerService readmit_advanced_head verb."""
+    from pytest import skip
+
+    from _fabreadmit_tdd_guard import (
+        FABREADMIT_SKIP_REASON,
+        fabreadmit_capability_active,
+        fabreadmit_require,
+        fabreadmit_symbol,
+        fabreadmit_this_nodeid,
+    )
+
+    if not fabreadmit_capability_active():
+        skip(FABREADMIT_SKIP_REASON)
+
+    verb_fn = fabreadmit_symbol("phase_loop_runtime.convergence.broker.verbs", "BrokerService.readmit_advanced_head")
+    if verb_fn is None:
+        verb_fn = fabreadmit_symbol("phase_loop_runtime.convergence.broker.verbs", "readmit_advanced_head")
+    fabreadmit_require(fabreadmit_this_nodeid(request), verb_fn is not None, "readmit_advanced_head verb missing")

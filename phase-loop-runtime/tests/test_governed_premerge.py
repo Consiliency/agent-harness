@@ -152,3 +152,26 @@ class RunnerWiringTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_fabreadmit_governed_premerge_readiness_interlock(request):
+    """governed_premerge readiness interlock for FABREADMIT."""
+    from pytest import skip
+
+    from _fabreadmit_tdd_guard import (
+        FABREADMIT_SKIP_REASON,
+        fabreadmit_capability_active,
+        fabreadmit_require,
+        fabreadmit_symbol,
+        fabreadmit_this_nodeid,
+    )
+
+    if not fabreadmit_capability_active():
+        skip(FABREADMIT_SKIP_REASON)
+
+    readiness = fabreadmit_symbol("phase_loop_runtime.governed_premerge", "_FAB_DELTA_BROKER_READMIT_READY")
+    fabreadmit_require(
+        fabreadmit_this_nodeid(request),
+        readiness is True,
+        "_FAB_DELTA_BROKER_READMIT_READY is False in governed_premerge",
+    )

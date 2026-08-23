@@ -118,3 +118,26 @@ def test_flag_on_resume_still_runs_torn_recovery(tmp_path: Path, monkeypatch):
 
     assert calls, "flag ON + a bound fab_run_id must still reach torn-recovery"
     assert result["status"] == "merged", result
+
+
+def test_fabreadmit_flag_off_recovery_leak_guard(request):
+    """Flag-off recovery leak guard for broker readmission."""
+    from pytest import skip
+
+    from _fabreadmit_tdd_guard import (
+        FABREADMIT_SKIP_REASON,
+        fabreadmit_capability_active,
+        fabreadmit_require,
+        fabreadmit_symbol,
+        fabreadmit_this_nodeid,
+    )
+
+    if not fabreadmit_capability_active():
+        skip(FABREADMIT_SKIP_REASON)
+
+    recovery_fn = fabreadmit_symbol("phase_loop_runtime.train_runner", "_commit_broker_readmitted_head")
+    fabreadmit_require(
+        fabreadmit_this_nodeid(request),
+        recovery_fn is not None,
+        "_commit_broker_readmitted_head missing in train_runner for flag-off recovery leak guard",
+    )

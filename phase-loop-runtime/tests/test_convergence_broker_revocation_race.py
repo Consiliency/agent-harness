@@ -362,3 +362,22 @@ def test_concurrent_revocation_cannot_land_during_the_admission_lock(tmp_path, r
     )
     assert result.accepted, "this admission won the lock fairly; it must still publish"
     assert landed.is_set(), "the writer must proceed once the admission releases the lock"
+
+
+def test_fabreadmit_revocation_race_under_admission_lock(request):
+    """Revocation race under admission lock during readmission."""
+    from pytest import skip
+
+    from _fabreadmit_tdd_guard import (
+        FABREADMIT_SKIP_REASON,
+        fabreadmit_capability_active,
+        fabreadmit_require,
+        fabreadmit_symbol,
+        fabreadmit_this_nodeid,
+    )
+
+    if not fabreadmit_capability_active():
+        skip(FABREADMIT_SKIP_REASON)
+
+    readmit_verb = fabreadmit_symbol("phase_loop_runtime.convergence.broker.verbs", "BrokerService.readmit_advanced_head")
+    fabreadmit_require(fabreadmit_this_nodeid(request), readmit_verb is not None, "BrokerService.readmit_advanced_head missing")

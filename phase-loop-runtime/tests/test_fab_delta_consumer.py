@@ -935,3 +935,141 @@ class DeltaReviewEmptyAuthorFailsClosedTest(unittest.TestCase):
             getattr(result, "mergeable", True),
             "an unknown (empty) delta author must fail closed, never run a self-review panel",
         )
+
+
+def test_fabreadmit_commit_points_reach_commit_broker_readmitted_head(request):
+    """Commit points reach _commit_broker_readmitted_head."""
+    from pytest import skip
+
+    from _fabreadmit_tdd_guard import (
+        FABREADMIT_SKIP_REASON,
+        fabreadmit_capability_active,
+        fabreadmit_require,
+        fabreadmit_symbol,
+        fabreadmit_this_nodeid,
+    )
+
+    if not fabreadmit_capability_active():
+        skip(FABREADMIT_SKIP_REASON)
+
+    commit_helper = fabreadmit_symbol("phase_loop_runtime.train_runner", "_commit_broker_readmitted_head")
+    fabreadmit_require(
+        fabreadmit_this_nodeid(request),
+        commit_helper is not None,
+        "_commit_broker_readmitted_head helper missing in train_runner",
+    )
+
+
+def test_fabreadmit_append_site_inventory(request):
+    """AST inventory of head-advancing ledger append sites."""
+    from pytest import skip
+
+    from _fabreadmit_tdd_guard import (
+        FABREADMIT_SKIP_REASON,
+        fabreadmit_capability_active,
+        fabreadmit_require,
+        fabreadmit_symbol,
+        fabreadmit_this_nodeid,
+    )
+
+    if not fabreadmit_capability_active():
+        skip(FABREADMIT_SKIP_REASON)
+
+    inventory_fn = fabreadmit_symbol("phase_loop_runtime.train_runner", "_verify_append_site_inventory")
+    fabreadmit_require(
+        fabreadmit_this_nodeid(request),
+        inventory_fn is not None,
+        "_verify_append_site_inventory missing in train_runner",
+    )
+
+
+def test_fabreadmit_append_site_inventory_detects_third_site(request):
+    """AST inventory detects third head-advancing append site."""
+    from pytest import skip
+
+    from _fabreadmit_tdd_guard import (
+        FABREADMIT_SKIP_REASON,
+        fabreadmit_capability_active,
+        fabreadmit_require,
+        fabreadmit_symbol,
+        fabreadmit_this_nodeid,
+    )
+
+    if not fabreadmit_capability_active():
+        skip(FABREADMIT_SKIP_REASON)
+
+    detector = fabreadmit_symbol("phase_loop_runtime.train_runner", "_verify_append_site_inventory")
+    fabreadmit_require(
+        fabreadmit_this_nodeid(request),
+        detector is not None,
+        "append_site_inventory detector missing in train_runner",
+    )
+
+
+def test_fabreadmit_fresh_revocation_blocks_delta_merge(request):
+    """Fresh readmission path revocation check blocks delta merge."""
+    from pytest import skip
+
+    from _fabreadmit_tdd_guard import (
+        FABREADMIT_SKIP_REASON,
+        fabreadmit_capability_active,
+        fabreadmit_require,
+        fabreadmit_symbol,
+        fabreadmit_this_nodeid,
+    )
+
+    if not fabreadmit_capability_active():
+        skip(FABREADMIT_SKIP_REASON)
+
+    rev_check = fabreadmit_symbol("phase_loop_runtime.train_runner", "_check_readmission_revocation")
+    fabreadmit_require(
+        fabreadmit_this_nodeid(request),
+        rev_check is not None,
+        "_check_readmission_revocation missing in train_runner",
+    )
+
+
+def test_fabreadmit_crash_resume_revocation_rechecked_blocks(request):
+    """Crash-resume path revocation recheck blocks append."""
+    from pytest import skip
+
+    from _fabreadmit_tdd_guard import (
+        FABREADMIT_SKIP_REASON,
+        fabreadmit_capability_active,
+        fabreadmit_require,
+        fabreadmit_symbol,
+        fabreadmit_this_nodeid,
+    )
+
+    if not fabreadmit_capability_active():
+        skip(FABREADMIT_SKIP_REASON)
+
+    recheck = fabreadmit_symbol("phase_loop_runtime.train_runner", "_recheck_crash_resume_revocation")
+    fabreadmit_require(
+        fabreadmit_this_nodeid(request),
+        recheck is not None,
+        "_recheck_crash_resume_revocation missing in train_runner",
+    )
+
+
+def test_fabreadmit_real_git_shortcut_end_to_end(request):
+    """Real-Git end-to-end delta shortcut with broker readmission."""
+    from pytest import skip
+
+    from _fabreadmit_tdd_guard import (
+        FABREADMIT_SKIP_REASON,
+        fabreadmit_capability_active,
+        fabreadmit_require,
+        fabreadmit_symbol,
+        fabreadmit_this_nodeid,
+    )
+
+    if not fabreadmit_capability_active():
+        skip(FABREADMIT_SKIP_REASON)
+
+    capability_ver = fabreadmit_symbol("phase_loop_runtime.fabreadmit_capability", "FABREADMIT_CAPABILITY_VERSION")
+    fabreadmit_require(
+        fabreadmit_this_nodeid(request),
+        capability_ver == 1,
+        "FABREADMIT_CAPABILITY_VERSION not active in fabreadmit_capability",
+    )

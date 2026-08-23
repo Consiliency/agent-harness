@@ -1464,3 +1464,49 @@ class TestPiece3aRegateEndToEnd:
             )
         assert result["status"] != "merged", result
         assert "fab-promotion-reassertion" in json.dumps(result, default=str)
+
+
+def test_fabreadmit_hardcoded_epoch_publisher_interlock(request):
+    """Interlock arm: any supported publisher stamping hardcoded epoch blocks readiness."""
+    from pytest import skip
+
+    from _fabreadmit_tdd_guard import (
+        FABREADMIT_SKIP_REASON,
+        fabreadmit_capability_active,
+        fabreadmit_require,
+        fabreadmit_symbol,
+        fabreadmit_this_nodeid,
+    )
+
+    if not fabreadmit_capability_active():
+        skip(FABREADMIT_SKIP_REASON)
+
+    check_fn = fabreadmit_symbol("phase_loop_runtime.governed_premerge", "_has_no_hardcoded_epoch_publishers")
+    fabreadmit_require(
+        fabreadmit_this_nodeid(request),
+        check_fn is not None,
+        "_has_no_hardcoded_epoch_publishers missing in governed_premerge",
+    )
+
+
+def test_fabreadmit_flag_reversal_kills_shortcut(request):
+    """Reverting readiness interlock kills real-git shortcut."""
+    from pytest import skip
+
+    from _fabreadmit_tdd_guard import (
+        FABREADMIT_SKIP_REASON,
+        fabreadmit_capability_active,
+        fabreadmit_require,
+        fabreadmit_symbol,
+        fabreadmit_this_nodeid,
+    )
+
+    if not fabreadmit_capability_active():
+        skip(FABREADMIT_SKIP_REASON)
+
+    interlock_val = fabreadmit_symbol("phase_loop_runtime.governed_premerge", "_FAB_DELTA_BROKER_READMIT_READY")
+    fabreadmit_require(
+        fabreadmit_this_nodeid(request),
+        interlock_val is True,
+        "_FAB_DELTA_BROKER_READMIT_READY is False in governed_premerge",
+    )
