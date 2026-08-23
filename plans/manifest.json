@@ -1783,6 +1783,58 @@
       "updated_at": "2026-08-18T13:01:45Z"
     },
     {
+      "acceptance_criteria_count": 8,
+      "created_at": "2026-08-23T18:13:00Z",
+      "file": "plans/phase-plan-v10-FABREADMIT.md",
+      "handoff_ref": null,
+      "if_gates_produced": [
+        "IF-0-FABREADMIT-1"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2",
+        "SL-3"
+      ],
+      "lifecycle": [
+        {
+          "at": "2026-08-23T18:13:00Z",
+          "by": "clawdbot-agent-harness-codex",
+          "metadata": {
+            "author_vendor": "gemini",
+            "deferred_issue": "agent-harness#634",
+            "plan_sha256": "da8becbe1f0f7cc61c4b4eeb5cef577704acb82e78febb0408c659322b64453f",
+            "president": "grok-4.6",
+            "president_decision": "PROCEED",
+            "review_topology": "opus_early_then_sol_grok45_gemini_critics_then_grok46_president",
+            "review_verdicts": {
+              "gemini_3_6_flash": "AGREE",
+              "grok_4_5": "AGREE",
+              "opus_5": "AGREE",
+              "sol_5_6": "DISAGREE_DEFERRED"
+            },
+            "roadmap_sha256": "c66949236043e46e956caec1c09d0c19d0e8751e4ce2891de1fe2edf24e9fea1",
+            "tests_first": true
+          },
+          "transition": "committed"
+        }
+      ],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "FABREADMIT",
+      "reflection_ref": null,
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v10.md",
+        "slug": "phase-plans-v10",
+        "status": "imported",
+        "type": "phase"
+      },
+      "slug": "v10-FABREADMIT",
+      "status": "committed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-08-23T18:13:00Z"
+    },
+    {
       "acceptance_criteria_count": null,
       "created_at": "2026-08-14T22:46:49Z",
       "file": "plans/phase-plan-v10-GOVLEAN.md",
