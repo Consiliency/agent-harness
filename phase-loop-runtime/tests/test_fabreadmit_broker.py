@@ -11,7 +11,13 @@ from _fabreadmit_tdd_guard import (
     fabreadmit_require,
     fabreadmit_symbol,
     fabreadmit_this_nodeid,
+    test_fabreadmit_guard_inventory_and_digests as _check_guard_inventory,
 )
+
+
+def test_fabreadmit_guard_inventory_integrity():
+    """Collect the always-green frozen-inventory control with the SL-0 suite."""
+    _check_guard_inventory()
 
 
 class _CountingAdapter:
