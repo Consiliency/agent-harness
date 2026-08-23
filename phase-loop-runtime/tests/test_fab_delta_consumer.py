@@ -250,6 +250,148 @@ class DeltaReadmitTransactionTest(GitRepoTestCase):
         from phase_loop_runtime.governed_premerge import LoopResult
         return LoopResult(mergeable=True, ran=True, rounds=1, panel=_delta_panel())
 
+    def _setup_broker_readmit_candidate(
+        self,
+        *,
+        node_id: str = "n1",
+        branch: str = "feat/pr1",
+    ) -> dict:
+        """Seed one coherent FABPUB-admitted candidate and a real delta advance.
+
+        The normal publish transaction constructs the candidate commit from the
+        staged tree.  Preparing it after a direct commit constructs a child and
+        makes the broker/readmission fixture self-contradictory, so this helper
+        intentionally stages first, prepares, then resumes the transaction.
+        """
+        import subprocess
+
+        from phase_loop_runtime.convergence.broker import live
+        from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
+        from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore
+        from phase_loop_runtime.convergence.contracts import BrokerRequest, BrokerVerb
+        from phase_loop_runtime.publishing import _envelope_from_transaction, prepare_publish_transaction
+        from phase_loop_runtime.train_ledger import LedgerRecord, append_record
+        from test_fabpub_shared_epoch import _CountingAdapter, _authority_preimage, _service as _pub_service
+
+        # Match the runtime's durable-artifact posture: FAB provenance is local
+        # state, never an input to the candidate or delta Git commits.
+        (self.repo / ".git" / "info" / "exclude").write_text(
+            ".phase-loop/\n", encoding="utf-8"
+        )
+        self.write(fd.BOUNDARY_MANIFEST_PATH, _STRONG_MANIFEST)
+        base = self.commit("c0 base")
+        self.push_main()
+
+        live.onboard_zero_legacy_repository(self.repo)
+        live.fabpub_activation_barrier([self.repo])
+        store_root = live.repository_broker_namespace(self.repo)
+        identity = live.canonical_repository_identity(self.repo)
+
+        subprocess.run(
+            ["git", "-C", str(self.repo), "checkout", "-q", "-b", branch], check=True
+        )
+        self.write("pkg/a.py", "candidate content\n")
+        subprocess.run(
+            ["git", "-C", str(self.repo), "add", "--", "pkg/a.py"], check=True
+        )
+
+        coordinator_root = self.tmp_path / "coord"
+        authority = _authority_preimage(identity, branch)
+        authority["train_id"] = "train1"
+        authority["node_id"] = node_id
+        transaction = prepare_publish_transaction(
+            self.repo,
+            owned_paths=self.OWNED,
+            checkpoint_root=coordinator_root,
+            branch=branch,
+            envelope_authority_preimage=authority,
+        )
+        transaction.resume()
+        candidate_head = transaction.committed_head_sha
+        assert candidate_head == subprocess.check_output(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD"], text=True
+        ).strip()
+
+        candidate = self.candidate(base, candidate_head)
+        candidate_seats = (_seat("codex:c:high", epoch=1, finding_ids=()),)
+        candidate_artifact = self.build_artifact(
+            base_sha=base, candidate=candidate, seats=candidate_seats
+        )
+        fp.write_provenance(self.repo, self.RUN, candidate_artifact)
+        for seat in candidate_seats:
+            fg.append_seat_outcome(self.repo, self.RUN, _durable_from_seat(seat))
+        self.write_review_round(self.RUN, candidate_artifact)
+
+        store = LinearizableAdmissionStore(store_root, lambda _: True)
+        evidence = BrokerEvidenceStore(store_root)
+        publish_adapter = _CountingAdapter()
+        publish_service = _pub_service(store_root, publish_adapter, store=store)
+        publish_request = BrokerRequest(
+            BrokerVerb.PUBLISH_COMMITTED_BRANCH,
+            _envelope_from_transaction(transaction, authority, self.repo),
+            identity,
+            branch,
+            candidate_head,
+            tuple(transaction.owned_paths),
+            adapter_worktree=str(self.repo),
+        )
+        publish_result = publish_service.execute(publish_request)
+        assert publish_result.accepted
+        assert len(store.replay()) == 1
+
+        # GitRepoTestCase owns the local fetchsrc bare remote; reuse it rather
+        # than registering a second remote with the same routing name.
+        fetch_remote = subprocess.check_output(
+            ["git", "-C", str(self.repo), "remote", "get-url", "fetchsrc"], text=True
+        ).strip()
+        subprocess.run(
+            ["git", "-C", str(self.repo), "push", "-q", "-f", "fetchsrc", f"{base}:refs/heads/main"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repo), "push", "-q", "-f", "fetchsrc", f"HEAD:refs/heads/{branch}"],
+            check=True,
+        )
+
+        ledger_path = self.tmp_path / "train.ledger.jsonl"
+        append_record(
+            ledger_path,
+            LedgerRecord(
+                node_id=node_id,
+                status="pr_open",
+                branch=branch,
+                head_sha=candidate_head,
+                pr_url="u",
+                merge_order=0,
+                fab_run_id=self.RUN,
+            ),
+        )
+
+        self.write("pkg/c.py", "disjoint delta advance\n")
+        delta_head = self._vendor_commit("c2 advance", vendor="Codex")
+        subprocess.run(
+            ["git", "-C", str(self.repo), "push", "-q", "-f", "fetchsrc", f"HEAD:refs/heads/{branch}"],
+            check=True,
+        )
+
+        return {
+            "base": base,
+            "candidate_head": candidate_head,
+            "delta_head": delta_head,
+            "transaction": transaction,
+            "store": store,
+            "evidence": evidence,
+            "ledger_path": ledger_path,
+            "identity": identity,
+            "store_root": store_root,
+            "coordinator_root": coordinator_root,
+            "fetch_remote": fetch_remote,
+            "authority": authority,
+            "node_id": node_id,
+            "branch": branch,
+            "candidate_artifact": candidate_artifact,
+        }
+
     def test_readmit_happy_path_extends_chain_and_commits_ledger(self):
         from phase_loop_runtime import train_runner as tr
         from phase_loop_runtime.train_ledger import read_ledger
@@ -942,25 +1084,71 @@ class DeltaReviewEmptyAuthorFailsClosedTest(unittest.TestCase):
         )
 
 
-def _scan_append_sites_in_source(source_text: str) -> set[tuple[str, str]]:
-    """Return set of (function_name, argument_summary) for head-carrying append_record calls."""
+def _scan_append_sites_in_source(source_text: str) -> tuple[list[tuple[str, str, str]], list[tuple[str, str, str]]]:
+    """Inventory every append and classify the durable head-carrying subset."""
     import ast
     tree = ast.parse(source_text)
-    sites = set()
+    all_sites: list[tuple[str, str, str]] = []
+    head_sites: list[tuple[str, str, str]] = []
 
     class Visitor(ast.NodeVisitor):
         def __init__(self):
             self.fn_stack = []
+            # Module bindings are needed for status constants; function bindings
+            # shadow them for separately constructed records.
+            self.assignments: list[dict[str, ast.expr]] = [{}]
 
         def visit_FunctionDef(self, node):
             self.fn_stack.append(node.name)
+            self.assignments.append({})
             self.generic_visit(node)
+            self.assignments.pop()
             self.fn_stack.pop()
 
         def visit_AsyncFunctionDef(self, node):
             self.fn_stack.append(node.name)
+            self.assignments.append({})
             self.generic_visit(node)
+            self.assignments.pop()
             self.fn_stack.pop()
+
+        def visit_Assign(self, node):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    self.assignments[-1][target.id] = node.value
+            self.generic_visit(node)
+
+        def visit_AnnAssign(self, node):
+            if isinstance(node.target, ast.Name) and node.value is not None:
+                self.assignments[-1][node.target.id] = node.value
+            self.generic_visit(node)
+
+        def _resolve(self, node, seen=frozenset()):
+            if isinstance(node, ast.Name):
+                if node.id in seen:
+                    return node
+                for scope in reversed(self.assignments):
+                    value = scope.get(node.id)
+                    if value is not None:
+                        return self._resolve(value, seen | {node.id})
+            return node
+
+        def _literal(self, node) -> str:
+            node = self._resolve(node)
+            return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else ast.unparse(node)
+
+        def _record_shape(self, record_arg) -> tuple[str, str, bool]:
+            supplied_as_name = isinstance(record_arg, ast.Name)
+            record = self._resolve(record_arg)
+            if not (
+                isinstance(record, ast.Call)
+                and ((isinstance(record.func, ast.Name) and record.func.id == "LedgerRecord")
+                     or (isinstance(record.func, ast.Attribute) and record.func.attr == "LedgerRecord"))
+            ):
+                return ("other", "unknown", False)
+            values = {keyword.arg: keyword.value for keyword in record.keywords if keyword.arg}
+            status = self._literal(values["status"]) if "status" in values else "missing"
+            return ("assigned" if supplied_as_name else "inline", status, "head_sha" in values)
 
         def visit_Call(self, node):
             fn_name = None
@@ -976,30 +1164,39 @@ def _scan_append_sites_in_source(source_text: str) -> set[tuple[str, str]]:
                 for kw in node.keywords:
                     if kw.arg == "record":
                         record_arg = kw.value
-                arg_repr = ast.unparse(record_arg) if record_arg is not None else "unknown"
-                if "head_sha" in arg_repr and "pr_open" in arg_repr:
-                    sites.add((enclosing_fn, arg_repr))
+                shape, status, has_head = self._record_shape(record_arg)
+                site = (enclosing_fn, shape, status)
+                all_sites.append(site)
+                if has_head:
+                    head_sites.append(site)
             self.generic_visit(node)
 
     Visitor().visit(tree)
-    return sites
+    return all_sites, head_sites
 
 
 def _assert_head_append_inventory(source_text: str):
-    """FR-R4-03: Complete set equality of head-advancing append sites."""
-    sites = _scan_append_sites_in_source(source_text)
-    commit_helper_sites = [s for s in sites if s[0] == "_commit_broker_readmitted_head"]
-    legacy_sites = [s for s in sites if s[0] == "_fab_delta_readmit"]
-    unauthorized_sites = [s for s in sites if s[0] not in ("_commit_broker_readmitted_head", "_run_train_unfenced")]
+    """FR-R8-09: exact head-append shapes, including assigned records/constants."""
+    all_sites, head_sites = _scan_append_sites_in_source(source_text)
+    from collections import Counter
 
-    assert len(commit_helper_sites) == 1, f"_commit_broker_readmitted_head must be present exactly once, found {len(commit_helper_sites)}"
-    assert len(legacy_sites) == 0, f"_fab_delta_readmit direct appends must be abolished, found {len(legacy_sites)}"
-    assert len(unauthorized_sites) == 0, f"unauthorized direct append sites detected: {unauthorized_sites}"
+    expected_head_sites = Counter((
+        ("_commit_broker_readmitted_head", "inline", "pr_open"),
+        ("_run_train_unfenced", "inline", "pr_open"),
+        ("_run_train_unfenced", "inline", "merged"),
+    ))
+    assert all_sites, "append_record inventory unexpectedly found no append sites"
+    assert Counter(head_sites) == expected_head_sites, (
+        "unauthorized or malformed head-carrying append sites detected: "
+        f"expected={expected_head_sites}, observed={head_sites}"
+    )
 
 
 def test_fabreadmit_commit_points_reach_commit_broker_readmitted_head(request, tmp_path):
     """Commit points reach _commit_broker_readmitted_head during readmission execution."""
+    import subprocess
     import unittest.mock as _mock
+    import pytest
     from pytest import skip
 
     from _fabreadmit_tdd_guard import (
@@ -1023,64 +1220,22 @@ def test_fabreadmit_commit_points_reach_commit_broker_readmitted_head(request, t
     )
 
     from phase_loop_runtime import train_runner as tr
-    from phase_loop_runtime.convergence.broker import live
-    from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
-    from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore
-    from phase_loop_runtime.train_ledger import read_ledger, append_record, LedgerRecord
-    from test_fabpub_shared_epoch import (
-        _authority_preimage,
-        _publish_transaction_request,
-        _service as _pub_service,
-        _CountingAdapter,
-    )
-    from phase_loop_runtime.publishing import prepare_publish_transaction
+    from phase_loop_runtime.train_ledger import read_ledger
 
     # Arm 1: Fresh advance readmission path (FR-R4-04, FR-R5-01, FR-R7-03)
     fixture = DeltaReadmitTransactionTest()
     fixture.tmp_path = tmp_path / "fresh"
     fixture.setUp()
     try:
-        live.onboard_zero_legacy_repository(fixture.repo)
-        live.fabpub_activation_barrier([fixture.repo])
-        store_root = live.repository_broker_namespace(fixture.repo)
-        identity = live.canonical_repository_identity(fixture.repo)
-
-        subprocess.run(["git", "-C", str(fixture.repo), "checkout", "-q", "-b", "feat/pr1"], check=True)
-        fixture.write("pkg/a.py", "candidate content\n")
-        candidate_head = fixture._vendor_commit("c1 candidate", vendor="Codex")
-
-        pub_txn = prepare_publish_transaction(
-            fixture.repo,
-            owned_paths=fixture.OWNED,
-            checkpoint_root=fixture.tmp_path / "coord_pub",
-            branch="feat/pr1",
-            envelope_authority_preimage=_authority_preimage(identity, "feat/pr1"),
-        )
-        pub_txn.resume()
-        assert pub_txn.committed_head_sha == candidate_head
-
-        store = LinearizableAdmissionStore(store_root, lambda _: True)
-        evidence = BrokerEvidenceStore(store_root)
-        pub_adapter = _CountingAdapter()
-        pub_svc = _pub_service(store_root, pub_adapter, store=store)
-        pub_res = pub_svc.execute(_publish_transaction_request(identity, "feat/pr1", pub_txn, fixture.repo))
-        assert pub_res.accepted
-
-        fetchsrc_dir = fixture.tmp_path / "fetchsrc.git"
-        subprocess.run(["git", "init", "-q", "--bare", str(fetchsrc_dir)], check=True)
-        subprocess.run(["git", "-C", str(fixture.repo), "remote", "add", "fetchsrc", str(fetchsrc_dir)], check=True)
-        subprocess.run(["git", "-C", str(fixture.repo), "push", "-q", "-f", "fetchsrc", "HEAD:refs/heads/main"], check=True)
-        subprocess.run(["git", "-C", str(fixture.repo), "push", "-q", "-f", "fetchsrc", "HEAD:refs/heads/feat/pr1"], check=True)
-
-        ledger_path = fixture.tmp_path / "train.ledger.jsonl"
-        append_record(ledger_path, LedgerRecord(
-            node_id="n1", status="pr_open", branch="feat/pr1", head_sha=candidate_head,
-            pr_url="u", merge_order=0, fab_run_id=fixture.RUN,
-        ))
-
-        fixture.write("pkg/a.py", "delta advance content\n")
-        delta_head = fixture._vendor_commit("c2 advance", vendor="Codex")
-        subprocess.run(["git", "-C", str(fixture.repo), "push", "-q", "-f", "fetchsrc", "HEAD:refs/heads/feat/pr1"], check=True)
+        seeded = fixture._setup_broker_readmit_candidate()
+        ledger_path = seeded["ledger_path"]
+        candidate_head = seeded["candidate_head"]
+        delta_head = seeded["delta_head"]
+        store = seeded["store"]
+        evidence = seeded["evidence"]
+        assert candidate_head == subprocess.check_output(
+            ["git", "-C", str(fixture.repo), "rev-parse", "HEAD^"], text=True
+        ).strip()
 
         spy_calls = []
         real_commit = tr._commit_broker_readmitted_head
@@ -1109,47 +1264,12 @@ def test_fabreadmit_commit_points_reach_commit_broker_readmitted_head(request, t
     fixture2.tmp_path = tmp_path / "crash_resume"
     fixture2.setUp()
     try:
-        live.onboard_zero_legacy_repository(fixture2.repo)
-        live.fabpub_activation_barrier([fixture2.repo])
-        store_root2 = live.repository_broker_namespace(fixture2.repo)
-        identity2 = live.canonical_repository_identity(fixture2.repo)
-
-        subprocess.run(["git", "-C", str(fixture2.repo), "checkout", "-q", "-b", "feat/pr1"], check=True)
-        fixture2.write("pkg/a.py", "candidate content 2\n")
-        candidate_head2 = fixture2._vendor_commit("c1 candidate 2", vendor="Codex")
-
-        pub_txn2 = prepare_publish_transaction(
-            fixture2.repo,
-            owned_paths=fixture2.OWNED,
-            checkpoint_root=fixture2.tmp_path / "coord_pub2",
-            branch="feat/pr1",
-            envelope_authority_preimage=_authority_preimage(identity2, "feat/pr1"),
-        )
-        pub_txn2.resume()
-        assert pub_txn2.committed_head_sha == candidate_head2
-
-        store2 = LinearizableAdmissionStore(store_root2, lambda _: True)
-        evidence2 = BrokerEvidenceStore(store_root2)
-        pub_adapter2 = _CountingAdapter()
-        pub_svc2 = _pub_service(store_root2, pub_adapter2, store=store2)
-        pub_res2 = pub_svc2.execute(_publish_transaction_request(identity2, "feat/pr1", pub_txn2, fixture2.repo))
-        assert pub_res2.accepted
-
-        fetchsrc_dir2 = fixture2.tmp_path / "fetchsrc.git"
-        subprocess.run(["git", "init", "-q", "--bare", str(fetchsrc_dir2)], check=True)
-        subprocess.run(["git", "-C", str(fixture2.repo), "remote", "add", "fetchsrc", str(fetchsrc_dir2)], check=True)
-        subprocess.run(["git", "-C", str(fixture2.repo), "push", "-q", "-f", "fetchsrc", "HEAD:refs/heads/main"], check=True)
-        subprocess.run(["git", "-C", str(fixture2.repo), "push", "-q", "-f", "fetchsrc", "HEAD:refs/heads/feat/pr1"], check=True)
-
-        ledger_path2 = fixture2.tmp_path / "train.ledger.jsonl"
-        append_record(ledger_path2, LedgerRecord(
-            node_id="n1", status="pr_open", branch="feat/pr1", head_sha=candidate_head2,
-            pr_url="u", merge_order=0, fab_run_id=fixture2.RUN,
-        ))
-
-        fixture2.write("pkg/a.py", "delta advance content 2\n")
-        delta_head2 = fixture2._vendor_commit("c2 advance 2", vendor="Codex")
-        subprocess.run(["git", "-C", str(fixture2.repo), "push", "-q", "-f", "fetchsrc", "HEAD:refs/heads/feat/pr1"], check=True)
+        seeded2 = fixture2._setup_broker_readmit_candidate()
+        ledger_path2 = seeded2["ledger_path"]
+        candidate_head2 = seeded2["candidate_head"]
+        delta_head2 = seeded2["delta_head"]
+        store2 = seeded2["store"]
+        evidence2 = seeded2["evidence"]
 
         import phase_loop_runtime.train_runner as _trmod
         real_append = _trmod.append_record
@@ -1253,17 +1373,22 @@ def test_fabreadmit_append_site_inventory_detects_third_site(request, tmp_path):
     train_runner_file = Path(__file__).resolve().parent.parent / "src" / "phase_loop_runtime" / "train_runner.py"
     source = train_runner_file.read_text(encoding="utf-8")
 
-    synthetic_source = source + "\ndef _extra_unauthorized_append_site(path, nid):\n    append_record(path, record=LedgerRecord(node_id=nid, status='pr_open', head_sha='sha3'))\n"
+    mutations = (
+        # A direct readmission append inside the former catch-all exemption.
+        source + "\ndef _run_train_unfenced(ledger_path):\n    append_record(ledger_path, LedgerRecord(node_id='mutated', status='pr_open', head_sha='sha3'))\n",
+        # A separately constructed record must not escape the inventory.
+        source + "\ndef _extra_unauthorized_append_site(path, nid):\n    record = LedgerRecord(node_id=nid, status='pr_open', head_sha='sha3')\n    append_record(path, record)\n",
+        # Nor may a status constant evade the pr_open classification.
+        source + "\nOPEN_STATUS = 'pr_open'\ndef _extra_constant_status_append(path, nid):\n    append_record(path, LedgerRecord(node_id=nid, status=OPEN_STATUS, head_sha='sha3'))\n",
+    )
 
-    # FR-R3-09 / FR-R4-03: Call SAME helper on mutated source inside pytest.raises(AssertionError)
-    with pytest.raises(AssertionError, match=r"unauthorized"):
-        _assert_head_append_inventory(synthetic_source)
+    for synthetic_source in mutations:
+        with pytest.raises(AssertionError, match=r"unauthorized or malformed"):
+            _assert_head_append_inventory(synthetic_source)
 
 
 def test_fabreadmit_fresh_revocation_blocks_delta_merge(request, tmp_path):
     """Fresh readmission path revocation check blocks delta merge."""
-    import subprocess
-    import pytest
     from pytest import skip
 
     from _fabreadmit_tdd_guard import (
@@ -1288,56 +1413,19 @@ def test_fabreadmit_fresh_revocation_blocks_delta_merge(request, tmp_path):
 
     from phase_loop_runtime import train_runner as tr
     from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
-    from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore, EvidenceRecord
-    from phase_loop_runtime.convergence.broker import live
+    from phase_loop_runtime.convergence.broker.evidence import EvidenceRecord
     from phase_loop_runtime.convergence.provider_contracts import TerminalOutcomeState
-    from phase_loop_runtime.train_ledger import read_ledger, append_record, LedgerRecord
-    from test_fabpub_shared_epoch import (
-        _authority_preimage,
-        _publish_transaction_request,
-        _service as _pub_service,
-        _CountingAdapter,
-    )
-    from phase_loop_runtime.publishing import prepare_publish_transaction
+    from phase_loop_runtime.train_ledger import read_ledger
 
     fixture = DeltaReadmitTransactionTest()
     fixture.tmp_path = tmp_path
     fixture.setUp()
     try:
-        live.onboard_zero_legacy_repository(fixture.repo)
-        live.fabpub_activation_barrier([fixture.repo])
-        store_root = live.repository_broker_namespace(fixture.repo)
-        identity = live.canonical_repository_identity(fixture.repo)
-
-        subprocess.run(["git", "-C", str(fixture.repo), "checkout", "-q", "-b", "feat/pr1"], check=True)
-        fixture.write("pkg/a.py", "candidate content fresh rev\n")
-        candidate_head = fixture._vendor_commit("c1 candidate fresh rev", vendor="Codex")
-
-        pub_txn = prepare_publish_transaction(
-            fixture.repo,
-            owned_paths=fixture.OWNED,
-            checkpoint_root=fixture.tmp_path / "coord_pub_fresh_rev",
-            branch="feat/pr1",
-            envelope_authority_preimage=_authority_preimage(identity, "feat/pr1"),
-        )
-        pub_txn.resume()
-        assert pub_txn.committed_head_sha == candidate_head
-
-        fetchsrc_dir = fixture.tmp_path / "fetchsrc.git"
-        subprocess.run(["git", "init", "-q", "--bare", str(fetchsrc_dir)], check=True)
-        subprocess.run(["git", "-C", str(fixture.repo), "remote", "add", "fetchsrc", str(fetchsrc_dir)], check=True)
-        subprocess.run(["git", "-C", str(fixture.repo), "push", "-q", "-f", "fetchsrc", "HEAD:refs/heads/main"], check=True)
-        subprocess.run(["git", "-C", str(fixture.repo), "push", "-q", "-f", "fetchsrc", "HEAD:refs/heads/feat/pr1"], check=True)
-
-        ledger_path = fixture.tmp_path / "train.ledger.jsonl"
-        append_record(ledger_path, LedgerRecord(
-            node_id="n1", status="pr_open", branch="feat/pr1", head_sha=candidate_head,
-            pr_url="u", merge_order=0, fab_run_id=fixture.RUN,
-        ))
-
-        fixture.write("pkg/a.py", "delta advance content fresh rev\n")
-        delta_head = fixture._vendor_commit("c2 advance fresh rev", vendor="Codex")
-        subprocess.run(["git", "-C", str(fixture.repo), "push", "-q", "-f", "fetchsrc", "HEAD:refs/heads/feat/pr1"], check=True)
+        seeded = fixture._setup_broker_readmit_candidate()
+        ledger_path = seeded["ledger_path"]
+        candidate_head = seeded["candidate_head"]
+        delta_head = seeded["delta_head"]
+        evidence = seeded["evidence"]
 
         in_lock_consulted = []
 
@@ -1346,17 +1434,10 @@ def test_fabreadmit_fresh_revocation_blocks_delta_merge(request, tmp_path):
             return evidence.epoch_blocked
 
         store = LinearizableAdmissionStore(
-            store_root,
+            seeded["store_root"],
             lambda _: True,
             epoch_blocked=_in_lock_epoch_blocked,
         )
-        evidence = BrokerEvidenceStore(store_root)
-        pub_adapter = _CountingAdapter()
-        pub_svc = _pub_service(store_root, pub_adapter, store=store)
-        pub_res = pub_svc.execute(_publish_transaction_request(identity, "feat/pr1", pub_txn, fixture.repo))
-        assert pub_res.accepted
-
-        readmit_adapter = _CountingAdapter()
 
         evidence.record_intent("rev-key-fresh")
         evidence.record_terminal(EvidenceRecord("rev-key-fresh", TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED, "revocation"))
@@ -1372,7 +1453,6 @@ def test_fabreadmit_fresh_revocation_blocks_delta_merge(request, tmp_path):
         assert len(in_lock_consulted) > 0, "in-lock epoch_blocked callback must be consulted by store"
         assert read_ledger(ledger_path)["n1"].head_sha == candidate_head, "ledger head must remain at candidate_head"
         assert len(store.replay()) == 1, "admission store count must remain unchanged after revocation"
-        assert readmit_adapter.calls == 0, "adapter calls must be zero"
     finally:
         fixture.tearDown()
 
@@ -1405,56 +1485,19 @@ def test_fabreadmit_crash_resume_revocation_rechecked_blocks(request, tmp_path):
 
     from phase_loop_runtime import train_runner as tr
     from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
-    from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore, EvidenceRecord
-    from phase_loop_runtime.convergence.broker import live
+    from phase_loop_runtime.convergence.broker.evidence import EvidenceRecord
     from phase_loop_runtime.convergence.provider_contracts import TerminalOutcomeState
-    from phase_loop_runtime.train_ledger import read_ledger, append_record, LedgerRecord
-    from test_fabpub_shared_epoch import (
-        _authority_preimage,
-        _publish_transaction_request,
-        _service as _pub_service,
-        _CountingAdapter,
-    )
-    from phase_loop_runtime.publishing import prepare_publish_transaction
+    from phase_loop_runtime.train_ledger import read_ledger
 
     fixture = DeltaReadmitTransactionTest()
     fixture.tmp_path = tmp_path
     fixture.setUp()
     try:
-        live.onboard_zero_legacy_repository(fixture.repo)
-        live.fabpub_activation_barrier([fixture.repo])
-        store_root = live.repository_broker_namespace(fixture.repo)
-        identity = live.canonical_repository_identity(fixture.repo)
-
-        subprocess.run(["git", "-C", str(fixture.repo), "checkout", "-q", "-b", "feat/pr1"], check=True)
-        fixture.write("pkg/a.py", "candidate content crash rev\n")
-        candidate_head = fixture._vendor_commit("c1 candidate crash rev", vendor="Codex")
-
-        pub_txn = prepare_publish_transaction(
-            fixture.repo,
-            owned_paths=fixture.OWNED,
-            checkpoint_root=fixture.tmp_path / "coord_pub_crash_rev",
-            branch="feat/pr1",
-            envelope_authority_preimage=_authority_preimage(identity, "feat/pr1"),
-        )
-        pub_txn.resume()
-        assert pub_txn.committed_head_sha == candidate_head
-
-        fetchsrc_dir = fixture.tmp_path / "fetchsrc.git"
-        subprocess.run(["git", "init", "-q", "--bare", str(fetchsrc_dir)], check=True)
-        subprocess.run(["git", "-C", str(fixture.repo), "remote", "add", "fetchsrc", str(fetchsrc_dir)], check=True)
-        subprocess.run(["git", "-C", str(fixture.repo), "push", "-q", "-f", "fetchsrc", "HEAD:refs/heads/main"], check=True)
-        subprocess.run(["git", "-C", str(fixture.repo), "push", "-q", "-f", "fetchsrc", "HEAD:refs/heads/feat/pr1"], check=True)
-
-        ledger_path = fixture.tmp_path / "train.ledger.jsonl"
-        append_record(ledger_path, LedgerRecord(
-            node_id="n1", status="pr_open", branch="feat/pr1", head_sha=candidate_head,
-            pr_url="u", merge_order=0, fab_run_id=fixture.RUN,
-        ))
-
-        fixture.write("pkg/a.py", "delta advance content crash rev\n")
-        delta_head = fixture._vendor_commit("c2 advance crash rev", vendor="Codex")
-        subprocess.run(["git", "-C", str(fixture.repo), "push", "-q", "-f", "fetchsrc", "HEAD:refs/heads/feat/pr1"], check=True)
+        seeded = fixture._setup_broker_readmit_candidate()
+        ledger_path = seeded["ledger_path"]
+        candidate_head = seeded["candidate_head"]
+        delta_head = seeded["delta_head"]
+        evidence = seeded["evidence"]
 
         in_lock_consulted = []
 
@@ -1463,17 +1506,10 @@ def test_fabreadmit_crash_resume_revocation_rechecked_blocks(request, tmp_path):
             return evidence.epoch_blocked
 
         store = LinearizableAdmissionStore(
-            store_root,
+            seeded["store_root"],
             lambda _: True,
             epoch_blocked=_in_lock_epoch_blocked,
         )
-        evidence = BrokerEvidenceStore(store_root)
-        pub_adapter = _CountingAdapter()
-        pub_svc = _pub_service(store_root, pub_adapter, store=store)
-        pub_res = pub_svc.execute(_publish_transaction_request(identity, "feat/pr1", pub_txn, fixture.repo))
-        assert pub_res.accepted
-
-        readmit_adapter = _CountingAdapter()
 
         # 1. Successful crash-resume path without revocation
         import phase_loop_runtime.train_runner as _trmod
@@ -1545,7 +1581,6 @@ def test_fabreadmit_crash_resume_revocation_rechecked_blocks(request, tmp_path):
         assert resumed_blocked is None, "revoked crash-resume must block with zero append"
         assert read_ledger(ledger_path)["n1"].head_sha == delta_head, "ledger head must remain at delta_head"
         assert len(store.replay()) == 3, "admission store count must remain unchanged after revocation"
-        assert readmit_adapter.calls == 0, "adapter calls must be zero"
     finally:
         fixture.tearDown()
 
@@ -1553,7 +1588,6 @@ def test_fabreadmit_crash_resume_revocation_rechecked_blocks(request, tmp_path):
 def test_fabreadmit_real_git_shortcut_end_to_end(request, tmp_path):
     """Real-Git end-to-end delta shortcut with broker readmission."""
     import os
-    import subprocess
     import unittest.mock as _mock
     from pathlib import Path
     from pytest import skip
@@ -1579,22 +1613,12 @@ def test_fabreadmit_real_git_shortcut_end_to_end(request, tmp_path):
     )
 
     from phase_loop_runtime import train_runner as tr
-    from phase_loop_runtime.train_ledger import read_ledger, append_record, LedgerRecord
+    from phase_loop_runtime.train_ledger import read_ledger
     from phase_loop_runtime.train_runner import CoordinatorRuntime
-    from phase_loop_runtime.convergence.broker import live
     from phase_loop_runtime.convergence.broker.live import _RepositoryRoutingBrokerService, build_routing_broker_client
     from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
-    import phase_loop_runtime.governed_premerge as gpmod
-    from phase_loop_runtime.governed_premerge import FAB_PROMOTION_ENV, parse_train_roadmap, TRAIN_2NODE_MD, _reverify_pass, _make_publish_stub
-    import phase_loop_runtime.governed_premerge as fg
-    import phase_loop_runtime.convergence.provider_contracts as fp
-    from test_fabpub_shared_epoch import (
-        _authority_preimage,
-        _publish_transaction_request,
-        _service as _pub_service,
-        _CountingAdapter,
-    )
-    from phase_loop_runtime.publishing import prepare_publish_transaction
+    from phase_loop_runtime.governed_premerge import FAB_PROMOTION_ENV
+    from phase_loop_runtime.train_roadmap import parse_train_roadmap
 
     def _capturing_head_merge_stub(cap: dict):
         def _merge_pr(workspace, branch, base="main", head_sha=None, run_id=None, fab_fetch_origin="origin"):
@@ -1609,48 +1633,18 @@ def test_fabreadmit_real_git_shortcut_end_to_end(request, tmp_path):
     fixture.tmp_path = tmp_path / "pos"
     fixture.setUp()
     try:
-        live.onboard_zero_legacy_repository(fixture.repo)
-        live.fabpub_activation_barrier([fixture.repo])
-        store_root = live.repository_broker_namespace(fixture.repo)
-        identity = live.canonical_repository_identity(fixture.repo)
-
-        subprocess.run(["git", "-C", str(fixture.repo), "checkout", "-q", "-b", "feat/pr1"], check=True)
-        fixture.write("pkg/a.py", "candidate content e2e\n")
-        candidate_head = fixture._vendor_commit("c1 candidate e2e", vendor="Codex")
-
-        pub_txn = prepare_publish_transaction(
-            fixture.repo,
-            owned_paths=fixture.OWNED,
-            checkpoint_root=fixture.tmp_path / "coord_pub_e2e",
-            branch="feat/pr1",
-            envelope_authority_preimage=_authority_preimage(identity, "feat/pr1"),
-        )
-        pub_txn.resume()
-        assert pub_txn.committed_head_sha == candidate_head
-
-        fetchsrc_dir = fixture.tmp_path / "fetchsrc.git"
-        subprocess.run(["git", "init", "-q", "--bare", str(fetchsrc_dir)], check=True)
-        subprocess.run(["git", "-C", str(fixture.repo), "remote", "add", "fetchsrc", str(fetchsrc_dir)], check=True)
-        subprocess.run(["git", "-C", str(fixture.repo), "push", "-q", "-f", "fetchsrc", "HEAD:refs/heads/main"], check=True)
-        subprocess.run(["git", "-C", str(fixture.repo), "push", "-q", "-f", "fetchsrc", "HEAD:refs/heads/feat/pr1"], check=True)
-
-        ledger_path = fixture.tmp_path / "train.ledger.jsonl"
-
-        fixture.write("pkg/a.py", "delta advance content e2e\n")
-        delta_head = fixture._vendor_commit("c2 advance e2e", vendor="Codex")
-        subprocess.run(["git", "-C", str(fixture.repo), "push", "-q", "-f", "fetchsrc", "HEAD:refs/heads/feat/pr1"], check=True)
-
-        pub_store = LinearizableAdmissionStore(store_root, lambda _: True)
-        pub_svc = _pub_service(store_root, _CountingAdapter(), store=pub_store)
-        pub_res = pub_svc.execute(_publish_transaction_request(identity, "feat/pr1", pub_txn, fixture.repo))
-        assert pub_res.accepted
+        node_id = "repo-a/specs/plan-a.md"
+        seeded = fixture._setup_broker_readmit_candidate(node_id=node_id)
+        ledger_path = seeded["ledger_path"]
+        candidate_head = seeded["candidate_head"]
+        delta_head = seeded["delta_head"]
 
         routing_client = build_routing_broker_client()
         assert isinstance(routing_client, _RepositoryRoutingBrokerService)
 
         coord_runtime = CoordinatorRuntime(
             train_id="train1",
-            coordinator_root=tmp_path / "coord",
+            coordinator_root=seeded["coordinator_root"],
             roadmap_path="train.md",
             roadmap_digest="d" * 64,
             workspace_id=str(fixture.repo),
@@ -1660,10 +1654,6 @@ def test_fabreadmit_real_git_shortcut_end_to_end(request, tmp_path):
         roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
         ws_map = {"repo-a/specs/plan-a.md": fixture.repo, "repo-b/specs/plan-b.md": fixture.repo}
 
-        append_record(ledger_path, LedgerRecord(
-            node_id="repo-a/specs/plan-a.md", status="pr_open", branch="feat/pr1", head_sha=candidate_head,
-            fab_run_id=fixture.RUN, merge_order=0))
-
         captured = {}
         commit_calls = []
         real_commit = tr._commit_broker_readmitted_head
@@ -1672,29 +1662,29 @@ def test_fabreadmit_real_git_shortcut_end_to_end(request, tmp_path):
             commit_calls.append((args, kwargs))
             return real_commit(*args, **kwargs)
 
-        # 1. Positive E2E Arm (FR-R7-04: resolve_owned_paths=None; FR-R7-05: merge receives exact delta_head; FR-R7-09: epoch directly)
+        # 1. Positive E2E Arm: production readiness is unpatched; only the master
+        # flag enables the otherwise-valid, durable authority path.
         with _mock.patch.dict(os.environ, {FAB_PROMOTION_ENV: "1"}):
-            with _mock.patch.object(gpmod, "_FAB_DELTA_BROKER_READMIT_READY", True):
-                with _mock.patch.object(tr, "_commit_broker_readmitted_head", side_effect=_spy_commit):
-                    result = tr.run_train(
-                        roadmap,
-                        ledger_path,
-                        run_mode="governed",
-                        resolve_workspace=lambda n: ws_map[n.node_id],
-                        coordinator_runtime=coord_runtime,
-                        resolve_owned_paths=None,
-                        _run_loop=lambda *a, **kw: (None, []),
-                        _publish=_make_publish_stub({}),
-                        _preflight_fn=lambda *a, **kw: None,
-                        _pr_is_open=lambda ws, br: True,
-                        _live_pr_head_sha_fn=lambda ws, br: delta_head,
-                        _merge_phase_enabled=True,
-                        _reverify_fn=_reverify_pass,
-                        _delta_review_fn=fixture._review_fn,
-                        _merge_pr_fn=_capturing_head_merge_stub(captured),
-                        fab_fetch_origin="fetchsrc",
-                        fab_delta_shortcut=True,
-                    )
+            with _mock.patch.object(tr, "_commit_broker_readmitted_head", side_effect=_spy_commit):
+                result = tr.run_train(
+                    roadmap,
+                    ledger_path,
+                    run_mode="governed",
+                    resolve_workspace=lambda n: ws_map[n.node_id],
+                    coordinator_runtime=coord_runtime,
+                    resolve_owned_paths=None,
+                    _run_loop=lambda *a, **kw: (None, []),
+                    _publish=_make_publish_stub({}),
+                    _preflight_fn=lambda *a, **kw: None,
+                    _pr_is_open=lambda ws, br: True,
+                    _live_pr_head_sha_fn=lambda ws, br: delta_head,
+                    _merge_phase_enabled=True,
+                    _reverify_fn=_reverify_pass,
+                    _delta_review_fn=fixture._review_fn,
+                    _merge_pr_fn=_capturing_head_merge_stub(captured),
+                    fab_fetch_origin="fetchsrc",
+                    fab_delta_shortcut=True,
+                )
 
         assert result["status"] == "merged"
         assert len(commit_calls) == 1, "shortcut helper entry must occur exactly once"
@@ -1706,68 +1696,91 @@ def test_fabreadmit_real_git_shortcut_end_to_end(request, tmp_path):
             repo=fixture.repo, run_id=fixture.RUN, live_base_ref_name="main", live_head_sha=delta_head, origin="fetchsrc"
         )
         assert gate_res.status == fp.GATE_STATUS_PASS
-        admission_store = LinearizableAdmissionStore(store_root, lambda _: True)
+        admission_store = LinearizableAdmissionStore(seeded["store_root"], lambda _: True)
         replayed = admission_store.replay()
         assert len(replayed) == 2, "admission store must hold publish + readmission records"
         assert replayed[-1].epoch == 2
 
-        # 2. FR-R3-04 & FR-R3-06 Kill arm (a): Reverting readiness False -> run on fresh fixture, status blocked/halted
+        # 2. Readiness kill: this is otherwise the same valid fixture and call
+        # shape as the positive arm; only the readiness conjunct is false.
         fix_a = DeltaReadmitTransactionTest()
         fix_a.tmp_path = tmp_path / "arm_a"
         fix_a.setUp()
         try:
-            ledger_a, base_a, cand_a, delta_a = fix_a._setup_candidate_and_advance()
-            live.onboard_zero_legacy_repository(fix_a.repo)
-            live.fabpub_activation_barrier([fix_a.repo])
-            append_record(ledger_a, LedgerRecord(
-                node_id="repo-a/specs/plan-a.md", status="pr_open", branch="feat/pr1", head_sha=cand_a,
-                fab_run_id=fix_a.RUN, merge_order=0))
-
-            with _mock.patch.object(gpmod, "_FAB_DELTA_BROKER_READMIT_READY", False):
-                result_a = tr.run_train(
-                    roadmap, ledger_a, run_mode="governed",
-                    resolve_workspace=lambda n: fix_a.repo,
-                    coordinator_runtime=coord_runtime,
-                    resolve_owned_paths=None,
-                    _run_loop=lambda *a, **kw: (None, []),
-                    _publish=_make_publish_stub({}),
-                    _pr_is_open=lambda ws, br: True,
-                    _live_pr_head_sha_fn=lambda ws, br: delta_a,
-                    _merge_phase_enabled=True,
-                    _merge_pr_fn=_capturing_head_merge_stub({}),
-                    fab_delta_shortcut=True,
-                )
-                assert result_a["status"] in ("merge_halted", "blocked", "halted") or read_ledger(ledger_a)["repo-a/specs/plan-a.md"].head_sha == cand_a
+            seeded_a = fix_a._setup_broker_readmit_candidate(node_id=node_id)
+            ledger_a = seeded_a["ledger_path"]
+            cand_a = seeded_a["candidate_head"]
+            delta_a = seeded_a["delta_head"]
+            runtime_a = CoordinatorRuntime(
+                train_id="train1", coordinator_root=seeded_a["coordinator_root"],
+                roadmap_path="train.md", roadmap_digest="d" * 64,
+                workspace_id=str(fix_a.repo), broker_client=build_routing_broker_client(),
+            )
+            with _mock.patch.dict(os.environ, {FAB_PROMOTION_ENV: "1"}):
+                with _mock.patch("phase_loop_runtime.governed_premerge._FAB_DELTA_BROKER_READMIT_READY", False):
+                    result_a = tr.run_train(
+                        roadmap, ledger_a, run_mode="governed",
+                        resolve_workspace=lambda n: fix_a.repo,
+                        coordinator_runtime=runtime_a,
+                        resolve_owned_paths=None,
+                        _run_loop=lambda *a, **kw: (None, []),
+                        _publish=_make_publish_stub({}),
+                        _preflight_fn=lambda *a, **kw: None,
+                        _pr_is_open=lambda ws, br: True,
+                        _live_pr_head_sha_fn=lambda ws, br: delta_a,
+                        _merge_phase_enabled=True,
+                        _reverify_fn=_reverify_pass,
+                        _delta_review_fn=fix_a._review_fn,
+                        _merge_pr_fn=_capturing_head_merge_stub({}),
+                        fab_fetch_origin="fetchsrc",
+                        fab_delta_shortcut=True,
+                    )
+            assert result_a["status"] != "merged"
+            assert read_ledger(ledger_a)[node_id].head_sha == cand_a
+            assert len(LinearizableAdmissionStore(seeded_a["store_root"], lambda _: True).replay()) == 1, (
+                "readiness kill must retain only the candidate admission"
+            )
         finally:
             fix_a.tearDown()
 
-        # 3. FR-R3-04 & FR-R7-04 Kill arm (b): Injecting covering-superset resolver -> fail-closed merge_halted, ledger head unchanged
+        # 3. Resolver kill: only injected resolver authority differs.  Its
+        # covering superset includes both the candidate and actual delta paths.
         fix_b = DeltaReadmitTransactionTest()
         fix_b.tmp_path = tmp_path / "arm_b"
         fix_b.setUp()
         try:
-            ledger_b, base_b, cand_b, delta_b = fix_b._setup_candidate_and_advance()
-            live.onboard_zero_legacy_repository(fix_b.repo)
-            live.fabpub_activation_barrier([fix_b.repo])
-            append_record(ledger_b, LedgerRecord(
-                node_id="repo-a/specs/plan-a.md", status="pr_open", branch="feat/pr1", head_sha=cand_b,
-                fab_run_id=fix_b.RUN, merge_order=0))
-
-            result_b = tr.run_train(
-                roadmap, ledger_b, run_mode="governed",
-                resolve_workspace=lambda n: fix_b.repo,
-                coordinator_runtime=coord_runtime,
-                resolve_owned_paths=lambda n: ("pkg/a.py", "pkg/unauthorized_extra.py"),
-                _run_loop=lambda *a, **kw: (None, []),
-                _publish=_make_publish_stub({}),
-                _pr_is_open=lambda ws, br: True,
-                _live_pr_head_sha_fn=lambda ws, br: delta_b,
-                _merge_phase_enabled=True,
-                _merge_pr_fn=_capturing_head_merge_stub({}),
-                fab_delta_shortcut=True,
+            seeded_b = fix_b._setup_broker_readmit_candidate(node_id=node_id)
+            ledger_b = seeded_b["ledger_path"]
+            cand_b = seeded_b["candidate_head"]
+            delta_b = seeded_b["delta_head"]
+            runtime_b = CoordinatorRuntime(
+                train_id="train1", coordinator_root=seeded_b["coordinator_root"],
+                roadmap_path="train.md", roadmap_digest="d" * 64,
+                workspace_id=str(fix_b.repo), broker_client=build_routing_broker_client(),
             )
-            assert result_b["status"] in ("merge_halted", "blocked", "halted")
-            assert read_ledger(ledger_b)["repo-a/specs/plan-a.md"].head_sha == cand_b
+            with _mock.patch.dict(os.environ, {FAB_PROMOTION_ENV: "1"}):
+                result_b = tr.run_train(
+                    roadmap, ledger_b, run_mode="governed",
+                    resolve_workspace=lambda n: fix_b.repo,
+                    coordinator_runtime=runtime_b,
+                    resolve_owned_paths=lambda _n: ("pkg/a.py", "pkg/c.py"),
+                    _run_loop=lambda *a, **kw: (None, []),
+                    _publish=_make_publish_stub({}),
+                    _preflight_fn=lambda *a, **kw: None,
+                    _pr_is_open=lambda ws, br: True,
+                    _live_pr_head_sha_fn=lambda ws, br: delta_b,
+                    _merge_phase_enabled=True,
+                    _reverify_fn=_reverify_pass,
+                    _delta_review_fn=fix_b._review_fn,
+                    _merge_pr_fn=_capturing_head_merge_stub({}),
+                    fab_fetch_origin="fetchsrc",
+                    fab_delta_shortcut=True,
+                )
+            assert result_b["status"] != "merged"
+            assert read_ledger(ledger_b)[node_id].head_sha == cand_b
+            assert len(LinearizableAdmissionStore(seeded_b["store_root"], lambda _: True).replay()) == 1, (
+                "resolver kill must retain only the candidate admission"
+            )
         finally:
             fix_b.tearDown()
 
@@ -1776,9 +1789,10 @@ def test_fabreadmit_real_git_shortcut_end_to_end(request, tmp_path):
         fix_c.tmp_path = tmp_path / "arm_c"
         fix_c.setUp()
         try:
-            ledger_c, base_c, cand_c, delta_c = fix_c._setup_candidate_and_advance()
-            live.onboard_zero_legacy_repository(fix_c.repo)
-            live.fabpub_activation_barrier([fix_c.repo])
+            seeded_c = fix_c._setup_broker_readmit_candidate()
+            ledger_c = seeded_c["ledger_path"]
+            cand_c = seeded_c["candidate_head"]
+            delta_c = seeded_c["delta_head"]
 
             res_c = tr._fab_delta_readmit(
                 fix_c.repo, ledger_c, node_id="n1", run_id=fix_c.RUN, branch="feat/pr1", pr_url="u",

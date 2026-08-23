@@ -1472,7 +1472,7 @@ _SUPPORTED_PUBLISHERS_FROZEN_SET = (
     "phase_loop_runtime.convergence.broker.live.BrokerClient.publish_committed_branch",
     "phase_loop_runtime.convergence.broker.verbs.publish_committed_branch",
 )
-_SUPPORTED_PUBLISHERS_DIGEST = "a2f84b60e6e7370a273e970b8f411b9514742a0b178ef9c7e0e5a87a2bd2903a"
+_SUPPORTED_PUBLISHERS_DIGEST = "60cb066f240bde3e1de80f505004b87b85d0d176f4fccc7afbd9f3ebd5071595"
 
 
 def test_fabreadmit_hardcoded_epoch_publisher_interlock(request, tmp_path):
@@ -1586,21 +1586,12 @@ def test_fabreadmit_flag_reversal_kills_shortcut(request, tmp_path):
     )
 
     from phase_loop_runtime import governed_premerge as gp
-    from phase_loop_runtime.governed_premerge import FAB_PROMOTION_ENV, fab_delta_shortcut_enabled, parse_train_roadmap
+    from phase_loop_runtime.governed_premerge import FAB_PROMOTION_ENV, fab_delta_shortcut_enabled
     from test_fab_delta_consumer import DeltaReadmitTransactionTest
     from phase_loop_runtime import train_runner as tr
-    from phase_loop_runtime.train_ledger import read_ledger, append_record, LedgerRecord
+    from phase_loop_runtime.train_ledger import read_ledger
     from phase_loop_runtime.train_runner import CoordinatorRuntime
-    from phase_loop_runtime.convergence.broker import live
     from phase_loop_runtime.convergence.broker.live import build_routing_broker_client
-    from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
-    from test_fabpub_shared_epoch import (
-        _authority_preimage,
-        _publish_transaction_request,
-        _service as _pub_service,
-        _CountingAdapter,
-    )
-    from phase_loop_runtime.publishing import prepare_publish_transaction
 
     # FR-R7-10: Require readiness symbol True directly without default fallback
     assert ready_symbol is True
@@ -1621,74 +1612,40 @@ def test_fabreadmit_flag_reversal_kills_shortcut(request, tmp_path):
     fix_true.tmp_path = tmp_path / "true_arm"
     fix_true.setUp()
     try:
-        live.onboard_zero_legacy_repository(fix_true.repo)
-        live.fabpub_activation_barrier([fix_true.repo])
-        store_root_t = live.repository_broker_namespace(fix_true.repo)
-        identity_t = live.canonical_repository_identity(fix_true.repo)
-
-        subprocess.run(["git", "-C", str(fix_true.repo), "checkout", "-q", "-b", "feat/pr1"], check=True)
-        fix_true.write("pkg/a.py", "candidate content true arm\n")
-        cand_t = fix_true._vendor_commit("c1 candidate true arm", vendor="Codex")
-
-        pub_txn_t = prepare_publish_transaction(
-            fix_true.repo,
-            owned_paths=fix_true.OWNED,
-            checkpoint_root=fix_true.tmp_path / "coord_pub_true",
-            branch="feat/pr1",
-            envelope_authority_preimage=_authority_preimage(identity_t, "feat/pr1"),
-        )
-        pub_txn_t.resume()
-        assert pub_txn_t.committed_head_sha == cand_t
-
-        fetchsrc_t = fix_true.tmp_path / "fetchsrc.git"
-        subprocess.run(["git", "init", "-q", "--bare", str(fetchsrc_t)], check=True)
-        subprocess.run(["git", "-C", str(fix_true.repo), "remote", "add", "fetchsrc", str(fetchsrc_t)], check=True)
-        subprocess.run(["git", "-C", str(fix_true.repo), "push", "-q", "-f", "fetchsrc", "HEAD:refs/heads/main"], check=True)
-        subprocess.run(["git", "-C", str(fix_true.repo), "push", "-q", "-f", "fetchsrc", "HEAD:refs/heads/feat/pr1"], check=True)
-
-        ledger_true = fix_true.tmp_path / "train.ledger.jsonl"
-        append_record(ledger_true, LedgerRecord(
-            node_id="repo-a/specs/plan-a.md", status="pr_open", branch="feat/pr1", head_sha=cand_t,
-            fab_run_id=fix_true.RUN, merge_order=0))
-
-        fix_true.write("pkg/a.py", "delta advance content true arm\n")
-        delta_t = fix_true._vendor_commit("c2 advance true arm", vendor="Codex")
-        subprocess.run(["git", "-C", str(fix_true.repo), "push", "-q", "-f", "fetchsrc", "HEAD:refs/heads/feat/pr1"], check=True)
-
-        pub_store_t = LinearizableAdmissionStore(store_root_t, lambda _: True)
-        pub_svc_t = _pub_service(store_root_t, _CountingAdapter(), store=pub_store_t)
-        pub_res_t = pub_svc_t.execute(_publish_transaction_request(identity_t, "feat/pr1", pub_txn_t, fix_true.repo))
-        assert pub_res_t.accepted
+        node_id = "repo-a/specs/plan-a.md"
+        seeded_true = fix_true._setup_broker_readmit_candidate(node_id=node_id)
+        ledger_true = seeded_true["ledger_path"]
+        cand_t = seeded_true["candidate_head"]
+        delta_t = seeded_true["delta_head"]
 
         coord_t = CoordinatorRuntime(
-            train_id="train1", coordinator_root=tmp_path / "coord_t", roadmap_path="train.md",
+            train_id="train1", coordinator_root=seeded_true["coordinator_root"], roadmap_path="train.md",
             roadmap_digest="d" * 64, workspace_id=str(fix_true.repo), broker_client=build_routing_broker_client(),
         )
         roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
 
         captured_t = {}
         with _mock.patch.dict(os.environ, {FAB_PROMOTION_ENV: "1"}):
-            with _mock.patch.object(gp, "_FAB_DELTA_BROKER_READMIT_READY", True):
-                res_true = tr.run_train(
-                    roadmap, ledger_true, run_mode="governed",
-                    resolve_workspace=lambda n: fix_true.repo,
-                    coordinator_runtime=coord_t,
-                    resolve_owned_paths=lambda n: fix_true.OWNED,
-                    _run_loop=lambda *a, **kw: (None, []),
-                    _publish=_make_publish_stub({}),
-                    _preflight_fn=lambda *a, **kw: None,
-                    _pr_is_open=lambda ws, br: True,
-                    _live_pr_head_sha_fn=lambda ws, br: delta_t,
-                    _merge_phase_enabled=True,
-                    _reverify_fn=_reverify_pass,
-                    _delta_review_fn=fix_true._review_fn,
-                    _merge_pr_fn=_capturing_head_merge_stub(captured_t),
-                    fab_fetch_origin="fetchsrc",
-                    fab_delta_shortcut=True,
-                )
+            res_true = tr.run_train(
+                roadmap, ledger_true, run_mode="governed",
+                resolve_workspace=lambda n: fix_true.repo,
+                coordinator_runtime=coord_t,
+                resolve_owned_paths=None,
+                _run_loop=lambda *a, **kw: (None, []),
+                _publish=_make_publish_stub({}),
+                _preflight_fn=lambda *a, **kw: None,
+                _pr_is_open=lambda ws, br: True,
+                _live_pr_head_sha_fn=lambda ws, br: delta_t,
+                _merge_phase_enabled=True,
+                _reverify_fn=_reverify_pass,
+                _delta_review_fn=fix_true._review_fn,
+                _merge_pr_fn=_capturing_head_merge_stub(captured_t),
+                fab_fetch_origin="fetchsrc",
+                fab_delta_shortcut=True,
+            )
 
         assert res_true["status"] == "merged"
-        assert read_ledger(ledger_true)["repo-a/specs/plan-a.md"].head_sha == delta_t
+        assert read_ledger(ledger_true)[node_id].head_sha == delta_t
     finally:
         fix_true.tearDown()
 
@@ -1697,47 +1654,13 @@ def test_fabreadmit_flag_reversal_kills_shortcut(request, tmp_path):
     fix_false.tmp_path = tmp_path / "false_arm"
     fix_false.setUp()
     try:
-        live.onboard_zero_legacy_repository(fix_false.repo)
-        live.fabpub_activation_barrier([fix_false.repo])
-        store_root_f = live.repository_broker_namespace(fix_false.repo)
-        identity_f = live.canonical_repository_identity(fix_false.repo)
-
-        subprocess.run(["git", "-C", str(fix_false.repo), "checkout", "-q", "-b", "feat/pr1"], check=True)
-        fix_false.write("pkg/a.py", "candidate content false arm\n")
-        cand_f = fix_false._vendor_commit("c1 candidate false arm", vendor="Codex")
-
-        pub_txn_f = prepare_publish_transaction(
-            fix_false.repo,
-            owned_paths=fix_false.OWNED,
-            checkpoint_root=fix_false.tmp_path / "coord_pub_false",
-            branch="feat/pr1",
-            envelope_authority_preimage=_authority_preimage(identity_f, "feat/pr1"),
-        )
-        pub_txn_f.resume()
-        assert pub_txn_f.committed_head_sha == cand_f
-
-        fetchsrc_f = fix_false.tmp_path / "fetchsrc.git"
-        subprocess.run(["git", "init", "-q", "--bare", str(fetchsrc_f)], check=True)
-        subprocess.run(["git", "-C", str(fix_false.repo), "remote", "add", "fetchsrc", str(fetchsrc_f)], check=True)
-        subprocess.run(["git", "-C", str(fix_false.repo), "push", "-q", "-f", "fetchsrc", "HEAD:refs/heads/main"], check=True)
-        subprocess.run(["git", "-C", str(fix_false.repo), "push", "-q", "-f", "fetchsrc", "HEAD:refs/heads/feat/pr1"], check=True)
-
-        ledger_false = fix_false.tmp_path / "train.ledger.jsonl"
-        append_record(ledger_false, LedgerRecord(
-            node_id="repo-a/specs/plan-a.md", status="pr_open", branch="feat/pr1", head_sha=cand_f,
-            fab_run_id=fix_false.RUN, merge_order=0))
-
-        fix_false.write("pkg/a.py", "delta advance content false arm\n")
-        delta_f = fix_false._vendor_commit("c2 advance false arm", vendor="Codex")
-        subprocess.run(["git", "-C", str(fix_false.repo), "push", "-q", "-f", "fetchsrc", "HEAD:refs/heads/feat/pr1"], check=True)
-
-        pub_store_f = LinearizableAdmissionStore(store_root_f, lambda _: True)
-        pub_svc_f = _pub_service(store_root_f, _CountingAdapter(), store=pub_store_f)
-        pub_res_f = pub_svc_f.execute(_publish_transaction_request(identity_f, "feat/pr1", pub_txn_f, fix_false.repo))
-        assert pub_res_f.accepted
+        seeded_false = fix_false._setup_broker_readmit_candidate(node_id=node_id)
+        ledger_false = seeded_false["ledger_path"]
+        cand_f = seeded_false["candidate_head"]
+        delta_f = seeded_false["delta_head"]
 
         coord_f = CoordinatorRuntime(
-            train_id="train1", coordinator_root=tmp_path / "coord_f", roadmap_path="train.md",
+            train_id="train1", coordinator_root=seeded_false["coordinator_root"], roadmap_path="train.md",
             roadmap_digest="d" * 64, workspace_id=str(fix_false.repo), broker_client=build_routing_broker_client(),
         )
 
@@ -1751,7 +1674,7 @@ def test_fabreadmit_flag_reversal_kills_shortcut(request, tmp_path):
                     roadmap, ledger_false, run_mode="governed",
                     resolve_workspace=lambda n: fix_false.repo,
                     coordinator_runtime=coord_f,
-                    resolve_owned_paths=lambda n: fix_false.OWNED,
+                    resolve_owned_paths=None,
                     _run_loop=lambda *a, **kw: (None, []),
                     _publish=_make_publish_stub({}),
                     _preflight_fn=lambda *a, **kw: None,
@@ -1765,7 +1688,7 @@ def test_fabreadmit_flag_reversal_kills_shortcut(request, tmp_path):
                     fab_delta_shortcut=True,
                 )
 
-        assert res_false["status"] in ("merge_halted", "blocked", "halted") or read_ledger(ledger_false)["repo-a/specs/plan-a.md"].head_sha == cand_f
-        assert read_ledger(ledger_false)["repo-a/specs/plan-a.md"].head_sha == cand_f, "ledger head must remain at candidate head when readiness is False"
+        assert res_false["status"] != "merged"
+        assert read_ledger(ledger_false)[node_id].head_sha == cand_f, "ledger head must remain at candidate head when readiness is False"
     finally:
         fix_false.tearDown()

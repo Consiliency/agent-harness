@@ -199,7 +199,7 @@ def test_fabreadmit_readmit_advanced_head_verb(request, tmp_path):
     with pytest.raises((PermissionError, ValueError), match=r"(?i)prior|unadmitted|unknown|forged|empty"):
         svc_empty_readmit.readmit_advanced_head(auth_empty)
     assert len(store_empty.replay()) == 0
-    assert readmit_empty_adapter.calls == 0
+    assert len(readmit_empty_adapter.calls) == 0
 
     # 2. FR-R5-01 & FR-R7-02: Setup activated store partition & seed real authorized publish
     repo_dir, transaction, identity, store_root = _authorized_publish_fixture(tmp_path, name="verbs-repo")
@@ -248,4 +248,4 @@ def test_fabreadmit_readmit_advanced_head_verb(request, tmp_path):
     assert receipt.repository == identity
     assert receipt.proposed_head_sha == delta_sha
     assert receipt.allocated_epoch == 2
-    assert readmit_adapter.calls == 0
+    assert len(readmit_adapter.calls) == 0

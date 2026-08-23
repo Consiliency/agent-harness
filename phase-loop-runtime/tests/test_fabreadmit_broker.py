@@ -18,7 +18,17 @@ from _fabreadmit_tdd_guard import (
 
 def test_fabreadmit_guard_inventory_integrity():
     """Collect the always-green frozen-inventory control with the SL-0 suite."""
+    import hashlib
+
+    from test_fab_activation_promotion import (
+        _SUPPORTED_PUBLISHERS_DIGEST,
+        _SUPPORTED_PUBLISHERS_FROZEN_SET,
+    )
+
     _check_guard_inventory()
+    assert hashlib.sha256(
+        ("\n".join(sorted(_SUPPORTED_PUBLISHERS_FROZEN_SET)) + "\n").encode("utf-8")
+    ).hexdigest() == _SUPPORTED_PUBLISHERS_DIGEST
 
 
 class _CountingAdapter:
@@ -109,6 +119,7 @@ def test_fabreadmit_broker_rediffs_head_range_and_rejects_scope_escape_without_a
     )
 
     from phase_loop_runtime.convergence.broker.verbs import BrokerService
+    from phase_loop_runtime.convergence.broker import live
     from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
     from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore
     from phase_loop_runtime.convergence.contracts import DeltaReadmitAuthority
@@ -141,14 +152,40 @@ def test_fabreadmit_broker_rediffs_head_range_and_rejects_scope_escape_without_a
     assert len(store_empty.replay()) == 0
     assert len(readmit_empty_adapter.calls) == 0
 
-    # 2. FR-R5-01 & FR-R7-02: Setup activated store partition & seed real authorized publish
-    repo_dir, transaction, identity, store_root = _authorized_publish_fixture(tmp_path, name="rediff-repo")
+    # 2. FR-R5-01 & FR-R7-02: Make unowned.py part of the base, before the
+    # admitted candidate.  The positive prior..proposed range may then contain
+    # only the owned a.py change; the following escape commit is the sole scope
+    # violation.
+    repo_dir = tmp_path / "rediff-repo"
+    repo_dir.mkdir()
+    subprocess.run(["git", "init", "-q", "-b", "main", str(repo_dir)], check=True)
+    subprocess.run(["git", "-C", str(repo_dir), "config", "user.email", "t@example.com"], check=True)
+    subprocess.run(["git", "-C", str(repo_dir), "config", "user.name", "Test"], check=True)
+    (repo_dir / "a.py").write_text("v1\n", encoding="utf-8")
+    (repo_dir / "unowned.py").write_text("v1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo_dir), "add", "a.py", "unowned.py"], check=True)
+    subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", "base with unowned path"], check=True)
+    live.onboard_zero_legacy_repository(repo_dir)
+    live.fabpub_activation_barrier([repo_dir])
+    identity = live.canonical_repository_identity(repo_dir)
+    store_root = live.repository_broker_namespace(repo_dir)
+    branch = "feat/x"
+    subprocess.run(["git", "-C", str(repo_dir), "checkout", "-q", "-b", branch], check=True)
+    (repo_dir / "a.py").write_text("candidate\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo_dir), "add", "a.py"], check=True)
+    transaction = prepare_publish_transaction(
+        repo_dir,
+        owned_paths=("a.py",),
+        checkpoint_root=tmp_path / "coord" / "rediff-repo",
+        branch=branch,
+        envelope_authority_preimage=_authority_preimage(identity, branch),
+    )
+    transaction.resume()
     pub_adapter = _CountingAdapter()
     store = LinearizableAdmissionStore(store_root, lambda _: True)
     evidence = BrokerEvidenceStore(store_root)
     pub_service = _service(store_root, pub_adapter, store=store)
 
-    branch = "feat/x"
     pub_req = _publish_transaction_request(identity, branch, transaction, repo_dir)
     pub_res = pub_service.execute(pub_req)
     assert pub_res.accepted, "prior publish transaction must be admitted"
@@ -231,12 +268,7 @@ def test_fabreadmit_broker_rediffs_head_range_and_rejects_scope_escape_without_a
     assert len(store.replay()) == 1
     assert len(readmit_adapter.calls) == 0
 
-    # 3. Create committed range in repo
-    (repo_dir / "unowned.py").write_text("v1\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(repo_dir), "add", "."], check=True)
-    subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", "unowned init"], check=True)
-
-    # Commit 1 (in scope): touches a.py
+    # 3. Commit 1 (in scope): touches a.py
     (repo_dir / "a.py").write_text("v2\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(repo_dir), "add", "."], check=True)
     subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", "in scope"], check=True)
