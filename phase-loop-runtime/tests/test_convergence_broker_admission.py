@@ -35,191 +35,176 @@ def test_fabreadmit_prior_record_predicate_and_chained_readmit_binding(request, 
     )
 
     from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
-    from phase_loop_runtime.convergence.broker import live
+    from phase_loop_runtime.convergence.broker.verbs import publish_committed_branch_idempotency_key
     from phase_loop_runtime.convergence.contracts import DeltaReadmitAuthority, ReadmitAdmissionBinding
+    from phase_loop_runtime.publishing import prepare_publish_transaction
+    from test_fabpub_shared_epoch import (
+        _authorized_publish_fixture,
+        _publish_transaction_request,
+        _service,
+        _CountingAdapter,
+        _authority_preimage,
+    )
 
-    # 1. Setup real Git repository and validated checkpoint root (FR-SL0-05)
-    repo_dir = tmp_path / "repo"
-    repo_dir.mkdir()
-    subprocess.run(["git", "init", "-q", str(repo_dir)], check=True)
-    subprocess.run(["git", "-C", str(repo_dir), "config", "user.email", "t@example.com"], check=True)
-    subprocess.run(["git", "-C", str(repo_dir), "config", "user.name", "Test"], check=True)
-    (repo_dir / "pkg").mkdir()
-    (repo_dir / "pkg" / "a.py").write_text("v1\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(repo_dir), "add", "."], check=True)
-    subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", "init"], check=True)
-    base_sha = subprocess.check_output(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True).strip()
+    # 1. Create activated real repository & real durable/resumed FABPUB transaction
+    repo_dir, transaction, identity, store_root = _authorized_publish_fixture(
+        tmp_path, name="first-hop-readmit"
+    )
+    adapter = _CountingAdapter()
+    store = LinearizableAdmissionStore(store_root, lambda _: True)
+    svc = _service(store_root, adapter, store=store)
 
-    ckpt = tmp_path / "ckpt"
-    ckpt.mkdir()
-    (ckpt / "train.json").write_text('{"train_id": "train1", "repository": "Consiliency/agent-harness"}', encoding="utf-8")
+    # 2. Seed prior publish admission through real BrokerService.execute(PreAdmissionEnvelope)
+    branch = "feat/x"
+    pub_req = _publish_transaction_request(identity, branch, transaction, repo_dir)
+    pub_outcome = svc.execute(pub_req)
+    assert pub_outcome.accepted, "prior publish transaction must be admitted"
+    initial_count = len(store.replay())
+    assert initial_count == 1
+
+    # 3. Prove durable prior admission key equals recomputed publish_committed_branch_idempotency_key
+    prior_admission = store.replay()[0]
+    recomputed_key = publish_committed_branch_idempotency_key(
+        identity, branch, transaction.committed_head_sha
+    )
+    assert prior_admission.idempotency_key == recomputed_key
+
+    # 4. Bind checkpoint root and create real descendant proposed commit
+    ckpt = transaction.store.checkpoint_root
+    (ckpt / "train.json").write_text(f'{{"train_id": "train1", "repository": "{identity}"}}', encoding="utf-8")
     (ckpt / "n1.json").write_text('{"node_id": "n1"}', encoding="utf-8")
 
-    # 2. Setup activated store partition via real FABPUB onboarding (FR-R3-01, FR-R3-02)
-    live.onboard_zero_legacy_repository(repo_dir)
-    live.fabpub_activation_barrier([repo_dir])
-    store_root = live.repository_broker_namespace(repo_dir)
-    store = LinearizableAdmissionStore(store_root, lambda _: True)
+    (repo_dir / "a.py").write_text("v2 advance\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo_dir), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", "advance 1"], check=True)
+    proposed_head_sha1 = subprocess.check_output(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True).strip()
 
-    # 3. Create real durable first-hop publish transaction at checkpoint root (FR-R4-05)
-    from phase_loop_runtime.publishing import prepare_publish_transaction, _transaction_authority
-    from phase_loop_runtime.convergence.broker.verbs import publish_committed_branch_idempotency_key
-
-    pub_txn = prepare_publish_transaction(
-        repo_dir,
-        owned_paths=("pkg/",),
-        checkpoint_root=ckpt,
-        branch="feat/x",
-        envelope_authority_preimage=_transaction_authority(repo_dir, "feat/x"),
-        node_id="n1",
-    )
-    idempotency_key = publish_committed_branch_idempotency_key("Consiliency/agent-harness", "feat/x", base_sha)
-
-    pub_req = AdmissionRequest(
-        attempt_id="att1",
-        epoch=1,
-        fence_token="fence1",
-        approval_digest="d" * 64,
-        prior_predicate=base_sha,
-        owned_scope="pkg",
-        idempotency_key=idempotency_key,
-    )
-    store.admit(pub_req)
-    initial_count = len(store.replay())
-
-    # Negative arm: Absent publish transaction at valid checkpoint root (FR-R4-05)
+    # Negative arms: absent-transaction, key mismatch, node mismatch (structural validation)
     ckpt_no_txn = tmp_path / "ckpt_no_txn"
     ckpt_no_txn.mkdir()
-    (ckpt_no_txn / "train.json").write_text('{"train_id": "train1", "repository": "Consiliency/agent-harness"}', encoding="utf-8")
+    (ckpt_no_txn / "train.json").write_text(f'{{"train_id": "train1", "repository": "{identity}"}}', encoding="utf-8")
     (ckpt_no_txn / "n1.json").write_text('{"node_id": "n1"}', encoding="utf-8")
     auth_no_txn = DeltaReadmitAuthority(
-        repository="Consiliency/agent-harness", adapter_worktree=str(repo_dir),
-        checkpoint_root=str(ckpt_no_txn), branch="feat/x", base="main",
-        prior_head_sha=base_sha, proposed_head_sha="b" * 40, train_id="train1",
+        repository=identity, adapter_worktree=str(repo_dir),
+        checkpoint_root=str(ckpt_no_txn), branch=branch, base="main",
+        prior_head_sha=transaction.committed_head_sha, proposed_head_sha=proposed_head_sha1, train_id="train1",
         node_id="n1", fab_run_id="run1", roadmap_digest="d" * 64, provenance_digest="p" * 64,
-        owned_scope=("pkg",)
+        owned_scope=("a.py",)
     )
     with pytest.raises(PermissionError, match=r"(?i)transaction|absent|missing|publish"):
         store.admit_next(auth_no_txn)
     assert len(store.replay()) == initial_count
 
-    # Negative arm: Key mismatch at valid checkpoint root (FR-R4-05)
     ckpt_key_mismatch = tmp_path / "ckpt_key_mismatch"
     ckpt_key_mismatch.mkdir()
-    (ckpt_key_mismatch / "train.json").write_text('{"train_id": "train1", "repository": "Consiliency/agent-harness"}', encoding="utf-8")
+    (ckpt_key_mismatch / "train.json").write_text(f'{{"train_id": "train1", "repository": "{identity}"}}', encoding="utf-8")
     (ckpt_key_mismatch / "n1.json").write_text('{"node_id": "n1"}', encoding="utf-8")
     prepare_publish_transaction(
-        repo_dir, owned_paths=("pkg/",), checkpoint_root=ckpt_key_mismatch, branch="feat/other",
-        envelope_authority_preimage=_transaction_authority(repo_dir, "feat/other"), node_id="n1"
+        repo_dir, owned_paths=("a.py",), checkpoint_root=ckpt_key_mismatch, branch="feat/other",
+        envelope_authority_preimage=_authority_preimage(identity, "feat/other"), node_id="n1"
     )
     auth_key_mismatch = DeltaReadmitAuthority(
-        repository="Consiliency/agent-harness", adapter_worktree=str(repo_dir),
-        checkpoint_root=str(ckpt_key_mismatch), branch="feat/x", base="main",
-        prior_head_sha=base_sha, proposed_head_sha="b" * 40, train_id="train1",
+        repository=identity, adapter_worktree=str(repo_dir),
+        checkpoint_root=str(ckpt_key_mismatch), branch=branch, base="main",
+        prior_head_sha=transaction.committed_head_sha, proposed_head_sha=proposed_head_sha1, train_id="train1",
         node_id="n1", fab_run_id="run1", roadmap_digest="d" * 64, provenance_digest="p" * 64,
-        owned_scope=("pkg",)
+        owned_scope=("a.py",)
     )
     with pytest.raises(PermissionError, match=r"(?i)key|mismatch|idempotency|branch"):
         store.admit_next(auth_key_mismatch)
     assert len(store.replay()) == initial_count
 
-    # Negative arm: Node mismatch at valid checkpoint root (FR-R4-05)
     ckpt_node_mismatch = tmp_path / "ckpt_node_mismatch"
     ckpt_node_mismatch.mkdir()
-    (ckpt_node_mismatch / "train.json").write_text('{"train_id": "train1", "repository": "Consiliency/agent-harness"}', encoding="utf-8")
+    (ckpt_node_mismatch / "train.json").write_text(f'{{"train_id": "train1", "repository": "{identity}"}}', encoding="utf-8")
     (ckpt_node_mismatch / "other_node.json").write_text('{"node_id": "other_node"}', encoding="utf-8")
     prepare_publish_transaction(
-        repo_dir, owned_paths=("pkg/",), checkpoint_root=ckpt_node_mismatch, branch="feat/x",
-        envelope_authority_preimage=_transaction_authority(repo_dir, "feat/x"), node_id="other_node"
+        repo_dir, owned_paths=("a.py",), checkpoint_root=ckpt_node_mismatch, branch=branch,
+        envelope_authority_preimage=_authority_preimage(identity, branch), node_id="other_node"
     )
     auth_node_mismatch = DeltaReadmitAuthority(
-        repository="Consiliency/agent-harness", adapter_worktree=str(repo_dir),
-        checkpoint_root=str(ckpt_node_mismatch), branch="feat/x", base="main",
-        prior_head_sha=base_sha, proposed_head_sha="b" * 40, train_id="train1",
+        repository=identity, adapter_worktree=str(repo_dir),
+        checkpoint_root=str(ckpt_node_mismatch), branch=branch, base="main",
+        prior_head_sha=transaction.committed_head_sha, proposed_head_sha=proposed_head_sha1, train_id="train1",
         node_id="n1", fab_run_id="run1", roadmap_digest="d" * 64, provenance_digest="p" * 64,
-        owned_scope=("pkg",)
+        owned_scope=("a.py",)
     )
     with pytest.raises(PermissionError, match=r"(?i)node"):
         store.admit_next(auth_node_mismatch)
     assert len(store.replay()) == initial_count
 
-
-    # 4. Valid first-hop readmission
+    # 5. Valid first-hop readmission
     auth_hop1 = DeltaReadmitAuthority(
-        repository="Consiliency/agent-harness",
+        repository=identity,
         adapter_worktree=str(repo_dir),
         checkpoint_root=str(ckpt),
-        branch="feat/x",
+        branch=branch,
         base="main",
-        prior_head_sha=base_sha,
-        proposed_head_sha="b" * 40,
+        prior_head_sha=transaction.committed_head_sha,
+        proposed_head_sha=proposed_head_sha1,
         train_id="train1",
         node_id="n1",
         fab_run_id="run1",
         roadmap_digest="d" * 64,
         provenance_digest="p" * 64,
-        owned_scope=("pkg",),
+        owned_scope=("a.py",),
     )
     rec1 = store.admit_next(auth_hop1)
     assert len(store.replay()) == initial_count + 1
     assert getattr(rec1, "epoch", 2) == initial_count + 1
     assert rec1.binding == ReadmitAdmissionBinding(
-        prior_head_sha=base_sha,
-        proposed_head_sha="b" * 40,
+        prior_head_sha=transaction.committed_head_sha,
+        proposed_head_sha=proposed_head_sha1,
         node_id="n1",
-        owned_scope=("pkg",),
+        owned_scope=("a.py",),
         authority_digest=auth_hop1.authority_digest,
     )
 
-    # Valid chained hop2 readmission
+    # 6. Valid chained hop2 readmission
+    (repo_dir / "a.py").write_text("v3 advance\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo_dir), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", "advance 2"], check=True)
+    proposed_head_sha2 = subprocess.check_output(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True).strip()
+
     auth_hop2 = DeltaReadmitAuthority(
-        repository="Consiliency/agent-harness",
+        repository=identity,
         adapter_worktree=str(repo_dir),
         checkpoint_root=str(ckpt),
-        branch="feat/x",
+        branch=branch,
         base="main",
-        prior_head_sha="b" * 40,
-        proposed_head_sha="c" * 40,
+        prior_head_sha=proposed_head_sha1,
+        proposed_head_sha=proposed_head_sha2,
         train_id="train1",
         node_id="n1",
         fab_run_id="run1",
         roadmap_digest="d" * 64,
         provenance_digest="p" * 64,
-        owned_scope=("pkg",),
+        owned_scope=("a.py",),
     )
     rec2 = store.admit_next(auth_hop2)
     assert len(store.replay()) == initial_count + 2
     cnt = len(store.replay())
 
-    # Rejection matrix (FR-R3-11): non-vacuous arms with exact matches & unchanged count
-    # Arm 1: First-hop wrong-node ON AN ISOLATED STORE whose only prior is current base_sha (FR-R3-11)
-    repo_iso = tmp_path / "repo_iso"
-    repo_iso.mkdir()
-    subprocess.run(["git", "init", "-q", str(repo_iso)], check=True)
-    subprocess.run(["git", "-C", str(repo_iso), "config", "user.email", "t@example.com"], check=True)
-    subprocess.run(["git", "-C", str(repo_iso), "config", "user.name", "Test"], check=True)
-    (repo_iso / "pkg").mkdir()
-    (repo_iso / "pkg" / "a.py").write_text("v1\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(repo_iso), "add", "."], check=True)
-    subprocess.run(["git", "-C", str(repo_iso), "commit", "-q", "-m", "init"], check=True)
-    base_sha_iso = subprocess.check_output(["git", "-C", str(repo_iso), "rev-parse", "HEAD"], text=True).strip()
-
-    live.onboard_zero_legacy_repository(repo_iso)
-    live.fabpub_activation_barrier([repo_iso])
-    store_iso_root = live.repository_broker_namespace(repo_iso)
+    # Rejection matrix: non-vacuous arms with exact matches & unchanged count
+    # Arm 1: First-hop wrong-node on an isolated store whose prior is real published transaction
+    repo_iso, txn_iso, identity_iso, store_iso_root = _authorized_publish_fixture(
+        tmp_path, name="iso-readmit"
+    )
     store_iso = LinearizableAdmissionStore(store_iso_root, lambda _: True)
-    store_iso.admit(AdmissionRequest(
-        attempt_id="att1_iso", epoch=1, fence_token="fence1", approval_digest="d"*64,
-        prior_predicate=base_sha_iso, owned_scope="pkg", idempotency_key="key1_iso"
-    ))
+    svc_iso = _service(store_iso_root, _CountingAdapter(), store=store_iso)
+    svc_iso.execute(_publish_transaction_request(identity_iso, branch, txn_iso, repo_iso))
     cnt_iso = len(store_iso.replay())
 
+    ckpt_iso = txn_iso.store.checkpoint_root
+    (ckpt_iso / "train.json").write_text(f'{{"train_id": "train1", "repository": "{identity_iso}"}}', encoding="utf-8")
+    (ckpt_iso / "n1.json").write_text('{"node_id": "n1"}', encoding="utf-8")
+
     auth_first_wrong_node = DeltaReadmitAuthority(
-        repository="Consiliency/agent-harness", adapter_worktree=str(repo_iso),
-        checkpoint_root=str(ckpt), branch="feat/x", base="main",
-        prior_head_sha=base_sha_iso, proposed_head_sha="f" * 40, train_id="train1",
+        repository=identity_iso, adapter_worktree=str(repo_iso),
+        checkpoint_root=str(ckpt_iso), branch=branch, base="main",
+        prior_head_sha=txn_iso.committed_head_sha, proposed_head_sha="f" * 40, train_id="train1",
         node_id="wrong_node", fab_run_id="run1", roadmap_digest="d" * 64, provenance_digest="p" * 64,
-        owned_scope=("pkg",)
+        owned_scope=("a.py",)
     )
     with pytest.raises(PermissionError, match=r"(?i)node"):
         store_iso.admit_next(auth_first_wrong_node)
@@ -227,11 +212,11 @@ def test_fabreadmit_prior_record_predicate_and_chained_readmit_binding(request, 
 
     # Arm 2: Chained wrong-node
     auth_chained_wrong_node = DeltaReadmitAuthority(
-        repository="Consiliency/agent-harness", adapter_worktree=str(repo_dir),
-        checkpoint_root=str(ckpt), branch="feat/x", base="main",
-        prior_head_sha="c" * 40, proposed_head_sha="f" * 40, train_id="train1",
+        repository=identity, adapter_worktree=str(repo_dir),
+        checkpoint_root=str(ckpt), branch=branch, base="main",
+        prior_head_sha=proposed_head_sha2, proposed_head_sha="f" * 40, train_id="train1",
         node_id="wrong_node", fab_run_id="run1", roadmap_digest="d" * 64, provenance_digest="p" * 64,
-        owned_scope=("pkg",)
+        owned_scope=("a.py",)
     )
     with pytest.raises(PermissionError, match=r"(?i)node"):
         store.admit_next(auth_chained_wrong_node)
@@ -239,11 +224,11 @@ def test_fabreadmit_prior_record_predicate_and_chained_readmit_binding(request, 
 
     # Arm 3: Wrong-branch
     auth_wrong_branch = DeltaReadmitAuthority(
-        repository="Consiliency/agent-harness", adapter_worktree=str(repo_dir),
+        repository=identity, adapter_worktree=str(repo_dir),
         checkpoint_root=str(ckpt), branch="feat/wrong", base="main",
-        prior_head_sha="c" * 40, proposed_head_sha="f" * 40, train_id="train1",
+        prior_head_sha=proposed_head_sha2, proposed_head_sha="f" * 40, train_id="train1",
         node_id="n1", fab_run_id="run1", roadmap_digest="d" * 64, provenance_digest="p" * 64,
-        owned_scope=("pkg",)
+        owned_scope=("a.py",)
     )
     with pytest.raises(PermissionError, match=r"(?i)branch"):
         store.admit_next(auth_wrong_branch)
@@ -251,9 +236,9 @@ def test_fabreadmit_prior_record_predicate_and_chained_readmit_binding(request, 
 
     # Arm 4: Wrong-scope
     auth_wrong_scope = DeltaReadmitAuthority(
-        repository="Consiliency/agent-harness", adapter_worktree=str(repo_dir),
-        checkpoint_root=str(ckpt), branch="feat/x", base="main",
-        prior_head_sha="c" * 40, proposed_head_sha="f" * 40, train_id="train1",
+        repository=identity, adapter_worktree=str(repo_dir),
+        checkpoint_root=str(ckpt), branch=branch, base="main",
+        prior_head_sha=proposed_head_sha2, proposed_head_sha="f" * 40, train_id="train1",
         node_id="n1", fab_run_id="run1", roadmap_digest="d" * 64, provenance_digest="p" * 64,
         owned_scope=("unadmitted_scope",)
     )
@@ -263,23 +248,23 @@ def test_fabreadmit_prior_record_predicate_and_chained_readmit_binding(request, 
 
     # Arm 5: Stale prior head
     auth_stale = DeltaReadmitAuthority(
-        repository="Consiliency/agent-harness", adapter_worktree=str(repo_dir),
-        checkpoint_root=str(ckpt), branch="feat/x", base="main",
-        prior_head_sha=base_sha, proposed_head_sha="f" * 40, train_id="train1",
+        repository=identity, adapter_worktree=str(repo_dir),
+        checkpoint_root=str(ckpt), branch=branch, base="main",
+        prior_head_sha=transaction.committed_head_sha, proposed_head_sha="f" * 40, train_id="train1",
         node_id="n1", fab_run_id="run1", roadmap_digest="d" * 64, provenance_digest="p" * 64,
-        owned_scope=("pkg",)
+        owned_scope=("a.py",)
     )
     with pytest.raises(PermissionError, match=r"(?i)stale|prior"):
         store.admit_next(auth_stale)
     assert len(store.replay()) == cnt
 
-    # Arm 6: Never-admitted / forged prior head (FR-R3-11)
+    # Arm 6: Never-admitted / forged prior head
     auth_forged = DeltaReadmitAuthority(
-        repository="Consiliency/agent-harness", adapter_worktree=str(repo_dir),
-        checkpoint_root=str(ckpt), branch="feat/x", base="main",
+        repository=identity, adapter_worktree=str(repo_dir),
+        checkpoint_root=str(ckpt), branch=branch, base="main",
         prior_head_sha="f" * 40, proposed_head_sha="g" * 40, train_id="train1",
         node_id="n1", fab_run_id="run1", roadmap_digest="d" * 64, provenance_digest="p" * 64,
-        owned_scope=("pkg",)
+        owned_scope=("a.py",)
     )
     with pytest.raises(PermissionError, match=r"(?i)prior|unadmitted|unknown|forged"):
         store.admit_next(auth_forged)
