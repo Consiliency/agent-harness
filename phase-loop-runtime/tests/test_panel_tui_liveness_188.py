@@ -18,6 +18,7 @@ seconds instead of the production 180s.
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import time
 
@@ -76,7 +77,7 @@ def test_wedged_pty_leg_is_reclaimed_on_heartbeat_extinction(tmp_path, monkeypat
     output_file = tmp_path / "panel-claude.txt"  # never written
 
     start = time.monotonic()
-    rc, text, status, _pty_tail = _run_claude_tui_session(
+    rc, text, status, pty_tail = _run_claude_tui_session(
         command=["sh", "-c", _WEDGE_SCRIPT],
         cwd=tmp_path,
         prompt="review this",
@@ -96,6 +97,9 @@ def test_wedged_pty_leg_is_reclaimed_on_heartbeat_extinction(tmp_path, monkeypat
         f"backstop (would prove a fixed timeout) and not never"
     )
     assert rc != 0, f"a reclaimed wedge must be fail-closed non-zero; got rc={rc}"
+    assert "elapsed_s=" in pty_tail
+    assert "last_progress_age_s=" in pty_tail
+    assert "child_running=true" in pty_tail
 
 
 def test_wedged_stall_marker_classifies_degraded(tmp_path, monkeypatch):
@@ -122,6 +126,146 @@ def test_wedged_stall_marker_classifies_degraded(tmp_path, monkeypatch):
         f"not a bare ERROR/silent OK; got {status!r}"
     )
     assert status in pi.LEG_STATUSES
+
+
+def test_stalled_tui_retries_once_in_fresh_scratch_and_recovers(
+    tmp_path, monkeypatch, caplog
+):
+    review_dir = tmp_path / "review"
+    out_dir = tmp_path / "out"
+    review_dir.mkdir()
+    out_dir.mkdir()
+    calls = []
+
+    def run_tui(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return 1, "", "claude_tui_stalled", "first attempt tail"
+        return 0, "Recovered review.\nAGREE", "claude_tui_file_output", ""
+
+    monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
+    monkeypatch.setattr(pi, "_claude_code_support_status", lambda: (True, ""))
+    monkeypatch.setattr(pi, "_claude_subscription_auth_ok", lambda env: (True, ""))
+    monkeypatch.setattr(pi, "_run_claude_tui_session", run_tui)
+
+    with caplog.at_level(logging.WARNING):
+        status, text = pi._exec_claude_tui_leg(
+            review_dir, out_dir, 600, "bundle", env={}, backstop_s=600
+        )
+
+    assert status == "OK"
+    assert text == "Recovered review.\nAGREE"
+    assert len(calls) == 2
+    assert calls[0]["cwd"] == out_dir
+    assert calls[0]["output_file"] == out_dir / "panel-claude.txt"
+    assert calls[1]["cwd"] != out_dir
+    assert calls[1]["cwd"].parent == out_dir
+    assert calls[1]["output_file"] == calls[1]["cwd"] / "panel-claude.txt"
+    assert calls[1]["backstop_s"] <= calls[0]["backstop_s"]
+    assert "claude_tui_stalled" in caplog.text
+    assert "first attempt tail" in caplog.text
+
+
+def test_stalled_tui_retries_only_once_and_preserves_first_partial_review(
+    tmp_path, monkeypatch
+):
+    review_dir = tmp_path / "review"
+    out_dir = tmp_path / "out"
+    review_dir.mkdir()
+    out_dir.mkdir()
+    calls = []
+
+    def run_tui(**kwargs):
+        calls.append(kwargs)
+        text = "unfinished first review" if len(calls) == 1 else ""
+        return 1, text, "claude_tui_stalled", f"tail {len(calls)}"
+
+    monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
+    monkeypatch.setattr(pi, "_claude_code_support_status", lambda: (True, ""))
+    monkeypatch.setattr(pi, "_claude_subscription_auth_ok", lambda env: (True, ""))
+    monkeypatch.setattr(pi, "_run_claude_tui_session", run_tui)
+
+    status, text = pi._exec_claude_tui_leg(
+        review_dir, out_dir, 600, "bundle", env={}, backstop_s=600
+    )
+
+    assert len(calls) == 2
+    assert status == "DEGRADED"
+    assert text == "unfinished first review"
+
+
+def test_stalled_tui_does_not_retry_past_original_backstop(tmp_path, monkeypatch):
+    review_dir = tmp_path / "review"
+    out_dir = tmp_path / "out"
+    review_dir.mkdir()
+    out_dir.mkdir()
+    calls = []
+
+    monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
+    monkeypatch.setattr(pi, "_claude_code_support_status", lambda: (True, ""))
+    monkeypatch.setattr(pi, "_claude_subscription_auth_ok", lambda env: (True, ""))
+    monkeypatch.setattr(
+        pi,
+        "_run_claude_tui_session",
+        lambda **kwargs: calls.append(kwargs)
+        or (1, "", "claude_tui_stalled", "tail"),
+    )
+    clock = iter((100.0, 700.0))
+    monkeypatch.setattr(pi.time, "monotonic", lambda: next(clock))
+
+    status, text = pi._exec_claude_tui_leg(
+        review_dir, out_dir, 600, "bundle", env={}, backstop_s=600
+    )
+
+    assert len(calls) == 1
+    assert status == "DEGRADED"
+    assert text == ""
+
+
+def test_capture_enabled_stall_remains_single_attempt(tmp_path, monkeypatch):
+    review_dir = tmp_path / "review"
+    out_dir = tmp_path / "out"
+    review_dir.mkdir()
+    out_dir.mkdir()
+    calls = []
+
+    class Authority:
+        def rewrite_provider_output_path(self, output_file):
+            return str(output_file)
+
+        def read_expected_output(self, _name):
+            return b""
+
+        def outer_environment(self):
+            return {}
+
+    monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
+    monkeypatch.setattr(
+        pi, "_capture_provider_preflight", lambda _authority, command, _latch: command
+    )
+    monkeypatch.setattr(pi, "_record_capture_review_attempt", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        pi,
+        "_run_claude_tui_session",
+        lambda **kwargs: calls.append(kwargs)
+        or (1, "", "claude_tui_stalled", "tail"),
+    )
+
+    status, text = pi._exec_claude_tui_leg(
+        review_dir,
+        out_dir,
+        600,
+        "bundle",
+        env={},
+        backstop_s=600,
+        agy_capture=object(),
+        provider_authority=Authority(),
+    )
+
+    assert len(calls) == 1
+    assert status == "DEGRADED"
+    assert text == ""
+    assert list(out_dir.iterdir()) == [out_dir / "panel-claude.txt"]
 
 
 def test_refusal_looking_tui_text_stays_degraded_without_typed_fallback(tmp_path, monkeypatch):

@@ -2574,6 +2574,14 @@ def _run_claude_tui_session(
             if log == "claude_tui_file_output"
             else _sanitized_pty_tail(terminal_bytes)
         )
+        if log == "claude_tui_stalled":
+            finished_at = time.monotonic()
+            diagnostic = (
+                f"elapsed_s={finished_at - start_monotonic:.1f} "
+                f"last_progress_age_s={finished_at - last_heartbeat:.1f} "
+                f"child_running={str(proc is not None and proc.poll() is None).lower()}"
+            )
+            tail = diagnostic + (f"; {tail}" if tail else "")
         return rc, text, log, tail
 
     try:
@@ -3325,6 +3333,12 @@ def _exec_claude_tui_leg(
     )
     if quiescence_latch is not None:
         tui_extra["quiescence_latch"] = quiescence_latch
+    leg_started = time.monotonic()
+    total_backstop_s = (
+        max(1, int(backstop_s))
+        if backstop_s is not None
+        else max(1, int(timeout_s), _MAX_LEG_TIMEOUT_S)
+    )
     rc, review_text, log_text, pty_tail = _run_claude_tui_session(
         command=command,
         cwd=out_dir,
@@ -3336,6 +3350,46 @@ def _exec_claude_tui_leg(
         backstop_s=backstop_s,
         **tui_extra,
     )
+    # Consiliency/agent-harness#343: a read-only by-reference Fable review can
+    # suffer turn extinction after otherwise healthy tool progress. Retry that
+    # exact typed failure once in a fresh scratch cwd. The retry stays inside the
+    # original leg backstop, uses the same staged inputs and subscription-TUI
+    # command, and still requires its own canonical output file. Capture-enabled
+    # launches remain single-attempt because their output namespace is sealed.
+    if log_text == "claude_tui_stalled" and agy_capture is None:
+        remaining_backstop_s = total_backstop_s - (
+            time.monotonic() - leg_started
+        )
+        if remaining_backstop_s >= 1:
+            first_review_text = review_text
+            retry_out_dir = Path(
+                tempfile.mkdtemp(prefix="claude-retry-", dir=out_dir)
+            )
+            retry_output_file = retry_out_dir / "panel-claude.txt"
+            retry_prompt = _render_claude_tui_prompt(
+                artifact, child_review_dir, retry_output_file, mode
+            )
+            remaining_backstop_s = total_backstop_s - (
+                time.monotonic() - leg_started
+            )
+            if remaining_backstop_s >= 1:
+                logging.getLogger(__name__).warning(
+                    "advisor-panel claude TUI attempt 1/2 DEGRADED "
+                    "[claude_tui_stalled]: %s",
+                    pty_tail or "no PTY tail",
+                )
+                rc, retry_review_text, log_text, pty_tail = _run_claude_tui_session(
+                    command=command,
+                    cwd=retry_out_dir,
+                    prompt=retry_prompt,
+                    output_file=retry_output_file,
+                    timeout_s=timeout_s,
+                    env=env,
+                    mode=mode,
+                    backstop_s=max(1, int(remaining_backstop_s)),
+                    **tui_extra,
+                )
+                review_text = retry_review_text or first_review_text
     if quiescence_latch is not None:
         quiescence_latch.raise_if_set()
     if agy_capture is not None:
