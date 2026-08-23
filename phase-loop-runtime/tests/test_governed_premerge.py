@@ -170,8 +170,18 @@ def test_fabreadmit_governed_premerge_readiness_interlock(request):
         skip(FABREADMIT_SKIP_REASON)
 
     readiness = fabreadmit_symbol("phase_loop_runtime.governed_premerge", "_FAB_DELTA_BROKER_READMIT_READY")
+    cap_ver = fabreadmit_symbol("phase_loop_runtime.fabreadmit_capability", "FABREADMIT_CAPABILITY_VERSION")
+    check_fn = fabreadmit_symbol("phase_loop_runtime.governed_premerge", "_has_no_hardcoded_epoch_publishers")
+
+    valid_readiness = (
+        readiness is True
+        and cap_ver == 1
+        and callable(check_fn)
+        and check_fn() is True
+    )
+
     fabreadmit_require(
         fabreadmit_this_nodeid(request),
-        readiness is True,
-        "_FAB_DELTA_BROKER_READMIT_READY is False in governed_premerge",
+        valid_readiness,
+        "_FAB_DELTA_BROKER_READMIT_READY readiness interlock missing or False in governed_premerge",
     )

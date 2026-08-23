@@ -3453,7 +3453,7 @@ def test_fabpub_train_resume_post_commit_pre_checkpoint(tmp_path: Path, request)
     assert PreAdmissionEnvelope is not None and _fabpub_hashlib is not None
 
 
-def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request):
+def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request, tmp_path):
     """run_train routes readmission through real repository routing broker client."""
     from pytest import skip
 
@@ -3471,8 +3471,18 @@ def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request):
     readmit_routing = fabreadmit_symbol(
         "phase_loop_runtime.train_runner", "_commit_broker_readmitted_head"
     )
+
+    valid_routing = False
+    if readmit_routing is not None:
+        try:
+            import inspect
+            sig = inspect.signature(readmit_routing)
+            valid_routing = "receipt" in sig.parameters or len(sig.parameters) >= 2
+        except Exception:
+            valid_routing = False
+
     fabreadmit_require(
         fabreadmit_this_nodeid(request),
-        readmit_routing is not None,
-        "_commit_broker_readmitted_head missing in train_runner",
+        valid_routing,
+        "_commit_broker_readmitted_head missing or unvalidated in train_runner",
     )

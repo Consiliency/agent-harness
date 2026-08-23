@@ -163,9 +163,9 @@ FABREADMIT_TEST_PATHS = tuple(
 FABREADMIT_OWNED_PATHS_COUNT = len(FABREADMIT_OWNED_PATHS)
 FABREADMIT_TEST_PATHS_COUNT = len(FABREADMIT_TEST_PATHS)
 
-FABREADMIT_OWNED_PATHS_SHA256 = fabreadmit_inventory_digest(FABREADMIT_OWNED_PATHS)
-FABREADMIT_TEST_PATHS_SHA256 = fabreadmit_inventory_digest(FABREADMIT_TEST_PATHS)
-FABREADMIT_RED_NODEIDS_SHA256 = fabreadmit_inventory_digest(FABREADMIT_RED_NODEIDS)
+FABREADMIT_OWNED_PATHS_SHA256 = "8c74a5a098735a210967733af1b89a18b7b414b950ba5aa5a2434536ffb71254"
+FABREADMIT_TEST_PATHS_SHA256 = "c0cc6f49079d42d4fce2e85a8b0c9a1dcf0df586d7613e8a71dd34be51bb0b67"
+FABREADMIT_RED_NODEIDS_SHA256 = "6026033266db6695ebd3d038efdcac6450690dd8c2612293368db0bd8d0fccaf"
 
 
 # ---------------------------------------------------------------------------
@@ -226,6 +226,9 @@ def fabreadmit_this_nodeid(request) -> str:
 
 
 def test_fabreadmit_guard_inventory_and_digests():
+    import ast
+    from pathlib import Path
+
     assert FABREADMIT_RED_COUNT == 18
     assert len(FABREADMIT_RED_ANCHORS) == FABREADMIT_RED_COUNT
     for nodeid in FABREADMIT_RED_NODEIDS:
@@ -233,3 +236,28 @@ def test_fabreadmit_guard_inventory_and_digests():
     assert fabreadmit_inventory_digest(FABREADMIT_OWNED_PATHS) == FABREADMIT_OWNED_PATHS_SHA256
     assert fabreadmit_inventory_digest(FABREADMIT_TEST_PATHS) == FABREADMIT_TEST_PATHS_SHA256
     assert fabreadmit_inventory_digest(FABREADMIT_RED_NODEIDS) == FABREADMIT_RED_NODEIDS_SHA256
+
+    # AST verification: each frozen nodeid resolves to exactly one test function
+    # in its named file and carries the capability skip guard.
+    repo_root = Path(__file__).resolve().parent.parent.parent
+    for nodeid in FABREADMIT_RED_NODEIDS:
+        filepath, func_name = nodeid.split("::")
+        abs_file = repo_root / filepath
+        assert abs_file.is_file(), f"Test file missing: {filepath}"
+        tree = ast.parse(abs_file.read_text(encoding="utf-8"), filename=str(abs_file))
+        matching_funcs = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == func_name
+        ]
+        assert len(matching_funcs) == 1, (
+            f"Nodeid {nodeid} must resolve to exactly one function in {filepath}, "
+            f"found {len(matching_funcs)}"
+        )
+        fn_ast = matching_funcs[0]
+        fn_src = ast.unparse(fn_ast)
+        has_skip_guard = (
+            "fabreadmit_capability_active" in fn_src or
+            "FABREADMIT_SKIP_REASON" in fn_src or
+            "fabreadmit_require" in fn_src
+        )
+        assert has_skip_guard, f"Function {func_name} in {filepath} missing capability skip guard"

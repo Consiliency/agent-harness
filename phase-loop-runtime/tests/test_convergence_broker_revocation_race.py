@@ -364,7 +364,7 @@ def test_concurrent_revocation_cannot_land_during_the_admission_lock(tmp_path, r
     assert landed.is_set(), "the writer must proceed once the admission releases the lock"
 
 
-def test_fabreadmit_revocation_race_under_admission_lock(request):
+def test_fabreadmit_revocation_race_under_admission_lock(request, tmp_path):
     """Revocation race under admission lock during readmission."""
     from pytest import skip
 
@@ -380,4 +380,18 @@ def test_fabreadmit_revocation_race_under_admission_lock(request):
         skip(FABREADMIT_SKIP_REASON)
 
     readmit_verb = fabreadmit_symbol("phase_loop_runtime.convergence.broker.verbs", "BrokerService.readmit_advanced_head")
-    fabreadmit_require(fabreadmit_this_nodeid(request), readmit_verb is not None, "BrokerService.readmit_advanced_head missing")
+
+    valid_race_guard = False
+    if readmit_verb is not None:
+        try:
+            import inspect
+            sig = inspect.signature(readmit_verb)
+            valid_race_guard = "authority" in sig.parameters or len(sig.parameters) >= 2
+        except Exception:
+            valid_race_guard = False
+
+    fabreadmit_require(
+        fabreadmit_this_nodeid(request),
+        valid_race_guard,
+        "Revocation race under admission lock during readmission missing or unvalidated",
+    )

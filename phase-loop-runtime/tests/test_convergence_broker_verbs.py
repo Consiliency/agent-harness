@@ -144,7 +144,7 @@ def test_replay_after_complete_returns_prior_result_not_none(tmp_path, request):
     assert replay.accepted, "idempotent recovery is accepted, not blocked"
 
 
-def test_fabreadmit_readmit_advanced_head_verb(request):
+def test_fabreadmit_readmit_advanced_head_verb(request, tmp_path):
     """BrokerService readmit_advanced_head verb."""
     from pytest import skip
 
@@ -159,7 +159,20 @@ def test_fabreadmit_readmit_advanced_head_verb(request):
     if not fabreadmit_capability_active():
         skip(FABREADMIT_SKIP_REASON)
 
-    verb_fn = fabreadmit_symbol("phase_loop_runtime.convergence.broker.verbs", "BrokerService.readmit_advanced_head")
-    if verb_fn is None:
-        verb_fn = fabreadmit_symbol("phase_loop_runtime.convergence.broker.verbs", "readmit_advanced_head")
-    fabreadmit_require(fabreadmit_this_nodeid(request), verb_fn is not None, "readmit_advanced_head verb missing")
+    broker_service_cls = fabreadmit_symbol("phase_loop_runtime.convergence.broker.verbs", "BrokerService")
+    readmit_verb = fabreadmit_symbol("phase_loop_runtime.convergence.broker.verbs", "BrokerService.readmit_advanced_head")
+
+    valid_verb = False
+    if broker_service_cls is not None and readmit_verb is not None:
+        try:
+            import inspect
+            sig = inspect.signature(readmit_verb)
+            valid_verb = "authority" in sig.parameters or len(sig.parameters) >= 2
+        except Exception:
+            valid_verb = False
+
+    fabreadmit_require(
+        fabreadmit_this_nodeid(request),
+        valid_verb,
+        "BrokerService.readmit_advanced_head verb missing or unvalidated",
+    )

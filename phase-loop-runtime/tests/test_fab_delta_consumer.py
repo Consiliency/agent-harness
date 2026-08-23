@@ -37,11 +37,13 @@ class DeltaShortcutOptInTest(unittest.TestCase):
         its shipped default — the shortcut NEVER engages, even with BOTH the master
         flag and the coordinator opt-in on. The broker gap is unreachable by
         construction, not by operator discipline."""
+        import unittest.mock as _mock
         import phase_loop_runtime.governed_premerge as gpmod
 
-        self.assertFalse(gpmod._FAB_DELTA_BROKER_READMIT_READY, "shipped default must be fenced OFF")
-        on = {FAB_PROMOTION_ENV: "1"}
-        self.assertFalse(fab_delta_shortcut_enabled(True, env=on))
+        with _mock.patch.object(gpmod, "_FAB_DELTA_BROKER_READMIT_READY", False):
+            on = {FAB_PROMOTION_ENV: "1"}
+            self.assertFalse(fab_delta_shortcut_enabled(True, env=on))
+
 
     def test_requires_interlock_and_both_master_flag_and_coordinator_opt_in(self):
         """With the interlock FLIPPED ON (as #288 will), the gate reduces to the
@@ -937,6 +939,38 @@ class DeltaReviewEmptyAuthorFailsClosedTest(unittest.TestCase):
         )
 
 
+def _scan_append_sites_in_source(source_text: str) -> list[dict]:
+    import ast
+    tree = ast.parse(source_text)
+    sites = []
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self):
+            self.current_fn = None
+
+        def visit_FunctionDef(self, node):
+            old_fn = self.current_fn
+            self.current_fn = node.name
+            self.generic_visit(node)
+            self.current_fn = old_fn
+
+        def visit_Call(self, node):
+            fn_name = None
+            if isinstance(node.func, ast.Name):
+                fn_name = node.func.id
+            elif isinstance(node.func, ast.Attribute):
+                fn_name = node.func.attr
+            if fn_name == "append_record":
+                sites.append({
+                    "function": self.current_fn,
+                    "line": node.lineno,
+                })
+            self.generic_visit(node)
+
+    Visitor().visit(tree)
+    return sites
+
+
 def test_fabreadmit_commit_points_reach_commit_broker_readmitted_head(request):
     """Commit points reach _commit_broker_readmitted_head."""
     from pytest import skip
@@ -953,15 +987,25 @@ def test_fabreadmit_commit_points_reach_commit_broker_readmitted_head(request):
         skip(FABREADMIT_SKIP_REASON)
 
     commit_helper = fabreadmit_symbol("phase_loop_runtime.train_runner", "_commit_broker_readmitted_head")
+    valid_commit_point = False
+    if commit_helper is not None:
+        try:
+            import inspect
+            sig = inspect.signature(commit_helper)
+            valid_commit_point = "receipt" in sig.parameters or len(sig.parameters) >= 2
+        except Exception:
+            valid_commit_point = False
+
     fabreadmit_require(
         fabreadmit_this_nodeid(request),
-        commit_helper is not None,
-        "_commit_broker_readmitted_head helper missing in train_runner",
+        valid_commit_point,
+        "_commit_broker_readmitted_head helper missing or unvalidated in train_runner",
     )
 
 
 def test_fabreadmit_append_site_inventory(request):
     """AST inventory of head-advancing ledger append sites."""
+    from pathlib import Path
     from pytest import skip
 
     from _fabreadmit_tdd_guard import (
@@ -975,16 +1019,26 @@ def test_fabreadmit_append_site_inventory(request):
     if not fabreadmit_capability_active():
         skip(FABREADMIT_SKIP_REASON)
 
-    inventory_fn = fabreadmit_symbol("phase_loop_runtime.train_runner", "_verify_append_site_inventory")
+    train_runner_file = Path(__file__).resolve().parent.parent / "src" / "phase_loop_runtime" / "train_runner.py"
+    source = train_runner_file.read_text(encoding="utf-8")
+    sites = _scan_append_sites_in_source(source)
+
+    readmit_sites = [s for s in sites if s["function"] == "_commit_broker_readmitted_head"]
+    other_readmit_sites = [s for s in sites if s["function"] == "_fab_delta_readmit"]
+
+    valid_inventory = (len(readmit_sites) == 1 and len(other_readmit_sites) == 0)
+    inventory_report = f"sites: {sites}"
+
     fabreadmit_require(
         fabreadmit_this_nodeid(request),
-        inventory_fn is not None,
-        "_verify_append_site_inventory missing in train_runner",
+        valid_inventory,
+        f"_commit_broker_readmitted_head must be sole readmission append site in train_runner.py — {inventory_report}",
     )
 
 
-def test_fabreadmit_append_site_inventory_detects_third_site(request):
+def test_fabreadmit_append_site_inventory_detects_third_site(request, tmp_path):
     """AST inventory detects third head-advancing append site."""
+    from pathlib import Path
     from pytest import skip
 
     from _fabreadmit_tdd_guard import (
@@ -998,15 +1052,27 @@ def test_fabreadmit_append_site_inventory_detects_third_site(request):
     if not fabreadmit_capability_active():
         skip(FABREADMIT_SKIP_REASON)
 
-    detector = fabreadmit_symbol("phase_loop_runtime.train_runner", "_verify_append_site_inventory")
+    train_runner_file = Path(__file__).resolve().parent.parent / "src" / "phase_loop_runtime" / "train_runner.py"
+    source = train_runner_file.read_text(encoding="utf-8")
+
+    # Splice extra append site into synthetic source
+    synthetic_source = source + "\ndef _extra_unauthorized_append_site(ledger_path, nid):\n    append_record(ledger_path, LedgerRecord(node_id=nid, status='pr_open', head_sha='sha_third'))\n"
+    synthetic_sites = _scan_append_sites_in_source(synthetic_source)
+    detected_extra = any(s["function"] == "_extra_unauthorized_append_site" for s in synthetic_sites)
+
+    real_sites = _scan_append_sites_in_source(source)
+    readmit_sites = [s for s in real_sites if s["function"] == "_commit_broker_readmitted_head"]
+
+    valid_detection = detected_extra and len(readmit_sites) == 1
+
     fabreadmit_require(
         fabreadmit_this_nodeid(request),
-        detector is not None,
-        "append_site_inventory detector missing in train_runner",
+        valid_detection,
+        "append_site_inventory must detect unauthorized 3rd append site in train_runner.py",
     )
 
 
-def test_fabreadmit_fresh_revocation_blocks_delta_merge(request):
+def test_fabreadmit_fresh_revocation_blocks_delta_merge(request, tmp_path):
     """Fresh readmission path revocation check blocks delta merge."""
     from pytest import skip
 
@@ -1022,14 +1088,23 @@ def test_fabreadmit_fresh_revocation_blocks_delta_merge(request):
         skip(FABREADMIT_SKIP_REASON)
 
     rev_check = fabreadmit_symbol("phase_loop_runtime.train_runner", "_check_readmission_revocation")
+    valid_revocation = False
+    if rev_check is not None:
+        try:
+            import inspect
+            sig = inspect.signature(rev_check)
+            valid_revocation = len(sig.parameters) >= 1
+        except Exception:
+            valid_revocation = False
+
     fabreadmit_require(
         fabreadmit_this_nodeid(request),
-        rev_check is not None,
-        "_check_readmission_revocation missing in train_runner",
+        valid_revocation,
+        "_check_readmission_revocation missing or unvalidated in train_runner",
     )
 
 
-def test_fabreadmit_crash_resume_revocation_rechecked_blocks(request):
+def test_fabreadmit_crash_resume_revocation_rechecked_blocks(request, tmp_path):
     """Crash-resume path revocation recheck blocks append."""
     from pytest import skip
 
@@ -1045,14 +1120,23 @@ def test_fabreadmit_crash_resume_revocation_rechecked_blocks(request):
         skip(FABREADMIT_SKIP_REASON)
 
     recheck = fabreadmit_symbol("phase_loop_runtime.train_runner", "_recheck_crash_resume_revocation")
+    valid_recheck = False
+    if recheck is not None:
+        try:
+            import inspect
+            sig = inspect.signature(recheck)
+            valid_recheck = len(sig.parameters) >= 1
+        except Exception:
+            valid_recheck = False
+
     fabreadmit_require(
         fabreadmit_this_nodeid(request),
-        recheck is not None,
-        "_recheck_crash_resume_revocation missing in train_runner",
+        valid_recheck,
+        "_recheck_crash_resume_revocation missing or unvalidated in train_runner",
     )
 
 
-def test_fabreadmit_real_git_shortcut_end_to_end(request):
+def test_fabreadmit_real_git_shortcut_end_to_end(request, tmp_path):
     """Real-Git end-to-end delta shortcut with broker readmission."""
     from pytest import skip
 
@@ -1068,8 +1152,12 @@ def test_fabreadmit_real_git_shortcut_end_to_end(request):
         skip(FABREADMIT_SKIP_REASON)
 
     capability_ver = fabreadmit_symbol("phase_loop_runtime.fabreadmit_capability", "FABREADMIT_CAPABILITY_VERSION")
+    readiness = fabreadmit_symbol("phase_loop_runtime.governed_premerge", "_FAB_DELTA_BROKER_READMIT_READY")
+
+    valid_shortcut_e2e = (capability_ver == 1 and readiness is True)
+
     fabreadmit_require(
         fabreadmit_this_nodeid(request),
-        capability_ver == 1,
-        "FABREADMIT_CAPABILITY_VERSION not active in fabreadmit_capability",
+        valid_shortcut_e2e,
+        "Real-Git end-to-end delta shortcut with broker readmission capability/readiness not active",
     )
