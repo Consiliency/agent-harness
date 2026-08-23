@@ -3455,6 +3455,7 @@ def test_fabpub_train_resume_post_commit_pre_checkpoint(tmp_path: Path, request)
 
 def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request, tmp_path):
     """run_train routes readmission through real repository routing broker client."""
+    import os
     import subprocess
     import unittest.mock as _mock
     from pytest import skip
@@ -3486,30 +3487,52 @@ def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request, 
     from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
     from phase_loop_runtime.train_ledger import append_record, LedgerRecord, read_ledger
     from phase_loop_runtime.train_roadmap import parse_train_roadmap
+    from phase_loop_runtime.governed_premerge import FAB_PROMOTION_ENV
+    import phase_loop_runtime.governed_premerge as gpmod
     from test_fab_activation_promotion import TRAIN_2NODE_MD, _make_publish_stub, _reverify_pass, _capturing_merge_stub
+    from test_fabpub_shared_epoch import (
+        _authorized_publish_fixture,
+        _publish_transaction_request,
+        _service as _pub_service,
+        _CountingAdapter,
+    )
 
-    # Setup real Git repo workspace (FR-SL0-12)
+    # Setup real Git repo workspace with origin & fetchsrc remotes (FR-SL0-12, FR-R5-03)
+    fetchsrc_dir = tmp_path / "fetchsrc.git"
+    subprocess.run(["git", "init", "-q", "--bare", str(fetchsrc_dir)], check=True)
+
     repo_dir = tmp_path / "repo"
     repo_dir.mkdir()
     subprocess.run(["git", "init", "-q", str(repo_dir)], check=True)
     subprocess.run(["git", "-C", str(repo_dir), "config", "user.email", "t@example.com"], check=True)
     subprocess.run(["git", "-C", str(repo_dir), "config", "user.name", "Test"], check=True)
+    subprocess.run(["git", "-C", str(repo_dir), "remote", "add", "origin", "git@github.com:testorg/testrepo.git"], check=True)
+    subprocess.run(["git", "-C", str(repo_dir), "remote", "add", "fetchsrc", str(fetchsrc_dir)], check=True)
+
     (repo_dir / "pkg").mkdir()
     (repo_dir / "pkg" / "a.py").write_text("v1\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(repo_dir), "add", "."], check=True)
     subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", "init"], check=True)
     base_sha = subprocess.check_output(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True).strip()
-
-    (repo_dir / "pkg" / "a.py").write_text("v2\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(repo_dir), "add", "."], check=True)
-    subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", "advance"], check=True)
-    delta_head = subprocess.check_output(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True).strip()
+    subprocess.run(["git", "-C", str(repo_dir), "push", "-q", "-f", "fetchsrc", "HEAD:refs/heads/main"], check=True)
 
     # Real FABPUB onboarding & store_root namespace (FR-R3-01, FR-R3-02, FR-R4-06)
     live.onboard_zero_legacy_repository(repo_dir)
     live.fabpub_activation_barrier([repo_dir])
     store_root = live.repository_broker_namespace(repo_dir)
     store = LinearizableAdmissionStore(store_root, lambda _: True)
+
+    # FR-R5-01: Seed real authorized publish first
+    pub_repo, pub_txn, pub_id, _ = _authorized_publish_fixture(tmp_path / "tr_pub", name="tr-pub")
+    pub_svc = _pub_service(store_root, _CountingAdapter(), store=store)
+    pub_res = pub_svc.execute(_publish_transaction_request(pub_id, "feat/repo-a", pub_txn, repo_dir))
+    assert pub_res.accepted
+
+    (repo_dir / "pkg" / "a.py").write_text("v2\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo_dir), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", "advance"], check=True)
+    delta_head = subprocess.check_output(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True).strip()
+    subprocess.run(["git", "-C", str(repo_dir), "push", "-q", "-f", "fetchsrc", f"HEAD:refs/heads/feat/repo-a"], check=True)
 
     # FR-R4-06: Production build_routing_broker_client with NO root argument
     routing_client = build_routing_broker_client()
@@ -3539,23 +3562,32 @@ def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request, 
         routing_spy_called.append(True)
         return real_commit_helper(*args, **kwargs)
 
-    with _mock.patch.object(tr, "_commit_broker_readmitted_head", side_effect=_spy_commit_helper):
-        result = tr.run_train(
-            roadmap,
-            ledger_path,
-            run_mode="governed",
-            resolve_workspace=lambda n: ws_map[n.node_id],
-            coordinator_runtime=coord_runtime,
-            _run_loop=lambda *a, **kw: (None, []),
-            _publish=_make_publish_stub({}),
-            _pr_is_open=lambda ws, br: True,
-            _live_pr_head_sha_fn=lambda ws, br: delta_head,
-            _merge_phase_enabled=True,
-            _reverify_fn=_reverify_pass,
-            _merge_fn=_capturing_merge_stub({}),
-            fab_fetch_origin="fetchsrc",
-        )
+    captured = {}
+    with _mock.patch.dict(os.environ, {FAB_PROMOTION_ENV: "1"}):
+        with _mock.patch.object(gpmod, "_FAB_DELTA_BROKER_READMIT_READY", True):
+            with _mock.patch.object(tr, "_commit_broker_readmitted_head", side_effect=_spy_commit_helper):
+                result = tr.run_train(
+                    roadmap,
+                    ledger_path,
+                    run_mode="governed",
+                    resolve_workspace=lambda n: ws_map[n.node_id],
+                    coordinator_runtime=coord_runtime,
+                    resolve_owned_paths=lambda n: ["pkg/"],
+                    _run_loop=lambda *a, **kw: (None, []),
+                    _publish=_make_publish_stub({}),
+                    _preflight_fn=lambda *a, **kw: None,
+                    _pr_is_open=lambda ws, br: True,
+                    _live_pr_head_sha_fn=lambda ws, br: delta_head,
+                    _merge_phase_enabled=True,
+                    _reverify_fn=_reverify_pass,
+                    _delta_review_fn=lambda *a, **kw: None,
+                    _merge_pr_fn=_capturing_merge_stub(captured),
+                    fab_fetch_origin="fetchsrc",
+                    fab_delta_shortcut=True,
+                )
 
     assert len(routing_spy_called) > 0, "_commit_broker_readmitted_head must be routed via CoordinatorRuntime"
     assert result.get("status") == "merged"
-    assert len(store.replay()) > 0, "durable admission record must be created via routing broker client"
+    replayed = LinearizableAdmissionStore(store_root, lambda _: True).replay()
+    assert len(replayed) == 2, "durable admission record must be created via routing broker client"
+    assert getattr(replayed[-1], "epoch", 2) == 2

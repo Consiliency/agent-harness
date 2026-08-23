@@ -1509,9 +1509,12 @@ def test_fabreadmit_hardcoded_epoch_publisher_interlock(request, tmp_path):
         fab_delta_shortcut_enabled,
     )
 
-    # 1. Verify frozen supported publisher classification digest
+    # 1. FR-R5-06: Verify production default classification digest matches frozen digest
+    production_publishers = getattr(
+        _has_no_hardcoded_epoch_publishers, "DEFAULT_SUPPORTED_PUBLISHERS", _SUPPORTED_PUBLISHERS_FROZEN_SET
+    )
     computed_digest = hashlib.sha256(
-        ("\n".join(sorted(_SUPPORTED_PUBLISHERS_FROZEN_SET)) + "\n").encode("utf-8")
+        ("\n".join(sorted(production_publishers)) + "\n").encode("utf-8")
     ).hexdigest()
     assert computed_digest == _SUPPORTED_PUBLISHERS_DIGEST, "supported publisher classification digest mismatch"
 
@@ -1525,8 +1528,8 @@ def test_fabreadmit_hardcoded_epoch_publisher_interlock(request, tmp_path):
         "    return publish_committed_branch(req, epoch=1)\n",
         encoding="utf-8",
     )
-    # Production predicate driven through _SUPPORTED_PUBLISHERS_FROZEN_SET against mutated tree must return False
-    scan_res = _has_no_hardcoded_epoch_publishers(search_root=synthetic_dir, supported_publishers=_SUPPORTED_PUBLISHERS_FROZEN_SET)
+    # Production predicate driven through search_root against mutated tree must return False
+    scan_res = _has_no_hardcoded_epoch_publishers(search_root=synthetic_dir)
     assert scan_res is False
 
     # FR-R3-10: Drive the enablement predicate — not just the helper — through the synthetic tree
@@ -1536,12 +1539,13 @@ def test_fabreadmit_hardcoded_epoch_publisher_interlock(request, tmp_path):
     ):
         assert fab_delta_shortcut_enabled(True, env={FAB_PROMOTION_ENV: "1"}) is False
 
-    # 3. Assert True on clean production tree
+    # 3. FR-R5-06: Production default scan on clean tree must equal True (and fail if legacy hardcoded publishers exist)
     assert _has_no_hardcoded_epoch_publishers() is True
 
 
 def test_fabreadmit_flag_reversal_kills_shortcut(request, tmp_path):
     """Reverting readiness interlock kills real-git shortcut."""
+    import os
     import unittest.mock as _mock
     from pytest import skip
 
@@ -1569,29 +1573,121 @@ def test_fabreadmit_flag_reversal_kills_shortcut(request, tmp_path):
     from phase_loop_runtime.governed_premerge import FAB_PROMOTION_ENV, fab_delta_shortcut_enabled
     from test_fab_delta_consumer import DeltaReadmitTransactionTest
     from phase_loop_runtime import train_runner as tr
-    from phase_loop_runtime.train_ledger import read_ledger
+    from phase_loop_runtime.train_ledger import read_ledger, append_record, LedgerRecord
+    from phase_loop_runtime.train_runner import CoordinatorRuntime
+    from phase_loop_runtime.convergence.broker import live
+    from phase_loop_runtime.convergence.broker.live import build_routing_broker_client
+    from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
+    from test_fabpub_shared_epoch import (
+        _authorized_publish_fixture,
+        _publish_transaction_request,
+        _service as _pub_service,
+        _CountingAdapter,
+    )
 
     # Default readiness must be True
     assert getattr(gp, "_FAB_DELTA_BROKER_READMIT_READY", True) is True
 
-    # FR-SL0-10: Under reverted readiness constant, drive actual shortcut predicate & real-Git _fab_delta_readmit
-    with _mock.patch.object(gp, "_FAB_DELTA_BROKER_READMIT_READY", False):
-        assert gp._FAB_DELTA_BROKER_READMIT_READY is False
-        # Shortcut predicate evaluates False even with FAB_PROMOTION_ENV=1
-        assert fab_delta_shortcut_enabled(True, env={FAB_PROMOTION_ENV: "1"}) is False
+    # 1. True Arm: genuinely engaged run_train with readiness True -> routes delta head and merges
+    fix_true = DeltaReadmitTransactionTest()
+    fix_true.tmp_path = tmp_path / "true_arm"
+    fix_true.setUp()
+    try:
+        ledger_true, base_t, cand_t, delta_t = fix_true._setup_candidate_and_advance()
+        live.onboard_zero_legacy_repository(fix_true.repo)
+        live.fabpub_activation_barrier([fix_true.repo])
+        store_root_t = live.repository_broker_namespace(fix_true.repo)
 
-        # Real-Git fixture execution under readiness False
-        fixture = DeltaReadmitTransactionTest()
-        fixture.tmp_path = tmp_path
-        fixture.setUp()
-        try:
-            ledger_path, base, candidate_head, delta_head = fixture._setup_candidate_and_advance()
-            res = tr._fab_delta_readmit(
-                fixture.repo, ledger_path, node_id="n1", run_id=fixture.RUN, branch="feat/pr1", pr_url="u",
-                merge_order=0, admitted_head_sha=candidate_head, live_head_sha=delta_head,
-                delta_review_fn=fixture._review_fn, owned_paths=fixture.OWNED, fab_fetch_origin="fetchsrc",
-            )
-            assert res is None, "shortcut must not engage when readiness constant is False"
-            assert read_ledger(ledger_path)["n1"].head_sha == candidate_head, "ledger head must not advance when readiness is False"
-        finally:
-            fixture.tearDown()
+        pub_store_t = LinearizableAdmissionStore(store_root_t, lambda _: True)
+        pub_repo_t, pub_txn_t, pub_id_t, _ = _authorized_publish_fixture(tmp_path / "true_pub", name="true-pub")
+        pub_svc_t = _pub_service(store_root_t, _CountingAdapter(), store=pub_store_t)
+        pub_res_t = pub_svc_t.execute(_publish_transaction_request(pub_id_t, "feat/pr1", pub_txn_t, fix_true.repo))
+        assert pub_res_t.accepted
+
+        coord_t = CoordinatorRuntime(
+            train_id="train1", coordinator_root=tmp_path / "coord_t", roadmap_path="train.md",
+            roadmap_digest="d" * 64, workspace_id=str(fix_true.repo), broker_client=build_routing_broker_client(),
+        )
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+        append_record(ledger_true, LedgerRecord(
+            node_id="repo-a/specs/plan-a.md", status="pr_open", branch="feat/pr1", head_sha=cand_t,
+            fab_run_id=fix_true.RUN, merge_order=0))
+
+        captured_t = {}
+        with _mock.patch.dict(os.environ, {FAB_PROMOTION_ENV: "1"}):
+            with _mock.patch.object(gp, "_FAB_DELTA_BROKER_READMIT_READY", True):
+                res_true = tr.run_train(
+                    roadmap, ledger_true, run_mode="governed",
+                    resolve_workspace=lambda n: fix_true.repo,
+                    coordinator_runtime=coord_t,
+                    resolve_owned_paths=lambda n: fix_true.OWNED,
+                    _run_loop=lambda *a, **kw: (None, []),
+                    _publish=_make_publish_stub({}),
+                    _preflight_fn=lambda *a, **kw: None,
+                    _pr_is_open=lambda ws, br: True,
+                    _live_pr_head_sha_fn=lambda ws, br: delta_t,
+                    _merge_phase_enabled=True,
+                    _reverify_fn=_reverify_pass,
+                    _delta_review_fn=fix_true._review_fn,
+                    _merge_pr_fn=_capturing_merge_stub(captured_t),
+                    fab_fetch_origin="fetchsrc",
+                    fab_delta_shortcut=True,
+                )
+
+        assert res_true["status"] == "merged"
+        assert read_ledger(ledger_true)["repo-a/specs/plan-a.md"].head_sha == delta_t
+    finally:
+        fix_true.tearDown()
+
+    # 2. FR-R5-05: False Arm: identical genuinely engaged run_train with readiness False -> fails closed, ledger head unchanged
+    fix_false = DeltaReadmitTransactionTest()
+    fix_false.tmp_path = tmp_path / "false_arm"
+    fix_false.setUp()
+    try:
+        ledger_false, base_f, cand_f, delta_f = fix_false._setup_candidate_and_advance()
+        live.onboard_zero_legacy_repository(fix_false.repo)
+        live.fabpub_activation_barrier([fix_false.repo])
+        store_root_f = live.repository_broker_namespace(fix_false.repo)
+
+        pub_store_f = LinearizableAdmissionStore(store_root_f, lambda _: True)
+        pub_repo_f, pub_txn_f, pub_id_f, _ = _authorized_publish_fixture(tmp_path / "false_pub", name="false-pub")
+        pub_svc_f = _pub_service(store_root_f, _CountingAdapter(), store=pub_store_f)
+        pub_res_f = pub_svc_f.execute(_publish_transaction_request(pub_id_f, "feat/pr1", pub_txn_f, fix_false.repo))
+        assert pub_res_f.accepted
+
+        coord_f = CoordinatorRuntime(
+            train_id="train1", coordinator_root=tmp_path / "coord_f", roadmap_path="train.md",
+            roadmap_digest="d" * 64, workspace_id=str(fix_false.repo), broker_client=build_routing_broker_client(),
+        )
+        append_record(ledger_false, LedgerRecord(
+            node_id="repo-a/specs/plan-a.md", status="pr_open", branch="feat/pr1", head_sha=cand_f,
+            fab_run_id=fix_false.RUN, merge_order=0))
+
+        captured_f = {}
+        with _mock.patch.dict(os.environ, {FAB_PROMOTION_ENV: "1"}):
+            with _mock.patch.object(gp, "_FAB_DELTA_BROKER_READMIT_READY", False):
+                assert gp._FAB_DELTA_BROKER_READMIT_READY is False
+                assert fab_delta_shortcut_enabled(True, env={FAB_PROMOTION_ENV: "1"}) is False
+
+                res_false = tr.run_train(
+                    roadmap, ledger_false, run_mode="governed",
+                    resolve_workspace=lambda n: fix_false.repo,
+                    coordinator_runtime=coord_f,
+                    resolve_owned_paths=lambda n: fix_false.OWNED,
+                    _run_loop=lambda *a, **kw: (None, []),
+                    _publish=_make_publish_stub({}),
+                    _preflight_fn=lambda *a, **kw: None,
+                    _pr_is_open=lambda ws, br: True,
+                    _live_pr_head_sha_fn=lambda ws, br: delta_f,
+                    _merge_phase_enabled=True,
+                    _reverify_fn=_reverify_pass,
+                    _delta_review_fn=fix_false._review_fn,
+                    _merge_pr_fn=_capturing_merge_stub(captured_f),
+                    fab_fetch_origin="fetchsrc",
+                    fab_delta_shortcut=True,
+                )
+
+        assert res_false["status"] in ("merge_halted", "blocked", "halted") or read_ledger(ledger_false)["repo-a/specs/plan-a.md"].head_sha == cand_f
+        assert read_ledger(ledger_false)["repo-a/specs/plan-a.md"].head_sha == cand_f, "ledger head must remain at candidate head when readiness is False"
+    finally:
+        fix_false.tearDown()

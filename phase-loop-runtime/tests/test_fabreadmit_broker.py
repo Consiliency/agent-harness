@@ -111,24 +111,125 @@ def test_fabreadmit_broker_rediffs_head_range_and_rejects_scope_escape_without_a
     from phase_loop_runtime.convergence.broker.verbs import BrokerService
     from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
     from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore
-    from phase_loop_runtime.convergence.broker import live
     from phase_loop_runtime.convergence.contracts import DeltaReadmitAuthority
+    from phase_loop_runtime.publishing import prepare_publish_transaction
+    from test_fabpub_shared_epoch import (
+        _authorized_publish_fixture,
+        _publish_transaction_request,
+        _service,
+        _CountingAdapter,
+        _authority_preimage,
+    )
 
-    # 1. Setup real Git repository with committed range
-    repo_dir = tmp_path / "repo"
-    repo_dir.mkdir()
-    subprocess.run(["git", "init", "-q", str(repo_dir)], check=True)
-    subprocess.run(["git", "-C", str(repo_dir), "config", "user.email", "t@example.com"], check=True)
-    subprocess.run(["git", "-C", str(repo_dir), "config", "user.name", "Test"], check=True)
-    (repo_dir / "pkg").mkdir()
-    (repo_dir / "pkg" / "a.py").write_text("v1\n", encoding="utf-8")
+    # 1. FR-R5-01: Empty-store denial arm proving readmission from an empty onboarded store fails with zero appends
+    repo_empty, txn_empty, id_empty, root_empty = _authorized_publish_fixture(tmp_path, name="empty-store")
+    store_empty = LinearizableAdmissionStore(root_empty, lambda _: True)
+    svc_empty = BrokerService(store_empty, BrokerEvidenceStore(root_empty), _CountingAdapter())
+    ckpt_empty = txn_empty.store.checkpoint_root
+    (ckpt_empty / "train.json").write_text(f'{{"train_id": "train1", "repository": "{id_empty}"}}', encoding="utf-8")
+    (ckpt_empty / "n1.json").write_text('{"node_id": "n1"}', encoding="utf-8")
+    auth_empty = DeltaReadmitAuthority(
+        repository=id_empty, adapter_worktree=str(repo_empty), checkpoint_root=str(ckpt_empty),
+        branch="feat/x", base="main", prior_head_sha=txn_empty.committed_head_sha, proposed_head_sha="b" * 40,
+        train_id="train1", node_id="n1", fab_run_id="run1", roadmap_digest="d" * 64, provenance_digest="p" * 64, owned_scope=("a.py",)
+    )
+    with pytest.raises((PermissionError, ValueError), match=r"(?i)prior|unadmitted|unknown|forged|empty"):
+        svc_empty.readmit_advanced_head(auth_empty)
+    assert len(store_empty.replay()) == 0
+
+    # 2. FR-R5-01: Setup activated store partition & seed real authorized publish
+    repo_dir, transaction, identity, store_root = _authorized_publish_fixture(tmp_path, name="rediff-repo")
+    adapter = _CountingAdapter()
+    store = LinearizableAdmissionStore(store_root, lambda _: True)
+    evidence = BrokerEvidenceStore(store_root)
+    service = _service(store_root, adapter, store=store)
+
+    branch = "feat/x"
+    pub_req = _publish_transaction_request(identity, branch, transaction, repo_dir)
+    pub_res = service.execute(pub_req)
+    assert pub_res.accepted, "prior publish transaction must be admitted"
+    assert len(store.replay()) == 1
+
+    # FR-R5-04: Valid checkpoint root at transaction's checkpoint root
+    ckpt = transaction.store.checkpoint_root
+    (ckpt / "train.json").write_text(f'{{"train_id": "train1", "repository": "{identity}"}}', encoding="utf-8")
+    (ckpt / "n1.json").write_text('{"node_id": "n1"}', encoding="utf-8")
+
+    # FR-R5-04: Readmission denial matrix for structural checkpoint root validation
+    # Missing root
+    auth_missing_root = DeltaReadmitAuthority(
+        repository=identity, adapter_worktree=str(repo_dir), checkpoint_root=str(tmp_path / "missing_ckpt"),
+        branch=branch, base="main", prior_head_sha=transaction.committed_head_sha, proposed_head_sha="b" * 40,
+        train_id="train1", node_id="n1", fab_run_id="run1", roadmap_digest="d" * 64, provenance_digest="p" * 64, owned_scope=("a.py",)
+    )
+    with pytest.raises((PermissionError, ValueError), match=r"(?i)checkpoint|missing|directory|exist"):
+        service.readmit_advanced_head(auth_missing_root)
+    assert len(store.replay()) == 1
+    assert adapter.calls == 0
+
+    # Relative root
+    auth_rel_root = DeltaReadmitAuthority(
+        repository=identity, adapter_worktree=str(repo_dir), checkpoint_root="relative/ckpt",
+        branch=branch, base="main", prior_head_sha=transaction.committed_head_sha, proposed_head_sha="b" * 40,
+        train_id="train1", node_id="n1", fab_run_id="run1", roadmap_digest="d" * 64, provenance_digest="p" * 64, owned_scope=("a.py",)
+    )
+    with pytest.raises((PermissionError, ValueError), match=r"(?i)relative|absolute"):
+        service.readmit_advanced_head(auth_rel_root)
+    assert len(store.replay()) == 1
+    assert adapter.calls == 0
+
+    # Wrong train root
+    ckpt_wrong_train = tmp_path / "ckpt_wrong_train"
+    ckpt_wrong_train.mkdir()
+    (ckpt_wrong_train / "train.json").write_text(f'{{"train_id": "wrong_train", "repository": "{identity}"}}', encoding="utf-8")
+    (ckpt_wrong_train / "n1.json").write_text('{"node_id": "n1"}', encoding="utf-8")
+    auth_wrong_train = DeltaReadmitAuthority(
+        repository=identity, adapter_worktree=str(repo_dir), checkpoint_root=str(ckpt_wrong_train),
+        branch=branch, base="main", prior_head_sha=transaction.committed_head_sha, proposed_head_sha="b" * 40,
+        train_id="train1", node_id="n1", fab_run_id="run1", roadmap_digest="d" * 64, provenance_digest="p" * 64, owned_scope=("a.py",)
+    )
+    with pytest.raises((PermissionError, ValueError), match=r"(?i)train"):
+        service.readmit_advanced_head(auth_wrong_train)
+    assert len(store.replay()) == 1
+    assert adapter.calls == 0
+
+    # Wrong node root
+    ckpt_wrong_node = tmp_path / "ckpt_wrong_node"
+    ckpt_wrong_node.mkdir()
+    (ckpt_wrong_node / "train.json").write_text(f'{{"train_id": "train1", "repository": "{identity}"}}', encoding="utf-8")
+    (ckpt_wrong_node / "other_node.json").write_text('{"node_id": "other_node"}', encoding="utf-8")
+    auth_wrong_node = DeltaReadmitAuthority(
+        repository=identity, adapter_worktree=str(repo_dir), checkpoint_root=str(ckpt_wrong_node),
+        branch=branch, base="main", prior_head_sha=transaction.committed_head_sha, proposed_head_sha="b" * 40,
+        train_id="train1", node_id="n1", fab_run_id="run1", roadmap_digest="d" * 64, provenance_digest="p" * 64, owned_scope=("a.py",)
+    )
+    with pytest.raises((PermissionError, ValueError), match=r"(?i)node"):
+        service.readmit_advanced_head(auth_wrong_node)
+    assert len(store.replay()) == 1
+    assert adapter.calls == 0
+
+    # Repository identity mismatch
+    ckpt_repo_mismatch = tmp_path / "ckpt_repo_mismatch"
+    ckpt_repo_mismatch.mkdir()
+    (ckpt_repo_mismatch / "train.json").write_text('{"train_id": "train1", "repository": "Other/repo"}', encoding="utf-8")
+    (ckpt_repo_mismatch / "n1.json").write_text('{"node_id": "n1"}', encoding="utf-8")
+    auth_repo_mismatch = DeltaReadmitAuthority(
+        repository=identity, adapter_worktree=str(repo_dir), checkpoint_root=str(ckpt_repo_mismatch),
+        branch=branch, base="main", prior_head_sha=transaction.committed_head_sha, proposed_head_sha="b" * 40,
+        train_id="train1", node_id="n1", fab_run_id="run1", roadmap_digest="d" * 64, provenance_digest="p" * 64, owned_scope=("a.py",)
+    )
+    with pytest.raises((PermissionError, ValueError), match=r"(?i)repository|mismatch"):
+        service.readmit_advanced_head(auth_repo_mismatch)
+    assert len(store.replay()) == 1
+    assert adapter.calls == 0
+
+    # 3. Create committed range in repo
     (repo_dir / "unowned.py").write_text("v1\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(repo_dir), "add", "."], check=True)
-    subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", "init"], check=True)
-    base_sha = subprocess.check_output(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True).strip()
+    subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", "unowned init"], check=True)
 
-    # Commit 1 (in scope): touches pkg/a.py
-    (repo_dir / "pkg" / "a.py").write_text("v2\n", encoding="utf-8")
+    # Commit 1 (in scope): touches a.py
+    (repo_dir / "a.py").write_text("v2\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(repo_dir), "add", "."], check=True)
     subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", "in scope"], check=True)
     in_scope_sha = subprocess.check_output(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True).strip()
@@ -139,43 +240,33 @@ def test_fabreadmit_broker_rediffs_head_range_and_rejects_scope_escape_without_a
     subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", "escape"], check=True)
     escape_sha = subprocess.check_output(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True).strip()
 
-    # 2. Setup activated store partition via real FABPUB onboarding (FR-R3-01, FR-R3-02)
-    live.onboard_zero_legacy_repository(repo_dir)
-    live.fabpub_activation_barrier([repo_dir])
-    store_root = live.repository_broker_namespace(repo_dir)
-
-    adapter = _CountingAdapter()
-    store = LinearizableAdmissionStore(store_root, lambda _: True)
-    evidence = BrokerEvidenceStore(store_root)
-    service = BrokerService(store, evidence, adapter)
-
-    # In-scope execution
+    # Positive in-scope execution
     in_scope_auth = DeltaReadmitAuthority(
-        repository="Consiliency/agent-harness",
+        repository=identity,
         adapter_worktree=str(repo_dir),
-        checkpoint_root=str(tmp_path / "ckpt"),
-        branch="feat/x",
+        checkpoint_root=str(ckpt),
+        branch=branch,
         base="main",
-        prior_head_sha=base_sha,
+        prior_head_sha=transaction.committed_head_sha,
         proposed_head_sha=in_scope_sha,
         train_id="train1",
         node_id="n1",
         fab_run_id="run1",
         roadmap_digest="d" * 64,
         provenance_digest="p" * 64,
-        owned_scope=("pkg/",),
+        owned_scope=("a.py",),
     )
     res_in = service.readmit_advanced_head(in_scope_auth)
     assert res_in is not None
-    assert getattr(res_in, "allocated_epoch", 1) == 1
+    assert getattr(res_in, "allocated_epoch", 2) == 2
     assert adapter.calls == 0
 
     # Scope-escape execution
     out_of_scope_auth = DeltaReadmitAuthority(
-        repository="Consiliency/agent-harness",
+        repository=identity,
         adapter_worktree=str(repo_dir),
-        checkpoint_root=str(tmp_path / "ckpt"),
-        branch="feat/x",
+        checkpoint_root=str(ckpt),
+        branch=branch,
         base="main",
         prior_head_sha=in_scope_sha,
         proposed_head_sha=escape_sha,
@@ -184,7 +275,7 @@ def test_fabreadmit_broker_rediffs_head_range_and_rejects_scope_escape_without_a
         fab_run_id="run1",
         roadmap_digest="d" * 64,
         provenance_digest="p" * 64,
-        owned_scope=("pkg/",),
+        owned_scope=("a.py",),
     )
     with pytest.raises((PermissionError, ValueError), match=r"(?i)scope|unowned"):
         service.readmit_advanced_head(out_of_scope_auth)

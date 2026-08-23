@@ -1027,8 +1027,14 @@ def test_fabreadmit_commit_points_reach_commit_broker_readmitted_head(request, t
     from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
     from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore
     from phase_loop_runtime.train_ledger import read_ledger
+    from test_fabpub_shared_epoch import (
+        _authorized_publish_fixture,
+        _publish_transaction_request,
+        _service as _pub_service,
+        _CountingAdapter,
+    )
 
-    # Arm 1: Fresh advance readmission path (FR-R4-04)
+    # Arm 1: Fresh advance readmission path (FR-R4-04, FR-R5-01)
     fixture = DeltaReadmitTransactionTest()
     fixture.tmp_path = tmp_path / "fresh"
     fixture.setUp()
@@ -1040,6 +1046,12 @@ def test_fabreadmit_commit_points_reach_commit_broker_readmitted_head(request, t
 
         store = LinearizableAdmissionStore(store_root, lambda _: True)
         evidence = BrokerEvidenceStore(store_root)
+
+        # Seed real publish admission first (FR-R5-01)
+        pub_repo, pub_txn, pub_id, _ = _authorized_publish_fixture(tmp_path / "fresh_pub", name="fresh-pub")
+        pub_svc = _pub_service(store_root, _CountingAdapter(), store=store)
+        pub_res = pub_svc.execute(_publish_transaction_request(pub_id, "feat/pr1", pub_txn, fixture.repo))
+        assert pub_res.accepted
 
         spy_calls = []
         real_commit = tr._commit_broker_readmitted_head
@@ -1059,11 +1071,11 @@ def test_fabreadmit_commit_points_reach_commit_broker_readmitted_head(request, t
         assert res_fresh == delta_head
         assert len(spy_calls) == 1, "exactly one helper entry in fresh advance arm"
         assert read_ledger(ledger_path)["n1"].head_sha == delta_head
-        assert len(store.replay()) == 1
+        assert len(store.replay()) == 2
     finally:
         fixture.tearDown()
 
-    # Arm 2: Crash-resume readmission path (FR-R4-04)
+    # Arm 2: Crash-resume readmission path (FR-R4-04, FR-R5-01)
     fixture2 = DeltaReadmitTransactionTest()
     fixture2.tmp_path = tmp_path / "crash_resume"
     fixture2.setUp()
@@ -1075,6 +1087,12 @@ def test_fabreadmit_commit_points_reach_commit_broker_readmitted_head(request, t
 
         store2 = LinearizableAdmissionStore(store_root2, lambda _: True)
         evidence2 = BrokerEvidenceStore(store_root2)
+
+        # Seed real publish admission first (FR-R5-01)
+        pub_repo2, pub_txn2, pub_id2, _ = _authorized_publish_fixture(tmp_path / "crash_pub", name="crash-pub")
+        pub_svc2 = _pub_service(store_root2, _CountingAdapter(), store=store2)
+        pub_res2 = pub_svc2.execute(_publish_transaction_request(pub_id2, "feat/pr1", pub_txn2, fixture2.repo))
+        assert pub_res2.accepted
 
         import phase_loop_runtime.train_runner as _trmod
         real_append = _trmod.append_record
@@ -1187,6 +1205,7 @@ def test_fabreadmit_append_site_inventory_detects_third_site(request, tmp_path):
 
 def test_fabreadmit_fresh_revocation_blocks_delta_merge(request, tmp_path):
     """Fresh readmission path revocation check blocks delta merge."""
+    import pytest
     from pytest import skip
 
     from _fabreadmit_tdd_guard import (
@@ -1215,6 +1234,12 @@ def test_fabreadmit_fresh_revocation_blocks_delta_merge(request, tmp_path):
     from phase_loop_runtime.convergence.broker import live
     from phase_loop_runtime.convergence.provider_contracts import TerminalOutcomeState
     from phase_loop_runtime.train_ledger import read_ledger
+    from test_fabpub_shared_epoch import (
+        _authorized_publish_fixture,
+        _publish_transaction_request,
+        _service as _pub_service,
+        _CountingAdapter,
+    )
 
     fixture = DeltaReadmitTransactionTest()
     fixture.tmp_path = tmp_path
@@ -1228,8 +1253,21 @@ def test_fabreadmit_fresh_revocation_blocks_delta_merge(request, tmp_path):
         store_root = live.repository_broker_namespace(fixture.repo)
 
         adapter = _CountingAdapter()
-        store = LinearizableAdmissionStore(store_root, lambda _: True)
         evidence = BrokerEvidenceStore(store_root)
+
+        # FR-R5-07: Wire in-lock epoch_blocked callback
+        in_lock_consulted = []
+        def _in_lock_epoch_blocked():
+            in_lock_consulted.append(True)
+            return evidence.epoch_blocked
+
+        store = LinearizableAdmissionStore(store_root, lambda _: True, epoch_blocked=_in_lock_epoch_blocked)
+
+        # FR-R5-01: Seed real authorized publish first
+        pub_repo, pub_txn, pub_id, _ = _authorized_publish_fixture(tmp_path / "fresh_rev_pub", name="fresh-rev-pub")
+        pub_svc = _pub_service(store_root, adapter, store=store)
+        pub_res = pub_svc.execute(_publish_transaction_request(pub_id, "feat/pr1", pub_txn, fixture.repo))
+        assert pub_res.accepted
 
         # 1. Unrevoked fresh arm: allocates epoch N+1, appends once, merges
         new_head = tr._fab_delta_readmit(
@@ -1239,11 +1277,12 @@ def test_fabreadmit_fresh_revocation_blocks_delta_merge(request, tmp_path):
             broker_store=store, evidence_store=evidence,
         )
         assert new_head == delta_head
+        assert len(in_lock_consulted) > 0, "in-lock epoch_blocked callback must be consulted by store"
         rec = read_ledger(ledger_path)["n1"]
         assert rec.head_sha == delta_head
         replayed = store.replay()
-        assert len(replayed) == 1
-        assert replayed[0].epoch == 1
+        assert len(replayed) == 2
+        assert replayed[-1].epoch == 2
 
         # 2. Revoked-under-lock fresh arm (FR-R3-07): write a new file before _vendor_commit
         fixture.write("pkg/fresh_file.py", "v fresh\n")
@@ -1260,7 +1299,7 @@ def test_fabreadmit_fresh_revocation_blocks_delta_merge(request, tmp_path):
         )
         assert result is None, "revoked delta readmission must return None"
         assert read_ledger(ledger_path)["n1"].head_sha == delta_head, "ledger head must remain unchanged"
-        assert len(store.replay()) == 1, "admission count must remain unchanged"
+        assert len(store.replay()) == 2, "admission count must remain unchanged"
         assert adapter.calls == 0, "counting adapter recorded zero calls"
     finally:
         fixture.tearDown()
@@ -1268,6 +1307,7 @@ def test_fabreadmit_fresh_revocation_blocks_delta_merge(request, tmp_path):
 
 def test_fabreadmit_crash_resume_revocation_rechecked_blocks(request, tmp_path):
     """Crash-resume path revocation recheck blocks append."""
+    import pytest
     from pytest import skip
 
     from _fabreadmit_tdd_guard import (
@@ -1296,6 +1336,12 @@ def test_fabreadmit_crash_resume_revocation_rechecked_blocks(request, tmp_path):
     from phase_loop_runtime.convergence.broker import live
     from phase_loop_runtime.convergence.provider_contracts import TerminalOutcomeState
     from phase_loop_runtime.train_ledger import read_ledger
+    from test_fabpub_shared_epoch import (
+        _authorized_publish_fixture,
+        _publish_transaction_request,
+        _service as _pub_service,
+        _CountingAdapter,
+    )
 
     fixture = DeltaReadmitTransactionTest()
     fixture.tmp_path = tmp_path
@@ -1309,8 +1355,21 @@ def test_fabreadmit_crash_resume_revocation_rechecked_blocks(request, tmp_path):
         store_root = live.repository_broker_namespace(fixture.repo)
 
         adapter = _CountingAdapter()
-        store = LinearizableAdmissionStore(store_root, lambda _: True)
         evidence = BrokerEvidenceStore(store_root)
+
+        # FR-R5-07: Wire in-lock epoch_blocked callback
+        in_lock_consulted = []
+        def _in_lock_epoch_blocked():
+            in_lock_consulted.append(True)
+            return evidence.epoch_blocked
+
+        store = LinearizableAdmissionStore(store_root, lambda _: True, epoch_blocked=_in_lock_epoch_blocked)
+
+        # FR-R5-01: Seed real authorized publish first
+        pub_repo, pub_txn, pub_id, _ = _authorized_publish_fixture(tmp_path / "crash_rev_pub", name="crash-rev-pub")
+        pub_svc = _pub_service(store_root, adapter, store=store)
+        pub_res = pub_svc.execute(_publish_transaction_request(pub_id, "feat/pr1", pub_txn, fixture.repo))
+        assert pub_res.accepted
 
         # 1. Unrevoked crash-resume arm
         import phase_loop_runtime.train_runner as _trmod
@@ -1345,6 +1404,7 @@ def test_fabreadmit_crash_resume_revocation_rechecked_blocks(request, tmp_path):
             broker_store=store, evidence_store=evidence,
         )
         assert resumed_head == delta_head
+        assert len(in_lock_consulted) > 0, "in-lock epoch_blocked callback must be consulted by store"
         assert len(store.replay()) == grant_count_before, "resume must deduplicate prior grant"
 
         # 2. FR-R3-08: Revoked-before-resume arm — create a NEW advance delta_head_2 so live != admitted
@@ -1381,7 +1441,7 @@ def test_fabreadmit_crash_resume_revocation_rechecked_blocks(request, tmp_path):
         )
         assert resumed_blocked is None, "revoked crash-resume must block with zero append"
         assert read_ledger(ledger_path)["n1"].head_sha == delta_head, "ledger head must remain at delta_head"
-        assert len(store.replay()) == 2, "admission store count must remain unchanged after revocation"
+        assert len(store.replay()) == 3, "admission store count must remain unchanged after revocation"
         assert adapter.calls == 0, "adapter calls must be zero"
     finally:
         fixture.tearDown()
@@ -1389,6 +1449,7 @@ def test_fabreadmit_crash_resume_revocation_rechecked_blocks(request, tmp_path):
 
 def test_fabreadmit_real_git_shortcut_end_to_end(request, tmp_path):
     """Real-Git end-to-end delta shortcut with broker readmission."""
+    import os
     import unittest.mock as _mock
     from pytest import skip
 
@@ -1419,6 +1480,13 @@ def test_fabreadmit_real_git_shortcut_end_to_end(request, tmp_path):
     from phase_loop_runtime.convergence.broker.live import _RepositoryRoutingBrokerService, build_routing_broker_client
     from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
     import phase_loop_runtime.governed_premerge as gpmod
+    from test_fab_activation_promotion import _capturing_merge_stub
+    from test_fabpub_shared_epoch import (
+        _authorized_publish_fixture,
+        _publish_transaction_request,
+        _service as _pub_service,
+        _CountingAdapter,
+    )
 
     fixture = DeltaReadmitTransactionTest()
     fixture.tmp_path = tmp_path / "pos"
@@ -1430,6 +1498,13 @@ def test_fabreadmit_real_git_shortcut_end_to_end(request, tmp_path):
         live.onboard_zero_legacy_repository(fixture.repo)
         live.fabpub_activation_barrier([fixture.repo])
         store_root = live.repository_broker_namespace(fixture.repo)
+
+        # FR-R5-01: Seed real authorized publish first
+        pub_store = LinearizableAdmissionStore(store_root, lambda _: True)
+        pub_repo, pub_txn, pub_id, _ = _authorized_publish_fixture(tmp_path / "e2e_pub", name="e2e-pub")
+        pub_svc = _pub_service(store_root, _CountingAdapter(), store=pub_store)
+        pub_res = pub_svc.execute(_publish_transaction_request(pub_id, "feat/pr1", pub_txn, fixture.repo))
+        assert pub_res.accepted
 
         # FR-R4-06: Production build_routing_broker_client with NO root argument
         routing_client = build_routing_broker_client()
@@ -1452,25 +1527,40 @@ def test_fabreadmit_real_git_shortcut_end_to_end(request, tmp_path):
             node_id="repo-a/specs/plan-a.md", status="pr_open", branch="feat/pr1", head_sha=candidate_head,
             fab_run_id=fixture.RUN, merge_order=0))
 
-        # 1. Positive E2E Arm with CoordinatorRuntime carrying broker client & _capturing_merge_stub (FR-R3-05)
-        result = tr.run_train(
-            roadmap,
-            ledger_path,
-            run_mode="governed",
-            resolve_workspace=lambda n: ws_map[n.node_id],
-            coordinator_runtime=coord_runtime,
-            resolve_owned_paths=None,
-            _run_loop=lambda *a, **kw: (None, []),
-            _publish=_make_publish_stub({}),
-            _pr_is_open=lambda ws, br: True,
-            _live_pr_head_sha_fn=lambda ws, br: delta_head,
-            _merge_phase_enabled=True,
-            _reverify_fn=_reverify_pass,
-            _train_review_fn=fixture._review_fn,
-            _merge_fn=_capturing_merge_stub({}),
-            fab_fetch_origin="fetchsrc",
-        )
+        captured = {}
+        commit_calls = []
+        real_commit = tr._commit_broker_readmitted_head
+
+        def _spy_commit(*args, **kwargs):
+            commit_calls.append((args, kwargs))
+            return real_commit(*args, **kwargs)
+
+        # 1. Positive E2E Arm with CoordinatorRuntime carrying broker client, exact seams & opt-ins (FR-R5-02)
+        with _mock.patch.dict(os.environ, {FAB_PROMOTION_ENV: "1"}):
+            with _mock.patch.object(gpmod, "_FAB_DELTA_BROKER_READMIT_READY", True):
+                with _mock.patch.object(tr, "_commit_broker_readmitted_head", side_effect=_spy_commit):
+                    result = tr.run_train(
+                        roadmap,
+                        ledger_path,
+                        run_mode="governed",
+                        resolve_workspace=lambda n: ws_map[n.node_id],
+                        coordinator_runtime=coord_runtime,
+                        resolve_owned_paths=lambda n: fixture.OWNED,
+                        _run_loop=lambda *a, **kw: (None, []),
+                        _publish=_make_publish_stub({}),
+                        _preflight_fn=lambda *a, **kw: None,
+                        _pr_is_open=lambda ws, br: True,
+                        _live_pr_head_sha_fn=lambda ws, br: delta_head,
+                        _merge_phase_enabled=True,
+                        _reverify_fn=_reverify_pass,
+                        _delta_review_fn=fixture._review_fn,
+                        _merge_pr_fn=_capturing_merge_stub(captured),
+                        fab_fetch_origin="fetchsrc",
+                        fab_delta_shortcut=True,
+                    )
+
         assert result["status"] == "merged"
+        assert len(commit_calls) == 1, "shortcut helper entry must occur exactly once"
         rec = read_ledger(ledger_path)["repo-a/specs/plan-a.md"]
         assert rec.head_sha == delta_head, "ledger must advance to exact admitted delta head"
 
@@ -1481,8 +1571,8 @@ def test_fabreadmit_real_git_shortcut_end_to_end(request, tmp_path):
         assert gate_res.status == fp.GATE_STATUS_PASS
         admission_store = LinearizableAdmissionStore(store_root, lambda _: True)
         replayed = admission_store.replay()
-        assert len(replayed) > 0, "admission store must hold readmission record"
-        assert getattr(replayed[-1], "epoch", 1) == 1
+        assert len(replayed) == 2, "admission store must hold publish + readmission records"
+        assert getattr(replayed[-1], "epoch", 2) == 2
 
         # 2. FR-R3-04 & FR-R3-06 Kill arm (a): Reverting readiness False -> run on fresh fixture, status blocked/halted
         fix_a = DeltaReadmitTransactionTest()
@@ -1507,7 +1597,8 @@ def test_fabreadmit_real_git_shortcut_end_to_end(request, tmp_path):
                     _pr_is_open=lambda ws, br: True,
                     _live_pr_head_sha_fn=lambda ws, br: delta_a,
                     _merge_phase_enabled=True,
-                    _merge_fn=_capturing_merge_stub({}),
+                    _merge_pr_fn=_capturing_merge_stub({}),
+                    fab_delta_shortcut=True,
                 )
                 assert result_a["status"] in ("merge_halted", "blocked", "halted") or read_ledger(ledger_a)["repo-a/specs/plan-a.md"].head_sha == cand_a
         finally:
@@ -1535,7 +1626,8 @@ def test_fabreadmit_real_git_shortcut_end_to_end(request, tmp_path):
                 _pr_is_open=lambda ws, br: True,
                 _live_pr_head_sha_fn=lambda ws, br: delta_b,
                 _merge_phase_enabled=True,
-                _merge_fn=_capturing_merge_stub({}),
+                _merge_pr_fn=_capturing_merge_stub({}),
+                fab_delta_shortcut=True,
             )
             assert result_b["status"] in ("merge_halted", "blocked", "halted")
             assert read_ledger(ledger_b)["repo-a/specs/plan-a.md"].head_sha == cand_b

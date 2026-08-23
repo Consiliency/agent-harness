@@ -147,6 +147,7 @@ def test_replay_after_complete_returns_prior_result_not_none(tmp_path, request):
 def test_fabreadmit_readmit_advanced_head_verb(request, tmp_path):
     """BrokerService readmit_advanced_head verb."""
     import subprocess
+    import pytest
     from pytest import skip
 
     from _fabreadmit_tdd_guard import (
@@ -172,60 +173,74 @@ def test_fabreadmit_readmit_advanced_head_verb(request, tmp_path):
     from phase_loop_runtime.convergence.broker.verbs import BrokerService
     from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
     from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore
-    from phase_loop_runtime.convergence.broker import live
     from phase_loop_runtime.convergence.contracts import DeltaReadmitAuthority, DeltaReadmitReceipt
+    from test_fabpub_shared_epoch import (
+        _authorized_publish_fixture,
+        _publish_transaction_request,
+        _service as _pub_service,
+        _CountingAdapter,
+    )
 
-    # Setup real Git repository and activated store partition (FR-R3-01, FR-R3-02)
-    repo_dir = tmp_path / "repo"
-    repo_dir.mkdir()
-    subprocess.run(["git", "init", "-q", str(repo_dir)], check=True)
-    subprocess.run(["git", "-C", str(repo_dir), "config", "user.email", "t@example.com"], check=True)
-    subprocess.run(["git", "-C", str(repo_dir), "config", "user.name", "Test"], check=True)
-    (repo_dir / "pkg").mkdir()
-    (repo_dir / "pkg" / "a.py").write_text("v1\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(repo_dir), "add", "."], check=True)
-    subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", "init"], check=True)
-    base_sha = subprocess.check_output(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True).strip()
+    # 1. FR-R5-01: Empty-store denial arm proving readmission from an empty onboarded store fails
+    repo_empty, txn_empty, id_empty, root_empty = _authorized_publish_fixture(tmp_path, name="verbs-empty")
+    store_empty = LinearizableAdmissionStore(root_empty, lambda _: True)
+    svc_empty = BrokerService(store_empty, BrokerEvidenceStore(root_empty), _CountingAdapter())
+    ckpt_empty = txn_empty.store.checkpoint_root
+    (ckpt_empty / "train.json").write_text(f'{{"train_id": "train1", "repository": "{id_empty}"}}', encoding="utf-8")
+    (ckpt_empty / "n1.json").write_text('{"node_id": "n1"}', encoding="utf-8")
+    auth_empty = DeltaReadmitAuthority(
+        repository=id_empty, adapter_worktree=str(repo_empty), checkpoint_root=str(ckpt_empty),
+        branch="feat/x", base="main", prior_head_sha=txn_empty.committed_head_sha, proposed_head_sha="b" * 40,
+        train_id="train1", node_id="n1", fab_run_id="run1", roadmap_digest="d" * 64, provenance_digest="p" * 64, owned_scope=("a.py",)
+    )
+    with pytest.raises((PermissionError, ValueError), match=r"(?i)prior|unadmitted|unknown|forged|empty"):
+        svc_empty.readmit_advanced_head(auth_empty)
+    assert len(store_empty.replay()) == 0
 
-    (repo_dir / "pkg" / "a.py").write_text("v2\n", encoding="utf-8")
+    # 2. FR-R5-01: Setup activated store partition & seed real authorized publish
+    repo_dir, transaction, identity, store_root = _authorized_publish_fixture(tmp_path, name="verbs-repo")
+    adapter = _CountingAdapter()
+    store = LinearizableAdmissionStore(store_root, lambda _: True)
+    evidence = BrokerEvidenceStore(store_root)
+    pub_svc = _pub_service(store_root, adapter, store=store)
+
+    branch = "feat/x"
+    pub_req = _publish_transaction_request(identity, branch, transaction, repo_dir)
+    pub_res = pub_svc.execute(pub_req)
+    assert pub_res.accepted, "prior publish transaction must be admitted"
+    assert len(store.replay()) == 1
+
+    ckpt = transaction.store.checkpoint_root
+    (ckpt / "train.json").write_text(f'{{"train_id": "train1", "repository": "{identity}"}}', encoding="utf-8")
+    (ckpt / "n1.json").write_text('{"node_id": "n1"}', encoding="utf-8")
+
+    (repo_dir / "a.py").write_text("v2 advance\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(repo_dir), "add", "."], check=True)
     subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", "advance"], check=True)
     delta_sha = subprocess.check_output(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True).strip()
 
-    ckpt = tmp_path / "ckpt"
-    ckpt.mkdir()
-    (ckpt / "train.json").write_text('{"train_id": "train1", "repository": "Consiliency/agent-harness"}', encoding="utf-8")
-    (ckpt / "n1.json").write_text('{"node_id": "n1"}', encoding="utf-8")
-
-    live.onboard_zero_legacy_repository(repo_dir)
-    live.fabpub_activation_barrier([repo_dir])
-    store_root = live.repository_broker_namespace(repo_dir)
-
-    adapter = _CountingAdapter()
-    store = LinearizableAdmissionStore(store_root, lambda _: True)
-    evidence = BrokerEvidenceStore(store_root)
     service = BrokerService(store, evidence, adapter)
 
     auth = DeltaReadmitAuthority(
-        repository="Consiliency/agent-harness",
+        repository=identity,
         adapter_worktree=str(repo_dir),
         checkpoint_root=str(ckpt),
-        branch="feat/x",
+        branch=branch,
         base="main",
-        prior_head_sha=base_sha,
+        prior_head_sha=transaction.committed_head_sha,
         proposed_head_sha=delta_sha,
         train_id="train1",
         node_id="n1",
         fab_run_id="run1",
         roadmap_digest="d" * 64,
         provenance_digest="p" * 64,
-        owned_scope=("pkg/",),
+        owned_scope=("a.py",),
     )
 
     receipt = service.readmit_advanced_head(auth)
 
     assert isinstance(receipt, DeltaReadmitReceipt)
-    assert receipt.repository == "Consiliency/agent-harness"
+    assert receipt.repository == identity
     assert receipt.proposed_head_sha == delta_sha
-    assert receipt.allocated_epoch == 1
+    assert receipt.allocated_epoch == 2
     assert adapter.calls == 0
