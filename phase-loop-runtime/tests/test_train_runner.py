@@ -3489,15 +3489,25 @@ def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request, 
     from phase_loop_runtime.train_roadmap import parse_train_roadmap
     from phase_loop_runtime.governed_premerge import FAB_PROMOTION_ENV
     import phase_loop_runtime.governed_premerge as gpmod
-    from test_fab_activation_promotion import TRAIN_2NODE_MD, _make_publish_stub, _reverify_pass, _capturing_merge_stub
+    from test_fab_activation_promotion import TRAIN_2NODE_MD, _make_publish_stub, _reverify_pass
     from test_fabpub_shared_epoch import (
-        _authorized_publish_fixture,
+        _authority_preimage,
         _publish_transaction_request,
         _service as _pub_service,
         _CountingAdapter,
     )
+    from phase_loop_runtime.publishing import prepare_publish_transaction
 
-    # Setup real Git repo workspace with origin & fetchsrc remotes (FR-SL0-12, FR-R5-03)
+    def _capturing_head_merge_stub(cap: dict):
+        def _merge_pr(workspace, branch, base="main", head_sha=None, run_id=None, fab_fetch_origin="origin"):
+            cap["workspace"] = workspace
+            cap["branch"] = branch
+            cap["head_sha"] = head_sha
+            cap["run_id"] = run_id
+            return f"sha-merged-{Path(workspace).name}"
+        return _merge_pr
+
+    # Setup real Git repo workspace with origin & fetchsrc remotes (FR-SL0-12, FR-R5-03, FR-R7-03)
     fetchsrc_dir = tmp_path / "fetchsrc.git"
     subprocess.run(["git", "init", "-q", "--bare", str(fetchsrc_dir)], check=True)
 
@@ -3513,26 +3523,38 @@ def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request, 
     (repo_dir / "pkg" / "a.py").write_text("v1\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(repo_dir), "add", "."], check=True)
     subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", "init"], check=True)
-    base_sha = subprocess.check_output(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True).strip()
-    subprocess.run(["git", "-C", str(repo_dir), "push", "-q", "-f", "fetchsrc", "HEAD:refs/heads/main"], check=True)
 
     # Real FABPUB onboarding & store_root namespace (FR-R3-01, FR-R3-02, FR-R4-06)
     live.onboard_zero_legacy_repository(repo_dir)
     live.fabpub_activation_barrier([repo_dir])
     store_root = live.repository_broker_namespace(repo_dir)
-    store = LinearizableAdmissionStore(store_root, lambda _: True)
+    identity = live.canonical_repository_identity(repo_dir)
 
-    # FR-R5-01: Seed real authorized publish first
-    pub_repo, pub_txn, pub_id, _ = _authorized_publish_fixture(tmp_path / "tr_pub", name="tr-pub")
+    # FR-R7-03: Prepare and admit prior publish transaction directly in repo_dir
+    subprocess.run(["git", "-C", str(repo_dir), "checkout", "-q", "-b", "feat/repo-a"], check=True)
+    pub_txn = prepare_publish_transaction(
+        repo_dir,
+        owned_paths=("pkg/a.py",),
+        checkpoint_root=tmp_path / "coord_pub_tr",
+        branch="feat/repo-a",
+        envelope_authority_preimage=_authority_preimage(identity, "feat/repo-a"),
+    )
+    pub_txn.resume()
+    candidate_head = pub_txn.committed_head_sha
+    subprocess.run(["git", "-C", str(repo_dir), "push", "-q", "-f", "fetchsrc", "HEAD:refs/heads/main"], check=True)
+    subprocess.run(["git", "-C", str(repo_dir), "push", "-q", "-f", "fetchsrc", "HEAD:refs/heads/feat/repo-a"], check=True)
+
+    store = LinearizableAdmissionStore(store_root, lambda _: True)
     pub_svc = _pub_service(store_root, _CountingAdapter(), store=store)
-    pub_res = pub_svc.execute(_publish_transaction_request(pub_id, "feat/repo-a", pub_txn, repo_dir))
+    pub_res = pub_svc.execute(_publish_transaction_request(identity, "feat/repo-a", pub_txn, repo_dir))
     assert pub_res.accepted
+    assert pub_txn.committed_head_sha == candidate_head
 
     (repo_dir / "pkg" / "a.py").write_text("v2\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(repo_dir), "add", "."], check=True)
     subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", "advance"], check=True)
     delta_head = subprocess.check_output(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True).strip()
-    subprocess.run(["git", "-C", str(repo_dir), "push", "-q", "-f", "fetchsrc", f"HEAD:refs/heads/feat/repo-a"], check=True)
+    subprocess.run(["git", "-C", str(repo_dir), "push", "-q", "-f", "fetchsrc", "HEAD:refs/heads/feat/repo-a"], check=True)
 
     # FR-R4-06: Production build_routing_broker_client with NO root argument
     routing_client = build_routing_broker_client()
@@ -3552,7 +3574,7 @@ def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request, 
     ledger_path = tmp_path / "ledger" / "train.ledger.jsonl"
     append_record(ledger_path, LedgerRecord(
         node_id="repo-a/specs/plan-a.md", status="pr_open", branch="feat/repo-a",
-        head_sha=base_sha, pr_url="u1", merge_order=0, fab_run_id="run-a"
+        head_sha=candidate_head, pr_url="u1", merge_order=0, fab_run_id="run-a"
     ))
 
     routing_spy_called = []
@@ -3561,6 +3583,9 @@ def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request, 
     def _spy_commit_helper(*args, **kwargs):
         routing_spy_called.append(True)
         return real_commit_helper(*args, **kwargs)
+
+    def _mergeable_delta_review(*args, **kwargs):
+        return _mock.Mock(mergeable=True, panel=["p1"])
 
     captured = {}
     with _mock.patch.dict(os.environ, {FAB_PROMOTION_ENV: "1"}):
@@ -3580,14 +3605,15 @@ def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request, 
                     _live_pr_head_sha_fn=lambda ws, br: delta_head,
                     _merge_phase_enabled=True,
                     _reverify_fn=_reverify_pass,
-                    _delta_review_fn=lambda *a, **kw: None,
-                    _merge_pr_fn=_capturing_merge_stub(captured),
+                    _delta_review_fn=_mergeable_delta_review,
+                    _merge_pr_fn=_capturing_head_merge_stub(captured),
                     fab_fetch_origin="fetchsrc",
                     fab_delta_shortcut=True,
                 )
 
     assert len(routing_spy_called) > 0, "_commit_broker_readmitted_head must be routed via CoordinatorRuntime"
     assert result.get("status") == "merged"
+    assert captured.get("head_sha") == delta_head, "merge call must receive exact delta_head"
     replayed = LinearizableAdmissionStore(store_root, lambda _: True).replay()
     assert len(replayed) == 2, "durable admission record must be created via routing broker client"
-    assert getattr(replayed[-1], "epoch", 2) == 2
+    assert replayed[-1].epoch == 2

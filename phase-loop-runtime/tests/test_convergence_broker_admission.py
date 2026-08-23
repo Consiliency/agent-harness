@@ -163,7 +163,7 @@ def test_fabreadmit_prior_record_predicate_and_chained_readmit_binding(request, 
     )
     rec1 = store.admit_next(auth_hop1)
     assert len(store.replay()) == initial_count + 1
-    assert getattr(rec1, "epoch", 2) == initial_count + 1
+    assert rec1.epoch == initial_count + 1
     assert rec1.binding == ReadmitAdmissionBinding(
         prior_head_sha=transaction.committed_head_sha,
         proposed_head_sha=proposed_head_sha1,
@@ -223,7 +223,8 @@ def test_fabreadmit_prior_record_predicate_and_chained_readmit_binding(request, 
         store_iso.admit_next(auth_first_wrong_node)
     assert len(store_iso.replay()) == cnt_iso
 
-    # Arm 2: Chained wrong-node
+    # Arm 2: Chained wrong-node (FR-R7-06: write matching wrong_node.json so structural validation passes)
+    (ckpt / "wrong_node.json").write_text('{"node_id": "wrong_node"}', encoding="utf-8")
     auth_chained_wrong_node = DeltaReadmitAuthority(
         repository=identity, adapter_worktree=str(repo_dir),
         checkpoint_root=str(ckpt), branch=branch, base="main",

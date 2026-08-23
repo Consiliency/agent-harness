@@ -1509,12 +1509,18 @@ def test_fabreadmit_hardcoded_epoch_publisher_interlock(request, tmp_path):
         fab_delta_shortcut_enabled,
     )
 
-    # 1. FR-R5-06: Verify production default classification digest matches frozen digest
-    production_publishers = getattr(
-        _has_no_hardcoded_epoch_publishers, "DEFAULT_SUPPORTED_PUBLISHERS", _SUPPORTED_PUBLISHERS_FROZEN_SET
+    # 1. FR-R5-06 & FR-R7-07: Probe production DEFAULT_SUPPORTED_PUBLISHERS without fallback
+    pub_set_symbol = fabreadmit_symbol(
+        "phase_loop_runtime.governed_premerge", "DEFAULT_SUPPORTED_PUBLISHERS"
     )
+    fabreadmit_require(
+        fabreadmit_this_nodeid(request),
+        pub_set_symbol is not None,
+        "DEFAULT_SUPPORTED_PUBLISHERS missing in phase_loop_runtime.governed_premerge",
+    )
+
     computed_digest = hashlib.sha256(
-        ("\n".join(sorted(production_publishers)) + "\n").encode("utf-8")
+        ("\n".join(sorted(pub_set_symbol)) + "\n").encode("utf-8")
     ).hexdigest()
     assert computed_digest == _SUPPORTED_PUBLISHERS_DIGEST, "supported publisher classification digest mismatch"
 
@@ -1539,13 +1545,14 @@ def test_fabreadmit_hardcoded_epoch_publisher_interlock(request, tmp_path):
     ):
         assert fab_delta_shortcut_enabled(True, env={FAB_PROMOTION_ENV: "1"}) is False
 
-    # 3. FR-R5-06: Production default scan on clean tree must equal True (and fail if legacy hardcoded publishers exist)
+    # 3. FR-R5-06: Production default scan on clean tree must equal True
     assert _has_no_hardcoded_epoch_publishers() is True
 
 
 def test_fabreadmit_flag_reversal_kills_shortcut(request, tmp_path):
     """Reverting readiness interlock kills real-git shortcut."""
     import os
+    import subprocess
     import unittest.mock as _mock
     from pytest import skip
 
@@ -1569,8 +1576,17 @@ def test_fabreadmit_flag_reversal_kills_shortcut(request, tmp_path):
         "FABREADMIT_CAPABILITY_VERSION missing in phase_loop_runtime.fabreadmit_capability",
     )
 
+    ready_symbol = fabreadmit_symbol(
+        "phase_loop_runtime.governed_premerge", "_FAB_DELTA_BROKER_READMIT_READY"
+    )
+    fabreadmit_require(
+        fabreadmit_this_nodeid(request),
+        ready_symbol is not None,
+        "_FAB_DELTA_BROKER_READMIT_READY missing in phase_loop_runtime.governed_premerge",
+    )
+
     from phase_loop_runtime import governed_premerge as gp
-    from phase_loop_runtime.governed_premerge import FAB_PROMOTION_ENV, fab_delta_shortcut_enabled
+    from phase_loop_runtime.governed_premerge import FAB_PROMOTION_ENV, fab_delta_shortcut_enabled, parse_train_roadmap
     from test_fab_delta_consumer import DeltaReadmitTransactionTest
     from phase_loop_runtime import train_runner as tr
     from phase_loop_runtime.train_ledger import read_ledger, append_record, LedgerRecord
@@ -1579,29 +1595,69 @@ def test_fabreadmit_flag_reversal_kills_shortcut(request, tmp_path):
     from phase_loop_runtime.convergence.broker.live import build_routing_broker_client
     from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
     from test_fabpub_shared_epoch import (
-        _authorized_publish_fixture,
+        _authority_preimage,
         _publish_transaction_request,
         _service as _pub_service,
         _CountingAdapter,
     )
+    from phase_loop_runtime.publishing import prepare_publish_transaction
 
-    # Default readiness must be True
-    assert getattr(gp, "_FAB_DELTA_BROKER_READMIT_READY", True) is True
+    # FR-R7-10: Require readiness symbol True directly without default fallback
+    assert ready_symbol is True
+    # FR-R7-10: Assert fab_delta_shortcut_enabled is True under default readiness without monkeypatching
+    assert fab_delta_shortcut_enabled(True, env={FAB_PROMOTION_ENV: "1"}) is True
 
-    # 1. True Arm: genuinely engaged run_train with readiness True -> routes delta head and merges
+    def _capturing_head_merge_stub(cap: dict):
+        def _merge_pr(workspace, branch, base="main", head_sha=None, run_id=None, fab_fetch_origin="origin"):
+            cap["workspace"] = workspace
+            cap["branch"] = branch
+            cap["head_sha"] = head_sha
+            cap["run_id"] = run_id
+            return f"sha-merged-{Path(workspace).name}"
+        return _merge_pr
+
+    # 1. True Arm: genuinely engaged run_train with readiness True -> routes delta head and merges (FR-R7-03)
     fix_true = DeltaReadmitTransactionTest()
     fix_true.tmp_path = tmp_path / "true_arm"
     fix_true.setUp()
     try:
-        ledger_true, base_t, cand_t, delta_t = fix_true._setup_candidate_and_advance()
         live.onboard_zero_legacy_repository(fix_true.repo)
         live.fabpub_activation_barrier([fix_true.repo])
         store_root_t = live.repository_broker_namespace(fix_true.repo)
+        identity_t = live.canonical_repository_identity(fix_true.repo)
+
+        subprocess.run(["git", "-C", str(fix_true.repo), "checkout", "-q", "-b", "feat/pr1"], check=True)
+        fix_true.write("pkg/a.py", "candidate content true arm\n")
+        cand_t = fix_true._vendor_commit("c1 candidate true arm", vendor="Codex")
+
+        pub_txn_t = prepare_publish_transaction(
+            fix_true.repo,
+            owned_paths=fix_true.OWNED,
+            checkpoint_root=fix_true.tmp_path / "coord_pub_true",
+            branch="feat/pr1",
+            envelope_authority_preimage=_authority_preimage(identity_t, "feat/pr1"),
+        )
+        pub_txn_t.resume()
+        assert pub_txn_t.committed_head_sha == cand_t
+
+        fetchsrc_t = fix_true.tmp_path / "fetchsrc.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(fetchsrc_t)], check=True)
+        subprocess.run(["git", "-C", str(fix_true.repo), "remote", "add", "fetchsrc", str(fetchsrc_t)], check=True)
+        subprocess.run(["git", "-C", str(fix_true.repo), "push", "-q", "-f", "fetchsrc", "HEAD:refs/heads/main"], check=True)
+        subprocess.run(["git", "-C", str(fix_true.repo), "push", "-q", "-f", "fetchsrc", "HEAD:refs/heads/feat/pr1"], check=True)
+
+        ledger_true = fix_true.tmp_path / "train.ledger.jsonl"
+        append_record(ledger_true, LedgerRecord(
+            node_id="repo-a/specs/plan-a.md", status="pr_open", branch="feat/pr1", head_sha=cand_t,
+            fab_run_id=fix_true.RUN, merge_order=0))
+
+        fix_true.write("pkg/a.py", "delta advance content true arm\n")
+        delta_t = fix_true._vendor_commit("c2 advance true arm", vendor="Codex")
+        subprocess.run(["git", "-C", str(fix_true.repo), "push", "-q", "-f", "fetchsrc", "HEAD:refs/heads/feat/pr1"], check=True)
 
         pub_store_t = LinearizableAdmissionStore(store_root_t, lambda _: True)
-        pub_repo_t, pub_txn_t, pub_id_t, _ = _authorized_publish_fixture(tmp_path / "true_pub", name="true-pub")
         pub_svc_t = _pub_service(store_root_t, _CountingAdapter(), store=pub_store_t)
-        pub_res_t = pub_svc_t.execute(_publish_transaction_request(pub_id_t, "feat/pr1", pub_txn_t, fix_true.repo))
+        pub_res_t = pub_svc_t.execute(_publish_transaction_request(identity_t, "feat/pr1", pub_txn_t, fix_true.repo))
         assert pub_res_t.accepted
 
         coord_t = CoordinatorRuntime(
@@ -1609,9 +1665,6 @@ def test_fabreadmit_flag_reversal_kills_shortcut(request, tmp_path):
             roadmap_digest="d" * 64, workspace_id=str(fix_true.repo), broker_client=build_routing_broker_client(),
         )
         roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
-        append_record(ledger_true, LedgerRecord(
-            node_id="repo-a/specs/plan-a.md", status="pr_open", branch="feat/pr1", head_sha=cand_t,
-            fab_run_id=fix_true.RUN, merge_order=0))
 
         captured_t = {}
         with _mock.patch.dict(os.environ, {FAB_PROMOTION_ENV: "1"}):
@@ -1629,7 +1682,7 @@ def test_fabreadmit_flag_reversal_kills_shortcut(request, tmp_path):
                     _merge_phase_enabled=True,
                     _reverify_fn=_reverify_pass,
                     _delta_review_fn=fix_true._review_fn,
-                    _merge_pr_fn=_capturing_merge_stub(captured_t),
+                    _merge_pr_fn=_capturing_head_merge_stub(captured_t),
                     fab_fetch_origin="fetchsrc",
                     fab_delta_shortcut=True,
                 )
@@ -1639,29 +1692,54 @@ def test_fabreadmit_flag_reversal_kills_shortcut(request, tmp_path):
     finally:
         fix_true.tearDown()
 
-    # 2. FR-R5-05: False Arm: identical genuinely engaged run_train with readiness False -> fails closed, ledger head unchanged
+    # 2. FR-R5-05 & FR-R7-03: False Arm: identical genuinely engaged run_train with readiness False -> fails closed, ledger head unchanged
     fix_false = DeltaReadmitTransactionTest()
     fix_false.tmp_path = tmp_path / "false_arm"
     fix_false.setUp()
     try:
-        ledger_false, base_f, cand_f, delta_f = fix_false._setup_candidate_and_advance()
         live.onboard_zero_legacy_repository(fix_false.repo)
         live.fabpub_activation_barrier([fix_false.repo])
         store_root_f = live.repository_broker_namespace(fix_false.repo)
+        identity_f = live.canonical_repository_identity(fix_false.repo)
+
+        subprocess.run(["git", "-C", str(fix_false.repo), "checkout", "-q", "-b", "feat/pr1"], check=True)
+        fix_false.write("pkg/a.py", "candidate content false arm\n")
+        cand_f = fix_false._vendor_commit("c1 candidate false arm", vendor="Codex")
+
+        pub_txn_f = prepare_publish_transaction(
+            fix_false.repo,
+            owned_paths=fix_false.OWNED,
+            checkpoint_root=fix_false.tmp_path / "coord_pub_false",
+            branch="feat/pr1",
+            envelope_authority_preimage=_authority_preimage(identity_f, "feat/pr1"),
+        )
+        pub_txn_f.resume()
+        assert pub_txn_f.committed_head_sha == cand_f
+
+        fetchsrc_f = fix_false.tmp_path / "fetchsrc.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(fetchsrc_f)], check=True)
+        subprocess.run(["git", "-C", str(fix_false.repo), "remote", "add", "fetchsrc", str(fetchsrc_f)], check=True)
+        subprocess.run(["git", "-C", str(fix_false.repo), "push", "-q", "-f", "fetchsrc", "HEAD:refs/heads/main"], check=True)
+        subprocess.run(["git", "-C", str(fix_false.repo), "push", "-q", "-f", "fetchsrc", "HEAD:refs/heads/feat/pr1"], check=True)
+
+        ledger_false = fix_false.tmp_path / "train.ledger.jsonl"
+        append_record(ledger_false, LedgerRecord(
+            node_id="repo-a/specs/plan-a.md", status="pr_open", branch="feat/pr1", head_sha=cand_f,
+            fab_run_id=fix_false.RUN, merge_order=0))
+
+        fix_false.write("pkg/a.py", "delta advance content false arm\n")
+        delta_f = fix_false._vendor_commit("c2 advance false arm", vendor="Codex")
+        subprocess.run(["git", "-C", str(fix_false.repo), "push", "-q", "-f", "fetchsrc", "HEAD:refs/heads/feat/pr1"], check=True)
 
         pub_store_f = LinearizableAdmissionStore(store_root_f, lambda _: True)
-        pub_repo_f, pub_txn_f, pub_id_f, _ = _authorized_publish_fixture(tmp_path / "false_pub", name="false-pub")
         pub_svc_f = _pub_service(store_root_f, _CountingAdapter(), store=pub_store_f)
-        pub_res_f = pub_svc_f.execute(_publish_transaction_request(pub_id_f, "feat/pr1", pub_txn_f, fix_false.repo))
+        pub_res_f = pub_svc_f.execute(_publish_transaction_request(identity_f, "feat/pr1", pub_txn_f, fix_false.repo))
         assert pub_res_f.accepted
 
         coord_f = CoordinatorRuntime(
             train_id="train1", coordinator_root=tmp_path / "coord_f", roadmap_path="train.md",
             roadmap_digest="d" * 64, workspace_id=str(fix_false.repo), broker_client=build_routing_broker_client(),
         )
-        append_record(ledger_false, LedgerRecord(
-            node_id="repo-a/specs/plan-a.md", status="pr_open", branch="feat/pr1", head_sha=cand_f,
-            fab_run_id=fix_false.RUN, merge_order=0))
 
         captured_f = {}
         with _mock.patch.dict(os.environ, {FAB_PROMOTION_ENV: "1"}):
@@ -1682,7 +1760,7 @@ def test_fabreadmit_flag_reversal_kills_shortcut(request, tmp_path):
                     _merge_phase_enabled=True,
                     _reverify_fn=_reverify_pass,
                     _delta_review_fn=fix_false._review_fn,
-                    _merge_pr_fn=_capturing_merge_stub(captured_f),
+                    _merge_pr_fn=_capturing_head_merge_stub(captured_f),
                     fab_fetch_origin="fetchsrc",
                     fab_delta_shortcut=True,
                 )

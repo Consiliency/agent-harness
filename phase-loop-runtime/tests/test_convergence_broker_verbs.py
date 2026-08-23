@@ -181,11 +181,12 @@ def test_fabreadmit_readmit_advanced_head_verb(request, tmp_path):
         _CountingAdapter,
     )
 
-    # 1. FR-R5-01: Empty-store denial arm proving readmission from an empty onboarded store fails
+    # 1. FR-R5-01 & FR-R7-01 & FR-R7-02: Empty-store denial arm proving readmission from an empty onboarded store fails
     repo_empty, txn_empty, id_empty, root_empty = _authorized_publish_fixture(tmp_path, name="verbs-empty")
     store_empty = LinearizableAdmissionStore(root_empty, lambda _: True)
-    svc_empty = BrokerService(store_empty, BrokerEvidenceStore(root_empty), _CountingAdapter())
-    ckpt_empty = txn_empty.store.checkpoint_root
+    pub_empty_adapter = _CountingAdapter()
+    svc_empty_pub = BrokerService(store_empty, BrokerEvidenceStore(root_empty), pub_empty_adapter)
+    ckpt_empty = txn_empty.checkpoint_root
     (ckpt_empty / "train.json").write_text(f'{{"train_id": "train1", "repository": "{id_empty}"}}', encoding="utf-8")
     (ckpt_empty / "n1.json").write_text('{"node_id": "n1"}', encoding="utf-8")
     auth_empty = DeltaReadmitAuthority(
@@ -193,16 +194,19 @@ def test_fabreadmit_readmit_advanced_head_verb(request, tmp_path):
         branch="feat/x", base="main", prior_head_sha=txn_empty.committed_head_sha, proposed_head_sha="b" * 40,
         train_id="train1", node_id="n1", fab_run_id="run1", roadmap_digest="d" * 64, provenance_digest="p" * 64, owned_scope=("a.py",)
     )
+    readmit_empty_adapter = _CountingAdapter()
+    svc_empty_readmit = BrokerService(store_empty, BrokerEvidenceStore(root_empty), readmit_empty_adapter)
     with pytest.raises((PermissionError, ValueError), match=r"(?i)prior|unadmitted|unknown|forged|empty"):
-        svc_empty.readmit_advanced_head(auth_empty)
+        svc_empty_readmit.readmit_advanced_head(auth_empty)
     assert len(store_empty.replay()) == 0
+    assert readmit_empty_adapter.calls == 0
 
-    # 2. FR-R5-01: Setup activated store partition & seed real authorized publish
+    # 2. FR-R5-01 & FR-R7-02: Setup activated store partition & seed real authorized publish
     repo_dir, transaction, identity, store_root = _authorized_publish_fixture(tmp_path, name="verbs-repo")
-    adapter = _CountingAdapter()
+    pub_adapter = _CountingAdapter()
     store = LinearizableAdmissionStore(store_root, lambda _: True)
     evidence = BrokerEvidenceStore(store_root)
-    pub_svc = _pub_service(store_root, adapter, store=store)
+    pub_svc = _pub_service(store_root, pub_adapter, store=store)
 
     branch = "feat/x"
     pub_req = _publish_transaction_request(identity, branch, transaction, repo_dir)
@@ -210,7 +214,7 @@ def test_fabreadmit_readmit_advanced_head_verb(request, tmp_path):
     assert pub_res.accepted, "prior publish transaction must be admitted"
     assert len(store.replay()) == 1
 
-    ckpt = transaction.store.checkpoint_root
+    ckpt = transaction.checkpoint_root
     (ckpt / "train.json").write_text(f'{{"train_id": "train1", "repository": "{identity}"}}', encoding="utf-8")
     (ckpt / "n1.json").write_text('{"node_id": "n1"}', encoding="utf-8")
 
@@ -219,7 +223,8 @@ def test_fabreadmit_readmit_advanced_head_verb(request, tmp_path):
     subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", "advance"], check=True)
     delta_sha = subprocess.check_output(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True).strip()
 
-    service = BrokerService(store, evidence, adapter)
+    readmit_adapter = _CountingAdapter()
+    service = BrokerService(store, evidence, readmit_adapter)
 
     auth = DeltaReadmitAuthority(
         repository=identity,
@@ -243,4 +248,4 @@ def test_fabreadmit_readmit_advanced_head_verb(request, tmp_path):
     assert receipt.repository == identity
     assert receipt.proposed_head_sha == delta_sha
     assert receipt.allocated_epoch == 2
-    assert adapter.calls == 0
+    assert readmit_adapter.calls == 0

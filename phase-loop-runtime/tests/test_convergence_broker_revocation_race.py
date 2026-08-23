@@ -408,11 +408,11 @@ def test_fabreadmit_revocation_race_under_admission_lock(request, tmp_path):
     repo_dir, transaction, identity, shared_partition_dir = _authorized_publish_fixture(
         tmp_path, name="race-repo"
     )
-    adapter = _CountingAdapter()
+    pub_adapter = _CountingAdapter()
     evidence_store = BrokerEvidenceStore(shared_partition_dir)
 
     # Seed prior publish transaction
-    pub_svc = _pub_service(shared_partition_dir, adapter)
+    pub_svc = _pub_service(shared_partition_dir, pub_adapter)
     pub_res = pub_svc.execute(_publish_transaction_request(identity, "feat/x", transaction, repo_dir))
     assert pub_res.accepted, "prior publish transaction must be admitted"
 
@@ -421,7 +421,7 @@ def test_fabreadmit_revocation_race_under_admission_lock(request, tmp_path):
     subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", "advance"], check=True)
     delta_sha = subprocess.check_output(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True).strip()
 
-    ckpt = transaction.store.checkpoint_root
+    ckpt = transaction.checkpoint_root
     (ckpt / "train.json").write_text(f'{{"train_id": "train1", "repository": "{identity}"}}', encoding="utf-8")
     (ckpt / "n1.json").write_text('{"node_id": "n1"}', encoding="utf-8")
 
@@ -442,7 +442,8 @@ def test_fabreadmit_revocation_race_under_admission_lock(request, tmp_path):
         epoch_blocked=_in_lock_epoch_blocked,
     )
 
-    service = BrokerService(admission_store, evidence_store, adapter)
+    readmit_adapter = _CountingAdapter()
+    service = BrokerService(admission_store, evidence_store, readmit_adapter)
 
     auth = DeltaReadmitAuthority(
         repository=identity,
@@ -480,7 +481,7 @@ def test_fabreadmit_revocation_race_under_admission_lock(request, tmp_path):
         "revocation landed while readmission lock was held — evidence and admission writers not sharing boundary lock"
     )
     assert receipt is not None
-    assert adapter.calls == 0
+    assert readmit_adapter.calls == 0
 
     # Negative arm (FR-SL0-03): Revocation injected under lock yields blocked return, zero append, zero adapter
     evidence_store.record_intent("revoked-key")
@@ -491,4 +492,4 @@ def test_fabreadmit_revocation_race_under_admission_lock(request, tmp_path):
     res_revoked = service.readmit_advanced_head(auth)
     assert res_revoked is None
     assert len(admission_store.replay()) == cnt_before
-    assert adapter.calls == 0
+    assert readmit_adapter.calls == 0
