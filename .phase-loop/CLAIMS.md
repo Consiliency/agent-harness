@@ -79,9 +79,26 @@ it makes the next agent route around work that finished.
 
 - **Claimed by:** Claude session, 2026-08-23
 - **Branch:** `claude/525-agy-panel-leg-permissions` (Consiliency/agent-harness#629)
-- **Status:** open, no roadmap conflict — Phase 7 (REVIEWTRUTH) covers board
-  *degradation reporting*, not leg argv. Narrow change: adds the headless permission flag
-  the gemini/agy leg needs to function at all (Consiliency/agent-harness#525).
+- **Status:** ✅ **MERGED** (`4e45af61`) — claim released.
+
+  **Correction to what this entry said before:** it read *"no roadmap conflict — Phase 7
+  (REVIEWTRUTH) covers board degradation reporting, not leg argv."* That was judgement,
+  not a check. `panel_invoker.py` IS in the **Key files** of both **Phase 6 (HARDEN)** and
+  **Phase 7 (REVIEWTRUTH)**. Owned — though not barred, unlike SCHED, which carried an
+  explicit prohibition.
+
+  Leaving the correction visible rather than deleting the entry: this file's whole value
+  is that it is accurate, and it recorded a wrong ownership call on day one. The same
+  class of error as Consiliency/agent-harness#625, caught only because the ownership check
+  was run on the *next* piece of work.
+
+  **For REVIEWTRUTH lane D**, which owns fillable-seat/backfill composition: the merged
+  change makes the agy seat fillable, which is an input to that design, not a substitute
+  for it. Two facts it will need — a floor of `_MIN_USABLE_REVIEWERS = 2`
+  (`governed_premerge.py:57`) never fires on a 4→3 degrade and direct `invoke_panel`
+  callers get no floor at all (Consiliency/agent-harness#358); and "fillable" for agy
+  currently means *unconfined*, with confinement tracked on
+  Consiliency/agent-harness#525.
 
 ---
 
