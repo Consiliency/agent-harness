@@ -367,91 +367,126 @@ def test_concurrent_revocation_cannot_land_during_the_admission_lock(tmp_path, r
 def test_fabreadmit_revocation_race_under_admission_lock(request, tmp_path):
     """Revocation race under admission lock during readmission."""
     import threading
+    import pytest
     from pytest import skip
 
     from _fabreadmit_tdd_guard import (
         FABREADMIT_SKIP_REASON,
         fabreadmit_capability_active,
         fabreadmit_require,
+        fabreadmit_symbol,
         fabreadmit_this_nodeid,
     )
 
     if not fabreadmit_capability_active():
         skip(FABREADMIT_SKIP_REASON)
 
-    def _run_test():
-        from phase_loop_runtime.convergence.broker.verbs import BrokerService
-        from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
-        from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore, EvidenceRecord
-        from phase_loop_runtime.convergence.contracts import DeltaReadmitAuthority
-        from phase_loop_runtime.convergence.provider_contracts import TerminalOutcomeState
+    verb_symbol = fabreadmit_symbol(
+        "phase_loop_runtime.convergence.broker.verbs", "BrokerService.readmit_advanced_head"
+    )
+    fabreadmit_require(
+        fabreadmit_this_nodeid(request),
+        verb_symbol is not None,
+        "BrokerService.readmit_advanced_head missing in phase_loop_runtime.convergence.broker.verbs",
+    )
 
-        adapter = _CountingAdapter()
-        evidence_store = BrokerEvidenceStore(tmp_path / "evidence")
-        admission_store = LinearizableAdmissionStore(
-            tmp_path / "admissions", lambda _: True, epoch_blocked=lambda: evidence_store.epoch_blocked
-        )
-        service = BrokerService(admission_store, evidence_store, adapter, contracts=())
+    from phase_loop_runtime.convergence.broker.verbs import BrokerService
+    from phase_loop_runtime.convergence.broker.admission import (
+        LinearizableAdmissionStore,
+        LegacyBrokerCutoverManifest,
+        run_legacy_broker_cutover,
+    )
+    from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore, EvidenceRecord
+    from phase_loop_runtime.convergence.contracts import DeltaReadmitAuthority
+    from phase_loop_runtime.convergence.provider_contracts import TerminalOutcomeState
 
-        auth = DeltaReadmitAuthority(
-            repository="Consiliency/agent-harness",
-            adapter_worktree=str(tmp_path / "repo"),
-            checkpoint_root=str(tmp_path / "ckpt"),
-            branch="feat/x",
-            base="main",
-            prior_head_sha="a" * 40,
-            proposed_head_sha="b" * 40,
-            train_id="train1",
-            node_id="n1",
-            fab_run_id="run1",
-            roadmap_digest="d" * 64,
-            provenance_digest="p" * 64,
-            owned_scope=("pkg",),
-        )
+    # Setup activated partition (FR-SL0-04)
+    ckpt = tmp_path / "ckpt"
+    ckpt.mkdir()
+    (ckpt / "train.json").write_text('{"train_id": "train1", "repository": "Consiliency/agent-harness"}', encoding="utf-8")
+    (ckpt / "n1.json").write_text('{"node_id": "n1"}', encoding="utf-8")
 
-        entered = threading.Event()
-        landed = threading.Event()
-        observed = {}
+    cutover_dir = tmp_path / "cutover"
+    cutover_dir.mkdir()
+    manifest = LegacyBrokerCutoverManifest(
+        repository="Consiliency/agent-harness",
+        prior_head_sha="a" * 40,
+        checkpoint_root=str(ckpt),
+    )
+    receipt_cutover = run_legacy_broker_cutover(manifest, cutover_dir)
+    receipt_cutover.activate()
 
-        def _revoke():
-            entered.wait(timeout=5)
+    # FR-SL0-03: Root BOTH admission store and evidence store on ONE single directory
+    shared_partition_dir = tmp_path / "partition"
+    shared_partition_dir.mkdir()
+
+    adapter = _CountingAdapter()
+    evidence_store = BrokerEvidenceStore(shared_partition_dir)
+
+    entered = threading.Event()
+    landed = threading.Event()
+    observed = {}
+
+    def _in_lock_epoch_blocked():
+        entered.set()
+        # Give racing thread a moment to try acquiring lock
+        landed.wait(timeout=0.2)
+        observed["landed_in_window"] = landed.is_set()
+        return evidence_store.epoch_blocked
+
+    admission_store = LinearizableAdmissionStore(
+        shared_partition_dir,
+        lambda _: True,
+        epoch_blocked=_in_lock_epoch_blocked,
+    )
+
+    service = BrokerService(admission_store, evidence_store, adapter)
+
+    auth = DeltaReadmitAuthority(
+        repository="Consiliency/agent-harness",
+        adapter_worktree=str(tmp_path / "repo"),
+        checkpoint_root=str(ckpt),
+        branch="feat/x",
+        base="main",
+        prior_head_sha="a" * 40,
+        proposed_head_sha="b" * 40,
+        train_id="train1",
+        node_id="n1",
+        fab_run_id="run1",
+        roadmap_digest="d" * 64,
+        provenance_digest="p" * 64,
+        owned_scope=("pkg",),
+    )
+
+    def _revoke():
+        if entered.wait(timeout=5):
+            # Attempting to record terminal evidence while admission lock is held
             evidence_store.record_intent("racing-key")
             evidence_store.record_terminal(
                 EvidenceRecord("racing-key", TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED, "concurrent-revocation")
             )
             landed.set()
 
-        writer = threading.Thread(target=_revoke, daemon=True)
-        writer.start()
+    writer = threading.Thread(target=_revoke, daemon=True)
+    writer.start()
 
-        real_admit_next = admission_store.admit_next
+    # Positive arm under race condition
+    receipt = service.readmit_advanced_head(auth)
+    writer.join(timeout=5)
 
-        def _instrumented_admit_next(authority, *args, **kwargs):
-            entered.set()
-            landed.wait(timeout=0.5)
-            observed["landed_in_window"] = landed.is_set()
-            return real_admit_next(authority, *args, **kwargs)
-
-        admission_store.admit_next = _instrumented_admit_next
-
-        receipt = service.readmit_advanced_head(auth)
-        writer.join(timeout=5)
-
-        assert observed.get("landed_in_window") is False, (
-            "revocation landed while readmission lock was held — evidence and admission writers not sharing boundary"
-        )
-        assert receipt is not None
-        assert adapter.calls == 0
-
-    valid = False
-    try:
-        _run_test()
-        valid = True
-    except Exception:
-        valid = False
-
-    fabreadmit_require(
-        fabreadmit_this_nodeid(request),
-        valid,
-        "Revocation race under admission lock during readmission missing or unvalidated",
+    assert observed.get("landed_in_window") is False, (
+        "revocation landed while readmission lock was held — evidence and admission writers not sharing boundary lock"
     )
+    assert receipt is not None
+    assert adapter.calls == 0
+
+    # Negative arm (FR-SL0-03): Revocation injected under lock yields blocked return, zero append, zero adapter
+    evidence_store.record_intent("revoked-key")
+    evidence_store.record_terminal(
+        EvidenceRecord("revoked-key", TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED, "revocation")
+    )
+    cnt_before = len(admission_store.replay())
+    res_revoked = service.readmit_advanced_head(auth)
+    assert res_revoked is None
+    assert len(admission_store.replay()) == cnt_before
+    assert adapter.calls == 0

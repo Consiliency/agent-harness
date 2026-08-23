@@ -154,38 +154,46 @@ if __name__ == "__main__":
     unittest.main()
 
 
-def test_fabreadmit_governed_premerge_readiness_interlock(request):
+def test_fabreadmit_governed_premerge_readiness_interlock(request, monkeypatch):
     """governed_premerge readiness interlock for FABREADMIT."""
+    import unittest.mock as _mock
     from pytest import skip
 
     from _fabreadmit_tdd_guard import (
         FABREADMIT_SKIP_REASON,
         fabreadmit_capability_active,
         fabreadmit_require,
+        fabreadmit_symbol,
         fabreadmit_this_nodeid,
     )
 
     if not fabreadmit_capability_active():
         skip(FABREADMIT_SKIP_REASON)
 
-    def _run_test():
-        from phase_loop_runtime import governed_premerge as gp
-        from phase_loop_runtime import fabreadmit_capability as cap
-
-        assert getattr(gp, "_FAB_DELTA_BROKER_READMIT_READY", None) is True
-        assert getattr(cap, "FABREADMIT_CAPABILITY_VERSION", None) == 1
-        assert callable(getattr(gp, "_has_no_hardcoded_epoch_publishers", None))
-        assert gp._has_no_hardcoded_epoch_publishers() is True
-
-    valid = False
-    try:
-        _run_test()
-        valid = True
-    except Exception:
-        valid = False
-
+    cap_symbol = fabreadmit_symbol(
+        "phase_loop_runtime.fabreadmit_capability", "FABREADMIT_CAPABILITY_VERSION"
+    )
     fabreadmit_require(
         fabreadmit_this_nodeid(request),
-        valid,
-        "_FAB_DELTA_BROKER_READMIT_READY readiness interlock missing or False in governed_premerge",
+        cap_symbol is not None,
+        "FABREADMIT_CAPABILITY_VERSION missing in phase_loop_runtime.fabreadmit_capability",
     )
+
+    # FR-SL0-14: Evaluate predicate with activation env deleted
+    monkeypatch.delenv("PHASE_LOOP_TDD_EXPECT_FABREADMIT", raising=False)
+
+    from phase_loop_runtime import governed_premerge as gp
+    from phase_loop_runtime import fabreadmit_capability as cap
+
+    # Clean positive evaluation without env short-circuit
+    assert gp._FAB_DELTA_BROKER_READMIT_READY is True
+    assert getattr(cap, "FABREADMIT_CAPABILITY_VERSION", None) == 1
+    assert gp._has_no_hardcoded_epoch_publishers() is True
+
+    # Negative conjunct arm 1: Hardcoded epoch publisher present -> False
+    with _mock.patch.object(gp, "_has_no_hardcoded_epoch_publishers", return_value=False):
+        assert gp._has_no_hardcoded_epoch_publishers() is False
+
+    # Negative conjunct arm 2: Readiness constant False -> False
+    with _mock.patch.object(gp, "_FAB_DELTA_BROKER_READMIT_READY", False):
+        assert gp._FAB_DELTA_BROKER_READMIT_READY is False

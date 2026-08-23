@@ -1486,68 +1486,45 @@ def test_fabreadmit_hardcoded_epoch_publisher_interlock(request, tmp_path):
         FABREADMIT_SKIP_REASON,
         fabreadmit_capability_active,
         fabreadmit_require,
+        fabreadmit_symbol,
         fabreadmit_this_nodeid,
     )
 
     if not fabreadmit_capability_active():
         skip(FABREADMIT_SKIP_REASON)
 
-    def _run_test():
-        # 1. Verify frozen supported publisher classification digest
-        computed_digest = hashlib.sha256(
-            ("\n".join(sorted(_SUPPORTED_PUBLISHERS_FROZEN_SET)) + "\n").encode("utf-8")
-        ).hexdigest()
-        assert computed_digest == _SUPPORTED_PUBLISHERS_DIGEST, "supported publisher classification digest mismatch"
-
-        # 2. Test-owned AST scan over phase-loop-runtime source tree
-        src_dir = Path(__file__).resolve().parent.parent / "src" / "phase_loop_runtime"
-        hardcoded_publish_sites = []
-
-        for py_file in src_dir.rglob("*.py"):
-            tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Call):
-                    for kw in node.keywords:
-                        if kw.arg == "epoch" and isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, int):
-                            hardcoded_publish_sites.append(f"{py_file.name}:{node.lineno}")
-
-        assert len(hardcoded_publish_sites) == 0, f"Found hardcoded-epoch publish sites: {hardcoded_publish_sites}"
-
-        # 3. Synthetic violation detection
-        synthetic_source = (
-            "from phase_loop_runtime.convergence.broker.verbs import publish_committed_branch\n"
-            "def legacy_publish(req):\n"
-            "    return publish_committed_branch(req, epoch=1)\n"
-        )
-        synthetic_file = tmp_path / "synthetic_legacy_publisher.py"
-        synthetic_file.write_text(synthetic_source, encoding="utf-8")
-
-        syn_tree = ast.parse(synthetic_file.read_text(encoding="utf-8"))
-        syn_detected = False
-        for node in ast.walk(syn_tree):
-            if isinstance(node, ast.Call):
-                for kw in node.keywords:
-                    if kw.arg == "epoch" and isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, int):
-                        syn_detected = True
-
-        assert syn_detected is True, "test-owned AST scanner must detect synthetic hardcoded epoch publisher"
-
-        # 4. Secondary control: check production predicate
-        from phase_loop_runtime.governed_premerge import _has_no_hardcoded_epoch_publishers
-        assert _has_no_hardcoded_epoch_publishers() is True
-
-    valid = False
-    try:
-        _run_test()
-        valid = True
-    except Exception:
-        valid = False
-
+    chk_symbol = fabreadmit_symbol(
+        "phase_loop_runtime.governed_premerge", "_has_no_hardcoded_epoch_publishers"
+    )
     fabreadmit_require(
         fabreadmit_this_nodeid(request),
-        valid,
-        "Hardcoded epoch publishers present or interlock unvalidated",
+        chk_symbol is not None,
+        "_has_no_hardcoded_epoch_publishers missing in phase_loop_runtime.governed_premerge",
     )
+
+    from phase_loop_runtime.governed_premerge import _has_no_hardcoded_epoch_publishers
+
+    # 1. Verify frozen supported publisher classification digest
+    computed_digest = hashlib.sha256(
+        ("\n".join(sorted(_SUPPORTED_PUBLISHERS_FROZEN_SET)) + "\n").encode("utf-8")
+    ).hexdigest()
+    assert computed_digest == _SUPPORTED_PUBLISHERS_DIGEST, "supported publisher classification digest mismatch"
+
+    # 2. FR-SL0-09: Point production inventory/predicate at tree containing synthetic hardcoded-epoch publisher
+    synthetic_dir = tmp_path / "synthetic_src" / "phase_loop_runtime"
+    synthetic_dir.mkdir(parents=True)
+    synthetic_file = synthetic_dir / "publisher.py"
+    synthetic_file.write_text(
+        "from phase_loop_runtime.convergence.broker.verbs import publish_committed_branch\n"
+        "def legacy_publish(req):\n"
+        "    return publish_committed_branch(req, epoch=1)\n",
+        encoding="utf-8",
+    )
+    # Production predicate driven through _SUPPORTED_PUBLISHERS_FROZEN_SET against mutated tree must return False
+    assert _has_no_hardcoded_epoch_publishers(search_root=synthetic_dir) is False
+
+    # 3. Assert True on clean production tree
+    assert _has_no_hardcoded_epoch_publishers() is True
 
 
 def test_fabreadmit_flag_reversal_kills_shortcut(request, tmp_path):
@@ -1559,27 +1536,49 @@ def test_fabreadmit_flag_reversal_kills_shortcut(request, tmp_path):
         FABREADMIT_SKIP_REASON,
         fabreadmit_capability_active,
         fabreadmit_require,
+        fabreadmit_symbol,
         fabreadmit_this_nodeid,
     )
 
     if not fabreadmit_capability_active():
         skip(FABREADMIT_SKIP_REASON)
 
-    def _run_test():
-        from phase_loop_runtime import governed_premerge as gp
-        assert getattr(gp, "_FAB_DELTA_BROKER_READMIT_READY", None) is True
-        with _mock.patch.object(gp, "_FAB_DELTA_BROKER_READMIT_READY", False):
-            assert gp._FAB_DELTA_BROKER_READMIT_READY is False
-
-    valid = False
-    try:
-        _run_test()
-        valid = True
-    except Exception:
-        valid = False
-
+    ready_symbol = fabreadmit_symbol(
+        "phase_loop_runtime.governed_premerge", "_FAB_DELTA_BROKER_READMIT_READY"
+    )
     fabreadmit_require(
         fabreadmit_this_nodeid(request),
-        valid,
-        "_FAB_DELTA_BROKER_READMIT_READY is False in governed_premerge",
+        ready_symbol is not None,
+        "_FAB_DELTA_BROKER_READMIT_READY missing in phase_loop_runtime.governed_premerge",
     )
+
+    from phase_loop_runtime import governed_premerge as gp
+    from phase_loop_runtime.governed_premerge import FAB_PROMOTION_ENV, fab_delta_shortcut_enabled
+    from test_fab_delta_consumer import DeltaReadmitTransactionTest
+    from phase_loop_runtime import train_runner as tr
+    from phase_loop_runtime.train_ledger import read_ledger
+
+    # Default readiness must be True
+    assert gp._FAB_DELTA_BROKER_READMIT_READY is True
+
+    # FR-SL0-10: Under reverted readiness constant, drive actual shortcut predicate & real-Git _fab_delta_readmit
+    with _mock.patch.object(gp, "_FAB_DELTA_BROKER_READMIT_READY", False):
+        assert gp._FAB_DELTA_BROKER_READMIT_READY is False
+        # Shortcut predicate evaluates False even with FAB_PROMOTION_ENV=1
+        assert fab_delta_shortcut_enabled(True, env={FAB_PROMOTION_ENV: "1"}) is False
+
+        # Real-Git fixture execution under readiness False
+        fixture = DeltaReadmitTransactionTest()
+        fixture.tmp_path = tmp_path
+        fixture.setUp()
+        try:
+            ledger_path, base, candidate_head, delta_head = fixture._setup_candidate_and_advance()
+            res = tr._fab_delta_readmit(
+                fixture.repo, ledger_path, node_id="n1", run_id=fixture.RUN, branch="feat/pr1", pr_url="u",
+                merge_order=0, admitted_head_sha=candidate_head, live_head_sha=delta_head,
+                delta_review_fn=fixture._review_fn, owned_paths=fixture.OWNED, fab_fetch_origin="fetchsrc",
+            )
+            assert res is None, "shortcut must not engage when readiness constant is False"
+            assert read_ledger(ledger_path)["n1"].head_sha == candidate_head, "ledger head must not advance when readiness is False"
+        finally:
+            fixture.tearDown()

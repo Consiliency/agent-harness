@@ -3455,50 +3455,117 @@ def test_fabpub_train_resume_post_commit_pre_checkpoint(tmp_path: Path, request)
 
 def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request, tmp_path):
     """run_train routes readmission through real repository routing broker client."""
+    import subprocess
+    import unittest.mock as _mock
     from pytest import skip
 
     from _fabreadmit_tdd_guard import (
         FABREADMIT_SKIP_REASON,
         fabreadmit_capability_active,
         fabreadmit_require,
+        fabreadmit_symbol,
         fabreadmit_this_nodeid,
     )
 
     if not fabreadmit_capability_active():
         skip(FABREADMIT_SKIP_REASON)
 
-    def _run_test():
-        from phase_loop_runtime import train_runner as tr
-        from phase_loop_runtime.convergence.broker.live import build_routing_broker_client
+    commit_helper = fabreadmit_symbol(
+        "phase_loop_runtime.train_runner", "_commit_broker_readmitted_head"
+    )
+    fabreadmit_require(
+        fabreadmit_this_nodeid(request),
+        commit_helper is not None,
+        "_commit_broker_readmitted_head missing in phase_loop_runtime.train_runner",
+    )
 
-        broker_client = build_routing_broker_client(broker_root=tmp_path / "broker")
-        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
-        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
-        ledger_path = tmp_path / "ledger" / "train.ledger.jsonl"
+    from phase_loop_runtime import train_runner as tr
+    from phase_loop_runtime.convergence.broker.live import CoordinatorRuntime, build_routing_broker_client
+    from phase_loop_runtime.convergence.broker.admission import (
+        LinearizableAdmissionStore,
+        LegacyBrokerCutoverManifest,
+        run_legacy_broker_cutover,
+    )
+    from phase_loop_runtime.train_ledger import append_record, LedgerRecord, read_ledger
 
+    # Setup real Git repo workspace (FR-SL0-12)
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo_dir)], check=True)
+    subprocess.run(["git", "-C", str(repo_dir), "config", "user.email", "t@example.com"], check=True)
+    subprocess.run(["git", "-C", str(repo_dir), "config", "user.name", "Test"], check=True)
+    (repo_dir / "pkg").mkdir()
+    (repo_dir / "pkg" / "a.py").write_text("v1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo_dir), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", "init"], check=True)
+    base_sha = subprocess.check_output(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True).strip()
+
+    (repo_dir / "pkg" / "a.py").write_text("v2\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo_dir), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", "advance"], check=True)
+    delta_head = subprocess.check_output(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True).strip()
+
+    # Activated partition setup (FR-SL0-04)
+    ckpt = tmp_path / "ckpt"
+    ckpt.mkdir()
+    (ckpt / "train.json").write_text('{"train_id": "train1", "repository": "Consiliency/agent-harness"}', encoding="utf-8")
+    (ckpt / "n1.json").write_text('{"node_id": "n1"}', encoding="utf-8")
+
+    cutover_dir = tmp_path / "cutover"
+    cutover_dir.mkdir()
+    manifest = LegacyBrokerCutoverManifest(
+        repository="Consiliency/agent-harness",
+        prior_head_sha=base_sha,
+        checkpoint_root=str(ckpt),
+    )
+    receipt_cutover = run_legacy_broker_cutover(manifest, cutover_dir)
+    receipt_cutover.activate()
+
+    partition_dir = tmp_path / "partition"
+    partition_dir.mkdir()
+    store = LinearizableAdmissionStore(partition_dir, lambda _: True)
+
+    routing_client = build_routing_broker_client(partition_dir)
+    coord_runtime = CoordinatorRuntime(
+        train_id="train1",
+        checkpoint_root=str(ckpt),
+        roadmap_path="train.md",
+        roadmap_digest="d" * 64,
+        workspace_root=str(repo_dir),
+        broker_client=routing_client,
+    )
+
+    roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+    ws_map = {"repo-a/specs/plan-a.md": repo_dir, "repo-b/specs/plan-b.md": repo_dir}
+    ledger_path = tmp_path / "ledger" / "train.ledger.jsonl"
+    append_record(ledger_path, LedgerRecord(
+        node_id="repo-a/specs/plan-a.md", status="pr_open", branch="feat/repo-a",
+        head_sha=base_sha, pr_url="u1", merge_order=0, fab_run_id="run-a"
+    ))
+
+    routing_spy_called = []
+    real_commit_helper = tr._commit_broker_readmitted_head
+
+    def _spy_commit_helper(*args, **kwargs):
+        routing_spy_called.append(True)
+        return real_commit_helper(*args, **kwargs)
+
+    with _mock.patch.object(tr, "_commit_broker_readmitted_head", side_effect=_spy_commit_helper):
         result = tr.run_train(
             roadmap,
             ledger_path,
             run_mode="governed",
             resolve_workspace=lambda n: ws_map[n.node_id],
-            coordinator_runtime=broker_client,
+            coordinator_runtime=coord_runtime,
             _run_loop=lambda *a, **kw: (None, []),
             _publish=_make_publish_stub({}),
-            _pr_is_open=lambda ws, br: False,
+            _pr_is_open=lambda ws, br: True,
+            _live_pr_head_sha_fn=lambda ws, br: delta_head,
+            _merge_phase_enabled=True,
+            _reverify_fn=_reverify_pass,
+            fab_fetch_origin="fetchsrc",
         )
 
-        assert hasattr(tr, "_commit_broker_readmitted_head")
-        assert result.get("status") == "merged"
-
-    valid = False
-    try:
-        _run_test()
-        valid = True
-    except Exception:
-        valid = False
-
-    fabreadmit_require(
-        fabreadmit_this_nodeid(request),
-        valid,
-        "_commit_broker_readmitted_head missing or unvalidated in train_runner",
-    )
+    assert len(routing_spy_called) > 0, "_commit_broker_readmitted_head must be routed via CoordinatorRuntime"
+    assert result.get("status") == "merged"
+    assert len(store.replay()) > 0, "durable admission record must be created via routing broker client"

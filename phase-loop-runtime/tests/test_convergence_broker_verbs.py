@@ -159,50 +159,67 @@ def test_fabreadmit_readmit_advanced_head_verb(request, tmp_path):
     if not fabreadmit_capability_active():
         skip(FABREADMIT_SKIP_REASON)
 
-    def _run_test():
-        from phase_loop_runtime.convergence.broker.verbs import BrokerService
-        from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
-        from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore
-        from phase_loop_runtime.convergence.contracts import DeltaReadmitAuthority, DeltaReadmitReceipt
-
-        adapter = _CountingAdapter()
-        store = LinearizableAdmissionStore(tmp_path / "admissions", lambda _: True)
-        evidence = BrokerEvidenceStore(tmp_path / "evidence")
-        service = BrokerService(store, evidence, adapter, contracts=())
-
-        auth = DeltaReadmitAuthority(
-            repository="Consiliency/agent-harness",
-            adapter_worktree=str(tmp_path / "repo"),
-            checkpoint_root=str(tmp_path / "ckpt"),
-            branch="feat/x",
-            base="main",
-            prior_head_sha="a" * 40,
-            proposed_head_sha="b" * 40,
-            train_id="train1",
-            node_id="n1",
-            fab_run_id="run1",
-            roadmap_digest="d" * 64,
-            provenance_digest="p" * 64,
-            owned_scope=("pkg",),
-        )
-
-        receipt = service.readmit_advanced_head(auth)
-
-        assert isinstance(receipt, DeltaReadmitReceipt)
-        assert receipt.repository == "Consiliency/agent-harness"
-        assert receipt.proposed_head_sha == "b" * 40
-        assert receipt.allocated_epoch > 0
-        assert adapter.calls == 0, "readmit_advanced_head verb must call zero provider adapters"
-
-    valid = False
-    try:
-        _run_test()
-        valid = True
-    except Exception:
-        valid = False
-
+    verb_symbol = fabreadmit_symbol(
+        "phase_loop_runtime.convergence.broker.verbs", "BrokerService.readmit_advanced_head"
+    )
     fabreadmit_require(
         fabreadmit_this_nodeid(request),
-        valid,
-        "BrokerService.readmit_advanced_head verb missing or unvalidated",
+        verb_symbol is not None,
+        "BrokerService.readmit_advanced_head verb missing in phase_loop_runtime.convergence.broker.verbs",
     )
+
+    from phase_loop_runtime.convergence.broker.verbs import BrokerService
+    from phase_loop_runtime.convergence.broker.admission import (
+        LinearizableAdmissionStore,
+        LegacyBrokerCutoverManifest,
+        run_legacy_broker_cutover,
+    )
+    from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore
+    from phase_loop_runtime.convergence.contracts import DeltaReadmitAuthority, DeltaReadmitReceipt
+
+    # Setup activated partition store (FR-SL0-04)
+    ckpt = tmp_path / "ckpt"
+    ckpt.mkdir()
+    (ckpt / "train.json").write_text('{"train_id": "train1", "repository": "Consiliency/agent-harness"}', encoding="utf-8")
+    (ckpt / "n1.json").write_text('{"node_id": "n1"}', encoding="utf-8")
+
+    cutover_dir = tmp_path / "cutover"
+    cutover_dir.mkdir()
+    manifest = LegacyBrokerCutoverManifest(
+        repository="Consiliency/agent-harness",
+        prior_head_sha="a" * 40,
+        checkpoint_root=str(ckpt),
+    )
+    receipt_cutover = run_legacy_broker_cutover(manifest, cutover_dir)
+    receipt_cutover.activate()
+
+    partition_dir = tmp_path / "partition"
+    partition_dir.mkdir()
+    adapter = _CountingAdapter()
+    store = LinearizableAdmissionStore(partition_dir, lambda _: True)
+    evidence = BrokerEvidenceStore(partition_dir)
+    service = BrokerService(store, evidence, adapter)
+
+    auth = DeltaReadmitAuthority(
+        repository="Consiliency/agent-harness",
+        adapter_worktree=str(tmp_path / "repo"),
+        checkpoint_root=str(ckpt),
+        branch="feat/x",
+        base="main",
+        prior_head_sha="a" * 40,
+        proposed_head_sha="b" * 40,
+        train_id="train1",
+        node_id="n1",
+        fab_run_id="run1",
+        roadmap_digest="d" * 64,
+        provenance_digest="p" * 64,
+        owned_scope=("pkg",),
+    )
+
+    receipt = service.readmit_advanced_head(auth)
+
+    assert isinstance(receipt, DeltaReadmitReceipt)
+    assert receipt.repository == "Consiliency/agent-harness"
+    assert receipt.proposed_head_sha == "b" * 40
+    assert receipt.allocated_epoch > 0
+    assert adapter.calls == 0
