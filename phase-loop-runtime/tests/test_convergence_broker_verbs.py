@@ -146,6 +146,7 @@ def test_replay_after_complete_returns_prior_result_not_none(tmp_path, request):
 
 def test_fabreadmit_readmit_advanced_head_verb(request, tmp_path):
     """BrokerService readmit_advanced_head verb."""
+    import subprocess
     from pytest import skip
 
     from _fabreadmit_tdd_guard import (
@@ -169,57 +170,62 @@ def test_fabreadmit_readmit_advanced_head_verb(request, tmp_path):
     )
 
     from phase_loop_runtime.convergence.broker.verbs import BrokerService
-    from phase_loop_runtime.convergence.broker.admission import (
-        LinearizableAdmissionStore,
-        LegacyBrokerCutoverManifest,
-        run_legacy_broker_cutover,
-    )
+    from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
     from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore
+    from phase_loop_runtime.convergence.broker import live
     from phase_loop_runtime.convergence.contracts import DeltaReadmitAuthority, DeltaReadmitReceipt
 
-    # Setup activated partition store (FR-SL0-04)
+    # Setup real Git repository and activated store partition (FR-R3-01, FR-R3-02)
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo_dir)], check=True)
+    subprocess.run(["git", "-C", str(repo_dir), "config", "user.email", "t@example.com"], check=True)
+    subprocess.run(["git", "-C", str(repo_dir), "config", "user.name", "Test"], check=True)
+    (repo_dir / "pkg").mkdir()
+    (repo_dir / "pkg" / "a.py").write_text("v1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo_dir), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", "init"], check=True)
+    base_sha = subprocess.check_output(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True).strip()
+
+    (repo_dir / "pkg" / "a.py").write_text("v2\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo_dir), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", "advance"], check=True)
+    delta_sha = subprocess.check_output(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True).strip()
+
     ckpt = tmp_path / "ckpt"
     ckpt.mkdir()
     (ckpt / "train.json").write_text('{"train_id": "train1", "repository": "Consiliency/agent-harness"}', encoding="utf-8")
     (ckpt / "n1.json").write_text('{"node_id": "n1"}', encoding="utf-8")
 
-    cutover_dir = tmp_path / "cutover"
-    cutover_dir.mkdir()
-    manifest = LegacyBrokerCutoverManifest(
-        repository="Consiliency/agent-harness",
-        prior_head_sha="a" * 40,
-        checkpoint_root=str(ckpt),
-    )
-    receipt_cutover = run_legacy_broker_cutover(manifest, cutover_dir)
-    receipt_cutover.activate()
+    live.onboard_zero_legacy_repository(repo_dir)
+    live.fabpub_activation_barrier([repo_dir])
+    store_root = live.repository_broker_namespace(repo_dir)
 
-    partition_dir = tmp_path / "partition"
-    partition_dir.mkdir()
     adapter = _CountingAdapter()
-    store = LinearizableAdmissionStore(partition_dir, lambda _: True)
-    evidence = BrokerEvidenceStore(partition_dir)
+    store = LinearizableAdmissionStore(store_root, lambda _: True)
+    evidence = BrokerEvidenceStore(store_root)
     service = BrokerService(store, evidence, adapter)
 
     auth = DeltaReadmitAuthority(
         repository="Consiliency/agent-harness",
-        adapter_worktree=str(tmp_path / "repo"),
+        adapter_worktree=str(repo_dir),
         checkpoint_root=str(ckpt),
         branch="feat/x",
         base="main",
-        prior_head_sha="a" * 40,
-        proposed_head_sha="b" * 40,
+        prior_head_sha=base_sha,
+        proposed_head_sha=delta_sha,
         train_id="train1",
         node_id="n1",
         fab_run_id="run1",
         roadmap_digest="d" * 64,
         provenance_digest="p" * 64,
-        owned_scope=("pkg",),
+        owned_scope=("pkg/",),
     )
 
     receipt = service.readmit_advanced_head(auth)
 
     assert isinstance(receipt, DeltaReadmitReceipt)
     assert receipt.repository == "Consiliency/agent-harness"
-    assert receipt.proposed_head_sha == "b" * 40
-    assert receipt.allocated_epoch > 0
+    assert receipt.proposed_head_sha == delta_sha
+    assert receipt.allocated_epoch == 1
     assert adapter.calls == 0

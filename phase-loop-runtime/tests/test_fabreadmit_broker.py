@@ -21,15 +21,6 @@ def test_fabreadmit_guard_inventory_integrity():
     _check_guard_inventory()
 
 
-from _fabreadmit_tdd_guard import (
-    FABREADMIT_SKIP_REASON,
-    fabreadmit_capability_active,
-    fabreadmit_require,
-    fabreadmit_symbol,
-    fabreadmit_this_nodeid,
-)
-
-
 class _CountingAdapter:
     def __init__(self):
         self.calls = 0
@@ -118,12 +109,9 @@ def test_fabreadmit_broker_rediffs_head_range_and_rejects_scope_escape_without_a
     )
 
     from phase_loop_runtime.convergence.broker.verbs import BrokerService
-    from phase_loop_runtime.convergence.broker.admission import (
-        LinearizableAdmissionStore,
-        LegacyBrokerCutoverManifest,
-        run_legacy_broker_cutover,
-    )
+    from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
     from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore
+    from phase_loop_runtime.convergence.broker import live
     from phase_loop_runtime.convergence.contracts import DeltaReadmitAuthority
 
     # 1. Setup real Git repository with committed range
@@ -151,22 +139,14 @@ def test_fabreadmit_broker_rediffs_head_range_and_rejects_scope_escape_without_a
     subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", "escape"], check=True)
     escape_sha = subprocess.check_output(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True).strip()
 
-    # 2. Setup activated store partition (FR-SL0-04)
-    cutover_dir = tmp_path / "cutover"
-    cutover_dir.mkdir(parents=True, exist_ok=True)
-    manifest = LegacyBrokerCutoverManifest(
-        repository="Consiliency/agent-harness",
-        prior_head_sha=base_sha,
-        checkpoint_root=str(tmp_path / "ckpt"),
-    )
-    receipt = run_legacy_broker_cutover(manifest, cutover_dir)
-    receipt.activate()
+    # 2. Setup activated store partition via real FABPUB onboarding (FR-R3-01, FR-R3-02)
+    live.onboard_zero_legacy_repository(repo_dir)
+    live.fabpub_activation_barrier([repo_dir])
+    store_root = live.repository_broker_namespace(repo_dir)
 
-    partition_dir = tmp_path / "partition"
-    partition_dir.mkdir(parents=True, exist_ok=True)
     adapter = _CountingAdapter()
-    store = LinearizableAdmissionStore(partition_dir, lambda _: True)
-    evidence = BrokerEvidenceStore(partition_dir)
+    store = LinearizableAdmissionStore(store_root, lambda _: True)
+    evidence = BrokerEvidenceStore(store_root)
     service = BrokerService(store, evidence, adapter)
 
     # In-scope execution
@@ -187,6 +167,7 @@ def test_fabreadmit_broker_rediffs_head_range_and_rejects_scope_escape_without_a
     )
     res_in = service.readmit_advanced_head(in_scope_auth)
     assert res_in is not None
+    assert getattr(res_in, "allocated_epoch", 1) == 1
     assert adapter.calls == 0
 
     # Scope-escape execution

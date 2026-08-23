@@ -3480,12 +3480,9 @@ def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request, 
     )
 
     from phase_loop_runtime import train_runner as tr
-    from phase_loop_runtime.convergence.broker.live import CoordinatorRuntime, build_routing_broker_client
-    from phase_loop_runtime.convergence.broker.admission import (
-        LinearizableAdmissionStore,
-        LegacyBrokerCutoverManifest,
-        run_legacy_broker_cutover,
-    )
+    from phase_loop_runtime.train_runner import CoordinatorRuntime
+    from phase_loop_runtime.convergence.broker import live
+    from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
     from phase_loop_runtime.train_ledger import append_record, LedgerRecord, read_ledger
 
     # Setup real Git repo workspace (FR-SL0-12)
@@ -3505,34 +3502,20 @@ def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request, 
     subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", "advance"], check=True)
     delta_head = subprocess.check_output(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True).strip()
 
-    # Activated partition setup (FR-SL0-04)
-    ckpt = tmp_path / "ckpt"
-    ckpt.mkdir()
-    (ckpt / "train.json").write_text('{"train_id": "train1", "repository": "Consiliency/agent-harness"}', encoding="utf-8")
-    (ckpt / "n1.json").write_text('{"node_id": "n1"}', encoding="utf-8")
+    # Real FABPUB onboarding & store_root namespace (FR-R3-01, FR-R3-02, FR-R3-03)
+    live.onboard_zero_legacy_repository(repo_dir)
+    live.fabpub_activation_barrier([repo_dir])
+    store_root = live.repository_broker_namespace(repo_dir)
+    store = LinearizableAdmissionStore(store_root, lambda _: True)
 
-    cutover_dir = tmp_path / "cutover"
-    cutover_dir.mkdir()
-    manifest = LegacyBrokerCutoverManifest(
-        repository="Consiliency/agent-harness",
-        prior_head_sha=base_sha,
-        checkpoint_root=str(ckpt),
-    )
-    receipt_cutover = run_legacy_broker_cutover(manifest, cutover_dir)
-    receipt_cutover.activate()
-
-    partition_dir = tmp_path / "partition"
-    partition_dir.mkdir()
-    store = LinearizableAdmissionStore(partition_dir, lambda _: True)
-
-    routing_client = build_routing_broker_client(partition_dir)
+    broker_client = live._test_only_repository_broker_client(Path(store_root).parent)
     coord_runtime = CoordinatorRuntime(
         train_id="train1",
-        checkpoint_root=str(ckpt),
+        coordinator_root=tmp_path / "coord",
         roadmap_path="train.md",
         roadmap_digest="d" * 64,
-        workspace_root=str(repo_dir),
-        broker_client=routing_client,
+        workspace_id=str(repo_dir),
+        broker_client=broker_client,
     )
 
     roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
@@ -3563,6 +3546,7 @@ def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request, 
             _live_pr_head_sha_fn=lambda ws, br: delta_head,
             _merge_phase_enabled=True,
             _reverify_fn=_reverify_pass,
+            _merge_fn=_capturing_merge_stub({}),
             fab_fetch_origin="fetchsrc",
         )
 

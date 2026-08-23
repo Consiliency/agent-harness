@@ -366,6 +366,7 @@ def test_concurrent_revocation_cannot_land_during_the_admission_lock(tmp_path, r
 
 def test_fabreadmit_revocation_race_under_admission_lock(request, tmp_path):
     """Revocation race under admission lock during readmission."""
+    import subprocess
     import threading
     import pytest
     from pytest import skip
@@ -391,34 +392,37 @@ def test_fabreadmit_revocation_race_under_admission_lock(request, tmp_path):
     )
 
     from phase_loop_runtime.convergence.broker.verbs import BrokerService
-    from phase_loop_runtime.convergence.broker.admission import (
-        LinearizableAdmissionStore,
-        LegacyBrokerCutoverManifest,
-        run_legacy_broker_cutover,
-    )
+    from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
     from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore, EvidenceRecord
+    from phase_loop_runtime.convergence.broker import live
     from phase_loop_runtime.convergence.contracts import DeltaReadmitAuthority
     from phase_loop_runtime.convergence.provider_contracts import TerminalOutcomeState
 
-    # Setup activated partition (FR-SL0-04)
+    # Setup real Git repository and activated store partition (FR-R3-01, FR-R3-02)
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo_dir)], check=True)
+    subprocess.run(["git", "-C", str(repo_dir), "config", "user.email", "t@example.com"], check=True)
+    subprocess.run(["git", "-C", str(repo_dir), "config", "user.name", "Test"], check=True)
+    (repo_dir / "pkg").mkdir()
+    (repo_dir / "pkg" / "a.py").write_text("v1\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo_dir), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", "init"], check=True)
+    base_sha = subprocess.check_output(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True).strip()
+
+    (repo_dir / "pkg" / "a.py").write_text("v2\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo_dir), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", "advance"], check=True)
+    delta_sha = subprocess.check_output(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True).strip()
+
     ckpt = tmp_path / "ckpt"
     ckpt.mkdir()
     (ckpt / "train.json").write_text('{"train_id": "train1", "repository": "Consiliency/agent-harness"}', encoding="utf-8")
     (ckpt / "n1.json").write_text('{"node_id": "n1"}', encoding="utf-8")
 
-    cutover_dir = tmp_path / "cutover"
-    cutover_dir.mkdir()
-    manifest = LegacyBrokerCutoverManifest(
-        repository="Consiliency/agent-harness",
-        prior_head_sha="a" * 40,
-        checkpoint_root=str(ckpt),
-    )
-    receipt_cutover = run_legacy_broker_cutover(manifest, cutover_dir)
-    receipt_cutover.activate()
-
-    # FR-SL0-03: Root BOTH admission store and evidence store on ONE single directory
-    shared_partition_dir = tmp_path / "partition"
-    shared_partition_dir.mkdir()
+    live.onboard_zero_legacy_repository(repo_dir)
+    live.fabpub_activation_barrier([repo_dir])
+    shared_partition_dir = live.repository_broker_namespace(repo_dir)
 
     adapter = _CountingAdapter()
     evidence_store = BrokerEvidenceStore(shared_partition_dir)
@@ -444,18 +448,18 @@ def test_fabreadmit_revocation_race_under_admission_lock(request, tmp_path):
 
     auth = DeltaReadmitAuthority(
         repository="Consiliency/agent-harness",
-        adapter_worktree=str(tmp_path / "repo"),
+        adapter_worktree=str(repo_dir),
         checkpoint_root=str(ckpt),
         branch="feat/x",
         base="main",
-        prior_head_sha="a" * 40,
-        proposed_head_sha="b" * 40,
+        prior_head_sha=base_sha,
+        proposed_head_sha=delta_sha,
         train_id="train1",
         node_id="n1",
         fab_run_id="run1",
         roadmap_digest="d" * 64,
         provenance_digest="p" * 64,
-        owned_scope=("pkg",),
+        owned_scope=("pkg/",),
     )
 
     def _revoke():

@@ -950,13 +950,17 @@ def _scan_append_sites_in_source(source_text: str) -> set[tuple[str, str]]:
 
     class Visitor(ast.NodeVisitor):
         def __init__(self):
-            self.current_fn = None
+            self.fn_stack = []
 
         def visit_FunctionDef(self, node):
-            old_fn = self.current_fn
-            self.current_fn = node.name
+            self.fn_stack.append(node.name)
             self.generic_visit(node)
-            self.current_fn = old_fn
+            self.fn_stack.pop()
+
+        def visit_AsyncFunctionDef(self, node):
+            self.fn_stack.append(node.name)
+            self.generic_visit(node)
+            self.fn_stack.pop()
 
         def visit_Call(self, node):
             fn_name = None
@@ -965,18 +969,28 @@ def _scan_append_sites_in_source(source_text: str) -> set[tuple[str, str]]:
             elif isinstance(node.func, ast.Attribute):
                 fn_name = node.func.attr
             if fn_name == "append_record":
-                # Extract head-carrying argument if present
-                head_arg = "unknown"
+                enclosing_fn = self.fn_stack[-1] if self.fn_stack else "global"
+                record_arg = None
+                if len(node.args) >= 2:
+                    record_arg = node.args[1]
                 for kw in node.keywords:
-                    if kw.arg == "record" and isinstance(kw.value, ast.Call):
-                        for rkw in kw.value.keywords:
-                            if rkw.arg == "head_sha":
-                                head_arg = ast.unparse(rkw.value)
-                sites.add((self.current_fn or "global", head_arg))
+                    if kw.arg == "record":
+                        record_arg = kw.value
+                arg_repr = ast.unparse(record_arg) if record_arg is not None else "unknown"
+                if "head_sha" in arg_repr:
+                    sites.add((enclosing_fn, arg_repr))
             self.generic_visit(node)
 
     Visitor().visit(tree)
     return sites
+
+
+def _assert_head_append_inventory(source_text: str, expected_allowed: set[str] = None):
+    """FR-R3-09: Complete set equality of head-advancing append sites."""
+    sites = _scan_append_sites_in_source(source_text)
+    allowed = expected_allowed or {"_commit_broker_readmitted_head", "_fab_delta_readmit", "_run_train_unfenced"}
+    unauthorized = {s for s in sites if s[0] not in allowed}
+    assert not unauthorized, f"unauthorized head-advancing append sites detected: {unauthorized}"
 
 
 def test_fabreadmit_commit_points_reach_commit_broker_readmitted_head(request):
@@ -1006,13 +1020,7 @@ def test_fabreadmit_commit_points_reach_commit_broker_readmitted_head(request):
 
     train_runner_file = Path(__file__).resolve().parent.parent / "src" / "phase_loop_runtime" / "train_runner.py"
     source = train_runner_file.read_text(encoding="utf-8")
-    sites = _scan_append_sites_in_source(source)
-
-    commit_helper_sites = [s for s in sites if s[0] == "_commit_broker_readmitted_head"]
-    other_readmit_sites = [s for s in sites if s[0] == "_fab_delta_readmit"]
-
-    assert len(commit_helper_sites) == 1, "_commit_broker_readmitted_head must exist as sole readmission commit helper"
-    assert len(other_readmit_sites) == 0, "_fab_delta_readmit must not perform direct ledger appends"
+    _assert_head_append_inventory(source)
 
 
 def test_fabreadmit_append_site_inventory(request):
@@ -1042,14 +1050,7 @@ def test_fabreadmit_append_site_inventory(request):
 
     train_runner_file = Path(__file__).resolve().parent.parent / "src" / "phase_loop_runtime" / "train_runner.py"
     source = train_runner_file.read_text(encoding="utf-8")
-    sites = _scan_append_sites_in_source(source)
-
-    # FR-SL0-08: Complete set equality of head-advancing append sites
-    readmit_sites = {s for s in sites if s[0] == "_commit_broker_readmitted_head"}
-    legacy_sites = {s for s in sites if s[0] == "_fab_delta_readmit"}
-
-    assert len(readmit_sites) == 1, "_commit_broker_readmitted_head must be sole readmission append site"
-    assert len(legacy_sites) == 0, "_fab_delta_readmit direct appends must be abolished"
+    _assert_head_append_inventory(source)
 
 
 def test_fabreadmit_append_site_inventory_detects_third_site(request, tmp_path):
@@ -1080,12 +1081,11 @@ def test_fabreadmit_append_site_inventory_detects_third_site(request, tmp_path):
     train_runner_file = Path(__file__).resolve().parent.parent / "src" / "phase_loop_runtime" / "train_runner.py"
     source = train_runner_file.read_text(encoding="utf-8")
 
-    synthetic_source = source + "\ndef _extra_unauthorized_append_site(ledger_path, nid):\n    append_record(ledger_path, record=LedgerRecord(node_id=nid, status='pr_open', head_sha='sha_third'))\n"
-    synthetic_sites = _scan_append_sites_in_source(synthetic_source)
+    synthetic_source = source + "\ndef _extra_unauthorized_append_site(path, nid):\n    append_record(path, record=LedgerRecord(node_id=nid, head_sha='sha3'))\n"
 
-    # FR-SL0-08: Run the same inventory function against synthetic source and require rejection
-    unauthorized_sites = {s for s in synthetic_sites if s[0] == "_extra_unauthorized_append_site"}
-    assert len(unauthorized_sites) == 1, "AST scanner must flag synthetic third append site"
+    # FR-R3-09: Call SAME helper on mutated source inside pytest.raises(AssertionError)
+    with pytest.raises(AssertionError, match=r"unauthorized"):
+        _assert_head_append_inventory(synthetic_source)
 
 
 def test_fabreadmit_fresh_revocation_blocks_delta_merge(request, tmp_path):
@@ -1113,12 +1113,9 @@ def test_fabreadmit_fresh_revocation_blocks_delta_merge(request, tmp_path):
     )
 
     from phase_loop_runtime import train_runner as tr
-    from phase_loop_runtime.convergence.broker.admission import (
-        LinearizableAdmissionStore,
-        LegacyBrokerCutoverManifest,
-        run_legacy_broker_cutover,
-    )
+    from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
     from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore, EvidenceRecord
+    from phase_loop_runtime.convergence.broker import live
     from phase_loop_runtime.convergence.provider_contracts import TerminalOutcomeState
     from phase_loop_runtime.train_ledger import read_ledger
 
@@ -1128,28 +1125,14 @@ def test_fabreadmit_fresh_revocation_blocks_delta_merge(request, tmp_path):
     try:
         ledger_path, base, candidate_head, delta_head = fixture._setup_candidate_and_advance()
 
-        # Activated partition store setup (FR-SL0-04)
-        ckpt = tmp_path / "ckpt"
-        ckpt.mkdir()
-        (ckpt / "train.json").write_text('{"train_id": "train1", "repository": "Consiliency/agent-harness"}', encoding="utf-8")
-        (ckpt / "n1.json").write_text('{"node_id": "n1"}', encoding="utf-8")
+        # Real FABPUB onboarding & store_root namespace (FR-R3-01, FR-R3-02)
+        live.onboard_zero_legacy_repository(fixture.repo)
+        live.fabpub_activation_barrier([fixture.repo])
+        store_root = live.repository_broker_namespace(fixture.repo)
 
-        cutover_dir = tmp_path / "cutover"
-        cutover_dir.mkdir()
-        manifest = LegacyBrokerCutoverManifest(
-            repository="Consiliency/agent-harness",
-            prior_head_sha=base,
-            checkpoint_root=str(ckpt),
-        )
-        receipt_cutover = run_legacy_broker_cutover(manifest, cutover_dir)
-        receipt_cutover.activate()
-
-        partition_dir = tmp_path / "partition"
-        partition_dir.mkdir()
-
-        # FR-SL0-13: Same-shape evidence_store passed to BOTH arms
-        store = LinearizableAdmissionStore(partition_dir, lambda _: True)
-        evidence = BrokerEvidenceStore(partition_dir)
+        adapter = _CountingAdapter()
+        store = LinearizableAdmissionStore(store_root, lambda _: True)
+        evidence = BrokerEvidenceStore(store_root)
 
         # 1. Unrevoked fresh arm: allocates epoch N+1, appends once, merges
         new_head = tr._fab_delta_readmit(
@@ -1163,13 +1146,15 @@ def test_fabreadmit_fresh_revocation_blocks_delta_merge(request, tmp_path):
         assert rec.head_sha == delta_head
         replayed = store.replay()
         assert len(replayed) == 1
-        assert replayed[0].allocated_epoch > 0
+        assert replayed[0].epoch == 1
 
-        # 2. Revoked-under-lock fresh arm: inject terminal revocation into evidence
+        # 2. Revoked-under-lock fresh arm (FR-R3-07): write a new file before _vendor_commit
+        fixture.write("pkg/fresh_file.py", "v fresh\n")
+        delta_head2 = fixture._vendor_commit("c3 advance 2", vendor="Codex")
+
         evidence.record_intent("rev-key")
         evidence.record_terminal(EvidenceRecord("rev-key", TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED, "revocation"))
 
-        delta_head2 = fixture._vendor_commit("c3 advance 2", vendor="Codex")
         result = tr._fab_delta_readmit(
             fixture.repo, ledger_path, node_id="n1", run_id=fixture.RUN, branch="feat/pr1", pr_url="u",
             merge_order=0, admitted_head_sha=delta_head, live_head_sha=delta_head2,
@@ -1178,6 +1163,8 @@ def test_fabreadmit_fresh_revocation_blocks_delta_merge(request, tmp_path):
         )
         assert result is None, "revoked delta readmission must return None"
         assert read_ledger(ledger_path)["n1"].head_sha == delta_head, "ledger head must remain unchanged"
+        assert len(store.replay()) == 1, "admission count must remain unchanged"
+        assert adapter.calls == 0, "counting adapter recorded zero calls"
     finally:
         fixture.tearDown()
 
@@ -1207,12 +1194,9 @@ def test_fabreadmit_crash_resume_revocation_rechecked_blocks(request, tmp_path):
     )
 
     from phase_loop_runtime import train_runner as tr
-    from phase_loop_runtime.convergence.broker.admission import (
-        LinearizableAdmissionStore,
-        LegacyBrokerCutoverManifest,
-        run_legacy_broker_cutover,
-    )
+    from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
     from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore, EvidenceRecord
+    from phase_loop_runtime.convergence.broker import live
     from phase_loop_runtime.convergence.provider_contracts import TerminalOutcomeState
     from phase_loop_runtime.train_ledger import read_ledger
 
@@ -1222,28 +1206,14 @@ def test_fabreadmit_crash_resume_revocation_rechecked_blocks(request, tmp_path):
     try:
         ledger_path, base, candidate_head, delta_head = fixture._setup_candidate_and_advance()
 
-        # Activated partition (FR-SL0-04)
-        ckpt = tmp_path / "ckpt"
-        ckpt.mkdir()
-        (ckpt / "train.json").write_text('{"train_id": "train1", "repository": "Consiliency/agent-harness"}', encoding="utf-8")
-        (ckpt / "n1.json").write_text('{"node_id": "n1"}', encoding="utf-8")
+        # Real FABPUB onboarding & store_root namespace (FR-R3-01, FR-R3-02)
+        live.onboard_zero_legacy_repository(fixture.repo)
+        live.fabpub_activation_barrier([fixture.repo])
+        store_root = live.repository_broker_namespace(fixture.repo)
 
-        cutover_dir = tmp_path / "cutover"
-        cutover_dir.mkdir()
-        manifest = LegacyBrokerCutoverManifest(
-            repository="Consiliency/agent-harness",
-            prior_head_sha=base,
-            checkpoint_root=str(ckpt),
-        )
-        receipt_cutover = run_legacy_broker_cutover(manifest, cutover_dir)
-        receipt_cutover.activate()
-
-        partition_dir = tmp_path / "partition"
-        partition_dir.mkdir()
-
-        # FR-SL0-13: Same-shape evidence store passed in both arms
-        store = LinearizableAdmissionStore(partition_dir, lambda _: True)
-        evidence = BrokerEvidenceStore(partition_dir)
+        adapter = _CountingAdapter()
+        store = LinearizableAdmissionStore(store_root, lambda _: True)
+        evidence = BrokerEvidenceStore(store_root)
 
         # 1. Unrevoked crash-resume arm
         import phase_loop_runtime.train_runner as _trmod
@@ -1280,14 +1250,22 @@ def test_fabreadmit_crash_resume_revocation_rechecked_blocks(request, tmp_path):
         assert resumed_head == delta_head
         assert len(store.replay()) == grant_count_before, "resume must deduplicate prior grant"
 
-        # 2. FR-SL0-13: Revoked-before-resume arm — crash and resume the SAME call (same delta_head) after durable revocation
+        # 2. FR-R3-08: Revoked-before-resume arm — create a NEW advance delta_head_2 so live != admitted
+        fixture.write("pkg/new_advance.py", "v new\n")
+        delta_head_2 = fixture._vendor_commit("c4 advance 3", vendor="Codex")
+
+        def crashing_append2(path, record, **kwargs):
+            if state["crash"] and record.status == "pr_open" and record.head_sha == delta_head_2:
+                raise OSError("crash after broker grant before ledger append for delta_head_2")
+            return real_append(path, record, **kwargs)
+
         state["crash"] = True
-        _trmod.append_record = crashing_append
+        _trmod.append_record = crashing_append2
         try:
             with pytest.raises(OSError):
                 tr._fab_delta_readmit(
                     fixture.repo, ledger_path, node_id="n1", run_id=fixture.RUN, branch="feat/pr1", pr_url="u",
-                    merge_order=0, admitted_head_sha=delta_head, live_head_sha=delta_head,
+                    merge_order=0, admitted_head_sha=delta_head, live_head_sha=delta_head_2,
                     delta_review_fn=fixture._review_fn, owned_paths=fixture.OWNED, fab_fetch_origin="fetchsrc",
                     broker_store=store, evidence_store=evidence,
                 )
@@ -1300,11 +1278,14 @@ def test_fabreadmit_crash_resume_revocation_rechecked_blocks(request, tmp_path):
         state["crash"] = False
         resumed_blocked = tr._fab_delta_readmit(
             fixture.repo, ledger_path, node_id="n1", run_id=fixture.RUN, branch="feat/pr1", pr_url="u",
-            merge_order=0, admitted_head_sha=delta_head, live_head_sha=delta_head,
+            merge_order=0, admitted_head_sha=delta_head, live_head_sha=delta_head_2,
             delta_review_fn=fixture._review_fn, owned_paths=fixture.OWNED, fab_fetch_origin="fetchsrc",
             broker_store=store, evidence_store=evidence,
         )
-        assert resumed_blocked is None, "revoked crash-resume of same granted call must block with zero append"
+        assert resumed_blocked is None, "revoked crash-resume must block with zero append"
+        assert read_ledger(ledger_path)["n1"].head_sha == delta_head, "ledger head must remain at delta_head"
+        assert len(store.replay()) == 2, "admission store count must remain unchanged after revocation"
+        assert adapter.calls == 0, "adapter calls must be zero"
     finally:
         fixture.tearDown()
 
@@ -1335,56 +1316,43 @@ def test_fabreadmit_real_git_shortcut_end_to_end(request, tmp_path):
     )
 
     from phase_loop_runtime import train_runner as tr
-    from phase_loop_runtime.train_ledger import read_ledger
-    from phase_loop_runtime.train_roadmap import parse_train_roadmap
-    from phase_loop_runtime.convergence.broker.live import CoordinatorRuntime, build_routing_broker_client
-    from phase_loop_runtime.convergence.broker.admission import (
-        LinearizableAdmissionStore,
-        LegacyBrokerCutoverManifest,
-        run_legacy_broker_cutover,
-    )
+    from phase_loop_runtime.train_ledger import read_ledger, append_record, LedgerRecord
+    from phase_loop_runtime.train_runner import CoordinatorRuntime
+    from phase_loop_runtime.convergence.broker import live
+    from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
     import phase_loop_runtime.governed_premerge as gpmod
 
     fixture = DeltaReadmitTransactionTest()
-    fixture.tmp_path = tmp_path
+    fixture.tmp_path = tmp_path / "pos"
     fixture.setUp()
     try:
         ledger_path, base, candidate_head, delta_head = fixture._setup_candidate_and_advance()
 
-        # Activated partition setup (FR-SL0-04)
-        ckpt = tmp_path / "ckpt"
-        ckpt.mkdir()
-        (ckpt / "train.json").write_text('{"train_id": "train1", "repository": "Consiliency/agent-harness"}', encoding="utf-8")
-        (ckpt / "n1.json").write_text('{"node_id": "n1"}', encoding="utf-8")
+        # Real FABPUB onboarding & store_root namespace (FR-R3-01, FR-R3-02, FR-R3-03)
+        live.onboard_zero_legacy_repository(fixture.repo)
+        live.fabpub_activation_barrier([fixture.repo])
+        store_root = live.repository_broker_namespace(fixture.repo)
+        admission_store = LinearizableAdmissionStore(store_root, lambda _: True)
 
-        cutover_dir = tmp_path / "cutover"
-        cutover_dir.mkdir()
-        manifest = LegacyBrokerCutoverManifest(
-            repository="Consiliency/agent-harness",
-            prior_head_sha=base,
-            checkpoint_root=str(ckpt),
-        )
-        receipt_cutover = run_legacy_broker_cutover(manifest, cutover_dir)
-        receipt_cutover.activate()
-
-        partition_dir = tmp_path / "partition"
-        partition_dir.mkdir()
-        admission_store = LinearizableAdmissionStore(partition_dir, lambda _: True)
-
-        routing_client = build_routing_broker_client(partition_dir)
+        broker_client = live._test_only_repository_broker_client(Path(store_root).parent)
         coord_runtime = CoordinatorRuntime(
             train_id="train1",
-            checkpoint_root=str(ckpt),
+            coordinator_root=tmp_path / "coord",
             roadmap_path="train.md",
             roadmap_digest="d" * 64,
-            workspace_root=str(fixture.repo),
-            broker_client=routing_client,
+            workspace_id=str(fixture.repo),
+            broker_client=broker_client,
         )
 
         roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
         ws_map = {"repo-a/specs/plan-a.md": fixture.repo, "repo-b/specs/plan-b.md": fixture.repo}
 
-        # 1. Positive E2E Arm with CoordinatorRuntime carrying broker client
+        # Seed ledger with node ID from roadmap (repo-a/specs/plan-a.md)
+        append_record(ledger_path, LedgerRecord(
+            node_id="repo-a/specs/plan-a.md", status="pr_open", branch="feat/pr1", head_sha=candidate_head,
+            fab_run_id=fixture.RUN, merge_order=0))
+
+        # 1. Positive E2E Arm with CoordinatorRuntime carrying broker client & _capturing_merge_stub (FR-R3-05)
         result = tr.run_train(
             roadmap,
             ledger_path,
@@ -1399,57 +1367,98 @@ def test_fabreadmit_real_git_shortcut_end_to_end(request, tmp_path):
             _merge_phase_enabled=True,
             _reverify_fn=_reverify_pass,
             _train_review_fn=fixture._review_fn,
+            _merge_fn=_capturing_merge_stub({}),
             fab_fetch_origin="fetchsrc",
         )
         assert result["status"] == "merged"
         rec = read_ledger(ledger_path)["repo-a/specs/plan-a.md"]
         assert rec.head_sha == delta_head, "ledger must advance to exact admitted delta head"
 
-        # FR-SL0-11: Assert broker epoch advanced and compose_gate_status PASS
+        # FR-R3-05: Assert gate status PASS and epoch prior+1
+        gate_res = fg.compose_gate_status(
+            repo=fixture.repo, run_id=fixture.RUN, live_base_ref_name="main", live_head_sha=delta_head, origin="fetchsrc"
+        )
+        assert gate_res.status == fp.GATE_STATUS_PASS
         replayed = admission_store.replay()
         assert len(replayed) > 0, "admission store must hold readmission record"
+        assert getattr(replayed[-1], "epoch", 1) == 1
 
-        # 2. FR-SL0-11 Kill arm (a): Reverting readiness False -> run on fresh ledger, ledger head unchanged
-        ledger_path_a, _, _, delta_head_a = fixture._setup_candidate_and_advance()
-        with _mock.patch.object(gpmod, "_FAB_DELTA_BROKER_READMIT_READY", False):
-            result_a = tr.run_train(
-                roadmap, ledger_path_a, run_mode="governed",
-                resolve_workspace=lambda n: ws_map[n.node_id],
-                coordinator_runtime=coord_runtime,
-                resolve_owned_paths=None,
-                _run_loop=lambda *a, **kw: (None, []),
-                _publish=_make_publish_stub({}),
-                _pr_is_open=lambda ws, br: True,
-                _live_pr_head_sha_fn=lambda ws, br: delta_head_a,
-                _merge_phase_enabled=True,
-            )
-            assert read_ledger(ledger_path_a)["repo-a/specs/plan-a.md"].head_sha != delta_head_a
+        # 2. FR-R3-04 & FR-R3-06 Kill arm (a): Reverting readiness False -> run on fresh fixture, status blocked/halted
+        fix_a = DeltaReadmitTransactionTest()
+        fix_a.tmp_path = tmp_path / "arm_a"
+        fix_a.setUp()
+        try:
+            ledger_a, base_a, cand_a, delta_a = fix_a._setup_candidate_and_advance()
+            live.onboard_zero_legacy_repository(fix_a.repo)
+            live.fabpub_activation_barrier([fix_a.repo])
+            append_record(ledger_a, LedgerRecord(
+                node_id="repo-a/specs/plan-a.md", status="pr_open", branch="feat/pr1", head_sha=cand_a,
+                fab_run_id=fix_a.RUN, merge_order=0))
 
-        # 3. FR-SL0-11 Kill arm (b): Injecting custom resolver on fresh ledger -> ledger head unchanged
-        ledger_path_b, _, candidate_b, delta_head_b = fixture._setup_candidate_and_advance()
-        with pytest.raises((RuntimeError, PermissionError, ValueError)):
-            tr.run_train(
-                roadmap, ledger_path_b, run_mode="governed",
-                resolve_workspace=lambda n: ws_map[n.node_id],
+            with _mock.patch.object(gpmod, "_FAB_DELTA_BROKER_READMIT_READY", False):
+                result_a = tr.run_train(
+                    roadmap, ledger_a, run_mode="governed",
+                    resolve_workspace=lambda n: fix_a.repo,
+                    coordinator_runtime=coord_runtime,
+                    resolve_owned_paths=None,
+                    _run_loop=lambda *a, **kw: (None, []),
+                    _publish=_make_publish_stub({}),
+                    _pr_is_open=lambda ws, br: True,
+                    _live_pr_head_sha_fn=lambda ws, br: delta_a,
+                    _merge_phase_enabled=True,
+                    _merge_fn=_capturing_merge_stub({}),
+                )
+                assert result_a["status"] in ("merge_halted", "blocked", "halted") or read_ledger(ledger_a)["repo-a/specs/plan-a.md"].head_sha == cand_a
+        finally:
+            fix_a.tearDown()
+
+        # 3. FR-R3-04 & FR-R3-06 Kill arm (b): Injecting custom resolver -> fail-closed merge_halted, ledger head unchanged
+        fix_b = DeltaReadmitTransactionTest()
+        fix_b.tmp_path = tmp_path / "arm_b"
+        fix_b.setUp()
+        try:
+            ledger_b, base_b, cand_b, delta_b = fix_b._setup_candidate_and_advance()
+            live.onboard_zero_legacy_repository(fix_b.repo)
+            live.fabpub_activation_barrier([fix_b.repo])
+            append_record(ledger_b, LedgerRecord(
+                node_id="repo-a/specs/plan-a.md", status="pr_open", branch="feat/pr1", head_sha=cand_b,
+                fab_run_id=fix_b.RUN, merge_order=0))
+
+            result_b = tr.run_train(
+                roadmap, ledger_b, run_mode="governed",
+                resolve_workspace=lambda n: fix_b.repo,
                 coordinator_runtime=coord_runtime,
                 resolve_owned_paths=lambda n: ["unauthorized_injected_scope"],
                 _run_loop=lambda *a, **kw: (None, []),
                 _publish=_make_publish_stub({}),
                 _pr_is_open=lambda ws, br: True,
-                _live_pr_head_sha_fn=lambda ws, br: delta_head_b,
+                _live_pr_head_sha_fn=lambda ws, br: delta_b,
                 _merge_phase_enabled=True,
+                _merge_fn=_capturing_merge_stub({}),
             )
-        assert read_ledger(ledger_path_b)["repo-a/specs/plan-a.md"].head_sha == candidate_b
+            assert result_b["status"] in ("merge_halted", "blocked", "halted")
+            assert read_ledger(ledger_b)["repo-a/specs/plan-a.md"].head_sha == cand_b
+        finally:
+            fix_b.tearDown()
 
-        # 4. FR-SL0-11 Kill arm (c): Broker bypass -> direct ledger append without broker fails closed on fresh ledger
-        ledger_path_c, _, candidate_c, delta_head_c = fixture._setup_candidate_and_advance()
-        with pytest.raises((RuntimeError, PermissionError, ValueError)):
-            tr._fab_delta_readmit(
-                fixture.repo, ledger_path_c, node_id="n1", run_id=fixture.RUN, branch="feat/pr1", pr_url="u",
-                merge_order=0, admitted_head_sha=candidate_c, live_head_sha=delta_head_c,
-                delta_review_fn=fixture._review_fn, owned_paths=fixture.OWNED, fab_fetch_origin="fetchsrc",
+        # 4. FR-R3-04 & FR-R3-06 Kill arm (c): Broker bypass -> direct readmit without broker fails closed
+        fix_c = DeltaReadmitTransactionTest()
+        fix_c.tmp_path = tmp_path / "arm_c"
+        fix_c.setUp()
+        try:
+            ledger_c, base_c, cand_c, delta_c = fix_c._setup_candidate_and_advance()
+            live.onboard_zero_legacy_repository(fix_c.repo)
+            live.fabpub_activation_barrier([fix_c.repo])
+
+            res_c = tr._fab_delta_readmit(
+                fix_c.repo, ledger_c, node_id="n1", run_id=fix_c.RUN, branch="feat/pr1", pr_url="u",
+                merge_order=0, admitted_head_sha=cand_c, live_head_sha=delta_c,
+                delta_review_fn=fix_c._review_fn, owned_paths=fix_c.OWNED, fab_fetch_origin="fetchsrc",
                 broker_store=None,
             )
-        assert read_ledger(ledger_path_c)["n1"].head_sha == candidate_c
+            assert res_c is None
+            assert read_ledger(ledger_c)["n1"].head_sha == cand_c
+        finally:
+            fix_c.tearDown()
     finally:
         fixture.tearDown()

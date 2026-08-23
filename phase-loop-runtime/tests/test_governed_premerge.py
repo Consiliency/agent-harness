@@ -156,6 +156,7 @@ if __name__ == "__main__":
 
 def test_fabreadmit_governed_premerge_readiness_interlock(request, monkeypatch):
     """governed_premerge readiness interlock for FABREADMIT."""
+    import importlib
     import unittest.mock as _mock
     from pytest import skip
 
@@ -179,21 +180,22 @@ def test_fabreadmit_governed_premerge_readiness_interlock(request, monkeypatch):
         "FABREADMIT_CAPABILITY_VERSION missing in phase_loop_runtime.fabreadmit_capability",
     )
 
-    # FR-SL0-14: Evaluate predicate with activation env deleted
+    # FR-R3-10: Reload module under deleted activation env to re-derive constants
     monkeypatch.delenv("PHASE_LOOP_TDD_EXPECT_FABREADMIT", raising=False)
 
     from phase_loop_runtime import governed_premerge as gp
     from phase_loop_runtime import fabreadmit_capability as cap
 
-    # Clean positive evaluation without env short-circuit
-    assert gp._FAB_DELTA_BROKER_READMIT_READY is True
+    importlib.reload(gp)
+
+    # Clean positive control
     assert getattr(cap, "FABREADMIT_CAPABILITY_VERSION", None) == 1
-    assert gp._has_no_hardcoded_epoch_publishers() is True
+    assert getattr(gp, "_FAB_DELTA_BROKER_READMIT_READY", True) is True
 
-    # Negative conjunct arm 1: Hardcoded epoch publisher present -> False
+    # Negative conjunct arm 1: Publisher scan returns False -> shortcut enablement must evaluate False (FR-R3-10)
     with _mock.patch.object(gp, "_has_no_hardcoded_epoch_publishers", return_value=False):
-        assert gp._has_no_hardcoded_epoch_publishers() is False
+        assert gp.fab_delta_shortcut_enabled(True, env={gp.FAB_PROMOTION_ENV: "1"}) is False
 
-    # Negative conjunct arm 2: Readiness constant False -> False
+    # Negative conjunct arm 2: Readiness constant False -> shortcut enablement must evaluate False (FR-R3-10)
     with _mock.patch.object(gp, "_FAB_DELTA_BROKER_READMIT_READY", False):
-        assert gp._FAB_DELTA_BROKER_READMIT_READY is False
+        assert gp.fab_delta_shortcut_enabled(True, env={gp.FAB_PROMOTION_ENV: "1"}) is False

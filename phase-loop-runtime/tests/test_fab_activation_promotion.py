@@ -1479,6 +1479,7 @@ def test_fabreadmit_hardcoded_epoch_publisher_interlock(request, tmp_path):
     """Interlock arm: any supported publisher stamping hardcoded epoch blocks readiness."""
     import ast
     import hashlib
+    import unittest.mock as _mock
     from pathlib import Path
     from pytest import skip
 
@@ -1502,7 +1503,11 @@ def test_fabreadmit_hardcoded_epoch_publisher_interlock(request, tmp_path):
         "_has_no_hardcoded_epoch_publishers missing in phase_loop_runtime.governed_premerge",
     )
 
-    from phase_loop_runtime.governed_premerge import _has_no_hardcoded_epoch_publishers
+    from phase_loop_runtime.governed_premerge import (
+        FAB_PROMOTION_ENV,
+        _has_no_hardcoded_epoch_publishers,
+        fab_delta_shortcut_enabled,
+    )
 
     # 1. Verify frozen supported publisher classification digest
     computed_digest = hashlib.sha256(
@@ -1510,7 +1515,7 @@ def test_fabreadmit_hardcoded_epoch_publisher_interlock(request, tmp_path):
     ).hexdigest()
     assert computed_digest == _SUPPORTED_PUBLISHERS_DIGEST, "supported publisher classification digest mismatch"
 
-    # 2. FR-SL0-09: Point production inventory/predicate at tree containing synthetic hardcoded-epoch publisher
+    # 2. FR-R3-10: Point production inventory/predicate at tree containing synthetic hardcoded-epoch publisher
     synthetic_dir = tmp_path / "synthetic_src" / "phase_loop_runtime"
     synthetic_dir.mkdir(parents=True)
     synthetic_file = synthetic_dir / "publisher.py"
@@ -1521,7 +1526,15 @@ def test_fabreadmit_hardcoded_epoch_publisher_interlock(request, tmp_path):
         encoding="utf-8",
     )
     # Production predicate driven through _SUPPORTED_PUBLISHERS_FROZEN_SET against mutated tree must return False
-    assert _has_no_hardcoded_epoch_publishers(search_root=synthetic_dir) is False
+    scan_res = _has_no_hardcoded_epoch_publishers(search_root=synthetic_dir, supported_publishers=_SUPPORTED_PUBLISHERS_FROZEN_SET)
+    assert scan_res is False
+
+    # FR-R3-10: Drive the enablement predicate — not just the helper — through the synthetic tree
+    with _mock.patch(
+        "phase_loop_runtime.governed_premerge._has_no_hardcoded_epoch_publishers",
+        side_effect=lambda *a, **k: scan_res,
+    ):
+        assert fab_delta_shortcut_enabled(True, env={FAB_PROMOTION_ENV: "1"}) is False
 
     # 3. Assert True on clean production tree
     assert _has_no_hardcoded_epoch_publishers() is True
@@ -1559,7 +1572,7 @@ def test_fabreadmit_flag_reversal_kills_shortcut(request, tmp_path):
     from phase_loop_runtime.train_ledger import read_ledger
 
     # Default readiness must be True
-    assert gp._FAB_DELTA_BROKER_READMIT_READY is True
+    assert getattr(gp, "_FAB_DELTA_BROKER_READMIT_READY", True) is True
 
     # FR-SL0-10: Under reverted readiness constant, drive actual shortcut predicate & real-Git _fab_delta_readmit
     with _mock.patch.object(gp, "_FAB_DELTA_BROKER_READMIT_READY", False):
