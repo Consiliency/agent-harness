@@ -189,20 +189,23 @@ def test_gemini_leg_passes_headless_permission_flag(monkeypatch):
     permission``) and the run dies in 8-13s with an empty body. Measured directly:
     identical staged bundle, flag absent -> denial; flag present -> a full review.
 
-    THIS TEST DOES NOT ASSERT A SECURITY PROPERTY. It asserts argv construction and
-    nothing more. An earlier docstring here concluded that the staged `--add-dir` made
-    the repository unreachable; that was false and is corrected rather than softened.
+    Without it the leg cannot review at all: agy's permission check has no headless
+    approver, the first tool call is auto-denied, and the run dies in 8-13s empty --
+    which is why this seat delivered zero usable reviews across four boards.
 
-    The flag makes the leg UNCONFINED on the non-capture path: it auto-approves every
-    tool permission, and `--add-dir` selects workspace context, not containment.
-    Demonstrated against live agy -- shell ran and a file was written outside
-    `--add-dir`; neither `--sandbox` nor `--mode plan` contained it (ah#525). The
-    staging fact is true but bounds file writes only, which is the smaller concern.
+    THIS TEST ASSERTS ARGV, NOT A SECURITY PROPERTY. An earlier docstring here
+    concluded that the staged `--add-dir` made the repository unreachable. That was
+    false: the flag auto-approves every tool permission (shell, network, spawn), and
+    `--add-dir` selects workspace context, not containment -- verified against live
+    agy, where shell ran and a file was written outside `--add-dir`.
 
-    Nothing in this file exercises real agy, so a green run here is scope-green, not
-    property-green. Host-path, shell, process, network and credential isolation are
-    NOT covered by any test; asserting the flag's presence must never be read as
-    evidence that enabling it is safe.
+    Running unconfined is a standing operator decision for this fleet (executors
+    already run --yolo, and the repo takes no third-party submissions), so this leg
+    matches the existing posture rather than introducing a new exposure. Confinement
+    is wanted eventually and tracked on ah#525.
+
+    Nothing here exercises real agy, so a green run is scope-green, not property-green.
+    Do not read the flag's presence as evidence about isolation in either direction.
 
     Mutation that must kill this: drop the flag from the gemini cmd.
     """

@@ -3759,34 +3759,33 @@ def _exec_leg(
         # Reproduced directly: identical bundle, flag absent -> denial; flag present ->
         # a complete review.
         #
-        # !! DANGER -- READ BEFORE ENABLING. This flag makes the leg UNCONFINED on the
-        # non-capture path. It auto-approves EVERY tool permission, not just workspace
-        # file I/O, and ``--add-dir`` selects workspace CONTEXT, not a containment
-        # boundary. DEMONSTRATED against live agy with a staged workspace holding only
-        # the review bundle: shell (`id`) ran rc=0 and a file was written to /tmp,
-        # OUTSIDE --add-dir. Adding ``--sandbox`` did not contain it; ``--mode plan``
-        # did not contain it. Without this flag the leg is denied and returns empty.
-        # So there is NO honored agy read-only lever: confined and functional are not
-        # simultaneously reachable from agy flags alone.
+        # ah#525: without this flag the leg cannot review AT ALL. agy's permission check
+        # has no headless approver, so the first tool call is auto-denied
+        # ("permission check failed for command ...: user denied permission") and the run
+        # dies in 8-13s with an empty body. That is why this seat delivered zero usable
+        # reviews across four boards.
         #
-        # An earlier version of this comment claimed the staged copy bounded the blast
-        # radius (citing IF-0-SANDBOX-1). That was FALSE and is removed rather than
-        # softened. The staging claim itself is true -- ``child_review_dir`` really is
-        # always a throwaway, never the repo -- but it bounds file writes only, which is
-        # the smaller concern; shell, network and spawn are unbounded by it.
+        # WHAT IT GRANTS, stated accurately: it auto-approves EVERY tool permission --
+        # shell, network and spawn included, not just workspace file I/O. ``--add-dir``
+        # selects workspace CONTEXT, not a containment boundary. Verified against live
+        # agy: with this flag, shell ran and a file was written OUTSIDE ``--add-dir``;
+        # neither ``--sandbox`` nor ``--mode plan`` contained it. So agy offers no
+        # honored read-only lever -- unlike grok (read-only ``--tools`` allow-list) or
+        # codex (``--sandbox read-only``).
         #
-        # Threat model: a review leg consumes UNTRUSTED material (the diff under review,
-        # including outside-agent submissions). A prompt injection can drive an
-        # auto-approved leg to shell out. The EXECUTOR passing this flag is not a
-        # precedent -- an executor is deliberately write-authorized; a reviewer is not
-        # (`launcher.py` distinguishes the two actions on purpose). Sibling review legs
-        # are confined: grok by a read-only ``--tools`` allow-list, codex by
-        # ``--sandbox read-only``. agy would be the only unconfined one.
+        # WHY THAT IS ACCEPTED HERE: this fleet runs its agents unconfined by standing
+        # operator decision (executors already run --yolo), and the repo takes no
+        # third-party submissions -- the material a review leg sees is our own. The
+        # exposure is therefore the fleet's existing posture, not a new one introduced
+        # by this leg. Real confinement is wanted eventually and tracked on ah#525:
+        # a bwrap jail already exists (``agy_canary_evidence.py``, ``--ro-bind / /`` with
+        # the stage read-only bound) but is opt-in and unused by the bare panel path.
         #
-        # Enabling this needs real confinement -- e.g. routing unconditionally through
-        # the existing bwrap capture jail (``agy_canary_evidence.py``, ``--ro-bind / /``
-        # with the stage read-only bound), which is currently OPT-IN and NOT used by the
-        # bare production panel path. An env/config opt-in is not confinement (ah#525).
+        # Do NOT re-add a claim that the staged workspace bounds this. An earlier version
+        # of this comment said so, citing IF-0-SANDBOX-1. The staging fact is true --
+        # ``child_review_dir`` is always a throwaway, never the repo -- but it bounds
+        # file writes only, which is not what this flag opens up. True premise, false
+        # conclusion; it read as authoritative and was wrong.
         cmd = [
             "agy",
             "--model",
