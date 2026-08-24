@@ -2885,6 +2885,7 @@ def test_manifest_snapshot_rejects_swap_after_final_plans_stat(tmp_path, monkeyp
         match=(
             "manifest (ancestry )?changed during validation|"
             "physical plans ancestry changed during scan|"
+            "physical plans source changed before scan|"
             "cannot scan physical plans source"
         ),
     ):
@@ -3709,9 +3710,9 @@ def test_check_rejects_root_change_between_physical_and_manifest_snapshots(
     real_scan = plan_manifest._scan_plans_dir_physical
     swapped = False
 
-    def swap_after_physical_scan(scan_repo):
+    def swap_after_physical_scan(scan_repo, **kwargs):
         nonlocal swapped
-        result = real_scan(scan_repo)
+        result = real_scan(scan_repo, **kwargs)
         if not swapped:
             Path(scan_repo).rename(scanned_root)
             replacement.rename(repo)
@@ -3731,6 +3732,77 @@ def test_check_rejects_root_change_between_physical_and_manifest_snapshots(
     else:
         assert result.exit_code != 0
     assert swapped
+
+
+@pytest.mark.parametrize("operation", ("check", "unregistered"))
+def test_manifest_inventory_rejects_temporary_parent_substitution(
+    tmp_path, monkeypatch, operation
+):
+    active_parent = tmp_path / "active"
+    repo = make_repo(active_parent)
+    tracked_rel = _commit_plan(repo)
+
+    manifest = repo / "plans" / "manifest.json"
+    manifest.write_text(
+        json.dumps({"plans": [{"file": tracked_rel}]}) + "\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "plans/manifest.json"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "register plan"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+    alternate_parent = tmp_path / "alternate"
+    shutil.copytree(active_parent, alternate_parent, symlinks=True)
+    alternate_repo = alternate_parent / "repo"
+    hidden_rel = "plans/phase-plan-v2-HIDDEN.md"
+
+    (repo / hidden_rel).write_text(
+        "---\nphase: HIDDEN\n---\n# Hidden\n",
+        encoding="utf-8",
+    )
+    (alternate_repo / "plans" / "manifest.json").write_text(
+        '{"plans":[]}\n',
+        encoding="utf-8",
+    )
+
+    assert check(repo).exit_code == 1
+    assert check(alternate_repo).exit_code == 1
+    assert plan_manifest.unregistered_plan_files(repo) == (hidden_rel,)
+    assert plan_manifest.unregistered_plan_files(alternate_repo) == (tracked_rel,)
+
+    parked_active = tmp_path / "parked-active"
+    real_scan = plan_manifest._scan_plans_dir_physical
+    swaps = 0
+
+    def scan_with_temporary_parent_substitution(scan_repo, **kwargs):
+        nonlocal swaps
+        active_parent.rename(parked_active)
+        alternate_parent.rename(active_parent)
+        try:
+            return real_scan(scan_repo, **kwargs)
+        finally:
+            active_parent.rename(alternate_parent)
+            parked_active.rename(active_parent)
+            swaps += 1
+
+    monkeypatch.setattr(
+        plan_manifest,
+        "_scan_plans_dir_physical",
+        scan_with_temporary_parent_substitution,
+    )
+
+    if operation == "check":
+        result = check(repo)
+        assert result.exit_code != 0
+        assert any(item.path == hidden_rel for item in result.missing)
+    else:
+        result = plan_manifest.unregistered_plan_files(repo)
+        assert result == (hidden_rel,)
+    assert swaps == 1
 
 
 def test_cli_attest_passes_preimport_process_token_into_runner_workflow(tmp_path, monkeypatch):

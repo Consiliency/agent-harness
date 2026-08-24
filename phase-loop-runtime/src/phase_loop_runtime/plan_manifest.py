@@ -1219,6 +1219,8 @@ def _regular_repo_file_sha256(repo: Path, rel_path: str) -> str | None:
 class _ManifestSnapshot:
     data: bytes | None
     source_error: bool = False
+    root_fd: int | None = None
+    plans_fd: int | None = None
 
 
 @contextmanager
@@ -1305,7 +1307,7 @@ def _pinned_manifest_snapshot(
                     "manifest.json", dir_fd=plans_fd, follow_symlinks=False
                 )
             except FileNotFoundError:
-                yield _ManifestSnapshot(None)
+                yield _ManifestSnapshot(None, root_fd=root_fd, plans_fd=plans_fd)
                 try:
                     os.stat("manifest.json", dir_fd=plans_fd, follow_symlinks=False)
                 except FileNotFoundError:
@@ -1318,7 +1320,12 @@ def _pinned_manifest_snapshot(
 
             expected_identity = file_identity(named_before)
             if not stat.S_ISREG(named_before.st_mode):
-                yield _ManifestSnapshot(None, source_error=True)
+                yield _ManifestSnapshot(
+                    None,
+                    source_error=True,
+                    root_fd=root_fd,
+                    plans_fd=plans_fd,
+                )
                 named_final = os.stat(
                     "manifest.json", dir_fd=plans_fd, follow_symlinks=False
                 )
@@ -1335,10 +1342,19 @@ def _pinned_manifest_snapshot(
                     "manifest.json", dir_fd=plans_fd, follow_symlinks=False
                 )
                 if data is None or file_identity(named_after) != expected_identity:
-                    yield _ManifestSnapshot(None, source_error=True)
+                    yield _ManifestSnapshot(
+                        None,
+                        source_error=True,
+                        root_fd=root_fd,
+                        plans_fd=plans_fd,
+                    )
                     return
 
-                yield _ManifestSnapshot(data)
+                yield _ManifestSnapshot(
+                    data,
+                    root_fd=root_fd,
+                    plans_fd=plans_fd,
+                )
 
                 def cloned_manifest_is_current() -> bool:
                     named_current = os.stat(
@@ -1387,7 +1403,12 @@ def _pinned_manifest_snapshot(
                 if file_identity(os.fstat(stream.fileno())) != expected_identity:
                     raise ManifestSourceError("manifest changed during data read")
             except OSError:
-                yield _ManifestSnapshot(None, source_error=True)
+                yield _ManifestSnapshot(
+                    None,
+                    source_error=True,
+                    root_fd=root_fd,
+                    plans_fd=plans_fd,
+                )
                 named_final = os.stat(
                     "manifest.json", dir_fd=plans_fd, follow_symlinks=False
                 )
@@ -1397,7 +1418,11 @@ def _pinned_manifest_snapshot(
                     raise ManifestSourceError("manifest ancestry changed during validation")
                 return
 
-            yield _ManifestSnapshot(data)
+            yield _ManifestSnapshot(
+                data,
+                root_fd=root_fd,
+                plans_fd=plans_fd,
+            )
             def manifest_file_is_current() -> bool:
                 named_final = os.stat(
                     "manifest.json", dir_fd=plans_fd, follow_symlinks=False
@@ -1774,7 +1799,12 @@ def _git_conflicted_index_plans(repo: Path) -> list[str]:
     return sorted(conflicted)
 
 
-def _scan_plans_dir_physical(repo: Path) -> tuple[list[str], list[MalformedPlanFinding]]:
+def _scan_plans_dir_physical(
+    repo: Path,
+    *,
+    root_fd: int | None = None,
+    plans_fd: int | None = None,
+) -> tuple[list[str], list[MalformedPlanFinding]]:
     """Direct-child physical scan of ``plans/`` -- filesystem-safe byte decoding,
     never following a directory-entry symlink, never reading plan content."""
     plans_dir = repo / "plans"
@@ -1798,22 +1828,35 @@ def _scan_plans_dir_physical(repo: Path) -> tuple[list[str], list[MalformedPlanF
 
     try:
         with ExitStack() as opened:
-            root_before = os.stat(repo, follow_symlinks=False)
-            root_fd = os.open(repo, directory_flags)
-            opened.callback(os.close, root_fd)
-            root_identity = directory_identity(os.fstat(root_fd))
-            if (
-                not stat.S_ISDIR(root_before.st_mode)
-                or directory_identity(root_before) != root_identity
-            ):
-                raise ManifestSourceError("physical repository root changed before scan")
+            if (root_fd is None) != (plans_fd is None):
+                raise ManifestSourceError("physical plans scan descriptors are incomplete")
+            owns_descriptors = root_fd is None
+            if owns_descriptors:
+                root_before = os.stat(repo, follow_symlinks=False)
+                root_fd = os.open(repo, directory_flags)
+                opened.callback(os.close, root_fd)
+                root_identity = directory_identity(os.fstat(root_fd))
+                if (
+                    not stat.S_ISDIR(root_before.st_mode)
+                    or directory_identity(root_before) != root_identity
+                ):
+                    raise ManifestSourceError(
+                        "physical repository root changed before scan"
+                    )
+            else:
+                root_identity = directory_identity(os.fstat(root_fd))
+                if not stat.S_ISDIR(os.fstat(root_fd).st_mode):
+                    raise ManifestSourceError(
+                        "physical repository descriptor is not a directory"
+                    )
             plans_before = os.stat("plans", dir_fd=root_fd, follow_symlinks=False)
             if not stat.S_ISDIR(plans_before.st_mode):
                 raise ManifestSourceError(
                     f"physical plans source is missing or not a directory: {plans_dir}"
                 )
-            plans_fd = os.open("plans", directory_flags, dir_fd=root_fd)
-            opened.callback(os.close, plans_fd)
+            if owns_descriptors:
+                plans_fd = os.open("plans", directory_flags, dir_fd=root_fd)
+                opened.callback(os.close, plans_fd)
             plans_identity = directory_identity(os.fstat(plans_fd))
             plans_after = os.stat("plans", dir_fd=root_fd, follow_symlinks=False)
             if (
@@ -1854,14 +1897,18 @@ def _scan_plans_dir_physical(repo: Path) -> tuple[list[str], list[MalformedPlanF
                     raise ManifestSourceError(
                         "physical plans entry changed during scan"
                     )
-            if (
+            plans_is_current = (
                 directory_identity(
                     os.stat("plans", dir_fd=root_fd, follow_symlinks=False)
                 )
-                != plans_identity
+                == plans_identity
+            )
+            root_is_current = (
+                not owns_descriptors
                 or directory_identity(os.stat(repo, follow_symlinks=False))
-                != root_identity
-            ):
+                == root_identity
+            )
+            if not plans_is_current or not root_is_current:
                 raise ManifestSourceError("physical plans ancestry changed during scan")
     except OSError as exc:
         raise ManifestSourceError(f"cannot scan physical plans source {plans_dir}: {exc}") from exc
@@ -1894,7 +1941,12 @@ def _scan_plans_dir_physical(repo: Path) -> tuple[list[str], list[MalformedPlanF
     return canonical, malformed
 
 
-def canonical_plan_files(repo: Path, tree_oid: str) -> CanonicalPlanFiles:
+def canonical_plan_files(
+    repo: Path,
+    tree_oid: str,
+    *,
+    snapshot: _ManifestSnapshot | None = None,
+) -> CanonicalPlanFiles:
     """The stable union of canonical phase-plan paths across the runner-captured
     ``tree_oid`` (typically ``HEAD``), the stage-0 Git index, and a bounded
     direct physical scan of ``plans/`` -- retaining each path's source-origin
@@ -1945,7 +1997,11 @@ def canonical_plan_files(repo: Path, tree_oid: str) -> CanonicalPlanFiles:
             continue
         malformed.append(MalformedPlanFinding(path=clean_rel, kind="conflicted-index", origin=frozenset({"index"})))
 
-    physical_canonical, physical_malformed = _scan_plans_dir_physical(repo)
+    physical_canonical, physical_malformed = _scan_plans_dir_physical(
+        repo,
+        root_fd=snapshot.root_fd if snapshot is not None else None,
+        plans_fd=snapshot.plans_fd if snapshot is not None else None,
+    )
     for rel in physical_canonical:
         origins.setdefault(rel, set()).add("filesystem")
     malformed.extend(physical_malformed)
@@ -2299,7 +2355,7 @@ def check(repo: Path) -> ManifestCheckResult:
     repo = Path(repo).resolve(strict=True)
     head_oid = _resolve_head_oid(repo)
     with _pinned_manifest_snapshot(repo, head_oid=head_oid) as snapshot:
-        canonical = canonical_plan_files(repo, head_oid)
+        canonical = canonical_plan_files(repo, head_oid, snapshot=snapshot)
         registered, manifest_malformed = _manifest_entry_scope_from_snapshot(
             repo, snapshot, head_oid=head_oid
         )
@@ -2332,7 +2388,7 @@ def unregistered_plan_files(repo: Path) -> tuple[str, ...]:
     repo = Path(repo).resolve()
     head_oid = _resolve_head_oid(repo)
     with _pinned_manifest_snapshot(repo, head_oid=head_oid) as snapshot:
-        canonical = canonical_plan_files(repo, head_oid)
+        canonical = canonical_plan_files(repo, head_oid, snapshot=snapshot)
         registered, _malformed = _manifest_entry_scope_from_snapshot(
             repo, snapshot, head_oid=head_oid
         )
