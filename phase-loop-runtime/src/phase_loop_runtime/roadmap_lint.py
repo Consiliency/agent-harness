@@ -637,6 +637,77 @@ def _escapes_repo(path: str) -> bool:
     return any(part in ("..", ".") for part in Path(path).parts)
 
 
+def _repo_path_is_safely_absent(root_fd: int, rel_path: str) -> bool:
+    if _escapes_repo(rel_path):
+        return False
+    parts = Path(rel_path).parts
+    if not parts:
+        return False
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    directory = getattr(os, "O_DIRECTORY", None)
+    if nofollow is None or directory is None:
+        return False
+    directory_flags = (
+        os.O_RDONLY | directory | nofollow | getattr(os, "O_CLOEXEC", 0)
+    )
+
+    def identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+        return (
+            value.st_dev,
+            value.st_ino,
+            value.st_mode,
+            value.st_mtime_ns,
+            value.st_ctime_ns,
+        )
+
+    opened = [os.dup(root_fd)]
+    walked: list[tuple[int, str, int, tuple[int, int, int, int, int]]] = []
+    missing: tuple[int, str] | None = None
+    try:
+        current_fd = opened[0]
+        for index, part in enumerate(parts):
+            try:
+                before = os.stat(part, dir_fd=current_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                missing = (current_fd, part)
+                break
+            if index == len(parts) - 1 or not stat.S_ISDIR(before.st_mode):
+                return False
+            child_fd = os.open(part, directory_flags, dir_fd=current_fd)
+            opened.append(child_fd)
+            after = os.stat(part, dir_fd=current_fd, follow_symlinks=False)
+            expected = identity(before)
+            if identity(after) != expected or identity(os.fstat(child_fd)) != expected:
+                return False
+            walked.append((current_fd, part, child_fd, expected))
+            current_fd = child_fd
+
+        if missing is None:
+            return False
+        for parent_fd, part, child_fd, expected in walked:
+            if (
+                identity(os.stat(part, dir_fd=parent_fd, follow_symlinks=False))
+                != expected
+                or identity(os.fstat(child_fd)) != expected
+            ):
+                return False
+        missing_parent_fd, missing_name = missing
+        try:
+            os.stat(
+                missing_name,
+                dir_fd=missing_parent_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            return True
+        return False
+    except OSError:
+        return False
+    finally:
+        for opened_fd in reversed(opened):
+            os.close(opened_fd)
+
+
 @contextmanager
 def _pinned_roadmap_sources(
     repo: Path,
@@ -729,17 +800,22 @@ def _pinned_roadmap_sources(
                 raise MalformedRegistryError(
                     "roadmap-status sources are not one stable regular-file snapshot"
                 )
-        elif capture_required_marker:
-            marker_present = os.path.lexists(marker_path)
-            if marker_present and _regular_repo_files_sha256(
-                root,
-                (marker_rel,),
-                root_fd=root_fd,
-                content_out=sources,
-            ) is None:
+        else:
+            if not _repo_path_is_safely_absent(root_fd, registry_rel):
                 raise MalformedRegistryError(
-                    "required roadmap marker is not a stable regular repository file"
+                    "roadmap-status registry is not safely absent"
                 )
+            if capture_required_marker:
+                marker_present = os.path.lexists(marker_path)
+                if marker_present and _regular_repo_files_sha256(
+                    root,
+                    (marker_rel,),
+                    root_fd=root_fd,
+                    content_out=sources,
+                ) is None:
+                    raise MalformedRegistryError(
+                        "required roadmap marker is not a stable regular repository file"
+                    )
 
         try:
             yield descriptor_repo, root_fd, sources
@@ -758,9 +834,9 @@ def _pinned_roadmap_sources(
                 raise MalformedRegistryError(
                     "roadmap-status sources changed during validation"
                 )
-        elif os.path.lexists(registry_path):
+        elif not _repo_path_is_safely_absent(root_fd, registry_rel):
             raise MalformedRegistryError(
-                "roadmap-status registry appeared during validation"
+                "roadmap-status registry appeared or became unsafe during validation"
             )
         elif capture_required_marker and marker_present:
             final_marker: dict[str, bytes] = {}

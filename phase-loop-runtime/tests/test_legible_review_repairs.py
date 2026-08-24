@@ -4154,12 +4154,17 @@ def test_public_roadmap_reader_rejects_path_outside_repo(tmp_path):
     )
     external = tmp_path / "external-roadmap-status.json"
     external.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    external_dir = tmp_path / "external-dir"
+    external_dir.mkdir()
+    linked_dir = repo / "specs" / "external-link"
+    linked_dir.symlink_to(external_dir, target_is_directory=True)
 
-    for requested in (external, repo / ".." / "missing-roadmap-status.json"):
-        with pytest.raises(
-            roadmap_lint.MalformedRegistryError,
-            match="path escapes repository",
-        ):
+    for requested in (
+        external,
+        repo / ".." / "missing-roadmap-status.json",
+        linked_dir / "missing-roadmap-status.json",
+    ):
+        with pytest.raises(roadmap_lint.MalformedRegistryError):
             roadmap_lint.read_roadmap_status(repo, requested)
 
 
