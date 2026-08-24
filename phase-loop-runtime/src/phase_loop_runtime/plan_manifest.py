@@ -1190,15 +1190,29 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
             lifecycle = entry.get("lifecycle")
             contracts: list[dict[str, Any]] = []
             rebinds: list[dict[str, Any]] = []
+            historical_binding_declared = False
+            historical_binding_malformed = False
             if isinstance(lifecycle, list):
                 for event in lifecycle:
                     metadata = event.get("metadata") if isinstance(event, dict) else None
                     if not isinstance(metadata, dict):
                         continue
-                    if isinstance(metadata.get("legible_plan_contract"), dict):
-                        contracts.append(metadata["legible_plan_contract"])
-                    if isinstance(metadata.get("digest_rebind"), dict):
-                        rebinds.append(metadata["digest_rebind"])
+                    for key, target in (
+                        ("legible_plan_contract", contracts),
+                        ("digest_rebind", rebinds),
+                    ):
+                        if key not in metadata:
+                            continue
+                        historical_binding_declared = True
+                        value = metadata[key]
+                        if isinstance(value, dict):
+                            target.append(value)
+                        else:
+                            historical_binding_malformed = True
+            if historical_binding_malformed:
+                malformed.append(
+                    MalformedPlanFinding(rel, "plan-contract", frozenset({"manifest"}))
+                )
             contract = contracts[-1] if contracts else None
             if rel == _LEGIBLE_PLAN_REL:
                 owned_digest = hashlib.sha256(
@@ -1233,7 +1247,7 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
                 )
 
             authority_history = entry.get("plan_authority_history")
-            if authority_history is None and digests:
+            if authority_history is None and historical_binding_declared:
                 malformed.append(
                     MalformedPlanFinding(rel, "plan-contract", frozenset({"manifest"}))
                 )

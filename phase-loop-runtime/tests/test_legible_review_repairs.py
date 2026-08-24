@@ -1920,6 +1920,17 @@ def test_legible_manifest_contract_survives_later_ordinary_lifecycle_event(tmp_p
         (item.path, item.kind) for item in missing_current_authority.malformed
     ]
 
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["plans"][0]["lifecycle"][0]["metadata"]["legible_plan_contract"] = "corrupt"
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
+
+    corrupted_historical_binding = check(repo)
+
+    assert corrupted_historical_binding.exit_code == 1
+    assert (rel, "plan-contract") in [
+        (item.path, item.kind) for item in corrupted_historical_binding.malformed
+    ]
+
 
 @pytest.mark.parametrize("defect", ("missing", "owned_paths", "owned_paths_count", "owned_paths_sha256", "test_paths"))
 def test_legible_manifest_contract_is_mandatory_and_complete(tmp_path, defect):
