@@ -295,7 +295,8 @@ class DeltaReadmitTransactionTest(GitRepoTestCase):
             ["git", "-C", str(self.repo), "add", "--", "pkg/a.py"], check=True
         )
 
-        coordinator_root = self.tmp_path / "coord"
+        fixture_root = self.repo.parent
+        coordinator_root = fixture_root / "coord"
         authority = _authority_preimage(identity, branch)
         authority["train_id"] = "train1"
         authority["node_id"] = node_id
@@ -353,7 +354,7 @@ class DeltaReadmitTransactionTest(GitRepoTestCase):
             check=True,
         )
 
-        ledger_path = self.tmp_path / "train.ledger.jsonl"
+        ledger_path = fixture_root / "train.ledger.jsonl"
         append_record(
             ledger_path,
             LedgerRecord(
@@ -392,15 +393,43 @@ class DeltaReadmitTransactionTest(GitRepoTestCase):
             "candidate_artifact": candidate_artifact,
         }
 
+    def _readmit_with_broker(self, runner, *args, broker_store, evidence_store, **kwargs):
+        """Pass the real broker/evidence pair once the SL-0 callable exposes it.
+
+        The frozen default suite intentionally exercises the pre-capability
+        callable, whose signature has no broker parameters.  This bridge keeps
+        that compatibility check stable while ensuring every migrated positive
+        supplies concrete broker/evidence artifacts as soon as the capability is
+        present.
+        """
+        import inspect
+
+        assert broker_store is not None
+        assert evidence_store is not None
+        parameters = inspect.signature(runner._fab_delta_readmit).parameters
+        if {"broker_store", "evidence_store"} <= set(parameters):
+            return runner._fab_delta_readmit(
+                *args,
+                broker_store=broker_store,
+                evidence_store=evidence_store,
+                **kwargs,
+            )
+        return runner._fab_delta_readmit(*args, **kwargs)
+
     def test_readmit_happy_path_extends_chain_and_commits_ledger(self):
         from phase_loop_runtime import train_runner as tr
         from phase_loop_runtime.train_ledger import read_ledger
 
-        ledger_path, base, candidate_head, delta_head = self._setup_candidate_and_advance()
-        new_admitted = tr._fab_delta_readmit(
+        seeded = self._setup_broker_readmit_candidate()
+        ledger_path = seeded["ledger_path"]
+        candidate_head = seeded["candidate_head"]
+        delta_head = seeded["delta_head"]
+        new_admitted = self._readmit_with_broker(
+            tr,
             self.repo, ledger_path, node_id="n1", run_id=self.RUN, branch="feat/pr1", pr_url="u",
             merge_order=0, admitted_head_sha=candidate_head, live_head_sha=delta_head,
             delta_review_fn=self._review_fn, owned_paths=self.OWNED, fab_fetch_origin="fetchsrc",
+            broker_store=seeded["store"], evidence_store=seeded["evidence"],
         )
         self.assertEqual(new_admitted, delta_head)
         # COMMIT POINT: the ledger now admits the new head with the same fab_run_id.
@@ -421,7 +450,10 @@ class DeltaReadmitTransactionTest(GitRepoTestCase):
         from phase_loop_runtime import train_runner as tr
         from phase_loop_runtime.train_ledger import read_ledger
 
-        ledger_path, base, candidate_head, delta_head = self._setup_candidate_and_advance()
+        seeded = self._setup_broker_readmit_candidate()
+        ledger_path = seeded["ledger_path"]
+        candidate_head = seeded["candidate_head"]
+        delta_head = seeded["delta_head"]
 
         # ATTEMPT 1 crashes at the commit point: append_record raises after the
         # provenance overwrite + fsync + gate-verify.
@@ -437,20 +469,24 @@ class DeltaReadmitTransactionTest(GitRepoTestCase):
         _trmod.append_record = crashing_append
         try:
             with self.assertRaises(OSError):
-                tr._fab_delta_readmit(
+                self._readmit_with_broker(
+                    tr,
                     self.repo, ledger_path, node_id="n1", run_id=self.RUN, branch="feat/pr1", pr_url="u",
                     merge_order=0, admitted_head_sha=candidate_head, live_head_sha=delta_head,
                     delta_review_fn=self._review_fn, owned_paths=self.OWNED, fab_fetch_origin="fetchsrc",
+                    broker_store=seeded["store"], evidence_store=seeded["evidence"],
                 )
             # Fail-closed: the ledger still admits the OLD candidate head.
             self.assertEqual(read_ledger(ledger_path)["n1"].head_sha, candidate_head)
 
             # RESUME (attempt 2): the append succeeds → converges to the new head.
             state["crash"] = False
-            new_admitted = tr._fab_delta_readmit(
+            new_admitted = self._readmit_with_broker(
+                tr,
                 self.repo, ledger_path, node_id="n1", run_id=self.RUN, branch="feat/pr1", pr_url="u",
                 merge_order=0, admitted_head_sha=candidate_head, live_head_sha=delta_head,
                 delta_review_fn=self._review_fn, owned_paths=self.OWNED, fab_fetch_origin="fetchsrc",
+                broker_store=seeded["store"], evidence_store=seeded["evidence"],
             )
             self.assertEqual(new_admitted, delta_head)
             self.assertEqual(read_ledger(ledger_path)["n1"].head_sha, delta_head)
@@ -499,7 +535,10 @@ class DeltaReadmitTransactionTest(GitRepoTestCase):
         from phase_loop_runtime import train_runner as tr
         from phase_loop_runtime.train_ledger import read_ledger
 
-        ledger_path, base, candidate_head, c2_head = self._setup_candidate_and_advance()
+        seeded = self._setup_broker_readmit_candidate()
+        ledger_path = seeded["ledger_path"]
+        candidate_head = seeded["candidate_head"]
+        c2_head = seeded["delta_head"]
 
         # ATTEMPT 1: crash on the fsync of the EXTENDED provenance (the one whose
         # chain is nonempty) → torn state left, no recovery.
@@ -516,10 +555,12 @@ class DeltaReadmitTransactionTest(GitRepoTestCase):
         fpmod.fsync_run_store_durable = crashing_fsync
         try:
             with self.assertRaises(OSError):
-                tr._fab_delta_readmit(
+                self._readmit_with_broker(
+                    tr,
                     self.repo, ledger_path, node_id="n1", run_id=self.RUN, branch="feat/pr1", pr_url="u",
                     merge_order=0, admitted_head_sha=candidate_head, live_head_sha=c2_head,
                     delta_review_fn=self._review_fn, owned_paths=self.OWNED, fab_fetch_origin="fetchsrc",
+                    broker_store=seeded["store"], evidence_store=seeded["evidence"],
                 )
         finally:
             fpmod.fsync_run_store_durable = real_fsync
@@ -534,10 +575,12 @@ class DeltaReadmitTransactionTest(GitRepoTestCase):
         c2b_head = self._vendor_commit("c2' replacement advance", vendor="Codex")
 
         # ATTEMPT 2 must CONVERGE (scope-back-at-start recovers the torn state).
-        new_admitted = tr._fab_delta_readmit(
+        new_admitted = self._readmit_with_broker(
+            tr,
             self.repo, ledger_path, node_id="n1", run_id=self.RUN, branch="feat/pr1", pr_url="u",
             merge_order=0, admitted_head_sha=candidate_head, live_head_sha=c2b_head,
             delta_review_fn=self._review_fn, owned_paths=self.OWNED, fab_fetch_origin="fetchsrc",
+            broker_store=seeded["store"], evidence_store=seeded["evidence"],
         )
         self.assertEqual(new_admitted, c2b_head, "attempt 2 must converge, not brick on the torn state")
         self.assertEqual(read_ledger(ledger_path)["n1"].head_sha, c2b_head)
@@ -560,7 +603,9 @@ class DeltaReadmitTransactionTest(GitRepoTestCase):
         from phase_loop_runtime import train_runner as tr
         from phase_loop_runtime.train_ledger import read_ledger
 
-        ledger_path, base, candidate_head, _local_advance = self._setup_candidate_and_advance()
+        seeded = self._setup_broker_readmit_candidate()
+        ledger_path = seeded["ledger_path"]
+        candidate_head = seeded["candidate_head"]
         # Drop the LOCAL advance the fixture made — we want a REMOTE-only one.
         subprocess.run(["git", "-C", str(self.repo), "reset", "--hard", candidate_head], check=True, capture_output=True)
         # Publish the admitted candidate to the remote (a side ref, leaving
@@ -594,10 +639,12 @@ class DeltaReadmitTransactionTest(GitRepoTestCase):
         )
 
         # The re-admission fetches it and converges to the remote head.
-        new_admitted = tr._fab_delta_readmit(
+        new_admitted = self._readmit_with_broker(
+            tr,
             self.repo, ledger_path, node_id="n1", run_id=self.RUN, branch="feat/pr1", pr_url="u",
             merge_order=0, admitted_head_sha=candidate_head, live_head_sha=remote_head,
             delta_review_fn=self._review_fn, owned_paths=self.OWNED, fab_fetch_origin="fetchsrc",
+            broker_store=seeded["store"], evidence_store=seeded["evidence"],
         )
         self.assertEqual(new_admitted, remote_head, "the shortcut must ENGAGE for a remote-only advance (via fetch)")
         self.assertEqual(read_ledger(ledger_path)["n1"].head_sha, remote_head)
@@ -673,7 +720,9 @@ class DeltaReadmitTransactionTest(GitRepoTestCase):
 
         from phase_loop_runtime import train_runner as tr
 
-        ledger_path, base, candidate_head, _delta_head = self._setup_candidate_and_advance()
+        seeded = self._setup_broker_readmit_candidate()
+        ledger_path = seeded["ledger_path"]
+        candidate_head = seeded["candidate_head"]
         # Replace the advance with one AUTHORED by a gemini agent (author +
         # committer + Co-authored-by all carry the vendor marker), no dispatch event.
         subprocess.run(["git", "-C", str(self.repo), "reset", "--hard", candidate_head], check=True, capture_output=True)
@@ -700,10 +749,12 @@ class DeltaReadmitTransactionTest(GitRepoTestCase):
             seen["authors"] = frozenset(author_vendors)
             return LoopResult(mergeable=True, ran=True, rounds=1, panel=_delta_panel())
 
-        new_admitted = tr._fab_delta_readmit(
+        new_admitted = self._readmit_with_broker(
+            tr,
             self.repo, ledger_path, node_id="n1", run_id=self.RUN, branch="feat/pr1", pr_url="u",
             merge_order=0, admitted_head_sha=candidate_head, live_head_sha=gem_head,
             delta_review_fn=capturing_review, owned_paths=self.OWNED, fab_fetch_origin="fetchsrc",
+            broker_store=seeded["store"], evidence_store=seeded["evidence"],
         )
         self.assertEqual(new_admitted, gem_head)
         self.assertIn(
@@ -1147,6 +1198,11 @@ def _scan_append_sites_in_source(source_text: str) -> tuple[list[tuple[str, str,
             ):
                 return ("other", "unknown", False)
             values = {keyword.arg: keyword.value for keyword in record.keywords if keyword.arg}
+            for keyword in record.keywords:
+                if keyword.arg is None and isinstance(keyword.value, ast.Dict):
+                    for key, value in zip(keyword.value.keys, keyword.value.values):
+                        if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                            values.setdefault(key.value, value)
             status = self._literal(values["status"]) if "status" in values else "missing"
             return ("assigned" if supplied_as_name else "inline", status, "head_sha" in values)
 
@@ -1194,6 +1250,7 @@ def _assert_head_append_inventory(source_text: str):
 
 def test_fabreadmit_commit_points_reach_commit_broker_readmitted_head(request, tmp_path):
     """Commit points reach _commit_broker_readmitted_head during readmission execution."""
+    from dataclasses import replace
     import subprocess
     import unittest.mock as _mock
     import pytest
@@ -1220,7 +1277,35 @@ def test_fabreadmit_commit_points_reach_commit_broker_readmitted_head(request, t
     )
 
     from phase_loop_runtime import train_runner as tr
+    from phase_loop_runtime.convergence.contracts import DeltaReadmitReceipt
     from phase_loop_runtime.train_ledger import read_ledger
+
+    def _receipt_from_call(call):
+        args, kwargs = call
+        receipts = [
+            value
+            for value in (*args, *kwargs.values())
+            if isinstance(value, DeltaReadmitReceipt)
+        ]
+        assert len(receipts) == 1, (
+            "each durable ledger commit must receive exactly one DeltaReadmitReceipt; "
+            f"got {receipts!r}"
+        )
+        return receipts[0]
+
+    def _assert_receipt_binds_durable_append(call, *, seeded, prior_head, proposed_head, store):
+        receipt = _receipt_from_call(call)
+        assert receipt.repository == seeded["identity"]
+        assert receipt.branch == seeded["branch"]
+        assert receipt.prior_head_sha == prior_head
+        assert receipt.proposed_head_sha == proposed_head
+        durable_record = store.replay()[-1]
+        assert durable_record.request.repository == receipt.repository
+        assert durable_record.request.branch == receipt.branch
+        assert receipt.allocated_epoch == durable_record.epoch
+        assert durable_record.binding.prior_head_sha == receipt.prior_head_sha
+        assert durable_record.binding.proposed_head_sha == receipt.proposed_head_sha
+        assert durable_record.binding.authority_digest == receipt.authority_digest
 
     # Arm 1: Fresh advance readmission path (FR-R4-04, FR-R5-01, FR-R7-03)
     fixture = DeltaReadmitTransactionTest()
@@ -1254,8 +1339,84 @@ def test_fabreadmit_commit_points_reach_commit_broker_readmitted_head(request, t
 
         assert res_fresh == delta_head
         assert len(spy_calls) == 1, "exactly one helper entry in fresh advance arm"
+        _assert_receipt_binds_durable_append(
+            spy_calls[0],
+            seeded=seeded,
+            prior_head=candidate_head,
+            proposed_head=delta_head,
+            store=store,
+        )
         assert read_ledger(ledger_path)["n1"].head_sha == delta_head
         assert len(store.replay()) == 2
+
+        # Missing or altered receipts may not authorize a durable ledger append.
+        for invalid_name, alter_receipt in (
+            ("missing", lambda _receipt: None),
+            ("mismatched", lambda receipt: replace(
+                receipt, proposed_head_sha=receipt.prior_head_sha
+            )),
+        ):
+            fixture_bad = DeltaReadmitTransactionTest()
+            fixture_bad.tmp_path = tmp_path / f"{invalid_name}_receipt"
+            fixture_bad.setUp()
+            try:
+                seeded_bad = fixture_bad._setup_broker_readmit_candidate()
+                real_commit_bad = tr._commit_broker_readmitted_head
+                append_calls = []
+
+                def _invalid_receipt_commit(*args, **kwargs):
+                    changed = False
+                    altered_args = []
+                    for value in args:
+                        if isinstance(value, DeltaReadmitReceipt):
+                            altered_args.append(alter_receipt(value))
+                            changed = True
+                        else:
+                            altered_args.append(value)
+                    altered_kwargs = {}
+                    for key, value in kwargs.items():
+                        if isinstance(value, DeltaReadmitReceipt):
+                            altered_kwargs[key] = alter_receipt(value)
+                            changed = True
+                        else:
+                            altered_kwargs[key] = value
+                    assert changed, "the commit point must receive a DeltaReadmitReceipt"
+                    return real_commit_bad(*altered_args, **altered_kwargs)
+
+                real_append_bad = tr.append_record
+
+                def _observe_append(*args, **kwargs):
+                    append_calls.append((args, kwargs))
+                    return real_append_bad(*args, **kwargs)
+
+                with _mock.patch.object(
+                    tr, "_commit_broker_readmitted_head", side_effect=_invalid_receipt_commit
+                ), _mock.patch.object(tr, "append_record", side_effect=_observe_append):
+                    rejected = tr._fab_delta_readmit(
+                        fixture_bad.repo,
+                        seeded_bad["ledger_path"],
+                        node_id="n1",
+                        run_id=fixture_bad.RUN,
+                        branch=seeded_bad["branch"],
+                        pr_url="u",
+                        merge_order=0,
+                        admitted_head_sha=seeded_bad["candidate_head"],
+                        live_head_sha=seeded_bad["delta_head"],
+                        delta_review_fn=fixture_bad._review_fn,
+                        owned_paths=fixture_bad.OWNED,
+                        fab_fetch_origin="fetchsrc",
+                        broker_store=seeded_bad["store"],
+                        evidence_store=seeded_bad["evidence"],
+                    )
+
+                assert rejected is None
+                assert append_calls == [], f"a {invalid_name} receipt must cause zero ledger appends"
+                assert (
+                    read_ledger(seeded_bad["ledger_path"])["n1"].head_sha
+                    == seeded_bad["candidate_head"]
+                )
+            finally:
+                fixture_bad.tearDown()
     finally:
         fixture.tearDown()
 
@@ -1310,6 +1471,13 @@ def test_fabreadmit_commit_points_reach_commit_broker_readmitted_head(request, t
 
         assert res_resume == delta_head2
         assert len(spy_calls2) == 1, "exactly one helper entry in crash-resume arm"
+        _assert_receipt_binds_durable_append(
+            spy_calls2[0],
+            seeded=seeded2,
+            prior_head=candidate_head2,
+            proposed_head=delta_head2,
+            store=store2,
+        )
         assert read_ledger(ledger_path2)["n1"].head_sha == delta_head2
     finally:
         fixture2.tearDown()
@@ -1380,6 +1548,8 @@ def test_fabreadmit_append_site_inventory_detects_third_site(request, tmp_path):
         source + "\ndef _extra_unauthorized_append_site(path, nid):\n    record = LedgerRecord(node_id=nid, status='pr_open', head_sha='sha3')\n    append_record(path, record)\n",
         # Nor may a status constant evade the pr_open classification.
         source + "\nOPEN_STATUS = 'pr_open'\ndef _extra_constant_status_append(path, nid):\n    append_record(path, LedgerRecord(node_id=nid, status=OPEN_STATUS, head_sha='sha3'))\n",
+        # Nor may a dictionary expansion hide a head-carrying ledger record.
+        source + "\ndef _extra_kwargs_head_append(path, nid):\n    append_record(path, LedgerRecord(**{'node_id': nid, 'status': 'pr_open', 'head_sha': 'sha3'}))\n",
     )
 
     for synthetic_source in mutations:
@@ -1418,10 +1588,34 @@ def test_fabreadmit_fresh_revocation_blocks_delta_merge(request, tmp_path):
     from phase_loop_runtime.train_ledger import read_ledger
 
     fixture = DeltaReadmitTransactionTest()
-    fixture.tmp_path = tmp_path
+    fixture.tmp_path = tmp_path / "fresh_positive"
     fixture.setUp()
     try:
         seeded = fixture._setup_broker_readmit_candidate()
+        ledger_path = seeded["ledger_path"]
+        candidate_head = seeded["candidate_head"]
+        delta_head = seeded["delta_head"]
+        store = seeded["store"]
+        evidence = seeded["evidence"]
+
+        res_fresh = tr._fab_delta_readmit(
+            fixture.repo, ledger_path, node_id="n1", run_id=fixture.RUN, branch="feat/pr1", pr_url="u",
+            merge_order=0, admitted_head_sha=candidate_head, live_head_sha=delta_head,
+            delta_review_fn=fixture._review_fn, owned_paths=fixture.OWNED, fab_fetch_origin="fetchsrc",
+            broker_store=store, evidence_store=evidence,
+        )
+
+        assert res_fresh == delta_head
+        assert read_ledger(ledger_path)["n1"].head_sha == delta_head
+        assert len(store.replay()) == 2
+    finally:
+        fixture.tearDown()
+
+    fixture_revoked = DeltaReadmitTransactionTest()
+    fixture_revoked.tmp_path = tmp_path / "fresh_revoked"
+    fixture_revoked.setUp()
+    try:
+        seeded = fixture_revoked._setup_broker_readmit_candidate()
         ledger_path = seeded["ledger_path"]
         candidate_head = seeded["candidate_head"]
         delta_head = seeded["delta_head"]
@@ -1443,9 +1637,9 @@ def test_fabreadmit_fresh_revocation_blocks_delta_merge(request, tmp_path):
         evidence.record_terminal(EvidenceRecord("rev-key-fresh", TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED, "revocation"))
 
         res_fresh_rev = tr._fab_delta_readmit(
-            fixture.repo, ledger_path, node_id="n1", run_id=fixture.RUN, branch="feat/pr1", pr_url="u",
+            fixture_revoked.repo, ledger_path, node_id="n1", run_id=fixture_revoked.RUN, branch="feat/pr1", pr_url="u",
             merge_order=0, admitted_head_sha=candidate_head, live_head_sha=delta_head,
-            delta_review_fn=fixture._review_fn, owned_paths=fixture.OWNED, fab_fetch_origin="fetchsrc",
+            delta_review_fn=fixture_revoked._review_fn, owned_paths=fixture_revoked.OWNED, fab_fetch_origin="fetchsrc",
             broker_store=store, evidence_store=evidence,
         )
 
@@ -1454,7 +1648,7 @@ def test_fabreadmit_fresh_revocation_blocks_delta_merge(request, tmp_path):
         assert read_ledger(ledger_path)["n1"].head_sha == candidate_head, "ledger head must remain at candidate_head"
         assert len(store.replay()) == 1, "admission store count must remain unchanged after revocation"
     finally:
-        fixture.tearDown()
+        fixture_revoked.tearDown()
 
 
 def test_fabreadmit_crash_resume_revocation_rechecked_blocks(request, tmp_path):

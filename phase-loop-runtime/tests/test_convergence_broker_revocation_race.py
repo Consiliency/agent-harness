@@ -413,8 +413,10 @@ def test_fabreadmit_revocation_race_under_admission_lock(request, tmp_path):
 
     # Seed prior publish transaction
     pub_svc = _pub_service(shared_partition_dir, pub_adapter)
-    pub_res = pub_svc.execute(_publish_transaction_request(identity, "feat/x", transaction, repo_dir))
+    pub_req = _publish_transaction_request(identity, "feat/x", transaction, repo_dir)
+    pub_res = pub_svc.execute(pub_req)
     assert pub_res.accepted, "prior publish transaction must be admitted"
+    admitted_envelope = pub_req.admission
 
     (repo_dir / "a.py").write_text("v2 advance\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(repo_dir), "add", "."], check=True)
@@ -422,8 +424,8 @@ def test_fabreadmit_revocation_race_under_admission_lock(request, tmp_path):
     delta_sha = subprocess.check_output(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True).strip()
 
     ckpt = transaction.checkpoint_root
-    (ckpt / "train.json").write_text(f'{{"train_id": "train1", "repository": "{identity}"}}', encoding="utf-8")
-    (ckpt / "n1.json").write_text('{"node_id": "n1"}', encoding="utf-8")
+    (ckpt / "train.json").write_text(f'{{"train_id": "{admitted_envelope.train_id}", "repository": "{identity}"}}', encoding="utf-8")
+    (ckpt / f"{admitted_envelope.node_id}.json").write_text(f'{{"node_id": "{admitted_envelope.node_id}"}}', encoding="utf-8")
 
     entered = threading.Event()
     landed = threading.Event()
@@ -453,10 +455,10 @@ def test_fabreadmit_revocation_race_under_admission_lock(request, tmp_path):
         base="main",
         prior_head_sha=transaction.committed_head_sha,
         proposed_head_sha=delta_sha,
-        train_id="train1",
-        node_id="n1",
+        train_id=admitted_envelope.train_id,
+        node_id=admitted_envelope.node_id,
         fab_run_id="run1",
-        roadmap_digest="d" * 64,
+        roadmap_digest=admitted_envelope.roadmap_digest,
         provenance_digest="p" * 64,
         owned_scope=("a.py",),
     )

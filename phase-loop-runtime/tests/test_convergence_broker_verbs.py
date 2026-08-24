@@ -183,16 +183,17 @@ def test_fabreadmit_readmit_advanced_head_verb(request, tmp_path):
 
     # 1. FR-R5-01 & FR-R7-01 & FR-R7-02: Empty-store denial arm proving readmission from an empty onboarded store fails
     repo_empty, txn_empty, id_empty, root_empty = _authorized_publish_fixture(tmp_path, name="verbs-empty")
+    empty_envelope = _publish_transaction_request(id_empty, "feat/x", txn_empty, repo_empty).admission
     store_empty = LinearizableAdmissionStore(root_empty, lambda _: True)
     pub_empty_adapter = _CountingAdapter()
     svc_empty_pub = BrokerService(store_empty, BrokerEvidenceStore(root_empty), pub_empty_adapter)
     ckpt_empty = txn_empty.checkpoint_root
-    (ckpt_empty / "train.json").write_text(f'{{"train_id": "train1", "repository": "{id_empty}"}}', encoding="utf-8")
-    (ckpt_empty / "n1.json").write_text('{"node_id": "n1"}', encoding="utf-8")
+    (ckpt_empty / "train.json").write_text(f'{{"train_id": "{empty_envelope.train_id}", "repository": "{id_empty}"}}', encoding="utf-8")
+    (ckpt_empty / f"{empty_envelope.node_id}.json").write_text(f'{{"node_id": "{empty_envelope.node_id}"}}', encoding="utf-8")
     auth_empty = DeltaReadmitAuthority(
         repository=id_empty, adapter_worktree=str(repo_empty), checkpoint_root=str(ckpt_empty),
         branch="feat/x", base="main", prior_head_sha=txn_empty.committed_head_sha, proposed_head_sha="b" * 40,
-        train_id="train1", node_id="n1", fab_run_id="run1", roadmap_digest="d" * 64, provenance_digest="p" * 64, owned_scope=("a.py",)
+        train_id=empty_envelope.train_id, node_id=empty_envelope.node_id, fab_run_id="run1", roadmap_digest=empty_envelope.roadmap_digest, provenance_digest="p" * 64, owned_scope=("a.py",)
     )
     readmit_empty_adapter = _CountingAdapter()
     svc_empty_readmit = BrokerService(store_empty, BrokerEvidenceStore(root_empty), readmit_empty_adapter)
@@ -210,13 +211,14 @@ def test_fabreadmit_readmit_advanced_head_verb(request, tmp_path):
 
     branch = "feat/x"
     pub_req = _publish_transaction_request(identity, branch, transaction, repo_dir)
+    admitted_envelope = pub_req.admission
     pub_res = pub_svc.execute(pub_req)
     assert pub_res.accepted, "prior publish transaction must be admitted"
     assert len(store.replay()) == 1
 
     ckpt = transaction.checkpoint_root
-    (ckpt / "train.json").write_text(f'{{"train_id": "train1", "repository": "{identity}"}}', encoding="utf-8")
-    (ckpt / "n1.json").write_text('{"node_id": "n1"}', encoding="utf-8")
+    (ckpt / "train.json").write_text(f'{{"train_id": "{admitted_envelope.train_id}", "repository": "{identity}"}}', encoding="utf-8")
+    (ckpt / f"{admitted_envelope.node_id}.json").write_text(f'{{"node_id": "{admitted_envelope.node_id}"}}', encoding="utf-8")
 
     (repo_dir / "a.py").write_text("v2 advance\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(repo_dir), "add", "."], check=True)
@@ -234,10 +236,10 @@ def test_fabreadmit_readmit_advanced_head_verb(request, tmp_path):
         base="main",
         prior_head_sha=transaction.committed_head_sha,
         proposed_head_sha=delta_sha,
-        train_id="train1",
-        node_id="n1",
+        train_id=admitted_envelope.train_id,
+        node_id=admitted_envelope.node_id,
         fab_run_id="run1",
-        roadmap_digest="d" * 64,
+        roadmap_digest=admitted_envelope.roadmap_digest,
         provenance_digest="p" * 64,
         owned_scope=("a.py",),
     )

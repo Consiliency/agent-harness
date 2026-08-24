@@ -3483,6 +3483,7 @@ def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request, 
     from phase_loop_runtime.train_runner import CoordinatorRuntime
     from phase_loop_runtime.convergence.broker.live import _RepositoryRoutingBrokerService, build_routing_broker_client
     from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
+    from phase_loop_runtime.convergence.contracts import DeltaReadmitReceipt
     from phase_loop_runtime.governed_premerge import FAB_PROMOTION_ENV, LoopResult
     from test_fab_activation_promotion import TRAIN_2NODE_MD, _make_publish_stub, _reverify_pass
     from test_fab_delta_consumer import DeltaReadmitTransactionTest, _delta_panel
@@ -3522,11 +3523,11 @@ def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request, 
         )
         ws_map = {"repo-a/specs/plan-a.md": repo_dir, "repo-b/specs/plan-b.md": repo_dir}
 
-        routing_spy_called = []
+        routing_spy_calls = []
         real_commit_helper = tr._commit_broker_readmitted_head
 
         def _spy_commit_helper(*args, **kwargs):
-            routing_spy_called.append(True)
+            routing_spy_calls.append((args, kwargs))
             return real_commit_helper(*args, **kwargs)
 
         def _mergeable_delta_review(*args, **kwargs):
@@ -3555,12 +3556,31 @@ def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request, 
                     fab_delta_shortcut=True,
                 )
 
-        assert routing_spy_called, "_commit_broker_readmitted_head must be routed via CoordinatorRuntime"
+        assert len(routing_spy_calls) == 1, (
+            "_commit_broker_readmitted_head must be reached exactly once via CoordinatorRuntime"
+        )
         assert result.get("status") == "merged"
         assert captured.get("head_sha") == delta_head, "merge call must receive exact delta_head"
         replayed = LinearizableAdmissionStore(store_root, lambda _: True).replay()
         assert len(replayed) == 2, "durable admission record must be created via routing broker client"
         assert replayed[-1].epoch == 2
+        receipt_values = [
+            value
+            for value in (*routing_spy_calls[0][0], *routing_spy_calls[0][1].values())
+            if isinstance(value, DeltaReadmitReceipt)
+        ]
+        assert len(receipt_values) == 1, "routing commit must receive exactly one DeltaReadmitReceipt"
+        receipt = receipt_values[0]
+        assert receipt.repository == seeded["identity"]
+        assert receipt.branch == seeded["branch"]
+        assert receipt.prior_head_sha == candidate_head
+        assert receipt.proposed_head_sha == delta_head
+        assert replayed[-1].request.repository == receipt.repository
+        assert replayed[-1].request.branch == receipt.branch
+        assert receipt.allocated_epoch == replayed[-1].epoch
+        assert replayed[-1].binding.prior_head_sha == receipt.prior_head_sha
+        assert replayed[-1].binding.proposed_head_sha == receipt.proposed_head_sha
+        assert replayed[-1].binding.authority_digest == receipt.authority_digest
         assert candidate_head != delta_head
     finally:
         fixture.tearDown()

@@ -48,6 +48,7 @@ from test_fab_activation_promotion import (  # noqa: E402
     _capturing_merge_stub,
     _make_publish_stub,
     _p3a_run_train,
+    _reverify_pass,
 )
 
 
@@ -121,7 +122,7 @@ def test_flag_on_resume_still_runs_torn_recovery(tmp_path: Path, monkeypatch):
 
 
 def test_fabreadmit_flag_off_recovery_leak_guard(request, tmp_path, monkeypatch):
-    """Flag-off recovery leak guard for broker readmission."""
+    """A flag-off broker-backed resume cannot durably re-admit a delta head."""
     from pytest import skip
 
     from _fabreadmit_tdd_guard import (
@@ -144,9 +145,63 @@ def test_fabreadmit_flag_off_recovery_leak_guard(request, tmp_path, monkeypatch)
         "_commit_broker_readmitted_head missing in phase_loop_runtime.train_runner",
     )
 
-    monkeypatch.delenv(gp.FAB_PROMOTION_ENV, raising=False)
-    recovery_calls = []
-    result = _resume_train(tmp_path, monkeypatch, recovery_calls=recovery_calls)
+    from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
+    from phase_loop_runtime.convergence.broker.live import build_routing_broker_client
+    from phase_loop_runtime.train_ledger import read_ledger
+    from phase_loop_runtime.train_runner import CoordinatorRuntime
+    from test_fab_delta_consumer import DeltaReadmitTransactionTest, _delta_panel
 
-    assert len(recovery_calls) == 0, "flag-off resume must execute zero torn-recovery calls"
-    assert result.get("status") == "merged"
+    monkeypatch.delenv(gp.FAB_PROMOTION_ENV, raising=False)
+    fixture = DeltaReadmitTransactionTest()
+    fixture.tmp_path = tmp_path / "broker_backed_resume"
+    fixture.setUp()
+    try:
+        node_id = "repo-a/specs/plan-a.md"
+        seeded = fixture._setup_broker_readmit_candidate(
+            node_id=node_id,
+            branch="feat/repo-a",
+        )
+        store_before = seeded["store"].replay()
+        commit_calls = []
+        real_commit = train_runner._commit_broker_readmitted_head
+
+        def _observe_commit(*args, **kwargs):
+            commit_calls.append((args, kwargs))
+            return real_commit(*args, **kwargs)
+
+        monkeypatch.setattr(train_runner, "_commit_broker_readmitted_head", _observe_commit)
+        coordinator_runtime = CoordinatorRuntime(
+            train_id="train1",
+            coordinator_root=seeded["coordinator_root"],
+            roadmap_path="train.md",
+            roadmap_digest="d" * 64,
+            workspace_id=str(fixture.repo),
+            broker_client=build_routing_broker_client(),
+        )
+        result = train_runner.run_train(
+            parse_train_roadmap(TRAIN_2NODE_MD),
+            seeded["ledger_path"],
+            run_mode="governed",
+            resolve_workspace=lambda _node: fixture.repo,
+            coordinator_runtime=coordinator_runtime,
+            resolve_owned_paths=None,
+            _run_loop=lambda *args, **kwargs: (None, []),
+            _publish=_make_publish_stub({}),
+            _preflight_fn=lambda *args, **kwargs: None,
+            _pr_is_open=lambda _workspace, _branch: True,
+            _live_pr_head_sha_fn=lambda _workspace, _branch: seeded["delta_head"],
+            _merge_phase_enabled=True,
+            _reverify_fn=_reverify_pass,
+            _delta_review_fn=lambda *args, **kwargs: _delta_panel(),
+            _merge_pr_fn=_capturing_merge_stub({}),
+            fab_fetch_origin="fetchsrc",
+            fab_delta_shortcut=True,
+        )
+
+        assert commit_calls == [], "flag-off resume must execute zero broker readmission commits"
+        canonical_store = LinearizableAdmissionStore(seeded["store_root"], lambda _: True)
+        assert canonical_store.replay() == store_before, "flag-off resume must leave canonical admission unchanged"
+        assert read_ledger(seeded["ledger_path"])[node_id].head_sha == seeded["candidate_head"]
+        assert result.get("status") == "merged"
+    finally:
+        fixture.tearDown()
