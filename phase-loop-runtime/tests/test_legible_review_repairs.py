@@ -1129,6 +1129,21 @@ def test_regular_repo_file_hash_rejects_device_swap_before_open(tmp_path, monkey
     assert not data_opened
 
 
+def test_regular_repo_file_hash_uses_portable_anchor_without_o_path(
+    tmp_path, monkeypatch
+):
+    repo = make_repo(tmp_path)
+    authority = repo / "authority"
+    authority.mkdir()
+    target = authority / "bound.md"
+    target.write_text("portable bytes\n", encoding="utf-8")
+    monkeypatch.delattr(plan_manifest.os, "O_PATH", raising=False)
+
+    digest = plan_manifest._regular_repo_file_sha256(repo, "authority/bound.md")
+
+    assert digest == hashlib.sha256(target.read_bytes()).hexdigest()
+
+
 def test_required_roadmap_registry_absence_is_typed_failure(tmp_path):
     repo = make_repo(tmp_path)
     marker = repo / "plans" / "phase-plan-v10-LEGIBLE.md"
@@ -2546,6 +2561,27 @@ def test_history_ignores_replace_refs_and_git_location_overrides(
     ]
 
 
+def test_trusted_git_disables_commit_graph(monkeypatch, tmp_path):
+    captured: list[str] = []
+
+    def recording_run(argv, **_kwargs):
+        captured.extend(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(plan_manifest.subprocess, "run", recording_run)
+
+    result = plan_manifest._git_history_capture(tmp_path, "rev-parse", "HEAD")
+
+    assert result.returncode == 0
+    assert captured[:5] == [
+        "git",
+        "--no-replace-objects",
+        "-c",
+        "core.commitGraph=false",
+        "-C",
+    ]
+
+
 def test_late_graft_insertion_cannot_change_history(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
     rel = _commit_plan(repo)
@@ -2831,6 +2867,18 @@ def test_manifest_snapshot_rejects_swap_after_final_plans_stat(tmp_path, monkeyp
     ):
         check(repo)
     assert plans_stats >= 3
+
+
+def test_manifest_snapshot_uses_portable_anchor_without_o_path(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    rel = _commit_plan(repo)
+    (repo / "plans" / "manifest.json").write_text(
+        json.dumps({"plans": [{"file": rel, "lifecycle": []}]}),
+        encoding="utf-8",
+    )
+    monkeypatch.delattr(plan_manifest.os, "O_PATH", raising=False)
+
+    assert check(repo).exit_code == 0
 
 
 def test_manifest_snapshot_rejects_write_after_former_final_fstat(

@@ -965,12 +965,17 @@ def _regular_repo_files_sha256(
     directory = getattr(os, "O_DIRECTORY", None)
     nonblock = getattr(os, "O_NONBLOCK", None)
     path_only = getattr(os, "O_PATH", None)
-    if nofollow is None or directory is None or nonblock is None or path_only is None:
+    if nofollow is None or directory is None or nonblock is None:
         return None
     cloexec = getattr(os, "O_CLOEXEC", 0)
     directory_flags = os.O_RDONLY | directory | nofollow | cloexec
-    anchor_flags = path_only | nofollow | cloexec
     file_flags = os.O_RDONLY | nonblock | cloexec
+    proc_anchor = path_only is not None and Path("/proc/self/fd").is_dir()
+    anchor_flags = (
+        path_only | nofollow | cloexec
+        if proc_anchor
+        else file_flags | nofollow
+    )
 
     def directory_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
         return (
@@ -1052,7 +1057,11 @@ def _regular_repo_files_sha256(
                     or anchor_identity != file_identity(file_named_after)
                 ):
                     return None
-                file_fd = os.open(f"/proc/self/fd/{anchor_fd}", file_flags)
+                file_fd = (
+                    os.open(f"/proc/self/fd/{anchor_fd}", file_flags)
+                    if proc_anchor
+                    else os.dup(anchor_fd)
+                )
                 stream = opened.enter_context(os.fdopen(file_fd, "rb"))
                 file_before = os.fstat(stream.fileno())
                 identity = file_identity(file_before)
@@ -1144,12 +1153,17 @@ def _pinned_manifest_snapshot(repo: Path) -> Iterator[_ManifestSnapshot]:
     directory = getattr(os, "O_DIRECTORY", None)
     nonblock = getattr(os, "O_NONBLOCK", None)
     path_only = getattr(os, "O_PATH", None)
-    if nofollow is None or directory is None or nonblock is None or path_only is None:
+    if nofollow is None or directory is None or nonblock is None:
         raise ManifestSourceError("descriptor-pinned manifest reads are unavailable")
     cloexec = getattr(os, "O_CLOEXEC", 0)
     directory_flags = os.O_RDONLY | directory | nofollow | cloexec
-    anchor_flags = path_only | nofollow | cloexec
     file_flags = os.O_RDONLY | nonblock | cloexec
+    proc_anchor = path_only is not None and Path("/proc/self/fd").is_dir()
+    anchor_flags = (
+        path_only | nofollow | cloexec
+        if proc_anchor
+        else file_flags | nofollow
+    )
 
     def directory_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
         return (
@@ -1251,7 +1265,11 @@ def _pinned_manifest_snapshot(repo: Path) -> Iterator[_ManifestSnapshot]:
                     or file_identity(named_after) != expected_identity
                 ):
                     raise ManifestSourceError("manifest changed before pinned read")
-                file_fd = os.open(f"/proc/self/fd/{anchor_fd}", file_flags)
+                file_fd = (
+                    os.open(f"/proc/self/fd/{anchor_fd}", file_flags)
+                    if proc_anchor
+                    else os.dup(anchor_fd)
+                )
                 stream = opened.enter_context(os.fdopen(file_fd, "rb"))
                 stream_identity = file_identity(os.fstat(stream.fileno()))
                 if stream_identity != expected_identity:
@@ -1326,7 +1344,15 @@ def _git_history_capture(
     env["GIT_SHALLOW_FILE"] = os.devnull
     try:
         return subprocess.run(
-            ["git", "--no-replace-objects", "-C", str(repo), *args],
+            [
+                "git",
+                "--no-replace-objects",
+                "-c",
+                "core.commitGraph=false",
+                "-C",
+                str(repo),
+                *args,
+            ],
             capture_output=True,
             check=False,
             text=text,
