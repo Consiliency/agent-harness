@@ -1129,7 +1129,7 @@ def test_regular_repo_file_hash_rejects_device_swap_before_open(tmp_path, monkey
     assert not data_opened
 
 
-def test_regular_repo_file_hash_uses_portable_anchor_without_o_path(
+def test_regular_repo_file_hash_fails_closed_without_safe_anchor(
     tmp_path, monkeypatch
 ):
     repo = make_repo(tmp_path)
@@ -1137,11 +1137,22 @@ def test_regular_repo_file_hash_uses_portable_anchor_without_o_path(
     authority.mkdir()
     target = authority / "bound.md"
     target.write_text("portable bytes\n", encoding="utf-8")
+    real_open = os.open
+    target_opened = False
+
+    def tracking_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal target_opened
+        if path == "bound.md" and dir_fd is not None:
+            target_opened = True
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(plan_manifest.os, "open", tracking_open)
     monkeypatch.delattr(plan_manifest.os, "O_PATH", raising=False)
 
     digest = plan_manifest._regular_repo_file_sha256(repo, "authority/bound.md")
 
-    assert digest == hashlib.sha256(target.read_bytes()).hexdigest()
+    assert digest is None
+    assert not target_opened
 
 
 def test_required_roadmap_registry_absence_is_typed_failure(tmp_path):
@@ -2869,12 +2880,19 @@ def test_manifest_snapshot_rejects_swap_after_final_plans_stat(tmp_path, monkeyp
     assert plans_stats >= 3
 
 
-def test_manifest_snapshot_uses_portable_anchor_without_o_path(tmp_path, monkeypatch):
+def test_manifest_snapshot_uses_exact_tree_without_safe_anchor(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
     rel = _commit_plan(repo)
     (repo / "plans" / "manifest.json").write_text(
         json.dumps({"plans": [{"file": rel, "lifecycle": []}]}),
         encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "plans/manifest.json"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "record manifest snapshot"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
     )
     monkeypatch.delattr(plan_manifest.os, "O_PATH", raising=False)
 

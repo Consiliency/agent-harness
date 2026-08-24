@@ -965,17 +965,13 @@ def _regular_repo_files_sha256(
     directory = getattr(os, "O_DIRECTORY", None)
     nonblock = getattr(os, "O_NONBLOCK", None)
     path_only = getattr(os, "O_PATH", None)
-    if nofollow is None or directory is None or nonblock is None:
+    proc_anchor = path_only is not None and Path("/proc/self/fd").is_dir()
+    if nofollow is None or directory is None or nonblock is None or not proc_anchor:
         return None
     cloexec = getattr(os, "O_CLOEXEC", 0)
     directory_flags = os.O_RDONLY | directory | nofollow | cloexec
     file_flags = os.O_RDONLY | nonblock | cloexec
-    proc_anchor = path_only is not None and Path("/proc/self/fd").is_dir()
-    anchor_flags = (
-        path_only | nofollow | cloexec
-        if proc_anchor
-        else file_flags | nofollow
-    )
+    anchor_flags = path_only | nofollow | cloexec
 
     def directory_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
         return (
@@ -1057,11 +1053,7 @@ def _regular_repo_files_sha256(
                     or anchor_identity != file_identity(file_named_after)
                 ):
                     return None
-                file_fd = (
-                    os.open(f"/proc/self/fd/{anchor_fd}", file_flags)
-                    if proc_anchor
-                    else os.dup(anchor_fd)
-                )
+                file_fd = os.open(f"/proc/self/fd/{anchor_fd}", file_flags)
                 stream = opened.enter_context(os.fdopen(file_fd, "rb"))
                 file_before = os.fstat(stream.fileno())
                 identity = file_identity(file_before)
@@ -1146,24 +1138,29 @@ class _ManifestSnapshot:
 
 
 @contextmanager
-def _pinned_manifest_snapshot(repo: Path) -> Iterator[_ManifestSnapshot]:
+def _pinned_manifest_snapshot(
+    repo: Path, *, head_oid: str | None = None
+) -> Iterator[_ManifestSnapshot]:
     """Keep the exact manifest bytes and path identity pinned through validation."""
     root = repo.resolve(strict=True)
     nofollow = getattr(os, "O_NOFOLLOW", None)
     directory = getattr(os, "O_DIRECTORY", None)
     nonblock = getattr(os, "O_NONBLOCK", None)
     path_only = getattr(os, "O_PATH", None)
+    proc_anchor = path_only is not None and Path("/proc/self/fd").is_dir()
+    if not proc_anchor:
+        if head_oid is None:
+            raise ManifestSourceError(
+                "exact HEAD is required when descriptor-pinned reads are unavailable"
+            )
+        yield _ManifestSnapshot(_manifest_blob_at_revision(repo, head_oid))
+        return
     if nofollow is None or directory is None or nonblock is None:
         raise ManifestSourceError("descriptor-pinned manifest reads are unavailable")
     cloexec = getattr(os, "O_CLOEXEC", 0)
     directory_flags = os.O_RDONLY | directory | nofollow | cloexec
     file_flags = os.O_RDONLY | nonblock | cloexec
-    proc_anchor = path_only is not None and Path("/proc/self/fd").is_dir()
-    anchor_flags = (
-        path_only | nofollow | cloexec
-        if proc_anchor
-        else file_flags | nofollow
-    )
+    anchor_flags = path_only | nofollow | cloexec
 
     def directory_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
         return (
@@ -1265,11 +1262,7 @@ def _pinned_manifest_snapshot(repo: Path) -> Iterator[_ManifestSnapshot]:
                     or file_identity(named_after) != expected_identity
                 ):
                     raise ManifestSourceError("manifest changed before pinned read")
-                file_fd = (
-                    os.open(f"/proc/self/fd/{anchor_fd}", file_flags)
-                    if proc_anchor
-                    else os.dup(anchor_fd)
-                )
+                file_fd = os.open(f"/proc/self/fd/{anchor_fd}", file_flags)
                 stream = opened.enter_context(os.fdopen(file_fd, "rb"))
                 stream_identity = file_identity(os.fstat(stream.fileno()))
                 if stream_identity != expected_identity:
@@ -1781,7 +1774,7 @@ def _manifest_entry_scope(
     the same repo-relative/direct-child/full-match checks as canonical
     scanning, plus any malformed entry path (origin ``"manifest"``)."""
     expected_head = head_oid or _resolve_head_oid(repo)
-    with _pinned_manifest_snapshot(repo) as snapshot:
+    with _pinned_manifest_snapshot(repo, head_oid=expected_head) as snapshot:
         result = _manifest_entry_scope_from_snapshot(
             repo, snapshot, head_oid=expected_head
         )
@@ -2059,9 +2052,14 @@ def _manifest_entry_scope_from_snapshot(
                         if isinstance(roadmap_rel, str)
                         else (rel,)
                     )
-                    actual_digests = _regular_repo_files_sha256(repo, authority_paths)
                     committed_digests = _regular_blobs_sha256_at_revision(
                         repo, head_oid, authority_paths
+                    )
+                    actual_digests = (
+                        _regular_repo_files_sha256(repo, authority_paths)
+                        if getattr(os, "O_PATH", None) is not None
+                        and Path("/proc/self/fd").is_dir()
+                        else committed_digests
                     )
                     actual_plan = (
                         actual_digests.get(rel)
