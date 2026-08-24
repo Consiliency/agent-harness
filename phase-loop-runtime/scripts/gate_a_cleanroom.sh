@@ -64,8 +64,37 @@ echo "workdir      : $WORK"
 # --- 1. Build the wheel -----------------------------------------------------
 DIST="$WORK/dist"
 mkdir -p "$DIST"
-( cd "$PKG_ROOT" && python3 -m build --wheel --outdir "$DIST" ) >/dev/null
-WHEEL="$(ls "$DIST"/*.whl | head -1)"
+if [ -n "${GATE_A_WHEEL:-}" ]; then
+  case "$GATE_A_WHEEL" in
+    /*.whl) ;;
+    *)
+      echo "GATE-A FAIL: GATE_A_WHEEL must be an absolute .whl path" >&2
+      exit 1
+      ;;
+  esac
+  if [ ! -f "$GATE_A_WHEEL" ] || [ -L "$GATE_A_WHEEL" ]; then
+    echo "GATE-A FAIL: GATE_A_WHEEL must name one regular, non-symlink wheel" >&2
+    exit 1
+  fi
+  WHEEL="$DIST/$(basename "$GATE_A_WHEEL")"
+  cp -- "$GATE_A_WHEEL" "$WHEEL"
+  if ! cmp -s "$GATE_A_WHEEL" "$WHEEL"; then
+    echo "GATE-A FAIL: copied prebuilt wheel differs from its release artifact" >&2
+    exit 1
+  fi
+  echo "wheel mode   : prebuilt release artifact"
+  python3 - "$WHEEL" <<'PYEOF'
+import hashlib
+import sys
+from pathlib import Path
+
+wheel = Path(sys.argv[1])
+print(f"wheel sha256 : {hashlib.sha256(wheel.read_bytes()).hexdigest()}")
+PYEOF
+else
+  ( cd "$PKG_ROOT" && python3 -m build --wheel --outdir "$DIST" ) >/dev/null
+  WHEEL="$(ls "$DIST"/*.whl | head -1)"
+fi
 echo "wheel        : $WHEEL"
 
 # --- 2. Isolated venv (no user-site, no dotfiles on sys.path) ---------------
