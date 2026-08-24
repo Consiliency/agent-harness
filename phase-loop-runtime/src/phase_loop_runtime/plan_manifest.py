@@ -1279,6 +1279,18 @@ def _git_error(proc: subprocess.CompletedProcess) -> str:
     return str(stderr or "").strip()
 
 
+def _resolve_head_oid(repo: Path) -> str:
+    resolved = _git_history_capture(
+        repo, "rev-parse", "--verify", "HEAD^{commit}"
+    )
+    oid = resolved.stdout.strip() if resolved.returncode == 0 else ""
+    if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", oid) is None:
+        raise ManifestSourceError(
+            f"git HEAD resolution failed: {_git_error(resolved)}"
+        )
+    return oid
+
+
 def _history_boundary_complete(repo: Path) -> bool:
     common_dir = _git_history_capture(
         repo, "rev-parse", "--path-format=absolute", "--git-common-dir"
@@ -1341,14 +1353,15 @@ def _manifest_blob_at_revision(repo: Path, revision: str) -> bytes | None:
     return blob.stdout
 
 
-def _frozen_paths_in_git_history(repo: Path) -> set[str]:
+def _frozen_paths_in_git_history(repo: Path, head_oid: str) -> set[str]:
     frozen_paths = sorted(_FROZEN_HISTORICAL_BINDING_PREFIXES)
     proc = _git_history_capture(
         repo,
         "log",
-        "--all",
+        "--full-history",
         "--format=",
         "--name-only",
+        head_oid,
         "--",
         *frozen_paths,
     )
@@ -1361,7 +1374,11 @@ def _frozen_paths_in_git_history(repo: Path) -> set[str]:
 
 
 def _ancestor_manifest_sequences(
-    repo: Path, working_manifest: bytes | None, *, history_complete: bool,
+    repo: Path,
+    working_manifest: bytes | None,
+    *,
+    head_oid: str,
+    history_complete: bool,
 ) -> tuple[
     dict[str, tuple[tuple[str, ...], ...]],
     dict[str, tuple[tuple[str, ...], ...]],
@@ -1369,12 +1386,12 @@ def _ancestor_manifest_sequences(
 ]:
     if not history_complete:
         return {}, {}, False
-    head_bytes = _manifest_blob_at_revision(repo, "HEAD")
+    head_bytes = _manifest_blob_at_revision(repo, head_oid)
     if working_manifest != head_bytes:
-        starts = ["HEAD"]
+        starts = [head_oid]
     else:
         parents = _git_history_capture(
-            repo, "rev-list", "--parents", "-n", "1", "HEAD"
+            repo, "rev-list", "--parents", "-n", "1", head_oid
         )
         if parents.returncode != 0:
             raise ManifestSourceError(
@@ -1617,24 +1634,35 @@ def canonical_plan_files(repo: Path, tree_oid: str) -> CanonicalPlanFiles:
     return CanonicalPlanFiles(entries=entries, malformed=tuple(malformed))
 
 
-def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFinding]]:
+def _manifest_entry_scope(
+    repo: Path, *, head_oid: str | None = None
+) -> tuple[set[str], list[MalformedPlanFinding]]:
     """Registered ``plans/`` entries from ``plans/manifest.json``, subjected to
     the same repo-relative/direct-child/full-match checks as canonical
     scanning, plus any malformed entry path (origin ``"manifest"``)."""
+    expected_head = head_oid or _resolve_head_oid(repo)
     with _pinned_manifest_snapshot(repo) as snapshot:
-        return _manifest_entry_scope_from_snapshot(repo, snapshot)
+        result = _manifest_entry_scope_from_snapshot(
+            repo, snapshot, head_oid=expected_head
+        )
+    if _resolve_head_oid(repo) != expected_head:
+        raise ManifestSourceError("HEAD changed during plan manifest validation")
+    return result
 
 
 def _manifest_entry_scope_from_snapshot(
-    repo: Path, snapshot: _ManifestSnapshot
+    repo: Path, snapshot: _ManifestSnapshot, *, head_oid: str
 ) -> tuple[set[str], list[MalformedPlanFinding]]:
     history_complete = _history_boundary_complete(repo)
     frozen_history = (
-        _frozen_paths_in_git_history(repo) if history_complete else set()
+        _frozen_paths_in_git_history(repo, head_oid) if history_complete else set()
     )
     ancestor_bindings, ancestor_authorities, history_complete = (
         _ancestor_manifest_sequences(
-            repo, snapshot.data, history_complete=history_complete
+            repo,
+            snapshot.data,
+            head_oid=head_oid,
+            history_complete=history_complete,
         )
     )
     frozen_history.update(ancestor_bindings)
@@ -1925,8 +1953,13 @@ def check(repo: Path) -> ManifestCheckResult:
     conflicted-index, symlink, non-regular, or escaping path. Never
     auto-registers, deletes, or silently ignores a plan."""
     repo = Path(repo).resolve(strict=True)
-    canonical = canonical_plan_files(repo, "HEAD")
-    registered, manifest_malformed = _manifest_entry_scope(repo)
+    head_oid = _resolve_head_oid(repo)
+    canonical = canonical_plan_files(repo, head_oid)
+    registered, manifest_malformed = _manifest_entry_scope(
+        repo, head_oid=head_oid
+    )
+    if _resolve_head_oid(repo) != head_oid:
+        raise ManifestSourceError("HEAD changed during plan manifest validation")
     canonical_set = set(canonical.paths())
 
     missing = tuple(
@@ -1952,8 +1985,11 @@ def unregistered_plan_files(repo: Path) -> tuple[str, ...]:
     """Canonical plan paths that are NOT currently registered in
     ``plans/manifest.json``, stable path-sorted."""
     repo = Path(repo).resolve()
-    canonical = canonical_plan_files(repo, "HEAD")
-    registered, _malformed = _manifest_entry_scope(repo)
+    head_oid = _resolve_head_oid(repo)
+    canonical = canonical_plan_files(repo, head_oid)
+    registered, _malformed = _manifest_entry_scope(repo, head_oid=head_oid)
+    if _resolve_head_oid(repo) != head_oid:
+        raise ManifestSourceError("HEAD changed during plan manifest validation")
     return tuple(sorted(set(canonical.paths()) - registered))
 
 

@@ -2603,6 +2603,83 @@ def test_late_shallow_insertion_cannot_change_history(tmp_path, monkeypatch):
     ]
 
 
+def test_head_move_and_restore_cannot_change_pinned_history(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    rel = _commit_plan(repo)
+    _write_generic_authority_manifest(repo, rel)
+    subprocess.run(
+        ["git", "add", "plans/manifest.json", "specs/current-roadmap.md"],
+        cwd=repo,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "record authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    (repo / rel).unlink()
+    (repo / "plans" / "manifest.json").unlink()
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "erase authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    head_tree = subprocess.run(
+        ["git", "rev-parse", f"{head}^{{tree}}"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    forged_root = subprocess.run(
+        ["git", "commit-tree", head_tree, "-m", "ancestry-free root"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    real_capture = plan_manifest._git_history_capture
+    moved = False
+    restored = False
+
+    def move_and_restore(repo_path, *args, **kwargs):
+        nonlocal moved, restored
+        if args == ("rev-list", "--parents", "-n", "1", head) and not moved:
+            subprocess.run(
+                ["git", "update-ref", "HEAD", forged_root],
+                cwd=repo,
+                check=True,
+            )
+            moved = True
+        result = real_capture(repo_path, *args, **kwargs)
+        if moved and not restored and args and args[0] == "log":
+            subprocess.run(
+                ["git", "update-ref", "HEAD", head], cwd=repo, check=True
+            )
+            restored = True
+        return result
+
+    monkeypatch.setattr(plan_manifest, "_git_history_capture", move_and_restore)
+
+    result = check(repo)
+
+    assert moved and restored
+    assert result.exit_code == 1
+    assert (rel, "plan-contract") in [
+        (item.path, item.kind) for item in result.malformed
+    ]
+
+
 def test_manifest_snapshot_rejects_swap_between_history_and_parse(
     tmp_path, monkeypatch
 ):
@@ -2631,7 +2708,7 @@ def test_manifest_snapshot_rejects_swap_between_history_and_parse(
 
     def swapping_capture(repo_path, *args, **kwargs):
         nonlocal swapped
-        if not swapped and args and args[0] == "log" and "--all" in args:
+        if not swapped and args and args[0] == "log" and "--format=" in args:
             replacement.replace(manifest_path)
             swapped = True
         return real_capture(repo_path, *args, **kwargs)
