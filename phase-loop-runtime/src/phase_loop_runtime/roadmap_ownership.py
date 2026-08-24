@@ -15,7 +15,8 @@ Nothing consumed it as ownership.
 
 Deliberately ADVISORY in this first form: it annotates, it never fails. A gate
 that blocks merges is only worth turning on once its false-positive rate has been
-measured against real history (``--report`` over merged PRs). Shipping it
+measured against real history. NOTE: no measurement flag exists yet -- that is a
+real gap, not an oversight to gloss (ah#633). Shipping it
 blocking-first would red the repo on the day it landed, which is how a gate gets
 disabled rather than fixed.
 
@@ -45,6 +46,10 @@ from .roadmap_lint import Phase, _extract_phases, declared_active_roadmap
 DISPOSITION_TRAILER = "Roadmap-Disposition:"
 
 
+#: Qualifications keyed "<alias>\\x00<token>", populated by ownership_map.
+_NOTES: Dict[str, str] = {}
+
+
 class RoadmapUnreadable(RuntimeError):
     """The roadmap could not be resolved or parsed.
 
@@ -63,6 +68,13 @@ class Ownership:
     phase_alias: str
     phase_name: str
     is_current: bool
+    #: The roadmap's own qualification on this claim, verbatim, or "".
+    #: GOVLEAN writes "`<dir>/` (new evidence, lint, and governance modules)" --
+    #: the parenthetical SCOPES the claim to part of that directory. Discarding it
+    #: turns a scoped claim into a whole-directory claim, which is how this module
+    #: briefly had GOVLEAN owning the entire source tree. The matcher cannot decide
+    #: what the prose means, so it surfaces it instead of guessing either way.
+    note: str = ""
 
 
 def resolve_roadmap(repo: Path) -> Path:
@@ -120,9 +132,19 @@ def _strip_token(raw: str) -> str:
     none.
     """
 
+    return _split_token(raw)[0]
+
+
+def _split_token(raw: str) -> "tuple[str, str]":
+    """(path, qualification) from a `Key files` bullet."""
+
     raw = raw.strip()
     found = _BACKTICKED.search(raw)
-    return (found.group(1) if found else raw).strip()
+    if not found:
+        return raw, ""
+    path = found.group(1).strip()
+    rest = raw[found.end():].strip()
+    return path, rest
 
 
 def ownership_map(roadmap_text: str) -> Dict[str, List[Phase]]:
@@ -155,11 +177,16 @@ def ownership_map(roadmap_text: str) -> Dict[str, List[Phase]]:
             f"changed shape and their claims would silently disappear"
         )
     mapping: Dict[str, List[Phase]] = {}
+    notes: Dict[str, str] = {}
     for phase in phases:
         for raw in phase.key_files:
-            token = _strip_token(raw)
+            token, note = _split_token(raw)
             if token:
                 mapping.setdefault(token, []).append(phase)
+                if note:
+                    notes[f"{phase.alias}\x00{token}"] = note
+    _NOTES.clear()
+    _NOTES.update(notes)
     if not mapping:
         raise RoadmapUnreadable(
             f"parsed {len(phases)} phase(s) but no Key files entries; the roadmap "
@@ -233,9 +260,19 @@ def audit(repo: Path, base: str) -> List[Ownership]:
                     phase_alias=phase.alias,
                     phase_name=phase.name,
                     is_current=(phase.alias == active),
+                    note=_note_for(phase.alias, path, mapping),
                 )
             )
     return found
+
+
+def _note_for(alias: str, path: str, mapping: Dict[str, List[Phase]]) -> str:
+    for owned in mapping:
+        if _claims(owned, path):
+            note = _NOTES.get(f"{alias}\x00{owned}")
+            if note:
+                return note
+    return ""
 
 
 def has_disposition(text: str) -> bool:
@@ -256,6 +293,13 @@ def render(found: Sequence[Ownership], disposition: bool) -> str:
         marker = " (CURRENT PHASE)" if own.is_current else ""
         lines.append(f"  • {own.path}")
         lines.append(f"      claimed by {own.phase_alias} — {own.phase_name}{marker}")
+        if own.note:
+            # The roadmap qualifies this claim. Shown verbatim rather than
+            # interpreted: "(new evidence, lint, and governance modules)" scopes a
+            # directory claim to part of it, and this matcher cannot tell which
+            # part. Reporting the whole directory as owned would overstate;
+            # dropping the entry would understate.
+            lines.append(f"      SCOPED — the roadmap qualifies this: {own.note}")
     lines += [
         "",
         "This is information, not a refusal. Editing a phase's Key files is often",
@@ -290,7 +334,10 @@ def main(argv: List[str]) -> int:
     except RoadmapUnreadable as exc:
         # Non-zero even in advisory mode: this is the check failing, not the PR.
         # Silence here would be indistinguishable from a clean run.
-        print(f"roadmap-ownership: CANNOT EVALUATE — {exc}", file=sys.stderr)
+        # stdout, not stderr: the workflow pipes stdout through `tee` into the job
+        # summary. On stderr the reason vanished from the summary and lived only in
+        # the raw log -- a check that cannot say WHY it failed where people look.
+        print(f"roadmap-ownership: CANNOT EVALUATE — {exc}")
         return 2
 
     disposition = has_disposition(args.body)

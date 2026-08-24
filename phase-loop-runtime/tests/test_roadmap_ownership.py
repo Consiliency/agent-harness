@@ -256,6 +256,32 @@ class TestRealBulletShapes(unittest.TestCase):
         self.assertFalse(ro._claims("specs/phase-plans-v*.md", "specs/other.md"))
 
 
+class TestScopedClaims(unittest.TestCase):
+    def test_a_qualified_claim_reports_its_qualification(self):
+        """GOVLEAN's directory claims are SCOPED by a parenthetical.
+
+        Discarding it turns "part of this directory" into "all of it" -- which is
+        how this module briefly had GOVLEAN owning the whole source tree. The
+        matcher cannot tell which part, so it must surface the prose.
+
+        Mutation that must kill this: drop the note from _split_token.
+        """
+        path, note = ro._split_token(
+            "`phase-loop-runtime/src/phase_loop_runtime/` (new evidence, lint, and "
+            "governance modules)"
+        )
+        self.assertEqual(path, "phase-loop-runtime/src/phase_loop_runtime/")
+        self.assertIn("new evidence", note)
+
+    def test_render_surfaces_the_qualification(self):
+        out = ro.render(
+            [ro.Ownership("a.py", "GOVLEAN", "Lean Governance", False, "(only new modules)")],
+            disposition=False,
+        )
+        self.assertIn("SCOPED", out)
+        self.assertIn("only new modules", out)
+
+
 class TestPartialDrift(unittest.TestCase):
     def test_one_phase_losing_key_files_raises(self):
         """The third mutation, found by review: PARTIAL drift passed silently.
@@ -324,6 +350,40 @@ class TestFailsLoudly(unittest.TestCase):
         with self.assertRaises(ro.RoadmapUnreadable) as caught:
             ro.ownership_map(stripped)
         self.assertIn("no Key files", str(caught.exception))
+
+    def test_unresolvable_base_raises_rather_than_reporting_no_changes(self):
+        """The THIRD operand, unpinned until review found it.
+
+        The suite pinned roadmap resolution and parsing, but not `git diff`.
+        Replacing that guard with `return []` left all tests green while the CLI
+        printed "OK — no changed path is claimed" and exited 0 on an unresolvable
+        base. A check that reports "nothing owned" because it could not look is
+        the exact failure this module exists to prevent, one operand deeper.
+
+        Mutation that must kill this: swallow the git failure and return [].
+        """
+        with TemporaryDirectory() as tmp:
+            repo = _repo(tmp)
+            subprocess.run(["git", "-C", tmp, "init", "-q", "-b", "main"], check=True)
+            subprocess.run(["git", "-C", tmp, "config", "user.email", "t@t"], check=True)
+            subprocess.run(["git", "-C", tmp, "config", "user.name", "t"], check=True)
+            subprocess.run(["git", "-C", tmp, "add", "-A"], check=True)
+            subprocess.run(["git", "-C", tmp, "commit", "-qm", "seed"], check=True)
+            with self.assertRaises(ro.RoadmapUnreadable):
+                ro.changed_paths(repo, "no-such-ref-anywhere")
+
+    def test_cli_exits_two_on_unresolvable_base(self):
+        with TemporaryDirectory() as tmp:
+            _repo(tmp)
+            subprocess.run(["git", "-C", tmp, "init", "-q", "-b", "main"], check=True)
+            subprocess.run(["git", "-C", tmp, "config", "user.email", "t@t"], check=True)
+            subprocess.run(["git", "-C", tmp, "config", "user.name", "t"], check=True)
+            subprocess.run(["git", "-C", tmp, "add", "-A"], check=True)
+            subprocess.run(["git", "-C", tmp, "commit", "-qm", "seed"], check=True)
+            self.assertEqual(
+                ro.main(["roadmap_ownership", "--repo", tmp, "--base", "no-such-ref"]),
+                2,
+            )
 
     def test_missing_roadmap_raises(self):
         with TemporaryDirectory() as tmp:
