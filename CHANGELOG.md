@@ -11,7 +11,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Lifecycle digest records now remain immutable evidence of the bytes reviewed at
   their historical event. A row-level append-only `plan_authority_history` names
   the current plan and roadmap digests, so later amendments no longer make every
-  earlier valid lifecycle record fail against today's bytes.
+  earlier valid lifecycle record fail against today's bytes. A historically bound
+  row cannot drop that current authority, and roadmap hashing rejects symlinked or
+  escaping path components.
 - The live repository coverage gate derives exact canonical/registered equality
   instead of hard-coding a plan count, and its positive control injects an
   unregistered plan into the real repository topology.

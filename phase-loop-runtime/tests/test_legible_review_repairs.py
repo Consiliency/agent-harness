@@ -865,6 +865,28 @@ def test_manifest_check_rejects_authoritative_plan_digest_drift(tmp_path):
     assert result.exit_code == 1
     assert (canonical, "plan-digest") in [(item.path, item.kind) for item in result.malformed]
 
+    external = tmp_path / "external-roadmap.md"
+    external.write_text("# External roadmap\n", encoding="utf-8")
+    roadmap = repo / "specs" / "current-roadmap.md"
+    roadmap.parent.mkdir(exist_ok=True)
+    roadmap.symlink_to(external)
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["plans"][0]["roadmap_ref"] = {"file": "specs/current-roadmap.md"}
+    payload["plans"][0]["plan_authority_history"][-1].update(
+        {
+            "plan_sha256": hashlib.sha256((repo / canonical).read_bytes()).hexdigest(),
+            "roadmap_sha256": hashlib.sha256(external.read_bytes()).hexdigest(),
+        }
+    )
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+
+    symlink_result = check(repo)
+
+    assert symlink_result.exit_code == 1
+    assert (canonical, "plan-contract") in [
+        (item.path, item.kind) for item in symlink_result.malformed
+    ]
+
 
 def test_required_roadmap_registry_absence_is_typed_failure(tmp_path):
     repo = make_repo(tmp_path)
@@ -1891,9 +1913,12 @@ def test_legible_manifest_contract_survives_later_ordinary_lifecycle_event(tmp_p
     del manifest["plans"][0]["plan_authority_history"]
     manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
 
-    historical_only = check(repo)
+    missing_current_authority = check(repo)
 
-    assert historical_only.exit_code == 0
+    assert missing_current_authority.exit_code == 1
+    assert (rel, "plan-contract") in [
+        (item.path, item.kind) for item in missing_current_authority.malformed
+    ]
 
 
 @pytest.mark.parametrize("defect", ("missing", "owned_paths", "owned_paths_count", "owned_paths_sha256", "test_paths"))

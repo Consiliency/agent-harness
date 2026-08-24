@@ -901,6 +901,76 @@ def _repo_relative_posix(repo: Path, raw_path: bytes | str) -> str | None:
     return text
 
 
+def _regular_repo_file_sha256(repo: Path, rel_path: str) -> str | None:
+    """Hash one repository-relative regular file without following symlinks."""
+    root = repo.resolve(strict=True)
+    path = root
+    parts = PurePosixPath(rel_path).parts
+    if not parts:
+        return None
+    try:
+        entry_stat = None
+        for index, part in enumerate(parts):
+            path /= part
+            entry_stat = path.lstat()
+            if stat.S_ISLNK(entry_stat.st_mode):
+                return None
+            if index < len(parts) - 1 and not stat.S_ISDIR(entry_stat.st_mode):
+                return None
+        if entry_stat is None or not stat.S_ISREG(entry_stat.st_mode):
+            return None
+        resolved = path.resolve(strict=True)
+        resolved.relative_to(root)
+        if resolved != path:
+            return None
+        identity = (
+            entry_stat.st_dev,
+            entry_stat.st_ino,
+            entry_stat.st_mode,
+            entry_stat.st_size,
+            entry_stat.st_mtime_ns,
+            entry_stat.st_ctime_ns,
+        )
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            opened = os.fstat(stream.fileno())
+            opened_identity = (
+                opened.st_dev,
+                opened.st_ino,
+                opened.st_mode,
+                opened.st_size,
+                opened.st_mtime_ns,
+                opened.st_ctime_ns,
+            )
+            if opened_identity != identity or not stat.S_ISREG(opened.st_mode):
+                return None
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+            after = os.fstat(stream.fileno())
+        after_identity = (
+            after.st_dev,
+            after.st_ino,
+            after.st_mode,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        )
+        final = path.lstat()
+        final_identity = (
+            final.st_dev,
+            final.st_ino,
+            final.st_mode,
+            final.st_size,
+            final.st_mtime_ns,
+            final.st_ctime_ns,
+        )
+        if after_identity != identity or final_identity != identity:
+            return None
+        return digest.hexdigest()
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
 def _classify_basename(basename: str) -> str:
     """``"canonical"`` (full-matches ``PLAN_RE``), ``"lookalike"`` (has the
     ``phase-plan-*.md`` shape but does not full-match), or ``"irrelevant"``
@@ -1163,7 +1233,11 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
                 )
 
             authority_history = entry.get("plan_authority_history")
-            if authority_history is not None:
+            if authority_history is None and digests:
+                malformed.append(
+                    MalformedPlanFinding(rel, "plan-contract", frozenset({"manifest"}))
+                )
+            elif authority_history is not None:
                 authority_valid = isinstance(authority_history, list) and bool(authority_history)
                 roadmap_ref = entry.get("roadmap_ref")
                 roadmap_value = roadmap_ref.get("file") if isinstance(roadmap_ref, dict) else None
@@ -1219,12 +1293,7 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
                             MalformedPlanFinding(rel, "plan-digest", frozenset({"manifest"}))
                         )
                     if isinstance(roadmap_rel, str):
-                        roadmap_path = repo / roadmap_rel
-                        actual_roadmap = (
-                            hashlib.sha256(roadmap_path.read_bytes()).hexdigest()
-                            if roadmap_path.is_file()
-                            else None
-                        )
+                        actual_roadmap = _regular_repo_file_sha256(repo, roadmap_rel)
                         if current_authority["roadmap_sha256"] != actual_roadmap:
                             malformed.append(
                                 MalformedPlanFinding(rel, "plan-contract", frozenset({"manifest"}))

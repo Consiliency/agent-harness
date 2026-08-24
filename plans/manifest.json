@@ -2282,6 +2282,14 @@
       ],
       "owner_skill": "codex-plan-phase",
       "phase_alias": "HARDEN",
+      "plan_authority_history": [
+        {
+          "plan_sha256": "b46805dec76792ddb066d9891fb5c731585576d9439270053e98013f28a480ee",
+          "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#620"
+        }
+      ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/fdaed78f/codex-v10-plan-harden/20260730T035939Z-01-harden-plan.md",
       "roadmap_ref": {
         "file": "specs/phase-plans-v10.md",
