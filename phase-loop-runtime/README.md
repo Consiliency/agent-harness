@@ -19,7 +19,7 @@ To install just this runtime package directly:
 
 ```sh
 pip install phase-loop-runtime              # latest compatible release
-pip install phase-loop-runtime==0.7.13      # …or pin an exact version
+pip install phase-loop-runtime==0.7.14      # …or pin an exact version
 ```
 
 To pin a specific tag from source instead, substitute a tag from
