@@ -4166,6 +4166,19 @@ def test_public_roadmap_reader_honors_requested_path(tmp_path, monkeypatch):
         Path("specs/roadmap-status.json"),
     ) is not None
 
+    monkeypatch.chdir(tmp_path)
+    repo_alias = tmp_path / "repo-alias"
+    repo_alias.symlink_to(repo, target_is_directory=True)
+    assert roadmap_lint.read_roadmap_status(
+        repo_alias,
+        repo_alias / "specs" / "roadmap-status.json",
+    ) is not None
+    relative_alias = repo_alias.relative_to(tmp_path)
+    assert roadmap_lint.read_roadmap_status(
+        relative_alias,
+        relative_alias / "specs" / "roadmap-status.json",
+    ) is not None
+
 
 def test_public_roadmap_reader_rejects_path_outside_repo(tmp_path):
     repo, _registry, payload = _roadmap_check_fixture(
