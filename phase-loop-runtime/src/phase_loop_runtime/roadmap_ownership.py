@@ -282,14 +282,39 @@ def has_disposition(text: str) -> bool:
     )
 
 
+#: Claims that fire on nearly every PR, and why each is expected rather than
+#: informative. `CHANGELOG.md` is claimed by RELEASE while the docs-audit gate
+#: REQUIRES a CHANGELOG entry for any public-surface change -- so the two rules
+#: together make the flag near-universal.
+#:
+#: These are DEMOTED, never dropped. A warning that fires on every PR is tuned out
+#: within a week, and then the substantive findings underneath it are tuned out
+#: too. Hiding them would be worse: the claim is real and a reader deciding
+#: whether to add a disposition needs to see it. So they move below the fold with
+#: the reason attached.
+EXPECTED_CLAIMS: Dict[str, str] = {
+    "CHANGELOG.md": "docs-audit requires an entry for public-surface changes",
+}
+
+
 def render(found: Sequence[Ownership], disposition: bool) -> str:
     if not found:
         return "roadmap-ownership: OK — no changed path is claimed by a roadmap phase"
-    lines = [
-        f"roadmap-ownership: {len(found)} claimed path(s) — ADVISORY, not blocking",
-        "",
-    ]
-    for own in sorted(found, key=lambda o: (o.path, o.phase_alias)):
+
+    expected = [o for o in found if o.path in EXPECTED_CLAIMS]
+    notable = [o for o in found if o.path not in EXPECTED_CLAIMS]
+
+    if not notable:
+        head = (
+            f"roadmap-ownership: OK — no notable claims "
+            f"({len(expected)} expected, listed below)"
+        )
+    else:
+        head = (
+            f"roadmap-ownership: {len(notable)} claimed path(s) — ADVISORY, not blocking"
+        )
+    lines = [head, ""]
+    for own in sorted(notable, key=lambda o: (o.path, o.phase_alias)):
         marker = " (CURRENT PHASE)" if own.is_current else ""
         lines.append(f"  • {own.path}")
         lines.append(f"      claimed by {own.phase_alias} — {own.phase_name}{marker}")
@@ -310,6 +335,13 @@ def render(found: Sequence[Ownership], disposition: bool) -> str:
         "lived in PR comments, not only in the roadmap (ah#354 said 'No SCHED runtime",
         "edits are authorized' and nothing in the roadmap file repeated it).",
     ]
+    if expected:
+        lines += ["", "Expected — shown for completeness, not action:"]
+        for own in sorted(expected, key=lambda o: (o.path, o.phase_alias)):
+            lines.append(
+                f"  · {own.path} — claimed by {own.phase_alias}; "
+                f"{EXPECTED_CLAIMS[own.path]}"
+            )
     if disposition:
         lines += ["", f"A {DISPOSITION_TRAILER} trailer is present — recorded."]
     else:

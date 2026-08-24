@@ -282,6 +282,53 @@ class TestScopedClaims(unittest.TestCase):
         self.assertIn("only new modules", out)
 
 
+class TestExpectedClaims(unittest.TestCase):
+    """Near-universal claims are DEMOTED, never dropped.
+
+    `CHANGELOG.md` is claimed by RELEASE while docs-audit REQUIRES a CHANGELOG
+    entry for public-surface changes, so the two rules together make the flag fire
+    on nearly every PR. A warning that always fires is tuned out within a week --
+    and then the substantive findings underneath it are tuned out too.
+    """
+
+    def _own(self, path, alias="RELEASE"):
+        return ro.Ownership(path, alias, "Pilots and Governed Release", False)
+
+    def test_expected_claim_is_moved_below_the_substantive_findings(self):
+        out = ro.render(
+            [self._own("CHANGELOG.md"), self._own("src/real.py", "SCHED")],
+            disposition=False,
+        )
+        self.assertLess(out.index("src/real.py"), out.index("CHANGELOG.md"))
+        self.assertIn("Expected", out)
+
+    def test_expected_claim_is_still_reported_with_its_reason(self):
+        """Demoted is not hidden.
+
+        Mutation that must kill this: filter expected claims out entirely instead
+        of moving them. A reader deciding whether to add a disposition needs to
+        see the claim; suppressing it would be a worse defect than the noise.
+        """
+        out = ro.render([self._own("CHANGELOG.md")], disposition=False)
+        self.assertIn("CHANGELOG.md", out)
+        self.assertIn("docs-audit requires an entry", out)
+
+    def test_only_expected_claims_reads_as_OK_not_as_findings(self):
+        out = ro.render([self._own("CHANGELOG.md")], disposition=False)
+        self.assertIn("no notable claims", out)
+
+    def test_the_count_in_the_headline_excludes_expected(self):
+        """The headline number must be the actionable one.
+
+        Mutation that must kill this: count `found` instead of `notable`.
+        """
+        out = ro.render(
+            [self._own("CHANGELOG.md"), self._own("src/real.py", "SCHED")],
+            disposition=False,
+        )
+        self.assertIn("1 claimed path(s)", out)
+
+
 class TestPartialDrift(unittest.TestCase):
     def test_one_phase_losing_key_files_raises(self):
         """The third mutation, found by review: PARTIAL drift passed silently.
