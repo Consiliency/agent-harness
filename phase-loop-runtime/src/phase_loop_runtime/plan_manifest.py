@@ -1831,10 +1831,12 @@ def _manifest_entry_scope_from_snapshot(
                 )
 
             authority_history = entry.get("plan_authority_history")
-            authority_required = (
+            roadmap_authority_required = (
                 frozen_prefix is not None
                 or historical_binding_declared
-                or rel in ancestor_authorities
+            )
+            authority_required = (
+                roadmap_authority_required or rel in ancestor_authorities
             )
             if authority_history is None and authority_required:
                 malformed.append(
@@ -1888,7 +1890,7 @@ def _manifest_entry_scope_from_snapshot(
                 roadmap_contract_valid = (
                     current_authority is not None
                     and (
-                        not authority_required
+                        not roadmap_authority_required
                         or (
                             isinstance(roadmap_ref, dict)
                             and isinstance(current_authority["roadmap_sha256"], str)
