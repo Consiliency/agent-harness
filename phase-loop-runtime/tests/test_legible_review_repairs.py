@@ -2036,8 +2036,10 @@ def test_legible_current_authority_cannot_drop_roadmap_binding(tmp_path):
     ]
 
 
-@pytest.mark.parametrize("lifecycle", ({}, None))
-def test_manifest_check_rejects_non_list_lifecycle_that_erases_authority(
+@pytest.mark.parametrize(
+    "lifecycle", ({}, None, [None], [{}], [{"metadata": None}])
+)
+def test_manifest_check_rejects_malformed_lifecycle_that_erases_authority(
     tmp_path, lifecycle
 ):
     repo = make_repo(tmp_path)

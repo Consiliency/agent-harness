@@ -1338,8 +1338,12 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
             )
             if isinstance(lifecycle, list):
                 for event in lifecycle:
-                    metadata = event.get("metadata") if isinstance(event, dict) else None
+                    if not isinstance(event, dict):
+                        historical_binding_malformed = True
+                        continue
+                    metadata = event.get("metadata")
                     if not isinstance(metadata, dict):
+                        historical_binding_malformed = True
                         continue
                     binding_in_event = False
                     for key, target in (
