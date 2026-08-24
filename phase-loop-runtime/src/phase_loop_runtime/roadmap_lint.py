@@ -27,12 +27,14 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Dict, List, Mapping, Optional, Set
+from typing import Dict, Iterator, List, Mapping, Optional, Set
 
 
 # ---------------------------------------------------------------------------
@@ -635,6 +637,122 @@ def _escapes_repo(path: str) -> bool:
     return any(part in ("..", ".") for part in Path(path).parts)
 
 
+@contextmanager
+def _pinned_roadmap_sources(
+    repo: Path,
+) -> Iterator[tuple[Path, int, dict[str, bytes]]]:
+    from .plan_manifest import _regular_repo_files_sha256
+
+    root = Path(repo).resolve(strict=True)
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    directory = getattr(os, "O_DIRECTORY", None)
+    if nofollow is None or directory is None:
+        raise MalformedRegistryError("descriptor-pinned roadmap reads are unavailable")
+    cloexec = getattr(os, "O_CLOEXEC", 0)
+    directory_flags = os.O_RDONLY | directory | nofollow | cloexec
+
+    def root_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+        return (
+            value.st_dev,
+            value.st_ino,
+            value.st_mode,
+            value.st_mtime_ns,
+            value.st_ctime_ns,
+        )
+
+    root_before = os.stat(root, follow_symlinks=False)
+    if not stat.S_ISDIR(root_before.st_mode):
+        raise MalformedRegistryError("roadmap repository root is not a directory")
+    try:
+        root_fd = os.open(root, directory_flags)
+    except OSError as exc:
+        raise MalformedRegistryError(
+            f"cannot pin roadmap repository root: {exc}"
+        ) from exc
+    try:
+        expected_root = root_identity(os.fstat(root_fd))
+        if expected_root != root_identity(root_before):
+            raise MalformedRegistryError("roadmap repository root changed before read")
+        descriptor_repo = next(
+            (
+                descriptor_root / str(root_fd)
+                for descriptor_root in (Path("/proc/self/fd"), Path("/dev/fd"))
+                if descriptor_root.is_dir()
+            ),
+            None,
+        )
+        if descriptor_repo is None:
+            raise MalformedRegistryError(
+                "descriptor-backed roadmap paths are unavailable"
+            )
+
+        registry_rel = ROADMAP_STATUS_REGISTRY_REL
+        registry_path = descriptor_repo / registry_rel
+        sources: dict[str, bytes] = {}
+        source_paths: tuple[str, ...] = ()
+        registry_present = os.path.lexists(registry_path)
+        if registry_present:
+            registry_source: dict[str, bytes] = {}
+            if _regular_repo_files_sha256(
+                root,
+                (registry_rel,),
+                root_fd=root_fd,
+                content_out=registry_source,
+            ) is None:
+                raise MalformedRegistryError(
+                    "roadmap-status registry is not a stable regular repository file"
+                )
+            try:
+                registry_data = parse_roadmap_status_manifest(
+                    registry_source[registry_rel].decode("utf-8")
+                )
+            except UnicodeDecodeError as exc:
+                raise MalformedRegistryError(
+                    "roadmap-status registry is not valid UTF-8"
+                ) from exc
+            source_paths = (
+                registry_rel,
+                *(entry["path"] for entry in registry_data["roadmaps"]),
+            )
+            if _regular_repo_files_sha256(
+                root,
+                source_paths,
+                root_fd=root_fd,
+                content_out=sources,
+            ) is None:
+                raise MalformedRegistryError(
+                    "roadmap-status sources are not one stable regular-file snapshot"
+                )
+
+        yield descriptor_repo, root_fd, sources
+
+        if registry_present:
+            final_sources: dict[str, bytes] = {}
+            if _regular_repo_files_sha256(
+                root,
+                source_paths,
+                root_fd=root_fd,
+                content_out=final_sources,
+            ) is None or final_sources != sources:
+                raise MalformedRegistryError(
+                    "roadmap-status sources changed during validation"
+                )
+        elif os.path.lexists(registry_path):
+            raise MalformedRegistryError(
+                "roadmap-status registry appeared during validation"
+            )
+        if root_identity(os.stat(root, follow_symlinks=False)) != expected_root:
+            raise MalformedRegistryError(
+                "roadmap repository root changed during validation"
+            )
+    except MalformedRegistryError:
+        raise
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise MalformedRegistryError(f"roadmap source snapshot failed: {exc}") from exc
+    finally:
+        os.close(root_fd)
+
+
 def _tracked_roadmap_paths(
     repo: Path, *, root_fd: int | None = None
 ) -> List[str]:
@@ -689,17 +807,14 @@ def read_roadmap_status(
     primary-banner status — all BEFORE returning any value. Raises a typed
     :class:`RoadmapStatusError` subclass on any defect.
     """
+    if source_bytes is None:
+        return validate_roadmap_status_coherence(repo, required=False)
     repo = Path(repo)
     path = Path(path)
-    if source_bytes is None:
-        if not path.exists():
-            return None
-        text = path.read_text(encoding="utf-8")
-    else:
-        registry_bytes = source_bytes.get(ROADMAP_STATUS_REGISTRY_REL)
-        if registry_bytes is None:
-            return None
-        text = registry_bytes.decode("utf-8")
+    registry_bytes = source_bytes.get(ROADMAP_STATUS_REGISTRY_REL)
+    if registry_bytes is None:
+        return None
+    text = registry_bytes.decode("utf-8")
     if not text.strip():
         raise MalformedRegistryError(f"roadmap-status.json is empty: {path}")
     data = parse_roadmap_status_manifest(text)
@@ -720,13 +835,8 @@ def read_roadmap_status(
 
     for entry in data["roadmaps"]:
         rel_path = entry["path"]
-        roadmap_file = repo / rel_path
         try:
-            banner_text = (
-                roadmap_file.read_text(encoding="utf-8")
-                if source_bytes is None
-                else source_bytes[rel_path].decode("utf-8")
-            )
+            banner_text = source_bytes[rel_path].decode("utf-8")
         except (KeyError, OSError, UnicodeDecodeError) as exc:
             raise StatusCoherenceError(f"cannot read tracked roadmap {rel_path}: {exc}") from exc
         banner_status = parse_roadmap_banner_status(banner_text, rel_path)
@@ -755,6 +865,18 @@ def validate_roadmap_status_coherence(
     When the canonical LEGIBLE phase marker is present, ``required=True`` also
     makes absence a typed failure. Present-but-defective registries always fail.
     """
+    if source_bytes is None:
+        with _pinned_roadmap_sources(repo) as (
+            descriptor_repo,
+            pinned_root_fd,
+            pinned_sources,
+        ):
+            return validate_roadmap_status_coherence(
+                descriptor_repo,
+                required=required,
+                root_fd=pinned_root_fd,
+                source_bytes=pinned_sources,
+            )
     repo = Path(repo)
     registry_path = repo / ROADMAP_STATUS_REGISTRY_REL
     status = read_roadmap_status(
