@@ -25,13 +25,14 @@ full Markdown parser.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Mapping, Optional, Set
 
 
 # ---------------------------------------------------------------------------
@@ -638,11 +639,32 @@ def _tracked_roadmap_paths(
     repo: Path, *, root_fd: int | None = None
 ) -> List[str]:
     """The exact Git-tracked ``specs/phase-plans-*.md`` path set, stable-sorted."""
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("GIT_")
+    }
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_SYSTEM"] = os.devnull
     try:
         proc = subprocess.run(
-            ["git", "-C", str(repo), "ls-files", "-z", "--", "specs/phase-plans-*.md"],
+            [
+                "git",
+                "--no-replace-objects",
+                "-c",
+                "core.commitGraph=false",
+                "-C",
+                str(repo),
+                "ls-files",
+                "-z",
+                "--",
+                "specs/phase-plans-*.md",
+            ],
             capture_output=True,
             check=True,
+            env=env,
             pass_fds=(root_fd,) if root_fd is not None else (),
         )
     except (OSError, subprocess.CalledProcessError) as exc:
@@ -652,7 +674,11 @@ def _tracked_roadmap_paths(
 
 
 def read_roadmap_status(
-    repo: Path, path: Path, *, root_fd: int | None = None
+    repo: Path,
+    path: Path,
+    *,
+    root_fd: int | None = None,
+    source_bytes: Mapping[str, bytes] | None = None,
 ) -> Optional[dict]:
     """Read and fully coherence-validate ``specs/roadmap-status.json``.
 
@@ -665,9 +691,15 @@ def read_roadmap_status(
     """
     repo = Path(repo)
     path = Path(path)
-    if not path.exists():
-        return None
-    text = path.read_text(encoding="utf-8")
+    if source_bytes is None:
+        if not path.exists():
+            return None
+        text = path.read_text(encoding="utf-8")
+    else:
+        registry_bytes = source_bytes.get(ROADMAP_STATUS_REGISTRY_REL)
+        if registry_bytes is None:
+            return None
+        text = registry_bytes.decode("utf-8")
     if not text.strip():
         raise MalformedRegistryError(f"roadmap-status.json is empty: {path}")
     data = parse_roadmap_status_manifest(text)
@@ -690,8 +722,12 @@ def read_roadmap_status(
         rel_path = entry["path"]
         roadmap_file = repo / rel_path
         try:
-            banner_text = roadmap_file.read_text(encoding="utf-8")
-        except OSError as exc:
+            banner_text = (
+                roadmap_file.read_text(encoding="utf-8")
+                if source_bytes is None
+                else source_bytes[rel_path].decode("utf-8")
+            )
+        except (KeyError, OSError, UnicodeDecodeError) as exc:
             raise StatusCoherenceError(f"cannot read tracked roadmap {rel_path}: {exc}") from exc
         banner_status = parse_roadmap_banner_status(banner_text, rel_path)
         if banner_status != entry["status"]:
@@ -711,6 +747,7 @@ def validate_roadmap_status_coherence(
     required: bool = False,
     *,
     root_fd: int | None = None,
+    source_bytes: Mapping[str, bytes] | None = None,
 ) -> Optional[dict]:
     """Full coherence validation over ``specs/roadmap-status.json``.
 
@@ -720,7 +757,12 @@ def validate_roadmap_status_coherence(
     """
     repo = Path(repo)
     registry_path = repo / ROADMAP_STATUS_REGISTRY_REL
-    status = read_roadmap_status(repo, registry_path, root_fd=root_fd)
+    status = read_roadmap_status(
+        repo,
+        registry_path,
+        root_fd=root_fd,
+        source_bytes=source_bytes,
+    )
     canonical_marker = repo / "plans" / "phase-plan-v10-LEGIBLE.md"
     if status is None and required and canonical_marker.is_file():
         raise MalformedRegistryError(f"required roadmap-status registry is absent: {registry_path}")

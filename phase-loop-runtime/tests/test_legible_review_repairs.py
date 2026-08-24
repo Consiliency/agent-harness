@@ -3967,6 +3967,142 @@ def test_current_authority_hash_binds_working_files_to_snapshot_root(
     )
 
 
+_ACTIVE_BANNER = (
+    "# Roadmap\n\n"
+    "> **Status (2026-08-01): ACTIVE — created this date, nothing executed yet.**\n"
+)
+_SUPERSEDED_BANNER = (
+    "# Roadmap\n\n"
+    "> # SUPERSEDED — replaced by `specs/phase-plans-v1.md` (2026-08-01)\n"
+)
+
+
+def _roadmap_check_fixture(tmp_path, *, banners, statuses):
+    repo = make_repo(tmp_path)
+    plan_rel = _commit_plan(repo)
+
+    for rel, banner in banners.items():
+        path = repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(banner, encoding="utf-8")
+
+    registry_payload = {
+        "schema": "roadmap_status_manifest.v1",
+        "selected_roadmap": "specs/phase-plans-v1.md",
+        "roadmaps": [
+            {"path": rel, "status": status}
+            for rel, status in sorted(statuses.items())
+        ],
+    }
+    registry = repo / "specs" / "roadmap-status.json"
+    registry.write_text(json.dumps(registry_payload) + "\n", encoding="utf-8")
+
+    (repo / "plans" / "manifest.json").write_text(
+        json.dumps({"plans": [{"file": plan_rel}]}) + "\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "roadmap fixture"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    return repo, registry, registry_payload
+
+
+def _assert_check_fails_closed(repo):
+    try:
+        result = check(repo)
+    except plan_manifest.ManifestSourceError:
+        return
+    assert result.exit_code != 0
+
+
+def test_roadmap_coverage_ignores_ambient_git_index_file(tmp_path, monkeypatch):
+    repo, _registry, _payload = _roadmap_check_fixture(
+        tmp_path,
+        banners={
+            "specs/phase-plans-v1.md": _ACTIVE_BANNER,
+            "specs/phase-plans-v2.md": _SUPERSEDED_BANNER,
+        },
+        statuses={"specs/phase-plans-v1.md": "active"},
+    )
+    _assert_check_fails_closed(repo)
+
+    alternate_index = tmp_path / "alternate-index"
+    alternate_env = dict(os.environ)
+    alternate_env["GIT_INDEX_FILE"] = str(alternate_index)
+    subprocess.run(
+        ["git", "read-tree", "HEAD"],
+        cwd=repo,
+        env=alternate_env,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "update-index", "--force-remove", "specs/phase-plans-v2.md"],
+        cwd=repo,
+        env=alternate_env,
+        check=True,
+    )
+
+    monkeypatch.setenv("GIT_INDEX_FILE", str(alternate_index))
+    _assert_check_fails_closed(repo)
+
+
+def test_roadmap_registry_and_banners_are_one_pinned_snapshot(
+    tmp_path, monkeypatch
+):
+    repo, registry, _payload = _roadmap_check_fixture(
+        tmp_path,
+        banners={"specs/phase-plans-v1.md": _SUPERSEDED_BANNER},
+        statuses={"specs/phase-plans-v1.md": "active"},
+    )
+    roadmap = repo / "specs" / "phase-plans-v1.md"
+    _assert_check_fails_closed(repo)
+
+    real_parse = roadmap_lint.parse_roadmap_status_manifest
+    changed = False
+
+    def parse_then_replace_sources(text):
+        nonlocal changed
+        parsed = real_parse(text)
+        registry.write_text("not json\n", encoding="utf-8")
+        roadmap.write_text(_ACTIVE_BANNER, encoding="utf-8")
+        changed = True
+        return parsed
+
+    monkeypatch.setattr(
+        roadmap_lint,
+        "parse_roadmap_status_manifest",
+        parse_then_replace_sources,
+    )
+
+    try:
+        result = check(repo)
+    except plan_manifest.ManifestSourceError:
+        assert changed
+        return
+    assert changed
+    assert result.exit_code != 0
+
+
+def test_roadmap_status_registry_rejects_external_symlink(tmp_path):
+    repo, registry, payload = _roadmap_check_fixture(
+        tmp_path / "repo-state",
+        banners={"specs/phase-plans-v1.md": _ACTIVE_BANNER},
+        statuses={"specs/phase-plans-v1.md": "active"},
+    )
+
+    external_registry = tmp_path / "external-roadmap-status.json"
+    external_registry.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    registry.unlink()
+    registry.symlink_to(external_registry)
+
+    assert registry.is_symlink()
+    _assert_check_fails_closed(repo)
+
+
 def test_cli_attest_passes_preimport_process_token_into_runner_workflow(tmp_path, monkeypatch):
     from phase_loop_runtime import cli
 

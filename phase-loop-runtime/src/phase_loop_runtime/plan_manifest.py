@@ -1015,6 +1015,7 @@ def _regular_repo_files_sha256(
     rel_paths: Sequence[str],
     *,
     root_fd: int | None = None,
+    content_out: dict[str, bytes] | None = None,
 ) -> dict[str, str] | None:
     """Hash stable repository files in one descriptor-pinned transaction."""
     root = Path(repo) if root_fd is not None else repo.resolve(strict=True)
@@ -1089,6 +1090,7 @@ def _regular_repo_files_sha256(
                 tuple[int, str, tuple[int, int, int, int, int, int], Any | None, str]
             ] = []
             digests: dict[str, str] = {}
+            contents: dict[str, bytes] = {}
             for rel_path in requested:
                 parts = path_parts[rel_path]
                 parent_fd = root_fd
@@ -1142,10 +1144,13 @@ def _regular_repo_files_sha256(
                     if not stat.S_ISREG(file_before.st_mode) or identity != anchor_identity:
                         return None
                     digest = hashlib.sha256()
+                    content = bytearray()
                     for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                         digest.update(chunk)
+                        content.extend(chunk)
                     if file_identity(os.fstat(stream.fileno())) != identity:
                         return None
+                    contents[rel_path] = bytes(content)
                 else:
                     cloned = _darwin_clonefileat_bytes(repo, parent_fd, parts[-1])
                     file_named_after = os.stat(
@@ -1154,6 +1159,7 @@ def _regular_repo_files_sha256(
                     if cloned is None or file_identity(file_named_after) != identity:
                         return None
                     digest = hashlib.sha256(cloned)
+                    contents[rel_path] = cloned
                 expected_digest = digest.hexdigest()
                 file_entries.append(
                     (parent_fd, parts[-1], identity, stream, expected_digest)
@@ -1224,6 +1230,9 @@ def _regular_repo_files_sha256(
             # file and namespace observation has already been cross-checked twice.
             if not files_are_current():
                 return None
+            if content_out is not None:
+                content_out.clear()
+                content_out.update(contents)
             return digests
     except (OSError, RuntimeError, ValueError):
         return None
@@ -2025,15 +2034,47 @@ def canonical_plan_files(
     from . import roadmap_lint
 
     working_repo = repo
+    roadmap_sources: dict[str, bytes] | None = None
     if snapshot is not None and snapshot.root_fd is not None:
         descriptor_repo = _descriptor_repo_path(snapshot.root_fd)
         if descriptor_repo is None:
             raise ManifestSourceError("descriptor-backed repository paths are unavailable")
         working_repo = descriptor_repo
+        registry_rel = roadmap_lint.ROADMAP_STATUS_REGISTRY_REL
+        registry_path = working_repo / registry_rel
+        roadmap_sources = {}
+        if os.path.lexists(registry_path):
+            registry_source: dict[str, bytes] = {}
+            if _regular_repo_files_sha256(
+                repo,
+                (registry_rel,),
+                root_fd=snapshot.root_fd,
+                content_out=registry_source,
+            ) is None:
+                raise ManifestSourceError(
+                    "roadmap-status registry is not a stable regular repository file"
+                )
+            registry_data = roadmap_lint.parse_roadmap_status_manifest(
+                registry_source[registry_rel].decode("utf-8")
+            )
+            roadmap_paths = tuple(
+                entry["path"] for entry in registry_data["roadmaps"]
+            )
+            source_paths = (registry_rel, *roadmap_paths)
+            if _regular_repo_files_sha256(
+                repo,
+                source_paths,
+                root_fd=snapshot.root_fd,
+                content_out=roadmap_sources,
+            ) is None:
+                raise ManifestSourceError(
+                    "roadmap-status sources are not one stable regular-file snapshot"
+                )
     roadmap_lint.validate_roadmap_status_coherence(
         working_repo,
         required=False,
         root_fd=snapshot.root_fd if snapshot is not None else None,
+        source_bytes=roadmap_sources,
     )
 
     origins: dict[str, set[str]] = {}
