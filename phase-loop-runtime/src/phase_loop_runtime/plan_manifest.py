@@ -1281,14 +1281,24 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
     the same repo-relative/direct-child/full-match checks as canonical
     scanning, plus any malformed entry path (origin ``"manifest"``)."""
     manifest_path = repo / "plans" / "manifest.json"
+    frozen_history = _frozen_paths_in_git_history(repo)
+
+    def frozen_findings(registered: set[str]) -> list[MalformedPlanFinding]:
+        return [
+            MalformedPlanFinding(
+                required_rel, "plan-contract", frozenset({"manifest"})
+            )
+            for required_rel in sorted(frozen_history - registered)
+        ]
+
     if not manifest_path.exists():
-        return set(), []
+        return set(), frozen_findings(set())
     try:
         data = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return set(), []
+        return set(), frozen_findings(set())
     if not isinstance(data, dict):
-        return set(), []
+        return set(), frozen_findings(set())
     registered: set[str] = set()
     malformed: list[MalformedPlanFinding] = []
     for entry in data.get("plans", []):
@@ -1323,8 +1333,8 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
             rebinds: list[dict[str, Any]] = []
             historical_binding_hashes: list[str] = []
             historical_binding_declared = False
-            historical_binding_malformed = lifecycle is not None and not isinstance(
-                lifecycle, list
+            historical_binding_malformed = (
+                "lifecycle" in entry and not isinstance(lifecycle, list)
             )
             if isinstance(lifecycle, list):
                 for event in lifecycle:
@@ -1510,12 +1520,7 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
                             )
         elif classification == "lookalike":
             malformed.append(MalformedPlanFinding(path=rel, kind="noncanonical", origin=frozenset({"manifest"})))
-    for required_rel in sorted(_frozen_paths_in_git_history(repo) - registered):
-        malformed.append(
-            MalformedPlanFinding(
-                required_rel, "plan-contract", frozenset({"manifest"})
-            )
-        )
+    malformed.extend(frozen_findings(registered))
     return registered, malformed
 
 

@@ -2036,11 +2036,14 @@ def test_legible_current_authority_cannot_drop_roadmap_binding(tmp_path):
     ]
 
 
-def test_manifest_check_rejects_non_list_lifecycle_that_erases_authority(tmp_path):
+@pytest.mark.parametrize("lifecycle", ({}, None))
+def test_manifest_check_rejects_non_list_lifecycle_that_erases_authority(
+    tmp_path, lifecycle
+):
     repo = make_repo(tmp_path)
     rel = _commit_plan(repo)
     (repo / "plans" / "manifest.json").write_text(
-        json.dumps({"plans": [{"file": rel, "lifecycle": {}}]}),
+        json.dumps({"plans": [{"file": rel, "lifecycle": lifecycle}]}),
         encoding="utf-8",
     )
 
@@ -2165,7 +2168,9 @@ def test_composite_authority_revalidates_plan_after_roadmap_hash(tmp_path, monke
     ]
 
 
-def test_frozen_historical_binding_cannot_be_deleted_with_authority(tmp_path):
+def test_frozen_historical_binding_cannot_be_deleted_with_authority(
+    tmp_path, monkeypatch
+):
     source_repo = Path(__file__).resolve().parents[2]
     source_manifest = json.loads(
         (source_repo / "plans" / "manifest.json").read_text(encoding="utf-8")
@@ -2240,6 +2245,30 @@ def test_frozen_historical_binding_cannot_be_deleted_with_authority(tmp_path):
     assert deleted_plan_and_row.exit_code == 1
     assert (entry["file"], "plan-contract") in [
         (item.path, item.kind) for item in deleted_plan_and_row.malformed
+    ]
+    for invalid_manifest in (None, "{", "[]"):
+        if invalid_manifest is None:
+            manifest_path.unlink()
+        else:
+            manifest_path.write_text(invalid_manifest, encoding="utf-8")
+        erased_manifest = check(repo)
+        assert erased_manifest.exit_code == 1
+        assert (entry["file"], "plan-contract") in [
+            (item.path, item.kind) for item in erased_manifest.malformed
+        ]
+    manifest_path.write_text('{"plans": []}\n', encoding="utf-8")
+    real_read_text = Path.read_text
+
+    def unreadable_manifest(path, *args, **kwargs):
+        if path == manifest_path:
+            raise PermissionError("denied")
+        return real_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", unreadable_manifest)
+    unreadable = check(repo)
+    assert unreadable.exit_code == 1
+    assert (entry["file"], "plan-contract") in [
+        (item.path, item.kind) for item in unreadable.malformed
     ]
 
 
