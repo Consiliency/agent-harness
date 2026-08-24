@@ -227,6 +227,7 @@ def _operational_fixture(
     pr_delta_path.write_text("# base panel invoker\n", encoding="utf-8")
     manifest_path = repo / "plans" / "manifest.json"
     plan_digest = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+    roadmap_digest = hashlib.sha256(roadmap_v10.read_bytes()).hexdigest()
     manifest_path.write_text(
         json.dumps(
             {
@@ -234,13 +235,22 @@ def _operational_fixture(
                     {
                         "file": "plans/phase-plan-v10-LEGIBLE.md",
                         "phase_alias": "LEGIBLE",
+                        "roadmap_ref": {"file": "specs/phase-plans-v10.md"},
+                        "plan_authority_history": [
+                            {
+                                "schema": "plan_current_authority.v1",
+                                "source": "Consiliency/agent-harness#647",
+                                "plan_sha256": plan_digest,
+                                "roadmap_sha256": roadmap_digest,
+                            }
+                        ],
                         "lifecycle": [
                             {
                                 "metadata": {
                                     "legible_plan_contract": {
                                         **LEGIBLE_CONTRACT_FIXED_FIELDS,
                                         "plan_sha256": plan_digest,
-                                        "roadmap_sha256": hashlib.sha256(roadmap_v10.read_bytes()).hexdigest(),
+                                        "roadmap_sha256": roadmap_digest,
                                         "owned_paths": list(LEGIBLE_OWNED_PATHS),
                                         "owned_paths_count": len(LEGIBLE_OWNED_PATHS),
                                         "owned_paths_sha256": owned_digest,

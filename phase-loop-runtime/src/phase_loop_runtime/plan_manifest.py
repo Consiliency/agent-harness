@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from . import roadmap_assumptions
 from .discovery import PLAN_RE
 
 
@@ -1308,7 +1309,15 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
                         )
                     if isinstance(roadmap_rel, str):
                         actual_roadmap = _regular_repo_file_sha256(repo, roadmap_rel)
-                        if current_authority["roadmap_sha256"] != actual_roadmap:
+                        canonical_roadmap = (
+                            roadmap_assumptions.CANONICAL_ROADMAP_SHA256
+                            if rel == _LEGIBLE_PLAN_REL
+                            else actual_roadmap
+                        )
+                        if (
+                            current_authority["roadmap_sha256"] != actual_roadmap
+                            or actual_roadmap != canonical_roadmap
+                        ):
                             malformed.append(
                                 MalformedPlanFinding(rel, "plan-contract", frozenset({"manifest"}))
                             )
