@@ -36,6 +36,7 @@ import importlib
 import importlib.util
 import json
 import os
+import shutil
 import stat
 import subprocess
 from collections.abc import Callable
@@ -1135,9 +1136,9 @@ def test_manifest_reporting_consumes_coherence_checked_accessor(tmp_path):
     calls: list[Path] = []
     original = read_status
 
-    def _spy(repo, path):  # noqa: ANN001 - test spy
+    def _spy(repo, path, **kwargs):  # noqa: ANN001 - test spy
         calls.append(Path(repo))
-        return original(repo, path)
+        return original(repo, path, **kwargs)
 
     import phase_loop_runtime.roadmap_lint as roadmap_lint_module
 
@@ -2148,7 +2149,7 @@ def _synthetic_fully_registered_repo(tmp_path: Path, count: int) -> tuple[Path, 
 
 
 def test_repository_manifest_exactly_covers_execution_scope(tmp_path):
-    from phase_loop_runtime.plan_manifest import validate_manifest
+    from phase_loop_runtime.plan_manifest import check, validate_manifest
 
     try:
         canonical_fn = _new_symbol("phase_loop_runtime.plan_manifest", "canonical_plan_files")
@@ -2161,6 +2162,8 @@ def test_repository_manifest_exactly_covers_execution_scope(tmp_path):
         assert validation.valid, f"live plans/manifest.json is not currently valid: {validation}"
         canonical = canonical_fn(REPO_ROOT, "HEAD")
         report = report_cls.build(REPO_ROOT, canonical, _real_manifest_registered_files())
+        manifest_check = check(REPO_ROOT)
+        assert manifest_check.exit_code == 0, manifest_check
     else:
         # Installed-wheel clean room: exercise the identical public contract
         # (an exactly-covering manifest reports zero unregistered files)
@@ -2186,7 +2189,30 @@ def test_integrated_six_root_tree_reports_28_of_28(tmp_path):
             assert (REPO_ROOT / rel).is_file(), f"root plan missing from live repo: {rel}"
         canonical = canonical_fn(REPO_ROOT, "HEAD")
         report = report_cls.build(REPO_ROOT, canonical, _real_manifest_registered_files())
-        assert report.canonical_count == 28 and report.registered_count == 28 and report.unregistered_count == 0
+        assert (
+            report.canonical_count == len(canonical.paths())
+            and report.registered_count == len(canonical.paths())
+            and report.unregistered_count == 0
+        )
+
+        injected_repo = tmp_path / "real-topology-unregistered"
+        shutil.copytree(REPO_ROOT / "plans", injected_repo / "plans")
+        shutil.copytree(REPO_ROOT / "specs", injected_repo / "specs")
+        subprocess.run(["git", "init", "-q", str(injected_repo)], check=True)
+        subprocess.run(["git", "-C", str(injected_repo), "add", "plans", "specs"], check=True)
+        subprocess.run(
+            [
+                "git", "-C", str(injected_repo), "-c", "user.name=Test",
+                "-c", "user.email=test@example.invalid", "commit", "-qm", "real topology",
+            ],
+            check=True,
+        )
+        injected = injected_repo / "plans" / "phase-plan-v999-UNREGISTERED.md"
+        injected.write_text("---\nphase: UNREGISTERED\n---\n# Unregistered\n", encoding="utf-8")
+        check_fn = _new_symbol("phase_loop_runtime.plan_manifest", "check")
+        injected_result = check_fn(injected_repo)
+        assert injected_result.exit_code != 0
+        assert any(item.path == "plans/phase-plan-v999-UNREGISTERED.md" for item in injected_result.missing)
         return
     # Installed-wheel clean room: exercise the identical public contract (a
     # fully-registered scope reports canonical==registered and zero

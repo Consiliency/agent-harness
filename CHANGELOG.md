@@ -6,6 +6,21 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### plan manifest: separate historical evidence from current authority (Consiliency/agent-harness#620, Consiliency/agent-harness#646)
+
+- Lifecycle digest records now remain immutable evidence of the bytes reviewed at
+  their historical event. A row-level append-only `plan_authority_history` names
+  the current plan and roadmap digests, so later amendments no longer make every
+  earlier valid lifecycle record fail against today's bytes. A historically bound
+  row cannot drop that current authority or hide the obligation by corrupting its
+  historical binding shape, and roadmap hashing rejects symlinked or escaping path
+  components.
+- The live repository coverage gate derives exact canonical/registered equality
+  instead of hard-coding a plan count, and its positive control injects an
+  unregistered plan into the real repository topology.
+- Correct the FABREADMIT phase row's detailed-plan-only
+  `acceptance_criteria_count`, restoring a fully valid live manifest.
+
 ### entry-doc check: close two coverage gaps (Consiliency/agent-harness#600)
 
 - **Flag-form pins are now checked.** Arm 2 matched `owner/repo@ref` and the URL

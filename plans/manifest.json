@@ -1151,6 +1151,14 @@
       ],
       "owner_skill": "codex-plan-phase",
       "phase_alias": "CONFORM",
+      "plan_authority_history": [
+        {
+          "plan_sha256": "51e099be414f429594e37281769ef559d7ef852eaba8d229ba91e445b9c9b725",
+          "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#620"
+        }
+      ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/99e37ba2/codex-v10-plan-conform/20260730T041108Z-65fd85.md",
       "roadmap_ref": {
         "file": "specs/phase-plans-v10.md",
@@ -1674,6 +1682,14 @@
       ],
       "owner_skill": "codex-plan-phase",
       "phase_alias": "FABPUB",
+      "plan_authority_history": [
+        {
+          "plan_sha256": "4752f97b7456b8546f34667cad86b934a4a1ad547969ea4ac284af1e29a14e3e",
+          "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#620"
+        }
+      ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/4b9cf157/codex-v10-plan-fabpub/20260730T035716Z-01-fabpub-plan.md",
       "roadmap_ref": {
         "file": "specs/phase-plans-v10.md",
@@ -1783,7 +1799,7 @@
       "updated_at": "2026-08-18T13:01:45Z"
     },
     {
-      "acceptance_criteria_count": 8,
+      "acceptance_criteria_count": null,
       "created_at": "2026-08-23T18:13:00Z",
       "file": "plans/phase-plan-v10-FABREADMIT.md",
       "handoff_ref": null,
@@ -2266,6 +2282,14 @@
       ],
       "owner_skill": "codex-plan-phase",
       "phase_alias": "HARDEN",
+      "plan_authority_history": [
+        {
+          "plan_sha256": "b46805dec76792ddb066d9891fb5c731585576d9439270053e98013f28a480ee",
+          "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#620"
+        }
+      ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/fdaed78f/codex-v10-plan-harden/20260730T035939Z-01-harden-plan.md",
       "roadmap_ref": {
         "file": "specs/phase-plans-v10.md",
@@ -2413,6 +2437,14 @@
       ],
       "owner_skill": "codex-plan-phase",
       "phase_alias": "LEGIBLE",
+      "plan_authority_history": [
+        {
+          "plan_sha256": "27bd1b556d8d3110d33f11780b84fac4c09c95c3e8389ada4d62d084f5a4a3ae",
+          "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#620"
+        }
+      ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/6a8f043f/codex-v10-plan-legible/20260730T040717Z-01-legible-plan.md",
       "roadmap_ref": {
         "file": "specs/phase-plans-v10.md",
@@ -3166,6 +3198,14 @@
       ],
       "owner_skill": "codex-plan-phase",
       "phase_alias": "PROOFGATE",
+      "plan_authority_history": [
+        {
+          "plan_sha256": "27ceb453abbdcd60eaa6629bfa1b90acc8d7075b62c882d3746d5cff9a50fd10",
+          "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#620"
+        }
+      ],
       "reflection_ref": null,
       "roadmap_ref": {
         "file": "specs/phase-plans-v10.md",
@@ -4180,6 +4220,14 @@
       ],
       "owner_skill": "codex-plan-phase",
       "phase_alias": "REVIEWTRUTH",
+      "plan_authority_history": [
+        {
+          "plan_sha256": "326b7e481c2d2b73daeba5bc26f24d2d7ef8bdb6033709f6111416aa79064cc5",
+          "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#620"
+        }
+      ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/9256301e/codex-v10-plan-reviewtruth/20260730T035938Z-01-reviewtruth-plan.md",
       "roadmap_ref": {
         "file": "specs/phase-plans-v10.md",
