@@ -7,11 +7,11 @@ import re
 import stat
 import subprocess
 from collections.abc import Mapping, Sequence
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Iterator
 
 from . import roadmap_assumptions
 from .discovery import PLAN_RE
@@ -1090,6 +1090,149 @@ def _regular_repo_file_sha256(repo: Path, rel_path: str) -> str | None:
     return digests.get(rel_path) if digests is not None else None
 
 
+@dataclass(frozen=True)
+class _ManifestSnapshot:
+    data: bytes | None
+    source_error: bool = False
+
+
+@contextmanager
+def _pinned_manifest_snapshot(repo: Path) -> Iterator[_ManifestSnapshot]:
+    """Keep the exact manifest bytes and path identity pinned through validation."""
+    root = repo.resolve(strict=True)
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    directory = getattr(os, "O_DIRECTORY", None)
+    nonblock = getattr(os, "O_NONBLOCK", None)
+    path_only = getattr(os, "O_PATH", None)
+    if nofollow is None or directory is None or nonblock is None or path_only is None:
+        raise ManifestSourceError("descriptor-pinned manifest reads are unavailable")
+    cloexec = getattr(os, "O_CLOEXEC", 0)
+    directory_flags = os.O_RDONLY | directory | nofollow | cloexec
+    anchor_flags = path_only | nofollow | cloexec
+    file_flags = os.O_RDONLY | nonblock | cloexec
+
+    def directory_identity(value: os.stat_result) -> tuple[int, int, int]:
+        return value.st_dev, value.st_ino, value.st_mode
+
+    def file_identity(value: os.stat_result) -> tuple[int, int, int, int, int, int]:
+        return (
+            value.st_dev,
+            value.st_ino,
+            value.st_mode,
+            value.st_size,
+            value.st_mtime_ns,
+            value.st_ctime_ns,
+        )
+
+    try:
+        with ExitStack() as opened:
+            root_before = os.stat(root, follow_symlinks=False)
+            root_fd = os.open(root, directory_flags)
+            opened.callback(os.close, root_fd)
+            root_identity = directory_identity(os.fstat(root_fd))
+            if (
+                not stat.S_ISDIR(root_before.st_mode)
+                or root_identity != directory_identity(root_before)
+            ):
+                raise ManifestSourceError("repository root changed before manifest read")
+            plans_before = os.stat("plans", dir_fd=root_fd, follow_symlinks=False)
+            plans_fd = os.open("plans", directory_flags, dir_fd=root_fd)
+            opened.callback(os.close, plans_fd)
+            plans_identity = directory_identity(os.fstat(plans_fd))
+            plans_after = os.stat("plans", dir_fd=root_fd, follow_symlinks=False)
+            if (
+                not stat.S_ISDIR(plans_before.st_mode)
+                or plans_identity != directory_identity(plans_before)
+                or plans_identity != directory_identity(plans_after)
+            ):
+                raise ManifestSourceError("plans directory changed before manifest read")
+
+            try:
+                named_before = os.stat(
+                    "manifest.json", dir_fd=plans_fd, follow_symlinks=False
+                )
+            except FileNotFoundError:
+                yield _ManifestSnapshot(None)
+                try:
+                    os.stat("manifest.json", dir_fd=plans_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise ManifestSourceError("manifest appeared during validation")
+                if (
+                    directory_identity(os.stat(root, follow_symlinks=False))
+                    != root_identity
+                    or directory_identity(
+                        os.stat("plans", dir_fd=root_fd, follow_symlinks=False)
+                    )
+                    != plans_identity
+                ):
+                    raise ManifestSourceError("manifest ancestry changed during validation")
+                return
+
+            expected_identity = file_identity(named_before)
+            if not stat.S_ISREG(named_before.st_mode):
+                yield _ManifestSnapshot(None, source_error=True)
+                named_final = os.stat(
+                    "manifest.json", dir_fd=plans_fd, follow_symlinks=False
+                )
+                if file_identity(named_final) != expected_identity:
+                    raise ManifestSourceError("manifest changed during validation")
+                return
+
+            try:
+                anchor_fd = os.open(
+                    "manifest.json", anchor_flags, dir_fd=plans_fd
+                )
+                opened.callback(os.close, anchor_fd)
+                anchor_identity = file_identity(os.fstat(anchor_fd))
+                named_after = os.stat(
+                    "manifest.json", dir_fd=plans_fd, follow_symlinks=False
+                )
+                if (
+                    anchor_identity != expected_identity
+                    or file_identity(named_after) != expected_identity
+                ):
+                    raise ManifestSourceError("manifest changed before pinned read")
+                file_fd = os.open(f"/proc/self/fd/{anchor_fd}", file_flags)
+                stream = opened.enter_context(os.fdopen(file_fd, "rb"))
+                stream_identity = file_identity(os.fstat(stream.fileno()))
+                if stream_identity != expected_identity:
+                    raise ManifestSourceError("manifest changed before data read")
+                data = stream.read()
+                if file_identity(os.fstat(stream.fileno())) != expected_identity:
+                    raise ManifestSourceError("manifest changed during data read")
+            except OSError:
+                yield _ManifestSnapshot(None, source_error=True)
+                named_final = os.stat(
+                    "manifest.json", dir_fd=plans_fd, follow_symlinks=False
+                )
+                if file_identity(named_final) != expected_identity:
+                    raise ManifestSourceError("manifest changed during validation")
+                return
+
+            yield _ManifestSnapshot(data)
+            named_final = os.stat(
+                "manifest.json", dir_fd=plans_fd, follow_symlinks=False
+            )
+            if (
+                directory_identity(os.stat(root, follow_symlinks=False))
+                != root_identity
+                or directory_identity(
+                    os.stat("plans", dir_fd=root_fd, follow_symlinks=False)
+                )
+                != plans_identity
+                or file_identity(named_final) != expected_identity
+                or file_identity(os.fstat(anchor_fd)) != expected_identity
+                or file_identity(os.fstat(stream.fileno())) != expected_identity
+            ):
+                raise ManifestSourceError("manifest changed during validation")
+    except ManifestSourceError:
+        raise
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ManifestSourceError(f"manifest snapshot failed: {exc}") from exc
+
+
 def _classify_basename(basename: str) -> str:
     """``"canonical"`` (full-matches ``PLAN_RE``), ``"lookalike"`` (has the
     ``phase-plan-*.md`` shape but does not full-match), or ``"irrelevant"``
@@ -1101,108 +1244,128 @@ def _classify_basename(basename: str) -> str:
     return "irrelevant"
 
 
+def _git_history_capture(
+    repo: Path, *args: str, text: bool = True
+) -> subprocess.CompletedProcess:
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("GIT_")
+    }
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_SYSTEM"] = os.devnull
+    try:
+        return subprocess.run(
+            ["git", "--no-replace-objects", "-C", str(repo), *args],
+            capture_output=True,
+            check=False,
+            text=text,
+            env=env,
+        )
+    except OSError as exc:
+        stdout: str | bytes = "" if text else b""
+        stderr: str | bytes = str(exc) if text else str(exc).encode()
+        return subprocess.CompletedProcess(args, 127, stdout, stderr)
+
+
+def _git_error(proc: subprocess.CompletedProcess) -> str:
+    stderr = proc.stderr
+    if isinstance(stderr, bytes):
+        return stderr.decode("utf-8", errors="replace").strip()
+    return str(stderr or "").strip()
+
+
+def _history_boundary_complete(repo: Path) -> bool:
+    shallow = _git_history_capture(repo, "rev-parse", "--is-shallow-repository")
+    if shallow.returncode != 0 or shallow.stdout.strip() not in {"true", "false"}:
+        raise ManifestSourceError(
+            "git rev-parse failed while resolving manifest history: "
+            f"{_git_error(shallow)}"
+        )
+    if shallow.stdout.strip() == "true":
+        return False
+    graft = _git_history_capture(repo, "rev-parse", "--git-path", "info/grafts")
+    if graft.returncode != 0 or not graft.stdout.strip():
+        raise ManifestSourceError(
+            "git graft-path probe failed while resolving manifest history: "
+            f"{_git_error(graft)}"
+        )
+    graft_path = Path(graft.stdout.strip())
+    if not graft_path.is_absolute():
+        graft_path = repo / graft_path
+    try:
+        return not (graft_path.exists() and graft_path.stat().st_size > 0)
+    except OSError:
+        return False
+
+
 def _frozen_paths_in_git_history(repo: Path) -> set[str]:
     frozen_paths = sorted(_FROZEN_HISTORICAL_BINDING_PREFIXES)
-    proc = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(repo),
-            "log",
-            "--all",
-            "--format=",
-            "--name-only",
-            "--",
-            *frozen_paths,
-        ],
-        capture_output=True,
-        check=False,
-        text=True,
+    proc = _git_history_capture(
+        repo,
+        "log",
+        "--all",
+        "--format=",
+        "--name-only",
+        "--",
+        *frozen_paths,
     )
     if proc.returncode != 0:
         raise ManifestSourceError(
-            f"git log failed while resolving frozen history: {proc.stderr.strip()}"
+            f"git log failed while resolving frozen history: {_git_error(proc)}"
         )
     changed_paths = set(proc.stdout.splitlines())
     return set(frozen_paths) & changed_paths
 
 
 def _ancestor_manifest_sequences(
-    repo: Path,
+    repo: Path, working_manifest: bytes | None,
 ) -> tuple[
     dict[str, tuple[tuple[str, ...], ...]],
     dict[str, tuple[tuple[str, ...], ...]],
     bool,
 ]:
-    shallow = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "--is-shallow-repository"],
-        capture_output=True,
-        check=False,
-        text=True,
+    history_complete = _history_boundary_complete(repo)
+    head_manifest = _git_history_capture(
+        repo, "show", "HEAD:plans/manifest.json", text=False
     )
-    if shallow.returncode != 0 or shallow.stdout.strip() not in {"true", "false"}:
-        raise ManifestSourceError(
-            "git rev-parse failed while resolving manifest history: "
-            f"{shallow.stderr.strip()}"
-        )
-    history_complete = shallow.stdout.strip() == "false"
-    head_manifest = subprocess.run(
-        ["git", "-C", str(repo), "show", "HEAD:plans/manifest.json"],
-        capture_output=True,
-        check=False,
-    )
-    try:
-        working_manifest = (repo / "plans" / "manifest.json").read_bytes()
-    except OSError:
-        working_manifest = None
     head_bytes = head_manifest.stdout if head_manifest.returncode == 0 else None
     if working_manifest != head_bytes:
         starts = ["HEAD"]
     else:
-        parents = subprocess.run(
-            ["git", "-C", str(repo), "rev-list", "--parents", "-n", "1", "HEAD"],
-            capture_output=True,
-            check=False,
-            text=True,
+        parents = _git_history_capture(
+            repo, "rev-list", "--parents", "-n", "1", "HEAD"
         )
         if parents.returncode != 0:
             raise ManifestSourceError(
                 "git rev-list failed while resolving manifest history: "
-                f"{parents.stderr.strip()}"
+                f"{_git_error(parents)}"
             )
         fields = parents.stdout.split()
         starts = fields[1:]
     if not starts:
         return {}, {}, history_complete
-    revisions = subprocess.run(
-        [
-            "git",
-            "-C",
-            str(repo),
-            "log",
-            "--full-history",
-            "--format=%H",
-            *starts,
-            "--",
-            "plans/manifest.json",
-        ],
-        capture_output=True,
-        check=False,
-        text=True,
+    revisions = _git_history_capture(
+        repo,
+        "log",
+        "--full-history",
+        "--format=%H",
+        *starts,
+        "--",
+        "plans/manifest.json",
     )
     if revisions.returncode != 0:
         raise ManifestSourceError(
             "git log failed while resolving manifest history: "
-            f"{revisions.stderr.strip()}"
+            f"{_git_error(revisions)}"
         )
     binding_sequences: dict[str, set[tuple[str, ...]]] = {}
     authority_sequences: dict[str, set[tuple[str, ...]]] = {}
     for revision in revisions.stdout.splitlines():
-        snapshot = subprocess.run(
-            ["git", "-C", str(repo), "show", f"{revision}:plans/manifest.json"],
-            capture_output=True,
-            check=False,
-            text=True,
+        snapshot = _git_history_capture(
+            repo, "show", f"{revision}:plans/manifest.json", text=False
         )
         if snapshot.returncode != 0:
             continue
@@ -1255,23 +1418,23 @@ def _ancestor_manifest_sequences(
 
 
 def _git_ls_tree_plans(repo: Path, tree_oid: str) -> list[str]:
-    proc = subprocess.run(
-        ["git", "-C", str(repo), "ls-tree", "-z", "--name-only", tree_oid, "--", "plans/"],
-        capture_output=True, check=False,
+    proc = _git_history_capture(
+        repo, "ls-tree", "-z", "--name-only", tree_oid, "--", "plans/", text=False
     )
     if proc.returncode != 0:
-        raise ManifestSourceError(f"git ls-tree failed for {tree_oid}: {proc.stderr.decode(errors='replace').strip()}")
+        raise ManifestSourceError(
+            f"git ls-tree failed for {tree_oid}: {_git_error(proc)}"
+        )
     return [chunk.decode("utf-8", "surrogateescape") for chunk in proc.stdout.split(b"\0") if chunk]
 
 
 def _git_ls_files_stage_plans(repo: Path) -> list[tuple[str, str, str]]:
     """Stage-0 index entries under ``plans/`` as ``(rel_path, blob_oid, mode)``."""
-    proc = subprocess.run(
-        ["git", "-C", str(repo), "ls-files", "-z", "--stage", "--", "plans/"],
-        capture_output=True, check=False,
+    proc = _git_history_capture(
+        repo, "ls-files", "-z", "--stage", "--", "plans/", text=False
     )
     if proc.returncode != 0:
-        raise ManifestSourceError(f"git ls-files failed: {proc.stderr.decode(errors='replace').strip()}")
+        raise ManifestSourceError(f"git ls-files failed: {_git_error(proc)}")
     out: list[tuple[str, str, str]] = []
     for chunk in proc.stdout.split(b"\0"):
         if not chunk:
@@ -1291,12 +1454,13 @@ def _git_ls_files_stage_plans(repo: Path) -> list[tuple[str, str, str]]:
 
 
 def _git_conflicted_index_plans(repo: Path) -> list[str]:
-    proc = subprocess.run(
-        ["git", "-C", str(repo), "ls-files", "-z", "--stage", "--", "plans/"],
-        capture_output=True, check=False,
+    proc = _git_history_capture(
+        repo, "ls-files", "-z", "--stage", "--", "plans/", text=False
     )
     if proc.returncode != 0:
-        raise ManifestSourceError(f"git conflicted-index scan failed: {proc.stderr.decode(errors='replace').strip()}")
+        raise ManifestSourceError(
+            f"git conflicted-index scan failed: {_git_error(proc)}"
+        )
     conflicted: set[str] = set()
     for chunk in proc.stdout.split(b"\0"):
         if not chunk:
@@ -1421,10 +1585,16 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
     """Registered ``plans/`` entries from ``plans/manifest.json``, subjected to
     the same repo-relative/direct-child/full-match checks as canonical
     scanning, plus any malformed entry path (origin ``"manifest"``)."""
-    manifest_path = repo / "plans" / "manifest.json"
+    with _pinned_manifest_snapshot(repo) as snapshot:
+        return _manifest_entry_scope_from_snapshot(repo, snapshot)
+
+
+def _manifest_entry_scope_from_snapshot(
+    repo: Path, snapshot: _ManifestSnapshot
+) -> tuple[set[str], list[MalformedPlanFinding]]:
     frozen_history = _frozen_paths_in_git_history(repo)
     ancestor_bindings, ancestor_authorities, history_complete = (
-        _ancestor_manifest_sequences(repo)
+        _ancestor_manifest_sequences(repo, snapshot.data)
     )
     frozen_history.update(ancestor_bindings)
     frozen_history.update(ancestor_authorities)
@@ -1435,6 +1605,14 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
             MalformedPlanFinding(
                 "plans/manifest.json",
                 "history-incomplete",
+                frozenset({"manifest"}),
+            )
+        )
+    if snapshot.source_error:
+        history_findings.append(
+            MalformedPlanFinding(
+                "plans/manifest.json",
+                "manifest-source",
                 frozenset({"manifest"}),
             )
         )
@@ -1450,11 +1628,11 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
             ),
         ]
 
-    if not manifest_path.exists():
+    if snapshot.data is None:
         return set(), frozen_findings(set())
     try:
-        data = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        data = json.loads(snapshot.data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
         return set(), frozen_findings(set())
     if not isinstance(data, dict):
         return set(), frozen_findings(set())
@@ -1739,16 +1917,14 @@ def unregistered_plan_files(repo: Path) -> tuple[str, ...]:
 def _git_first_add_commit_iso(repo: Path, rel_path: str) -> str:
     """The committer timestamp of the FIRST commit that added ``rel_path``
     (frozen Git evidence, never filesystem mtime or wall clock)."""
-    proc = subprocess.run(
-        ["git", "-C", str(repo), "log", "--diff-filter=A", "--format=%cI", "--follow", "--", rel_path],
-        capture_output=True, text=True, check=False,
+    proc = _git_history_capture(
+        repo, "log", "--diff-filter=A", "--format=%cI", "--follow", "--", rel_path
     )
     lines = [line for line in proc.stdout.strip().splitlines() if line]
     text = lines[-1] if lines else ""
     if not text:
-        proc = subprocess.run(
-            ["git", "-C", str(repo), "log", "-1", "--format=%cI", "--", rel_path],
-            capture_output=True, text=True, check=False,
+        proc = _git_history_capture(
+            repo, "log", "-1", "--format=%cI", "--", rel_path
         )
         text = proc.stdout.strip()
     if not text:

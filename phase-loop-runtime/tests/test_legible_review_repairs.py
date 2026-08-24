@@ -2375,6 +2375,144 @@ def test_shallow_history_fails_closed(tmp_path):
     ]
 
 
+def test_history_ignores_replace_refs_and_git_location_overrides(
+    tmp_path, monkeypatch
+):
+    repo = make_repo(tmp_path / "source")
+    rel = _commit_plan(repo)
+    _write_generic_authority_manifest(repo, rel)
+    subprocess.run(
+        ["git", "add", "plans/manifest.json", "specs/current-roadmap.md"],
+        cwd=repo,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "record authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    (repo / rel).unlink()
+    (repo / "plans" / "manifest.json").unlink()
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "erase authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    head_tree = subprocess.run(
+        ["git", "rev-parse", "HEAD^{tree}"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    replacement = subprocess.run(
+        ["git", "commit-tree", head_tree, "-m", "forged root"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "replace", "HEAD", replacement], cwd=repo, check=True
+    )
+    plain_parents = subprocess.run(
+        ["git", "rev-list", "--parents", "-n", "1", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.split()
+    assert len(plain_parents) == 1
+    attacker = make_repo(tmp_path / "attacker")
+    monkeypatch.setenv("GIT_DIR", str(attacker / ".git"))
+    monkeypatch.setenv("GIT_GRAFT_FILE", str(attacker / "forged-grafts"))
+
+    result = check(repo)
+
+    assert result.exit_code == 1
+    assert (rel, "plan-contract") in [
+        (item.path, item.kind) for item in result.malformed
+    ]
+    monkeypatch.delenv("GIT_DIR")
+    monkeypatch.delenv("GIT_GRAFT_FILE")
+    subprocess.run(["git", "replace", "-d", "HEAD"], cwd=repo, check=True)
+    graft_path = Path(
+        subprocess.run(
+            ["git", "rev-parse", "--git-path", "info/grafts"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
+    if not graft_path.is_absolute():
+        graft_path = repo / graft_path
+    graft_path.parent.mkdir(parents=True, exist_ok=True)
+    graft_path.write_text(
+        subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    grafted = check(repo)
+
+    assert grafted.exit_code == 1
+    assert ("plans/manifest.json", "history-incomplete") in [
+        (item.path, item.kind) for item in grafted.malformed
+    ]
+
+
+def test_manifest_snapshot_rejects_swap_between_history_and_parse(
+    tmp_path, monkeypatch
+):
+    repo = make_repo(tmp_path)
+    rel = _commit_plan(repo)
+    _write_generic_authority_manifest(repo, rel)
+    manifest_path = repo / "plans" / "manifest.json"
+    subprocess.run(
+        ["git", "add", "plans/manifest.json", "specs/current-roadmap.md"],
+        cwd=repo,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "record authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    erased = json.loads(manifest_path.read_text(encoding="utf-8"))
+    erased["plans"][0].pop("plan_authority_history")
+    erased["plans"][0]["lifecycle"] = []
+    replacement = repo / "plans" / "replacement.json"
+    replacement.write_text(json.dumps(erased), encoding="utf-8")
+    real_capture = plan_manifest._git_history_capture
+    swapped = False
+
+    def swapping_capture(repo_path, *args, **kwargs):
+        nonlocal swapped
+        if not swapped and args and args[0] == "log" and "--all" in args:
+            replacement.replace(manifest_path)
+            swapped = True
+        return real_capture(repo_path, *args, **kwargs)
+
+    monkeypatch.setattr(plan_manifest, "_git_history_capture", swapping_capture)
+
+    with pytest.raises(
+        plan_manifest.ManifestSourceError, match="manifest changed during validation"
+    ):
+        check(repo)
+    assert swapped
+
+
 def test_composite_authority_revalidates_plan_after_roadmap_hash(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
     rel = _commit_plan(repo)
@@ -2580,15 +2718,19 @@ def test_frozen_historical_binding_cannot_be_deleted_with_authority(
             (item.path, item.kind) for item in erased_manifest.malformed
         ]
     manifest_path.write_text('{"plans": []}\n', encoding="utf-8")
-    real_read_text = Path.read_text
+    real_open = plan_manifest.os.open
+    denied = False
 
-    def unreadable_manifest(path, *args, **kwargs):
-        if path == manifest_path:
+    def unreadable_manifest(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal denied
+        if isinstance(path, str) and path.startswith("/proc/self/fd/") and not denied:
+            denied = True
             raise PermissionError("denied")
-        return real_read_text(path, *args, **kwargs)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
 
-    monkeypatch.setattr(Path, "read_text", unreadable_manifest)
+    monkeypatch.setattr(plan_manifest.os, "open", unreadable_manifest)
     unreadable = check(repo)
+    assert denied
     assert unreadable.exit_code == 1
     assert (entry["file"], "plan-contract") in [
         (item.path, item.kind) for item in unreadable.malformed
