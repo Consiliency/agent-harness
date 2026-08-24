@@ -187,6 +187,7 @@ PYEOF
   # Seeded unconditionally: the capability-absent branch below never repopulates
   # this array, and the junit evidence must be emitted in either posture.
   CONFORM_STANDALONE_DESELECTS=("--junitxml=$GATE_A_JUNIT")
+  LEGIBLE_AUTHORITY_ENV=()
   if [ "$CONFORM_CAPABILITY_STATUS" -eq 0 ]; then
     # CONFORM's final mutation/lifecycle proof needs source and Git history as
     # immutable data. A sparse private clone supplies those bytes while scripts
@@ -208,12 +209,16 @@ PYEOF
       /plans/phase-plan-v10-CONFORM.md \
       /plans/phase-plan-v10-FABPUB.md \
       /plans/phase-plan-v10-GOVLEAN.md \
+      /plans/phase-plan-v10-PROOFGATE.md \
       /skills-src/claude/claude-plan-phase/scripts/validate_plan_doc.py \
       /CHANGELOG.md
     git -C "$STANDALONE_ROOT" checkout --quiet --detach "$SOURCE_HEAD"
     LEGIBLE_AUTHORITY_MANIFEST="$WORK/legible-authority-manifest.json"
     git -C "$STANDALONE_ROOT" show \
       "$SOURCE_HEAD:plans/manifest.json" > "$LEGIBLE_AUTHORITY_MANIFEST"
+    LEGIBLE_AUTHORITY_ENV=(
+      "PHASE_LOOP_LEGIBLE_AUTHORITY_MANIFEST=$LEGIBLE_AUTHORITY_MANIFEST"
+    )
     SUITE_TREE="$STANDALONE_ROOT/phase-loop-runtime"
     # tests/__init__.py prepends a sibling src tree unless that exact path is
     # already present. Add it after site-packages so candidate source remains
@@ -304,7 +309,7 @@ PYEOF
       PATH="$VENV/bin:/usr/bin:/bin" \
       PYTHONNOUSERSITE=1 \
       PYTHONDONTWRITEBYTECODE=1 \
-      PHASE_LOOP_LEGIBLE_AUTHORITY_MANIFEST="$LEGIBLE_AUTHORITY_MANIFEST" \
+      "${LEGIBLE_AUTHORITY_ENV[@]}" \
       PYTHONPATH="$SUITE_TREE/tests" \
       "$PY" - "$SUITE_TREE" "${CONFORM_STANDALONE_DESELECTS[@]}" <<'PYEOF'
 import sys

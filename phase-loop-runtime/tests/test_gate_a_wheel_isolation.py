@@ -93,6 +93,7 @@ class GateAConformEvidenceScopeTest(unittest.TestCase):
             "/phase-loop-runtime/protocol/",
             "/plans/phase-plan-v10-CONFORM.md",
             "/plans/phase-plan-v10-FABPUB.md",
+            "/plans/phase-plan-v10-PROOFGATE.md",
             "/CHANGELOG.md",
         ):
             self.assertIn(required, script)
