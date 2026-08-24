@@ -6,6 +6,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### roadmap-ownership preflight, advisory (Consiliency/agent-harness#633)
+
+- New `roadmap_ownership` module and a **non-blocking** CI job that reports which
+  roadmap phase claims each changed path. The per-phase `Key files` lists were
+  already an ownership map and `roadmap_lint` already parsed them; nothing consumed
+  them as ownership, so a block bound only the agents who read the roadmap.
+- Advisory deliberately: it annotates, never fails. It becomes worth making required
+  only once its false-positive rate is measured against merged history.
+- It **does** exit non-zero when it cannot evaluate. A preflight that silently passes
+  on an unreadable map would report green for every PR.
+
 ### entry-doc check: close two coverage gaps (Consiliency/agent-harness#600)
 
 - **Flag-form pins are now checked.** Arm 2 matched `owner/repo@ref` and the URL

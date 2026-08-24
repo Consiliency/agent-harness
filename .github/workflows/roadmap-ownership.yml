@@ -1,0 +1,48 @@
+name: roadmap-ownership
+
+# ADVISORY ONLY (ah#633). This annotates; it never fails a PR.
+#
+# It stays advisory until its false-positive rate has been measured against real
+# merged history. A gate that reds the repo on the day it lands is a gate that
+# gets disabled rather than fixed, and the files it guards -- `runner.py` appears
+# under several phases -- are edited by ordinary work all the time.
+#
+# The one thing it DOES fail on is being unable to evaluate (exit 2): a preflight
+# that silently passes when it cannot read its own ownership map would report
+# green for every PR the moment the roadmap format moved.
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  roadmap-ownership:
+    name: roadmap ownership (advisory)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Report roadmap-owned paths in this PR
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          cd phase-loop-runtime
+          set -o pipefail
+          PYTHONPATH=src python -m phase_loop_runtime.roadmap_ownership \
+            --repo "$GITHUB_WORKSPACE" \
+            --base "$BASE_SHA" \
+            --body "$PR_BODY" | tee "$RUNNER_TEMP/ownership.txt"
+
+      - name: Surface it in the job summary
+        if: always()
+        run: cat "$RUNNER_TEMP/ownership.txt" >> "$GITHUB_STEP_SUMMARY" || true
