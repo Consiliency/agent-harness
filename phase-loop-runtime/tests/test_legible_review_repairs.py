@@ -2513,6 +2513,122 @@ def test_manifest_snapshot_rejects_swap_between_history_and_parse(
     assert swapped
 
 
+def test_generic_ancestor_authority_cannot_be_removed_from_retained_row(tmp_path):
+    repo = make_repo(tmp_path)
+    rel = _commit_plan(repo)
+    plan_digest = hashlib.sha256((repo / rel).read_bytes()).hexdigest()
+    manifest_path = repo / "plans" / "manifest.json"
+    manifest = {
+        "plans": [
+            {
+                "file": rel,
+                "plan_authority_history": [
+                    {
+                        "schema": "plan_current_authority.v1",
+                        "source": "agent-harness#647",
+                        "plan_sha256": plan_digest,
+                        "roadmap_sha256": None,
+                    }
+                ],
+                "lifecycle": [],
+            }
+        ]
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    subprocess.run(["git", "add", "plans/manifest.json"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "record unbound authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    assert check(repo).exit_code == 0
+    manifest["plans"][0].pop("plan_authority_history")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = check(repo)
+
+    assert result.exit_code == 1
+    assert (rel, "plan-contract") in [
+        (item.path, item.kind) for item in result.malformed
+    ]
+
+
+def test_unavailable_historical_manifest_blob_fails_closed(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    rel = _commit_plan(repo)
+    plan_digest = hashlib.sha256((repo / rel).read_bytes()).hexdigest()
+    manifest_path = repo / "plans" / "manifest.json"
+    first_authority = {
+        "schema": "plan_current_authority.v1",
+        "source": "agent-harness#647",
+        "plan_sha256": plan_digest,
+        "roadmap_sha256": None,
+    }
+    manifest = {
+        "plans": [
+            {
+                "file": rel,
+                "plan_authority_history": [first_authority],
+                "lifecycle": [],
+            }
+        ]
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    subprocess.run(["git", "add", "plans/manifest.json"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "record first authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    ancestor = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    ancestor_blob = subprocess.run(
+        ["git", "rev-parse", f"{ancestor}:plans/manifest.json"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    manifest["plans"][0]["plan_authority_history"].append(
+        {**first_authority, "source": "agent-harness#648"}
+    )
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    subprocess.run(["git", "add", "plans/manifest.json"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "append current authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    real_capture = plan_manifest._git_history_capture
+
+    def missing_blob(repo_path, *args, **kwargs):
+        if args == ("cat-file", "blob", ancestor_blob):
+            text_mode = kwargs.get("text", True)
+            return subprocess.CompletedProcess(
+                args,
+                128,
+                "" if text_mode else b"",
+                "missing blob" if text_mode else b"missing blob",
+            )
+        return real_capture(repo_path, *args, **kwargs)
+
+    monkeypatch.setattr(plan_manifest, "_git_history_capture", missing_blob)
+
+    with pytest.raises(
+        plan_manifest.ManifestSourceError,
+        match=f"manifest blob is unavailable at {ancestor}",
+    ):
+        check(repo)
+
+
 def test_composite_authority_revalidates_plan_after_roadmap_hash(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
     rel = _commit_plan(repo)

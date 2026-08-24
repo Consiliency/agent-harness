@@ -1301,6 +1301,49 @@ def _history_boundary_complete(repo: Path) -> bool:
         return False
 
 
+def _manifest_blob_at_revision(repo: Path, revision: str) -> bytes | None:
+    tree = _git_history_capture(
+        repo,
+        "ls-tree",
+        "-z",
+        revision,
+        "--",
+        "plans/manifest.json",
+        text=False,
+    )
+    if tree.returncode != 0:
+        raise ManifestSourceError(
+            f"git ls-tree failed for manifest at {revision}: {_git_error(tree)}"
+        )
+    records = [record for record in tree.stdout.split(b"\0") if record]
+    if not records:
+        return None
+    if len(records) != 1:
+        raise ManifestSourceError(
+            f"manifest tree entry is ambiguous at {revision}"
+        )
+    meta, separator, path = records[0].partition(b"\t")
+    fields = meta.split()
+    if (
+        separator != b"\t"
+        or path != b"plans/manifest.json"
+        or len(fields) != 3
+        or fields[0] not in {b"100644", b"100755"}
+        or fields[1] != b"blob"
+    ):
+        raise ManifestSourceError(
+            f"manifest is not a regular blob at {revision}"
+        )
+    blob = _git_history_capture(
+        repo, "cat-file", "blob", fields[2].decode("ascii"), text=False
+    )
+    if blob.returncode != 0:
+        raise ManifestSourceError(
+            f"manifest blob is unavailable at {revision}: {_git_error(blob)}"
+        )
+    return blob.stdout
+
+
 def _frozen_paths_in_git_history(repo: Path) -> set[str]:
     frozen_paths = sorted(_FROZEN_HISTORICAL_BINDING_PREFIXES)
     proc = _git_history_capture(
@@ -1328,10 +1371,7 @@ def _ancestor_manifest_sequences(
     bool,
 ]:
     history_complete = _history_boundary_complete(repo)
-    head_manifest = _git_history_capture(
-        repo, "show", "HEAD:plans/manifest.json", text=False
-    )
-    head_bytes = head_manifest.stdout if head_manifest.returncode == 0 else None
+    head_bytes = _manifest_blob_at_revision(repo, "HEAD")
     if working_manifest != head_bytes:
         starts = ["HEAD"]
     else:
@@ -1364,13 +1404,11 @@ def _ancestor_manifest_sequences(
     binding_sequences: dict[str, set[tuple[str, ...]]] = {}
     authority_sequences: dict[str, set[tuple[str, ...]]] = {}
     for revision in revisions.stdout.splitlines():
-        snapshot = _git_history_capture(
-            repo, "show", f"{revision}:plans/manifest.json", text=False
-        )
-        if snapshot.returncode != 0:
+        snapshot = _manifest_blob_at_revision(repo, revision)
+        if snapshot is None:
             continue
         try:
-            payload = json.loads(snapshot.stdout)
+            payload = json.loads(snapshot)
         except json.JSONDecodeError:
             continue
         plans = payload.get("plans") if isinstance(payload, dict) else None
@@ -1763,7 +1801,9 @@ def _manifest_entry_scope_from_snapshot(
 
             authority_history = entry.get("plan_authority_history")
             authority_required = (
-                frozen_prefix is not None or historical_binding_declared
+                frozen_prefix is not None
+                or historical_binding_declared
+                or rel in ancestor_authorities
             )
             if authority_history is None and authority_required:
                 malformed.append(
