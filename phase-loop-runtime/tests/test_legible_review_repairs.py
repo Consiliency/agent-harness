@@ -3,8 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import signal
 import subprocess
 import sys
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
@@ -990,6 +992,30 @@ def test_regular_repo_file_hash_rejects_ancestor_swap_after_hash(tmp_path, monke
 
     assert plan_manifest._regular_repo_file_sha256(repo, "authority/bound.md") is None
     assert target_fstats == 2
+
+
+def test_regular_repo_file_hash_rejects_fifo_without_blocking(tmp_path):
+    if not hasattr(os, "mkfifo") or not hasattr(signal, "SIGALRM"):
+        pytest.skip("FIFO alarm regression requires POSIX")
+    repo = make_repo(tmp_path)
+    authority = repo / "authority"
+    authority.mkdir()
+    os.mkfifo(authority / "bound.md")
+    previous_handler = signal.signal(
+        signal.SIGALRM,
+        lambda *_args: (_ for _ in ()).throw(TimeoutError("FIFO open blocked")),
+    )
+    signal.setitimer(signal.ITIMER_REAL, 2)
+    started = time.monotonic()
+    try:
+        result = plan_manifest._regular_repo_file_sha256(repo, "authority/bound.md")
+    finally:
+        elapsed = time.monotonic() - started
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+
+    assert result is None
+    assert elapsed < 1
 
 
 def test_required_roadmap_registry_absence_is_typed_failure(tmp_path):

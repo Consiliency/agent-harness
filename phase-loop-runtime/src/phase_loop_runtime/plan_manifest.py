@@ -963,11 +963,12 @@ def _regular_repo_files_sha256(
         path_parts[rel_path] = parts
     nofollow = getattr(os, "O_NOFOLLOW", None)
     directory = getattr(os, "O_DIRECTORY", None)
-    if nofollow is None or directory is None:
+    nonblock = getattr(os, "O_NONBLOCK", None)
+    if nofollow is None or directory is None or nonblock is None:
         return None
     cloexec = getattr(os, "O_CLOEXEC", 0)
     directory_flags = os.O_RDONLY | directory | nofollow | cloexec
-    file_flags = os.O_RDONLY | nofollow | cloexec
+    file_flags = os.O_RDONLY | nofollow | nonblock | cloexec
 
     def directory_identity(value: os.stat_result) -> tuple[int, int, int]:
         return value.st_dev, value.st_ino, value.st_mode
