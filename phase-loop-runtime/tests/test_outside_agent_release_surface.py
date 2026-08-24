@@ -158,6 +158,8 @@ def test_release_workflows_keep_version_build_and_publish_boundaries_explicit():
     assert "Publishing (OIDC)" in publish
     assert "workflow_dispatch" in publish
     assert "pull_request:" in publish
+    assert "fetch-depth: 0" in publish
+    assert "ref: ${{ github.event.pull_request.head.sha || github.ref }}" in publish
     assert "Verify tag matches phase-loop-runtime version" in publish
     assert "python -m build --sdist --wheel --outdir dist phase-loop-runtime" in publish
     assert "Verify exact wheel in an isolated locked environment" in publish
