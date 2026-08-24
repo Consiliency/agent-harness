@@ -2033,6 +2033,25 @@ def canonical_plan_files(
 
     from . import roadmap_lint
 
+    registry_rel = roadmap_lint.ROADMAP_STATUS_REGISTRY_REL
+    registry_tree = _git_history_capture(
+        repo,
+        "ls-tree",
+        "-z",
+        "--name-only",
+        tree_oid,
+        "--",
+        registry_rel,
+        text=False,
+        root_fd=snapshot.root_fd if snapshot is not None else None,
+    )
+    if registry_tree.returncode != 0:
+        raise ManifestSourceError(
+            f"git ls-tree failed for roadmap status at {tree_oid}: "
+            f"{_git_error(registry_tree)}"
+        )
+    registry_required = registry_rel.encode() in registry_tree.stdout.split(b"\0")
+
     working_repo = repo
     roadmap_sources: dict[str, bytes] | None = None
     if snapshot is not None and snapshot.root_fd is not None:
@@ -2040,8 +2059,9 @@ def canonical_plan_files(
         if descriptor_repo is None:
             raise ManifestSourceError("descriptor-backed repository paths are unavailable")
         working_repo = descriptor_repo
-        registry_rel = roadmap_lint.ROADMAP_STATUS_REGISTRY_REL
+        marker_rel = "plans/phase-plan-v10-LEGIBLE.md"
         registry_path = working_repo / registry_rel
+        marker_path = working_repo / marker_rel
         roadmap_sources = {}
         if os.path.lexists(registry_path):
             registry_source: dict[str, bytes] = {}
@@ -2070,15 +2090,30 @@ def canonical_plan_files(
                 raise ManifestSourceError(
                     "roadmap-status sources are not one stable regular-file snapshot"
                 )
+        elif registry_required and os.path.lexists(marker_path):
+            if _regular_repo_files_sha256(
+                repo,
+                (marker_rel,),
+                root_fd=snapshot.root_fd,
+                content_out=roadmap_sources,
+            ) is None:
+                raise ManifestSourceError(
+                    "required roadmap marker is not a stable regular repository file"
+                )
     if snapshot is None:
-        roadmap_lint.validate_roadmap_status_coherence(
+        status = roadmap_lint.read_roadmap_status(
             working_repo,
-            required=False,
+            working_repo / registry_rel,
         )
+        if status is None and registry_required:
+            roadmap_lint.validate_roadmap_status_coherence(
+                working_repo,
+                required=True,
+            )
     else:
         roadmap_lint._validate_roadmap_status_sources(
             working_repo,
-            False,
+            registry_required,
             root_fd=snapshot.root_fd,
             source_bytes=roadmap_sources or {},
         )

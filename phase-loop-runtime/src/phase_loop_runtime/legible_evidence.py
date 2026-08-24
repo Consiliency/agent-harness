@@ -488,6 +488,12 @@ def validate_roadmap_status_evidence(
                         "roadmap_status_digest_drift",
                         f"{rel}: declaration bytes drifted",
                     )
+            roadmap_lint._validate_roadmap_status_sources(
+                descriptor_repo,
+                required,
+                root_fd=root_fd,
+                source_bytes=source_bytes,
+            )
     except roadmap_lint.RoadmapStatusError as exc:
         if not required and "registry" in str(exc) and "absent" in str(exc):
             raise LegibleStatusEvidenceError(

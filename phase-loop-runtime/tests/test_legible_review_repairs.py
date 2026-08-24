@@ -4103,6 +4103,60 @@ def test_roadmap_status_registry_rejects_external_symlink(tmp_path):
     _assert_check_fails_closed(repo)
 
 
+def test_manifest_check_requires_registry_when_legible_marker_exists(tmp_path):
+    repo, registry, _payload = _roadmap_check_fixture(
+        tmp_path,
+        banners={"specs/phase-plans-v1.md": _ACTIVE_BANNER},
+        statuses={"specs/phase-plans-v1.md": "active"},
+    )
+    marker = repo / "plans" / "phase-plan-v10-LEGIBLE.md"
+    marker.write_text("---\nphase: LEGIBLE\n---\n# LEGIBLE\n", encoding="utf-8")
+    subprocess.run(["git", "add", marker], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "add LEGIBLE marker"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    registry.unlink()
+
+    with pytest.raises(
+        plan_manifest.ManifestSourceError,
+        match="required roadmap-status registry is absent",
+    ):
+        check(repo)
+
+
+def test_public_roadmap_reader_honors_requested_path(tmp_path):
+    repo, registry, _payload = _roadmap_check_fixture(
+        tmp_path / "repo-state",
+        banners={"specs/phase-plans-v1.md": _ACTIVE_BANNER},
+        statuses={"specs/phase-plans-v1.md": "active"},
+    )
+
+    assert roadmap_lint.read_roadmap_status(
+        repo,
+        repo / "specs" / "missing-roadmap-status.json",
+    ) is None
+    assert roadmap_lint.read_roadmap_status(repo, registry) is not None
+
+
+def test_public_roadmap_reader_rejects_path_outside_repo(tmp_path):
+    repo, _registry, payload = _roadmap_check_fixture(
+        tmp_path / "repo-state",
+        banners={"specs/phase-plans-v1.md": _ACTIVE_BANNER},
+        statuses={"specs/phase-plans-v1.md": "active"},
+    )
+    external = tmp_path / "external-roadmap-status.json"
+    external.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+    with pytest.raises(
+        roadmap_lint.MalformedRegistryError,
+        match="path escapes repository",
+    ):
+        roadmap_lint.read_roadmap_status(repo, external)
+
+
 @pytest.mark.parametrize("source", ("registry", "banner"))
 def test_direct_roadmap_validation_rejects_external_symlink_source(
     tmp_path, source
@@ -4258,6 +4312,29 @@ def test_roadmap_evidence_validation_rejects_fifo_without_blocking(
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0)
         signal.signal(signal.SIGALRM, previous)
+
+
+def test_roadmap_evidence_revalidates_full_banner_coherence(tmp_path):
+    repo, _registry, _payload = _roadmap_check_fixture(
+        tmp_path,
+        banners={"specs/phase-plans-v1.md": _ACTIVE_BANNER},
+        statuses={"specs/phase-plans-v1.md": "active"},
+    )
+    record = legible_evidence.collect_roadmap_status(repo, required=True)
+    banner = repo / "specs" / "phase-plans-v1.md"
+    banner.write_text(
+        _ACTIVE_BANNER
+        + "> **Status (2026-08-02): ACTIVE — created this date, nothing executed yet.**\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(legible_evidence.LegibleStatusEvidenceError) as excinfo:
+        legible_evidence.validate_roadmap_status_evidence(
+            repo,
+            record,
+            required=True,
+        )
+    assert excinfo.value.code == "roadmap_status_coherence_drift"
 
 
 def test_cli_attest_passes_preimport_process_token_into_runner_workflow(tmp_path, monkeypatch):

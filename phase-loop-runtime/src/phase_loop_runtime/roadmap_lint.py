@@ -640,6 +640,9 @@ def _escapes_repo(path: str) -> bool:
 @contextmanager
 def _pinned_roadmap_sources(
     repo: Path,
+    *,
+    registry_rel: str = ROADMAP_STATUS_REGISTRY_REL,
+    capture_required_marker: bool = True,
 ) -> Iterator[tuple[Path, int, dict[str, bytes]]]:
     from .plan_manifest import _regular_repo_files_sha256
 
@@ -687,7 +690,6 @@ def _pinned_roadmap_sources(
                 "descriptor-backed roadmap paths are unavailable"
             )
 
-        registry_rel = ROADMAP_STATUS_REGISTRY_REL
         marker_rel = "plans/phase-plan-v10-LEGIBLE.md"
         registry_path = descriptor_repo / registry_rel
         marker_path = descriptor_repo / marker_rel
@@ -727,7 +729,7 @@ def _pinned_roadmap_sources(
                 raise MalformedRegistryError(
                     "roadmap-status sources are not one stable regular-file snapshot"
                 )
-        else:
+        elif capture_required_marker:
             marker_present = os.path.lexists(marker_path)
             if marker_present and _regular_repo_files_sha256(
                 root,
@@ -760,7 +762,7 @@ def _pinned_roadmap_sources(
             raise MalformedRegistryError(
                 "roadmap-status registry appeared during validation"
             )
-        elif marker_present:
+        elif capture_required_marker and marker_present:
             final_marker: dict[str, bytes] = {}
             if _regular_repo_files_sha256(
                 root,
@@ -771,7 +773,7 @@ def _pinned_roadmap_sources(
                 raise MalformedRegistryError(
                     "required roadmap marker changed during validation"
                 )
-        elif os.path.lexists(marker_path):
+        elif capture_required_marker and os.path.lexists(marker_path):
             raise MalformedRegistryError(
                 "required roadmap marker appeared during validation"
             )
@@ -827,12 +829,13 @@ def _tracked_roadmap_paths(
     return sorted(names)
 
 
-def read_roadmap_status(
+def _read_roadmap_status_sources(
     repo: Path,
     path: Path,
     *,
-    root_fd: int | None = None,
-    source_bytes: Mapping[str, bytes] | None = None,
+    root_fd: int,
+    source_bytes: Mapping[str, bytes],
+    registry_rel: str,
 ) -> Optional[dict]:
     """Read and fully coherence-validate ``specs/roadmap-status.json``.
 
@@ -843,11 +846,9 @@ def read_roadmap_status(
     primary-banner status — all BEFORE returning any value. Raises a typed
     :class:`RoadmapStatusError` subclass on any defect.
     """
-    if source_bytes is None:
-        return validate_roadmap_status_coherence(repo, required=False)
     repo = Path(repo)
     path = Path(path)
-    registry_bytes = source_bytes.get(ROADMAP_STATUS_REGISTRY_REL)
+    registry_bytes = source_bytes.get(registry_rel)
     if registry_bytes is None:
         return None
     text = registry_bytes.decode("utf-8")
@@ -888,6 +889,31 @@ def read_roadmap_status(
     return data
 
 
+def read_roadmap_status(repo: Path, path: Path) -> Optional[dict]:
+    repo = Path(repo).resolve(strict=True)
+    requested = Path(path)
+    if not requested.is_absolute():
+        requested = repo / requested
+    try:
+        registry_rel = requested.relative_to(repo).as_posix()
+    except ValueError as exc:
+        raise MalformedRegistryError(
+            f"roadmap-status path escapes repository: {requested}"
+        ) from exc
+    with _pinned_roadmap_sources(
+        repo,
+        registry_rel=registry_rel,
+        capture_required_marker=False,
+    ) as (descriptor_repo, root_fd, source_bytes):
+        return _read_roadmap_status_sources(
+            descriptor_repo,
+            descriptor_repo / registry_rel,
+            root_fd=root_fd,
+            source_bytes=source_bytes,
+            registry_rel=registry_rel,
+        )
+
+
 def _validate_roadmap_status_sources(
     repo: Path,
     required: bool,
@@ -897,11 +923,12 @@ def _validate_roadmap_status_sources(
 ) -> Optional[dict]:
     repo = Path(repo)
     registry_path = repo / ROADMAP_STATUS_REGISTRY_REL
-    status = read_roadmap_status(
+    status = _read_roadmap_status_sources(
         repo,
         registry_path,
         root_fd=root_fd,
         source_bytes=source_bytes,
+        registry_rel=ROADMAP_STATUS_REGISTRY_REL,
     )
     canonical_marker = "plans/phase-plan-v10-LEGIBLE.md"
     if status is None and required and canonical_marker in source_bytes:
