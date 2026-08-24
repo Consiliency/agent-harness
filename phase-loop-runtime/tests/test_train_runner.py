@@ -3487,13 +3487,16 @@ def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request, 
     from phase_loop_runtime.governed_premerge import FAB_PROMOTION_ENV, LoopResult
     from test_fab_activation_promotion import TRAIN_2NODE_MD, _make_publish_stub, _reverify_pass
     from test_fab_delta_consumer import DeltaReadmitTransactionTest, _delta_panel
+    from test_train_merge import _approval_review_fn
 
-    def _capturing_head_merge_stub(cap: dict):
+    def _capturing_head_merge_stub(cap: dict, node_for_workspace: dict[Path, str]):
         def _merge_pr(workspace, branch, base="main", head_sha=None, run_id=None, fab_fetch_origin="origin"):
-            cap["workspace"] = workspace
-            cap["branch"] = branch
-            cap["head_sha"] = head_sha
-            cap["run_id"] = run_id
+            node_id = node_for_workspace[Path(workspace)]
+            cap.setdefault(node_id, []).append({
+                "branch": branch,
+                "head_sha": head_sha,
+                "run_id": run_id,
+            })
             return f"sha-merged-{Path(workspace).name}"
         return _merge_pr
 
@@ -3521,7 +3524,12 @@ def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request, 
             workspace_id=str(repo_dir),
             broker_client=routing_client,
         )
-        ws_map = {"repo-a/specs/plan-a.md": repo_dir, "repo-b/specs/plan-b.md": repo_dir}
+        repo_b = tmp_path / "routing-repo-b"
+        repo_b.mkdir()
+        ws_map = {
+            "repo-a/specs/plan-a.md": repo_dir,
+            "repo-b/specs/plan-b.md": repo_b,
+        }
 
         routing_spy_calls = []
         real_commit_helper = tr._commit_broker_readmitted_head
@@ -3545,13 +3553,19 @@ def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request, 
                     resolve_owned_paths=None,
                     _run_loop=lambda *a, **kw: (None, []),
                     _publish=_make_publish_stub({}),
+                    _set_upstream_ref_fn=lambda *a, **kw: [],
                     _preflight_fn=lambda *a, **kw: None,
                     _pr_is_open=lambda ws, br: True,
                     _live_pr_head_sha_fn=lambda ws, br: delta_head,
                     _merge_phase_enabled=True,
                     _reverify_fn=_reverify_pass,
+                    _train_review_fn=_approval_review_fn,
+                    _pr_merged_sha_fn=lambda *a, **kw: None,
                     _delta_review_fn=_mergeable_delta_review,
-                    _merge_pr_fn=_capturing_head_merge_stub(captured),
+                    _merge_pr_fn=_capturing_head_merge_stub(captured, {
+                        repo_dir: "repo-a/specs/plan-a.md",
+                        repo_b: "repo-b/specs/plan-b.md",
+                    }),
                     fab_fetch_origin="fetchsrc",
                     fab_delta_shortcut=True,
                 )
@@ -3560,7 +3574,11 @@ def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request, 
             "_commit_broker_readmitted_head must be reached exactly once via CoordinatorRuntime"
         )
         assert result.get("status") == "merged"
-        assert captured.get("head_sha") == delta_head, "merge call must receive exact delta_head"
+        assert captured["repo-a/specs/plan-a.md"] == [{
+            "branch": seeded["branch"],
+            "head_sha": delta_head,
+            "run_id": fixture.RUN,
+        }], "repo-a merge must receive exact delta_head without a later-node overwrite"
         replayed = LinearizableAdmissionStore(store_root, lambda _: True).replay()
         assert len(replayed) == 2, "durable admission record must be created via routing broker client"
         assert replayed[-1].epoch == 2

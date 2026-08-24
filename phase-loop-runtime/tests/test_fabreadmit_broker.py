@@ -322,7 +322,13 @@ def test_fabreadmit_broker_rediffs_head_range_and_rejects_scope_escape_without_a
         provenance_digest="p" * 64,
         owned_scope=("a.py",),
     )
+    replay_before_escape = tuple(store.replay())
+    receipt_before_escape = replay_before_escape[-1]
     with pytest.raises((PermissionError, ValueError), match=r"(?i)scope|unowned"):
         readmit_service.readmit_advanced_head(out_of_scope_auth)
 
+    replay_after_escape = tuple(store.replay())
+    assert len(replay_after_escape) == len(replay_before_escape)
+    assert replay_after_escape == replay_before_escape
+    assert replay_after_escape[-1] == receipt_before_escape
     assert len(readmit_adapter.calls) == 0
