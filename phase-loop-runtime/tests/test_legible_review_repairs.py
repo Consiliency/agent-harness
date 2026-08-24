@@ -2087,6 +2087,70 @@ def test_historical_digest_rebind_cannot_drop_current_roadmap_binding(tmp_path):
     ]
 
 
+def test_composite_authority_revalidates_plan_after_roadmap_hash(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    rel = _commit_plan(repo)
+    plan_path = repo / rel
+    roadmap = repo / "specs" / "current-roadmap.md"
+    roadmap.write_text("# Current roadmap\n", encoding="utf-8")
+    plan_digest = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+    roadmap_digest = hashlib.sha256(roadmap.read_bytes()).hexdigest()
+    manifest = repo / "plans" / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "plans": [
+                    {
+                        "file": rel,
+                        "roadmap_ref": {"file": "specs/current-roadmap.md"},
+                        "plan_authority_history": [
+                            {
+                                "schema": "plan_current_authority.v1",
+                                "source": "agent-harness#620",
+                                "plan_sha256": plan_digest,
+                                "roadmap_sha256": roadmap_digest,
+                            }
+                        ],
+                        "lifecycle": [
+                            {
+                                "metadata": {
+                                    "digest_rebind": {
+                                        "plan_sha256": plan_digest,
+                                        "roadmap_sha256": roadmap_digest,
+                                    }
+                                }
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert check(repo).exit_code == 0
+    replacement = repo / "plans" / "replacement.md"
+    replacement.write_text("---\nphase: RUNNER\n---\n# Drifted plan\n", encoding="utf-8")
+    real_open = os.open
+    swapped = False
+
+    def swapping_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if path == "specs" and dir_fd is not None and not swapped:
+            replacement.replace(plan_path)
+            swapped = True
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(plan_manifest.os, "open", swapping_open)
+
+    result = check(repo)
+
+    assert swapped
+    assert result.exit_code == 1
+    assert (rel, "plan-digest") in [
+        (item.path, item.kind) for item in result.malformed
+    ]
+
+
 def test_frozen_historical_binding_cannot_be_deleted_with_authority(tmp_path):
     source_repo = Path(__file__).resolve().parents[2]
     source_manifest = json.loads(

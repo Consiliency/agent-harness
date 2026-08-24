@@ -752,27 +752,26 @@ _CANONICAL_LOOKALIKE_RE = re.compile(r"^phase-plan-.*\.md$")
 _LEGIBLE_PLAN_REL = "plans/phase-plan-v10-LEGIBLE.md"
 _FROZEN_HISTORICAL_BINDING_PREFIXES: dict[str, tuple[str, ...]] = {
     "plans/phase-plan-v10-CONFORM.md": (
-        "d6f02ab5296af01c2fe35f35a5f976b124ae7983b8bf3f3296933dc817ec2c84",
-        "0f90a8c261df11937b67201828b4cdb6a6cfe1c3197f583a16089f854088c478",
-        "63a55eda6be97369636dd75f185bd62491863240a63ee1989a52b8fe3e13ea5a",
-        "f719ec2e2a2c8704a9777a9988a645a699c635ccb4ba81cd19cf7ef65d2a1af0",
-        "398a55d43d9fec9d06614c0184435062f0af7e8464e7c03bd21cb832dbd9ec5d",
+        "b7a98e3754c9930e2237caf24f77737e9622121ae85ab4a346337add20c5634b",
+        "6e6be20133d5674f843346cd80cff9e3db0dbd9c75a5df94d2f23a840324fa1d",
+        "920099aa6454dc9d57660b59d99733c7864e6c53ad80fc8d41293ec2696b7c05",
+        "3ac51f988cb4b1213771853733a879ce855087efa0df2558a69ecfe9aaeb178b",
+        "57cd905f29214e85d4b7a64f7c861faa952e4861ed07023b7c26e870e65b618b",
     ),
     "plans/phase-plan-v10-FABPUB.md": (
-        "190bdbca2f11991fc3382e9ceb371ae0e08aadb0cc8dcaa558e2739583cb8f6f",
+        "82a54db92c084bcc12ca74cdd09d4ad4657e8cfca5c83300447ccbffb0a2c360",
     ),
     "plans/phase-plan-v10-HARDEN.md": (
-        "f8e55eb06478a413eb87930defc2f95431e0447778bad696699f72c3dd66f6d8",
+        "9c4a22f664cd93a3c63b4ef616d9b654cc003e35f13df873e7c9e86a878abcfa",
     ),
     _LEGIBLE_PLAN_REL: (
-        "90dc151ea24103c27bbc517eed623a7b3894d70e0a325c399acee90ca135cd3d",
-        "7c3af47a32644c9d1e6db9795989cd01a52678c90f92d4e82564c7e9eb584a6f",
+        "15252d908e83cceda2cc38a3d20b59772b787af3df80b8ef68cb82b6f019e4ac",
     ),
     "plans/phase-plan-v10-PROOFGATE.md": (
-        "f13818aead6a8b85a080b92d9462e83c5fe0154a1f6025ef8aeadac379f13af4",
+        "999ea4240291f53e5a0fdf69c52a875647b7a1b550476263a2506d33dbceca52",
     ),
     "plans/phase-plan-v10-REVIEWTRUTH.md": (
-        "1f79d48fd4cf72f046d3706df60be9f9defa2e568c9f9707ff425b484ba8f54e",
+        "fe57316a6a1f5b113ec93b742492522f649548941ff6d1b905ccd500014459dc",
     ),
 }
 _LEGIBLE_OWNED_PATHS = (
@@ -928,12 +927,20 @@ def _repo_relative_posix(repo: Path, raw_path: bytes | str) -> str | None:
     return text
 
 
-def _regular_repo_file_sha256(repo: Path, rel_path: str) -> str | None:
-    """Hash one stable repository-relative regular file without following symlinks."""
+def _regular_repo_files_sha256(
+    repo: Path, rel_paths: Sequence[str]
+) -> dict[str, str] | None:
+    """Hash stable repository files in one descriptor-pinned transaction."""
     root = repo.resolve(strict=True)
-    parts = PurePosixPath(rel_path).parts
-    if not parts or _repo_relative_posix(root, rel_path) != rel_path:
+    requested = tuple(rel_paths)
+    if not requested or len(set(requested)) != len(requested):
         return None
+    path_parts: dict[str, tuple[str, ...]] = {}
+    for rel_path in requested:
+        parts = PurePosixPath(rel_path).parts
+        if not parts or _repo_relative_posix(root, rel_path) != rel_path:
+            return None
+        path_parts[rel_path] = parts
     nofollow = getattr(os, "O_NOFOLLOW", None)
     directory = getattr(os, "O_DIRECTORY", None)
     if nofollow is None or directory is None:
@@ -966,50 +973,62 @@ def _regular_repo_file_sha256(repo: Path, rel_path: str) -> str | None:
             if root_identity != directory_identity(root_before):
                 return None
 
-            parent_fd = root_fd
             directory_entries: list[tuple[int, str, tuple[int, int, int]]] = []
-            for part in parts[:-1]:
-                child_before = os.stat(part, dir_fd=parent_fd, follow_symlinks=False)
-                if not stat.S_ISDIR(child_before.st_mode):
-                    return None
-                child_fd = os.open(part, directory_flags, dir_fd=parent_fd)
-                opened.callback(os.close, child_fd)
-                child_stat = os.fstat(child_fd)
-                child_identity = directory_identity(child_stat)
-                child_after = os.stat(part, dir_fd=parent_fd, follow_symlinks=False)
+            file_entries: list[
+                tuple[int, str, tuple[int, int, int, int, int, int], Any]
+            ] = []
+            digests: dict[str, str] = {}
+            for rel_path in requested:
+                parts = path_parts[rel_path]
+                parent_fd = root_fd
+                for part in parts[:-1]:
+                    child_before = os.stat(
+                        part, dir_fd=parent_fd, follow_symlinks=False
+                    )
+                    if not stat.S_ISDIR(child_before.st_mode):
+                        return None
+                    child_fd = os.open(part, directory_flags, dir_fd=parent_fd)
+                    opened.callback(os.close, child_fd)
+                    child_stat = os.fstat(child_fd)
+                    child_identity = directory_identity(child_stat)
+                    child_after = os.stat(
+                        part, dir_fd=parent_fd, follow_symlinks=False
+                    )
+                    if (
+                        not stat.S_ISDIR(child_stat.st_mode)
+                        or child_identity != directory_identity(child_before)
+                        or child_identity != directory_identity(child_after)
+                    ):
+                        return None
+                    directory_entries.append((parent_fd, part, child_identity))
+                    parent_fd = child_fd
+
+                file_named_before = os.stat(
+                    parts[-1], dir_fd=parent_fd, follow_symlinks=False
+                )
+                file_fd = os.open(parts[-1], file_flags, dir_fd=parent_fd)
+                stream = opened.enter_context(os.fdopen(file_fd, "rb"))
+                file_before = os.fstat(stream.fileno())
+                identity = file_identity(file_before)
+                file_named_after = os.stat(
+                    parts[-1], dir_fd=parent_fd, follow_symlinks=False
+                )
                 if (
-                    not stat.S_ISDIR(child_stat.st_mode)
-                    or child_identity != directory_identity(child_before)
-                    or child_identity != directory_identity(child_after)
+                    not stat.S_ISREG(file_before.st_mode)
+                    or identity != file_identity(file_named_before)
+                    or identity != file_identity(file_named_after)
                 ):
                     return None
-                directory_entries.append((parent_fd, part, child_identity))
-                parent_fd = child_fd
+                digest = hashlib.sha256()
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+                if file_identity(os.fstat(stream.fileno())) != identity:
+                    return None
+                file_entries.append((parent_fd, parts[-1], identity, stream))
+                digests[rel_path] = digest.hexdigest()
 
-            file_named_before = os.stat(
-                parts[-1], dir_fd=parent_fd, follow_symlinks=False
-            )
-            file_fd = os.open(parts[-1], file_flags, dir_fd=parent_fd)
-            stream = opened.enter_context(os.fdopen(file_fd, "rb"))
-            file_before = os.fstat(stream.fileno())
-            identity = file_identity(file_before)
-            file_named_after = os.stat(
-                parts[-1], dir_fd=parent_fd, follow_symlinks=False
-            )
-            if (
-                not stat.S_ISREG(file_before.st_mode)
-                or identity != file_identity(file_named_before)
-                or identity != file_identity(file_named_after)
-            ):
-                return None
-            digest = hashlib.sha256()
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(chunk)
-            if file_identity(os.fstat(stream.fileno())) != identity:
-                return None
-
-            # Revalidate every entry through its original pinned parent. A second
-            # pathname walk would create another stale-descriptor race of its own.
+            # Revalidate every plan/roadmap entry only after the complete composite
+            # has been hashed, through each entry's original pinned parent.
             if directory_identity(os.stat(root, follow_symlinks=False)) != root_identity:
                 return None
             for entry_parent_fd, part, expected in directory_entries:
@@ -1018,12 +1037,23 @@ def _regular_repo_file_sha256(repo: Path, rel_path: str) -> str | None:
                 )
                 if directory_identity(current) != expected:
                     return None
-            final = os.stat(parts[-1], dir_fd=parent_fd, follow_symlinks=False)
-            if file_identity(final) != identity or not stat.S_ISREG(final.st_mode):
-                return None
-            return digest.hexdigest()
+            for parent_fd, name, identity, stream in file_entries:
+                final = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                if (
+                    file_identity(final) != identity
+                    or file_identity(os.fstat(stream.fileno())) != identity
+                    or not stat.S_ISREG(final.st_mode)
+                ):
+                    return None
+            return digests
     except (OSError, RuntimeError, ValueError):
         return None
+
+
+def _regular_repo_file_sha256(repo: Path, rel_path: str) -> str | None:
+    """Hash one stable repository-relative regular file without following symlinks."""
+    digests = _regular_repo_files_sha256(repo, (rel_path,))
+    return digests.get(rel_path) if digests is not None else None
 
 
 def _classify_basename(basename: str) -> str:
@@ -1255,6 +1285,7 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
                     metadata = event.get("metadata") if isinstance(event, dict) else None
                     if not isinstance(metadata, dict):
                         continue
+                    binding_in_event = False
                     for key, target in (
                         ("legible_plan_contract", contracts),
                         ("digest_rebind", rebinds),
@@ -1262,19 +1293,19 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
                         if key not in metadata:
                             continue
                         historical_binding_declared = True
+                        binding_in_event = True
                         value = metadata[key]
                         if isinstance(value, dict):
                             target.append(value)
-                            serialized = json.dumps(
-                                {"kind": key, "record": value},
-                                sort_keys=True,
-                                separators=(",", ":"),
-                            ).encode("utf-8")
-                            historical_binding_hashes.append(
-                                hashlib.sha256(serialized).hexdigest()
-                            )
                         else:
                             historical_binding_malformed = True
+                    if binding_in_event:
+                        serialized = json.dumps(
+                            event, sort_keys=True, separators=(",", ":")
+                        ).encode("utf-8")
+                        historical_binding_hashes.append(
+                            hashlib.sha256(serialized).hexdigest()
+                        )
             frozen_prefix = _FROZEN_HISTORICAL_BINDING_PREFIXES.get(rel)
             if frozen_prefix is not None and tuple(
                 historical_binding_hashes[: len(frozen_prefix)]
@@ -1387,13 +1418,27 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
                         MalformedPlanFinding(rel, "plan-contract", frozenset({"manifest"}))
                     )
                 else:
-                    actual_plan = _regular_repo_file_sha256(repo, rel)
+                    authority_paths = (
+                        (rel, roadmap_rel)
+                        if isinstance(roadmap_rel, str)
+                        else (rel,)
+                    )
+                    actual_digests = _regular_repo_files_sha256(repo, authority_paths)
+                    actual_plan = (
+                        actual_digests.get(rel)
+                        if actual_digests is not None
+                        else None
+                    )
                     if current_authority["plan_sha256"] != actual_plan:
                         malformed.append(
                             MalformedPlanFinding(rel, "plan-digest", frozenset({"manifest"}))
                         )
                     if isinstance(roadmap_rel, str):
-                        actual_roadmap = _regular_repo_file_sha256(repo, roadmap_rel)
+                        actual_roadmap = (
+                            actual_digests.get(roadmap_rel)
+                            if actual_digests is not None
+                            else None
+                        )
                         canonical_roadmap = (
                             roadmap_assumptions.CANONICAL_ROADMAP_SHA256
                             if rel == _LEGIBLE_PLAN_REL
