@@ -991,7 +991,7 @@ def test_regular_repo_file_hash_rejects_ancestor_swap_after_hash(tmp_path, monke
     monkeypatch.setattr(plan_manifest.os, "fstat", swapping_fstat)
 
     assert plan_manifest._regular_repo_file_sha256(repo, "authority/bound.md") is None
-    assert target_fstats == 2
+    assert target_fstats >= 2
 
 
 def test_regular_repo_file_hash_rejects_fifo_without_blocking(tmp_path, monkeypatch):
@@ -1027,6 +1027,49 @@ def test_regular_repo_file_hash_rejects_fifo_without_blocking(tmp_path, monkeypa
     assert result is None
     assert elapsed < 1
     assert not opened_fifo
+
+
+def test_regular_repo_file_hash_rejects_device_swap_before_open(tmp_path, monkeypatch):
+    if not hasattr(os, "mkfifo") or not hasattr(signal, "SIGALRM"):
+        pytest.skip("device-swap alarm regression requires POSIX")
+    repo = make_repo(tmp_path)
+    authority = repo / "authority"
+    authority.mkdir()
+    target = authority / "bound.md"
+    target.write_text("trusted bytes\n", encoding="utf-8")
+    replacement = authority / "replacement"
+    os.mkfifo(replacement)
+    real_open = os.open
+    swapped = False
+    data_opened = False
+
+    def swapping_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped, data_opened
+        if path == "bound.md" and dir_fd is not None and not swapped:
+            replacement.replace(target)
+            swapped = True
+        if isinstance(path, str) and path.startswith("/proc/self/fd/"):
+            data_opened = True
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(plan_manifest.os, "open", swapping_open)
+    previous_handler = signal.signal(
+        signal.SIGALRM,
+        lambda *_args: (_ for _ in ()).throw(TimeoutError("device open blocked")),
+    )
+    signal.setitimer(signal.ITIMER_REAL, 2)
+    started = time.monotonic()
+    try:
+        result = plan_manifest._regular_repo_file_sha256(repo, "authority/bound.md")
+    finally:
+        elapsed = time.monotonic() - started
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+
+    assert result is None
+    assert elapsed < 1
+    assert swapped
+    assert not data_opened
 
 
 def test_required_roadmap_registry_absence_is_typed_failure(tmp_path):
@@ -2239,6 +2282,58 @@ def test_frozen_historical_binding_cannot_be_deleted_with_authority(
         json.dumps({"plans": [entry]}, sort_keys=True) + "\n", encoding="utf-8"
     )
     assert check(repo).exit_code == 0
+    subprocess.run(["git", "add", "plans/manifest.json"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "record baseline authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    governed_append = json.loads(json.dumps(entry))
+    governed_append["lifecycle"].append(
+        next(
+            json.loads(json.dumps(event))
+            for event in entry["lifecycle"]
+            if "digest_rebind" in event.get("metadata", {})
+        )
+    )
+    governed_append["plan_authority_history"].append(
+        json.loads(json.dumps(entry["plan_authority_history"][-1]))
+    )
+    manifest_path.write_text(
+        json.dumps({"plans": [governed_append]}, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "plans/manifest.json"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "append governed authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    assert check(repo).exit_code == 0
+    rewritten_append = json.loads(json.dumps(governed_append))
+    rewritten_append["lifecycle"][-1]["metadata"]["digest_rebind"][
+        "roadmap_sha256"
+    ] = "0" * 64
+    valid_current = json.loads(
+        json.dumps(rewritten_append["plan_authority_history"][-1])
+    )
+    rewritten_append["plan_authority_history"][-1]["plan_sha256"] = "0" * 64
+    rewritten_append["plan_authority_history"].append(valid_current)
+    manifest_path.write_text(
+        json.dumps({"plans": [rewritten_append]}, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    assert check(repo).exit_code == 1
+    deleted_append = json.loads(json.dumps(governed_append))
+    deleted_append["lifecycle"].pop()
+    deleted_append["plan_authority_history"].pop()
+    manifest_path.write_text(
+        json.dumps({"plans": [deleted_append]}, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    assert check(repo).exit_code == 1
     original_authority = json.loads(json.dumps(entry["plan_authority_history"]))
     entry["plan_authority_history"][0]["plan_sha256"] = "0" * 64
     entry["plan_authority_history"].append(original_authority[0])

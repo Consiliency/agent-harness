@@ -964,11 +964,13 @@ def _regular_repo_files_sha256(
     nofollow = getattr(os, "O_NOFOLLOW", None)
     directory = getattr(os, "O_DIRECTORY", None)
     nonblock = getattr(os, "O_NONBLOCK", None)
-    if nofollow is None or directory is None or nonblock is None:
+    path_only = getattr(os, "O_PATH", None)
+    if nofollow is None or directory is None or nonblock is None or path_only is None:
         return None
     cloexec = getattr(os, "O_CLOEXEC", 0)
     directory_flags = os.O_RDONLY | directory | nofollow | cloexec
-    file_flags = os.O_RDONLY | nofollow | nonblock | cloexec
+    anchor_flags = path_only | nofollow | cloexec
+    file_flags = os.O_RDONLY | nonblock | cloexec
 
     def directory_identity(value: os.stat_result) -> tuple[int, int, int]:
         return value.st_dev, value.st_ino, value.st_mode
@@ -1029,17 +1031,26 @@ def _regular_repo_files_sha256(
                 )
                 if not stat.S_ISREG(file_named_before.st_mode):
                     return None
-                file_fd = os.open(parts[-1], file_flags, dir_fd=parent_fd)
-                stream = opened.enter_context(os.fdopen(file_fd, "rb"))
-                file_before = os.fstat(stream.fileno())
-                identity = file_identity(file_before)
+                anchor_fd = os.open(parts[-1], anchor_flags, dir_fd=parent_fd)
+                opened.callback(os.close, anchor_fd)
+                anchor_stat = os.fstat(anchor_fd)
+                anchor_identity = file_identity(anchor_stat)
                 file_named_after = os.stat(
                     parts[-1], dir_fd=parent_fd, follow_symlinks=False
                 )
                 if (
+                    not stat.S_ISREG(anchor_stat.st_mode)
+                    or anchor_identity != file_identity(file_named_before)
+                    or anchor_identity != file_identity(file_named_after)
+                ):
+                    return None
+                file_fd = os.open(f"/proc/self/fd/{anchor_fd}", file_flags)
+                stream = opened.enter_context(os.fdopen(file_fd, "rb"))
+                file_before = os.fstat(stream.fileno())
+                identity = file_identity(file_before)
+                if (
                     not stat.S_ISREG(file_before.st_mode)
-                    or identity != file_identity(file_named_before)
-                    or identity != file_identity(file_named_after)
+                    or identity != anchor_identity
                 ):
                     return None
                 digest = hashlib.sha256()
@@ -1114,6 +1125,96 @@ def _frozen_paths_in_git_history(repo: Path) -> set[str]:
         )
     changed_paths = set(proc.stdout.splitlines())
     return set(frozen_paths) & changed_paths
+
+
+def _ancestor_manifest_sequences(
+    repo: Path,
+) -> tuple[dict[str, tuple[tuple[str, ...], ...]], dict[str, tuple[tuple[str, ...], ...]]]:
+    head_manifest = subprocess.run(
+        ["git", "-C", str(repo), "show", "HEAD:plans/manifest.json"],
+        capture_output=True,
+        check=False,
+    )
+    if head_manifest.returncode != 0:
+        return {}, {}
+    try:
+        working_manifest = (repo / "plans" / "manifest.json").read_bytes()
+    except OSError:
+        working_manifest = None
+    start = "HEAD" if working_manifest != head_manifest.stdout else "HEAD^"
+    revisions = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "log",
+            "--format=%H",
+            start,
+            "--",
+            "plans/manifest.json",
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    if revisions.returncode != 0:
+        return {}, {}
+    binding_sequences: dict[str, set[tuple[str, ...]]] = {}
+    authority_sequences: dict[str, set[tuple[str, ...]]] = {}
+    for revision in revisions.stdout.splitlines():
+        snapshot = subprocess.run(
+            ["git", "-C", str(repo), "show", f"{revision}:plans/manifest.json"],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+        if snapshot.returncode != 0:
+            continue
+        try:
+            payload = json.loads(snapshot.stdout)
+        except json.JSONDecodeError:
+            continue
+        plans = payload.get("plans") if isinstance(payload, dict) else None
+        if not isinstance(plans, list):
+            continue
+        for entry in plans:
+            if not isinstance(entry, dict) or not isinstance(entry.get("file"), str):
+                continue
+            authority_history = entry.get("plan_authority_history")
+            if not isinstance(authority_history, list) or not authority_history:
+                continue
+            rel = entry["file"]
+            authority_hashes = tuple(
+                hashlib.sha256(
+                    json.dumps(record, sort_keys=True, separators=(",", ":")).encode(
+                        "utf-8"
+                    )
+                ).hexdigest()
+                for record in authority_history
+                if isinstance(record, dict)
+            )
+            binding_hashes = tuple(
+                hashlib.sha256(
+                    json.dumps(event, sort_keys=True, separators=(",", ":")).encode(
+                        "utf-8"
+                    )
+                ).hexdigest()
+                for event in entry.get("lifecycle", [])
+                if isinstance(event, dict)
+                and isinstance(event.get("metadata"), dict)
+                and any(
+                    key in event["metadata"]
+                    for key in ("legible_plan_contract", "digest_rebind")
+                )
+            )
+            if authority_hashes:
+                authority_sequences.setdefault(rel, set()).add(authority_hashes)
+            if binding_hashes:
+                binding_sequences.setdefault(rel, set()).add(binding_hashes)
+    return (
+        {rel: tuple(sorted(values)) for rel, values in binding_sequences.items()},
+        {rel: tuple(sorted(values)) for rel, values in authority_sequences.items()},
+    )
 
 
 def _git_ls_tree_plans(repo: Path, tree_oid: str) -> list[str]:
@@ -1285,6 +1386,9 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
     scanning, plus any malformed entry path (origin ``"manifest"``)."""
     manifest_path = repo / "plans" / "manifest.json"
     frozen_history = _frozen_paths_in_git_history(repo)
+    ancestor_bindings, ancestor_authorities = _ancestor_manifest_sequences(repo)
+    frozen_history.update(ancestor_bindings)
+    frozen_history.update(ancestor_authorities)
 
     def frozen_findings(registered: set[str]) -> list[MalformedPlanFinding]:
         return [
@@ -1370,9 +1474,15 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
                             hashlib.sha256(serialized).hexdigest()
                         )
             frozen_prefix = _FROZEN_HISTORICAL_BINDING_PREFIXES.get(rel)
-            if frozen_prefix is not None and tuple(
-                historical_binding_hashes[: len(frozen_prefix)]
-            ) != frozen_prefix:
+            current_binding_hashes = tuple(historical_binding_hashes)
+            if frozen_prefix is not None and current_binding_hashes[
+                : len(frozen_prefix)
+            ] != frozen_prefix:
+                historical_binding_malformed = True
+            if any(
+                current_binding_hashes[: len(prefix)] != prefix
+                for prefix in ancestor_bindings.get(rel, ())
+            ):
                 historical_binding_malformed = True
             if historical_binding_malformed:
                 malformed.append(
@@ -1463,9 +1573,15 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
                         )
                     )
                 frozen_authority_prefix = _FROZEN_AUTHORITY_PREFIXES.get(rel)
-                if frozen_authority_prefix is not None and tuple(
-                    authority_hashes[: len(frozen_authority_prefix)]
-                ) != frozen_authority_prefix:
+                current_authority_hashes = tuple(authority_hashes)
+                if frozen_authority_prefix is not None and current_authority_hashes[
+                    : len(frozen_authority_prefix)
+                ] != frozen_authority_prefix:
+                    authority_valid = False
+                if any(
+                    current_authority_hashes[: len(prefix)] != prefix
+                    for prefix in ancestor_authorities.get(rel, ())
+                ):
                     authority_valid = False
                 current_authority = authority_history[-1] if authority_valid else None
                 roadmap_contract_valid = (
