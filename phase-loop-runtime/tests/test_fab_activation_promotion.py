@@ -1589,6 +1589,7 @@ def test_fabreadmit_flag_reversal_kills_shortcut(request, tmp_path):
     from phase_loop_runtime.governed_premerge import FAB_PROMOTION_ENV, fab_delta_shortcut_enabled
     from test_fab_delta_consumer import DeltaReadmitTransactionTest
     from phase_loop_runtime import train_runner as tr
+    from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
     from phase_loop_runtime.train_ledger import read_ledger
     from phase_loop_runtime.train_runner import CoordinatorRuntime
     from phase_loop_runtime.convergence.broker.live import build_routing_broker_client
@@ -1600,10 +1601,12 @@ def test_fabreadmit_flag_reversal_kills_shortcut(request, tmp_path):
 
     def _capturing_head_merge_stub(cap: dict):
         def _merge_pr(workspace, branch, base="main", head_sha=None, run_id=None, fab_fetch_origin="origin"):
-            cap["workspace"] = workspace
-            cap["branch"] = branch
-            cap["head_sha"] = head_sha
-            cap["run_id"] = run_id
+            cap.setdefault("calls", []).append({
+                "workspace": workspace,
+                "branch": branch,
+                "head_sha": head_sha,
+                "run_id": run_id,
+            })
             return f"sha-merged-{Path(workspace).name}"
         return _merge_pr
 
@@ -1625,30 +1628,41 @@ def test_fabreadmit_flag_reversal_kills_shortcut(request, tmp_path):
         roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
 
         captured_t = {}
+        commit_calls_t = []
+        real_commit = tr._commit_broker_readmitted_head
+
+        def _observe_true_commit(*args, **kwargs):
+            commit_calls_t.append((args, kwargs))
+            return real_commit(*args, **kwargs)
+
         with _mock.patch.dict(os.environ, {FAB_PROMOTION_ENV: "1"}):
-            res_true = tr.run_train(
-                roadmap, ledger_true, run_mode="governed",
-                resolve_workspace=lambda n: fix_true.repo,
-                coordinator_runtime=coord_t,
-                resolve_owned_paths=None,
-                _run_loop=lambda *a, **kw: (None, []),
-                _publish=_make_publish_stub({}),
-                _set_upstream_ref_fn=lambda *a, **kw: [],
-                _preflight_fn=lambda *a, **kw: None,
-                _pr_is_open=lambda ws, br: True,
-                _live_pr_head_sha_fn=lambda ws, br: delta_t,
-                _merge_phase_enabled=True,
-                _reverify_fn=_reverify_pass,
-                _train_review_fn=_approval_review_fn,
-                _pr_merged_sha_fn=lambda *a, **kw: None,
-                _delta_review_fn=fix_true._review_fn,
-                _merge_pr_fn=_capturing_head_merge_stub(captured_t),
-                fab_fetch_origin="fetchsrc",
-                fab_delta_shortcut=True,
-            )
+            with _mock.patch.object(tr, "_commit_broker_readmitted_head", side_effect=_observe_true_commit):
+                res_true = tr.run_train(
+                    roadmap, ledger_true, run_mode="governed",
+                    resolve_workspace=lambda n: fix_true.repo,
+                    coordinator_runtime=coord_t,
+                    resolve_owned_paths=None,
+                    _run_loop=lambda *a, **kw: (None, []),
+                    _publish=_make_publish_stub({}),
+                    _set_upstream_ref_fn=lambda *a, **kw: [],
+                    _preflight_fn=lambda *a, **kw: None,
+                    _pr_is_open=lambda ws, br: True,
+                    _live_pr_head_sha_fn=lambda ws, br: delta_t,
+                    _merge_phase_enabled=True,
+                    _reverify_fn=_reverify_pass,
+                    _train_review_fn=_approval_review_fn,
+                    _pr_merged_sha_fn=lambda *a, **kw: None,
+                    _delta_review_fn=fix_true._review_fn,
+                    _merge_pr_fn=_capturing_head_merge_stub(captured_t),
+                    fab_fetch_origin="fetchsrc",
+                    fab_delta_shortcut=True,
+                )
 
         assert res_true["status"] == "merged"
+        assert len(commit_calls_t) == 1, "engaged arm must enter the broker helper once"
         assert read_ledger(ledger_true)[node_id].head_sha == delta_t
+        assert len(LinearizableAdmissionStore(seeded_true["store_root"], lambda _: True).replay()) == 2
+        assert captured_t["calls"][0]["head_sha"] == delta_t
     finally:
         fix_true.tearDown()
 
@@ -1668,33 +1682,43 @@ def test_fabreadmit_flag_reversal_kills_shortcut(request, tmp_path):
         )
 
         captured_f = {}
+        commit_calls_f = []
+
+        def _observe_false_commit(*args, **kwargs):
+            commit_calls_f.append((args, kwargs))
+            return real_commit(*args, **kwargs)
+
         with _mock.patch.dict(os.environ, {FAB_PROMOTION_ENV: "1"}):
             with _mock.patch.object(gp, "_FAB_DELTA_BROKER_READMIT_READY", False):
                 assert gp._FAB_DELTA_BROKER_READMIT_READY is False
                 assert fab_delta_shortcut_enabled(True, env={FAB_PROMOTION_ENV: "1"}) is False
 
-                res_false = tr.run_train(
-                    roadmap, ledger_false, run_mode="governed",
-                    resolve_workspace=lambda n: fix_false.repo,
-                    coordinator_runtime=coord_f,
-                    resolve_owned_paths=None,
-                    _run_loop=lambda *a, **kw: (None, []),
-                    _publish=_make_publish_stub({}),
-                    _set_upstream_ref_fn=lambda *a, **kw: [],
-                    _preflight_fn=lambda *a, **kw: None,
-                    _pr_is_open=lambda ws, br: True,
-                    _live_pr_head_sha_fn=lambda ws, br: delta_f,
-                    _merge_phase_enabled=True,
-                    _reverify_fn=_reverify_pass,
-                    _train_review_fn=_approval_review_fn,
-                    _pr_merged_sha_fn=lambda *a, **kw: None,
-                    _delta_review_fn=fix_false._review_fn,
-                    _merge_pr_fn=_capturing_head_merge_stub(captured_f),
-                    fab_fetch_origin="fetchsrc",
-                    fab_delta_shortcut=True,
-                )
+                with _mock.patch.object(tr, "_commit_broker_readmitted_head", side_effect=_observe_false_commit):
+                    res_false = tr.run_train(
+                        roadmap, ledger_false, run_mode="governed",
+                        resolve_workspace=lambda n: fix_false.repo,
+                        coordinator_runtime=coord_f,
+                        resolve_owned_paths=None,
+                        _run_loop=lambda *a, **kw: (None, []),
+                        _publish=_make_publish_stub({}),
+                        _set_upstream_ref_fn=lambda *a, **kw: [],
+                        _preflight_fn=lambda *a, **kw: None,
+                        _pr_is_open=lambda ws, br: True,
+                        _live_pr_head_sha_fn=lambda ws, br: delta_f,
+                        _merge_phase_enabled=True,
+                        _reverify_fn=_reverify_pass,
+                        _train_review_fn=_approval_review_fn,
+                        _pr_merged_sha_fn=lambda *a, **kw: None,
+                        _delta_review_fn=fix_false._review_fn,
+                        _merge_pr_fn=_capturing_head_merge_stub(captured_f),
+                        fab_fetch_origin="fetchsrc",
+                        fab_delta_shortcut=True,
+                    )
 
-        assert res_false["status"] != "merged"
-        assert read_ledger(ledger_false)[node_id].head_sha == cand_f, "ledger head must remain at candidate head when readiness is False"
+        assert res_false["status"] == "merged"
+        assert commit_calls_f == [], "disabled shortcut must not enter the broker helper"
+        assert len(LinearizableAdmissionStore(seeded_false["store_root"], lambda _: True).replay()) == 1
+        assert captured_f["calls"][0]["head_sha"] == cand_f
+        assert read_ledger(ledger_false)[node_id].head_sha == delta_f
     finally:
         fix_false.tearDown()

@@ -142,7 +142,11 @@ def _run_fabreadmit_two_node_resume(runner, fixture, seeded: dict, *, live_head_
         broker_client=build_routing_broker_client(),
     )
     return runner.run_train(
-        parse_train_roadmap(TRAIN_2NODE_MD),
+        # Keep the existing two-node topology, but make its dependency order-only:
+        # repo-b has no upstream-content comparison that can pre-empt repo-a P4.
+        parse_train_roadmap(TRAIN_2NODE_MD.replace(
+            "**Channel:** submodule path=vendor/repo-a", "**Channel:** (none)"
+        )),
         seeded["ledger_path"],
         run_mode="governed",
         resolve_workspace=lambda node: ws_map[node.node_id],
@@ -1332,6 +1336,7 @@ def _assert_head_append_inventory(source_text: str):
     expected_head_sites = Counter((
         ("_commit_broker_readmitted_head", "inline", "pr_open"),
         ("_run_train_unfenced", "inline", "pr_open"),
+        ("_run_train_unfenced", "assigned", "merged"),
         ("_run_train_unfenced", "inline", "merged"),
     ))
     assert all_sites, "append_record inventory unexpectedly found no append sites"
@@ -1652,6 +1657,7 @@ def test_fabreadmit_append_site_inventory_detects_third_site(request, tmp_path):
 
 def test_fabreadmit_fresh_revocation_blocks_delta_merge(request, tmp_path):
     """Fresh readmission path revocation check blocks delta merge."""
+    import os
     import unittest.mock as _mock
     from pytest import skip
 
@@ -1692,11 +1698,21 @@ def test_fabreadmit_fresh_revocation_blocks_delta_merge(request, tmp_path):
         store = seeded["store"]
         _seed_fabreadmit_two_node_resume(ledger_path, seeded["candidate_head"])
         captured = {}
-        result = _run_fabreadmit_two_node_resume(
-            tr, fixture, seeded, live_head_sha=delta_head, captured=captured
-        )
+        commit_calls = []
+        real_commit = tr._commit_broker_readmitted_head
+
+        def _observe_commit(*args, **kwargs):
+            commit_calls.append((args, kwargs))
+            return real_commit(*args, **kwargs)
+
+        with _mock.patch.dict(os.environ, {FAB_PROMOTION_ENV: "1"}):
+            with _mock.patch.object(tr, "_commit_broker_readmitted_head", side_effect=_observe_commit):
+                result = _run_fabreadmit_two_node_resume(
+                    tr, fixture, seeded, live_head_sha=delta_head, captured=captured
+                )
 
         assert result["status"] == "merged"
+        assert len(commit_calls) == 1, "unrevoked readmission must enter the broker helper once"
         assert captured[seeded["node_id"]] == [{
             "branch": seeded["branch"],
             "head_sha": delta_head,
@@ -1727,20 +1743,29 @@ def test_fabreadmit_fresh_revocation_blocks_delta_merge(request, tmp_path):
         admission_before = tuple(store.replay())
         captured = {}
         provider_effects = []
+        commit_calls = []
+        real_commit = tr._commit_broker_readmitted_head
 
         def _unexpected_provider_effect(*args, **kwargs):
             provider_effects.append((args, kwargs))
             raise AssertionError("revoked readmission must not reach a provider adapter")
 
-        with _mock.patch(
-            "phase_loop_runtime.convergence.broker.live.GitHubBrokerAdapter.execute",
-            side_effect=_unexpected_provider_effect,
-        ):
-            result = _run_fabreadmit_two_node_resume(
-                tr, fixture_revoked, seeded, live_head_sha=delta_head, captured=captured
-            )
+        def _observe_commit(*args, **kwargs):
+            commit_calls.append((args, kwargs))
+            return real_commit(*args, **kwargs)
+
+        with _mock.patch.dict(os.environ, {FAB_PROMOTION_ENV: "1"}):
+            with _mock.patch.object(tr, "_commit_broker_readmitted_head", side_effect=_observe_commit):
+                with _mock.patch(
+                    "phase_loop_runtime.convergence.broker.live.GitHubBrokerAdapter.execute",
+                    side_effect=_unexpected_provider_effect,
+                ):
+                    result = _run_fabreadmit_two_node_resume(
+                        tr, fixture_revoked, seeded, live_head_sha=delta_head, captured=captured
+                    )
 
         assert result["status"] != "merged", "revoked fresh readmission must block the caller merge"
+        assert commit_calls == [], "revoked fresh readmission must not enter the broker helper"
         assert captured == {}, "revoked fresh readmission must execute zero merges"
         assert provider_effects == [], "revoked fresh readmission must have zero provider-adapter effect"
         assert ledger_path.read_text(encoding="utf-8") == ledger_before, "revocation must append no ledger record"
@@ -1752,6 +1777,7 @@ def test_fabreadmit_fresh_revocation_blocks_delta_merge(request, tmp_path):
 
 def test_fabreadmit_crash_resume_revocation_rechecked_blocks(request, tmp_path):
     """Crash-resume path rechecks revocation and blocks on terminal revocation."""
+    import os
     import pytest
     import unittest.mock as _mock
     from pytest import skip
@@ -1799,18 +1825,29 @@ def test_fabreadmit_crash_resume_revocation_rechecked_blocks(request, tmp_path):
                 raise SystemExit("simulated crash after broker grant before ledger append")
             return real_append(path, record, **kwargs)
 
-        with _mock.patch.object(tr, "append_record", side_effect=_crash_after_broker_grant):
-            with pytest.raises(SystemExit, match="simulated crash"):
-                _run_fabreadmit_two_node_resume(
-                    tr, fixture, seeded, live_head_sha=delta_head, captured={}
-                )
+        with _mock.patch.dict(os.environ, {FAB_PROMOTION_ENV: "1"}):
+            with _mock.patch.object(tr, "append_record", side_effect=_crash_after_broker_grant):
+                with pytest.raises(SystemExit, match="simulated crash"):
+                    _run_fabreadmit_two_node_resume(
+                        tr, fixture, seeded, live_head_sha=delta_head, captured={}
+                    )
 
         grant_count_before = len(store.replay())
         captured = {}
-        result = _run_fabreadmit_two_node_resume(
-            tr, fixture, seeded, live_head_sha=delta_head, captured=captured
-        )
+        commit_calls = []
+        real_commit = tr._commit_broker_readmitted_head
+
+        def _observe_commit(*args, **kwargs):
+            commit_calls.append((args, kwargs))
+            return real_commit(*args, **kwargs)
+
+        with _mock.patch.dict(os.environ, {FAB_PROMOTION_ENV: "1"}):
+            with _mock.patch.object(tr, "_commit_broker_readmitted_head", side_effect=_observe_commit):
+                result = _run_fabreadmit_two_node_resume(
+                    tr, fixture, seeded, live_head_sha=delta_head, captured=captured
+                )
         assert result["status"] == "merged"
+        assert len(commit_calls) == 1, "resume must re-enter the broker helper once"
         assert captured[seeded["node_id"]] == [{
             "branch": seeded["branch"],
             "head_sha": delta_head,
@@ -1840,11 +1877,12 @@ def test_fabreadmit_crash_resume_revocation_rechecked_blocks(request, tmp_path):
                 raise SystemExit("simulated crash after broker grant before ledger append")
             return real_append(path, record, **kwargs)
 
-        with _mock.patch.object(tr, "append_record", side_effect=_crash_after_broker_grant):
-            with pytest.raises(SystemExit, match="simulated crash"):
-                _run_fabreadmit_two_node_resume(
-                    tr, fixture_revoked, seeded, live_head_sha=delta_head, captured={}
-                )
+        with _mock.patch.dict(os.environ, {FAB_PROMOTION_ENV: "1"}):
+            with _mock.patch.object(tr, "append_record", side_effect=_crash_after_broker_grant):
+                with pytest.raises(SystemExit, match="simulated crash"):
+                    _run_fabreadmit_two_node_resume(
+                        tr, fixture_revoked, seeded, live_head_sha=delta_head, captured={}
+                    )
 
         evidence.record_intent("rev-key-resume")
         evidence.record_terminal(EvidenceRecord(
@@ -1854,20 +1892,29 @@ def test_fabreadmit_crash_resume_revocation_rechecked_blocks(request, tmp_path):
         admission_before = tuple(store.replay())
         captured = {}
         provider_effects = []
+        commit_calls = []
+        real_commit = tr._commit_broker_readmitted_head
 
         def _unexpected_provider_effect(*args, **kwargs):
             provider_effects.append((args, kwargs))
             raise AssertionError("revoked resume must not reach a provider adapter")
 
-        with _mock.patch(
-            "phase_loop_runtime.convergence.broker.live.GitHubBrokerAdapter.execute",
-            side_effect=_unexpected_provider_effect,
-        ):
-            result = _run_fabreadmit_two_node_resume(
-                tr, fixture_revoked, seeded, live_head_sha=delta_head, captured=captured
-            )
+        def _observe_commit(*args, **kwargs):
+            commit_calls.append((args, kwargs))
+            return real_commit(*args, **kwargs)
+
+        with _mock.patch.dict(os.environ, {FAB_PROMOTION_ENV: "1"}):
+            with _mock.patch.object(tr, "_commit_broker_readmitted_head", side_effect=_observe_commit):
+                with _mock.patch(
+                    "phase_loop_runtime.convergence.broker.live.GitHubBrokerAdapter.execute",
+                    side_effect=_unexpected_provider_effect,
+                ):
+                    result = _run_fabreadmit_two_node_resume(
+                        tr, fixture_revoked, seeded, live_head_sha=delta_head, captured=captured
+                    )
 
         assert result["status"] != "merged", "revoked crash-resume must block the caller merge"
+        assert commit_calls == [], "revoked crash-resume must not enter the broker helper"
         assert captured == {}, "revoked crash-resume must execute zero merges"
         assert provider_effects == [], "revoked crash-resume must have zero provider-adapter effect"
         assert ledger_path.read_text(encoding="utf-8") == ledger_before, "revocation must append no ledger record"
@@ -2024,33 +2071,45 @@ def test_fabreadmit_real_git_shortcut_end_to_end(request, tmp_path):
                 roadmap_path="train.md", roadmap_digest="d" * 64,
                 workspace_id=str(fix_a.repo), broker_client=build_routing_broker_client(),
             )
+            captured_a = {}
+            commit_calls_a = []
+
+            def _observe_readiness_kill_commit(*args, **kwargs):
+                commit_calls_a.append((args, kwargs))
+                return real_commit(*args, **kwargs)
+
             with _mock.patch.dict(os.environ, {FAB_PROMOTION_ENV: "1"}):
                 with _mock.patch("phase_loop_runtime.governed_premerge._FAB_DELTA_BROKER_READMIT_READY", False):
-                    result_a = tr.run_train(
-                        roadmap, ledger_a, run_mode="governed",
-                        resolve_workspace=lambda n: fix_a.repo,
-                        coordinator_runtime=runtime_a,
-                        resolve_owned_paths=None,
-                        _run_loop=lambda *a, **kw: (None, []),
-                        _publish=_make_publish_stub({}),
-                        _set_upstream_ref_fn=lambda *a, **kw: [],
-                        _preflight_fn=lambda *a, **kw: None,
-                        _pr_is_open=lambda ws, br: True,
-                        _live_pr_head_sha_fn=lambda ws, br: delta_a,
-                        _merge_phase_enabled=True,
-                        _reverify_fn=_reverify_pass,
-                        _train_review_fn=_approval_review_fn,
-                        _pr_merged_sha_fn=lambda *a, **kw: None,
-                        _delta_review_fn=fix_a._review_fn,
-                        _merge_pr_fn=_capturing_head_merge_stub({}),
-                        fab_fetch_origin="fetchsrc",
-                        fab_delta_shortcut=True,
-                    )
-            assert result_a["status"] != "merged"
-            assert read_ledger(ledger_a)[node_id].head_sha == cand_a
+                    with _mock.patch.object(
+                        tr, "_commit_broker_readmitted_head", side_effect=_observe_readiness_kill_commit
+                    ):
+                        result_a = tr.run_train(
+                            roadmap, ledger_a, run_mode="governed",
+                            resolve_workspace=lambda n: fix_a.repo,
+                            coordinator_runtime=runtime_a,
+                            resolve_owned_paths=None,
+                            _run_loop=lambda *a, **kw: (None, []),
+                            _publish=_make_publish_stub({}),
+                            _set_upstream_ref_fn=lambda *a, **kw: [],
+                            _preflight_fn=lambda *a, **kw: None,
+                            _pr_is_open=lambda ws, br: True,
+                            _live_pr_head_sha_fn=lambda ws, br: delta_a,
+                            _merge_phase_enabled=True,
+                            _reverify_fn=_reverify_pass,
+                            _train_review_fn=_approval_review_fn,
+                            _pr_merged_sha_fn=lambda *a, **kw: None,
+                            _delta_review_fn=fix_a._review_fn,
+                            _merge_pr_fn=_capturing_head_merge_stub(captured_a),
+                            fab_fetch_origin="fetchsrc",
+                            fab_delta_shortcut=True,
+                        )
+            assert result_a["status"] == "merged"
+            assert commit_calls_a == [], "readiness kill must not enter the broker helper"
+            assert read_ledger(ledger_a)[node_id].head_sha == delta_a
             assert len(LinearizableAdmissionStore(seeded_a["store_root"], lambda _: True).replay()) == 1, (
                 "readiness kill must retain only the candidate admission"
             )
+            assert captured_a[str(fix_a.repo)][0]["head_sha"] == cand_a
         finally:
             fix_a.tearDown()
 
@@ -2069,32 +2128,44 @@ def test_fabreadmit_real_git_shortcut_end_to_end(request, tmp_path):
                 roadmap_path="train.md", roadmap_digest="d" * 64,
                 workspace_id=str(fix_b.repo), broker_client=build_routing_broker_client(),
             )
+            captured_b = {}
+            commit_calls_b = []
+
+            def _observe_resolver_kill_commit(*args, **kwargs):
+                commit_calls_b.append((args, kwargs))
+                return real_commit(*args, **kwargs)
+
             with _mock.patch.dict(os.environ, {FAB_PROMOTION_ENV: "1"}):
-                result_b = tr.run_train(
-                    roadmap, ledger_b, run_mode="governed",
-                    resolve_workspace=lambda n: fix_b.repo,
-                    coordinator_runtime=runtime_b,
-                    resolve_owned_paths=lambda _n: ("pkg/a.py", "pkg/c.py"),
-                    _run_loop=lambda *a, **kw: (None, []),
-                    _publish=_make_publish_stub({}),
-                    _set_upstream_ref_fn=lambda *a, **kw: [],
-                    _preflight_fn=lambda *a, **kw: None,
-                    _pr_is_open=lambda ws, br: True,
-                    _live_pr_head_sha_fn=lambda ws, br: delta_b,
-                    _merge_phase_enabled=True,
-                    _reverify_fn=_reverify_pass,
-                    _train_review_fn=_approval_review_fn,
-                    _pr_merged_sha_fn=lambda *a, **kw: None,
-                    _delta_review_fn=fix_b._review_fn,
-                    _merge_pr_fn=_capturing_head_merge_stub({}),
-                    fab_fetch_origin="fetchsrc",
-                    fab_delta_shortcut=True,
-                )
-            assert result_b["status"] != "merged"
-            assert read_ledger(ledger_b)[node_id].head_sha == cand_b
+                with _mock.patch.object(
+                    tr, "_commit_broker_readmitted_head", side_effect=_observe_resolver_kill_commit
+                ):
+                    result_b = tr.run_train(
+                        roadmap, ledger_b, run_mode="governed",
+                        resolve_workspace=lambda n: fix_b.repo,
+                        coordinator_runtime=runtime_b,
+                        resolve_owned_paths=lambda _n: ("pkg/a.py", "pkg/c.py"),
+                        _run_loop=lambda *a, **kw: (None, []),
+                        _publish=_make_publish_stub({}),
+                        _set_upstream_ref_fn=lambda *a, **kw: [],
+                        _preflight_fn=lambda *a, **kw: None,
+                        _pr_is_open=lambda ws, br: True,
+                        _live_pr_head_sha_fn=lambda ws, br: delta_b,
+                        _merge_phase_enabled=True,
+                        _reverify_fn=_reverify_pass,
+                        _train_review_fn=_approval_review_fn,
+                        _pr_merged_sha_fn=lambda *a, **kw: None,
+                        _delta_review_fn=fix_b._review_fn,
+                        _merge_pr_fn=_capturing_head_merge_stub(captured_b),
+                        fab_fetch_origin="fetchsrc",
+                        fab_delta_shortcut=True,
+                    )
+            assert result_b["status"] == "merged"
+            assert commit_calls_b == [], "resolver kill must not enter the broker helper"
+            assert read_ledger(ledger_b)[node_id].head_sha == delta_b
             assert len(LinearizableAdmissionStore(seeded_b["store_root"], lambda _: True).replay()) == 1, (
                 "resolver kill must retain only the candidate admission"
             )
+            assert captured_b[str(fix_b.repo)][0]["head_sha"] == cand_b
         finally:
             fix_b.tearDown()
 
