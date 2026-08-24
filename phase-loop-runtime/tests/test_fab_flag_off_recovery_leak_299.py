@@ -148,7 +148,6 @@ def test_fabreadmit_flag_off_recovery_leak_guard(request, tmp_path, monkeypatch)
 
     from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
     from phase_loop_runtime.convergence.broker.live import build_routing_broker_client
-    from phase_loop_runtime.train_ledger import read_ledger
     from phase_loop_runtime.train_runner import CoordinatorRuntime
     from test_fab_delta_consumer import DeltaReadmitTransactionTest, _delta_panel
 
@@ -164,11 +163,16 @@ def test_fabreadmit_flag_off_recovery_leak_guard(request, tmp_path, monkeypatch)
         )
         store_before = seeded["store"].replay()
         commit_calls = []
+        merge_calls = []
         real_commit = train_runner._commit_broker_readmitted_head
 
         def _observe_commit(*args, **kwargs):
             commit_calls.append((args, kwargs))
             return real_commit(*args, **kwargs)
+
+        def _capture_merge(workspace, branch, base="main", head_sha=None, run_id=None, fab_fetch_origin="origin"):
+            merge_calls.append((branch, head_sha))
+            return f"sha-merged-{Path(workspace).name}"
 
         monkeypatch.setattr(train_runner, "_commit_broker_readmitted_head", _observe_commit)
         coordinator_runtime = CoordinatorRuntime(
@@ -197,7 +201,7 @@ def test_fabreadmit_flag_off_recovery_leak_guard(request, tmp_path, monkeypatch)
             _train_review_fn=_approval_review_fn,
             _pr_merged_sha_fn=lambda *args, **kwargs: None,
             _delta_review_fn=lambda *args, **kwargs: _delta_panel(),
-            _merge_pr_fn=_capturing_merge_stub({}),
+            _merge_pr_fn=_capture_merge,
             fab_fetch_origin="fetchsrc",
             fab_delta_shortcut=True,
         )
@@ -205,7 +209,9 @@ def test_fabreadmit_flag_off_recovery_leak_guard(request, tmp_path, monkeypatch)
         assert commit_calls == [], "flag-off resume must execute zero broker readmission commits"
         canonical_store = LinearizableAdmissionStore(seeded["store_root"], lambda _: True)
         assert canonical_store.replay() == store_before, "flag-off resume must leave canonical admission unchanged"
-        assert read_ledger(seeded["ledger_path"])[node_id].head_sha == seeded["candidate_head"]
+        assert [head_sha for branch, head_sha in merge_calls if branch == seeded["branch"]] == [
+            seeded["candidate_head"]
+        ], "flag-off resume must merge the admitted candidate head"
         assert result.get("status") == "merged"
     finally:
         fixture.tearDown()

@@ -128,7 +128,7 @@ def _run_fabreadmit_two_node_resume(runner, fixture, seeded: dict, *, live_head_
 
     node_id = seeded["node_id"]
     repo_b = fixture.tmp_path / "repo-b"
-    repo_b.mkdir(exist_ok=True)
+    repo_b.mkdir(parents=True, exist_ok=True)
     ws_map = {
         node_id: fixture.repo,
         "repo-b/specs/plan-b.md": repo_b,
@@ -145,7 +145,7 @@ def _run_fabreadmit_two_node_resume(runner, fixture, seeded: dict, *, live_head_
         # Keep the existing two-node topology, but make its dependency order-only:
         # repo-b has no upstream-content comparison that can pre-empt repo-a P4.
         parse_train_roadmap(TRAIN_2NODE_MD.replace(
-            "**Channel:** submodule path=vendor/repo-a", "**Channel:** (none)"
+            "**Channel:** submodule path=vendor/repo-a", "**Channel:** order-only"
         )),
         seeded["ledger_path"],
         run_mode="governed",
@@ -1745,6 +1745,8 @@ def test_fabreadmit_fresh_revocation_blocks_delta_merge(request, tmp_path):
         provider_effects = []
         commit_calls = []
         real_commit = tr._commit_broker_readmitted_head
+        revocation_checks = []
+        real_revocation_check = tr._check_readmission_revocation
 
         def _unexpected_provider_effect(*args, **kwargs):
             provider_effects.append((args, kwargs))
@@ -1754,17 +1756,23 @@ def test_fabreadmit_fresh_revocation_blocks_delta_merge(request, tmp_path):
             commit_calls.append((args, kwargs))
             return real_commit(*args, **kwargs)
 
+        def _observe_revocation_check(*args, **kwargs):
+            revocation_checks.append((args, kwargs))
+            return real_revocation_check(*args, **kwargs)
+
         with _mock.patch.dict(os.environ, {FAB_PROMOTION_ENV: "1"}):
-            with _mock.patch.object(tr, "_commit_broker_readmitted_head", side_effect=_observe_commit):
-                with _mock.patch(
-                    "phase_loop_runtime.convergence.broker.live.GitHubBrokerAdapter.execute",
-                    side_effect=_unexpected_provider_effect,
-                ):
-                    result = _run_fabreadmit_two_node_resume(
-                        tr, fixture_revoked, seeded, live_head_sha=delta_head, captured=captured
-                    )
+            with _mock.patch.object(tr, "_check_readmission_revocation", side_effect=_observe_revocation_check):
+                with _mock.patch.object(tr, "_commit_broker_readmitted_head", side_effect=_observe_commit):
+                    with _mock.patch(
+                        "phase_loop_runtime.convergence.broker.live.GitHubBrokerAdapter.execute",
+                        side_effect=_unexpected_provider_effect,
+                    ):
+                        result = _run_fabreadmit_two_node_resume(
+                            tr, fixture_revoked, seeded, live_head_sha=delta_head, captured=captured
+                        )
 
         assert result["status"] != "merged", "revoked fresh readmission must block the caller merge"
+        assert revocation_checks, "revoked fresh readmission must enter the revocation boundary"
         assert commit_calls == [], "revoked fresh readmission must not enter the broker helper"
         assert captured == {}, "revoked fresh readmission must execute zero merges"
         assert provider_effects == [], "revoked fresh readmission must have zero provider-adapter effect"
@@ -1894,6 +1902,8 @@ def test_fabreadmit_crash_resume_revocation_rechecked_blocks(request, tmp_path):
         provider_effects = []
         commit_calls = []
         real_commit = tr._commit_broker_readmitted_head
+        revocation_checks = []
+        real_revocation_check = tr._check_readmission_revocation
 
         def _unexpected_provider_effect(*args, **kwargs):
             provider_effects.append((args, kwargs))
@@ -1903,17 +1913,23 @@ def test_fabreadmit_crash_resume_revocation_rechecked_blocks(request, tmp_path):
             commit_calls.append((args, kwargs))
             return real_commit(*args, **kwargs)
 
+        def _observe_revocation_check(*args, **kwargs):
+            revocation_checks.append((args, kwargs))
+            return real_revocation_check(*args, **kwargs)
+
         with _mock.patch.dict(os.environ, {FAB_PROMOTION_ENV: "1"}):
-            with _mock.patch.object(tr, "_commit_broker_readmitted_head", side_effect=_observe_commit):
-                with _mock.patch(
-                    "phase_loop_runtime.convergence.broker.live.GitHubBrokerAdapter.execute",
-                    side_effect=_unexpected_provider_effect,
-                ):
-                    result = _run_fabreadmit_two_node_resume(
-                        tr, fixture_revoked, seeded, live_head_sha=delta_head, captured=captured
-                    )
+            with _mock.patch.object(tr, "_check_readmission_revocation", side_effect=_observe_revocation_check):
+                with _mock.patch.object(tr, "_commit_broker_readmitted_head", side_effect=_observe_commit):
+                    with _mock.patch(
+                        "phase_loop_runtime.convergence.broker.live.GitHubBrokerAdapter.execute",
+                        side_effect=_unexpected_provider_effect,
+                    ):
+                        result = _run_fabreadmit_two_node_resume(
+                            tr, fixture_revoked, seeded, live_head_sha=delta_head, captured=captured
+                        )
 
         assert result["status"] != "merged", "revoked crash-resume must block the caller merge"
+        assert revocation_checks, "revoked crash-resume must enter the revocation boundary"
         assert commit_calls == [], "revoked crash-resume must not enter the broker helper"
         assert captured == {}, "revoked crash-resume must execute zero merges"
         assert provider_effects == [], "revoked crash-resume must have zero provider-adapter effect"
