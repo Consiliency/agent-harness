@@ -1135,13 +1135,24 @@ def _ancestor_manifest_sequences(
         capture_output=True,
         check=False,
     )
-    if head_manifest.returncode != 0:
-        return {}, {}
     try:
         working_manifest = (repo / "plans" / "manifest.json").read_bytes()
     except OSError:
         working_manifest = None
-    start = "HEAD" if working_manifest != head_manifest.stdout else "HEAD^"
+    head_bytes = head_manifest.stdout if head_manifest.returncode == 0 else None
+    if working_manifest != head_bytes:
+        starts = ["HEAD"]
+    else:
+        parents = subprocess.run(
+            ["git", "-C", str(repo), "rev-list", "--parents", "-n", "1", "HEAD"],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+        fields = parents.stdout.split() if parents.returncode == 0 else []
+        starts = fields[1:]
+    if not starts:
+        return {}, {}
     revisions = subprocess.run(
         [
             "git",
@@ -1149,7 +1160,7 @@ def _ancestor_manifest_sequences(
             str(repo),
             "log",
             "--format=%H",
-            start,
+            *starts,
             "--",
             "plans/manifest.json",
         ],

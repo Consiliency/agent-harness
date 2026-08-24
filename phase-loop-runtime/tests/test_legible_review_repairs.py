@@ -2186,6 +2186,150 @@ def test_historical_digest_rebind_cannot_drop_current_roadmap_binding(tmp_path):
     ]
 
 
+def _write_generic_authority_manifest(repo: Path, rel: str) -> None:
+    roadmap = repo / "specs" / "current-roadmap.md"
+    roadmap.write_text("# Current roadmap\n", encoding="utf-8")
+    plan_digest = hashlib.sha256((repo / rel).read_bytes()).hexdigest()
+    roadmap_digest = hashlib.sha256(roadmap.read_bytes()).hexdigest()
+    (repo / "plans" / "manifest.json").write_text(
+        json.dumps(
+            {
+                "plans": [
+                    {
+                        "file": rel,
+                        "roadmap_ref": {"file": "specs/current-roadmap.md"},
+                        "plan_authority_history": [
+                            {
+                                "schema": "plan_current_authority.v1",
+                                "source": "agent-harness#647",
+                                "plan_sha256": plan_digest,
+                                "roadmap_sha256": roadmap_digest,
+                            }
+                        ],
+                        "lifecycle": [
+                            {
+                                "metadata": {
+                                    "digest_rebind": {
+                                        "plan_sha256": plan_digest,
+                                        "roadmap_sha256": roadmap_digest,
+                                    }
+                                }
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_generic_ancestor_authority_survives_plan_and_manifest_deletion(tmp_path):
+    repo = make_repo(tmp_path)
+    rel = _commit_plan(repo)
+    _write_generic_authority_manifest(repo, rel)
+    subprocess.run(
+        ["git", "add", "plans/manifest.json", "specs/current-roadmap.md"],
+        cwd=repo,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "record generic authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    assert check(repo).exit_code == 0
+    (repo / rel).unlink()
+    (repo / "plans" / "manifest.json").unlink()
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "delete generic authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+    result = check(repo)
+
+    assert result.exit_code == 1
+    assert (rel, "plan-contract") in [
+        (item.path, item.kind) for item in result.malformed
+    ]
+
+
+def test_merge_checks_authority_from_every_parent(tmp_path):
+    repo = make_repo(tmp_path)
+    (repo / "plans" / ".gitkeep").write_text("", encoding="utf-8")
+    subprocess.run(["git", "add", "plans/.gitkeep"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "retain plans directory"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(["git", "switch", "-c", "authority-parent"], cwd=repo, check=True)
+    rel = _commit_plan(repo)
+    _write_generic_authority_manifest(repo, rel)
+    subprocess.run(
+        ["git", "add", "plans/manifest.json", "specs/current-roadmap.md"],
+        cwd=repo,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "record second-parent authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    authority_parent = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    base_tree = subprocess.run(
+        ["git", "rev-parse", f"{base}^{{tree}}"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    merge = subprocess.run(
+        [
+            "git",
+            "commit-tree",
+            base_tree,
+            "-p",
+            base,
+            "-p",
+            authority_parent,
+            "-m",
+            "merge without second-parent authority",
+        ],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(["git", "switch", "--detach", merge], cwd=repo, check=True)
+
+    result = check(repo)
+
+    assert result.exit_code == 1
+    assert (rel, "plan-contract") in [
+        (item.path, item.kind) for item in result.malformed
+    ]
+
+
 def test_composite_authority_revalidates_plan_after_roadmap_hash(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
     rel = _commit_plan(repo)
