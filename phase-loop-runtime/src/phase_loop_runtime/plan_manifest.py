@@ -1027,6 +1027,8 @@ def _regular_repo_files_sha256(
                 file_named_before = os.stat(
                     parts[-1], dir_fd=parent_fd, follow_symlinks=False
                 )
+                if not stat.S_ISREG(file_named_before.st_mode):
+                    return None
                 file_fd = os.open(parts[-1], file_flags, dir_fd=parent_fd)
                 stream = opened.enter_context(os.fdopen(file_fd, "rb"))
                 file_before = os.fstat(stream.fileno())

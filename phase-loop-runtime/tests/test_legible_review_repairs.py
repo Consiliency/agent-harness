@@ -994,13 +994,23 @@ def test_regular_repo_file_hash_rejects_ancestor_swap_after_hash(tmp_path, monke
     assert target_fstats == 2
 
 
-def test_regular_repo_file_hash_rejects_fifo_without_blocking(tmp_path):
+def test_regular_repo_file_hash_rejects_fifo_without_blocking(tmp_path, monkeypatch):
     if not hasattr(os, "mkfifo") or not hasattr(signal, "SIGALRM"):
         pytest.skip("FIFO alarm regression requires POSIX")
     repo = make_repo(tmp_path)
     authority = repo / "authority"
     authority.mkdir()
     os.mkfifo(authority / "bound.md")
+    real_open = os.open
+    opened_fifo = False
+
+    def tracking_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal opened_fifo
+        if path == "bound.md" and dir_fd is not None:
+            opened_fifo = True
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(plan_manifest.os, "open", tracking_open)
     previous_handler = signal.signal(
         signal.SIGALRM,
         lambda *_args: (_ for _ in ()).throw(TimeoutError("FIFO open blocked")),
@@ -1016,6 +1026,7 @@ def test_regular_repo_file_hash_rejects_fifo_without_blocking(tmp_path):
 
     assert result is None
     assert elapsed < 1
+    assert not opened_fifo
 
 
 def test_required_roadmap_registry_absence_is_typed_failure(tmp_path):
