@@ -2070,12 +2070,18 @@ def canonical_plan_files(
                 raise ManifestSourceError(
                     "roadmap-status sources are not one stable regular-file snapshot"
                 )
-    roadmap_lint.validate_roadmap_status_coherence(
-        working_repo,
-        required=False,
-        root_fd=snapshot.root_fd if snapshot is not None else None,
-        source_bytes=roadmap_sources,
-    )
+    if snapshot is None:
+        roadmap_lint.validate_roadmap_status_coherence(
+            working_repo,
+            required=False,
+        )
+    else:
+        roadmap_lint._validate_roadmap_status_sources(
+            working_repo,
+            False,
+            root_fd=snapshot.root_fd,
+            source_bytes=roadmap_sources or {},
+        )
 
     origins: dict[str, set[str]] = {}
     malformed: list[MalformedPlanFinding] = []

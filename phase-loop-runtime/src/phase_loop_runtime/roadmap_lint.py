@@ -669,6 +669,7 @@ def _pinned_roadmap_sources(
         raise MalformedRegistryError(
             f"cannot pin roadmap repository root: {exc}"
         ) from exc
+    consumer_exception = False
     try:
         expected_root = root_identity(os.fstat(root_fd))
         if expected_root != root_identity(root_before):
@@ -687,10 +688,13 @@ def _pinned_roadmap_sources(
             )
 
         registry_rel = ROADMAP_STATUS_REGISTRY_REL
+        marker_rel = "plans/phase-plan-v10-LEGIBLE.md"
         registry_path = descriptor_repo / registry_rel
+        marker_path = descriptor_repo / marker_rel
         sources: dict[str, bytes] = {}
         source_paths: tuple[str, ...] = ()
         registry_present = os.path.lexists(registry_path)
+        marker_present = False
         if registry_present:
             registry_source: dict[str, bytes] = {}
             if _regular_repo_files_sha256(
@@ -723,8 +727,23 @@ def _pinned_roadmap_sources(
                 raise MalformedRegistryError(
                     "roadmap-status sources are not one stable regular-file snapshot"
                 )
+        else:
+            marker_present = os.path.lexists(marker_path)
+            if marker_present and _regular_repo_files_sha256(
+                root,
+                (marker_rel,),
+                root_fd=root_fd,
+                content_out=sources,
+            ) is None:
+                raise MalformedRegistryError(
+                    "required roadmap marker is not a stable regular repository file"
+                )
 
-        yield descriptor_repo, root_fd, sources
+        try:
+            yield descriptor_repo, root_fd, sources
+        except BaseException:
+            consumer_exception = True
+            raise
 
         if registry_present:
             final_sources: dict[str, bytes] = {}
@@ -741,6 +760,21 @@ def _pinned_roadmap_sources(
             raise MalformedRegistryError(
                 "roadmap-status registry appeared during validation"
             )
+        elif marker_present:
+            final_marker: dict[str, bytes] = {}
+            if _regular_repo_files_sha256(
+                root,
+                (marker_rel,),
+                root_fd=root_fd,
+                content_out=final_marker,
+            ) is None or final_marker != sources:
+                raise MalformedRegistryError(
+                    "required roadmap marker changed during validation"
+                )
+        elif os.path.lexists(marker_path):
+            raise MalformedRegistryError(
+                "required roadmap marker appeared during validation"
+            )
         if root_identity(os.stat(root, follow_symlinks=False)) != expected_root:
             raise MalformedRegistryError(
                 "roadmap repository root changed during validation"
@@ -748,6 +782,8 @@ def _pinned_roadmap_sources(
     except MalformedRegistryError:
         raise
     except (OSError, RuntimeError, ValueError) as exc:
+        if consumer_exception:
+            raise
         raise MalformedRegistryError(f"roadmap source snapshot failed: {exc}") from exc
     finally:
         os.close(root_fd)
@@ -852,31 +888,13 @@ def read_roadmap_status(
     return data
 
 
-def validate_roadmap_status_coherence(
+def _validate_roadmap_status_sources(
     repo: Path,
-    required: bool = False,
+    required: bool,
     *,
-    root_fd: int | None = None,
-    source_bytes: Mapping[str, bytes] | None = None,
+    root_fd: int,
+    source_bytes: Mapping[str, bytes],
 ) -> Optional[dict]:
-    """Full coherence validation over ``specs/roadmap-status.json``.
-
-    A wholly absent registry is a no-op for legacy/synthetic repositories.
-    When the canonical LEGIBLE phase marker is present, ``required=True`` also
-    makes absence a typed failure. Present-but-defective registries always fail.
-    """
-    if source_bytes is None:
-        with _pinned_roadmap_sources(repo) as (
-            descriptor_repo,
-            pinned_root_fd,
-            pinned_sources,
-        ):
-            return validate_roadmap_status_coherence(
-                descriptor_repo,
-                required=required,
-                root_fd=pinned_root_fd,
-                source_bytes=pinned_sources,
-            )
     repo = Path(repo)
     registry_path = repo / ROADMAP_STATUS_REGISTRY_REL
     status = read_roadmap_status(
@@ -885,10 +903,40 @@ def validate_roadmap_status_coherence(
         root_fd=root_fd,
         source_bytes=source_bytes,
     )
-    canonical_marker = repo / "plans" / "phase-plan-v10-LEGIBLE.md"
-    if status is None and required and canonical_marker.is_file():
+    canonical_marker = "plans/phase-plan-v10-LEGIBLE.md"
+    if status is None and required and canonical_marker in source_bytes:
         raise MalformedRegistryError(f"required roadmap-status registry is absent: {registry_path}")
     return status
+
+
+def validate_roadmap_status_coherence(
+    repo: Path, required: bool = False
+) -> Optional[dict]:
+    """Full coherence validation over ``specs/roadmap-status.json``.
+
+    A wholly absent registry is a no-op for legacy/synthetic repositories.
+    When the canonical LEGIBLE phase marker is present, ``required=True`` also
+    makes absence a typed failure. Present-but-defective registries always fail.
+    """
+    status, _sources = _coherent_roadmap_status_sources(repo, required=required)
+    return status
+
+
+def _coherent_roadmap_status_sources(
+    repo: Path, *, required: bool
+) -> tuple[Optional[dict], dict[str, bytes]]:
+    with _pinned_roadmap_sources(repo) as (
+        descriptor_repo,
+        pinned_root_fd,
+        pinned_sources,
+    ):
+        status = _validate_roadmap_status_sources(
+            descriptor_repo,
+            required,
+            root_fd=pinned_root_fd,
+            source_bytes=pinned_sources,
+        )
+        return status, dict(pinned_sources)
 
 
 def declared_active_roadmap(repo: Path) -> Path:

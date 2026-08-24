@@ -381,7 +381,10 @@ def collect_roadmap_status(repo: Path, *, required: bool = True) -> dict[str, An
     repo = Path(repo)
     registry_path = repo / roadmap_lint.ROADMAP_STATUS_REGISTRY_REL
     try:
-        status = roadmap_lint.validate_roadmap_status_coherence(repo, required=required)
+        status, source_bytes = roadmap_lint._coherent_roadmap_status_sources(
+            repo,
+            required=required,
+        )
     except roadmap_lint.RoadmapStatusError as exc:
         # A present-but-defective registry is always a coherence-class defect
         # from this reducer's point of view; only a changed tracked-path SET
@@ -393,14 +396,14 @@ def collect_roadmap_status(repo: Path, *, required: bool = True) -> dict[str, An
     if status is None:
         raise LegibleStatusEvidenceError("roadmap_status_registry_absent", f"no registry at {registry_path}")
 
-    registry_bytes = registry_path.read_bytes()
+    registry_bytes = source_bytes[roadmap_lint.ROADMAP_STATUS_REGISTRY_REL]
     tracked_paths = sorted(entry["path"] for entry in status["roadmaps"])
     tracked_digest = hashlib.sha256("\n".join(tracked_paths).encode("utf-8")).hexdigest()
 
     roadmaps: list[dict[str, Any]] = []
     for entry in status["roadmaps"]:
         rel = entry["path"]
-        text = (repo / rel).read_text(encoding="utf-8")
+        text = source_bytes[rel].decode("utf-8")
         banner_status = roadmap_lint.parse_roadmap_banner_status(text, rel)
         lines = text.splitlines()
         line3 = lines[2] if len(lines) > 2 else ""
@@ -432,26 +435,69 @@ def validate_roadmap_status_evidence(
     re-parsing, so a since-corrupted declaration reports digest drift rather
     than a different (also-true but less specific) parse failure."""
     repo = Path(repo)
-    registry_path = repo / record["registry_path"]
-    registry_bytes = registry_path.read_bytes()
-    if hashlib.sha256(registry_bytes).hexdigest() != record["registry_sha256"]:
-        raise LegibleStatusEvidenceError("roadmap_status_registry_drift", "registry bytes drifted since collection")
-
-    recorded_paths = sorted(entry["path"] for entry in record["roadmaps"])
-    current_tracked = roadmap_lint._tracked_roadmap_paths(repo)
-    if current_tracked != recorded_paths:
+    if record["registry_path"] != roadmap_lint.ROADMAP_STATUS_REGISTRY_REL:
         raise LegibleStatusEvidenceError(
-            "roadmap_status_path_set_drift", "tracked roadmap path set drifted since collection"
+            "roadmap_status_registry_drift",
+            "recorded registry path is not canonical",
         )
+    try:
+        with roadmap_lint._pinned_roadmap_sources(repo) as (
+            descriptor_repo,
+            root_fd,
+            source_bytes,
+        ):
+            registry_bytes = source_bytes.get(
+                roadmap_lint.ROADMAP_STATUS_REGISTRY_REL
+            )
+            if registry_bytes is None:
+                raise LegibleStatusEvidenceError(
+                    "roadmap_status_registry_absent",
+                    "roadmap-status registry is absent",
+                )
+            if hashlib.sha256(registry_bytes).hexdigest() != record["registry_sha256"]:
+                raise LegibleStatusEvidenceError(
+                    "roadmap_status_registry_drift",
+                    "registry bytes drifted since collection",
+                )
 
-    for entry in record["roadmaps"]:
-        rel = entry["path"]
-        text = (repo / rel).read_text(encoding="utf-8")
-        lines = text.splitlines()
-        line3 = lines[2] if len(lines) > 2 else ""
-        digest = hashlib.sha256(line3.encode("utf-8")).hexdigest()
-        if digest != entry["declaration_sha256"]:
-            raise LegibleStatusEvidenceError("roadmap_status_digest_drift", f"{rel}: declaration bytes drifted")
+            recorded_paths = sorted(entry["path"] for entry in record["roadmaps"])
+            current_tracked = roadmap_lint._tracked_roadmap_paths(
+                descriptor_repo,
+                root_fd=root_fd,
+            )
+            if current_tracked != recorded_paths:
+                raise LegibleStatusEvidenceError(
+                    "roadmap_status_path_set_drift",
+                    "tracked roadmap path set drifted since collection",
+                )
+
+            for entry in record["roadmaps"]:
+                rel = entry["path"]
+                try:
+                    text = source_bytes[rel].decode("utf-8")
+                except (KeyError, UnicodeDecodeError) as exc:
+                    raise LegibleStatusEvidenceError(
+                        "roadmap_status_digest_drift",
+                        f"{rel}: declaration bytes unavailable",
+                    ) from exc
+                lines = text.splitlines()
+                line3 = lines[2] if len(lines) > 2 else ""
+                digest = hashlib.sha256(line3.encode("utf-8")).hexdigest()
+                if digest != entry["declaration_sha256"]:
+                    raise LegibleStatusEvidenceError(
+                        "roadmap_status_digest_drift",
+                        f"{rel}: declaration bytes drifted",
+                    )
+    except roadmap_lint.RoadmapStatusError as exc:
+        if not required and "registry" in str(exc) and "absent" in str(exc):
+            raise LegibleStatusEvidenceError(
+                "roadmap_status_registry_absent",
+                str(exc),
+            ) from exc
+        raise LegibleStatusEvidenceError(
+            "roadmap_status_coherence_drift",
+            str(exc),
+        ) from exc
 
     return RoadmapStatusEvidenceValidation(ok=True)
 

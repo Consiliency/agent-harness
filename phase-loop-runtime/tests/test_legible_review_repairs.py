@@ -4159,6 +4159,107 @@ def test_direct_roadmap_validation_rejects_fifo_without_blocking(
         signal.signal(signal.SIGALRM, previous)
 
 
+def test_required_roadmap_marker_is_bound_to_absent_registry_snapshot(
+    tmp_path, monkeypatch
+):
+    repo = make_repo(tmp_path)
+    marker = repo / "plans" / "phase-plan-v10-LEGIBLE.md"
+    marker.write_text("---\nphase: LEGIBLE\n---\n# LEGIBLE\n", encoding="utf-8")
+    registry = repo / roadmap_lint.ROADMAP_STATUS_REGISTRY_REL
+    parked_marker = tmp_path / "parked-marker.md"
+    real_validate = roadmap_lint._validate_roadmap_status_sources
+    mutated = False
+
+    def mutate_after_snapshot(repo_arg, required, **kwargs):
+        nonlocal mutated
+        registry.write_text("not json\n", encoding="utf-8")
+        marker.rename(parked_marker)
+        mutated = True
+        try:
+            return real_validate(repo_arg, required, **kwargs)
+        finally:
+            parked_marker.rename(marker)
+            registry.unlink()
+
+    monkeypatch.setattr(
+        roadmap_lint,
+        "_validate_roadmap_status_sources",
+        mutate_after_snapshot,
+    )
+
+    with pytest.raises(roadmap_lint.RoadmapStatusError):
+        roadmap_lint.validate_roadmap_status_coherence(repo, required=True)
+    assert mutated
+    assert marker.is_file()
+    assert not registry.exists()
+
+
+@pytest.mark.parametrize("source", ("registry", "banner"))
+def test_roadmap_evidence_validation_rejects_external_symlink_source(
+    tmp_path, source
+):
+    repo, registry, payload = _roadmap_check_fixture(
+        tmp_path / "repo-state",
+        banners={"specs/phase-plans-v1.md": _ACTIVE_BANNER},
+        statuses={"specs/phase-plans-v1.md": "active"},
+    )
+    record = legible_evidence.collect_roadmap_status(repo, required=True)
+    banner = repo / "specs" / "phase-plans-v1.md"
+
+    if source == "registry":
+        external = tmp_path / "external-roadmap-status.json"
+        external.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        registry.unlink()
+        registry.symlink_to(external)
+    else:
+        external = tmp_path / "external-roadmap.md"
+        external.write_text(_ACTIVE_BANNER, encoding="utf-8")
+        banner.unlink()
+        banner.symlink_to(external)
+
+    with pytest.raises(legible_evidence.LegibleStatusEvidenceError):
+        legible_evidence.validate_roadmap_status_evidence(
+            repo,
+            record,
+            required=True,
+        )
+
+
+@pytest.mark.parametrize("source", ("registry", "banner"))
+def test_roadmap_evidence_validation_rejects_fifo_without_blocking(
+    tmp_path, source
+):
+    repo, registry, _payload = _roadmap_check_fixture(
+        tmp_path,
+        banners={"specs/phase-plans-v1.md": _ACTIVE_BANNER},
+        statuses={"specs/phase-plans-v1.md": "active"},
+    )
+    record = legible_evidence.collect_roadmap_status(repo, required=True)
+    target = (
+        registry
+        if source == "registry"
+        else repo / "specs" / "phase-plans-v1.md"
+    )
+    target.unlink()
+    os.mkfifo(target)
+
+    def timeout_handler(_signum, _frame):
+        raise TimeoutError("roadmap evidence validation blocked on a FIFO")
+
+    previous = signal.signal(signal.SIGALRM, timeout_handler)
+    signal.setitimer(signal.ITIMER_REAL, 1.0)
+    try:
+        with pytest.raises(legible_evidence.LegibleStatusEvidenceError):
+            legible_evidence.validate_roadmap_status_evidence(
+                repo,
+                record,
+                required=True,
+            )
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
 def test_cli_attest_passes_preimport_process_token_into_runner_workflow(tmp_path, monkeypatch):
     from phase_loop_runtime import cli
 
