@@ -205,7 +205,6 @@ PYEOF
       /phase-loop-runtime/README.md \
       /docs/ \
       /specs/ \
-      /plans/manifest.json \
       /plans/phase-plan-v10-CONFORM.md \
       /plans/phase-plan-v10-FABPUB.md \
       /plans/phase-plan-v10-GOVLEAN.md \
