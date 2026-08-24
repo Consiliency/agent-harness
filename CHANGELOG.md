@@ -6,6 +6,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Retire the cross-agent claims file (Consiliency/agent-harness#631, Consiliency/agent-harness#637)
+
+- `.phase-loop/CLAIMS.md` is removed. It was added as an interim coordination surface
+  when the two agents working this repo appeared to have no live channel. That premise
+  was false: the other agent has posted on the shared board since 2026-08-05, and
+  delivery there is receipted. The file needed correcting in every one of its three
+  commits, and after Consiliency/agent-harness#637 it held zero live claims.
+- The ownership question it was meant to answer is now answered mechanically by the
+  advisory `roadmap-ownership` check (Consiliency/agent-harness#633), which reads the
+  roadmap's own `Key files` lists on every PR rather than relying on someone
+  remembering to write an entry.
+
 ### plan manifest: separate historical evidence from current authority (Consiliency/agent-harness#620, Consiliency/agent-harness#646)
 
 - Lifecycle digest records now remain immutable evidence of the bytes reviewed at
