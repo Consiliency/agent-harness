@@ -925,6 +925,36 @@ def test_regular_repo_file_hash_rejects_ancestor_swap(tmp_path, monkeypatch):
     assert swapped
 
 
+def test_regular_repo_file_hash_rejects_ancestor_swap_after_hash(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    nested = repo / "authority"
+    nested.mkdir()
+    target = nested / "bound.md"
+    target.write_text("trusted bytes\n", encoding="utf-8")
+    target_inode = target.stat().st_ino
+    moved = tmp_path / "moved-authority"
+    external = tmp_path / "external-authority"
+    external.mkdir()
+    (external / "bound.md").write_text("outside bytes\n", encoding="utf-8")
+    real_fstat = os.fstat
+    target_fstats = 0
+
+    def swapping_fstat(descriptor):
+        nonlocal target_fstats
+        result = real_fstat(descriptor)
+        if result.st_ino == target_inode:
+            target_fstats += 1
+            if target_fstats == 2:
+                nested.rename(moved)
+                nested.symlink_to(external, target_is_directory=True)
+        return result
+
+    monkeypatch.setattr(plan_manifest.os, "fstat", swapping_fstat)
+
+    assert plan_manifest._regular_repo_file_sha256(repo, "authority/bound.md") is None
+    assert target_fstats == 2
+
+
 def test_required_roadmap_registry_absence_is_typed_failure(tmp_path):
     repo = make_repo(tmp_path)
     marker = repo / "plans" / "phase-plan-v10-LEGIBLE.md"
@@ -1895,7 +1925,14 @@ def test_operational_evidence_rejects_unproven_frozen_semantics(tmp_path, mutati
 
 def _write_legible_manifest_contract(repo: Path, *, include_contract: bool = True) -> tuple[str, dict]:
     rel = _commit_plan(repo, "phase-plan-v10-LEGIBLE.md")
+    source_repo = Path(__file__).resolve().parents[2]
+    roadmap_path = repo / roadmap_assumptions.CANONICAL_ROADMAP_REL
+    roadmap_path.parent.mkdir(parents=True, exist_ok=True)
+    roadmap_path.write_bytes(
+        (source_repo / roadmap_assumptions.CANONICAL_ROADMAP_REL).read_bytes()
+    )
     plan_digest = hashlib.sha256((repo / rel).read_bytes()).hexdigest()
+    roadmap_digest = hashlib.sha256(roadmap_path.read_bytes()).hexdigest()
     owned_digest = hashlib.sha256("".join(f"{path}\n" for path in LEGIBLE_OWNED_PATHS).encode()).hexdigest()
     contract = {
         **LEGIBLE_CONTRACT_FIXED_FIELDS,
@@ -1915,12 +1952,15 @@ def _write_legible_manifest_contract(repo: Path, *, include_contract: bool = Tru
                     {
                         "file": rel,
                         "phase_alias": "LEGIBLE",
+                        "roadmap_ref": {
+                            "file": roadmap_assumptions.CANONICAL_ROADMAP_REL
+                        },
                         "plan_authority_history": [
                             {
                                 "schema": "plan_current_authority.v1",
                                 "source": "agent-harness#620",
                                 "plan_sha256": plan_digest,
-                                "roadmap_sha256": None,
+                                "roadmap_sha256": roadmap_digest,
                             }
                         ],
                         "lifecycle": lifecycle,
@@ -1933,6 +1973,40 @@ def _write_legible_manifest_contract(repo: Path, *, include_contract: bool = Tru
         encoding="utf-8",
     )
     return rel, contract
+
+
+def test_legible_current_authority_cannot_drop_roadmap_binding(tmp_path):
+    repo = make_repo(tmp_path)
+    rel, _contract = _write_legible_manifest_contract(repo)
+    assert check(repo).exit_code == 0
+    manifest_path = repo / "plans" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    del manifest["plans"][0]["roadmap_ref"]
+    manifest["plans"][0]["plan_authority_history"][-1]["roadmap_sha256"] = None
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
+
+    result = check(repo)
+
+    assert result.exit_code == 1
+    assert (rel, "plan-contract") in [
+        (item.path, item.kind) for item in result.malformed
+    ]
+
+
+def test_manifest_check_rejects_non_list_lifecycle_that_erases_authority(tmp_path):
+    repo = make_repo(tmp_path)
+    rel = _commit_plan(repo)
+    (repo / "plans" / "manifest.json").write_text(
+        json.dumps({"plans": [{"file": rel, "lifecycle": {}}]}),
+        encoding="utf-8",
+    )
+
+    result = check(repo)
+
+    assert result.exit_code == 1
+    assert (rel, "plan-contract") in [
+        (item.path, item.kind) for item in result.malformed
+    ]
 
 
 def test_legible_manifest_contract_survives_later_ordinary_lifecycle_event(tmp_path):

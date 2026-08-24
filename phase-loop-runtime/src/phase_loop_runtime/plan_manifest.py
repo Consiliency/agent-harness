@@ -942,43 +942,58 @@ def _regular_repo_file_sha256(repo: Path, rel_path: str) -> str | None:
                 return None
 
             parent_fd = root_fd
-            directory_identities = [root_identity]
+            directory_entries: list[tuple[int, str, tuple[int, int, int]]] = []
             for part in parts[:-1]:
+                child_before = os.stat(part, dir_fd=parent_fd, follow_symlinks=False)
+                if not stat.S_ISDIR(child_before.st_mode):
+                    return None
                 child_fd = os.open(part, directory_flags, dir_fd=parent_fd)
                 opened.callback(os.close, child_fd)
                 child_stat = os.fstat(child_fd)
-                if not stat.S_ISDIR(child_stat.st_mode):
+                child_identity = directory_identity(child_stat)
+                child_after = os.stat(part, dir_fd=parent_fd, follow_symlinks=False)
+                if (
+                    not stat.S_ISDIR(child_stat.st_mode)
+                    or child_identity != directory_identity(child_before)
+                    or child_identity != directory_identity(child_after)
+                ):
                     return None
-                directory_identities.append(directory_identity(child_stat))
+                directory_entries.append((parent_fd, part, child_identity))
                 parent_fd = child_fd
 
+            file_named_before = os.stat(
+                parts[-1], dir_fd=parent_fd, follow_symlinks=False
+            )
             file_fd = os.open(parts[-1], file_flags, dir_fd=parent_fd)
-            file_before = os.fstat(file_fd)
-            if not stat.S_ISREG(file_before.st_mode):
-                os.close(file_fd)
-                return None
+            stream = opened.enter_context(os.fdopen(file_fd, "rb"))
+            file_before = os.fstat(stream.fileno())
             identity = file_identity(file_before)
-            digest = hashlib.sha256()
-            with os.fdopen(file_fd, "rb") as stream:
-                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                    digest.update(chunk)
-                if file_identity(os.fstat(stream.fileno())) != identity:
-                    return None
-
-            # Rewalk the named path from a fresh root descriptor. This detects an
-            # ancestor moved or replaced while the first descriptor chain was open.
-            verify_root_fd = os.open(root, directory_flags)
-            opened.callback(os.close, verify_root_fd)
-            if directory_identity(os.fstat(verify_root_fd)) != directory_identities[0]:
+            file_named_after = os.stat(
+                parts[-1], dir_fd=parent_fd, follow_symlinks=False
+            )
+            if (
+                not stat.S_ISREG(file_before.st_mode)
+                or identity != file_identity(file_named_before)
+                or identity != file_identity(file_named_after)
+            ):
                 return None
-            verify_parent_fd = verify_root_fd
-            for part, expected in zip(parts[:-1], directory_identities[1:], strict=True):
-                verify_child_fd = os.open(part, directory_flags, dir_fd=verify_parent_fd)
-                opened.callback(os.close, verify_child_fd)
-                if directory_identity(os.fstat(verify_child_fd)) != expected:
+            digest = hashlib.sha256()
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+            if file_identity(os.fstat(stream.fileno())) != identity:
+                return None
+
+            # Revalidate every entry through its original pinned parent. A second
+            # pathname walk would create another stale-descriptor race of its own.
+            if directory_identity(os.stat(root, follow_symlinks=False)) != root_identity:
+                return None
+            for entry_parent_fd, part, expected in directory_entries:
+                current = os.stat(
+                    part, dir_fd=entry_parent_fd, follow_symlinks=False
+                )
+                if directory_identity(current) != expected:
                     return None
-                verify_parent_fd = verify_child_fd
-            final = os.stat(parts[-1], dir_fd=verify_parent_fd, follow_symlinks=False)
+            final = os.stat(parts[-1], dir_fd=parent_fd, follow_symlinks=False)
             if file_identity(final) != identity or not stat.S_ISREG(final.st_mode):
                 return None
             return digest.hexdigest()
@@ -1206,7 +1221,9 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
             contracts: list[dict[str, Any]] = []
             rebinds: list[dict[str, Any]] = []
             historical_binding_declared = False
-            historical_binding_malformed = False
+            historical_binding_malformed = lifecycle is not None and not isinstance(
+                lifecycle, list
+            )
             if isinstance(lifecycle, list):
                 for event in lifecycle:
                     metadata = event.get("metadata") if isinstance(event, dict) else None
@@ -1296,6 +1313,13 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
                 current_authority = authority_history[-1] if authority_valid else None
                 roadmap_contract_valid = (
                     current_authority is not None
+                    and (
+                        rel != _LEGIBLE_PLAN_REL
+                        or (
+                            isinstance(roadmap_ref, dict)
+                            and isinstance(current_authority["roadmap_sha256"], str)
+                        )
+                    )
                     and (
                         (roadmap_ref is None and current_authority["roadmap_sha256"] is None)
                         or (
