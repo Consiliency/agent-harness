@@ -117,7 +117,7 @@ class GoldenPerLegLaunchTests(unittest.TestCase):
         self.assertEqual(legacy["cmd"], seam["cmd"])
         self.assertEqual(legacy["env"], seam["env"])
         self.assertEqual(legacy["deadline_s"], seam["deadline_s"])
-        self.assertEqual(seam["cmd"][seam["cmd"].index("--model") + 1], "gemini-3.6-flash-high")
+        self.assertEqual(seam["cmd"][seam["cmd"].index("--model") + 1], "gemini-3.7-flash-high")
 
     def test_claude_argv_and_env_equal_legacy(self) -> None:
         seat = _default_seat("claude")
@@ -220,9 +220,9 @@ class GoldenWholeBoardBehaviorTests(unittest.TestCase):
         self.assertEqual(
             [r.seat_key for r in board.legs],
             ["codex:gpt-5.6-sol:max:red-team",
-             "gemini:gemini-3.6-flash:high:alternative-approach",
+             "gemini:gemini-3.7-flash:high:alternative-approach",
              "claude:claude-fable-5:max:correctness",
-             "grok:grok-4.5:max:adversarial"],
+             "grok:grok-4.6:max:adversarial"],
         )
         for p, b in zip(panel.legs, board.legs):
             self.assertEqual(p.leg, b.leg)             # bare vendor lane unchanged

@@ -293,8 +293,10 @@ def review_policy_for_tier(tier: ReviewLandingTier | str) -> ReviewLandingPolicy
 DEFAULT_REVIEW_SEAT_ALIASES: Mapping[str, str] = {
     "claude-fable-5": "fable",  # model-id-source: frozen review policy default seat
     "gpt-5.6-sol": "sol",  # model-id-source: frozen review policy default seat
-    "gemini-3.6-flash": "gemini",  # model-id-source: frozen review policy default seat
-    "grok-4.5": "grok",  # model-id-source: frozen review policy default seat
+    "gemini-3.7-flash": "gemini",  # model-id-source: frozen review policy default seat
+    "gemini-3.6-flash": "gemini",  # model-id-source: explicit legacy review seat
+    "grok-4.6": "grok",  # model-id-source: frozen review policy default seat
+    "grok-4.5": "grok",  # model-id-source: explicit legacy review seat
 }
 
 
@@ -354,8 +356,8 @@ def _validate_review_board_policy(
 PRESIDENT_LADDER: tuple[str, ...] = (
     "fable",
     "sol",
-    "grok-4.5",  # model-id-source: frozen president availability ladder
-    "gemini-3.6",  # model-id-source: frozen president availability ladder
+    "grok-4.6",  # model-id-source: frozen president availability ladder
+    "gemini-3.7-flash",  # model-id-source: frozen president availability ladder
 )
 
 
@@ -498,9 +500,9 @@ _LEG_CLI: dict[str, str] = {
 # drift back to Sonnet.
 DEFAULT_LEG_MODELS: dict[str, str] = {
     "codex": "gpt-5.6-sol",  # model-id-source: panel per-leg default (single source of truth)
-    "gemini": "gemini-3.6-flash-high",  # model-id-source: panel per-leg default
+    "gemini": "gemini-3.7-flash-high",  # model-id-source: panel per-leg default
     "claude": "claude-fable-5",  # model-id-source: panel per-leg default (single source of truth)
-    "grok": "grok-4.5",  # model-id-source: panel per-leg default (single source of truth)
+    "grok": "grok-4.6",  # model-id-source: panel per-leg default (single source of truth)
 }
 # Legs are blocking subprocess I/O (the CLI wait releases the GIL), so the panel /
 # board fans them out across threads for REAL parallelism — a 3-frontier max-effort
@@ -3787,13 +3789,13 @@ def _exec_leg(
         # ABDHOME: the agy leg bakes effort INTO the model name. effort-absent keeps
         # the shared default model verbatim; a seat renders
         # ``(base, effort)`` -> ``"<base> (Word)"`` (idempotent on an already-baked
-        # string), so a ``gemini-3.6-flash`` + ``high`` seat yields the canonical id.
+        # string), so a ``gemini-3.7-flash`` + ``high`` seat yields the canonical id.
         gemini_model = (
             model or DEFAULT_LEG_MODELS["gemini"]
             if effort is None
             else render_seat_invocation(
                 "gemini",
-                model or "gemini-3.6-flash",  # model-id-source: board base default
+                model or "gemini-3.7-flash",  # model-id-source: board base default
                 effort,
             ).model
         )

@@ -403,8 +403,8 @@ def _operational_fixture(
     panel_models = {
         "claude": "claude-fable-5",
         "codex": "gpt-5.6-sol",
-        "gemini": "gemini-3.6-flash",
-        "grok": "grok-4.5",
+        "gemini": "gemini-3.7-flash",
+        "grok": "grok-4.6",
     }
     leg_records = []
     leg_paths: list[Path] = []

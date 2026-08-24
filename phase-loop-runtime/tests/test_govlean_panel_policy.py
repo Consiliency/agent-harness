@@ -105,7 +105,7 @@ def test_president_descends_only_through_typed_availability_failures_and_never_o
 def test_president_ladder_reaches_gemini_without_skipping_a_rung():
     panel = _panel()
     attempts: list[str] = []
-    expected = ("fable", "sol", "grok-4.5", "gemini-3.6")
+    expected = ("fable", "sol", "grok-4.6", "gemini-3.7-flash")
 
     def invoke(model: str, _prompt: str):
         attempts.append(model)
@@ -121,7 +121,7 @@ def test_president_ladder_reaches_gemini_without_skipping_a_rung():
 
     assert tuple(panel.PRESIDENT_LADDER) == expected
     assert attempts == list(expected)
-    assert ruling.model == "gemini-3.6"
+    assert ruling.model == "gemini-3.7-flash"
 
 
 def test_president_does_not_descend_on_an_untyped_or_nonavailability_failure():
