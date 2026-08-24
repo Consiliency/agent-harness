@@ -14,6 +14,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   them as ownership, so a block bound only the agents who read the roadmap.
 - Advisory deliberately: it annotates, never fails. It becomes worth making required
   only once its false-positive rate is measured against merged history.
+- Reads the repository's declared active roadmap via `roadmap_lint.declared_active_roadmap`
+  (the `specs/roadmap-status.json` registry), not a version-number guess.
 - It **does** exit non-zero when it cannot evaluate. A preflight that silently passes
   on an unreadable map would report green for every PR.
 

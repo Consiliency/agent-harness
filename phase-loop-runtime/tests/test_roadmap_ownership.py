@@ -130,16 +130,38 @@ class TestOwnershipMap(unittest.TestCase):
         )
         self.assertIn("SCHED", [p.alias for p in owners])
 
-    def test_unowned_file_has_no_owner(self):
+    def test_a_genuinely_unowned_path_has_no_owner(self):
+        """`docs/TEAM-ONBOARDING.md` is claimed by no phase.
+
+        This test previously used `entry_doc_check.py` as the "unowned" example,
+        which was WRONG and passed only because the parser could not read
+        annotated directory entries. GOVLEAN claims
+        `phase-loop-runtime/src/phase_loop_runtime/` wholesale, so every runtime
+        module is claimed. I had also concluded by hand that `entry_doc_check.py`
+        was unowned -- the same blind spot, made twice, once in prose and once in
+        code.
+        """
         mapping = ro.ownership_map(
             (REPO_ROOT / "specs" / "phase-plans-v10.md").read_text()
         )
-        self.assertEqual(
-            ro.owners_for(
-                "phase-loop-runtime/src/phase_loop_runtime/entry_doc_check.py", mapping
-            ),
-            [],
+        self.assertEqual(ro.owners_for("docs/TEAM-ONBOARDING.md", mapping), [])
+
+    def test_govlean_directory_claim_covers_every_runtime_module(self):
+        """A single phase claiming the whole source tree is the signal/noise problem.
+
+        GOVLEAN's `phase-loop-runtime/src/phase_loop_runtime/` entry means EVERY
+        runtime change is "owned". Recorded as a test because it is the fact that
+        decides whether this check can ever become blocking -- not a defect in the
+        matcher, which is behaving correctly.
+        """
+        mapping = ro.ownership_map(
+            (REPO_ROOT / "specs" / "phase-plans-v10.md").read_text()
         )
+        for module in ("entry_doc_check.py", "panel_invoker.py", "runner.py"):
+            owners = ro.owners_for(
+                f"phase-loop-runtime/src/phase_loop_runtime/{module}", mapping
+            )
+            self.assertIn("GOVLEAN", [p.alias for p in owners], module)
 
     def test_a_path_can_have_several_owners(self):
         """Collapsing to one owner would silently drop a claim.
@@ -184,6 +206,99 @@ class TestOwnershipMap(unittest.TestCase):
         self.assertEqual(ro.owners_for("src/betamax.py", mapping), [])
 
 
+class TestRealBulletShapes(unittest.TestCase):
+    """The shapes that actually appear in `Key files`, all found by review.
+
+    My first version handled only `` `path` `` and silently missed the rest. Its
+    own dry-run reported "no changed path is claimed" for a PR editing two
+    directories GOVLEAN claims -- a false negative from the check whose whole
+    purpose is not missing ownership.
+    """
+
+    def test_annotated_directory_entry_is_read(self):
+        """GOVLEAN writes: - `path/` (new evidence, lint, and governance modules)
+
+        Mutation that must kill this: strip the whole bullet instead of taking
+        the first backticked span.
+        """
+        mapping = ro.ownership_map(
+            (REPO_ROOT / "specs" / "phase-plans-v10.md").read_text()
+        )
+        owners = ro.owners_for(
+            "phase-loop-runtime/src/phase_loop_runtime/roadmap_ownership.py", mapping
+        )
+        self.assertIn("GOVLEAN", [p.alias for p in owners])
+
+    def test_unbackticked_trailing_prose_entry_is_read(self):
+        """GOVLEAN also writes: - `skills-src/` planner and roadmap skills ..."""
+        self.assertEqual(
+            ro._strip_token("`skills-src/` planner and roadmap skills plus outputs"),
+            "skills-src/",
+        )
+
+    def test_glob_entry_claims_what_it_matches(self):
+        """LEGIBLE claims `specs/phase-plans-v*.md`.
+
+        Stored literally a glob matches nothing, so LEGIBLE's claim on every
+        roadmap file was silently inert.
+
+        Mutation that must kill this: drop the fnmatch branch from `_claims`.
+        """
+        mapping = ro.ownership_map(
+            (REPO_ROOT / "specs" / "phase-plans-v10.md").read_text()
+        )
+        self.assertIn(
+            "LEGIBLE",
+            [p.alias for p in ro.owners_for("specs/phase-plans-v10.md", mapping)],
+        )
+
+    def test_glob_does_not_over_claim(self):
+        self.assertFalse(ro._claims("specs/phase-plans-v*.md", "specs/other.md"))
+
+
+class TestPartialDrift(unittest.TestCase):
+    def test_one_phase_losing_key_files_raises(self):
+        """The third mutation, found by review: PARTIAL drift passed silently.
+
+        The all-or-nothing guards only see "every phase gone" or "every entry
+        gone". Removing ONE phase's `**Key files**` heading left the map looking
+        healthy while that phase's claims vanished -- exactly the silent-wrong
+        answer this check must never give.
+
+        Mutation that must kill this: drop the `barren` check.
+        """
+        lines = ROADMAP.splitlines()
+        out, skipping = [], False
+        for line in lines:
+            if line == "**Key files**" and not skipping:
+                skipping = True   # drop ALPHA's heading and its bullets only
+                continue
+            if skipping:
+                if line.startswith("- `"):
+                    continue
+                skipping = False
+            out.append(line)
+        with self.assertRaises(ro.RoadmapUnreadable) as caught:
+            ro.ownership_map("\n".join(out))
+        self.assertIn("ALPHA", str(caught.exception))
+
+
+class TestUsesCanonicalAuthority(unittest.TestCase):
+    def test_resolves_the_declared_active_roadmap(self):
+        """Delegates to the repo's own registry rather than guessing.
+
+        Hand-rolling "highest version number" picks a SUPERSEDED roadmap the
+        moment a higher-numbered one is delivered, then audits against a map
+        nobody works from.
+        """
+        self.assertEqual(ro.resolve_roadmap(REPO_ROOT).name, "phase-plans-v10.md")
+
+    def test_unreadable_repo_raises_rather_than_guessing(self):
+        with TemporaryDirectory() as tmp:
+            with self.assertRaises(ro.RoadmapUnreadable):
+                ro.resolve_roadmap(Path(tmp))
+
+
 class TestFailsLoudly(unittest.TestCase):
     """A preflight that silently passes when it cannot read its map is the bug."""
 
@@ -219,24 +334,6 @@ class TestFailsLoudly(unittest.TestCase):
         """The check failing must not look like the PR passing."""
         with TemporaryDirectory() as tmp:
             self.assertEqual(ro.main(["roadmap_ownership", "--repo", tmp]), 2)
-
-
-class TestRoadmapResolution(unittest.TestCase):
-    def test_state_json_wins_over_the_glob(self):
-        with TemporaryDirectory() as tmp:
-            repo = _repo(tmp)
-            (repo / "specs" / "phase-plans-v11.md").write_text(ROADMAP)
-            (repo / ".phase-loop" / "state.json").write_text(
-                json.dumps({"roadmap": "specs/phase-plans-v10.md"})
-            )
-            self.assertEqual(ro.resolve_roadmap(repo).name, "phase-plans-v10.md")
-
-    def test_glob_fallback_sorts_numerically_not_lexically(self):
-        """`v10` sorts BEFORE `v7` as a string; the newest roadmap is v10."""
-        with TemporaryDirectory() as tmp:
-            repo = _repo(tmp, current=None)
-            (repo / "specs" / "phase-plans-v7.md").write_text(ROADMAP)
-            self.assertEqual(ro.resolve_roadmap(repo).name, "phase-plans-v10.md")
 
 
 class TestDisposition(unittest.TestCase):

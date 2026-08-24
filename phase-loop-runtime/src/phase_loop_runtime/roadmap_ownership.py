@@ -26,14 +26,16 @@ another phase's files. Doing so while building it would be a poor advertisement.
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence
 
-from .roadmap_lint import Phase, _extract_phases
+from .roadmap_lint import Phase, _extract_phases, declared_active_roadmap
 
 #: A PR body/commit trailer that records a deliberate edit into an owned file.
 #: The goal is NOT to prevent the edit -- an urgent fix in a reserved file is a
@@ -64,42 +66,28 @@ class Ownership:
 
 
 def resolve_roadmap(repo: Path) -> Path:
-    """The roadmap the runner is actually driving.
+    """The roadmap this repository declares ACTIVE.
 
-    ``.phase-loop/state.json`` names it explicitly; that is authoritative because
-    it is what the runner reads. The glob is only a fallback for a checkout with
-    no runner state, and picks the highest version -- note ``v10`` sorts BEFORE
-    ``v7`` lexically, so the sort is numeric.
+    Delegates to `roadmap_lint.declared_active_roadmap`, which reads the registry
+    at `specs/roadmap-status.json` -- the repository's own authority on which
+    roadmap is selected, with `delivered` and `superseded` ones recorded alongside.
+
+    An earlier version of this function hand-rolled the choice: state.json, then
+    the numerically highest `phase-plans-v*.md`. That picks a SUPERSEDED roadmap
+    the moment a higher-numbered one is delivered, and would then audit ownership
+    against a map nobody is working from -- producing confident, wrong answers.
+    Re-implementing a selection rule the repo already owns was the mistake; this
+    check exists because I did not read what already existed.
     """
 
-    state = repo / ".phase-loop" / "state.json"
-    if state.is_file():
-        try:
-            declared = json.loads(state.read_text()).get("roadmap")
-        except (OSError, ValueError):
-            declared = None
-        if declared:
-            path = Path(declared)
-            if not path.is_absolute():
-                path = repo / path
-            if path.is_file():
-                return path
-
-    candidates = sorted(
-        (repo / "specs").glob("phase-plans-v*.md"),
-        key=lambda p: _version_key(p.name),
-    )
-    if not candidates:
+    try:
+        return declared_active_roadmap(Path(repo))
+    except Exception as exc:  # registry absent/unreadable, or no single active
         raise RoadmapUnreadable(
-            f"no roadmap found: {state} names none and specs/phase-plans-v*.md "
-            f"matched nothing under {repo}"
-        )
-    return candidates[-1]
-
-
-def _version_key(name: str) -> Tuple[int, str]:
-    digits = "".join(c for c in name.split("-v")[-1] if c.isdigit())
-    return (int(digits) if digits else -1, name)
+            f"could not determine the active roadmap for {repo}: {exc}. "
+            f"Refusing to guess -- auditing ownership against the wrong roadmap "
+            f"would produce credible-looking false results."
+        ) from exc
 
 
 def current_phase(repo: Path) -> Optional[str]:
@@ -112,10 +100,29 @@ def current_phase(repo: Path) -> Optional[str]:
         return None
 
 
-def _strip_token(raw: str) -> str:
-    """`Key files` entries are markdown bullets, usually backticked."""
+_BACKTICKED = re.compile(r"`([^`]+)`")
 
-    return raw.strip().strip("`").strip()
+
+def _strip_token(raw: str) -> str:
+    """The PATH out of a `Key files` bullet.
+
+    Bullets are not uniformly `` `path` ``. Real entries in this roadmap include
+    an annotation after the path::
+
+        - `phase-loop-runtime/src/phase_loop_runtime/` (new evidence, lint, ...)
+        - `skills-src/` planner and roadmap skills plus regeneration outputs
+
+    Stripping the whole bullet's outer backticks left the annotation attached, so
+    the token never matched anything. My own dry-run of this module reported "no
+    changed path is claimed" for a PR that edits two directories GOVLEAN claims --
+    a FALSE NEGATIVE from the check whose entire purpose is not missing ownership.
+    Take the first backticked span; fall back to the bare bullet when there is
+    none.
+    """
+
+    raw = raw.strip()
+    found = _BACKTICKED.search(raw)
+    return (found.group(1) if found else raw).strip()
 
 
 def ownership_map(roadmap_text: str) -> Dict[str, List[Phase]]:
@@ -135,6 +142,17 @@ def ownership_map(roadmap_text: str) -> Dict[str, List[Phase]]:
         raise RoadmapUnreadable(
             "parsed zero phases from the roadmap; refusing to report an empty "
             "ownership map (that would pass every PR)"
+        )
+    barren = [p.alias for p in phases if not p.key_files]
+    if barren:
+        # PARTIAL drift, which the all-or-nothing guards below cannot see: one
+        # phase losing its `Key files` heading leaves the other phases' entries
+        # intact, so the map looks healthy while that phase's claims vanish.
+        # `roadmap_lint.check_phase_fields` already errors on this, so a phase
+        # with none means the roadmap changed shape under this parser.
+        raise RoadmapUnreadable(
+            f"phase(s) {', '.join(barren)} declare no Key files; the roadmap "
+            f"changed shape and their claims would silently disappear"
         )
     mapping: Dict[str, List[Phase]] = {}
     for phase in phases:
@@ -159,11 +177,32 @@ def owners_for(path: str, mapping: Dict[str, List[Phase]]) -> List[Phase]:
 
     hits: List[Phase] = []
     for owned, phases in mapping.items():
-        if path == owned or (owned.endswith("/") and path.startswith(owned)):
+        if _claims(owned, path):
             for phase in phases:
                 if phase not in hits:
                     hits.append(phase)
     return hits
+
+
+def _claims(owned: str, path: str) -> bool:
+    """Does an ownership token claim ``path``?
+
+    Three token shapes appear in real `Key files` lists and all three must work:
+
+    * exact file -- claims only itself;
+    * directory (trailing ``/``) -- claims everything beneath it;
+    * GLOB (``specs/phase-plans-v*.md``, LEGIBLE) -- claims what it matches.
+      Stored literally, a glob matched nothing, so LEGIBLE's claim on every
+      roadmap file was silently inert.
+    """
+
+    if path == owned:
+        return True
+    if owned.endswith("/") and path.startswith(owned):
+        return True
+    if any(ch in owned for ch in "*?[") and fnmatch.fnmatch(path, owned):
+        return True
+    return False
 
 
 def changed_paths(repo: Path, base: str) -> List[str]:
