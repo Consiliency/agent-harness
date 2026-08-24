@@ -125,12 +125,12 @@ def test_grok_leg_argv_is_headless_plain_with_reasoning_effort(monkeypatch):
     assert "-p" in cmd  # single-turn headless prompt
     # plain headless output (stdout IS the review; no --output-last-message file)
     assert cmd[cmd.index("--output-format") + 1] == "plain"
-    # runs the grok-4.5 default model at grok's MAX reasoning. The effort-absent default
+    # runs the grok-4.6 default model at grok's MAX reasoning. The effort-absent default
     # renders through the SAME map as an explicit seat effort (ah#222): canonical ``max``
     # CLAMPS to grok's ``high`` ceiling (grok has no ``max``/``xhigh``), so the token the
     # CLI receives is a valid ``high`` — NOT the literal ``max`` that the grok CLI rejects
     # ("unknown effort level 'max'"), which used to ERROR the grok leg on every default run.
-    assert cmd[cmd.index("-m") + 1] == "grok-4.5"
+    assert cmd[cmd.index("-m") + 1] == "grok-4.6"
     assert cmd[cmd.index("--reasoning-effort") + 1] == "high"
     # regression guard: the invalid literal must never reach the CLI on the default path.
     assert "max" not in cmd

@@ -3,10 +3,10 @@
 The ``code-review`` board's IDEAL shape is one seat per frontier vendor, each at
 its MAX thinking and each carrying a DISTINCT review lens:
 
-    grok    grok-4.5         max   lens=adversarial
+    grok    grok-4.6         max   lens=adversarial
     claude  claude-fable-5   max   lens=correctness
     codex   gpt-5.6-sol      max   lens=red-team
-    gemini  Gemini 3.6 Flash high  lens=alternative-approach   (high == its ceiling)
+    gemini  Gemini 3.7 Flash high  lens=alternative-approach   (high == its ceiling)
 
 The load-bearing behavior is the **availability-aware fallback**: a panel must
 NEVER collapse to one or two reviewers just because one or two vendors are down.
@@ -44,10 +44,10 @@ from .schema import Board, Seat, vendor_family
 # its MAX thinking (gemini's ceiling is ``high``) with a distinct primary lens.
 _VENDOR_ORDER: tuple[str, ...] = ("grok", "claude", "codex", "gemini")
 _VENDOR_SEAT: dict[str, dict[str, str]] = {
-    "grok": {"model": "grok-4.5", "harness": "grok", "effort": "max", "lens": "adversarial"},
+    "grok": {"model": "grok-4.6", "harness": "grok", "effort": "max", "lens": "adversarial"},
     "claude": {"model": "claude-fable-5", "harness": "claude", "effort": "max", "lens": "correctness"},
     "codex": {"model": "gpt-5.6-sol", "harness": "codex", "effort": "max", "lens": "red-team"},
-    "gemini": {"model": "gemini-3.6-flash", "harness": "gemini", "effort": "high", "lens": "alternative-approach"},
+    "gemini": {"model": "gemini-3.7-flash", "harness": "gemini", "effort": "high", "lens": "alternative-approach"},
 }
 
 # Distinct lenses the backfill cycles through (each vendor's primary lens is drawn

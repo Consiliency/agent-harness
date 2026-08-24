@@ -105,7 +105,7 @@ _HARNESS_VENDOR: dict[str, str] = {
     "opencode": "codex",  # openai-family models
     "claude": "claude",
     "gemini": "gemini",
-    "grok": "grok",  # xAI-family models (grok-4.5) on the grok CLI lane
+    "grok": "grok",  # xAI-family models (grok-4.6) on the grok CLI lane
     "pi": "pi",
 }
 

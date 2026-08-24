@@ -6,7 +6,7 @@ canonical pair into the exact invocation token shared by launcher and board path
 
     claude  -> effort flag        ``--effort max``
     codex   -> config override    ``-c model_reasoning_effort=xhigh``
-    gemini  -> model-name embed   ``gemini-3.6-flash-high``
+    gemini  -> model-name embed   ``gemini-3.7-flash-high``
     grok    -> effort flag        ``--reasoning-effort high``
 
 Legacy Gemini Pro display names remain supported for explicit boards.
@@ -59,7 +59,7 @@ _CODEX_EFFORT: dict[str, str] = {
 # canonical effort -> grok ``--reasoning-effort`` token. The grok CLI accepts ONLY
 # ``high | medium | low`` (verified via an out-of-range probe: ``--reasoning-effort max``
 # -> ``unknown effort level 'max'; use one of: high, medium, low``). So canonical ``max``
-# CLAMPS to grok's own ``high`` ceiling — the panel's grok seat runs at grok-4.5's maximum
+# CLAMPS to grok's own ``high`` ceiling — the panel's grok seat runs at grok-4.6's maximum
 # reasoning. (ah#222: a prior literal ``max`` made the grok leg ERROR on every default panel
 # run.) The grokexec/launcher grok effort path is separate (capability_registry) — not fixed here.
 #
@@ -128,8 +128,8 @@ def gemini_base_model(model: str) -> str:
 def render_agy_model(model: str, effort: str | None = None) -> str:
     """Render a Gemini model for agy's effort-in-model-name convention.
 
-    Canonical ids such as ``gemini-3.6-flash`` become
-    ``gemini-3.6-flash-high``. Legacy display names retain their parenthesized
+    Canonical ids such as ``gemini-3.7-flash`` become
+    ``gemini-3.7-flash-high``. Legacy display names retain their parenthesized
     effort spelling, and the established routing aliases remain compatible.
     Unknown ``gemini-*`` ids fail loud instead of silently selecting Pro.
     """

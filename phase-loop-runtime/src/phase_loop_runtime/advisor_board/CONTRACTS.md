@@ -29,7 +29,7 @@ equivalence is proven by a test (not asserted in prose).
   (`render_gemini_model`, panel_invoker.py:1016). Built-3 lanes are concrete;
   breadth lanes raise `EffortMappingError` until ABDREG/ABDHOME/ABDOMNI.
   Round-trip (proven): claude→`--effort max`, codex→
-  `-c model_reasoning_effort=xhigh`, Gemini Flash→`gemini-3.6-flash-high`;
+  `-c model_reasoning_effort=xhigh`, Gemini Flash→`gemini-3.7-flash-high`;
   explicit legacy Pro display names remain compatible.
 - **Seat identity for result re-keying** — `Seat.seat_key` is a stable LABEL over
   every distinguishing field (lane, model, effort, lens), so lens-only-different
@@ -186,8 +186,11 @@ the real matrix at `load_boards()` time (`tests/test_advisor_board_config.py`,
   byte-pinned to this Fable `invoke_panel` panel by the golden proof
   (`tests/test_advisor_board_golden.py`); the sole sanctioned delta stays `seat_key`.
 - **`default` and `code-review` are four-vendor frontier boards.** Gemini uses
-  `gemini-3.6-flash` at its `high` ceiling alongside Sol, Fable, and Grok 4.5;
+  `gemini-3.7-flash` at its `high` ceiling alongside Sol, Fable, and Grok 4.6;
   `code-review` preserves availability-aware backfill and distinct lenses.
+- **President availability ladder.** Review findings go first to Fable, then
+  Sol, Grok 4.6, and Gemini 3.7 Flash. Descent occurs only for a typed
+  `president_unavailable` result, never because a president dissents.
 - **Divergent-thinking boards keep Sonnet.** `brainstorm` / `doc-edit` /
   `legal-brainstorm` deliberately retain `claude-sonnet-5` — a diverse voice, a
   low-stakes copyedit, a cheap aggressive ideation seat — where it is the right tool.
