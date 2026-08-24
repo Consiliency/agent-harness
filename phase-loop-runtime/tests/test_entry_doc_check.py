@@ -454,6 +454,95 @@ class TestArmPaths(unittest.TestCase):
             self.assertEqual(codes(found), [("paths", "missing_path")])
 
 
+class TestSlashCommandTokens(unittest.TestCase):
+    """ah#600: harness docs invoke skills as `/claude-plan-phase`, not paths.
+
+    Differential against origin/main before this change: `/claude-plan-phase` WAS
+    reported `missing_path`, `/docs/does-not-exist.md` was too. After: only the
+    slash-command stops being reported. That is the whole intended delta.
+    """
+
+    def test_slash_command_is_not_treated_as_a_path(self):
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp,
+                {
+                    "phase-loop-runtime/README.md": (
+                        "Invoke `/claude-phase-roadmap-builder` in your harness.\n"
+                    )
+                },
+            )
+            found = edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))
+            self.assertEqual(codes(found), [])
+
+    def test_skill_invocations_across_harnesses_are_skipped(self):
+        for cmd in (
+            "/claude-plan-phase",
+            "/codex-advisor-panel",
+            "/gemini-execute-phase",
+            "/opencode-phase-loop",
+        ):
+            with self.subTest(cmd=cmd):
+                with TemporaryDirectory() as tmp:
+                    repo = build_repo(
+                        tmp, {"phase-loop-runtime/README.md": f"Run `{cmd}`.\n"}
+                    )
+                    found = edc.check_repo(
+                        repo, entry_docs=("phase-loop-runtime/README.md",)
+                    )
+                    self.assertEqual(codes(found), [])
+
+    def test_the_skip_cannot_launder_a_real_broken_path(self):
+        """The guard that keeps the skip class honest.
+
+        The skip is deliberately narrow -- ONE segment, NO extension. A
+        multi-segment absolute path is still a path claim and must still resolve,
+        or the class would be a hole rather than a kind.
+
+        Mutation that must kill this: widen the skip to any leading-slash token.
+        """
+        # SAME-SHAPE cases first -- these are the ones that matter. An earlier
+        # version of this skip keyed on SHAPE (single segment, no extension) and
+        # laundered both of these: base code reports `missing_path`, the shape
+        # rule reported nothing. A guard listing only multi-segment/dotted paths
+        # never entered the skip at all, so it guarded nothing -- caught by the
+        # review panel, and the third instance of that vacuity class in one day.
+        for broken in (
+            "/LICENCE",              # single segment, no extension: a real typo
+            "/docs-does-not-exist",  # same shape as a slash-command, isn't one
+            "/docs/does-not-exist.md",
+            "/specs/missing/",
+        ):
+            with self.subTest(token=broken):
+                with TemporaryDirectory() as tmp:
+                    repo = build_repo(
+                        tmp,
+                        {"phase-loop-runtime/README.md": f"See `{broken}` for details.\n"},
+                    )
+                    found = edc.check_repo(
+                        repo, entry_docs=("phase-loop-runtime/README.md",)
+                    )
+                    self.assertEqual(codes(found), [("paths", "missing_path")])
+
+
+class TestEntryDocRoles(unittest.TestCase):
+    def test_entry_docs_is_the_union_of_both_roles(self):
+        self.assertEqual(
+            edc.ENTRY_DOCS,
+            edc.PACKAGE_LONG_DESCRIPTION_DOCS + edc.ONBOARDING_DOCS,
+        )
+
+    def test_onboarding_docs_are_checked(self):
+        """The ah#600 coverage gap: these were entry points by function, unchecked."""
+        for doc in ("docs/TEAM-ONBOARDING.md", "docs/outside-worker-quickstart.md"):
+            self.assertIn(doc, edc.ENTRY_DOCS)
+
+    def test_onboarding_docs_are_not_package_long_descriptions(self):
+        """They are checked, but they are not any package's declared README."""
+        for doc in edc.ONBOARDING_DOCS:
+            self.assertNotIn(doc, edc.PACKAGE_LONG_DESCRIPTION_DOCS)
+
+
 # ---------------------------------------------------------------------------
 # Arm 2 -- pin freshness
 
@@ -486,6 +575,117 @@ class TestArmPinFreshness(unittest.TestCase):
             self.assertEqual(codes(found), [("pins", "stale_pin")])
             # Version sort, not lexical: v0.7.9 is the lexical max here.
             self.assertIn(FIXTURE_LATEST_TAG, found[0].message)
+
+    def test_flag_form_ref_pin_stale_is_reported(self):
+        """ah#600 regression: `--ref v0.1.5` is the shipped defect, verbatim.
+
+        `docs/TEAM-ONBOARDING.md` on main told every team to pin `--ref v0.1.5`
+        while the latest release was six minors ahead. Arm 2 matched `@ref` and
+        the URL forms but not the installer's own documented flag -- the spelling
+        most likely to appear in an install doc.
+
+        Mutation that must kill this: drop `_FLAG_REF_PIN_RE` from the scan.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp,
+                {
+                    "phase-loop-runtime/README.md": (
+                        "```sh\nagent-harness/install-agent-harness.sh --ref v0.1.5\n```\n"
+                    )
+                },
+            )
+            found = edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))
+            self.assertEqual(codes(found), [("pins", "stale_pin")])
+            self.assertIn(FIXTURE_LATEST_TAG, found[0].message)
+
+    def test_env_form_ref_pin_stale_is_reported(self):
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp,
+                {"phase-loop-runtime/README.md": "```sh\nAGENT_HARNESS_REF=v0.1.5 ./install.sh\n```\n"},
+            )
+            found = edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))
+            self.assertEqual(codes(found), [("pins", "stale_pin")])
+
+    def test_flag_form_metavariable_ref_is_reported(self):
+        """Kills a mutation that survived the silence test.
+
+        `test_flag_form_ref_placeholder_and_branch_are_silent` asserts SILENCE, so
+        it cannot distinguish "the regex matched and the placeholder was accepted"
+        from "the regex never matched at all". Tightening the ref char-class to
+        exclude `<>` left all 63 tests green while making `--ref <VERSION>` invisible
+        -- silence-reads-as-success, found by the review panel.
+
+        This test requires the flag regex to DELIVER a metavariable ref to the
+        shared evaluator, so it fails the moment delivery breaks.
+
+        Mutation that must kill this: drop `<>` from _FLAG_REF_PIN_RE's ref class.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp,
+                {"phase-loop-runtime/README.md": "```sh\n./install.sh --ref <VERSION>\n```\n"},
+            )
+            found = edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))
+            self.assertEqual(codes(found), [("pins", "invalid_placeholder")])
+
+    def test_quoted_flag_refs_are_covered(self):
+        """Shell-quoting is idiomatic; a quoted stale pin must not hide.
+
+        `--ref "v0.1.5"` produced ZERO findings before this -- the quotes were
+        excluded from the ref class so the regex did not match at all. That is the
+        ah#600 defect class itself: a grammar miss hiding a stale pin behind green.
+        """
+        for spelling in ('--ref "v0.1.5"', "--ref='v0.1.5'", 'AGENT_HARNESS_REF="v0.1.5"'):
+            with self.subTest(spelling=spelling):
+                with TemporaryDirectory() as tmp:
+                    repo = build_repo(
+                        tmp,
+                        {"phase-loop-runtime/README.md": f"```sh\n./i.sh {spelling}\n```\n"},
+                    )
+                    found = edc.check_repo(
+                        repo, entry_docs=("phase-loop-runtime/README.md",)
+                    )
+                    self.assertEqual(codes(found), [("pins", "stale_pin")])
+
+    def test_flag_ref_with_trailing_sentence_punctuation_is_not_stale(self):
+        """A FRESH pin followed by prose punctuation must not read as stale.
+
+        `--ref v0.7.13,` captured the comma into the ref and compared `v0.7.13,`
+        against `v0.7.13`. `_DIST_PIN_RE` already excludes `,;`; the ref class now
+        matches it.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp,
+                {
+                    "phase-loop-runtime/README.md": (
+                        f"Pin with `--ref {FIXTURE_LATEST_TAG},` then continue.\n"
+                    )
+                },
+            )
+            found = edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))
+            self.assertEqual(codes(found), [])
+
+    def test_flag_form_ref_placeholder_and_branch_are_silent(self):
+        """The positive control: correct docs must stay green.
+
+        The live `docs/TEAM-ONBOARDING.md` uses `--ref vX.Y.Z` since ah#602, and
+        `--ref main` is a branch selector, not a release claim. Either firing
+        would make this arm red on day one.
+        """
+        for spelling in ("--ref vX.Y.Z", "--ref <TAG>", "--ref main", "--ref HEAD"):
+            with self.subTest(spelling=spelling):
+                with TemporaryDirectory() as tmp:
+                    repo = build_repo(
+                        tmp,
+                        {"phase-loop-runtime/README.md": f"```sh\n./install.sh {spelling}\n```\n"},
+                    )
+                    found = edc.check_repo(
+                        repo, entry_docs=("phase-loop-runtime/README.md",)
+                    )
+                    self.assertEqual(codes(found), [])
 
     def test_release_tag_namespace_excludes_foreign_and_non_release_tags(self):
         with TemporaryDirectory() as tmp:

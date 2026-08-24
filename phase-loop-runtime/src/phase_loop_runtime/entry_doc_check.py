@@ -43,6 +43,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
+from .skill_paths import HARNESS_DEFAULT_SKILL_ROOTS
+
 
 # ---------------------------------------------------------------------------
 # Surfaces
@@ -53,7 +55,17 @@ from typing import Dict, List, Optional, Sequence, Set, Tuple
 #: ``[project].readme`` by :func:`check_entry_doc_coverage` -- a long-description
 #: path missing from this tuple is itself a finding, otherwise a new package
 #: README is silently uncovered by the very check meant to cover it.
-ENTRY_DOCS: Tuple[str, ...] = (
+#: The package/repo front doors -- the docs that are some package's declared
+#: long-description. Named separately so the tuple's membership rule is legible;
+#: previously this list and the onboarding docs were one tuple and nothing said
+#: which entries were present for which reason.
+#:
+#: NOTE ``check_entry_doc_coverage`` deliberately reconciles against the FULL
+#: checked set (``ENTRY_DOCS``), not against this narrower tuple. Its assertion is
+#: "no package long-description goes UNCHECKED", and the checked set is the union
+#: -- so a package README listed under either role satisfies it. Narrowing the
+#: reconciliation would flag a README that is in fact being checked.
+PACKAGE_LONG_DESCRIPTION_DOCS: Tuple[str, ...] = (
     "README.md",
     "AGENTS.md",
     "CLAUDE.md",
@@ -61,6 +73,26 @@ ENTRY_DOCS: Tuple[str, ...] = (
     "phase-loop-skills/README.md",
     "consiliency-harness/README.md",
 )
+
+#: Entry points by FUNCTION rather than by packaging -- what a new human or agent
+#: is actually pointed at. They carry install instructions, so they are exactly
+#: where a stale pin does the most damage, and ah#600 is the proof: a `--ref v0.1.5`
+#: six minors behind sat in TEAM-ONBOARDING.md on `main`, uncovered.
+#:
+#: Deliberately NOT in PACKAGE_LONG_DESCRIPTION_DOCS: these are not any package's
+#: long-description, and the coverage arm must keep reconciling against that
+#: narrower set or it would stop reporting an unlisted package README.
+ONBOARDING_DOCS: Tuple[str, ...] = (
+    "docs/TEAM-ONBOARDING.md",
+    "docs/outside-worker-quickstart.md",
+)
+
+#: Everything the arms read. The union of two roles that used to be one tuple --
+#: the conflation was harmless (the coverage check is a one-directional subset
+#: test, so growing it kept both green) but unreadable: nothing said which entries
+#: were present because a package declares them and which because someone wanted
+#: them checked.
+ENTRY_DOCS: Tuple[str, ...] = PACKAGE_LONG_DESCRIPTION_DOCS + ONBOARDING_DOCS
 
 #: Closed, **position-sensitive** placeholder grammar.
 #:
@@ -518,6 +550,18 @@ def _resolves(ctx: RepoContext, doc_dir: str, rel: str, require_file: bool = Fal
     return False
 
 
+#: Harness skill invocations: `/claude-plan-phase`, `/codex-advisor-panel`. Docs tell
+#: you to RUN these, so they are pervasive in an onboarding doc, but they are not
+#: paths. Keyed on this repo's actual skill-naming convention (`<harness>-<name>`)
+#: rather than on SHAPE: an earlier version skipped any single-segment extensionless
+#: absolute, which laundered `/LICENCE` and `/docs-does-not-exist` -- both reported
+#: by the base code, both silent under the shape rule. A skip class must name a KIND
+#: of token narrowly enough that a typo cannot wear its costume.
+_SLASH_COMMAND_RE = re.compile(
+    r"^/(?:" + "|".join(sorted(HARNESS_DEFAULT_SKILL_ROOTS)) + r")-[a-z0-9]+(?:-[a-z0-9]+)*$"
+)
+
+
 def check_paths(text: str, doc_path: str, ctx: RepoContext) -> List[Finding]:
     """Arm 1: backtick tokens that look like repo paths must resolve.
 
@@ -564,6 +608,9 @@ def check_paths(text: str, doc_path: str, ctx: RepoContext) -> List[Finding]:
                 continue
             if token.startswith("/"):
                 if root in ABSOLUTE_SYSTEM_ROOTS and not ctx.exists(root):
+                    continue
+                if _SLASH_COMMAND_RE.match(token):
+                    # A skill invocation, not a path -- see _SLASH_COMMAND_RE.
                     continue
             elif root in INSTALL_LAYOUT_ROOTS and not ctx.exists(root):
                 continue
@@ -652,6 +699,23 @@ _URL_TAG_PIN_RE = re.compile(
     r"(?P<ref>v[0-9][0-9A-Za-z._-]*)"
 )
 
+#: The same claim in CLI-flag form. `--ref vX` and `AGENT_HARNESS_REF=vX` are the
+#: installer's OWN documented interface (`install-agent-harness.sh --ref vX.Y.Z`),
+#: which makes the flag the spelling most likely to appear in an install doc --
+#: precisely where a stale pin does the most damage. ah#600: a `--ref v0.1.5`,
+#: six minors behind, reached `main` in `docs/TEAM-ONBOARDING.md` and no arm saw it.
+#:
+#: Unlike the URL forms this names NO owner/repo, so it cannot be identity-gated.
+#: An unqualified ref in a doc belonging to this repository is a claim about THIS
+#: repository's release namespace -- which is the only reading that makes sense for
+#: an install instruction. The tag-shape gate (`^v[0-9]`) and the placeholder
+#: grammar keep correct docs silent; a third-party tool's `--ref vX` in one of our
+#: entry docs would be a false positive, and is the case for a suppression.
+_FLAG_REF_PIN_RE = re.compile(
+    r"(?:--ref[=\s]+|\bAGENT_HARNESS_REF=)"
+    r"[\"']?(?P<ref>[^\s\"'`#)\],;]+)[\"']?"
+)
+
 #: Archive suffixes and sentence punctuation that ride along on a URL-form ref.
 _REF_SUFFIX_RE = re.compile(r"(?:\.tar\.gz|\.tgz|\.zip)$", re.IGNORECASE)
 
@@ -665,6 +729,84 @@ def _normalize_url_ref(ref: str) -> str:
     """
     cleaned = _REF_SUFFIX_RE.sub("", ref)
     return cleaned.rstrip(".")
+
+
+def _evaluate_ref_pin(
+    raw_ref: str, token: str, doc_path: str, idx: int, ctx: RepoContext
+) -> List[Finding]:
+    """Evaluate one ref-shaped pin against the release-tag namespace.
+
+    Shared by all three ref grammars -- `@ref`, the URL forms, and the CLI-flag
+    form -- so they stay ONE clock. A second copy of this logic would be a second
+    notion of freshness, which is the thing the arm-2 docstring warns against.
+    """
+
+    findings: List[Finding] = []
+    ref = _normalize_url_ref(raw_ref)
+    if ref in REF_PLACEHOLDERS:
+        return findings
+    if _METAVAR_RE.search(ref):
+        findings.append(
+            Finding(
+                file=doc_path,
+                line=idx,
+                arm="pins",
+                code="invalid_placeholder",
+                token=token,
+                message=(
+                    f"`{ref}` is not an accepted ref placeholder; a ref "
+                    f"position accepts only {', '.join(REF_PLACEHOLDERS)}."
+                ),
+            )
+        )
+        return findings
+    if not re.match(r"^v[0-9]", ref):
+        # A branch or SHA selector is not a release pin.
+        return findings
+    latest = ctx.latest_release_tag
+    if latest is None:
+        # FAIL CLOSED. An empty release namespace is not "nothing to
+        # compare against" -- the document makes a live claim about
+        # this repository's latest release and the check could not
+        # evaluate it. Staying silent here would make every stale git
+        # pin invisible under a shallow clone, a fork PR, or anyone
+        # relaxing the workflow's `fetch-depth: 0`, with a green check
+        # implying coverage that does not exist.
+        findings.append(
+            Finding(
+                file=doc_path,
+                line=idx,
+                arm="pins",
+                code="release_namespace_unresolved",
+                token=token,
+                message=(
+                    f"`@{ref}` pins this repository, but no tag matches the "
+                    f"release namespace `{_RELEASE_TAG_GLOB}`, so its freshness "
+                    f"could not be evaluated. Fetch tags (`fetch-depth: 0`) "
+                    f"before running this check -- an unevaluated pin is not a "
+                    f"fresh one."
+                ),
+            )
+        )
+        return findings
+    if ref == latest:
+        return findings
+    findings.append(
+        Finding(
+            file=doc_path,
+            line=idx,
+            arm="pins",
+            code="stale_pin",
+            token=token,
+            message=(
+                f"`@{ref}` is stale: the latest tag in the release namespace "
+                f"`{_RELEASE_TAG_GLOB}` is {latest}. (The pinned tag may well "
+                f"exist -- freshness is the property being checked, not "
+                f"existence.)"
+            ),
+        )
+    )
+    return findings
 
 
 def check_pin_freshness(text: str, doc_path: str, ctx: RepoContext) -> List[Finding]:
@@ -761,70 +903,20 @@ def check_pin_freshness(text: str, doc_path: str, ctx: RepoContext) -> List[Find
             if (owner, name) not in ctx.repo_identities:
                 # A pin at somebody else's repository is on somebody else's clock.
                 continue
-            ref = _normalize_url_ref(match.group("ref"))
-            if ref in REF_PLACEHOLDERS:
-                continue
-            if _METAVAR_RE.search(ref):
-                findings.append(
-                    Finding(
-                        file=doc_path,
-                        line=idx,
-                        arm="pins",
-                        code="invalid_placeholder",
-                        token=match.group(0),
-                        message=(
-                            f"`{ref}` is not an accepted ref placeholder; a ref "
-                            f"position accepts only {', '.join(REF_PLACEHOLDERS)}."
-                        ),
-                    )
-                )
-                continue
-            if not re.match(r"^v[0-9]", ref):
-                # A branch or SHA selector is not a release pin.
-                continue
-            latest = ctx.latest_release_tag
-            if latest is None:
-                # FAIL CLOSED. An empty release namespace is not "nothing to
-                # compare against" -- the document makes a live claim about
-                # this repository's latest release and the check could not
-                # evaluate it. Staying silent here would make every stale git
-                # pin invisible under a shallow clone, a fork PR, or anyone
-                # relaxing the workflow's `fetch-depth: 0`, with a green check
-                # implying coverage that does not exist.
-                findings.append(
-                    Finding(
-                        file=doc_path,
-                        line=idx,
-                        arm="pins",
-                        code="release_namespace_unresolved",
-                        token=match.group(0),
-                        message=(
-                            f"`@{ref}` pins this repository, but no tag matches the "
-                            f"release namespace `{_RELEASE_TAG_GLOB}`, so its freshness "
-                            f"could not be evaluated. Fetch tags (`fetch-depth: 0`) "
-                            f"before running this check -- an unevaluated pin is not a "
-                            f"fresh one."
-                        ),
-                    )
-                )
-                continue
-            if ref == latest:
-                continue
-            findings.append(
-                Finding(
-                    file=doc_path,
-                    line=idx,
-                    arm="pins",
-                    code="stale_pin",
-                    token=match.group(0),
-                    message=(
-                        f"`@{ref}` is stale: the latest tag in the release namespace "
-                        f"`{_RELEASE_TAG_GLOB}` is {latest}. (The pinned tag may well "
-                        f"exist -- freshness is the property being checked, not "
-                        f"existence.)"
-                    ),
+            findings.extend(
+                _evaluate_ref_pin(
+                    match.group("ref"), match.group(0), doc_path, idx, ctx
                 )
             )
+        for match in _FLAG_REF_PIN_RE.finditer(line):
+            # No owner/repo to gate on -- see _FLAG_REF_PIN_RE. An unqualified ref
+            # in this repository's own entry doc is a claim about this repository.
+            findings.extend(
+                _evaluate_ref_pin(
+                    match.group("ref"), match.group(0), doc_path, idx, ctx
+                )
+            )
+
     return findings
 
 
@@ -917,10 +1009,15 @@ def check_published_rendering(text: str, doc_path: str, ctx: RepoContext) -> Lis
 
 
 def check_entry_doc_coverage(ctx: RepoContext, entry_docs: Sequence[str]) -> List[Finding]:
-    """Every package long-description must be an entry doc.
+    """Every package long-description must be among the CHECKED docs.
 
     Otherwise a newly added package README is silently uncovered -- the same
     drift class this check exists to catch, one level up.
+
+    ``entry_docs`` is the full checked set, deliberately: the property is "no
+    package long-description goes unchecked", so a README listed under any role
+    satisfies it. Reconciling against only ``PACKAGE_LONG_DESCRIPTION_DOCS``
+    would report a README that is demonstrably being read.
     """
     findings: List[Finding] = []
     covered = set(entry_docs)
