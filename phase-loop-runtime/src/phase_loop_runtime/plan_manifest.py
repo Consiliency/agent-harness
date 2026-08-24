@@ -750,6 +750,31 @@ MANIFEST_ORIGIN_FLAGS = frozenset({"head", "index", "filesystem", "manifest"})
 
 _CANONICAL_LOOKALIKE_RE = re.compile(r"^phase-plan-.*\.md$")
 _LEGIBLE_PLAN_REL = "plans/phase-plan-v10-LEGIBLE.md"
+_FROZEN_HISTORICAL_BINDING_PREFIXES: dict[str, tuple[str, ...]] = {
+    "plans/phase-plan-v10-CONFORM.md": (
+        "d6f02ab5296af01c2fe35f35a5f976b124ae7983b8bf3f3296933dc817ec2c84",
+        "0f90a8c261df11937b67201828b4cdb6a6cfe1c3197f583a16089f854088c478",
+        "63a55eda6be97369636dd75f185bd62491863240a63ee1989a52b8fe3e13ea5a",
+        "f719ec2e2a2c8704a9777a9988a645a699c635ccb4ba81cd19cf7ef65d2a1af0",
+        "398a55d43d9fec9d06614c0184435062f0af7e8464e7c03bd21cb832dbd9ec5d",
+    ),
+    "plans/phase-plan-v10-FABPUB.md": (
+        "190bdbca2f11991fc3382e9ceb371ae0e08aadb0cc8dcaa558e2739583cb8f6f",
+    ),
+    "plans/phase-plan-v10-HARDEN.md": (
+        "f8e55eb06478a413eb87930defc2f95431e0447778bad696699f72c3dd66f6d8",
+    ),
+    _LEGIBLE_PLAN_REL: (
+        "90dc151ea24103c27bbc517eed623a7b3894d70e0a325c399acee90ca135cd3d",
+        "7c3af47a32644c9d1e6db9795989cd01a52678c90f92d4e82564c7e9eb584a6f",
+    ),
+    "plans/phase-plan-v10-PROOFGATE.md": (
+        "f13818aead6a8b85a080b92d9462e83c5fe0154a1f6025ef8aeadac379f13af4",
+    ),
+    "plans/phase-plan-v10-REVIEWTRUTH.md": (
+        "1f79d48fd4cf72f046d3706df60be9f9defa2e568c9f9707ff425b484ba8f54e",
+    ),
+}
 _LEGIBLE_OWNED_PATHS = (
     ".claude/docs-catalog.json",
     "phase-loop-runtime/src/phase_loop_runtime/_contract_docs/runtime/verification-evidence-contract.md",
@@ -1220,6 +1245,7 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
             lifecycle = entry.get("lifecycle")
             contracts: list[dict[str, Any]] = []
             rebinds: list[dict[str, Any]] = []
+            historical_binding_hashes: list[str] = []
             historical_binding_declared = False
             historical_binding_malformed = lifecycle is not None and not isinstance(
                 lifecycle, list
@@ -1239,8 +1265,21 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
                         value = metadata[key]
                         if isinstance(value, dict):
                             target.append(value)
+                            serialized = json.dumps(
+                                {"kind": key, "record": value},
+                                sort_keys=True,
+                                separators=(",", ":"),
+                            ).encode("utf-8")
+                            historical_binding_hashes.append(
+                                hashlib.sha256(serialized).hexdigest()
+                            )
                         else:
                             historical_binding_malformed = True
+            frozen_prefix = _FROZEN_HISTORICAL_BINDING_PREFIXES.get(rel)
+            if frozen_prefix is not None and tuple(
+                historical_binding_hashes[: len(frozen_prefix)]
+            ) != frozen_prefix:
+                historical_binding_malformed = True
             if historical_binding_malformed:
                 malformed.append(
                     MalformedPlanFinding(rel, "plan-contract", frozenset({"manifest"}))
@@ -1289,7 +1328,10 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
                 )
 
             authority_history = entry.get("plan_authority_history")
-            if authority_history is None and historical_binding_declared:
+            authority_required = (
+                frozen_prefix is not None or historical_binding_declared
+            )
+            if authority_history is None and authority_required:
                 malformed.append(
                     MalformedPlanFinding(rel, "plan-contract", frozenset({"manifest"}))
                 )
@@ -1324,7 +1366,7 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
                 roadmap_contract_valid = (
                     current_authority is not None
                     and (
-                        not historical_binding_declared
+                        not authority_required
                         or (
                             isinstance(roadmap_ref, dict)
                             and isinstance(current_authority["roadmap_sha256"], str)

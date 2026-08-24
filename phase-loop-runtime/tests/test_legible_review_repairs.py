@@ -138,6 +138,21 @@ def _commit_plan(repo: Path, name: str = "phase-plan-v1-RUNNER.md") -> str:
     return rel
 
 
+def _source_binding_events(source_repo: Path, rel: str) -> list[dict]:
+    manifest = json.loads(
+        (source_repo / "plans" / "manifest.json").read_text(encoding="utf-8")
+    )
+    entry = next(item for item in manifest["plans"] if item["file"] == rel)
+    return [
+        json.loads(json.dumps(event))
+        for event in entry["lifecycle"]
+        if any(
+            key in event.get("metadata", {})
+            for key in ("legible_plan_contract", "digest_rebind")
+        )
+    ]
+
+
 def _operational_fixture(
     repo: Path, *, stage: str = "candidate"
 ) -> tuple[str, dict[str, dict]]:
@@ -228,6 +243,9 @@ def _operational_fixture(
     manifest_path = repo / "plans" / "manifest.json"
     plan_digest = hashlib.sha256(plan_path.read_bytes()).hexdigest()
     roadmap_digest = hashlib.sha256(roadmap_v10.read_bytes()).hexdigest()
+    frozen_binding_events = _source_binding_events(
+        source_repo, "plans/phase-plan-v10-LEGIBLE.md"
+    )
     manifest_path.write_text(
         json.dumps(
             {
@@ -245,6 +263,7 @@ def _operational_fixture(
                             }
                         ],
                         "lifecycle": [
+                            *frozen_binding_events,
                             {
                                 "metadata": {
                                     "legible_plan_contract": {
@@ -1949,7 +1968,11 @@ def _write_legible_manifest_contract(repo: Path, *, include_contract: bool = Tru
         "owned_paths_sha256": owned_digest,
         "test_paths": list(legible_evidence.FROZEN_TEST_PATHS),
     }
-    lifecycle = [{"metadata": {"legible_plan_contract": contract}}] if include_contract else []
+    lifecycle = _source_binding_events(source_repo, rel)
+    if include_contract:
+        lifecycle.append({"metadata": {"legible_plan_contract": contract}})
+    else:
+        lifecycle[0]["metadata"].pop("legible_plan_contract")
     lifecycle.append({"metadata": {"note": "ordinary later event"}})
     (repo / "plans" / "manifest.json").write_text(
         json.dumps(
@@ -2060,6 +2083,53 @@ def test_historical_digest_rebind_cannot_drop_current_roadmap_binding(tmp_path):
 
     assert result.exit_code == 1
     assert (rel, "plan-contract") in [
+        (item.path, item.kind) for item in result.malformed
+    ]
+
+
+def test_frozen_historical_binding_cannot_be_deleted_with_authority(tmp_path):
+    source_repo = Path(__file__).resolve().parents[2]
+    source_manifest = json.loads(
+        (source_repo / "plans" / "manifest.json").read_text(encoding="utf-8")
+    )
+    entry = next(
+        item
+        for item in source_manifest["plans"]
+        if item["file"] == "plans/phase-plan-v10-FABPUB.md"
+    )
+    repo = make_repo(tmp_path)
+    plan_path = repo / entry["file"]
+    plan_path.write_bytes((source_repo / entry["file"]).read_bytes())
+    roadmap_rel = entry["roadmap_ref"]["file"]
+    roadmap_path = repo / roadmap_rel
+    roadmap_path.parent.mkdir(parents=True, exist_ok=True)
+    roadmap_path.write_bytes((source_repo / roadmap_rel).read_bytes())
+    subprocess.run(["git", "add", entry["file"]], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "add FABPUB plan"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    manifest_path = repo / "plans" / "manifest.json"
+    manifest_path.write_text(
+        json.dumps({"plans": [entry]}, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    assert check(repo).exit_code == 0
+    entry["lifecycle"] = [
+        event
+        for event in entry["lifecycle"]
+        if "digest_rebind" not in event.get("metadata", {})
+    ]
+    del entry["plan_authority_history"]
+    manifest_path.write_text(
+        json.dumps({"plans": [entry]}, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+    result = check(repo)
+
+    assert result.exit_code == 1
+    assert (entry["file"], "plan-contract") in [
         (item.path, item.kind) for item in result.malformed
     ]
 
