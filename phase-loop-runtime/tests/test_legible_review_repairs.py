@@ -2105,6 +2105,17 @@ def _write_legible_manifest_contract(repo: Path, *, include_contract: bool = Tru
     roadmap_path.write_bytes(
         (source_repo / roadmap_assumptions.CANONICAL_ROADMAP_REL).read_bytes()
     )
+    subprocess.run(
+        ["git", "add", roadmap_assumptions.CANONICAL_ROADMAP_REL],
+        cwd=repo,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "bind LEGIBLE roadmap snapshot"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
     plan_digest = hashlib.sha256((repo / rel).read_bytes()).hexdigest()
     roadmap_digest = hashlib.sha256(roadmap_path.read_bytes()).hexdigest()
     owned_digest = hashlib.sha256("".join(f"{path}\n" for path in LEGIBLE_OWNED_PATHS).encode()).hexdigest()
@@ -2200,6 +2211,13 @@ def test_historical_digest_rebind_cannot_drop_current_roadmap_binding(tmp_path):
     roadmap = repo / "specs" / "current-roadmap.md"
     roadmap.parent.mkdir(exist_ok=True)
     roadmap.write_text("# Current roadmap\n", encoding="utf-8")
+    subprocess.run(["git", "add", "specs/current-roadmap.md"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "bind roadmap snapshot"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
     plan_digest = hashlib.sha256((repo / rel).read_bytes()).hexdigest()
     roadmap_digest = hashlib.sha256(roadmap.read_bytes()).hexdigest()
     manifest_path = repo / "plans" / "manifest.json"
@@ -2988,6 +3006,13 @@ def test_composite_authority_revalidates_plan_after_roadmap_hash(tmp_path, monke
     plan_path = repo / rel
     roadmap = repo / "specs" / "current-roadmap.md"
     roadmap.write_text("# Current roadmap\n", encoding="utf-8")
+    subprocess.run(["git", "add", "specs/current-roadmap.md"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "bind roadmap snapshot"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
     plan_digest = hashlib.sha256(plan_path.read_bytes()).hexdigest()
     roadmap_digest = hashlib.sha256(roadmap.read_bytes()).hexdigest()
     manifest = repo / "plans" / "manifest.json"
@@ -3046,6 +3071,69 @@ def test_composite_authority_revalidates_plan_after_roadmap_hash(tmp_path, monke
     ]
 
 
+def test_composite_authority_requires_one_exact_git_tree(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    rel = _commit_plan(repo)
+    plan_path = repo / rel
+    plan_a_digest = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+    plan_path.write_text("---\nphase: RUNNER\n---\n# Plan C\n", encoding="utf-8")
+    roadmap_rel = "specs/current-roadmap.md"
+    roadmap = repo / roadmap_rel
+    roadmap.write_text("# Roadmap B\n", encoding="utf-8")
+    roadmap_b_digest = hashlib.sha256(roadmap.read_bytes()).hexdigest()
+    subprocess.run(["git", "add", rel, roadmap_rel], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "replace plan while adding roadmap"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    manifest = {
+        "plans": [
+            {
+                "file": rel,
+                "roadmap_ref": {"file": roadmap_rel},
+                "plan_authority_history": [
+                    {
+                        "schema": "plan_current_authority.v1",
+                        "source": "agent-harness#647",
+                        "plan_sha256": plan_a_digest,
+                        "roadmap_sha256": roadmap_b_digest,
+                    }
+                ],
+                "lifecycle": [
+                    {
+                        "metadata": {
+                            "digest_rebind": {
+                                "plan_sha256": plan_a_digest,
+                                "roadmap_sha256": roadmap_b_digest,
+                            }
+                        }
+                    }
+                ],
+            }
+        ]
+    }
+    (repo / "plans" / "manifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        plan_manifest,
+        "_regular_repo_files_sha256",
+        lambda *_args, **_kwargs: {
+            rel: plan_a_digest,
+            roadmap_rel: roadmap_b_digest,
+        },
+    )
+
+    result = check(repo)
+
+    assert result.exit_code == 1
+    assert (rel, "plan-digest") in [
+        (item.path, item.kind) for item in result.malformed
+    ]
+
+
 def test_frozen_historical_binding_cannot_be_deleted_with_authority(
     tmp_path, monkeypatch
 ):
@@ -3066,7 +3154,9 @@ def test_frozen_historical_binding_cannot_be_deleted_with_authority(
     roadmap_path = repo / roadmap_rel
     roadmap_path.parent.mkdir(parents=True, exist_ok=True)
     roadmap_path.write_bytes((source_repo / roadmap_rel).read_bytes())
-    subprocess.run(["git", "add", entry["file"]], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "add", entry["file"], roadmap_rel], cwd=repo, check=True
+    )
     subprocess.run(
         ["git", "commit", "-m", "add FABPUB plan"],
         cwd=repo,

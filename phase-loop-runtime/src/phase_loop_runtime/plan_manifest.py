@@ -1419,6 +1419,54 @@ def _manifest_blob_at_revision(repo: Path, revision: str) -> bytes | None:
     return blob.stdout
 
 
+def _regular_blobs_sha256_at_revision(
+    repo: Path, revision: str, rel_paths: tuple[str, ...]
+) -> dict[str, str] | None:
+    """Hash regular blobs from one immutable Git tree."""
+    requested = tuple(dict.fromkeys(rel_paths))
+    if not requested:
+        return {}
+    tree = _git_history_capture(
+        repo,
+        "ls-tree",
+        "-z",
+        revision,
+        "--",
+        *requested,
+        text=False,
+    )
+    if tree.returncode != 0:
+        raise ManifestSourceError(
+            f"git ls-tree failed for authority at {revision}: {_git_error(tree)}"
+        )
+    blobs: dict[str, str] = {}
+    for record in (item for item in tree.stdout.split(b"\0") if item):
+        meta, separator, path_bytes = record.partition(b"\t")
+        fields = meta.split()
+        try:
+            path = path_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+        if (
+            separator != b"\t"
+            or path not in requested
+            or path in blobs
+            or len(fields) != 3
+            or fields[0] not in {b"100644", b"100755"}
+            or fields[1] != b"blob"
+        ):
+            return None
+        blob = _git_history_capture(
+            repo, "cat-file", "blob", fields[2].decode("ascii"), text=False
+        )
+        if blob.returncode != 0:
+            raise ManifestSourceError(
+                f"authority blob is unavailable at {revision}: {_git_error(blob)}"
+            )
+        blobs[path] = hashlib.sha256(blob.stdout).hexdigest()
+    return blobs if set(blobs) == set(requested) else None
+
+
 def _frozen_paths_in_git_history(repo: Path, head_oid: str) -> set[str]:
     frozen_paths = sorted(_FROZEN_HISTORICAL_BINDING_PREFIXES)
     proc = _git_history_capture(
@@ -1986,12 +2034,23 @@ def _manifest_entry_scope_from_snapshot(
                         else (rel,)
                     )
                     actual_digests = _regular_repo_files_sha256(repo, authority_paths)
+                    committed_digests = _regular_blobs_sha256_at_revision(
+                        repo, head_oid, authority_paths
+                    )
                     actual_plan = (
                         actual_digests.get(rel)
                         if actual_digests is not None
                         else None
                     )
-                    if current_authority["plan_sha256"] != actual_plan:
+                    committed_plan = (
+                        committed_digests.get(rel)
+                        if committed_digests is not None
+                        else None
+                    )
+                    if (
+                        current_authority["plan_sha256"] != actual_plan
+                        or actual_plan != committed_plan
+                    ):
                         malformed.append(
                             MalformedPlanFinding(rel, "plan-digest", frozenset({"manifest"}))
                         )
@@ -2001,6 +2060,11 @@ def _manifest_entry_scope_from_snapshot(
                             if actual_digests is not None
                             else None
                         )
+                        committed_roadmap = (
+                            committed_digests.get(roadmap_rel)
+                            if committed_digests is not None
+                            else None
+                        )
                         canonical_roadmap = (
                             roadmap_assumptions.CANONICAL_ROADMAP_SHA256
                             if rel == _LEGIBLE_PLAN_REL
@@ -2008,6 +2072,7 @@ def _manifest_entry_scope_from_snapshot(
                         )
                         if (
                             current_authority["roadmap_sha256"] != actual_roadmap
+                            or actual_roadmap != committed_roadmap
                             or actual_roadmap != canonical_roadmap
                         ):
                             malformed.append(
