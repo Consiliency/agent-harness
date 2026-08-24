@@ -1257,6 +1257,7 @@ def _git_history_capture(
     env["GIT_CONFIG_NOSYSTEM"] = "1"
     env["GIT_CONFIG_SYSTEM"] = os.devnull
     env["GIT_GRAFT_FILE"] = os.devnull
+    env["GIT_SHALLOW_FILE"] = os.devnull
     try:
         return subprocess.run(
             ["git", "--no-replace-objects", "-C", str(repo), *args],
@@ -1279,25 +1280,20 @@ def _git_error(proc: subprocess.CompletedProcess) -> str:
 
 
 def _history_boundary_complete(repo: Path) -> bool:
-    shallow = _git_history_capture(repo, "rev-parse", "--is-shallow-repository")
-    if shallow.returncode != 0 or shallow.stdout.strip() not in {"true", "false"}:
-        raise ManifestSourceError(
-            "git rev-parse failed while resolving manifest history: "
-            f"{_git_error(shallow)}"
-        )
-    if shallow.stdout.strip() == "true":
-        return False
-    graft = _git_history_capture(
+    common_dir = _git_history_capture(
         repo, "rev-parse", "--path-format=absolute", "--git-common-dir"
     )
-    if graft.returncode != 0 or not graft.stdout.strip():
+    if common_dir.returncode != 0 or not common_dir.stdout.strip():
         raise ManifestSourceError(
             "git common-directory probe failed while resolving manifest history: "
-            f"{_git_error(graft)}"
+            f"{_git_error(common_dir)}"
         )
-    graft_path = Path(graft.stdout.strip()) / "info" / "grafts"
+    common_path = Path(common_dir.stdout.strip())
     try:
-        return not (graft_path.exists() and graft_path.stat().st_size > 0)
+        return not any(
+            path.exists() and path.stat().st_size > 0
+            for path in (common_path / "shallow", common_path / "info" / "grafts")
+        )
     except OSError:
         return False
 
@@ -1365,13 +1361,14 @@ def _frozen_paths_in_git_history(repo: Path) -> set[str]:
 
 
 def _ancestor_manifest_sequences(
-    repo: Path, working_manifest: bytes | None,
+    repo: Path, working_manifest: bytes | None, *, history_complete: bool,
 ) -> tuple[
     dict[str, tuple[tuple[str, ...], ...]],
     dict[str, tuple[tuple[str, ...], ...]],
     bool,
 ]:
-    history_complete = _history_boundary_complete(repo)
+    if not history_complete:
+        return {}, {}, False
     head_bytes = _manifest_blob_at_revision(repo, "HEAD")
     if working_manifest != head_bytes:
         starts = ["HEAD"]
@@ -1631,9 +1628,14 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
 def _manifest_entry_scope_from_snapshot(
     repo: Path, snapshot: _ManifestSnapshot
 ) -> tuple[set[str], list[MalformedPlanFinding]]:
-    frozen_history = _frozen_paths_in_git_history(repo)
+    history_complete = _history_boundary_complete(repo)
+    frozen_history = (
+        _frozen_paths_in_git_history(repo) if history_complete else set()
+    )
     ancestor_bindings, ancestor_authorities, history_complete = (
-        _ancestor_manifest_sequences(repo, snapshot.data)
+        _ancestor_manifest_sequences(
+            repo, snapshot.data, history_complete=history_complete
+        )
     )
     frozen_history.update(ancestor_bindings)
     frozen_history.update(ancestor_authorities)
