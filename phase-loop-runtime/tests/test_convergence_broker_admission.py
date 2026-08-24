@@ -401,3 +401,16 @@ def test_fabreadmit_linked_worktrees_share_canonical_repository_allocator(reques
     assert store_main is not None and store_linked is not None
     assert store_main.canonical_repository == store_linked.canonical_repository
     assert store_main.store_dir.resolve() == store_linked.store_dir.resolve()
+
+    main_record = store_main.admit(
+        AdmissionRequest("main", 1, "f-main", "d-main", "v1", "scope", "main-key")
+    )
+    linked_record = store_linked.admit(
+        AdmissionRequest("linked", 2, "f-linked", "d-linked", "v1", "scope", "linked-key")
+    )
+
+    replay_main = store_main.replay()
+    replay_linked = store_linked.replay()
+    assert [record.epoch for record in (main_record, linked_record)] == [1, 2]
+    assert replay_main == replay_linked == [main_record, linked_record]
+    assert [record.request.idempotency_key for record in replay_main] == ["main-key", "linked-key"]

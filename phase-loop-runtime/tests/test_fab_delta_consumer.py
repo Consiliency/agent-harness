@@ -1245,20 +1245,38 @@ def _scan_append_sites_in_source(source_text: str) -> tuple[list[tuple[str, str,
             # Module bindings are needed for status constants; function bindings
             # shadow them for separately constructed records.
             self.assignments: list[dict[str, ast.expr]] = [{}]
+            self.train_ledger_modules: list[set[str]] = [set()]
 
         def visit_FunctionDef(self, node):
             self.fn_stack.append(node.name)
             self.assignments.append({})
+            self.train_ledger_modules.append(set())
             self.generic_visit(node)
+            self.train_ledger_modules.pop()
             self.assignments.pop()
             self.fn_stack.pop()
 
         def visit_AsyncFunctionDef(self, node):
             self.fn_stack.append(node.name)
             self.assignments.append({})
+            self.train_ledger_modules.append(set())
             self.generic_visit(node)
+            self.train_ledger_modules.pop()
             self.assignments.pop()
             self.fn_stack.pop()
+
+        def visit_ImportFrom(self, node):
+            if (node.module or "").endswith("train_ledger"):
+                for alias in node.names:
+                    if alias.name == "append_record":
+                        self.assignments[-1][alias.asname or alias.name] = ast.Name(id="append_record")
+            self.generic_visit(node)
+
+        def visit_Import(self, node):
+            for alias in node.names:
+                if alias.name.endswith(".train_ledger") and alias.asname:
+                    self.train_ledger_modules[-1].add(alias.asname)
+            self.generic_visit(node)
 
         def visit_Assign(self, node):
             for target in node.targets:
@@ -1303,13 +1321,19 @@ def _scan_append_sites_in_source(source_text: str) -> tuple[list[tuple[str, str,
             status = self._literal(values["status"]) if "status" in values else "missing"
             return ("assigned" if supplied_as_name else "inline", status, "head_sha" in values)
 
+        def _is_append_record_target(self, node) -> bool:
+            target = self._resolve(node)
+            if isinstance(target, ast.Name):
+                return target.id == "append_record"
+            if isinstance(target, ast.Attribute) and target.attr == "append_record":
+                value = self._resolve(target.value)
+                return isinstance(value, ast.Name) and any(
+                    value.id in modules for modules in reversed(self.train_ledger_modules)
+                )
+            return False
+
         def visit_Call(self, node):
-            fn_name = None
-            if isinstance(node.func, ast.Name):
-                fn_name = node.func.id
-            elif isinstance(node.func, ast.Attribute):
-                fn_name = node.func.attr
-            if fn_name == "append_record":
+            if self._is_append_record_target(node.func):
                 enclosing_fn = self.fn_stack[-1] if self.fn_stack else "global"
                 record_arg = None
                 if len(node.args) >= 2:
@@ -1648,6 +1672,13 @@ def test_fabreadmit_append_site_inventory_detects_third_site(request, tmp_path):
         source + "\nOPEN_STATUS = 'pr_open'\ndef _extra_constant_status_append(path, nid):\n    append_record(path, LedgerRecord(node_id=nid, status=OPEN_STATUS, head_sha='sha3'))\n",
         # Nor may a dictionary expansion hide a head-carrying ledger record.
         source + "\ndef _extra_kwargs_head_append(path, nid):\n    append_record(path, LedgerRecord(**{'node_id': nid, 'status': 'pr_open', 'head_sha': 'sha3'}))\n",
+        # Nor may direct call-target and import aliases hide a third head append.
+        source + (
+            "\nfrom phase_loop_runtime.train_ledger import append_record as persisted_append\n"
+            "def _extra_aliased_head_append(path, nid):\n"
+            "    append_alias = persisted_append\n"
+            "    append_alias(path, LedgerRecord(node_id=nid, status='pr_open', head_sha='sha3'))\n"
+        ),
     )
 
     for synthetic_source in mutations:
