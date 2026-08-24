@@ -894,6 +894,7 @@ def read_roadmap_status(repo: Path, path: Path) -> Optional[dict]:
     requested = Path(path)
     if not requested.is_absolute():
         requested = repo / requested
+    requested = Path(os.path.abspath(requested))
     try:
         registry_rel = requested.relative_to(repo).as_posix()
     except ValueError as exc:

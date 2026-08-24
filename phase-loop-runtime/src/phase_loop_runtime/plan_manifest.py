@@ -2059,9 +2059,7 @@ def canonical_plan_files(
         if descriptor_repo is None:
             raise ManifestSourceError("descriptor-backed repository paths are unavailable")
         working_repo = descriptor_repo
-        marker_rel = "plans/phase-plan-v10-LEGIBLE.md"
         registry_path = working_repo / registry_rel
-        marker_path = working_repo / marker_rel
         roadmap_sources = {}
         if os.path.lexists(registry_path):
             registry_source: dict[str, bytes] = {}
@@ -2090,25 +2088,19 @@ def canonical_plan_files(
                 raise ManifestSourceError(
                     "roadmap-status sources are not one stable regular-file snapshot"
                 )
-        elif registry_required and os.path.lexists(marker_path):
-            if _regular_repo_files_sha256(
-                repo,
-                (marker_rel,),
-                root_fd=snapshot.root_fd,
-                content_out=roadmap_sources,
-            ) is None:
-                raise ManifestSourceError(
-                    "required roadmap marker is not a stable regular repository file"
-                )
+        elif registry_required:
+            raise ManifestSourceError(
+                f"committed roadmap-status registry is absent: {registry_path}"
+            )
     if snapshot is None:
         status = roadmap_lint.read_roadmap_status(
             working_repo,
             working_repo / registry_rel,
         )
         if status is None and registry_required:
-            roadmap_lint.validate_roadmap_status_coherence(
-                working_repo,
-                required=True,
+            raise ManifestSourceError(
+                f"committed roadmap-status registry is absent: "
+                f"{working_repo / registry_rel}"
             )
     else:
         roadmap_lint._validate_roadmap_status_sources(

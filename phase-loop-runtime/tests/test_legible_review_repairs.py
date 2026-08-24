@@ -4103,28 +4103,33 @@ def test_roadmap_status_registry_rejects_external_symlink(tmp_path):
     _assert_check_fails_closed(repo)
 
 
-def test_manifest_check_requires_registry_when_legible_marker_exists(tmp_path):
+def test_manifest_check_requires_registry_committed_in_audited_tree(tmp_path):
     repo, registry, _payload = _roadmap_check_fixture(
         tmp_path,
         banners={"specs/phase-plans-v1.md": _ACTIVE_BANNER},
         statuses={"specs/phase-plans-v1.md": "active"},
     )
-    marker = repo / "plans" / "phase-plan-v10-LEGIBLE.md"
-    marker.write_text("---\nphase: LEGIBLE\n---\n# LEGIBLE\n", encoding="utf-8")
-    subprocess.run(["git", "add", marker], cwd=repo, check=True)
-    subprocess.run(
-        ["git", "commit", "-m", "add LEGIBLE marker"],
-        cwd=repo,
-        check=True,
-        capture_output=True,
-    )
+    assert check(repo).exit_code == 0
+    assert not (repo / "plans" / "phase-plan-v10-LEGIBLE.md").exists()
     registry.unlink()
 
     with pytest.raises(
         plan_manifest.ManifestSourceError,
-        match="required roadmap-status registry is absent",
+        match="committed roadmap-status registry is absent",
     ):
         check(repo)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    with pytest.raises(
+        plan_manifest.ManifestSourceError,
+        match="committed roadmap-status registry is absent",
+    ):
+        plan_manifest.canonical_plan_files(repo, head)
 
 
 def test_public_roadmap_reader_honors_requested_path(tmp_path):
@@ -4150,11 +4155,12 @@ def test_public_roadmap_reader_rejects_path_outside_repo(tmp_path):
     external = tmp_path / "external-roadmap-status.json"
     external.write_text(json.dumps(payload) + "\n", encoding="utf-8")
 
-    with pytest.raises(
-        roadmap_lint.MalformedRegistryError,
-        match="path escapes repository",
-    ):
-        roadmap_lint.read_roadmap_status(repo, external)
+    for requested in (external, repo / ".." / "missing-roadmap-status.json"):
+        with pytest.raises(
+            roadmap_lint.MalformedRegistryError,
+            match="path escapes repository",
+        ):
+            roadmap_lint.read_roadmap_status(repo, requested)
 
 
 @pytest.mark.parametrize("source", ("registry", "banner"))
