@@ -634,12 +634,16 @@ def _escapes_repo(path: str) -> bool:
     return any(part in ("..", ".") for part in Path(path).parts)
 
 
-def _tracked_roadmap_paths(repo: Path) -> List[str]:
+def _tracked_roadmap_paths(
+    repo: Path, *, root_fd: int | None = None
+) -> List[str]:
     """The exact Git-tracked ``specs/phase-plans-*.md`` path set, stable-sorted."""
     try:
         proc = subprocess.run(
             ["git", "-C", str(repo), "ls-files", "-z", "--", "specs/phase-plans-*.md"],
-            capture_output=True, check=True,
+            capture_output=True,
+            check=True,
+            pass_fds=(root_fd,) if root_fd is not None else (),
         )
     except (OSError, subprocess.CalledProcessError) as exc:
         raise MalformedRegistryError(f"unable to list tracked roadmaps: {exc}") from exc
@@ -647,7 +651,9 @@ def _tracked_roadmap_paths(repo: Path) -> List[str]:
     return sorted(names)
 
 
-def read_roadmap_status(repo: Path, path: Path) -> Optional[dict]:
+def read_roadmap_status(
+    repo: Path, path: Path, *, root_fd: int | None = None
+) -> Optional[dict]:
     """Read and fully coherence-validate ``specs/roadmap-status.json``.
 
     Returns ``None`` when ``path`` is wholly absent (the only "legacy"
@@ -672,7 +678,7 @@ def read_roadmap_status(repo: Path, path: Path) -> Optional[dict]:
         raise StatusCoherenceError(
             f"roadmap-status.json must declare exactly the selected roadmap active: active={active_paths}"
         )
-    tracked_paths = _tracked_roadmap_paths(repo)
+    tracked_paths = _tracked_roadmap_paths(repo, root_fd=root_fd)
     if registered_paths != tracked_paths:
         missing = sorted(set(tracked_paths) - set(registered_paths))
         extra = sorted(set(registered_paths) - set(tracked_paths))
@@ -700,7 +706,12 @@ def read_roadmap_status(repo: Path, path: Path) -> Optional[dict]:
     return data
 
 
-def validate_roadmap_status_coherence(repo: Path, required: bool = False) -> Optional[dict]:
+def validate_roadmap_status_coherence(
+    repo: Path,
+    required: bool = False,
+    *,
+    root_fd: int | None = None,
+) -> Optional[dict]:
     """Full coherence validation over ``specs/roadmap-status.json``.
 
     A wholly absent registry is a no-op for legacy/synthetic repositories.
@@ -709,7 +720,7 @@ def validate_roadmap_status_coherence(repo: Path, required: bool = False) -> Opt
     """
     repo = Path(repo)
     registry_path = repo / ROADMAP_STATUS_REGISTRY_REL
-    status = read_roadmap_status(repo, registry_path)
+    status = read_roadmap_status(repo, registry_path, root_fd=root_fd)
     canonical_marker = repo / "plans" / "phase-plan-v10-LEGIBLE.md"
     if status is None and required and canonical_marker.is_file():
         raise MalformedRegistryError(f"required roadmap-status registry is absent: {registry_path}")

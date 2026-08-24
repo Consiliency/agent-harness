@@ -3805,6 +3805,168 @@ def test_manifest_inventory_rejects_temporary_parent_substitution(
     assert swaps == 1
 
 
+@pytest.mark.parametrize("operation", ("check", "unregistered"))
+def test_manifest_inventory_binds_stage_zero_index_to_snapshot_root(
+    tmp_path, monkeypatch, operation
+):
+    active_parent = tmp_path / "active"
+    repo = make_repo(active_parent)
+    tracked_rel = _commit_plan(repo)
+
+    manifest = repo / "plans" / "manifest.json"
+    manifest.write_text(
+        json.dumps({"plans": [{"file": tracked_rel}]}) + "\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "plans/manifest.json"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "register plan"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+    alternate_parent = tmp_path / "alternate"
+    shutil.copytree(active_parent, alternate_parent, symlinks=True)
+    alternate_repo = alternate_parent / "repo"
+    (alternate_repo / "plans" / "manifest.json").write_text(
+        '{"plans":[]}\n',
+        encoding="utf-8",
+    )
+
+    staged_rel = "plans/phase-plan-v2-STAGED.md"
+    staged_path = repo / staged_rel
+    staged_path.write_text(
+        "---\nphase: STAGED\n---\n# Staged\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", staged_rel], cwd=repo, check=True)
+    staged_path.unlink()
+
+    assert check(repo).exit_code == 1
+    assert check(alternate_repo).exit_code == 1
+    assert plan_manifest.unregistered_plan_files(repo) == (staged_rel,)
+    assert plan_manifest.unregistered_plan_files(alternate_repo) == (tracked_rel,)
+
+    parked_active = tmp_path / "parked-active"
+    real_stage_scan = plan_manifest._git_ls_files_stage_plans
+    swaps = 0
+
+    def stage_scan_from_alternate(repo_arg, **kwargs):
+        nonlocal swaps
+        active_parent.rename(parked_active)
+        alternate_parent.rename(active_parent)
+        try:
+            return real_stage_scan(repo_arg, **kwargs)
+        finally:
+            active_parent.rename(alternate_parent)
+            parked_active.rename(active_parent)
+            swaps += 1
+
+    monkeypatch.setattr(
+        plan_manifest,
+        "_git_ls_files_stage_plans",
+        stage_scan_from_alternate,
+    )
+
+    if operation == "check":
+        result = check(repo)
+        assert result.exit_code != 0
+        assert any(item.path == staged_rel for item in result.missing)
+    else:
+        result = plan_manifest.unregistered_plan_files(repo)
+        assert result == (staged_rel,)
+    assert swaps == 1
+
+
+def test_current_authority_hash_binds_working_files_to_snapshot_root(
+    tmp_path, monkeypatch
+):
+    active_parent = tmp_path / "active"
+    repo = make_repo(active_parent)
+    plan_rel = _commit_plan(repo)
+    plan_bytes = (repo / plan_rel).read_bytes()
+
+    authority = {
+        "schema": "plan_current_authority.v1",
+        "source": "agent-harness#620",
+        "plan_sha256": hashlib.sha256(plan_bytes).hexdigest(),
+        "roadmap_sha256": None,
+    }
+    manifest = repo / "plans" / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "plans": [
+                    {
+                        "file": plan_rel,
+                        "plan_authority_history": [authority],
+                    }
+                ]
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "plans/manifest.json"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "bind current authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+    alternate_parent = tmp_path / "alternate"
+    shutil.copytree(active_parent, alternate_parent, symlinks=True)
+    alternate_repo = alternate_parent / "repo"
+
+    (repo / plan_rel).write_text(
+        "---\nphase: RUNNER\n---\n# Drifted\n",
+        encoding="utf-8",
+    )
+    (alternate_repo / "plans" / "manifest.json").write_text(
+        '{"plans":[]}\n',
+        encoding="utf-8",
+    )
+
+    state_a = check(repo)
+    assert state_a.exit_code == 1
+    assert any(
+        item.path == plan_rel and item.kind == "plan-digest"
+        for item in state_a.malformed
+    )
+    assert check(alternate_repo).exit_code == 1
+
+    parked_active = tmp_path / "parked-active"
+    real_hasher = plan_manifest._regular_repo_files_sha256
+    swaps = 0
+
+    def hash_from_alternate(repo_arg, rel_paths, **kwargs):
+        nonlocal swaps
+        active_parent.rename(parked_active)
+        alternate_parent.rename(active_parent)
+        try:
+            return real_hasher(repo_arg, rel_paths, **kwargs)
+        finally:
+            active_parent.rename(alternate_parent)
+            parked_active.rename(active_parent)
+            swaps += 1
+
+    monkeypatch.setattr(
+        plan_manifest,
+        "_regular_repo_files_sha256",
+        hash_from_alternate,
+    )
+
+    result = check(repo)
+    assert swaps == 1
+    assert result.exit_code != 0
+    assert any(
+        item.path == plan_rel and item.kind == "plan-digest"
+        for item in result.malformed
+    )
+
+
 def test_cli_attest_passes_preimport_process_token_into_runner_workflow(tmp_path, monkeypatch):
     from phase_loop_runtime import cli
 

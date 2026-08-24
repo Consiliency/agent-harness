@@ -11,6 +11,7 @@ import sys
 import tempfile
 from collections.abc import Mapping, Sequence
 from contextlib import ExitStack, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -32,6 +33,11 @@ TRANSITIONS = {
     "committed": {"executing", "orphaned"},
     "executing": {"completed", "failed", "orphaned"},
 }
+
+_PINNED_REPO_ROOT_FD: ContextVar[int | None] = ContextVar(
+    "pinned_repo_root_fd",
+    default=None,
+)
 
 
 CLOSED_DISPOSITIONS = frozenset(
@@ -1005,10 +1011,13 @@ def _darwin_clonefileat_bytes(repo: Path, parent_fd: int, name: str) -> bytes | 
 
 
 def _regular_repo_files_sha256(
-    repo: Path, rel_paths: Sequence[str]
+    repo: Path,
+    rel_paths: Sequence[str],
+    *,
+    root_fd: int | None = None,
 ) -> dict[str, str] | None:
     """Hash stable repository files in one descriptor-pinned transaction."""
-    root = repo.resolve(strict=True)
+    root = Path(repo) if root_fd is not None else repo.resolve(strict=True)
     requested = tuple(rel_paths)
     if not requested or len(set(requested)) != len(requested):
         return None
@@ -1057,14 +1066,21 @@ def _regular_repo_files_sha256(
 
     try:
         with ExitStack() as opened:
-            root_before = os.stat(root, follow_symlinks=False)
-            if not stat.S_ISDIR(root_before.st_mode):
-                return None
-            root_fd = os.open(root, directory_flags)
-            opened.callback(os.close, root_fd)
-            root_identity = directory_identity(os.fstat(root_fd))
-            if root_identity != directory_identity(root_before):
-                return None
+            owns_root = root_fd is None
+            if owns_root:
+                root_before = os.stat(root, follow_symlinks=False)
+                if not stat.S_ISDIR(root_before.st_mode):
+                    return None
+                root_fd = os.open(root, directory_flags)
+                opened.callback(os.close, root_fd)
+                root_identity = directory_identity(os.fstat(root_fd))
+                if root_identity != directory_identity(root_before):
+                    return None
+            else:
+                root_stat = os.fstat(root_fd)
+                if not stat.S_ISDIR(root_stat.st_mode):
+                    return None
+                root_identity = directory_identity(root_stat)
 
             directory_entries: list[
                 tuple[int, str, tuple[int, int, int, int, int]]
@@ -1187,7 +1203,9 @@ def _regular_repo_files_sha256(
                 )
                 if directory_identity(current) != expected:
                     return None
-            if directory_identity(os.stat(root, follow_symlinks=False)) != root_identity:
+            if owns_root and directory_identity(
+                os.stat(root, follow_symlinks=False)
+            ) != root_identity:
                 return None
             if not files_are_current():
                 return None
@@ -1197,7 +1215,9 @@ def _regular_repo_files_sha256(
                 )
                 if directory_identity(current) != expected:
                     return None
-            if directory_identity(os.stat(root, follow_symlinks=False)) != root_identity:
+            if owns_root and directory_identity(
+                os.stat(root, follow_symlinks=False)
+            ) != root_identity:
                 return None
             # A read-only verifier cannot freeze later writers. This terminal file
             # observation is the transaction's linearization point: every earlier
@@ -1285,6 +1305,8 @@ def _pinned_manifest_snapshot(
                 or plans_identity != directory_identity(plans_after)
             ):
                 raise ManifestSourceError("plans directory changed before manifest read")
+            pinned_token = _PINNED_REPO_ROOT_FD.set(root_fd)
+            opened.callback(_PINNED_REPO_ROOT_FD.reset, pinned_token)
 
             def ancestry_is_current() -> bool:
                 return (
@@ -1462,8 +1484,18 @@ def _classify_basename(basename: str) -> str:
     return "irrelevant"
 
 
+def _descriptor_repo_path(root_fd: int) -> Path | None:
+    for descriptor_root in (Path("/proc/self/fd"), Path("/dev/fd")):
+        if descriptor_root.is_dir():
+            return descriptor_root / str(root_fd)
+    return None
+
+
 def _git_history_capture(
-    repo: Path, *args: str, text: bool = True
+    repo: Path,
+    *args: str,
+    text: bool = True,
+    root_fd: int | None = None,
 ) -> subprocess.CompletedProcess:
     env = {
         key: value
@@ -1476,6 +1508,23 @@ def _git_history_capture(
     env["GIT_CONFIG_SYSTEM"] = os.devnull
     env["GIT_GRAFT_FILE"] = os.devnull
     env["GIT_SHALLOW_FILE"] = os.devnull
+    effective_root_fd = (
+        root_fd if root_fd is not None else _PINNED_REPO_ROOT_FD.get()
+    )
+    repo_path = str(repo)
+    pass_fds: tuple[int, ...] = ()
+    if effective_root_fd is not None:
+        descriptor_repo = _descriptor_repo_path(effective_root_fd)
+        if descriptor_repo is None:
+            stdout: str | bytes = "" if text else b""
+            stderr: str | bytes = (
+                "descriptor-backed Git paths are unavailable"
+                if text
+                else b"descriptor-backed Git paths are unavailable"
+            )
+            return subprocess.CompletedProcess(args, 127, stdout, stderr)
+        repo_path = str(descriptor_repo)
+        pass_fds = (effective_root_fd,)
     try:
         return subprocess.run(
             [
@@ -1484,13 +1533,14 @@ def _git_history_capture(
                 "-c",
                 "core.commitGraph=false",
                 "-C",
-                str(repo),
+                repo_path,
                 *args,
             ],
             capture_output=True,
             check=False,
             text=text,
             env=env,
+            pass_fds=pass_fds,
         )
     except OSError as exc:
         stdout: str | bytes = "" if text else b""
@@ -1755,10 +1805,19 @@ def _git_ls_tree_plans(repo: Path, tree_oid: str) -> list[str]:
     return [chunk.decode("utf-8", "surrogateescape") for chunk in proc.stdout.split(b"\0") if chunk]
 
 
-def _git_ls_files_stage_plans(repo: Path) -> list[tuple[str, str, str]]:
+def _git_ls_files_stage_plans(
+    repo: Path, *, root_fd: int | None = None
+) -> list[tuple[str, str, str]]:
     """Stage-0 index entries under ``plans/`` as ``(rel_path, blob_oid, mode)``."""
     proc = _git_history_capture(
-        repo, "ls-files", "-z", "--stage", "--", "plans/", text=False
+        repo,
+        "ls-files",
+        "-z",
+        "--stage",
+        "--",
+        "plans/",
+        text=False,
+        root_fd=root_fd,
     )
     if proc.returncode != 0:
         raise ManifestSourceError(f"git ls-files failed: {_git_error(proc)}")
@@ -1780,9 +1839,18 @@ def _git_ls_files_stage_plans(repo: Path) -> list[tuple[str, str, str]]:
     return out
 
 
-def _git_conflicted_index_plans(repo: Path) -> list[str]:
+def _git_conflicted_index_plans(
+    repo: Path, *, root_fd: int | None = None
+) -> list[str]:
     proc = _git_history_capture(
-        repo, "ls-files", "-z", "--stage", "--", "plans/", text=False
+        repo,
+        "ls-files",
+        "-z",
+        "--stage",
+        "--",
+        "plans/",
+        text=False,
+        root_fd=root_fd,
     )
     if proc.returncode != 0:
         raise ManifestSourceError(
@@ -1956,7 +2024,17 @@ def canonical_plan_files(
 
     from . import roadmap_lint
 
-    roadmap_lint.validate_roadmap_status_coherence(repo, required=False)
+    working_repo = repo
+    if snapshot is not None and snapshot.root_fd is not None:
+        descriptor_repo = _descriptor_repo_path(snapshot.root_fd)
+        if descriptor_repo is None:
+            raise ManifestSourceError("descriptor-backed repository paths are unavailable")
+        working_repo = descriptor_repo
+    roadmap_lint.validate_roadmap_status_coherence(
+        working_repo,
+        required=False,
+        root_fd=snapshot.root_fd if snapshot is not None else None,
+    )
 
     origins: dict[str, set[str]] = {}
     malformed: list[MalformedPlanFinding] = []
@@ -1972,7 +2050,10 @@ def canonical_plan_files(
         elif classification == "lookalike":
             malformed.append(MalformedPlanFinding(path=rel, kind="noncanonical", origin=frozenset({"head"})))
 
-    for raw, _blob, mode in _git_ls_files_stage_plans(repo):
+    for raw, _blob, mode in _git_ls_files_stage_plans(
+        repo,
+        root_fd=snapshot.root_fd if snapshot is not None else None,
+    ):
         rel = _repo_relative_posix(repo, raw)
         if rel is None or "/" in rel[len("plans/"):]:
             continue
@@ -1991,7 +2072,10 @@ def canonical_plan_files(
         elif classification == "lookalike":
             malformed.append(MalformedPlanFinding(path=rel, kind="noncanonical", origin=frozenset({"index"})))
 
-    for rel in _git_conflicted_index_plans(repo):
+    for rel in _git_conflicted_index_plans(
+        repo,
+        root_fd=snapshot.root_fd if snapshot is not None else None,
+    ):
         clean_rel = _repo_relative_posix(repo, rel)
         if clean_rel is None:
             continue
@@ -2300,7 +2384,11 @@ def _manifest_entry_scope_from_snapshot(
                     committed_digests = _regular_blobs_sha256_at_revision(
                         repo, head_oid, authority_paths
                     )
-                    actual_digests = _regular_repo_files_sha256(repo, authority_paths)
+                    actual_digests = _regular_repo_files_sha256(
+                        repo,
+                        authority_paths,
+                        root_fd=snapshot.root_fd,
+                    )
                     actual_plan = (
                         actual_digests.get(rel)
                         if actual_digests is not None

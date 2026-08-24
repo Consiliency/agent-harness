@@ -1136,9 +1136,9 @@ def test_manifest_reporting_consumes_coherence_checked_accessor(tmp_path):
     calls: list[Path] = []
     original = read_status
 
-    def _spy(repo, path):  # noqa: ANN001 - test spy
+    def _spy(repo, path, **kwargs):  # noqa: ANN001 - test spy
         calls.append(Path(repo))
-        return original(repo, path)
+        return original(repo, path, **kwargs)
 
     import phase_loop_runtime.roadmap_lint as roadmap_lint_module
 
