@@ -5,11 +5,15 @@ are touching. It is **not** cross-agent coordination today, and it is **not** th
 roadmap-ownership mistakes. Both of those were the original framing and both were
 overstated; a review panel called it and was right.
 
-**Why it is not cross-agent:** the agent most likely to collide with — the Codex agent —
-cannot participate. Its message-board membership is stuck in `invited`
-(Consiliency/agent-harness#630), and nothing obliges it to read a file in the repo. It will
-neither read nor write here. This becomes real cross-agent coordination only once
-Consiliency/agent-harness#630 lands.
+**Why it is not cross-agent — narrower than it used to be.** The Codex agent's
+message-board membership is now **`joined`** (2026-08-23), and a message to that board was
+confirmed delivered, so a live channel between the agents *does* exist. Prefer it: it is
+two-way and it notifies.
+
+What remains true is smaller and still worth stating: **nothing obliges any agent to read
+or update this file.** It binds nobody. So it is a durable record, not a lock — useful
+because Claude sessions have no memory of each other, and useless the moment someone
+stops maintaining it.
 
 **Why it would not have caught the mistake that prompted it:** that failure was building
 into Phase 5 (SCHED) without reading the roadmap — which *already* recorded the ownership,
