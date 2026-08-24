@@ -966,16 +966,17 @@ def _read_roadmap_status_sources(
 
 
 def read_roadmap_status(repo: Path, path: Path) -> Optional[dict]:
-    repo = Path(repo).resolve(strict=True)
+    repo_argument = Path(repo)
+    repo = repo_argument.resolve(strict=True)
     requested = Path(path)
     if not requested.is_absolute():
-        cwd_requested = Path(os.path.abspath(requested))
-        try:
-            cwd_requested.relative_to(repo)
-        except ValueError:
-            requested = repo / requested
-        else:
-            requested = cwd_requested
+        repo_parts = repo_argument.parts
+        explicitly_repo_prefixed = (
+            not repo_argument.is_absolute()
+            and bool(repo_parts)
+            and requested.parts[: len(repo_parts)] == repo_parts
+        )
+        requested = requested if explicitly_repo_prefixed else repo / requested
     requested = Path(os.path.abspath(requested))
     try:
         registry_rel = requested.relative_to(repo).as_posix()

@@ -4153,6 +4153,19 @@ def test_public_roadmap_reader_honors_requested_path(tmp_path, monkeypatch):
         relative_registry,
     ) is not None
 
+    nested = repo / "nested"
+    nested.mkdir()
+    monkeypatch.chdir(nested)
+    repo_from_child = Path("..")
+    assert roadmap_lint.read_roadmap_status(
+        repo_from_child,
+        repo_from_child / "specs" / "roadmap-status.json",
+    ) is not None
+    assert roadmap_lint.read_roadmap_status(
+        repo_from_child,
+        Path("specs/roadmap-status.json"),
+    ) is not None
+
 
 def test_public_roadmap_reader_rejects_path_outside_repo(tmp_path):
     repo, _registry, payload = _roadmap_check_fixture(
