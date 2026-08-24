@@ -111,6 +111,7 @@ class GateAConformEvidenceScopeTest(unittest.TestCase):
         self.assertNotIn("sparse-checkout set \\\n      phase-loop-runtime/tests", script)
         self.assertNotIn("      .claude", script)
         self.assertIn('"--rootdir=$SUITE_TREE"', script)
+        self.assertIn("os.chdir(suite.parent)", script)
 
         for nodeid in (
             "test_outside_agent_contract_drift.py::test_documented_consumer_mirror_policy_allows_only_pinned_contract_bytes",

@@ -312,11 +312,13 @@ PYEOF
       "${LEGIBLE_AUTHORITY_ENV[@]}" \
       PYTHONPATH="$SUITE_TREE/tests" \
       "$PY" - "$SUITE_TREE" "${CONFORM_STANDALONE_DESELECTS[@]}" <<'PYEOF'
+import os
 import sys
 from pathlib import Path
 
 suite = Path(sys.argv[1]).resolve()
 extra_pytest_args = sys.argv[2:]
+os.chdir(suite.parent)
 import phase_loop_runtime
 
 runtime_file = Path(phase_loop_runtime.__file__).resolve()
