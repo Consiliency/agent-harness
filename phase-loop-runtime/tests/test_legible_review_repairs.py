@@ -838,10 +838,18 @@ def test_manifest_check_rejects_authoritative_plan_digest_drift(tmp_path):
                     {
                         "file": canonical,
                         "phase_alias": "RUNNER",
+                        "plan_authority_history": [
+                            {
+                                "schema": "plan_current_authority.v1",
+                                "source": "agent-harness#620",
+                                "plan_sha256": "0" * 64,
+                                "roadmap_sha256": None,
+                            }
+                        ],
                         "lifecycle": [
                             {
                                 "metadata": {
-                                    "legible_plan_contract": {"plan_sha256": "0" * 60}
+                                    "legible_plan_contract": {"plan_sha256": "1" * 64}
                                 }
                             }
                         ],
@@ -1843,7 +1851,23 @@ def _write_legible_manifest_contract(repo: Path, *, include_contract: bool = Tru
     lifecycle.append({"metadata": {"note": "ordinary later event"}})
     (repo / "plans" / "manifest.json").write_text(
         json.dumps(
-            {"plans": [{"file": rel, "phase_alias": "LEGIBLE", "lifecycle": lifecycle}]},
+            {
+                "plans": [
+                    {
+                        "file": rel,
+                        "phase_alias": "LEGIBLE",
+                        "plan_authority_history": [
+                            {
+                                "schema": "plan_current_authority.v1",
+                                "source": "agent-harness#620",
+                                "plan_sha256": plan_digest,
+                                "roadmap_sha256": None,
+                            }
+                        ],
+                        "lifecycle": lifecycle,
+                    }
+                ]
+            },
             sort_keys=True,
         )
         + "\n",
@@ -1861,6 +1885,15 @@ def test_legible_manifest_contract_survives_later_ordinary_lifecycle_event(tmp_p
 
     assert result.exit_code == 1
     assert (rel, "plan-digest") in [(item.path, item.kind) for item in result.malformed]
+
+    manifest_path = repo / "plans" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    del manifest["plans"][0]["plan_authority_history"]
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
+
+    historical_only = check(repo)
+
+    assert historical_only.exit_code == 0
 
 
 @pytest.mark.parametrize("defect", ("missing", "owned_paths", "owned_paths_count", "owned_paths_sha256", "test_paths"))

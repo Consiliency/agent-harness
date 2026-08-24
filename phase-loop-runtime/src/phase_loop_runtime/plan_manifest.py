@@ -12,7 +12,6 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from . import roadmap_assumptions
 from .discovery import PLAN_RE
 
 
@@ -773,7 +772,6 @@ _LEGIBLE_TEST_PATHS = (
     "phase-loop-runtime/tests/test_legible_evidence.py",
     "phase-loop-runtime/tests/test_legible_roadmap_contract.py",
 )
-_LEGIBLE_ROADMAP_SHA256 = roadmap_assumptions.CANONICAL_ROADMAP_SHA256
 _LEGIBLE_PLAN_CONTRACT_FIXED = {
     "absent_registry_selector_falsifier_nodeid": (
         "phase-loop-runtime/tests/test_legible_roadmap_contract.py::"
@@ -809,6 +807,11 @@ _LEGIBLE_PLAN_CONTRACT_KEYS = frozenset(
         "test_paths",
     }
 )
+_PLAN_AUTHORITY_SCHEMA = "plan_current_authority.v1"
+_PLAN_AUTHORITY_KEYS = frozenset(
+    {"schema", "source", "plan_sha256", "roadmap_sha256"}
+)
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class ManifestSourceError(RuntimeError):
@@ -1141,21 +1144,91 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
                     and isinstance(contract.get("test_paths"), list)
                     and len(contract["test_paths"]) == len(_LEGIBLE_TEST_PATHS)
                     and set(contract["test_paths"]) == set(_LEGIBLE_TEST_PATHS)
-                    and contract.get("roadmap_sha256") == _LEGIBLE_ROADMAP_SHA256
-                    and isinstance(contract.get("plan_sha256"), str)
+                    and _SHA256_RE.fullmatch(str(contract.get("roadmap_sha256", "")))
+                    and _SHA256_RE.fullmatch(str(contract.get("plan_sha256", "")))
                 )
                 if not required_contract:
                     malformed.append(
                         MalformedPlanFinding(rel, "plan-contract", frozenset({"manifest"}))
                     )
             digests = [item.get("plan_sha256") for item in (*contracts, *rebinds)]
-            if digests:
-                plan_path = repo / rel
-                actual = hashlib.sha256(plan_path.read_bytes()).hexdigest() if plan_path.is_file() else None
-                if any(not isinstance(digest, str) or digest != actual for digest in digests):
-                    malformed.append(
-                        MalformedPlanFinding(rel, "plan-digest", frozenset({"manifest"}))
+            # Lifecycle contracts and digest rebinds are immutable evidence of the
+            # bytes reviewed at that historical event. Comparing every one of them
+            # with today's plan makes a valid append-only history impossible after
+            # any later amendment. Keep validating their digest syntax, but bind
+            # current bytes only through the row-level append-only authority history.
+            if any(not isinstance(digest, str) or _SHA256_RE.fullmatch(digest) is None for digest in digests):
+                malformed.append(
+                    MalformedPlanFinding(rel, "plan-digest", frozenset({"manifest"}))
+                )
+
+            authority_history = entry.get("plan_authority_history")
+            if authority_history is not None:
+                authority_valid = isinstance(authority_history, list) and bool(authority_history)
+                roadmap_ref = entry.get("roadmap_ref")
+                roadmap_value = roadmap_ref.get("file") if isinstance(roadmap_ref, dict) else None
+                roadmap_rel = (
+                    _repo_relative_posix(repo, roadmap_value)
+                    if isinstance(roadmap_value, str)
+                    else None
+                )
+                for authority in authority_history if isinstance(authority_history, list) else ():
+                    authority_valid = (
+                        authority_valid
+                        and isinstance(authority, dict)
+                        and set(authority) == _PLAN_AUTHORITY_KEYS
+                        and authority.get("schema") == _PLAN_AUTHORITY_SCHEMA
+                        and isinstance(authority.get("source"), str)
+                        and ISSUE_ID_RE.fullmatch(authority["source"]) is not None
+                        and isinstance(authority.get("plan_sha256"), str)
+                        and _SHA256_RE.fullmatch(authority["plan_sha256"]) is not None
+                        and (
+                            authority.get("roadmap_sha256") is None
+                            or (
+                                isinstance(authority.get("roadmap_sha256"), str)
+                                and _SHA256_RE.fullmatch(authority["roadmap_sha256"]) is not None
+                            )
+                        )
                     )
+                current_authority = authority_history[-1] if authority_valid else None
+                roadmap_contract_valid = (
+                    current_authority is not None
+                    and (
+                        (roadmap_ref is None and current_authority["roadmap_sha256"] is None)
+                        or (
+                            isinstance(roadmap_ref, dict)
+                            and isinstance(roadmap_rel, str)
+                            and roadmap_rel == roadmap_value
+                            and isinstance(current_authority["roadmap_sha256"], str)
+                        )
+                    )
+                )
+                if not authority_valid or not roadmap_contract_valid:
+                    malformed.append(
+                        MalformedPlanFinding(rel, "plan-contract", frozenset({"manifest"}))
+                    )
+                else:
+                    plan_path = repo / rel
+                    actual_plan = (
+                        hashlib.sha256(plan_path.read_bytes()).hexdigest()
+                        if plan_path.is_file()
+                        else None
+                    )
+                    if current_authority["plan_sha256"] != actual_plan:
+                        malformed.append(
+                            MalformedPlanFinding(rel, "plan-digest", frozenset({"manifest"}))
+                        )
+                    if isinstance(roadmap_rel, str):
+                        roadmap_path = repo / roadmap_rel
+                        actual_roadmap = (
+                            hashlib.sha256(roadmap_path.read_bytes()).hexdigest()
+                            if roadmap_path.is_file()
+                            else None
+                        )
+                        if current_authority["roadmap_sha256"] != actual_roadmap:
+                            malformed.append(
+                                MalformedPlanFinding(rel, "plan-contract", frozenset({"manifest"}))
+                            )
         elif classification == "lookalike":
             malformed.append(MalformedPlanFinding(path=rel, kind="noncanonical", origin=frozenset({"manifest"})))
     return registered, malformed
