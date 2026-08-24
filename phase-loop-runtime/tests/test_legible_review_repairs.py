@@ -2752,6 +2752,17 @@ def test_generic_ancestor_authority_cannot_be_removed_from_retained_row(tmp_path
         capture_output=True,
     )
     assert check(repo).exit_code == 0
+    authority_history = manifest["plans"][0]["plan_authority_history"]
+    manifest["plans"][0]["plan_authority_history"] = None
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    null_authority = check(repo)
+    assert null_authority.exit_code == 1
+    assert (rel, "plan-contract") in [
+        (item.path, item.kind) for item in null_authority.malformed
+    ]
+    manifest["plans"][0]["plan_authority_history"] = authority_history
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    assert check(repo).exit_code == 0
     (repo / "README.md").write_text("successor\n", encoding="utf-8")
     subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
     subprocess.run(

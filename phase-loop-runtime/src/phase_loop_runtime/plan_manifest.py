@@ -1830,6 +1830,7 @@ def _manifest_entry_scope_from_snapshot(
                     MalformedPlanFinding(rel, "plan-contract", frozenset({"manifest"}))
                 )
 
+            authority_history_declared = "plan_authority_history" in entry
             authority_history = entry.get("plan_authority_history")
             roadmap_authority_required = (
                 frozen_prefix is not None
@@ -1838,7 +1839,9 @@ def _manifest_entry_scope_from_snapshot(
             authority_required = (
                 roadmap_authority_required or rel in ancestor_authorities
             )
-            if authority_history is None and authority_required:
+            if authority_history is None and (
+                authority_history_declared or authority_required
+            ):
                 malformed.append(
                     MalformedPlanFinding(rel, "plan-contract", frozenset({"manifest"}))
                 )
