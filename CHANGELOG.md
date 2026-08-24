@@ -31,6 +31,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   an entry) are **demoted to an `Expected` footer with the reason attached, never
   dropped** — a warning that fires on every PR is tuned out within a week, and takes the
   substantive findings under it along too.
+- The workflow **installs** the runtime rather than relying on `PYTHONPATH` — the parser
+  pulls in `pydantic` transitively, so a path-only run cannot import it.
 - Advisory deliberately: it annotates, never fails. It becomes worth making required
   only once its false-positive rate is measured against merged history.
 - Reads the repository's declared active roadmap via `roadmap_lint.declared_active_roadmap`
