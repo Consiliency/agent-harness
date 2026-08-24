@@ -45,6 +45,7 @@ def _pinned_env() -> Iterator[None]:
         "PHASE_LOOP_CHANNEL_SESSION_ID",
         "PHASE_LOOP_CLAUDE_CHANNEL_SESSION_ID",
         "PHASE_LOOP_CLAUDE_CHANNEL_SIDECAR_URL",
+        "PHASE_LOOP_RUNNER_REPO_ROOT",
         "CI",
         "GITHUB_ACTIONS",
     ]
@@ -53,6 +54,7 @@ def _pinned_env() -> Iterator[None]:
         for k in keys:
             os.environ.pop(k, None)
         os.environ["PHASE_LOOP_CLAUDE_ROUTE"] = "agent_view"
+        os.environ["PHASE_LOOP_RUNNER_REPO_ROOT"] = str(Path(__file__).resolve().parents[2])
         yield
     finally:
         for k, v in saved.items():
