@@ -1268,6 +1268,9 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
                         MalformedPlanFinding(rel, "plan-contract", frozenset({"manifest"}))
                     )
             digests = [item.get("plan_sha256") for item in (*contracts, *rebinds)]
+            roadmap_digests = [
+                item.get("roadmap_sha256") for item in (*contracts, *rebinds)
+            ]
             # Lifecycle contracts and digest rebinds are immutable evidence of the
             # bytes reviewed at that historical event. Comparing every one of them
             # with today's plan makes a valid append-only history impossible after
@@ -1276,6 +1279,13 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
             if any(not isinstance(digest, str) or _SHA256_RE.fullmatch(digest) is None for digest in digests):
                 malformed.append(
                     MalformedPlanFinding(rel, "plan-digest", frozenset({"manifest"}))
+                )
+            if any(
+                not isinstance(digest, str) or _SHA256_RE.fullmatch(digest) is None
+                for digest in roadmap_digests
+            ):
+                malformed.append(
+                    MalformedPlanFinding(rel, "plan-contract", frozenset({"manifest"}))
                 )
 
             authority_history = entry.get("plan_authority_history")
@@ -1314,7 +1324,7 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
                 roadmap_contract_valid = (
                     current_authority is not None
                     and (
-                        rel != _LEGIBLE_PLAN_REL
+                        not historical_binding_declared
                         or (
                             isinstance(roadmap_ref, dict)
                             and isinstance(current_authority["roadmap_sha256"], str)

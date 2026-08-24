@@ -840,26 +840,33 @@ def test_manifest_check_rejects_duplicate_registered_plan_path(tmp_path):
 def test_manifest_check_rejects_authoritative_plan_digest_drift(tmp_path):
     repo = make_repo(tmp_path)
     canonical = _commit_plan(repo)
+    roadmap = repo / "specs" / "current-roadmap.md"
+    roadmap.write_text("# Current roadmap\n", encoding="utf-8")
+    roadmap_digest = hashlib.sha256(roadmap.read_bytes()).hexdigest()
     manifest = repo / "plans" / "manifest.json"
     manifest.write_text(
         json.dumps(
             {
                 "plans": [
-                    {
-                        "file": canonical,
-                        "phase_alias": "RUNNER",
-                        "plan_authority_history": [
+                        {
+                            "file": canonical,
+                            "phase_alias": "RUNNER",
+                            "roadmap_ref": {"file": "specs/current-roadmap.md"},
+                            "plan_authority_history": [
                             {
                                 "schema": "plan_current_authority.v1",
                                 "source": "agent-harness#620",
                                 "plan_sha256": "0" * 64,
-                                "roadmap_sha256": None,
+                                    "roadmap_sha256": roadmap_digest,
                             }
                         ],
                         "lifecycle": [
                             {
-                                "metadata": {
-                                    "legible_plan_contract": {"plan_sha256": "1" * 64}
+                                    "metadata": {
+                                        "legible_plan_contract": {
+                                            "plan_sha256": "1" * 64,
+                                            "roadmap_sha256": roadmap_digest,
+                                        }
                                 }
                             }
                         ],
@@ -877,8 +884,7 @@ def test_manifest_check_rejects_authoritative_plan_digest_drift(tmp_path):
 
     external = tmp_path / "external-roadmap.md"
     external.write_text("# External roadmap\n", encoding="utf-8")
-    roadmap = repo / "specs" / "current-roadmap.md"
-    roadmap.parent.mkdir(exist_ok=True)
+    roadmap.unlink()
     roadmap.symlink_to(external)
     payload = json.loads(manifest.read_text(encoding="utf-8"))
     payload["plans"][0]["roadmap_ref"] = {"file": "specs/current-roadmap.md"}
@@ -2000,6 +2006,55 @@ def test_manifest_check_rejects_non_list_lifecycle_that_erases_authority(tmp_pat
         json.dumps({"plans": [{"file": rel, "lifecycle": {}}]}),
         encoding="utf-8",
     )
+
+    result = check(repo)
+
+    assert result.exit_code == 1
+    assert (rel, "plan-contract") in [
+        (item.path, item.kind) for item in result.malformed
+    ]
+
+
+def test_historical_digest_rebind_cannot_drop_current_roadmap_binding(tmp_path):
+    repo = make_repo(tmp_path)
+    rel = _commit_plan(repo)
+    roadmap = repo / "specs" / "current-roadmap.md"
+    roadmap.parent.mkdir(exist_ok=True)
+    roadmap.write_text("# Current roadmap\n", encoding="utf-8")
+    plan_digest = hashlib.sha256((repo / rel).read_bytes()).hexdigest()
+    roadmap_digest = hashlib.sha256(roadmap.read_bytes()).hexdigest()
+    manifest_path = repo / "plans" / "manifest.json"
+    manifest = {
+        "plans": [
+            {
+                "file": rel,
+                "roadmap_ref": {"file": "specs/current-roadmap.md"},
+                "plan_authority_history": [
+                    {
+                        "schema": "plan_current_authority.v1",
+                        "source": "agent-harness#620",
+                        "plan_sha256": plan_digest,
+                        "roadmap_sha256": roadmap_digest,
+                    }
+                ],
+                "lifecycle": [
+                    {
+                        "metadata": {
+                            "digest_rebind": {
+                                "plan_sha256": plan_digest,
+                                "roadmap_sha256": roadmap_digest,
+                            }
+                        }
+                    }
+                ],
+            }
+        ]
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    assert check(repo).exit_code == 0
+    del manifest["plans"][0]["roadmap_ref"]
+    manifest["plans"][0]["plan_authority_history"][-1]["roadmap_sha256"] = None
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     result = check(repo)
 
