@@ -90,7 +90,7 @@ class AvailabilitySimulationTests(unittest.TestCase):
         # ALL four seats on the single available vendor, each a DIFFERENT lens.
         self.assertEqual({s.harness for s in board.seats}, {"grok"})
         self.assertEqual(len({s.lens for s in board.seats}), 4)
-        self.assertEqual({s.model for s in board.seats}, {"grok-4.5"})
+        self.assertEqual({s.model for s in board.seats}, {"grok-4.6"})
 
     def test_never_below_floor_for_any_nonempty_availability(self) -> None:
         # Exhaustively: every non-empty subset of vendors reaches the target and is
@@ -118,7 +118,7 @@ class AvailabilitySimulationTests(unittest.TestCase):
         self.assertEqual(_keys(a), _keys(b))
 
     def test_every_composed_board_passes_matrix_validation(self) -> None:
-        # A composed board is only useful if its seats are all VALID (grok-4.5 on the
+        # A composed board is only useful if its seats are all VALID (grok-4.6 on the
         # grok lane, gpt on codex, …) — validate each availability scenario.
         from itertools import combinations
 

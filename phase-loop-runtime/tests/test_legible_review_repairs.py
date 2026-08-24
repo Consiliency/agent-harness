@@ -3,8 +3,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
+import signal
 import subprocess
 import sys
+import time
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
@@ -138,6 +141,35 @@ def _commit_plan(repo: Path, name: str = "phase-plan-v1-RUNNER.md") -> str:
     return rel
 
 
+def _source_authority_manifest(source_repo: Path) -> dict:
+    manifest_path = Path(
+        os.environ.get(
+            "PHASE_LOOP_LEGIBLE_AUTHORITY_MANIFEST",
+            source_repo / "plans" / "manifest.json",
+        )
+    )
+    return json.loads(manifest_path.read_text(encoding="utf-8"))
+
+
+def _source_binding_events(source_repo: Path, rel: str) -> list[dict]:
+    manifest = _source_authority_manifest(source_repo)
+    entry = next(item for item in manifest["plans"] if item["file"] == rel)
+    return [
+        json.loads(json.dumps(event))
+        for event in entry["lifecycle"]
+        if any(
+            key in event.get("metadata", {})
+            for key in ("legible_plan_contract", "digest_rebind")
+        )
+    ]
+
+
+def _source_authority_history(source_repo: Path, rel: str) -> list[dict]:
+    manifest = _source_authority_manifest(source_repo)
+    entry = next(item for item in manifest["plans"] if item["file"] == rel)
+    return json.loads(json.dumps(entry["plan_authority_history"]))
+
+
 def _operational_fixture(
     repo: Path, *, stage: str = "candidate"
 ) -> tuple[str, dict[str, dict]]:
@@ -227,6 +259,13 @@ def _operational_fixture(
     pr_delta_path.write_text("# base panel invoker\n", encoding="utf-8")
     manifest_path = repo / "plans" / "manifest.json"
     plan_digest = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+    roadmap_digest = hashlib.sha256(roadmap_v10.read_bytes()).hexdigest()
+    frozen_binding_events = _source_binding_events(
+        source_repo, "plans/phase-plan-v10-LEGIBLE.md"
+    )
+    frozen_authority_history = _source_authority_history(
+        source_repo, "plans/phase-plan-v10-LEGIBLE.md"
+    )
     manifest_path.write_text(
         json.dumps(
             {
@@ -234,13 +273,24 @@ def _operational_fixture(
                     {
                         "file": "plans/phase-plan-v10-LEGIBLE.md",
                         "phase_alias": "LEGIBLE",
+                        "roadmap_ref": {"file": "specs/phase-plans-v10.md"},
+                        "plan_authority_history": [
+                            *frozen_authority_history,
+                            {
+                                "schema": "plan_current_authority.v1",
+                                "source": "Consiliency/agent-harness#647",
+                                "plan_sha256": plan_digest,
+                                "roadmap_sha256": roadmap_digest,
+                            }
+                        ],
                         "lifecycle": [
+                            *frozen_binding_events,
                             {
                                 "metadata": {
                                     "legible_plan_contract": {
                                         **LEGIBLE_CONTRACT_FIXED_FIELDS,
                                         "plan_sha256": plan_digest,
-                                        "roadmap_sha256": hashlib.sha256(roadmap_v10.read_bytes()).hexdigest(),
+                                        "roadmap_sha256": roadmap_digest,
                                         "owned_paths": list(LEGIBLE_OWNED_PATHS),
                                         "owned_paths_count": len(LEGIBLE_OWNED_PATHS),
                                         "owned_paths_sha256": owned_digest,
@@ -403,8 +453,8 @@ def _operational_fixture(
     panel_models = {
         "claude": "claude-fable-5",
         "codex": "gpt-5.6-sol",
-        "gemini": "gemini-3.6-flash",
-        "grok": "grok-4.5",
+        "gemini": "gemini-3.7-flash",
+        "grok": "grok-4.6",
     }
     leg_records = []
     leg_paths: list[Path] = []
@@ -830,18 +880,33 @@ def test_manifest_check_rejects_duplicate_registered_plan_path(tmp_path):
 def test_manifest_check_rejects_authoritative_plan_digest_drift(tmp_path):
     repo = make_repo(tmp_path)
     canonical = _commit_plan(repo)
+    roadmap = repo / "specs" / "current-roadmap.md"
+    roadmap.write_text("# Current roadmap\n", encoding="utf-8")
+    roadmap_digest = hashlib.sha256(roadmap.read_bytes()).hexdigest()
     manifest = repo / "plans" / "manifest.json"
     manifest.write_text(
         json.dumps(
             {
                 "plans": [
-                    {
-                        "file": canonical,
-                        "phase_alias": "RUNNER",
+                        {
+                            "file": canonical,
+                            "phase_alias": "RUNNER",
+                            "roadmap_ref": {"file": "specs/current-roadmap.md"},
+                            "plan_authority_history": [
+                            {
+                                "schema": "plan_current_authority.v1",
+                                "source": "agent-harness#620",
+                                "plan_sha256": "0" * 64,
+                                    "roadmap_sha256": roadmap_digest,
+                            }
+                        ],
                         "lifecycle": [
                             {
-                                "metadata": {
-                                    "legible_plan_contract": {"plan_sha256": "0" * 60}
+                                    "metadata": {
+                                        "legible_plan_contract": {
+                                            "plan_sha256": "1" * 64,
+                                            "roadmap_sha256": roadmap_digest,
+                                        }
                                 }
                             }
                         ],
@@ -856,6 +921,252 @@ def test_manifest_check_rejects_authoritative_plan_digest_drift(tmp_path):
 
     assert result.exit_code == 1
     assert (canonical, "plan-digest") in [(item.path, item.kind) for item in result.malformed]
+
+    external = tmp_path / "external-roadmap.md"
+    external.write_text("# External roadmap\n", encoding="utf-8")
+    roadmap.unlink()
+    roadmap.symlink_to(external)
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["plans"][0]["roadmap_ref"] = {"file": "specs/current-roadmap.md"}
+    payload["plans"][0]["plan_authority_history"][-1].update(
+        {
+            "plan_sha256": hashlib.sha256((repo / canonical).read_bytes()).hexdigest(),
+            "roadmap_sha256": hashlib.sha256(external.read_bytes()).hexdigest(),
+        }
+    )
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+
+    symlink_result = check(repo)
+
+    assert symlink_result.exit_code == 1
+    assert (canonical, "plan-contract") in [
+        (item.path, item.kind) for item in symlink_result.malformed
+    ]
+
+
+def test_regular_repo_file_hash_rejects_ancestor_swap(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    nested = repo / "authority"
+    nested.mkdir()
+    (nested / "bound.md").write_text("trusted bytes\n", encoding="utf-8")
+    moved = tmp_path / "moved-authority"
+    external = tmp_path / "external-authority"
+    external.mkdir()
+    (external / "bound.md").write_text("outside bytes\n", encoding="utf-8")
+    real_open = os.open
+    swapped = False
+
+    def swapping_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        descriptor = real_open(path, flags, mode, dir_fd=dir_fd)
+        if path == "authority" and dir_fd is not None and not swapped:
+            nested.rename(moved)
+            nested.symlink_to(external, target_is_directory=True)
+            swapped = True
+        return descriptor
+
+    monkeypatch.setattr(plan_manifest.os, "open", swapping_open)
+
+    assert plan_manifest._regular_repo_file_sha256(repo, "authority/bound.md") is None
+    assert swapped
+
+
+def test_regular_repo_file_hash_rejects_ancestor_swap_after_hash(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    nested = repo / "authority"
+    nested.mkdir()
+    target = nested / "bound.md"
+    target.write_text("trusted bytes\n", encoding="utf-8")
+    target_inode = target.stat().st_ino
+    moved = tmp_path / "moved-authority"
+    external = tmp_path / "external-authority"
+    external.mkdir()
+    (external / "bound.md").write_text("outside bytes\n", encoding="utf-8")
+    real_fstat = os.fstat
+    target_fstats = 0
+
+    def swapping_fstat(descriptor):
+        nonlocal target_fstats
+        result = real_fstat(descriptor)
+        if result.st_ino == target_inode:
+            target_fstats += 1
+            if target_fstats == 2:
+                nested.rename(moved)
+                nested.symlink_to(external, target_is_directory=True)
+        return result
+
+    monkeypatch.setattr(plan_manifest.os, "fstat", swapping_fstat)
+
+    assert plan_manifest._regular_repo_file_sha256(repo, "authority/bound.md") is None
+    assert target_fstats >= 2
+
+
+def test_regular_repo_file_hash_rejects_swap_after_final_child_stat(
+    tmp_path, monkeypatch
+):
+    repo = make_repo(tmp_path)
+    nested = repo / "authority"
+    nested.mkdir()
+    (nested / "bound.md").write_text("trusted bytes\n", encoding="utf-8")
+    moved = tmp_path / "moved-authority"
+    external = tmp_path / "external-authority"
+    external.mkdir()
+    (external / "bound.md").write_text("outside bytes\n", encoding="utf-8")
+    real_stat = os.stat
+    directory_stats = 0
+
+    def swapping_stat(path, *args, **kwargs):
+        nonlocal directory_stats
+        result = real_stat(path, *args, **kwargs)
+        if path == "authority" and kwargs.get("dir_fd") is not None:
+            directory_stats += 1
+            if directory_stats == 3:
+                nested.rename(moved)
+                nested.symlink_to(external, target_is_directory=True)
+        return result
+
+    monkeypatch.setattr(plan_manifest.os, "stat", swapping_stat)
+
+    assert plan_manifest._regular_repo_file_sha256(repo, "authority/bound.md") is None
+    assert directory_stats >= 3
+
+
+def test_regular_repo_file_hash_rejects_write_after_former_final_fstat(
+    tmp_path, monkeypatch
+):
+    repo = make_repo(tmp_path)
+    authority = repo / "authority"
+    authority.mkdir()
+    target = authority / "bound.md"
+    target.write_text("trusted bytes\n", encoding="utf-8")
+    target_inode = target.stat().st_ino
+    real_fstat = os.fstat
+    target_fstats = 0
+
+    def writing_fstat(descriptor):
+        nonlocal target_fstats
+        result = real_fstat(descriptor)
+        if result.st_ino == target_inode:
+            target_fstats += 1
+            if target_fstats == 4:
+                target.write_text("drifted bytes\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(plan_manifest.os, "fstat", writing_fstat)
+
+    assert plan_manifest._regular_repo_file_sha256(repo, "authority/bound.md") is None
+    assert target_fstats >= 4
+
+
+def test_regular_repo_file_hash_rejects_fifo_without_blocking(tmp_path, monkeypatch):
+    if not hasattr(os, "mkfifo") or not hasattr(signal, "SIGALRM"):
+        pytest.skip("FIFO alarm regression requires POSIX")
+    repo = make_repo(tmp_path)
+    authority = repo / "authority"
+    authority.mkdir()
+    os.mkfifo(authority / "bound.md")
+    real_open = os.open
+    opened_fifo = False
+
+    def tracking_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal opened_fifo
+        if path == "bound.md" and dir_fd is not None:
+            opened_fifo = True
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(plan_manifest.os, "open", tracking_open)
+    previous_handler = signal.signal(
+        signal.SIGALRM,
+        lambda *_args: (_ for _ in ()).throw(TimeoutError("FIFO open blocked")),
+    )
+    signal.setitimer(signal.ITIMER_REAL, 2)
+    started = time.monotonic()
+    try:
+        result = plan_manifest._regular_repo_file_sha256(repo, "authority/bound.md")
+    finally:
+        elapsed = time.monotonic() - started
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+
+    assert result is None
+    assert elapsed < 1
+    assert not opened_fifo
+
+
+def test_regular_repo_file_hash_rejects_device_swap_before_open(tmp_path, monkeypatch):
+    if not hasattr(os, "mkfifo") or not hasattr(signal, "SIGALRM"):
+        pytest.skip("device-swap alarm regression requires POSIX")
+    repo = make_repo(tmp_path)
+    authority = repo / "authority"
+    authority.mkdir()
+    target = authority / "bound.md"
+    target.write_text("trusted bytes\n", encoding="utf-8")
+    replacement = authority / "replacement"
+    os.mkfifo(replacement)
+    real_open = os.open
+    swapped = False
+    data_opened = False
+
+    def swapping_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped, data_opened
+        if path == "bound.md" and dir_fd is not None and not swapped:
+            replacement.replace(target)
+            swapped = True
+        if isinstance(path, str) and path.startswith("/proc/self/fd/"):
+            data_opened = True
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(plan_manifest.os, "open", swapping_open)
+    previous_handler = signal.signal(
+        signal.SIGALRM,
+        lambda *_args: (_ for _ in ()).throw(TimeoutError("device open blocked")),
+    )
+    signal.setitimer(signal.ITIMER_REAL, 2)
+    started = time.monotonic()
+    try:
+        result = plan_manifest._regular_repo_file_sha256(repo, "authority/bound.md")
+    finally:
+        elapsed = time.monotonic() - started
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+
+    assert result is None
+    assert elapsed < 1
+    assert swapped
+    assert not data_opened
+
+
+def test_regular_repo_file_hash_uses_darwin_clone_without_data_open(
+    tmp_path, monkeypatch
+):
+    repo = make_repo(tmp_path)
+    authority = repo / "authority"
+    authority.mkdir()
+    target = authority / "bound.md"
+    target.write_text("portable bytes\n", encoding="utf-8")
+    expected = target.read_bytes()
+    real_open = os.open
+    target_opened = False
+
+    def tracking_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal target_opened
+        if path == "bound.md" and dir_fd is not None:
+            target_opened = True
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(plan_manifest.os, "open", tracking_open)
+    monkeypatch.delattr(plan_manifest.os, "O_PATH", raising=False)
+    monkeypatch.setattr(plan_manifest.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        plan_manifest,
+        "_darwin_clonefileat_bytes",
+        lambda *_args, **_kwargs: expected,
+    )
+
+    digest = plan_manifest._regular_repo_file_sha256(repo, "authority/bound.md")
+
+    assert digest == hashlib.sha256(expected).hexdigest()
+    assert not target_opened
 
 
 def test_required_roadmap_registry_absence_is_typed_failure(tmp_path):
@@ -1828,7 +2139,25 @@ def test_operational_evidence_rejects_unproven_frozen_semantics(tmp_path, mutati
 
 def _write_legible_manifest_contract(repo: Path, *, include_contract: bool = True) -> tuple[str, dict]:
     rel = _commit_plan(repo, "phase-plan-v10-LEGIBLE.md")
+    source_repo = Path(__file__).resolve().parents[2]
+    roadmap_path = repo / roadmap_assumptions.CANONICAL_ROADMAP_REL
+    roadmap_path.parent.mkdir(parents=True, exist_ok=True)
+    roadmap_path.write_bytes(
+        (source_repo / roadmap_assumptions.CANONICAL_ROADMAP_REL).read_bytes()
+    )
+    subprocess.run(
+        ["git", "add", roadmap_assumptions.CANONICAL_ROADMAP_REL],
+        cwd=repo,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "bind LEGIBLE roadmap snapshot"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
     plan_digest = hashlib.sha256((repo / rel).read_bytes()).hexdigest()
+    roadmap_digest = hashlib.sha256(roadmap_path.read_bytes()).hexdigest()
     owned_digest = hashlib.sha256("".join(f"{path}\n" for path in LEGIBLE_OWNED_PATHS).encode()).hexdigest()
     contract = {
         **LEGIBLE_CONTRACT_FIXED_FIELDS,
@@ -1839,17 +2168,1261 @@ def _write_legible_manifest_contract(repo: Path, *, include_contract: bool = Tru
         "owned_paths_sha256": owned_digest,
         "test_paths": list(legible_evidence.FROZEN_TEST_PATHS),
     }
-    lifecycle = [{"metadata": {"legible_plan_contract": contract}}] if include_contract else []
+    lifecycle = _source_binding_events(source_repo, rel)
+    frozen_authority_history = _source_authority_history(source_repo, rel)
+    if include_contract:
+        lifecycle.append({"metadata": {"legible_plan_contract": contract}})
+    else:
+        lifecycle[0]["metadata"].pop("legible_plan_contract")
     lifecycle.append({"metadata": {"note": "ordinary later event"}})
     (repo / "plans" / "manifest.json").write_text(
         json.dumps(
-            {"plans": [{"file": rel, "phase_alias": "LEGIBLE", "lifecycle": lifecycle}]},
+            {
+                "plans": [
+                    {
+                        "file": rel,
+                        "phase_alias": "LEGIBLE",
+                        "roadmap_ref": {
+                            "file": roadmap_assumptions.CANONICAL_ROADMAP_REL
+                        },
+                        "plan_authority_history": [
+                            *frozen_authority_history,
+                            {
+                                "schema": "plan_current_authority.v1",
+                                "source": "agent-harness#620",
+                                "plan_sha256": plan_digest,
+                                "roadmap_sha256": roadmap_digest,
+                            }
+                        ],
+                        "lifecycle": lifecycle,
+                    }
+                ]
+            },
             sort_keys=True,
         )
         + "\n",
         encoding="utf-8",
     )
     return rel, contract
+
+
+def test_legible_current_authority_cannot_drop_roadmap_binding(tmp_path):
+    repo = make_repo(tmp_path)
+    rel, _contract = _write_legible_manifest_contract(repo)
+    assert check(repo).exit_code == 0
+    manifest_path = repo / "plans" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    del manifest["plans"][0]["roadmap_ref"]
+    manifest["plans"][0]["plan_authority_history"][-1]["roadmap_sha256"] = None
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
+
+    result = check(repo)
+
+    assert result.exit_code == 1
+    assert (rel, "plan-contract") in [
+        (item.path, item.kind) for item in result.malformed
+    ]
+
+
+@pytest.mark.parametrize(
+    "lifecycle", ({}, None, [None], [{}], [{"metadata": None}])
+)
+def test_manifest_check_rejects_malformed_lifecycle_that_erases_authority(
+    tmp_path, lifecycle
+):
+    repo = make_repo(tmp_path)
+    rel = _commit_plan(repo)
+    (repo / "plans" / "manifest.json").write_text(
+        json.dumps({"plans": [{"file": rel, "lifecycle": lifecycle}]}),
+        encoding="utf-8",
+    )
+
+    result = check(repo)
+
+    assert result.exit_code == 1
+    assert (rel, "plan-contract") in [
+        (item.path, item.kind) for item in result.malformed
+    ]
+
+
+def test_historical_digest_rebind_cannot_drop_current_roadmap_binding(tmp_path):
+    repo = make_repo(tmp_path)
+    rel = _commit_plan(repo)
+    roadmap = repo / "specs" / "current-roadmap.md"
+    roadmap.parent.mkdir(exist_ok=True)
+    roadmap.write_text("# Current roadmap\n", encoding="utf-8")
+    subprocess.run(["git", "add", "specs/current-roadmap.md"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "bind roadmap snapshot"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    plan_digest = hashlib.sha256((repo / rel).read_bytes()).hexdigest()
+    roadmap_digest = hashlib.sha256(roadmap.read_bytes()).hexdigest()
+    manifest_path = repo / "plans" / "manifest.json"
+    manifest = {
+        "plans": [
+            {
+                "file": rel,
+                "roadmap_ref": {"file": "specs/current-roadmap.md"},
+                "plan_authority_history": [
+                    {
+                        "schema": "plan_current_authority.v1",
+                        "source": "agent-harness#620",
+                        "plan_sha256": plan_digest,
+                        "roadmap_sha256": roadmap_digest,
+                    }
+                ],
+                "lifecycle": [
+                    {
+                        "metadata": {
+                            "digest_rebind": {
+                                "plan_sha256": plan_digest,
+                                "roadmap_sha256": roadmap_digest,
+                            }
+                        }
+                    }
+                ],
+            }
+        ]
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    assert check(repo).exit_code == 0
+    del manifest["plans"][0]["roadmap_ref"]
+    manifest["plans"][0]["plan_authority_history"][-1]["roadmap_sha256"] = None
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = check(repo)
+
+    assert result.exit_code == 1
+    assert (rel, "plan-contract") in [
+        (item.path, item.kind) for item in result.malformed
+    ]
+
+
+def _write_generic_authority_manifest(repo: Path, rel: str) -> None:
+    roadmap = repo / "specs" / "current-roadmap.md"
+    roadmap.write_text("# Current roadmap\n", encoding="utf-8")
+    plan_digest = hashlib.sha256((repo / rel).read_bytes()).hexdigest()
+    roadmap_digest = hashlib.sha256(roadmap.read_bytes()).hexdigest()
+    (repo / "plans" / "manifest.json").write_text(
+        json.dumps(
+            {
+                "plans": [
+                    {
+                        "file": rel,
+                        "roadmap_ref": {"file": "specs/current-roadmap.md"},
+                        "plan_authority_history": [
+                            {
+                                "schema": "plan_current_authority.v1",
+                                "source": "agent-harness#647",
+                                "plan_sha256": plan_digest,
+                                "roadmap_sha256": roadmap_digest,
+                            }
+                        ],
+                        "lifecycle": [
+                            {
+                                "metadata": {
+                                    "digest_rebind": {
+                                        "plan_sha256": plan_digest,
+                                        "roadmap_sha256": roadmap_digest,
+                                    }
+                                }
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_generic_ancestor_authority_survives_plan_and_manifest_deletion(tmp_path):
+    repo = make_repo(tmp_path)
+    rel = _commit_plan(repo)
+    _write_generic_authority_manifest(repo, rel)
+    subprocess.run(
+        ["git", "add", "plans/manifest.json", "specs/current-roadmap.md"],
+        cwd=repo,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "record generic authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    assert check(repo).exit_code == 0
+    (repo / rel).unlink()
+    (repo / "plans" / "manifest.json").unlink()
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "delete generic authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+    result = check(repo)
+
+    assert result.exit_code == 1
+    assert (rel, "plan-contract") in [
+        (item.path, item.kind) for item in result.malformed
+    ]
+
+
+def test_merge_checks_authority_from_every_parent(tmp_path):
+    repo = make_repo(tmp_path)
+    (repo / "plans" / ".gitkeep").write_text("", encoding="utf-8")
+    subprocess.run(["git", "add", "plans/.gitkeep"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "retain plans directory"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    base = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(["git", "switch", "-c", "authority-parent"], cwd=repo, check=True)
+    rel = _commit_plan(repo)
+    _write_generic_authority_manifest(repo, rel)
+    subprocess.run(
+        ["git", "add", "plans/manifest.json", "specs/current-roadmap.md"],
+        cwd=repo,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "record second-parent authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    authority_parent = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    base_tree = subprocess.run(
+        ["git", "rev-parse", f"{base}^{{tree}}"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    merge = subprocess.run(
+        [
+            "git",
+            "commit-tree",
+            base_tree,
+            "-p",
+            base,
+            "-p",
+            authority_parent,
+            "-m",
+            "merge without second-parent authority",
+        ],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(["git", "switch", "--detach", merge], cwd=repo, check=True)
+
+    result = check(repo)
+
+    assert result.exit_code == 1
+    assert (rel, "plan-contract") in [
+        (item.path, item.kind) for item in result.malformed
+    ]
+    (repo / "README.md").write_text("successor\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "unrelated successor"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+    successor_result = check(repo)
+
+    assert successor_result.exit_code == 1
+    assert (rel, "plan-contract") in [
+        (item.path, item.kind) for item in successor_result.malformed
+    ]
+
+
+def test_shallow_history_fails_closed(tmp_path):
+    source = make_repo(tmp_path / "source")
+    rel = _commit_plan(source)
+    _write_generic_authority_manifest(source, rel)
+    subprocess.run(
+        ["git", "add", "plans/manifest.json", "specs/current-roadmap.md"],
+        cwd=source,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "record authority before shallow clone"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+    )
+    shallow = tmp_path / "shallow"
+    subprocess.run(
+        ["git", "clone", "--depth", "1", f"file://{source}", str(shallow)],
+        check=True,
+        capture_output=True,
+    )
+
+    result = check(shallow)
+
+    assert result.exit_code == 1
+    assert ("plans/manifest.json", "history-incomplete") in [
+        (item.path, item.kind) for item in result.malformed
+    ]
+
+
+def test_history_ignores_replace_refs_and_git_location_overrides(
+    tmp_path, monkeypatch
+):
+    repo = make_repo(tmp_path / "source")
+    rel = _commit_plan(repo)
+    _write_generic_authority_manifest(repo, rel)
+    subprocess.run(
+        ["git", "add", "plans/manifest.json", "specs/current-roadmap.md"],
+        cwd=repo,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "record authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    (repo / rel).unlink()
+    (repo / "plans" / "manifest.json").unlink()
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "erase authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    head_tree = subprocess.run(
+        ["git", "rev-parse", "HEAD^{tree}"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    replacement = subprocess.run(
+        ["git", "commit-tree", head_tree, "-m", "forged root"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", "replace", "HEAD", replacement], cwd=repo, check=True
+    )
+    plain_parents = subprocess.run(
+        ["git", "rev-list", "--parents", "-n", "1", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.split()
+    assert len(plain_parents) == 1
+    attacker = make_repo(tmp_path / "attacker")
+    monkeypatch.setenv("GIT_DIR", str(attacker / ".git"))
+    monkeypatch.setenv("GIT_GRAFT_FILE", str(attacker / "forged-grafts"))
+
+    result = check(repo)
+
+    assert result.exit_code == 1
+    assert (rel, "plan-contract") in [
+        (item.path, item.kind) for item in result.malformed
+    ]
+    monkeypatch.delenv("GIT_DIR")
+    monkeypatch.delenv("GIT_GRAFT_FILE")
+    subprocess.run(["git", "replace", "-d", "HEAD"], cwd=repo, check=True)
+    graft_path = Path(
+        subprocess.run(
+            ["git", "rev-parse", "--git-path", "info/grafts"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
+    if not graft_path.is_absolute():
+        graft_path = repo / graft_path
+    graft_path.parent.mkdir(parents=True, exist_ok=True)
+    graft_path.write_text(
+        subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+    grafted = check(repo)
+
+    assert grafted.exit_code == 1
+    assert ("plans/manifest.json", "history-incomplete") in [
+        (item.path, item.kind) for item in grafted.malformed
+    ]
+
+
+def test_trusted_git_disables_commit_graph(monkeypatch, tmp_path):
+    captured: list[str] = []
+
+    def recording_run(argv, **_kwargs):
+        captured.extend(argv)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(plan_manifest.subprocess, "run", recording_run)
+
+    result = plan_manifest._git_history_capture(tmp_path, "rev-parse", "HEAD")
+
+    assert result.returncode == 0
+    assert captured[:5] == [
+        "git",
+        "--no-replace-objects",
+        "-c",
+        "core.commitGraph=false",
+        "-C",
+    ]
+
+
+def test_late_graft_insertion_cannot_change_history(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    rel = _commit_plan(repo)
+    _write_generic_authority_manifest(repo, rel)
+    subprocess.run(
+        ["git", "add", "plans/manifest.json", "specs/current-roadmap.md"],
+        cwd=repo,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "record authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    (repo / rel).unlink()
+    (repo / "plans" / "manifest.json").unlink()
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "erase authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    graft_path = Path(
+        subprocess.run(
+            ["git", "rev-parse", "--git-path", "info/grafts"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
+    if not graft_path.is_absolute():
+        graft_path = repo / graft_path
+    real_boundary = plan_manifest._history_boundary_complete
+    inserted = False
+
+    def insert_after_probe(repo_path):
+        nonlocal inserted
+        result = real_boundary(repo_path)
+        if result and not inserted:
+            graft_path.parent.mkdir(parents=True, exist_ok=True)
+            graft_path.write_text(head + "\n", encoding="utf-8")
+            inserted = True
+        return result
+
+    monkeypatch.setattr(
+        plan_manifest, "_history_boundary_complete", insert_after_probe
+    )
+
+    result = check(repo)
+
+    assert inserted
+    assert result.exit_code == 1
+    assert (rel, "plan-contract") in [
+        (item.path, item.kind) for item in result.malformed
+    ]
+
+
+def test_late_shallow_insertion_cannot_change_history(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    rel = _commit_plan(repo)
+    _write_generic_authority_manifest(repo, rel)
+    subprocess.run(
+        ["git", "add", "plans/manifest.json", "specs/current-roadmap.md"],
+        cwd=repo,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "record authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    (repo / rel).unlink()
+    (repo / "plans" / "manifest.json").unlink()
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "erase authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    common_dir = Path(
+        subprocess.run(
+            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
+    shallow_path = common_dir / "shallow"
+    real_boundary = plan_manifest._history_boundary_complete
+    inserted = False
+
+    def insert_after_probe(repo_path):
+        nonlocal inserted
+        result = real_boundary(repo_path)
+        if result and not inserted:
+            shallow_path.write_text(head + "\n", encoding="utf-8")
+            inserted = True
+        return result
+
+    monkeypatch.setattr(
+        plan_manifest, "_history_boundary_complete", insert_after_probe
+    )
+
+    result = check(repo)
+
+    assert inserted
+    assert result.exit_code == 1
+    assert (rel, "plan-contract") in [
+        (item.path, item.kind) for item in result.malformed
+    ]
+
+
+def test_head_move_and_restore_cannot_change_pinned_history(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    rel = _commit_plan(repo)
+    _write_generic_authority_manifest(repo, rel)
+    subprocess.run(
+        ["git", "add", "plans/manifest.json", "specs/current-roadmap.md"],
+        cwd=repo,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "record authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    (repo / rel).unlink()
+    (repo / "plans" / "manifest.json").unlink()
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "erase authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    head_tree = subprocess.run(
+        ["git", "rev-parse", f"{head}^{{tree}}"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    forged_root = subprocess.run(
+        ["git", "commit-tree", head_tree, "-m", "ancestry-free root"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    real_capture = plan_manifest._git_history_capture
+    moved = False
+    restored = False
+
+    def move_and_restore(repo_path, *args, **kwargs):
+        nonlocal moved, restored
+        if args == ("rev-list", "--parents", "-n", "1", head) and not moved:
+            subprocess.run(
+                ["git", "update-ref", "HEAD", forged_root],
+                cwd=repo,
+                check=True,
+            )
+            moved = True
+        result = real_capture(repo_path, *args, **kwargs)
+        if moved and not restored and args and args[0] == "log":
+            subprocess.run(
+                ["git", "update-ref", "HEAD", head], cwd=repo, check=True
+            )
+            restored = True
+        return result
+
+    monkeypatch.setattr(plan_manifest, "_git_history_capture", move_and_restore)
+
+    result = check(repo)
+
+    assert moved and restored
+    assert result.exit_code == 1
+    assert (rel, "plan-contract") in [
+        (item.path, item.kind) for item in result.malformed
+    ]
+
+
+def test_manifest_snapshot_rejects_swap_between_history_and_parse(
+    tmp_path, monkeypatch
+):
+    repo = make_repo(tmp_path)
+    rel = _commit_plan(repo)
+    _write_generic_authority_manifest(repo, rel)
+    manifest_path = repo / "plans" / "manifest.json"
+    subprocess.run(
+        ["git", "add", "plans/manifest.json", "specs/current-roadmap.md"],
+        cwd=repo,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "record authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    erased = json.loads(manifest_path.read_text(encoding="utf-8"))
+    erased["plans"][0].pop("plan_authority_history")
+    erased["plans"][0]["lifecycle"] = []
+    replacement = repo / "plans" / "replacement.json"
+    replacement.write_text(json.dumps(erased), encoding="utf-8")
+    real_capture = plan_manifest._git_history_capture
+    swapped = False
+
+    def swapping_capture(repo_path, *args, **kwargs):
+        nonlocal swapped
+        if not swapped and args and args[0] == "log" and "--format=" in args:
+            replacement.replace(manifest_path)
+            swapped = True
+        return real_capture(repo_path, *args, **kwargs)
+
+    monkeypatch.setattr(plan_manifest, "_git_history_capture", swapping_capture)
+
+    with pytest.raises(
+        plan_manifest.ManifestSourceError, match="manifest changed during validation"
+    ):
+        check(repo)
+    assert swapped
+
+
+def test_manifest_snapshot_rejects_swap_after_final_plans_stat(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    rel = _commit_plan(repo)
+    manifest_path = repo / "plans" / "manifest.json"
+    manifest_path.write_text(
+        json.dumps({"plans": [{"file": rel, "lifecycle": []}]}),
+        encoding="utf-8",
+    )
+    assert check(repo).exit_code == 0
+    moved = tmp_path / "moved-plans"
+    external = tmp_path / "external-plans"
+    external.mkdir()
+    (external / "manifest.json").write_text('{"plans": []}', encoding="utf-8")
+    real_stat = os.stat
+    plans_stats = 0
+
+    def swapping_stat(path, *args, **kwargs):
+        nonlocal plans_stats
+        result = real_stat(path, *args, **kwargs)
+        if path == "plans" and kwargs.get("dir_fd") is not None:
+            plans_stats += 1
+            if plans_stats == 3:
+                (repo / "plans").rename(moved)
+                (repo / "plans").symlink_to(external, target_is_directory=True)
+        return result
+
+    monkeypatch.setattr(plan_manifest.os, "stat", swapping_stat)
+
+    with pytest.raises(
+        plan_manifest.ManifestSourceError,
+        match=(
+            "manifest (ancestry )?changed during validation|"
+            "physical plans ancestry changed during scan|"
+            "physical plans source changed before scan|"
+            "cannot scan physical plans source"
+        ),
+    ):
+        check(repo)
+    assert plans_stats >= 3
+
+
+def test_manifest_snapshot_uses_darwin_clone_without_safe_anchor(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    rel = _commit_plan(repo)
+    manifest_path = repo / "plans" / "manifest.json"
+    manifest_path.write_text(
+        json.dumps({"plans": [{"file": rel, "lifecycle": []}]}),
+        encoding="utf-8",
+    )
+    monkeypatch.delattr(plan_manifest.os, "O_PATH", raising=False)
+    monkeypatch.setattr(plan_manifest.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        plan_manifest,
+        "_darwin_clonefileat_bytes",
+        lambda *_args, **_kwargs: manifest_path.read_bytes(),
+    )
+
+    assert check(repo).exit_code == 0
+    manifest_path.write_text('{"plans": []}', encoding="utf-8")
+    assert check(repo).exit_code == 1
+
+
+def test_darwin_clone_authority_rejects_working_plan_drift(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    rel = _commit_plan(repo)
+    plan_path = repo / rel
+    plan_digest = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+    (repo / "plans" / "manifest.json").write_text(
+        json.dumps(
+            {
+                "plans": [
+                    {
+                        "file": rel,
+                        "plan_authority_history": [
+                            {
+                                "schema": "plan_current_authority.v1",
+                                "source": "agent-harness#647",
+                                "plan_sha256": plan_digest,
+                                "roadmap_sha256": None,
+                            }
+                        ],
+                        "lifecycle": [],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def clone_bytes(_repo, parent_fd, name):
+        return Path(f"/proc/self/fd/{parent_fd}/{name}").read_bytes()
+
+    monkeypatch.delattr(plan_manifest.os, "O_PATH", raising=False)
+    monkeypatch.setattr(plan_manifest.sys, "platform", "darwin")
+    monkeypatch.setattr(plan_manifest, "_darwin_clonefileat_bytes", clone_bytes)
+    assert check(repo).exit_code == 0
+    plan_path.write_text("---\nphase: RUNNER\n---\n# Drifted\n", encoding="utf-8")
+
+    result = check(repo)
+
+    assert result.exit_code == 1
+    assert (rel, "plan-digest") in [
+        (item.path, item.kind) for item in result.malformed
+    ]
+
+
+def test_manifest_snapshot_rejects_write_after_former_final_fstat(
+    tmp_path, monkeypatch
+):
+    repo = make_repo(tmp_path)
+    rel = _commit_plan(repo)
+    manifest_path = repo / "plans" / "manifest.json"
+    manifest_path.write_text(
+        json.dumps({"plans": [{"file": rel, "lifecycle": []}]}),
+        encoding="utf-8",
+    )
+    assert check(repo).exit_code == 0
+    manifest_inode = manifest_path.stat().st_ino
+    real_fstat = os.fstat
+    manifest_fstats = 0
+
+    def writing_fstat(descriptor):
+        nonlocal manifest_fstats
+        result = real_fstat(descriptor)
+        if result.st_ino == manifest_inode:
+            manifest_fstats += 1
+            if manifest_fstats == 5:
+                manifest_path.write_text('{"plans": []}', encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(plan_manifest.os, "fstat", writing_fstat)
+
+    with pytest.raises(plan_manifest.ManifestSourceError, match="manifest changed"):
+        check(repo)
+    assert manifest_fstats >= 5
+
+
+def test_generic_ancestor_authority_cannot_be_removed_from_retained_row(tmp_path):
+    repo = make_repo(tmp_path)
+    rel = _commit_plan(repo)
+    plan_digest = hashlib.sha256((repo / rel).read_bytes()).hexdigest()
+    manifest_path = repo / "plans" / "manifest.json"
+    manifest = {
+        "plans": [
+            {
+                "file": rel,
+                "plan_authority_history": [
+                    {
+                        "schema": "plan_current_authority.v1",
+                        "source": "agent-harness#647",
+                        "plan_sha256": plan_digest,
+                        "roadmap_sha256": None,
+                    }
+                ],
+                "lifecycle": [],
+            }
+        ]
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    subprocess.run(["git", "add", "plans/manifest.json"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "record unbound authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    assert check(repo).exit_code == 0
+    authority_history = manifest["plans"][0]["plan_authority_history"]
+    manifest["plans"][0]["plan_authority_history"] = None
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    null_authority = check(repo)
+    assert null_authority.exit_code == 1
+    assert (rel, "plan-contract") in [
+        (item.path, item.kind) for item in null_authority.malformed
+    ]
+    manifest["plans"][0]["plan_authority_history"] = authority_history
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    assert check(repo).exit_code == 0
+    (repo / "README.md").write_text("successor\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "code-only successor"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    assert check(repo).exit_code == 0
+    manifest["plans"][0].pop("plan_authority_history")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = check(repo)
+
+    assert result.exit_code == 1
+    assert (rel, "plan-contract") in [
+        (item.path, item.kind) for item in result.malformed
+    ]
+
+
+def test_unavailable_historical_manifest_blob_fails_closed(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    rel = _commit_plan(repo)
+    plan_digest = hashlib.sha256((repo / rel).read_bytes()).hexdigest()
+    manifest_path = repo / "plans" / "manifest.json"
+    first_authority = {
+        "schema": "plan_current_authority.v1",
+        "source": "agent-harness#647",
+        "plan_sha256": plan_digest,
+        "roadmap_sha256": None,
+    }
+    manifest = {
+        "plans": [
+            {
+                "file": rel,
+                "plan_authority_history": [first_authority],
+                "lifecycle": [],
+            }
+        ]
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    subprocess.run(["git", "add", "plans/manifest.json"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "record first authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    ancestor = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    ancestor_blob = subprocess.run(
+        ["git", "rev-parse", f"{ancestor}:plans/manifest.json"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    manifest["plans"][0]["plan_authority_history"].append(
+        {**first_authority, "source": "agent-harness#648"}
+    )
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    subprocess.run(["git", "add", "plans/manifest.json"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "append current authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    real_capture = plan_manifest._git_history_capture
+
+    def missing_blob(repo_path, *args, **kwargs):
+        if args == ("cat-file", "blob", ancestor_blob):
+            text_mode = kwargs.get("text", True)
+            return subprocess.CompletedProcess(
+                args,
+                128,
+                "" if text_mode else b"",
+                "missing blob" if text_mode else b"missing blob",
+            )
+        return real_capture(repo_path, *args, **kwargs)
+
+    monkeypatch.setattr(plan_manifest, "_git_history_capture", missing_blob)
+
+    with pytest.raises(
+        plan_manifest.ManifestSourceError,
+        match=f"manifest blob is unavailable at {ancestor}",
+    ):
+        check(repo)
+
+
+def test_composite_authority_revalidates_plan_after_roadmap_hash(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    rel = _commit_plan(repo)
+    plan_path = repo / rel
+    roadmap = repo / "specs" / "current-roadmap.md"
+    roadmap.write_text("# Current roadmap\n", encoding="utf-8")
+    subprocess.run(["git", "add", "specs/current-roadmap.md"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "bind roadmap snapshot"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    plan_digest = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+    roadmap_digest = hashlib.sha256(roadmap.read_bytes()).hexdigest()
+    manifest = repo / "plans" / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "plans": [
+                    {
+                        "file": rel,
+                        "roadmap_ref": {"file": "specs/current-roadmap.md"},
+                        "plan_authority_history": [
+                            {
+                                "schema": "plan_current_authority.v1",
+                                "source": "agent-harness#620",
+                                "plan_sha256": plan_digest,
+                                "roadmap_sha256": roadmap_digest,
+                            }
+                        ],
+                        "lifecycle": [
+                            {
+                                "metadata": {
+                                    "digest_rebind": {
+                                        "plan_sha256": plan_digest,
+                                        "roadmap_sha256": roadmap_digest,
+                                    }
+                                }
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert check(repo).exit_code == 0
+    real_open = os.open
+    swapped = False
+
+    def swapping_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if path == "specs" and dir_fd is not None and not swapped:
+            plan_path.write_text(
+                "---\nphase: RUNNER\n---\n# Drifted plan\n", encoding="utf-8"
+            )
+            swapped = True
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(plan_manifest.os, "open", swapping_open)
+
+    result = check(repo)
+
+    assert swapped
+    assert result.exit_code == 1
+    assert (rel, "plan-digest") in [
+        (item.path, item.kind) for item in result.malformed
+    ]
+
+
+def test_composite_authority_requires_one_exact_git_tree(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    rel = _commit_plan(repo)
+    plan_path = repo / rel
+    plan_a_digest = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+    plan_path.write_text("---\nphase: RUNNER\n---\n# Plan C\n", encoding="utf-8")
+    roadmap_rel = "specs/current-roadmap.md"
+    roadmap = repo / roadmap_rel
+    roadmap.write_text("# Roadmap B\n", encoding="utf-8")
+    roadmap_b_digest = hashlib.sha256(roadmap.read_bytes()).hexdigest()
+    subprocess.run(["git", "add", rel, roadmap_rel], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "replace plan while adding roadmap"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    manifest = {
+        "plans": [
+            {
+                "file": rel,
+                "roadmap_ref": {"file": roadmap_rel},
+                "plan_authority_history": [
+                    {
+                        "schema": "plan_current_authority.v1",
+                        "source": "agent-harness#647",
+                        "plan_sha256": plan_a_digest,
+                        "roadmap_sha256": roadmap_b_digest,
+                    }
+                ],
+                "lifecycle": [
+                    {
+                        "metadata": {
+                            "digest_rebind": {
+                                "plan_sha256": plan_a_digest,
+                                "roadmap_sha256": roadmap_b_digest,
+                            }
+                        }
+                    }
+                ],
+            }
+        ]
+    }
+    (repo / "plans" / "manifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        plan_manifest,
+        "_regular_repo_files_sha256",
+        lambda *_args, **_kwargs: {
+            rel: plan_a_digest,
+            roadmap_rel: roadmap_b_digest,
+        },
+    )
+
+    result = check(repo)
+
+    assert result.exit_code == 1
+    assert (rel, "plan-digest") in [
+        (item.path, item.kind) for item in result.malformed
+    ]
+
+
+def test_frozen_historical_binding_cannot_be_deleted_with_authority(
+    tmp_path, monkeypatch
+):
+    source_repo = Path(__file__).resolve().parents[2]
+    source_manifest = _source_authority_manifest(source_repo)
+    entry = next(
+        item
+        for item in source_manifest["plans"]
+        if item["file"] == "plans/phase-plan-v10-FABPUB.md"
+    )
+    original_entry = json.loads(json.dumps(entry))
+    repo = make_repo(tmp_path)
+    plan_path = repo / entry["file"]
+    plan_path.write_bytes((source_repo / entry["file"]).read_bytes())
+    roadmap_rel = entry["roadmap_ref"]["file"]
+    roadmap_path = repo / roadmap_rel
+    roadmap_path.parent.mkdir(parents=True, exist_ok=True)
+    roadmap_path.write_bytes((source_repo / roadmap_rel).read_bytes())
+    subprocess.run(
+        ["git", "add", entry["file"], roadmap_rel], cwd=repo, check=True
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "add FABPUB plan"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    manifest_path = repo / "plans" / "manifest.json"
+    manifest_path.write_text(
+        json.dumps({"plans": [entry]}, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    assert check(repo).exit_code == 0
+    subprocess.run(["git", "add", "plans/manifest.json"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "record baseline authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    governed_append = json.loads(json.dumps(entry))
+    governed_append["lifecycle"].append(
+        next(
+            json.loads(json.dumps(event))
+            for event in entry["lifecycle"]
+            if "digest_rebind" in event.get("metadata", {})
+        )
+    )
+    governed_append["plan_authority_history"].append(
+        json.loads(json.dumps(entry["plan_authority_history"][-1]))
+    )
+    manifest_path.write_text(
+        json.dumps({"plans": [governed_append]}, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "plans/manifest.json"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "append governed authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    assert check(repo).exit_code == 0
+    rewritten_append = json.loads(json.dumps(governed_append))
+    rewritten_append["lifecycle"][-1]["metadata"]["digest_rebind"][
+        "roadmap_sha256"
+    ] = "0" * 64
+    valid_current = json.loads(
+        json.dumps(rewritten_append["plan_authority_history"][-1])
+    )
+    rewritten_append["plan_authority_history"][-1]["plan_sha256"] = "0" * 64
+    rewritten_append["plan_authority_history"].append(valid_current)
+    manifest_path.write_text(
+        json.dumps({"plans": [rewritten_append]}, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    assert check(repo).exit_code == 1
+    deleted_append = json.loads(json.dumps(governed_append))
+    deleted_append["lifecycle"].pop()
+    deleted_append["plan_authority_history"].pop()
+    manifest_path.write_text(
+        json.dumps({"plans": [deleted_append]}, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    assert check(repo).exit_code == 1
+    original_authority = json.loads(json.dumps(entry["plan_authority_history"]))
+    entry["plan_authority_history"][0]["plan_sha256"] = "0" * 64
+    entry["plan_authority_history"].append(original_authority[0])
+    manifest_path.write_text(
+        json.dumps({"plans": [entry]}, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+    rewritten_authority = check(repo)
+
+    assert rewritten_authority.exit_code == 1
+    assert (entry["file"], "plan-contract") in [
+        (item.path, item.kind) for item in rewritten_authority.malformed
+    ]
+    entry = json.loads(json.dumps(original_entry))
+    entry["lifecycle"] = [
+        event
+        for event in entry["lifecycle"]
+        if "digest_rebind" not in event.get("metadata", {})
+    ]
+    del entry["plan_authority_history"]
+    manifest_path.write_text(
+        json.dumps({"plans": [entry]}, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+    result = check(repo)
+
+    assert result.exit_code == 1
+    assert (entry["file"], "plan-contract") in [
+        (item.path, item.kind) for item in result.malformed
+    ]
+    plan_path.unlink()
+    manifest_path.write_text('{"plans": []}\n', encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "delete FABPUB plan and row"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+    deleted_plan_and_row = check(repo)
+
+    assert deleted_plan_and_row.exit_code == 1
+    assert (entry["file"], "plan-contract") in [
+        (item.path, item.kind) for item in deleted_plan_and_row.malformed
+    ]
+    for invalid_manifest in (None, "{", "[]"):
+        if invalid_manifest is None:
+            manifest_path.unlink()
+        else:
+            manifest_path.write_text(invalid_manifest, encoding="utf-8")
+        erased_manifest = check(repo)
+        assert erased_manifest.exit_code == 1
+        assert (entry["file"], "plan-contract") in [
+            (item.path, item.kind) for item in erased_manifest.malformed
+        ]
+    manifest_path.write_text('{"plans": []}\n', encoding="utf-8")
+    real_open = plan_manifest.os.open
+    denied = False
+
+    def unreadable_manifest(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal denied
+        if isinstance(path, str) and path.startswith("/proc/self/fd/") and not denied:
+            denied = True
+            raise PermissionError("denied")
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(plan_manifest.os, "open", unreadable_manifest)
+    unreadable = check(repo)
+    assert denied
+    assert unreadable.exit_code == 1
+    assert (entry["file"], "plan-contract") in [
+        (item.path, item.kind) for item in unreadable.malformed
+    ]
 
 
 def test_legible_manifest_contract_survives_later_ordinary_lifecycle_event(tmp_path):
@@ -1861,6 +3434,29 @@ def test_legible_manifest_contract_survives_later_ordinary_lifecycle_event(tmp_p
 
     assert result.exit_code == 1
     assert (rel, "plan-digest") in [(item.path, item.kind) for item in result.malformed]
+
+    manifest_path = repo / "plans" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    del manifest["plans"][0]["plan_authority_history"]
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
+
+    missing_current_authority = check(repo)
+
+    assert missing_current_authority.exit_code == 1
+    assert (rel, "plan-contract") in [
+        (item.path, item.kind) for item in missing_current_authority.malformed
+    ]
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["plans"][0]["lifecycle"][0]["metadata"]["legible_plan_contract"] = "corrupt"
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
+
+    corrupted_historical_binding = check(repo)
+
+    assert corrupted_historical_binding.exit_code == 1
+    assert (rel, "plan-contract") in [
+        (item.path, item.kind) for item in corrupted_historical_binding.malformed
+    ]
 
 
 @pytest.mark.parametrize("defect", ("missing", "owned_paths", "owned_paths_count", "owned_paths_sha256", "test_paths"))
@@ -2036,6 +3632,760 @@ def test_manifest_physical_source_failure_is_typed(tmp_path, monkeypatch, defect
         plan_manifest.canonical_plan_files(repo, head)
 
 
+def test_physical_scan_rejects_or_observes_plans_ancestor_swap(
+    tmp_path, monkeypatch
+):
+    repo = make_repo(tmp_path)
+    _commit_plan(repo)
+    hidden_rel = "plans/phase-plan-v2-HIDDEN.md"
+    (repo / hidden_rel).write_text(
+        "---\nphase: HIDDEN\n---\n# Hidden plan\n", encoding="utf-8"
+    )
+    plans = repo / "plans"
+    moved = tmp_path / "moved-plans"
+    external = tmp_path / "external-plans"
+    external.mkdir()
+    real_listdir = os.listdir
+    swapped = False
+
+    def swapping_listdir(path):
+        nonlocal swapped
+        if not swapped:
+            plans.rename(moved)
+            plans.symlink_to(external, target_is_directory=True)
+            try:
+                result = real_listdir(path)
+            finally:
+                plans.unlink()
+                moved.rename(plans)
+            swapped = True
+            return result
+        return real_listdir(path)
+
+    monkeypatch.setattr(plan_manifest.os, "listdir", swapping_listdir)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    try:
+        files = plan_manifest.canonical_plan_files(repo, head)
+    except plan_manifest.ManifestSourceError:
+        pass
+    else:
+        assert hidden_rel in files.paths()
+    assert swapped
+
+
+def test_check_rejects_root_change_between_physical_and_manifest_snapshots(
+    tmp_path, monkeypatch
+):
+    repo = make_repo(tmp_path / "initial")
+    tracked_rel = _commit_plan(repo)
+    manifest = repo / "plans" / "manifest.json"
+    manifest.write_text(
+        json.dumps({"plans": [{"file": tracked_rel}]}) + "\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "plans/manifest.json"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "register plan"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+    replacement = tmp_path / "replacement"
+    shutil.copytree(repo, replacement, symlinks=True)
+    hidden_rel = "plans/phase-plan-v2-HIDDEN.md"
+    (replacement / hidden_rel).write_text(
+        "---\nphase: HIDDEN\n---\n# Hidden\n",
+        encoding="utf-8",
+    )
+
+    manifest.write_text('{"plans":[]}\n', encoding="utf-8")
+    assert check(repo).exit_code == 1
+    assert check(replacement).exit_code == 1
+
+    scanned_root = tmp_path / "scanned-root"
+    real_scan = plan_manifest._scan_plans_dir_physical
+    swapped = False
+
+    def swap_after_physical_scan(scan_repo, **kwargs):
+        nonlocal swapped
+        result = real_scan(scan_repo, **kwargs)
+        if not swapped:
+            Path(scan_repo).rename(scanned_root)
+            replacement.rename(repo)
+            swapped = True
+        return result
+
+    monkeypatch.setattr(
+        plan_manifest,
+        "_scan_plans_dir_physical",
+        swap_after_physical_scan,
+    )
+
+    try:
+        result = check(repo)
+    except plan_manifest.ManifestSourceError:
+        pass
+    else:
+        assert result.exit_code != 0
+    assert swapped
+
+
+@pytest.mark.parametrize("operation", ("check", "unregistered"))
+def test_manifest_inventory_rejects_temporary_parent_substitution(
+    tmp_path, monkeypatch, operation
+):
+    active_parent = tmp_path / "active"
+    repo = make_repo(active_parent)
+    tracked_rel = _commit_plan(repo)
+
+    manifest = repo / "plans" / "manifest.json"
+    manifest.write_text(
+        json.dumps({"plans": [{"file": tracked_rel}]}) + "\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "plans/manifest.json"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "register plan"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+    alternate_parent = tmp_path / "alternate"
+    shutil.copytree(active_parent, alternate_parent, symlinks=True)
+    alternate_repo = alternate_parent / "repo"
+    hidden_rel = "plans/phase-plan-v2-HIDDEN.md"
+
+    (repo / hidden_rel).write_text(
+        "---\nphase: HIDDEN\n---\n# Hidden\n",
+        encoding="utf-8",
+    )
+    (alternate_repo / "plans" / "manifest.json").write_text(
+        '{"plans":[]}\n',
+        encoding="utf-8",
+    )
+
+    assert check(repo).exit_code == 1
+    assert check(alternate_repo).exit_code == 1
+    assert plan_manifest.unregistered_plan_files(repo) == (hidden_rel,)
+    assert plan_manifest.unregistered_plan_files(alternate_repo) == (tracked_rel,)
+
+    parked_active = tmp_path / "parked-active"
+    real_scan = plan_manifest._scan_plans_dir_physical
+    swaps = 0
+
+    def scan_with_temporary_parent_substitution(scan_repo, **kwargs):
+        nonlocal swaps
+        active_parent.rename(parked_active)
+        alternate_parent.rename(active_parent)
+        try:
+            return real_scan(scan_repo, **kwargs)
+        finally:
+            active_parent.rename(alternate_parent)
+            parked_active.rename(active_parent)
+            swaps += 1
+
+    monkeypatch.setattr(
+        plan_manifest,
+        "_scan_plans_dir_physical",
+        scan_with_temporary_parent_substitution,
+    )
+
+    if operation == "check":
+        result = check(repo)
+        assert result.exit_code != 0
+        assert any(item.path == hidden_rel for item in result.missing)
+    else:
+        result = plan_manifest.unregistered_plan_files(repo)
+        assert result == (hidden_rel,)
+    assert swaps == 1
+
+
+@pytest.mark.parametrize("operation", ("check", "unregistered"))
+def test_manifest_inventory_binds_stage_zero_index_to_snapshot_root(
+    tmp_path, monkeypatch, operation
+):
+    active_parent = tmp_path / "active"
+    repo = make_repo(active_parent)
+    tracked_rel = _commit_plan(repo)
+
+    manifest = repo / "plans" / "manifest.json"
+    manifest.write_text(
+        json.dumps({"plans": [{"file": tracked_rel}]}) + "\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "plans/manifest.json"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "register plan"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+    alternate_parent = tmp_path / "alternate"
+    shutil.copytree(active_parent, alternate_parent, symlinks=True)
+    alternate_repo = alternate_parent / "repo"
+    (alternate_repo / "plans" / "manifest.json").write_text(
+        '{"plans":[]}\n',
+        encoding="utf-8",
+    )
+
+    staged_rel = "plans/phase-plan-v2-STAGED.md"
+    staged_path = repo / staged_rel
+    staged_path.write_text(
+        "---\nphase: STAGED\n---\n# Staged\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", staged_rel], cwd=repo, check=True)
+    staged_path.unlink()
+
+    assert check(repo).exit_code == 1
+    assert check(alternate_repo).exit_code == 1
+    assert plan_manifest.unregistered_plan_files(repo) == (staged_rel,)
+    assert plan_manifest.unregistered_plan_files(alternate_repo) == (tracked_rel,)
+
+    parked_active = tmp_path / "parked-active"
+    real_stage_scan = plan_manifest._git_ls_files_stage_plans
+    swaps = 0
+
+    def stage_scan_from_alternate(repo_arg, **kwargs):
+        nonlocal swaps
+        active_parent.rename(parked_active)
+        alternate_parent.rename(active_parent)
+        try:
+            return real_stage_scan(repo_arg, **kwargs)
+        finally:
+            active_parent.rename(alternate_parent)
+            parked_active.rename(active_parent)
+            swaps += 1
+
+    monkeypatch.setattr(
+        plan_manifest,
+        "_git_ls_files_stage_plans",
+        stage_scan_from_alternate,
+    )
+
+    if operation == "check":
+        result = check(repo)
+        assert result.exit_code != 0
+        assert any(item.path == staged_rel for item in result.missing)
+    else:
+        result = plan_manifest.unregistered_plan_files(repo)
+        assert result == (staged_rel,)
+    assert swaps == 1
+
+
+def test_current_authority_hash_binds_working_files_to_snapshot_root(
+    tmp_path, monkeypatch
+):
+    active_parent = tmp_path / "active"
+    repo = make_repo(active_parent)
+    plan_rel = _commit_plan(repo)
+    plan_bytes = (repo / plan_rel).read_bytes()
+
+    authority = {
+        "schema": "plan_current_authority.v1",
+        "source": "agent-harness#620",
+        "plan_sha256": hashlib.sha256(plan_bytes).hexdigest(),
+        "roadmap_sha256": None,
+    }
+    manifest = repo / "plans" / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "plans": [
+                    {
+                        "file": plan_rel,
+                        "plan_authority_history": [authority],
+                    }
+                ]
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "plans/manifest.json"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "bind current authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+    alternate_parent = tmp_path / "alternate"
+    shutil.copytree(active_parent, alternate_parent, symlinks=True)
+    alternate_repo = alternate_parent / "repo"
+
+    (repo / plan_rel).write_text(
+        "---\nphase: RUNNER\n---\n# Drifted\n",
+        encoding="utf-8",
+    )
+    (alternate_repo / "plans" / "manifest.json").write_text(
+        '{"plans":[]}\n',
+        encoding="utf-8",
+    )
+
+    state_a = check(repo)
+    assert state_a.exit_code == 1
+    assert any(
+        item.path == plan_rel and item.kind == "plan-digest"
+        for item in state_a.malformed
+    )
+    assert check(alternate_repo).exit_code == 1
+
+    parked_active = tmp_path / "parked-active"
+    real_hasher = plan_manifest._regular_repo_files_sha256
+    swaps = 0
+
+    def hash_from_alternate(repo_arg, rel_paths, **kwargs):
+        nonlocal swaps
+        active_parent.rename(parked_active)
+        alternate_parent.rename(active_parent)
+        try:
+            return real_hasher(repo_arg, rel_paths, **kwargs)
+        finally:
+            active_parent.rename(alternate_parent)
+            parked_active.rename(active_parent)
+            swaps += 1
+
+    monkeypatch.setattr(
+        plan_manifest,
+        "_regular_repo_files_sha256",
+        hash_from_alternate,
+    )
+
+    result = check(repo)
+    assert swaps == 1
+    assert result.exit_code != 0
+    assert any(
+        item.path == plan_rel and item.kind == "plan-digest"
+        for item in result.malformed
+    )
+
+
+_ACTIVE_BANNER = (
+    "# Roadmap\n\n"
+    "> **Status (2026-08-01): ACTIVE — created this date, nothing executed yet.**\n"
+)
+_SUPERSEDED_BANNER = (
+    "# Roadmap\n\n"
+    "> # SUPERSEDED — replaced by `specs/phase-plans-v1.md` (2026-08-01)\n"
+)
+
+
+def _roadmap_check_fixture(tmp_path, *, banners, statuses):
+    repo = make_repo(tmp_path)
+    plan_rel = _commit_plan(repo)
+
+    for rel, banner in banners.items():
+        path = repo / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(banner, encoding="utf-8")
+
+    registry_payload = {
+        "schema": "roadmap_status_manifest.v1",
+        "selected_roadmap": "specs/phase-plans-v1.md",
+        "roadmaps": [
+            {"path": rel, "status": status}
+            for rel, status in sorted(statuses.items())
+        ],
+    }
+    registry = repo / "specs" / "roadmap-status.json"
+    registry.write_text(json.dumps(registry_payload) + "\n", encoding="utf-8")
+
+    (repo / "plans" / "manifest.json").write_text(
+        json.dumps({"plans": [{"file": plan_rel}]}) + "\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "roadmap fixture"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    return repo, registry, registry_payload
+
+
+def _assert_check_fails_closed(repo):
+    try:
+        result = check(repo)
+    except plan_manifest.ManifestSourceError:
+        return
+    assert result.exit_code != 0
+
+
+def test_roadmap_coverage_ignores_ambient_git_index_file(tmp_path, monkeypatch):
+    repo, _registry, _payload = _roadmap_check_fixture(
+        tmp_path,
+        banners={
+            "specs/phase-plans-v1.md": _ACTIVE_BANNER,
+            "specs/phase-plans-v2.md": _SUPERSEDED_BANNER,
+        },
+        statuses={"specs/phase-plans-v1.md": "active"},
+    )
+    _assert_check_fails_closed(repo)
+
+    alternate_index = tmp_path / "alternate-index"
+    alternate_env = dict(os.environ)
+    alternate_env["GIT_INDEX_FILE"] = str(alternate_index)
+    subprocess.run(
+        ["git", "read-tree", "HEAD"],
+        cwd=repo,
+        env=alternate_env,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "update-index", "--force-remove", "specs/phase-plans-v2.md"],
+        cwd=repo,
+        env=alternate_env,
+        check=True,
+    )
+
+    monkeypatch.setenv("GIT_INDEX_FILE", str(alternate_index))
+    _assert_check_fails_closed(repo)
+
+
+def test_roadmap_registry_and_banners_are_one_pinned_snapshot(
+    tmp_path, monkeypatch
+):
+    repo, registry, _payload = _roadmap_check_fixture(
+        tmp_path,
+        banners={"specs/phase-plans-v1.md": _SUPERSEDED_BANNER},
+        statuses={"specs/phase-plans-v1.md": "active"},
+    )
+    roadmap = repo / "specs" / "phase-plans-v1.md"
+    _assert_check_fails_closed(repo)
+
+    real_parse = roadmap_lint.parse_roadmap_status_manifest
+    changed = False
+
+    def parse_then_replace_sources(text):
+        nonlocal changed
+        parsed = real_parse(text)
+        registry.write_text("not json\n", encoding="utf-8")
+        roadmap.write_text(_ACTIVE_BANNER, encoding="utf-8")
+        changed = True
+        return parsed
+
+    monkeypatch.setattr(
+        roadmap_lint,
+        "parse_roadmap_status_manifest",
+        parse_then_replace_sources,
+    )
+
+    try:
+        result = check(repo)
+    except plan_manifest.ManifestSourceError:
+        assert changed
+        return
+    assert changed
+    assert result.exit_code != 0
+
+
+def test_roadmap_status_registry_rejects_external_symlink(tmp_path):
+    repo, registry, payload = _roadmap_check_fixture(
+        tmp_path / "repo-state",
+        banners={"specs/phase-plans-v1.md": _ACTIVE_BANNER},
+        statuses={"specs/phase-plans-v1.md": "active"},
+    )
+
+    external_registry = tmp_path / "external-roadmap-status.json"
+    external_registry.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    registry.unlink()
+    registry.symlink_to(external_registry)
+
+    assert registry.is_symlink()
+    _assert_check_fails_closed(repo)
+
+
+def test_manifest_check_requires_registry_committed_in_audited_tree(tmp_path):
+    repo, registry, _payload = _roadmap_check_fixture(
+        tmp_path,
+        banners={"specs/phase-plans-v1.md": _ACTIVE_BANNER},
+        statuses={"specs/phase-plans-v1.md": "active"},
+    )
+    assert check(repo).exit_code == 0
+    assert not (repo / "plans" / "phase-plan-v10-LEGIBLE.md").exists()
+    registry.unlink()
+
+    with pytest.raises(
+        plan_manifest.ManifestSourceError,
+        match="committed roadmap-status registry is absent",
+    ):
+        check(repo)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    with pytest.raises(
+        plan_manifest.ManifestSourceError,
+        match="committed roadmap-status registry is absent",
+    ):
+        plan_manifest.canonical_plan_files(repo, head)
+
+
+def test_public_roadmap_reader_honors_requested_path(tmp_path, monkeypatch):
+    repo, registry, _payload = _roadmap_check_fixture(
+        tmp_path / "repo-state",
+        banners={"specs/phase-plans-v1.md": _ACTIVE_BANNER},
+        statuses={"specs/phase-plans-v1.md": "active"},
+    )
+
+    assert roadmap_lint.read_roadmap_status(
+        repo,
+        repo / "specs" / "missing-roadmap-status.json",
+    ) is None
+    assert roadmap_lint.read_roadmap_status(repo, registry) is not None
+
+    monkeypatch.chdir(tmp_path)
+    relative_repo = repo.relative_to(tmp_path)
+    relative_registry = relative_repo / "specs" / "roadmap-status.json"
+    assert roadmap_lint.read_roadmap_status(
+        relative_repo,
+        relative_registry,
+    ) is not None
+
+    nested = repo / "nested"
+    nested.mkdir()
+    monkeypatch.chdir(nested)
+    repo_from_child = Path("..")
+    assert roadmap_lint.read_roadmap_status(
+        repo_from_child,
+        repo_from_child / "specs" / "roadmap-status.json",
+    ) is not None
+    assert roadmap_lint.read_roadmap_status(
+        repo_from_child,
+        Path("specs/roadmap-status.json"),
+    ) is not None
+
+    monkeypatch.chdir(tmp_path)
+    repo_alias = tmp_path / "repo-alias"
+    repo_alias.symlink_to(repo, target_is_directory=True)
+    assert roadmap_lint.read_roadmap_status(
+        repo_alias,
+        repo_alias / "specs" / "roadmap-status.json",
+    ) is not None
+    relative_alias = repo_alias.relative_to(tmp_path)
+    assert roadmap_lint.read_roadmap_status(
+        relative_alias,
+        relative_alias / "specs" / "roadmap-status.json",
+    ) is not None
+
+
+def test_public_roadmap_reader_rejects_path_outside_repo(tmp_path):
+    repo, _registry, payload = _roadmap_check_fixture(
+        tmp_path / "repo-state",
+        banners={"specs/phase-plans-v1.md": _ACTIVE_BANNER},
+        statuses={"specs/phase-plans-v1.md": "active"},
+    )
+    external = tmp_path / "external-roadmap-status.json"
+    external.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+    external_dir = tmp_path / "external-dir"
+    external_dir.mkdir()
+    linked_dir = repo / "specs" / "external-link"
+    linked_dir.symlink_to(external_dir, target_is_directory=True)
+
+    for requested in (
+        external,
+        repo / ".." / "missing-roadmap-status.json",
+        linked_dir / "missing-roadmap-status.json",
+    ):
+        with pytest.raises(roadmap_lint.MalformedRegistryError):
+            roadmap_lint.read_roadmap_status(repo, requested)
+
+
+@pytest.mark.parametrize("source", ("registry", "banner"))
+def test_direct_roadmap_validation_rejects_external_symlink_source(
+    tmp_path, source
+):
+    repo, registry, payload = _roadmap_check_fixture(
+        tmp_path / "repo-state",
+        banners={"specs/phase-plans-v1.md": _ACTIVE_BANNER},
+        statuses={"specs/phase-plans-v1.md": "active"},
+    )
+    banner = repo / "specs" / "phase-plans-v1.md"
+
+    if source == "registry":
+        external = tmp_path / "external-roadmap-status.json"
+        external.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        registry.unlink()
+        registry.symlink_to(external)
+    else:
+        external = tmp_path / "external-roadmap.md"
+        external.write_text(_ACTIVE_BANNER, encoding="utf-8")
+        banner.unlink()
+        banner.symlink_to(external)
+
+    with pytest.raises(roadmap_lint.RoadmapStatusError):
+        roadmap_lint.validate_roadmap_status_coherence(repo, required=True)
+
+
+@pytest.mark.parametrize("source", ("registry", "banner"))
+def test_direct_roadmap_validation_rejects_fifo_without_blocking(
+    tmp_path, source
+):
+    repo, registry, _payload = _roadmap_check_fixture(
+        tmp_path,
+        banners={"specs/phase-plans-v1.md": _ACTIVE_BANNER},
+        statuses={"specs/phase-plans-v1.md": "active"},
+    )
+    target = (
+        registry
+        if source == "registry"
+        else repo / "specs" / "phase-plans-v1.md"
+    )
+    target.unlink()
+    os.mkfifo(target)
+
+    def timeout_handler(_signum, _frame):
+        raise TimeoutError("roadmap validation blocked on a FIFO")
+
+    previous = signal.signal(signal.SIGALRM, timeout_handler)
+    signal.setitimer(signal.ITIMER_REAL, 1.0)
+    try:
+        with pytest.raises(roadmap_lint.RoadmapStatusError):
+            roadmap_lint.validate_roadmap_status_coherence(repo, required=True)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def test_required_roadmap_marker_is_bound_to_absent_registry_snapshot(
+    tmp_path, monkeypatch
+):
+    repo = make_repo(tmp_path)
+    marker = repo / "plans" / "phase-plan-v10-LEGIBLE.md"
+    marker.write_text("---\nphase: LEGIBLE\n---\n# LEGIBLE\n", encoding="utf-8")
+    registry = repo / roadmap_lint.ROADMAP_STATUS_REGISTRY_REL
+    parked_marker = tmp_path / "parked-marker.md"
+    real_validate = roadmap_lint._validate_roadmap_status_sources
+    mutated = False
+
+    def mutate_after_snapshot(repo_arg, required, **kwargs):
+        nonlocal mutated
+        registry.write_text("not json\n", encoding="utf-8")
+        marker.rename(parked_marker)
+        mutated = True
+        try:
+            return real_validate(repo_arg, required, **kwargs)
+        finally:
+            parked_marker.rename(marker)
+            registry.unlink()
+
+    monkeypatch.setattr(
+        roadmap_lint,
+        "_validate_roadmap_status_sources",
+        mutate_after_snapshot,
+    )
+
+    with pytest.raises(roadmap_lint.RoadmapStatusError):
+        roadmap_lint.validate_roadmap_status_coherence(repo, required=True)
+    assert mutated
+    assert marker.is_file()
+    assert not registry.exists()
+
+
+@pytest.mark.parametrize("source", ("registry", "banner"))
+def test_roadmap_evidence_validation_rejects_external_symlink_source(
+    tmp_path, source
+):
+    repo, registry, payload = _roadmap_check_fixture(
+        tmp_path / "repo-state",
+        banners={"specs/phase-plans-v1.md": _ACTIVE_BANNER},
+        statuses={"specs/phase-plans-v1.md": "active"},
+    )
+    record = legible_evidence.collect_roadmap_status(repo, required=True)
+    banner = repo / "specs" / "phase-plans-v1.md"
+
+    if source == "registry":
+        external = tmp_path / "external-roadmap-status.json"
+        external.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        registry.unlink()
+        registry.symlink_to(external)
+    else:
+        external = tmp_path / "external-roadmap.md"
+        external.write_text(_ACTIVE_BANNER, encoding="utf-8")
+        banner.unlink()
+        banner.symlink_to(external)
+
+    with pytest.raises(legible_evidence.LegibleStatusEvidenceError):
+        legible_evidence.validate_roadmap_status_evidence(
+            repo,
+            record,
+            required=True,
+        )
+
+
+@pytest.mark.parametrize("source", ("registry", "banner"))
+def test_roadmap_evidence_validation_rejects_fifo_without_blocking(
+    tmp_path, source
+):
+    repo, registry, _payload = _roadmap_check_fixture(
+        tmp_path,
+        banners={"specs/phase-plans-v1.md": _ACTIVE_BANNER},
+        statuses={"specs/phase-plans-v1.md": "active"},
+    )
+    record = legible_evidence.collect_roadmap_status(repo, required=True)
+    target = (
+        registry
+        if source == "registry"
+        else repo / "specs" / "phase-plans-v1.md"
+    )
+    target.unlink()
+    os.mkfifo(target)
+
+    def timeout_handler(_signum, _frame):
+        raise TimeoutError("roadmap evidence validation blocked on a FIFO")
+
+    previous = signal.signal(signal.SIGALRM, timeout_handler)
+    signal.setitimer(signal.ITIMER_REAL, 1.0)
+    try:
+        with pytest.raises(legible_evidence.LegibleStatusEvidenceError):
+            legible_evidence.validate_roadmap_status_evidence(
+                repo,
+                record,
+                required=True,
+            )
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
+def test_roadmap_evidence_revalidates_full_banner_coherence(tmp_path):
+    repo, _registry, _payload = _roadmap_check_fixture(
+        tmp_path,
+        banners={"specs/phase-plans-v1.md": _ACTIVE_BANNER},
+        statuses={"specs/phase-plans-v1.md": "active"},
+    )
+    record = legible_evidence.collect_roadmap_status(repo, required=True)
+    banner = repo / "specs" / "phase-plans-v1.md"
+    banner.write_text(
+        _ACTIVE_BANNER
+        + "> **Status (2026-08-02): ACTIVE — created this date, nothing executed yet.**\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(legible_evidence.LegibleStatusEvidenceError) as excinfo:
+        legible_evidence.validate_roadmap_status_evidence(
+            repo,
+            record,
+            required=True,
+        )
+    assert excinfo.value.code == "roadmap_status_coherence_drift"
+
+
 def test_cli_attest_passes_preimport_process_token_into_runner_workflow(tmp_path, monkeypatch):
     from phase_loop_runtime import cli
 
@@ -2160,17 +4510,17 @@ def test_assumption_sidecar_rejects_coordinated_roadmap_and_digest_drift(tmp_pat
     assert excinfo.value.code == "sidecar_contract_drift"
 
 
-def test_manifest_plan_entry_lstat_failure_is_typed(tmp_path, monkeypatch):
+def test_manifest_plan_entry_stat_failure_is_typed(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
     target = repo / _commit_plan(repo)
-    real_lstat = Path.lstat
+    real_stat = os.stat
 
-    def fail_target(path):
-        if path == target:
+    def fail_target(path, *args, **kwargs):
+        if path == os.fsencode(target.name) and kwargs.get("dir_fd") is not None:
             raise PermissionError("denied")
-        return real_lstat(path)
+        return real_stat(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "lstat", fail_target)
+    monkeypatch.setattr(plan_manifest.os, "stat", fail_target)
     head = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
     ).stdout.strip()

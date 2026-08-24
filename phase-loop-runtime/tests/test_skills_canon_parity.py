@@ -134,6 +134,20 @@ class SkillsCanonParityTest(unittest.TestCase):
                 text = packaged.read_text(encoding="utf-8")
                 self.assertIn("phase_loop_runtime.panel_invoker", text)
                 self.assertNotIn("run_cli_panels.sh", text)
+                for literal in (
+                    "Claude Fable 5",
+                    "claude-fable-5",
+                    "GPT-5.6 Sol",
+                    "gpt-5.6-sol",
+                    "Grok 4.6",
+                    "grok-4.6",
+                    "Gemini 3.7 Flash",
+                    "gemini-3.7-flash",
+                ):
+                    self.assertIn(literal, text, f"{packaged}: lost concrete model {literal}")
+                self.assertNotIn("Harness Fable", text)
+                self.assertNotIn("Harness 3.7 Flash", text)
+                self.assertNotIn("<harness>-3.7-flash", text)
 
     def test_installed_bundle_preserves_concrete_harness_literals(self):
         """CR blind-spot gate: parity (committed == build) does NOT catch a
@@ -159,7 +173,8 @@ class SkillsCanonParityTest(unittest.TestCase):
         from phase_loop_runtime.build_bundle import PRESERVE_LITERALS
         from phase_loop_runtime.skill_install import install_skills
 
-        # claude carries every preserved literal (model ids + claude-in-chrome).
+        # The Claude-installed bundle carries every preserved cross-vendor literal
+        # through its advisor-board skill, plus Claude-only model/tool literals.
         with tempfile.TemporaryDirectory() as td:
             dest = Path(td)
             install_skills(
@@ -180,12 +195,15 @@ class SkillsCanonParityTest(unittest.TestCase):
                     f"installed claude bundle lost concrete literal {literal!r} "
                     "(neutralizer corrupted it to a <harness>- form)",
                 )
-                # The corrupted form depends on the literal's shape: a `claude-X`
-                # token (model id / claude-in-chrome) collapses to `<harness>-X`,
-                # while a `Claude X` brand-display form (the Co-Authored-By model
-                # attribution) collapses to `Harness X` via the brand regex.
+                # The corrupted form depends on the literal's shape: a provider-ID
+                # token collapses to `<harness>-X`, while a provider display name
+                # collapses to `Harness X` via the brand regex.
                 if literal.startswith("claude-"):
                     corrupted = literal.replace("claude-", "<harness>-", 1)
+                elif literal.startswith("gemini-"):
+                    corrupted = literal.replace("gemini-", "<harness>-", 1)
+                elif literal.startswith("Gemini"):
+                    corrupted = literal.replace("Gemini", "Harness", 1)
                 else:
                     corrupted = literal.replace("Claude", "Harness", 1)
                 self.assertNotIn(

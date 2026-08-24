@@ -92,12 +92,30 @@ class GateAConformEvidenceScopeTest(unittest.TestCase):
             "/phase-loop-runtime/src/",
             "/phase-loop-runtime/protocol/",
             "/plans/phase-plan-v10-CONFORM.md",
+            "/plans/phase-plan-v10-FABPUB.md",
+            "/plans/phase-plan-v10-PROOFGATE.md",
+            "/skills-src/codex/codex-execute-phase/",
             "/CHANGELOG.md",
         ):
             self.assertIn(required, script)
+        self.assertIn('"$SOURCE_HEAD:plans/manifest.json"', script)
+        self.assertIn("PHASE_LOOP_LEGIBLE_AUTHORITY_MANIFEST", script)
+        self.assertNotIn("      /plans/manifest.json \\", script)
+        self.assertLess(
+            script.index("LEGIBLE_AUTHORITY_ENV=()"),
+            script.index('if [ "$CONFORM_CAPABILITY_STATUS" -eq 0 ]'),
+        )
+        self.assertLess(
+            script.index('if [ "$CONFORM_CAPABILITY_STATUS" -eq 0 ]'),
+            script.index('"${LEGIBLE_AUTHORITY_ENV[@]}"'),
+        )
         self.assertNotIn("sparse-checkout set \\\n      phase-loop-runtime/tests", script)
         self.assertNotIn("      .claude", script)
         self.assertIn('"--rootdir=$SUITE_TREE"', script)
+        self.assertIn("os.chdir(suite.parent)", script)
+        self.assertIn('PROOFGATE_358_COMMIT="0196f19c7e9fd90e9a707de076271057b521e1d1"', script)
+        self.assertIn('git -C "$SOURCE_REPO" pack-objects --stdout', script)
+        self.assertIn('git -C "$STANDALONE_ROOT" unpack-objects -q', script)
 
         for nodeid in (
             "test_outside_agent_contract_drift.py::test_documented_consumer_mirror_policy_allows_only_pinned_contract_bytes",

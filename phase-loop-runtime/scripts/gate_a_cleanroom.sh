@@ -187,6 +187,7 @@ PYEOF
   # Seeded unconditionally: the capability-absent branch below never repopulates
   # this array, and the junit evidence must be emitted in either posture.
   CONFORM_STANDALONE_DESELECTS=("--junitxml=$GATE_A_JUNIT")
+  LEGIBLE_AUTHORITY_ENV=()
   if [ "$CONFORM_CAPABILITY_STATUS" -eq 0 ]; then
     # CONFORM's final mutation/lifecycle proof needs source and Git history as
     # immutable data. A sparse private clone supplies those bytes while scripts
@@ -206,10 +207,42 @@ PYEOF
       /docs/ \
       /specs/ \
       /plans/phase-plan-v10-CONFORM.md \
+      /plans/phase-plan-v10-FABPUB.md \
       /plans/phase-plan-v10-GOVLEAN.md \
+      /plans/phase-plan-v10-PROOFGATE.md \
+      /skills-src/codex/codex-execute-phase/ \
       /skills-src/claude/claude-plan-phase/scripts/validate_plan_doc.py \
       /CHANGELOG.md
     git -C "$STANDALONE_ROOT" checkout --quiet --detach "$SOURCE_HEAD"
+    # PROOFGATE's known-bad agent-harness#358 corpus is pinned to an exact commit
+    # that lives on a historical plan branch rather than the candidate ancestry.
+    # A clone of a CI checkout advertises only its local branch refs, so transfer
+    # the four immutable objects needed for commit:path lookup explicitly. This
+    # retains the exact Git identity without exposing the outer source tree to the
+    # installed-wheel process or depending on network access during Gate A.
+    PROOFGATE_358_COMMIT="0196f19c7e9fd90e9a707de076271057b521e1d1"
+    PROOFGATE_358_PATH="plans/detailed-board-silent-degradation-358-20260728.md"
+    if ! git -C "$SOURCE_REPO" cat-file -e "$PROOFGATE_358_COMMIT:$PROOFGATE_358_PATH"; then
+      echo "GATE-A FAIL: pinned agent-harness#358 PROOFGATE corpus is absent from the source object store" >&2
+      exit 1
+    fi
+    printf '%s\n' \
+      "$PROOFGATE_358_COMMIT" \
+      "$(git -C "$SOURCE_REPO" rev-parse "$PROOFGATE_358_COMMIT^{tree}")" \
+      "$(git -C "$SOURCE_REPO" rev-parse "$PROOFGATE_358_COMMIT:plans")" \
+      "$(git -C "$SOURCE_REPO" rev-parse "$PROOFGATE_358_COMMIT:$PROOFGATE_358_PATH")" \
+      | git -C "$SOURCE_REPO" pack-objects --stdout \
+      | git -C "$STANDALONE_ROOT" unpack-objects -q
+    if ! git -C "$STANDALONE_ROOT" cat-file -e "$PROOFGATE_358_COMMIT:$PROOFGATE_358_PATH"; then
+      echo "GATE-A FAIL: pinned agent-harness#358 PROOFGATE corpus transfer failed" >&2
+      exit 1
+    fi
+    LEGIBLE_AUTHORITY_MANIFEST="$WORK/legible-authority-manifest.json"
+    git -C "$STANDALONE_ROOT" show \
+      "$SOURCE_HEAD:plans/manifest.json" > "$LEGIBLE_AUTHORITY_MANIFEST"
+    LEGIBLE_AUTHORITY_ENV=(
+      "PHASE_LOOP_LEGIBLE_AUTHORITY_MANIFEST=$LEGIBLE_AUTHORITY_MANIFEST"
+    )
     SUITE_TREE="$STANDALONE_ROOT/phase-loop-runtime"
     # tests/__init__.py prepends a sibling src tree unless that exact path is
     # already present. Add it after site-packages so candidate source remains
@@ -300,13 +333,16 @@ PYEOF
       PATH="$VENV/bin:/usr/bin:/bin" \
       PYTHONNOUSERSITE=1 \
       PYTHONDONTWRITEBYTECODE=1 \
+      "${LEGIBLE_AUTHORITY_ENV[@]}" \
       PYTHONPATH="$SUITE_TREE/tests" \
       "$PY" - "$SUITE_TREE" "${CONFORM_STANDALONE_DESELECTS[@]}" <<'PYEOF'
+import os
 import sys
 from pathlib import Path
 
 suite = Path(sys.argv[1]).resolve()
 extra_pytest_args = sys.argv[2:]
+os.chdir(suite.parent)
 import phase_loop_runtime
 
 runtime_file = Path(phase_loop_runtime.__file__).resolve()

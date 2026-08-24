@@ -600,9 +600,11 @@ dispatch cluster.
 - [ ] EC-SCHED-7 — **WORKTREE-LOSS DISPOSITION (carried from v9 FAB lane (a), `phase-plans-v9.md:357`; v9's banner recorded it as "CANNOT-DETERMINE, not carried" (`v9:16`), and superseding v9 would otherwise make its acceptance condition silently unreachable — "cannot-determine" is not a disposition).** v9:357 required each of four divergent worktrees — `agent-harness-abdreg`, `ah-abdreg-pkg`, `ah-abdreg-rebase` (three copies on `feat/advisor-board-abdreg`) and `agent-harness-abdresolve` (`phase/abdresolve`) — to be landed, committed-and-parked, or explicitly discarded with a recorded decision, no silent loss. The verifiable, satisfiable obligation carried here is PRESERVATION OF THE SURVIVING COMMITTED TIPS (verified 2026-07-29, aligned to `plans/design-fab-191-delta-review.md:514-521`, NOT smoothed): NONE of the four worktrees still exists under `git worktree list`, and both branches `feat/advisor-board-abdreg` (`4c603c3`) and `phase/abdresolve` (`582037e`) survive on `origin` (confirmed by `git ls-remote`), so their committed state is parked-and-recoverable. Satisfied by those two `origin` tips confirmed retained under a recorded disposition. Falsified by either `feat/advisor-board-abdreg` or `phase/abdresolve` being deleted from `origin` with no recorded decision — the observable is the missing ref, a silent loss of committed state. STANDING FINDING (STATE, not satisfaction — this criterion does NOT turn green by recording it, and it is NOT satisfied by admitting the loss): the `phase/abdresolve` worktree's 25 uncommitted files were **discarded UN-INSPECTED** — whether they were re-appearing already-committed work or genuine un-committed progress is UNKNOWABLE, and the FAB design record `design-fab-191-delta-review.md:514-521` explicitly DECLINES to claim "no silent loss" for them — so v9:357's no-silent-loss is UNMET for `abdresolve`, carried as an accepted possible-loss exactly like EC-INTEG-5's 2-of-N residual, never a green. (The `abdreg` copies' 5 uncommitted files were by contrast INSPECTED — sibling copies reverting committed safety fixes, an abandoned experiment, no value forgone — a genuine recorded discard, outside the standing finding.)
 
 **Scope notes**
-Decompose into 2 lanes over disjoint files: lane A owns worktree reclamation
+Decompose into 2 production lanes over disjoint files: lane A owns worktree reclamation
 (`phase_worktree_executor.py`), lane B owns the scheduler cluster (`lane_scheduler.py`,
-`runner.py`) for which a drafted plan already exists. **EC-SCHED-1/2/3 are BLOCKED on the agent-harness#354
+`runner.py`, `launcher.py`, `worker_pool.py`) for which a drafted plan already exists.
+Lane B produces a digest-bound handoff that must be incorporated into and freshly reviewed with
+the HARDEN plan before HARDEN writes `runner.py` or `launcher.py`. **EC-SCHED-1/2/3 are BLOCKED on the agent-harness#354
 design fork**, which has been paneled twice — options (a)/(b)/(c) were rejected 3/3, and
 resume-first was rejected on mechanism (the handoff is a closeout artifact, not a session
 checkpoint). A third framing is required before lane A starts.
@@ -615,16 +617,20 @@ its own initiative.
 - `phase-loop-runtime/src/phase_loop_runtime/phase_worktree_executor.py`
 - `phase-loop-runtime/src/phase_loop_runtime/lane_scheduler.py`
 - `phase-loop-runtime/src/phase_loop_runtime/runner.py`
+- `phase-loop-runtime/src/phase_loop_runtime/launcher.py`
+- `phase-loop-runtime/src/phase_loop_runtime/worker_pool.py`
 
 **Depends on**
 - PROOFGATE
 
 **Produces**
-- (none)
+- `SCHED_HARDEN_HANDOFF` — exact scheduler landing commit/tree/path set and the freshly reviewed
+  HARDEN plan/manifest digest that consumes it before overlapping HARDEN writes begin
 
 **Spec closeout policy**
-schema: `spec_delta_closeout.v1`; expected decision: `no_spec_delta`; target surfaces: none
-outside this repo; `redaction_posture: metadata_only`; malformed evidence routes non-human
+schema: `spec_delta_closeout.v1`; expected decision: `canonical_spec_update`; target surfaces:
+`specs/phase-plans-v10.md`, `plans/phase-plan-v10-HARDEN.md`, and `plans/manifest.json`;
+`redaction_posture: metadata_only`; malformed evidence routes non-human
 `blocker_class=contract_bug`.
 
 ### Phase 6 — Isolation and Verification Hardening (HARDEN)
@@ -1246,7 +1252,7 @@ Downstream semantic edges:
   PROOFGATE   → SCHED       (SCHED's re-framed GC work should land under the falsifier gate)
 
 Lane-level writer edge:
-  SCHED lane B before HARDEN  (runner.py; lane B may land while SCHED lane A resolves agent-harness#354)
+  SCHED lane B before HARDEN  (runner.py and launcher.py; lane B may land while SCHED lane A resolves agent-harness#354; HARDEN consumes the exact SCHED_HARDEN_HANDOFF before writing either path)
 
 Governance ruling (amendment 2026-08-13, GOVLEAN): PROOFGATE execution is re-gated behind GOVLEAN completion as a ratified maintainer ruling. The structured graph carries only the backed CONFORM-to-GOVLEAN dependency because the roadmap grammar forbids forward dependencies and edits to existing phases; the gate is operative through Phase 13's Produces freezes (the PROOFGATE plan must reference IF-0-GOVLEAN-1's frozen primitive signatures) and through dispatch discipline recorded in Phase 13's section.
 
@@ -1275,10 +1281,10 @@ PROOFGATE/CONFORM pair. The exhaustive pattern-expanded intersections are:
 | REVIEWTRUTH / CONFORM | `tests/conftest.py`, `cli.py` | CONFORM → REVIEWTRUTH |
 | REVIEWTRUTH / FABPUB | `cli.py`, `train_runner.py` | FABPUB before REVIEWTRUTH (transitive) |
 | REVIEWTRUTH / HARDEN | `launcher.py`, `advisor_board/composition.py`, `cli.py`, `panel_invoker.py`, `runner.py`, `test_advisor_board_golden.py`, `test_advisor_board_research.py`, `test_panel_native_fill_183.py` | HARDEN → REVIEWTRUTH |
-| REVIEWTRUTH / SCHED | `phase_worktree_executor.py`, `runner.py`, `test_phase_worktree_executor.py` | SCHED → REVIEWTRUTH |
+| REVIEWTRUTH / SCHED | `phase_worktree_executor.py`, `launcher.py`, `runner.py`, `test_phase_worktree_executor.py` | SCHED → REVIEWTRUTH |
 | LEGIBLE / SCHED | `runner.py` | LEGIBLE before SCHED (transitive) |
-| PROOFGATE / SCHED | `runner.py` | PROOFGATE → SCHED |
-| HARDEN / SCHED | `runner.py` | SCHED lane B → HARDEN |
+| PROOFGATE / SCHED | `launcher.py`, `runner.py` | PROOFGATE → SCHED |
+| HARDEN / SCHED | `launcher.py`, `runner.py` | SCHED lane B → freshly reviewed `SCHED_HARDEN_HANDOFF` → HARDEN |
 | PROOFGATE / CONFORM | none | parallel-safe |
 | GOVLEAN / PROOFGATE | `panel_invoker.py` | shared path; serialized by the governance ruling (GOVLEAN completes before PROOFGATE executes) |
 | GOVLEAN / HARDEN | `panel_invoker.py` | shared path; GOVLEAN precedes HARDEN (ruling + wave order, transitive) |
@@ -1388,9 +1394,9 @@ PROOFGATE's EXECUTION additionally waits on GOVLEAN's delivery and consumes IF-0
 the governance ruling above and the pre-registered experiment below. LEGIBLE lands first; after
 PROOFGATE (which itself executes only after GOVLEAN delivers), SCHED lane B may run alongside
 the remaining CONFORM/FABPUB path and must land before
-HARDEN touches `runner.py`. SCHED lane A may proceed independently after its recorded design
+HARDEN touches `runner.py` or `launcher.py`. SCHED lane A may proceed independently after its recorded design
 decision. FABPUB consumes both wave-2 root-plan landings; HARDEN consumes FABPUB plus the landed
-SCHED lane B; and full SCHED must land before REVIEWTRUTH. REVIEWTRUTH consumes SCHED, CONFORM, and
+SCHED lane B through a digest-bound, freshly reviewed `SCHED_HARDEN_HANDOFF`; and full SCHED must land before REVIEWTRUTH. REVIEWTRUTH consumes SCHED, CONFORM, and
 HARDEN and must rebuild its exact-head bootstrap evidence on that
 post-upstream base. RESIDUAL is also not a root — it `Depends on` FABPUB (its lane A rewrites the
 `verbs.py`/`train_runner.py` publish identity FABPUB owns), so plan and execute it only after
