@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: LEGIBLE
 roadmap: specs/phase-plans-v10.md
-roadmap_sha256: 040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e
+roadmap_sha256: 9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0
 legible_lifecycle_contract: legible_tdd_candidate_main.v1
 legible_tdd_activation_env: PHASE_LOOP_TDD_EXPECT_LEGIBLE
 legible_capability_marker: phase_loop_runtime.legible_evidence:LEGIBLE_CAPABILITY_VERSION=legible.v1
@@ -404,7 +404,7 @@ sidecar text becomes a command. The complete per-drifting-fact inventory is:
 | LEGIBLE-A1-CONFORM-UNGATED | CONFORM is no longer blocked on `spec#118` | v10 dependency/criterion predicates contain no unresolved `spec#118` prerequisite for CONFORM | inject a `spec#118 must close` dependency | current dependency graph passes |
 | LEGIBLE-A2-I128 | `Consiliency/governed-pipeline#128` remains open | GitHub issue state is `OPEN` | observe `CLOSED` | current open payload passes |
 | LEGIBLE-A2-GP-PIN | governed-pipeline still pins agent-harness `0.5.0` | default-branch `tools/agent-harness.pin.json` has package `phase-loop-runtime`, `expected_version == "0.5.0"`, and `pip_spec == "phase-loop-runtime==0.5.0"` | change any one field independently | current remote JSON passes |
-| LEGIBLE-A2-LOCAL-VERSION | agent-harness ships `0.7.13` | `phase-loop-runtime/pyproject.toml` and `phase_loop_runtime.__version__` both equal `0.7.13` | change either surface alone | current equal pair passes |
+| LEGIBLE-A2-LOCAL-VERSION | agent-harness ships `0.7.14` | `phase-loop-runtime/pyproject.toml` and `phase_loop_runtime.__version__` both equal `0.7.14` | change either surface alone to `0.7.15` | current equal pair passes |
 | LEGIBLE-A2-NO-DEPENDENCY | no v10 phase depends on governed-pipeline#128 resolving | roadmap dependency/criterion predicate finds no closure prerequisite | inject one phase dependency on issue closure | current roadmap passes |
 | LEGIBLE-A3-REVIEWTRUTH-TRANSITION | Assumption 3 is in exactly one declared before/after state | fixed `reviewtruth_fable_transition` adapter classifies `pending` or `resolved` from one issue/source/behavior/live-route observation | exercise every inconsistent issue/source/route combination, or make the required live Fable leg unavailable | current pending observation passes; a resolved native-fill fixture with a bound live verdict reaches FULL |
 | LEGIBLE-A3-NO-DEGRADED-GATE | a runtime-internal 3-of-4 result cannot satisfy this run's gate | v10 execution policy requires four-vendor exact-digest review and forbids degraded promotion | mutate the policy to authorize 3-of-4 | current no-degraded policy passes |
@@ -980,7 +980,7 @@ evidence and cannot satisfy either criterion.
   it does not add release scope.
 - Digest continuity is a preflight and closeout invariant: before every lane, and again before
   final verification, SHA-256 of `specs/phase-plans-v10.md` must equal
-  `040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e`. Any roadmap-byte
+  `9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0`. Any roadmap-byte
   change blocks as an unpaneled contract change; this plan provides no mid-phase rebind path
   because none is required by the sidecar architecture. In particular, Assumption 3 already
   declares both the pending and resolved REVIEWTRUTH states, so the fixed sidecar adapter
