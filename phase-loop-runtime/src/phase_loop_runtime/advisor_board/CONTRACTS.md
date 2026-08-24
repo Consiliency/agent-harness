@@ -90,7 +90,7 @@ equivalence is proven by a test (not asserted in prose).
 
 - The model-first `default` board (`DEFAULT_BOARD`) resolves four vendors in
   `DEFAULT_BOARD_VENDOR_ORDER`: Codex/Sol, Gemini/Flash high, Claude/Fable, and
-  Grok 4.5. The separate legacy `PANEL_LEGS` tuple and explicit `invoke_panel`
+  Grok 4.6. The separate legacy `PANEL_LEGS` tuple and explicit `invoke_panel`
   API remain the frozen three-leg Codex/Gemini/Claude boundary.
 - `advisor-panel` stays a working alias of `advisor-board` — the rename + alias is
   ABDRESOLVE; this contract only *states* the invariant.
