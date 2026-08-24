@@ -169,6 +169,10 @@ def test_release_workflows_keep_version_build_and_publish_boundaries_explicit():
     assert "--no-install-project" in publish
     assert "release_candidate_source_data.pth" in publish
     assert "assert not runtime_file.is_relative_to(source)" in publish
+    assert "wheels=(dist/*.whl)" in publish
+    assert 'if [ "${#wheels[@]}" -ne 1 ]' in publish
+    assert 'GATE_A_WHEEL="$(realpath "${wheels[0]}")"' in publish
+    assert "bash phase-loop-runtime/scripts/gate_a_cleanroom.sh" in publish
     assert "phase_loop_runtime.agy_canary_evidence" in publish
     publish_code = "\n".join(
         line for line in publish.splitlines() if not line.lstrip().startswith("#")
@@ -191,6 +195,7 @@ def test_release_workflows_keep_version_build_and_publish_boundaries_explicit():
     assert "pypa/gh-action-pypi-publish" in publish
     assert "id-token: write" in publish
     assert "skip-existing: false" in publish
+    assert "python -m pytest -q phase-loop-runtime/tests" not in publish
     assert "PYPI_API_TOKEN" not in publish
     assert "secrets." not in publish
 

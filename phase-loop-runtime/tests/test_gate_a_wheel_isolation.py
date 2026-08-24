@@ -83,6 +83,20 @@ class GateAWheelIsolationTest(unittest.TestCase):
 
 @unittest.skipUnless(GATE_SCRIPT.is_file(), "source Gate A script unavailable")
 class GateAConformEvidenceScopeTest(unittest.TestCase):
+    def test_prebuilt_release_wheel_seam_preserves_artifact_identity(self):
+        script = GATE_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn('if [ -n "${GATE_A_WHEEL:-}" ]', script)
+        self.assertIn('GATE_A_WHEEL must be an absolute .whl path', script)
+        self.assertIn('cp -- "$GATE_A_WHEEL" "$WHEEL"', script)
+        self.assertIn('cmp -s "$GATE_A_WHEEL" "$WHEEL"', script)
+        self.assertIn('wheel mode   : prebuilt release artifact', script)
+        self.assertIn('( cd "$PKG_ROOT" && python3 -m build --wheel --outdir "$DIST" )', script)
+        self.assertLess(
+            script.index('if [ -n "${GATE_A_WHEEL:-}" ]'),
+            script.index('( cd "$PKG_ROOT" && python3 -m build --wheel --outdir "$DIST" )'),
+        )
+
     def test_conform_evidence_scope_is_minimal_and_excludes_final_nodes(self):
         script = GATE_SCRIPT.read_text(encoding="utf-8")
 

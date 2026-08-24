@@ -73,8 +73,6 @@ jobs:
           runtime_file = Path(phase_loop_runtime.__file__).resolve()
           assert not runtime_file.is_relative_to(source), runtime_file
           PY
-          PYTHONPATH=phase-loop-runtime/tests \
-            /tmp/phase-loop-release-wheel/bin/python -m pytest -q phase-loop-runtime/tests
           /tmp/phase-loop-release-wheel/bin/python - <<'PY'
           import importlib.metadata
           import importlib.util
@@ -92,6 +90,18 @@ jobs:
                      agy-canary-verify agy-canary-finalize; do
             /tmp/phase-loop-release-wheel/bin/phase-loop "$sub" --help >/dev/null
           done
+      - name: Gate A — verify the exact prebuilt wheel in a clean room
+        env:
+          GATE_A_JUNIT: ${{ runner.temp }}/junit-release-gate-a.xml
+        run: |
+          shopt -s nullglob
+          wheels=(dist/*.whl)
+          if [ "${#wheels[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one release wheel, found ${#wheels[@]}"
+            exit 1
+          fi
+          GATE_A_WHEEL="$(realpath "${wheels[0]}")" \
+            bash phase-loop-runtime/scripts/gate_a_cleanroom.sh
       - name: Record exact artifact SHA-256 tuples
         run: |
           mkdir -p release
