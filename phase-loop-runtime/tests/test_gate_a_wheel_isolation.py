@@ -92,9 +92,13 @@ class GateAConformEvidenceScopeTest(unittest.TestCase):
             "/phase-loop-runtime/src/",
             "/phase-loop-runtime/protocol/",
             "/plans/phase-plan-v10-CONFORM.md",
+            "/plans/phase-plan-v10-FABPUB.md",
             "/CHANGELOG.md",
         ):
             self.assertIn(required, script)
+        self.assertIn('"$SOURCE_HEAD:plans/manifest.json"', script)
+        self.assertIn("PHASE_LOOP_LEGIBLE_AUTHORITY_MANIFEST", script)
+        self.assertNotIn("      /plans/manifest.json \\", script)
         self.assertNotIn("sparse-checkout set \\\n      phase-loop-runtime/tests", script)
         self.assertNotIn("      .claude", script)
         self.assertIn('"--rootdir=$SUITE_TREE"', script)

@@ -141,10 +141,18 @@ def _commit_plan(repo: Path, name: str = "phase-plan-v1-RUNNER.md") -> str:
     return rel
 
 
-def _source_binding_events(source_repo: Path, rel: str) -> list[dict]:
-    manifest = json.loads(
-        (source_repo / "plans" / "manifest.json").read_text(encoding="utf-8")
+def _source_authority_manifest(source_repo: Path) -> dict:
+    manifest_path = Path(
+        os.environ.get(
+            "PHASE_LOOP_LEGIBLE_AUTHORITY_MANIFEST",
+            source_repo / "plans" / "manifest.json",
+        )
     )
+    return json.loads(manifest_path.read_text(encoding="utf-8"))
+
+
+def _source_binding_events(source_repo: Path, rel: str) -> list[dict]:
+    manifest = _source_authority_manifest(source_repo)
     entry = next(item for item in manifest["plans"] if item["file"] == rel)
     return [
         json.loads(json.dumps(event))
@@ -157,9 +165,7 @@ def _source_binding_events(source_repo: Path, rel: str) -> list[dict]:
 
 
 def _source_authority_history(source_repo: Path, rel: str) -> list[dict]:
-    manifest = json.loads(
-        (source_repo / "plans" / "manifest.json").read_text(encoding="utf-8")
-    )
+    manifest = _source_authority_manifest(source_repo)
     entry = next(item for item in manifest["plans"] if item["file"] == rel)
     return json.loads(json.dumps(entry["plan_authority_history"]))
 
@@ -3263,9 +3269,7 @@ def test_frozen_historical_binding_cannot_be_deleted_with_authority(
     tmp_path, monkeypatch
 ):
     source_repo = Path(__file__).resolve().parents[2]
-    source_manifest = json.loads(
-        (source_repo / "plans" / "manifest.json").read_text(encoding="utf-8")
-    )
+    source_manifest = _source_authority_manifest(source_repo)
     entry = next(
         item
         for item in source_manifest["plans"]
