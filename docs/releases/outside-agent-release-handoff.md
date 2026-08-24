@@ -95,7 +95,10 @@ this metadata document.
 
 - direct-wheel sha256: `08ec0e61c91b95ccd822a6c6dafc47f607455c594ea1d8a253c7c0b1f7ab4fa7`
 - direct-sdist sha256: `d6731f120f694c8046eb5a1d77ad49d68e356edad672c41790ef4c72b5583c37`
-- sdist-derived-wheel sha256: `a300c58ae319afc5a0e60d074974fde2e60017cbad0ee213562139baff5bf5b3`
+- sdist-derived-wheel sha256: not claimed. A raw wheel rebuilt from the published
+  sdist is timestamp/toolchain-dependent, and the release workflow did not retain
+  a normalized derived-wheel artifact. Release identity is bound only to the
+  direct wheel and sdist verified by `SHA256SUMS` and published without rebuilding.
 
 ## Package Surface Inventory
 
