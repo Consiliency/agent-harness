@@ -1,9 +1,9 @@
 # Outside-Agent Release Handoff
 
-This handoff records release-preparation evidence for the outside-agent
-conformance runtime. It is metadata-only and does not publish a package, create a
-tag, dispatch a workflow, edit governed-pipeline, or claim production merge
-enforcement is live.
+This handoff records release-preparation and post-publication evidence for the
+outside-agent conformance runtime. It is metadata-only: the document itself did
+not publish a package, create a tag, dispatch a workflow, edit governed-pipeline,
+or make production merge enforcement live.
 
 ## Package Identity
 
@@ -48,45 +48,70 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 ## Release-Check Evidence
 
-- `publication_status=pending` while the v0.7.14 source, isolated-wheel, and
-  exact-head review gates run.
-- The release PR records focused and full-suite results plus candidate artifact
-  digests produced from its exact head.
-- Tag, workflow, GitHub Release, PyPI publication, and fleet adoption evidence
-  are recorded only after the reviewed release PR merges; none is claimed here.
+- `publication_status=published`
+- Release PR: `Consiliency/agent-harness#649`; reviewed head
+  `8d6332d66bbf5ebe2fc1f4466acd6250008c661f`; base
+  `6981ba6fe4d9a3abf0947c7791af1dbc7fad9a4a`; native GPT-5.6 Sol exact-head
+  verdict: `AGREE`.
+- Exact-head PR gates: publish workflow `32776585825`, build/Gate A job
+  `97588926177`, offloaded suite job `97588950399`, and aggregate suite-gate job
+  `97606897017`; all completed successfully.
+- Merge commit: `0c4d3a89054efa80a1f7663bd65e70d0f547c76e`.
+- Signed annotated tag: `v0.7.14`; tag object
+  `2de6c06973b84890b62184fa023d387f6044a43c`; GitHub verification: `valid`.
+- Trusted-publish workflow `32783112944`: build/Gate A job `97609245453` and
+  publish job `97625905153` completed successfully. The publish job downloaded
+  the build artifacts, verified both entries in `SHA256SUMS`, and published
+  without rebuilding.
+- PyPI publication: `phase-loop-runtime==0.7.14`, wheel and sdist both present
+  and not yanked. A fresh public-PyPI Python 3.10 install resolved 0.7.14 from
+  site-packages and `phase-loop --version` reported 0.7.14.
+- GitHub Release: `https://github.com/Consiliency/agent-harness/releases/tag/v0.7.14`.
+- Fleet adoption: the supported installer refreshed Claude, Codex, Gemini, and
+  OpenCode skill roots from `v0.7.14`. All eight installed advisor-board/panel
+  skill bodies contain `claude-fable-5`, `gpt-5.6-sol`, `grok-4.6`, and
+  `gemini-3.7-flash`, and contain none of `Harness Fable`, `Harness 3.7 Flash`,
+  or `<harness>-3.7-flash`.
+- Installed behavior: president order is Fable, Sol, Grok 4.6, then Gemini 3.7
+  Flash. A blocking Fable ruling did not fall back; typed
+  `president_unavailable` traversed all four rungs; untyped unavailability failed
+  at Fable. General executor defaults were not changed by the release PR.
 
 ## Sealed Implementation Evidence
 
 This release handoff covers phase-loop-runtime 0.7.14 with a digest-enumerated
-contract mirror. Publication, tag creation, and workflow dispatch remain
-maintainer-owned and are not published or not dispatched here.
+contract mirror. Publication, tag creation, workflow dispatch, and downstream
+adoption remained maintainer-owned and were not published or not dispatched by
+this metadata document.
 
-- candidate implementation commit: pending exact release PR head
-- candidate implementation tree: pending exact release PR tree
-- pre-publication package evidence: pending exact-head verification
+- candidate implementation commit: `8d6332d66bbf5ebe2fc1f4466acd6250008c661f`
+- candidate implementation tree: `80ad6aaf8925977d3202d1e841963be24aa9e3b9`
+- release merge commit: `0c4d3a89054efa80a1f7663bd65e70d0f547c76e`
+- release merge tree: `80ad6aaf8925977d3202d1e841963be24aa9e3b9`
+- pre-publication package evidence: exact-head workflow `32776585825`, job
+  `97588926177`, success
 
 ### Package Archive Digests
 
-- direct-wheel sha256: pending exact-head build
-- direct-sdist sha256: pending exact-head build
-- sdist-derived-wheel sha256: pending exact-head rebuild
+- direct-wheel sha256: `08ec0e61c91b95ccd822a6c6dafc47f607455c594ea1d8a253c7c0b1f7ab4fa7`
+- direct-sdist sha256: `d6731f120f694c8046eb5a1d77ad49d68e356edad672c41790ef4c72b5583c37`
+- sdist-derived-wheel sha256: `a300c58ae319afc5a0e60d074974fde2e60017cbad0ee213562139baff5bf5b3`
 
 ## Package Surface Inventory
 
 - Wheel artifact: `phase_loop_runtime-0.7.14-py3-none-any.whl`
 - Sdist artifact: `phase_loop_runtime-0.7.14.tar.gz`
 - Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.14.data`, `phase_loop_runtime-0.7.14.dist-info`
-- Wheel file count: recorded from the exact-head build before review
+- Wheel file count: `460`
 - Sdist top-level entries: `MANIFEST.in`, `PKG-INFO`, `README.md`, `protocol`, `pyproject.toml`, `setup.cfg`, `src`, `tests`
-- Sdist file count: recorded from the exact-head build before review
+- Sdist file count: `881`
 - Wheel entry points: `phase-loop = phase_loop_runtime.cli:main`; `codex-phase-loop = phase_loop_runtime.cli:main`
 - Runtime plugin entry points: `dotfiles = phase_loop_runtime.dotfiles_profile_plugin:register_profile_commands`; `dotfiles = phase_loop_runtime.skill_sources_plugin:register_skill_sources`
 
 ## Governed-Pipeline Pinning
 
-Governed-pipeline should consume this runtime as an authoritative validator only
-after a maintainer publishes or pins it. Pin the released package
-`phase-loop-runtime==0.7.14`, then call:
+Governed-pipeline may consume this published runtime as an authoritative
+validator by pinning `phase-loop-runtime==0.7.14`, then calling:
 
 ```bash
 phase-loop outside-agent-validate path/to/outside-agent-submission.json \
@@ -133,9 +158,12 @@ merge verdict.
 
 ## Maintainer Dispatch Boundary
 
-- The package is not published from this handoff.
-- A git tag is not created from this handoff.
-- The PyPI workflow is not dispatched from this handoff.
+- The package was not published from this handoff; trusted workflow `32783112944`
+  published it from the signed `v0.7.14` tag.
+- The git tag was not created from this handoff; its verified tag object is
+  `2de6c06973b84890b62184fa023d387f6044a43c`.
+- The PyPI workflow was not dispatched from this handoff; the tag push triggered
+  it and the workflow completed successfully.
 - Production governed-pipeline enforcement is not claimed by this handoff.
-- Maintainers own publish, tag, workflow dispatch, and downstream production pin
-  rollout after reviewing this evidence.
+- Maintainers retain ownership of future publishing, tagging, workflow dispatch,
+  and downstream production pin rollout.
