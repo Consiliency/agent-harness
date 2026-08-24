@@ -898,6 +898,33 @@ def test_manifest_check_rejects_authoritative_plan_digest_drift(tmp_path):
     ]
 
 
+def test_regular_repo_file_hash_rejects_ancestor_swap(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    nested = repo / "authority"
+    nested.mkdir()
+    (nested / "bound.md").write_text("trusted bytes\n", encoding="utf-8")
+    moved = tmp_path / "moved-authority"
+    external = tmp_path / "external-authority"
+    external.mkdir()
+    (external / "bound.md").write_text("outside bytes\n", encoding="utf-8")
+    real_open = os.open
+    swapped = False
+
+    def swapping_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        descriptor = real_open(path, flags, mode, dir_fd=dir_fd)
+        if path == "authority" and dir_fd is not None and not swapped:
+            nested.rename(moved)
+            nested.symlink_to(external, target_is_directory=True)
+            swapped = True
+        return descriptor
+
+    monkeypatch.setattr(plan_manifest.os, "open", swapping_open)
+
+    assert plan_manifest._regular_repo_file_sha256(repo, "authority/bound.md") is None
+    assert swapped
+
+
 def test_required_roadmap_registry_absence_is_typed_failure(tmp_path):
     repo = make_repo(tmp_path)
     marker = repo / "plans" / "phase-plan-v10-LEGIBLE.md"

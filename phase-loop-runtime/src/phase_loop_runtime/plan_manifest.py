@@ -7,6 +7,7 @@ import re
 import stat
 import subprocess
 from collections.abc import Mapping, Sequence
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -903,71 +904,84 @@ def _repo_relative_posix(repo: Path, raw_path: bytes | str) -> str | None:
 
 
 def _regular_repo_file_sha256(repo: Path, rel_path: str) -> str | None:
-    """Hash one repository-relative regular file without following symlinks."""
+    """Hash one stable repository-relative regular file without following symlinks."""
     root = repo.resolve(strict=True)
-    path = root
     parts = PurePosixPath(rel_path).parts
-    if not parts:
+    if not parts or _repo_relative_posix(root, rel_path) != rel_path:
         return None
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    directory = getattr(os, "O_DIRECTORY", None)
+    if nofollow is None or directory is None:
+        return None
+    cloexec = getattr(os, "O_CLOEXEC", 0)
+    directory_flags = os.O_RDONLY | directory | nofollow | cloexec
+    file_flags = os.O_RDONLY | nofollow | cloexec
+
+    def directory_identity(value: os.stat_result) -> tuple[int, int, int]:
+        return value.st_dev, value.st_ino, value.st_mode
+
+    def file_identity(value: os.stat_result) -> tuple[int, int, int, int, int, int]:
+        return (
+            value.st_dev,
+            value.st_ino,
+            value.st_mode,
+            value.st_size,
+            value.st_mtime_ns,
+            value.st_ctime_ns,
+        )
+
     try:
-        entry_stat = None
-        for index, part in enumerate(parts):
-            path /= part
-            entry_stat = path.lstat()
-            if stat.S_ISLNK(entry_stat.st_mode):
+        with ExitStack() as opened:
+            root_before = os.stat(root, follow_symlinks=False)
+            if not stat.S_ISDIR(root_before.st_mode):
                 return None
-            if index < len(parts) - 1 and not stat.S_ISDIR(entry_stat.st_mode):
+            root_fd = os.open(root, directory_flags)
+            opened.callback(os.close, root_fd)
+            root_identity = directory_identity(os.fstat(root_fd))
+            if root_identity != directory_identity(root_before):
                 return None
-        if entry_stat is None or not stat.S_ISREG(entry_stat.st_mode):
-            return None
-        resolved = path.resolve(strict=True)
-        resolved.relative_to(root)
-        if resolved != path:
-            return None
-        identity = (
-            entry_stat.st_dev,
-            entry_stat.st_ino,
-            entry_stat.st_mode,
-            entry_stat.st_size,
-            entry_stat.st_mtime_ns,
-            entry_stat.st_ctime_ns,
-        )
-        digest = hashlib.sha256()
-        with path.open("rb") as stream:
-            opened = os.fstat(stream.fileno())
-            opened_identity = (
-                opened.st_dev,
-                opened.st_ino,
-                opened.st_mode,
-                opened.st_size,
-                opened.st_mtime_ns,
-                opened.st_ctime_ns,
-            )
-            if opened_identity != identity or not stat.S_ISREG(opened.st_mode):
+
+            parent_fd = root_fd
+            directory_identities = [root_identity]
+            for part in parts[:-1]:
+                child_fd = os.open(part, directory_flags, dir_fd=parent_fd)
+                opened.callback(os.close, child_fd)
+                child_stat = os.fstat(child_fd)
+                if not stat.S_ISDIR(child_stat.st_mode):
+                    return None
+                directory_identities.append(directory_identity(child_stat))
+                parent_fd = child_fd
+
+            file_fd = os.open(parts[-1], file_flags, dir_fd=parent_fd)
+            file_before = os.fstat(file_fd)
+            if not stat.S_ISREG(file_before.st_mode):
+                os.close(file_fd)
                 return None
-            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                digest.update(chunk)
-            after = os.fstat(stream.fileno())
-        after_identity = (
-            after.st_dev,
-            after.st_ino,
-            after.st_mode,
-            after.st_size,
-            after.st_mtime_ns,
-            after.st_ctime_ns,
-        )
-        final = path.lstat()
-        final_identity = (
-            final.st_dev,
-            final.st_ino,
-            final.st_mode,
-            final.st_size,
-            final.st_mtime_ns,
-            final.st_ctime_ns,
-        )
-        if after_identity != identity or final_identity != identity:
-            return None
-        return digest.hexdigest()
+            identity = file_identity(file_before)
+            digest = hashlib.sha256()
+            with os.fdopen(file_fd, "rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+                if file_identity(os.fstat(stream.fileno())) != identity:
+                    return None
+
+            # Rewalk the named path from a fresh root descriptor. This detects an
+            # ancestor moved or replaced while the first descriptor chain was open.
+            verify_root_fd = os.open(root, directory_flags)
+            opened.callback(os.close, verify_root_fd)
+            if directory_identity(os.fstat(verify_root_fd)) != directory_identities[0]:
+                return None
+            verify_parent_fd = verify_root_fd
+            for part, expected in zip(parts[:-1], directory_identities[1:], strict=True):
+                verify_child_fd = os.open(part, directory_flags, dir_fd=verify_parent_fd)
+                opened.callback(os.close, verify_child_fd)
+                if directory_identity(os.fstat(verify_child_fd)) != expected:
+                    return None
+                verify_parent_fd = verify_child_fd
+            final = os.stat(parts[-1], dir_fd=verify_parent_fd, follow_symlinks=False)
+            if file_identity(final) != identity or not stat.S_ISREG(final.st_mode):
+                return None
+            return digest.hexdigest()
     except (OSError, RuntimeError, ValueError):
         return None
 
@@ -1297,12 +1311,7 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
                         MalformedPlanFinding(rel, "plan-contract", frozenset({"manifest"}))
                     )
                 else:
-                    plan_path = repo / rel
-                    actual_plan = (
-                        hashlib.sha256(plan_path.read_bytes()).hexdigest()
-                        if plan_path.is_file()
-                        else None
-                    )
+                    actual_plan = _regular_repo_file_sha256(repo, rel)
                     if current_authority["plan_sha256"] != actual_plan:
                         malformed.append(
                             MalformedPlanFinding(rel, "plan-digest", frozenset({"manifest"}))
