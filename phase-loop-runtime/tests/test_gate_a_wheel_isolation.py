@@ -100,6 +100,14 @@ class GateAConformEvidenceScopeTest(unittest.TestCase):
         self.assertIn('"$SOURCE_HEAD:plans/manifest.json"', script)
         self.assertIn("PHASE_LOOP_LEGIBLE_AUTHORITY_MANIFEST", script)
         self.assertNotIn("      /plans/manifest.json \\", script)
+        self.assertLess(
+            script.index("LEGIBLE_AUTHORITY_ENV=()"),
+            script.index('if [ "$CONFORM_CAPABILITY_STATUS" -eq 0 ]'),
+        )
+        self.assertLess(
+            script.index('if [ "$CONFORM_CAPABILITY_STATUS" -eq 0 ]'),
+            script.index('"${LEGIBLE_AUTHORITY_ENV[@]}"'),
+        )
         self.assertNotIn("sparse-checkout set \\\n      phase-loop-runtime/tests", script)
         self.assertNotIn("      .claude", script)
         self.assertIn('"--rootdir=$SUITE_TREE"', script)
