@@ -608,6 +608,66 @@ class TestArmPinFreshness(unittest.TestCase):
             found = edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))
             self.assertEqual(codes(found), [("pins", "stale_pin")])
 
+    def test_flag_form_metavariable_ref_is_reported(self):
+        """Kills a mutation that survived the silence test.
+
+        `test_flag_form_ref_placeholder_and_branch_are_silent` asserts SILENCE, so
+        it cannot distinguish "the regex matched and the placeholder was accepted"
+        from "the regex never matched at all". Tightening the ref char-class to
+        exclude `<>` left all 63 tests green while making `--ref <VERSION>` invisible
+        -- silence-reads-as-success, found by the review panel.
+
+        This test requires the flag regex to DELIVER a metavariable ref to the
+        shared evaluator, so it fails the moment delivery breaks.
+
+        Mutation that must kill this: drop `<>` from _FLAG_REF_PIN_RE's ref class.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp,
+                {"phase-loop-runtime/README.md": "```sh\n./install.sh --ref <VERSION>\n```\n"},
+            )
+            found = edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))
+            self.assertEqual(codes(found), [("pins", "invalid_placeholder")])
+
+    def test_quoted_flag_refs_are_covered(self):
+        """Shell-quoting is idiomatic; a quoted stale pin must not hide.
+
+        `--ref "v0.1.5"` produced ZERO findings before this -- the quotes were
+        excluded from the ref class so the regex did not match at all. That is the
+        ah#600 defect class itself: a grammar miss hiding a stale pin behind green.
+        """
+        for spelling in ('--ref "v0.1.5"', "--ref='v0.1.5'", 'AGENT_HARNESS_REF="v0.1.5"'):
+            with self.subTest(spelling=spelling):
+                with TemporaryDirectory() as tmp:
+                    repo = build_repo(
+                        tmp,
+                        {"phase-loop-runtime/README.md": f"```sh\n./i.sh {spelling}\n```\n"},
+                    )
+                    found = edc.check_repo(
+                        repo, entry_docs=("phase-loop-runtime/README.md",)
+                    )
+                    self.assertEqual(codes(found), [("pins", "stale_pin")])
+
+    def test_flag_ref_with_trailing_sentence_punctuation_is_not_stale(self):
+        """A FRESH pin followed by prose punctuation must not read as stale.
+
+        `--ref v0.7.13,` captured the comma into the ref and compared `v0.7.13,`
+        against `v0.7.13`. `_DIST_PIN_RE` already excludes `,;`; the ref class now
+        matches it.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = build_repo(
+                tmp,
+                {
+                    "phase-loop-runtime/README.md": (
+                        f"Pin with `--ref {FIXTURE_LATEST_TAG},` then continue.\n"
+                    )
+                },
+            )
+            found = edc.check_repo(repo, entry_docs=("phase-loop-runtime/README.md",))
+            self.assertEqual(codes(found), [])
+
     def test_flag_form_ref_placeholder_and_branch_are_silent(self):
         """The positive control: correct docs must stay green.
 

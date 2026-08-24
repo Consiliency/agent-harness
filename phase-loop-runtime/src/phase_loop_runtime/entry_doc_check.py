@@ -43,6 +43,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
+from .skill_paths import HARNESS_DEFAULT_SKILL_ROOTS
+
 
 # ---------------------------------------------------------------------------
 # Surfaces
@@ -555,7 +557,9 @@ def _resolves(ctx: RepoContext, doc_dir: str, rel: str, require_file: bool = Fal
 #: absolute, which laundered `/LICENCE` and `/docs-does-not-exist` -- both reported
 #: by the base code, both silent under the shape rule. A skip class must name a KIND
 #: of token narrowly enough that a typo cannot wear its costume.
-_SLASH_COMMAND_RE = re.compile(r"^/(?:claude|codex|gemini|opencode)-[a-z0-9]+(?:-[a-z0-9]+)*$")
+_SLASH_COMMAND_RE = re.compile(
+    r"^/(?:" + "|".join(sorted(HARNESS_DEFAULT_SKILL_ROOTS)) + r")-[a-z0-9]+(?:-[a-z0-9]+)*$"
+)
 
 
 def check_paths(text: str, doc_path: str, ctx: RepoContext) -> List[Finding]:
@@ -708,7 +712,8 @@ _URL_TAG_PIN_RE = re.compile(
 #: grammar keep correct docs silent; a third-party tool's `--ref vX` in one of our
 #: entry docs would be a false positive, and is the case for a suppression.
 _FLAG_REF_PIN_RE = re.compile(
-    r"(?:--ref[=\s]+|\bAGENT_HARNESS_REF=)(?P<ref>[^\s\"'`#)\]]+)"
+    r"(?:--ref[=\s]+|\bAGENT_HARNESS_REF=)"
+    r"[\"']?(?P<ref>[^\s\"'`#)\],;]+)[\"']?"
 )
 
 #: Archive suffixes and sentence punctuation that ride along on a URL-form ref.

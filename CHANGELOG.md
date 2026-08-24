@@ -23,8 +23,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   which contradicts itself. Now unpinned, a form that cannot rot.
 - **Slash-commands are no longer read as paths.** `/claude-phase-roadmap-builder` is a
   skill invocation; arm 1 reported it as an unresolvable repository path. The skip is
-  narrow — one segment, no extension — so a multi-segment absolute path is still
-  required to resolve.
+  keyed on the harness skill-naming convention (`/<harness>-<name>`, harnesses derived
+  from `skill_paths.HARNESS_DEFAULT_SKILL_ROOTS`), **not** on token shape — a shape rule
+  laundered real typos like `/LICENCE`, which base `main` reports.
 
 ### CI: cancel superseded test runs (Consiliency/agent-harness#619, Consiliency/agent-harness#621)
 
