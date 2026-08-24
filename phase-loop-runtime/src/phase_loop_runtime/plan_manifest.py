@@ -1129,7 +1129,23 @@ def _frozen_paths_in_git_history(repo: Path) -> set[str]:
 
 def _ancestor_manifest_sequences(
     repo: Path,
-) -> tuple[dict[str, tuple[tuple[str, ...], ...]], dict[str, tuple[tuple[str, ...], ...]]]:
+) -> tuple[
+    dict[str, tuple[tuple[str, ...], ...]],
+    dict[str, tuple[tuple[str, ...], ...]],
+    bool,
+]:
+    shallow = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--is-shallow-repository"],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    if shallow.returncode != 0 or shallow.stdout.strip() not in {"true", "false"}:
+        raise ManifestSourceError(
+            "git rev-parse failed while resolving manifest history: "
+            f"{shallow.stderr.strip()}"
+        )
+    history_complete = shallow.stdout.strip() == "false"
     head_manifest = subprocess.run(
         ["git", "-C", str(repo), "show", "HEAD:plans/manifest.json"],
         capture_output=True,
@@ -1149,16 +1165,22 @@ def _ancestor_manifest_sequences(
             check=False,
             text=True,
         )
-        fields = parents.stdout.split() if parents.returncode == 0 else []
+        if parents.returncode != 0:
+            raise ManifestSourceError(
+                "git rev-list failed while resolving manifest history: "
+                f"{parents.stderr.strip()}"
+            )
+        fields = parents.stdout.split()
         starts = fields[1:]
     if not starts:
-        return {}, {}
+        return {}, {}, history_complete
     revisions = subprocess.run(
         [
             "git",
             "-C",
             str(repo),
             "log",
+            "--full-history",
             "--format=%H",
             *starts,
             "--",
@@ -1169,7 +1191,10 @@ def _ancestor_manifest_sequences(
         text=True,
     )
     if revisions.returncode != 0:
-        return {}, {}
+        raise ManifestSourceError(
+            "git log failed while resolving manifest history: "
+            f"{revisions.stderr.strip()}"
+        )
     binding_sequences: dict[str, set[tuple[str, ...]]] = {}
     authority_sequences: dict[str, set[tuple[str, ...]]] = {}
     for revision in revisions.stdout.splitlines():
@@ -1225,6 +1250,7 @@ def _ancestor_manifest_sequences(
     return (
         {rel: tuple(sorted(values)) for rel, values in binding_sequences.items()},
         {rel: tuple(sorted(values)) for rel, values in authority_sequences.items()},
+        history_complete,
     )
 
 
@@ -1397,16 +1423,31 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
     scanning, plus any malformed entry path (origin ``"manifest"``)."""
     manifest_path = repo / "plans" / "manifest.json"
     frozen_history = _frozen_paths_in_git_history(repo)
-    ancestor_bindings, ancestor_authorities = _ancestor_manifest_sequences(repo)
+    ancestor_bindings, ancestor_authorities, history_complete = (
+        _ancestor_manifest_sequences(repo)
+    )
     frozen_history.update(ancestor_bindings)
     frozen_history.update(ancestor_authorities)
 
+    history_findings: list[MalformedPlanFinding] = []
+    if not history_complete:
+        history_findings.append(
+            MalformedPlanFinding(
+                "plans/manifest.json",
+                "history-incomplete",
+                frozenset({"manifest"}),
+            )
+        )
+
     def frozen_findings(registered: set[str]) -> list[MalformedPlanFinding]:
         return [
-            MalformedPlanFinding(
-                required_rel, "plan-contract", frozenset({"manifest"})
-            )
-            for required_rel in sorted(frozen_history - registered)
+            *history_findings,
+            *(
+                MalformedPlanFinding(
+                    required_rel, "plan-contract", frozenset({"manifest"})
+                )
+                for required_rel in sorted(frozen_history - registered)
+            ),
         ]
 
     if not manifest_path.exists():
@@ -1418,7 +1459,7 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
     if not isinstance(data, dict):
         return set(), frozen_findings(set())
     registered: set[str] = set()
-    malformed: list[MalformedPlanFinding] = []
+    malformed: list[MalformedPlanFinding] = list(history_findings)
     for entry in data.get("plans", []):
         if not isinstance(entry, dict):
             continue

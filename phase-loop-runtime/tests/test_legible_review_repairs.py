@@ -2328,6 +2328,51 @@ def test_merge_checks_authority_from_every_parent(tmp_path):
     assert (rel, "plan-contract") in [
         (item.path, item.kind) for item in result.malformed
     ]
+    (repo / "README.md").write_text("successor\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "unrelated successor"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+    successor_result = check(repo)
+
+    assert successor_result.exit_code == 1
+    assert (rel, "plan-contract") in [
+        (item.path, item.kind) for item in successor_result.malformed
+    ]
+
+
+def test_shallow_history_fails_closed(tmp_path):
+    source = make_repo(tmp_path / "source")
+    rel = _commit_plan(source)
+    _write_generic_authority_manifest(source, rel)
+    subprocess.run(
+        ["git", "add", "plans/manifest.json", "specs/current-roadmap.md"],
+        cwd=source,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "record authority before shallow clone"],
+        cwd=source,
+        check=True,
+        capture_output=True,
+    )
+    shallow = tmp_path / "shallow"
+    subprocess.run(
+        ["git", "clone", "--depth", "1", f"file://{source}", str(shallow)],
+        check=True,
+        capture_output=True,
+    )
+
+    result = check(shallow)
+
+    assert result.exit_code == 1
+    assert ("plans/manifest.json", "history-incomplete") in [
+        (item.path, item.kind) for item in result.malformed
+    ]
 
 
 def test_composite_authority_revalidates_plan_after_roadmap_hash(tmp_path, monkeypatch):
