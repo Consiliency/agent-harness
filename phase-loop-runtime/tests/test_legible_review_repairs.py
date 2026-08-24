@@ -4132,7 +4132,7 @@ def test_manifest_check_requires_registry_committed_in_audited_tree(tmp_path):
         plan_manifest.canonical_plan_files(repo, head)
 
 
-def test_public_roadmap_reader_honors_requested_path(tmp_path):
+def test_public_roadmap_reader_honors_requested_path(tmp_path, monkeypatch):
     repo, registry, _payload = _roadmap_check_fixture(
         tmp_path / "repo-state",
         banners={"specs/phase-plans-v1.md": _ACTIVE_BANNER},
@@ -4144,6 +4144,14 @@ def test_public_roadmap_reader_honors_requested_path(tmp_path):
         repo / "specs" / "missing-roadmap-status.json",
     ) is None
     assert roadmap_lint.read_roadmap_status(repo, registry) is not None
+
+    monkeypatch.chdir(tmp_path)
+    relative_repo = repo.relative_to(tmp_path)
+    relative_registry = relative_repo / "specs" / "roadmap-status.json"
+    assert roadmap_lint.read_roadmap_status(
+        relative_repo,
+        relative_registry,
+    ) is not None
 
 
 def test_public_roadmap_reader_rejects_path_outside_repo(tmp_path):
