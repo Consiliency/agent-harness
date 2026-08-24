@@ -13,10 +13,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   was false: the other agent has posted on the shared board since 2026-08-05, and
   delivery there is receipted. The file needed correcting in every one of its three
   commits, and after Consiliency/agent-harness#637 it held zero live claims.
-- The ownership question it was meant to answer is now answered mechanically by the
-  advisory `roadmap-ownership` check (Consiliency/agent-harness#633), which reads the
-  roadmap's own `Key files` lists on every PR rather than relying on someone
-  remembering to write an entry.
+- The ownership question it was meant to answer is addressed by the advisory
+  `roadmap-ownership` check proposed in Consiliency/agent-harness#644
+  (Consiliency/agent-harness#633) — a sibling PR, **not yet merged at the time of this
+  change** — which reads the roadmap's own `Key files` lists on every PR rather than
+  relying on someone remembering to write an entry. Stated as intent rather than as
+  accomplished fact: if this lands first, the file is gone and the mechanical
+  replacement is not yet present, and claiming otherwise would repeat the exact defect
+  that retired the file.
 
 ### plan manifest: separate historical evidence from current authority (Consiliency/agent-harness#620, Consiliency/agent-harness#646)
 
