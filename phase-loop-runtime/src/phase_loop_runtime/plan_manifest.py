@@ -774,6 +774,26 @@ _FROZEN_HISTORICAL_BINDING_PREFIXES: dict[str, tuple[str, ...]] = {
         "fe57316a6a1f5b113ec93b742492522f649548941ff6d1b905ccd500014459dc",
     ),
 }
+_FROZEN_AUTHORITY_PREFIXES: dict[str, tuple[str, ...]] = {
+    "plans/phase-plan-v10-CONFORM.md": (
+        "12d4689b88e54a5175062e508959d7b2b943508c4b48a7aec38d12e15d090f5a",
+    ),
+    "plans/phase-plan-v10-FABPUB.md": (
+        "10461e5b7a0dd6ff074f7951c95225c384ca4dfb4e68604683f641d9e727f59d",
+    ),
+    "plans/phase-plan-v10-HARDEN.md": (
+        "8a0ee7e01f101f63f3e40b7a9acb32841d8d9cac8086851574dbf3be427d38d7",
+    ),
+    _LEGIBLE_PLAN_REL: (
+        "7b4e578ca0dbb34e058e1771078d4698f0002161203277445d1810aa734ba16c",
+    ),
+    "plans/phase-plan-v10-PROOFGATE.md": (
+        "08070ee7baff4f1313532c503f37bfd27f830cde6a19a6b8a96919d82b03e65d",
+    ),
+    "plans/phase-plan-v10-REVIEWTRUTH.md": (
+        "5e90b3a53a26691801216a45ab816f45b98c5c2d76a2961300070f1cc79f78f3",
+    ),
+}
 _LEGIBLE_OWNED_PATHS = (
     ".claude/docs-catalog.json",
     "phase-loop-runtime/src/phase_loop_runtime/_contract_docs/runtime/verification-evidence-contract.md",
@@ -1065,6 +1085,32 @@ def _classify_basename(basename: str) -> str:
     if _CANONICAL_LOOKALIKE_RE.match(basename):
         return "lookalike"
     return "irrelevant"
+
+
+def _frozen_paths_in_git_history(repo: Path) -> set[str]:
+    frozen_paths = sorted(_FROZEN_HISTORICAL_BINDING_PREFIXES)
+    proc = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "log",
+            "--all",
+            "--format=",
+            "--name-only",
+            "--",
+            *frozen_paths,
+        ],
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise ManifestSourceError(
+            f"git log failed while resolving frozen history: {proc.stderr.strip()}"
+        )
+    changed_paths = set(proc.stdout.splitlines())
+    return set(frozen_paths) & changed_paths
 
 
 def _git_ls_tree_plans(repo: Path, tree_oid: str) -> list[str]:
@@ -1368,6 +1414,7 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
                 )
             elif authority_history is not None:
                 authority_valid = isinstance(authority_history, list) and bool(authority_history)
+                authority_hashes: list[str] = []
                 roadmap_ref = entry.get("roadmap_ref")
                 roadmap_value = roadmap_ref.get("file") if isinstance(roadmap_ref, dict) else None
                 roadmap_rel = (
@@ -1376,6 +1423,11 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
                     else None
                 )
                 for authority in authority_history if isinstance(authority_history, list) else ():
+                    if isinstance(authority, dict):
+                        serialized = json.dumps(
+                            authority, sort_keys=True, separators=(",", ":")
+                        ).encode("utf-8")
+                        authority_hashes.append(hashlib.sha256(serialized).hexdigest())
                     authority_valid = (
                         authority_valid
                         and isinstance(authority, dict)
@@ -1393,6 +1445,11 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
                             )
                         )
                     )
+                frozen_authority_prefix = _FROZEN_AUTHORITY_PREFIXES.get(rel)
+                if frozen_authority_prefix is not None and tuple(
+                    authority_hashes[: len(frozen_authority_prefix)]
+                ) != frozen_authority_prefix:
+                    authority_valid = False
                 current_authority = authority_history[-1] if authority_valid else None
                 roadmap_contract_valid = (
                     current_authority is not None
@@ -1453,6 +1510,12 @@ def _manifest_entry_scope(repo: Path) -> tuple[set[str], list[MalformedPlanFindi
                             )
         elif classification == "lookalike":
             malformed.append(MalformedPlanFinding(path=rel, kind="noncanonical", origin=frozenset({"manifest"})))
+    for required_rel in sorted(_frozen_paths_in_git_history(repo) - registered):
+        malformed.append(
+            MalformedPlanFinding(
+                required_rel, "plan-contract", frozenset({"manifest"})
+            )
+        )
     return registered, malformed
 
 

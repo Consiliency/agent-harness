@@ -153,6 +153,14 @@ def _source_binding_events(source_repo: Path, rel: str) -> list[dict]:
     ]
 
 
+def _source_authority_history(source_repo: Path, rel: str) -> list[dict]:
+    manifest = json.loads(
+        (source_repo / "plans" / "manifest.json").read_text(encoding="utf-8")
+    )
+    entry = next(item for item in manifest["plans"] if item["file"] == rel)
+    return json.loads(json.dumps(entry["plan_authority_history"]))
+
+
 def _operational_fixture(
     repo: Path, *, stage: str = "candidate"
 ) -> tuple[str, dict[str, dict]]:
@@ -246,6 +254,9 @@ def _operational_fixture(
     frozen_binding_events = _source_binding_events(
         source_repo, "plans/phase-plan-v10-LEGIBLE.md"
     )
+    frozen_authority_history = _source_authority_history(
+        source_repo, "plans/phase-plan-v10-LEGIBLE.md"
+    )
     manifest_path.write_text(
         json.dumps(
             {
@@ -255,6 +266,7 @@ def _operational_fixture(
                         "phase_alias": "LEGIBLE",
                         "roadmap_ref": {"file": "specs/phase-plans-v10.md"},
                         "plan_authority_history": [
+                            *frozen_authority_history,
                             {
                                 "schema": "plan_current_authority.v1",
                                 "source": "Consiliency/agent-harness#647",
@@ -1969,6 +1981,7 @@ def _write_legible_manifest_contract(repo: Path, *, include_contract: bool = Tru
         "test_paths": list(legible_evidence.FROZEN_TEST_PATHS),
     }
     lifecycle = _source_binding_events(source_repo, rel)
+    frozen_authority_history = _source_authority_history(source_repo, rel)
     if include_contract:
         lifecycle.append({"metadata": {"legible_plan_contract": contract}})
     else:
@@ -1985,6 +1998,7 @@ def _write_legible_manifest_contract(repo: Path, *, include_contract: bool = Tru
                             "file": roadmap_assumptions.CANONICAL_ROADMAP_REL
                         },
                         "plan_authority_history": [
+                            *frozen_authority_history,
                             {
                                 "schema": "plan_current_authority.v1",
                                 "source": "agent-harness#620",
@@ -2161,6 +2175,7 @@ def test_frozen_historical_binding_cannot_be_deleted_with_authority(tmp_path):
         for item in source_manifest["plans"]
         if item["file"] == "plans/phase-plan-v10-FABPUB.md"
     )
+    original_entry = json.loads(json.dumps(entry))
     repo = make_repo(tmp_path)
     plan_path = repo / entry["file"]
     plan_path.write_bytes((source_repo / entry["file"]).read_bytes())
@@ -2180,6 +2195,20 @@ def test_frozen_historical_binding_cannot_be_deleted_with_authority(tmp_path):
         json.dumps({"plans": [entry]}, sort_keys=True) + "\n", encoding="utf-8"
     )
     assert check(repo).exit_code == 0
+    original_authority = json.loads(json.dumps(entry["plan_authority_history"]))
+    entry["plan_authority_history"][0]["plan_sha256"] = "0" * 64
+    entry["plan_authority_history"].append(original_authority[0])
+    manifest_path.write_text(
+        json.dumps({"plans": [entry]}, sort_keys=True) + "\n", encoding="utf-8"
+    )
+
+    rewritten_authority = check(repo)
+
+    assert rewritten_authority.exit_code == 1
+    assert (entry["file"], "plan-contract") in [
+        (item.path, item.kind) for item in rewritten_authority.malformed
+    ]
+    entry = json.loads(json.dumps(original_entry))
     entry["lifecycle"] = [
         event
         for event in entry["lifecycle"]
@@ -2195,6 +2224,22 @@ def test_frozen_historical_binding_cannot_be_deleted_with_authority(tmp_path):
     assert result.exit_code == 1
     assert (entry["file"], "plan-contract") in [
         (item.path, item.kind) for item in result.malformed
+    ]
+    plan_path.unlink()
+    manifest_path.write_text('{"plans": []}\n', encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "delete FABPUB plan and row"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+    deleted_plan_and_row = check(repo)
+
+    assert deleted_plan_and_row.exit_code == 1
+    assert (entry["file"], "plan-contract") in [
+        (item.path, item.kind) for item in deleted_plan_and_row.malformed
     ]
 
 
