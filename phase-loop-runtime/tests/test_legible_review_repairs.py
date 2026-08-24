@@ -1129,7 +1129,7 @@ def test_regular_repo_file_hash_rejects_device_swap_before_open(tmp_path, monkey
     assert not data_opened
 
 
-def test_regular_repo_file_hash_fails_closed_without_safe_anchor(
+def test_regular_repo_file_hash_uses_darwin_clone_without_data_open(
     tmp_path, monkeypatch
 ):
     repo = make_repo(tmp_path)
@@ -1137,6 +1137,7 @@ def test_regular_repo_file_hash_fails_closed_without_safe_anchor(
     authority.mkdir()
     target = authority / "bound.md"
     target.write_text("portable bytes\n", encoding="utf-8")
+    expected = target.read_bytes()
     real_open = os.open
     target_opened = False
 
@@ -1148,10 +1149,16 @@ def test_regular_repo_file_hash_fails_closed_without_safe_anchor(
 
     monkeypatch.setattr(plan_manifest.os, "open", tracking_open)
     monkeypatch.delattr(plan_manifest.os, "O_PATH", raising=False)
+    monkeypatch.setattr(plan_manifest.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        plan_manifest,
+        "_darwin_clonefileat_bytes",
+        lambda *_args, **_kwargs: expected,
+    )
 
     digest = plan_manifest._regular_repo_file_sha256(repo, "authority/bound.md")
 
-    assert digest is None
+    assert digest == hashlib.sha256(expected).hexdigest()
     assert not target_opened
 
 
@@ -2880,23 +2887,69 @@ def test_manifest_snapshot_rejects_swap_after_final_plans_stat(tmp_path, monkeyp
     assert plans_stats >= 3
 
 
-def test_manifest_snapshot_uses_exact_tree_without_safe_anchor(tmp_path, monkeypatch):
+def test_manifest_snapshot_uses_darwin_clone_without_safe_anchor(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
     rel = _commit_plan(repo)
-    (repo / "plans" / "manifest.json").write_text(
+    manifest_path = repo / "plans" / "manifest.json"
+    manifest_path.write_text(
         json.dumps({"plans": [{"file": rel, "lifecycle": []}]}),
         encoding="utf-8",
     )
-    subprocess.run(["git", "add", "plans/manifest.json"], cwd=repo, check=True)
-    subprocess.run(
-        ["git", "commit", "-m", "record manifest snapshot"],
-        cwd=repo,
-        check=True,
-        capture_output=True,
-    )
     monkeypatch.delattr(plan_manifest.os, "O_PATH", raising=False)
+    monkeypatch.setattr(plan_manifest.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        plan_manifest,
+        "_darwin_clonefileat_bytes",
+        lambda *_args, **_kwargs: manifest_path.read_bytes(),
+    )
 
     assert check(repo).exit_code == 0
+    manifest_path.write_text('{"plans": []}', encoding="utf-8")
+    assert check(repo).exit_code == 1
+
+
+def test_darwin_clone_authority_rejects_working_plan_drift(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    rel = _commit_plan(repo)
+    plan_path = repo / rel
+    plan_digest = hashlib.sha256(plan_path.read_bytes()).hexdigest()
+    (repo / "plans" / "manifest.json").write_text(
+        json.dumps(
+            {
+                "plans": [
+                    {
+                        "file": rel,
+                        "plan_authority_history": [
+                            {
+                                "schema": "plan_current_authority.v1",
+                                "source": "agent-harness#647",
+                                "plan_sha256": plan_digest,
+                                "roadmap_sha256": None,
+                            }
+                        ],
+                        "lifecycle": [],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def clone_bytes(_repo, parent_fd, name):
+        return Path(f"/proc/self/fd/{parent_fd}/{name}").read_bytes()
+
+    monkeypatch.delattr(plan_manifest.os, "O_PATH", raising=False)
+    monkeypatch.setattr(plan_manifest.sys, "platform", "darwin")
+    monkeypatch.setattr(plan_manifest, "_darwin_clonefileat_bytes", clone_bytes)
+    assert check(repo).exit_code == 0
+    plan_path.write_text("---\nphase: RUNNER\n---\n# Drifted\n", encoding="utf-8")
+
+    result = check(repo)
+
+    assert result.exit_code == 1
+    assert (rel, "plan-digest") in [
+        (item.path, item.kind) for item in result.malformed
+    ]
 
 
 def test_manifest_snapshot_rejects_write_after_former_final_fstat(

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 import os
 import re
 import stat
 import subprocess
+import sys
+import tempfile
 from collections.abc import Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
@@ -947,6 +950,60 @@ def _repo_relative_posix(repo: Path, raw_path: bytes | str) -> str | None:
     return text
 
 
+def _darwin_clonefileat_bytes(repo: Path, parent_fd: int, name: str) -> bytes | None:
+    """Atomically clone and read one Darwin regular file without data-opening it."""
+    if sys.platform != "darwin":
+        return None
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    directory = getattr(os, "O_DIRECTORY", None)
+    nonblock = getattr(os, "O_NONBLOCK", None)
+    if nofollow is None or directory is None or nonblock is None:
+        return None
+    try:
+        clonefileat = ctypes.CDLL(None, use_errno=True).clonefileat
+        clonefileat.argtypes = (
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint32,
+        )
+        clonefileat.restype = ctypes.c_int
+        with tempfile.TemporaryDirectory(
+            prefix=".plan-manifest-clone-", dir=repo.parent
+        ) as temp_dir:
+            cloexec = getattr(os, "O_CLOEXEC", 0)
+            temp_fd = os.open(
+                temp_dir, os.O_RDONLY | directory | nofollow | cloexec
+            )
+            try:
+                clone_name = b"snapshot"
+                if clonefileat(
+                    parent_fd,
+                    os.fsencode(name),
+                    temp_fd,
+                    clone_name,
+                    0x0001,
+                ) != 0:
+                    return None
+                clone_fd = os.open(
+                    os.fsdecode(clone_name),
+                    os.O_RDONLY | nonblock | nofollow | cloexec,
+                    dir_fd=temp_fd,
+                )
+                try:
+                    if not stat.S_ISREG(os.fstat(clone_fd).st_mode):
+                        return None
+                    with os.fdopen(os.dup(clone_fd), "rb") as stream:
+                        return stream.read()
+                finally:
+                    os.close(clone_fd)
+            finally:
+                os.close(temp_fd)
+    except (AttributeError, OSError, RuntimeError, ValueError):
+        return None
+
+
 def _regular_repo_files_sha256(
     repo: Path, rel_paths: Sequence[str]
 ) -> dict[str, str] | None:
@@ -966,12 +1023,18 @@ def _regular_repo_files_sha256(
     nonblock = getattr(os, "O_NONBLOCK", None)
     path_only = getattr(os, "O_PATH", None)
     proc_anchor = path_only is not None and Path("/proc/self/fd").is_dir()
-    if nofollow is None or directory is None or nonblock is None or not proc_anchor:
+    darwin_clone = sys.platform == "darwin"
+    if (
+        nofollow is None
+        or directory is None
+        or nonblock is None
+        or not (proc_anchor or darwin_clone)
+    ):
         return None
     cloexec = getattr(os, "O_CLOEXEC", 0)
     directory_flags = os.O_RDONLY | directory | nofollow | cloexec
     file_flags = os.O_RDONLY | nonblock | cloexec
-    anchor_flags = path_only | nofollow | cloexec
+    anchor_flags = path_only | nofollow | cloexec if proc_anchor else 0
 
     def directory_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
         return (
@@ -1007,7 +1070,7 @@ def _regular_repo_files_sha256(
                 tuple[int, str, tuple[int, int, int, int, int]]
             ] = []
             file_entries: list[
-                tuple[int, str, tuple[int, int, int, int, int, int], Any, str]
+                tuple[int, str, tuple[int, int, int, int, int, int], Any | None, str]
             ] = []
             digests: dict[str, str] = {}
             for rel_path in requested:
@@ -1040,33 +1103,41 @@ def _regular_repo_files_sha256(
                 )
                 if not stat.S_ISREG(file_named_before.st_mode):
                     return None
-                anchor_fd = os.open(parts[-1], anchor_flags, dir_fd=parent_fd)
-                opened.callback(os.close, anchor_fd)
-                anchor_stat = os.fstat(anchor_fd)
-                anchor_identity = file_identity(anchor_stat)
-                file_named_after = os.stat(
-                    parts[-1], dir_fd=parent_fd, follow_symlinks=False
-                )
-                if (
-                    not stat.S_ISREG(anchor_stat.st_mode)
-                    or anchor_identity != file_identity(file_named_before)
-                    or anchor_identity != file_identity(file_named_after)
-                ):
-                    return None
-                file_fd = os.open(f"/proc/self/fd/{anchor_fd}", file_flags)
-                stream = opened.enter_context(os.fdopen(file_fd, "rb"))
-                file_before = os.fstat(stream.fileno())
-                identity = file_identity(file_before)
-                if (
-                    not stat.S_ISREG(file_before.st_mode)
-                    or identity != anchor_identity
-                ):
-                    return None
-                digest = hashlib.sha256()
-                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                    digest.update(chunk)
-                if file_identity(os.fstat(stream.fileno())) != identity:
-                    return None
+                identity = file_identity(file_named_before)
+                stream = None
+                if proc_anchor:
+                    anchor_fd = os.open(parts[-1], anchor_flags, dir_fd=parent_fd)
+                    opened.callback(os.close, anchor_fd)
+                    anchor_stat = os.fstat(anchor_fd)
+                    anchor_identity = file_identity(anchor_stat)
+                    file_named_after = os.stat(
+                        parts[-1], dir_fd=parent_fd, follow_symlinks=False
+                    )
+                    if (
+                        not stat.S_ISREG(anchor_stat.st_mode)
+                        or anchor_identity != identity
+                        or anchor_identity != file_identity(file_named_after)
+                    ):
+                        return None
+                    file_fd = os.open(f"/proc/self/fd/{anchor_fd}", file_flags)
+                    stream = opened.enter_context(os.fdopen(file_fd, "rb"))
+                    file_before = os.fstat(stream.fileno())
+                    identity = file_identity(file_before)
+                    if not stat.S_ISREG(file_before.st_mode) or identity != anchor_identity:
+                        return None
+                    digest = hashlib.sha256()
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                    if file_identity(os.fstat(stream.fileno())) != identity:
+                        return None
+                else:
+                    cloned = _darwin_clonefileat_bytes(repo, parent_fd, parts[-1])
+                    file_named_after = os.stat(
+                        parts[-1], dir_fd=parent_fd, follow_symlinks=False
+                    )
+                    if cloned is None or file_identity(file_named_after) != identity:
+                        return None
+                    digest = hashlib.sha256(cloned)
                 expected_digest = digest.hexdigest()
                 file_entries.append(
                     (parent_fd, parts[-1], identity, stream, expected_digest)
@@ -1078,17 +1149,30 @@ def _regular_repo_files_sha256(
             def files_are_current() -> bool:
                 for parent_fd, name, identity, stream, expected_digest in file_entries:
                     final = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-                    if (
-                        file_identity(final) != identity
-                        or file_identity(os.fstat(stream.fileno())) != identity
-                        or not stat.S_ISREG(final.st_mode)
-                    ):
+                    if file_identity(final) != identity or not stat.S_ISREG(final.st_mode):
                         return False
-                    stream.seek(0)
-                    digest = hashlib.sha256()
-                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                        digest.update(chunk)
-                    if digest.hexdigest() != expected_digest:
+                    if stream is None:
+                        cloned = _darwin_clonefileat_bytes(repo, parent_fd, name)
+                        current_digest = (
+                            hashlib.sha256(cloned).hexdigest()
+                            if cloned is not None
+                            else None
+                        )
+                    else:
+                        if file_identity(os.fstat(stream.fileno())) != identity:
+                            return False
+                        stream.seek(0)
+                        digest = hashlib.sha256()
+                        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                            digest.update(chunk)
+                        current_digest = digest.hexdigest()
+                    named_after = os.stat(
+                        name, dir_fd=parent_fd, follow_symlinks=False
+                    )
+                    if (
+                        current_digest != expected_digest
+                        or file_identity(named_after) != identity
+                    ):
                         return False
                 return True
 
@@ -1148,19 +1232,15 @@ def _pinned_manifest_snapshot(
     nonblock = getattr(os, "O_NONBLOCK", None)
     path_only = getattr(os, "O_PATH", None)
     proc_anchor = path_only is not None and Path("/proc/self/fd").is_dir()
-    if not proc_anchor:
-        if head_oid is None:
-            raise ManifestSourceError(
-                "exact HEAD is required when descriptor-pinned reads are unavailable"
-            )
-        yield _ManifestSnapshot(_manifest_blob_at_revision(repo, head_oid))
-        return
+    darwin_clone = sys.platform == "darwin"
+    if not (proc_anchor or darwin_clone):
+        raise ManifestSourceError("safe manifest snapshots are unavailable")
     if nofollow is None or directory is None or nonblock is None:
         raise ManifestSourceError("descriptor-pinned manifest reads are unavailable")
     cloexec = getattr(os, "O_CLOEXEC", 0)
     directory_flags = os.O_RDONLY | directory | nofollow | cloexec
     file_flags = os.O_RDONLY | nonblock | cloexec
-    anchor_flags = path_only | nofollow | cloexec
+    anchor_flags = path_only | nofollow | cloexec if proc_anchor else 0
 
     def directory_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
         return (
@@ -1246,6 +1326,42 @@ def _pinned_manifest_snapshot(
                     raise ManifestSourceError("manifest changed during validation")
                 if not ancestry_is_current():
                     raise ManifestSourceError("manifest ancestry changed during validation")
+                return
+
+            if darwin_clone:
+                expected_identity = file_identity(named_before)
+                data = _darwin_clonefileat_bytes(repo, plans_fd, "manifest.json")
+                named_after = os.stat(
+                    "manifest.json", dir_fd=plans_fd, follow_symlinks=False
+                )
+                if data is None or file_identity(named_after) != expected_identity:
+                    yield _ManifestSnapshot(None, source_error=True)
+                    return
+
+                yield _ManifestSnapshot(data)
+
+                def cloned_manifest_is_current() -> bool:
+                    named_current = os.stat(
+                        "manifest.json", dir_fd=plans_fd, follow_symlinks=False
+                    )
+                    cloned = _darwin_clonefileat_bytes(
+                        repo, plans_fd, "manifest.json"
+                    )
+                    named_final = os.stat(
+                        "manifest.json", dir_fd=plans_fd, follow_symlinks=False
+                    )
+                    return (
+                        file_identity(named_current) == expected_identity
+                        and cloned == data
+                        and file_identity(named_final) == expected_identity
+                    )
+
+                if not cloned_manifest_is_current() or not ancestry_is_current():
+                    raise ManifestSourceError("manifest changed during validation")
+                if not cloned_manifest_is_current() or not ancestry_is_current():
+                    raise ManifestSourceError("manifest changed during validation")
+                if not cloned_manifest_is_current():
+                    raise ManifestSourceError("manifest changed during validation")
                 return
 
             try:
@@ -2055,12 +2171,7 @@ def _manifest_entry_scope_from_snapshot(
                     committed_digests = _regular_blobs_sha256_at_revision(
                         repo, head_oid, authority_paths
                     )
-                    actual_digests = (
-                        _regular_repo_files_sha256(repo, authority_paths)
-                        if getattr(os, "O_PATH", None) is not None
-                        and Path("/proc/self/fd").is_dir()
-                        else committed_digests
-                    )
+                    actual_digests = _regular_repo_files_sha256(repo, authority_paths)
                     actual_plan = (
                         actual_digests.get(rel)
                         if actual_digests is not None
