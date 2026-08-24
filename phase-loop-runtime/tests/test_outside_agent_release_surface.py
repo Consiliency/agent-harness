@@ -157,10 +157,38 @@ def test_release_workflows_keep_version_build_and_publish_boundaries_explicit():
     assert "Trusted" in publish
     assert "Publishing (OIDC)" in publish
     assert "workflow_dispatch" in publish
+    assert "pull_request:" in publish
     assert "Verify tag matches phase-loop-runtime version" in publish
     assert "python -m build --sdist --wheel --outdir dist phase-loop-runtime" in publish
+    assert "Verify exact wheel in an isolated locked environment" in publish
+    assert "--extra visual" in publish
+    assert "--group test" in publish
+    assert "--locked" in publish
+    assert "--no-install-project" in publish
+    assert "release_candidate_source_data.pth" in publish
+    assert "assert not runtime_file.is_relative_to(source)" in publish
+    assert "phase_loop_runtime.agy_canary_evidence" in publish
+    publish_code = "\n".join(
+        line for line in publish.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert '/tmp/phase-loop-release-wheel/bin/phase-loop "$sub" --help' in publish_code
+    for subcommand in (
+        "agy-canary-probe",
+        "agy-canary-clean-settings",
+        "agy-canary-bootstrap-attest",
+        "agy-canary-prepare",
+        "agy-canary-verify",
+        "agy-canary-finalize",
+    ):
+        assert subcommand in publish_code
+    assert not re.search(r"agy-canary-cleanup\b", publish_code)
+    assert "sha256sum dist/* | tee release/SHA256SUMS" in publish
+    assert "sha256sum --check release/SHA256SUMS" in publish
+    assert "if: startsWith(github.ref, 'refs/tags/v')" in publish
+    assert publish.count("python -m build --sdist --wheel") == 1
     assert "pypa/gh-action-pypi-publish" in publish
     assert "id-token: write" in publish
+    assert "skip-existing: false" in publish
     assert "PYPI_API_TOKEN" not in publish
     assert "secrets." not in publish
 

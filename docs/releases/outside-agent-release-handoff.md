@@ -8,15 +8,15 @@ enforcement is live.
 ## Package Identity
 
 - Package: `phase-loop-runtime`
-- Version: `0.7.13`
-- Runtime `phase_loop_runtime.__version__`: `0.7.13`
-- Version pin prepared for downstream pinning: `phase-loop-runtime==0.7.13`
+- Version: `0.7.14`
+- Runtime `phase_loop_runtime.__version__`: `0.7.14`
+- Version pin prepared for downstream pinning: `phase-loop-runtime==0.7.14`
 - Console scripts: `phase-loop`, `codex-phase-loop`
 
 ## Validator Identity
 
 - Governed-pipeline validator authority: `governed_pipeline_validator`
-- Validator version: `0.7.13`
+- Validator version: `0.7.14`
 - Validator command: `phase-loop outside-agent-validate`
 - Advisory preflight command: `phase-loop outside-agent-preflight`
 - Advisory output remains supporting evidence only; governed-pipeline remains
@@ -48,35 +48,37 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 ## Release-Check Evidence
 
-- `cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_outside_agent_release_surface.py tests/test_outside_agent_contract_pin.py tests/test_outside_agent_real_output.py tests/test_outside_agent_advisory.py -q` passed with 16 tests.
-- `PYTHONPATH=phase-loop-runtime/src python -m phase_loop_runtime.cli validate-roadmap specs/phase-plans-v7.md` passed for 5 phases.
-- `cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_outside_agent_release_surface.py tests/test_outside_agent_contract_pin.py tests/test_outside_agent_vectors.py tests/test_outside_agent_advisory.py tests/test_outside_agent_advisory_cli.py tests/test_outside_agent_real_runtime.py tests/test_outside_agent_real_output.py tests/test_outside_agent_real_cli.py tests/test_outside_agent_real_ci.py -q` passed with 41 tests.
-- The `build` frontend was installed and used to produce the sdist + wheel below.
-- `python -m build --sdist --wheel --outdir /tmp/phase-loop-runtime-oarelease-dist phase-loop-runtime` succeeded.
-- `git status --short` after the release-check lane showed the new release-surface test file as the only tracked dirty path at that point.
+- `publication_status=pending` while the v0.7.14 source, isolated-wheel, and
+  exact-head review gates run.
+- The release PR records focused and full-suite results plus candidate artifact
+  digests produced from its exact head.
+- Tag, workflow, GitHub Release, PyPI publication, and fleet adoption evidence
+  are recorded only after the reviewed release PR merges; none is claimed here.
 
 ## Sealed Implementation Evidence
 
-This release handoff covers phase-loop-runtime 0.7.13 with a digest-enumerated contract mirror. Publication, tag creation, and workflow dispatch remain maintainer-owned and are not published or not dispatched here.
+This release handoff covers phase-loop-runtime 0.7.14 with a digest-enumerated
+contract mirror. Publication, tag creation, and workflow dispatch remain
+maintainer-owned and are not published or not dispatched here.
 
-- candidate implementation commit: 9f8d6c60f562fbceb4bd09a20211b046255b373f
-- candidate implementation tree: 75228b3296b4727d81b20ff378ea9d4c1d4ab5aa
-- pre-doc A2 package evidence sha256: 17b47d6cc7b860fd74956646594fc2430522364a860c227cefa87c71b73cf46d
+- candidate implementation commit: pending exact release PR head
+- candidate implementation tree: pending exact release PR tree
+- pre-publication package evidence: pending exact-head verification
 
 ### Package Archive Digests
 
-- direct-wheel sha256: 0f52d153afd6d5357a042a63b13e2bb1cd75f86e9d59b1242492fe3e614ecf0f
-- direct-sdist sha256: f995a3cc0679125035668e96f0f7f9f9fa18fe5773adcad3af79e24b6617dd09
-- sdist-derived-wheel sha256: 0f52d153afd6d5357a042a63b13e2bb1cd75f86e9d59b1242492fe3e614ecf0f
+- direct-wheel sha256: pending exact-head build
+- direct-sdist sha256: pending exact-head build
+- sdist-derived-wheel sha256: pending exact-head rebuild
 
 ## Package Surface Inventory
 
-- Wheel artifact: `phase_loop_runtime-0.7.13-py3-none-any.whl`
-- Sdist artifact: `phase_loop_runtime-0.7.13.tar.gz`
-- Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.13.data`, `phase_loop_runtime-0.7.13.dist-info`
-- Wheel file count: 430
+- Wheel artifact: `phase_loop_runtime-0.7.14-py3-none-any.whl`
+- Sdist artifact: `phase_loop_runtime-0.7.14.tar.gz`
+- Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.14.data`, `phase_loop_runtime-0.7.14.dist-info`
+- Wheel file count: recorded from the exact-head build before review
 - Sdist top-level entries: `MANIFEST.in`, `PKG-INFO`, `README.md`, `protocol`, `pyproject.toml`, `setup.cfg`, `src`, `tests`
-- Sdist file count: 941
+- Sdist file count: recorded from the exact-head build before review
 - Wheel entry points: `phase-loop = phase_loop_runtime.cli:main`; `codex-phase-loop = phase_loop_runtime.cli:main`
 - Runtime plugin entry points: `dotfiles = phase_loop_runtime.dotfiles_profile_plugin:register_profile_commands`; `dotfiles = phase_loop_runtime.skill_sources_plugin:register_skill_sources`
 
@@ -84,7 +86,7 @@ This release handoff covers phase-loop-runtime 0.7.13 with a digest-enumerated c
 
 Governed-pipeline should consume this runtime as an authoritative validator only
 after a maintainer publishes or pins it. Pin the released package
-`phase-loop-runtime==0.7.13`, then call:
+`phase-loop-runtime==0.7.14`, then call:
 
 ```bash
 phase-loop outside-agent-validate path/to/outside-agent-submission.json \

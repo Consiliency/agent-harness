@@ -6,6 +6,29 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+## [0.7.14] - 2026-08-24
+
+### Fleet advisor-board defaults (Consiliency/agent-harness#643, Consiliency/agent-harness#645)
+
+- The default four-seat advisor board now resolves Claude Fable 5, GPT-5.6 Sol,
+  Grok 4.6, and Gemini 3.7 Flash across the shipped harness skill bundle.
+- The president ladder is Fable, then Sol, then Grok, then Gemini, and fallback
+  remains limited to typed unavailability rather than quality or verdict content.
+- Native harness execution remains the default for native legs; nonnative legs
+  retain their TUI-adapter boundary. General executor defaults are unchanged.
+
+### Release and governance readiness (Consiliency/agent-harness#432, Consiliency/agent-harness#620, Consiliency/agent-harness#647)
+
+- The plan manifest now preserves historical lifecycle evidence while appending
+  current plan/roadmap authority, and the full live repository coverage gate is
+  valid at the v0.7.14 release base.
+- Gate A clean-room verification binds to its isolated repository evidence,
+  including the exact historical PROOFGATE corpus and canonical launch-golden
+  skill input, without caller-worktree leakage.
+- The release workflow builds once, verifies the exact wheel in a locked isolated
+  environment, records SHA-256 tuples, and publishes only the downloaded tag
+  artifacts through trusted publishing.
+
 ### plan manifest: separate historical evidence from current authority (Consiliency/agent-harness#620, Consiliency/agent-harness#646)
 
 - Lifecycle digest records now remain immutable evidence of the bytes reviewed at
