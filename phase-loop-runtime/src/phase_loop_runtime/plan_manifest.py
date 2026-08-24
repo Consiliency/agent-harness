@@ -972,8 +972,14 @@ def _regular_repo_files_sha256(
     anchor_flags = path_only | nofollow | cloexec
     file_flags = os.O_RDONLY | nonblock | cloexec
 
-    def directory_identity(value: os.stat_result) -> tuple[int, int, int]:
-        return value.st_dev, value.st_ino, value.st_mode
+    def directory_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+        return (
+            value.st_dev,
+            value.st_ino,
+            value.st_mode,
+            value.st_mtime_ns,
+            value.st_ctime_ns,
+        )
 
     def file_identity(value: os.stat_result) -> tuple[int, int, int, int, int, int]:
         return (
@@ -996,7 +1002,9 @@ def _regular_repo_files_sha256(
             if root_identity != directory_identity(root_before):
                 return None
 
-            directory_entries: list[tuple[int, str, tuple[int, int, int]]] = []
+            directory_entries: list[
+                tuple[int, str, tuple[int, int, int, int, int]]
+            ] = []
             file_entries: list[
                 tuple[int, str, tuple[int, int, int, int, int, int], Any]
             ] = []
@@ -1063,14 +1071,6 @@ def _regular_repo_files_sha256(
 
             # Revalidate every plan/roadmap entry only after the complete composite
             # has been hashed, through each entry's original pinned parent.
-            if directory_identity(os.stat(root, follow_symlinks=False)) != root_identity:
-                return None
-            for entry_parent_fd, part, expected in directory_entries:
-                current = os.stat(
-                    part, dir_fd=entry_parent_fd, follow_symlinks=False
-                )
-                if directory_identity(current) != expected:
-                    return None
             for parent_fd, name, identity, stream in file_entries:
                 final = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
                 if (
@@ -1079,6 +1079,25 @@ def _regular_repo_files_sha256(
                     or not stat.S_ISREG(final.st_mode)
                 ):
                     return None
+            # Revalidate from the deepest pinned directory back to the root.
+            # Directory ctime makes a child replacement visible to its parent,
+            # so a swap after a child check is caught by a later ancestor check.
+            for entry_parent_fd, part, expected in reversed(directory_entries):
+                current = os.stat(
+                    part, dir_fd=entry_parent_fd, follow_symlinks=False
+                )
+                if directory_identity(current) != expected:
+                    return None
+            if directory_identity(os.stat(root, follow_symlinks=False)) != root_identity:
+                return None
+            for entry_parent_fd, part, expected in reversed(directory_entries):
+                current = os.stat(
+                    part, dir_fd=entry_parent_fd, follow_symlinks=False
+                )
+                if directory_identity(current) != expected:
+                    return None
+            if directory_identity(os.stat(root, follow_symlinks=False)) != root_identity:
+                return None
             return digests
     except (OSError, RuntimeError, ValueError):
         return None
@@ -1111,8 +1130,14 @@ def _pinned_manifest_snapshot(repo: Path) -> Iterator[_ManifestSnapshot]:
     anchor_flags = path_only | nofollow | cloexec
     file_flags = os.O_RDONLY | nonblock | cloexec
 
-    def directory_identity(value: os.stat_result) -> tuple[int, int, int]:
-        return value.st_dev, value.st_ino, value.st_mode
+    def directory_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+        return (
+            value.st_dev,
+            value.st_ino,
+            value.st_mode,
+            value.st_mtime_ns,
+            value.st_ctime_ns,
+        )
 
     def file_identity(value: os.stat_result) -> tuple[int, int, int, int, int, int]:
         return (
@@ -1147,6 +1172,22 @@ def _pinned_manifest_snapshot(repo: Path) -> Iterator[_ManifestSnapshot]:
             ):
                 raise ManifestSourceError("plans directory changed before manifest read")
 
+            def ancestry_is_current() -> bool:
+                return (
+                    directory_identity(
+                        os.stat("plans", dir_fd=root_fd, follow_symlinks=False)
+                    )
+                    == plans_identity
+                    and directory_identity(os.stat(root, follow_symlinks=False))
+                    == root_identity
+                    and directory_identity(
+                        os.stat("plans", dir_fd=root_fd, follow_symlinks=False)
+                    )
+                    == plans_identity
+                    and directory_identity(os.stat(root, follow_symlinks=False))
+                    == root_identity
+                )
+
             try:
                 named_before = os.stat(
                     "manifest.json", dir_fd=plans_fd, follow_symlinks=False
@@ -1159,14 +1200,7 @@ def _pinned_manifest_snapshot(repo: Path) -> Iterator[_ManifestSnapshot]:
                     pass
                 else:
                     raise ManifestSourceError("manifest appeared during validation")
-                if (
-                    directory_identity(os.stat(root, follow_symlinks=False))
-                    != root_identity
-                    or directory_identity(
-                        os.stat("plans", dir_fd=root_fd, follow_symlinks=False)
-                    )
-                    != plans_identity
-                ):
+                if not ancestry_is_current():
                     raise ManifestSourceError("manifest ancestry changed during validation")
                 return
 
@@ -1178,6 +1212,8 @@ def _pinned_manifest_snapshot(repo: Path) -> Iterator[_ManifestSnapshot]:
                 )
                 if file_identity(named_final) != expected_identity:
                     raise ManifestSourceError("manifest changed during validation")
+                if not ancestry_is_current():
+                    raise ManifestSourceError("manifest ancestry changed during validation")
                 return
 
             try:
@@ -1209,6 +1245,8 @@ def _pinned_manifest_snapshot(repo: Path) -> Iterator[_ManifestSnapshot]:
                 )
                 if file_identity(named_final) != expected_identity:
                     raise ManifestSourceError("manifest changed during validation")
+                if not ancestry_is_current():
+                    raise ManifestSourceError("manifest ancestry changed during validation")
                 return
 
             yield _ManifestSnapshot(data)
@@ -1216,15 +1254,10 @@ def _pinned_manifest_snapshot(repo: Path) -> Iterator[_ManifestSnapshot]:
                 "manifest.json", dir_fd=plans_fd, follow_symlinks=False
             )
             if (
-                directory_identity(os.stat(root, follow_symlinks=False))
-                != root_identity
-                or directory_identity(
-                    os.stat("plans", dir_fd=root_fd, follow_symlinks=False)
-                )
-                != plans_identity
-                or file_identity(named_final) != expected_identity
+                file_identity(os.fstat(stream.fileno())) != expected_identity
                 or file_identity(os.fstat(anchor_fd)) != expected_identity
-                or file_identity(os.fstat(stream.fileno())) != expected_identity
+                or file_identity(named_final) != expected_identity
+                or not ancestry_is_current()
             ):
                 raise ManifestSourceError("manifest changed during validation")
     except ManifestSourceError:

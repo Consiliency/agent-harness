@@ -994,6 +994,36 @@ def test_regular_repo_file_hash_rejects_ancestor_swap_after_hash(tmp_path, monke
     assert target_fstats >= 2
 
 
+def test_regular_repo_file_hash_rejects_swap_after_final_child_stat(
+    tmp_path, monkeypatch
+):
+    repo = make_repo(tmp_path)
+    nested = repo / "authority"
+    nested.mkdir()
+    (nested / "bound.md").write_text("trusted bytes\n", encoding="utf-8")
+    moved = tmp_path / "moved-authority"
+    external = tmp_path / "external-authority"
+    external.mkdir()
+    (external / "bound.md").write_text("outside bytes\n", encoding="utf-8")
+    real_stat = os.stat
+    directory_stats = 0
+
+    def swapping_stat(path, *args, **kwargs):
+        nonlocal directory_stats
+        result = real_stat(path, *args, **kwargs)
+        if path == "authority" and kwargs.get("dir_fd") is not None:
+            directory_stats += 1
+            if directory_stats == 3:
+                nested.rename(moved)
+                nested.symlink_to(external, target_is_directory=True)
+        return result
+
+    monkeypatch.setattr(plan_manifest.os, "stat", swapping_stat)
+
+    assert plan_manifest._regular_repo_file_sha256(repo, "authority/bound.md") is None
+    assert directory_stats >= 3
+
+
 def test_regular_repo_file_hash_rejects_fifo_without_blocking(tmp_path, monkeypatch):
     if not hasattr(os, "mkfifo") or not hasattr(signal, "SIGALRM"):
         pytest.skip("FIFO alarm regression requires POSIX")
@@ -2722,6 +2752,42 @@ def test_manifest_snapshot_rejects_swap_between_history_and_parse(
     assert swapped
 
 
+def test_manifest_snapshot_rejects_swap_after_final_plans_stat(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    rel = _commit_plan(repo)
+    manifest_path = repo / "plans" / "manifest.json"
+    manifest_path.write_text(
+        json.dumps({"plans": [{"file": rel, "lifecycle": []}]}),
+        encoding="utf-8",
+    )
+    assert check(repo).exit_code == 0
+    moved = tmp_path / "moved-plans"
+    external = tmp_path / "external-plans"
+    external.mkdir()
+    (external / "manifest.json").write_text('{"plans": []}', encoding="utf-8")
+    real_stat = os.stat
+    plans_stats = 0
+
+    def swapping_stat(path, *args, **kwargs):
+        nonlocal plans_stats
+        result = real_stat(path, *args, **kwargs)
+        if path == "plans" and kwargs.get("dir_fd") is not None:
+            plans_stats += 1
+            if plans_stats == 3:
+                (repo / "plans").rename(moved)
+                (repo / "plans").symlink_to(external, target_is_directory=True)
+        return result
+
+    monkeypatch.setattr(plan_manifest.os, "stat", swapping_stat)
+
+    with pytest.raises(
+        plan_manifest.ManifestSourceError,
+        match="manifest (ancestry )?changed during validation",
+    ):
+        check(repo)
+    assert plans_stats >= 3
+
+
 def test_generic_ancestor_authority_cannot_be_removed_from_retained_row(tmp_path):
     repo = make_repo(tmp_path)
     rel = _commit_plan(repo)
@@ -2899,15 +2965,15 @@ def test_composite_authority_revalidates_plan_after_roadmap_hash(tmp_path, monke
         encoding="utf-8",
     )
     assert check(repo).exit_code == 0
-    replacement = repo / "plans" / "replacement.md"
-    replacement.write_text("---\nphase: RUNNER\n---\n# Drifted plan\n", encoding="utf-8")
     real_open = os.open
     swapped = False
 
     def swapping_open(path, flags, mode=0o777, *, dir_fd=None):
         nonlocal swapped
         if path == "specs" and dir_fd is not None and not swapped:
-            replacement.replace(plan_path)
+            plan_path.write_text(
+                "---\nphase: RUNNER\n---\n# Drifted plan\n", encoding="utf-8"
+            )
             swapped = True
         return real_open(path, flags, mode, dir_fd=dir_fd)
 
