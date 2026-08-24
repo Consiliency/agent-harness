@@ -1778,14 +1778,91 @@ def _scan_plans_dir_physical(repo: Path) -> tuple[list[str], list[MalformedPlanF
     """Direct-child physical scan of ``plans/`` -- filesystem-safe byte decoding,
     never following a directory-entry symlink, never reading plan content."""
     plans_dir = repo / "plans"
-    if plans_dir.is_symlink():
-        raise ManifestSourceError(f"physical plans source is symlinked: {plans_dir}")
-    if not plans_dir.is_dir():
-        raise ManifestSourceError(f"physical plans source is missing or not a directory: {plans_dir}")
     canonical: list[str] = []
     malformed: list[MalformedPlanFinding] = []
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    directory = getattr(os, "O_DIRECTORY", None)
+    if nofollow is None or directory is None:
+        raise ManifestSourceError("descriptor-pinned plans scans are unavailable")
+    cloexec = getattr(os, "O_CLOEXEC", 0)
+    directory_flags = os.O_RDONLY | directory | nofollow | cloexec
+
+    def directory_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+        return (
+            value.st_dev,
+            value.st_ino,
+            value.st_mode,
+            value.st_mtime_ns,
+            value.st_ctime_ns,
+        )
+
     try:
-        raw_entries = os.listdir(os.fsencode(plans_dir))
+        with ExitStack() as opened:
+            root_before = os.stat(repo, follow_symlinks=False)
+            root_fd = os.open(repo, directory_flags)
+            opened.callback(os.close, root_fd)
+            root_identity = directory_identity(os.fstat(root_fd))
+            if (
+                not stat.S_ISDIR(root_before.st_mode)
+                or directory_identity(root_before) != root_identity
+            ):
+                raise ManifestSourceError("physical repository root changed before scan")
+            plans_before = os.stat("plans", dir_fd=root_fd, follow_symlinks=False)
+            if not stat.S_ISDIR(plans_before.st_mode):
+                raise ManifestSourceError(
+                    f"physical plans source is missing or not a directory: {plans_dir}"
+                )
+            plans_fd = os.open("plans", directory_flags, dir_fd=root_fd)
+            opened.callback(os.close, plans_fd)
+            plans_identity = directory_identity(os.fstat(plans_fd))
+            plans_after = os.stat("plans", dir_fd=root_fd, follow_symlinks=False)
+            if (
+                plans_identity != directory_identity(plans_before)
+                or plans_identity != directory_identity(plans_after)
+            ):
+                raise ManifestSourceError("physical plans source changed before scan")
+            raw_entries = tuple(os.fsencode(name) for name in os.listdir(plans_fd))
+            entry_stats: dict[bytes, os.stat_result] = {}
+            for raw_name in raw_entries:
+                entry_stats[raw_name] = os.stat(
+                    raw_name, dir_fd=plans_fd, follow_symlinks=False
+                )
+            final_entries = tuple(
+                os.fsencode(name) for name in os.listdir(plans_fd)
+            )
+            if sorted(raw_entries) != sorted(final_entries):
+                raise ManifestSourceError("physical plans entries changed during scan")
+            for raw_name, expected in entry_stats.items():
+                current = os.stat(
+                    raw_name, dir_fd=plans_fd, follow_symlinks=False
+                )
+                if (
+                    current.st_dev,
+                    current.st_ino,
+                    current.st_mode,
+                    current.st_size,
+                    current.st_mtime_ns,
+                    current.st_ctime_ns,
+                ) != (
+                    expected.st_dev,
+                    expected.st_ino,
+                    expected.st_mode,
+                    expected.st_size,
+                    expected.st_mtime_ns,
+                    expected.st_ctime_ns,
+                ):
+                    raise ManifestSourceError(
+                        "physical plans entry changed during scan"
+                    )
+            if (
+                directory_identity(
+                    os.stat("plans", dir_fd=root_fd, follow_symlinks=False)
+                )
+                != plans_identity
+                or directory_identity(os.stat(repo, follow_symlinks=False))
+                != root_identity
+            ):
+                raise ManifestSourceError("physical plans ancestry changed during scan")
     except OSError as exc:
         raise ManifestSourceError(f"cannot scan physical plans source {plans_dir}: {exc}") from exc
     for raw_name in raw_entries:
@@ -1803,11 +1880,7 @@ def _scan_plans_dir_physical(repo: Path) -> tuple[list[str], list[MalformedPlanF
         if classification == "irrelevant":
             continue
         rel = f"plans/{name}"
-        full_path = plans_dir / name
-        try:
-            entry_stat = full_path.lstat()
-        except OSError as exc:
-            raise ManifestSourceError(f"cannot inspect physical plan entry {full_path}: {exc}") from exc
+        entry_stat = entry_stats[raw_name]
         if stat.S_ISLNK(entry_stat.st_mode):
             malformed.append(MalformedPlanFinding(path=rel, kind="symlink", origin=frozenset({"filesystem"})))
             continue

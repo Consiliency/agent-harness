@@ -2881,7 +2881,10 @@ def test_manifest_snapshot_rejects_swap_after_final_plans_stat(tmp_path, monkeyp
 
     with pytest.raises(
         plan_manifest.ManifestSourceError,
-        match="manifest (ancestry )?changed during validation",
+        match=(
+            "manifest (ancestry )?changed during validation|"
+            "physical plans ancestry changed during scan"
+        ),
     ):
         check(repo)
     assert plans_stats >= 3
@@ -3622,6 +3625,54 @@ def test_manifest_physical_source_failure_is_typed(tmp_path, monkeypatch, defect
         plan_manifest.canonical_plan_files(repo, head)
 
 
+def test_physical_scan_rejects_or_observes_plans_ancestor_swap(
+    tmp_path, monkeypatch
+):
+    repo = make_repo(tmp_path)
+    _commit_plan(repo)
+    hidden_rel = "plans/phase-plan-v2-HIDDEN.md"
+    (repo / hidden_rel).write_text(
+        "---\nphase: HIDDEN\n---\n# Hidden plan\n", encoding="utf-8"
+    )
+    plans = repo / "plans"
+    moved = tmp_path / "moved-plans"
+    external = tmp_path / "external-plans"
+    external.mkdir()
+    real_listdir = os.listdir
+    swapped = False
+
+    def swapping_listdir(path):
+        nonlocal swapped
+        if not swapped:
+            plans.rename(moved)
+            plans.symlink_to(external, target_is_directory=True)
+            try:
+                result = real_listdir(path)
+            finally:
+                plans.unlink()
+                moved.rename(plans)
+            swapped = True
+            return result
+        return real_listdir(path)
+
+    monkeypatch.setattr(plan_manifest.os, "listdir", swapping_listdir)
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    try:
+        files = plan_manifest.canonical_plan_files(repo, head)
+    except plan_manifest.ManifestSourceError:
+        pass
+    else:
+        assert hidden_rel in files.paths()
+    assert swapped
+
+
 def test_cli_attest_passes_preimport_process_token_into_runner_workflow(tmp_path, monkeypatch):
     from phase_loop_runtime import cli
 
@@ -3746,17 +3797,17 @@ def test_assumption_sidecar_rejects_coordinated_roadmap_and_digest_drift(tmp_pat
     assert excinfo.value.code == "sidecar_contract_drift"
 
 
-def test_manifest_plan_entry_lstat_failure_is_typed(tmp_path, monkeypatch):
+def test_manifest_plan_entry_stat_failure_is_typed(tmp_path, monkeypatch):
     repo = make_repo(tmp_path)
     target = repo / _commit_plan(repo)
-    real_lstat = Path.lstat
+    real_stat = os.stat
 
-    def fail_target(path):
-        if path == target:
+    def fail_target(path, *args, **kwargs):
+        if path == os.fsencode(target.name) and kwargs.get("dir_fd") is not None:
             raise PermissionError("denied")
-        return real_lstat(path)
+        return real_stat(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "lstat", fail_target)
+    monkeypatch.setattr(plan_manifest.os, "stat", fail_target)
     head = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
     ).stdout.strip()
