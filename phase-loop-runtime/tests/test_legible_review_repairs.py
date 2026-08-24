@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -2883,7 +2884,8 @@ def test_manifest_snapshot_rejects_swap_after_final_plans_stat(tmp_path, monkeyp
         plan_manifest.ManifestSourceError,
         match=(
             "manifest (ancestry )?changed during validation|"
-            "physical plans ancestry changed during scan"
+            "physical plans ancestry changed during scan|"
+            "cannot scan physical plans source"
         ),
     ):
         check(repo)
@@ -3670,6 +3672,64 @@ def test_physical_scan_rejects_or_observes_plans_ancestor_swap(
         pass
     else:
         assert hidden_rel in files.paths()
+    assert swapped
+
+
+def test_check_rejects_root_change_between_physical_and_manifest_snapshots(
+    tmp_path, monkeypatch
+):
+    repo = make_repo(tmp_path / "initial")
+    tracked_rel = _commit_plan(repo)
+    manifest = repo / "plans" / "manifest.json"
+    manifest.write_text(
+        json.dumps({"plans": [{"file": tracked_rel}]}) + "\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "add", "plans/manifest.json"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "register plan"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+
+    replacement = tmp_path / "replacement"
+    shutil.copytree(repo, replacement, symlinks=True)
+    hidden_rel = "plans/phase-plan-v2-HIDDEN.md"
+    (replacement / hidden_rel).write_text(
+        "---\nphase: HIDDEN\n---\n# Hidden\n",
+        encoding="utf-8",
+    )
+
+    manifest.write_text('{"plans":[]}\n', encoding="utf-8")
+    assert check(repo).exit_code == 1
+    assert check(replacement).exit_code == 1
+
+    scanned_root = tmp_path / "scanned-root"
+    real_scan = plan_manifest._scan_plans_dir_physical
+    swapped = False
+
+    def swap_after_physical_scan(scan_repo):
+        nonlocal swapped
+        result = real_scan(scan_repo)
+        if not swapped:
+            Path(scan_repo).rename(scanned_root)
+            replacement.rename(repo)
+            swapped = True
+        return result
+
+    monkeypatch.setattr(
+        plan_manifest,
+        "_scan_plans_dir_physical",
+        swap_after_physical_scan,
+    )
+
+    try:
+        result = check(repo)
+    except plan_manifest.ManifestSourceError:
+        pass
+    else:
+        assert result.exit_code != 0
     assert swapped
 
 

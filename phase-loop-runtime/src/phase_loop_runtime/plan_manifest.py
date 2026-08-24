@@ -2298,10 +2298,11 @@ def check(repo: Path) -> ManifestCheckResult:
     auto-registers, deletes, or silently ignores a plan."""
     repo = Path(repo).resolve(strict=True)
     head_oid = _resolve_head_oid(repo)
-    canonical = canonical_plan_files(repo, head_oid)
-    registered, manifest_malformed = _manifest_entry_scope(
-        repo, head_oid=head_oid
-    )
+    with _pinned_manifest_snapshot(repo, head_oid=head_oid) as snapshot:
+        canonical = canonical_plan_files(repo, head_oid)
+        registered, manifest_malformed = _manifest_entry_scope_from_snapshot(
+            repo, snapshot, head_oid=head_oid
+        )
     if _resolve_head_oid(repo) != head_oid:
         raise ManifestSourceError("HEAD changed during plan manifest validation")
     canonical_set = set(canonical.paths())
@@ -2330,8 +2331,11 @@ def unregistered_plan_files(repo: Path) -> tuple[str, ...]:
     ``plans/manifest.json``, stable path-sorted."""
     repo = Path(repo).resolve()
     head_oid = _resolve_head_oid(repo)
-    canonical = canonical_plan_files(repo, head_oid)
-    registered, _malformed = _manifest_entry_scope(repo, head_oid=head_oid)
+    with _pinned_manifest_snapshot(repo, head_oid=head_oid) as snapshot:
+        canonical = canonical_plan_files(repo, head_oid)
+        registered, _malformed = _manifest_entry_scope_from_snapshot(
+            repo, snapshot, head_oid=head_oid
+        )
     if _resolve_head_oid(repo) != head_oid:
         raise ManifestSourceError("HEAD changed during plan manifest validation")
     return tuple(sorted(set(canonical.paths()) - registered))
