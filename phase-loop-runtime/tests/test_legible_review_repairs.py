@@ -2471,6 +2471,75 @@ def test_history_ignores_replace_refs_and_git_location_overrides(
     ]
 
 
+def test_late_graft_insertion_cannot_change_history(tmp_path, monkeypatch):
+    repo = make_repo(tmp_path)
+    rel = _commit_plan(repo)
+    _write_generic_authority_manifest(repo, rel)
+    subprocess.run(
+        ["git", "add", "plans/manifest.json", "specs/current-roadmap.md"],
+        cwd=repo,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "record authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    (repo / rel).unlink()
+    (repo / "plans" / "manifest.json").unlink()
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "erase authority"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+    )
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    graft_path = Path(
+        subprocess.run(
+            ["git", "rev-parse", "--git-path", "info/grafts"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
+    if not graft_path.is_absolute():
+        graft_path = repo / graft_path
+    real_capture = plan_manifest._git_history_capture
+    inserted = False
+
+    def insert_after_probe(repo_path, *args, **kwargs):
+        nonlocal inserted
+        result = real_capture(repo_path, *args, **kwargs)
+        if args == (
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+        ) and not inserted:
+            graft_path.parent.mkdir(parents=True, exist_ok=True)
+            graft_path.write_text(head + "\n", encoding="utf-8")
+            inserted = True
+        return result
+
+    monkeypatch.setattr(plan_manifest, "_git_history_capture", insert_after_probe)
+
+    result = check(repo)
+
+    assert inserted
+    assert result.exit_code == 1
+    assert (rel, "plan-contract") in [
+        (item.path, item.kind) for item in result.malformed
+    ]
+
+
 def test_manifest_snapshot_rejects_swap_between_history_and_parse(
     tmp_path, monkeypatch
 ):

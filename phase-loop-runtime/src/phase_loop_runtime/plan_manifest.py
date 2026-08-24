@@ -1256,6 +1256,7 @@ def _git_history_capture(
     env["GIT_CONFIG_GLOBAL"] = os.devnull
     env["GIT_CONFIG_NOSYSTEM"] = "1"
     env["GIT_CONFIG_SYSTEM"] = os.devnull
+    env["GIT_GRAFT_FILE"] = os.devnull
     try:
         return subprocess.run(
             ["git", "--no-replace-objects", "-C", str(repo), *args],
@@ -1286,15 +1287,15 @@ def _history_boundary_complete(repo: Path) -> bool:
         )
     if shallow.stdout.strip() == "true":
         return False
-    graft = _git_history_capture(repo, "rev-parse", "--git-path", "info/grafts")
+    graft = _git_history_capture(
+        repo, "rev-parse", "--path-format=absolute", "--git-common-dir"
+    )
     if graft.returncode != 0 or not graft.stdout.strip():
         raise ManifestSourceError(
-            "git graft-path probe failed while resolving manifest history: "
+            "git common-directory probe failed while resolving manifest history: "
             f"{_git_error(graft)}"
         )
-    graft_path = Path(graft.stdout.strip())
-    if not graft_path.is_absolute():
-        graft_path = repo / graft_path
+    graft_path = Path(graft.stdout.strip()) / "info" / "grafts"
     try:
         return not (graft_path.exists() and graft_path.stat().st_size > 0)
     except OSError:
