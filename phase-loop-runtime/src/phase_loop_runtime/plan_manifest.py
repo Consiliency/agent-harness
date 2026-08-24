@@ -1006,7 +1006,7 @@ def _regular_repo_files_sha256(
                 tuple[int, str, tuple[int, int, int, int, int]]
             ] = []
             file_entries: list[
-                tuple[int, str, tuple[int, int, int, int, int, int], Any]
+                tuple[int, str, tuple[int, int, int, int, int, int], Any, str]
             ] = []
             digests: dict[str, str] = {}
             for rel_path in requested:
@@ -1066,19 +1066,33 @@ def _regular_repo_files_sha256(
                     digest.update(chunk)
                 if file_identity(os.fstat(stream.fileno())) != identity:
                     return None
-                file_entries.append((parent_fd, parts[-1], identity, stream))
-                digests[rel_path] = digest.hexdigest()
+                expected_digest = digest.hexdigest()
+                file_entries.append(
+                    (parent_fd, parts[-1], identity, stream, expected_digest)
+                )
+                digests[rel_path] = expected_digest
 
             # Revalidate every plan/roadmap entry only after the complete composite
             # has been hashed, through each entry's original pinned parent.
-            for parent_fd, name, identity, stream in file_entries:
-                final = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-                if (
-                    file_identity(final) != identity
-                    or file_identity(os.fstat(stream.fileno())) != identity
-                    or not stat.S_ISREG(final.st_mode)
-                ):
-                    return None
+            def files_are_current() -> bool:
+                for parent_fd, name, identity, stream, expected_digest in file_entries:
+                    final = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                    if (
+                        file_identity(final) != identity
+                        or file_identity(os.fstat(stream.fileno())) != identity
+                        or not stat.S_ISREG(final.st_mode)
+                    ):
+                        return False
+                    stream.seek(0)
+                    digest = hashlib.sha256()
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                    if digest.hexdigest() != expected_digest:
+                        return False
+                return True
+
+            if not files_are_current():
+                return None
             # Revalidate from the deepest pinned directory back to the root.
             # Directory ctime makes a child replacement visible to its parent,
             # so a swap after a child check is caught by a later ancestor check.
@@ -1090,6 +1104,8 @@ def _regular_repo_files_sha256(
                     return None
             if directory_identity(os.stat(root, follow_symlinks=False)) != root_identity:
                 return None
+            if not files_are_current():
+                return None
             for entry_parent_fd, part, expected in reversed(directory_entries):
                 current = os.stat(
                     part, dir_fd=entry_parent_fd, follow_symlinks=False
@@ -1097,6 +1113,11 @@ def _regular_repo_files_sha256(
                 if directory_identity(current) != expected:
                     return None
             if directory_identity(os.stat(root, follow_symlinks=False)) != root_identity:
+                return None
+            # A read-only verifier cannot freeze later writers. This terminal file
+            # observation is the transaction's linearization point: every earlier
+            # file and namespace observation has already been cross-checked twice.
+            if not files_are_current():
                 return None
             return digests
     except (OSError, RuntimeError, ValueError):
@@ -1250,15 +1271,27 @@ def _pinned_manifest_snapshot(repo: Path) -> Iterator[_ManifestSnapshot]:
                 return
 
             yield _ManifestSnapshot(data)
-            named_final = os.stat(
-                "manifest.json", dir_fd=plans_fd, follow_symlinks=False
-            )
-            if (
-                file_identity(os.fstat(stream.fileno())) != expected_identity
-                or file_identity(os.fstat(anchor_fd)) != expected_identity
-                or file_identity(named_final) != expected_identity
-                or not ancestry_is_current()
-            ):
+            def manifest_file_is_current() -> bool:
+                named_final = os.stat(
+                    "manifest.json", dir_fd=plans_fd, follow_symlinks=False
+                )
+                metadata_current = (
+                    file_identity(os.fstat(stream.fileno())) == expected_identity
+                    and file_identity(os.fstat(anchor_fd)) == expected_identity
+                    and file_identity(named_final) == expected_identity
+                )
+                if not metadata_current:
+                    return False
+                stream.seek(0)
+                return stream.read() == data
+
+            if not manifest_file_is_current() or not ancestry_is_current():
+                raise ManifestSourceError("manifest changed during validation")
+            if not manifest_file_is_current() or not ancestry_is_current():
+                raise ManifestSourceError("manifest changed during validation")
+            # The terminal file observation is the linearization point; mutation
+            # after it is subsequent repository state, not part of this snapshot.
+            if not manifest_file_is_current():
                 raise ManifestSourceError("manifest changed during validation")
     except ManifestSourceError:
         raise

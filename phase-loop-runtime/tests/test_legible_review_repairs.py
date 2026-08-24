@@ -1024,6 +1024,33 @@ def test_regular_repo_file_hash_rejects_swap_after_final_child_stat(
     assert directory_stats >= 3
 
 
+def test_regular_repo_file_hash_rejects_write_after_former_final_fstat(
+    tmp_path, monkeypatch
+):
+    repo = make_repo(tmp_path)
+    authority = repo / "authority"
+    authority.mkdir()
+    target = authority / "bound.md"
+    target.write_text("trusted bytes\n", encoding="utf-8")
+    target_inode = target.stat().st_ino
+    real_fstat = os.fstat
+    target_fstats = 0
+
+    def writing_fstat(descriptor):
+        nonlocal target_fstats
+        result = real_fstat(descriptor)
+        if result.st_ino == target_inode:
+            target_fstats += 1
+            if target_fstats == 4:
+                target.write_text("drifted bytes\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(plan_manifest.os, "fstat", writing_fstat)
+
+    assert plan_manifest._regular_repo_file_sha256(repo, "authority/bound.md") is None
+    assert target_fstats >= 4
+
+
 def test_regular_repo_file_hash_rejects_fifo_without_blocking(tmp_path, monkeypatch):
     if not hasattr(os, "mkfifo") or not hasattr(signal, "SIGALRM"):
         pytest.skip("FIFO alarm regression requires POSIX")
@@ -2786,6 +2813,37 @@ def test_manifest_snapshot_rejects_swap_after_final_plans_stat(tmp_path, monkeyp
     ):
         check(repo)
     assert plans_stats >= 3
+
+
+def test_manifest_snapshot_rejects_write_after_former_final_fstat(
+    tmp_path, monkeypatch
+):
+    repo = make_repo(tmp_path)
+    rel = _commit_plan(repo)
+    manifest_path = repo / "plans" / "manifest.json"
+    manifest_path.write_text(
+        json.dumps({"plans": [{"file": rel, "lifecycle": []}]}),
+        encoding="utf-8",
+    )
+    assert check(repo).exit_code == 0
+    manifest_inode = manifest_path.stat().st_ino
+    real_fstat = os.fstat
+    manifest_fstats = 0
+
+    def writing_fstat(descriptor):
+        nonlocal manifest_fstats
+        result = real_fstat(descriptor)
+        if result.st_ino == manifest_inode:
+            manifest_fstats += 1
+            if manifest_fstats == 5:
+                manifest_path.write_text('{"plans": []}', encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(plan_manifest.os, "fstat", writing_fstat)
+
+    with pytest.raises(plan_manifest.ManifestSourceError, match="manifest changed"):
+        check(repo)
+    assert manifest_fstats >= 5
 
 
 def test_generic_ancestor_authority_cannot_be_removed_from_retained_row(tmp_path):
