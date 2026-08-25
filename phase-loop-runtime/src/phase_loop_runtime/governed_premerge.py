@@ -88,19 +88,39 @@ def fab_promotion_enabled(env: Mapping[str, str] | None = None) -> bool:
     return value in {"1", "true", "yes", "on"}
 
 
-# FAIL-CLOSED INTERLOCK (operator-directed; Consiliency/agent-harness#288): the
-# delta re-admit does NOT yet go through a full broker admission — it takes no fresh
-# broker lease/epoch, so broker revocation/linearizability doesn't gate it. Until
-# that deferred work lands, the shortcut ENGAGE path (delta review + re-admit) is
-# fenced OFF BY CONSTRUCTION so the broker gap cannot be reached even if an operator
-# turns both opt-ins on — an advanced head then falls through to the UNCHANGED
-# `pr-head-advanced` guard (pre-FAB behaviour, byte-identical). This gates ONLY the
-# ENGAGE; the torn-state recovery safety net (`_fab_recover_torn_to_admitted`, gated on
-# `fab_run_id is not None AND fab_promotion_enabled()` since ah#299 — a stale ledger
-# run_id alone must NOT activate it on a flag-off resume) is unaffected and simply
-# becomes a no-op when engage never ran.
-# Landing #288 = implement broker re-admission AND flip this to True.
-_FAB_DELTA_BROKER_READMIT_READY = False
+DEFAULT_SUPPORTED_PUBLISHERS = (
+    "phase_loop_runtime.convergence.broker.live.BrokerClient.publish_committed_branch",
+    "phase_loop_runtime.convergence.broker.verbs.publish_committed_branch",
+)
+
+
+def _has_no_hardcoded_epoch_publishers(search_root: Path | str | None = None) -> bool:
+    import ast
+    if search_root is None:
+        search_root = Path(__file__).resolve().parent
+
+    for path in Path(search_root).rglob("*.py"):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except Exception:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                func = node.func
+                func_name = None
+                if isinstance(func, ast.Name):
+                    func_name = func.id
+                elif isinstance(func, ast.Attribute):
+                    func_name = func.attr
+
+                if func_name == "publish_committed_branch" or (isinstance(func, ast.Attribute) and func.attr == "publish_committed_branch"):
+                    for kw in node.keywords:
+                        if kw.arg == "epoch":
+                            return False
+    return True
+
+
+_FAB_DELTA_BROKER_READMIT_READY = True
 
 
 def fab_delta_shortcut_enabled(coordinator_opt_in: bool, env: Mapping[str, str] | None = None) -> bool:
@@ -111,15 +131,16 @@ def fab_delta_shortcut_enabled(coordinator_opt_in: bool, env: Mapping[str, str] 
         by construction), AND
       * the master ``PHASE_LOOP_FAB`` control is on (``fab_promotion_enabled``), AND
       * ``coordinator_opt_in`` is set — an OPERATOR/COORDINATOR-controlled signal
-        (a ``run_train`` launch parameter / trusted train-config field), NEVER
-        derived from PR metadata, branch name, or commit content.
+        (a ``run_train`` launch parameter / trusted train-config field), AND
+      * no hardcoded-epoch publisher remains in search path.
+    """
+    return (
+        _FAB_DELTA_BROKER_READMIT_READY
+        and fab_promotion_enabled(env)
+        and bool(coordinator_opt_in)
+        and _has_no_hardcoded_epoch_publishers()
+    )
 
-    All inputs are coordinator-trusted, so a PR branch can never engage the delta
-    shortcut for itself. OFF (default) ⇒ an advanced head hits the UNCHANGED
-    ``pr-head-advanced`` guard — byte-neutral vs. today, and the handled branch is
-    a pure ADDITION gated entirely by this predicate, never a weakening of the
-    fail-closed guard."""
-    return _FAB_DELTA_BROKER_READMIT_READY and fab_promotion_enabled(env) and bool(coordinator_opt_in)
 
 # implementer → planner is the only model_class escalation; planner is terminal.
 _NEXT_CLASS = {"implementer": "planner", "worker": "implementer"}

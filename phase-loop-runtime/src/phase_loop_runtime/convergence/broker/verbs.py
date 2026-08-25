@@ -13,6 +13,8 @@ from phase_loop_runtime.convergence.contracts import (
     BrokerRequest,
     BrokerTerminalEvidence,
     BrokerVerb,
+    DeltaReadmitAuthority,
+    DeltaReadmitReceipt,
     PreAdmissionEnvelope,
     PublishCommittedBranchResult,
     publish_committed_branch_idempotency_key,
@@ -33,6 +35,8 @@ class BrokerProviderAdapter(Protocol):
 
 class BrokerClient(Protocol):
     def execute(self, request: BrokerRequest) -> "BrokerExecutionResult": ...
+    def readmit_advanced_head(self, auth: DeltaReadmitAuthority) -> DeltaReadmitReceipt | None: ...
+
 
 
 @dataclass(frozen=True)
@@ -204,6 +208,55 @@ class BrokerService:
         self.adapter = adapter
         self.contracts = contracts
 
+    def readmit_advanced_head(self, auth: DeltaReadmitAuthority) -> DeltaReadmitReceipt | None:
+        from phase_loop_runtime.convergence.broker.live import canonical_repository_identity
+        if auth.adapter_worktree:
+            try:
+                worktree_repo = canonical_repository_identity(auth.adapter_worktree)
+                if worktree_repo != auth.repository:
+                    raise PermissionError(f"repository mismatch: {worktree_repo} != {auth.repository}")
+            except (PermissionError, ValueError):
+                raise
+            except Exception as e:
+                raise PermissionError(str(e)) from e
+
+        if self.evidence_store.epoch_blocked:
+            return None
+
+        rec = self.admission_store.admit_next(auth)
+        if rec is None:
+            return None
+
+        import subprocess
+        try:
+            diff_out = subprocess.check_output(
+                ["git", "-C", auth.adapter_worktree, "diff", "--name-only", f"{auth.prior_head_sha}..{auth.proposed_head_sha}"],
+                text=True,
+                stderr=subprocess.PIPE,
+            )
+        except subprocess.CalledProcessError as e:
+            raise PermissionError(f"git diff failed for proposed head range: {e.stderr or e}") from e
+
+        changed_paths = [p.strip() for p in diff_out.splitlines() if p.strip()]
+        for path in changed_paths:
+            if not any(path == scope or path.startswith(scope.rstrip("/") + "/") for scope in auth.owned_scope):
+                raise PermissionError(f"unowned path in diff: {path} outside scope {auth.owned_scope}")
+
+        if isinstance(rec, DeltaReadmitReceipt):
+            return rec
+        attempt_id = f"readmit:{auth.node_id}:{auth.proposed_head_sha[:8]}"
+        return DeltaReadmitReceipt(
+            repository=auth.repository,
+            branch=auth.branch,
+            prior_head_sha=auth.prior_head_sha,
+            proposed_head_sha=auth.proposed_head_sha,
+            allocated_epoch=rec.epoch,
+            attempt_identity=attempt_id,
+            authority_digest=auth.authority_digest,
+        )
+
+
+
     def _dedup_key(self, request: BrokerRequest) -> str:
         if request.verb is BrokerVerb.PUBLISH_COMMITTED_BRANCH:
             base = publish_committed_branch_idempotency_key(request.repo, request.branch, request.head_sha)
@@ -321,7 +374,9 @@ class BrokerService:
             envelope.expected_version_predicate,
             envelope.authority_domain_scope,
             idempotency_key,
+            node_id=envelope.node_id,
         )
+
 
     def _block_unsealed_owner(self, owner: AdapterStartOwnership) -> bool:
         """Resolve one observed owner under the repository evidence lock.

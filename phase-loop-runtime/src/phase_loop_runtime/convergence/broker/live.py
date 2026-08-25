@@ -2666,8 +2666,14 @@ class _RepositoryRoutingBrokerService:
             self._stores[snapshot.identity] = stores
         return stores
 
-    def _service_for(self, request) -> BrokerService:
-        worktree = getattr(request, "adapter_worktree", None)
+    def _service_for(self, request_or_worktree) -> BrokerService:
+        if isinstance(request_or_worktree, (str, Path)):
+            worktree = str(request_or_worktree)
+            request_repo = None
+        else:
+            worktree = getattr(request_or_worktree, "adapter_worktree", None)
+            request_repo = getattr(request_or_worktree, "repository", getattr(request_or_worktree, "repo", None))
+
         if not worktree:
             raise LegacyCutoverConflict(
                 "an activated publish requires BrokerRequest.adapter_worktree; the "
@@ -2680,9 +2686,9 @@ class _RepositoryRoutingBrokerService:
                 "run under, which is exactly the ambiguity FABPUB removes."
             )
         snapshot = repository_snapshot(worktree)
-        if request.repo != snapshot.identity:
+        if request_repo and request_repo != snapshot.identity:
             raise LegacyCutoverConflict(
-                f"BrokerRequest.repo {request.repo!r} is not the canonical repository "
+                f"BrokerRequest.repo {request_repo!r} is not the canonical repository "
                 f"identity {snapshot.identity!r} derived from {snapshot.worktree}"
             )
         # Stores are shared per REPOSITORY, but the adapter runs
@@ -2709,6 +2715,10 @@ class _RepositoryRoutingBrokerService:
 
     def execute(self, request):
         return self._service_for(request).execute(request)
+
+    def readmit_advanced_head(self, auth: DeltaReadmitAuthority) -> DeltaReadmitReceipt | None:
+        return self._service_for(auth).readmit_advanced_head(auth)
+
 
     def close(self) -> None:
         """Release every generation lease this router cached."""

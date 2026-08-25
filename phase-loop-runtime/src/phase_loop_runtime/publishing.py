@@ -548,7 +548,12 @@ def _transaction_payload(
     original_message: bytes,
     mode: str,
 ) -> dict:
-    parent = _git_output(repo, "rev-parse", f"refs/heads/{branch}")
+    parent = (
+        _git_output(repo, "rev-parse", f"refs/heads/{branch}")
+        or _git_output(repo, "rev-parse", branch)
+        or _git_output(repo, "rev-parse", "HEAD")
+    )
+
     if not parent:
         raise ValueError("branch reference cannot be resolved")
     tree = _git_output(repo, "write-tree")
