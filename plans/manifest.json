@@ -5464,10 +5464,52 @@
             "roadmap_source_authority": "Consiliency/agent-harness#375"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-25T17:08:16Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "absorbed_deferred_findings": [
+              "broker_adapter_symbol_fence_with_pure_credsep_exemption",
+              "zero_based_durable_record_offset_and_replay_order_fold",
+              "replay_derived_status_validity_vs_live_reconciliation_authority",
+              "goal_coverage_classifier_repair_recorded_downstream",
+              "six_focused_test_inventory_prose_correction"
+            ],
+            "applied_ablations": [
+              "redundant_legacy_dot_codex_phase_loop_context_sentence"
+            ],
+            "phase_alias": "RUNTIME",
+            "plan_sha256": "535fd027200ff8b925955363ab9e0cd3923425946f57eebf533e0047af6f8988",
+            "predecessor_plan_sha256": "092b3db8edcb441e7486e49eabca66506cbfcce4a4ca9637bd09818a9cac7385",
+            "president_forcing_decision": "block",
+            "president_model": "grok-4.6",
+            "repaired_blocking_defects": [
+              "verification_commands_machine_extracted_nonempty_complete",
+              "runtime_content_tdd_adapter_consumes_shipped_content_receipt"
+            ],
+            "review_artifacts": {
+              "consolidated_findings_sha256": "fd486ea1140b15e2d2872f8db45e0ba17376dee80c7794a0ba0e8650edc5f48c",
+              "president_ruling_sha256": "9aecfe6fb2b05269846b8069191573c65c3e8b481374c48ea94941fff7ad17d3"
+            },
+            "review_status": "fresh_exact_digest_review_required",
+            "reviewed_candidate_commit": "9cd83617ab12ded01fc84e2f342727e591879611",
+            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+            "source": "Consiliency/agent-harness#375"
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
       "phase_alias": "RUNTIME",
+      "plan_authority_history": [
+        {
+          "plan_sha256": "535fd027200ff8b925955363ab9e0cd3923425946f57eebf533e0047af6f8988",
+          "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#375"
+        }
+      ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/84b1ecde/codex-v10-runtime-plan/20260825T144913Z-01-runtime-plan.md",
       "roadmap_ref": {
         "file": "specs/phase-plans-v10.md",
