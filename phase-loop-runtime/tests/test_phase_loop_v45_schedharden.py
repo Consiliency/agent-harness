@@ -555,47 +555,6 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
     assert safe["restored"] and mutated["restored"]
     assert safe["restored_popen"] and mutated["restored_popen"]
 
-    from phase_loop_runtime.verification_evidence import (
-        _bind_sidecar_extension, run_verification, validate_verification_artifact,
-    )
-
-    artifact_dir = root / ".sched-test-evidence" / mutation
-    try:
-        run_verification(root, artifact_dir, [[sys.executable, "-c", "pass"]], None, None, 30, phase_alias="SCHED")
-        observation = {
-            "frozen_base": base,
-            "candidate_test_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-            "source_digests": source_digests,
-            "exact_diff_sha256": diff_digest,
-            "nodeid": nodeid,
-            "injected_mutation": {
-                "bytes_sha256": hashlib.sha256(
-                    {"pass_fds": b'kwargs["pass_fds"] = ()', "subreaper_session": b'kwargs["start_new_session"] = False', "process_tree_reaping": b"LeaseSupervisor.reap_descendants = direct_child_only"}[mutation]
-                ).hexdigest(),
-                "behavior": mutation,
-                "applied": mutated["reaping_mutation_applied"] if mutation == "process_tree_reaping" else mutated["mutation_applied"],
-            },
-            "restored_popen": mutated["restored_popen"],
-            "restored_reaper": mutated["restored_reaper"],
-            "safe": safe,
-            "mutated": mutated,
-        }
-        sidecar = artifact_dir / "sched-supervisor-observation.json"
-        sidecar.write_text(json.dumps(observation, sort_keys=True), encoding="utf-8")
-        _bind_sidecar_extension((artifact_dir / "verification.json"), namespace="phase_loop_runtime.legible_evidence", record={
-            "schema": "verification_evidence_sidecar.v1",
-            "path": str(sidecar.relative_to(root)),
-            "byte_length": sidecar.stat().st_size,
-            "sha256": hashlib.sha256(sidecar.read_bytes()).hexdigest(),
-            "stage": "sched_joined_probe",
-            "expected_head": base,
-            "bootstrap_head": base,
-            "process_start_token": hashlib.sha256(sidecar.read_bytes()).hexdigest(),
-        })
-        assert validate_verification_artifact(artifact_dir / "verification.json").ok
-    finally:
-        shutil.rmtree(artifact_dir.parent, ignore_errors=True)
-
     assert supervisor_type is not None, "missing production LeaseSupervisor guarantee"
     assert safe["production_spawn"] == {"pass_fds": safe["production_spawn"]["pass_fds"], "session": True, "subreaper": True}
     assert safe["observed"]["lease_inherited"] is True
@@ -606,6 +565,9 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
     if mutation == "process_tree_reaping":
         assert mutated["reaping_mutation_applied"] is True
         assert mutated["restored_reaper"] is True
+    else:
+        assert mutated["mutation_applied"] is True
+    assert mutated["restored_popen"] is True
 
     unsafe = {
         "pass_fds": mutated["lease_acquired"] and not mutated["observed"]["lease_inherited"],
@@ -613,17 +575,61 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
         "process_tree_reaping": mutated["lease_acquired"] and mutated["grandchild_live"],
     }[mutation]
     assert unsafe
+
     from phase_loop_runtime.verification_evidence import (
         _bind_sidecar_extension, run_verification, validate_verification_artifact,
     )
-    artifact_dir = tmp_path / "verification" / mutation
-    run_verification(root, artifact_dir, [[sys.executable, "-c", "pass"]], None, None, 30, phase_alias="SCHED")
-    artifact = artifact_dir / "verification.json"
-    mutant_bytes = json.dumps({"dependency": "phase_loop_runtime.launcher.subprocess.Popen", "mutation": mutation}, sort_keys=True).encode()
-    _bind_sidecar_extension(artifact, namespace="phase_loop_runtime.proofgate_evidence", record={
-        "schema": "proofgate_evidence_sidecar.v1",
-        "candidate_snapshot": {"frozen_base": base, "candidate_test_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), "source_digests": source_digests, "exact_diff_sha256": diff_digest},
-        "mutations": [{"injected_bytes_sha256": hashlib.sha256(mutant_bytes).hexdigest(), "behavior": mutation, "restored_bytes_sha256": source_digests["phase-loop-runtime/src/phase_loop_runtime/launcher.py"]}],
-        "chronology": {"nodeid": nodeid, "expected_failure_anchor": mutation, "observed": {"lock_held": not mutated["lease_acquired"], "grandchild_live": mutated["grandchild_live"], "subreaper_enabled": mutated["observed"]["subreaper_enabled"]}, "base_test_sha256": base_digest},
-    })
-    assert validate_verification_artifact(artifact).ok
+    mutation_sources = {
+        "pass_fds": {
+            "dependency": "phase_loop_runtime.launcher.subprocess.Popen",
+            "callable_identity": "observe_popen",
+            "source": b'kwargs["pass_fds"] = ()',
+        },
+        "subreaper_session": {
+            "dependency": "phase_loop_runtime.launcher.subprocess.Popen",
+            "callable_identity": "observe_popen",
+            "source": b'kwargs["start_new_session"] = False',
+        },
+        "process_tree_reaping": {
+            "dependency": "phase_loop_runtime.launcher.LeaseSupervisor.reap_descendants",
+            "callable_identity": "direct_child_only",
+            "source": b"def direct_child_only(supervisor, *args, **kwargs): return supervisor.reap_direct_child(*args, **kwargs)",
+        },
+    }
+    injected = mutation_sources[mutation]
+    artifact_dir = root / ".sched-test-evidence" / mutation
+    try:
+        run_verification(root, artifact_dir, [[sys.executable, "-c", "pass"]], None, None, 30, phase_alias="SCHED")
+        artifact = artifact_dir / "verification.json"
+        _bind_sidecar_extension(artifact, namespace="phase_loop_runtime.proofgate_evidence", record={
+            "schema": "proofgate_evidence_sidecar.v1",
+            "candidate_snapshot": {
+                "reference_fixture_used": False,
+                "frozen_base": base,
+                "nodeid": nodeid,
+                "candidate_test_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                "source_digests": source_digests,
+                "exact_diff_sha256": diff_digest,
+                "base_test_sha256": base_digest,
+            },
+            "mutations": [{
+                "named_dependency": injected["dependency"],
+                "callable_identity": injected["callable_identity"],
+                "injected_source_bytes": injected["source"].decode("utf-8"),
+                "injected_source_sha256": hashlib.sha256(injected["source"]).hexdigest(),
+                "mutation_applied": mutated["reaping_mutation_applied"] if mutation == "process_tree_reaping" else mutated["mutation_applied"],
+                "restoration_proof": {
+                    "popen_restored": mutated["restored_popen"],
+                    "reaper_restored": mutated["restored_reaper"],
+                },
+            }],
+            "chronology": {
+                "expected_failure_anchor": mutation,
+                "safe": safe,
+                "mutated": mutated,
+                "unsafe_discrimination": unsafe,
+            },
+        })
+        assert validate_verification_artifact(artifact).ok
+    finally:
+        shutil.rmtree(artifact_dir.parent, ignore_errors=True)
