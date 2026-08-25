@@ -15,8 +15,7 @@ Nothing consumed it as ownership.
 
 Deliberately ADVISORY in this first form: it annotates, it never fails. A gate
 that blocks merges is only worth turning on once its false-positive rate has been
-measured against real history. NOTE: no measurement flag exists yet -- that is a
-real gap, not an oversight to gloss (ah#633). Shipping it
+measured against real history -- which is what ``--report`` does. Shipping it
 blocking-first would red the repo on the day it landed, which is how a gate gets
 disabled rather than fixed.
 
@@ -353,13 +352,147 @@ def render(found: Sequence[Ownership], disposition: bool) -> str:
     return "\n".join(lines)
 
 
+@dataclass(frozen=True)
+class ReplayRow:
+    """One historical merge, replayed."""
+
+    sha: str
+    subject: str
+    notable: int
+    expected: int
+    phases: "tuple[str, ...]"
+    skipped_reason: str = ""
+
+
+def _merge_commits(repo: Path, limit: int) -> List["tuple[str, str]"]:
+    out = subprocess.run(
+        # Space-separated, not a control character: a literal NUL in argv is
+        # rejected by subprocess outright. The sha is fixed-width, so a single
+        # split is unambiguous even when the subject contains spaces.
+        ["git", "-C", str(repo), "log", "--merges", "-n", str(limit),
+         "--format=%H %s"],
+        capture_output=True, text=True, check=False,
+    )
+    if out.returncode != 0:
+        raise RoadmapUnreadable(f"could not list merges: {out.stderr.strip()}")
+    rows = []
+    for line in out.stdout.splitlines():
+        parts = line.split(" ", 1)
+        if len(parts) == 2 and len(parts[0]) == 40:
+            rows.append((parts[0], parts[1]))
+    return rows
+
+
+def replay(repo: Path, limit: int, roadmap_rel: str) -> List[ReplayRow]:
+    """Replay the check over the last ``limit`` merges.
+
+    Uses the roadmap **as it existed at each commit**, not today's. Measuring
+    historical PRs against the current roadmap would answer "what would fire
+    now", when the question a graduation decision needs is "what WOULD have
+    fired" -- and `Key files` lists change, so those differ.
+
+    A commit whose roadmap cannot be read is recorded with a reason and counted,
+    never dropped. A silently shrinking denominator would flatter the rate, which
+    is the one number this exists to produce honestly.
+    """
+
+    rows: List[ReplayRow] = []
+    for sha, subject in _merge_commits(repo, limit):
+        blob = subprocess.run(
+            ["git", "-C", str(repo), "show", f"{sha}:{roadmap_rel}"],
+            capture_output=True, text=True, check=False,
+        )
+        if blob.returncode != 0:
+            rows.append(ReplayRow(sha, subject, 0, 0, (), "roadmap absent at commit"))
+            continue
+        try:
+            mapping = ownership_map(blob.stdout)
+        except RoadmapUnreadable as exc:
+            rows.append(ReplayRow(sha, subject, 0, 0, (), f"unparseable: {exc}"))
+            continue
+        diff = subprocess.run(
+            ["git", "-C", str(repo), "diff", "--name-only", f"{sha}^1", sha],
+            capture_output=True, text=True, check=False,
+        )
+        if diff.returncode != 0:
+            rows.append(ReplayRow(sha, subject, 0, 0, (), "diff failed"))
+            continue
+        notable = expected = 0
+        phases: List[str] = []
+        for path in (p for p in diff.stdout.splitlines() if p.strip()):
+            owners = owners_for(path, mapping)
+            if not owners:
+                continue
+            if path in EXPECTED_CLAIMS:
+                expected += 1
+            else:
+                notable += 1
+                phases.extend(p.alias for p in owners)
+        rows.append(ReplayRow(sha, subject, notable, expected, tuple(sorted(set(phases)))))
+    return rows
+
+
+def render_report(rows: Sequence[ReplayRow]) -> str:
+    total = len(rows)
+    skipped = [r for r in rows if r.skipped_reason]
+    scored = [r for r in rows if not r.skipped_reason]
+    flagged = [r for r in scored if r.notable]
+    lines = [
+        f"roadmap-ownership --report: {total} merge(s) replayed "
+        f"({len(scored)} scored, {len(skipped)} unscorable)",
+        "",
+    ]
+    if scored:
+        pct = 100.0 * len(flagged) / len(scored)
+        lines.append(
+            f"  would have flagged: {len(flagged)}/{len(scored)} ({pct:.0f}%)"
+        )
+        lines.append(
+            "  ^ THIS is the graduation number. A blocking gate at this rate stops "
+            f"{pct:.0f}% of merges."
+        )
+    counts: Dict[str, int] = {}
+    for r in flagged:
+        for a in r.phases:
+            counts[a] = counts.get(a, 0) + 1
+    if counts:
+        lines += ["", "  by phase:"]
+        for alias, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
+            lines.append(f"    {alias:<14} {n}")
+    if skipped:
+        # Counted, never dropped: a shrinking denominator flatters the rate.
+        lines += ["", f"  unscorable ({len(skipped)}) — excluded from the rate:"]
+        for r in skipped[:5]:
+            lines.append(f"    {r.sha[:8]} {r.skipped_reason}")
+    return "\n".join(lines)
+
+
 def main(argv: List[str]) -> int:
     parser = argparse.ArgumentParser(prog="roadmap_ownership")
     parser.add_argument("--repo", required=True, type=Path)
     parser.add_argument("--base", default="origin/main")
     parser.add_argument("--body", default="", help="PR body, scanned for the trailer")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--report",
+        type=int,
+        metavar="N",
+        help="replay the check over the last N merges and print the flag rate; "
+             "this is the measurement a graduation decision needs",
+    )
     args = parser.parse_args(argv[1:])
+
+    if args.report:
+        try:
+            roadmap_rel = str(
+                resolve_roadmap(args.repo).relative_to(Path(args.repo).resolve())
+            )
+            rows = replay(args.repo, args.report, roadmap_rel)
+        except RoadmapUnreadable as exc:
+            print(f"roadmap-ownership: CANNOT EVALUATE — {exc}")
+            return 2
+        print(render_report(rows))
+        return 0
 
     try:
         found = audit(args.repo, args.base)

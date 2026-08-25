@@ -6,6 +6,20 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### roadmap-ownership: the graduation instrument (Consiliency/agent-harness#633)
+
+- `--report N` replays the check over the last N merges and prints the flag rate — the
+  measurement a decision to make this check *blocking* actually needs. It reads the
+  roadmap **as it existed at each commit**, not today's, because `Key files` lists change
+  and the question is what *would have* fired, not what fires now.
+- Commits whose roadmap cannot be read are reported with a reason and excluded from the
+  rate, never dropped silently: a shrinking denominator would flatter the one number this
+  exists to produce honestly.
+- **First measurement on this repo: 34/40 merges (85%) would have been flagged, and
+  GOVLEAN accounts for all 34.** A blocking gate at that rate stops 85% of merges. The
+  matcher is correct; one phase claiming `phase-loop-runtime/src/phase_loop_runtime/`
+  wholesale is the cause. Blocking is not viable until that claim is narrowed.
+
 ### Broker-gated FAB delta readmission (Consiliency/agent-harness#191, Consiliency/agent-harness#288)
 
 - Advanced reviewed heads now re-enter through the convergence broker before the

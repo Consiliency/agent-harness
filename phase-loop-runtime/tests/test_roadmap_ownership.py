@@ -329,6 +329,88 @@ class TestExpectedClaims(unittest.TestCase):
         self.assertIn("1 claimed path(s)", out)
 
 
+class TestReplayReport(unittest.TestCase):
+    """`--report` is the graduation instrument (ah#633)."""
+
+    def _repo_with_history(self, tmp):
+        repo = _repo(tmp)
+        run = lambda *a: subprocess.run(["git", "-C", tmp, *a], check=True,
+                                        capture_output=True)
+        run("init", "-q", "-b", "main")
+        run("config", "user.email", "t@t")
+        run("config", "user.name", "t")
+        run("add", "-A")
+        run("commit", "-qm", "seed")
+        run("checkout", "-qb", "feature")
+        (repo / "src").mkdir(exist_ok=True)
+        (repo / "src" / "alpha.py").write_text("x = 1\n")
+        run("add", "-A")
+        run("commit", "-qm", "touch alpha")
+        run("checkout", "-q", "main")
+        run("merge", "--no-ff", "-q", "feature", "-m", "Merge feature")
+        return repo
+
+    def test_replay_flags_a_historical_merge(self):
+        with TemporaryDirectory() as tmp:
+            repo = self._repo_with_history(tmp)
+            rows = ro.replay(repo, 5, "specs/phase-plans-v10.md")
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0].notable, 1)
+            self.assertIn("ALPHA", rows[0].phases)
+
+    def test_unscorable_merges_are_counted_not_dropped(self):
+        """A shrinking denominator would flatter the rate.
+
+        The rate is the ONE number this exists to produce honestly, so a commit
+        whose roadmap cannot be read is reported with a reason rather than
+        silently excluded from `total`.
+
+        Mutation that must kill this: `continue` instead of appending a row with
+        a skipped_reason.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = self._repo_with_history(tmp)
+            rows = ro.replay(repo, 5, "specs/does-not-exist.md")
+            self.assertEqual(len(rows), 1)
+            self.assertTrue(rows[0].skipped_reason)
+            out = ro.render_report(rows)
+            self.assertIn("unscorable", out)
+            self.assertIn("0 scored", out)
+
+    def test_rate_is_computed_over_scored_only(self):
+        rows = [
+            ro.ReplayRow("a" * 40, "one", 1, 0, ("SCHED",)),
+            ro.ReplayRow("b" * 40, "two", 0, 1, ()),
+            ro.ReplayRow("c" * 40, "three", 0, 0, (), "roadmap absent at commit"),
+        ]
+        out = ro.render_report(rows)
+        self.assertIn("1/2 (50%)", out)
+
+    def test_replay_reads_the_roadmap_AT_each_commit(self):
+        """Not today's roadmap. `Key files` lists change over time, so measuring
+        history against the current roadmap answers "what would fire now" when the
+        question is "what WOULD have fired".
+
+        Mutation that must kill this: read the roadmap from the working tree.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = self._repo_with_history(tmp)
+            # The roadmap change must be COMMITTED, or `HEAD:` and `{sha}:` return
+            # the same bytes and the mutation is invisible. My first version only
+            # wrote the working tree, so this test passed under the very mutation
+            # it names -- the sixth vacuous assertion of this session, caught by
+            # running the mutation rather than trusting the setup.
+            (repo / "specs" / "phase-plans-v10.md").write_text(
+                ROADMAP.replace("- `src/alpha.py`", "- `src/unrelated.py`")
+            )
+            subprocess.run(["git", "-C", tmp, "add", "-A"], check=True,
+                           capture_output=True)
+            subprocess.run(["git", "-C", tmp, "commit", "-qm", "retarget roadmap"],
+                           check=True, capture_output=True)
+            rows = ro.replay(repo, 5, "specs/phase-plans-v10.md")
+            self.assertEqual(rows[0].notable, 1, "must use the roadmap at that commit")
+
+
 class TestPartialDrift(unittest.TestCase):
     def test_one_phase_losing_key_files_raises(self):
         """The third mutation, found by review: PARTIAL drift passed silently.
