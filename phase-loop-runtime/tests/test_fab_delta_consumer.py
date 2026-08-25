@@ -1327,6 +1327,10 @@ def _scan_append_sites_in_source(source_text: str) -> tuple[list[tuple[str, str,
                 return f"{base}.{node.attr}" if base else None
             return None
 
+        def _is_train_ledger_binding(self, node) -> bool:
+            qualified = self._qualified_name(node)
+            return qualified is not None and qualified.endswith(".train_ledger")
+
         def _record_shape(self, record_arg) -> tuple[str, str, bool]:
             supplied_as_name = isinstance(record_arg, ast.Name)
             record = self._resolve(record_arg)
@@ -1350,8 +1354,16 @@ def _scan_append_sites_in_source(source_text: str) -> tuple[list[tuple[str, str,
             if isinstance(target, ast.Name):
                 return target.id == "append_record"
             if isinstance(target, ast.Attribute) and target.attr == "append_record":
-                qualified = self._qualified_name(target.value)
-                return qualified is not None and qualified.endswith(".train_ledger")
+                return self._is_train_ledger_binding(target.value)
+            if (
+                isinstance(target, ast.Call)
+                and isinstance(target.func, ast.Name)
+                and target.func.id == "getattr"
+                and len(target.args) >= 2
+                and isinstance(target.args[1], ast.Constant)
+                and target.args[1].value == "append_record"
+            ):
+                return self._is_train_ledger_binding(target.args[0])
             return False
 
         def visit_Call(self, node):
@@ -1719,11 +1731,32 @@ def test_fabreadmit_append_site_inventory_detects_third_site(request, tmp_path):
             "def _extra_relative_aliased_head_append(path, nid):\n"
             "    tl.append_record(path, LedgerRecord(node_id=nid, status='pr_open', head_sha='sha3'))\n"
         ),
+        # Nor may a getattr lookup hide a third head append.
+        source + (
+            "\nfrom phase_loop_runtime import train_ledger\n"
+            "def _extra_getattr_head_append(path, nid):\n"
+            "    getattr(train_ledger, 'append_record')(path, LedgerRecord(node_id=nid, status='pr_open', head_sha='sha3'))\n"
+        ),
+        # Nor may an alias of that getattr result hide a third head append.
+        source + (
+            "\nfrom phase_loop_runtime import train_ledger\n"
+            "def _extra_getattr_aliased_head_append(path, nid):\n"
+            "    append_alias = getattr(train_ledger, 'append_record')\n"
+            "    append_alias(path, LedgerRecord(node_id=nid, status='pr_open', head_sha='sha3'))\n"
+        ),
     )
 
     for synthetic_source in mutations:
         with pytest.raises(AssertionError, match=r"unauthorized or malformed"):
             _assert_head_append_inventory(synthetic_source)
+
+    unrelated_source = source + (
+        "\nunrelated_object = object()\n"
+        "def _unrelated_getattr_append(path, nid):\n"
+        "    getattr(unrelated_object, 'append_record')(path, LedgerRecord(node_id=nid, status='pr_open', head_sha='sha3'))\n"
+    )
+    unrelated_sites, _ = _scan_append_sites_in_source(unrelated_source)
+    assert all(site[0] != "_unrelated_getattr_append" for site in unrelated_sites)
 
 
 def test_fabreadmit_fresh_revocation_blocks_delta_merge(request, tmp_path):
