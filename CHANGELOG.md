@@ -16,9 +16,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - The population is what **landed on the merge target** (`--base`, default `origin/main`),
   not whatever `HEAD` happens to be. Run from a feature branch, an unrevisioned `git log`
   walks the branch and the PR's own unlanded commits displace real landings.
-- **Which** roadmap governed is resolved per commit from the versioned registry at that
-  sha, not once from `HEAD`. A window crossing a version flip (v9 → v10) would otherwise
-  read pre-flip commits as "roadmap absent" and eject them from the denominator.
+- **Which** roadmap governed is resolved per commit, not once from `HEAD`, mirroring
+  `declared_active_roadmap` and reusing that module's parsers rather than a private JSON
+  reader: the versioned registry at that sha, else the banner-declared roadmap of that
+  era. A window crossing a version flip (v9 → v10) would otherwise read pre-flip commits
+  as "roadmap absent" and eject them from the denominator.
+- Where history genuinely never declared an active roadmap — this repo's pre-registry
+  commits carry nine `phase-plans-v*.md` files and no active banner — the row says so
+  ("0 of 9 declare active") instead of the false "roadmap absent". A registry that is
+  present but not coherent is disclosed, never scored under a roadmap it does not name.
 - Commits whose roadmap cannot be read are reported with a reason and excluded from the
   rate, never dropped silently: a shrinking denominator would flatter the one number this
   exists to produce honestly. A report that scores nothing exits non-zero rather than

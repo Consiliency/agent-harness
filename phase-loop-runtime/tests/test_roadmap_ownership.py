@@ -103,6 +103,24 @@ x
 """
 
 
+def _registry(selected: str, entries) -> str:
+    """A canonical `roadmap_status_manifest.v1` document.
+
+    The fixtures previously wrote a bare `{"roadmaps": [...]}`, which the repo's
+    own parser rejects -- so they were exercising a registry shape this codebase
+    never produces.
+    """
+
+    return json.dumps({
+        "schema": "roadmap_status_manifest.v1",
+        "selected_roadmap": selected,
+        "roadmaps": sorted(
+            ({"path": p, "status": st} for p, st in entries),
+            key=lambda e: e["path"],
+        ),
+    })
+
+
 def _repo(tmp: str, *, roadmap: str = ROADMAP, current: str | None = "ALPHA") -> Path:
     repo = Path(tmp)
     (repo / "specs").mkdir(parents=True, exist_ok=True)
@@ -375,12 +393,26 @@ class TestReplayReport(unittest.TestCase):
         """
         with TemporaryDirectory() as tmp:
             repo = self._repo_with_history(tmp)
+            # Remove the roadmap so NOTHING resolves at any commit. Passing a
+            # bogus relative path is no longer enough: the resolver is
+            # authoritative and finds the fixture's real roadmap regardless, so
+            # the old form silently stopped testing the unscorable path.
+            (repo / "specs" / "phase-plans-v10.md").unlink()
+            subprocess.run(["git", "-C", tmp, "add", "-A"], check=True,
+                           capture_output=True)
+            subprocess.run(["git", "-C", tmp, "commit", "-qm", "drop roadmap"],
+                           check=True, capture_output=True)
             rows = ro.replay(repo, 5, "specs/does-not-exist.md")
-            self.assertEqual(len(rows), 2)
-            self.assertTrue(all(r.skipped_reason for r in rows))
-            out = ro.render_report(rows)
-            self.assertIn("unscorable", out)
-            self.assertIn("0 scored", out)
+            # Every mainline entry is present: the roadmap-less commit and the
+            # root are unscorable, the middle one still scores. Nothing is
+            # dropped -- that is the property under test.
+            self.assertEqual(len(rows), 3, "no row may be silently dropped")
+            self.assertTrue(any(r.skipped_reason for r in rows))
+            self.assertIn("unscorable", ro.render_report(rows))
+            # And an all-unscorable set must read as zero scored rather than
+            # quietly reporting a rate over an empty denominator.
+            allskipped = [ro.ReplayRow(r.sha, r.subject, 0, 0, (), "x") for r in rows]
+            self.assertIn("0 scored", ro.render_report(allskipped))
 
     def test_rate_is_computed_over_scored_only(self):
         rows = [
@@ -603,9 +635,10 @@ class TestRoadmapAuthorityIsHistorical(unittest.TestCase):
             run("config", "user.name", "t")
             # Era 1: v9 is the active roadmap and it claims src/alpha.py.
             (repo / "specs" / "phase-plans-v9.md").write_text(ROADMAP)
-            (repo / "specs" / "roadmap-status.json").write_text(json.dumps(
-                {"roadmaps": [{"path": "specs/phase-plans-v9.md", "status": "active"}]}
-            ))
+            (repo / "specs" / "roadmap-status.json").write_text(
+                _registry("specs/phase-plans-v9.md",
+                          [("specs/phase-plans-v9.md", "active")])
+            )
             run("add", "-A")
             run("commit", "-qm", "seed v9 era")
             (repo / "src").mkdir(exist_ok=True)
@@ -615,9 +648,10 @@ class TestRoadmapAuthorityIsHistorical(unittest.TestCase):
             # Era 2: flip to v10. v9 is gone; v10 exists only from here on.
             (repo / "specs" / "phase-plans-v9.md").unlink()
             (repo / "specs" / "phase-plans-v10.md").write_text(ROADMAP)
-            (repo / "specs" / "roadmap-status.json").write_text(json.dumps(
-                {"roadmaps": [{"path": "specs/phase-plans-v10.md", "status": "active"}]}
-            ))
+            (repo / "specs" / "roadmap-status.json").write_text(
+                _registry("specs/phase-plans-v10.md",
+                          [("specs/phase-plans-v10.md", "active")])
+            )
             run("add", "-A")
             run("commit", "-qm", "flip to v10")
 
@@ -660,13 +694,14 @@ class TestRegistryIncoherenceIsDisclosed(unittest.TestCase):
         The row would then be SCORED (notable=1) against HEAD's roadmap.
         """
         with TemporaryDirectory() as tmp:
-            repo = self._repo_with_registry(tmp, json.dumps({"roadmaps": [
-                {"path": "specs/phase-plans-v10.md", "status": "active"},
-                {"path": "specs/phase-plans-v9.md", "status": "active"},
-            ]}))
+            repo = self._repo_with_registry(tmp, _registry(
+                "specs/phase-plans-v10.md",
+                [("specs/phase-plans-v10.md", "active"),
+                 ("specs/phase-plans-v9.md", "active")],
+            ))
             rows = ro.replay(repo, 5, "specs/phase-plans-v10.md", "main")
             row = [r for r in rows if r.subject == "the change"][0]
-            self.assertIn("names 2 active", row.skipped_reason)
+            self.assertIn("marks 2 roadmaps active", row.skipped_reason)
             self.assertEqual(row.notable, 0)
 
     def test_unreadable_registry_is_unscorable_not_silently_scored(self):
@@ -674,7 +709,7 @@ class TestRegistryIncoherenceIsDisclosed(unittest.TestCase):
             repo = self._repo_with_registry(tmp, "{not json")
             rows = ro.replay(repo, 5, "specs/phase-plans-v10.md", "main")
             row = [r for r in rows if r.subject == "the change"][0]
-            self.assertIn("unreadable", row.skipped_reason)
+            self.assertIn("invalid at commit", row.skipped_reason)
 
     def test_an_ABSENT_registry_still_falls_back_and_scores(self):
         """The fallback must survive: the registry-less fixtures across this
@@ -715,6 +750,104 @@ class TestDominantIsNotAlwaysTheConstraint(unittest.TestCase):
         out = ro.render_report(rows)
         self.assertIn("NOT the binding constraint", out)
         self.assertNotIn("NECESSARY but NOT SUFFICIENT", out)
+
+
+class TestPreRegistryEraResolution(unittest.TestCase):
+    """Before the registry existed, the roadmap was declared by BANNER.
+
+    Codex seat, round 2: falling back to today's roadmap path for pre-registry
+    commits both loses them from the denominator and states something false
+    ("roadmap absent") about history that plainly contains roadmaps.
+    """
+
+    def _era(self, tmp, banners):
+        repo = Path(tmp)
+        (repo / "specs").mkdir(parents=True, exist_ok=True)
+        for name, status in banners:
+            body = ROADMAP if status is None else ROADMAP.replace(
+                "# Roadmap", f"# Roadmap\n\n{status}", 1)
+            (repo / "specs" / name).write_text(body)
+        run = lambda *a: subprocess.run(["git", "-C", tmp, *a], check=True,
+                                        capture_output=True)
+        run("init", "-q", "-b", "main")
+        run("config", "user.email", "t@t")
+        run("config", "user.name", "t")
+        run("add", "-A")
+        run("commit", "-qm", "seed")
+        (repo / "src").mkdir(exist_ok=True)
+        (repo / "src" / "alpha.py").write_text("x = 1\n")
+        run("add", "-A")
+        run("commit", "-qm", "the change")
+        return repo
+
+    def test_the_banner_declared_roadmap_is_used_when_no_registry_exists(self):
+        """Mutation that must kill this: return the fallback instead of
+        consulting banners. The fallback path names v10, which does not exist
+        here, so the row would read "roadmap absent" instead of scoring.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = self._era(tmp, [
+                ("phase-plans-v8.md",
+                 "> # DELIVERED — CLOSED (assessed 2026-01-02)"),
+                ("phase-plans-v9.md",
+                 "> **Status (2026-01-03): ACTIVE — created this date, "
+                 "nothing executed yet.**"),
+            ])
+            rows = ro.replay(repo, 5, "specs/phase-plans-v10.md", "main")
+            row = [r for r in rows if r.subject == "the change"][0]
+            self.assertFalse(row.skipped_reason,
+                             "v9 declares itself active and must be used")
+            self.assertEqual(row.notable, 1)
+
+    def test_no_banner_declares_active_is_disclosed_with_the_real_reason(self):
+        """The honest disclosure matters as much as the resolution: this repo's
+        own pre-registry commits carry nine roadmaps and NO active banner, and
+        reporting that as "roadmap absent" is simply false.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = self._era(tmp, [("phase-plans-v8.md", None),
+                                   ("phase-plans-v9.md", None)])
+            rows = ro.replay(repo, 5, "specs/phase-plans-v10.md", "main")
+            row = [r for r in rows if r.subject == "the change"][0]
+            self.assertIn("sole active roadmap", row.skipped_reason)
+            self.assertNotIn("absent", row.skipped_reason)
+
+    def test_a_registry_selecting_a_roadmap_it_does_not_mark_active_is_rejected(self):
+        """A selection contradicting the manifest's own status records is
+        rejected, not scored (codex seat).
+
+        This is caught by the repo's canonical parser -- which is exactly the
+        argument for reusing it instead of the private JSON reader this had
+        before, where such a registry was silently accepted.
+
+        Mutation that must kill this: fall back to the HEAD path when the
+        manifest is rejected, which scores the commit anyway.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "specs").mkdir(parents=True, exist_ok=True)
+            (repo / "specs" / "phase-plans-v10.md").write_text(ROADMAP)
+            (repo / "specs" / "phase-plans-v9.md").write_text(ROADMAP)
+            (repo / "specs" / "roadmap-status.json").write_text(_registry(
+                "specs/phase-plans-v10.md",
+                [("specs/phase-plans-v10.md", "superseded"),
+                 ("specs/phase-plans-v9.md", "active")],
+            ))
+            run = lambda *a: subprocess.run(["git", "-C", tmp, *a], check=True,
+                                            capture_output=True)
+            run("init", "-q", "-b", "main")
+            run("config", "user.email", "t@t")
+            run("config", "user.name", "t")
+            run("add", "-A")
+            run("commit", "-qm", "seed")
+            (repo / "src").mkdir(exist_ok=True)
+            (repo / "src" / "alpha.py").write_text("x = 1\n")
+            run("add", "-A")
+            run("commit", "-qm", "the change")
+            rows = ro.replay(repo, 5, "specs/phase-plans-v10.md", "main")
+            row = [r for r in rows if r.subject == "the change"][0]
+            self.assertIn("registry invalid at commit", row.skipped_reason)
+            self.assertEqual(row.notable, 0)
 
 
 class TestShallowCloneBoundary(unittest.TestCase):

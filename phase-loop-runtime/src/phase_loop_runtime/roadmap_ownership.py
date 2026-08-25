@@ -36,7 +36,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
-from .roadmap_lint import ROADMAP_STATUS_REGISTRY_REL, Phase, _extract_phases, declared_active_roadmap
+from .roadmap_lint import (
+    ROADMAP_STATUS_REGISTRY_REL,
+    RoadmapStatusError,
+    parse_roadmap_banner_status,
+    parse_roadmap_status_manifest,
+)
+from .roadmap_lint import Phase, _extract_phases, declared_active_roadmap
 
 #: A PR body/commit trailer that records a deliberate edit into an owned file.
 #: The goal is NOT to prevent the edit -- an urgent fix in a reserved file is a
@@ -145,6 +151,9 @@ def _split_token(raw: str) -> "tuple[str, str]":
     path = found.group(1).strip()
     rest = raw[found.end():].strip()
     return path, rest
+
+
+_ROADMAP_CANDIDATE_RE = re.compile(r"^specs/phase-plans-v\d+\.md$")
 
 
 def ownership_map(roadmap_text: str) -> Dict[str, List[Phase]]:
@@ -406,39 +415,83 @@ def _landed_commits(repo: Path, limit: int, rev: str = "HEAD") -> List["tuple[st
 def _roadmap_rel_at(repo: Path, sha: str, fallback_rel: str) -> "tuple[Optional[str], Optional[str]]":
     """Which roadmap was GOVERNING at ``sha``.
 
-    Resolving the path once from HEAD and reading it at every historical commit
-    is wrong across a roadmap version flip: pre-flip commits either read as
-    "absent" or, worse, get scored against a file that existed only as an
-    unratified draft. The registry is itself versioned, so ask it at each commit.
+    Mirrors :func:`declared_active_roadmap` -- registry first, then the
+    banner-declared singleton -- but reads every input as it existed at ``sha``
+    instead of from the working tree, and REUSES that module's parsers rather
+    than re-implementing them. A private JSON reader here would drift from the
+    canonical schema rules and quietly accept registries the repo rejects.
 
-    Returns ``(roadmap_rel, unscorable_reason)``. An ABSENT registry falls back
-    to the HEAD-resolved path -- the legacy/synthetic-repo case
-    ``declared_active_roadmap`` also tolerates. A registry that is PRESENT but
-    unreadable, or that names anything other than exactly one active roadmap,
-    yields a reason instead: scoring it against HEAD's roadmap would measure it
-    under a roadmap its own registry did not name.
+    Falling back to HEAD's roadmap is not an acceptable default: the pre-registry
+    era of this repo carries nine ``phase-plans-v*.md`` files, of which exactly
+    one declares itself active, so those commits ARE resolvable and reporting
+    them as "roadmap absent" both loses them from the denominator and states
+    something false about the history.
+
+    Returns ``(roadmap_rel, unscorable_reason)`` -- exactly one is non-None.
     """
 
-    out = subprocess.run(
-        ["git", "-C", str(repo), "show", f"{sha}:{ROADMAP_STATUS_REGISTRY_REL}"],
+    def _blob(path: str) -> Optional[str]:
+        out = subprocess.run(
+            ["git", "-C", str(repo), "show", f"{sha}:{path}"],
+            capture_output=True, text=True, check=False,
+        )
+        return out.stdout if out.returncode == 0 else None
+
+    registry = _blob(ROADMAP_STATUS_REGISTRY_REL)
+    if registry is not None:
+        try:
+            manifest = parse_roadmap_status_manifest(registry)
+        except (RoadmapStatusError, KeyError, ValueError) as exc:
+            # PRESENT but not canonical. Falling back would score the commit
+            # against a roadmap its own registry did not name.
+            return None, f"roadmap registry invalid at commit: {type(exc).__name__}"
+        selected = manifest["selected_roadmap"]
+        # Schema-valid is not the same as coherent: a manifest can parse while
+        # its `selected_roadmap` contradicts its own status records. Scoring
+        # under a selection the registry itself does not mark active would be a
+        # quiet wrong answer, which is the one outcome this tool cannot afford.
+        active = [e["path"] for e in manifest["roadmaps"] if e["status"] == "active"]
+        if len(active) != 1:
+            return None, (
+                f"roadmap registry at commit marks {len(active)} roadmaps active"
+            )
+        # No `active[0] != selected` guard here: verified unreachable, because
+        # `parse_roadmap_status_manifest` already rejects a manifest whose
+        # selection is not the active record. An untestable guard would only
+        # assert protection it never provides.
+        return selected, None
+
+    # Pre-registry era: resolve the way the repo did then.
+    listing = subprocess.run(
+        ["git", "-C", str(repo), "ls-tree", "--name-only", sha, "specs/"],
         capture_output=True, text=True, check=False,
     )
-    if out.returncode != 0:
-        # ABSENT registry is the legacy/synthetic case `declared_active_roadmap`
-        # also tolerates: fall back, and score.
+    if listing.returncode != 0:
         return fallback_rel, None
-    try:
-        entries = json.loads(out.stdout).get("roadmaps", [])
-    except (ValueError, AttributeError):
-        return None, "roadmap registry unreadable at commit"
-    active = [e.get("path") for e in entries if e.get("status") == "active"]
-    if len(active) == 1 and active[0]:
+    candidates = sorted(
+        p for p in listing.stdout.splitlines()
+        if _ROADMAP_CANDIDATE_RE.match(p.strip())
+    )
+    if not candidates:
+        return fallback_rel, None
+    if len(candidates) == 1:
+        return candidates[0], None
+    active = []
+    for rel in candidates:
+        text = _blob(rel)
+        if text is None:
+            continue
+        try:
+            if parse_roadmap_banner_status(text, rel) == "active":
+                active.append(rel)
+        except RoadmapStatusError:
+            continue
+    if len(active) == 1:
         return active[0], None
-    # PRESENT but incoherent is different: falling back to HEAD's roadmap would
-    # silently score the commit against a roadmap that demonstrably was not the
-    # one its own registry named. Everywhere else this module counts what it
-    # cannot read and says why; do that here too rather than fail open.
-    return None, f"roadmap registry at commit names {len(active)} active roadmaps"
+    return None, (
+        f"cannot determine the sole active roadmap at commit "
+        f"({len(active)} of {len(candidates)} declare active)"
+    )
 
 
 def _is_shallow(repo: Path) -> bool:
