@@ -5396,6 +5396,132 @@
       "task_summary": "Thread live run alias into verification.json (ah#85b)",
       "type": "detailed",
       "updated_at": "2026-07-28T22:28:34Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-08-25T14:49:13Z",
+      "file": "plans/phase-plan-v10-RUNTIME.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260825T144913Z-01-runtime-plan.md",
+      "if_gates_produced": [
+        "IF-0-RUNTIME-1"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2",
+        "SL-3",
+        "SL-4",
+        "SL-5"
+      ],
+      "lifecycle": [
+        {
+          "at": "2026-08-25T14:49:13Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "phase_alias": "RUNTIME",
+            "planning_base": "3a10b03191f10bdb70c8238b535dcc6afdb5a6d7",
+            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+            "run_id": "20260825T144913Z-01-runtime-plan"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-08-25T16:25:15Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "absorbed_deferred_observations": [
+              "keyword_only_render_train_status_signature",
+              "whole_phase_sl0_through_sl5_write_set",
+              "exact_environment_scrubber_symbols",
+              "runtime_residual_cli_serialization",
+              "ancestral_planning_base_wording",
+              "whole_phase_single_vendor_ownership",
+              "additive_convergence_init_exports"
+            ],
+            "applied_ablations": [
+              "duplicate_context_roadmap_digest",
+              "duplicate_execution_policy_plan_row"
+            ],
+            "authority_source": "Consiliency/agent-harness#375",
+            "phase_alias": "RUNTIME",
+            "plan_sha256": "092b3db8edcb441e7486e49eabca66506cbfcce4a4ca9637bd09818a9cac7385",
+            "predecessor_plan_sha256": "80e0216157b7a9cfe0f16c7c0de5ad2b3fbeb02b45a40b51cfbc6a53840de540",
+            "president_forcing_decision": "block",
+            "president_model": "grok-4.6",
+            "repair_status": "blocking_and_deferred_findings_absorbed_requires_fresh_exact_digest_board",
+            "resolved_blocking_clusters": [
+              "exact_production_target_binding_rejects_test_helper_and_runtime_tdd_guard_targets",
+              "status_projection_scoped_to_recovered_train_state_without_reconciliation_verdict_claim"
+            ],
+            "review_artifacts": {
+              "consolidated_findings_sha256": "9f6542e327c2f888660f4808d9252205141bd26ac05e0ecfca2c0c46ed5a46b4",
+              "critics_sha256": "f3fd77639c70ef2f2e354245425a23f78f8160857e52f2ca6b07df487aafaf86",
+              "early_prover_sha256": "d82790826bde83a5cf72453a3e5f48c9b55ee13f6fa7691866554d87222d390a",
+              "president_ruling_sha256": "6e2826272704f831277644178155924d6d96f382f6c63ec2d131661dc65799f3"
+            },
+            "reviewed_candidate_commit": "3b03dc4a00fab096c261e51b93ac5a973ed74508",
+            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+            "roadmap_source_authority": "Consiliency/agent-harness#375"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-08-25T17:08:16Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "absorbed_deferred_findings": [
+              "broker_adapter_symbol_fence_with_pure_credsep_exemption",
+              "zero_based_durable_record_offset_and_replay_order_fold",
+              "replay_derived_status_validity_vs_live_reconciliation_authority",
+              "goal_coverage_classifier_repair_recorded_downstream",
+              "six_focused_test_inventory_prose_correction"
+            ],
+            "applied_ablations": [
+              "redundant_legacy_dot_codex_phase_loop_context_sentence"
+            ],
+            "phase_alias": "RUNTIME",
+            "plan_sha256": "535fd027200ff8b925955363ab9e0cd3923425946f57eebf533e0047af6f8988",
+            "predecessor_plan_sha256": "092b3db8edcb441e7486e49eabca66506cbfcce4a4ca9637bd09818a9cac7385",
+            "president_forcing_decision": "block",
+            "president_model": "grok-4.6",
+            "repaired_blocking_defects": [
+              "verification_commands_machine_extracted_nonempty_complete",
+              "runtime_content_tdd_adapter_consumes_shipped_content_receipt"
+            ],
+            "review_artifacts": {
+              "consolidated_findings_sha256": "fd486ea1140b15e2d2872f8db45e0ba17376dee80c7794a0ba0e8650edc5f48c",
+              "president_ruling_sha256": "9aecfe6fb2b05269846b8069191573c65c3e8b481374c48ea94941fff7ad17d3"
+            },
+            "review_status": "fresh_exact_digest_review_required",
+            "reviewed_candidate_commit": "9cd83617ab12ded01fc84e2f342727e591879611",
+            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+            "source": "Consiliency/agent-harness#375"
+          },
+          "transition": "committed"
+        }
+      ],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "RUNTIME",
+      "plan_authority_history": [
+        {
+          "plan_sha256": "535fd027200ff8b925955363ab9e0cd3923425946f57eebf533e0047af6f8988",
+          "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#375"
+        }
+      ],
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/84b1ecde/codex-v10-runtime-plan/20260825T144913Z-01-runtime-plan.md",
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v10.md",
+        "slug": "phase-plans-v10",
+        "status": "imported",
+        "type": "phase"
+      },
+      "slug": "v10-RUNTIME",
+      "status": "committed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-08-25T16:25:15Z"
     }
   ],
   "schema_version": 1
