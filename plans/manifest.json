@@ -2392,6 +2392,118 @@
     },
     {
       "acceptance_criteria_count": null,
+      "created_at": "2026-08-25T15:27:51Z",
+      "file": "plans/phase-plan-v10-INTEG.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260825T150714Z-01-integ-plan.md",
+      "if_gates_produced": [
+        "IF-0-INTEG-1"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2",
+        "SL-3"
+      ],
+      "lifecycle": [
+        {
+          "at": "2026-08-25T15:27:51Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "author_model": "gpt-5.6-sol",
+            "author_vendor": "openai",
+            "plan_sha256": "dc6359cebee1a40e04732981cf62623c60dd01b9ae1c588488c2159a3f790283",
+            "review_status": "unreviewed_not_approved",
+            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+            "run_id": "20260825T150714Z-01-integ-plan"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-08-25T20:21:55Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "author_model": "gpt-5.6-sol",
+            "author_vendor": "openai",
+            "phase_alias": "INTEG",
+            "plan_sha256": "7cb409a3a4d6aaecf8cddc691b3b33590a5b24c2dadb4bcaeb08c824dfe3a1db",
+            "predecessor_plan_sha256": "dc6359cebee1a40e04732981cf62623c60dd01b9ae1c588488c2159a3f790283",
+            "president_forcing_decision": "REJECT",
+            "repaired_blocking_defects": [
+              "suite_command_shell_free_argv",
+              "verification_commands_machine_extracted",
+              "dispatch_hints_precedence_rung_removed"
+            ],
+            "review_bundle": "/mnt/workspace/review-bundles/integ-plan-af072092",
+            "review_status": "fresh_exact_digest_full_board_required",
+            "reviewed_candidate_commit": "af072092800bac7f78c1a602dfc3a4635bc82202",
+            "reviewed_candidate_parent": "982d94fe06f8aacaf5ab8e21635b7a69a4317897",
+            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-08-25T20:58:02Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "author_model": "gpt-5.6-sol",
+            "author_vendor": "openai",
+            "phase_alias": "INTEG",
+            "plan_sha256": "16431bf3719df2cb3a170b55198e2308d8d5b6e7470557be893b6524f56c2e83",
+            "predecessor_plan_sha256": "7cb409a3a4d6aaecf8cddc691b3b33590a5b24c2dadb4bcaeb08c824dfe3a1db",
+            "president_forcing_decision": "REJECT",
+            "repaired_blocking_defects": [
+              "focused_regression_shell_globs_replaced_with_explicit_paths"
+            ],
+            "review_status": "fresh_exact_digest_full_board_required",
+            "reviewed_candidate_commit": "aa6899dc12544919403cdc5fac07efc8daf31c7b",
+            "reviewed_candidate_parent": "af072092800bac7f78c1a602dfc3a4635bc82202",
+            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-08-25T22:12:46Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "author_model": "gpt-5.6-sol",
+            "author_vendor": "openai",
+            "phase_alias": "INTEG",
+            "plan_sha256": "0815de55d1e963501f5fa068711d208b99a0fd9f1f475a9c5df666b4ec33ecd3",
+            "predecessor_plan_sha256": "16431bf3719df2cb3a170b55198e2308d8d5b6e7470557be893b6524f56c2e83",
+            "president_forcing_decision": "REPAIR",
+            "president_ruling_sha256": "9ae01a354862fc3de9b34d6aa069b071552c8ff6a0e37ae99ac5ac07d7a8d414",
+            "repair_issue": "agent-harness#679",
+            "repaired_blocking_defects": [
+              "verification_intake_future_paths_removed",
+              "legacy_fault_binding_moved_to_post_run_coordinator",
+              "redundant_focused_regression_removed"
+            ],
+            "review_bundle": "/mnt/workspace/review-bundles/integ-plan-427d2d39",
+            "review_status": "fresh_exact_digest_full_board_required",
+            "reviewed_candidate_commit": "427d2d39c05427efced6fa3ffb51d24954c41ad2",
+            "reviewed_candidate_parent": "c5ad8af1406c1f3aed5cc41f6864364790390918",
+            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0"
+          },
+          "transition": "committed"
+        }
+      ],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "INTEG",
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/05dc3b1c/codex-v10-integ-plan/20260825T150714Z-01-integ-plan.md",
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v10.md",
+        "slug": "phase-plans-v10",
+        "status": "committed",
+        "type": "phase"
+      },
+      "slug": "v10-INTEG",
+      "status": "committed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-08-25T22:12:46Z"
+    },
+    {
+      "acceptance_criteria_count": null,
       "created_at": "2026-07-30T04:07:17Z",
       "file": "plans/phase-plan-v10-LEGIBLE.md",
       "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260730T040717Z-01-legible-plan.md",
