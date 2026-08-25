@@ -6,6 +6,20 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Broker-gated FAB delta readmission (Consiliency/agent-harness#191, Consiliency/agent-harness#288)
+
+- Advanced reviewed heads now re-enter through the convergence broker before the
+  FAB delta shortcut can merge them. The shortcut requires active FABREADMIT and
+  FABPUB capabilities, both operator/coordinator opt-ins, fresh broker authority,
+  and an owned-path re-diff; stale, revoked, poisoned, or out-of-scope authority
+  fails closed.
+- Readmission advances broker and train-ledger evidence without invoking a
+  provider adapter. The active shortcut binds the exact reviewed bytes through
+  recovery and merge, including crash-safe resume and flag-reversal behavior.
+- The repository-wide FABPUB decision remains in force: publish byte-neutrality
+  is retracted because canonical publication intentionally renumbers shared
+  admission epochs and writes its deterministic publication evidence.
+
 ## [0.7.14] - 2026-08-24
 
 ### Fleet advisor-board defaults (Consiliency/agent-harness#643, Consiliency/agent-harness#645)

@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: FABREADMIT
 roadmap: specs/phase-plans-v10.md
-roadmap_sha256: c66949236043e46e956caec1c09d0c19d0e8751e4ce2891de1fe2edf24e9fea1
+roadmap_sha256: 9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0
 automation:
   suite_command:
     - env
@@ -238,7 +238,7 @@ SL-3 — Activation, documentation, and exact-head evidence reducer
 
 - **Scope**: Enable the consumer only after the integrated mechanism proves every
   negative and positive arm, then reduce exact-head completion evidence.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/fabreadmit_capability.py`, `phase-loop-runtime/src/phase_loop_runtime/governed_premerge.py`, `CHANGELOG.md`
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/fabreadmit_capability.py`, `phase-loop-runtime/src/phase_loop_runtime/governed_premerge.py`, `phase-loop-runtime/src/phase_loop_runtime/publishing.py`, `CHANGELOG.md`
 - **Interfaces provided**: active production delta shortcut and closeable evidence
   for agent-harness#191 and agent-harness#288
 - **Interfaces consumed**: exact RED node inventory (from SL-0), unified readmission commit surface (from SL-2), IF-0-FABREADMIT-1 authority/receipt surface (from SL-1), exact merged FABPUB capability marker (pre-existing)
@@ -253,6 +253,11 @@ SL-3 — Activation, documentation, and exact-head evidence reducer
     capability-marker conjunct; it may not short-circuit active FABPUB or the
     hardcoded-epoch absence check. Keep both operator/coordinator opt-ins
     mandatory.
+  - impl: Preserve transaction construction for a reviewed branch that does not
+    yet have a local ref by resolving the named branch and then `HEAD` after the
+    canonical `refs/heads/<branch>` lookup. This is required by the frozen
+    first-hop key-mismatch falsifier so broker validation, rather than an
+    unrelated missing-ref error, remains the observed boundary.
   - impl: Update the CHANGELOG with broker-gated readmission, active reviewed-byte
     shortcut, zero provider effect during readmission, and the already-ratified
     publish byte-neutrality retraction.
@@ -266,7 +271,7 @@ SL-3 — Activation, documentation, and exact-head evidence reducer
 
 ## Execution Policy
 
-- work-unit defaults: work-unit=`lane_execute`, effort=`high`, unsupported=`inherit_default`, inherit-default=`true`
+- work-unit defaults: work-unit=`lane_execute`, effort=`high`, unsupported=`block`, inherit-default=`false`
 - plan: executor=`codex`, model=`gpt-5.6-sol`, effort=`xhigh`, work-unit=`phase_plan`, reason=`maintainer-selected planning authority`
 - SL-0: executor=`gemini`, model=`gemini-3.6-flash`, effort=`high`, work-unit=`lane_execute`, reason=`FABREADMIT single-author-vendor tests-first lane`
 - SL-1: executor=`gemini`, model=`gemini-3.6-flash`, effort=`high`, work-unit=`lane_execute`, reason=`FABREADMIT single-author-vendor broker lane`

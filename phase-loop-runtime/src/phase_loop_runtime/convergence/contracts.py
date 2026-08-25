@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
 from enum import Enum
 from typing import Tuple
 
@@ -233,3 +234,81 @@ def evaluate_resource_isolation(
     if set(left_owned_paths) & set(right_owned_paths):
         return ResourceIsolationDecision(False, "owned paths overlap")
     return ResourceIsolationDecision(True, "disjoint paths with frozen interfaces")
+
+
+@dataclass(frozen=True)
+class DeltaReadmitAuthority:
+    """IF-0-FABREADMIT-1 immutable delta readmission request."""
+
+    repository: str
+    adapter_worktree: str
+    checkpoint_root: str
+    branch: str
+    base: str
+    prior_head_sha: str
+    proposed_head_sha: str
+    train_id: str
+    node_id: str
+    fab_run_id: str
+    roadmap_digest: str
+    provenance_digest: str
+    owned_scope: Tuple[str, ...]
+
+    FORBIDDEN_FIELDS = (
+        "epoch",
+        "attempt_id",
+        "fence_token",
+        "approval_digest",
+        "idempotency_key",
+    )
+
+    def __post_init__(self) -> None:
+        if isinstance(self.owned_scope, (list, set)):
+            object.__setattr__(self, "owned_scope", tuple(self.owned_scope))
+        if not self.repository or not self.branch or not self.prior_head_sha or not self.proposed_head_sha or not self.train_id or not self.node_id or not self.fab_run_id:
+            raise ValueError("DeltaReadmitAuthority authority fields cannot be empty")
+
+    @property
+    def authority_digest(self) -> str:
+        payload = (
+            f"{self.repository}\0{self.branch}\0{self.prior_head_sha}\0"
+            f"{self.proposed_head_sha}\0{self.train_id}\0{self.node_id}\0"
+            f"{self.fab_run_id}\0{self.roadmap_digest}\0{self.provenance_digest}\0"
+            f"{','.join(self.owned_scope)}"
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    @property
+    def attempt_identity(self) -> str:
+        return hashlib.sha256(
+            b"FABREADMIT-READMISSION-ATTEMPT-v1\0"
+            + bytes.fromhex(self.authority_digest)
+        ).hexdigest()
+
+@dataclass(frozen=True)
+class DeltaReadmitReceipt:
+    """IF-0-FABREADMIT-1 readmission grant receipt."""
+
+    repository: str
+    branch: str
+    prior_head_sha: str
+    proposed_head_sha: str
+    allocated_epoch: int
+    attempt_identity: str
+    authority_digest: str
+
+    @property
+    def epoch(self) -> int:
+        return self.allocated_epoch
+
+
+@dataclass(frozen=True)
+class ReadmitAdmissionBinding:
+    """ReadmitAdmissionBinding.v1 binding stored on readmit admission records."""
+
+    prior_head_sha: str
+    proposed_head_sha: str
+    node_id: str
+    owned_scope: Tuple[str, ...]
+    authority_digest: str
+    attempt_identity: str | None = field(default=None, compare=False)

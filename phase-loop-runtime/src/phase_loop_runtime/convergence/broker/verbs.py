@@ -13,6 +13,8 @@ from phase_loop_runtime.convergence.contracts import (
     BrokerRequest,
     BrokerTerminalEvidence,
     BrokerVerb,
+    DeltaReadmitAuthority,
+    DeltaReadmitReceipt,
     PreAdmissionEnvelope,
     PublishCommittedBranchResult,
     publish_committed_branch_idempotency_key,
@@ -33,6 +35,8 @@ class BrokerProviderAdapter(Protocol):
 
 class BrokerClient(Protocol):
     def execute(self, request: BrokerRequest) -> "BrokerExecutionResult": ...
+    def readmit_advanced_head(self, auth: DeltaReadmitAuthority) -> DeltaReadmitReceipt | None: ...
+
 
 
 @dataclass(frozen=True)
@@ -204,6 +208,38 @@ class BrokerService:
         self.adapter = adapter
         self.contracts = contracts
 
+    def readmit_advanced_head(self, auth: DeltaReadmitAuthority) -> DeltaReadmitReceipt | None:
+        from phase_loop_runtime.convergence.broker.live import canonical_repository_identity
+        if auth.adapter_worktree:
+            try:
+                worktree_repo = canonical_repository_identity(auth.adapter_worktree)
+                if worktree_repo != auth.repository:
+                    raise PermissionError(f"repository mismatch: {worktree_repo} != {auth.repository}")
+            except (PermissionError, ValueError):
+                raise
+            except Exception as e:
+                raise PermissionError(str(e)) from e
+
+        if self.evidence_store.epoch_blocked:
+            return None
+
+        rec = self.admission_store.admit_next(auth)
+        if rec is None:
+            return None
+
+        if isinstance(rec, DeltaReadmitReceipt):
+            return rec
+
+        return DeltaReadmitReceipt(
+            repository=auth.repository,
+            branch=auth.branch,
+            prior_head_sha=auth.prior_head_sha,
+            proposed_head_sha=auth.proposed_head_sha,
+            allocated_epoch=rec.epoch,
+            attempt_identity=auth.attempt_identity,
+            authority_digest=auth.authority_digest,
+        )
+
     def _dedup_key(self, request: BrokerRequest) -> str:
         if request.verb is BrokerVerb.PUBLISH_COMMITTED_BRANCH:
             base = publish_committed_branch_idempotency_key(request.repo, request.branch, request.head_sha)
@@ -322,6 +358,7 @@ class BrokerService:
             envelope.authority_domain_scope,
             idempotency_key,
         )
+
 
     def _block_unsealed_owner(self, owner: AdapterStartOwnership) -> bool:
         """Resolve one observed owner under the repository evidence lock.
