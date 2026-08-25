@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import threading
 import unittest
 from pathlib import Path
 
@@ -1760,10 +1761,8 @@ def test_launcher_accepts_explicit_nonserialized_lease_authority():
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         lease_path = root / "phase.lock"
-        probe_lease_fd = os.open(lease_path, os.O_RDWR | os.O_CREAT, 0o600)
-        fcntl.flock(probe_lease_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        probe_grandchild_path = root / "probe-grandchild.pid"
-        launch_lease_fd = -1
+        launch_lease_fd = os.open(lease_path, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(launch_lease_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         launch_grandchild_path = root / "launch-grandchild.pid"
 
         class InjectedLockedDescriptor:
@@ -1785,17 +1784,35 @@ def test_launcher_accepts_explicit_nonserialized_lease_authority():
             "open(marker_path, 'w', encoding='utf-8').write(str(child.pid))\n"
         )
         try:
-            # This is the SL-2 non-production capability probe. Custody moves
-            # to the live grandchild's inherited open-file description; after
-            # launch the coordinator copy is closed before contention is read.
-            executor = subprocess.run(
-                [sys.executable, "-c", helper, str(probe_lease_fd), str(probe_grandchild_path)],
-                pass_fds=(probe_lease_fd,),
-                check=True,
-            )
-            assert executor.returncode == 0 and probe_grandchild_path.exists()
-            os.close(probe_lease_fd)
-            probe_lease_fd = -1
+            # Exercise the real launch path, not a look-alike subprocess probe.
+            # The launcher owns the inherited descriptor after this call starts;
+            # the coordinator copy is deliberately closed before we contend.
+            result_box = {}
+
+            def run_launch():
+                try:
+                    result_box["result"] = launch(
+                        [sys.executable, "-c", helper, str(launch_lease_fd), str(launch_grandchild_path)],
+                        log_path=root / "executor.log",
+                        lease_authority=InjectedLockedDescriptor(launch_lease_fd),
+                    )
+                except BaseException as exc:  # asserted below in the frozen RED state
+                    result_box["error"] = exc
+
+            launched = threading.Thread(target=run_launch, daemon=True)
+            launched.start()
+            deadline = time.monotonic() + 10
+            while not launch_grandchild_path.exists() and "error" not in result_box:
+                assert time.monotonic() < deadline, "launch never transferred lease custody"
+                time.sleep(0.02)
+            if "error" in result_box:
+                pytest.fail(f"absent launcher lease-supervisor anchor: {result_box['error']!r}")
+
+            inherited_lease_fd = launch_lease_fd
+            os.close(launch_lease_fd)
+            launch_lease_fd = -1
+            grandchild_pid = int(launch_grandchild_path.read_text(encoding="utf-8"))
+            assert os.kill(grandchild_pid, 0) is None
             contender = os.open(lease_path, os.O_RDWR)
             try:
                 with pytest.raises(BlockingIOError):
@@ -1803,46 +1820,29 @@ def test_launcher_accepts_explicit_nonserialized_lease_authority():
             finally:
                 os.close(contender)
 
-            grandchild_pid = int(probe_grandchild_path.read_text(encoding="utf-8"))
-            assert os.kill(grandchild_pid, 0) is None
+            # The launcher contract owns complete-tree termination/reaping.  Once
+            # its descendant is terminated, launch may return and release custody.
             os.kill(grandchild_pid, 9)
-            deadline = time.monotonic() + 5
-            while True:
-                try:
-                    os.kill(grandchild_pid, 0)
-                except ProcessLookupError:
-                    break
-                assert time.monotonic() < deadline, "grandchild was not reaped"
-                time.sleep(0.02)
+            launched.join(timeout=10)
+            assert not launched.is_alive(), "launcher did not reap its descendant"
+            assert "error" not in result_box
+            result = result_box["result"]
+            assert result.returncode == 0
+            assert result.supervisor_receipt["generation"] == "g-launch"
+            assert result.supervisor_receipt["pass_fds"] == [inherited_lease_fd]
+            assert result.supervisor_receipt["process_tree_empty"] is True
             contender = os.open(lease_path, os.O_RDWR)
             try:
                 fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 fcntl.flock(contender, fcntl.LOCK_UN)
             finally:
                 os.close(contender)
-
-            # The future SL-2 launcher seam receives a new, still-locked
-            # capability. It must not reuse the relinquished probe descriptor
-            # or the probe's killed grandchild marker.
-            launch_lease_fd = os.open(lease_path, os.O_RDWR)
-            fcntl.flock(launch_lease_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            result = launch(
-                [sys.executable, "-c", helper, str(launch_lease_fd), str(launch_grandchild_path)],
-                log_path=root / "executor.log",
-                lease_authority=InjectedLockedDescriptor(launch_lease_fd),
-            )
-            assert result.returncode == 0
-            assert result.supervisor_receipt["generation"] == "g-launch"
-            assert result.supervisor_receipt["pass_fds"] == [launch_lease_fd]
-            assert result.supervisor_receipt["process_tree_empty"] is True
         finally:
-            for marker_path in (probe_grandchild_path, launch_grandchild_path):
-                if marker_path.exists():
-                    try:
-                        os.kill(int(marker_path.read_text(encoding="utf-8")), 9)
-                    except ProcessLookupError:
-                        pass
-            for fd in (probe_lease_fd, launch_lease_fd):
-                if fd >= 0:
-                    fcntl.flock(fd, fcntl.LOCK_UN)
-                    os.close(fd)
+            if launch_grandchild_path.exists():
+                try:
+                    os.kill(int(launch_grandchild_path.read_text(encoding="utf-8")), 9)
+                except ProcessLookupError:
+                    pass
+            if launch_lease_fd >= 0:
+                fcntl.flock(launch_lease_fd, fcntl.LOCK_UN)
+                os.close(launch_lease_fd)

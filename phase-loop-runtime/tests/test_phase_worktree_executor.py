@@ -12,6 +12,7 @@ concurrent cross-phase dispatch safe:
 from __future__ import annotations
 
 import os
+import stat
 import subprocess
 from contextlib import contextmanager
 from dataclasses import replace
@@ -470,9 +471,26 @@ def test_sched_create_preserves_dirty_and_untracked_generation_bytes_and_ref(tmp
         target = first.worktree_path / "scratch" / "untracked.bin"
         target.parent.mkdir()
         target.write_bytes(untracked)
+        link_target = first.worktree_path / "link-target.bin"
+        link_target.write_bytes(b"symlink target bytes\n")
+        symlink = first.worktree_path / "recoverable-link"
+        symlink.symlink_to(link_target.name)
+        fifo = first.worktree_path / "recoverable.fifo"
+        os.mkfifo(fifo)
         replacement = create_phase_worktree(repo, phase="extract", target_branch=branch, base_sha=base)
     assert replacement.generation != first.generation
-    _assert_preserved(repo, first, {"tracked.txt": dirty, "scratch/untracked.bin": untracked})
+    _assert_preserved(
+        repo,
+        first,
+        {
+            "tracked.txt": dirty,
+            "scratch/untracked.bin": untracked,
+            "link-target.bin": b"symlink target bytes\n",
+        },
+    )
+    assert (first.worktree_path / "recoverable-link").is_symlink()
+    assert os.readlink(first.worktree_path / "recoverable-link") == "link-target.bin"
+    assert stat.S_ISFIFO((first.worktree_path / "recoverable.fifo").lstat().st_mode)
 
 
 @require_sched_red
@@ -517,21 +535,23 @@ def test_sched_post_scan_mutation_prevents_reclamation(tmp_path):
     with _isolated_worktree_root(tmp_path):
         handle = create_phase_worktree(repo, phase="extract", target_branch=branch, base_sha=resolve_base_sha(repo))
         handle.lease_authority.close()
-        original_remove = executor._remove_worktree
+        original_inventory = executor._stable_inventory
         mutation_ran = False
 
-        def mutate_after_inventory(repo_arg, path):
+        def mutate_between_stable_inventories(*args, **kwargs):
             nonlocal mutation_ran
-            mutation_ran = True
-            (handle.worktree_path / "late.txt").write_bytes(b"appeared after scan\n")
-            return original_remove(repo_arg, path)
+            observed = original_inventory(*args, **kwargs)
+            if not mutation_ran:
+                mutation_ran = True
+                (handle.worktree_path / "late.txt").write_bytes(b"appeared between stable inventories\n")
+            return observed
 
-        with patch.object(executor, "_remove_worktree", side_effect=mutate_after_inventory):
+        with patch.object(executor, "_stable_inventory", side_effect=mutate_between_stable_inventories):
             result = executor.reclaim_phase_worktree(repo, handle)
-    assert mutation_ran, "the post-scan mutation anchor must execute"
+    assert mutation_ran, "the between-inventory mutation anchor must execute"
     assert result.reclaimed is False
     assert result.reason == "inventory_changed"
-    _assert_preserved(repo, handle, {"late.txt": b"appeared after scan\n"})
+    _assert_preserved(repo, handle, {"late.txt": b"appeared between stable inventories\n"})
 
 
 @require_sched_red
@@ -548,6 +568,27 @@ def test_sched_lease_identity_drift_preserves_generation(tmp_path):
     assert result.reclaimed is False
     assert result.reason == "lease_identity_drift"
     _assert_preserved(repo, handle, {"identity.txt": b"identity-bound recovery\n"})
+
+    # Preserve-on-doubt is part of this frozen node: a failed inventory and an
+    # unsupported filesystem capability are both uncertainty, never permission
+    # to remove a released generation.
+    uncertain = create_phase_worktree(repo, phase="import", target_branch=branch, base_sha=resolve_base_sha(repo))
+    uncertain.lease_authority.close()
+    (uncertain.worktree_path / "uncertain.txt").write_bytes(b"inventory uncertainty\n")
+    with patch.object(executor, "_stable_inventory", side_effect=OSError("simulated inventory failure")):
+        inventory_error = executor.reclaim_phase_worktree(repo, uncertain)
+    assert inventory_error.reclaimed is False
+    assert inventory_error.reason == "inventory_error"
+    _assert_preserved(repo, uncertain, {"uncertain.txt": b"inventory uncertainty\n"})
+
+    unsupported = create_phase_worktree(repo, phase="verify", target_branch=branch, base_sha=resolve_base_sha(repo))
+    unsupported.lease_authority.close()
+    (unsupported.worktree_path / "unsupported.txt").write_bytes(b"filesystem capability unknown\n")
+    with patch.object(executor, "_supports_safe_reclamation", return_value=False):
+        unsupported_result = executor.reclaim_phase_worktree(repo, unsupported)
+    assert unsupported_result.reclaimed is False
+    assert unsupported_result.reason == "unsupported_filesystem"
+    _assert_preserved(repo, unsupported, {"unsupported.txt": b"filesystem capability unknown\n"})
 
 
 @require_sched_red

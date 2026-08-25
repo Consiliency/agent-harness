@@ -719,11 +719,26 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
         import json
         import time
 
-        reference_source = "SCHED reference supervisor v2: pass_fds, session, complete process-group reaping"
+        reference_source = "SCHED reference supervisor v3: pass_fds, session, subreaper, complete process-group reaping"
         reference_digest = hashlib.sha256(reference_source.encode("utf-8")).hexdigest()
+        source_repo = Path(__file__).resolve().parents[2]
         preproduction_base = subprocess.check_output(
-            ["git", "-C", str(preproduction["repo"]), "rev-parse", "HEAD"], text=True
+            ["git", "-C", str(source_repo), "rev-parse", "HEAD^"], text=True
         ).strip()
+
+        def source_digest_at_base(path: str) -> str:
+            return hashlib.sha256(
+                subprocess.check_output(
+                    ["git", "-C", str(source_repo), "show", f"{preproduction_base}:{path}"]
+                )
+            ).hexdigest()
+
+        preproduction_source_digests = {
+            "launcher.py": source_digest_at_base("phase-loop-runtime/src/phase_loop_runtime/launcher.py"),
+            "phase_worktree_executor.py": source_digest_at_base(
+                "phase-loop-runtime/src/phase_loop_runtime/phase_worktree_executor.py"
+            ),
+        }
         launch_digest = hashlib.sha256(inspect.getsource(launcher.launch).encode("utf-8")).hexdigest()
         popen_digest = hashlib.sha256(inspect.getsource(launcher.subprocess.Popen).encode("utf-8")).hexdigest()
 
@@ -736,7 +751,12 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
             fcntl.flock(lease_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             helper = (
                 "import json, os, subprocess, sys, time\n"
-                "lease_fd, marker, session = int(sys.argv[1]), sys.argv[2], int(sys.argv[3])\n"
+                "lease_fd, marker, session, enable_subreaper = int(sys.argv[1]), sys.argv[2], int(sys.argv[3]), int(sys.argv[4])\n"
+                "import ctypes\n"
+                "libc = ctypes.CDLL(None, use_errno=True)\n"
+                "if libc.prctl(36, enable_subreaper, 0, 0, 0) != 0: raise OSError(ctypes.get_errno(), 'PR_SET_CHILD_SUBREAPER')\n"
+                "subreaper = ctypes.c_int()\n"
+                "if libc.prctl(37, ctypes.byref(subreaper), 0, 0, 0) != 0: raise OSError(ctypes.get_errno(), 'PR_GET_CHILD_SUBREAPER')\n"
                 "inherited = True\n"
                 "try: os.fstat(lease_fd)\n"
                 "except OSError: inherited = False\n"
@@ -744,12 +764,20 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
                 "close_fds=True, pass_fds=((lease_fd,) if inherited else ()), "
                 "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
                 "json.dump({'grandchild_pid': child.pid, 'inherited': inherited, "
-                "'session_isolated': os.getsid(0) != session}, open(marker, 'w'))\n"
+                "'session_isolated': os.getsid(0) != session, 'subreaper_enabled': bool(subreaper.value)}, open(marker, 'w'))\n"
                 "if inherited: os.close(lease_fd)\n"
             )
             pass_fds = () if case == "pass_fds" else (lease_fd,)
             supervisor = subprocess.Popen(
-                [sys.executable, "-c", helper, str(lease_fd), str(marker_path), str(os.getsid(0))],
+                [
+                    sys.executable,
+                    "-c",
+                    helper,
+                    str(lease_fd),
+                    str(marker_path),
+                    str(os.getsid(0)),
+                    str(int(case != "subreaper_session")),
+                ],
                 close_fds=True,
                 pass_fds=pass_fds,
                 start_new_session=case != "subreaper_session",
@@ -796,13 +824,14 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
                     time.sleep(0.02)
             expected_anchor = {
                 "pass_fds": "live grandchild loses inherited lease",
-                "subreaper_session": "supervisor does not isolate its session",
+                "subreaper_session": "supervisor disables both session isolation and PR_SET_CHILD_SUBREAPER",
                 "process_tree_reaping": "direct-child-only reaping leaves a live grandchild",
                 "safe": "unmodified reference supervisor retains lease and isolates its session",
             }[case]
             unsafe = (
                 contender_acquired if case == "pass_fds"
-                else not marker["session_isolated"] if case == "subreaper_session"
+                else (not marker["session_isolated"] and not marker["subreaper_enabled"])
+                if case == "subreaper_session"
                 else supervisor.returncode == 0 and grandchild_live
                 if case == "process_tree_reaping"
                 else False
@@ -811,7 +840,7 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
                 "schema_version": "verification_evidence.v3",
                 "nodeid": f"{__file__}::test_supervisor_retains_lease_after_executor_parent_exits[{case}]",
                 "preproduction_base": preproduction_base,
-                "preproduction_source_digests": {"launcher.launch": launch_digest, "launcher.Popen": popen_digest},
+                "preproduction_source_digests": preproduction_source_digests,
                 "reference_supervisor_digest": reference_digest,
                 "reference_fixture_used": True,
                 "injection_anchor": "test_local.ReferenceLeaseSupervisor",
@@ -823,11 +852,14 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
                     "direct_child_exited": supervisor.returncode == 0,
                     "grandchild_live": grandchild_live,
                     "grandchild_reaped": grandchild_reaped,
+                    "session_isolated": marker["session_isolated"],
+                    "subreaper_enabled": marker["subreaper_enabled"],
                 },
                 "positive_control": (
                     not contender_acquired
                     and grandchild_live
                     and marker["session_isolated"]
+                    and marker["subreaper_enabled"]
                     and grandchild_reaped
                 ),
                 "restored_source_digests": {"launcher.launch": launch_digest, "launcher.Popen": popen_digest},
@@ -841,30 +873,25 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
                 os.close(lease_fd)
             return evidence
 
-        evidence_records = []
-        positive_records = []
-        for case in ("pass_fds", "subreaper_session", "process_tree_reaping"):
-            positive = reference_mutation("safe")
-            assert positive["positive_control"] is True
-            positive_records.append(positive)
-            record = reference_mutation(case)
-            record["positive_control"] = positive["positive_control"]
-            evidence_records.append(record)
-        assert all(record["schema_version"] == "verification_evidence.v3" for record in evidence_records)
-        assert {record["nodeid"].rsplit("[", 1)[1][:-1] for record in evidence_records} == {
-            "pass_fds", "subreaper_session", "process_tree_reaping"
-        }
-        assert all(record["observed"]["unsafe"] for record in evidence_records)
-        assert all(record["positive_control"] for record in evidence_records)
-        assert all(record["observed"]["grandchild_reaped"] for record in positive_records)
-        process_tree_records = [
-            record
-            for record in evidence_records
-            if record["nodeid"].endswith("[process_tree_reaping]")
-        ]
-        assert all(record["observed"]["direct_child_exited"] for record in process_tree_records)
-        assert all(record["observed"]["grandchild_live"] for record in process_tree_records)
-        assert all(not record["observed"]["grandchild_reaped"] for record in process_tree_records)
+        positive = reference_mutation("safe")
+        assert positive["positive_control"] is True
+        assert positive["observed"]["grandchild_reaped"] is True
+        record = reference_mutation(mutation)
+        record["positive_control"] = positive["positive_control"]
+        assert record["schema_version"] == "verification_evidence.v3"
+        assert record["nodeid"].endswith(f"[{mutation}]")
+        assert record["preproduction_base"] == preproduction_base
+        assert record["preproduction_source_digests"] == preproduction_source_digests
+        assert record["observed"]["unsafe"] is True
+        assert record["positive_control"] is True
+        if mutation == "subreaper_session":
+            assert record["observed"]["session_isolated"] is False
+            assert record["observed"]["subreaper_enabled"] is False
+        if mutation == "process_tree_reaping":
+            assert record["observed"]["direct_child_exited"] is True
+            assert record["observed"]["grandchild_live"] is True
+            assert record["observed"]["grandchild_reaped"] is False
+        print(json.dumps(record, sort_keys=True))
         pytest.fail(f"{mutation}: pre-production seam executed; LeaseSupervisor is missing")
 
     safe = run_probe(tmp_path / "safe", "safe", require_supervisor=True)
