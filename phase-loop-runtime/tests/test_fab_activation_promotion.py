@@ -1477,10 +1477,8 @@ _SUPPORTED_PUBLISHERS_DIGEST = "60cb066f240bde3e1de80f505004b87b85d0d176f4fccc7a
 
 def test_fabreadmit_hardcoded_epoch_publisher_interlock(request, tmp_path):
     """Interlock arm: any supported publisher stamping hardcoded epoch blocks readiness."""
-    import ast
     import hashlib
     import unittest.mock as _mock
-    from pathlib import Path
     from pytest import skip
 
     from _fabreadmit_tdd_guard import (
@@ -1552,7 +1550,6 @@ def test_fabreadmit_hardcoded_epoch_publisher_interlock(request, tmp_path):
 def test_fabreadmit_flag_reversal_kills_shortcut(request, tmp_path):
     """Reverting readiness interlock kills real-git shortcut."""
     import os
-    import subprocess
     import unittest.mock as _mock
     from pytest import skip
 

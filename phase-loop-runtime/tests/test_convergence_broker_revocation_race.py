@@ -368,7 +368,6 @@ def test_fabreadmit_revocation_race_under_admission_lock(request, tmp_path):
     """Revocation race under admission lock during readmission."""
     import subprocess
     import threading
-    import pytest
     from pytest import skip
 
     from _fabreadmit_tdd_guard import (
@@ -394,7 +393,6 @@ def test_fabreadmit_revocation_race_under_admission_lock(request, tmp_path):
     from phase_loop_runtime.convergence.broker.verbs import BrokerService
     from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
     from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore, EvidenceRecord
-    from phase_loop_runtime.convergence.broker import live
     from phase_loop_runtime.convergence.contracts import DeltaReadmitAuthority
     from phase_loop_runtime.convergence.provider_contracts import TerminalOutcomeState
 
