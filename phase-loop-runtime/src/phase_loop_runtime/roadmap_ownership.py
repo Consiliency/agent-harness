@@ -14,8 +14,9 @@ present and machine-readable the whole time -- ``roadmap_lint`` already parses
 Nothing consumed it as ownership.
 
 Deliberately ADVISORY in this first form: it annotates, it never fails. A gate
-that blocks merges is only worth turning on once its false-positive rate has been
-measured against real history -- which is what ``--report`` does. Shipping it
+that blocks merges is only worth turning on once its flag rate has been measured
+against real history (the flag rate, not the false-positive rate: nothing here
+establishes which flags were wrong) -- which is what ``--report`` does. Shipping it
 blocking-first would red the repo on the day it landed, which is how a gate gets
 disabled rather than fixed.
 
@@ -396,6 +397,21 @@ def _landed_commits(repo: Path, limit: int) -> List["tuple[str, str]"]:
     return rows
 
 
+def _is_shallow(repo: Path) -> bool:
+    """A shallow clone's boundary commit also has no ``^1``.
+
+    Reporting it as a root commit would misattribute a fetch-depth artifact to
+    repo history -- and in a shallow CI checkout that is the common case, not the
+    rare one.
+    """
+
+    out = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--is-shallow-repository"],
+        capture_output=True, text=True, check=False,
+    )
+    return out.stdout.strip() == "true"
+
+
 def replay(repo: Path, limit: int, roadmap_rel: str) -> List[ReplayRow]:
     """Replay the check over the last ``limit`` LANDED changes.
 
@@ -403,6 +419,14 @@ def replay(repo: Path, limit: int, roadmap_rel: str) -> List[ReplayRow]:
     historical PRs against the current roadmap would answer "what would fire
     now", when the question a graduation decision needs is "what WOULD have
     fired" -- and `Key files` lists change, so those differ.
+
+    KNOWN BOUNDARY: ``roadmap_rel`` is resolved ONCE, from the roadmap active at
+    HEAD, and then read at every historical sha. Across a roadmap version flip
+    (v9 -> v10) older commits either read as "roadmap absent at commit" -- counted
+    and disclosed, not silently dropped -- or, if the newer file already existed
+    as an unratified draft, get scored against a roadmap that was not yet
+    governing. Windows that stay inside the current roadmap's reign are exact;
+    a window crossing a flip should be read with this in mind.
 
     A commit whose roadmap cannot be read is recorded with a reason and counted,
     never dropped. A silently shrinking denominator would flatter the rate, which
@@ -433,7 +457,9 @@ def replay(repo: Path, limit: int, roadmap_rel: str) -> List[ReplayRow]:
             # rate this produces. Unscorable with an accurate reason -- not the
             # generic "diff failed", which would misreport a normal repo boundary
             # as a tooling error.
-            rows.append(ReplayRow(sha, subject, 0, 0, (), "root commit (no parent to diff)"))
+            reason = ("shallow-clone boundary (no parent to diff)" if _is_shallow(repo)
+                      else "root commit (no parent to diff)")
+            rows.append(ReplayRow(sha, subject, 0, 0, (), reason))
             continue
         diff = subprocess.run(
             ["git", "-C", str(repo), "diff", "--name-only", f"{sha}^1", sha],
@@ -484,6 +510,30 @@ def render_report(rows: Sequence[ReplayRow]) -> str:
         lines += ["", "  by phase:"]
         for alias, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
             lines.append(f"    {alias:<14} {n}")
+    if counts and scored:
+        # Leave-one-phase-out. The headline rate answers "is blocking viable
+        # NOW"; it does NOT answer "would narrowing the dominant claim make it
+        # viable", which is the actual next decision. Reviewers read the first
+        # number as licensing the second, so compute the second explicitly.
+        #
+        # Exact, not an estimate: `phases` aggregates the owners of a row's
+        # notable paths, so a row survives the counterfactual iff some OTHER
+        # phase still claims one of them.
+        dominant = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+        remaining = [r for r in flagged if set(r.phases) - {dominant}]
+        rpct = 100.0 * len(remaining) / len(scored)
+        lines += ["", f"  counterfactual — if {dominant} claimed nothing:"]
+        lines.append(f"    would STILL flag: {len(remaining)}/{len(scored)} ({rpct:.0f}%)")
+        if remaining:
+            lines.append(
+                f"    ^ narrowing {dominant} is NECESSARY but NOT SUFFICIENT — "
+                f"{len(remaining)} change(s) are claimed by other phases too."
+            )
+        else:
+            lines.append(
+                f"    ^ {dominant} is the sole cause; narrowing it alone would "
+                "clear the gate."
+            )
     if skipped:
         # Counted, never dropped: a shrinking denominator flatters the rate.
         lines += ["", f"  unscorable ({len(skipped)}) — excluded from the rate:"]
@@ -502,12 +552,12 @@ def main(argv: List[str]) -> int:
         "--report",
         type=int,
         metavar="N",
-        help="replay the check over the last N merges and print the flag rate; "
+        help="replay the check over the last N landed changes (merge OR squash) and print the flag rate; "
              "this is the measurement a graduation decision needs",
     )
     args = parser.parse_args(argv[1:])
 
-    if args.report:
+    if args.report is not None:
         try:
             roadmap_rel = str(
                 resolve_roadmap(args.repo).relative_to(Path(args.repo).resolve())
@@ -517,6 +567,10 @@ def main(argv: List[str]) -> int:
             print(f"roadmap-ownership: CANNOT EVALUATE — {exc}")
             return 2
         print(render_report(rows))
+        # Nothing scored means the instrument failed to produce its number.
+        # Exiting 0 there would read as "measured, and the answer was fine".
+        if rows and not any(not r.skipped_reason for r in rows):
+            return 2
         return 0
 
     try:

@@ -8,17 +8,24 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### roadmap-ownership: the graduation instrument (Consiliency/agent-harness#633)
 
-- `--report N` replays the check over the last N merges and prints the flag rate — the
+- `--report N` replays the check over the last N landed changes — merge commits **and**
+  squashes, since this repo lands PRs both ways — and prints the flag rate: the
   measurement a decision to make this check *blocking* actually needs. It reads the
   roadmap **as it existed at each commit**, not today's, because `Key files` lists change
   and the question is what *would have* fired, not what fires now.
 - Commits whose roadmap cannot be read are reported with a reason and excluded from the
   rate, never dropped silently: a shrinking denominator would flatter the one number this
-  exists to produce honestly.
-- **First measurement on this repo: 34/40 merges (85%) would have been flagged, and
-  GOVLEAN accounts for all 34.** A blocking gate at that rate stops 85% of merges. The
-  matcher is correct; one phase claiming `phase-loop-runtime/src/phase_loop_runtime/`
-  wholesale is the cause. Blocking is not viable until that claim is narrowed.
+  exists to produce honestly. A report that scores nothing exits non-zero rather than
+  reading as a clean measurement.
+- **First measurement on this repo: 33/40 landed changes (82%) would have been flagged,
+  and GOVLEAN accounts for all 33.** A blocking gate at that rate stops 82% of merges,
+  which is how a gate gets switched off rather than fixed. The matcher is correct; one
+  phase claiming `phase-loop-runtime/src/phase_loop_runtime/` wholesale is the cause.
+- **But narrowing that claim is necessary, not sufficient.** `--report` also prints the
+  leave-one-phase-out counterfactual: with GOVLEAN claiming nothing, **10/40 (25%)** would
+  still be flagged by other phases. Blocking remains out of reach at 25%; the ownership
+  data needs work well beyond the single dominant claim, and the earlier framing of
+  GOVLEAN as *the* blocker overstated what the measurement shows.
 
 ### Broker-gated FAB delta readmission (Consiliency/agent-harness#191, Consiliency/agent-harness#288)
 

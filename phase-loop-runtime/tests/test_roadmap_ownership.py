@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import io
 import subprocess
+from contextlib import redirect_stdout
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -442,6 +444,95 @@ class TestReplayReport(unittest.TestCase):
             merge = [r for r in rows if r.subject == "Merge feature"]
             self.assertEqual(len(merge), 1)
             self.assertEqual(merge[0].notable, 1, "must use the roadmap at that commit")
+
+
+class TestCounterfactual(unittest.TestCase):
+    """Leave-one-phase-out: the statistic the graduation decision actually needs.
+
+    The headline rate says "blocking is not viable now". Read alone it invites
+    the inference "so narrow the dominant claim and it becomes viable" -- which
+    the data does not support. On this repo the real numbers are 82% headline,
+    25% with the dominant phase removed.
+    """
+
+    def test_rows_claimed_by_another_phase_SURVIVE_removing_the_dominant(self):
+        """Mutation that must kill this: treat every row mentioning the dominant
+        phase as cleared (e.g. filter on `dominant in r.phases`) instead of
+        checking whether any OTHER phase still claims it. That mutation reports
+        0% and would license exactly the wrong decision.
+        """
+        rows = [
+            # dominant-only: clears when GOVLEAN claims nothing
+            ro.ReplayRow("a" * 40, "one", 1, 0, ("GOVLEAN",)),
+            ro.ReplayRow("b" * 40, "two", 1, 0, ("GOVLEAN",)),
+            # also claimed by REVIEWTRUTH: survives
+            ro.ReplayRow("c" * 40, "three", 2, 0, ("GOVLEAN", "REVIEWTRUTH")),
+        ]
+        out = ro.render_report(rows)
+        self.assertIn("if GOVLEAN claimed nothing", out)
+        self.assertIn("would STILL flag: 1/3", out)
+        self.assertIn("NOT SUFFICIENT", out)
+
+    def test_a_sole_cause_is_reported_as_a_sole_cause(self):
+        """The opposite verdict must also be reachable, or the message is a
+        constant rather than a finding.
+        """
+        rows = [
+            ro.ReplayRow("a" * 40, "one", 1, 0, ("GOVLEAN",)),
+            ro.ReplayRow("b" * 40, "two", 1, 0, ("GOVLEAN",)),
+        ]
+        out = ro.render_report(rows)
+        self.assertIn("would STILL flag: 0/2", out)
+        self.assertIn("sole cause", out)
+        self.assertNotIn("NOT SUFFICIENT", out)
+
+
+class TestReportCliContract(unittest.TestCase):
+    def test_report_zero_does_not_fall_through_to_audit_mode(self):
+        """`--report 0` is falsy. `if args.report:` silently ran the ordinary
+        audit instead -- answering a question the operator did not ask.
+
+        Mutation that must kill this: `is not None` -> truthiness. Audit mode
+        prints the claim report, never the replay header.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = _repo(tmp)
+            run = lambda *a: subprocess.run(["git", "-C", tmp, *a], check=True,
+                                            capture_output=True)
+            run("init", "-q", "-b", "main")
+            run("config", "user.email", "t@t")
+            run("config", "user.name", "t")
+            run("add", "-A")
+            run("commit", "-qm", "seed")
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = ro.main(["prog", "--repo", str(repo), "--report", "0"])
+            self.assertEqual(rc, 0)
+            self.assertIn("0 landed change(s) replayed", buf.getvalue())
+
+    def test_a_report_that_scored_NOTHING_exits_nonzero(self):
+        """An instrument that produced no number must not report success.
+
+        Mutation that must kill this: `return 0` unconditionally. The rows all
+        carry a skipped_reason, so the report prints "0 scored" -- which under
+        exit 0 reads as "measured, and it was fine".
+        """
+        with TemporaryDirectory() as tmp:
+            repo = _repo(tmp)
+            run = lambda *a: subprocess.run(["git", "-C", tmp, *a], check=True,
+                                            capture_output=True)
+            run("init", "-q", "-b", "main")
+            run("config", "user.email", "t@t")
+            run("config", "user.name", "t")
+            run("add", "-A")
+            run("commit", "-qm", "seed")
+            # ONE commit: the only mainline entry is the root, which has no
+            # parent to diff and is therefore unscorable. Nothing scores.
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = ro.main(["prog", "--repo", str(repo), "--report", "5"])
+            self.assertIn("0 scored", buf.getvalue())
+            self.assertEqual(rc, 2, "an unmeasured report must not exit 0")
 
 
 class TestPartialDrift(unittest.TestCase):
