@@ -142,3 +142,112 @@ def test_replay_after_complete_returns_prior_result_not_none(tmp_path, request):
     assert replay.publish_result is not None, "replay of COMPLETED op must return the result, not None"
     assert replay.publish_result == first.publish_result
     assert replay.accepted, "idempotent recovery is accepted, not blocked"
+
+
+def test_fabreadmit_readmit_advanced_head_verb(request, tmp_path):
+    """BrokerService readmit_advanced_head verb."""
+    import subprocess
+    import pytest
+    from pytest import skip
+
+    from _fabreadmit_tdd_guard import (
+        FABREADMIT_SKIP_REASON,
+        fabreadmit_capability_active,
+        fabreadmit_require,
+        fabreadmit_symbol,
+        fabreadmit_this_nodeid,
+    )
+
+    if not fabreadmit_capability_active():
+        skip(FABREADMIT_SKIP_REASON)
+
+    verb_symbol = fabreadmit_symbol(
+        "phase_loop_runtime.convergence.broker.verbs", "BrokerService.readmit_advanced_head"
+    )
+    fabreadmit_require(
+        fabreadmit_this_nodeid(request),
+        verb_symbol is not None,
+        "BrokerService.readmit_advanced_head verb missing in phase_loop_runtime.convergence.broker.verbs",
+    )
+
+    from phase_loop_runtime.convergence.broker.verbs import BrokerService
+    from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
+    from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore
+    from phase_loop_runtime.convergence.contracts import DeltaReadmitAuthority, DeltaReadmitReceipt
+    from test_fabpub_shared_epoch import (
+        _authorized_publish_fixture,
+        _publish_transaction_request,
+        _service as _pub_service,
+        _CountingAdapter,
+    )
+
+    # 1. FR-R5-01 & FR-R7-01 & FR-R7-02: Empty-store denial arm proving readmission from an empty onboarded store fails
+    repo_empty, txn_empty, id_empty, root_empty = _authorized_publish_fixture(tmp_path, name="verbs-empty")
+    empty_envelope = _publish_transaction_request(id_empty, "feat/x", txn_empty, repo_empty).admission
+    store_empty = LinearizableAdmissionStore(root_empty, lambda _: True)
+    pub_empty_adapter = _CountingAdapter()
+    svc_empty_pub = BrokerService(store_empty, BrokerEvidenceStore(root_empty), pub_empty_adapter)
+    ckpt_empty = txn_empty.checkpoint_root
+    (ckpt_empty / "train.json").write_text(f'{{"train_id": "{empty_envelope.train_id}", "repository": "{id_empty}"}}', encoding="utf-8")
+    (ckpt_empty / f"{empty_envelope.node_id}.json").write_text(f'{{"node_id": "{empty_envelope.node_id}"}}', encoding="utf-8")
+    auth_empty = DeltaReadmitAuthority(
+        repository=id_empty, adapter_worktree=str(repo_empty), checkpoint_root=str(ckpt_empty),
+        branch="feat/x", base="main", prior_head_sha=txn_empty.committed_head_sha, proposed_head_sha="b" * 40,
+        train_id=empty_envelope.train_id, node_id=empty_envelope.node_id, fab_run_id="run1", roadmap_digest=empty_envelope.roadmap_digest, provenance_digest="p" * 64, owned_scope=("a.py",)
+    )
+    readmit_empty_adapter = _CountingAdapter()
+    svc_empty_readmit = BrokerService(store_empty, BrokerEvidenceStore(root_empty), readmit_empty_adapter)
+    with pytest.raises((PermissionError, ValueError), match=r"(?i)prior|unadmitted|unknown|forged|empty"):
+        svc_empty_readmit.readmit_advanced_head(auth_empty)
+    assert len(store_empty.replay()) == 0
+    assert len(readmit_empty_adapter.calls) == 0
+
+    # 2. FR-R5-01 & FR-R7-02: Setup activated store partition & seed real authorized publish
+    repo_dir, transaction, identity, store_root = _authorized_publish_fixture(tmp_path, name="verbs-repo")
+    pub_adapter = _CountingAdapter()
+    store = LinearizableAdmissionStore(store_root, lambda _: True)
+    evidence = BrokerEvidenceStore(store_root)
+    pub_svc = _pub_service(store_root, pub_adapter, store=store)
+
+    branch = "feat/x"
+    pub_req = _publish_transaction_request(identity, branch, transaction, repo_dir)
+    admitted_envelope = pub_req.admission
+    pub_res = pub_svc.execute(pub_req)
+    assert pub_res.accepted, "prior publish transaction must be admitted"
+    assert len(store.replay()) == 1
+
+    ckpt = transaction.checkpoint_root
+    (ckpt / "train.json").write_text(f'{{"train_id": "{admitted_envelope.train_id}", "repository": "{identity}"}}', encoding="utf-8")
+    (ckpt / f"{admitted_envelope.node_id}.json").write_text(f'{{"node_id": "{admitted_envelope.node_id}"}}', encoding="utf-8")
+
+    (repo_dir / "a.py").write_text("v2 advance\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo_dir), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", "advance"], check=True)
+    delta_sha = subprocess.check_output(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True).strip()
+
+    readmit_adapter = _CountingAdapter()
+    service = BrokerService(store, evidence, readmit_adapter)
+
+    auth = DeltaReadmitAuthority(
+        repository=identity,
+        adapter_worktree=str(repo_dir),
+        checkpoint_root=str(ckpt),
+        branch=branch,
+        base="main",
+        prior_head_sha=transaction.committed_head_sha,
+        proposed_head_sha=delta_sha,
+        train_id=admitted_envelope.train_id,
+        node_id=admitted_envelope.node_id,
+        fab_run_id="run1",
+        roadmap_digest=admitted_envelope.roadmap_digest,
+        provenance_digest="p" * 64,
+        owned_scope=("a.py",),
+    )
+
+    receipt = service.readmit_advanced_head(auth)
+
+    assert isinstance(receipt, DeltaReadmitReceipt)
+    assert receipt.repository == identity
+    assert receipt.proposed_head_sha == delta_sha
+    assert receipt.allocated_epoch == 2
+    assert len(readmit_adapter.calls) == 0

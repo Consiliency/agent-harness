@@ -362,3 +362,134 @@ def test_concurrent_revocation_cannot_land_during_the_admission_lock(tmp_path, r
     )
     assert result.accepted, "this admission won the lock fairly; it must still publish"
     assert landed.is_set(), "the writer must proceed once the admission releases the lock"
+
+
+def test_fabreadmit_revocation_race_under_admission_lock(request, tmp_path):
+    """Revocation race under admission lock during readmission."""
+    import subprocess
+    import threading
+    from pytest import skip
+
+    from _fabreadmit_tdd_guard import (
+        FABREADMIT_SKIP_REASON,
+        fabreadmit_capability_active,
+        fabreadmit_require,
+        fabreadmit_symbol,
+        fabreadmit_this_nodeid,
+    )
+
+    if not fabreadmit_capability_active():
+        skip(FABREADMIT_SKIP_REASON)
+
+    verb_symbol = fabreadmit_symbol(
+        "phase_loop_runtime.convergence.broker.verbs", "BrokerService.readmit_advanced_head"
+    )
+    fabreadmit_require(
+        fabreadmit_this_nodeid(request),
+        verb_symbol is not None,
+        "BrokerService.readmit_advanced_head missing in phase_loop_runtime.convergence.broker.verbs",
+    )
+
+    from phase_loop_runtime.convergence.broker.verbs import BrokerService
+    from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
+    from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore, EvidenceRecord
+    from phase_loop_runtime.convergence.contracts import DeltaReadmitAuthority
+    from phase_loop_runtime.convergence.provider_contracts import TerminalOutcomeState
+
+    # Setup real Git repository and activated store partition (FR-R3-01, FR-R3-02, FR-R5-01)
+    from test_fabpub_shared_epoch import (
+        _authorized_publish_fixture,
+        _publish_transaction_request,
+        _service as _pub_service,
+    )
+
+    repo_dir, transaction, identity, shared_partition_dir = _authorized_publish_fixture(
+        tmp_path, name="race-repo"
+    )
+    pub_adapter = _CountingAdapter()
+    evidence_store = BrokerEvidenceStore(shared_partition_dir)
+
+    # Seed prior publish transaction
+    pub_svc = _pub_service(shared_partition_dir, pub_adapter)
+    pub_req = _publish_transaction_request(identity, "feat/x", transaction, repo_dir)
+    pub_res = pub_svc.execute(pub_req)
+    assert pub_res.accepted, "prior publish transaction must be admitted"
+    admitted_envelope = pub_req.admission
+
+    (repo_dir / "a.py").write_text("v2 advance\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo_dir), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", "advance"], check=True)
+    delta_sha = subprocess.check_output(["git", "-C", str(repo_dir), "rev-parse", "HEAD"], text=True).strip()
+
+    ckpt = transaction.checkpoint_root
+    (ckpt / "train.json").write_text(f'{{"train_id": "{admitted_envelope.train_id}", "repository": "{identity}"}}', encoding="utf-8")
+    (ckpt / f"{admitted_envelope.node_id}.json").write_text(f'{{"node_id": "{admitted_envelope.node_id}"}}', encoding="utf-8")
+
+    entered = threading.Event()
+    landed = threading.Event()
+    observed = {}
+
+    def _in_lock_epoch_blocked():
+        entered.set()
+        # Give racing thread a moment to try acquiring lock
+        landed.wait(timeout=0.2)
+        observed["landed_in_window"] = landed.is_set()
+        return evidence_store.epoch_blocked
+
+    admission_store = LinearizableAdmissionStore(
+        shared_partition_dir,
+        lambda _: True,
+        epoch_blocked=_in_lock_epoch_blocked,
+    )
+
+    readmit_adapter = _CountingAdapter()
+    service = BrokerService(admission_store, evidence_store, readmit_adapter)
+
+    auth = DeltaReadmitAuthority(
+        repository=identity,
+        adapter_worktree=str(repo_dir),
+        checkpoint_root=str(ckpt),
+        branch="feat/x",
+        base="main",
+        prior_head_sha=transaction.committed_head_sha,
+        proposed_head_sha=delta_sha,
+        train_id=admitted_envelope.train_id,
+        node_id=admitted_envelope.node_id,
+        fab_run_id="run1",
+        roadmap_digest=admitted_envelope.roadmap_digest,
+        provenance_digest="p" * 64,
+        owned_scope=("a.py",),
+    )
+
+    def _revoke():
+        if entered.wait(timeout=5):
+            # Attempting to record terminal evidence while admission lock is held
+            evidence_store.record_intent("racing-key")
+            evidence_store.record_terminal(
+                EvidenceRecord("racing-key", TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED, "concurrent-revocation")
+            )
+            landed.set()
+
+    writer = threading.Thread(target=_revoke, daemon=True)
+    writer.start()
+
+    # Positive arm under race condition
+    receipt = service.readmit_advanced_head(auth)
+    writer.join(timeout=5)
+
+    assert observed.get("landed_in_window") is False, (
+        "revocation landed while readmission lock was held — evidence and admission writers not sharing boundary lock"
+    )
+    assert receipt is not None
+    assert readmit_adapter.calls == 0
+
+    # Negative arm (FR-SL0-03): Revocation injected under lock yields blocked return, zero append, zero adapter
+    evidence_store.record_intent("revoked-key")
+    evidence_store.record_terminal(
+        EvidenceRecord("revoked-key", TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED, "revocation")
+    )
+    cnt_before = len(admission_store.replay())
+    res_revoked = service.readmit_advanced_head(auth)
+    assert res_revoked is None
+    assert len(admission_store.replay()) == cnt_before
+    assert readmit_adapter.calls == 0

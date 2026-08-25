@@ -1342,10 +1342,12 @@ class TestPiece3bRecoveryWiring:
         shortcut — `_fab_delta_readmit` is never called; the advance is handled by the
         normal (unchanged) `pr-head-advanced` path. The broker gap is unreachable by
         construction."""
+        monkeypatch.setattr("phase_loop_runtime.governed_premerge._FAB_DELTA_BROKER_READMIT_READY", False)
         engaged: list = []
         result = self._run_with_advanced_head(tmp_path, monkeypatch, engaged)
         assert engaged == [], "the ENGAGE path must be fenced off while _FAB_DELTA_BROKER_READMIT_READY is False"
         assert result["status"] == "merged", result
+
 
     def test_interlock_on_re_enables_engage(self, tmp_path: Path, monkeypatch):
         """Flipping the interlock True (as #288 will) re-enables ENGAGE — the clear
@@ -1464,3 +1466,256 @@ class TestPiece3aRegateEndToEnd:
             )
         assert result["status"] != "merged", result
         assert "fab-promotion-reassertion" in json.dumps(result, default=str)
+
+
+_SUPPORTED_PUBLISHERS_FROZEN_SET = (
+    "phase_loop_runtime.convergence.broker.live.BrokerClient.publish_committed_branch",
+    "phase_loop_runtime.convergence.broker.verbs.publish_committed_branch",
+)
+_SUPPORTED_PUBLISHERS_DIGEST = "60cb066f240bde3e1de80f505004b87b85d0d176f4fccc7afbd9f3ebd5071595"
+
+
+def test_fabreadmit_hardcoded_epoch_publisher_interlock(request, tmp_path):
+    """Interlock arm: any supported publisher stamping hardcoded epoch blocks readiness."""
+    import hashlib
+    import unittest.mock as _mock
+    from pytest import skip
+
+    from _fabreadmit_tdd_guard import (
+        FABREADMIT_SKIP_REASON,
+        fabreadmit_capability_active,
+        fabreadmit_require,
+        fabreadmit_symbol,
+        fabreadmit_this_nodeid,
+    )
+
+    if not fabreadmit_capability_active():
+        skip(FABREADMIT_SKIP_REASON)
+
+    chk_symbol = fabreadmit_symbol(
+        "phase_loop_runtime.governed_premerge", "_has_no_hardcoded_epoch_publishers"
+    )
+    fabreadmit_require(
+        fabreadmit_this_nodeid(request),
+        chk_symbol is not None,
+        "_has_no_hardcoded_epoch_publishers missing in phase_loop_runtime.governed_premerge",
+    )
+
+    from phase_loop_runtime.governed_premerge import (
+        FAB_PROMOTION_ENV,
+        _has_no_hardcoded_epoch_publishers,
+        fab_delta_shortcut_enabled,
+    )
+
+    # 1. FR-R5-06 & FR-R7-07: Probe production DEFAULT_SUPPORTED_PUBLISHERS without fallback
+    pub_set_symbol = fabreadmit_symbol(
+        "phase_loop_runtime.governed_premerge", "DEFAULT_SUPPORTED_PUBLISHERS"
+    )
+    fabreadmit_require(
+        fabreadmit_this_nodeid(request),
+        pub_set_symbol is not None,
+        "DEFAULT_SUPPORTED_PUBLISHERS missing in phase_loop_runtime.governed_premerge",
+    )
+
+    computed_digest = hashlib.sha256(
+        ("\n".join(sorted(pub_set_symbol)) + "\n").encode("utf-8")
+    ).hexdigest()
+    assert computed_digest == _SUPPORTED_PUBLISHERS_DIGEST, "supported publisher classification digest mismatch"
+
+    # 2. FR-R3-10: Point production inventory/predicate at tree containing synthetic hardcoded-epoch publisher
+    synthetic_dir = tmp_path / "synthetic_src" / "phase_loop_runtime"
+    synthetic_dir.mkdir(parents=True)
+    synthetic_file = synthetic_dir / "publisher.py"
+    synthetic_file.write_text(
+        "from phase_loop_runtime.convergence.broker.verbs import publish_committed_branch\n"
+        "def legacy_publish(req):\n"
+        "    return publish_committed_branch(req, epoch=1)\n",
+        encoding="utf-8",
+    )
+    # Production predicate driven through search_root against mutated tree must return False
+    scan_res = _has_no_hardcoded_epoch_publishers(search_root=synthetic_dir)
+    assert scan_res is False
+
+    # FR-R3-10: Drive the enablement predicate — not just the helper — through the synthetic tree
+    with _mock.patch(
+        "phase_loop_runtime.governed_premerge._has_no_hardcoded_epoch_publishers",
+        side_effect=lambda *a, **k: scan_res,
+    ):
+        assert fab_delta_shortcut_enabled(True, env={FAB_PROMOTION_ENV: "1"}) is False
+
+    # 3. FR-R5-06: Production default scan on clean tree must equal True
+    assert _has_no_hardcoded_epoch_publishers() is True
+
+
+def test_fabreadmit_flag_reversal_kills_shortcut(request, tmp_path):
+    """Reverting readiness interlock kills real-git shortcut."""
+    import os
+    import unittest.mock as _mock
+    from pytest import skip
+
+    from _fabreadmit_tdd_guard import (
+        FABREADMIT_SKIP_REASON,
+        fabreadmit_capability_active,
+        fabreadmit_require,
+        fabreadmit_symbol,
+        fabreadmit_this_nodeid,
+    )
+
+    if not fabreadmit_capability_active():
+        skip(FABREADMIT_SKIP_REASON)
+
+    capability_version = fabreadmit_symbol(
+        "phase_loop_runtime.fabreadmit_capability", "FABREADMIT_CAPABILITY_VERSION"
+    )
+    fabreadmit_require(
+        fabreadmit_this_nodeid(request),
+        capability_version == 1,
+        "FABREADMIT_CAPABILITY_VERSION missing in phase_loop_runtime.fabreadmit_capability",
+    )
+
+    ready_symbol = fabreadmit_symbol(
+        "phase_loop_runtime.governed_premerge", "_FAB_DELTA_BROKER_READMIT_READY"
+    )
+    fabreadmit_require(
+        fabreadmit_this_nodeid(request),
+        ready_symbol is not None,
+        "_FAB_DELTA_BROKER_READMIT_READY missing in phase_loop_runtime.governed_premerge",
+    )
+
+    from phase_loop_runtime import governed_premerge as gp
+    from phase_loop_runtime.governed_premerge import FAB_PROMOTION_ENV, fab_delta_shortcut_enabled
+    from test_fab_delta_consumer import DeltaReadmitTransactionTest
+    from phase_loop_runtime import train_runner as tr
+    from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
+    from phase_loop_runtime.train_ledger import read_ledger
+    from phase_loop_runtime.train_runner import CoordinatorRuntime
+    from phase_loop_runtime.convergence.broker.live import build_routing_broker_client
+
+    # FR-R7-10: Require readiness symbol True directly without default fallback
+    assert ready_symbol is True
+    # FR-R7-10: Assert fab_delta_shortcut_enabled is True under default readiness without monkeypatching
+    assert fab_delta_shortcut_enabled(True, env={FAB_PROMOTION_ENV: "1"}) is True
+
+    def _capturing_head_merge_stub(cap: dict):
+        def _merge_pr(workspace, branch, base="main", head_sha=None, run_id=None, fab_fetch_origin="origin"):
+            cap.setdefault("calls", []).append({
+                "workspace": workspace,
+                "branch": branch,
+                "head_sha": head_sha,
+                "run_id": run_id,
+            })
+            return f"sha-merged-{Path(workspace).name}"
+        return _merge_pr
+
+    # 1. True Arm: genuinely engaged run_train with readiness True -> routes delta head and merges (FR-R7-03)
+    fix_true = DeltaReadmitTransactionTest()
+    fix_true.tmp_path = tmp_path / "true_arm"
+    fix_true.setUp()
+    try:
+        node_id = "repo-a/specs/plan-a.md"
+        seeded_true = fix_true._setup_broker_readmit_candidate(node_id=node_id)
+        ledger_true = seeded_true["ledger_path"]
+        cand_t = seeded_true["candidate_head"]
+        delta_t = seeded_true["delta_head"]
+
+        coord_t = CoordinatorRuntime(
+            train_id="train1", coordinator_root=seeded_true["coordinator_root"], roadmap_path="train.md",
+            roadmap_digest="d" * 64, workspace_id=str(fix_true.repo), broker_client=build_routing_broker_client(),
+        )
+        roadmap = parse_train_roadmap(TRAIN_2NODE_MD)
+
+        captured_t = {}
+        commit_calls_t = []
+        real_commit = tr._commit_broker_readmitted_head
+
+        def _observe_true_commit(*args, **kwargs):
+            commit_calls_t.append((args, kwargs))
+            return real_commit(*args, **kwargs)
+
+        with _mock.patch.dict(os.environ, {FAB_PROMOTION_ENV: "1"}):
+            with _mock.patch.object(tr, "_commit_broker_readmitted_head", side_effect=_observe_true_commit):
+                res_true = tr.run_train(
+                    roadmap, ledger_true, run_mode="governed",
+                    resolve_workspace=lambda n: fix_true.repo,
+                    coordinator_runtime=coord_t,
+                    resolve_owned_paths=None,
+                    _run_loop=lambda *a, **kw: (None, []),
+                    _publish=_make_publish_stub({}),
+                    _set_upstream_ref_fn=lambda *a, **kw: [],
+                    _preflight_fn=lambda *a, **kw: None,
+                    _pr_is_open=lambda ws, br: True,
+                    _live_pr_head_sha_fn=lambda ws, br: delta_t,
+                    _merge_phase_enabled=True,
+                    _reverify_fn=_reverify_pass,
+                    _train_review_fn=_approval_review_fn,
+                    _pr_merged_sha_fn=lambda *a, **kw: None,
+                    _delta_review_fn=fix_true._review_fn,
+                    _merge_pr_fn=_capturing_head_merge_stub(captured_t),
+                    fab_fetch_origin="fetchsrc",
+                    fab_delta_shortcut=True,
+                )
+
+        assert res_true["status"] == "merged"
+        assert len(commit_calls_t) == 1, "engaged arm must enter the broker helper once"
+        assert read_ledger(ledger_true)[node_id].head_sha == delta_t
+        assert len(LinearizableAdmissionStore(seeded_true["store_root"], lambda _: True).replay()) == 2
+        assert captured_t["calls"][0]["head_sha"] == delta_t
+    finally:
+        fix_true.tearDown()
+
+    # 2. FR-R5-05 & FR-R7-03: False Arm: identical genuinely engaged run_train with readiness False -> fails closed, ledger head unchanged
+    fix_false = DeltaReadmitTransactionTest()
+    fix_false.tmp_path = tmp_path / "false_arm"
+    fix_false.setUp()
+    try:
+        seeded_false = fix_false._setup_broker_readmit_candidate(node_id=node_id)
+        ledger_false = seeded_false["ledger_path"]
+        cand_f = seeded_false["candidate_head"]
+        delta_f = seeded_false["delta_head"]
+
+        coord_f = CoordinatorRuntime(
+            train_id="train1", coordinator_root=seeded_false["coordinator_root"], roadmap_path="train.md",
+            roadmap_digest="d" * 64, workspace_id=str(fix_false.repo), broker_client=build_routing_broker_client(),
+        )
+
+        captured_f = {}
+        commit_calls_f = []
+
+        def _observe_false_commit(*args, **kwargs):
+            commit_calls_f.append((args, kwargs))
+            return real_commit(*args, **kwargs)
+
+        with _mock.patch.dict(os.environ, {FAB_PROMOTION_ENV: "1"}):
+            with _mock.patch.object(gp, "_FAB_DELTA_BROKER_READMIT_READY", False):
+                assert gp._FAB_DELTA_BROKER_READMIT_READY is False
+                assert fab_delta_shortcut_enabled(True, env={FAB_PROMOTION_ENV: "1"}) is False
+
+                with _mock.patch.object(tr, "_commit_broker_readmitted_head", side_effect=_observe_false_commit):
+                    res_false = tr.run_train(
+                        roadmap, ledger_false, run_mode="governed",
+                        resolve_workspace=lambda n: fix_false.repo,
+                        coordinator_runtime=coord_f,
+                        resolve_owned_paths=None,
+                        _run_loop=lambda *a, **kw: (None, []),
+                        _publish=_make_publish_stub({}),
+                        _set_upstream_ref_fn=lambda *a, **kw: [],
+                        _preflight_fn=lambda *a, **kw: None,
+                        _pr_is_open=lambda ws, br: True,
+                        _live_pr_head_sha_fn=lambda ws, br: delta_f,
+                        _merge_phase_enabled=True,
+                        _reverify_fn=_reverify_pass,
+                        _train_review_fn=_approval_review_fn,
+                        _pr_merged_sha_fn=lambda *a, **kw: None,
+                        _delta_review_fn=fix_false._review_fn,
+                        _merge_pr_fn=_capturing_head_merge_stub(captured_f),
+                        fab_fetch_origin="fetchsrc",
+                        fab_delta_shortcut=True,
+                    )
+
+        assert res_false["status"] == "merged"
+        assert commit_calls_f == [], "disabled shortcut must not enter the broker helper"
+        assert len(LinearizableAdmissionStore(seeded_false["store_root"], lambda _: True).replay()) == 1
+        assert captured_f["calls"][0]["head_sha"] == cand_f
+        assert read_ledger(ledger_false)[node_id].head_sha == delta_f
+    finally:
+        fix_false.tearDown()

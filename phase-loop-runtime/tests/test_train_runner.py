@@ -3451,3 +3451,154 @@ def test_fabpub_train_resume_post_commit_pre_checkpoint(tmp_path: Path, request)
         f"a clean no-transaction execute node must still reach run_loop; got {clean_outcome}"
     )
     assert PreAdmissionEnvelope is not None and _fabpub_hashlib is not None
+
+
+def test_fabreadmit_train_runner_commit_broker_readmitted_head_routing(request, tmp_path):
+    """run_train routes readmission through real repository routing broker client."""
+    import os
+    import unittest.mock as _mock
+    from pytest import skip
+
+    from _fabreadmit_tdd_guard import (
+        FABREADMIT_SKIP_REASON,
+        fabreadmit_capability_active,
+        fabreadmit_require,
+        fabreadmit_symbol,
+        fabreadmit_this_nodeid,
+    )
+
+    if not fabreadmit_capability_active():
+        skip(FABREADMIT_SKIP_REASON)
+
+    commit_helper = fabreadmit_symbol(
+        "phase_loop_runtime.train_runner", "_commit_broker_readmitted_head"
+    )
+    fabreadmit_require(
+        fabreadmit_this_nodeid(request),
+        commit_helper is not None,
+        "_commit_broker_readmitted_head missing in phase_loop_runtime.train_runner",
+    )
+
+    from phase_loop_runtime import train_runner as tr
+    from phase_loop_runtime.train_runner import CoordinatorRuntime
+    from phase_loop_runtime.convergence.broker.live import _RepositoryRoutingBrokerService, build_routing_broker_client
+    from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
+    from phase_loop_runtime.convergence.contracts import DeltaReadmitReceipt
+    from phase_loop_runtime.governed_premerge import FAB_PROMOTION_ENV, LoopResult
+    from test_fab_activation_promotion import TRAIN_2NODE_MD, _make_publish_stub, _reverify_pass
+    from test_fab_delta_consumer import DeltaReadmitTransactionTest, _delta_panel
+    from test_train_merge import _approval_review_fn
+
+    def _capturing_head_merge_stub(cap: dict, node_for_workspace: dict[Path, str]):
+        def _merge_pr(workspace, branch, base="main", head_sha=None, run_id=None, fab_fetch_origin="origin"):
+            node_id = node_for_workspace[Path(workspace)]
+            cap.setdefault(node_id, []).append({
+                "branch": branch,
+                "head_sha": head_sha,
+                "run_id": run_id,
+            })
+            return f"sha-merged-{Path(workspace).name}"
+        return _merge_pr
+
+    fixture = DeltaReadmitTransactionTest()
+    fixture.tmp_path = tmp_path / "routing"
+    fixture.setUp()
+    try:
+        seeded = fixture._setup_broker_readmit_candidate(
+            node_id="repo-a/specs/plan-a.md", branch="feat/repo-a"
+        )
+        repo_dir = fixture.repo
+        candidate_head = seeded["candidate_head"]
+        delta_head = seeded["delta_head"]
+        store_root = seeded["store_root"]
+
+        # FR-R4-06: production repository routing, fed the same valid candidate,
+        # provenance, admission and pushed delta as the other consumer controls.
+        routing_client = build_routing_broker_client()
+        assert isinstance(routing_client, _RepositoryRoutingBrokerService)
+        coord_runtime = CoordinatorRuntime(
+            train_id="train1",
+            coordinator_root=seeded["coordinator_root"],
+            roadmap_path="train.md",
+            roadmap_digest="d" * 64,
+            workspace_id=str(repo_dir),
+            broker_client=routing_client,
+        )
+        repo_b = tmp_path / "routing-repo-b"
+        repo_b.mkdir()
+        ws_map = {
+            "repo-a/specs/plan-a.md": repo_dir,
+            "repo-b/specs/plan-b.md": repo_b,
+        }
+
+        routing_spy_calls = []
+        real_commit_helper = tr._commit_broker_readmitted_head
+
+        def _spy_commit_helper(*args, **kwargs):
+            routing_spy_calls.append((args, kwargs))
+            return real_commit_helper(*args, **kwargs)
+
+        def _mergeable_delta_review(*args, **kwargs):
+            return LoopResult(mergeable=True, ran=True, rounds=1, panel=_delta_panel())
+
+        captured = {}
+        with _mock.patch.dict(os.environ, {FAB_PROMOTION_ENV: "1"}):
+            with _mock.patch.object(tr, "_commit_broker_readmitted_head", side_effect=_spy_commit_helper):
+                result = tr.run_train(
+                    parse_train_roadmap(TRAIN_2NODE_MD),
+                    seeded["ledger_path"],
+                    run_mode="governed",
+                    resolve_workspace=lambda n: ws_map[n.node_id],
+                    coordinator_runtime=coord_runtime,
+                    resolve_owned_paths=None,
+                    _run_loop=lambda *a, **kw: (None, []),
+                    _publish=_make_publish_stub({}),
+                    _set_upstream_ref_fn=lambda *a, **kw: [],
+                    _preflight_fn=lambda *a, **kw: None,
+                    _pr_is_open=lambda ws, br: True,
+                    _live_pr_head_sha_fn=lambda ws, br: delta_head,
+                    _merge_phase_enabled=True,
+                    _reverify_fn=_reverify_pass,
+                    _train_review_fn=_approval_review_fn,
+                    _pr_merged_sha_fn=lambda *a, **kw: None,
+                    _delta_review_fn=_mergeable_delta_review,
+                    _merge_pr_fn=_capturing_head_merge_stub(captured, {
+                        repo_dir: "repo-a/specs/plan-a.md",
+                        repo_b: "repo-b/specs/plan-b.md",
+                    }),
+                    fab_fetch_origin="fetchsrc",
+                    fab_delta_shortcut=True,
+                )
+
+        assert len(routing_spy_calls) == 1, (
+            "_commit_broker_readmitted_head must be reached exactly once via CoordinatorRuntime"
+        )
+        assert result.get("status") == "merged"
+        assert captured["repo-a/specs/plan-a.md"] == [{
+            "branch": seeded["branch"],
+            "head_sha": delta_head,
+            "run_id": fixture.RUN,
+        }], "repo-a merge must receive exact delta_head without a later-node overwrite"
+        replayed = LinearizableAdmissionStore(store_root, lambda _: True).replay()
+        assert len(replayed) == 2, "durable admission record must be created via routing broker client"
+        assert replayed[-1].epoch == 2
+        receipt_values = [
+            value
+            for value in (*routing_spy_calls[0][0], *routing_spy_calls[0][1].values())
+            if isinstance(value, DeltaReadmitReceipt)
+        ]
+        assert len(receipt_values) == 1, "routing commit must receive exactly one DeltaReadmitReceipt"
+        receipt = receipt_values[0]
+        assert receipt.repository == seeded["identity"]
+        assert receipt.branch == seeded["branch"]
+        assert receipt.prior_head_sha == candidate_head
+        assert receipt.proposed_head_sha == delta_head
+        assert replayed[-1].request.repository == receipt.repository
+        assert replayed[-1].request.branch == receipt.branch
+        assert receipt.allocated_epoch == replayed[-1].epoch
+        assert replayed[-1].binding.prior_head_sha == receipt.prior_head_sha
+        assert replayed[-1].binding.proposed_head_sha == receipt.proposed_head_sha
+        assert replayed[-1].binding.authority_digest == receipt.authority_digest
+        assert candidate_head != delta_head
+    finally:
+        fixture.tearDown()
