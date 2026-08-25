@@ -19,6 +19,7 @@ from phase_loop_runtime.runner import (
 from phase_loop_runtime.state import load_work_unit_state, write_work_unit_state
 from phase_loop_test_utils import commit_fixture_paths, make_repo, write_phase_plan
 from phase_loop_test_utils import assert_metadata_only_evidence_refs
+from test_phase_worktree_executor import require_sched_red
 
 import pytest
 
@@ -26,9 +27,6 @@ import pytest
 # runtime execute path, which resolves the dotfiles skill-source / profile overlay
 # (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
 # conftest hook skips it when no dotfiles tree is reachable.
-pytestmark = pytest.mark.dotfiles_integration
-
-
 def _lane_plan_body() -> str:
     return (
         "# RUNNER\n\n"
@@ -49,6 +47,7 @@ def _lane_plan_body() -> str:
     )
 
 
+@pytest.mark.dotfiles_integration
 class PhaseLoopWorkUnitRunnerTest(unittest.TestCase):
     def test_dfparsoak_harness_lane_launch_records_assignment_and_redacted_refs(self):
         with tempfile.TemporaryDirectory() as td:
@@ -258,3 +257,44 @@ class PhaseLoopWorkUnitRunnerTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@require_sched_red
+def test_declared_phase_reducer_kind_bypasses_executor_heuristic(tmp_path):
+    repo = make_repo(tmp_path)
+    roadmap = repo / "specs" / "phase-plans-v1.md"
+    executor_override = write_phase_plan(
+        repo,
+        "RUNNER",
+        roadmap,
+        body=(
+            _lane_plan_body()
+            .replace("### SL-0 - Producer", "### SL-0 - Verification Reducer")
+            .replace("- **Owned files**: `producer.py`", "- **Owned files**: none")
+            .replace(
+                "### SL-0 - Verification Reducer\n",
+                "### SL-0 - Verification Reducer\n- **Execution policy**: `work_unit_kind=lane_execute`\n",
+            )
+        ),
+    )
+    selected = select_next_work_unit(repo, executor_override, "RUNNER")
+    assert selected.identity.kind == "lane_execute"
+    assert selected.identity.lane_id == "SL-0"
+
+    reducer_override = write_phase_plan(
+        repo,
+        "RUNNER",
+        roadmap,
+        body=_lane_plan_body().replace(
+            "### SL-0 - Producer\n",
+            "### SL-0 - Producer\n- **Execution policy**: `work_unit_kind=phase_reducer`\n",
+        ),
+    )
+    selected = select_next_work_unit(repo, reducer_override, "RUNNER")
+
+    assert selected.identity.kind == "phase_reducer"
+    # The kind is consumed by the dispatch selector, not merely retained on
+    # parsed metadata.  A reducer must never be launched through the executor
+    # route just because its owned-file shape resembles an execute lane.
+    assert selected.identity.lane_id == "SL-0"
+    assert selected.status == "planned"

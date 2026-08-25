@@ -4,6 +4,7 @@ from pathlib import Path
 
 from phase_loop_runtime.lane_scheduler import worktree_assignments_for_phase_wave
 from phase_loop_test_utils import make_repo
+from test_phase_worktree_executor import require_sched_red
 
 
 class WorkerPoolWorktreeAllocTest(unittest.TestCase):
@@ -36,3 +37,21 @@ class WorkerPoolWorktreeAllocTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@require_sched_red
+def test_phase_wave_assignments_keep_creator_generation_identity():
+    with tempfile.TemporaryDirectory() as td:
+        repo = make_repo(Path(td))
+        assignments = worktree_assignments_for_phase_wave(
+            repo,
+            ("A",),
+            branch="main",
+            mode="concurrent",
+            base_sha="base",
+            creator_handles={"A": {"generation": "g-42", "worktree_path": "/tmp/creator-A", "temp_branch": "phase-loop/sched/main/A-g-42"}},
+        )
+    assignment = assignments[0]
+    assert assignment.generation == "g-42"
+    assert assignment.worktree_path == "/tmp/creator-A"
+    assert assignment.temp_branch == "phase-loop/sched/main/A-g-42"

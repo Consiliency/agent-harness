@@ -1,7 +1,10 @@
 import io
+import fcntl
+import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -26,6 +29,7 @@ from phase_loop_runtime.models import CommandAdapterConfig, HarnessLaneAssignmen
 from phase_loop_runtime.profiles import resolve_profile, resolve_profile_for_executor
 from phase_loop_runtime.prompts import build_prompt
 from phase_loop_test_utils import make_repo, write_phase_plan
+from test_phase_worktree_executor import require_sched_red
 
 import pytest
 
@@ -33,9 +37,7 @@ import pytest
 # runtime execute path, which resolves the dotfiles skill-source / profile overlay
 # (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
 # conftest hook skips it when no dotfiles tree is reachable.
-pytestmark = pytest.mark.dotfiles_integration
-
-
+@pytest.mark.dotfiles_integration
 class PhaseLoopLauncherTest(unittest.TestCase):
     def test_profile_overrides_record_reason(self):
         selection = resolve_profile("execute", model="gpt-5.6-sol", effort="high")
@@ -1751,3 +1753,96 @@ class PhaseLoopLauncherTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@require_sched_red
+def test_launcher_accepts_explicit_nonserialized_lease_authority():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        lease_path = root / "phase.lock"
+        probe_lease_fd = os.open(lease_path, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(probe_lease_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        probe_grandchild_path = root / "probe-grandchild.pid"
+        launch_lease_fd = -1
+        launch_grandchild_path = root / "launch-grandchild.pid"
+
+        class InjectedLockedDescriptor:
+            generation = "g-launch"
+
+            def __init__(self, fd):
+                self._fd = fd
+
+            def fileno(self):
+                return self._fd
+
+        helper = (
+            "import os, subprocess, sys\n"
+            "lease_fd, marker_path = int(sys.argv[1]), sys.argv[2]\n"
+            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(10)'], "
+            "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True, "
+            "pass_fds=(lease_fd,))\n"
+            "os.close(lease_fd)\n"
+            "open(marker_path, 'w', encoding='utf-8').write(str(child.pid))\n"
+        )
+        try:
+            # This is the SL-2 non-production capability probe. Custody moves
+            # to the live grandchild's inherited open-file description; after
+            # launch the coordinator copy is closed before contention is read.
+            executor = subprocess.run(
+                [sys.executable, "-c", helper, str(probe_lease_fd), str(probe_grandchild_path)],
+                pass_fds=(probe_lease_fd,),
+                check=True,
+            )
+            assert executor.returncode == 0 and probe_grandchild_path.exists()
+            os.close(probe_lease_fd)
+            probe_lease_fd = -1
+            contender = os.open(lease_path, os.O_RDWR)
+            try:
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            finally:
+                os.close(contender)
+
+            grandchild_pid = int(probe_grandchild_path.read_text(encoding="utf-8"))
+            assert os.kill(grandchild_pid, 0) is None
+            os.kill(grandchild_pid, 9)
+            deadline = time.monotonic() + 5
+            while True:
+                try:
+                    os.kill(grandchild_pid, 0)
+                except ProcessLookupError:
+                    break
+                assert time.monotonic() < deadline, "grandchild was not reaped"
+                time.sleep(0.02)
+            contender = os.open(lease_path, os.O_RDWR)
+            try:
+                fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(contender, fcntl.LOCK_UN)
+            finally:
+                os.close(contender)
+
+            # The future SL-2 launcher seam receives a new, still-locked
+            # capability. It must not reuse the relinquished probe descriptor
+            # or the probe's killed grandchild marker.
+            launch_lease_fd = os.open(lease_path, os.O_RDWR)
+            fcntl.flock(launch_lease_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            result = launch(
+                [sys.executable, "-c", helper, str(launch_lease_fd), str(launch_grandchild_path)],
+                log_path=root / "executor.log",
+                lease_authority=InjectedLockedDescriptor(launch_lease_fd),
+            )
+            assert result.returncode == 0
+            assert result.supervisor_receipt["generation"] == "g-launch"
+            assert result.supervisor_receipt["pass_fds"] == [launch_lease_fd]
+            assert result.supervisor_receipt["process_tree_empty"] is True
+        finally:
+            for marker_path in (probe_grandchild_path, launch_grandchild_path):
+                if marker_path.exists():
+                    try:
+                        os.kill(int(marker_path.read_text(encoding="utf-8")), 9)
+                    except ProcessLookupError:
+                        pass
+            for fd in (probe_lease_fd, launch_lease_fd):
+                if fd >= 0:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                    os.close(fd)

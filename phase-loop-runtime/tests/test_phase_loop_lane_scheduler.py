@@ -7,6 +7,7 @@ from phase_loop_runtime.lane_scheduler import select_ready_lane_wave, validate_c
 from phase_loop_runtime.models import LaneWorktreeAssignment, WorkUnitIdentity, WorkUnitState
 from phase_loop_runtime.plan_ir import parse_phase_plan_ir
 from phase_loop_test_utils import make_repo, write_phase_plan
+from test_phase_worktree_executor import require_sched_red
 
 
 def _fanout_body() -> str:
@@ -195,3 +196,43 @@ class PhaseLoopLaneSchedulerTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@require_sched_red
+def test_declared_work_unit_kind_is_authoritative_at_lane_selection(tmp_path):
+    repo = make_repo(tmp_path)
+    reducer_override = write_phase_plan(
+        repo,
+        "WAVESCHED",
+        tmp_path / "repo" / "specs" / "phase-plans-v1.md",
+        body=_fanout_body().replace(
+            "### SL-0 - A\n", "### SL-0 - A\n- **Execution policy**: `work_unit_kind=phase_reducer`\n"
+        ),
+    )
+    lane = parse_phase_plan_ir(reducer_override).lanes[0]
+    assert lane.execution_policy.work_unit_kind == "phase_reducer"
+    decision = select_ready_lane_wave(parse_phase_plan_ir(reducer_override), mode="serialized")
+    assert decision.status == "ready"
+    assert decision.ready_wave is not None
+    assert decision.ready_wave.lane_ids == ("SL-0",)
+    assert decision.ready_wave.work_unit_kinds == {"SL-0": "phase_reducer"}
+
+    executor_override = write_phase_plan(
+        repo,
+        "WAVESCHED",
+        tmp_path / "repo" / "specs" / "phase-plans-v1.md",
+        body=(
+            _fanout_body()
+            .replace("### SL-0 - A", "### SL-0 - Verification Reducer")
+            .replace("- **Owned files**: `a.py`", "- **Owned files**: none")
+            .replace(
+                "### SL-0 - Verification Reducer\n",
+                "### SL-0 - Verification Reducer\n- **Execution policy**: `work_unit_kind=lane_execute`\n",
+            )
+        ),
+    )
+    reducer_lane = parse_phase_plan_ir(executor_override).lanes[0]
+    assert reducer_lane.reducer_kind != "none" or reducer_lane.read_only
+    assert reducer_lane.execution_policy.work_unit_kind == "lane_execute"
+    executor_decision = select_ready_lane_wave(parse_phase_plan_ir(executor_override), mode="serialized")
+    assert executor_decision.ready_wave.work_unit_kinds == {"SL-0": "lane_execute"}

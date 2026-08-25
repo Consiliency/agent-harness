@@ -11,10 +11,14 @@ concurrent cross-phase dispatch safe:
 """
 from __future__ import annotations
 
+import os
 import subprocess
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from phase_loop_runtime.phase_worktree_executor import (
     PhaseWorktreeHandle,
@@ -26,6 +30,60 @@ from phase_loop_runtime.phase_worktree_executor import (
     transfer_phase_worktree_dirty,
 )
 from phase_loop_test_utils import make_repo
+
+
+SCHED_SKIP_REASON = "SCHED RED suite inactive; set PHASE_LOOP_TDD_EXPECT_SCHED=1"
+SCHED_RECOVERY_DECISION = "docs/research/sched-worktree-recovery-ratification.md"
+
+
+def sched_red_active() -> bool:
+    return os.environ.get("PHASE_LOOP_TDD_EXPECT_SCHED") == "1"
+
+
+def require_sched_red(test):
+    return pytest.mark.skipif(not sched_red_active(), reason=SCHED_SKIP_REASON)(test)
+
+
+SCHED_SL2_NODEIDS = (
+    "phase-loop-runtime/tests/test_phase_loop_lane_scheduler.py::test_declared_work_unit_kind_is_authoritative_at_lane_selection",
+    "phase-loop-runtime/tests/test_phase_loop_concurrent_phase_dispatch.py::test_no_diff_result_requires_an_explicit_artifact_verification_skip",
+    "phase-loop-runtime/tests/test_dispatch_lock_reentrancy.py::test_nested_dispatch_lock_retains_one_explicit_run_identity",
+    "phase-loop-runtime/tests/test_phase_loop_work_unit_runner.py::test_declared_phase_reducer_kind_bypasses_executor_heuristic",
+    "phase-loop-runtime/tests/test_phase_loop_runner.py::test_nested_runner_dispatch_threads_one_run_identity",
+    "phase-loop-runtime/tests/test_phase_loop_launcher.py::test_launcher_accepts_explicit_nonserialized_lease_authority",
+    "phase-loop-runtime/tests/test_workerpool_failure_isolation.py::test_blocked_worker_preserves_recoverable_generation_metadata",
+    "phase-loop-runtime/tests/test_workerpool_parallel.py::test_worker_pool_propagates_run_identity_and_lease_authority",
+    "phase-loop-runtime/tests/test_workerpool_worktree_alloc.py::test_phase_wave_assignments_keep_creator_generation_identity",
+    "phase-loop-runtime/tests/test_v34_parallel_dispatch_soak.py::test_real_diff_never_skips_artifact_dependent_verification",
+    "phase-loop-runtime/tests/test_phase_loop_v45_sched.py::test_staged_planner_artifact_survives_parent_reduction",
+    "phase-loop-runtime/tests/test_workerpool_failure_isolation.py::test_manual_or_blocked_closeout_preserves_staged_and_untracked_bytes",
+)
+SCHED_SL4_NODEIDS = (
+    "phase-loop-runtime/tests/test_phase_worktree_executor.py::test_sched_create_preserves_committed_generation_and_mints_replacement",
+    "phase-loop-runtime/tests/test_phase_worktree_executor.py::test_sched_create_preserves_dirty_and_untracked_generation_bytes_and_ref",
+    "phase-loop-runtime/tests/test_phase_worktree_executor.py::test_sched_ignored_handoff_only_generation_is_preserved",
+    "phase-loop-runtime/tests/test_phase_worktree_executor.py::test_sched_held_live_lease_prevents_reclamation",
+    "phase-loop-runtime/tests/test_phase_worktree_executor.py::test_sched_post_scan_mutation_prevents_reclamation",
+    "phase-loop-runtime/tests/test_phase_worktree_executor.py::test_sched_lease_identity_drift_preserves_generation",
+    "phase-loop-runtime/tests/test_phase_worktree_executor.py::test_sched_generation_path_and_branch_collisions_never_reuse_preserved_generation",
+    "phase-loop-runtime/tests/test_phase_worktree_executor.py::test_sched_released_empty_generation_is_reclaimed_and_fresh_generation_launches",
+)
+SCHED_JOINED_NODEIDS = (
+    "phase-loop-runtime/tests/test_phase_loop_v45_sched.py::test_scheduler_consumes_creator_returned_worktree_handle",
+    "phase-loop-runtime/tests/test_phase_loop_v45_schedharden.py::test_supervisor_retains_lease_after_executor_parent_exits[pass_fds]",
+    "phase-loop-runtime/tests/test_phase_loop_v45_schedharden.py::test_supervisor_retains_lease_after_executor_parent_exits[subreaper_session]",
+    "phase-loop-runtime/tests/test_phase_loop_v45_schedharden.py::test_supervisor_retains_lease_after_executor_parent_exits[process_tree_reaping]",
+)
+SCHED_RED_NODEIDS = SCHED_SL2_NODEIDS + SCHED_SL4_NODEIDS + SCHED_JOINED_NODEIDS
+
+assert len(SCHED_SL2_NODEIDS) == 12
+assert len(SCHED_SL4_NODEIDS) == 8
+assert len(SCHED_JOINED_NODEIDS) == 4
+assert len(SCHED_RED_NODEIDS) == 24
+assert len(SCHED_RED_NODEIDS) == len(set(SCHED_RED_NODEIDS))
+assert not (set(SCHED_SL2_NODEIDS) & set(SCHED_SL4_NODEIDS))
+assert not (set(SCHED_SL2_NODEIDS) & set(SCHED_JOINED_NODEIDS))
+assert not (set(SCHED_SL4_NODEIDS) & set(SCHED_JOINED_NODEIDS))
 
 
 def _in_head(repo: Path, rel: str) -> bool:
@@ -61,6 +119,14 @@ def _isolated_worktree_root(tmp_path: Path):
         yield
 
 
+@pytest.fixture(autouse=True)
+def _per_test_worktree_root(tmp_path: Path):
+    """Keep every lifecycle case off the shared deterministic workspace path."""
+
+    with _isolated_worktree_root(tmp_path):
+        yield
+
+
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True
@@ -81,6 +147,20 @@ def _commit_in_worktree(worktree: Path, rel: str, content: str, message: str) ->
         check=True,
         stdout=subprocess.DEVNULL,
     )
+
+
+def _assert_preserved(repo: Path, handle, expected: dict[str, bytes]) -> None:
+    """A preserved generation must retain its path, ref, and every byte.
+
+    This deliberately checks all three independent recovery handles.  A branch
+    alone is not enough for untracked/ignored bytes, while a path alone is not
+    enough once the worker has crashed and only the temporary ref survives.
+    """
+
+    assert handle.worktree_path.exists()
+    assert _git(repo, "show-ref", "--verify", f"refs/heads/{handle.temp_branch}").returncode == 0
+    for rel, content in expected.items():
+        assert (handle.worktree_path / rel).read_bytes() == content
 
 
 def test_create_isolates_phase_on_its_own_branch(tmp_path):
@@ -200,14 +280,13 @@ def test_create_is_idempotent_after_stale_worktree(tmp_path):
     base = resolve_base_sha(repo)
 
     first = create_phase_worktree(repo, phase="extract", target_branch=branch, base_sha=base)
-    _commit_in_worktree(first.worktree_path, "src/extract.py", "x = 1\n", "stale work")
-    # Simulate a crashed prior run: do NOT tear down; recreate the same phase.
+    # Keep this legacy control byte-empty.  It proves only that the historical
+    # implementation can recreate an occupied fixture at its requested base;
+    # preservation and collision behavior belong to the activated SCHED case.
     second = create_phase_worktree(repo, phase="extract", target_branch=branch, base_sha=base)
 
-    assert second.worktree_path == first.worktree_path
     assert second.worktree_path.exists()
-    # Recreated fresh at base: the stale commit's file is gone.
-    assert not (second.worktree_path / "src" / "extract.py").exists()
+    assert second.base_sha == base
     teardown_phase_worktree(repo, second)
 
 
@@ -359,3 +438,169 @@ def test_handle_roundtrips_fields(tmp_path):
     )
     assert handle.phase == "EXTRACT"
     assert handle.target_branch == "main"
+
+
+@require_sched_red
+def test_sched_create_preserves_committed_generation_and_mints_replacement(tmp_path):
+    # SCHED_RECOVERY_DECISION: docs/research/sched-worktree-recovery-ratification.md
+    assert SCHED_RECOVERY_DECISION == "docs/research/sched-worktree-recovery-ratification.md"
+    repo = make_repo(tmp_path)
+    branch = _current_branch(repo)
+    base = resolve_base_sha(repo)
+    with _isolated_worktree_root(tmp_path):
+        first = create_phase_worktree(repo, phase="extract", target_branch=branch, base_sha=base)
+        _commit_in_worktree(first.worktree_path, "src/recoverable.py", "kept = True\n", "recoverable")
+        replacement = create_phase_worktree(repo, phase="extract", target_branch=branch, base_sha=base)
+    assert replacement.generation != first.generation
+    assert replacement.worktree_path != first.worktree_path
+    assert replacement.temp_branch != first.temp_branch
+    _assert_preserved(repo, first, {"src/recoverable.py": b"kept = True\n"})
+
+
+@require_sched_red
+def test_sched_create_preserves_dirty_and_untracked_generation_bytes_and_ref(tmp_path):
+    repo = make_repo(tmp_path)
+    branch = _current_branch(repo)
+    base = resolve_base_sha(repo)
+    dirty = b"dirty-but-recoverable\n"
+    untracked = b"untracked-but-recoverable\x00bytes"
+    with _isolated_worktree_root(tmp_path):
+        first = create_phase_worktree(repo, phase="extract", target_branch=branch, base_sha=base)
+        (first.worktree_path / "tracked.txt").write_bytes(dirty)
+        target = first.worktree_path / "scratch" / "untracked.bin"
+        target.parent.mkdir()
+        target.write_bytes(untracked)
+        replacement = create_phase_worktree(repo, phase="extract", target_branch=branch, base_sha=base)
+    assert replacement.generation != first.generation
+    _assert_preserved(repo, first, {"tracked.txt": dirty, "scratch/untracked.bin": untracked})
+
+
+@require_sched_red
+def test_sched_ignored_handoff_only_generation_is_preserved(tmp_path):
+    repo = make_repo(tmp_path)
+    (repo / ".gitignore").write_text(".dev-skills/\n", encoding="utf-8")
+    _git(repo, "add", ".gitignore")
+    _git(repo, "commit", "-q", "-m", "ignore handoffs")
+    branch = _current_branch(repo)
+    base = resolve_base_sha(repo)
+    with _isolated_worktree_root(tmp_path):
+        first = create_phase_worktree(repo, phase="extract", target_branch=branch, base_sha=base)
+        handoff = first.worktree_path / ".dev-skills" / "handoffs" / "resume.md"
+        handoff.parent.mkdir(parents=True)
+        handoff.write_text("recover this generation\n", encoding="utf-8")
+        replacement = create_phase_worktree(repo, phase="extract", target_branch=branch, base_sha=base)
+    assert replacement.generation != first.generation
+    _assert_preserved(repo, first, {".dev-skills/handoffs/resume.md": b"recover this generation\n"})
+
+
+@require_sched_red
+def test_sched_held_live_lease_prevents_reclamation(tmp_path):
+    import phase_loop_runtime.phase_worktree_executor as executor
+
+    repo = make_repo(tmp_path)
+    branch = _current_branch(repo)
+    with _isolated_worktree_root(tmp_path):
+        handle = create_phase_worktree(repo, phase="extract", target_branch=branch, base_sha=resolve_base_sha(repo))
+        (handle.worktree_path / "keep.txt").write_bytes(b"held lease keeps this generation\n")
+        result = executor.reclaim_phase_worktree(repo, handle)
+    assert result.reclaimed is False
+    assert result.reason == "live_lease"
+    _assert_preserved(repo, handle, {"keep.txt": b"held lease keeps this generation\n"})
+
+
+@require_sched_red
+def test_sched_post_scan_mutation_prevents_reclamation(tmp_path):
+    import phase_loop_runtime.phase_worktree_executor as executor
+
+    repo = make_repo(tmp_path)
+    branch = _current_branch(repo)
+    with _isolated_worktree_root(tmp_path):
+        handle = create_phase_worktree(repo, phase="extract", target_branch=branch, base_sha=resolve_base_sha(repo))
+        handle.lease_authority.close()
+        original_remove = executor._remove_worktree
+        mutation_ran = False
+
+        def mutate_after_inventory(repo_arg, path):
+            nonlocal mutation_ran
+            mutation_ran = True
+            (handle.worktree_path / "late.txt").write_bytes(b"appeared after scan\n")
+            return original_remove(repo_arg, path)
+
+        with patch.object(executor, "_remove_worktree", side_effect=mutate_after_inventory):
+            result = executor.reclaim_phase_worktree(repo, handle)
+    assert mutation_ran, "the post-scan mutation anchor must execute"
+    assert result.reclaimed is False
+    assert result.reason == "inventory_changed"
+    _assert_preserved(repo, handle, {"late.txt": b"appeared after scan\n"})
+
+
+@require_sched_red
+def test_sched_lease_identity_drift_preserves_generation(tmp_path):
+    import phase_loop_runtime.phase_worktree_executor as executor
+
+    repo = make_repo(tmp_path)
+    branch = _current_branch(repo)
+    with _isolated_worktree_root(tmp_path):
+        handle = create_phase_worktree(repo, phase="extract", target_branch=branch, base_sha=resolve_base_sha(repo))
+        (handle.worktree_path / "identity.txt").write_bytes(b"identity-bound recovery\n")
+        drifted = replace(handle, lease_authority=handle.lease_authority.with_identity("foreign-lease"))
+        result = executor.reclaim_phase_worktree(repo, drifted)
+    assert result.reclaimed is False
+    assert result.reason == "lease_identity_drift"
+    _assert_preserved(repo, handle, {"identity.txt": b"identity-bound recovery\n"})
+
+
+@require_sched_red
+def test_sched_generation_path_and_branch_collisions_never_reuse_preserved_generation(tmp_path):
+    repo = make_repo(tmp_path)
+    branch = _current_branch(repo)
+    with _isolated_worktree_root(tmp_path):
+        first = create_phase_worktree(repo, phase="extract", target_branch=branch, base_sha=resolve_base_sha(repo))
+        _commit_in_worktree(first.worktree_path, "committed.txt", "preserved commit\n", "preserve generation")
+        second = create_phase_worktree(repo, phase="extract", target_branch=branch, base_sha=resolve_base_sha(repo))
+    assert (second.generation, second.worktree_path, second.temp_branch) != (first.generation, first.worktree_path, first.temp_branch)
+    _assert_preserved(repo, first, {"committed.txt": b"preserved commit\n"})
+
+
+@require_sched_red
+def test_sched_released_empty_generation_is_reclaimed_and_fresh_generation_launches(tmp_path):
+    import phase_loop_runtime.phase_worktree_executor as executor
+
+    repo = make_repo(tmp_path)
+    branch = _current_branch(repo)
+    with _isolated_worktree_root(tmp_path):
+        first = create_phase_worktree(repo, phase="extract", target_branch=branch, base_sha=resolve_base_sha(repo))
+        removal_observations = []
+        original_remove = executor._remove_worktree
+
+        def remove_while_owner_is_live(repo_arg, path):
+            removal_observations.append(first.lease_authority.is_open())
+            return original_remove(repo_arg, path)
+
+        # Owner-authorized teardown is distinct from crash reclamation: the
+        # original authority stays open through final inventory/removal and only
+        # the bound complete-tree receipt authorizes its closure afterwards.
+        with patch.object(executor, "_remove_worktree", side_effect=remove_while_owner_is_live):
+            teardown = teardown_phase_worktree(
+                repo,
+                first,
+                supervisor_receipt={
+                    "generation": first.generation,
+                    "process_tree_empty": True,
+                    "receipt_binding": first.lease_authority.identity,
+                },
+            )
+        assert removal_observations == [True]
+        assert teardown.removed is True
+        assert first.lease_authority.is_open() is False
+
+        # Crash-residual reclamation separately acquires a released lease and
+        # mints a fresh generation only after the empty inventory is proven.
+        first = create_phase_worktree(repo, phase="extract", target_branch=branch, base_sha=resolve_base_sha(repo))
+        first.lease_authority.close()
+        reclaimed = executor.reclaim_phase_worktree(repo, first)
+        replacement = create_phase_worktree(repo, phase="extract", target_branch=branch, base_sha=resolve_base_sha(repo))
+    assert reclaimed.reclaimed is True
+    assert not first.worktree_path.exists()
+    assert replacement.generation != first.generation
+    assert replacement.worktree_path.exists()

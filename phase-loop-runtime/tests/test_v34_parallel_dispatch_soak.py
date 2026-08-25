@@ -14,6 +14,7 @@ from phase_loop_runtime.plan_ir import iter_waves
 from phase_loop_runtime.runner import run_loop
 from phase_loop_runtime.worker_pool import PhaseWorkerJob, run_phase_worker_pool
 from phase_loop_test_utils import build_fake_automation_output, commit_fixture_paths, make_repo, write_phase_plan
+from test_phase_worktree_executor import require_sched_red
 
 import pytest
 
@@ -21,9 +22,7 @@ import pytest
 # runtime execute path, which resolves the dotfiles skill-source / profile overlay
 # (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
 # conftest hook skips it when no dotfiles tree is reachable.
-pytestmark = pytest.mark.dotfiles_integration
-
-
+@pytest.mark.dotfiles_integration
 class V34ParallelDispatchSoakTest(unittest.TestCase):
     def test_soak_roadmap_declares_three_phase_wave_then_reducer(self):
         roadmap = Path(__file__).resolve().parents[3] / "specs" / "phase-plans-v34-soak-parallel.md"
@@ -157,3 +156,52 @@ def _event_index(events: list[dict], action: str, phase: str) -> int:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@require_sched_red
+def test_real_diff_never_skips_artifact_dependent_verification():
+    from phase_loop_runtime import runner
+    from phase_loop_runtime.launcher import LaunchResult
+    from phase_loop_test_utils import build_fake_automation_output, commit_fixture_paths, make_repo, write_phase_plan
+
+    with tempfile.TemporaryDirectory() as td:
+        repo = make_repo(Path(td))
+        roadmap = repo / "specs" / "phase-plans-v1.md"
+        roadmap.write_text(
+            "# Roadmap\n\n### Phase 1 - Alpha (A)\n**Depends on**\n- (none)\n",
+            encoding="utf-8",
+        )
+        plan = write_phase_plan(repo, "A", roadmap, owned_files=("src/a.py",))
+        commit_fixture_paths(repo, "add real-diff plan", roadmap, plan)
+        verification_calls = []
+
+        def real_diff_launch(spec, **_kwargs):
+            result = LaunchResult(
+                command=spec.command,
+                returncode=0,
+                output=build_fake_automation_output(
+                    status="complete",
+                    verification_status="passed",
+                    artifact=str(plan),
+                    artifact_state="tracked",
+                ),
+                executor=spec.executor,
+            )
+            object.__setattr__(result, "changed_paths", ("src/a.py",))
+            return result
+
+        def observe_verification(*args, **kwargs):
+            verification_calls.append(kwargs.get("phase_alias"))
+            return {"ok": True, "status": "observed"}
+
+        with (
+            patch("phase_loop_runtime.runner.launch_with_spec", side_effect=real_diff_launch),
+            patch("phase_loop_runtime.runner._run_execute_verification", side_effect=observe_verification),
+            patch("phase_loop_runtime.injection._resolve_pack_skill_dirs", return_value={}),
+        ):
+            snapshot, _ = runner.run_loop(repo, roadmap, phase="A")
+
+        assert snapshot.phases["A"] == "complete"
+        assert verification_calls == ["A"]
+        events = read_events(repo)
+        assert events[-1]["metadata"]["runner_verification"]["artifact_diff"] == ["src/a.py"]
