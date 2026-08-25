@@ -1845,6 +1845,69 @@
             "tests_first": true
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-25T09:30:10Z",
+          "by": "clawdbot-agent-harness-codex",
+          "metadata": {
+            "candidate_head": "b4ace6e83985f6daaac4603d4c012e2123b30f3c",
+            "implementation_pr": "Consiliency/agent-harness#658",
+            "merge_commit": "3fdc28c336c3215f09a0ea9c8cf154aa13700ab6",
+            "reason": "reviewed_implementation_merged_and_exact_main_closeout_started",
+            "review_findings_issue": "Consiliency/agent-harness#655"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-08-25T09:30:10Z",
+          "by": "clawdbot-agent-harness-codex",
+          "metadata": {
+            "acceptance_criteria_satisfied": 8,
+            "acceptance_criteria_total": 8,
+            "candidate_head": "b4ace6e83985f6daaac4603d4c012e2123b30f3c",
+            "candidate_patch_sha256": "62a4d4923147b198f28490f0a14b846ee991e93d12ea44884a7340ea9508b586",
+            "ci_runs": [
+              "https://github.com/Consiliency/agent-harness/actions/runs/32825835170",
+              "https://github.com/Consiliency/agent-harness/actions/runs/32825835399"
+            ],
+            "ci_suite_result": "wheel_clean_room_and_offloaded_suite_and_aggregate_gate_passed",
+            "exact_main_head": "3fdc28c336c3215f09a0ea9c8cf154aa13700ab6",
+            "exact_main_results": {
+              "activated_inventory": "162_passed",
+              "activation_absent_inventory": "162_passed",
+              "broad_selector": "665_passed_26_skipped_4578_deselected_80_subtests_passed",
+              "real_git_shortcut": "1_passed_77_deselected"
+            },
+            "exact_main_tree": "243a8c17688484680a069cfdc917e5e48c66dc15",
+            "implementation_pr": "Consiliency/agent-harness#658",
+            "issue_dispositions": {
+              "Consiliency/agent-harness#191": "closed",
+              "Consiliency/agent-harness#288": "closed",
+              "Consiliency/agent-harness#339": "closed",
+              "Consiliency/agent-harness#363": "closed"
+            },
+            "issue_dispositions_sha256": "17a5b7b991a79e8c5e713337498c404b145cf0d6397bd0d808336cd21f33bd97",
+            "issue_inventory": [
+              "Consiliency/agent-harness#191",
+              "Consiliency/agent-harness#288",
+              "Consiliency/agent-harness#339",
+              "Consiliency/agent-harness#363"
+            ],
+            "plan_sha256": "46f60c0ea1e7a51bbcab784566454b959f806c50d8dff04fa91e75d36a812bfd",
+            "president_ruling": "PROCEED_no_blocking_findings",
+            "president_ruling_sha256": "7261365ab0d4ea25de71b1b3b8b603e5f9b01dd5b8371391e1525646ac783301",
+            "produced_if_gates": [
+              "IF-0-FABREADMIT-1"
+            ],
+            "reason": "exact_canonical_main_attestation_and_issue_reducer_passed",
+            "review_findings_issue": "Consiliency/agent-harness#655",
+            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+            "scope_result": "5_changed_files_all_within_owned_union",
+            "spec_delta_closeout": "no_spec_delta",
+            "spec_delta_closeout_sha256": "35a0fe7fd1b9140608f612afabecc60a6c2ae53de30c6534611e9f26992a295e",
+            "verification_status": "passed"
+          },
+          "transition": "completed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -1857,10 +1920,10 @@
         "type": "phase"
       },
       "slug": "v10-FABREADMIT",
-      "status": "committed",
+      "status": "completed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-23T18:13:00Z"
+      "updated_at": "2026-08-25T09:30:10Z"
     },
     {
       "acceptance_criteria_count": null,
