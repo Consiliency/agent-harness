@@ -1,5 +1,6 @@
 import io
 import fcntl
+import json
 import os
 import subprocess
 import sys
@@ -1763,7 +1764,7 @@ def test_launcher_accepts_explicit_nonserialized_lease_authority():
         lease_path = root / "phase.lock"
         launch_lease_fd = os.open(lease_path, os.O_RDWR | os.O_CREAT, 0o600)
         fcntl.flock(launch_lease_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        launch_grandchild_path = root / "launch-grandchild.pid"
+        launch_custody_path = root / "launch-custody.json"
 
         class InjectedLockedDescriptor:
             generation = "g-launch"
@@ -1776,12 +1777,15 @@ def test_launcher_accepts_explicit_nonserialized_lease_authority():
 
         helper = (
             "import os, subprocess, sys\n"
+            "import json, time\n"
             "lease_fd, marker_path = int(sys.argv[1]), sys.argv[2]\n"
-            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(10)'], "
+            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(1)'], "
             "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True, "
             "pass_fds=(lease_fd,))\n"
+            "json.dump({'executor_pid': os.getpid(), 'supervisor_pid': os.getppid(), "
+            "'grandchild_pid': child.pid}, open(marker_path, 'w'))\n"
             "os.close(lease_fd)\n"
-            "open(marker_path, 'w', encoding='utf-8').write(str(child.pid))\n"
+            "time.sleep(0.25)\n"
         )
         try:
             # Exercise the real launch path, not a look-alike subprocess probe.
@@ -1792,7 +1796,7 @@ def test_launcher_accepts_explicit_nonserialized_lease_authority():
             def run_launch():
                 try:
                     result_box["result"] = launch(
-                        [sys.executable, "-c", helper, str(launch_lease_fd), str(launch_grandchild_path)],
+                        [sys.executable, "-c", helper, str(launch_lease_fd), str(launch_custody_path)],
                         log_path=root / "executor.log",
                         lease_authority=InjectedLockedDescriptor(launch_lease_fd),
                     )
@@ -1802,7 +1806,7 @@ def test_launcher_accepts_explicit_nonserialized_lease_authority():
             launched = threading.Thread(target=run_launch, daemon=True)
             launched.start()
             deadline = time.monotonic() + 10
-            while not launch_grandchild_path.exists() and "error" not in result_box:
+            while not launch_custody_path.exists() and "error" not in result_box:
                 assert time.monotonic() < deadline, "launch never transferred lease custody"
                 time.sleep(0.02)
             if "error" in result_box:
@@ -1811,7 +1815,14 @@ def test_launcher_accepts_explicit_nonserialized_lease_authority():
             inherited_lease_fd = launch_lease_fd
             os.close(launch_lease_fd)
             launch_lease_fd = -1
-            grandchild_pid = int(launch_grandchild_path.read_text(encoding="utf-8"))
+            custody = json.loads(launch_custody_path.read_text(encoding="utf-8"))
+            executor_pid = custody["executor_pid"]
+            supervisor_pid = custody["supervisor_pid"]
+            grandchild_pid = custody["grandchild_pid"]
+            assert executor_pid != os.getpid()
+            assert supervisor_pid != os.getpid(), "launcher did not create an independent supervisor"
+            assert os.kill(executor_pid, 0) is None
+            assert os.kill(supervisor_pid, 0) is None
             assert os.kill(grandchild_pid, 0) is None
             contender = os.open(lease_path, os.O_RDWR)
             try:
@@ -1820,17 +1831,38 @@ def test_launcher_accepts_explicit_nonserialized_lease_authority():
             finally:
                 os.close(contender)
 
-            # The launcher contract owns complete-tree termination/reaping.  Once
-            # its descendant is terminated, launch may return and release custody.
-            os.kill(grandchild_pid, 9)
+            # The executor exits first, while the supervisor remains responsible
+            # for the live grandchild and the lease.  The test never kills that
+            # grandchild: a conformant supervisor waits for and reaps it itself.
+            def process_live(pid):
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    return False
+                return True
+
+            deadline = time.monotonic() + 5
+            while process_live(executor_pid):
+                assert time.monotonic() < deadline, "executor parent did not exit"
+                time.sleep(0.02)
+            assert os.kill(supervisor_pid, 0) is None
+            assert os.kill(grandchild_pid, 0) is None
+            contender = os.open(lease_path, os.O_RDWR)
+            try:
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            finally:
+                os.close(contender)
             launched.join(timeout=10)
-            assert not launched.is_alive(), "launcher did not reap its descendant"
+            assert not launched.is_alive(), "launcher did not reap its complete descendant tree"
             assert "error" not in result_box
             result = result_box["result"]
             assert result.returncode == 0
             assert result.supervisor_receipt["generation"] == "g-launch"
             assert result.supervisor_receipt["pass_fds"] == [inherited_lease_fd]
             assert result.supervisor_receipt["process_tree_empty"] is True
+            with pytest.raises(ProcessLookupError):
+                os.kill(grandchild_pid, 0)
             contender = os.open(lease_path, os.O_RDWR)
             try:
                 fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1838,9 +1870,9 @@ def test_launcher_accepts_explicit_nonserialized_lease_authority():
             finally:
                 os.close(contender)
         finally:
-            if launch_grandchild_path.exists():
+            if launch_custody_path.exists():
                 try:
-                    os.kill(int(launch_grandchild_path.read_text(encoding="utf-8")), 9)
+                    os.kill(json.loads(launch_custody_path.read_text(encoding="utf-8"))["grandchild_pid"], 9)
                 except ProcessLookupError:
                     pass
             if launch_lease_fd >= 0:

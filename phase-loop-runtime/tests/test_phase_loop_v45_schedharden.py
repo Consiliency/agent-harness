@@ -393,6 +393,7 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
         coordinator_path.write_text(
             textwrap.dedent(
                 """
+                import ctypes
                 import fcntl
                 import hashlib
                 import json
@@ -481,6 +482,16 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
                         kwargs["pass_fds"] = ()
                     if is_supervisor_spawn and mutation == "subreaper_session":
                         kwargs["start_new_session"] = False
+                        previous_preexec = kwargs.get("preexec_fn")
+
+                        def disable_child_subreaper():
+                            if previous_preexec is not None:
+                                previous_preexec()
+                            libc = ctypes.CDLL(None, use_errno=True)
+                            if libc.prctl(36, 0, 0, 0, 0) != 0:
+                                raise OSError(ctypes.get_errno(), "PR_SET_CHILD_SUBREAPER")
+
+                        kwargs["preexec_fn"] = disable_child_subreaper
                     process = real_popen(*args, **kwargs)
                     if is_supervisor_spawn:
                         emit(
@@ -488,14 +499,20 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
                             source_anchor="phase_loop_runtime.launcher.subprocess.Popen",
                             mutation=mutation,
                             mutation_digest=hashlib.sha256(
-                                (mutation + repr(before_fds) + repr(kwargs.get("pass_fds", ()))
-                                 + repr(before_session) + repr(kwargs.get("start_new_session"))).encode()
+                                (
+                                    "phase-loop-runtime/tests/test_phase_loop_v45_schedharden.py::"
+                                    f"test_supervisor_retains_lease_after_executor_parent_exits[{mutation}]::"
+                                    f"{popen_source_digest}"
+                                ).encode()
                             ).hexdigest(),
                             source_digest=popen_source_digest,
                             before_pass_fds=list(before_fds),
                             after_pass_fds=list(kwargs.get("pass_fds", ())),
                             before_start_new_session=before_session,
                             after_start_new_session=kwargs.get("start_new_session"),
+                            after_pr_set_child_subreaper=(
+                                False if mutation == "subreaper_session" else None
+                            ),
                             supervisor_pid=process.pid,
                         )
                     if isinstance(command, (tuple, list)) and str(helper_path) in command:
@@ -719,7 +736,14 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
         import json
         import time
 
-        reference_source = "SCHED reference supervisor v3: pass_fds, session, subreaper, complete process-group reaping"
+        frozen_nodeid = (
+            "phase-loop-runtime/tests/test_phase_loop_v45_schedharden.py::"
+            "test_supervisor_retains_lease_after_executor_parent_exits"
+        )
+        reference_source = (
+            "SCHED reference supervisor v4: runner-to-launch seam, pass_fds, "
+            "session, PR_SET_CHILD_SUBREAPER, and complete descendant reaping"
+        )
         reference_digest = hashlib.sha256(reference_source.encode("utf-8")).hexdigest()
         source_repo = Path(__file__).resolve().parents[2]
         preproduction_base = subprocess.check_output(
@@ -747,11 +771,12 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
             case_root.mkdir(exist_ok=True)
             lock_path = case_root / "lease.lock"
             marker_path = case_root / "marker.json"
+            child_marker_path = case_root / "child.json"
             lease_fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
             fcntl.flock(lease_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             helper = (
-                "import json, os, subprocess, sys, time\n"
-                "lease_fd, marker, session, enable_subreaper = int(sys.argv[1]), sys.argv[2], int(sys.argv[3]), int(sys.argv[4])\n"
+                "import ctypes, json, os, subprocess, sys, time\n"
+                "lease_fd, marker, child_marker, session, enable_subreaper, reap_tree = (int(sys.argv[1]), sys.argv[2], sys.argv[3], int(sys.argv[4]), int(sys.argv[5]), int(sys.argv[6]))\n"
                 "import ctypes\n"
                 "libc = ctypes.CDLL(None, use_errno=True)\n"
                 "if libc.prctl(36, enable_subreaper, 0, 0, 0) != 0: raise OSError(ctypes.get_errno(), 'PR_SET_CHILD_SUBREAPER')\n"
@@ -760,12 +785,21 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
                 "inherited = True\n"
                 "try: os.fstat(lease_fd)\n"
                 "except OSError: inherited = False\n"
-                "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(20)'], "
+                "executor = subprocess.Popen([sys.executable, '-c', \"import json, os, subprocess, sys; lease_fd = int(sys.argv[2]); inherited = os.path.exists('/proc/self/fd/%s' % lease_fd); child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(1)'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, pass_fds=((lease_fd,) if inherited else ())); json.dump({'grandchild_pid': child.pid}, open(sys.argv[1], 'w'))\", child_marker, str(lease_fd)], "
                 "close_fds=True, pass_fds=((lease_fd,) if inherited else ()), "
                 "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
-                "json.dump({'grandchild_pid': child.pid, 'inherited': inherited, "
-                "'session_isolated': os.getsid(0) != session, 'subreaper_enabled': bool(subreaper.value)}, open(marker, 'w'))\n"
+                "deadline = time.monotonic() + 5\n"
+                "while not os.path.exists(child_marker):\n"
+                "    if time.monotonic() >= deadline: raise RuntimeError('reference executor did not report grandchild')\n"
+                "    time.sleep(0.01)\n"
+                "grandchild_pid = json.load(open(child_marker))['grandchild_pid']\n"
+                "json.dump({'executor_pid': executor.pid, 'grandchild_pid': grandchild_pid, 'inherited': inherited, 'session_isolated': os.getsid(0) != session, 'subreaper_enabled': bool(subreaper.value)}, open(marker, 'w'))\n"
                 "if inherited: os.close(lease_fd)\n"
+                "executor.wait()\n"
+                "if reap_tree:\n"
+                "    while True:\n"
+                "        try: pid, _status = os.waitpid(-1, 0)\n"
+                "        except ChildProcessError: break\n"
             )
             pass_fds = () if case == "pass_fds" else (lease_fd,)
             supervisor = subprocess.Popen(
@@ -775,8 +809,10 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
                     helper,
                     str(lease_fd),
                     str(marker_path),
+                    str(child_marker_path),
                     str(os.getsid(0)),
                     str(int(case != "subreaper_session")),
+                    str(int(case != "process_tree_reaping")),
                 ],
                 close_fds=True,
                 pass_fds=pass_fds,
@@ -784,11 +820,14 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-            supervisor.wait(timeout=10)
             # The coordinator relinquishes its copy: any remaining exclusion
-            # must belong solely to the helper grandchild's shared descriptor.
+            # must belong solely to the reference supervisor's descendant tree.
             os.close(lease_fd)
             lease_fd = -1
+            deadline = time.monotonic() + 5
+            while not marker_path.exists():
+                assert time.monotonic() < deadline, "reference supervisor did not report custody"
+                time.sleep(0.01)
             marker = json.loads(marker_path.read_text(encoding="utf-8"))
             grandchild_pid = marker["grandchild_pid"]
             contender = os.open(lock_path, os.O_RDWR)
@@ -803,25 +842,28 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
                         fcntl.flock(contender, fcntl.LOCK_UN)
             finally:
                 os.close(contender)
-            grandchild_live = os.kill(grandchild_pid, 0) is None
-            grandchild_reaped = False
-            if case == "safe":
-                # A genuine positive control first proves that the live
-                # descendant retains the lease in an isolated session, then
-                # reaps that complete session. The process-tree mutation
-                # intentionally omits this group cleanup after its direct
-                # helper exits, leaving its grandchild live for a distinct
-                # unsafe observation.
-                os.killpg(supervisor.pid, signal.SIGKILL)
-                deadline = time.monotonic() + 5
-                while True:
+                grandchild_live = os.kill(grandchild_pid, 0) is None
+                supervisor.wait(timeout=10)
+                grandchild_reaped = False
+                try:
+                    os.kill(grandchild_pid, 0)
+                except ProcessLookupError:
+                    grandchild_reaped = True
+                if case == "safe":
+                    deadline = time.monotonic() + 5
+                    while not grandchild_reaped and time.monotonic() < deadline:
+                        try:
+                            os.kill(grandchild_pid, 0)
+                        except ProcessLookupError:
+                            grandchild_reaped = True
+                            break
+                        time.sleep(0.02)
+                    assert grandchild_reaped, "reference supervisor did not reap grandchild"
+                elif not grandchild_reaped:
                     try:
                         os.kill(grandchild_pid, 0)
                     except ProcessLookupError:
                         grandchild_reaped = True
-                        break
-                    assert time.monotonic() < deadline, "reference supervisor did not reap grandchild"
-                    time.sleep(0.02)
             expected_anchor = {
                 "pass_fds": "live grandchild loses inherited lease",
                 "subreaper_session": "supervisor disables both session isolation and PR_SET_CHILD_SUBREAPER",
@@ -838,13 +880,15 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
             )
             evidence = {
                 "schema_version": "verification_evidence.v3",
-                "nodeid": f"{__file__}::test_supervisor_retains_lease_after_executor_parent_exits[{case}]",
+                "nodeid": f"{frozen_nodeid}[{case}]",
                 "preproduction_base": preproduction_base,
                 "preproduction_source_digests": preproduction_source_digests,
                 "reference_supervisor_digest": reference_digest,
                 "reference_fixture_used": True,
                 "injection_anchor": "test_local.ReferenceLeaseSupervisor",
-                "injection_digest": hashlib.sha256((case + repr(pass_fds)).encode("utf-8")).hexdigest(),
+                "injection_digest": hashlib.sha256(
+                    f"{frozen_nodeid}[{case}]::{reference_digest}".encode("utf-8")
+                ).hexdigest(),
                 "expected_failure_anchor": expected_anchor,
                 "observed": {
                     "unsafe": unsafe,
@@ -864,10 +908,11 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
                 ),
                 "restored_source_digests": {"launcher.launch": launch_digest, "launcher.Popen": popen_digest},
             }
-            try:
-                os.kill(grandchild_pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            if not grandchild_reaped:
+                try:
+                    os.kill(grandchild_pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
             if lease_fd >= 0:
                 fcntl.flock(lease_fd, fcntl.LOCK_UN)
                 os.close(lease_fd)
@@ -927,6 +972,7 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
             evidence = next(event for event in mutated["events"] if event["kind"] == "supervisor_spawn_mutation")
             assert evidence["before_start_new_session"] is True
             assert evidence["after_start_new_session"] is False
+            assert evidence["after_pr_set_child_subreaper"] is False
             assert evidence["source_digest"] == restored["phase_loop_runtime.launcher.subprocess.Popen"]["source_digest"]
         else:
             evidence = next(
@@ -935,9 +981,40 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
             assert evidence["source_anchor"] == "LeaseSupervisor process lifetime"
             assert evidence["source_digest"] == restored["phase_loop_runtime.launcher.LeaseSupervisor"]["source_digest"]
 
-        assert mutated["post_parent_acquired"] is True
-        assert mutated["reclaim"]["lease_acquired"] is True
+        if mutation == "subreaper_session":
+            # A conformant supervisor still owns the lease and reaps the tree
+            # after this mutation; unsafe session/subreaper state does not
+            # require a fabricated lease-loss observation.
+            assert mutated["post_parent_acquired"] is False
+            assert mutated["reclaim"]["lease_acquired"] is False
+        else:
+            assert mutated["post_parent_acquired"] is True
+            assert mutated["reclaim"]["lease_acquired"] is True
         assert mutated["reclaim"]["reclaimed"] is False
+
+        verification_evidence = {
+            "schema_version": "verification_evidence.v3",
+            "nodeid": (
+                "phase-loop-runtime/tests/test_phase_loop_v45_schedharden.py::"
+                f"test_supervisor_retains_lease_after_executor_parent_exits[{mutation}]"
+            ),
+            "reference_fixture_used": False,
+            "injection_anchor": "phase_loop_runtime.launcher.LeaseSupervisor",
+            "injection_digest": evidence["mutation_digest"],
+            "expected_failure_anchor": {
+                "pass_fds": "live grandchild loses inherited lease",
+                "subreaper_session": "supervisor disables both session isolation and PR_SET_CHILD_SUBREAPER",
+                "process_tree_reaping": "direct-child-only reaping leaves a live grandchild",
+            }[mutation],
+            "positive_control": safe["post_parent_acquired"] is False,
+            "observed": {
+                "grandchild_live": bool(mutated["children"]),
+                "lease_held": mutated["post_parent_acquired"] is False,
+            },
+        }
+        assert verification_evidence["reference_fixture_used"] is False
+        assert verification_evidence["nodeid"].endswith(f"[{mutation}]")
+        print(json.dumps(verification_evidence, sort_keys=True))
     finally:
         for probe in (safe, mutated):
             for pid in probe["children"]:
