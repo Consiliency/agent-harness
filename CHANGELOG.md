@@ -13,10 +13,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   measurement a decision to make this check *blocking* actually needs. It reads the
   roadmap **as it existed at each commit**, not today's, because `Key files` lists change
   and the question is what *would have* fired, not what fires now.
+- The population is what **landed on the merge target** (`--base`, default `origin/main`),
+  not whatever `HEAD` happens to be. Run from a feature branch, an unrevisioned `git log`
+  walks the branch and the PR's own unlanded commits displace real landings.
+- **Which** roadmap governed is resolved per commit from the versioned registry at that
+  sha, not once from `HEAD`. A window crossing a version flip (v9 → v10) would otherwise
+  read pre-flip commits as "roadmap absent" and eject them from the denominator.
 - Commits whose roadmap cannot be read are reported with a reason and excluded from the
   rate, never dropped silently: a shrinking denominator would flatter the one number this
   exists to produce honestly. A report that scores nothing exits non-zero rather than
-  reading as a clean measurement.
+  reading as a clean measurement — including `--report 0`, which is not a measurement.
 - **First measurement on this repo: 33/40 landed changes (82%) would have been flagged,
   and GOVLEAN accounts for all 33.** A blocking gate at that rate stops 82% of merges,
   which is how a gate gets switched off rather than fixed. The matcher is correct; one

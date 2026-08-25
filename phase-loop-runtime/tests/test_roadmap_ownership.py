@@ -493,7 +493,8 @@ class TestReportCliContract(unittest.TestCase):
         audit instead -- answering a question the operator did not ask.
 
         Mutation that must kill this: `is not None` -> truthiness. Audit mode
-        prints the claim report, never the replay header.
+        prints the claim report, never the replay header -- so the assertion on
+        the header, not the exit code, is what pins the branch.
         """
         with TemporaryDirectory() as tmp:
             repo = _repo(tmp)
@@ -506,8 +507,12 @@ class TestReportCliContract(unittest.TestCase):
             run("commit", "-qm", "seed")
             buf = io.StringIO()
             with redirect_stdout(buf):
-                rc = ro.main(["prog", "--repo", str(repo), "--report", "0"])
-            self.assertEqual(rc, 0)
+                rc = ro.main(["prog", "--repo", str(repo), "--report", "0",
+                              "--base", "main"])
+            # Reaching replay is the point; the exit code is 2 because a report
+            # over zero changes produced no measurement, and the fail-closed
+            # promise has no exception for the empty case.
+            self.assertEqual(rc, 2)
             self.assertIn("0 landed change(s) replayed", buf.getvalue())
 
     def test_a_report_that_scored_NOTHING_exits_nonzero(self):
@@ -530,9 +535,98 @@ class TestReportCliContract(unittest.TestCase):
             # parent to diff and is therefore unscorable. Nothing scores.
             buf = io.StringIO()
             with redirect_stdout(buf):
-                rc = ro.main(["prog", "--repo", str(repo), "--report", "5"])
+                rc = ro.main(["prog", "--repo", str(repo), "--report", "5",
+                              "--base", "main"])
             self.assertIn("0 scored", buf.getvalue())
             self.assertEqual(rc, 2, "an unmeasured report must not exit 0")
+
+
+class TestPopulationIsWhatLanded(unittest.TestCase):
+    """The instrument must measure the MERGE TARGET, not the current branch.
+
+    Found by the codex seat. With no revision, `git log` walks HEAD: run from a
+    feature branch, the PR's own unlanded commits occupy the top of the window
+    and displace real landings. Same sampling defect as `--merges`, one level up
+    -- and it silently redefines the population the headline rate describes.
+    """
+
+    def test_feature_branch_commits_are_NOT_sampled_as_landed(self):
+        """Mutation that must kill this: drop `rev` from the git log argv (or
+        pass "HEAD"), which is exactly the pre-fix code.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = _repo(tmp)
+            run = lambda *a: subprocess.run(["git", "-C", tmp, *a], check=True,
+                                            capture_output=True)
+            run("init", "-q", "-b", "main")
+            run("config", "user.email", "t@t")
+            run("config", "user.name", "t")
+            run("add", "-A")
+            run("commit", "-qm", "seed")
+            (repo / "src").mkdir(exist_ok=True)
+            (repo / "src" / "alpha.py").write_text("x = 1\n")
+            run("add", "-A")
+            run("commit", "-qm", "LANDED on main")
+            run("checkout", "-qb", "feature")
+            (repo / "src" / "alpha.py").write_text("x = 2\n")
+            run("add", "-A")
+            run("commit", "-qm", "UNLANDED branch work")
+
+            # Standing on the feature branch, sampling the merge target.
+            rows = ro.replay(repo, 5, "specs/phase-plans-v10.md", "main")
+            subjects = [r.subject for r in rows]
+            self.assertIn("LANDED on main", subjects)
+            self.assertNotIn("UNLANDED branch work", subjects,
+                             "an unlanded commit must never count as a landing")
+
+
+class TestRoadmapAuthorityIsHistorical(unittest.TestCase):
+    """WHICH roadmap governed is itself versioned (codex seat, P1).
+
+    Resolving the path once from HEAD and reading it at every commit is wrong
+    across a version flip: pre-flip commits read as "roadmap absent" and get
+    ejected from the denominator the rate depends on.
+    """
+
+    def test_a_pre_flip_commit_is_scored_against_the_roadmap_that_governed_it(self):
+        """Mutation that must kill this: make `_roadmap_rel_at` return the
+        fallback unconditionally. The pre-flip commit then looks for v10, which
+        does not exist at that sha, and becomes unscorable instead of flagged.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "specs").mkdir(parents=True, exist_ok=True)
+            run = lambda *a: subprocess.run(["git", "-C", tmp, *a], check=True,
+                                            capture_output=True)
+            run("init", "-q", "-b", "main")
+            run("config", "user.email", "t@t")
+            run("config", "user.name", "t")
+            # Era 1: v9 is the active roadmap and it claims src/alpha.py.
+            (repo / "specs" / "phase-plans-v9.md").write_text(ROADMAP)
+            (repo / "specs" / "roadmap-status.json").write_text(json.dumps(
+                {"roadmaps": [{"path": "specs/phase-plans-v9.md", "status": "active"}]}
+            ))
+            run("add", "-A")
+            run("commit", "-qm", "seed v9 era")
+            (repo / "src").mkdir(exist_ok=True)
+            (repo / "src" / "alpha.py").write_text("x = 1\n")
+            run("add", "-A")
+            run("commit", "-qm", "change under v9")
+            # Era 2: flip to v10. v9 is gone; v10 exists only from here on.
+            (repo / "specs" / "phase-plans-v9.md").unlink()
+            (repo / "specs" / "phase-plans-v10.md").write_text(ROADMAP)
+            (repo / "specs" / "roadmap-status.json").write_text(json.dumps(
+                {"roadmaps": [{"path": "specs/phase-plans-v10.md", "status": "active"}]}
+            ))
+            run("add", "-A")
+            run("commit", "-qm", "flip to v10")
+
+            rows = ro.replay(repo, 5, "specs/phase-plans-v10.md", "main")
+            under_v9 = [r for r in rows if r.subject == "change under v9"]
+            self.assertEqual(len(under_v9), 1)
+            self.assertFalse(under_v9[0].skipped_reason,
+                             "must resolve v9 at that commit, not today's v10")
+            self.assertEqual(under_v9[0].notable, 1)
 
 
 class TestPartialDrift(unittest.TestCase):

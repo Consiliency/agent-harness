@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
-from .roadmap_lint import Phase, _extract_phases, declared_active_roadmap
+from .roadmap_lint import ROADMAP_STATUS_REGISTRY_REL, Phase, _extract_phases, declared_active_roadmap
 
 #: A PR body/commit trailer that records a deliberate edit into an owned file.
 #: The goal is NOT to prevent the edit -- an urgent fix in a reserved file is a
@@ -365,7 +365,7 @@ class ReplayRow:
     skipped_reason: str = ""
 
 
-def _landed_commits(repo: Path, limit: int) -> List["tuple[str, str]"]:
+def _landed_commits(repo: Path, limit: int, rev: str = "HEAD") -> List["tuple[str, str]"]:
     """The last ``limit`` changes that LANDED on this branch.
 
     ``--first-parent``, not ``--merges``. This repo lands PRs both ways -- the
@@ -383,8 +383,14 @@ def _landed_commits(repo: Path, limit: int) -> List["tuple[str, str]"]:
         # Space-separated, not a control character: a literal NUL in argv is
         # rejected by subprocess outright. The sha is fixed-width, so a single
         # split is unambiguous even when the subject contains spaces.
+        #
+        # `rev` is the MERGE TARGET, not HEAD. Run from a feature branch with no
+        # revision, `git log` walks the branch: the top entries are the PR's own
+        # unlanded commits, which displace real landings and silently make the
+        # population "my branch" instead of "what landed". That is the same
+        # sampling defect as `--merges`, one level up.
         ["git", "-C", str(repo), "log", "--first-parent", "-n", str(limit),
-         "--format=%H %s"],
+         "--format=%H %s", rev],
         capture_output=True, text=True, check=False,
     )
     if out.returncode != 0:
@@ -395,6 +401,35 @@ def _landed_commits(repo: Path, limit: int) -> List["tuple[str, str]"]:
         if len(parts) == 2 and len(parts[0]) == 40:
             rows.append((parts[0], parts[1]))
     return rows
+
+
+def _roadmap_rel_at(repo: Path, sha: str, fallback_rel: str) -> str:
+    """Which roadmap was GOVERNING at ``sha``.
+
+    Resolving the path once from HEAD and reading it at every historical commit
+    is wrong across a roadmap version flip: pre-flip commits either read as
+    "absent" or, worse, get scored against a file that existed only as an
+    unratified draft. The registry is itself versioned, so ask it at each commit.
+
+    Falls back to the HEAD-resolved path when the registry is absent or names no
+    single active roadmap -- the legacy/synthetic-repo case that
+    ``declared_active_roadmap`` also tolerates.
+    """
+
+    out = subprocess.run(
+        ["git", "-C", str(repo), "show", f"{sha}:{ROADMAP_STATUS_REGISTRY_REL}"],
+        capture_output=True, text=True, check=False,
+    )
+    if out.returncode != 0:
+        return fallback_rel
+    try:
+        entries = json.loads(out.stdout).get("roadmaps", [])
+    except (ValueError, AttributeError):
+        return fallback_rel
+    active = [e.get("path") for e in entries if e.get("status") == "active"]
+    if len(active) == 1 and active[0]:
+        return active[0]
+    return fallback_rel
 
 
 def _is_shallow(repo: Path) -> bool:
@@ -412,7 +447,7 @@ def _is_shallow(repo: Path) -> bool:
     return out.stdout.strip() == "true"
 
 
-def replay(repo: Path, limit: int, roadmap_rel: str) -> List[ReplayRow]:
+def replay(repo: Path, limit: int, roadmap_rel: str, rev: str = "HEAD") -> List[ReplayRow]:
     """Replay the check over the last ``limit`` LANDED changes.
 
     Uses the roadmap **as it existed at each commit**, not today's. Measuring
@@ -420,13 +455,13 @@ def replay(repo: Path, limit: int, roadmap_rel: str) -> List[ReplayRow]:
     now", when the question a graduation decision needs is "what WOULD have
     fired" -- and `Key files` lists change, so those differ.
 
-    KNOWN BOUNDARY: ``roadmap_rel`` is resolved ONCE, from the roadmap active at
-    HEAD, and then read at every historical sha. Across a roadmap version flip
-    (v9 -> v10) older commits either read as "roadmap absent at commit" -- counted
-    and disclosed, not silently dropped -- or, if the newer file already existed
-    as an unratified draft, get scored against a roadmap that was not yet
-    governing. Windows that stay inside the current roadmap's reign are exact;
-    a window crossing a flip should be read with this in mind.
+    WHICH roadmap is also resolved per commit, from the versioned registry at
+    that sha -- not once from HEAD. A window crossing a version flip (v9 -> v10)
+    would otherwise read pre-flip commits as "roadmap absent", or score them
+    against a file that existed then only as an unratified draft.
+
+    ``rev`` is the merge target. Sampling ``HEAD`` from a feature branch measures
+    the branch, not what landed.
 
     A commit whose roadmap cannot be read is recorded with a reason and counted,
     never dropped. A silently shrinking denominator would flatter the rate, which
@@ -434,9 +469,10 @@ def replay(repo: Path, limit: int, roadmap_rel: str) -> List[ReplayRow]:
     """
 
     rows: List[ReplayRow] = []
-    for sha, subject in _landed_commits(repo, limit):
+    for sha, subject in _landed_commits(repo, limit, rev):
+        rel_at_sha = _roadmap_rel_at(repo, sha, roadmap_rel)
         blob = subprocess.run(
-            ["git", "-C", str(repo), "show", f"{sha}:{roadmap_rel}"],
+            ["git", "-C", str(repo), "show", f"{sha}:{rel_at_sha}"],
             capture_output=True, text=True, check=False,
         )
         if blob.returncode != 0:
@@ -562,14 +598,17 @@ def main(argv: List[str]) -> int:
             roadmap_rel = str(
                 resolve_roadmap(args.repo).relative_to(Path(args.repo).resolve())
             )
-            rows = replay(args.repo, args.report, roadmap_rel)
+            rows = replay(args.repo, args.report, roadmap_rel, args.base)
         except RoadmapUnreadable as exc:
             print(f"roadmap-ownership: CANNOT EVALUATE — {exc}")
             return 2
         print(render_report(rows))
         # Nothing scored means the instrument failed to produce its number.
         # Exiting 0 there would read as "measured, and the answer was fine".
-        if rows and not any(not r.skipped_reason for r in rows):
+        # This includes the empty case (`--report 0`): a report over zero
+        # changes is not a measurement, and the CHANGELOG promises fail-closed
+        # without an exception for it.
+        if not any(not r.skipped_reason for r in rows):
             return 2
         return 0
 
