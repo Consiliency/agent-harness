@@ -238,7 +238,7 @@ SL-3 — Activation, documentation, and exact-head evidence reducer
 
 - **Scope**: Enable the consumer only after the integrated mechanism proves every
   negative and positive arm, then reduce exact-head completion evidence.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/fabreadmit_capability.py`, `phase-loop-runtime/src/phase_loop_runtime/governed_premerge.py`, `CHANGELOG.md`
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/fabreadmit_capability.py`, `phase-loop-runtime/src/phase_loop_runtime/governed_premerge.py`, `phase-loop-runtime/src/phase_loop_runtime/publishing.py`, `CHANGELOG.md`
 - **Interfaces provided**: active production delta shortcut and closeable evidence
   for agent-harness#191 and agent-harness#288
 - **Interfaces consumed**: exact RED node inventory (from SL-0), unified readmission commit surface (from SL-2), IF-0-FABREADMIT-1 authority/receipt surface (from SL-1), exact merged FABPUB capability marker (pre-existing)
@@ -253,6 +253,11 @@ SL-3 — Activation, documentation, and exact-head evidence reducer
     capability-marker conjunct; it may not short-circuit active FABPUB or the
     hardcoded-epoch absence check. Keep both operator/coordinator opt-ins
     mandatory.
+  - impl: Preserve transaction construction for a reviewed branch that does not
+    yet have a local ref by resolving the named branch and then `HEAD` after the
+    canonical `refs/heads/<branch>` lookup. This is required by the frozen
+    first-hop key-mismatch falsifier so broker validation, rather than an
+    unrelated missing-ref error, remains the observed boundary.
   - impl: Update the CHANGELOG with broker-gated readmission, active reviewed-byte
     shortcut, zero provider effect during readmission, and the already-ratified
     publish byte-neutrality retraction.

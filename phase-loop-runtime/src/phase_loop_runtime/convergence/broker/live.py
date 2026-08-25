@@ -26,7 +26,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
-from phase_loop_runtime.convergence.contracts import AdmissionRequest
+from phase_loop_runtime.convergence.contracts import (
+    AdmissionRequest,
+    DeltaReadmitAuthority,
+    DeltaReadmitReceipt,
+)
 from phase_loop_runtime.convergence.provider_contracts import PROVIDER_COMPLETION_CLASSIFICATIONS
 
 from .admission import BrokerAdmissionPolicy, LinearizableAdmissionStore

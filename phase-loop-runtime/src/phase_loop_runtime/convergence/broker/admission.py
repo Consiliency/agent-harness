@@ -59,8 +59,13 @@ def validate_checkpoint_root(
             raise ValueError(f"invalid {node_id}.json in checkpoint_root: {e}") from e
         if node_data.get("node_id") and node_data.get("node_id") != node_id:
             raise ValueError(f"node_id mismatch: expected {node_id}, got {node_data.get('node_id')}")
+    else:
+        other_node_files = [f for f in ckpt_path.glob("*.json") if f.name != "train.json"]
+        if other_node_files:
+            raise ValueError(f"node_id mismatch: checkpoint_root carries node files {other_node_files!r} but not expected {node_id}.json")
 
     return True
+
 
 
 
@@ -234,7 +239,9 @@ class LinearizableAdmissionStore:
                                     matching_history.append((auth.prior_head_sha, record))
 
 
+                    found_in_ledger = False
                     if not matching_history:
+
                         ledger_file = Path(auth.adapter_worktree).parent / "train.ledger.jsonl"
                         if not ledger_file.exists() and auth.checkpoint_root:
                             ledger_file = Path(auth.checkpoint_root).parent / "train.ledger.jsonl"
@@ -277,54 +284,61 @@ class LinearizableAdmissionStore:
                             raise PermissionError(f"stale prior head: {auth.prior_head_sha} is not latest {latest_head_sha}")
 
                     if latest_record is not None:
-                        prior_node = latest_record.binding.node_id if latest_record.binding is not None else getattr(latest_record.request, "node_id", None)
+                        prior_node = latest_record.binding.node_id if latest_record.binding is not None else (
+                            getattr(latest_record.request, "node_id", None)
+                            or (latest_record.request.envelope_authority_preimage.get("node_id") if isinstance(latest_record.request, PreAdmissionEnvelope) and hasattr(latest_record.request, "envelope_authority_preimage") else None)
+                        )
                         if prior_node and prior_node != auth.node_id:
                             raise PermissionError(f"node_id mismatch: expected {prior_node}, got {auth.node_id}")
 
-                        if latest_record.binding is not None:
-                            if latest_record.binding.owned_scope != auth.owned_scope:
-                                raise PermissionError(f"scope mismatch: expected {latest_record.binding.owned_scope}, got {auth.owned_scope}")
+                    if latest_record is not None and latest_record.binding is not None:
+                        if latest_record.binding.owned_scope != auth.owned_scope:
+                            raise PermissionError(f"scope mismatch: expected {latest_record.binding.owned_scope}, got {auth.owned_scope}")
+
 
                     else:
                         from phase_loop_runtime.publishing import PublishTransactionStore
                         store_pub = PublishTransactionStore(Path(auth.checkpoint_root), auth.node_id)
                         active_ptr = store_pub.load_active()
                         txn_id = active_ptr.get("transaction_id") if active_ptr else None
-                        if not txn_id:
+                        if not txn_id and latest_record is not None:
                             txn_id = getattr(latest_record.request, "fence_token", None) or getattr(latest_record.request, "transaction_id", None)
                         if not txn_id:
-                            raise PermissionError(f"node_id mismatch: publish transaction absent or missing at checkpoint_root: {auth.checkpoint_root}")
+                            if not found_in_ledger:
+                                raise PermissionError(f"publish transaction absent or missing at checkpoint_root: {auth.checkpoint_root}")
+                        else:
+                            ckpt_file = store_pub.checkpoint_path(txn_id)
+                            if not ckpt_file.exists():
+                                pub_txns_dir = Path(auth.checkpoint_root) / "publish-transactions"
+                                if pub_txns_dir.exists():
+                                    for candidate in pub_txns_dir.iterdir():
+                                        if candidate.is_dir() and (candidate / f"{txn_id}.json").exists():
+                                            ckpt_file = candidate / f"{txn_id}.json"
+                                            break
+                            if not ckpt_file.exists():
+                                if not found_in_ledger:
+                                    raise PermissionError(f"publish transaction absent or missing at checkpoint_root: {auth.checkpoint_root}")
+                            else:
+                                active_pub = json.loads(ckpt_file.read_text(encoding="utf-8"))
+                                if active_pub.get("state") in ("ABANDONED", "CONFLICTED"):
+                                    raise PermissionError(f"publish transaction state invalid: {active_pub.get('state')}")
 
-                        ckpt_file = store_pub.checkpoint_path(txn_id)
-                        if not ckpt_file.exists():
-                            pub_txns_dir = Path(auth.checkpoint_root) / "publish-transactions"
-                            if pub_txns_dir.exists():
-                                for candidate in pub_txns_dir.iterdir():
-                                    if candidate.is_dir() and (candidate / f"{txn_id}.json").exists():
-                                        ckpt_file = candidate / f"{txn_id}.json"
-                                        break
-                        if not ckpt_file.exists():
-                            raise PermissionError(f"node_id mismatch: publish transaction absent or missing at checkpoint_root: {auth.checkpoint_root}")
+                                if active_pub.get("committed_head_sha") and active_pub.get("committed_head_sha") != auth.prior_head_sha:
+                                    raise PermissionError(f"node_id mismatch: transaction committed head {active_pub.get('committed_head_sha')} != prior_head_sha {auth.prior_head_sha}")
 
-                        active_pub = json.loads(ckpt_file.read_text(encoding="utf-8"))
-                        if active_pub.get("state") in ("ABANDONED", "CONFLICTED"):
-                            raise PermissionError(f"publish transaction state invalid: {active_pub.get('state')}")
+                                pub_branch = active_pub.get("branch") or (getattr(latest_record.request, "branch", None) if latest_record is not None else None)
+                                if pub_branch and pub_branch != auth.branch:
+                                    raise PermissionError(f"idempotency key mismatch: branch mismatch {pub_branch} != {auth.branch}")
+
+                                pub_node = active_pub.get("node_id", store_pub.node_id)
+                                if pub_node != auth.node_id:
+                                    raise PermissionError(f"node_id mismatch: expected {pub_node}, got {auth.node_id}")
+
+                                pub_scope = tuple(active_pub.get("owned_paths", ())) if active_pub.get("owned_paths") else (getattr(latest_record.request, "owned_scope", auth.owned_scope) if latest_record is not None else auth.owned_scope)
+                                if pub_scope and pub_scope != auth.owned_scope:
+                                    raise PermissionError(f"scope mismatch: expected {pub_scope}, got {auth.owned_scope}")
 
 
-                        if active_pub.get("committed_head_sha") and active_pub.get("committed_head_sha") != auth.prior_head_sha:
-                            raise PermissionError(f"node_id mismatch: transaction committed head {active_pub.get('committed_head_sha')} != prior_head_sha {auth.prior_head_sha}")
-
-                        pub_branch = active_pub.get("branch") or getattr(latest_record.request, "branch", None)
-                        if pub_branch and pub_branch != auth.branch:
-                            raise PermissionError(f"idempotency key mismatch: branch mismatch {pub_branch} != {auth.branch}")
-
-                        pub_node = active_pub.get("node_id", store_pub.node_id)
-                        if pub_node != auth.node_id:
-                            raise PermissionError(f"node_id mismatch: expected {pub_node}, got {auth.node_id}")
-
-                        pub_scope = tuple(active_pub.get("owned_paths", ())) if active_pub.get("owned_paths") else getattr(latest_record.request, "owned_scope", auth.owned_scope)
-                        if pub_scope and pub_scope != auth.owned_scope:
-                            raise PermissionError(f"scope mismatch: expected {pub_scope}, got {auth.owned_scope}")
 
                     if auth.adapter_worktree:
                         import subprocess

@@ -21,6 +21,7 @@ here adds ``human_required`` and the autonomous path is a literal no-op.
 """
 from __future__ import annotations
 
+import importlib
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -93,6 +94,24 @@ DEFAULT_SUPPORTED_PUBLISHERS = (
     "phase_loop_runtime.convergence.broker.verbs.publish_committed_branch",
 )
 
+FABREADMIT_ACTIVATION_ENV = "PHASE_LOOP_TDD_EXPECT_FABREADMIT"
+FABREADMIT_MARKER_MODULE = "phase_loop_runtime.fabreadmit_capability"
+FABREADMIT_MARKER_ATTRIBUTE = "FABREADMIT_CAPABILITY_VERSION"
+FABREADMIT_MARKER_VERSION = 1
+
+
+def _fabreadmit_capability_active() -> bool:
+    """Return whether the broker-readmission capability marker is active."""
+    if os.environ.get(FABREADMIT_ACTIVATION_ENV) == "1":
+        return True
+    try:
+        module = importlib.import_module(FABREADMIT_MARKER_MODULE)
+    except ModuleNotFoundError as error:
+        if error.name != FABREADMIT_MARKER_MODULE:
+            raise
+        return False
+    return getattr(module, FABREADMIT_MARKER_ATTRIBUTE, None) == FABREADMIT_MARKER_VERSION
+
 
 def _has_no_hardcoded_epoch_publishers(search_root: Path | str | None = None) -> bool:
     import ast
@@ -120,7 +139,7 @@ def _has_no_hardcoded_epoch_publishers(search_root: Path | str | None = None) ->
     return True
 
 
-_FAB_DELTA_BROKER_READMIT_READY = True
+_FAB_DELTA_BROKER_READMIT_READY = _fabreadmit_capability_active()
 
 
 def fab_delta_shortcut_enabled(coordinator_opt_in: bool, env: Mapping[str, str] | None = None) -> bool:
@@ -134,8 +153,11 @@ def fab_delta_shortcut_enabled(coordinator_opt_in: bool, env: Mapping[str, str] 
         (a ``run_train`` launch parameter / trusted train-config field), AND
       * no hardcoded-epoch publisher remains in search path.
     """
+    from .convergence.broker.live import fabpub_capability_active
+
     return (
         _FAB_DELTA_BROKER_READMIT_READY
+        and fabpub_capability_active()
         and fab_promotion_enabled(env)
         and bool(coordinator_opt_in)
         and _has_no_hardcoded_epoch_publishers()

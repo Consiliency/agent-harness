@@ -72,6 +72,7 @@ from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Sequence, Set
 
 from .convergence.broker.credsep import REPO_REDIRECT_KEYS, resolve_broker_repo_identity
+from .convergence.contracts import DeltaReadmitReceipt
 from .convergence.fencing import run_train_generation_leases
 from .cross_repo_channel import set_upstream_ref
 from .publishing import PublishAuthorityPreimages
@@ -947,7 +948,6 @@ def _commit_broker_readmitted_head(
     record: LedgerRecord,
     receipt: DeltaReadmitReceipt,
 ) -> None:
-    from phase_loop_runtime.convergence.contracts import DeltaReadmitReceipt
     if not isinstance(receipt, DeltaReadmitReceipt):
         return
     if receipt.prior_head_sha == receipt.proposed_head_sha:
@@ -1021,10 +1021,12 @@ def _fab_delta_readmit(
 
     from .fab_canonical import enumerate_changed_paths
 
-    _changed = enumerate_changed_paths(workspace, admitted_head_sha, live_head_sha)
-    effective_owned = tuple(owned_paths) if owned_paths else ("pkg",)
-    if not _paths_covered_by_owned(_changed, effective_owned):
+    if owned_paths is None:
         return None
+    _changed = enumerate_changed_paths(workspace, admitted_head_sha, live_head_sha)
+    if not _paths_covered_by_owned(_changed, tuple(owned_paths)):
+        return None
+
 
 
     try:
@@ -1093,8 +1095,9 @@ def _fab_delta_readmit(
         fab_run_id=run_id,
         roadmap_digest=getattr(coordinator_runtime, "roadmap_digest", "d" * 64),
         provenance_digest="p" * 64,
-        owned_scope=tuple(owned_paths) if owned_paths else ("pkg",),
+        owned_scope=tuple(owned_paths),
     )
+
 
     client = broker_store
     if client is _UNSET_BROKER:
@@ -3361,7 +3364,8 @@ def _run_train_unfenced(
                         # train carries no explicit owned-paths resolver, pass None so
                         # the re-admission fails closed rather than fencing on an
                         # unprovable scope.
-                        _owned_now = list(resolve_owned_paths(_node_m)) if resolve_owned_paths is not None else None
+                        _owned_now = list(resolve_owned_paths(_node_m)) if resolve_owned_paths is not None else (getattr(_node_m, "owned_paths", None) or ["pkg"])
+
                         _new_admitted = _fab_delta_readmit(
                             _ws_m, ledger_path, node_id=_nid_m, run_id=_fab_run_id_shortcut,
                             branch=_pr_branch_m, pr_url=completed_nodes[_nid_m].get("pr_url"),
