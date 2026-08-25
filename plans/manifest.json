@@ -2440,6 +2440,26 @@
             "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-25T20:58:02Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "author_model": "gpt-5.6-sol",
+            "author_vendor": "openai",
+            "phase_alias": "INTEG",
+            "plan_sha256": "16431bf3719df2cb3a170b55198e2308d8d5b6e7470557be893b6524f56c2e83",
+            "predecessor_plan_sha256": "7cb409a3a4d6aaecf8cddc691b3b33590a5b24c2dadb4bcaeb08c824dfe3a1db",
+            "president_forcing_decision": "REJECT",
+            "repaired_blocking_defects": [
+              "focused_regression_shell_globs_replaced_with_explicit_paths"
+            ],
+            "review_status": "fresh_exact_digest_full_board_required",
+            "reviewed_candidate_commit": "aa6899dc12544919403cdc5fac07efc8daf31c7b",
+            "reviewed_candidate_parent": "af072092800bac7f78c1a602dfc3a4635bc82202",
+            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0"
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -2455,7 +2475,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-25T20:21:55Z"
+      "updated_at": "2026-08-25T20:58:02Z"
     },
     {
       "acceptance_criteria_count": null,
