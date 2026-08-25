@@ -1245,23 +1245,23 @@ def _scan_append_sites_in_source(source_text: str) -> tuple[list[tuple[str, str,
             # Module bindings are needed for status constants; function bindings
             # shadow them for separately constructed records.
             self.assignments: list[dict[str, ast.expr]] = [{}]
-            self.train_ledger_modules: list[set[str]] = [set()]
+            self.train_ledger_bindings: list[dict[str, str]] = [{}]
 
         def visit_FunctionDef(self, node):
             self.fn_stack.append(node.name)
             self.assignments.append({})
-            self.train_ledger_modules.append(set())
+            self.train_ledger_bindings.append({})
             self.generic_visit(node)
-            self.train_ledger_modules.pop()
+            self.train_ledger_bindings.pop()
             self.assignments.pop()
             self.fn_stack.pop()
 
         def visit_AsyncFunctionDef(self, node):
             self.fn_stack.append(node.name)
             self.assignments.append({})
-            self.train_ledger_modules.append(set())
+            self.train_ledger_bindings.append({})
             self.generic_visit(node)
-            self.train_ledger_modules.pop()
+            self.train_ledger_bindings.pop()
             self.assignments.pop()
             self.fn_stack.pop()
 
@@ -1270,16 +1270,23 @@ def _scan_append_sites_in_source(source_text: str) -> tuple[list[tuple[str, str,
                 for alias in node.names:
                     if alias.name == "append_record":
                         self.assignments[-1][alias.asname or alias.name] = ast.Name(id="append_record")
-            elif node.module == "phase_loop_runtime":
+            elif node.module == "phase_loop_runtime" or (
+                node.module is None and node.level
+            ):
                 for alias in node.names:
                     if alias.name == "train_ledger":
-                        self.train_ledger_modules[-1].add(alias.asname or alias.name)
+                        self.train_ledger_bindings[-1][alias.asname or alias.name] = (
+                            "phase_loop_runtime.train_ledger"
+                        )
             self.generic_visit(node)
 
         def visit_Import(self, node):
             for alias in node.names:
-                if alias.name.endswith(".train_ledger") and alias.asname:
-                    self.train_ledger_modules[-1].add(alias.asname)
+                if alias.name.endswith(".train_ledger"):
+                    local_name = alias.asname or alias.name.split(".", 1)[0]
+                    self.train_ledger_bindings[-1][local_name] = (
+                        alias.name if alias.asname else local_name
+                    )
             self.generic_visit(node)
 
         def visit_Assign(self, node):
@@ -1307,6 +1314,19 @@ def _scan_append_sites_in_source(source_text: str) -> tuple[list[tuple[str, str,
             node = self._resolve(node)
             return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else ast.unparse(node)
 
+        def _qualified_name(self, node) -> str | None:
+            node = self._resolve(node)
+            if isinstance(node, ast.Name):
+                for scope in reversed(self.train_ledger_bindings):
+                    qualified = scope.get(node.id)
+                    if qualified is not None:
+                        return qualified
+                return node.id
+            if isinstance(node, ast.Attribute):
+                base = self._qualified_name(node.value)
+                return f"{base}.{node.attr}" if base else None
+            return None
+
         def _record_shape(self, record_arg) -> tuple[str, str, bool]:
             supplied_as_name = isinstance(record_arg, ast.Name)
             record = self._resolve(record_arg)
@@ -1330,10 +1350,8 @@ def _scan_append_sites_in_source(source_text: str) -> tuple[list[tuple[str, str,
             if isinstance(target, ast.Name):
                 return target.id == "append_record"
             if isinstance(target, ast.Attribute) and target.attr == "append_record":
-                value = self._resolve(target.value)
-                return isinstance(value, ast.Name) and any(
-                    value.id in modules for modules in reversed(self.train_ledger_modules)
-                )
+                qualified = self._qualified_name(target.value)
+                return qualified is not None and qualified.endswith(".train_ledger")
             return False
 
         def visit_Call(self, node):
@@ -1687,6 +1705,18 @@ def test_fabreadmit_append_site_inventory_detects_third_site(request, tmp_path):
         source + (
             "\nfrom phase_loop_runtime import train_ledger as tl\n"
             "def _extra_module_aliased_head_append(path, nid):\n"
+            "    tl.append_record(path, LedgerRecord(node_id=nid, status='pr_open', head_sha='sha3'))\n"
+        ),
+        # Nor may a bare package import hide a qualified third head append.
+        source + (
+            "\nimport phase_loop_runtime.train_ledger\n"
+            "def _extra_qualified_head_append(path, nid):\n"
+            "    phase_loop_runtime.train_ledger.append_record(path, LedgerRecord(node_id=nid, status='pr_open', head_sha='sha3'))\n"
+        ),
+        # Nor may a relative module alias hide a third head append.
+        source + (
+            "\nfrom . import train_ledger as tl\n"
+            "def _extra_relative_aliased_head_append(path, nid):\n"
             "    tl.append_record(path, LedgerRecord(node_id=nid, status='pr_open', head_sha='sha3'))\n"
         ),
     )
