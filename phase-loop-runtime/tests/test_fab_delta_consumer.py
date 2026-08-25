@@ -1270,6 +1270,10 @@ def _scan_append_sites_in_source(source_text: str) -> tuple[list[tuple[str, str,
                 for alias in node.names:
                     if alias.name == "append_record":
                         self.assignments[-1][alias.asname or alias.name] = ast.Name(id="append_record")
+            elif node.module == "phase_loop_runtime":
+                for alias in node.names:
+                    if alias.name == "train_ledger":
+                        self.train_ledger_modules[-1].add(alias.asname or alias.name)
             self.generic_visit(node)
 
         def visit_Import(self, node):
@@ -1678,6 +1682,12 @@ def test_fabreadmit_append_site_inventory_detects_third_site(request, tmp_path):
             "def _extra_aliased_head_append(path, nid):\n"
             "    append_alias = persisted_append\n"
             "    append_alias(path, LedgerRecord(node_id=nid, status='pr_open', head_sha='sha3'))\n"
+        ),
+        # Nor may a package-level train-ledger alias hide a third head append.
+        source + (
+            "\nfrom phase_loop_runtime import train_ledger as tl\n"
+            "def _extra_module_aliased_head_append(path, nid):\n"
+            "    tl.append_record(path, LedgerRecord(node_id=nid, status='pr_open', head_sha='sha3'))\n"
         ),
     )
 
