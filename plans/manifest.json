@@ -5424,6 +5424,46 @@
             "run_id": "20260825T144913Z-01-runtime-plan"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-25T16:25:15Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "absorbed_deferred_observations": [
+              "keyword_only_render_train_status_signature",
+              "whole_phase_sl0_through_sl5_write_set",
+              "exact_environment_scrubber_symbols",
+              "runtime_residual_cli_serialization",
+              "ancestral_planning_base_wording",
+              "whole_phase_single_vendor_ownership",
+              "additive_convergence_init_exports"
+            ],
+            "applied_ablations": [
+              "duplicate_context_roadmap_digest",
+              "duplicate_execution_policy_plan_row"
+            ],
+            "authority_source": "Consiliency/agent-harness#375",
+            "phase_alias": "RUNTIME",
+            "plan_sha256": "092b3db8edcb441e7486e49eabca66506cbfcce4a4ca9637bd09818a9cac7385",
+            "predecessor_plan_sha256": "80e0216157b7a9cfe0f16c7c0de5ad2b3fbeb02b45a40b51cfbc6a53840de540",
+            "president_forcing_decision": "block",
+            "president_model": "grok-4.6",
+            "repair_status": "blocking_and_deferred_findings_absorbed_requires_fresh_exact_digest_board",
+            "resolved_blocking_clusters": [
+              "exact_production_target_binding_rejects_test_helper_and_runtime_tdd_guard_targets",
+              "status_projection_scoped_to_recovered_train_state_without_reconciliation_verdict_claim"
+            ],
+            "review_artifacts": {
+              "consolidated_findings_sha256": "9f6542e327c2f888660f4808d9252205141bd26ac05e0ecfca2c0c46ed5a46b4",
+              "critics_sha256": "f3fd77639c70ef2f2e354245425a23f78f8160857e52f2ca6b07df487aafaf86",
+              "early_prover_sha256": "d82790826bde83a5cf72453a3e5f48c9b55ee13f6fa7691866554d87222d390a",
+              "president_ruling_sha256": "6e2826272704f831277644178155924d6d96f382f6c63ec2d131661dc65799f3"
+            },
+            "reviewed_candidate_commit": "3b03dc4a00fab096c261e51b93ac5a973ed74508",
+            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+            "roadmap_source_authority": "Consiliency/agent-harness#375"
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -5439,7 +5479,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-25T14:49:13Z"
+      "updated_at": "2026-08-25T16:25:15Z"
     }
   ],
   "schema_version": 1

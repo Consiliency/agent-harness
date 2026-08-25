@@ -29,9 +29,8 @@ automation:
 ## Context
 
 RUNTIME completes the non-broker convergence substrate already present as a thin skeleton on
-the current `origin/main` input recorded by
-`v10-RUNTIME.lifecycle[0].metadata.planning_base` in `plans/manifest.json`. The roadmap bytes are
-exactly SHA-256 `9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0`.
+the ancestral planning input recorded by `v10-RUNTIME.lifecycle[0].metadata.planning_base` in
+`plans/manifest.json`.
 The authoritative phase ledger in `plans/manifest.json` records LEGIBLE and PROOFGATE as
 `completed` and RUNTIME as `committed`, so RUNTIME's roadmap dependency is satisfied. A missing or
 stale worktree-local `.phase-loop/state.json` does not override that ledger. Legacy
@@ -44,7 +43,7 @@ contains the initial implementation from Consiliency/agent-harness#197: `event_l
 and a short public document. The existing focused tests establish only smoke behavior; they do not
 prove crash-safe short writes and cross-process appends, fresh four-domain reconciliation and every
 frozen authority verdict, strict adapter fencing, or full transcript-free reconstruction. RUNTIME
-therefore lands new falsifiers against this current baseline before repairing production.
+therefore lands new falsifiers against this baseline before repairing production.
 
 The roadmap now assigns advisor-seat lifecycle persistence to REVIEWTRUTH. RUNTIME may consume the
 pre-existing `CoordinatorEvent.seat_outcomes` field when reconstructing approval state, but it does
@@ -65,11 +64,15 @@ write under that boundary.
   `reconcile_train_state(state: RecoveredTrainState, probes: ExactStateProbes) ->
   ReconciliationVerdict`; `build_train_status(state: RecoveredTrainState,
   event_log_path: Path | str = "") -> TrainStatusSnapshot`; and
-  `render_train_status(snapshot: TrainStatusSnapshot, as_json: bool = False) -> str`.
+  `render_train_status(snapshot: TrainStatusSnapshot, *, as_json: bool = False) -> str`.
   `RecoveredTrainState` retains `train_id`, last outcome per node, unmatched intents, latest epoch,
   verification/approval validity, ambiguities, and last durable offset. `ReconciliationVerdict`
   retains one versioned `ReconciliationBinding`, fresh metadata-only observations, a non-secret
-  blocker reason, and `checked_at`. Intent is durable before return; an outcome must match a prior
+  blocker reason, and `checked_at`. `TrainStatusSnapshot` is the replay projection of only
+  `RecoveredTrainState` plus the event-log path; it does not carry authority, observations,
+  `checked_at`, blocker reason, or invalidation triggers. Those fresh facts remain on SL-2's
+  `ReconciliationVerdict` for INTEG, without changing `CoordinatorEvent` or either status signature.
+  Intent is durable before return; an outcome must match a prior
   intent by `(train_id, node_id, attempt_id, epoch)`; identical replay is idempotent; conflicting
   duplicates, mixed versions, epoch regression, corrupt committed records, missing authority, and
   ambiguous provider outcomes fail closed. Every reconciliation invokes fresh Git, GitHub,
@@ -114,13 +117,13 @@ SL-5 — Documentation and whole-phase verification reducer
 
 - **Scope**: Land the complete v10 RUNTIME falsifier set, default-green/activated-RED guard, and chronology proof before any production edit.
 - **Owned files**: `phase-loop-runtime/tests/_runtime_tdd_guard.py`, `phase-loop-runtime/tests/test_convergence_event_log.py`, `phase-loop-runtime/tests/test_convergence_reconcile.py`, `phase-loop-runtime/tests/test_convergence_adapters.py`, `phase-loop-runtime/tests/test_convergence_status.py`, `phase-loop-runtime/tests/test_convergence_runtime_imports.py`, `phase-loop-runtime/tests/test_cli_train_status_45.py`
-- **Interfaces provided**: immutable RUNTIME tests, RUNTIME RED-anchor inventory, RUNTIME chronology receipt contract
+- **Interfaces provided**: immutable RUNTIME tests, per-case production-target/RED-anchor inventory, RUNTIME chronology receipt contract
 - **Interfaces consumed**: `CoordinatorEvent` (pre-existing), `ConvergenceResultEnvelope` (pre-existing), `AdmissionRequest` (pre-existing), `AuthoritySource` (pre-existing), `InvalidationTrigger` (pre-existing), `test_lane_chronology.v1` (pre-existing)
 - **Parallel-safe**: no; this is the single pre-production tests-only boundary.
 - **Tasks**:
-  - test: Add `_runtime_tdd_guard.py` with exact activation `PHASE_LOOP_TDD_EXPECT_RUNTIME=1`, lazy probes, unique `RUNTIME-RED-ANCHOR::<case>` failures, a collected-node inventory, injection-anchor assertions, and a chronology-receipt verifier without pinning future commits or commit counts in this plan.
+  - test: Add `_runtime_tdd_guard.py` with exact activation `PHASE_LOOP_TDD_EXPECT_RUNTIME=1`, lazy probes, unique `RUNTIME-RED-ANCHOR::<case>` failures, a collected-node inventory, and a chronology-receipt verifier. Every case binds one exact `(lane, production path, symbol)` target owned by SL-1, SL-2, or SL-3; resolve the symbol's source to that path and require the target to be entered before its RED anchor. Reject every test/helper/guard target, especially `phase-loop-runtime/tests/_runtime_tdd_guard.py`, regardless of `is_production_construction_site` classification.
   - test: Expand the six matching focused tests plus `test_cli_train_status_45.py` to cover torn/short/cross-process appends, replay conflicts, mixed versions and epochs, fresh four-domain probes and every authority/invalidation enum, strict executable and environment bounds, expected-version preservation, provider terminal mappings, process-tree timeout, event-log-only restart, stable JSON/human status, unchanged legacy `--train`, and the integrated public surface.
-  - test: On the exact pre-production base, require the ordinary selector to pass or skip only the guarded new falsifiers, then require the activated selector to fail only at the complete unique RED-anchor inventory after every injection anchor was entered. Preserve JUnit, raw output digest, source-tree digest, reviewed plan/roadmap digests, and the tests-only landing identity in runner-owned `.phase-loop/evidence/RUNTIME/tdd/` receipts.
+  - test: On the exact pre-production base, require the ordinary selector to pass or skip only the guarded new falsifiers, then require the activated selector to fail only at the complete unique RED-anchor inventory after every bound production target was entered. Preserve the per-case target map, JUnit, raw output digest, source-tree digest, reviewed plan/roadmap digests, and tests-only landing identity in runner-owned `.phase-loop/evidence/RUNTIME/tdd/` receipts.
   - impl: Add test and guard code only. Do not modify production, public docs, package metadata, lockfiles, environment examples, or the existing frozen contract tests.
   - verify: Run the default and activated selectors in isolated processes, validate the RED-anchor inventory and `test_lane_chronology.v1` receipt, panel the exact tests-only diff under the authority active at dispatch, and land it before SL-1, SL-2, or SL-3 starts.
 
@@ -155,13 +158,13 @@ SL-5 — Documentation and whole-phase verification reducer
 - **Scope**: Complete the three non-coordinating adapters and the event-log-only status/CLI projection without touching train coordination or broker effects.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/convergence/adapters/__init__.py`, `phase-loop-runtime/src/phase_loop_runtime/convergence/adapters/base.py`, `phase-loop-runtime/src/phase_loop_runtime/convergence/adapters/codex.py`, `phase-loop-runtime/src/phase_loop_runtime/convergence/adapters/claude.py`, `phase-loop-runtime/src/phase_loop_runtime/convergence/adapters/outside_agent.py`, `phase-loop-runtime/src/phase_loop_runtime/convergence/status.py`, `phase-loop-runtime/src/phase_loop_runtime/cli.py`
 - **Interfaces provided**: adapter and status implementation
-- **Interfaces consumed**: immutable RUNTIME tests, `AdmissionRequest` (pre-existing), `ConvergenceResultEnvelope` (pre-existing), `ConvergenceResultStatus` (pre-existing), `RecoveredTrainState` (pre-existing), `validate_outside_agent_submission` (pre-existing), IF-0-RUNTIME-1 (pre-existing)
-- **Parallel-safe**: yes; after SL-0, this file set is disjoint from SL-1 and SL-2, and `cli.py` has one RUNTIME writer.
+- **Interfaces consumed**: immutable RUNTIME tests, `AdmissionRequest` (pre-existing), `ConvergenceResultEnvelope` (pre-existing), `ConvergenceResultStatus` (pre-existing), `RecoveredTrainState` (pre-existing), `validate_outside_agent_submission` (pre-existing), `scrub_subscription_env` (pre-existing), `strip_mutation_credentials` (pre-existing), IF-0-RUNTIME-1 (pre-existing)
+- **Parallel-safe**: yes; after SL-0, this set is disjoint from SL-1 and SL-2; the coordinator separately serializes RUNTIME against RESIDUAL's `cli.py` writer.
 - **Tasks**:
   - test: Consume SL-0 unchanged and prove all adapters return the same frozen envelope for success, verified, blocked, clarification, degraded, failure, malformed output, nonzero exit, timeout, and outside-agent conformance failure while preserving attempt and expected-version bindings.
-  - test: Prove `train-status --event-log PATH [--json]` reconstructs intent-only, completed, invalidated, mixed-version, epoch-regressed, and ambiguous-provider histories after restart with transcripts and repo-local runner state absent, while legacy `--train` bytes and read-only behavior remain unchanged.
-  - impl: Require exact provider executable identity rather than prefix matching; reuse the central subscription and mutation-credential scrubbers; use bounded argv/cwd/time/output, a fully reclaimed process group on timeout, metadata-only diagnostics, and the pre-existing outside-agent validator. Adapters execute exactly one permitted action, carry the admission predicate unchanged, and import no train coordinator, publisher, merge, release, package, or broker adapter.
-  - impl: Make status output deterministic and explicit about log identity/offset, pending attempts, node outcomes, verification/approval validity, ambiguities, authority/invalidation facts, and non-secret next action. Keep `train-status --event-log` mutually exclusive with `--train`, read-only, and compatible with the existing Python console-script entrypoint.
+  - test: Prove `train-status --event-log PATH [--json]` reconstructs intent-only, completed, verification/approval-invalid, mixed-version, epoch-regressed, and ambiguous-provider histories after restart with transcripts and repo-local runner state absent, while legacy `--train` bytes and read-only behavior remain unchanged.
+  - impl: Require exact provider executable identity rather than prefix matching; apply the read-only pure helpers `phase_loop_runtime.advisor_board.backing.scrub_subscription_env` and `phase_loop_runtime.convergence.broker.credsep.strip_mutation_credentials` without editing their modules or importing a broker adapter symbol; use bounded argv/cwd/time/output, a fully reclaimed timeout process group, metadata-only diagnostics, and the pre-existing outside-agent validator. Adapters execute one permitted action, carry the admission predicate unchanged, and import no train coordinator, publisher, merge, release, package, or broker adapter.
+  - impl: Make status deterministic from `RecoveredTrainState` plus log identity/offset, pending attempts, node outcomes, verification/approval validity, ambiguities, and non-secret next action. Do not synthesize or persist `ReconciliationVerdict` authority/invalidation facts; those remain SL-2 live output. Keep `train-status --event-log` mutually exclusive with `--train`, read-only, and compatible with the existing Python console-script entrypoint.
   - verify: `cd phase-loop-runtime && env PHASE_LOOP_TDD_EXPECT_RUNTIME=1 PYTHONPATH=src python3 -m pytest -q tests/test_convergence_adapters.py tests/test_convergence_status.py tests/test_cli_train_status_45.py tests/test_convergence_fixture_contracts.py`.
 
 ### SL-4 — Runtime integration reducer
@@ -173,7 +176,7 @@ SL-5 — Documentation and whole-phase verification reducer
 - **Parallel-safe**: no; this synthesized public-surface writer depends on every functional producer.
 - **Tasks**:
   - test: Consume the SL-0 import, integration, documentation, and chronology assertions without editing them.
-  - impl: Export the exact IF-0-RUNTIME-1 surface and `RUNTIME_CAPABILITY_VERSION = 1` only after all three producer heads integrate. Do not change frozen `CoordinatorEvent`, `ConvergenceResultEnvelope`, `AdmissionRequest`, `AuthoritySource`, or `InvalidationTrigger` shapes.
+  - impl: Additively export the exact IF-0-RUNTIME-1 surface and `RUNTIME_CAPABILITY_VERSION = 1` only after all three producer heads integrate; preserve every existing BROKER/INTEG export. Do not change frozen `CoordinatorEvent`, `ConvergenceResultEnvelope`, `AdmissionRequest`, `AuthoritySource`, or `InvalidationTrigger` shapes.
   - verify: Run all activated focused tests, import the public package in a fresh process, and confirm SL-0 has no diff from its tests-only landing.
 
 ### SL-5 — Documentation and whole-phase verification reducer
@@ -192,18 +195,18 @@ SL-5 — Documentation and whole-phase verification reducer
 ## Execution Policy
 
 - work-unit defaults: work-unit=`lane_execute`, effort=`high`, unsupported=`block`, inherit-default=`false`, policy-source=`phase plan`
-- plan: executor=`codex`, model=`gpt-5.6-sol`, effort=`max`, work-unit=`phase_plan`, unsupported=`block`, inherit-default=`false`, policy-source=`roadmap`, reason=`v10 planning policy; CLI/operator override remains higher precedence`
 - execute: effort=`high`, work-unit=`lane_execute`, unsupported=`block`, inherit-default=`false`, policy-source=`phase plan`, reason=`coordinator must supply the explicit whole-phase author executor at dispatch`
 - SL-4: effort=`high`, work-unit=`phase_reducer`, unsupported=`block`, inherit-default=`false`, policy-source=`phase plan`
 - SL-5: effort=`high`, work-unit=`phase_reducer`, unsupported=`block`, inherit-default=`false`, policy-source=`phase plan`
 
 ## Execution Notes
 
-- Policy precedence is CLI/operator override, this phase-plan policy, roadmap policy, `Dispatch Hints`, then registry defaults. No unsupported executor/model/effort may silently downgrade; this plan blocks rather than falling back. The coordinator selects one explicit author executor from the rotation active at dispatch and keeps that vendor for SL-1 through SL-4. Runtime lane schedulers remain off; SL-1, SL-2, and SL-3 may fan out only through same-vendor workers in scheduler-owned isolated worktrees after machine verification of the disjoint path sets. SL-0, SL-4, and SL-5 are serial reducers.
+- Policy precedence is CLI/operator override, this phase-plan policy, roadmap policy, `Dispatch Hints`, then registry defaults. No unsupported executor/model/effort may silently downgrade; this plan blocks rather than falling back. The coordinator selects one explicit author executor from the rotation active at dispatch and keeps that vendor for SL-0 through SL-5. Runtime lane schedulers remain off; SL-1, SL-2, and SL-3 may fan out only through same-vendor workers in scheduler-owned isolated worktrees after machine verification of the disjoint path sets. SL-0, SL-4, and SL-5 are serial reducers.
 - PROOFGATE is complete on this planning base. Before execution, recheck that the exact dispatch base still records PROOFGATE completed in the phase ledger; otherwise stop with `upstream_phase_unmet`. Planning or worktree-local runner state does not substitute for that completed lifecycle record.
-- EC-RUNTIME-0 is literal. SL-0 lands and receives the required governed review before any production change. SL-1 through SL-4 may never edit an SL-0 path. The runner-stamped chronology receipt binds the exact base, tests-only head/landing, plan and roadmap digests, collected node IDs, injection anchors, default-green and activated-RED results, and the first production parent without prescribing future SHA values or commit counts in this plan.
+- EC-RUNTIME-0 is literal. SL-0 lands and receives the required governed review before any production change. SL-1 through SL-5 may never edit an SL-0 path. The runner-stamped chronology receipt binds the exact base, tests-only head/landing, plan and roadmap digests, collected node IDs, injection anchors, default-green and activated-RED results, and the first production parent without prescribing future SHA values or commit counts in this plan.
 - The existing skeleton is baseline code, not acceptance evidence. A new falsifier that unexpectedly passes on the exact pre-production base is not RED and must be repaired in SL-0 before landing; a collection/import failure is not an accepted RED result.
-- The complete phase-owned write set is the union of SL-0 through SL-4. `phase-loop-runtime/src/phase_loop_runtime/train_runner.py`, `runner.py`, `injection.py`, `panel_invoker.py`, all broker/publishing modules, frozen convergence contract files/tests, `pyproject.toml`, lockfiles, environment examples, migrations, README, and CHANGELOG remain out of scope.
+- The complete phase-owned write set is the union of SL-0 through SL-5. `phase-loop-runtime/src/phase_loop_runtime/train_runner.py`, `runner.py`, `injection.py`, `panel_invoker.py`, all broker/publishing modules, frozen convergence contract files/tests, `pyproject.toml`, lockfiles, environment examples, migrations, README, and CHANGELOG remain out of scope.
+- Before either phase dispatch and until RUNTIME closeout records release of ownership, the coordinator must serialize RUNTIME and RESIDUAL because both plans own `phase-loop-runtime/src/phase_loop_runtime/cli.py`; they may not execute concurrently.
 - IF-0-VC-2 command preflight is satisfied only when `validate_plan_doc.py` resolves the anchored roadmap and complete goal coverage, `verification_commands_from_plan` extracts the commands below, and `resolve_suite_command_doc` resolves the frontmatter `automation.suite_command` without a finding. Collection-only, skipped activated falsifiers, stale-head output, or prose-only claims are not passing evidence.
 - The RUNTIME deliverable is non-visual. No avatar, browser-media, or visible-render evidence is required; execution closeout sets `visual_render_declared=false`.
 
@@ -218,8 +221,9 @@ SL-5 — Documentation and whole-phase verification reducer
 
 This metadata-only closeout routing preserves the roadmap's declared decision and does not grant
 an implementation lane permission to edit the protected roadmap or this plan. The amendment must
-record the re-grounding/supersession decision and exact RUNTIME evidence without future-history
-pins or raw transcripts, provider payloads, credentials, environment values, or private paths.
+record the re-grounding/supersession decision, exact RUNTIME evidence, and RUNTIME/RESIDUAL
+`cli.py` serialization without future-history pins or raw transcripts, provider payloads,
+credentials, environment values, or private paths.
 
 ## Verification
 
@@ -248,7 +252,7 @@ git diff --check
 
 ## Acceptance Criteria
 
-- [ ] EC-RUNTIME-0 — proven by `PHASE_LOOP_RUNTIME_TDD_RECEIPT=.phase-loop/evidence/RUNTIME/tdd/chronology.json PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q phase-loop-runtime/tests/test_convergence_runtime_imports.py -k "runtime_tdd_chronology"`; falsified by a production change preceding the tests-only landing, any later SL-0 diff, or an activated case missing its unique RED anchor; path-entered control: the receipt records every injection anchor before the expected assertion and also records the ordinary default-green run.
+- [ ] EC-RUNTIME-0 — proven by `PHASE_LOOP_RUNTIME_TDD_RECEIPT=.phase-loop/evidence/RUNTIME/tdd/chronology.json PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q phase-loop-runtime/tests/test_convergence_runtime_imports.py -k "runtime_tdd_chronology"`; falsified by a production change preceding the tests-only landing, any later SL-0 diff, or an activated case missing its unique RED anchor or targeting a test/helper/guard instead of one exact SL-1/SL-2/SL-3 production path and symbol; path-entered control: the receipt binds every case to its resolved production target, records target entry before the expected assertion, rejects `_runtime_tdd_guard.py` as a target, and records the ordinary default-green run.
 - [ ] EC-RUNTIME-1 — proven by `PHASE_LOOP_TDD_EXPECT_RUNTIME=1 PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_convergence_event_log.py`; falsified by accepting a dropped intent, partial/torn committed record, conflicting replay, concurrent write loss, mixed version, epoch regression, or restart mismatch; path-entered control: a complete intent/outcome pair survives restart and folds to the expected state.
 - [ ] EC-RUNTIME-2 — proven by `PHASE_LOOP_TDD_EXPECT_RUNTIME=1 PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_convergence_reconcile.py`; falsified by any changed Git/GitHub/provider/registry observation escaping its authority verdict or normative invalidation trigger; path-entered control: a fresh matching four-domain observation emits the expected authority with zero invalidations.
 - [ ] EC-RUNTIME-3 — proven by `PHASE_LOOP_TDD_EXPECT_RUNTIME=1 PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_convergence_adapters.py`; falsified by an adapter accepting a wrong executable, dropping the expected-version binding, leaking credentials, leaving a timed-out child, coordinating a train, or returning a non-frozen envelope; path-entered control: each provider adapter executes one bounded valid request and returns the expected frozen status and attempt identity.
