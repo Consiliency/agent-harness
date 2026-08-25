@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+
 from enum import Enum
 from typing import Tuple
 
@@ -32,7 +33,6 @@ class AdmissionRequest:
     expected_version_predicate: str
     authority_domain_scope: str
     idempotency_key: str
-    node_id: str | None = None
 
     def __post_init__(self) -> None:
         if not all((self.attempt_id, self.fence_token, self.approval_digest, self.expected_version_predicate, self.authority_domain_scope, self.idempotency_key)):
@@ -40,7 +40,6 @@ class AdmissionRequest:
 
 
 @dataclass(frozen=True)
-
 class PreAdmissionEnvelope:
     """The epoch-free authority a FRESH ``publish_committed_branch`` must carry.
 
@@ -266,6 +265,8 @@ class DeltaReadmitAuthority:
     def __post_init__(self) -> None:
         if isinstance(self.owned_scope, (list, set)):
             object.__setattr__(self, "owned_scope", tuple(self.owned_scope))
+        if not self.repository or not self.branch or not self.prior_head_sha or not self.proposed_head_sha or not self.train_id or not self.node_id or not self.fab_run_id:
+            raise ValueError("DeltaReadmitAuthority authority fields cannot be empty")
 
     @property
     def authority_digest(self) -> str:
@@ -277,6 +278,12 @@ class DeltaReadmitAuthority:
         )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
+    @property
+    def attempt_identity(self) -> str:
+        return hashlib.sha256(
+            b"FABREADMIT-READMISSION-ATTEMPT-v1\0"
+            + bytes.fromhex(self.authority_digest)
+        ).hexdigest()
 
 @dataclass(frozen=True)
 class DeltaReadmitReceipt:
@@ -295,7 +302,6 @@ class DeltaReadmitReceipt:
         return self.allocated_epoch
 
 
-
 @dataclass(frozen=True)
 class ReadmitAdmissionBinding:
     """ReadmitAdmissionBinding.v1 binding stored on readmit admission records."""
@@ -305,3 +311,4 @@ class ReadmitAdmissionBinding:
     node_id: str
     owned_scope: Tuple[str, ...]
     authority_digest: str
+    attempt_identity: str | None = field(default=None, compare=False)

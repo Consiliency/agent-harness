@@ -118,6 +118,8 @@ def _has_no_hardcoded_epoch_publishers(search_root: Path | str | None = None) ->
     if search_root is None:
         search_root = Path(__file__).resolve().parent
 
+    supported_names = tuple(p.rsplit(".", 1)[-1] for p in DEFAULT_SUPPORTED_PUBLISHERS)
+
     for path in Path(search_root).rglob("*.py"):
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -132,10 +134,12 @@ def _has_no_hardcoded_epoch_publishers(search_root: Path | str | None = None) ->
                 elif isinstance(func, ast.Attribute):
                     func_name = func.attr
 
-                if func_name == "publish_committed_branch" or (isinstance(func, ast.Attribute) and func.attr == "publish_committed_branch"):
+                if func_name in supported_names:
                     for kw in node.keywords:
                         if kw.arg == "epoch":
                             return False
+                    if len(node.args) >= 3:
+                        return False
     return True
 
 

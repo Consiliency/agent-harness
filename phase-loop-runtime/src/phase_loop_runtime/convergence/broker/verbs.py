@@ -230,20 +230,15 @@ class BrokerService:
         if isinstance(rec, DeltaReadmitReceipt):
             return rec
 
-        attempt_id = f"readmit:{auth.node_id}:{auth.proposed_head_sha[:8]}"
         return DeltaReadmitReceipt(
             repository=auth.repository,
             branch=auth.branch,
             prior_head_sha=auth.prior_head_sha,
             proposed_head_sha=auth.proposed_head_sha,
             allocated_epoch=rec.epoch,
-            attempt_identity=attempt_id,
+            attempt_identity=auth.attempt_identity,
             authority_digest=auth.authority_digest,
         )
-
-
-
-
 
     def _dedup_key(self, request: BrokerRequest) -> str:
         if request.verb is BrokerVerb.PUBLISH_COMMITTED_BRANCH:
@@ -362,7 +357,6 @@ class BrokerService:
             envelope.expected_version_predicate,
             envelope.authority_domain_scope,
             idempotency_key,
-            node_id=envelope.node_id,
         )
 
 

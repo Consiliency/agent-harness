@@ -72,7 +72,8 @@ from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Sequence, Set
 
 from .convergence.broker.credsep import REPO_REDIRECT_KEYS, resolve_broker_repo_identity
-from .convergence.contracts import DeltaReadmitReceipt
+from .convergence.contracts import DeltaReadmitAuthority, DeltaReadmitReceipt
+
 from .convergence.fencing import run_train_generation_leases
 from .cross_repo_channel import set_upstream_ref
 from .publishing import PublishAuthorityPreimages
@@ -947,13 +948,25 @@ def _commit_broker_readmitted_head(
     ledger_path: Path,
     record: LedgerRecord,
     receipt: DeltaReadmitReceipt,
+    auth: DeltaReadmitAuthority | None = None,
 ) -> None:
+
     if not isinstance(receipt, DeltaReadmitReceipt):
         return
     if receipt.prior_head_sha == receipt.proposed_head_sha:
         return
     if record.head_sha != receipt.proposed_head_sha:
         return
+    if auth is not None:
+        if (
+            receipt.repository != auth.repository
+            or receipt.branch != auth.branch
+            or receipt.prior_head_sha != auth.prior_head_sha
+            or receipt.proposed_head_sha != auth.proposed_head_sha
+            or receipt.attempt_identity != auth.attempt_identity
+            or receipt.authority_digest != auth.authority_digest
+        ):
+            return
     append_record(
         ledger_path,
         LedgerRecord(
@@ -1019,16 +1032,7 @@ def _fab_delta_readmit(
     if _rl.returncode != 0 or _rl.stdout.strip() != "1":
         return None
 
-    from .fab_canonical import enumerate_changed_paths
-
-    if owned_paths is None:
-        return None
-    _changed = enumerate_changed_paths(workspace, admitted_head_sha, live_head_sha)
-    if not _paths_covered_by_owned(_changed, tuple(owned_paths)):
-        return None
-
-
-
+    # 1. Read existing provenance
     try:
         artifact = fab_gate.read_provenance(workspace, run_id)
     except Exception:  # noqa: BLE001
@@ -1037,6 +1041,10 @@ def _fab_delta_readmit(
     prefix_chain, prefix_epochs = _admitted_prefix(artifact, admitted_head_sha)
     if prefix_chain is None:
         return None
+
+    from .fab_canonical import enumerate_changed_paths
+
+    # 2. Scope run to admitted prefix
     if artifact.delta_chain:
         artifact = _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
 
@@ -1044,68 +1052,220 @@ def _fab_delta_readmit(
         artifact.delta_chain[-1].delta_head_sha if artifact.delta_chain else artifact.candidate.head_sha
     )
 
-
     def _gate_passes() -> bool:
         try:
-            return fab_gate.compose_gate_status(
-                repo=workspace, run_id=run_id, live_base_ref_name=_DEFAULT_BASE,
-                live_head_sha=live_head_sha, origin=fab_fetch_origin,
-            ).status == fab_provenance.GATE_STATUS_PASS
+            return (
+                fab_gate.compose_gate_status(
+                    repo=workspace,
+                    run_id=run_id,
+                    live_base_ref_name=_DEFAULT_BASE,
+                    live_head_sha=live_head_sha,
+                    origin=fab_fetch_origin,
+                ).status
+                == fab_provenance.GATE_STATUS_PASS
+            )
         except Exception:  # noqa: BLE001
             return False
 
+    # 3. Review provenance extension & fsync (MUST happen BEFORE gate check and broker grant)
+    if resolved_final != live_head_sha:
+        base_sha = artifact.base.base_sha
+        repo_slug = artifact.base.ref_identity.split("#", 1)[0]
+        if artifact.delta_chain:
+            parent_patch_digest = artifact.delta_chain[-1].resulting_head_digest
+            parent_chain_digest = artifact.delta_chain[-1].chain_digest
+            next_epoch = max([fab_gate.FAB_CANDIDATE_EPOCH, *(d.epoch for d in artifact.delta_chain)]) + 1
+        else:
+            parent_patch_digest = artifact.candidate.patch_digest
+            parent_chain_digest = artifact.compute_c0()
+            next_epoch = fab_gate.FAB_CANDIDATE_EPOCH + 1
+
+        from .governed_bundle import committed_range_diff
+
+        reviewed_diff = committed_range_diff(workspace, admitted_head_sha, live_head_sha)
+        from .events import read_events
+        from .governed_review import author_vendor_for_executor
+
+        _delta_authors = _delta_commit_author_vendors(workspace, admitted_head_sha, live_head_sha)
+        if not _delta_authors:
+            return None
+        _dispatch_authors = frozenset(
+            author_vendor_for_executor(str(e.get("selected_executor")))
+            for e in read_events(workspace)
+            if isinstance(e, dict) and e.get("selected_executor")
+        )
+        author_vendors = _delta_authors | _dispatch_authors
+        review = delta_review_fn(workspace, reviewed_diff, author_vendors)
+        if not getattr(review, "mergeable", False) or getattr(review, "panel", None) is None:
+            return None
+
+        try:
+            fab_producer.capture_delta_review_at_invocation(
+                workspace, run_id, review.panel, epoch=next_epoch, reviewed_diff_text=reviewed_diff
+            )
+            delta_record = fab_producer.build_and_finalize_delta_round(
+                workspace, run_id,
+                epoch=next_epoch, base_sha=base_sha, repo_slug=repo_slug,
+                parent_head_sha=admitted_head_sha, parent_patch_digest=parent_patch_digest,
+                parent_chain_digest=parent_chain_digest, delta_head_sha=live_head_sha,
+                findings=(), review_scope=ReviewScope(mode=REVIEW_SCOPE_DELTA_ONLY),
+                reviewed_diff_text=reviewed_diff,
+            )
+        except Exception:  # noqa: BLE001
+            _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
+            return None
+
+        fab_producer.scope_run_to_epochs(
+            workspace, run_id, [*prefix_epochs, next_epoch]
+        )
+
+        extended = fab_provenance.ReviewProvenanceArtifact.build(
+            repo=artifact.repo,
+            base=artifact.base,
+            boundary_manifest=artifact.boundary_manifest,
+            candidate=artifact.candidate,
+            seats=artifact.seats,
+            findings=artifact.findings,
+            material_digests=artifact.material_digests,
+            delta_chain=(*artifact.delta_chain, delta_record),
+        )
+        fab_provenance.write_provenance(workspace, run_id, extended)
+        fab_provenance.fsync_run_store_durable(workspace, run_id)
+    else:
+        extended = artifact
+
+    # 4. Gate PASS check
+    if not _gate_passes():
+        _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
+        return None
+
+    # 5. Broker Grant Phase (Checkpoint root resolution & PublishTransaction cross-check)
     from .convergence.broker.live import (
         build_routing_broker_client,
         canonical_repository_identity,
-        fabpub_activation_barrier,
-        onboard_zero_legacy_repository,
     )
     from .convergence.contracts import DeltaReadmitAuthority, DeltaReadmitReceipt
-
-    try:
-        onboard_zero_legacy_repository(workspace)
-        fabpub_activation_barrier([workspace])
-    except Exception:
-        pass
-
-    try:
-        canonical_repo = canonical_repository_identity(workspace)
-    except Exception:
-        canonical_repo = "Consiliency/agent-harness"
-
+    from .publishing import PublishTransactionStore
 
     if coordinator_runtime is not None and getattr(coordinator_runtime, "coordinator_root", None) is not None:
         ckpt_root = str(getattr(coordinator_runtime, "coordinator_root"))
     else:
-        ckpt_root = str(workspace.parent / "coord")
-    Path(ckpt_root).mkdir(parents=True, exist_ok=True)
+        ckpt_root = str(ledger_path.parent / "coord")
 
+    cpath = Path(ckpt_root)
+    if not cpath.exists() or not cpath.is_dir():
+        _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
+        return None
 
+    # Load active PublishTransaction for node_id
+    pts = PublishTransactionStore(cpath, node_id)
+    active_ptr = pts.load_active()
+    if not active_ptr or not active_ptr.get("transaction_id"):
+        pts = PublishTransactionStore(cpath, "node")
+        active_ptr = pts.load_active()
+
+    if not active_ptr or not active_ptr.get("transaction_id"):
+        _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
+        return None
+
+    ckpt_file = pts.checkpoint_path(active_ptr["transaction_id"])
+    if not ckpt_file.exists():
+        _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
+        return None
+
+    active_pub = json.loads(ckpt_file.read_text(encoding="utf-8"))
+    envelope_auth = active_pub.get("envelope_authority_preimage") or {}
+
+    tx_node_id = active_pub.get("node_id") or envelope_auth.get("node_id")
+    if tx_node_id and tx_node_id != node_id:
+        _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
+        return None
+
+    tx_branch = active_pub.get("branch") or envelope_auth.get("branch")
+    if not tx_branch:
+        _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
+        return None
+    if branch is not None and branch != tx_branch:
+        _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
+        return None
+    effective_branch = tx_branch
+
+    tx_train_id = envelope_auth.get("train_id") or getattr(coordinator_runtime, "train_id", None)
+    if not tx_train_id:
+        _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
+        return None
+    train_id = tx_train_id
+
+    tx_roadmap_digest = envelope_auth.get("roadmap_digest") or getattr(coordinator_runtime, "roadmap_digest", None)
+    if not tx_roadmap_digest:
+        _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
+        return None
+    roadmap_digest = tx_roadmap_digest
+
+    prior_committed_head = active_pub.get("committed_head_sha") or active_pub.get("expected_commit_oid") or active_pub.get("parent_head_sha")
+    if not prior_committed_head or prior_committed_head != admitted_head_sha:
+        _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
+        return None
+
+    try:
+        canonical_repo = canonical_repository_identity(workspace)
+    except Exception:
+        _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
+        return None
+
+    tx_repo = active_pub.get("canonical_repository_identity") or (envelope_auth.get("authority_domain_scope", "").removeprefix("repository:") if envelope_auth.get("authority_domain_scope", "").startswith("repository:") else None)
+    if tx_repo and tx_repo != canonical_repo:
+        _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
+        return None
+
+    durable_owned = active_pub.get("owned_paths") or envelope_auth.get("owned_paths")
+    if not durable_owned:
+        _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
+        return None
+    durable_owned_tuple = tuple(sorted(durable_owned))
+    if owned_paths is not None and tuple(sorted(owned_paths)) != durable_owned_tuple:
+        _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
+        return None
+    effective_owned_scope = durable_owned_tuple
+
+    # Scope coverage check against changed paths
+    _changed = enumerate_changed_paths(workspace, admitted_head_sha, live_head_sha)
+    if not _paths_covered_by_owned(_changed, effective_owned_scope):
+        _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
+        return None
+
+    provenance_digest = (
+        extended.delta_chain[-1].chain_digest
+        if getattr(extended, "delta_chain", None)
+        else extended.compute_c0()
+    )
 
     auth = DeltaReadmitAuthority(
         repository=canonical_repo,
         adapter_worktree=str(workspace.resolve()),
         checkpoint_root=ckpt_root,
-        branch=branch or "feat/x",
+        branch=effective_branch,
         base=_DEFAULT_BASE,
         prior_head_sha=admitted_head_sha,
         proposed_head_sha=live_head_sha,
-        train_id=getattr(coordinator_runtime, "train_id", "train1"),
+        train_id=train_id,
         node_id=node_id,
         fab_run_id=run_id,
-        roadmap_digest=getattr(coordinator_runtime, "roadmap_digest", "d" * 64),
-        provenance_digest="p" * 64,
-        owned_scope=tuple(owned_paths),
+        roadmap_digest=roadmap_digest,
+        provenance_digest=provenance_digest,
+        owned_scope=effective_owned_scope,
     )
-
 
     client = broker_store
     if client is _UNSET_BROKER:
         if coordinator_runtime is not None and getattr(coordinator_runtime, "broker_client", None) is not None:
             client = coordinator_runtime.broker_client
         else:
-            client = build_routing_broker_client()
-
+            try:
+                client = build_routing_broker_client()
+            except Exception:
+                _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
+                return None
 
     receipt = None
     if client is not None:
@@ -1113,6 +1273,7 @@ def _fab_delta_readmit(
             try:
                 receipt = client.readmit_advanced_head(auth)
             except Exception:
+                _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
                 return None
         elif hasattr(client, "admit_next"):
             try:
@@ -1120,137 +1281,63 @@ def _fab_delta_readmit(
                 if isinstance(rec, DeltaReadmitReceipt):
                     receipt = rec
                 elif rec is not None:
-                    attempt_id = f"readmit:{auth.node_id}:{auth.proposed_head_sha[:8]}"
                     receipt = DeltaReadmitReceipt(
                         repository=auth.repository,
                         branch=auth.branch,
                         prior_head_sha=auth.prior_head_sha,
                         proposed_head_sha=auth.proposed_head_sha,
                         allocated_epoch=rec.epoch,
-                        attempt_identity=attempt_id,
+                        attempt_identity=auth.attempt_identity,
                         authority_digest=auth.authority_digest,
                     )
             except Exception:
+                _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
                 return None
     elif isinstance(broker_store, DeltaReadmitReceipt):
         receipt = broker_store
 
-
     if receipt is None:
+        _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
         return None
 
-
+    # 6. Evidentiary revocation check
     if evidence_store is None:
         from .convergence.broker.evidence import BrokerEvidenceStore
         from .convergence.broker.live import repository_broker_namespace
+
         try:
             ns = repository_broker_namespace(workspace)
             evidence_store = BrokerEvidenceStore(ns)
         except Exception:
-            evidence_store = BrokerEvidenceStore(ckpt_root)
-
-    if _check_readmission_revocation(evidence_store):
-        return None
-
-
-
-    rec_to_commit = LedgerRecord(
-        node_id=node_id, status="pr_open", branch=branch, pr_url=pr_url,
-        head_sha=live_head_sha, merge_order=merge_order, fab_run_id=run_id,
-    )
-
-    if resolved_final == live_head_sha and _gate_passes():
-        _commit_broker_readmitted_head(ledger_path, rec_to_commit, receipt)
-        from .train_ledger import read_ledger
-        latest = read_ledger(ledger_path).get(node_id)
-        if latest is None or latest.head_sha != live_head_sha:
+            _scope_run_to_admitted_prefix(
+                workspace, run_id, artifact, prefix_chain, prefix_epochs
+            )
             return None
-        return live_head_sha
-
-
-    artifact = _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
-
-    base_sha = artifact.base.base_sha
-    repo_slug = artifact.base.ref_identity.split("#", 1)[0]
-    if artifact.delta_chain:
-        parent_patch_digest = artifact.delta_chain[-1].resulting_head_digest
-        parent_chain_digest = artifact.delta_chain[-1].chain_digest
-        next_epoch = max([fab_gate.FAB_CANDIDATE_EPOCH, *(d.epoch for d in artifact.delta_chain)]) + 1
-    else:
-        parent_patch_digest = artifact.candidate.patch_digest
-        parent_chain_digest = artifact.compute_c0()
-        next_epoch = fab_gate.FAB_CANDIDATE_EPOCH + 1
-
-    from .governed_bundle import committed_range_diff
-
-    reviewed_diff = committed_range_diff(workspace, admitted_head_sha, live_head_sha)
-    from .events import read_events
-    from .governed_review import author_vendor_for_executor
-
-    _delta_authors = _delta_commit_author_vendors(workspace, admitted_head_sha, live_head_sha)
-    if not _delta_authors:
-        return None
-    _dispatch_authors = frozenset(
-        author_vendor_for_executor(str(e.get("selected_executor")))
-        for e in read_events(workspace)
-        if isinstance(e, dict) and e.get("selected_executor")
-    )
-    author_vendors = _delta_authors | _dispatch_authors
-    review = delta_review_fn(workspace, reviewed_diff, author_vendors)
-    if not getattr(review, "mergeable", False) or getattr(review, "panel", None) is None:
-        return None
-
-    try:
-        fab_producer.capture_delta_review_at_invocation(
-            workspace, run_id, review.panel, epoch=next_epoch, reviewed_diff_text=reviewed_diff
-        )
-        delta_record = fab_producer.build_and_finalize_delta_round(
-            workspace, run_id,
-            epoch=next_epoch, base_sha=base_sha, repo_slug=repo_slug,
-            parent_head_sha=admitted_head_sha, parent_patch_digest=parent_patch_digest,
-            parent_chain_digest=parent_chain_digest, delta_head_sha=live_head_sha,
-            findings=(), review_scope=ReviewScope(mode=REVIEW_SCOPE_DELTA_ONLY),
-            reviewed_diff_text=reviewed_diff,
-        )
-    except Exception:  # noqa: BLE001
-        _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
-        return None
-
-    fab_producer.scope_run_to_epochs(
-        workspace, run_id, [*prefix_epochs, next_epoch]
-    )
-
-    extended = fab_provenance.ReviewProvenanceArtifact.build(
-        repo=artifact.repo,
-        base=artifact.base,
-        boundary_manifest=artifact.boundary_manifest,
-        candidate=artifact.candidate,
-        seats=artifact.seats,
-        findings=artifact.findings,
-        material_digests=artifact.material_digests,
-        delta_chain=(*artifact.delta_chain, delta_record),
-    )
-    fab_provenance.write_provenance(workspace, run_id, extended)
-    fab_provenance.fsync_run_store_durable(workspace, run_id)
-
-    if not _gate_passes():
-        _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
-        return None
 
     if _check_readmission_revocation(evidence_store):
         _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
         return None
 
-    _commit_broker_readmitted_head(ledger_path, rec_to_commit, receipt)
+    # 7. Commit readmitted head to ledger
+    rec_to_commit = LedgerRecord(
+        node_id=node_id,
+        status="pr_open",
+        branch=effective_branch,
+        pr_url=pr_url,
+        head_sha=live_head_sha,
+        merge_order=merge_order,
+        fab_run_id=run_id,
+    )
+
+    _commit_broker_readmitted_head(ledger_path, rec_to_commit, receipt, auth)
     from .train_ledger import read_ledger
+
     latest = read_ledger(ledger_path).get(node_id)
     if latest is None or latest.head_sha != live_head_sha:
         _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
         return None
+
     return live_head_sha
-
-
-
 
 def _gh_host_from_repo_args(repo_args: Sequence[str]) -> Optional[str]:
     """The GitHub HOST from the broker-validated ``--repo <host>/<owner>/<repo>``
@@ -3364,7 +3451,8 @@ def _run_train_unfenced(
                         # train carries no explicit owned-paths resolver, pass None so
                         # the re-admission fails closed rather than fencing on an
                         # unprovable scope.
-                        _owned_now = list(resolve_owned_paths(_node_m)) if resolve_owned_paths is not None else (getattr(_node_m, "owned_paths", None) or ["pkg"])
+                        _owned_now = list(resolve_owned_paths(_node_m)) if resolve_owned_paths is not None else getattr(_node_m, "owned_paths", None)
+
 
                         _new_admitted = _fab_delta_readmit(
                             _ws_m, ledger_path, node_id=_nid_m, run_id=_fab_run_id_shortcut,
