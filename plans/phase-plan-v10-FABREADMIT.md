@@ -266,7 +266,7 @@ SL-3 — Activation, documentation, and exact-head evidence reducer
 
 ## Execution Policy
 
-- work-unit defaults: work-unit=`lane_execute`, effort=`high`, unsupported=`inherit_default`, inherit-default=`true`
+- work-unit defaults: work-unit=`lane_execute`, effort=`high`, unsupported=`block`, inherit-default=`false`
 - plan: executor=`codex`, model=`gpt-5.6-sol`, effort=`xhigh`, work-unit=`phase_plan`, reason=`maintainer-selected planning authority`
 - SL-0: executor=`gemini`, model=`gemini-3.6-flash`, effort=`high`, work-unit=`lane_execute`, reason=`FABREADMIT single-author-vendor tests-first lane`
 - SL-1: executor=`gemini`, model=`gemini-3.6-flash`, effort=`high`, work-unit=`lane_execute`, reason=`FABREADMIT single-author-vendor broker lane`
