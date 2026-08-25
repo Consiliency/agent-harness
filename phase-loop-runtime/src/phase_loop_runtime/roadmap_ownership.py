@@ -364,17 +364,30 @@ class ReplayRow:
     skipped_reason: str = ""
 
 
-def _merge_commits(repo: Path, limit: int) -> List["tuple[str, str]"]:
+def _landed_commits(repo: Path, limit: int) -> List["tuple[str, str]"]:
+    """The last ``limit`` changes that LANDED on this branch.
+
+    ``--first-parent``, not ``--merges``. This repo lands PRs both ways -- the
+    other agent's arrive as merge commits, mine arrive squashed -- and
+    ``--merges`` silently samples only the first population. My own ah#644 and
+    ah#650 were invisible to my own measurement, which is a sampling bias in the
+    one number this tool exists to produce.
+
+    First-parent gives exactly one entry per landed change of either shape, and
+    ``<sha>^1..<sha>`` is the right diff for both: a merge's first parent is the
+    previous mainline tip, and a squash commit's only parent is the same thing.
+    """
+
     out = subprocess.run(
         # Space-separated, not a control character: a literal NUL in argv is
         # rejected by subprocess outright. The sha is fixed-width, so a single
         # split is unambiguous even when the subject contains spaces.
-        ["git", "-C", str(repo), "log", "--merges", "-n", str(limit),
+        ["git", "-C", str(repo), "log", "--first-parent", "-n", str(limit),
          "--format=%H %s"],
         capture_output=True, text=True, check=False,
     )
     if out.returncode != 0:
-        raise RoadmapUnreadable(f"could not list merges: {out.stderr.strip()}")
+        raise RoadmapUnreadable(f"could not list landed commits: {out.stderr.strip()}")
     rows = []
     for line in out.stdout.splitlines():
         parts = line.split(" ", 1)
@@ -384,7 +397,7 @@ def _merge_commits(repo: Path, limit: int) -> List["tuple[str, str]"]:
 
 
 def replay(repo: Path, limit: int, roadmap_rel: str) -> List[ReplayRow]:
-    """Replay the check over the last ``limit`` merges.
+    """Replay the check over the last ``limit`` LANDED changes.
 
     Uses the roadmap **as it existed at each commit**, not today's. Measuring
     historical PRs against the current roadmap would answer "what would fire
@@ -397,7 +410,7 @@ def replay(repo: Path, limit: int, roadmap_rel: str) -> List[ReplayRow]:
     """
 
     rows: List[ReplayRow] = []
-    for sha, subject in _merge_commits(repo, limit):
+    for sha, subject in _landed_commits(repo, limit):
         blob = subprocess.run(
             ["git", "-C", str(repo), "show", f"{sha}:{roadmap_rel}"],
             capture_output=True, text=True, check=False,
@@ -409,6 +422,18 @@ def replay(repo: Path, limit: int, roadmap_rel: str) -> List[ReplayRow]:
             mapping = ownership_map(blob.stdout)
         except RoadmapUnreadable as exc:
             rows.append(ReplayRow(sha, subject, 0, 0, (), f"unparseable: {exc}"))
+            continue
+        has_parent = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--verify", "-q", f"{sha}^1"],
+            capture_output=True, text=True, check=False,
+        )
+        if has_parent.returncode != 0:
+            # The root commit is the initial import: every path in the tree is
+            # "changed", so scoring it would flag everything and distort the very
+            # rate this produces. Unscorable with an accurate reason -- not the
+            # generic "diff failed", which would misreport a normal repo boundary
+            # as a tooling error.
+            rows.append(ReplayRow(sha, subject, 0, 0, (), "root commit (no parent to diff)"))
             continue
         diff = subprocess.run(
             ["git", "-C", str(repo), "diff", "--name-only", f"{sha}^1", sha],
@@ -438,7 +463,7 @@ def render_report(rows: Sequence[ReplayRow]) -> str:
     scored = [r for r in rows if not r.skipped_reason]
     flagged = [r for r in scored if r.notable]
     lines = [
-        f"roadmap-ownership --report: {total} merge(s) replayed "
+        f"roadmap-ownership --report: {total} landed change(s) replayed "
         f"({len(scored)} scored, {len(skipped)} unscorable)",
         "",
     ]

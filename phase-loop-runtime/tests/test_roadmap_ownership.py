@@ -354,9 +354,12 @@ class TestReplayReport(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             repo = self._repo_with_history(tmp)
             rows = ro.replay(repo, 5, "specs/phase-plans-v10.md")
-            self.assertEqual(len(rows), 1)
+            # First-parent walks the whole mainline, so the root commit is here
+            # too -- unscorable, and counted as such.
+            self.assertEqual(len(rows), 2)
             self.assertEqual(rows[0].notable, 1)
             self.assertIn("ALPHA", rows[0].phases)
+            self.assertIn("root commit", rows[1].skipped_reason)
 
     def test_unscorable_merges_are_counted_not_dropped(self):
         """A shrinking denominator would flatter the rate.
@@ -371,8 +374,8 @@ class TestReplayReport(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             repo = self._repo_with_history(tmp)
             rows = ro.replay(repo, 5, "specs/does-not-exist.md")
-            self.assertEqual(len(rows), 1)
-            self.assertTrue(rows[0].skipped_reason)
+            self.assertEqual(len(rows), 2)
+            self.assertTrue(all(r.skipped_reason for r in rows))
             out = ro.render_report(rows)
             self.assertIn("unscorable", out)
             self.assertIn("0 scored", out)
@@ -385,6 +388,32 @@ class TestReplayReport(unittest.TestCase):
         ]
         out = ro.render_report(rows)
         self.assertIn("1/2 (50%)", out)
+
+    def test_a_SQUASH_merged_pr_is_sampled_too(self):
+        """The sampling bug this file exists to prevent (found pre-merge).
+
+        The first version used `--merges`, which samples ONLY merge commits. This
+        repo lands PRs both ways -- the other agent's arrive as merge commits,
+        mine arrive squashed -- so my own ah#644 and ah#650 were invisible to my
+        own measurement. A biased population silently corrupts the one number
+        this tool produces.
+
+        Mutation that must kill this: `--merges` instead of `--first-parent`.
+        A squash lands as a plain non-merge commit on the mainline, so under
+        `--merges` this row disappears entirely and the count drops.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = self._repo_with_history(tmp)
+            # A squash-merged PR: one ordinary commit directly on main.
+            (repo / "src" / "alpha.py").write_text("x = 2\n")
+            subprocess.run(["git", "-C", tmp, "add", "-A"], check=True,
+                           capture_output=True)
+            subprocess.run(["git", "-C", tmp, "commit", "-qm", "squashed pr (#99)"],
+                           check=True, capture_output=True)
+            rows = ro.replay(repo, 5, "specs/phase-plans-v10.md")
+            squashed = [r for r in rows if "squashed pr" in r.subject]
+            self.assertEqual(len(squashed), 1, "a squash-merged PR must be sampled")
+            self.assertEqual(squashed[0].notable, 1)
 
     def test_replay_reads_the_roadmap_AT_each_commit(self):
         """Not today's roadmap. `Key files` lists change over time, so measuring
@@ -408,7 +437,11 @@ class TestReplayReport(unittest.TestCase):
             subprocess.run(["git", "-C", tmp, "commit", "-qm", "retarget roadmap"],
                            check=True, capture_output=True)
             rows = ro.replay(repo, 5, "specs/phase-plans-v10.md")
-            self.assertEqual(rows[0].notable, 1, "must use the roadmap at that commit")
+            # Target the merge by SUBJECT, not by index: the retarget commit is
+            # itself on the mainline and is the newest row.
+            merge = [r for r in rows if r.subject == "Merge feature"]
+            self.assertEqual(len(merge), 1)
+            self.assertEqual(merge[0].notable, 1, "must use the roadmap at that commit")
 
 
 class TestPartialDrift(unittest.TestCase):
