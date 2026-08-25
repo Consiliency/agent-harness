@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: FABREADMIT
 roadmap: specs/phase-plans-v10.md
-roadmap_sha256: c66949236043e46e956caec1c09d0c19d0e8751e4ce2891de1fe2edf24e9fea1
+roadmap_sha256: 9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0
 automation:
   suite_command:
     - env
