@@ -2417,6 +2417,29 @@
             "run_id": "20260825T150714Z-01-integ-plan"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-25T20:21:55Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "author_model": "gpt-5.6-sol",
+            "author_vendor": "openai",
+            "phase_alias": "INTEG",
+            "plan_sha256": "7cb409a3a4d6aaecf8cddc691b3b33590a5b24c2dadb4bcaeb08c824dfe3a1db",
+            "predecessor_plan_sha256": "dc6359cebee1a40e04732981cf62623c60dd01b9ae1c588488c2159a3f790283",
+            "president_forcing_decision": "REJECT",
+            "repaired_blocking_defects": [
+              "suite_command_shell_free_argv",
+              "verification_commands_machine_extracted",
+              "dispatch_hints_precedence_rung_removed"
+            ],
+            "review_bundle": "/mnt/workspace/review-bundles/integ-plan-af072092",
+            "review_status": "fresh_exact_digest_full_board_required",
+            "reviewed_candidate_commit": "af072092800bac7f78c1a602dfc3a4635bc82202",
+            "reviewed_candidate_parent": "982d94fe06f8aacaf5ab8e21635b7a69a4317897",
+            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0"
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -2432,7 +2455,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-25T15:27:51Z"
+      "updated_at": "2026-08-25T20:21:55Z"
     },
     {
       "acceptance_criteria_count": null,

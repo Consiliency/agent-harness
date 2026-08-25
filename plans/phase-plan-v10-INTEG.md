@@ -4,7 +4,18 @@ phase: INTEG
 roadmap: specs/phase-plans-v10.md
 roadmap_sha256: 9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0
 automation:
-  suite_command: 'PYTHONPATH=phase-loop-runtime/src python3 -m phase_loop_runtime.tdd_receipts verify --receipt .phase-loop/evidence/INTEG/content-tdd-receipt.json --repo . && env PHASE_LOOP_TDD_EXPECT_INTEG=1 PYTHONPATH=phase-loop-runtime/src python3 -m pytest phase-loop-runtime/tests/test_integ_coordinator_contract.py phase-loop-runtime/tests/test_integ_credential_isolation.py phase-loop-runtime/tests/test_integ_fault_matrix.py phase-loop-runtime/tests/test_integ_legacy_faults_reconciliation.py -q && PYTHONPATH=phase-loop-runtime/src python3 phase-loop-runtime/tests/_integ_tdd_guard.py verify-legacy-faults --record .phase-loop/evidence/INTEG/legacy-faults-reconciliation.json --verification .phase-loop/evidence/INTEG/verification.json'
+  suite_command:
+    - env
+    - PHASE_LOOP_TDD_EXPECT_INTEG=1
+    - PYTHONPATH=phase-loop-runtime/src
+    - python3
+    - -m
+    - pytest
+    - phase-loop-runtime/tests/test_integ_coordinator_contract.py
+    - phase-loop-runtime/tests/test_integ_credential_isolation.py
+    - phase-loop-runtime/tests/test_integ_fault_matrix.py
+    - phase-loop-runtime/tests/test_integ_legacy_faults_reconciliation.py
+    - -q
 ---
 
 # INTEG: Coordinator Integration and Fault Suite
@@ -120,7 +131,7 @@ SL-3 — Whole-phase verification and documentation sweep
 - Existing provider classifications remain fail-closed. INTEG may route merge/release/package requests through the broker and observe their typed human-executed/unsupported result, but it may not make those verbs automated; RELEASE owns real pilots and release dispatch.
 - Fault timing uses injected clocks, barriers, fake channels, and call logs. No sleep-based proof, live credential, real mutation, transcript authority, secret-bearing fixture, or raw provider payload is allowed.
 - Documentation impact is consciously `no_doc_delta` and spec impact is `no_spec_delta`: behavior is already specified by the v10 roadmap and absorbed contracts. If implementation discovers a required contract or public-surface change, stop for a roadmap amendment instead of widening this plan.
-- Policy precedence is CLI/operator override, this plan, roadmap policy, `Dispatch Hints`, then registry defaults. Silent downgrade is forbidden; the declared `inherit_default` behavior is the only default inheritance.
+- Policy precedence is CLI/operator override, this plan, roadmap policy, then registry defaults. Silent downgrade is forbidden; the declared `inherit_default` behavior is the only default inheritance.
 - Closeout is complete only when verification passes and `produced_if_gates` contains exactly `IF-0-INTEG-1`. This phase is not a visible render deliverable, so `visual_render_declared=false` and no visual evidence is required.
 
 ## Spec Closeout Plan
@@ -134,17 +145,15 @@ SL-3 — Whole-phase verification and documentation sweep
 
 ## Verification
 
-```bash
-PYTHONPATH=phase-loop-runtime/src python3 -m phase_loop_runtime.cli validate-roadmap specs/phase-plans-v10.md
-python3 skills-src/claude/claude-plan-phase/scripts/validate_plan_doc.py plans/phase-plan-v10-INTEG.md
-PYTHONPATH=phase-loop-runtime/src python3 -m phase_loop_runtime.tdd_receipts verify --receipt .phase-loop/evidence/INTEG/content-tdd-receipt.json --repo .
-env PHASE_LOOP_TDD_EXPECT_INTEG=1 PYTHONPATH=phase-loop-runtime/src python3 -m pytest phase-loop-runtime/tests/test_integ_coordinator_contract.py phase-loop-runtime/tests/test_integ_credential_isolation.py phase-loop-runtime/tests/test_integ_fault_matrix.py phase-loop-runtime/tests/test_integ_legacy_faults_reconciliation.py -q
-PYTHONPATH=phase-loop-runtime/src python3 phase-loop-runtime/tests/_integ_tdd_guard.py verify-legacy-faults --record .phase-loop/evidence/INTEG/legacy-faults-reconciliation.json --verification .phase-loop/evidence/INTEG/verification.json
-PYTHONPATH=phase-loop-runtime/src python3 -m pytest phase-loop-runtime/tests/test_convergence_*.py phase-loop-runtime/tests/test_train_*.py phase-loop-runtime/tests/test_fab*.py phase-loop-runtime/tests/test_outside_agent*.py -q
-PYTHONPATH=phase-loop-runtime/src python3 -m pytest phase-loop-runtime/tests -q -m "not dotfiles_integration"
-ruff check phase-loop-runtime/src/phase_loop_runtime/
-git diff --check
-```
+- `PYTHONPATH=phase-loop-runtime/src python3 -m phase_loop_runtime.cli validate-roadmap specs/phase-plans-v10.md`
+- `python3 skills-src/claude/claude-plan-phase/scripts/validate_plan_doc.py plans/phase-plan-v10-INTEG.md`
+- `PYTHONPATH=phase-loop-runtime/src python3 -m phase_loop_runtime.tdd_receipts verify --receipt .phase-loop/evidence/INTEG/content-tdd-receipt.json --repo .`
+- `env PHASE_LOOP_TDD_EXPECT_INTEG=1 PYTHONPATH=phase-loop-runtime/src python3 -m pytest phase-loop-runtime/tests/test_integ_coordinator_contract.py phase-loop-runtime/tests/test_integ_credential_isolation.py phase-loop-runtime/tests/test_integ_fault_matrix.py phase-loop-runtime/tests/test_integ_legacy_faults_reconciliation.py -q`
+- `PYTHONPATH=phase-loop-runtime/src python3 phase-loop-runtime/tests/_integ_tdd_guard.py verify-legacy-faults --record .phase-loop/evidence/INTEG/legacy-faults-reconciliation.json --verification .phase-loop/evidence/INTEG/verification.json`
+- `PYTHONPATH=phase-loop-runtime/src python3 -m pytest phase-loop-runtime/tests/test_convergence_*.py phase-loop-runtime/tests/test_train_*.py phase-loop-runtime/tests/test_fab*.py phase-loop-runtime/tests/test_outside_agent*.py -q`
+- `PYTHONPATH=phase-loop-runtime/src python3 -m pytest phase-loop-runtime/tests -q -m "not dotfiles_integration"`
+- `ruff check phase-loop-runtime/src/phase_loop_runtime/`
+- `git diff --check`
 
 ## Acceptance Criteria
 
