@@ -2306,6 +2306,12 @@
           "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#645"
+        },
+        {
+          "plan_sha256": "bea77577ed3ecc5cd2c631d20d253427a5b771b3261454e8f700f9f374bc4a3c",
+          "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#616"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/fdaed78f/codex-v10-plan-harden/20260730T035939Z-01-harden-plan.md",
@@ -3599,10 +3605,76 @@
             "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-25T09:10:11Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "harden_plan_sha256": "bea77577ed3ecc5cd2c631d20d253427a5b771b3261454e8f700f9f374bc4a3c",
+            "plan_sha256": "50ef2f5a7678a657a186fc3dc206e86cfd5fc41b6369fa1d35fa4258e6ad8761",
+            "predecessor_harden_plan_sha256": "b46805dec76792ddb066d9891fb5c731585576d9439270053e98013f28a480ee",
+            "predecessor_plan_sha256": "7bdab8155c945666f750e19085686dfc10024717dc39a493f47d168cd725c5e6",
+            "reconciled_findings": [
+              "preserve_immutable_harden_lifecycle_contracts",
+              "append_live_harden_plan_authority",
+              "bind_harden_verifier_to_history_and_current_authority",
+              "record_sched_current_authority"
+            ],
+            "review_status": "initial_board_blockers_repaired_requires_fresh_exact_digest_review",
+            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+            "source": "Consiliency/agent-harness#616"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-08-25T09:51:31Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "board_artifacts": {
+              "consolidated_findings_sha256": "71029aa6c1beb84b817dc4761e8d636d4ef7c62d81801e78111590696ac5c24d",
+              "critics_sha256": "2e25fd4a1757f024992892222d49fd7337c1f9d581579a6a57520162687e056a",
+              "early_prover_sha256": "761d0276d13cef3b99676b5ad98fb71fedf143a7c69eac2e22c9bbe90e494c04",
+              "president_ruling_sha256": "d1319d4b50c2533f7dc70de7b4a415696454e99a1385a926a820281dc9a580b7"
+            },
+            "deferred_findings_issue": "Consiliency/agent-harness#660",
+            "external_board_statuses": {
+              "claude_opus_5_early_prover": "PARTIALLY_AGREE_no_blocking_finding",
+              "gemini_3_6_flash": "PARTIALLY_AGREE_no_blocking_finding",
+              "gpt_5_6_sol": "AGREE",
+              "grok_4_5": "PARTIALLY_AGREE_no_blocking_finding"
+            },
+            "harden_plan_sha256": "bea77577ed3ecc5cd2c631d20d253427a5b771b3261454e8f700f9f374bc4a3c",
+            "plan_sha256": "50ef2f5a7678a657a186fc3dc206e86cfd5fc41b6369fa1d35fa4258e6ad8761",
+            "president_forcing_decision": "PROCEED_WITH_DOWNSTREAM",
+            "president_model": "grok-4.6",
+            "president_status": "recovered_usable_ruling_after_parser_false_negative",
+            "rebased_artifact_identity_preserved": true,
+            "rebased_equivalent_commit": "9017aeca3218b6b1eb0f36e8cc848a16104dca23",
+            "review_status": "exact_digest_board_accepted_with_issue_bound_deferred_findings",
+            "reviewed_candidate_commit": "e393fd9870aa0c19de49334d2a010c765d2eff22",
+            "reviewed_manifest_sha256": "5fb8fc53623d940b3575bd70f75ba206ee6bf0ceb414cbb441ece4f187afacc2",
+            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+            "source": "Consiliency/agent-harness#616"
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
       "phase_alias": "SCHED",
+      "plan_authority_history": [
+        {
+          "plan_sha256": "7bdab8155c945666f750e19085686dfc10024717dc39a493f47d168cd725c5e6",
+          "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#616"
+        },
+        {
+          "plan_sha256": "50ef2f5a7678a657a186fc3dc206e86cfd5fc41b6369fa1d35fa4258e6ad8761",
+          "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#616"
+        }
+      ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/ea0bef92/codex-v10-sched-plan/20260820T003600Z-01-sched-plan.md",
       "roadmap_ref": {
         "file": "specs/phase-plans-v10.md",
@@ -3614,7 +3686,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-23T23:49:06Z"
+      "updated_at": "2026-08-25T09:51:31Z"
     },
     {
       "acceptance_criteria_count": null,

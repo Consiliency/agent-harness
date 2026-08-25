@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: SCHED
 roadmap: specs/phase-plans-v10.md
-roadmap_sha256: 6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68
+roadmap_sha256: 9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0
 automation:
   suite_command: 'PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q phase-loop-runtime/tests/test_phase_worktree_executor.py phase-loop-runtime/tests/test_phase_loop_lane_scheduler.py phase-loop-runtime/tests/test_phase_loop_concurrent_phase_dispatch.py phase-loop-runtime/tests/test_dispatch_lock_reentrancy.py phase-loop-runtime/tests/test_phase_loop_work_unit_runner.py phase-loop-runtime/tests/test_phase_loop_runner.py phase-loop-runtime/tests/test_phase_loop_launcher.py phase-loop-runtime/tests/test_workerpool_failure_isolation.py phase-loop-runtime/tests/test_workerpool_parallel.py phase-loop-runtime/tests/test_workerpool_worktree_alloc.py phase-loop-runtime/tests/test_v34_parallel_dispatch_soak.py phase-loop-runtime/tests/test_phase_loop_v45_sched.py phase-loop-runtime/tests/test_phase_loop_v45_schedharden.py'
 ---
@@ -15,8 +15,10 @@ SCHED closes the scheduler-dispatch and crash-residual worktree defects carried 
 `Consiliency/agent-harness#300`, `Consiliency/agent-harness#301`,
 `Consiliency/agent-harness#353`, and draft `Consiliency/agent-harness#354`.
 The active roadmap requires SCHED after completed PROOFGATE and before REVIEWTRUTH.
-At this plan's base, PROOFGATE is completed, while SCHED has no manifest row or
-execution-ready plan. Draft `Consiliency/agent-harness#354` is not an implementation
+At this plan's original base, PROOFGATE was completed while SCHED had no manifest row
+or execution-ready plan. SCHED is now registered as committed; this planning-package
+revision rebinds its current authority to the active roadmap without rewriting that
+historical lifecycle. Draft `Consiliency/agent-harness#354` is not an implementation
 base: review proved that its same-phase recreation force-deletes recoverable work,
 ignored handoffs are durable state, and a path-based age/status check has a deletion
 TOCTOU. Its block/reuse/transfer proposals also lacked an active-owner exclusion and
@@ -325,12 +327,17 @@ SL-6 — Documentation, disposition, and completion evidence
     candidate values are non-null and status is `candidate_awaiting_review`. HARDEN selects
     the final candidate event and requires every earlier handoff event to be exactly the
     one immutable null-identity template; it never updates that template in place.
-  - impl: in the same candidate commit, atomically refresh the unique HARDEN current-
-    authority fields `completion_record_contract.plan_sha256`,
-    `digest_rebind.plan_sha256`, and `harden_plan_contract.plan_sha256` to the amended
-    HARDEN bytes, preserving their historical reviewed/predecessor fields and the stable
-    contract payload seal. The appended candidate handoff binds that same digest. A partial
-    refresh, template rewrite, or stale current-authority field blocks candidate `C`.
+  - impl: in the same candidate commit, preserve every pre-existing HARDEN lifecycle
+    event byte-for-byte, including `completion_record_contract`, `digest_rebind`,
+    `harden_plan_contract`, their historical roadmap/plan identities, and the stable
+    historical contract payload seal. Append one `plan_current_authority.v1` item to the
+    row-level `plan_authority_history`, sourced to `Consiliency/agent-harness#616`, whose
+    `plan_sha256` equals the amended HARDEN bytes and whose `roadmap_sha256` equals the
+    exact live roadmap bytes. HARDEN's live verifier reads that authority tail; it never
+    treats an immutable lifecycle contract as a mutable current-authority slot. The
+    appended candidate handoff binds the same current HARDEN, SCHED, and roadmap digests.
+    A historical-event rewrite, partial authority append, template rewrite, or stale
+    authority tail blocks candidate `C`.
   - verify: before resolving `C`, `R`, or any other Git object, the literal HARDEN
     preflight rejects raw `include.*`/`includeIf.*` directives across all enabled
     repository scopes without following them and then rejects the complete effective
