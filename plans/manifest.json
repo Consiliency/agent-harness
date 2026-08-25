@@ -2285,8 +2285,8 @@
               "review_receipt_schema": "v10.sched-harden-review-receipt.v1",
               "review_request_digest_domain": "v10.sched-harden-review-request.v1\n",
               "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68",
-              "schema": "v10.sched-harden-handoff.v1",
-              "sched_plan_sha256": "90edd225d9f066c6a251496a1eb8f09daebbf376f271348a0b7f261eca904a02"
+              "sched_plan_sha256": "90edd225d9f066c6a251496a1eb8f09daebbf376f271348a0b7f261eca904a02",
+              "schema": "v10.sched-harden-handoff.v1"
             }
           },
           "transition": "committed"
@@ -3657,6 +3657,22 @@
             "source": "Consiliency/agent-harness#616"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-25T10:56:30Z",
+          "by": "clawdbot-agent-harness-codex",
+          "metadata": {
+            "board_status": "exact_digest_board_accepted_with_issue_bound_deferred_findings",
+            "deferred_findings_issue": "Consiliency/agent-harness#660",
+            "phase_alias": "SCHED",
+            "plan_sha256": "50ef2f5a7678a657a186fc3dc206e86cfd5fc41b6369fa1d35fa4258e6ad8761",
+            "planning_merge": "bab3bbc7038ed5b01df8216051051f3796bfe3ba",
+            "planning_pr": "Consiliency/agent-harness#661",
+            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+            "run_id": "20260825T105611Z-v10-sched-execution",
+            "work_unit_bootstrap": "runner_owned_explicit_assignments_due_to_Consiliency/agent-harness#301"
+          },
+          "transition": "executing"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -3683,10 +3699,10 @@
         "type": "phase"
       },
       "slug": "v10-SCHED",
-      "status": "committed",
+      "status": "executing",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-25T09:51:31Z"
+      "updated_at": "2026-08-25T10:56:30Z"
     },
     {
       "acceptance_criteria_count": null,
