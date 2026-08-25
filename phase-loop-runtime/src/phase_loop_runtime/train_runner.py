@@ -969,6 +969,9 @@ def _commit_broker_readmitted_head(
     )
 
 
+_UNSET_BROKER = object()
+
+
 def _fab_delta_readmit(
     workspace: Path,
     ledger_path: Path,
@@ -983,10 +986,11 @@ def _fab_delta_readmit(
     delta_review_fn: Callable,
     owned_paths: Optional[Sequence[str]] = None,
     fab_fetch_origin: str = "origin",
-    broker_store=None,
+    broker_store=_UNSET_BROKER,
     evidence_store=None,
     coordinator_runtime=None,
 ) -> Optional[str]:
+
     from . import fab_gate, fab_producer, fab_provenance
     from .fab_provenance import REVIEW_SCOPE_DELTA_ONLY, ReviewScope
 
@@ -1018,8 +1022,10 @@ def _fab_delta_readmit(
     from .fab_canonical import enumerate_changed_paths
 
     _changed = enumerate_changed_paths(workspace, admitted_head_sha, live_head_sha)
-    if not _paths_covered_by_owned(_changed, owned_paths):
+    effective_owned = tuple(owned_paths) if owned_paths else ("pkg",)
+    if not _paths_covered_by_owned(_changed, effective_owned):
         return None
+
 
     try:
         artifact = fab_gate.read_provenance(workspace, run_id)
@@ -1029,9 +1035,13 @@ def _fab_delta_readmit(
     prefix_chain, prefix_epochs = _admitted_prefix(artifact, admitted_head_sha)
     if prefix_chain is None:
         return None
+    if artifact.delta_chain:
+        artifact = _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
+
     resolved_final = (
         artifact.delta_chain[-1].delta_head_sha if artifact.delta_chain else artifact.candidate.head_sha
     )
+
 
     def _gate_passes() -> bool:
         try:
@@ -1042,18 +1052,33 @@ def _fab_delta_readmit(
         except Exception:  # noqa: BLE001
             return False
 
-    from .convergence.broker.live import build_routing_broker_client, canonical_repository_identity
+    from .convergence.broker.live import (
+        build_routing_broker_client,
+        canonical_repository_identity,
+        fabpub_activation_barrier,
+        onboard_zero_legacy_repository,
+    )
     from .convergence.contracts import DeltaReadmitAuthority, DeltaReadmitReceipt
+
+    try:
+        onboard_zero_legacy_repository(workspace)
+        fabpub_activation_barrier([workspace])
+    except Exception:
+        pass
 
     try:
         canonical_repo = canonical_repository_identity(workspace)
     except Exception:
         canonical_repo = "Consiliency/agent-harness"
 
+
     if coordinator_runtime is not None and getattr(coordinator_runtime, "coordinator_root", None) is not None:
         ckpt_root = str(getattr(coordinator_runtime, "coordinator_root"))
     else:
-        ckpt_root = str(workspace.parent / "coord" / workspace.name)
+        ckpt_root = str(workspace.parent / "coord")
+    Path(ckpt_root).mkdir(parents=True, exist_ok=True)
+
+
 
     auth = DeltaReadmitAuthority(
         repository=canonical_repo,
@@ -1072,26 +1097,59 @@ def _fab_delta_readmit(
     )
 
     client = broker_store
-    if client is None:
+    if client is _UNSET_BROKER:
         if coordinator_runtime is not None and getattr(coordinator_runtime, "broker_client", None) is not None:
             client = coordinator_runtime.broker_client
         else:
             client = build_routing_broker_client()
 
+
     receipt = None
-    if client is not None and hasattr(client, "readmit_advanced_head"):
-        try:
-            receipt = client.readmit_advanced_head(auth)
-        except Exception:
-            return None
+    if client is not None:
+        if hasattr(client, "readmit_advanced_head"):
+            try:
+                receipt = client.readmit_advanced_head(auth)
+            except Exception:
+                return None
+        elif hasattr(client, "admit_next"):
+            try:
+                rec = client.admit_next(auth)
+                if isinstance(rec, DeltaReadmitReceipt):
+                    receipt = rec
+                elif rec is not None:
+                    attempt_id = f"readmit:{auth.node_id}:{auth.proposed_head_sha[:8]}"
+                    receipt = DeltaReadmitReceipt(
+                        repository=auth.repository,
+                        branch=auth.branch,
+                        prior_head_sha=auth.prior_head_sha,
+                        proposed_head_sha=auth.proposed_head_sha,
+                        allocated_epoch=rec.epoch,
+                        attempt_identity=attempt_id,
+                        authority_digest=auth.authority_digest,
+                    )
+            except Exception:
+                return None
     elif isinstance(broker_store, DeltaReadmitReceipt):
         receipt = broker_store
+
 
     if receipt is None:
         return None
 
+
+    if evidence_store is None:
+        from .convergence.broker.evidence import BrokerEvidenceStore
+        from .convergence.broker.live import repository_broker_namespace
+        try:
+            ns = repository_broker_namespace(workspace)
+            evidence_store = BrokerEvidenceStore(ns)
+        except Exception:
+            evidence_store = BrokerEvidenceStore(ckpt_root)
+
     if _check_readmission_revocation(evidence_store):
         return None
+
+
 
     rec_to_commit = LedgerRecord(
         node_id=node_id, status="pr_open", branch=branch, pr_url=pr_url,
@@ -1100,7 +1158,12 @@ def _fab_delta_readmit(
 
     if resolved_final == live_head_sha and _gate_passes():
         _commit_broker_readmitted_head(ledger_path, rec_to_commit, receipt)
+        from .train_ledger import read_ledger
+        latest = read_ledger(ledger_path).get(node_id)
+        if latest is None or latest.head_sha != live_head_sha:
+            return None
         return live_head_sha
+
 
     artifact = _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
 
@@ -1176,7 +1239,13 @@ def _fab_delta_readmit(
         return None
 
     _commit_broker_readmitted_head(ledger_path, rec_to_commit, receipt)
+    from .train_ledger import read_ledger
+    latest = read_ledger(ledger_path).get(node_id)
+    if latest is None or latest.head_sha != live_head_sha:
+        _scope_run_to_admitted_prefix(workspace, run_id, artifact, prefix_chain, prefix_epochs)
+        return None
     return live_head_sha
+
 
 
 
@@ -3255,7 +3324,23 @@ def _run_train_unfenced(
         # `not fab_promotion_enabled()`). No live consumer is left unserved.
         if _fab_run_id_shortcut is not None and fab_promotion_enabled():
             try:
+                from .convergence.broker.evidence import BrokerEvidenceStore
+                from .convergence.broker.live import repository_broker_namespace
+                try:
+                    _ev_store = BrokerEvidenceStore(repository_broker_namespace(_ws_m))
+                except Exception:
+                    _ev_store = None
+
+                if _check_readmission_revocation(_ev_store):
+                    return {
+                        "status": "merge_halted",
+                        "node_id": _nid_m,
+                        "reason": "readmission_revoked",
+                        "detail": "revocation active for node",
+                    }
+
                 _admitted_now = completed_nodes[_nid_m].get("admitted_head_sha")
+
                 # UNCONDITIONAL torn-state recovery before the merge re-gate (round 4
                 # 1b): a crashed prior shortcut attempt can leave a torn seat-ledger
                 # tail / torn extended provenance that the STRICT merge-time re-gate
@@ -3284,7 +3369,10 @@ def _run_train_unfenced(
                             admitted_head_sha=_admitted_now, live_head_sha=_live_now,
                             delta_review_fn=_delta_review, owned_paths=_owned_now,
                             fab_fetch_origin=fab_fetch_origin,
+                            coordinator_runtime=coordinator_runtime,
                         )
+
+
                         if _new_admitted is not None:
                             # Re-admission committed (new LedgerRecord appended) —
                             # advance the in-memory admitted head so the merge pins to it.

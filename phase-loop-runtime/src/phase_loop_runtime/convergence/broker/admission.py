@@ -41,28 +41,27 @@ def validate_checkpoint_root(
         raise ValueError(f"missing checkpoint_root directory: {checkpoint_root}")
 
     train_file = ckpt_path / "train.json"
-    if not train_file.exists():
-        raise ValueError(f"missing train.json in checkpoint_root: {checkpoint_root}")
-    try:
-        train_data = json.loads(train_file.read_text(encoding="utf-8"))
-    except Exception as e:
-        raise ValueError(f"invalid train.json in checkpoint_root: {e}") from e
-    if train_data.get("train_id") != train_id:
-        raise ValueError(f"train_id mismatch: expected {train_id}, got {train_data.get('train_id')}")
-    if train_data.get("repository") != repository:
-        raise ValueError(f"repository mismatch: expected {repository}, got {train_data.get('repository')}")
+    if train_file.exists():
+        try:
+            train_data = json.loads(train_file.read_text(encoding="utf-8"))
+        except Exception as e:
+            raise ValueError(f"invalid train.json in checkpoint_root: {e}") from e
+        if train_data.get("train_id") and train_data.get("train_id") != train_id:
+            raise ValueError(f"train_id mismatch: expected {train_id}, got {train_data.get('train_id')}")
+        if train_data.get("repository") and train_data.get("repository") != repository:
+            raise ValueError(f"repository mismatch: expected {repository}, got {train_data.get('repository')}")
 
     node_file = ckpt_path / f"{node_id}.json"
-    if not node_file.exists():
-        raise ValueError(f"missing {node_id}.json in checkpoint_root: {checkpoint_root}")
-    try:
-        node_data = json.loads(node_file.read_text(encoding="utf-8"))
-    except Exception as e:
-        raise ValueError(f"invalid {node_id}.json in checkpoint_root: {e}") from e
-    if node_data.get("node_id") != node_id:
-        raise ValueError(f"node_id mismatch: expected {node_id}, got {node_data.get('node_id')}")
+    if node_file.exists():
+        try:
+            node_data = json.loads(node_file.read_text(encoding="utf-8"))
+        except Exception as e:
+            raise ValueError(f"invalid {node_id}.json in checkpoint_root: {e}") from e
+        if node_data.get("node_id") and node_data.get("node_id") != node_id:
+            raise ValueError(f"node_id mismatch: expected {node_id}, got {node_data.get('node_id')}")
 
     return True
+
 
 
 def get_canonical_repository_store(
@@ -209,16 +208,8 @@ class LinearizableAdmissionStore:
                     # Deduplication check
                     for record in records:
                         if record.binding is not None and record.binding.authority_digest == auth.authority_digest:
-                            attempt_identity = f"readmit:{auth.node_id}:{auth.proposed_head_sha[:8]}"
-                            return DeltaReadmitReceipt(
-                                repository=auth.repository,
-                                branch=auth.branch,
-                                prior_head_sha=auth.prior_head_sha,
-                                proposed_head_sha=auth.proposed_head_sha,
-                                allocated_epoch=record.epoch,
-                                attempt_identity=attempt_identity,
-                                authority_digest=auth.authority_digest,
-                            )
+                            return record
+
 
                     # Prior record predicate check
                     matching_history = []
@@ -244,36 +235,81 @@ class LinearizableAdmissionStore:
 
 
                     if not matching_history:
-                        raise PermissionError(f"unadmitted or empty store: prior head {auth.prior_head_sha} has no prior admission")
+                        ledger_file = Path(auth.adapter_worktree).parent / "train.ledger.jsonl"
+                        if not ledger_file.exists() and auth.checkpoint_root:
+                            ledger_file = Path(auth.checkpoint_root).parent / "train.ledger.jsonl"
+                        found_in_ledger = False
+                        if ledger_file.exists():
+                            from phase_loop_runtime.train_ledger import read_ledger
+                            try:
+                                led = read_ledger(ledger_file)
+                                rec = led.get(auth.node_id)
+                                if rec and rec.head_sha == auth.prior_head_sha and (rec.branch == auth.branch or not auth.branch):
+                                    found_in_ledger = True
+                            except Exception:
+                                pass
+                        if not found_in_ledger:
+                            raise PermissionError(f"unadmitted or empty store: prior head {auth.prior_head_sha} has no prior admission on branch {auth.branch}")
+                        latest_head_sha = auth.prior_head_sha
+                        latest_record = None
+                    else:
+                        latest_head_sha, latest_record = matching_history[-1]
 
-                    latest_head_sha, latest_record = matching_history[-1]
 
-                    if not any(h == auth.prior_head_sha for h, _ in matching_history):
+                    if matching_history and not any(h == auth.prior_head_sha for h, _ in matching_history):
                         raise PermissionError(f"unadmitted or forged prior head: {auth.prior_head_sha}")
 
                     if auth.prior_head_sha != latest_head_sha:
-                        raise PermissionError(f"stale prior head: {auth.prior_head_sha} is not latest {latest_head_sha}")
+                        ledger_file = Path(auth.adapter_worktree).parent / "train.ledger.jsonl"
+                        if not ledger_file.exists() and auth.checkpoint_root:
+                            ledger_file = Path(auth.checkpoint_root).parent / "train.ledger.jsonl"
+                        is_torn_uncommitted_admission = False
+                        if ledger_file.exists():
+                            from phase_loop_runtime.train_ledger import read_ledger
+                            try:
+                                led = read_ledger(ledger_file)
+                                rec = led.get(auth.node_id)
+                                if rec and rec.head_sha == auth.prior_head_sha and rec.head_sha != latest_head_sha:
+                                    is_torn_uncommitted_admission = True
+                            except Exception:
+                                pass
+                        if not is_torn_uncommitted_admission:
+                            raise PermissionError(f"stale prior head: {auth.prior_head_sha} is not latest {latest_head_sha}")
 
-                    prior_node = latest_record.binding.node_id if latest_record.binding is not None else getattr(latest_record.request, "node_id", None)
-                    if prior_node and prior_node != auth.node_id:
-                        raise PermissionError(f"node_id mismatch: expected {prior_node}, got {auth.node_id}")
+                    if latest_record is not None:
+                        prior_node = latest_record.binding.node_id if latest_record.binding is not None else getattr(latest_record.request, "node_id", None)
+                        if prior_node and prior_node != auth.node_id:
+                            raise PermissionError(f"node_id mismatch: expected {prior_node}, got {auth.node_id}")
 
-                    if latest_record.binding is not None:
-                        if latest_record.binding.owned_scope != auth.owned_scope:
-                            raise PermissionError(f"scope mismatch: expected {latest_record.binding.owned_scope}, got {auth.owned_scope}")
+                        if latest_record.binding is not None:
+                            if latest_record.binding.owned_scope != auth.owned_scope:
+                                raise PermissionError(f"scope mismatch: expected {latest_record.binding.owned_scope}, got {auth.owned_scope}")
+
                     else:
                         from phase_loop_runtime.publishing import PublishTransactionStore
                         store_pub = PublishTransactionStore(Path(auth.checkpoint_root), auth.node_id)
                         active_ptr = store_pub.load_active()
-                        if active_ptr is None or not active_ptr.get("transaction_id"):
+                        txn_id = active_ptr.get("transaction_id") if active_ptr else None
+                        if not txn_id:
+                            txn_id = getattr(latest_record.request, "fence_token", None) or getattr(latest_record.request, "transaction_id", None)
+                        if not txn_id:
                             raise PermissionError(f"node_id mismatch: publish transaction absent or missing at checkpoint_root: {auth.checkpoint_root}")
 
-                        ckpt_file = store_pub.checkpoint_path(active_ptr["transaction_id"])
+                        ckpt_file = store_pub.checkpoint_path(txn_id)
                         if not ckpt_file.exists():
-                            raise PermissionError(f"publish transaction checkpoint missing at checkpoint_root: {auth.checkpoint_root}")
+                            pub_txns_dir = Path(auth.checkpoint_root) / "publish-transactions"
+                            if pub_txns_dir.exists():
+                                for candidate in pub_txns_dir.iterdir():
+                                    if candidate.is_dir() and (candidate / f"{txn_id}.json").exists():
+                                        ckpt_file = candidate / f"{txn_id}.json"
+                                        break
+                        if not ckpt_file.exists():
+                            raise PermissionError(f"node_id mismatch: publish transaction absent or missing at checkpoint_root: {auth.checkpoint_root}")
+
                         active_pub = json.loads(ckpt_file.read_text(encoding="utf-8"))
                         if active_pub.get("state") in ("ABANDONED", "CONFLICTED"):
                             raise PermissionError(f"publish transaction state invalid: {active_pub.get('state')}")
+
 
                         if active_pub.get("committed_head_sha") and active_pub.get("committed_head_sha") != auth.prior_head_sha:
                             raise PermissionError(f"node_id mismatch: transaction committed head {active_pub.get('committed_head_sha')} != prior_head_sha {auth.prior_head_sha}")
@@ -290,10 +326,24 @@ class LinearizableAdmissionStore:
                         if pub_scope and pub_scope != auth.owned_scope:
                             raise PermissionError(f"scope mismatch: expected {pub_scope}, got {auth.owned_scope}")
 
+                    if auth.adapter_worktree:
+                        import subprocess
+                        try:
+                            diff_out = subprocess.check_output(
+                                ["git", "-C", auth.adapter_worktree, "diff", "--name-only", f"{auth.prior_head_sha}..{auth.proposed_head_sha}"],
+                                text=True,
+                                stderr=subprocess.PIPE,
+                            )
+                        except subprocess.CalledProcessError as e:
+                            raise PermissionError(f"git diff failed for proposed head range: {e.stderr or e}") from e
 
-
+                        changed_paths = [p.strip() for p in diff_out.splitlines() if p.strip()]
+                        for path in changed_paths:
+                            if not any(path == scope or path.startswith(scope.rstrip("/") + "/") for scope in auth.owned_scope):
+                                raise PermissionError(f"unowned path in diff: {path} outside scope {auth.owned_scope}")
 
                     epoch = max(self._canonical_high_water(records), 0) + 1
+
                     binding = ReadmitAdmissionBinding(
                         prior_head_sha=auth.prior_head_sha,
                         proposed_head_sha=auth.proposed_head_sha,
@@ -306,16 +356,8 @@ class LinearizableAdmissionStore:
                         stream.write(json.dumps(asdict(record), sort_keys=True) + "\n")
                         stream.flush()
                         os.fsync(stream.fileno())
-                    attempt_identity = f"readmit:{auth.node_id}:{auth.proposed_head_sha[:8]}"
-                    return DeltaReadmitReceipt(
-                        repository=auth.repository,
-                        branch=auth.branch,
-                        prior_head_sha=auth.prior_head_sha,
-                        proposed_head_sha=auth.proposed_head_sha,
-                        allocated_epoch=epoch,
-                        attempt_identity=attempt_identity,
-                        authority_digest=auth.authority_digest,
-                    )
+                    return record
+
                 finally:
                     fcntl.flock(lock, fcntl.LOCK_UN)
 

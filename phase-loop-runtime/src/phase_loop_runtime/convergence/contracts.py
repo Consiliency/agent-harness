@@ -39,8 +39,8 @@ class AdmissionRequest:
             raise ValueError("admission requests require every fencing field")
 
 
-
 @dataclass(frozen=True)
+
 class PreAdmissionEnvelope:
     """The epoch-free authority a FRESH ``publish_committed_branch`` must carry.
 
@@ -290,6 +290,11 @@ class DeltaReadmitReceipt:
     attempt_identity: str
     authority_digest: str
 
+    @property
+    def epoch(self) -> int:
+        return self.allocated_epoch
+
+
 
 @dataclass(frozen=True)
 class ReadmitAdmissionBinding:
@@ -300,4 +305,3 @@ class ReadmitAdmissionBinding:
     node_id: str
     owned_scope: Tuple[str, ...]
     authority_digest: str
-

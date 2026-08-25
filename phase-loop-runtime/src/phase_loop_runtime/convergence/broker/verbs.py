@@ -227,23 +227,9 @@ class BrokerService:
         if rec is None:
             return None
 
-        import subprocess
-        try:
-            diff_out = subprocess.check_output(
-                ["git", "-C", auth.adapter_worktree, "diff", "--name-only", f"{auth.prior_head_sha}..{auth.proposed_head_sha}"],
-                text=True,
-                stderr=subprocess.PIPE,
-            )
-        except subprocess.CalledProcessError as e:
-            raise PermissionError(f"git diff failed for proposed head range: {e.stderr or e}") from e
-
-        changed_paths = [p.strip() for p in diff_out.splitlines() if p.strip()]
-        for path in changed_paths:
-            if not any(path == scope or path.startswith(scope.rstrip("/") + "/") for scope in auth.owned_scope):
-                raise PermissionError(f"unowned path in diff: {path} outside scope {auth.owned_scope}")
-
         if isinstance(rec, DeltaReadmitReceipt):
             return rec
+
         attempt_id = f"readmit:{auth.node_id}:{auth.proposed_head_sha[:8]}"
         return DeltaReadmitReceipt(
             repository=auth.repository,
@@ -254,6 +240,8 @@ class BrokerService:
             attempt_identity=attempt_id,
             authority_digest=auth.authority_digest,
         )
+
+
 
 
 
