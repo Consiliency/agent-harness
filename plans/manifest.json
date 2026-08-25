@@ -5546,10 +5546,38 @@
             "run_id": "20260825T151729Z-01-leglife-plan"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-25T16:35:34Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "plan_repair_record_id": "v10-LEGLIFE.plan-review-repair.v1",
+            "plan_sha256": "642f30ffae912a0368854be9fb5cad123ab50e4d87e8bd4f2ebe4a542bc945ea",
+            "predecessor_plan_sha256": "984b31a03f4ab365bf3c99cc21664c3d5f83c20b40015f36af51c216989e8649",
+            "repair_scope": [
+              "disjoint_lane_nodeid_partitions_and_markers",
+              "sl1_to_sl2_material_attestation_dependency",
+              "default_green_complete_machine_readable_verification",
+              "upstream_authority_and_provenance_reconciliation",
+              "supported_ablation"
+            ],
+            "review_status": "binding_board_and_president_blockers_repaired_requires_fresh_exact_digest_review",
+            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+            "source": "Consiliency/agent-harness#375"
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
       "phase_alias": "LEGLIFE",
+      "plan_authority_history": [
+        {
+          "plan_sha256": "642f30ffae912a0368854be9fb5cad123ab50e4d87e8bd4f2ebe4a542bc945ea",
+          "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#375"
+        }
+      ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/7ae6c600/codex-v10-leglife-plan/20260825T151729Z-01-leglife-plan.md",
       "roadmap_ref": {
         "file": "specs/phase-plans-v10.md",
@@ -5561,7 +5589,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-25T15:17:29Z"
+      "updated_at": "2026-08-25T16:35:34Z"
     }
   ],
   "schema_version": 1
