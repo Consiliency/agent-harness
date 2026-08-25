@@ -2460,6 +2460,31 @@
             "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-25T22:12:46Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "author_model": "gpt-5.6-sol",
+            "author_vendor": "openai",
+            "phase_alias": "INTEG",
+            "plan_sha256": "0815de55d1e963501f5fa068711d208b99a0fd9f1f475a9c5df666b4ec33ecd3",
+            "predecessor_plan_sha256": "16431bf3719df2cb3a170b55198e2308d8d5b6e7470557be893b6524f56c2e83",
+            "president_forcing_decision": "REPAIR",
+            "president_ruling_sha256": "9ae01a354862fc3de9b34d6aa069b071552c8ff6a0e37ae99ac5ac07d7a8d414",
+            "repair_issue": "agent-harness#679",
+            "repaired_blocking_defects": [
+              "verification_intake_future_paths_removed",
+              "legacy_fault_binding_moved_to_post_run_coordinator",
+              "redundant_focused_regression_removed"
+            ],
+            "review_bundle": "/mnt/workspace/review-bundles/integ-plan-427d2d39",
+            "review_status": "fresh_exact_digest_full_board_required",
+            "reviewed_candidate_commit": "427d2d39c05427efced6fa3ffb51d24954c41ad2",
+            "reviewed_candidate_parent": "c5ad8af1406c1f3aed5cc41f6864364790390918",
+            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0"
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -2475,7 +2500,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-25T20:58:02Z"
+      "updated_at": "2026-08-25T22:12:46Z"
     },
     {
       "acceptance_criteria_count": null,
