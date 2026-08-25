@@ -613,6 +613,11 @@ def main(argv: List[str]) -> int:
     args = parser.parse_args(argv[1:])
 
     if args.report is not None:
+        if args.report < 0:
+            # `git log -n -1` is not "one"; it is unlimited. A negative N would
+            # silently replay all of history rather than fail.
+            print("roadmap-ownership: --report N must be >= 0")
+            return 2
         try:
             roadmap_rel = str(
                 resolve_roadmap(args.repo).relative_to(Path(args.repo).resolve())

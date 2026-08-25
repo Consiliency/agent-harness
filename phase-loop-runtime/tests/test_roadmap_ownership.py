@@ -717,6 +717,69 @@ class TestDominantIsNotAlwaysTheConstraint(unittest.TestCase):
         self.assertNotIn("NECESSARY but NOT SUFFICIENT", out)
 
 
+class TestShallowCloneBoundary(unittest.TestCase):
+    """The shallow branch shipped with no test reaching it (Fable seat).
+
+    A remedy exercised only by a manual probe is unpinned: the next edit can
+    silently revert it. Fixture recipe from that seat, which it proved works.
+    """
+
+    def test_a_shallow_boundary_is_labelled_as_one_not_as_a_root_commit(self):
+        """Mutation that must kill this: make `_is_shallow` return False, which
+        is the pre-fix behaviour -- the boundary then reads "root commit".
+        """
+        with TemporaryDirectory() as src, TemporaryDirectory() as dstdir:
+            repo = _repo(src)
+            run = lambda *a: subprocess.run(["git", "-C", src, *a], check=True,
+                                            capture_output=True)
+            run("init", "-q", "-b", "main")
+            run("config", "user.email", "t@t")
+            run("config", "user.name", "t")
+            run("add", "-A")
+            run("commit", "-qm", "seed")
+            (repo / "src").mkdir(exist_ok=True)
+            for i, msg in enumerate(("second", "third", "fourth")):
+                (repo / "src" / "alpha.py").write_text(f"x = {i}\n")
+                run("add", "-A")
+                run("commit", "-qm", msg)
+            dst = Path(dstdir) / "clone"
+            # Depth must NOT reach the root: git un-shallows a clone whose
+            # requested depth covers all history, and the branch would not fire.
+            subprocess.run(["git", "clone", "-q", "--depth", "2",
+                            f"file://{src}", str(dst)], check=True,
+                           capture_output=True)
+            self.assertTrue(ro._is_shallow(dst), "fixture must be a shallow clone")
+            rows = ro.replay(dst, 5, "specs/phase-plans-v10.md", "HEAD")
+            boundary = [r for r in rows if r.skipped_reason]
+            self.assertEqual(len(boundary), 1)
+            self.assertIn("shallow-clone boundary", boundary[0].skipped_reason)
+            self.assertNotIn("root commit", boundary[0].skipped_reason)
+
+
+class TestNegativeReportIsRejected(unittest.TestCase):
+    def test_negative_N_does_not_silently_replay_all_history(self):
+        """`git log -n -1` is unlimited, not one.
+
+        Mutation that must kill this: drop the guard. The run then succeeds and
+        replays every commit, so the exit code flips to 0.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = _repo(tmp)
+            run = lambda *a: subprocess.run(["git", "-C", tmp, *a], check=True,
+                                            capture_output=True)
+            run("init", "-q", "-b", "main")
+            run("config", "user.email", "t@t")
+            run("config", "user.name", "t")
+            run("add", "-A")
+            run("commit", "-qm", "seed")
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = ro.main(["prog", "--repo", str(repo), "--report", "-1",
+                              "--base", "main"])
+            self.assertEqual(rc, 2)
+            self.assertIn("must be >= 0", buf.getvalue())
+
+
 class TestPartialDrift(unittest.TestCase):
     def test_one_phase_losing_key_files_raises(self):
         """The third mutation, found by review: PARTIAL drift passed silently.
