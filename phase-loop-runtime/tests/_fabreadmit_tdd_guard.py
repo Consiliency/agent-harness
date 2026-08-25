@@ -239,15 +239,13 @@ def test_fabreadmit_guard_inventory_and_digests():
 
     # AST verification: each frozen nodeid resolves to exactly one test function
     # in its named file and carries the capability skip guard.
-    repo_root = Path(__file__).resolve()
-    while repo_root.parent != repo_root and not (
-        repo_root / "plans" / "phase-plan-v10-FABREADMIT.md"
-    ).is_file():
-        repo_root = repo_root.parent
+    runtime_root = Path(__file__).resolve().parents[1]
 
     for nodeid in FABREADMIT_RED_NODEIDS:
         filepath, func_name = nodeid.split("::")
-        abs_file = repo_root / filepath
+        filepath_parts = Path(filepath).parts
+        assert filepath_parts[0] == "phase-loop-runtime", f"Unexpected test path: {filepath}"
+        abs_file = runtime_root.joinpath(*filepath_parts[1:])
         assert abs_file.is_file(), f"Test file missing: {filepath}"
         tree = ast.parse(abs_file.read_text(encoding="utf-8"), filename=str(abs_file))
         matching_funcs = [
