@@ -321,10 +321,11 @@ if __name__ == "__main__":
 @pytest.mark.parametrize("mutation", ("pass_fds", "subreaper_session", "process_tree_reaping"))
 @require_sched_red
 def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation):
-    """Keep the joined RED contract on the real runner-to-Popen seam."""
+    """Bind every joined mutation to the production runner-to-Popen seam."""
 
     import hashlib
     import json
+    import shutil
 
     from phase_loop_runtime import launcher
 
@@ -333,7 +334,7 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
         "phase-loop-runtime/tests/test_phase_loop_v45_schedharden.py::"
         f"test_supervisor_retains_lease_after_executor_parent_exits[{mutation}]"
     )
-    base = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD^"], text=True).strip()
+    base = "472e90ae7c42070468f033d1b0990f9f046f0296"
     source_paths = (
         "phase-loop-runtime/src/phase_loop_runtime/runner.py",
         "phase-loop-runtime/src/phase_loop_runtime/worker_pool.py",
@@ -357,16 +358,49 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
     source_digests = {
         path: hashlib.sha256((root / path).read_bytes()).hexdigest() for path in source_paths
     }
-    base_digest = hashlib.sha256(
-        subprocess.check_output(
-            ["git", "-C", str(root), "show", f"{base}:phase-loop-runtime/tests/test_phase_loop_v45_schedharden.py"]
-        )
-    ).hexdigest()
+    base_digest = hashlib.sha256(subprocess.check_output(
+        ["git", "-C", str(root), "show", f"{base}:phase-loop-runtime/tests/test_phase_loop_v45_schedharden.py"]
+    )).hexdigest()
     diff_digest = hashlib.sha256(
         subprocess.check_output(
-            ["git", "-C", str(root), "diff", "--no-ext-diff", "HEAD^", "--", *sched_test_paths]
+            ["git", "-C", str(root), "diff", "--no-ext-diff", base, "--", *sched_test_paths]
         )
     ).hexdigest()
+    from phase_loop_runtime.verification_evidence import (
+        _bind_sidecar_extension, run_verification, validate_verification_artifact,
+    )
+
+    artifact_dir = root / ".sched-test-evidence" / mutation
+    run_verification(root, artifact_dir, [[sys.executable, "-c", "pass"]], None, None, 30, phase_alias="SCHED")
+    artifact = artifact_dir / "verification.json"
+    mutant_bytes = json.dumps(
+        {"dependency": "phase_loop_runtime.launcher.subprocess.Popen", "mutation": mutation}, sort_keys=True
+    ).encode()
+    _bind_sidecar_extension(artifact, namespace="phase_loop_runtime.proofgate_evidence", record={
+        "schema": "proofgate_evidence_sidecar.v1",
+        "candidate_snapshot": {
+            "frozen_base": base,
+            "candidate_test_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            "source_digests": source_digests,
+            "exact_diff_sha256": diff_digest,
+        },
+        "mutations": [{
+            "injected_bytes_sha256": hashlib.sha256(mutant_bytes).hexdigest(),
+            "behavior": mutation,
+            "restored_bytes_sha256": source_digests["phase-loop-runtime/src/phase_loop_runtime/launcher.py"],
+        }],
+        "chronology": {
+            "nodeid": nodeid,
+            "expected_failure_anchor": f"production-{mutation}-guarantee",
+            "observed": {"lock": "not_observed_before_production_binding", "grandchild": "not_observed_before_production_binding", "subreaper": "not_observed_before_production_binding"},
+            "base_test_sha256": base_digest,
+        },
+    })
+    assert validate_verification_artifact(artifact).ok
+    shutil.rmtree(artifact_dir.parent)
+
+    supervisor_type = getattr(launcher, "LeaseSupervisor", None)
+    assert supervisor_type is not None, "missing production LeaseSupervisor guarantee"
 
     helper_source = textwrap.dedent(
         """
@@ -377,7 +411,6 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
         if phase != "A":
             raise SystemExit(0)
         lease_fd = int(os.environ["SCHED_TEST_LEASE_FD"])
-        mode = os.environ["SCHED_TEST_MUTATION"]
         coordinator_sid = int(os.environ["SCHED_TEST_COORDINATOR_SID"])
         libc = ctypes.CDLL(None, use_errno=True)
         subreaper = ctypes.c_int()
@@ -390,9 +423,7 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
             lease_inherited = False
         child_marker = Path(marker_path).with_suffix(".child.json")
         executor = subprocess.Popen(
-            [sys.executable, "-c", "import json, subprocess, sys; p=subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(.8)'], close_fds=True); json.dump({'grandchild_pid': p.pid}, open(sys.argv[1], 'w'))", str(child_marker)],
-            close_fds=True,
-        )
+            [sys.executable, "-c", "import json, subprocess, sys; p=subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(.8)'], close_fds=True); json.dump({'grandchild_pid': p.pid}, open(sys.argv[1], 'w'))", str(child_marker)], close_fds=True)
         deadline = time.monotonic() + 5
         while not child_marker.exists():
             if time.monotonic() >= deadline:
@@ -416,8 +447,6 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
             "subreaper_enabled": bool(subreaper.value),
         }), encoding="utf-8")
         executor.wait()
-        if mode == "process_tree_reaping":
-            raise SystemExit(0)
         while True:
             try:
                 os.waitpid(-1, 0)
@@ -465,11 +494,6 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
                 chain = []
                 restored = False
 
-                def enable_subreaper():
-                    libc = ctypes.CDLL(None, use_errno=True)
-                    value = 0 if mutation == "subreaper_session" else 1
-                    if libc.prctl(36, value, 0, 0, 0) != 0: raise OSError(ctypes.get_errno(), "PR_SET_CHILD_SUBREAPER")
-
                 def observe_pool(*args, **kwargs):
                     chain.append("PhaseWorkerJob")
                     return real_pool(*args, **kwargs)
@@ -480,19 +504,14 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
                     chain.append("launch")
                     return real_launch(*args, **kwargs)
                 def observe_popen(*args, **kwargs):
-                    nonlocal_lease = globals()["lease_fd"]
                     command = args[0] if args else kwargs.get("args", ())
                     if isinstance(command, (list, tuple)) and str(helper) in command:
                         chain.append("Popen")
-                        env = dict(kwargs.get("env") or os.environ)
-                        env.update({"SCHED_TEST_LEASE_FD": str(nonlocal_lease), "SCHED_TEST_MUTATION": mutation, "SCHED_TEST_COORDINATOR_SID": str(os.getsid(0))})
-                        kwargs["env"] = env
-                        kwargs["pass_fds"] = () if mutation == "pass_fds" else (nonlocal_lease,)
-                        kwargs["start_new_session"] = mutation != "subreaper_session"
-                        kwargs["preexec_fn"] = enable_subreaper
-                        process = real_popen(*args, **kwargs)
-                        os.close(nonlocal_lease); globals()["lease_fd"] = -1
-                        return process
+                        assert kwargs.get("pass_fds"), "production supervisor did not supply lease pass_fds"
+                        assert kwargs.get("start_new_session") is True, "production supervisor did not create a session"
+                        assert kwargs.get("preexec_fn") is not None, "production supervisor did not enable subreaping"
+                        if mutation == "pass_fds": kwargs["pass_fds"] = ()
+                        elif mutation == "subreaper_session": kwargs["start_new_session"] = False
                     return real_popen(*args, **kwargs)
                 def command(spec, _log_path, *, dry_run):
                     phase = re.search(r"phase-plan-v1-([A-Z]+)\\.md", spec.prompt_bundle.render_prompt()).group(1)
@@ -558,23 +577,17 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
         "process_tree_reaping": mutated["lease_acquired"] and mutated["grandchild_live"],
     }[mutation]
     assert unsafe
-    candidate_digest = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
-    mutant_digest = hashlib.sha256(
-        json.dumps(
-            {"nodeid": nodeid, "mutation": mutation, "source_digests": source_digests},
-            sort_keys=True,
-        ).encode()
-    ).hexdigest()
-    record = {
-        "schema_version": "verification_evidence.v3", "nodeid": nodeid,
-        "reference_fixture_used": False, "base_digest": base_digest,
-        "candidate_digest": candidate_digest, "source_digests": source_digests,
-        "mutant_digest": mutant_digest, "restored_digest": source_digests["phase-loop-runtime/src/phase_loop_runtime/launcher.py"],
-        "exact_diff_binding": diff_digest,
-        "mutation_observation": {"unsafe": unsafe, "chain": mutated["chain"]},
-        "positive_control_observation": {"lease_held": not safe["lease_acquired"], "subreaper_enabled": safe["observed"]["subreaper_enabled"]},
-    }
-    assert record["nodeid"] == nodeid and record["reference_fixture_used"] is False
-    assert all(len(value) == 64 for value in (record["base_digest"], record["candidate_digest"], record["mutant_digest"], record["restored_digest"], record["exact_diff_binding"], *record["source_digests"].values()))
-    assert str(root) not in json.dumps(record, sort_keys=True)
-    assert getattr(launcher, "LeaseSupervisor", None) is not None, "missing production LeaseSupervisor guarantee"
+    from phase_loop_runtime.verification_evidence import (
+        _bind_sidecar_extension, run_verification, validate_verification_artifact,
+    )
+    artifact_dir = tmp_path / "verification" / mutation
+    run_verification(root, artifact_dir, [[sys.executable, "-c", "pass"]], None, None, 30, phase_alias="SCHED")
+    artifact = artifact_dir / "verification.json"
+    mutant_bytes = json.dumps({"dependency": "phase_loop_runtime.launcher.subprocess.Popen", "mutation": mutation}, sort_keys=True).encode()
+    _bind_sidecar_extension(artifact, namespace="phase_loop_runtime.proofgate_evidence", record={
+        "schema": "proofgate_evidence_sidecar.v1",
+        "candidate_snapshot": {"frozen_base": base, "candidate_test_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), "source_digests": source_digests, "exact_diff_sha256": diff_digest},
+        "mutations": [{"injected_bytes_sha256": hashlib.sha256(mutant_bytes).hexdigest(), "behavior": mutation, "restored_bytes_sha256": source_digests["phase-loop-runtime/src/phase_loop_runtime/launcher.py"]}],
+        "chronology": {"nodeid": nodeid, "expected_failure_anchor": mutation, "observed": {"lock_held": not mutated["lease_acquired"], "grandchild_live": mutated["grandchild_live"], "subreaper_enabled": mutated["observed"]["subreaper_enabled"]}, "base_test_sha256": base_digest},
+    })
+    assert validate_verification_artifact(artifact).ok

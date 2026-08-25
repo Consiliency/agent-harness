@@ -1781,9 +1781,15 @@ def test_launcher_accepts_explicit_nonserialized_lease_authority():
             "lease_fd, marker_path = int(sys.argv[1]), sys.argv[2]\n"
             "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(1)'], "
             "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True, "
-            "pass_fds=(lease_fd,))\n"
+            "pass_fds=())\n"
+            "lease = os.fstat(lease_fd)\n"
+            "grandchild_lease_fds = []\n"
+            "for entry in os.scandir(f'/proc/{child.pid}/fd'):\n"
+            "    try: candidate = os.stat(entry.path)\n"
+            "    except OSError: continue\n"
+            "    if (candidate.st_dev, candidate.st_ino) == (lease.st_dev, lease.st_ino): grandchild_lease_fds.append(entry.name)\n"
             "json.dump({'executor_pid': os.getpid(), 'supervisor_pid': os.getppid(), "
-            "'grandchild_pid': child.pid}, open(marker_path, 'w'))\n"
+            "'grandchild_pid': child.pid, 'grandchild_lease_fds': grandchild_lease_fds}, open(marker_path, 'w'))\n"
             "os.close(lease_fd)\n"
             "time.sleep(0.25)\n"
         )
@@ -1819,6 +1825,7 @@ def test_launcher_accepts_explicit_nonserialized_lease_authority():
             executor_pid = custody["executor_pid"]
             supervisor_pid = custody["supervisor_pid"]
             grandchild_pid = custody["grandchild_pid"]
+            assert custody["grandchild_lease_fds"] == [], "grandchild inherited the lease descriptor"
             assert executor_pid != os.getpid()
             assert supervisor_pid != os.getpid(), "launcher did not create an independent supervisor"
             assert os.kill(executor_pid, 0) is None
