@@ -30,6 +30,8 @@ import argparse
 import fnmatch
 import json
 import re
+import shutil
+import tempfile
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -37,10 +39,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
 from .roadmap_lint import (
-    ROADMAP_STATUS_REGISTRY_REL,
     RoadmapStatusError,
-    parse_roadmap_banner_status,
-    parse_roadmap_status_manifest,
+    validate_roadmap_status_coherence,
 )
 from .roadmap_lint import Phase, _extract_phases, declared_active_roadmap
 
@@ -151,14 +151,6 @@ def _split_token(raw: str) -> "tuple[str, str]":
     path = found.group(1).strip()
     rest = raw[found.end():].strip()
     return path, rest
-
-
-# Mirrors `declared_active_roadmap`'s glob EXACTLY. A narrower pattern
-# (e.g. digits-only) sees a different candidate set than the canonical
-# selector, and can resolve a singleton where the real selector would
-# refuse -- this repo's history carries `phase-plans-v1-task-message-
-# sourcebroker.md`, which digits-only silently drops.
-_ROADMAP_CANDIDATE_GLOB = "specs/phase-plans-v*.md"
 
 
 def ownership_map(roadmap_text: str) -> Dict[str, List[Phase]]:
@@ -417,104 +409,72 @@ def _landed_commits(repo: Path, limit: int, rev: str = "HEAD") -> List["tuple[st
     return rows
 
 
-def _roadmap_rel_at(repo: Path, sha: str, fallback_rel: str) -> "tuple[Optional[str], Optional[str]]":
-    """Which roadmap was GOVERNING at ``sha``.
+def _materialize_specs(repo: Path, sha: str, scratch: Path) -> None:
+    """Reproduce ``specs/`` as it existed at ``sha`` inside ``scratch``.
 
-    Mirrors :func:`declared_active_roadmap` -- registry first, then the
-    banner-declared singleton -- but reads every input as it existed at ``sha``
-    instead of from the working tree, and REUSES that module's parsers rather
-    than re-implementing them. A private JSON reader here would drift from the
-    canonical schema rules and quietly accept registries the repo rejects.
+    The canonical validators are fd-bound to a real git tree -- they list
+    tracked roadmaps through git -- so historical bytes have to be given a tree
+    to live in. One scratch repo is reused across the whole replay and its index
+    refreshed per commit; a checkout per commit would cost far more.
+    """
 
-    Falling back to HEAD's roadmap is not an acceptable default: the pre-registry
-    era of this repo carries nine ``phase-plans-v*.md`` files, of which exactly
-    one declares itself active, so those commits ARE resolvable and reporting
-    them as "roadmap absent" both loses them from the denominator and states
-    something false about the history.
+    specs = scratch / "specs"
+    if specs.exists():
+        shutil.rmtree(specs)
+    specs.mkdir(parents=True)
+    names = subprocess.run(
+        ["git", "-C", str(repo), "ls-tree", "--name-only", sha, "specs/"],
+        capture_output=True, text=True, check=False,
+    )
+    for rel in names.stdout.split():
+        blob = subprocess.run(
+            ["git", "-C", str(repo), "show", f"{sha}:{rel}"],
+            capture_output=True, check=False,
+        )
+        if blob.returncode == 0:
+            dest = scratch / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(blob.stdout)
+    subprocess.run(["git", "-C", str(scratch), "add", "-A"],
+                   capture_output=True, check=False)
+
+
+def _roadmap_rel_at(repo: Path, sha: str, scratch: Path) -> "tuple[Optional[str], Optional[str]]":
+    """Which roadmap was GOVERNING at ``sha``, decided by the CANONICAL readers.
+
+    Earlier versions of this resolver re-implemented pieces of the authority
+    rules -- first a private JSON reader, then a partial mirror that validated
+    only the selected roadmap's banner. Each partial mirror was wrong in a way
+    the canonical reader was not: `parse_roadmap_status_manifest` checks schema
+    but explicitly NOT banner coherence or tracked-path coverage, so a registry
+    the repository itself rejects was still scored.
+
+    So nothing is re-implemented here. The commit's ``specs/`` tree is
+    materialized and handed to `validate_roadmap_status_coherence` (registry
+    era) and `declared_active_roadmap` (pre-registry era) -- the same functions
+    the repo uses on the working tree. Whatever they reject is disclosed as
+    unscorable rather than scored under authority the repo would refuse.
 
     Returns ``(roadmap_rel, unscorable_reason)`` -- exactly one is non-None.
     """
 
-    def _blob(path: str) -> Optional[str]:
-        out = subprocess.run(
-            ["git", "-C", str(repo), "show", f"{sha}:{path}"],
-            capture_output=True, text=True, check=False,
-        )
-        return out.stdout if out.returncode == 0 else None
-
-    registry = _blob(ROADMAP_STATUS_REGISTRY_REL)
-    if registry is not None:
-        try:
-            manifest = parse_roadmap_status_manifest(registry)
-        except (RoadmapStatusError, KeyError, ValueError) as exc:
-            # PRESENT but not canonical. Falling back would score the commit
-            # against a roadmap its own registry did not name.
-            return None, f"roadmap registry invalid at commit: {type(exc).__name__}"
-        selected = manifest["selected_roadmap"]
-        # Schema-valid is not the same as coherent: a manifest can parse while
-        # its `selected_roadmap` contradicts its own status records. Scoring
-        # under a selection the registry itself does not mark active would be a
-        # quiet wrong answer, which is the one outcome this tool cannot afford.
-        active = [e["path"] for e in manifest["roadmaps"] if e["status"] == "active"]
-        if len(active) != 1:
-            return None, (
-                f"roadmap registry at commit marks {len(active)} roadmaps active"
-            )
-        # No `active[0] != selected` guard here: verified unreachable, because
-        # `parse_roadmap_status_manifest` already rejects a manifest whose
-        # selection is not the active record. An untestable guard would only
-        # assert protection it never provides.
-        #
-        # The manifest parser deliberately does NOT check banner coherence --
-        # `read_roadmap_status` is the authority reader and does both legs. A
-        # schema-valid registry whose selected roadmap's own banner says
-        # `delivered` (or carries no banner at all) is not authority, and
-        # scoring under it would be exactly the fail-open this resolver exists
-        # to close.
-        selected_text = _blob(selected)
-        if selected_text is None:
-            return None, "roadmap registry at commit selects a missing roadmap"
-        try:
-            if parse_roadmap_banner_status(selected_text, selected) != "active":
-                return None, (
-                    "roadmap registry at commit selects a roadmap whose own "
-                    "banner does not declare it active"
-                )
-        except RoadmapStatusError as exc:
-            return None, f"selected roadmap banner unreadable at commit: {type(exc).__name__}"
-        return selected, None
-
-    # Pre-registry era: resolve the way the repo did then.
-    listing = subprocess.run(
-        ["git", "-C", str(repo), "ls-tree", "--name-only", sha, "specs/"],
-        capture_output=True, text=True, check=False,
-    )
-    if listing.returncode != 0:
-        return fallback_rel, None
-    candidates = sorted(
-        p for p in listing.stdout.splitlines()
-        if fnmatch.fnmatch(p.strip(), _ROADMAP_CANDIDATE_GLOB)
-    )
-    if not candidates:
-        return fallback_rel, None
-    if len(candidates) == 1:
-        return candidates[0], None
-    active = []
-    for rel in candidates:
-        text = _blob(rel)
-        if text is None:
-            continue
-        try:
-            if parse_roadmap_banner_status(text, rel) == "active":
-                active.append(rel)
-        except RoadmapStatusError:
-            continue
-    if len(active) == 1:
-        return active[0], None
-    return None, (
-        f"cannot determine the sole active roadmap at commit "
-        f"({len(active)} of {len(candidates)} declare active)"
-    )
+    _materialize_specs(repo, sha, scratch)
+    try:
+        status = validate_roadmap_status_coherence(scratch, required=False)
+    except RoadmapStatusError as exc:
+        return None, f"roadmap authority incoherent at commit: {type(exc).__name__}"
+    if status is not None:
+        return status["selected_roadmap"], None
+    # No registry: the pre-registry era, where authority was the banner-declared
+    # singleton. `declared_active_roadmap` is that rule, glob included.
+    try:
+        resolved = declared_active_roadmap(scratch)
+    except RoadmapStatusError as exc:
+        return None, f"no active roadmap declared at commit: {type(exc).__name__}"
+    try:
+        return resolved.relative_to(scratch.resolve()).as_posix(), None
+    except ValueError:
+        return None, "roadmap resolved outside the commit tree"
 
 
 def _is_shallow(repo: Path) -> bool:
@@ -554,8 +514,18 @@ def replay(repo: Path, limit: int, roadmap_rel: str, rev: str = "HEAD") -> List[
     """
 
     rows: List[ReplayRow] = []
+    with tempfile.TemporaryDirectory(prefix="roadmap-replay-") as _scratch:
+        scratch = Path(_scratch)
+        subprocess.run(["git", "-C", str(scratch), "init", "-q", "-b", "replay"],
+                       capture_output=True, check=False)
+        rows = _replay_rows(repo, limit, rev, scratch)
+    return rows
+
+
+def _replay_rows(repo: Path, limit: int, rev: str, scratch: Path) -> List[ReplayRow]:
+    rows: List[ReplayRow] = []
     for sha, subject in _landed_commits(repo, limit, rev):
-        rel_at_sha, registry_reason = _roadmap_rel_at(repo, sha, roadmap_rel)
+        rel_at_sha, registry_reason = _roadmap_rel_at(repo, sha, scratch)
         if registry_reason:
             rows.append(ReplayRow(sha, subject, 0, 0, (), registry_reason))
             continue

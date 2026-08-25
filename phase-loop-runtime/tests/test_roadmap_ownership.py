@@ -706,7 +706,7 @@ class TestRegistryIncoherenceIsDisclosed(unittest.TestCase):
             ))
             rows = ro.replay(repo, 5, "specs/phase-plans-v10.md", "main")
             row = [r for r in rows if r.subject == "the change"][0]
-            self.assertIn("marks 2 roadmaps active", row.skipped_reason)
+            self.assertIn("authority incoherent", row.skipped_reason)
             self.assertEqual(row.notable, 0)
 
     def test_unreadable_registry_is_unscorable_not_silently_scored(self):
@@ -714,7 +714,7 @@ class TestRegistryIncoherenceIsDisclosed(unittest.TestCase):
             repo = self._repo_with_registry(tmp, "{not json")
             rows = ro.replay(repo, 5, "specs/phase-plans-v10.md", "main")
             row = [r for r in rows if r.subject == "the change"][0]
-            self.assertIn("invalid at commit", row.skipped_reason)
+            self.assertIn("authority incoherent", row.skipped_reason)
 
     def test_an_ABSENT_registry_still_falls_back_and_scores(self):
         """The fallback must survive: the registry-less fixtures across this
@@ -814,7 +814,7 @@ class TestPreRegistryEraResolution(unittest.TestCase):
                                    ("phase-plans-v9.md", None)])
             rows = ro.replay(repo, 5, "specs/phase-plans-v10.md", "main")
             row = [r for r in rows if r.subject == "the change"][0]
-            self.assertIn("sole active roadmap", row.skipped_reason)
+            self.assertIn("no active roadmap declared", row.skipped_reason)
             self.assertNotIn("absent", row.skipped_reason)
 
     def test_a_registry_selecting_a_roadmap_it_does_not_mark_active_is_rejected(self):
@@ -851,7 +851,7 @@ class TestPreRegistryEraResolution(unittest.TestCase):
             run("commit", "-qm", "the change")
             rows = ro.replay(repo, 5, "specs/phase-plans-v10.md", "main")
             row = [r for r in rows if r.subject == "the change"][0]
-            self.assertIn("registry invalid at commit", row.skipped_reason)
+            self.assertIn("authority incoherent", row.skipped_reason)
             self.assertEqual(row.notable, 0)
 
 
@@ -897,7 +897,7 @@ class TestRegistryIsNotAuthorityByItself(unittest.TestCase):
         """
         with TemporaryDirectory() as tmp:
             row = self._row(self._repo(tmp, ROADMAP))
-            self.assertIn("banner", row.skipped_reason)
+            self.assertIn("authority incoherent", row.skipped_reason)
             self.assertEqual(row.notable, 0)
 
     def test_a_selected_roadmap_whose_banner_says_DELIVERED_is_not_scored(self):
@@ -906,7 +906,7 @@ class TestRegistryIsNotAuthorityByItself(unittest.TestCase):
                 "# Roadmap",
                 "# Roadmap\n\n> # DELIVERED — CLOSED (assessed 2026-01-02)", 1)
             row = self._row(self._repo(tmp, body))
-            self.assertIn("does not declare it active", row.skipped_reason)
+            self.assertIn("authority incoherent", row.skipped_reason)
 
     def test_a_coherent_registry_plus_active_banner_DOES_score(self):
         """The positive case must stay reachable, or the checks above would be
@@ -946,7 +946,7 @@ class TestCandidateSetMirrorsCanonicalGlob(unittest.TestCase):
             run("commit", "-qm", "the change")
             rows = ro.replay(repo, 5, "specs/phase-plans-v10.md", "main")
             row = [r for r in rows if r.subject == "the change"][0]
-            self.assertIn("of 2 declare active", row.skipped_reason)
+            self.assertIn("no active roadmap declared", row.skipped_reason)
 
 
 class TestShallowCloneBoundary(unittest.TestCase):
