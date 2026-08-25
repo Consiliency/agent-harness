@@ -26,8 +26,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   ("0 of 9 declare active") instead of the false "roadmap absent". A registry that is
   present but not coherent is disclosed, never scored under a roadmap it does not name.
   Authority is decided by the repo's own readers — `validate_roadmap_status_coherence`
-  and `declared_active_roadmap`, applied to the commit's materialized `specs/` tree —
-  rather than by any private re-implementation of the rules here.
+  and `declared_active_roadmap` — applied to a real detached checkout of each commit,
+  rather than by any private re-implementation of the rules or any hand-built index.
+  Resolution fails closed: a commit that cannot be checked out is disclosed, never scored.
+- History is judged by what it declared, not by today's rules. The versioned LEGIBLE
+  marker predates the roadmap registry (introduced 2026-08-03), so requiring a registry
+  wherever the marker appears would eject a whole legitimate era — measured at 19 commits
+  in a 150-window, a 13% denominator loss on a false basis.
 - Commits whose roadmap cannot be read are reported with a reason and excluded from the
   rate, never dropped silently: a shrinking denominator would flatter the one number this
   exists to produce honestly. A report that scores nothing exits non-zero rather than

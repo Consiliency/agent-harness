@@ -949,6 +949,66 @@ class TestCandidateSetMirrorsCanonicalGlob(unittest.TestCase):
             self.assertIn("no active roadmap declared", row.skipped_reason)
 
 
+class TestNoAnachronisticAuthority(unittest.TestCase):
+    """History is judged by what it declared, not by today's rules.
+
+    The versioned LEGIBLE marker predates the roadmap registry in this repo, so
+    demanding a registry wherever the marker exists ejects a whole legitimate
+    era. Measured: 19 such commits in a 150-window.
+    """
+
+    def test_marker_without_registry_is_SCORED_via_the_banner_of_its_era(self):
+        """Mutation that must kill this: `required=True`, which raises
+        MalformedRegistryError("required roadmap-status registry is absent") and
+        turns a scored row into an unscorable one.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "specs").mkdir(parents=True, exist_ok=True)
+            (repo / "plans").mkdir(parents=True, exist_ok=True)
+            # The marker exists; the registry does not -- the real historical era.
+            (repo / "plans" / "phase-plan-v10-LEGIBLE.md").write_text("x\n")
+            (repo / "specs" / "phase-plans-v9.md").write_text(ROADMAP_ACTIVE)
+            run = lambda *a: subprocess.run(["git", "-C", tmp, *a], check=True,
+                                            capture_output=True)
+            run("init", "-q", "-b", "main")
+            run("config", "user.email", "t@t")
+            run("config", "user.name", "t")
+            run("add", "-A")
+            run("commit", "-qm", "seed")
+            (repo / "src").mkdir(exist_ok=True)
+            (repo / "src" / "alpha.py").write_text("x = 1\n")
+            run("add", "-A")
+            run("commit", "-qm", "the change")
+            rows = ro.replay(repo, 5, "specs/phase-plans-v9.md", "main")
+            row = [r for r in rows if r.subject == "the change"][0]
+            self.assertFalse(row.skipped_reason,
+                             "a pre-registry-era commit must not be ejected")
+            self.assertEqual(row.notable, 1)
+
+
+class TestAuthorityResolutionFailsClosed(unittest.TestCase):
+    def test_a_commit_that_cannot_be_checked_out_is_disclosed_not_scored(self):
+        """A half-materialized commit must never be scored as if it were the
+        commit.
+
+        Mutation that must kill this: return a roadmap path instead of a reason
+        when `git worktree add` fails.
+        """
+        with TemporaryDirectory() as tmp, TemporaryDirectory() as tmp_root:
+            repo = _repo(tmp)
+            run = lambda *a: subprocess.run(["git", "-C", tmp, *a], check=True,
+                                            capture_output=True)
+            run("init", "-q", "-b", "main")
+            run("config", "user.email", "t@t")
+            run("config", "user.name", "t")
+            run("add", "-A")
+            run("commit", "-qm", "seed")
+            rel, reason = ro._roadmap_rel_at(repo, "0" * 40, Path(tmp_root))
+            self.assertIsNone(rel)
+            self.assertIn("could not check out commit", reason)
+
+
 class TestShallowCloneBoundary(unittest.TestCase):
     """The shallow branch shipped with no test reaching it (Fable seat).
 

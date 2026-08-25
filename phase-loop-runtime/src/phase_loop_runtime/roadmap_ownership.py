@@ -30,7 +30,6 @@ import argparse
 import fnmatch
 import json
 import re
-import shutil
 import tempfile
 import subprocess
 import sys
@@ -409,72 +408,85 @@ def _landed_commits(repo: Path, limit: int, rev: str = "HEAD") -> List["tuple[st
     return rows
 
 
-def _materialize_specs(repo: Path, sha: str, scratch: Path) -> None:
-    """Reproduce ``specs/`` as it existed at ``sha`` inside ``scratch``.
+def _git(args: List[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], capture_output=True, text=True, check=False)
 
-    The canonical validators are fd-bound to a real git tree -- they list
-    tracked roadmaps through git -- so historical bytes have to be given a tree
-    to live in. One scratch repo is reused across the whole replay and its index
-    refreshed per commit; a checkout per commit would cost far more.
+
+def _roadmap_rel_at(repo: Path, sha: str, tmp_root: Path) -> "tuple[Optional[str], Optional[str]]":
+    """Which roadmap was GOVERNING at ``sha``, decided by the CANONICAL readers
+    against a REAL checkout of that commit.
+
+    Nothing about the authority rules is re-implemented here, and nothing about
+    the repository is emulated. Earlier versions did both, and each approximation
+    was wrong where the real thing was not:
+
+    * a private JSON reader drifted from the canonical schema rules;
+    * `parse_roadmap_status_manifest` alone checks schema but explicitly NOT
+      banner coherence or tracked-path coverage;
+    * hand-building a scratch index with ``git add -A`` loses file modes and
+      lets ignore rules and host git config decide what is "tracked", while
+      `validate_roadmap_status_coherence` depends on the exact ``git ls-files``
+      set.
+
+    So the commit gets an actual detached worktree, sparse-checked-out to the
+    paths the validators read. The index is git's own, built from the commit,
+    so modes and tracked-path coverage are exact rather than reconstructed.
+
+    Fails CLOSED: any git failure yields an unscorable reason. A materialization
+    that half-succeeded must never be scored as if it were the commit. Only the
+    ``worktree add`` failure is test-pinned -- the sparse-checkout and checkout
+    failures are defensive against git I/O errors that are not reliably
+    inducible in a fixture, and are not claimed as covered.
     """
 
-    specs = scratch / "specs"
-    if specs.exists():
-        shutil.rmtree(specs)
-    specs.mkdir(parents=True)
-    names = subprocess.run(
-        ["git", "-C", str(repo), "ls-tree", "--name-only", sha, "specs/"],
-        capture_output=True, text=True, check=False,
-    )
-    for rel in names.stdout.split():
-        blob = subprocess.run(
-            ["git", "-C", str(repo), "show", f"{sha}:{rel}"],
-            capture_output=True, check=False,
-        )
-        if blob.returncode == 0:
-            dest = scratch / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(blob.stdout)
-    subprocess.run(["git", "-C", str(scratch), "add", "-A"],
-                   capture_output=True, check=False)
-
-
-def _roadmap_rel_at(repo: Path, sha: str, scratch: Path) -> "tuple[Optional[str], Optional[str]]":
-    """Which roadmap was GOVERNING at ``sha``, decided by the CANONICAL readers.
-
-    Earlier versions of this resolver re-implemented pieces of the authority
-    rules -- first a private JSON reader, then a partial mirror that validated
-    only the selected roadmap's banner. Each partial mirror was wrong in a way
-    the canonical reader was not: `parse_roadmap_status_manifest` checks schema
-    but explicitly NOT banner coherence or tracked-path coverage, so a registry
-    the repository itself rejects was still scored.
-
-    So nothing is re-implemented here. The commit's ``specs/`` tree is
-    materialized and handed to `validate_roadmap_status_coherence` (registry
-    era) and `declared_active_roadmap` (pre-registry era) -- the same functions
-    the repo uses on the working tree. Whatever they reject is disclosed as
-    unscorable rather than scored under authority the repo would refuse.
-
-    Returns ``(roadmap_rel, unscorable_reason)`` -- exactly one is non-None.
-    """
-
-    _materialize_specs(repo, sha, scratch)
+    wt = tmp_root / f"wt-{sha[:12]}"
+    add = _git(["-C", str(repo), "worktree", "add", "--detach", "--no-checkout",
+                "-q", str(wt), sha])
+    if add.returncode != 0:
+        return None, f"could not check out commit: {add.stderr.strip()[:80]}"
     try:
-        status = validate_roadmap_status_coherence(scratch, required=False)
-    except RoadmapStatusError as exc:
-        return None, f"roadmap authority incoherent at commit: {type(exc).__name__}"
-    if status is not None:
-        return status["selected_roadmap"], None
-    # No registry: the pre-registry era, where authority was the banner-declared
-    # singleton. `declared_active_roadmap` is that rule, glob included.
-    try:
-        resolved = declared_active_roadmap(scratch)
-    except RoadmapStatusError as exc:
-        return None, f"no active roadmap declared at commit: {type(exc).__name__}"
-    try:
-        return resolved.relative_to(scratch.resolve()).as_posix(), None
-    except ValueError:
-        return None, "roadmap resolved outside the commit tree"
+        # `plans/` carries the versioned marker the canonical validator uses to
+        # tell a post-registry commit (registry REQUIRED) from a legacy one.
+        sparse = _git(["-C", str(wt), "sparse-checkout", "set", "--no-cone",
+                       "/specs/", "/plans/"])
+        if sparse.returncode != 0:
+            return None, f"could not scope checkout: {sparse.stderr.strip()[:80]}"
+        checkout = _git(["-C", str(wt), "checkout"])
+        if checkout.returncode != 0:
+            return None, f"could not populate checkout: {checkout.stderr.strip()[:80]}"
+        try:
+            # required=False, DELIBERATELY -- and this is the one place a
+            # reviewer's `required=True` recommendation was not taken.
+            #
+            # `required=True` demands a registry wherever the versioned LEGIBLE
+            # marker exists. That is the right rule for the working tree, but
+            # applying it to history is an anachronism: the marker predates the
+            # registry, which arrived 2026-08-03. Measured on this repo, a
+            # 150-commit window contains 19 commits carrying the marker with no
+            # registry -- an era that simply had no registry to carry, not an
+            # era of incoherent ones. Under `required=True` all 19 are ejected
+            # as MalformedRegistryError, shrinking the denominator by 13% on
+            # exactly the false basis this module counts unscorable rows to
+            # prevent.
+            #
+            # Replay asks what a commit DECLARED, not whether it would satisfy
+            # today's rules. `required=False` asks the first question.
+            status = validate_roadmap_status_coherence(wt, required=False)
+        except RoadmapStatusError as exc:
+            return None, f"roadmap authority incoherent at commit: {type(exc).__name__}"
+        if status is not None:
+            return status["selected_roadmap"], None
+        try:
+            resolved = declared_active_roadmap(wt)
+        except RoadmapStatusError as exc:
+            return None, f"no active roadmap declared at commit: {type(exc).__name__}"
+        try:
+            return resolved.relative_to(wt.resolve()).as_posix(), None
+        except ValueError:
+            return None, "roadmap resolved outside the commit tree"
+    finally:
+        _git(["-C", str(repo), "worktree", "remove", "--force", str(wt)])
+        _git(["-C", str(repo), "worktree", "prune"])
 
 
 def _is_shallow(repo: Path) -> bool:
@@ -513,19 +525,14 @@ def replay(repo: Path, limit: int, roadmap_rel: str, rev: str = "HEAD") -> List[
     is the one number this exists to produce honestly.
     """
 
-    rows: List[ReplayRow] = []
-    with tempfile.TemporaryDirectory(prefix="roadmap-replay-") as _scratch:
-        scratch = Path(_scratch)
-        subprocess.run(["git", "-C", str(scratch), "init", "-q", "-b", "replay"],
-                       capture_output=True, check=False)
-        rows = _replay_rows(repo, limit, rev, scratch)
-    return rows
+    with tempfile.TemporaryDirectory(prefix="roadmap-replay-") as tmp_root:
+        return _replay_rows(repo, limit, rev, Path(tmp_root))
 
 
-def _replay_rows(repo: Path, limit: int, rev: str, scratch: Path) -> List[ReplayRow]:
+def _replay_rows(repo: Path, limit: int, rev: str, tmp_root: Path) -> List[ReplayRow]:
     rows: List[ReplayRow] = []
     for sha, subject in _landed_commits(repo, limit, rev):
-        rel_at_sha, registry_reason = _roadmap_rel_at(repo, sha, scratch)
+        rel_at_sha, registry_reason = _roadmap_rel_at(repo, sha, tmp_root)
         if registry_reason:
             rows.append(ReplayRow(sha, subject, 0, 0, (), registry_reason))
             continue
