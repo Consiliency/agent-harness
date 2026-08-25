@@ -403,7 +403,7 @@ def _landed_commits(repo: Path, limit: int, rev: str = "HEAD") -> List["tuple[st
     return rows
 
 
-def _roadmap_rel_at(repo: Path, sha: str, fallback_rel: str) -> str:
+def _roadmap_rel_at(repo: Path, sha: str, fallback_rel: str) -> "tuple[Optional[str], Optional[str]]":
     """Which roadmap was GOVERNING at ``sha``.
 
     Resolving the path once from HEAD and reading it at every historical commit
@@ -411,9 +411,12 @@ def _roadmap_rel_at(repo: Path, sha: str, fallback_rel: str) -> str:
     "absent" or, worse, get scored against a file that existed only as an
     unratified draft. The registry is itself versioned, so ask it at each commit.
 
-    Falls back to the HEAD-resolved path when the registry is absent or names no
-    single active roadmap -- the legacy/synthetic-repo case that
-    ``declared_active_roadmap`` also tolerates.
+    Returns ``(roadmap_rel, unscorable_reason)``. An ABSENT registry falls back
+    to the HEAD-resolved path -- the legacy/synthetic-repo case
+    ``declared_active_roadmap`` also tolerates. A registry that is PRESENT but
+    unreadable, or that names anything other than exactly one active roadmap,
+    yields a reason instead: scoring it against HEAD's roadmap would measure it
+    under a roadmap its own registry did not name.
     """
 
     out = subprocess.run(
@@ -421,15 +424,21 @@ def _roadmap_rel_at(repo: Path, sha: str, fallback_rel: str) -> str:
         capture_output=True, text=True, check=False,
     )
     if out.returncode != 0:
-        return fallback_rel
+        # ABSENT registry is the legacy/synthetic case `declared_active_roadmap`
+        # also tolerates: fall back, and score.
+        return fallback_rel, None
     try:
         entries = json.loads(out.stdout).get("roadmaps", [])
     except (ValueError, AttributeError):
-        return fallback_rel
+        return None, "roadmap registry unreadable at commit"
     active = [e.get("path") for e in entries if e.get("status") == "active"]
     if len(active) == 1 and active[0]:
-        return active[0]
-    return fallback_rel
+        return active[0], None
+    # PRESENT but incoherent is different: falling back to HEAD's roadmap would
+    # silently score the commit against a roadmap that demonstrably was not the
+    # one its own registry named. Everywhere else this module counts what it
+    # cannot read and says why; do that here too rather than fail open.
+    return None, f"roadmap registry at commit names {len(active)} active roadmaps"
 
 
 def _is_shallow(repo: Path) -> bool:
@@ -470,7 +479,10 @@ def replay(repo: Path, limit: int, roadmap_rel: str, rev: str = "HEAD") -> List[
 
     rows: List[ReplayRow] = []
     for sha, subject in _landed_commits(repo, limit, rev):
-        rel_at_sha = _roadmap_rel_at(repo, sha, roadmap_rel)
+        rel_at_sha, registry_reason = _roadmap_rel_at(repo, sha, roadmap_rel)
+        if registry_reason:
+            rows.append(ReplayRow(sha, subject, 0, 0, (), registry_reason))
+            continue
         blob = subprocess.run(
             ["git", "-C", str(repo), "show", f"{sha}:{rel_at_sha}"],
             capture_output=True, text=True, check=False,
@@ -560,7 +572,14 @@ def render_report(rows: Sequence[ReplayRow]) -> str:
         rpct = 100.0 * len(remaining) / len(scored)
         lines += ["", f"  counterfactual — if {dominant} claimed nothing:"]
         lines.append(f"    would STILL flag: {len(remaining)}/{len(scored)} ({rpct:.0f}%)")
-        if remaining:
+        if len(remaining) == len(flagged):
+            # Removing it changes nothing, so it is not even necessary --
+            # calling it necessary here would misdirect the remediation.
+            lines.append(
+                f"    ^ {dominant} is NOT the binding constraint: every flagged "
+                "change is claimed by some other phase as well."
+            )
+        elif remaining:
             lines.append(
                 f"    ^ narrowing {dominant} is NECESSARY but NOT SUFFICIENT — "
                 f"{len(remaining)} change(s) are claimed by other phases too."

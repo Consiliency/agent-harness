@@ -629,6 +629,94 @@ class TestRoadmapAuthorityIsHistorical(unittest.TestCase):
             self.assertEqual(under_v9[0].notable, 1)
 
 
+class TestRegistryIncoherenceIsDisclosed(unittest.TestCase):
+    """A present-but-incoherent registry must not fail open (grok seat).
+
+    Everywhere else this module counts what it cannot read and says why. Falling
+    back to HEAD's roadmap would score the commit against a roadmap its own
+    registry did not name -- a wrong number, silently.
+    """
+
+    def _repo_with_registry(self, tmp, registry_text):
+        repo = Path(tmp)
+        (repo / "specs").mkdir(parents=True, exist_ok=True)
+        (repo / "specs" / "phase-plans-v10.md").write_text(ROADMAP)
+        (repo / "specs" / "roadmap-status.json").write_text(registry_text)
+        run = lambda *a: subprocess.run(["git", "-C", tmp, *a], check=True,
+                                        capture_output=True)
+        run("init", "-q", "-b", "main")
+        run("config", "user.email", "t@t")
+        run("config", "user.name", "t")
+        run("add", "-A")
+        run("commit", "-qm", "seed")
+        (repo / "src").mkdir(exist_ok=True)
+        (repo / "src" / "alpha.py").write_text("x = 1\n")
+        run("add", "-A")
+        run("commit", "-qm", "the change")
+        return repo
+
+    def test_two_active_roadmaps_is_unscorable_not_silently_scored(self):
+        """Mutation that must kill this: return the fallback instead of a reason.
+        The row would then be SCORED (notable=1) against HEAD's roadmap.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = self._repo_with_registry(tmp, json.dumps({"roadmaps": [
+                {"path": "specs/phase-plans-v10.md", "status": "active"},
+                {"path": "specs/phase-plans-v9.md", "status": "active"},
+            ]}))
+            rows = ro.replay(repo, 5, "specs/phase-plans-v10.md", "main")
+            row = [r for r in rows if r.subject == "the change"][0]
+            self.assertIn("names 2 active", row.skipped_reason)
+            self.assertEqual(row.notable, 0)
+
+    def test_unreadable_registry_is_unscorable_not_silently_scored(self):
+        with TemporaryDirectory() as tmp:
+            repo = self._repo_with_registry(tmp, "{not json")
+            rows = ro.replay(repo, 5, "specs/phase-plans-v10.md", "main")
+            row = [r for r in rows if r.subject == "the change"][0]
+            self.assertIn("unreadable", row.skipped_reason)
+
+    def test_an_ABSENT_registry_still_falls_back_and_scores(self):
+        """The fallback must survive: the registry-less fixtures across this
+        file depend on it, and a legacy repo is not an error.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = _repo(tmp)
+            run = lambda *a: subprocess.run(["git", "-C", tmp, *a], check=True,
+                                            capture_output=True)
+            run("init", "-q", "-b", "main")
+            run("config", "user.email", "t@t")
+            run("config", "user.name", "t")
+            run("add", "-A")
+            run("commit", "-qm", "seed")
+            (repo / "src").mkdir(exist_ok=True)
+            (repo / "src" / "alpha.py").write_text("x = 1\n")
+            run("add", "-A")
+            run("commit", "-qm", "the change")
+            rows = ro.replay(repo, 5, "specs/phase-plans-v10.md", "main")
+            row = [r for r in rows if r.subject == "the change"][0]
+            self.assertFalse(row.skipped_reason)
+            self.assertEqual(row.notable, 1)
+
+
+class TestDominantIsNotAlwaysTheConstraint(unittest.TestCase):
+    def test_when_removing_it_changes_nothing_it_is_not_called_necessary(self):
+        """"Necessary but not sufficient" is false when every flagged row has
+        another owner: removing the dominant phase changes nothing, so calling
+        it necessary would misdirect the remediation.
+
+        Mutation that must kill this: collapse the branch back to the single
+        `if remaining:` message.
+        """
+        rows = [
+            ro.ReplayRow("a" * 40, "one", 2, 0, ("GOVLEAN", "SCHED")),
+            ro.ReplayRow("b" * 40, "two", 2, 0, ("GOVLEAN", "SCHED")),
+        ]
+        out = ro.render_report(rows)
+        self.assertIn("NOT the binding constraint", out)
+        self.assertNotIn("NECESSARY but NOT SUFFICIENT", out)
+
+
 class TestPartialDrift(unittest.TestCase):
     def test_one_phase_losing_key_files_raises(self):
         """The third mutation, found by review: PARTIAL drift passed silently.
