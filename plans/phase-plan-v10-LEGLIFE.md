@@ -105,7 +105,9 @@ SL-3 — Documentation and LEGLIFE evidence reduction
     `invoke_leg()`, custom/default config and lens propagation, material parity or
     typed asymmetry, active isolation/review-tier enforcement, Omnigent and ledger
     reachability, and zero-production-caller prohibitions. Amend only sanctioned
-    additive result fields in the existing golden inventory.
+    additive result fields in the existing golden inventory. The golden amendment
+    is default-green and vacuous while both capability markers are absent, then
+    becomes load-bearing as each lawful production marker activates its partition.
   - impl: land only the two owned test paths. They become immutable; later lanes add
     no tests.
   - verify: run the complete default suite and require green. Then force `SL1_NODEIDS`
@@ -177,8 +179,8 @@ SL-3 — Documentation and LEGLIFE evidence reduction
     material digest/asymmetry, and forwarding status in metadata-only JSON. No
     `getattr`, absent-field fallback, or silent omission is permitted. Export new
     observability types lazily from `advisor_board.__init__`.
-  - impl: install only `LEGLIFE_SL2_CAPABILITY_MARKER` after every `SL-2`
-    production path is present.
+  - impl: install only `LEGLIFE_SL2_CAPABILITY_MARKER` in
+    `phase_loop_runtime.cli` after every `SL-2` production path is present.
   - verify: force exact `SL2_NODEIDS` on the lawful `SL-1` base plus this writer
     and require GREEN; rerun `SL1_NODEIDS` as a regression and the focused CLI,
     config, resolver, Omnigent, observability, timeout, concurrency, and integration
@@ -218,16 +220,14 @@ nodeid partitions are disjoint.
 
 ## Verification
 
-These bullet-form commands are the final joined runner contract; fenced commands are
-not authoritative. `SL-0` uses the default command as its green machine gate and
-records each forced partition's expected RED separately. `SL-1` closes with the
-forced SL-1 command only. `SL-2` closes with the forced SL-2 command on the `SL-1`
-base. Only the joined candidate may run the forced union and the full extracted set.
+These bullet-form commands are the always-green runner contract at every lane
+boundary. `SL-0` uses the default command as its green machine gate and records each
+forced partition's expected RED in its lane-local verification evidence. `SL-1`
+reruns the forced SL-1 partition in its lane-local verification; `SL-2` reruns the
+forced SL-2 partition on the `SL-1` base and then the forced union. Intentional RED
+or capability-dependent commands never enter this extracted list.
 
 - `PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q phase-loop-runtime/tests/test_leglife_phase.py phase-loop-runtime/tests/test_advisor_board_golden.py phase-loop-runtime/tests/test_panel_invoker.py phase-loop-runtime/tests/test_panel_invoker_spawn.py phase-loop-runtime/tests/test_panel_invoker_timeout_argv.py phase-loop-runtime/tests/test_advisor_board_concurrency.py phase-loop-runtime/tests/test_advisor_board_integration.py phase-loop-runtime/tests/test_advisor_board_config.py phase-loop-runtime/tests/test_advisor_board_resolver.py phase-loop-runtime/tests/test_advisor_board_backing_omnigent.py phase-loop-runtime/tests/test_advisor_board_observability.py phase-loop-runtime/tests/test_advisor_board_cli_legacy.py`
-- `PHASE_LOOP_TDD_EXPECT_LEGLIFE_SL1=1 PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q phase-loop-runtime/tests/test_leglife_phase.py::test_timeout_outcome_and_bound phase-loop-runtime/tests/test_leglife_phase.py::test_aggregate_quiescence phase-loop-runtime/tests/test_leglife_phase.py::test_supported_single_leg_entrypoint phase-loop-runtime/tests/test_leglife_phase.py::test_material_parity_or_typed_asymmetry`
-- `PHASE_LOOP_TDD_EXPECT_LEGLIFE_SL2=1 PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q phase-loop-runtime/tests/test_leglife_phase.py::test_custom_seat_lens_prompt phase-loop-runtime/tests/test_leglife_phase.py::test_configured_default_board_reaches_prompt phase-loop-runtime/tests/test_leglife_phase.py::test_production_entry_preserves_harden_isolation_and_govlean_review_tier phase-loop-runtime/tests/test_leglife_phase.py::test_omnigent_production_reachability phase-loop-runtime/tests/test_leglife_phase.py::test_real_ledger_production_reachability`
-- `PHASE_LOOP_TDD_EXPECT_LEGLIFE_SL1=1 PHASE_LOOP_TDD_EXPECT_LEGLIFE_SL2=1 PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q phase-loop-runtime/tests/test_leglife_phase.py::test_timeout_outcome_and_bound phase-loop-runtime/tests/test_leglife_phase.py::test_aggregate_quiescence phase-loop-runtime/tests/test_leglife_phase.py::test_supported_single_leg_entrypoint phase-loop-runtime/tests/test_leglife_phase.py::test_material_parity_or_typed_asymmetry phase-loop-runtime/tests/test_leglife_phase.py::test_custom_seat_lens_prompt phase-loop-runtime/tests/test_leglife_phase.py::test_configured_default_board_reaches_prompt phase-loop-runtime/tests/test_leglife_phase.py::test_production_entry_preserves_harden_isolation_and_govlean_review_tier phase-loop-runtime/tests/test_leglife_phase.py::test_omnigent_production_reachability phase-loop-runtime/tests/test_leglife_phase.py::test_real_ledger_production_reachability`
 - `PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q phase-loop-runtime/tests -m "not dotfiles_integration"`
 - `uv run --project phase-loop-runtime ruff check phase-loop-runtime`
 - `uv --project phase-loop-runtime lock --check`

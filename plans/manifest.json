@@ -5566,6 +5566,34 @@
             "source": "Consiliency/agent-harness#375"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-25T17:16:25Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "absorbed_deferred_findings": [
+              "nodeid_path_tokens_removed_from_extracted_verification",
+              "golden_amendment_default_green_then_load_bearing",
+              "sl2_capability_marker_host_named"
+            ],
+            "phase_alias": "LEGLIFE",
+            "plan_sha256": "91bf9886be634125d663b01e4a27f6d6ed27fb353b5a7a58bc82fe69cb62c6c3",
+            "predecessor_plan_sha256": "642f30ffae912a0368854be9fb5cad123ab50e4d87e8bd4f2ebe4a542bc945ea",
+            "president_forcing_decision": "block_tests_first_dispatch",
+            "president_model": "grok-4.6",
+            "repaired_blocking_defects": [
+              "intentional_red_commands_removed_from_extracted_runner_contract"
+            ],
+            "review_artifacts": {
+              "consolidated_findings_sha256": "c2a08be3f0591dbf171451fb51719cdce5f98604dc16373dfa17f713f9fd54f7",
+              "president_ruling_sha256": "e8a6fd3ca808a383776c2e3d925555d747a5277b55e828c3e31a28775f4e1f96"
+            },
+            "review_status": "fresh_exact_digest_review_required",
+            "reviewed_candidate_commit": "6356064b5482ab67c000ed52921efa13a0486a74",
+            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+            "source": "Consiliency/agent-harness#375"
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -5573,6 +5601,12 @@
       "plan_authority_history": [
         {
           "plan_sha256": "642f30ffae912a0368854be9fb5cad123ab50e4d87e8bd4f2ebe4a542bc945ea",
+          "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#375"
+        },
+        {
+          "plan_sha256": "91bf9886be634125d663b01e4a27f6d6ed27fb353b5a7a58bc82fe69cb62c6c3",
           "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#375"
@@ -5589,7 +5623,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-25T16:35:34Z"
+      "updated_at": "2026-08-25T17:16:25Z"
     }
   ],
   "schema_version": 1
