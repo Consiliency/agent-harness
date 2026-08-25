@@ -103,6 +103,11 @@ x
 """
 
 
+ACTIVE_BANNER = ("> **Status (2026-01-03): ACTIVE — created this date, "
+                 "nothing executed yet.**")
+ROADMAP_ACTIVE = ROADMAP.replace("# Roadmap", "# Roadmap\n\n" + ACTIVE_BANNER, 1)
+
+
 def _registry(selected: str, entries) -> str:
     """A canonical `roadmap_status_manifest.v1` document.
 
@@ -634,7 +639,7 @@ class TestRoadmapAuthorityIsHistorical(unittest.TestCase):
             run("config", "user.email", "t@t")
             run("config", "user.name", "t")
             # Era 1: v9 is the active roadmap and it claims src/alpha.py.
-            (repo / "specs" / "phase-plans-v9.md").write_text(ROADMAP)
+            (repo / "specs" / "phase-plans-v9.md").write_text(ROADMAP_ACTIVE)
             (repo / "specs" / "roadmap-status.json").write_text(
                 _registry("specs/phase-plans-v9.md",
                           [("specs/phase-plans-v9.md", "active")])
@@ -647,7 +652,7 @@ class TestRoadmapAuthorityIsHistorical(unittest.TestCase):
             run("commit", "-qm", "change under v9")
             # Era 2: flip to v10. v9 is gone; v10 exists only from here on.
             (repo / "specs" / "phase-plans-v9.md").unlink()
-            (repo / "specs" / "phase-plans-v10.md").write_text(ROADMAP)
+            (repo / "specs" / "phase-plans-v10.md").write_text(ROADMAP_ACTIVE)
             (repo / "specs" / "roadmap-status.json").write_text(
                 _registry("specs/phase-plans-v10.md",
                           [("specs/phase-plans-v10.md", "active")])
@@ -848,6 +853,100 @@ class TestPreRegistryEraResolution(unittest.TestCase):
             row = [r for r in rows if r.subject == "the change"][0]
             self.assertIn("registry invalid at commit", row.skipped_reason)
             self.assertEqual(row.notable, 0)
+
+
+class TestRegistryIsNotAuthorityByItself(unittest.TestCase):
+    """Schema-valid registry != authority (codex seat, round 3).
+
+    `parse_roadmap_status_manifest` deliberately does NOT check banner
+    coherence; `read_roadmap_status` is the authority reader and does both legs.
+    A registry naming a roadmap whose own banner says otherwise is not authority,
+    and scoring under it is a fail-open.
+    """
+
+    def _repo(self, tmp, v10_body):
+        repo = Path(tmp)
+        (repo / "specs").mkdir(parents=True, exist_ok=True)
+        (repo / "specs" / "phase-plans-v10.md").write_text(v10_body)
+        (repo / "specs" / "roadmap-status.json").write_text(_registry(
+            "specs/phase-plans-v10.md",
+            [("specs/phase-plans-v10.md", "active")],
+        ))
+        run = lambda *a: subprocess.run(["git", "-C", tmp, *a], check=True,
+                                        capture_output=True)
+        run("init", "-q", "-b", "main")
+        run("config", "user.email", "t@t")
+        run("config", "user.name", "t")
+        run("add", "-A")
+        run("commit", "-qm", "seed")
+        (repo / "src").mkdir(exist_ok=True)
+        (repo / "src" / "alpha.py").write_text("x = 1\n")
+        run("add", "-A")
+        run("commit", "-qm", "the change")
+        return repo
+
+    def _row(self, repo):
+        rows = ro.replay(repo, 5, "specs/phase-plans-v10.md", "main")
+        return [r for r in rows if r.subject == "the change"][0]
+
+    def test_a_selected_roadmap_with_NO_banner_is_not_scored(self):
+        """Mutation that must kill this: drop the banner-coherence leg and score
+        on the manifest alone. The old fixtures used a banner-less ROADMAP with
+        a registry and expected scoring -- pinning the fail-open rather than
+        catching it.
+        """
+        with TemporaryDirectory() as tmp:
+            row = self._row(self._repo(tmp, ROADMAP))
+            self.assertIn("banner", row.skipped_reason)
+            self.assertEqual(row.notable, 0)
+
+    def test_a_selected_roadmap_whose_banner_says_DELIVERED_is_not_scored(self):
+        with TemporaryDirectory() as tmp:
+            body = ROADMAP.replace(
+                "# Roadmap",
+                "# Roadmap\n\n> # DELIVERED — CLOSED (assessed 2026-01-02)", 1)
+            row = self._row(self._repo(tmp, body))
+            self.assertIn("does not declare it active", row.skipped_reason)
+
+    def test_a_coherent_registry_plus_active_banner_DOES_score(self):
+        """The positive case must stay reachable, or the checks above would be
+        satisfied by a resolver that simply never scores anything.
+        """
+        with TemporaryDirectory() as tmp:
+            row = self._row(self._repo(tmp, ROADMAP_ACTIVE))
+            self.assertFalse(row.skipped_reason)
+            self.assertEqual(row.notable, 1)
+
+
+class TestCandidateSetMirrorsCanonicalGlob(unittest.TestCase):
+    def test_a_non_digit_roadmap_name_counts_as_a_candidate(self):
+        """`phase-plans-v1-task-message-sourcebroker.md` is a real file in this
+        repo's history. A digits-only pattern drops it, so the resolver would see
+        a singleton where the canonical selector sees two and refuses.
+
+        Mutation that must kill this: narrow the glob back to digits-only, which
+        makes v9 look like the sole candidate and scores the row.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            (repo / "specs").mkdir(parents=True, exist_ok=True)
+            (repo / "specs" / "phase-plans-v9.md").write_text(ROADMAP)
+            (repo / "specs" / "phase-plans-v1-task-message-sourcebroker.md"
+             ).write_text(ROADMAP)
+            run = lambda *a: subprocess.run(["git", "-C", tmp, *a], check=True,
+                                            capture_output=True)
+            run("init", "-q", "-b", "main")
+            run("config", "user.email", "t@t")
+            run("config", "user.name", "t")
+            run("add", "-A")
+            run("commit", "-qm", "seed")
+            (repo / "src").mkdir(exist_ok=True)
+            (repo / "src" / "alpha.py").write_text("x = 1\n")
+            run("add", "-A")
+            run("commit", "-qm", "the change")
+            rows = ro.replay(repo, 5, "specs/phase-plans-v10.md", "main")
+            row = [r for r in rows if r.subject == "the change"][0]
+            self.assertIn("of 2 declare active", row.skipped_reason)
 
 
 class TestShallowCloneBoundary(unittest.TestCase):

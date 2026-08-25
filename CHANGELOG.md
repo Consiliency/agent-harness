@@ -25,6 +25,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   commits carry nine `phase-plans-v*.md` files and no active banner — the row says so
   ("0 of 9 declare active") instead of the false "roadmap absent". A registry that is
   present but not coherent is disclosed, never scored under a roadmap it does not name.
+  Schema-validity alone is not authority: the selected roadmap's own banner must declare
+  it active, mirroring `read_roadmap_status`'s second leg, and the candidate set uses the
+  canonical `phase-plans-v*.md` glob rather than a narrower pattern that would resolve a
+  singleton where the real selector refuses.
 - Commits whose roadmap cannot be read are reported with a reason and excluded from the
   rate, never dropped silently: a shrinking denominator would flatter the one number this
   exists to produce honestly. A report that scores nothing exits non-zero rather than

@@ -153,7 +153,12 @@ def _split_token(raw: str) -> "tuple[str, str]":
     return path, rest
 
 
-_ROADMAP_CANDIDATE_RE = re.compile(r"^specs/phase-plans-v\d+\.md$")
+# Mirrors `declared_active_roadmap`'s glob EXACTLY. A narrower pattern
+# (e.g. digits-only) sees a different candidate set than the canonical
+# selector, and can resolve a singleton where the real selector would
+# refuse -- this repo's history carries `phase-plans-v1-task-message-
+# sourcebroker.md`, which digits-only silently drops.
+_ROADMAP_CANDIDATE_GLOB = "specs/phase-plans-v*.md"
 
 
 def ownership_map(roadmap_text: str) -> Dict[str, List[Phase]]:
@@ -459,6 +464,24 @@ def _roadmap_rel_at(repo: Path, sha: str, fallback_rel: str) -> "tuple[Optional[
         # `parse_roadmap_status_manifest` already rejects a manifest whose
         # selection is not the active record. An untestable guard would only
         # assert protection it never provides.
+        #
+        # The manifest parser deliberately does NOT check banner coherence --
+        # `read_roadmap_status` is the authority reader and does both legs. A
+        # schema-valid registry whose selected roadmap's own banner says
+        # `delivered` (or carries no banner at all) is not authority, and
+        # scoring under it would be exactly the fail-open this resolver exists
+        # to close.
+        selected_text = _blob(selected)
+        if selected_text is None:
+            return None, "roadmap registry at commit selects a missing roadmap"
+        try:
+            if parse_roadmap_banner_status(selected_text, selected) != "active":
+                return None, (
+                    "roadmap registry at commit selects a roadmap whose own "
+                    "banner does not declare it active"
+                )
+        except RoadmapStatusError as exc:
+            return None, f"selected roadmap banner unreadable at commit: {type(exc).__name__}"
         return selected, None
 
     # Pre-registry era: resolve the way the repo did then.
@@ -470,7 +493,7 @@ def _roadmap_rel_at(repo: Path, sha: str, fallback_rel: str) -> "tuple[Optional[
         return fallback_rel, None
     candidates = sorted(
         p for p in listing.stdout.splitlines()
-        if _ROADMAP_CANDIDATE_RE.match(p.strip())
+        if fnmatch.fnmatch(p.strip(), _ROADMAP_CANDIDATE_GLOB)
     )
     if not candidates:
         return fallback_rel, None
