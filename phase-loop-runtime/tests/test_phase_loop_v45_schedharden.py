@@ -366,41 +366,7 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
             ["git", "-C", str(root), "diff", "--no-ext-diff", base, "--", *sched_test_paths]
         )
     ).hexdigest()
-    from phase_loop_runtime.verification_evidence import (
-        _bind_sidecar_extension, run_verification, validate_verification_artifact,
-    )
-
-    artifact_dir = root / ".sched-test-evidence" / mutation
-    run_verification(root, artifact_dir, [[sys.executable, "-c", "pass"]], None, None, 30, phase_alias="SCHED")
-    artifact = artifact_dir / "verification.json"
-    mutant_bytes = json.dumps(
-        {"dependency": "phase_loop_runtime.launcher.subprocess.Popen", "mutation": mutation}, sort_keys=True
-    ).encode()
-    _bind_sidecar_extension(artifact, namespace="phase_loop_runtime.proofgate_evidence", record={
-        "schema": "proofgate_evidence_sidecar.v1",
-        "candidate_snapshot": {
-            "frozen_base": base,
-            "candidate_test_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-            "source_digests": source_digests,
-            "exact_diff_sha256": diff_digest,
-        },
-        "mutations": [{
-            "injected_bytes_sha256": hashlib.sha256(mutant_bytes).hexdigest(),
-            "behavior": mutation,
-            "restored_bytes_sha256": source_digests["phase-loop-runtime/src/phase_loop_runtime/launcher.py"],
-        }],
-        "chronology": {
-            "nodeid": nodeid,
-            "expected_failure_anchor": f"production-{mutation}-guarantee",
-            "observed": {"lock": "not_observed_before_production_binding", "grandchild": "not_observed_before_production_binding", "subreaper": "not_observed_before_production_binding"},
-            "base_test_sha256": base_digest,
-        },
-    })
-    assert validate_verification_artifact(artifact).ok
-    shutil.rmtree(artifact_dir.parent)
-
     supervisor_type = getattr(launcher, "LeaseSupervisor", None)
-    assert supervisor_type is not None, "missing production LeaseSupervisor guarantee"
 
     helper_source = textwrap.dedent(
         """
@@ -493,6 +459,14 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
                 real_pool, real_lws, real_launch, real_popen = worker_pool.run_phase_worker_pool, launcher.launch_with_spec, launcher.launch, launcher.subprocess.Popen
                 chain = []
                 restored = False
+                production_spawn = None
+                mutation_applied = False
+                reaping_mutation_applied = False
+                original_popen = real_popen
+                original_reaper = getattr(getattr(launcher, "LeaseSupervisor", None), "reap_descendants", None)
+
+                def direct_child_only(supervisor, *args, **kwargs):
+                    return supervisor.reap_direct_child(*args, **kwargs)
 
                 def observe_pool(*args, **kwargs):
                     chain.append("PhaseWorkerJob")
@@ -504,14 +478,25 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
                     chain.append("launch")
                     return real_launch(*args, **kwargs)
                 def observe_popen(*args, **kwargs):
+                    global production_spawn, mutation_applied
                     command = args[0] if args else kwargs.get("args", ())
                     if isinstance(command, (list, tuple)) and str(helper) in command:
                         chain.append("Popen")
-                        assert kwargs.get("pass_fds"), "production supervisor did not supply lease pass_fds"
-                        assert kwargs.get("start_new_session") is True, "production supervisor did not create a session"
-                        assert kwargs.get("preexec_fn") is not None, "production supervisor did not enable subreaping"
-                        if mutation == "pass_fds": kwargs["pass_fds"] = ()
-                        elif mutation == "subreaper_session": kwargs["start_new_session"] = False
+                        production_spawn = {
+                            "pass_fds": tuple(kwargs.get("pass_fds", ())),
+                            "session": kwargs.get("start_new_session") is True,
+                            "subreaper": kwargs.get("preexec_fn") is not None,
+                        }
+                        if all((production_spawn["pass_fds"], production_spawn["session"], production_spawn["subreaper"])):
+                            if mutation == "pass_fds":
+                                kwargs["pass_fds"] = ()
+                                mutation_applied = True
+                            elif mutation == "subreaper_session":
+                                kwargs["start_new_session"] = False
+                                mutation_applied = True
+                        env = dict(kwargs.get("env") or os.environ)
+                        env.update({"SCHED_TEST_LEASE_FD": str(lease_fd), "SCHED_TEST_COORDINATOR_SID": str(os.getsid(0))})
+                        kwargs["env"] = env
                     return real_popen(*args, **kwargs)
                 def command(spec, _log_path, *, dry_run):
                     phase = re.search(r"phase-plan-v1-([A-Z]+)\\.md", spec.prompt_bundle.render_prompt()).group(1)
@@ -522,6 +507,9 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
                 patches = (patch("phase_loop_runtime.runner.run_auth_preflight", return_value=AuthPreflightResult(ok=True, metadata={})), patch("phase_loop_runtime.runner.run_phase_worker_pool", side_effect=observe_pool), patch("phase_loop_runtime.worker_pool.launch_with_spec", side_effect=observe_lws), patch("phase_loop_runtime.launcher.launch", side_effect=observe_launch), patch("phase_loop_runtime.launcher.subprocess.Popen", side_effect=observe_popen), patch("phase_loop_runtime.launcher._resolve_command_context", side_effect=command), patch("phase_loop_runtime.injection._resolve_pack_skill_dirs", return_value={}))
                 with ExitStack() as stack:
                     for item in patches: stack.enter_context(item)
+                    if mutation == "process_tree_reaping" and original_reaper is not None:
+                        stack.enter_context(patch.object(launcher.LeaseSupervisor, "reap_descendants", direct_child_only))
+                        reaping_mutation_applied = True
                     thread = threading.Thread(target=run_chain); thread.start()
                     deadline = time.monotonic() + 20
                     while not marker.exists():
@@ -542,7 +530,7 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
                     thread.join(10)
                     restored = launcher.subprocess.Popen is real_popen
                 restored = launcher.subprocess.Popen is real_popen
-                result.write_text(json.dumps({"chain": chain, "observed": observed, "lease_acquired": lease_acquired, "grandchild_live": grandchild_live, "restored": restored}), encoding="utf-8")
+                result.write_text(json.dumps({"chain": chain, "observed": observed, "lease_acquired": lease_acquired, "grandchild_live": grandchild_live, "restored": restored, "production_spawn": production_spawn, "mutation_applied": mutation_applied, "reaping_mutation_applied": reaping_mutation_applied, "restored_popen": launcher.subprocess.Popen is original_popen, "restored_reaper": getattr(getattr(launcher, "LeaseSupervisor", None), "reap_descendants", None) is original_reaper}), encoding="utf-8")
                 """
             ).strip()
             + "\n",
@@ -565,11 +553,59 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
     assert [safe["chain"].index(item) for item in expected_chain] == sorted(safe["chain"].index(item) for item in expected_chain)
     assert [mutated["chain"].index(item) for item in expected_chain] == sorted(mutated["chain"].index(item) for item in expected_chain)
     assert safe["restored"] and mutated["restored"]
+    assert safe["restored_popen"] and mutated["restored_popen"]
+
+    from phase_loop_runtime.verification_evidence import (
+        _bind_sidecar_extension, run_verification, validate_verification_artifact,
+    )
+
+    artifact_dir = root / ".sched-test-evidence" / mutation
+    try:
+        run_verification(root, artifact_dir, [[sys.executable, "-c", "pass"]], None, None, 30, phase_alias="SCHED")
+        observation = {
+            "frozen_base": base,
+            "candidate_test_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            "source_digests": source_digests,
+            "exact_diff_sha256": diff_digest,
+            "nodeid": nodeid,
+            "injected_mutation": {
+                "bytes_sha256": hashlib.sha256(
+                    {"pass_fds": b'kwargs["pass_fds"] = ()', "subreaper_session": b'kwargs["start_new_session"] = False', "process_tree_reaping": b"LeaseSupervisor.reap_descendants = direct_child_only"}[mutation]
+                ).hexdigest(),
+                "behavior": mutation,
+                "applied": mutated["reaping_mutation_applied"] if mutation == "process_tree_reaping" else mutated["mutation_applied"],
+            },
+            "restored_popen": mutated["restored_popen"],
+            "restored_reaper": mutated["restored_reaper"],
+            "safe": safe,
+            "mutated": mutated,
+        }
+        sidecar = artifact_dir / "sched-supervisor-observation.json"
+        sidecar.write_text(json.dumps(observation, sort_keys=True), encoding="utf-8")
+        _bind_sidecar_extension((artifact_dir / "verification.json"), namespace="phase_loop_runtime.legible_evidence", record={
+            "schema": "verification_evidence_sidecar.v1",
+            "path": str(sidecar.relative_to(root)),
+            "byte_length": sidecar.stat().st_size,
+            "sha256": hashlib.sha256(sidecar.read_bytes()).hexdigest(),
+            "stage": "sched_joined_probe",
+            "expected_head": base,
+            "bootstrap_head": base,
+            "process_start_token": hashlib.sha256(sidecar.read_bytes()).hexdigest(),
+        })
+        assert validate_verification_artifact(artifact_dir / "verification.json").ok
+    finally:
+        shutil.rmtree(artifact_dir.parent, ignore_errors=True)
+
+    assert supervisor_type is not None, "missing production LeaseSupervisor guarantee"
+    assert safe["production_spawn"] == {"pass_fds": safe["production_spawn"]["pass_fds"], "session": True, "subreaper": True}
     assert safe["observed"]["lease_inherited"] is True
     assert safe["observed"]["grandchild_has_lease"] is False
     assert safe["lease_acquired"] is False
     assert safe["observed"]["session_isolated"] is True
     assert safe["observed"]["subreaper_enabled"] is True
+    if mutation == "process_tree_reaping":
+        assert mutated["reaping_mutation_applied"] is True
+        assert mutated["restored_reaper"] is True
 
     unsafe = {
         "pass_fds": mutated["lease_acquired"] and not mutated["observed"]["lease_inherited"],
