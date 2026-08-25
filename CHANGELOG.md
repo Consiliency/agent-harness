@@ -6,6 +6,47 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### roadmap-ownership: the graduation instrument (Consiliency/agent-harness#633)
+
+- `--report N` replays the check over the last N landed changes — merge commits **and**
+  squashes, since this repo lands PRs both ways — and prints the flag rate: the
+  measurement a decision to make this check *blocking* actually needs. It reads the
+  roadmap **as it existed at each commit**, not today's, because `Key files` lists change
+  and the question is what *would have* fired, not what fires now.
+- The population is what **landed on the merge target** (`--base`, default `origin/main`),
+  not whatever `HEAD` happens to be. Run from a feature branch, an unrevisioned `git log`
+  walks the branch and the PR's own unlanded commits displace real landings.
+- **Which** roadmap governed is resolved per commit, not once from `HEAD`, mirroring
+  `declared_active_roadmap` and reusing that module's parsers rather than a private JSON
+  reader: the versioned registry at that sha, else the banner-declared roadmap of that
+  era. A window crossing a version flip (v9 → v10) would otherwise read pre-flip commits
+  as "roadmap absent" and eject them from the denominator.
+- Where history genuinely never declared an active roadmap — this repo's pre-registry
+  commits carry nine `phase-plans-v*.md` files and no active banner — the row says so
+  ("0 of 9 declare active") instead of the false "roadmap absent". A registry that is
+  present but not coherent is disclosed, never scored under a roadmap it does not name.
+  Authority is decided by the repo's own readers — `validate_roadmap_status_coherence`
+  and `declared_active_roadmap` — applied to a real detached checkout of each commit,
+  rather than by any private re-implementation of the rules or any hand-built index.
+  Resolution fails closed: a commit that cannot be checked out is disclosed, never scored.
+- History is judged by what it declared, not by today's rules. The versioned LEGIBLE
+  marker predates the roadmap registry (introduced 2026-08-03), so requiring a registry
+  wherever the marker appears would eject a whole legitimate era — measured at 19 commits
+  in a 150-window, a 13% denominator loss on a false basis.
+- Commits whose roadmap cannot be read are reported with a reason and excluded from the
+  rate, never dropped silently: a shrinking denominator would flatter the one number this
+  exists to produce honestly. A report that scores nothing exits non-zero rather than
+  reading as a clean measurement — including `--report 0`, which is not a measurement.
+- **First measurement on this repo: 33/40 landed changes (82%) would have been flagged,
+  and GOVLEAN accounts for all 33.** A blocking gate at that rate stops 82% of merges,
+  which is how a gate gets switched off rather than fixed. The matcher is correct; one
+  phase claiming `phase-loop-runtime/src/phase_loop_runtime/` wholesale is the cause.
+- **But narrowing that claim is necessary, not sufficient.** `--report` also prints the
+  leave-one-phase-out counterfactual: with GOVLEAN claiming nothing, **10/40 (25%)** would
+  still be flagged by other phases. Blocking remains out of reach at 25%; the ownership
+  data needs work well beyond the single dominant claim, and the earlier framing of
+  GOVLEAN as *the* blocker overstated what the measurement shows.
+
 ### Broker-gated FAB delta readmission (Consiliency/agent-harness#191, Consiliency/agent-harness#288)
 
 - Advanced reviewed heads now re-enter through the convergence broker before the

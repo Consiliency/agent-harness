@@ -14,9 +14,9 @@ present and machine-readable the whole time -- ``roadmap_lint`` already parses
 Nothing consumed it as ownership.
 
 Deliberately ADVISORY in this first form: it annotates, it never fails. A gate
-that blocks merges is only worth turning on once its false-positive rate has been
-measured against real history. NOTE: no measurement flag exists yet -- that is a
-real gap, not an oversight to gloss (ah#633). Shipping it
+that blocks merges is only worth turning on once its flag rate has been measured
+against real history (the flag rate, not the false-positive rate: nothing here
+establishes which flags were wrong) -- which is what ``--report`` does. Shipping it
 blocking-first would red the repo on the day it landed, which is how a gate gets
 disabled rather than fixed.
 
@@ -30,12 +30,17 @@ import argparse
 import fnmatch
 import json
 import re
+import tempfile
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
+from .roadmap_lint import (
+    RoadmapStatusError,
+    validate_roadmap_status_coherence,
+)
 from .roadmap_lint import Phase, _extract_phases, declared_active_roadmap
 
 #: A PR body/commit trailer that records a deliberate edit into an owned file.
@@ -353,13 +358,336 @@ def render(found: Sequence[Ownership], disposition: bool) -> str:
     return "\n".join(lines)
 
 
+@dataclass(frozen=True)
+class ReplayRow:
+    """One historical merge, replayed."""
+
+    sha: str
+    subject: str
+    notable: int
+    expected: int
+    phases: "tuple[str, ...]"
+    skipped_reason: str = ""
+
+
+def _landed_commits(repo: Path, limit: int, rev: str = "HEAD") -> List["tuple[str, str]"]:
+    """The last ``limit`` changes that LANDED on this branch.
+
+    ``--first-parent``, not ``--merges``. This repo lands PRs both ways -- the
+    other agent's arrive as merge commits, mine arrive squashed -- and
+    ``--merges`` silently samples only the first population. My own ah#644 and
+    ah#650 were invisible to my own measurement, which is a sampling bias in the
+    one number this tool exists to produce.
+
+    First-parent gives exactly one entry per landed change of either shape, and
+    ``<sha>^1..<sha>`` is the right diff for both: a merge's first parent is the
+    previous mainline tip, and a squash commit's only parent is the same thing.
+    """
+
+    out = subprocess.run(
+        # Space-separated, not a control character: a literal NUL in argv is
+        # rejected by subprocess outright. The sha is fixed-width, so a single
+        # split is unambiguous even when the subject contains spaces.
+        #
+        # `rev` is the MERGE TARGET, not HEAD. Run from a feature branch with no
+        # revision, `git log` walks the branch: the top entries are the PR's own
+        # unlanded commits, which displace real landings and silently make the
+        # population "my branch" instead of "what landed". That is the same
+        # sampling defect as `--merges`, one level up.
+        ["git", "-C", str(repo), "log", "--first-parent", "-n", str(limit),
+         "--format=%H %s", rev],
+        capture_output=True, text=True, check=False,
+    )
+    if out.returncode != 0:
+        raise RoadmapUnreadable(f"could not list landed commits: {out.stderr.strip()}")
+    rows = []
+    for line in out.stdout.splitlines():
+        parts = line.split(" ", 1)
+        if len(parts) == 2 and len(parts[0]) == 40:
+            rows.append((parts[0], parts[1]))
+    return rows
+
+
+def _git(args: List[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(["git", *args], capture_output=True, text=True, check=False)
+
+
+def _roadmap_rel_at(repo: Path, sha: str, tmp_root: Path) -> "tuple[Optional[str], Optional[str]]":
+    """Which roadmap was GOVERNING at ``sha``, decided by the CANONICAL readers
+    against a REAL checkout of that commit.
+
+    Nothing about the authority rules is re-implemented here, and nothing about
+    the repository is emulated. Earlier versions did both, and each approximation
+    was wrong where the real thing was not:
+
+    * a private JSON reader drifted from the canonical schema rules;
+    * `parse_roadmap_status_manifest` alone checks schema but explicitly NOT
+      banner coherence or tracked-path coverage;
+    * hand-building a scratch index with ``git add -A`` loses file modes and
+      lets ignore rules and host git config decide what is "tracked", while
+      `validate_roadmap_status_coherence` depends on the exact ``git ls-files``
+      set.
+
+    So the commit gets an actual detached worktree, sparse-checked-out to the
+    paths the validators read. The index is git's own, built from the commit,
+    so modes and tracked-path coverage are exact rather than reconstructed.
+
+    Fails CLOSED: any git failure yields an unscorable reason. A materialization
+    that half-succeeded must never be scored as if it were the commit. Only the
+    ``worktree add`` failure is test-pinned -- the sparse-checkout and checkout
+    failures are defensive against git I/O errors that are not reliably
+    inducible in a fixture, and are not claimed as covered.
+    """
+
+    wt = tmp_root / f"wt-{sha[:12]}"
+    add = _git(["-C", str(repo), "worktree", "add", "--detach", "--no-checkout",
+                "-q", str(wt), sha])
+    if add.returncode != 0:
+        return None, f"could not check out commit: {add.stderr.strip()[:80]}"
+    try:
+        # `plans/` carries the versioned marker the canonical validator uses to
+        # tell a post-registry commit (registry REQUIRED) from a legacy one.
+        sparse = _git(["-C", str(wt), "sparse-checkout", "set", "--no-cone",
+                       "/specs/", "/plans/"])
+        if sparse.returncode != 0:
+            return None, f"could not scope checkout: {sparse.stderr.strip()[:80]}"
+        checkout = _git(["-C", str(wt), "checkout"])
+        if checkout.returncode != 0:
+            return None, f"could not populate checkout: {checkout.stderr.strip()[:80]}"
+        try:
+            # required=False, DELIBERATELY -- and this is the one place a
+            # reviewer's `required=True` recommendation was not taken.
+            #
+            # `required=True` demands a registry wherever the versioned LEGIBLE
+            # marker exists. That is the right rule for the working tree, but
+            # applying it to history is an anachronism: the marker predates the
+            # registry, which arrived 2026-08-03. Measured on this repo, a
+            # 150-commit window contains 19 commits carrying the marker with no
+            # registry -- an era that simply had no registry to carry, not an
+            # era of incoherent ones. Under `required=True` all 19 are ejected
+            # as MalformedRegistryError, shrinking the denominator by 13% on
+            # exactly the false basis this module counts unscorable rows to
+            # prevent.
+            #
+            # Replay asks what a commit DECLARED, not whether it would satisfy
+            # today's rules. `required=False` asks the first question.
+            status = validate_roadmap_status_coherence(wt, required=False)
+        except RoadmapStatusError as exc:
+            return None, f"roadmap authority incoherent at commit: {type(exc).__name__}"
+        if status is not None:
+            return status["selected_roadmap"], None
+        try:
+            resolved = declared_active_roadmap(wt)
+        except RoadmapStatusError as exc:
+            return None, f"no active roadmap declared at commit: {type(exc).__name__}"
+        try:
+            return resolved.relative_to(wt.resolve()).as_posix(), None
+        except ValueError:
+            return None, "roadmap resolved outside the commit tree"
+    finally:
+        _git(["-C", str(repo), "worktree", "remove", "--force", str(wt)])
+        _git(["-C", str(repo), "worktree", "prune"])
+
+
+def _is_shallow(repo: Path) -> bool:
+    """A shallow clone's boundary commit also has no ``^1``.
+
+    Reporting it as a root commit would misattribute a fetch-depth artifact to
+    repo history -- and in a shallow CI checkout that is the common case, not the
+    rare one.
+    """
+
+    out = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "--is-shallow-repository"],
+        capture_output=True, text=True, check=False,
+    )
+    return out.stdout.strip() == "true"
+
+
+def replay(repo: Path, limit: int, roadmap_rel: str, rev: str = "HEAD") -> List[ReplayRow]:
+    """Replay the check over the last ``limit`` LANDED changes.
+
+    Uses the roadmap **as it existed at each commit**, not today's. Measuring
+    historical PRs against the current roadmap would answer "what would fire
+    now", when the question a graduation decision needs is "what WOULD have
+    fired" -- and `Key files` lists change, so those differ.
+
+    WHICH roadmap is also resolved per commit, from the versioned registry at
+    that sha -- not once from HEAD. A window crossing a version flip (v9 -> v10)
+    would otherwise read pre-flip commits as "roadmap absent", or score them
+    against a file that existed then only as an unratified draft.
+
+    ``rev`` is the merge target. Sampling ``HEAD`` from a feature branch measures
+    the branch, not what landed.
+
+    A commit whose roadmap cannot be read is recorded with a reason and counted,
+    never dropped. A silently shrinking denominator would flatter the rate, which
+    is the one number this exists to produce honestly.
+    """
+
+    with tempfile.TemporaryDirectory(prefix="roadmap-replay-") as tmp_root:
+        return _replay_rows(repo, limit, rev, Path(tmp_root))
+
+
+def _replay_rows(repo: Path, limit: int, rev: str, tmp_root: Path) -> List[ReplayRow]:
+    rows: List[ReplayRow] = []
+    for sha, subject in _landed_commits(repo, limit, rev):
+        rel_at_sha, registry_reason = _roadmap_rel_at(repo, sha, tmp_root)
+        if registry_reason:
+            rows.append(ReplayRow(sha, subject, 0, 0, (), registry_reason))
+            continue
+        blob = subprocess.run(
+            ["git", "-C", str(repo), "show", f"{sha}:{rel_at_sha}"],
+            capture_output=True, text=True, check=False,
+        )
+        if blob.returncode != 0:
+            rows.append(ReplayRow(sha, subject, 0, 0, (), "roadmap absent at commit"))
+            continue
+        try:
+            mapping = ownership_map(blob.stdout)
+        except RoadmapUnreadable as exc:
+            rows.append(ReplayRow(sha, subject, 0, 0, (), f"unparseable: {exc}"))
+            continue
+        has_parent = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--verify", "-q", f"{sha}^1"],
+            capture_output=True, text=True, check=False,
+        )
+        if has_parent.returncode != 0:
+            # The root commit is the initial import: every path in the tree is
+            # "changed", so scoring it would flag everything and distort the very
+            # rate this produces. Unscorable with an accurate reason -- not the
+            # generic "diff failed", which would misreport a normal repo boundary
+            # as a tooling error.
+            reason = ("shallow-clone boundary (no parent to diff)" if _is_shallow(repo)
+                      else "root commit (no parent to diff)")
+            rows.append(ReplayRow(sha, subject, 0, 0, (), reason))
+            continue
+        diff = subprocess.run(
+            ["git", "-C", str(repo), "diff", "--name-only", f"{sha}^1", sha],
+            capture_output=True, text=True, check=False,
+        )
+        if diff.returncode != 0:
+            rows.append(ReplayRow(sha, subject, 0, 0, (), "diff failed"))
+            continue
+        notable = expected = 0
+        phases: List[str] = []
+        for path in (p for p in diff.stdout.splitlines() if p.strip()):
+            owners = owners_for(path, mapping)
+            if not owners:
+                continue
+            if path in EXPECTED_CLAIMS:
+                expected += 1
+            else:
+                notable += 1
+                phases.extend(p.alias for p in owners)
+        rows.append(ReplayRow(sha, subject, notable, expected, tuple(sorted(set(phases)))))
+    return rows
+
+
+def render_report(rows: Sequence[ReplayRow]) -> str:
+    total = len(rows)
+    skipped = [r for r in rows if r.skipped_reason]
+    scored = [r for r in rows if not r.skipped_reason]
+    flagged = [r for r in scored if r.notable]
+    lines = [
+        f"roadmap-ownership --report: {total} landed change(s) replayed "
+        f"({len(scored)} scored, {len(skipped)} unscorable)",
+        "",
+    ]
+    if scored:
+        pct = 100.0 * len(flagged) / len(scored)
+        lines.append(
+            f"  would have flagged: {len(flagged)}/{len(scored)} ({pct:.0f}%)"
+        )
+        lines.append(
+            "  ^ THIS is the graduation number. A blocking gate at this rate stops "
+            f"{pct:.0f}% of merges."
+        )
+    counts: Dict[str, int] = {}
+    for r in flagged:
+        for a in r.phases:
+            counts[a] = counts.get(a, 0) + 1
+    if counts:
+        lines += ["", "  by phase:"]
+        for alias, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])):
+            lines.append(f"    {alias:<14} {n}")
+    if counts and scored:
+        # Leave-one-phase-out. The headline rate answers "is blocking viable
+        # NOW"; it does NOT answer "would narrowing the dominant claim make it
+        # viable", which is the actual next decision. Reviewers read the first
+        # number as licensing the second, so compute the second explicitly.
+        #
+        # Exact, not an estimate: `phases` aggregates the owners of a row's
+        # notable paths, so a row survives the counterfactual iff some OTHER
+        # phase still claims one of them.
+        dominant = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+        remaining = [r for r in flagged if set(r.phases) - {dominant}]
+        rpct = 100.0 * len(remaining) / len(scored)
+        lines += ["", f"  counterfactual — if {dominant} claimed nothing:"]
+        lines.append(f"    would STILL flag: {len(remaining)}/{len(scored)} ({rpct:.0f}%)")
+        if len(remaining) == len(flagged):
+            # Removing it changes nothing, so it is not even necessary --
+            # calling it necessary here would misdirect the remediation.
+            lines.append(
+                f"    ^ {dominant} is NOT the binding constraint: every flagged "
+                "change is claimed by some other phase as well."
+            )
+        elif remaining:
+            lines.append(
+                f"    ^ narrowing {dominant} is NECESSARY but NOT SUFFICIENT — "
+                f"{len(remaining)} change(s) are claimed by other phases too."
+            )
+        else:
+            lines.append(
+                f"    ^ {dominant} is the sole cause; narrowing it alone would "
+                "clear the gate."
+            )
+    if skipped:
+        # Counted, never dropped: a shrinking denominator flatters the rate.
+        lines += ["", f"  unscorable ({len(skipped)}) — excluded from the rate:"]
+        for r in skipped[:5]:
+            lines.append(f"    {r.sha[:8]} {r.skipped_reason}")
+    return "\n".join(lines)
+
+
 def main(argv: List[str]) -> int:
     parser = argparse.ArgumentParser(prog="roadmap_ownership")
     parser.add_argument("--repo", required=True, type=Path)
     parser.add_argument("--base", default="origin/main")
     parser.add_argument("--body", default="", help="PR body, scanned for the trailer")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument(
+        "--report",
+        type=int,
+        metavar="N",
+        help="replay the check over the last N landed changes (merge OR squash) and print the flag rate; "
+             "this is the measurement a graduation decision needs",
+    )
     args = parser.parse_args(argv[1:])
+
+    if args.report is not None:
+        if args.report < 0:
+            # `git log -n -1` is not "one"; it is unlimited. A negative N would
+            # silently replay all of history rather than fail.
+            print("roadmap-ownership: --report N must be >= 0")
+            return 2
+        try:
+            roadmap_rel = str(
+                resolve_roadmap(args.repo).relative_to(Path(args.repo).resolve())
+            )
+            rows = replay(args.repo, args.report, roadmap_rel, args.base)
+        except RoadmapUnreadable as exc:
+            print(f"roadmap-ownership: CANNOT EVALUATE — {exc}")
+            return 2
+        print(render_report(rows))
+        # Nothing scored means the instrument failed to produce its number.
+        # Exiting 0 there would read as "measured, and the answer was fine".
+        # This includes the empty case (`--report 0`): a report over zero
+        # changes is not a measurement, and the CHANGELOG promises fail-closed
+        # without an exception for it.
+        if not any(not r.skipped_reason for r in rows):
+            return 2
+        return 0
 
     try:
         found = audit(args.repo, args.base)
