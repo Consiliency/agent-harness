@@ -73,7 +73,7 @@ def build_prompt(
                 "If this phase discovers steering that changes downstream work, amend the phase roadmap at the nearest downstream phase "
                 "that is not already executing. Do not treat an older downstream phase plan as authoritative after a roadmap amendment. "
                 "Treat ignored, private, raw-data, credential, and evidence-source files as read-protected unless the phase plan or source bundle explicitly allowlists the exact path or glob for read access. "
-                "Before closeout, run `git status --short` and classify every dirty path against the active owned-file contract; report a repairable dirty_worktree_conflict instead of completion for unowned generated files, unauthorized ignored outputs, or outputs derived from unauthorized raw/private reads."
+                "Before closeout, run `git status --short` and classify every dirty path against the active owned-file contract; report a repairable dirty_worktree_conflict instead of completion for unowned generated files or outputs derived from unauthorized raw/private reads. For IGNORED paths do not judge by hand: run `python -m phase_loop_runtime.closeout_classifier --repo .` and block only when it exits 1 (unknown ignored outputs); exit 0 means the runner and its own toolchain produced them and they must not block a verified owned diff (agent-harness#670), and exit 2 (probe failed) blocks."
             ),
             ),
             delegation_request=delegation_request,

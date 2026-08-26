@@ -81,9 +81,14 @@ adapter mode overrides the orchestrator-only interactive workflow below.
   process is the context reset. There is no human in this loop to reset it.
 - Before that closeout, run `git status --short` and classify dirty paths
   against the active plan's owned files and control artifacts. If a generated
-  path is unowned, ignored without explicit allowlist/staging policy, or
-  derived from unauthorized raw/private inputs, stop with
-  `dirty_worktree_conflict` instead of reporting completion. But when required
+  path is unowned or derived from unauthorized raw/private inputs, stop with
+  `dirty_worktree_conflict` instead of reporting completion. For IGNORED paths do
+  not judge by hand: run `python -m phase_loop_runtime.closeout_classifier --repo .`
+  and block only when it exits 1 (unknown ignored outputs). Exit 0 means every
+  ignored path was produced by the runner or its own toolchain (`.phase-loop/**`,
+  pytest/Ruff caches, `__pycache__`, egg-info, `.venv`) -- the governed command's
+  own footprint, which must never block a verified owned diff (agent-harness#670).
+  Exit 2 means the probe failed: treat that as blocking. But when required
   verification passed and the ONLY uncommitted paths are phase-owned outputs this
   run was not authorized to commit, report `awaiting_phase_closeout` and let the
   runner's graduated closeout gate commit them — reserve `dirty_worktree_conflict`

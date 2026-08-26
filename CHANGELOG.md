@@ -6,6 +6,23 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### closeout: the runner's own footprint stops blocking closeout (Consiliency/agent-harness#670)
+
+- New `classify_ignored_output` / `audit_ignored_outputs` in `closeout_classifier`, plus
+  `python -m phase_loop_runtime.closeout_classifier --repo .` (exit 0 = no unknown ignored
+  outputs, 1 = unknown present, 2 = probe failed). Typed provenance:
+  **runner_owned** (taken from the runtime's own `EXCLUDE_ENTRIES`, not a second list),
+  **tool_cache** (pytest/Ruff/mypy caches, `__pycache__`, egg-info, `.venv`, `node_modules`),
+  **unknown_ignored** — which still blocks, deny-by-default.
+- The closeout audit contract now reads that verdict instead of judging ignored paths by
+  hand, in the runtime prompt and in the claude/codex/gemini `execute-phase` skills.
+  An executor followed the old prose *correctly* and reported
+  `dirty_worktree_conflict` for `.phase-loop/**`, `.ruff_cache/`, `.pytest_cache/` and
+  `.venv/` while its 13-file tracked diff was owned and verified — artifacts the governed
+  command had just created. Blocking there is a loop: the repair turn re-runs the command
+  and recreates them.
+- Verified against the reported run's actual worktree: the audit now exits 0 there.
+
 ### roadmap-ownership: name the phase worth narrowing (Consiliency/agent-harness#683)
 
 - The `--report` counterfactual now selects the phase with the most **solely-claimed**
