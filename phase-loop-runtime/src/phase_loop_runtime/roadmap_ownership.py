@@ -649,26 +649,26 @@ def render_report(rows: Sequence[ReplayRow]) -> str:
         # Exact, not an estimate: `phases` aggregates the owners of a row's
         # notable paths, so a row survives the counterfactual iff some OTHER
         # phase still claims one of them.
-        dominant = _most_relievable_phase(flagged, counts)
-        remaining = [r for r in flagged if set(r.phases) - {dominant}]
+        relievable = _most_relievable_phase(flagged, counts)
+        remaining = [r for r in flagged if set(r.phases) - {relievable}]
         rpct = 100.0 * len(remaining) / len(scored)
-        lines += ["", f"  counterfactual — if {dominant} claimed nothing:"]
+        lines += ["", f"  counterfactual — if {relievable} claimed nothing:"]
         lines.append(f"    would STILL flag: {len(remaining)}/{len(scored)} ({rpct:.0f}%)")
         if len(remaining) == len(flagged):
             # Removing it changes nothing, so it is not even necessary --
             # calling it necessary here would misdirect the remediation.
             lines.append(
-                f"    ^ {dominant} is NOT the binding constraint: every flagged "
+                f"    ^ {relievable} is NOT the binding constraint: every flagged "
                 "change is claimed by some other phase as well."
             )
         elif remaining:
             lines.append(
-                f"    ^ narrowing {dominant} is NECESSARY but NOT SUFFICIENT — "
+                f"    ^ narrowing {relievable} is NECESSARY but NOT SUFFICIENT — "
                 f"{len(remaining)} change(s) are claimed by other phases too."
             )
         else:
             lines.append(
-                f"    ^ {dominant} is the sole cause; narrowing it alone would "
+                f"    ^ {relievable} is the sole cause; narrowing it alone would "
                 "clear the gate."
             )
     if skipped:

@@ -603,9 +603,16 @@ class TestCounterfactualPicksTheRelievablePhase(unittest.TestCase):
                 for i in range(23)]
         rows += [ro.ReplayRow(f"{i+90:040x}", f"m{i}", 2, 0, ("GOVLEAN", "OTHER"))
                  for i in range(10)]
+        # The 7 scored-but-unflagged rows matter: the rate's denominator is
+        # SCORED rows, not flagged ones. Without them the fixture reports 10/33
+        # while the published figure is 10/40, so a test named for the real
+        # shape would not have reproduced it.
+        rows += [ro.ReplayRow(f"{i+200:040x}", f"clean{i}", 0, 0, ())
+                 for i in range(7)]
         out = ro.render_report(rows)
         self.assertIn("if GOVLEAN claimed nothing", out)
-        self.assertIn("would STILL flag: 10/33", out)
+        self.assertIn("would STILL flag: 10/40 (25%)", out)
+        self.assertIn("would have flagged: 33/40 (82%)", out)
 
 
 class TestReportCliContract(unittest.TestCase):
