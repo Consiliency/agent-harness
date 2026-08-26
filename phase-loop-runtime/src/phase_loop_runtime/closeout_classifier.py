@@ -223,11 +223,22 @@ def audit_ignored_outputs(repo: Path) -> dict:
     ``blocks`` is True. "Could not read the tree" must never present as clean.
     """
 
-    out = subprocess.run(
-        ["git", "-C", str(repo), "status", "--porcelain", "--ignored=matching",
-         "--untracked-files=all"],
-        capture_output=True, text=True, check=False,
-    )
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo), "status", "--porcelain", "--ignored=matching",
+             "--untracked-files=all"],
+            capture_output=True, text=True, check=False,
+        )
+    except OSError as exc:
+        # No git binary at all. Still fail closed, but as a typed probe failure
+        # rather than a traceback -- "could not run git" and "unknown outputs"
+        # are different facts and the caller has to tell them apart.
+        return {
+            "probe_failed": True,
+            "blocks": True,
+            "reason": f"git unavailable: {type(exc).__name__}",
+            RUNNER_OWNED: [], TOOL_CACHE: [], UNKNOWN_IGNORED: [],
+        }
     if out.returncode != 0:
         return {
             "probe_failed": True,
@@ -236,6 +247,7 @@ def audit_ignored_outputs(repo: Path) -> dict:
             RUNNER_OWNED: [], TOOL_CACHE: [], UNKNOWN_IGNORED: [],
         }
     buckets: dict = {RUNNER_OWNED: [], TOOL_CACHE: [], UNKNOWN_IGNORED: []}
+    blocking = False
     for line in out.stdout.splitlines():
         # Only `!!` entries are ignored; tracked/untracked dirt is graded by the
         # ownership contract, not by this audit.
@@ -244,9 +256,14 @@ def audit_ignored_outputs(repo: Path) -> dict:
         path = line[3:].strip().strip('"')
         if not path:
             continue
-        buckets[classify_ignored_output(path).provenance].append(path)
+        verdict = classify_ignored_output(path)
+        buckets[verdict.provenance].append(path)
+        # Consume the verdict's own `blocks` rather than re-deriving it from
+        # bucket membership: two seams for one fact drift the moment a new
+        # provenance is added.
+        blocking = blocking or verdict.blocks
     buckets["probe_failed"] = False
-    buckets["blocks"] = bool(buckets[UNKNOWN_IGNORED])
+    buckets["blocks"] = blocking
     buckets["reason"] = (
         f"{len(buckets[UNKNOWN_IGNORED])} ignored output(s) with no recognised producer"
         if buckets[UNKNOWN_IGNORED]

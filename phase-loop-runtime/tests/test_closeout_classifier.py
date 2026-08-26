@@ -226,6 +226,30 @@ class TestIgnoredOutputAudit(unittest.TestCase):
             self.assertTrue(result["probe_failed"])
             self.assertTrue(result["blocks"])
 
+    def test_a_missing_git_binary_is_a_typed_probe_failure_not_a_traceback(self):
+        """"Could not run git" and "unknown outputs present" are different facts
+        and the caller must be able to tell them apart (Fable seat).
+
+        Mutation that must kill this: drop the OSError handler, which raises
+        FileNotFoundError out of the audit instead of returning a verdict.
+        """
+        import phase_loop_runtime.closeout_classifier as cc
+
+        def boom(*a, **k):
+            raise FileNotFoundError("no git here")
+
+        original = cc.subprocess.run
+        cc.subprocess.run = boom
+        try:
+            with TemporaryDirectory() as tmp:
+                result = cc.audit_ignored_outputs(Path(tmp))
+                self.assertTrue(result["probe_failed"])
+                self.assertTrue(result["blocks"])
+                self.assertIn("git unavailable", result["reason"])
+                self.assertEqual(main(["--repo", tmp]), 2)
+        finally:
+            cc.subprocess.run = original
+
     def test_the_cli_exit_codes_carry_the_verdict(self):
         with TemporaryDirectory() as tmp:
             repo = self._repo(tmp)

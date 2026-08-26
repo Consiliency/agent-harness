@@ -92,7 +92,8 @@ adapter mode overrides the orchestrator-only interactive workflow below.
   verification passed and the ONLY uncommitted paths are phase-owned outputs this
   run was not authorized to commit, report `awaiting_phase_closeout` and let the
   runner's graduated closeout gate commit them — reserve `dirty_worktree_conflict`
-  for unowned, unauthorized-ignored, or overlapping-unrelated paths.
+  for unowned paths, ignored paths the audit typed as unknown, or
+  overlapping-unrelated paths.
 
 Follow-on executor for `/claude-plan-phase`. Consumes the plan doc + TaskCreate'd lane tasks and drives them to completion: root lanes first, parallel lanes in parallel, auto-merge on green, retry-once on failure, halt-all on second failure.
 
