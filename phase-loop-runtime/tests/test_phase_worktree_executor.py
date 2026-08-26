@@ -11,6 +11,7 @@ concurrent cross-phase dispatch safe:
 """
 from __future__ import annotations
 
+import inspect
 import os
 import stat
 import subprocess
@@ -268,7 +269,19 @@ def test_teardown_removes_worktree_and_branch(tmp_path):
 
     handle = create_phase_worktree(repo, phase="verify", target_branch=branch, base_sha=base)
     path = handle.worktree_path
-    teardown_phase_worktree(repo, handle)
+    if "supervisor_receipt" in inspect.signature(teardown_phase_worktree).parameters:
+        teardown_phase_worktree(
+            repo,
+            handle,
+            supervisor_receipt={
+                "generation": handle.generation,
+                "process_tree_empty": True,
+                "receipt_binding": handle.lease_authority.identity,
+                "terminal_status": "complete",
+            },
+        )
+    else:
+        teardown_phase_worktree(repo, handle)
 
     assert not path.exists()
     listed = _git(repo, "branch", "--list", handle.temp_branch).stdout.strip()
