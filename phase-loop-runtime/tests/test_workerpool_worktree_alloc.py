@@ -109,3 +109,6 @@ def test_phase_wave_assignments_keep_creator_generation_identity():
     for job in observed_jobs:
         assert job.worktree_handle is created_handles[job.phase]
         assert job.spec.wrapped_cwd == str(created_handles[job.phase].worktree_path)
+        assert job.worktree_handle.generation == created_handles[job.phase].generation
+        assert job.worktree_handle.temp_branch == created_handles[job.phase].temp_branch
+        assert job.worktree_handle.lease_authority.identity == created_handles[job.phase].lease_authority.identity

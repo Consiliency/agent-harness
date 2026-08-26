@@ -451,10 +451,15 @@ def test_sched_create_preserves_committed_generation_and_mints_replacement(tmp_p
     with _isolated_worktree_root(tmp_path):
         first = create_phase_worktree(repo, phase="extract", target_branch=branch, base_sha=base)
         _commit_in_worktree(first.worktree_path, "src/recoverable.py", "kept = True\n", "recoverable")
+        preserved_commit = resolve_base_sha(first.worktree_path)
+        assert preserved_commit != base
+        assert _git(repo, "rev-parse", first.temp_branch).stdout.strip() == preserved_commit
         replacement = create_phase_worktree(repo, phase="extract", target_branch=branch, base_sha=base)
     assert replacement.generation != first.generation
     assert replacement.worktree_path != first.worktree_path
     assert replacement.temp_branch != first.temp_branch
+    assert _git(repo, "rev-parse", first.temp_branch).stdout.strip() == preserved_commit
+    assert _git(first.worktree_path, "rev-parse", "HEAD").stdout.strip() == preserved_commit
     _assert_preserved(repo, first, {"src/recoverable.py": b"kept = True\n"})
 
 
@@ -605,11 +610,56 @@ def test_sched_generation_path_and_branch_collisions_never_reuse_preserved_gener
 
 @require_sched_red
 def test_sched_released_empty_generation_is_reclaimed_and_fresh_generation_launches(tmp_path):
+    import inspect
+
     import phase_loop_runtime.phase_worktree_executor as executor
 
     repo = make_repo(tmp_path)
     branch = _current_branch(repo)
     with _isolated_worktree_root(tmp_path):
+        assert "supervisor_receipt" in inspect.signature(teardown_phase_worktree).parameters
+        for status in (None, "malformed", "stale", "failed", "blocked", "manual", "ambiguous"):
+            preserved = create_phase_worktree(repo, phase=f"preserve-{status or 'missing'}", target_branch=branch, base_sha=resolve_base_sha(repo))
+            preserved_path = preserved.worktree_path / "must-survive.txt"
+            preserved_path.write_bytes(f"{status or 'missing'} receipt\n".encode())
+            receipt = None
+            if status == "malformed":
+                receipt = {"generation": preserved.generation}
+            elif status == "stale":
+                receipt = {
+                    "generation": f"{preserved.generation}-stale",
+                    "process_tree_empty": True,
+                    "receipt_binding": preserved.lease_authority.identity,
+                    "terminal_status": "complete",
+                }
+            elif status is not None:
+                receipt = {
+                    "generation": preserved.generation,
+                    "process_tree_empty": True,
+                    "receipt_binding": preserved.lease_authority.identity,
+                    "terminal_status": status,
+                }
+            rejected = teardown_phase_worktree(repo, preserved, supervisor_receipt=receipt)
+            assert rejected.removed is False, f"{status or 'missing'} closeout removed recoverable state"
+            _assert_preserved(repo, preserved, {"must-survive.txt": f"{status or 'missing'} receipt\n".encode()})
+
+        removal_failure = create_phase_worktree(repo, phase="preserve-removal-failure", target_branch=branch, base_sha=resolve_base_sha(repo))
+        removal_failure_path = removal_failure.worktree_path / "must-survive.txt"
+        removal_failure_path.write_bytes(b"failed removal\n")
+        with patch.object(executor, "_remove_worktree", side_effect=OSError("simulated removal failure")):
+            failed_removal = teardown_phase_worktree(
+                repo,
+                removal_failure,
+                supervisor_receipt={
+                    "generation": removal_failure.generation,
+                    "process_tree_empty": True,
+                    "receipt_binding": removal_failure.lease_authority.identity,
+                    "terminal_status": "complete",
+                },
+            )
+        assert failed_removal.removed is False
+        _assert_preserved(repo, removal_failure, {"must-survive.txt": b"failed removal\n"})
+
         first = create_phase_worktree(repo, phase="extract", target_branch=branch, base_sha=resolve_base_sha(repo))
         removal_observations = []
         original_remove = executor._remove_worktree
@@ -629,6 +679,7 @@ def test_sched_released_empty_generation_is_reclaimed_and_fresh_generation_launc
                     "generation": first.generation,
                     "process_tree_empty": True,
                     "receipt_binding": first.lease_authority.identity,
+                    "terminal_status": "complete",
                 },
             )
         assert removal_observations == [True]
