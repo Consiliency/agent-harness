@@ -17,7 +17,7 @@
       "work_unit_kind": "lane_execute",
       "worktree_assignment": {
         "lane_id": "SL-0",
-        "worktree_path": "<WORKTREE-PATH-REDACTED>",
+        "worktree_path": "<WORKTREE-PATH-REDACTED>/SL-0",
         "isolation_mode": "git_worktree",
         "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       },
@@ -33,7 +33,7 @@
       "work_unit_kind": "lane_execute",
       "worktree_assignment": {
         "lane_id": "SL-1",
-        "worktree_path": "<WORKTREE-PATH-REDACTED>",
+        "worktree_path": "<WORKTREE-PATH-REDACTED>/SL-1",
         "isolation_mode": "git_worktree",
         "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       },
@@ -49,7 +49,7 @@
       "work_unit_kind": "lane_execute",
       "worktree_assignment": {
         "lane_id": "SL-2",
-        "worktree_path": "<WORKTREE-PATH-REDACTED>",
+        "worktree_path": "<WORKTREE-PATH-REDACTED>/SL-2",
         "isolation_mode": "git_worktree",
         "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       },
@@ -65,7 +65,7 @@
       "work_unit_kind": "phase_reducer",
       "worktree_assignment": {
         "lane_id": "SL-3",
-        "worktree_path": "<WORKTREE-PATH-REDACTED>",
+        "worktree_path": "<WORKTREE-PATH-REDACTED>/SL-3",
         "isolation_mode": "git_worktree",
         "base_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       },
