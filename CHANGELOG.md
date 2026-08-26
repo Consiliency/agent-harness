@@ -18,6 +18,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   and normalized downstream; it is never substituted during policy resolution.
 - Policy-derived selection is unchanged: without an operator model, `inherit_default`
   still applies.
+- A blank or whitespace-only `--model` now fails loudly. It passed every `is not None`
+  check and the renderer stripped it and fell through to the provider's HEAVY default,
+  so `--model "$UNSET_VAR"` silently launched `Gemini 3.1 Pro (High)`. Pre-existing, and
+  fixed here because this path now promises an operator pin is never substituted.
 
 ### agy canary: XDG_RUNTIME_DIR is not a customization (Consiliency/agent-harness#711)
 

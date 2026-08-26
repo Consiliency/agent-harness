@@ -188,6 +188,49 @@ class PhaseLoopExecutionPolicyTest(unittest.TestCase):
         self.assertEqual(argv_model, "gemini-3.6-flash-high")
         self.assertNotIn("phase-loop-", argv_model)
 
+    def test_a_blank_operator_model_fails_loudly_instead_of_launching_HEAVY(self):
+        """agent-harness#671 round 2 (codex seat), reproduced before fixing.
+
+        A blank or whitespace-only pin passes every `is not None` check, and the
+        renderer strips it and falls through to the provider's HEAVY default --
+        so `--model "$UNSET_VAR"` silently launched `Gemini 3.1 Pro (High)`
+        instead of failing. Verified byte-identical on clean origin/main, so this
+        is PRE-EXISTING rather than a regression; it is fixed here because this
+        function now promises an operator pin is never substituted, and that
+        promise has to cover the blank case.
+
+        Mutation that must kill this: drop the `.strip()` emptiness check.
+        """
+        for pin in ("", "   ", "\t"):
+            with self.assertRaises(ValueError) as caught:
+                resolve_execution_policy(
+                    action="execute",
+                    executor="gemini",
+                    model_selection=ModelSelection(
+                        profile="execute", model="gemini-3.6-flash", effort="medium",
+                    ),
+                    operator_model=pin,
+                    operator_effort="high",
+                )
+            self.assertIn("empty --model", str(caught.exception))
+
+    def test_omitting_the_operator_model_is_still_fine(self):
+        """The guard must reject BLANK, not absent. `None` means "no override"
+        and must keep working, or the fix breaks every non-override launch.
+
+        Mutation that must kill this: reject `operator_model is None` too.
+        """
+        resolved = resolve_execution_policy(
+            action="execute",
+            executor="gemini",
+            model_selection=ModelSelection(
+                profile="execute", model="gemini-3.6-flash", effort="medium",
+            ),
+            operator_model=None,
+            operator_effort=None,
+        )
+        self.assertNotEqual(resolved.model_source, "CLI/operator override")
+
     def test_policy_derived_gemini_model_still_inherits_the_default(self):
         """The fix must NOT disable inheritance generally -- only stop it
         outranking an operator pin. Without an operator model the policy path is

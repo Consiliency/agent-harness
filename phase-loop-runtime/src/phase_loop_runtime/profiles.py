@@ -774,6 +774,18 @@ def resolve_execution_policy(
             effort_source = source or policy.source
 
     if operator_model is not None:
+        if not operator_model.strip():
+            # agent-harness#671 round 2 (codex seat). A blank or whitespace-only pin is
+            # not a model. It survives every `is not None` check, and the
+            # renderer strips it and falls through to the provider's HEAVY
+            # default -- so `--model "$UNSET_VAR"` silently launches Pro instead
+            # of failing. Pre-existing behaviour, but this function now promises
+            # that an operator pin is never substituted, and a promise that an
+            # invalid pin fails loudly has to hold for the blank case too.
+            raise ValueError(
+                "operator supplied an empty --model; pass a concrete model id "
+                "or omit the flag"
+            )
         policy_model = operator_model
         model_source = "CLI/operator override"
         override_reason = "operator supplied --model"
