@@ -451,10 +451,15 @@ def test_sched_create_preserves_committed_generation_and_mints_replacement(tmp_p
     with _isolated_worktree_root(tmp_path):
         first = create_phase_worktree(repo, phase="extract", target_branch=branch, base_sha=base)
         _commit_in_worktree(first.worktree_path, "src/recoverable.py", "kept = True\n", "recoverable")
+        preserved_commit = resolve_base_sha(first.worktree_path)
+        assert preserved_commit != base
+        assert _git(repo, "rev-parse", first.temp_branch).stdout.strip() == preserved_commit
         replacement = create_phase_worktree(repo, phase="extract", target_branch=branch, base_sha=base)
     assert replacement.generation != first.generation
     assert replacement.worktree_path != first.worktree_path
     assert replacement.temp_branch != first.temp_branch
+    assert _git(repo, "rev-parse", first.temp_branch).stdout.strip() == preserved_commit
+    assert _git(first.worktree_path, "rev-parse", "HEAD").stdout.strip() == preserved_commit
     _assert_preserved(repo, first, {"src/recoverable.py": b"kept = True\n"})
 
 
@@ -605,11 +610,123 @@ def test_sched_generation_path_and_branch_collisions_never_reuse_preserved_gener
 
 @require_sched_red
 def test_sched_released_empty_generation_is_reclaimed_and_fresh_generation_launches(tmp_path):
+    import inspect
+
     import phase_loop_runtime.phase_worktree_executor as executor
 
     repo = make_repo(tmp_path)
     branch = _current_branch(repo)
+
+    def branch_is_addressable(handle):
+        return (
+            subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", f"refs/heads/{handle.temp_branch}"],
+                capture_output=True,
+                text=True,
+            ).returncode
+            == 0
+        )
+
+    assert branch_is_addressable(
+        type("BranchHandle", (), {"temp_branch": branch})()
+    ), "branch addressability helper must be executable before production receipt support exists"
+
     with _isolated_worktree_root(tmp_path):
+        assert "supervisor_receipt" in inspect.signature(teardown_phase_worktree).parameters
+        invalid_receipt_generations = []
+        for status in ("missing", "malformed", "stale", "failed", "blocked", "manual", "ambiguous"):
+            preserved = create_phase_worktree(
+                repo,
+                phase=f"preserve-{status}",
+                target_branch=branch,
+                base_sha=resolve_base_sha(repo),
+            )
+            receipt = None
+            if status == "malformed":
+                receipt = {"generation": preserved.generation}
+            elif status == "stale":
+                receipt = {
+                    "generation": f"{preserved.generation}-stale",
+                    "process_tree_empty": True,
+                    "receipt_binding": f"{preserved.lease_authority.identity}-stale",
+                    "terminal_status": "complete",
+                }
+            elif status != "missing":
+                receipt = {
+                    "generation": preserved.generation,
+                    "process_tree_empty": True,
+                    "receipt_binding": preserved.lease_authority.identity,
+                    "terminal_status": status,
+                }
+            invalid_receipt_generations.append((status, preserved, receipt))
+
+        invalid_removal_attempts = []
+
+        def invalid_receipt_must_not_remove(repo_arg, path):
+            invalid_removal_attempts.append((repo_arg, path))
+            raise AssertionError("invalid receipt reached worktree removal")
+
+        with patch.object(executor, "_remove_worktree", side_effect=invalid_receipt_must_not_remove):
+            rejected_generations = [
+                (status, preserved, teardown_phase_worktree(repo, preserved, supervisor_receipt=receipt))
+                for status, preserved, receipt in invalid_receipt_generations
+            ]
+        assert invalid_removal_attempts == []
+        for status, preserved, rejected in rejected_generations:
+            assert rejected.removed is False, f"{status} empty generation was removed without valid receipt"
+            assert preserved.worktree_path.exists(), f"{status} receipt lost the recoverable worktree"
+            assert branch_is_addressable(preserved), f"{status} receipt lost the recoverable branch"
+            assert _git(repo, "rev-parse", preserved.temp_branch).stdout.strip() == preserved.base_sha
+
+        removal_failure = create_phase_worktree(
+            repo,
+            phase="preserve-removal-failure",
+            target_branch=branch,
+            base_sha=resolve_base_sha(repo),
+        )
+        removal_attempts = []
+
+        def fail_real_removal(repo_arg, path):
+            removal_attempts.append((repo_arg, path))
+            raise OSError("simulated removal failure")
+
+        with patch.object(executor, "_remove_worktree", side_effect=fail_real_removal):
+            failed_removal = teardown_phase_worktree(
+                repo,
+                removal_failure,
+                supervisor_receipt={
+                    "generation": removal_failure.generation,
+                    "process_tree_empty": True,
+                    "receipt_binding": removal_failure.lease_authority.identity,
+                    "terminal_status": "complete",
+                },
+            )
+        assert removal_attempts == [(repo, removal_failure.worktree_path)]
+        assert failed_removal.removed is False
+        assert removal_failure.worktree_path.exists()
+        assert branch_is_addressable(removal_failure)
+        assert _git(repo, "rev-parse", removal_failure.temp_branch).stdout.strip() == removal_failure.base_sha
+
+        nonempty = create_phase_worktree(
+            repo,
+            phase="preserve-nonempty",
+            target_branch=branch,
+            base_sha=resolve_base_sha(repo),
+        )
+        (nonempty.worktree_path / "must-survive.txt").write_bytes(b"nonempty inventory\n")
+        retained_nonempty = teardown_phase_worktree(
+            repo,
+            nonempty,
+            supervisor_receipt={
+                "generation": nonempty.generation,
+                "process_tree_empty": True,
+                "receipt_binding": nonempty.lease_authority.identity,
+                "terminal_status": "complete",
+            },
+        )
+        assert retained_nonempty.removed is False
+        _assert_preserved(repo, nonempty, {"must-survive.txt": b"nonempty inventory\n"})
+
         first = create_phase_worktree(repo, phase="extract", target_branch=branch, base_sha=resolve_base_sha(repo))
         removal_observations = []
         original_remove = executor._remove_worktree
@@ -629,6 +746,7 @@ def test_sched_released_empty_generation_is_reclaimed_and_fresh_generation_launc
                     "generation": first.generation,
                     "process_tree_empty": True,
                     "receipt_binding": first.lease_authority.identity,
+                    "terminal_status": "complete",
                 },
             )
         assert removal_observations == [True]

@@ -1,6 +1,8 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3]
 from phase_loop_runtime.lane_scheduler import select_ready_lane_wave, validate_concurrent_lane_ownership, worktree_assignments_for_wave
@@ -236,3 +238,27 @@ def test_declared_work_unit_kind_is_authoritative_at_lane_selection(tmp_path):
     assert reducer_lane.execution_policy.work_unit_kind == "lane_execute"
     executor_decision = select_ready_lane_wave(parse_phase_plan_ir(executor_override), mode="serialized")
     assert executor_decision.ready_wave.work_unit_kinds == {"SL-0": "lane_execute"}
+
+    from phase_loop_runtime import runner
+
+    observed = []
+
+    def observe_launch(_repo, _roadmap, _plan, identity, *, policy=None, **_kwargs):
+        observed.append((identity, dict(policy or {})))
+        return WorkUnitState(identity=identity, status="running", policy=dict(policy or {}))
+
+    with patch("phase_loop_runtime.runner.launch_work_unit_attempt", side_effect=observe_launch):
+        outcome = runner._launch_ready_lane_wave(
+            repo=repo,
+            roadmap=repo / "specs" / "phase-plans-v1.md",
+            plan=executor_override,
+            phase="WAVESCHED",
+            mode="serialized",
+            action="execute",
+            selection=SimpleNamespace(model="codex", effort="high", source="test", override_reason=None),
+            dry_run=False,
+        )
+
+    assert outcome["phase_status"] == "executing"
+    assert [(identity.lane_id, identity.kind) for identity, _ in observed] == [("SL-0", "lane_execute")]
+    assert observed[0][1]["work_unit_kind"] == "lane_execute"

@@ -703,4 +703,7 @@ def test_supervisor_retains_lease_after_executor_parent_exits(tmp_path, mutation
     assert mutated["restored_reaper"] is True
     assert safe["grandchild_released_after_done"] is True
     assert mutated["grandchild_released_after_done"] is True
+    assert "waitpid(-1" not in inspect.getsource(supervisor_type.reap_descendants).replace(" ", ""), (
+        "two concurrent worker supervisors must wait only for their own descendants"
+    )
     assert unsafe

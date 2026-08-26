@@ -3736,8 +3736,15 @@ def test_nested_runner_dispatch_threads_one_run_identity():
         commit_fixture_paths(repo, "add run identity plan", roadmap, plan, peer_plan)
         observed_jobs = []
         observed_launches = []
+        observed_locks = []
 
         real_pool = worker_pool.run_phase_worker_pool
+        real_lock = runner.DispatchLock
+
+        class ObserveDispatchLock(real_lock):
+            def __init__(self, *args, **kwargs):
+                observed_locks.append(kwargs.get("caller_run_id"))
+                super().__init__(*args, **kwargs)
 
         def observe_pool(_repo, _roadmap, jobs, **kwargs):
             observed_jobs.extend(jobs)
@@ -3751,6 +3758,7 @@ def test_nested_runner_dispatch_threads_one_run_identity():
             patch("phase_loop_runtime.runner.run_auth_preflight", return_value=AuthPreflightResult(ok=True, metadata={})),
             patch("phase_loop_runtime.runner.run_phase_worker_pool", side_effect=observe_pool),
             patch("phase_loop_runtime.worker_pool.launch_with_spec", side_effect=observe_launch_with_spec),
+            patch("phase_loop_runtime.runner.DispatchLock", ObserveDispatchLock),
             patch("phase_loop_runtime.injection._resolve_pack_skill_dirs", return_value={}),
         ):
             runner.run_loop(
@@ -3763,3 +3771,4 @@ def test_nested_runner_dispatch_threads_one_run_identity():
     assert {job.phase for job in observed_jobs} == {"RUNNER", "PEER"}
     assert {job.caller_run_id for job in observed_jobs} == {"sched-parent-run"}
     assert {kwargs["caller_run_id"] for kwargs in observed_launches} == {"sched-parent-run"}
+    assert observed_locks and set(observed_locks) == {"sched-parent-run"}

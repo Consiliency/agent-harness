@@ -18,6 +18,7 @@ reachable production defect. These tests pin the helper's contract directly.
 from __future__ import annotations
 
 import tempfile
+from dataclasses import fields
 from pathlib import Path
 from unittest.mock import patch
 
@@ -72,10 +73,16 @@ def test_no_diff_result_requires_an_explicit_artifact_verification_skip():
         commit_fixture_paths(repo, "add no-diff plan", roadmap, plan)
         verification_calls = []
 
+        assert "changed_paths" in {field.name for field in fields(LaunchResult)}, (
+            "live launch results must carry an exact changed-path signal; "
+            "tests may not fabricate it after construction"
+        )
+
         def no_diff_launch(spec, **_kwargs):
-            result = LaunchResult(
+            return LaunchResult(
                 command=spec.command,
                 returncode=0,
+                changed_paths=(),
                 output=build_fake_automation_output(
                     status="complete",
                     verification_status="passed",
@@ -84,8 +91,6 @@ def test_no_diff_result_requires_an_explicit_artifact_verification_skip():
                 ),
                 executor=spec.executor,
             )
-            object.__setattr__(result, "changed_paths", ())
-            return result
 
         def observe_verification(*args, **kwargs):
             verification_calls.append(kwargs.get("phase_alias"))

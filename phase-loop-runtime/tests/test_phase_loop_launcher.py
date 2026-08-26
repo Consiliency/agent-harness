@@ -1765,6 +1765,7 @@ def test_launcher_accepts_explicit_nonserialized_lease_authority():
         launch_lease_fd = os.open(lease_path, os.O_RDWR | os.O_CREAT, 0o600)
         fcntl.flock(launch_lease_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         launch_custody_path = root / "launch-custody.json"
+        heartbeat_path = root / "executor.heartbeat.json"
 
         class InjectedLockedDescriptor:
             generation = "g-launch"
@@ -1804,6 +1805,9 @@ def test_launcher_accepts_explicit_nonserialized_lease_authority():
                     result_box["result"] = launch(
                         [sys.executable, "-c", helper, str(launch_lease_fd), str(launch_custody_path)],
                         log_path=root / "executor.log",
+                        heartbeat_path=heartbeat_path,
+                        heartbeat_interval_seconds=0,
+                        stream_output=True,
                         lease_authority=InjectedLockedDescriptor(launch_lease_fd),
                     )
                 except BaseException as exc:  # asserted below in the frozen RED state
@@ -1868,6 +1872,7 @@ def test_launcher_accepts_explicit_nonserialized_lease_authority():
             assert result.supervisor_receipt["generation"] == "g-launch"
             assert result.supervisor_receipt["pass_fds"] == [inherited_lease_fd]
             assert result.supervisor_receipt["process_tree_empty"] is True
+            assert heartbeat_path.exists(), "lease supervision must retain the normal heartbeat path"
             with pytest.raises(ProcessLookupError):
                 os.kill(grandchild_pid, 0)
             contender = os.open(lease_path, os.O_RDWR)
