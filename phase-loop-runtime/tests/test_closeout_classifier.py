@@ -172,6 +172,60 @@ class TestIgnoredOutputProvenance(unittest.TestCase):
             UNKNOWN_IGNORED)
 
 
+class TestTheAuditIsReachableWhereItIsPrescribed(unittest.TestCase):
+    """Codex seat: the module form does not run on the primary install path.
+
+    `uv tool install` isolates the package, so `python -m phase_loop_runtime...`
+    fails to import — and the closeout contract reads that exit 1 as "unknown
+    ignored outputs". An audit instruction with only a module form would
+    therefore recreate the false blocker on the SUPPORTED install.
+    """
+
+    def test_the_console_entrypoint_target_exists_and_takes_no_arguments(self):
+        """A `[project.scripts]` target is called with NO arguments. Pointing it
+        at `main(argv)` would TypeError on first real use, in the isolated
+        install where nobody is watching.
+
+        Mutation that must kill this: point the entrypoint at `main`.
+        """
+        import inspect
+
+        import phase_loop_runtime.closeout_classifier as cc
+
+        # src/phase_loop_runtime/x.py -> parents[2] is the package root that
+        # holds pyproject.toml. Skip under an installed (site-packages) layout,
+        # where no source tree exists to assert against.
+        package_root = Path(cc.__file__).parents[2]
+        pyproject_path = package_root / "pyproject.toml"
+        if not pyproject_path.exists():
+            self.skipTest("installed layout: no source pyproject.toml to check")
+        pyproject = pyproject_path.read_text()
+        self.assertIn(
+            'phase-loop-closeout-audit = "phase_loop_runtime.closeout_classifier:console_main"',
+            pyproject,
+            "the audit must be reachable as a console command, not only as a module",
+        )
+        target = getattr(cc, "console_main", None)
+        self.assertIsNotNone(target, "declared entrypoint target must exist")
+        self.assertEqual(len(inspect.signature(target).parameters), 0)
+
+    def test_every_prose_surface_prescribes_the_console_command(self):
+        """The instruction and the reachable command must agree. They did not:
+        the prose named a module form that cannot run where the tool is
+        installed.
+        """
+        import phase_loop_runtime.closeout_classifier as cc
+
+        root = Path(cc.__file__).parents[3]
+        surfaces = sorted(root.glob("skills-src/*/*-execute-phase/SKILL.md"))
+        surfaces = [p for p in surfaces if "closeout_classifier" in p.read_text()]
+        if not surfaces:
+            self.skipTest("installed layout: no skills-src tree to check")
+        for path in surfaces:
+            body = path.read_text()
+            self.assertIn("phase-loop-closeout-audit --repo .", body, path.name)
+
+
 class TestProvenanceCannotBeSpoofed(unittest.TestCase):
     """Codex seat: provenance was inferred from path components alone.
 

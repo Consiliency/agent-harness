@@ -9,8 +9,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 ### closeout: the runner's own footprint stops blocking closeout (Consiliency/agent-harness#670)
 
 - New `classify_ignored_output` / `audit_ignored_outputs` in `closeout_classifier`, plus
-  `python -m phase_loop_runtime.closeout_classifier --repo .` (exit 0 = no unknown ignored
-  outputs, 1 = unknown present, 2 = probe failed). Typed provenance:
+  a new `phase-loop-closeout-audit` console command (exit 0 = no unknown ignored outputs,
+  1 = unknown present, 2 = probe failed). A console entrypoint, not just the module
+  form: `uv tool install` isolates the package, so `python -m phase_loop_runtime...`
+  fails to import there and the closeout contract reads that exit 1 as "unknown ignored
+  outputs" — an audit reachable only as a module would recreate the false blocker on the
+  primary install path. Typed provenance:
   **runner_owned** (taken from the runtime's own `EXCLUDE_ENTRIES`, not a second list),
   **tool_cache** (pytest/Ruff/mypy caches, `__pycache__`, egg-info, `.venv`, `node_modules`),
   **unknown_ignored** — which still blocks, deny-by-default. A trusted name only

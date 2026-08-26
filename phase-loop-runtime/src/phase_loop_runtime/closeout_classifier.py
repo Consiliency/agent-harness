@@ -317,5 +317,23 @@ def main(argv: list[str]) -> int:
     return 1 if result["blocks"] else 0
 
 
+def console_main() -> int:
+    """Console-script entrypoint (``phase-loop-closeout-audit``).
+
+    A ``[project.scripts]`` target is invoked with NO arguments, so it cannot be
+    ``main`` directly -- that signature takes an argv list.
+
+    This exists because the module form does not work on the primary
+    installation path: `uv tool install` puts the package in an isolated
+    environment where `python -m phase_loop_runtime...` fails to import. Under
+    the closeout contract that failure exits 1, which the contract reads as
+    "unknown ignored outputs" -- so an audit instruction that only had a module
+    form would recreate the very false blocker this closes, on the supported
+    install.
+    """
+
+    return main(sys.argv[1:])
+
+
 if __name__ == "__main__":  # pragma: no cover - thin argv shim
     raise SystemExit(main(sys.argv[1:]))
