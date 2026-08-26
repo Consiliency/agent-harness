@@ -111,13 +111,27 @@ def _run_one(repo: Path, roadmap: Path, job: PhaseWorkerJob) -> PhaseWorkerResul
     )
     summary = {
         "phase": job.phase,
-        "terminal_status": "blocked" if result.failed else "complete",
-        "verification_status": "blocked" if result.failed else "passed",
         "returncode": result.returncode,
         "executor": result.executor,
         "log_path": result.log_path,
         "supervisor_receipt": result.supervisor_receipt,
     }
+    if job.worktree_handle is None:
+        summary.update(
+            {
+                "terminal_status": "blocked" if result.failed else "complete",
+                "verification_status": "blocked" if result.failed else "passed",
+                "status_source": "legacy_returncode",
+            }
+        )
+    else:
+        summary.update(
+            {
+                "terminal_status": "blocked" if result.failed else "unknown",
+                "verification_status": "blocked" if result.failed else "not_run",
+                "status_source": "launch_failure" if result.failed else "awaiting_trusted_closeout",
+            }
+        )
     if result.failed and job.worktree_handle is not None:
         handle = job.worktree_handle
         if isinstance(handle, dict):

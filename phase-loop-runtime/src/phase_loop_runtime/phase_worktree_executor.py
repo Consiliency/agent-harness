@@ -455,16 +455,20 @@ def reclaim_phase_worktree(repo: Path, handle: PhaseWorktreeHandle) -> WorktreeR
     authority = handle.lease_authority
     if (
         authority is None
-        or handle.lease_identity != authority.identity
-        or authority.generation != handle.generation
+        or handle.lease_identity != getattr(authority, "identity", None)
+        or getattr(authority, "generation", None) != handle.generation
+        or not callable(getattr(authority, "is_open", None))
     ):
         return WorktreeReclamationResult(False, "lease_identity_drift")
     if authority.is_open():
         return WorktreeReclamationResult(False, "live_lease")
+    lease_path = getattr(authority, "path", None)
+    if not isinstance(lease_path, Path):
+        return WorktreeReclamationResult(False, "lease_identity_drift")
     if not _supports_safe_reclamation(handle.worktree_path):
         return WorktreeReclamationResult(False, "unsupported_filesystem")
     try:
-        fd = os.open(authority.path, os.O_RDWR | os.O_CREAT, 0o600)
+        fd = os.open(lease_path, os.O_RDWR | os.O_CREAT, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:

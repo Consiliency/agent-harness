@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 import uuid
@@ -177,7 +178,7 @@ from .pipeline_adapter.flag import (
 from .phase_worktree_executor import (
     create_phase_worktree,
     current_branch,
-    integrate_phase_worktree,
+    reclaim_phase_worktree,
     resolve_base_sha,
     teardown_phase_worktree,
     transfer_phase_worktree_dirty,
@@ -4661,10 +4662,10 @@ def run_loop(
             per-roadmap DispatchLock still guards separate runner processes.
             """
             nonlocal alias, concurrent_exec_repo, phase_cycles_completed
-            # A committing closeout always transports the real executor's dirty
-            # owned work before parent reduction. ``push`` is the CLI default, so
-            # it must not depend on an opt-in environment flag.
-            real_exec_integration = closeout_mode in {"commit", "push"} or concurrent_real_exec_integration_enabled()
+            # ``push`` is the CLI default, so its dirty transport must not depend
+            # on an opt-in environment flag. ``commit`` retains its legacy
+            # committed-only behavior until that flag is explicitly enabled.
+            real_exec_integration = closeout_mode == "push" or concurrent_real_exec_integration_enabled()
             # Reality-reconcile (no-op until RECONCILE/#129 lands) before readiness.
             reconciled = reconcile_against_git_reality(repo, roadmap, dict(classifications))
             waves = tuple(iter_waves(roadmap))
@@ -4765,6 +4766,14 @@ def run_loop(
                         results.append(result)
                         worker = worker_by_phase[ready_phase]
                         worker_summary = getattr(worker, "terminal_summary", {})
+                        trusted_closeout = _trusted_concurrent_worker_closeout(
+                            result,
+                            preps[ready_phase].spec,
+                        )
+                        if isinstance(worker_summary, dict):
+                            worker_summary.update(trusted_closeout)
+                        else:
+                            worker_summary = trusted_closeout
                         worker_terminal_status = (
                             worker_summary.get("terminal_status") if isinstance(worker_summary, dict) else None
                         )
@@ -4777,13 +4786,19 @@ def run_loop(
                             and not result.failed
                             and worker_terminal_status == "complete"
                             and worker_verification_status == "passed"
+                            and worker_summary.get("closeout_trusted") is True
+                            and ownership.valid
+                        )
+                        can_transport_awaiting_closeout = (
+                            real_exec_integration
+                            and worker_summary.get("bare_awaiting_closeout") is True
                             and ownership.valid
                         )
                         parent_reduced = False
                         # Bring the child's work onto the pipeline branch BEFORE
                         # finalize — finalize's closeout/reconcile run on the main
                         # repo, so the work must be present there first.
-                        if not can_reduce:
+                        if not can_reduce and not can_transport_awaiting_closeout:
                             # Failed, blocked, manual, ambiguous, and invalid-ownership
                             # generations remain exact recovery material; no child bytes
                             # may cross into the parent before finalization.
@@ -4798,18 +4813,19 @@ def run_loop(
                                 metadata={
                                     "terminal_status": worker_terminal_status,
                                     "verification_status": worker_verification_status,
+                                    "closeout_trusted": worker_summary.get("closeout_trusted"),
                                     "ownership_valid": ownership.valid,
                                     "preserved_branch": handles[ready_phase].temp_branch,
                                 },
                             )
-                        elif real_exec_integration:
+                        else:
                             # Real executors leave verified work DIRTY in the
                             # worktree and emit awaiting_phase_closeout; the parent
                             # closeout commits it. Transport the dirty work onto
                             # main as UNSTAGED changes so finalize's existing,
                             # ownership-gated closeout commits it — integrate
                             # (committed-only merge) would be a no-op and lose it.
-                            transfer = transfer_phase_worktree_dirty(
+                            transfer = _transfer_phase_worktree_dirty_for_reduction(
                                 repo,
                                 handles[ready_phase],
                                 commit_message=f"phase-loop sched: transport {ready_phase}",
@@ -4852,29 +4868,6 @@ def run_loop(
                                         "preserved_branch": handles[ready_phase].temp_branch,
                                     },
                                 )
-                        else:
-                            integration = integrate_phase_worktree(
-                                repo, handles[ready_phase], message=f"phase-loop sched: integrate {ready_phase}"
-                            )
-                            if integration.conflict:
-                                # The ownership gate should make this impossible; if it
-                                # happens the gate was bypassed, so KEEP the temp branch
-                                # (work preserved for diagnosis) instead of force-deleting.
-                                preserve_branches.add(ready_phase)
-                                _append_coordinator_event(
-                                    repo=repo,
-                                    roadmap=roadmap,
-                                    phase=ready_phase,
-                                    action="coordinator.concurrent_integration_conflict",
-                                    status=classifications.get(ready_phase, "unknown"),
-                                    selection=selection,
-                                    metadata={
-                                        "integration": integration.to_json(),
-                                        "preserved_branch": handles[ready_phase].temp_branch,
-                                    },
-                                )
-                            else:
-                                parent_reduced = integration.integrated
                         alias = ready_phase
                         wave_outcome = _finalize_phase_launch(preps[ready_phase], result)
                         if (
@@ -4937,6 +4930,9 @@ def run_loop(
                     authority = getattr(handle, "lease_authority", None)
                     if authority is not None and getattr(authority, "is_open", lambda: False)():
                         authority.close()
+                for ready_phase, handle in handles.items():
+                    if ready_phase not in preserve_branches:
+                        reclaim_phase_worktree(repo, handle)
             return "halt" if halt else "dispatched"
 
         while iterations_remaining > 0 and (not full_phase or phase_cycles_completed < max_phases):
@@ -5364,6 +5360,61 @@ class _SchedulerLeaseDescriptor(NamedTuple):
     identity: tuple[int, int]
 
 
+def _trusted_concurrent_worker_closeout(result, spec) -> dict[str, object]:
+    child_automation = _parsed_child_automation(result, spec)
+    bare_awaiting_closeout = not result.failed and not child_automation and not result.output.strip()
+    terminal_status = "awaiting_phase_closeout" if bare_awaiting_closeout else _phase_status_literal(
+        child_automation.get("automation_status")
+    )
+    verification_status = str(child_automation.get("automation_verification_status") or "").strip().lower()
+    human_required = str(child_automation.get("automation_human_required") or "").lower() == "true"
+    has_blocker = bool(
+        _optional_automation_literal(child_automation.get("automation_blocker_class"))
+        or _optional_automation_literal(child_automation.get("automation_blocker_summary"))
+    )
+    required_human_inputs = child_automation.get("automation_required_human_inputs")
+    trusted = (
+        not result.failed
+        and not child_automation.get("automation_parse_error")
+        and terminal_status == "complete"
+        and verification_status == "passed"
+        and not human_required
+        and not has_blocker
+        and not required_human_inputs
+    )
+    return {
+        "terminal_status": terminal_status or "unknown",
+        "verification_status": verification_status or "not_run",
+        "closeout_trusted": trusted,
+        "bare_awaiting_closeout": bare_awaiting_closeout,
+    }
+
+
+def _transfer_phase_worktree_dirty_for_reduction(
+    repo: Path,
+    handle,
+    *,
+    commit_message: str,
+    owns_path,
+):
+    transport = transfer_phase_worktree_dirty
+    implementation = getattr(transport, "side_effect", None)
+    target = implementation if callable(implementation) else transport
+    try:
+        parameters = inspect.signature(target).parameters.values()
+    except (TypeError, ValueError):
+        accepts_ownership_filter = True
+    else:
+        accepts_ownership_filter = any(
+            parameter.name == "owns_path" or parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters
+        )
+    kwargs = {"commit_message": commit_message}
+    if accepts_ownership_filter:
+        kwargs["owns_path"] = owns_path
+    return transport(repo, handle, **kwargs)
+
+
 class _SchedulerLeaseAuthority:
     """Bind a scheduler lease to one worktree generation without owning its fd."""
 
@@ -5372,6 +5423,7 @@ class _SchedulerLeaseAuthority:
         self._generation_authority = generation_authority
         self.generation = generation
         self.identity = identity
+        self.path = getattr(generation_authority, "path", None)
         self._closed = False
 
     def fileno(self) -> int:
