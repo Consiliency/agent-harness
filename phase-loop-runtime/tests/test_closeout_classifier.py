@@ -226,6 +226,86 @@ class TestTheAuditIsReachableWhereItIsPrescribed(unittest.TestCase):
             self.assertIn("phase-loop-closeout-audit --repo .", body, path.name)
 
 
+class TestOneStatementOfEachFact(unittest.TestCase):
+    """Two drift classes that each shipped a real defect on this PR.
+
+    Adding one console entrypoint desynchronised THREE independent statements of
+    the same fact (pyproject, the wheel validator, the binding validator), and
+    the break was invisible because the wheel fixtures are synthetic while only
+    a real release build validates. Separately, a prose rider landed on some of
+    the surfaces that prescribe the audit but not all -- three times, because I
+    kept counting files instead of occurrences.
+
+    These assert the agreements rather than relying on a fourth manual sweep.
+    """
+
+    def _repo_root(self):
+        import phase_loop_runtime.closeout_classifier as cc
+
+        return Path(cc.__file__).parents[3]
+
+    def test_release_console_allowlist_matches_pyproject(self):
+        """The governed-release allowlist and `[project.scripts]` must agree.
+
+        Mutation that must kill this: add an entrypoint to pyproject without
+        updating the allowlist (which is exactly what broke the release path).
+        """
+        import re
+
+        import phase_loop_runtime.agy_canary_evidence as ev
+
+        pyproject = self._repo_root() / "phase-loop-runtime" / "pyproject.toml"
+        if not pyproject.exists():
+            self.skipTest("installed layout: no source pyproject.toml")
+        body = pyproject.read_text()
+        section = body.split("[project.scripts]", 1)[1].split("\n[", 1)[0]
+        declared = {
+            m.group(1): m.group(2)
+            for m in re.finditer(r'^([\w.-]+)\s*=\s*"([^"]+)"', section, re.M)
+        }
+        allowlisted = {row["name"]: row["target"] for row in ev._CANONICAL_CONSOLE_SCRIPTS}
+        self.assertEqual(
+            declared, allowlisted,
+            "pyproject [project.scripts] and the release console allowlist disagree",
+        )
+
+    def test_every_surface_prescribing_the_audit_covers_the_cannot_run_case(self):
+        """Counted by OCCURRENCE, not by file, and whitespace-normalized.
+
+        Both mistakes were live: the codex/gemini skills prescribe the audit
+        TWICE (Core Rules and the closeout paragraph) while the rider reached
+        only the first, and the claude rider wraps across lines so a naive
+        line-wise grep reports a phantom gap.
+
+        Mutation that must kill this: drop the rider from any one site.
+        """
+        import re
+
+        root = self._repo_root()
+        surfaces = [
+            root / "skills-src",
+            root / "phase-loop-skills",
+            root / "phase-loop-runtime/src/phase_loop_runtime/skills_bundle",
+        ]
+        checked = 0
+        for surface in surfaces:
+            if not surface.exists():
+                continue
+            checked += 1
+            prescribe = cover = 0
+            for path in surface.rglob("*.md"):
+                body = re.sub(r"\s+", " ", path.read_text(encoding="utf-8"))
+                prescribe += body.count("phase-loop-closeout-audit --repo .")
+                cover += body.count("failure to run the audit")
+            self.assertEqual(
+                prescribe, cover,
+                f"{surface.name}: {prescribe} site(s) prescribe the audit but "
+                f"{cover} cover the cannot-run case",
+            )
+        if not checked:
+            self.skipTest("installed layout: no skill sources to check")
+
+
 class TestProvenanceCannotBeSpoofed(unittest.TestCase):
     """Codex seat: provenance was inferred from path components alone.
 

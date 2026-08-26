@@ -28,6 +28,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `.venv/` while its 13-file tracked diff was owned and verified — artifacts the governed
   command had just created. Blocking there is a loop: the repair turn re-runs the command
   and recreates them.
+- The release console allowlist is now ONE constant consumed by both validation sites and
+  pinned against `[project.scripts]`; adding the audit entrypoint had desynchronised three
+  independent statements of that fact, invisible to the suite because the wheel fixtures
+  are synthetic while only a real release build validates.
 - Verified against the reported run's actual worktree: the audit now exits 0 there.
 
 ### roadmap-ownership: name the phase worth narrowing (Consiliency/agent-harness#683)
