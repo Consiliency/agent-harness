@@ -1,5 +1,5 @@
 import tempfile
-import time
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -19,18 +19,16 @@ class WorkerPoolParallelTest(unittest.TestCase):
             roadmap.write_text("# Roadmap\n", encoding="utf-8")
             jobs = tuple(PhaseWorkerJob(phase=phase, spec=_Spec(phase)) for phase in ("A", "B", "C"))
             started: list[str] = []
+            all_workers_started = threading.Barrier(len(jobs), timeout=1)
 
             def fake_launch(spec, **kwargs):
                 started.append(spec.phase)
-                time.sleep(0.05)
+                all_workers_started.wait()
                 return LaunchResult(command=["fake", spec.phase], returncode=0, executor="codex")
 
-            before = time.monotonic()
             with patch("phase_loop_runtime.worker_pool.launch_with_spec", side_effect=fake_launch):
                 results = run_phase_worker_pool(repo, roadmap, jobs, max_workers=3)
-            elapsed = time.monotonic() - before
 
-            self.assertLess(elapsed, 0.14)
             self.assertEqual(tuple(item.phase for item in results), ("A", "B", "C"))
             self.assertEqual(set(started), {"A", "B", "C"})
             for item in results:
