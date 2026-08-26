@@ -463,36 +463,71 @@ if __name__ == "__main__":
 
 @require_sched_red
 def test_scheduler_consumes_creator_returned_worktree_handle():
-    from phase_loop_runtime.phase_worktree_executor import create_phase_worktree, resolve_base_sha
-    from phase_loop_runtime.lane_scheduler import worktree_assignments_for_phase_wave
+    from phase_loop_runtime import runner, worker_pool
+    from phase_loop_runtime.launcher import AuthPreflightResult
 
     with tempfile.TemporaryDirectory() as td:
-        root = Path(td)
-        repo = make_repo(root)
-        handle = create_phase_worktree(
-            repo,
-            phase="EXTRACT",
-            target_branch="master",
-            base_sha=resolve_base_sha(repo),
-            workspace_mount=root / "worktrees",
+        repo = make_repo(Path(td))
+        roadmap = repo / "specs" / "phase-plans-v1.md"
+        roadmap.write_text(
+            "# Roadmap\n\n### Phase 1 - Extract (EXTRACT)\n**Depends on**\n- (none)\n\n"
+            "### Phase 2 - Import (IMPORT)\n**Depends on**\n- (none)\n",
+            encoding="utf-8",
         )
-        try:
-            assignments = worktree_assignments_for_phase_wave(
-                repo,
-                ("EXTRACT",),
-                branch="master",
-                mode="concurrent",
-                base_sha=resolve_base_sha(repo),
-                creator_handles={"EXTRACT": handle},
-            )
-            assignment = assignments[0]
-            assert assignment.worktree_path == str(handle.worktree_path)
-            assert assignment.temp_branch == handle.temp_branch
-            assert assignment.generation == handle.generation
-        finally:
-            from phase_loop_runtime.phase_worktree_executor import teardown_phase_worktree
+        plans = {
+            phase: write_phase_plan(repo, phase, roadmap, owned_files=(f"src/{phase.lower()}.py",))
+            for phase in ("EXTRACT", "IMPORT")
+        }
+        commit_fixture_paths(repo, "add creator-handle dispatch fixture", roadmap, *plans.values())
+        observed_jobs = []
+        observed_specs = []
+        created_handles = {}
+        real_pool = worker_pool.run_phase_worker_pool
+        real_create = runner.create_phase_worktree
 
-            teardown_phase_worktree(repo, handle)
+        def observe_create(*args, **kwargs):
+            handle = real_create(*args, workspace_mount=Path(td) / "worktrees", **kwargs)
+            created_handles[kwargs["phase"]] = handle
+            return handle
+
+        def observe_pool(*args, **kwargs):
+            observed_jobs.extend(args[2])
+            return real_pool(*args, **kwargs)
+
+        def complete_launch(spec, **_kwargs):
+            observed_specs.append(spec)
+            phase = _phase_from_spec(spec)
+            return LaunchResult(
+                command=spec.command,
+                returncode=0,
+                output=build_fake_automation_output(
+                    status="complete",
+                    verification_status="passed",
+                    artifact=str(plans[phase]),
+                    artifact_state="tracked",
+                ),
+                executor=spec.executor,
+            )
+
+        with (
+            patch("phase_loop_runtime.runner.run_auth_preflight", return_value=AuthPreflightResult(ok=True, metadata={})),
+            patch("phase_loop_runtime.runner.create_phase_worktree", side_effect=observe_create),
+            patch("phase_loop_runtime.runner.run_phase_worker_pool", side_effect=observe_pool),
+            patch("phase_loop_runtime.runner.launch_with_spec", side_effect=complete_launch),
+            patch("phase_loop_runtime.worker_pool.launch_with_spec", side_effect=complete_launch),
+            patch("phase_loop_runtime.injection._resolve_pack_skill_dirs", return_value={}),
+        ):
+            runner.run_loop(repo, roadmap, phase_scheduler_mode="concurrent", max_phases=2)
+
+    assert {_phase_from_spec(spec) for spec in observed_specs} == {"EXTRACT", "IMPORT"}
+    assert {job.phase for job in observed_jobs} == {"EXTRACT", "IMPORT"}
+    assert all(hasattr(job, "worktree_handle") for job in observed_jobs), (
+        "missing production creator-handle dispatch seam"
+    )
+    for job in observed_jobs:
+        assert job.worktree_handle is created_handles[job.phase]
+        assert job.spec.wrapped_cwd == str(created_handles[job.phase].worktree_path)
+        assert job.spec.wrapped_cwd != str(repo)
 
 
 @require_sched_red

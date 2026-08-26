@@ -114,12 +114,16 @@ def test_blocked_worker_preserves_recoverable_generation_metadata():
 
 @require_sched_red
 def test_manual_or_blocked_closeout_preserves_staged_and_untracked_bytes():
-    """Manual and blocked paths preserve, rather than transport or tear down."""
+    """Exercise the worker dispatch seam that must preserve a blocked generation."""
 
-    from phase_loop_runtime.worker_pool import preserve_recoverable_generation
+    import inspect
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
+        repo = make_repo(root / "repo")
+        roadmap = repo / "specs" / "phase-plans-v1.md"
+        roadmap.parent.mkdir(parents=True, exist_ok=True)
+        roadmap.write_text("# Roadmap\n", encoding="utf-8")
         worktree = root / "generation"
         worktree.mkdir()
         staged = worktree / "planner.md"
@@ -127,14 +131,29 @@ def test_manual_or_blocked_closeout_preserves_staged_and_untracked_bytes():
         staged.write_bytes(b"staged planner artifact\n")
         untracked.parent.mkdir(parents=True)
         untracked.write_bytes(b"ignored handoff bytes\n")
-        receipt = preserve_recoverable_generation(
-            {"generation": "g-manual", "worktree_path": str(worktree), "temp_branch": "phase-loop/sched/main/PLAN-g-manual"},
-            terminal_status="blocked",
-            closeout_mode="manual",
-        )
+        handle = {
+            "generation": "g-manual",
+            "worktree_path": str(worktree),
+            "temp_branch": "phase-loop/sched/main/PLAN-g-manual",
+        }
+        job_kwargs = {"phase": "PLAN", "spec": type("Spec", (), {"executor": "codex"})()}
+        job_parameters = inspect.signature(PhaseWorkerJob).parameters
+        if "worktree_handle" in job_parameters:
+            job_kwargs["worktree_handle"] = handle
+        if "closeout_mode" in job_parameters:
+            job_kwargs["closeout_mode"] = "manual"
+        job = PhaseWorkerJob(**job_kwargs)
+        with patch(
+            "phase_loop_runtime.worker_pool.launch_with_spec",
+            return_value=LaunchResult(command=["fake"], returncode=1, executor="codex"),
+        ):
+            result = run_phase_worker_pool(repo, roadmap, (job,), max_workers=1)[0]
 
-        assert receipt["preserved"] is True
-        assert receipt["generation"] == "g-manual"
-        assert receipt["temp_branch"] == "phase-loop/sched/main/PLAN-g-manual"
+        assert {"worktree_handle", "closeout_mode"} <= set(job_parameters), (
+            "missing production manual-closeout preservation seam"
+        )
+        recovery = result.terminal_summary["recoverable_generation"]
+        assert recovery["generation"] == handle["generation"]
+        assert recovery["temp_branch"] == handle["temp_branch"]
         assert staged.read_bytes() == b"staged planner artifact\n"
         assert untracked.read_bytes() == b"ignored handoff bytes\n"
