@@ -203,6 +203,13 @@ class TestProvenanceCannotBeSpoofed(unittest.TestCase):
             self.assertEqual(classify_ignored_output(path).provenance,
                              UNKNOWN_IGNORED, path)
 
+    def test_a_traversal_component_is_never_trusted(self):
+        """Parity with the absolute-path rule: neither shape comes from the
+        porcelain this grades (Fable seat).
+        """
+        self.assertEqual(classify_ignored_output("../x/.venv/").provenance,
+                         UNKNOWN_IGNORED)
+
     def test_an_absolute_path_is_never_trusted(self):
         self.assertEqual(classify_ignored_output("/abs/.venv/lib").provenance,
                          UNKNOWN_IGNORED)
@@ -276,6 +283,11 @@ class TestIgnoredOutputAudit(unittest.TestCase):
             result = audit_ignored_outputs(repo)
             self.assertTrue(result["blocks"])
             self.assertTrue(result[UNKNOWN_IGNORED])
+            # Assert the REASON too, not just the flag: the reason line is what
+            # an LLM executor reads, and a seam that reports "produced by the
+            # runner" beside a blocking exit code is a contradiction the exit
+            # code alone cannot catch.
+            self.assertIn("no recognised producer", result["reason"])
 
     def test_a_failed_git_probe_blocks_rather_than_reading_as_clean(self):
         """"Could not read the tree" must never present as "nothing to see".

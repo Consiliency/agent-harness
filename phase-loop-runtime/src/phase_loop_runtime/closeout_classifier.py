@@ -191,9 +191,10 @@ def classify_ignored_output(repo_relpath: str) -> IgnoredOutputVerdict:
     norm = raw[2:] if raw.startswith("./") else raw
     if not norm:
         return IgnoredOutputVerdict(UNKNOWN_IGNORED, True, "empty path")
-    if norm.startswith("/"):
-        # Repo-relative paths only. An absolute path did not come from the
-        # porcelain this grades, so nothing about its shape is trustworthy.
+    if norm.startswith("/") or ".." in PurePosixPath(norm.rstrip("/")).parts:
+        # Repo-relative, traversal-free paths only. Neither shape comes from the
+        # porcelain this grades, so nothing about them is trustworthy -- and the
+        # rationale that rejects an absolute path applies verbatim to `..`.
         return IgnoredOutputVerdict(UNKNOWN_IGNORED, True, "not a repo-relative path")
 
     # Runner-owned lifecycle state, taken from the runtime's OWN declared
