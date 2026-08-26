@@ -10,7 +10,7 @@ from phase_loop_runtime.launcher import (
     build_grok_command,
 )
 from phase_loop_runtime.models import ExecutionPolicyRule, ModelSelection
-from phase_loop_runtime.profiles import _resolve_policy_model  # noqa: F401
+from phase_loop_runtime.profiles import _resolve_policy_model
 from phase_loop_runtime.profiles import resolve_execution_policy, resolve_model_selection_from_policy, resolve_profile_for_executor
 
 
@@ -213,6 +213,39 @@ class PhaseLoopExecutionPolicyTest(unittest.TestCase):
                     operator_effort="high",
                 )
             self.assertIn("empty --model", str(caught.exception))
+
+    def test_an_internal_alias_typed_as_an_operator_pin_is_REJECTED(self):
+        """Rejecting is not substituting (fable seat).
+
+        The operator-pin guard returns before the `phase-loop-` fail-closed
+        raise, so a MISSPELLED internal token reached agy verbatim and failed
+        there with a vaguer message. The repo knows these names are its own
+        vocabulary, so it can refuse precisely — without violating the
+        never-substitute invariant, since nothing is swapped in.
+
+        A RECOGNISED alias is deliberately still allowed through: the codex seat
+        noted an operator may define these locally as `modelConfigs.customAliases`,
+        so refusing them would break a legitimate workflow. Only an
+        unrecognised `phase-loop-*` token — a typo by construction — is refused.
+
+        Mutation that must kill this: drop the prefix check inside the
+        operator-pin branch.
+        """
+        with self.assertRaises(ValueError) as caught:
+            _resolve_policy_model(
+                "gemini", "lane_execute", "phase-loop-execute-mediumX", None,
+                "inherit_default", operator_pinned=True,
+            )
+        self.assertIn("internal phase-loop alias", str(caught.exception))
+
+        # A recognised alias still passes: operators may define it locally.
+        self.assertEqual(
+            _resolve_policy_model(
+                "gemini", "lane_execute", "phase-loop-execute-medium", None,
+                "inherit_default", operator_pinned=True,
+            ),
+            "phase-loop-execute-medium",
+        )
 
     def test_omitting_the_operator_model_is_still_fine(self):
         """The guard must reject BLANK, not absent. `None` means "no override"

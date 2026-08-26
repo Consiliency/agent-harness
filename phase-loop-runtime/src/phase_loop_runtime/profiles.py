@@ -964,8 +964,18 @@ def _resolve_policy_model(
         return model
     if operator_pinned:
         # Highest precedence wins outright. Substituting here is the ah#671
-        # defect; an invalid pin must fail loudly at launch, not be silently
-        # swapped for something the operator did not ask for.
+        # defect; an invalid pin must fail loudly, not be silently swapped for
+        # something the operator did not ask for.
+        #
+        # REJECTING is not substituting, so an internal token typed as a pin is
+        # still refused here (fable seat): the repo knows `phase-loop-*` names
+        # are its own vocabulary and never provider models, so it can say so
+        # precisely instead of letting agy fail with a vaguer message.
+        if model.startswith("phase-loop-"):
+            raise ValueError(
+                f"`{model}` is an internal phase-loop alias, not a provider "
+                f"model id for `{executor}`; pass a provider model id"
+            )
         return model
     if unsupported_behavior == "inherit_default" and default_alias:
         return default_alias
