@@ -6637,6 +6637,17 @@ def test_every_exemption_is_stated_once():
             )
     assert definition is not None, "could not locate the exemption constant"
 
+    # SET literals only, deliberately. Extending the walk to tuples/lists was
+    # tried and reverted: the bwrap argv is a list containing the positional
+    # string "XDG_RUNTIME_DIR" (`--setenv XDG_RUNTIME_DIR /run/user/phase-loop`,
+    # agy_canary_evidence.py:1615), so a tuple/list rule fires on the very code
+    # that makes this exemption safe. A tripwire that flags innocent code gets
+    # deleted, which is worse than a narrower one.
+    #
+    # The residue is acceptable because the two rules PARTITION the space: a
+    # re-inline spelled as a tuple is either behaviour-identical (harmless), or
+    # behaviour-changing -- and every behaviour-changing variant is killed by the
+    # behavioural tests, at BOTH call sites, regardless of syntax.
     offenders = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Set) or node is definition:
