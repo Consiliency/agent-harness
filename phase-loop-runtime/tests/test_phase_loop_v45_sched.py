@@ -31,6 +31,7 @@ from phase_loop_runtime.events import read_events
 from phase_loop_runtime.launcher import LaunchResult
 from phase_loop_runtime.runner import run_loop
 from phase_loop_test_utils import build_fake_automation_output, commit_fixture_paths, make_repo, write_phase_plan
+from test_phase_worktree_executor import require_sched_red
 
 MIDDLE = ("EXTRACT", "IMPORT", "COACHPROF", "MEMORY")
 
@@ -40,15 +41,13 @@ import pytest
 # runtime execute path, which resolves the dotfiles skill-source / profile overlay
 # (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
 # conftest hook skips it when no dotfiles tree is reachable.
-pytestmark = pytest.mark.dotfiles_integration
-
-
 def _phase_from_spec(spec) -> str:
     match = re.search(r"phase-plan-v1-([A-Z]+)\.md", spec.prompt_bundle.render_prompt())
     assert match is not None, "spec prompt missing plan artifact reference"
     return match.group(1)
 
 
+@pytest.mark.dotfiles_integration
 class V45SchedConcurrentTest(unittest.TestCase):
     def setUp(self):
         # The worker pool sizes to min(len(jobs), os.cpu_count()). Pin cpu_count
@@ -426,6 +425,7 @@ class V45SchedConcurrentTest(unittest.TestCase):
                 self.assertFalse(path.exists(), f"leaked worktree {path}")
 
 
+@pytest.mark.dotfiles_integration
 class V45SchedWiringTest(unittest.TestCase):
     def test_phase_scheduler_arg_parses_choices(self):
         from phase_loop_runtime.cli import build_parser
@@ -459,3 +459,125 @@ def snapshot_branch(snapshot, repo: Path) -> str:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@require_sched_red
+def test_scheduler_consumes_creator_returned_worktree_handle():
+    from phase_loop_runtime import runner, worker_pool
+    from phase_loop_runtime.launcher import AuthPreflightResult
+
+    with tempfile.TemporaryDirectory() as td:
+        repo = make_repo(Path(td))
+        roadmap = repo / "specs" / "phase-plans-v1.md"
+        roadmap.write_text(
+            "# Roadmap\n\n### Phase 1 - Extract (EXTRACT)\n**Depends on**\n- (none)\n\n"
+            "### Phase 2 - Import (IMPORT)\n**Depends on**\n- (none)\n",
+            encoding="utf-8",
+        )
+        plans = {
+            phase: write_phase_plan(repo, phase, roadmap, owned_files=(f"src/{phase.lower()}.py",))
+            for phase in ("EXTRACT", "IMPORT")
+        }
+        commit_fixture_paths(repo, "add creator-handle dispatch fixture", roadmap, *plans.values())
+        observed_jobs = []
+        observed_specs = []
+        created_handles = {}
+        real_pool = worker_pool.run_phase_worker_pool
+        real_create = runner.create_phase_worktree
+
+        def observe_create(*args, **kwargs):
+            handle = real_create(*args, workspace_mount=Path(td) / "worktrees", **kwargs)
+            created_handles[kwargs["phase"]] = handle
+            return handle
+
+        def observe_pool(*args, **kwargs):
+            observed_jobs.extend(args[2])
+            return real_pool(*args, **kwargs)
+
+        def complete_launch(spec, **_kwargs):
+            observed_specs.append(spec)
+            phase = _phase_from_spec(spec)
+            return LaunchResult(
+                command=spec.command,
+                returncode=0,
+                output=build_fake_automation_output(
+                    status="complete",
+                    verification_status="passed",
+                    artifact=str(plans[phase]),
+                    artifact_state="tracked",
+                ),
+                executor=spec.executor,
+            )
+
+        with (
+            patch("phase_loop_runtime.runner.run_auth_preflight", return_value=AuthPreflightResult(ok=True, metadata={})),
+            patch("phase_loop_runtime.runner.create_phase_worktree", side_effect=observe_create),
+            patch("phase_loop_runtime.runner.run_phase_worker_pool", side_effect=observe_pool),
+            patch("phase_loop_runtime.runner.launch_with_spec", side_effect=complete_launch),
+            patch("phase_loop_runtime.worker_pool.launch_with_spec", side_effect=complete_launch),
+            patch("phase_loop_runtime.injection._resolve_pack_skill_dirs", return_value={}),
+        ):
+            runner.run_loop(repo, roadmap, phase_scheduler_mode="concurrent", max_phases=2)
+
+    assert {_phase_from_spec(spec) for spec in observed_specs} == {"EXTRACT", "IMPORT"}
+    assert {job.phase for job in observed_jobs} == {"EXTRACT", "IMPORT"}
+    assert all(hasattr(job, "worktree_handle") for job in observed_jobs), (
+        "missing production creator-handle dispatch seam"
+    )
+    for job in observed_jobs:
+        assert job.worktree_handle is created_handles[job.phase]
+        assert job.spec.wrapped_cwd == str(created_handles[job.phase].worktree_path)
+        assert job.spec.wrapped_cwd != str(repo)
+
+
+@require_sched_red
+def test_staged_planner_artifact_survives_parent_reduction(tmp_path):
+    from phase_loop_runtime import runner
+
+    repo = make_repo(tmp_path)
+    roadmap = repo / "specs" / "phase-plans-v1.md"
+    roadmap.write_text(
+        "# Roadmap\n\n"
+        "### Phase 1 - Planner (PLAN)\n**Depends on**\n- (none)\n\n"
+        "### Phase 2 - Peer (PEER)\n**Depends on**\n- (none)\n",
+        encoding="utf-8",
+    )
+    plan = write_phase_plan(repo, "PLAN", roadmap, owned_files=("plans/staged-plan.md",))
+    peer_plan = write_phase_plan(repo, "PEER", roadmap, owned_files=("src/peer.py",))
+    commit_fixture_paths(repo, "add staged planner fixture", roadmap, plan, peer_plan)
+    original = b"validated planner bytes\n"
+
+    def staged_planner_launch(spec, **_kwargs):
+        artifact = Path(spec.wrapped_cwd) / "plans" / "staged-plan.md"
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        artifact.write_bytes(original)
+        return LaunchResult(
+            command=spec.command,
+            returncode=0,
+            output=build_fake_automation_output(
+                status="complete",
+                verification_status="passed",
+                artifact=str(artifact),
+                artifact_state="tracked",
+            ),
+            executor=spec.executor,
+        )
+
+    with (
+        patch("phase_loop_runtime.runner.launch_with_spec", side_effect=staged_planner_launch),
+        patch("phase_loop_runtime.worker_pool.launch_with_spec", side_effect=staged_planner_launch),
+        patch("phase_loop_runtime.injection._resolve_pack_skill_dirs", return_value={}),
+    ):
+        snapshot, _ = runner.run_loop(
+            repo,
+            roadmap,
+            phase_scheduler_mode="concurrent",
+            closeout_mode="commit",
+        )
+
+    assert snapshot.phases["PLAN"] == "complete"
+    assert (repo / "plans" / "staged-plan.md").read_bytes() == original
+    reduction_events = [
+        event for event in read_events(repo) if event["action"] == "coordinator.concurrent_parent_reduction"
+    ]
+    assert reduction_events and reduction_events[-1]["metadata"]["staged_artifacts"] == ["plans/staged-plan.md"]

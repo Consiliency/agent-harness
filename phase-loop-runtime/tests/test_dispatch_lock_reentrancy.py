@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from phase_loop_runtime.dispatch_lock import (
@@ -18,6 +20,7 @@ from phase_loop_runtime.dispatch_lock import (
     holder_is_self,
 )
 from phase_loop_test_utils import make_repo
+from test_phase_worktree_executor import require_sched_red
 
 # A pid that is neither this process nor any ancestor of it, and not alive.
 _FOREIGN_PID = 2_000_000_000
@@ -140,3 +143,28 @@ class DispatchLockReentrancyTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@require_sched_red
+def test_nested_dispatch_lock_retains_one_explicit_run_identity():
+    # The coordinator identity is propagated into a fresh child lock rather
+    # than relying on ambient process ancestry (which a supervisor session
+    # intentionally breaks).  A different identity still remains contention.
+    with tempfile.TemporaryDirectory() as td:
+        repo = make_repo(Path(td))
+        roadmap = repo / "specs" / "phase-plans-v1.md"
+        outer = DispatchLock(repo, roadmap, caller_run_id="sched-root").acquire()
+        try:
+            nested = DispatchLock(repo, roadmap, caller_run_id="sched-root").acquire()
+            assert nested.reentrant is True
+            nested.release()
+            with pytest.raises(DispatchLockContention):
+                DispatchLock(repo, roadmap, caller_run_id="other-run").acquire()
+        finally:
+            outer.release()
+
+    # A real worker-bound child must receive the same value in its explicit
+    # launch metadata; lock reentrancy alone is not evidence of that boundary.
+    from phase_loop_runtime import runner
+
+    assert runner.child_executor_env(caller_run_id="sched-root")["PHASE_LOOP_CALLER_RUN_ID"] == "sched-root"

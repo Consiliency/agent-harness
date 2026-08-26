@@ -1,7 +1,12 @@
 import io
+import fcntl
+import json
+import os
 import subprocess
 import sys
 import tempfile
+import time
+import threading
 import unittest
 from pathlib import Path
 
@@ -26,6 +31,7 @@ from phase_loop_runtime.models import CommandAdapterConfig, HarnessLaneAssignmen
 from phase_loop_runtime.profiles import resolve_profile, resolve_profile_for_executor
 from phase_loop_runtime.prompts import build_prompt
 from phase_loop_test_utils import make_repo, write_phase_plan
+from test_phase_worktree_executor import require_sched_red
 
 import pytest
 
@@ -33,9 +39,7 @@ import pytest
 # runtime execute path, which resolves the dotfiles skill-source / profile overlay
 # (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
 # conftest hook skips it when no dotfiles tree is reachable.
-pytestmark = pytest.mark.dotfiles_integration
-
-
+@pytest.mark.dotfiles_integration
 class PhaseLoopLauncherTest(unittest.TestCase):
     def test_profile_overrides_record_reason(self):
         selection = resolve_profile("execute", model="gpt-5.6-sol", effort="high")
@@ -1751,3 +1755,133 @@ class PhaseLoopLauncherTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@require_sched_red
+def test_launcher_accepts_explicit_nonserialized_lease_authority():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        lease_path = root / "phase.lock"
+        launch_lease_fd = os.open(lease_path, os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(launch_lease_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        launch_custody_path = root / "launch-custody.json"
+
+        class InjectedLockedDescriptor:
+            generation = "g-launch"
+
+            def __init__(self, fd):
+                self._fd = fd
+
+            def fileno(self):
+                return self._fd
+
+        helper = (
+            "import os, subprocess, sys\n"
+            "import json, time\n"
+            "lease_fd, marker_path = int(sys.argv[1]), sys.argv[2]\n"
+            "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(1)'], "
+            "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, close_fds=True, "
+            "pass_fds=())\n"
+            "lease = os.fstat(lease_fd)\n"
+            "grandchild_lease_fds = []\n"
+            "for entry in os.scandir(f'/proc/{child.pid}/fd'):\n"
+            "    try: candidate = os.stat(entry.path)\n"
+            "    except OSError: continue\n"
+            "    if (candidate.st_dev, candidate.st_ino) == (lease.st_dev, lease.st_ino): grandchild_lease_fds.append(entry.name)\n"
+            "json.dump({'executor_pid': os.getpid(), 'supervisor_pid': os.getppid(), "
+            "'grandchild_pid': child.pid, 'grandchild_lease_fds': grandchild_lease_fds}, open(marker_path, 'w'))\n"
+            "os.close(lease_fd)\n"
+            "time.sleep(0.25)\n"
+        )
+        try:
+            # Exercise the real launch path, not a look-alike subprocess probe.
+            # The launcher owns the inherited descriptor after this call starts;
+            # the coordinator copy is deliberately closed before we contend.
+            result_box = {}
+
+            def run_launch():
+                try:
+                    result_box["result"] = launch(
+                        [sys.executable, "-c", helper, str(launch_lease_fd), str(launch_custody_path)],
+                        log_path=root / "executor.log",
+                        lease_authority=InjectedLockedDescriptor(launch_lease_fd),
+                    )
+                except BaseException as exc:  # asserted below in the frozen RED state
+                    result_box["error"] = exc
+
+            launched = threading.Thread(target=run_launch, daemon=True)
+            launched.start()
+            deadline = time.monotonic() + 10
+            while not launch_custody_path.exists() and "error" not in result_box:
+                assert time.monotonic() < deadline, "launch never transferred lease custody"
+                time.sleep(0.02)
+            if "error" in result_box:
+                pytest.fail(f"absent launcher lease-supervisor anchor: {result_box['error']!r}")
+
+            inherited_lease_fd = launch_lease_fd
+            os.close(launch_lease_fd)
+            launch_lease_fd = -1
+            custody = json.loads(launch_custody_path.read_text(encoding="utf-8"))
+            executor_pid = custody["executor_pid"]
+            supervisor_pid = custody["supervisor_pid"]
+            grandchild_pid = custody["grandchild_pid"]
+            assert custody["grandchild_lease_fds"] == [], "grandchild inherited the lease descriptor"
+            assert executor_pid != os.getpid()
+            assert supervisor_pid != os.getpid(), "launcher did not create an independent supervisor"
+            assert os.kill(executor_pid, 0) is None
+            assert os.kill(supervisor_pid, 0) is None
+            assert os.kill(grandchild_pid, 0) is None
+            contender = os.open(lease_path, os.O_RDWR)
+            try:
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            finally:
+                os.close(contender)
+
+            # The executor exits first, while the supervisor remains responsible
+            # for the live grandchild and the lease.  The test never kills that
+            # grandchild: a conformant supervisor waits for and reaps it itself.
+            def process_live(pid):
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    return False
+                return True
+
+            deadline = time.monotonic() + 5
+            while process_live(executor_pid):
+                assert time.monotonic() < deadline, "executor parent did not exit"
+                time.sleep(0.02)
+            assert os.kill(supervisor_pid, 0) is None
+            assert os.kill(grandchild_pid, 0) is None
+            contender = os.open(lease_path, os.O_RDWR)
+            try:
+                with pytest.raises(BlockingIOError):
+                    fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            finally:
+                os.close(contender)
+            launched.join(timeout=10)
+            assert not launched.is_alive(), "launcher did not reap its complete descendant tree"
+            assert "error" not in result_box
+            result = result_box["result"]
+            assert result.returncode == 0
+            assert result.supervisor_receipt["generation"] == "g-launch"
+            assert result.supervisor_receipt["pass_fds"] == [inherited_lease_fd]
+            assert result.supervisor_receipt["process_tree_empty"] is True
+            with pytest.raises(ProcessLookupError):
+                os.kill(grandchild_pid, 0)
+            contender = os.open(lease_path, os.O_RDWR)
+            try:
+                fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(contender, fcntl.LOCK_UN)
+            finally:
+                os.close(contender)
+        finally:
+            if launch_custody_path.exists():
+                try:
+                    os.kill(json.loads(launch_custody_path.read_text(encoding="utf-8"))["grandchild_pid"], 9)
+                except ProcessLookupError:
+                    pass
+            if launch_lease_fd >= 0:
+                fcntl.flock(launch_lease_fd, fcntl.LOCK_UN)
+                os.close(launch_lease_fd)

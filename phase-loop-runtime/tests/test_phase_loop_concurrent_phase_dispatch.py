@@ -17,7 +17,14 @@ reachable production defect. These tests pin the helper's contract directly.
 
 from __future__ import annotations
 
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
+
 from phase_loop_runtime.runner import _select_parallel_dispatch_phase
+from phase_loop_runtime.launcher import LaunchResult
+from phase_loop_test_utils import build_fake_automation_output, commit_fixture_paths, make_repo, write_phase_plan
+from test_phase_worktree_executor import require_sched_red
 
 WAVES = (("SEAL",), ("ROOM", "AVAIL"))
 CLASSIFICATIONS = {"SEAL": "blocked", "ROOM": "planned", "AVAIL": "unplanned"}
@@ -45,3 +52,51 @@ def test_no_explicit_phase_preserves_wave_selection():
     classifications = {"ROOM": "planned", "AVAIL": "unplanned"}
     assert _select_parallel_dispatch_phase(waves, classifications) == "ROOM"
     assert _select_parallel_dispatch_phase(waves, classifications, None) == "ROOM"
+
+
+@require_sched_red
+def test_no_diff_result_requires_an_explicit_artifact_verification_skip():
+    from phase_loop_runtime import runner
+
+    # Drive the production run/reduction path.  The verifier boundary is only
+    # observed, not replaced by a proposed no-diff helper: a true no-diff result
+    # must never enter artifact-dependent verification.
+    with tempfile.TemporaryDirectory() as td:
+        repo = make_repo(Path(td))
+        roadmap = repo / "specs" / "phase-plans-v1.md"
+        roadmap.write_text(
+            "# Roadmap\n\n### Phase 1 - Room (ROOM)\n**Depends on**\n- (none)\n",
+            encoding="utf-8",
+        )
+        plan = write_phase_plan(repo, "ROOM", roadmap, owned_files=("src/room.py",))
+        commit_fixture_paths(repo, "add no-diff plan", roadmap, plan)
+        verification_calls = []
+
+        def no_diff_launch(spec, **_kwargs):
+            result = LaunchResult(
+                command=spec.command,
+                returncode=0,
+                output=build_fake_automation_output(
+                    status="complete",
+                    verification_status="passed",
+                    artifact=str(plan),
+                    artifact_state="tracked",
+                ),
+                executor=spec.executor,
+            )
+            object.__setattr__(result, "changed_paths", ())
+            return result
+
+        def observe_verification(*args, **kwargs):
+            verification_calls.append(kwargs.get("phase_alias"))
+            return {"ok": True, "status": "observed"}
+
+        with (
+            patch("phase_loop_runtime.runner.launch_with_spec", side_effect=no_diff_launch),
+            patch("phase_loop_runtime.runner._run_execute_verification", side_effect=observe_verification),
+            patch("phase_loop_runtime.injection._resolve_pack_skill_dirs", return_value={}),
+        ):
+            snapshot, _ = runner.run_loop(repo, roadmap, phase="ROOM")
+
+        assert snapshot.phases["ROOM"] == "complete"
+        assert verification_calls == []

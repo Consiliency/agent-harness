@@ -70,6 +70,7 @@ from phase_loop_test_utils import (
     write_phase_plan,
 )
 from test_phase_loop_pipeline_bundle import _write_bundle, _write_protected_source
+from test_phase_worktree_executor import require_sched_red
 
 import pytest
 
@@ -77,9 +78,6 @@ import pytest
 # runtime execute path, which resolves the dotfiles skill-source / profile overlay
 # (claude-config/*, codex-config/* …) absent standalone. Run-time integration: the
 # conftest hook skips it when no dotfiles tree is reachable.
-pytestmark = pytest.mark.dotfiles_integration
-
-
 def _migration_wave_body() -> str:
     return (
         "# MIGRATELOOP\n\n"
@@ -100,6 +98,7 @@ def _migration_wave_body() -> str:
     )
 
 
+@pytest.mark.dotfiles_integration
 class PhaseLoopRunnerTest(unittest.TestCase):
     def test_pipeline_branch_governance_uses_explicit_base_ref(self):
         with tempfile.TemporaryDirectory() as td:
@@ -3716,3 +3715,51 @@ automation:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@require_sched_red
+def test_nested_runner_dispatch_threads_one_run_identity():
+    from phase_loop_runtime import runner, worker_pool
+    from phase_loop_runtime.launcher import AuthPreflightResult
+
+    with tempfile.TemporaryDirectory() as td:
+        repo = make_repo(Path(td))
+        roadmap = repo / "specs" / "phase-plans-v1.md"
+        roadmap.write_text(
+            "# Roadmap\n\n"
+            "### Phase 1 - Runner (RUNNER)\n**Depends on**\n- (none)\n\n"
+            "### Phase 2 - Peer (PEER)\n**Depends on**\n- (none)\n",
+            encoding="utf-8",
+        )
+        plan = write_phase_plan(repo, "RUNNER", roadmap)
+        peer_plan = write_phase_plan(repo, "PEER", roadmap)
+        commit_fixture_paths(repo, "add run identity plan", roadmap, plan, peer_plan)
+        observed_jobs = []
+        observed_launches = []
+
+        real_pool = worker_pool.run_phase_worker_pool
+
+        def observe_pool(_repo, _roadmap, jobs, **kwargs):
+            observed_jobs.extend(jobs)
+            return real_pool(_repo, _roadmap, jobs, **kwargs)
+
+        def observe_launch_with_spec(_spec, **kwargs):
+            observed_launches.append(kwargs)
+            return LaunchResult(command=["fake"], returncode=0, executor="codex")
+
+        with (
+            patch("phase_loop_runtime.runner.run_auth_preflight", return_value=AuthPreflightResult(ok=True, metadata={})),
+            patch("phase_loop_runtime.runner.run_phase_worker_pool", side_effect=observe_pool),
+            patch("phase_loop_runtime.worker_pool.launch_with_spec", side_effect=observe_launch_with_spec),
+            patch("phase_loop_runtime.injection._resolve_pack_skill_dirs", return_value={}),
+        ):
+            runner.run_loop(
+                repo,
+                roadmap,
+                caller_run_id="sched-parent-run",
+                phase_scheduler_mode="concurrent",
+            )
+
+    assert {job.phase for job in observed_jobs} == {"RUNNER", "PEER"}
+    assert {job.caller_run_id for job in observed_jobs} == {"sched-parent-run"}
+    assert {kwargs["caller_run_id"] for kwargs in observed_launches} == {"sched-parent-run"}
