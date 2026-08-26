@@ -3738,6 +3738,9 @@ def test_nested_runner_dispatch_threads_one_run_identity():
         observed_launches = []
         observed_locks = []
 
+        workspace_mount = Path(td) / "workspace"
+        workspace_mount.mkdir()
+        real_create = runner.create_phase_worktree
         real_pool = worker_pool.run_phase_worker_pool
         real_lock = runner.DispatchLock
 
@@ -3750,12 +3753,16 @@ def test_nested_runner_dispatch_threads_one_run_identity():
             observed_jobs.extend(jobs)
             return real_pool(_repo, _roadmap, jobs, **kwargs)
 
+        def observe_create(*args, **kwargs):
+            return real_create(*args, workspace_mount=workspace_mount, **kwargs)
+
         def observe_launch_with_spec(_spec, **kwargs):
             observed_launches.append(kwargs)
             return LaunchResult(command=["fake"], returncode=0, executor="codex")
 
         with (
             patch("phase_loop_runtime.runner.run_auth_preflight", return_value=AuthPreflightResult(ok=True, metadata={})),
+            patch("phase_loop_runtime.runner.create_phase_worktree", side_effect=observe_create),
             patch("phase_loop_runtime.runner.run_phase_worker_pool", side_effect=observe_pool),
             patch("phase_loop_runtime.worker_pool.launch_with_spec", side_effect=observe_launch_with_spec),
             patch("phase_loop_runtime.runner.DispatchLock", ObserveDispatchLock),
