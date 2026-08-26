@@ -88,7 +88,10 @@ adapter mode overrides the orchestrator-only interactive workflow below.
   ignored path was produced by the runner or its own toolchain (`.phase-loop/**`,
   pytest/Ruff caches, `__pycache__`, egg-info, `.venv`) -- the governed command's
   own footprint, which must never block a verified owned diff (agent-harness#670).
-  Exit 2 means the probe failed: treat that as blocking. But when required
+  Exit 2 means the probe failed: treat that as blocking, and so is ANY
+  failure to run the audit at all (command not found on a pinned runtime
+  that predates it, non-zero for any other reason) -- inability to measure
+  is never evidence of a clean tree. But when required
   verification passed and the ONLY uncommitted paths are phase-owned outputs this
   run was not authorized to commit, report `awaiting_phase_closeout` and let the
   runner's graduated closeout gate commit them — reserve `dirty_worktree_conflict`
