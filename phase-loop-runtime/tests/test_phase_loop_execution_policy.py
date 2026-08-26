@@ -10,6 +10,7 @@ from phase_loop_runtime.launcher import (
     build_grok_command,
 )
 from phase_loop_runtime.models import ExecutionPolicyRule, ModelSelection
+from phase_loop_runtime.profiles import _resolve_policy_model  # noqa: F401
 from phase_loop_runtime.profiles import resolve_execution_policy, resolve_model_selection_from_policy, resolve_profile_for_executor
 
 
@@ -136,6 +137,72 @@ class PhaseLoopExecutionPolicyTest(unittest.TestCase):
         self.assertEqual(selection.effort, "high")
         self.assertEqual(resolved.model_source, "CLI/operator override")
         self.assertEqual(resolved.effort_source, "CLI/operator override")
+
+    def test_operator_gemini_model_survives_inherit_default_end_to_end(self):
+        """agent-harness#671, the reported RESIDUAL launch, end to end.
+
+        The precedence test above is codex-only, and codex has NO model_aliases,
+        so it never reaches the substitution branch. Gemini does: `allowed` is
+        the set of INTERNAL alias values, a canonical id is absent from it, and
+        `inherit_default` replaced the operator's explicit `--model` with
+        `phase-loop-execute-medium` -- which agy rejects before session creation.
+
+        Asserts the whole chain the operator experiences: resolution keeps the
+        pin, the source records the override, and the emitted argv carries the
+        canonical id with NO internal token anywhere in it.
+
+        Mutation that must kill this: drop `operator_pinned` from
+        `_resolve_policy_model`, or stop threading it at the call site.
+        """
+        plan = ExecutionPolicyRule(
+            selector="execute",
+            action="execute",
+            executor="gemini",
+            model="gemini-3.6-flash",
+            effort="medium",
+            work_unit_kind="lane_execute",
+            source="plan:execute",
+            unsupported_policy_behavior="inherit_default",
+            inherit_default=True,
+        )
+
+        resolved = resolve_execution_policy(
+            action="execute",
+            executor="gemini",
+            model_selection=ModelSelection(
+                profile="execute", model="gemini-3.6-flash", effort="medium",
+            ),
+            operator_model="gemini-3.6-flash",
+            operator_effort="high",
+            plan_policy=plan,
+        )
+        selection = resolve_model_selection_from_policy(
+            profile="execute", resolved_policy=resolved,
+        )
+
+        self.assertEqual(selection.model, "gemini-3.6-flash")
+        self.assertEqual(resolved.model_source, "CLI/operator override")
+        self.assertNotIn("phase-loop-", resolved.model)
+
+        argv_model = _gemini_cli_model(selection.model, selection.effort)
+        self.assertEqual(argv_model, "gemini-3.6-flash-high")
+        self.assertNotIn("phase-loop-", argv_model)
+
+    def test_policy_derived_gemini_model_still_inherits_the_default(self):
+        """The fix must NOT disable inheritance generally -- only stop it
+        outranking an operator pin. Without an operator model the policy path is
+        unchanged.
+
+        Mutation that must kill this: make `_resolve_policy_model` return the
+        model unconditionally, which would "fix" ah#671 by deleting the feature.
+        """
+        self.assertEqual(
+            _resolve_policy_model(
+                "gemini", "lane_execute", "gemini-3.6-flash", None,
+                "inherit_default", operator_pinned=False,
+            ),
+            "phase-loop-execute-medium",
+        )
 
     def test_invalid_gemini_alias_fails_closed_without_explicit_fallback(self):
         policy = ExecutionPolicyRule(

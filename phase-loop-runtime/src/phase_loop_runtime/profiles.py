@@ -811,7 +811,16 @@ def resolve_execution_policy(
         default_effort=model_selection.effort,
     )
     fallback_applied = normalized_effort != policy_effort
-    resolved_model = _resolve_policy_model(policy_executor, work_unit_kind, policy_model, fallback, unsupported_behavior)
+    resolved_model = _resolve_policy_model(
+        policy_executor,
+        work_unit_kind,
+        policy_model,
+        fallback,
+        unsupported_behavior,
+        # Provenance, not value: only the CLI/operator override may outrank
+        # policy inheritance, and only the caller knows where the model came from.
+        operator_pinned=operator_model is not None,
+    )
     return ResolvedExecutionPolicy(
         action=action,
         lane=lane,
@@ -917,13 +926,34 @@ def _resolve_policy_model(
     model: str,
     fallback: str | None,
     unsupported_behavior: str,
+    *,
+    operator_pinned: bool = False,
 ) -> str:
+    """Resolve the policy model, NEVER overriding an explicit operator pin.
+
+    agent-harness#671. ``allowed`` is the set of this provider's INTERNAL alias values
+    (``phase-loop-execute-medium`` and friends), not the set of models the
+    provider supports. A canonical id like ``gemini-3.6-flash`` is therefore
+    absent from it, and ``inherit_default`` replaced the operator's explicit
+    ``--model`` with an internal token that agy rejects before session creation.
+
+    "Not one of our internal aliases" is not "unsupported by the provider", and
+    default inheritance must not outrank a CLI/operator override -- the
+    precedence this module documents elsewhere. An operator pin may be validated
+    and normalized downstream, but it is never SUBSTITUTED here.
+    """
+
     capability = provider_policy_capabilities()[executor]
     if not capability.model_aliases:
         return model
     allowed = set(capability.model_aliases.values())
     default_alias = capability.model_aliases.get(work_unit_kind)
     if model in allowed:
+        return model
+    if operator_pinned:
+        # Highest precedence wins outright. Substituting here is the ah#671
+        # defect; an invalid pin must fail loudly at launch, not be silently
+        # swapped for something the operator did not ask for.
         return model
     if unsupported_behavior == "inherit_default" and default_alias:
         return default_alias
