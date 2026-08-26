@@ -172,6 +172,49 @@ class TestIgnoredOutputProvenance(unittest.TestCase):
             UNKNOWN_IGNORED)
 
 
+class TestProvenanceCannotBeSpoofed(unittest.TestCase):
+    """Codex seat: provenance was inferred from path components alone.
+
+    Two ways an arbitrary ignored payload could borrow a trusted name and skip
+    the block. Neither was covered by the original tests, and both were live.
+    """
+
+    def test_a_FILE_named_like_a_cache_is_not_a_cache(self):
+        """`.venv` as an ordinary file (or symlink) is not the environment
+        directory. Git renders a collapsed directory WITH a trailing slash and a
+        file without one, so the shape distinguishes them.
+
+        Mutation that must kill this: accept a match on the final component
+        without requiring directory form.
+        """
+        for path in (".venv", "node_modules", "private.egg-info", ".phase-loop"):
+            verdict = classify_ignored_output(path)
+            self.assertEqual(verdict.provenance, UNKNOWN_IGNORED,
+                             f"{path} is a file, not a trusted directory")
+            self.assertTrue(verdict.blocks)
+
+    def test_leading_whitespace_cannot_borrow_runner_provenance(self):
+        """" .phase-loop/" is a DIFFERENT directory from ".phase-loop/", and a
+        `.strip()` handed it the runner's trust.
+
+        Mutation that must kill this: strip the path before matching.
+        """
+        for path in (" .phase-loop/secrets.env", "  .venv/lib/x"):
+            self.assertEqual(classify_ignored_output(path).provenance,
+                             UNKNOWN_IGNORED, path)
+
+    def test_an_absolute_path_is_never_trusted(self):
+        self.assertEqual(classify_ignored_output("/abs/.venv/lib").provenance,
+                         UNKNOWN_IGNORED)
+
+    def test_the_legitimate_forms_still_pass(self):
+        """The hardening must not re-break the case the whole PR exists to fix."""
+        for path in (".phase-loop/", ".phase-loop/state.json", ".ruff_cache/",
+                     "phase-loop-runtime/.venv/", "a/b/__pycache__/x.pyc",
+                     "src/pkg.egg-info/", ".codex/phase-loop/x"):
+            self.assertFalse(classify_ignored_output(path).blocks, path)
+
+
 class TestIgnoredOutputAudit(unittest.TestCase):
     def _repo(self, tmp):
         run = lambda *a: subprocess.run(["git", "-C", tmp, *a], check=True,
@@ -205,6 +248,25 @@ class TestIgnoredOutputAudit(unittest.TestCase):
             self.assertFalse(result["blocks"], result)
             self.assertEqual(result[UNKNOWN_IGNORED], [])
             self.assertTrue(result[RUNNER_OWNED] or result[TOOL_CACHE])
+
+    def test_a_directory_that_MIMICS_runner_state_blocks_end_to_end(self):
+        """Built for real so git's own quoting is in the loop: a directory named
+        " .phase-loop" (leading space) must not inherit runner provenance.
+
+        Mutation that must kill this: strip whitespace in the classifier.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = self._repo(tmp)
+            (repo / ".gitignore").write_text(
+                ".phase-loop/\n.ruff_cache/\n__pycache__/\n.venv/\nscratch/\n"
+                " .phase-loop/\n")
+            spoof = repo / " .phase-loop"
+            spoof.mkdir()
+            (spoof / "payload.env").write_text("SECRET=1")
+            result = audit_ignored_outputs(repo)
+            self.assertTrue(result["blocks"],
+                            f"spoofed runner dir must block: {result}")
+            self.assertTrue(result[UNKNOWN_IGNORED])
 
     def test_an_unknown_ignored_output_makes_the_audit_block(self):
         with TemporaryDirectory() as tmp:

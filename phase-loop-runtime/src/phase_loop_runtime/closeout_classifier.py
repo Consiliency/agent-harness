@@ -183,24 +183,43 @@ def classify_ignored_output(repo_relpath: str) -> IgnoredOutputVerdict:
     runner's own footprint, NOT to stop blocking.
     """
 
-    raw = (repo_relpath or "").strip()
+    # Do NOT strip whitespace: " .phase-loop/x" is a DIFFERENT path from
+    # ".phase-loop/x", and stripping it hands trusted provenance to a directory
+    # an attacker (or an accident) can create. Only a trailing newline, which is
+    # line-reading debris rather than part of the name, is removed.
+    raw = (repo_relpath or "").rstrip("\n")
     norm = raw[2:] if raw.startswith("./") else raw
-    norm = norm.lstrip("/")
     if not norm:
         return IgnoredOutputVerdict(UNKNOWN_IGNORED, True, "empty path")
+    if norm.startswith("/"):
+        # Repo-relative paths only. An absolute path did not come from the
+        # porcelain this grades, so nothing about its shape is trustworthy.
+        return IgnoredOutputVerdict(UNKNOWN_IGNORED, True, "not a repo-relative path")
 
     # Runner-owned lifecycle state, taken from the runtime's OWN declared
     # exclusions rather than a second list here -- a private copy would drift
     # from the paths the runtime actually writes.
     for entry in EXCLUDE_ENTRIES:
         prefix = entry.rstrip("/")
-        if norm == prefix or norm.startswith(prefix + "/"):
+        # `norm == prefix` is deliberately NOT trusted: a bare `.phase-loop`
+        # with no trailing slash is a FILE of that name, not the runner's state
+        # directory.
+        if norm == prefix + "/" or norm.startswith(prefix + "/"):
             return IgnoredOutputVerdict(
                 RUNNER_OWNED, False, f"runner lifecycle state under {entry}"
             )
 
-    parts = PurePosixPath(norm).parts
-    for part in parts:
+    # A cache name only earns trust as a DIRECTORY. Git renders a collapsed
+    # directory with a trailing slash and a file without one, so a bare `.venv`
+    # or `node_modules` entry is an ordinary FILE (or a symlink) that merely
+    # borrowed the name -- classifying it as a cache would let any ignored
+    # payload pick a trusted name and skip the block.
+    is_dir_form = norm.endswith("/")
+    parts = PurePosixPath(norm.rstrip("/")).parts
+    for index, part in enumerate(parts):
+        directory_component = is_dir_form or index < len(parts) - 1
+        if not directory_component:
+            continue
         if part in _TOOL_CACHE_DIR_NAMES:
             return IgnoredOutputVerdict(TOOL_CACHE, False, f"toolchain output ({part})")
         if part.endswith(_TOOL_CACHE_DIR_SUFFIXES):

@@ -13,7 +13,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   outputs, 1 = unknown present, 2 = probe failed). Typed provenance:
   **runner_owned** (taken from the runtime's own `EXCLUDE_ENTRIES`, not a second list),
   **tool_cache** (pytest/Ruff/mypy caches, `__pycache__`, egg-info, `.venv`, `node_modules`),
-  **unknown_ignored** — which still blocks, deny-by-default.
+  **unknown_ignored** — which still blocks, deny-by-default. A trusted name only
+  counts as a DIRECTORY (git's trailing-slash form or a non-final component), and
+  paths are matched unstripped, so neither an ordinary file named `.venv` nor a
+  directory named `" .phase-loop"` can borrow runner or toolchain provenance.
 - The closeout audit contract now reads that verdict instead of judging ignored paths by
   hand, in the runtime prompt and in the claude/codex/gemini `execute-phase` skills.
   An executor followed the old prose *correctly* and reported
