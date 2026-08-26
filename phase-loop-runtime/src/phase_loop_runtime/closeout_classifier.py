@@ -273,7 +273,15 @@ def audit_ignored_outputs(repo: Path) -> dict:
         # ownership contract, not by this audit.
         if not line.startswith("!! "):
             continue
-        path = line[3:].strip().strip('"')
+        # Unquote WITHOUT stripping whitespace. Git does quote a path with a
+        # leading space (verified: `!! " .phase-loop/"`), so `.strip()` would
+        # hit the quotes rather than the space -- but that makes correctness
+        # depend on git's quoting rules. Peeling the quotes explicitly and
+        # never stripping whitespace is safe by construction instead.
+        raw = line[3:].rstrip("\n").rstrip("\r")
+        if len(raw) >= 2 and raw.startswith('"') and raw.endswith('"'):
+            raw = raw[1:-1]
+        path = raw
         if not path:
             continue
         verdict = classify_ignored_output(path)
