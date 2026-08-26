@@ -283,9 +283,11 @@ def audit_ignored_outputs(repo: Path) -> dict:
         blocking = blocking or verdict.blocks
     buckets["probe_failed"] = False
     buckets["blocks"] = blocking
+    # `reason` reads the SAME seam as `blocks`, not the UNKNOWN bucket: deriving
+    # them separately drifts the moment a provenance other than unknown blocks.
     buckets["reason"] = (
         f"{len(buckets[UNKNOWN_IGNORED])} ignored output(s) with no recognised producer"
-        if buckets[UNKNOWN_IGNORED]
+        if blocking
         else "every ignored path was produced by the runner or its toolchain"
     )
     return buckets
