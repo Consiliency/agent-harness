@@ -6557,3 +6557,63 @@ def test_release_identity_rejects_any_extra_artifact():
     release["artifacts"].sort(key=lambda row: (row["filename"], row["packagetype"]))
     with pytest.raises(evidence.AgyCanaryEvidenceError, match="artifacts"):
         evidence._validate_release_identity(release)
+
+
+def test_a_default_linux_environment_does_not_trip_the_customization_guard(tmp_path):
+    """agent-harness#711: `XDG_RUNTIME_DIR` is not a customization.
+
+    systemd/pam_systemd set it on essentially every Linux login, and it names a
+    per-session directory for sockets -- it relocates nothing agy reads. Treating
+    it as a customization source made the guard fire on the DEFAULT environment
+    rather than a customized one, failing 41 tests in this file on any ordinary
+    host and forcing every verification run to diff failure sets against main.
+
+    This test exists because the gap was invisible: every other test here builds
+    its environment explicitly, so the default case was never exercised.
+
+    Mutation that must kill this: drop "XDG_RUNTIME_DIR" from
+    `_CUSTOMIZATION_ENV_EXEMPT`.
+    """
+    default_env = {
+        "XDG_RUNTIME_DIR": "/run/user/1000",
+        "HOME": str(tmp_path),
+        "PATH": "/usr/bin:/bin",
+        "LANG": "en_US.UTF-8",
+    }
+    frozen = evidence.freeze_customization_inventory(
+        home=tmp_path, project_dir=tmp_path, env=default_env,
+    )
+    assert frozen["environment_names"] == []
+    assert frozen["sources_complete"] is True
+
+
+def test_the_xdg_variables_that_DO_relocate_agy_state_still_trip_the_guard(tmp_path):
+    """The exemption must not widen. XDG_CONFIG/DATA/STATE/CACHE genuinely move
+    agy's configuration and state, so they remain customization sources.
+
+    Mutation that must kill this: exempt the whole `XDG_` family, or drop the
+    prefixes instead of exempting the one name.
+    """
+    for name in ("XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME"):
+        with pytest.raises(evidence.AgyCanaryEvidenceError, match="customization source"):
+            evidence.freeze_customization_inventory(
+                home=tmp_path, project_dir=tmp_path,
+                env={name: "/tmp/host-relocated", "XDG_RUNTIME_DIR": "/run/user/1000"},
+            )
+
+
+def test_every_exemption_is_stated_once(tmp_path):
+    """Both call sites must consult the same exemption set.
+
+    The exemption was duplicated as a literal at each site; adding an entry to
+    one and not the other is the drift this prevents.
+
+    Mutation that must kill this: re-inline the literal at either site.
+    """
+    assert "AGY_CANARY_SETTINGS_PATH" in evidence._CUSTOMIZATION_ENV_EXEMPT
+    assert "XDG_RUNTIME_DIR" in evidence._CUSTOMIZATION_ENV_EXEMPT
+    source = Path(evidence.__file__).read_text(encoding="utf-8")
+    # The literal may appear only in the constant's own definition.
+    assert source.count('"AGY_CANARY_SETTINGS_PATH"') == 1, (
+        "the exemption set is stated more than once"
+    )

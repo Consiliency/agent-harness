@@ -6,6 +6,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### agy canary: XDG_RUNTIME_DIR is not a customization (Consiliency/agent-harness#711)
+
+- `XDG_RUNTIME_DIR` no longer counts as an active agy customization source. systemd sets
+  it on essentially every Linux login and it names a per-session socket directory — it
+  relocates nothing agy reads, unlike `XDG_CONFIG_HOME`/`DATA`/`STATE`/`CACHE`, which
+  still trip the guard. Including it made the guard fire on the **default** Linux
+  environment: 41 tests in `test_agy_canary_evidence.py` failed on any ordinary host,
+  with or without a local change, so every verification run had to diff failure sets
+  against `origin/main` to prove a branch was clean.
+- The exemption set is now one constant consumed by both call sites rather than a literal
+  duplicated at each.
+
 ### closeout: the runner's own footprint stops blocking closeout (Consiliency/agent-harness#670)
 
 - New `classify_ignored_output` / `audit_ignored_outputs` in `closeout_classifier`, plus

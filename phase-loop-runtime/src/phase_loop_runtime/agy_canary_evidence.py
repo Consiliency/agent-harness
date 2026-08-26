@@ -112,6 +112,17 @@ _PRIVATE_BOARD_RESERVED_PREFIXES = (
 _CUSTOMIZATION_ENV_PREFIXES = (
     "AGY_", "ANTIGRAVITY_", "GEMINI_", "XDG_CONFIG_", "XDG_DATA_", "XDG_STATE_", "XDG_CACHE_", "XDG_RUNTIME_",
 )
+# Names that match a prefix above but are NOT customization. One tuple consumed
+# by every site: the exemption was previously written out at each call site, and
+# a duplicated literal drifts the moment an entry is added.
+#
+# `XDG_RUNTIME_DIR` (agent-harness#711): set by systemd/pam_systemd on essentially every
+# Linux login, it is the per-session directory for sockets and transient files.
+# It relocates nothing agy reads -- unlike XDG_CONFIG_/DATA_/STATE_/CACHE_, which
+# genuinely move agy's configuration and state and must keep tripping the guard.
+# Leaving it in made the guard fire on the DEFAULT Linux environment rather than
+# on a customized one, failing 41 tests on any ordinary host.
+_CUSTOMIZATION_ENV_EXEMPT = frozenset({"AGY_CANARY_SETTINGS_PATH", "XDG_RUNTIME_DIR"})
 
 
 class AgyCanaryEvidenceError(RuntimeError):
@@ -3423,7 +3434,7 @@ def inventory_customizations(
     source_env = os.environ if env is None else env
     found["environment_overrides"] = sorted(
         name for name in source_env if name.startswith(_CUSTOMIZATION_ENV_PREFIXES)
-        and name not in {"AGY_CANARY_SETTINGS_PATH"}
+        and name not in _CUSTOMIZATION_ENV_EXEMPT
     )
     if any(found.values()):
         raise AgyCanaryEvidenceError("active agy customization source detected")
@@ -3445,7 +3456,7 @@ def freeze_customization_inventory(
         "environment_names": sorted(
             name for name in env
             if name.startswith(_CUSTOMIZATION_ENV_PREFIXES)
-            and name not in {"AGY_CANARY_SETTINGS_PATH"}
+            and name not in _CUSTOMIZATION_ENV_EXEMPT
         ),
         "inventory": inventory,
     }
