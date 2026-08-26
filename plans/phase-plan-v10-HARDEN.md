@@ -198,9 +198,12 @@ SL-3 — Evidence, documentation, and whole-phase reducer
   handoff-bearing lifecycle event. Every earlier handoff-bearing event must retain
   `template_declared_actual_sl2_rebind_required` and null actual identities; do not
   require total cardinality one. The selected event must bind the actual reviewed SCHED
-  SL-2 commit, reviewed head, tree, exact six-path diff, current HARDEN/SCHED/roadmap
-  digests, canonical receipt, and four usable `AGREE` reviews. An arbitrary 64-hex
-  string, unreviewed object, stale plan, or template cannot pass.
+  atomic SL-2 plus SL-4 integration commit, reviewed head, tree, exact seven-path
+  diff, current HARDEN/SCHED/roadmap digests, canonical receipt, and four usable
+  `AGREE` reviews. `required_path_set` remains the exact six SL-2 overlap paths; the
+  only admitted companion is SL-4's `phase_worktree_executor.py`, as required by
+  `Consiliency/agent-harness#704`. An arbitrary 64-hex string, unreviewed object,
+  stale plan, template, or other extra path cannot pass.
 - SL-0 lands tests-only and receives exact-head board review. Production begins from
   that fetched landing; later production commits do not alter SL-0. SL-1 and SL-2 may
   proceed only after this boundary and must serialize with any external writer of their
@@ -241,11 +244,11 @@ plan=Path("plans","phase-plan-v10-HARDEN.md").as_posix(); sched=Path("plans","ph
 m=json.loads(B(c,manifest)); row=[x for x in m["plans"] if x.get("phase_alias")=="HARDEN"]; assert len(row)==1
 hs=[e["metadata"]["sched_harden_handoff"] for e in row[0]["lifecycle"] if isinstance(e.get("metadata"),dict) and "sched_harden_handoff" in e["metadata"]]
 assert len(hs)>=2 and all(x["handoff_status"]=="template_declared_actual_sl2_rebind_required" and x["actual_sl2_commit"] is x["actual_sl2_reviewed_head"] is x["actual_sl2_tree"] is None for x in hs[:-1])
-h=hs[-1]; paths=[Path("phase-loop-runtime","src","phase_loop_runtime",x).as_posix() for x in ("lane_scheduler.py","launcher.py","models.py","plan_ir.py","runner.py","worker_pool.py")]; seats=["native_codex","claude","gemini","grok"]
+h=hs[-1]; paths=[Path("phase-loop-runtime","src","phase_loop_runtime",x).as_posix() for x in ("lane_scheduler.py","launcher.py","models.py","plan_ir.py","runner.py","worker_pool.py")]; companion=Path("phase-loop-runtime","src","phase_loop_runtime","phase_worktree_executor.py").as_posix(); integration_paths=sorted([*paths,companion]); seats=["native_codex","claude","gemini","grok"]
 assert h["handoff_status"]=="candidate_awaiting_review" and h["required_path_set"]==paths and h["required_review_seats"]==seats
 actual=G("rev-parse",f'{h["actual_sl2_commit"]}^{{commit}}'); reviewed=G("rev-parse",f'{h["actual_sl2_reviewed_head"]}^{{commit}}'); tree=G("rev-parse",f"{actual}^{{tree}}")
 assert actual==h["actual_sl2_commit"] and reviewed==h["actual_sl2_reviewed_head"] and tree==h["actual_sl2_tree"]
-p=G("rev-list","--parents","-n","1",actual).split(); assert len(p)==3 and p[2]==reviewed and D(p[1],actual)==paths
+p=G("rev-list","--parents","-n","1",actual).split(); assert len(p)==3 and p[2]==reviewed and D(p[1],actual)==integration_paths
 G("merge-base","--is-ancestor",actual,c)
 assert h["harden_plan_sha256"]==H(B(c,plan)) and h["sched_plan_sha256"]==H(B(c,sched)) and h["roadmap_sha256"]==H(B(c,roadmap))
 payload={k:v for k,v in h.items() if k!="manifest_contract_sha256"}; assert h["manifest_contract_sha256"]==H(h["manifest_contract_digest_domain"].encode()+C(payload))
