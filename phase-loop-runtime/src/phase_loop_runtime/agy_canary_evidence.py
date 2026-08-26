@@ -6746,6 +6746,22 @@ def _record_rows(data: bytes, *, wheel: bool) -> list[tuple[str, str, str]]:
     return output
 
 
+# The governed release's console entry points, sorted by name. ONE statement of
+# this fact: it was previously written out at each validation site and in
+# pyproject.toml, and adding an entrypoint (agent-harness#670) desynchronised
+# them -- invisible to the suite, because the wheel fixtures are synthetic while
+# only a real release build validates. `test_release_console_allowlist_matches_pyproject`
+# pins this against pyproject.toml so the two cannot drift again.
+_CANONICAL_CONSOLE_SCRIPTS = [
+    {"name": "codex-phase-loop", "target": "phase_loop_runtime.cli:main"},
+    {"name": "phase-loop", "target": "phase_loop_runtime.cli:main"},
+    {
+        "name": "phase-loop-closeout-audit",
+        "target": "phase_loop_runtime.closeout_classifier:console_main",
+    },
+]
+
+
 def _wheel_console_scripts(data: bytes) -> list[dict[str, str]]:
     """Parse the authenticated wheel metadata into canonical launcher authority."""
     try:
@@ -6765,11 +6781,7 @@ def _wheel_console_scripts(data: bytes) -> list[dict[str, str]]:
         for name, target in parser.items("console_scripts", raw=True)
     ]
     scripts.sort(key=lambda row: row["name"])
-    expected = [
-        {"name": "codex-phase-loop", "target": "phase_loop_runtime.cli:main"},
-        {"name": "phase-loop", "target": "phase_loop_runtime.cli:main"},
-    ]
-    if scripts != expected:
+    if scripts != _CANONICAL_CONSOLE_SCRIPTS:
         raise AgyCanaryEvidenceError("release wheel console entry points are not canonical")
     return scripts
 
@@ -6871,10 +6883,7 @@ def _validate_wheel_binding(value: Any, *, version: str) -> dict[str, Any]:
             value.get("record_path") != f"phase_loop_runtime-{version}.dist-info/RECORD" or
             value.get("root_scheme") != "purelib" or
             any(not _is_digest(value.get(name)) for name in ("sha256", "url_sha256", "record_sha256")) or
-            value.get("console_scripts") != [
-                {"name": "codex-phase-loop", "target": "phase_loop_runtime.cli:main"},
-                {"name": "phase-loop", "target": "phase_loop_runtime.cli:main"},
-            ] or
+            value.get("console_scripts") != _CANONICAL_CONSOLE_SCRIPTS or
             not isinstance(value.get("files"), list) or not value["files"]):
         raise AgyCanaryEvidenceError("release wheel binding is malformed")
     wheel_paths: set[str] = set()

@@ -9,7 +9,20 @@ config_nonsource is a tight allowlist; unmatched is deny-by-default UNSAFE.
 import unittest
 
 import phase_loop_runtime.models as m
-from phase_loop_runtime.closeout_classifier import classify_unowned_path, SensitivityVerdict
+import subprocess
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from phase_loop_runtime.closeout_classifier import (
+    RUNNER_OWNED,
+    TOOL_CACHE,
+    UNKNOWN_IGNORED,
+    SensitivityVerdict,
+    audit_ignored_outputs,
+    classify_ignored_output,
+    classify_unowned_path,
+    main,
+)
 
 
 class CloseoutClassifierTest(unittest.TestCase):
@@ -84,3 +97,374 @@ class CloseoutClassifierTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestIgnoredOutputProvenance(unittest.TestCase):
+    """ah#670: an executor blocked closeout on the runner's OWN footprint.
+
+    Its 13-file tracked diff was owned and verified; `.phase-loop/**`,
+    `.ruff_cache/`, `.pytest_cache/` and `.venv/` were all produced by the
+    governed command itself. Blocking there is a loop -- the repair turn re-runs
+    the command and recreates them.
+    """
+
+    def test_the_exact_paths_from_the_reported_run_do_not_block(self):
+        """Every path is taken verbatim from the terminal-summary of the run in
+        the issue, so this pins the reported case rather than a paraphrase.
+
+        Mutation that must kill this: drop `.venv`/`__pycache__` from the
+        toolchain set, or stop consulting EXCLUDE_ENTRIES.
+        """
+        reported = [
+            ".phase-loop/active-loop.json",
+            ".phase-loop/events.jsonl",
+            ".phase-loop/metrics.jsonl",
+            ".phase-loop/runs/",
+            ".phase-loop/state.json",
+            ".phase-loop/tui-handoff.md",
+            ".ruff_cache/",
+            "phase-loop-runtime/.pytest_cache/",
+            "phase-loop-runtime/.venv/",
+            "phase-loop-runtime/src/phase_loop_runtime.egg-info/",
+            "phase-loop-runtime/src/phase_loop_runtime/__pycache__/",
+        ]
+        for path in reported:
+            verdict = classify_ignored_output(path)
+            self.assertFalse(verdict.blocks, f"{path} must not block: {verdict}")
+            self.assertIn(verdict.provenance, (RUNNER_OWNED, TOOL_CACHE))
+
+    def test_runner_state_is_typed_from_the_runtime_s_own_exclusions(self):
+        self.assertEqual(classify_ignored_output(".phase-loop/state.json").provenance,
+                         RUNNER_OWNED)
+        # The legacy location is in EXCLUDE_ENTRIES too, so reusing that constant
+        # covers it without a second list here.
+        self.assertEqual(classify_ignored_output(".codex/phase-loop/state.json").provenance,
+                         RUNNER_OWNED)
+
+    def test_an_unrecognised_ignored_output_STILL_blocks(self):
+        """The point is to stop blocking on the runner's footprint, not to stop
+        blocking. Deny-by-default must survive.
+
+        Mutation that must kill this: return a non-blocking verdict as the
+        fallback instead of UNKNOWN_IGNORED.
+        """
+        for path in ("scratch/dump.csv", "secrets.env.bak", "output/report.pdf"):
+            verdict = classify_ignored_output(path)
+            self.assertEqual(verdict.provenance, UNKNOWN_IGNORED)
+            self.assertTrue(verdict.blocks, f"{path} must still block")
+
+    def test_a_cache_NAME_matches_at_any_depth(self):
+        """The reported run had caches at the root AND nested two levels down,
+        so a root-anchored rule would have missed half of them.
+        """
+        self.assertEqual(
+            classify_ignored_output("a/b/c/__pycache__/x.pyc").provenance, TOOL_CACHE)
+
+    def test_a_path_merely_CONTAINING_a_cache_name_is_not_laundered(self):
+        """`my__pycache__notes.txt` is not a cache. Substring matching would
+        launder an arbitrary ignored file into the non-blocking bucket.
+
+        Mutation that must kill this: match on substring rather than on a path
+        COMPONENT.
+        """
+        self.assertEqual(
+            classify_ignored_output("notes/my__pycache__notes.txt").provenance,
+            UNKNOWN_IGNORED)
+
+
+class TestTheAuditIsReachableWhereItIsPrescribed(unittest.TestCase):
+    """Codex seat: the module form does not run on the primary install path.
+
+    `uv tool install` isolates the package, so `python -m phase_loop_runtime...`
+    fails to import — and the closeout contract reads that exit 1 as "unknown
+    ignored outputs". An audit instruction with only a module form would
+    therefore recreate the false blocker on the SUPPORTED install.
+    """
+
+    def test_the_console_entrypoint_target_exists_and_takes_no_arguments(self):
+        """A `[project.scripts]` target is called with NO arguments. Pointing it
+        at `main(argv)` would TypeError on first real use, in the isolated
+        install where nobody is watching.
+
+        Mutation that must kill this: point the entrypoint at `main`.
+        """
+        import inspect
+
+        import phase_loop_runtime.closeout_classifier as cc
+
+        # src/phase_loop_runtime/x.py -> parents[2] is the package root that
+        # holds pyproject.toml. Skip under an installed (site-packages) layout,
+        # where no source tree exists to assert against.
+        package_root = Path(cc.__file__).parents[2]
+        pyproject_path = package_root / "pyproject.toml"
+        if not pyproject_path.exists():
+            self.skipTest("installed layout: no source pyproject.toml to check")
+        pyproject = pyproject_path.read_text()
+        self.assertIn(
+            'phase-loop-closeout-audit = "phase_loop_runtime.closeout_classifier:console_main"',
+            pyproject,
+            "the audit must be reachable as a console command, not only as a module",
+        )
+        target = getattr(cc, "console_main", None)
+        self.assertIsNotNone(target, "declared entrypoint target must exist")
+        self.assertEqual(len(inspect.signature(target).parameters), 0)
+
+    def test_every_prose_surface_prescribes_the_console_command(self):
+        """The instruction and the reachable command must agree. They did not:
+        the prose named a module form that cannot run where the tool is
+        installed.
+        """
+        import phase_loop_runtime.closeout_classifier as cc
+
+        root = Path(cc.__file__).parents[3]
+        surfaces = sorted(root.glob("skills-src/*/*-execute-phase/SKILL.md"))
+        surfaces = [p for p in surfaces if "closeout_classifier" in p.read_text()]
+        if not surfaces:
+            self.skipTest("installed layout: no skills-src tree to check")
+        for path in surfaces:
+            body = path.read_text()
+            self.assertIn("phase-loop-closeout-audit --repo .", body, path.name)
+
+
+class TestOneStatementOfEachFact(unittest.TestCase):
+    """Two drift classes that each shipped a real defect on this PR.
+
+    Adding one console entrypoint desynchronised THREE independent statements of
+    the same fact (pyproject, the wheel validator, the binding validator), and
+    the break was invisible because the wheel fixtures are synthetic while only
+    a real release build validates. Separately, a prose rider landed on some of
+    the surfaces that prescribe the audit but not all -- three times, because I
+    kept counting files instead of occurrences.
+
+    These assert the agreements rather than relying on a fourth manual sweep.
+    """
+
+    def _repo_root(self):
+        import phase_loop_runtime.closeout_classifier as cc
+
+        return Path(cc.__file__).parents[3]
+
+    def test_release_console_allowlist_matches_pyproject(self):
+        """The governed-release allowlist and `[project.scripts]` must agree.
+
+        Mutation that must kill this: add an entrypoint to pyproject without
+        updating the allowlist (which is exactly what broke the release path).
+        """
+        import re
+
+        import phase_loop_runtime.agy_canary_evidence as ev
+
+        pyproject = self._repo_root() / "phase-loop-runtime" / "pyproject.toml"
+        if not pyproject.exists():
+            self.skipTest("installed layout: no source pyproject.toml")
+        body = pyproject.read_text()
+        section = body.split("[project.scripts]", 1)[1].split("\n[", 1)[0]
+        declared = {
+            m.group(1): m.group(2)
+            for m in re.finditer(r'^([\w.-]+)\s*=\s*"([^"]+)"', section, re.M)
+        }
+        allowlisted = {row["name"]: row["target"] for row in ev._CANONICAL_CONSOLE_SCRIPTS}
+        self.assertEqual(
+            declared, allowlisted,
+            "pyproject [project.scripts] and the release console allowlist disagree",
+        )
+
+    def test_every_surface_prescribing_the_audit_covers_the_cannot_run_case(self):
+        """Counted by OCCURRENCE, not by file, and whitespace-normalized.
+
+        Both mistakes were live: the codex/gemini skills prescribe the audit
+        TWICE (Core Rules and the closeout paragraph) while the rider reached
+        only the first, and the claude rider wraps across lines so a naive
+        line-wise grep reports a phantom gap.
+
+        Mutation that must kill this: drop the rider from any one site.
+        """
+        import re
+
+        root = self._repo_root()
+        surfaces = [
+            root / "skills-src",
+            root / "phase-loop-skills",
+            root / "phase-loop-runtime/src/phase_loop_runtime/skills_bundle",
+        ]
+        checked = 0
+        for surface in surfaces:
+            if not surface.exists():
+                continue
+            checked += 1
+            prescribe = cover = 0
+            for path in surface.rglob("*.md"):
+                body = re.sub(r"\s+", " ", path.read_text(encoding="utf-8"))
+                prescribe += body.count("phase-loop-closeout-audit --repo .")
+                cover += body.count("failure to run the audit")
+            self.assertEqual(
+                prescribe, cover,
+                f"{surface.name}: {prescribe} site(s) prescribe the audit but "
+                f"{cover} cover the cannot-run case",
+            )
+        if not checked:
+            self.skipTest("installed layout: no skill sources to check")
+
+
+class TestProvenanceCannotBeSpoofed(unittest.TestCase):
+    """Codex seat: provenance was inferred from path components alone.
+
+    Two ways an arbitrary ignored payload could borrow a trusted name and skip
+    the block. Neither was covered by the original tests, and both were live.
+    """
+
+    def test_a_FILE_named_like_a_cache_is_not_a_cache(self):
+        """`.venv` as an ordinary file (or symlink) is not the environment
+        directory. Git renders a collapsed directory WITH a trailing slash and a
+        file without one, so the shape distinguishes them.
+
+        Mutation that must kill this: accept a match on the final component
+        without requiring directory form.
+        """
+        for path in (".venv", "node_modules", "private.egg-info", ".phase-loop"):
+            verdict = classify_ignored_output(path)
+            self.assertEqual(verdict.provenance, UNKNOWN_IGNORED,
+                             f"{path} is a file, not a trusted directory")
+            self.assertTrue(verdict.blocks)
+
+    def test_leading_whitespace_cannot_borrow_runner_provenance(self):
+        """" .phase-loop/" is a DIFFERENT directory from ".phase-loop/", and a
+        `.strip()` handed it the runner's trust.
+
+        Mutation that must kill this: strip the path before matching.
+        """
+        for path in (" .phase-loop/secrets.env", "  .venv/lib/x"):
+            self.assertEqual(classify_ignored_output(path).provenance,
+                             UNKNOWN_IGNORED, path)
+
+    def test_a_traversal_component_is_never_trusted(self):
+        """Parity with the absolute-path rule: neither shape comes from the
+        porcelain this grades (Fable seat).
+        """
+        self.assertEqual(classify_ignored_output("../x/.venv/").provenance,
+                         UNKNOWN_IGNORED)
+
+    def test_an_absolute_path_is_never_trusted(self):
+        self.assertEqual(classify_ignored_output("/abs/.venv/lib").provenance,
+                         UNKNOWN_IGNORED)
+
+    def test_the_legitimate_forms_still_pass(self):
+        """The hardening must not re-break the case the whole PR exists to fix."""
+        for path in (".phase-loop/", ".phase-loop/state.json", ".ruff_cache/",
+                     "phase-loop-runtime/.venv/", "a/b/__pycache__/x.pyc",
+                     "src/pkg.egg-info/", ".codex/phase-loop/x"):
+            self.assertFalse(classify_ignored_output(path).blocks, path)
+
+
+class TestIgnoredOutputAudit(unittest.TestCase):
+    def _repo(self, tmp):
+        run = lambda *a: subprocess.run(["git", "-C", tmp, *a], check=True,
+                                        capture_output=True)
+        run("init", "-q", "-b", "main")
+        run("config", "user.email", "t@t")
+        run("config", "user.name", "t")
+        repo = Path(tmp)
+        (repo / ".gitignore").write_text(
+            ".phase-loop/\n.ruff_cache/\n__pycache__/\n.venv/\nscratch/\n")
+        (repo / "src").mkdir()
+        (repo / "src" / "owned.py").write_text("x = 1\n")
+        run("add", "-A")
+        run("commit", "-qm", "seed")
+        return repo
+
+    def test_the_reported_scenario_end_to_end_does_not_block(self):
+        """Acceptance regression from the issue: an owned tracked diff PLUS
+        `.phase-loop/**` plus pytest/Ruff caches must not block.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = self._repo(tmp)
+            (repo / "src" / "owned.py").write_text("x = 2\n")     # owned tracked diff
+            (repo / ".phase-loop" / "runs").mkdir(parents=True)
+            (repo / ".phase-loop" / "state.json").write_text("{}")
+            (repo / ".ruff_cache").mkdir()
+            (repo / ".ruff_cache" / "c").write_text("x")
+            (repo / "src" / "__pycache__").mkdir()
+            (repo / "src" / "__pycache__" / "owned.pyc").write_text("x")
+            result = audit_ignored_outputs(repo)
+            self.assertFalse(result["blocks"], result)
+            self.assertEqual(result[UNKNOWN_IGNORED], [])
+            self.assertTrue(result[RUNNER_OWNED] or result[TOOL_CACHE])
+
+    def test_a_directory_that_MIMICS_runner_state_blocks_end_to_end(self):
+        """Built for real so git's own quoting is in the loop: a directory named
+        " .phase-loop" (leading space) must not inherit runner provenance.
+
+        Mutation that must kill this: strip whitespace in the classifier.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = self._repo(tmp)
+            (repo / ".gitignore").write_text(
+                ".phase-loop/\n.ruff_cache/\n__pycache__/\n.venv/\nscratch/\n"
+                " .phase-loop/\n")
+            spoof = repo / " .phase-loop"
+            spoof.mkdir()
+            (spoof / "payload.env").write_text("SECRET=1")
+            result = audit_ignored_outputs(repo)
+            self.assertTrue(result["blocks"],
+                            f"spoofed runner dir must block: {result}")
+            self.assertTrue(result[UNKNOWN_IGNORED])
+
+    def test_an_unknown_ignored_output_makes_the_audit_block(self):
+        with TemporaryDirectory() as tmp:
+            repo = self._repo(tmp)
+            (repo / "scratch").mkdir()
+            (repo / "scratch" / "dump.csv").write_text("x")
+            result = audit_ignored_outputs(repo)
+            self.assertTrue(result["blocks"])
+            self.assertTrue(result[UNKNOWN_IGNORED])
+            # Assert the REASON too, not just the flag: the reason line is what
+            # an LLM executor reads, and a seam that reports "produced by the
+            # runner" beside a blocking exit code is a contradiction the exit
+            # code alone cannot catch.
+            self.assertIn("no recognised producer", result["reason"])
+
+    def test_a_failed_git_probe_blocks_rather_than_reading_as_clean(self):
+        """"Could not read the tree" must never present as "nothing to see".
+
+        Mutation that must kill this: return empty buckets with blocks=False on
+        a non-zero git exit.
+        """
+        with TemporaryDirectory() as tmp:
+            result = audit_ignored_outputs(Path(tmp) / "not-a-repo")
+            self.assertTrue(result["probe_failed"])
+            self.assertTrue(result["blocks"])
+
+    def test_a_missing_git_binary_is_a_typed_probe_failure_not_a_traceback(self):
+        """"Could not run git" and "unknown outputs present" are different facts
+        and the caller must be able to tell them apart (Fable seat).
+
+        Mutation that must kill this: drop the OSError handler, which raises
+        FileNotFoundError out of the audit instead of returning a verdict.
+        """
+        import phase_loop_runtime.closeout_classifier as cc
+
+        def boom(*a, **k):
+            raise FileNotFoundError("no git here")
+
+        original = cc.subprocess.run
+        cc.subprocess.run = boom
+        try:
+            with TemporaryDirectory() as tmp:
+                result = cc.audit_ignored_outputs(Path(tmp))
+                self.assertTrue(result["probe_failed"])
+                self.assertTrue(result["blocks"])
+                self.assertIn("git unavailable", result["reason"])
+                self.assertEqual(main(["--repo", tmp]), 2)
+        finally:
+            cc.subprocess.run = original
+
+    def test_the_cli_exit_codes_carry_the_verdict(self):
+        with TemporaryDirectory() as tmp:
+            repo = self._repo(tmp)
+            (repo / ".ruff_cache").mkdir()
+            (repo / ".ruff_cache" / "c").write_text("x")
+            self.assertEqual(main(["--repo", str(repo)]), 0)
+            (repo / "scratch").mkdir()
+            (repo / "scratch" / "dump.csv").write_text("x")
+            self.assertEqual(main(["--repo", str(repo)]), 1)
+            self.assertEqual(main(["--repo", str(Path(tmp) / "nope")]), 2)

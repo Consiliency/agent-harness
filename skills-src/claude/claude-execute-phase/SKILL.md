@@ -81,13 +81,22 @@ adapter mode overrides the orchestrator-only interactive workflow below.
   process is the context reset. There is no human in this loop to reset it.
 - Before that closeout, run `git status --short` and classify dirty paths
   against the active plan's owned files and control artifacts. If a generated
-  path is unowned, ignored without explicit allowlist/staging policy, or
-  derived from unauthorized raw/private inputs, stop with
-  `dirty_worktree_conflict` instead of reporting completion. But when required
+  path is unowned or derived from unauthorized raw/private inputs, stop with
+  `dirty_worktree_conflict` instead of reporting completion. For IGNORED paths do
+  not judge by hand: run `phase-loop-closeout-audit --repo .` (module form `python -m phase_loop_runtime.closeout_classifier --repo .` only when the package is on the ACTIVE python's path)
+  and block only when it exits 1 (unknown ignored outputs). Exit 0 means every
+  ignored path was produced by the runner or its own toolchain (`.phase-loop/**`,
+  pytest/Ruff caches, `__pycache__`, egg-info, `.venv`) -- the governed command's
+  own footprint, which must never block a verified owned diff (agent-harness#670).
+  Exit 2 means the probe failed: treat that as blocking, and so is ANY
+  failure to run the audit at all (command not found on a pinned runtime
+  that predates it, non-zero for any other reason) -- inability to measure
+  is never evidence of a clean tree. But when required
   verification passed and the ONLY uncommitted paths are phase-owned outputs this
   run was not authorized to commit, report `awaiting_phase_closeout` and let the
   runner's graduated closeout gate commit them — reserve `dirty_worktree_conflict`
-  for unowned, unauthorized-ignored, or overlapping-unrelated paths.
+  for unowned paths, ignored paths the audit typed as unknown, or
+  overlapping-unrelated paths.
 
 Follow-on executor for `/claude-plan-phase`. Consumes the plan doc + TaskCreate'd lane tasks and drives them to completion: root lanes first, parallel lanes in parallel, auto-merge on green, retry-once on failure, halt-all on second failure.
 
