@@ -618,14 +618,18 @@ def test_sched_released_empty_generation_is_reclaimed_and_fresh_generation_launc
     branch = _current_branch(repo)
 
     def branch_is_addressable(handle):
-        return _git(
-            repo,
-            "rev-parse",
-            "--verify",
-            "--quiet",
-            f"refs/heads/{handle.temp_branch}",
-            check=False,
-        ).returncode == 0
+        return (
+            subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", f"refs/heads/{handle.temp_branch}"],
+                capture_output=True,
+                text=True,
+            ).returncode
+            == 0
+        )
+
+    assert branch_is_addressable(
+        type("BranchHandle", (), {"temp_branch": branch})()
+    ), "branch addressability helper must be executable before production receipt support exists"
 
     with _isolated_worktree_root(tmp_path):
         assert "supervisor_receipt" in inspect.signature(teardown_phase_worktree).parameters
