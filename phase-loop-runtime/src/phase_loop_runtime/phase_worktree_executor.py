@@ -34,6 +34,7 @@ import subprocess
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from .runtime_paths import lane_worktree_path
 
@@ -137,6 +138,7 @@ class WorktreeTransferResult:
     applied: bool
     conflict: bool = False
     reason: str | None = None
+    unowned_paths: tuple[str, ...] = field(default_factory=tuple)
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -146,6 +148,7 @@ class WorktreeTransferResult:
             "applied": self.applied,
             "conflict": self.conflict,
             "reason": self.reason,
+            "unowned_paths": list(self.unowned_paths),
         }
 
 
@@ -492,10 +495,10 @@ def create_phase_worktree(
 ) -> PhaseWorktreeHandle:
     """Create an isolated worktree for ``phase`` on its own temp branch.
 
-    Idempotent: a stale worktree at the computed path or a stale temp branch
-    (from a crashed prior run) is pruned/deleted before recreation. The new
-    worktree is checked out at ``base_sha`` so every concurrent sibling starts
-    from the same pipeline-branch tip.
+    An occupied or preserved generation is never removed here. Instead, creation
+    mints a collision-resistant path and branch while retaining the recoverable
+    generation intact. Every new worktree starts from ``base_sha`` so concurrent
+    siblings share the same pipeline-branch tip.
     """
 
     phase = phase.upper()
@@ -614,11 +617,46 @@ def integrate_phase_worktree(
     )
 
 
+def _worktree_change_paths(
+    worktree: Path,
+    *,
+    base_sha: str,
+    temp_branch: str,
+) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+    """Return dirty and total changed paths without decoding patch bytes."""
+
+    status = _git_bytes(worktree, "status", "--porcelain=v1", "--untracked-files=all", "-z")
+    if status.returncode != 0:
+        return None
+    dirty_paths: set[str] = set()
+    records = status.stdout.split(b"\0")
+    index = 0
+    while index < len(records) - 1:
+        record = records[index]
+        index += 1
+        if len(record) < 4 or record[2:3] != b" ":
+            return None
+        status_code = record[:2]
+        dirty_paths.add(os.fsdecode(record[3:]))
+        if b"R" in status_code or b"C" in status_code:
+            if index >= len(records) - 1:
+                return None
+            dirty_paths.add(os.fsdecode(records[index]))
+            index += 1
+
+    committed = _git_bytes(worktree, "diff", "--name-only", "-z", base_sha, temp_branch)
+    if committed.returncode != 0:
+        return None
+    total_paths = dirty_paths | {os.fsdecode(path) for path in committed.stdout.split(b"\0") if path}
+    return tuple(sorted(dirty_paths)), tuple(sorted(total_paths))
+
+
 def transfer_phase_worktree_dirty(
     repo: Path,
     handle: PhaseWorktreeHandle,
     *,
     commit_message: str | None = None,
+    owns_path: Callable[[str], bool] | None = None,
 ) -> WorktreeTransferResult:
     """Transport a phase child's worktree work onto main as UNSTAGED changes.
 
@@ -626,11 +664,10 @@ def transfer_phase_worktree_dirty(
     a real phase executor leaves its verified work DIRTY in the worktree and
     emits ``awaiting_phase_closeout`` — the parent runner's closeout is what
     stages+commits the dirty phase-owned files. So the committed-only merge is a
-    no-op against a real child and the work is lost. This brings the child's full
+    no-op against a real child and the work is lost. This brings the child's owned
     delta (uncommitted + any self-commits) onto the *main* working tree without
-    committing it, so the parent's existing closeout — whose selective
-    ``git add -- <owned>`` is what enforces the ownership gate — commits it on the
-    pipeline branch exactly as in serial mode.
+    committing it. When ``owns_path`` is supplied, every changed path must match
+    it before any child bytes are staged or applied.
 
     The work is first committed onto ``temp_branch`` (preserving it on a ref), then
     transported via ``git diff base..temp | git apply`` rather than a
@@ -641,9 +678,49 @@ def transfer_phase_worktree_dirty(
     """
 
     worktree = handle.worktree_path
-    # Stage everything dirty (captures untracked new files too) and commit it onto
-    # the temp branch so the work survives on a ref even if the apply to main fails.
-    _git(worktree, "add", "-A", check=False)
+    change_paths = _worktree_change_paths(
+        worktree,
+        base_sha=handle.base_sha,
+        temp_branch=handle.temp_branch,
+    )
+    if change_paths is None:
+        return WorktreeTransferResult(
+            phase=handle.phase,
+            temp_branch=handle.temp_branch,
+            had_changes=True,
+            applied=False,
+            conflict=True,
+            reason="could not inspect worktree changes for ownership-gated transport",
+        )
+    dirty_paths, total_paths = change_paths
+    unowned_paths = tuple(path for path in total_paths if owns_path is not None and not owns_path(path))
+    if unowned_paths:
+        return WorktreeTransferResult(
+            phase=handle.phase,
+            temp_branch=handle.temp_branch,
+            had_changes=True,
+            applied=False,
+            conflict=True,
+            reason="worktree changes exceed phase ownership",
+            unowned_paths=unowned_paths,
+        )
+
+    # Stage only inspected dirty paths (including untracked files), never a broad
+    # ``git add -A`` that could carry an unowned child write into the parent.
+    if dirty_paths:
+        staged = _git(worktree, "add", "--", *dirty_paths, check=False)
+        if staged.returncode != 0:
+            return WorktreeTransferResult(
+                phase=handle.phase,
+                temp_branch=handle.temp_branch,
+                had_changes=True,
+                applied=False,
+                conflict=True,
+                reason=(
+                    "failed to stage ownership-gated worktree changes for transport: "
+                    f"{staged.stderr.strip() or staged.stdout.strip()}"
+                ),
+            )
     has_staged = _git(worktree, "diff", "--cached", "--quiet", check=False).returncode != 0
     if has_staged:
         message = commit_message or f"phase-loop sched transport: {handle.phase}"
@@ -732,6 +809,7 @@ def teardown_phase_worktree(
     *,
     delete_branch: bool = True,
     supervisor_receipt: dict[str, object] | None = None,
+    transferred_to_parent: bool = False,
 ) -> WorktreeTeardownResult:
     """Remove only an owner-authorized, stably empty worktree generation."""
 
@@ -752,6 +830,14 @@ def teardown_phase_worktree(
         inventory_reason = _empty_stable_inventory(handle.worktree_path, handle.base_sha)
     except OSError:
         return WorktreeTeardownResult(False, "inventory_error")
+    if inventory_reason == "inventory_nonempty" and transferred_to_parent:
+        reset = _git(handle.worktree_path, "reset", "--hard", handle.base_sha, check=False)
+        if reset.returncode != 0:
+            return WorktreeTeardownResult(False, "transport_reset_error")
+        try:
+            inventory_reason = _empty_stable_inventory(handle.worktree_path, handle.base_sha)
+        except OSError:
+            return WorktreeTeardownResult(False, "inventory_error")
     if inventory_reason is not None:
         return WorktreeTeardownResult(False, inventory_reason)
     try:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import json
 import os
 import re
@@ -407,6 +408,7 @@ class LeaseSupervisor:
     """POSIX supervisor retaining a lease until its executor tree is gone."""
 
     _DESCENDANT_REAP_GRACE_SECONDS = 5.0
+    _DESCENDANT_KILL_GRACE_SECONDS = 1.0
 
     @staticmethod
     def enable_subreaper() -> None:
@@ -415,32 +417,60 @@ class LeaseSupervisor:
     def reap_direct_child(self, process: subprocess.Popen) -> None:
         process.wait()
 
-    def reap_descendants(self, process: subprocess.Popen) -> int:
-        process_group_id = getattr(process, "process_group_id", None)
-        if process_group_id is None:
+    @staticmethod
+    def _adopted_descendants() -> tuple[int, ...]:
+        """List the subreaper's live descendant tree without using a process group."""
+
+        parent_by_pid: dict[int, int] = {}
+        for stat_path in Path("/proc").glob("[0-9]*/stat"):
             try:
-                process_group_id = os.getpgid(process.pid)
-            except ProcessLookupError:
-                process_group_id = None
-        returncode = process.wait()
-        if not isinstance(process_group_id, int) or process_group_id <= 0:
-            return returncode
-        reap_deadline = time.monotonic() + self._DESCENDANT_REAP_GRACE_SECONDS
-        terminated = False
-        while True:
-            try:
-                pid, _ = os.waitpid(-process_group_id, os.WNOHANG)
-            except ChildProcessError:
-                break
-            if pid:
+                pid = int(stat_path.parts[-2])
+                fields = stat_path.read_text(encoding="utf-8").rsplit(")", 1)[1].split()
+                parent_by_pid[pid] = int(fields[1])
+            except (IndexError, OSError, ValueError):
                 continue
-            if not terminated and time.monotonic() >= reap_deadline:
-                if process_group_id is not None:
-                    try:
-                        os.killpg(process_group_id, signal.SIGTERM)
-                    except ProcessLookupError:
-                        pass
-                terminated = True
+        descendants: set[int] = set()
+        parents = {os.getpid()}
+        while parents:
+            children = {pid for pid, parent in parent_by_pid.items() if parent in parents}
+            children.difference_update(descendants)
+            descendants.update(children)
+            parents = children
+        return tuple(sorted(descendants))
+
+    def _signal_adopted_descendants(self, signum: int) -> None:
+        for pid in self._adopted_descendants():
+            try:
+                os.killpg(os.getpgid(pid), signum)
+            except ProcessLookupError:
+                continue
+
+    def reap_descendants(self, process: subprocess.Popen) -> int:
+        returncode = process.wait()
+        # The executor is a session leader, but descendants can call ``setsid``
+        # and leave that group. The subreaper adopts every surviving descendant,
+        # so explicit child reaping establishes complete-tree emptiness and /proc
+        # provides the signal targets for session-detached descendants at the
+        # grace limit.
+        reap_deadline = time.monotonic() + self._DESCENDANT_REAP_GRACE_SECONDS
+        kill_deadline: float | None = None
+        sent_sigkill = False
+        while True:
+            descendants = self._adopted_descendants()
+            if not descendants:
+                break
+            for pid in descendants:
+                try:
+                    os.waitpid(pid, os.WNOHANG)
+                except ChildProcessError:
+                    continue
+            now = time.monotonic()
+            if kill_deadline is None and now >= reap_deadline:
+                self._signal_adopted_descendants(signal.SIGTERM)
+                kill_deadline = now + self._DESCENDANT_KILL_GRACE_SECONDS
+            elif kill_deadline is not None and not sent_sigkill and now >= kill_deadline:
+                self._signal_adopted_descendants(signal.SIGKILL)
+                sent_sigkill = True
             time.sleep(0.01)
         return returncode
 
@@ -2378,6 +2408,7 @@ def _launch_with_lease_supervisor(
             "pass_fds": [lease_fd],
             "process_tree_empty": not (result.timed_out or result.interrupted or result.stalled),
             "receipt_binding": getattr(lease_authority, "identity", None),
+            "terminal_status": "complete" if not result.failed else "blocked",
         },
     )
 
@@ -3496,37 +3527,91 @@ def _result_with_spec(result: LaunchResult, spec: LaunchSpec) -> LaunchResult:
     )
 
 
-def _worktree_change_snapshot(cwd: str | Path | None) -> tuple[str, tuple[str, ...]] | None:
+def _worktree_change_snapshot(
+    cwd: str | Path | None,
+) -> tuple[str, str, str, str, tuple[str, ...]] | None:
     if cwd is None:
         return None
+    root = Path(cwd)
     status = subprocess.run(
-        ["git", "-C", str(cwd), "status", "--porcelain=v1", "--untracked-files=all"],
+        ["git", "-C", str(root), "status", "--porcelain=v1", "--untracked-files=all", "-z"],
         capture_output=True,
-        text=True,
         check=False,
     )
     head = subprocess.run(
-        ["git", "-C", str(cwd), "rev-parse", "HEAD"],
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
         capture_output=True,
-        text=True,
         check=False,
     )
-    if status.returncode != 0 or head.returncode != 0:
+    index_diff = subprocess.run(
+        ["git", "-C", str(root), "diff", "--cached", "--binary", "--full-index"],
+        capture_output=True,
+        check=False,
+    )
+    worktree_diff = subprocess.run(
+        ["git", "-C", str(root), "diff", "--binary", "--full-index"],
+        capture_output=True,
+        check=False,
+    )
+    untracked = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "--others", "--exclude-standard", "-z"],
+        capture_output=True,
+        check=False,
+    )
+    if any(command.returncode != 0 for command in (status, head, index_diff, worktree_diff, untracked)):
         return None
-    paths = tuple(sorted(line[3:] for line in status.stdout.splitlines() if len(line) > 3))
-    return (head.stdout.strip(), paths)
+
+    paths: set[str] = set()
+    records = status.stdout.split(b"\0")
+    index = 0
+    while index < len(records) - 1:
+        record = records[index]
+        index += 1
+        if len(record) < 4 or record[2:3] != b" ":
+            return None
+        status_code = record[:2]
+        paths.add(os.fsdecode(record[3:]))
+        if b"R" in status_code or b"C" in status_code:
+            if index >= len(records) - 1:
+                return None
+            paths.add(os.fsdecode(records[index]))
+            index += 1
+
+    untracked_digest = hashlib.sha256()
+    for raw_path in (path for path in untracked.stdout.split(b"\0") if path):
+        path = root / os.fsdecode(raw_path)
+        untracked_digest.update(raw_path)
+        try:
+            if path.is_symlink():
+                untracked_digest.update(b"symlink\0")
+                untracked_digest.update(os.fsencode(os.readlink(path)))
+            elif path.is_file():
+                untracked_digest.update(b"file\0")
+                untracked_digest.update(path.read_bytes())
+            else:
+                untracked_digest.update(f"special:{path.lstat().st_mode}".encode("ascii"))
+        except OSError:
+            return None
+
+    return (
+        os.fsdecode(head.stdout).strip(),
+        hashlib.sha256(index_diff.stdout).hexdigest(),
+        hashlib.sha256(worktree_diff.stdout).hexdigest(),
+        untracked_digest.hexdigest(),
+        tuple(sorted(paths)),
+    )
 
 
 def _with_changed_paths(
     result: LaunchResult,
-    before: tuple[str, tuple[str, ...]] | None,
+    before: tuple[str, str, str, str, tuple[str, ...]] | None,
     cwd: str | Path | None,
 ) -> LaunchResult:
     after = _worktree_change_snapshot(cwd)
     if before is None or after is None:
         return result
-    before_head, before_paths = before
-    after_head, after_paths = after
+    before_head, _before_index, _before_worktree, _before_untracked, before_paths = before
+    after_head, _after_index, _after_worktree, _after_untracked, after_paths = after
     if before == after:
         return replace(result, changed_paths=())
     paths = set(before_paths) | set(after_paths)

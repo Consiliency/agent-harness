@@ -179,6 +179,7 @@ from .phase_worktree_executor import (
     current_branch,
     integrate_phase_worktree,
     resolve_base_sha,
+    teardown_phase_worktree,
     transfer_phase_worktree_dirty,
 )
 from .plan_ir import iter_waves
@@ -4660,10 +4661,10 @@ def run_loop(
             per-roadmap DispatchLock still guards separate runner processes.
             """
             nonlocal alias, concurrent_exec_repo, phase_cycles_completed
-            # SAFE CUTOVER (#130): default-off. When on, a real executor's dirty
-            # worktree work is transported onto main and committed by the parent
-            # closeout; when off, the legacy committed-only merge is used.
-            real_exec_integration = closeout_mode == "commit" or concurrent_real_exec_integration_enabled()
+            # A committing closeout always transports the real executor's dirty
+            # owned work before parent reduction. ``push`` is the CLI default, so
+            # it must not depend on an opt-in environment flag.
+            real_exec_integration = closeout_mode in {"commit", "push"} or concurrent_real_exec_integration_enabled()
             # Reality-reconcile (no-op until RECONCILE/#129 lands) before readiness.
             reconciled = reconcile_against_git_reality(repo, roadmap, dict(classifications))
             waves = tuple(iter_waves(roadmap))
@@ -4747,12 +4748,13 @@ def run_loop(
                             quiet_blocker_seconds=quiet_blocker_seconds,
                             worktree_handle=handle,
                             caller_run_id=caller_run_id,
-                            lease_authority=lease_authority,
+                            lease_authority=getattr(handle, "lease_authority", None),
                             closeout_mode=closeout_mode,
                         )
                     )
                 if not halt and jobs:
                     pool_results = run_phase_worker_pool(repo, roadmap, jobs)
+                    worker_by_phase = {item.phase: item for item in pool_results}
                     result_by_phase = {item.phase: item.result for item in pool_results}
                     for ready_phase in wave:
                         if ready_phase not in preps:
@@ -4761,10 +4763,46 @@ def run_loop(
                         if result is None:
                             continue
                         results.append(result)
+                        worker = worker_by_phase[ready_phase]
+                        worker_summary = getattr(worker, "terminal_summary", {})
+                        worker_terminal_status = (
+                            worker_summary.get("terminal_status") if isinstance(worker_summary, dict) else None
+                        )
+                        worker_verification_status = (
+                            worker_summary.get("verification_status") if isinstance(worker_summary, dict) else None
+                        )
+                        ownership = parse_plan_ownership(repo, roadmap, preps[ready_phase].plan)
+                        can_reduce = (
+                            closeout_mode in {"commit", "push"}
+                            and not result.failed
+                            and worker_terminal_status == "complete"
+                            and worker_verification_status == "passed"
+                            and ownership.valid
+                        )
+                        parent_reduced = False
                         # Bring the child's work onto the pipeline branch BEFORE
                         # finalize — finalize's closeout/reconcile run on the main
                         # repo, so the work must be present there first.
-                        if real_exec_integration:
+                        if not can_reduce:
+                            # Failed, blocked, manual, ambiguous, and invalid-ownership
+                            # generations remain exact recovery material; no child bytes
+                            # may cross into the parent before finalization.
+                            preserve_branches.add(ready_phase)
+                            _append_coordinator_event(
+                                repo=repo,
+                                roadmap=roadmap,
+                                phase=ready_phase,
+                                action="coordinator.concurrent_generation_preserved",
+                                status=classifications.get(ready_phase, "unknown"),
+                                selection=selection,
+                                metadata={
+                                    "terminal_status": worker_terminal_status,
+                                    "verification_status": worker_verification_status,
+                                    "ownership_valid": ownership.valid,
+                                    "preserved_branch": handles[ready_phase].temp_branch,
+                                },
+                            )
+                        elif real_exec_integration:
                             # Real executors leave verified work DIRTY in the
                             # worktree and emit awaiting_phase_closeout; the parent
                             # closeout commits it. Transport the dirty work onto
@@ -4775,8 +4813,10 @@ def run_loop(
                                 repo,
                                 handles[ready_phase],
                                 commit_message=f"phase-loop sched: transport {ready_phase}",
+                                owns_path=ownership.matches_dirty_output,
                             )
                             if transfer.applied:
+                                parent_reduced = True
                                 staged_artifacts.extend(
                                     path for path in _dirty_paths(repo) if path.startswith("plans/")
                                 )
@@ -4833,8 +4873,39 @@ def run_loop(
                                         "preserved_branch": handles[ready_phase].temp_branch,
                                     },
                                 )
+                            else:
+                                parent_reduced = integration.integrated
                         alias = ready_phase
                         wave_outcome = _finalize_phase_launch(preps[ready_phase], result)
+                        if (
+                            parent_reduced
+                            and ready_phase not in preserve_branches
+                            and wave_outcome.status_after_closeout == "complete"
+                        ):
+                            receipt = result.supervisor_receipt
+                            if isinstance(receipt, dict):
+                                teardown = teardown_phase_worktree(
+                                    repo,
+                                    handles[ready_phase],
+                                    supervisor_receipt={**receipt, "terminal_status": "complete"},
+                                    transferred_to_parent=True,
+                                )
+                            else:
+                                teardown = None
+                            if teardown is None or not teardown.removed:
+                                preserve_branches.add(ready_phase)
+                                _append_coordinator_event(
+                                    repo=repo,
+                                    roadmap=roadmap,
+                                    phase=ready_phase,
+                                    action="coordinator.concurrent_teardown_preserved",
+                                    status=classifications.get(ready_phase, "unknown"),
+                                    selection=selection,
+                                    metadata={
+                                        "reason": teardown.reason if teardown is not None else "missing_supervisor_receipt",
+                                        "preserved_branch": handles[ready_phase].temp_branch,
+                                    },
+                                )
                         # --full-phase counts completed phase cycles. The wave path
                         # `continue`s past the loop tail that does this in serial
                         # mode, so account for each terminal phase here instead.
@@ -4858,10 +4929,14 @@ def run_loop(
                         metadata={"staged_artifacts": sorted(set(staged_artifacts))},
                     )
             finally:
-                # SL-4 owns authenticated empty-inventory reclamation. Until its
-                # lease authority is published, preserve every generation rather
-                # than treating a missing receipt as permission to force-remove it.
-                pass
+                # Every launch has returned before this point, so no descendant can
+                # still need the parent copy of its descriptor. Preserve unresolved
+                # generations, but release the coordinator's duplicate descriptor so
+                # crash reclamation can prove the generation is no longer live.
+                for handle in handles.values():
+                    authority = getattr(handle, "lease_authority", None)
+                    if authority is not None and getattr(authority, "is_open", lambda: False)():
+                        authority.close()
             return "halt" if halt else "dispatched"
 
         while iterations_remaining > 0 and (not full_phase or phase_cycles_completed < max_phases):
@@ -5289,6 +5364,34 @@ class _SchedulerLeaseDescriptor(NamedTuple):
     identity: tuple[int, int]
 
 
+class _SchedulerLeaseAuthority:
+    """Bind a scheduler lease to one worktree generation without owning its fd."""
+
+    def __init__(self, authority: object, generation_authority: object, generation: str, identity: str) -> None:
+        self._authority = authority
+        self._generation_authority = generation_authority
+        self.generation = generation
+        self.identity = identity
+        self._closed = False
+
+    def fileno(self) -> int:
+        return int(getattr(self._authority, "fileno")())
+
+    def is_open(self) -> bool:
+        if self._closed:
+            return False
+        try:
+            os.fstat(self.fileno())
+        except OSError:
+            return False
+        return bool(getattr(self._generation_authority, "is_open", lambda: True)())
+
+    def close(self) -> None:
+        if not self._closed:
+            getattr(self._generation_authority, "close", lambda: None)()
+            self._closed = True
+
+
 def _attach_scheduler_generation(handle: object, *, lease_authority: object | None) -> None:
     """Keep the creator's handle as the one nonserialized scheduler identity."""
     material = "\0".join(
@@ -5304,6 +5407,17 @@ def _attach_scheduler_generation(handle: object, *, lease_authority: object | No
             "lease_authority",
             lease_authority or _SchedulerLeaseDescriptor((int(digest[:8], 16), int(digest[8:16], 16))),
         )
+        return
+    if lease_authority is None or not callable(getattr(lease_authority, "fileno", None)):
+        return
+    generation_authority = getattr(handle, "lease_authority")
+    generation = str(getattr(handle, "generation"))
+    identity = str(getattr(handle, "lease_identity", getattr(generation_authority, "identity", "")))
+    object.__setattr__(
+        handle,
+        "lease_authority",
+        _SchedulerLeaseAuthority(lease_authority, generation_authority, generation, identity),
+    )
 
 
 def _launch_ready_lane_wave(
