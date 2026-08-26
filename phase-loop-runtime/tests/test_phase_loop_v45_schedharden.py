@@ -292,6 +292,86 @@ class V45SchedHardenRealExecTest(unittest.TestCase):
                     all(c["metadata"]["coordinator"]["preserved_branch"] for c in conflicts)
                 )
 
+    def _assert_trusted_transfer_conflict_blocks_reduction_and_preserves_generation(self):
+        """Trusted child output cannot reduce a parent when its bytes did not land."""
+
+        from phase_loop_runtime.phase_worktree_executor import WorktreeTransferResult
+
+        ordinary_launch = self._fake_launch()
+
+        def trusted_launch(spec, dry_run=False, log_path=None, stream_output=False, **kwargs):
+            phase = _phase_from_spec(spec)
+            if phase not in MIDDLE_DIRTY:
+                return ordinary_launch(spec, dry_run, log_path, stream_output, **kwargs)
+            target = Path(spec.wrapped_cwd) / self.owned[phase]
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(f"{phase} trusted but untransferred output\n", encoding="utf-8")
+            return LaunchResult(
+                command=spec.command,
+                returncode=0,
+                output=build_fake_automation_output(
+                    status="complete",
+                    verification_status="passed",
+                    artifact=str(Path(spec.wrapped_cwd) / "plans" / f"phase-plan-v1-{phase}.md"),
+                    artifact_state="tracked",
+                ),
+                executor=spec.executor,
+            )
+
+        def preserve_unapplied_transfer(repo, handle, *, commit_message=None, **kwargs):
+            _git = lambda *args: subprocess.run(
+                ["git", "-C", str(handle.worktree_path), *args], check=True, capture_output=True, text=True
+            )
+            _git("add", "-A")
+            _git("commit", "-m", commit_message or "preserve rejected transfer")
+            return WorktreeTransferResult(
+                phase=handle.phase,
+                temp_branch=handle.temp_branch,
+                had_changes=True,
+                applied=False,
+                conflict=True,
+                reason="forced unapplied transfer after preserving child commit",
+            )
+
+        with patch.dict(os.environ, {"PHASE_LOOP_CONCURRENT_REAL_EXEC": "true"}):
+            with tempfile.TemporaryDirectory() as td:
+                repo = make_repo(Path(td))
+                roadmap = self._write_roadmap(repo)
+                self._write_plans(repo, roadmap)
+                with patch.object(self, "_fake_launch", return_value=trusted_launch), patch(
+                    "phase_loop_runtime.runner.transfer_phase_worktree_dirty",
+                    side_effect=preserve_unapplied_transfer,
+                ), patch(
+                    "phase_loop_runtime.injection._resolve_pack_skill_dirs",
+                    return_value={},
+                ):
+                    snapshot, _results = self._run(repo, roadmap)
+
+                for phase in MIDDLE_DIRTY:
+                    self.assertNotEqual(snapshot.phases[phase], "complete", phase)
+                    self.assertFalse(_committed_on_main(repo, self.owned[phase]), phase)
+                from phase_loop_runtime.events import read_events
+
+                conflicts = [
+                    event
+                    for event in read_events(repo)
+                    if event["action"] == "coordinator.concurrent_transfer_conflict"
+                ]
+                self.assertEqual({event["phase"] for event in conflicts}, set(MIDDLE_DIRTY))
+                for conflict in conflicts:
+                    preserved_branch = conflict["metadata"]["coordinator"]["preserved_branch"]
+                    self.assertTrue(preserved_branch)
+                    phase = conflict["phase"]
+                    self.assertEqual(
+                        subprocess.run(
+                            ["git", "-C", str(repo), "show", f"{preserved_branch}:{self.owned[phase]}"],
+                            check=True,
+                            capture_output=True,
+                            text=True,
+                        ).stdout,
+                        f"{phase} trusted but untransferred output\n",
+                    )
+
     def test_concurrent_real_exec_with_manual_closeout_is_refused(self):
         # Footgun guard: manual closeout would strand transported dirty work on
         # main across waves, so the runner must refuse at startup rather than fail
@@ -310,6 +390,18 @@ class V45SchedHardenRealExecTest(unittest.TestCase):
                         max_phases=1,
                     )
                 self.assertIn("closeout-mode", str(ctx.exception))
+
+
+@require_sched_red
+def test_trusted_transfer_conflict_blocks_reduction_and_preserves_generation():
+    """Run the SCHED transfer anchor without the class's dotfiles integration mark."""
+
+    case = V45SchedHardenRealExecTest()
+    case.setUp()
+    try:
+        case._assert_trusted_transfer_conflict_blocks_reduction_and_preserves_generation()
+    finally:
+        case.doCleanups()
 
 
 if __name__ == "__main__":

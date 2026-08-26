@@ -1758,6 +1758,91 @@ if __name__ == "__main__":
 
 
 @require_sched_red
+def test_supervised_launch_drains_retained_stdout_before_returning():
+    """The lease supervisor must not retain Popen's launch or stdout descriptors."""
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        lease_fd = os.open(root / "phase.lock", os.O_RDWR | os.O_CREAT, 0o600)
+        marker_path = root / "executor.pid"
+        heartbeat_path = root / "executor.heartbeat.json"
+        completed = threading.Event()
+        outcome = {}
+
+        class LeaseAuthority:
+            generation = "stdout-drain"
+
+            def fileno(self):
+                return lease_fd
+
+        helper = (
+            "import os, sys\n"
+            "from pathlib import Path\n"
+            "Path(sys.argv[1]).write_text(str(os.getpid()), encoding='utf-8')\n"
+            "sys.stdout.write('x' * 131072)\n"
+            "sys.stdout.flush()\n"
+        )
+
+        def run_launch():
+            try:
+                import phase_loop_runtime.launcher as launcher
+
+                command = [sys.executable, "-c", helper, str(marker_path)]
+                supervised_launch = getattr(launcher, "_launch_with_lease_supervisor", None)
+                if callable(supervised_launch):
+                    outcome["result"] = supervised_launch(
+                        command,
+                        lease_authority=LeaseAuthority(),
+                        log_path=root / "executor.log",
+                        stdin_text=None,
+                        cwd=None,
+                        env=dict(os.environ),
+                        stream_output=False,
+                        heartbeat_path=heartbeat_path,
+                        heartbeat_interval_seconds=0,
+                        quiet_warning_seconds=600,
+                        quiet_blocker_seconds=1800,
+                        timeout_seconds=None,
+                    )
+                else:
+                    outcome["result"] = launch(
+                        command,
+                        log_path=root / "executor.log",
+                        heartbeat_path=heartbeat_path,
+                        heartbeat_interval_seconds=0,
+                        stream_output=False,
+                        lease_authority=LeaseAuthority(),
+                    )
+            except BaseException as exc:
+                outcome["error"] = exc
+            finally:
+                completed.set()
+
+        launched = threading.Thread(target=run_launch, daemon=True)
+        launched.start()
+        deadline = time.monotonic() + 5
+        while not marker_path.exists() and not completed.is_set():
+            assert time.monotonic() < deadline, "supervised executor never reached its stdout write"
+            time.sleep(0.01)
+        try:
+            assert marker_path.exists(), outcome.get("error")
+            assert completed.wait(2), "launch did not return to drain the executor's stdout"
+            assert "error" not in outcome
+            result = outcome["result"]
+            assert result.returncode == 0
+            assert result.output == "x" * 131072
+            assert heartbeat_path.exists(), "supervised launch did not retain heartbeat supervision"
+        finally:
+            if marker_path.exists() and not completed.is_set():
+                try:
+                    os.kill(int(marker_path.read_text(encoding="utf-8")), 9)
+                except ProcessLookupError:
+                    pass
+                completed.wait(5)
+            os.close(lease_fd)
+
+
+@require_sched_red
 def test_launcher_accepts_explicit_nonserialized_lease_authority():
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)

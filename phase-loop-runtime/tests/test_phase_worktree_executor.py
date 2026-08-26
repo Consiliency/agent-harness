@@ -59,6 +59,7 @@ SCHED_SL2_NODEIDS = (
     "phase-loop-runtime/tests/test_v34_parallel_dispatch_soak.py::test_real_diff_never_skips_artifact_dependent_verification",
     "phase-loop-runtime/tests/test_phase_loop_v45_sched.py::test_staged_planner_artifact_survives_parent_reduction",
     "phase-loop-runtime/tests/test_workerpool_failure_isolation.py::test_manual_or_blocked_closeout_preserves_staged_and_untracked_bytes",
+    "phase-loop-runtime/tests/test_phase_loop_v45_schedharden.py::test_trusted_transfer_conflict_blocks_reduction_and_preserves_generation",
 )
 SCHED_SL4_NODEIDS = (
     "phase-loop-runtime/tests/test_phase_worktree_executor.py::test_sched_create_preserves_committed_generation_and_mints_replacement",
@@ -69,19 +70,21 @@ SCHED_SL4_NODEIDS = (
     "phase-loop-runtime/tests/test_phase_worktree_executor.py::test_sched_lease_identity_drift_preserves_generation",
     "phase-loop-runtime/tests/test_phase_worktree_executor.py::test_sched_generation_path_and_branch_collisions_never_reuse_preserved_generation",
     "phase-loop-runtime/tests/test_phase_worktree_executor.py::test_sched_released_empty_generation_is_reclaimed_and_fresh_generation_launches",
+    "phase-loop-runtime/tests/test_phase_worktree_executor.py::test_sched_committed_rename_from_unowned_source_is_rejected",
 )
 SCHED_JOINED_NODEIDS = (
     "phase-loop-runtime/tests/test_phase_loop_v45_sched.py::test_scheduler_consumes_creator_returned_worktree_handle",
     "phase-loop-runtime/tests/test_phase_loop_v45_schedharden.py::test_supervisor_retains_lease_after_executor_parent_exits[pass_fds]",
     "phase-loop-runtime/tests/test_phase_loop_v45_schedharden.py::test_supervisor_retains_lease_after_executor_parent_exits[subreaper_session]",
     "phase-loop-runtime/tests/test_phase_loop_v45_schedharden.py::test_supervisor_retains_lease_after_executor_parent_exits[process_tree_reaping]",
+    "phase-loop-runtime/tests/test_phase_loop_launcher.py::test_supervised_launch_drains_retained_stdout_before_returning",
 )
 SCHED_RED_NODEIDS = SCHED_SL2_NODEIDS + SCHED_SL4_NODEIDS + SCHED_JOINED_NODEIDS
 
-assert len(SCHED_SL2_NODEIDS) == 12
-assert len(SCHED_SL4_NODEIDS) == 8
-assert len(SCHED_JOINED_NODEIDS) == 4
-assert len(SCHED_RED_NODEIDS) == 24
+assert len(SCHED_SL2_NODEIDS) == 13
+assert len(SCHED_SL4_NODEIDS) == 9
+assert len(SCHED_JOINED_NODEIDS) == 5
+assert len(SCHED_RED_NODEIDS) == 27
 assert len(SCHED_RED_NODEIDS) == len(set(SCHED_RED_NODEIDS))
 assert not (set(SCHED_SL2_NODEIDS) & set(SCHED_SL4_NODEIDS))
 assert not (set(SCHED_SL2_NODEIDS) & set(SCHED_JOINED_NODEIDS))
@@ -230,6 +233,51 @@ def test_integration_is_noop_without_commits(tmp_path):
     assert res.had_commits is False
     assert resolve_base_sha(repo) == base  # pipeline tip unmoved
     teardown_phase_worktree(repo, handle)
+
+
+@require_sched_red
+def test_sched_committed_rename_from_unowned_source_is_rejected(tmp_path):
+    """A committed rename must validate both Git-reported paths before apply."""
+
+    repo = make_repo(tmp_path)
+    source = repo / "unowned" / "parent.py"
+    source.parent.mkdir()
+    source.write_text("keep = True\n", encoding="utf-8")
+    _git(repo, "add", "unowned/parent.py")
+    _git(repo, "commit", "-m", "add unowned source")
+    branch = _current_branch(repo)
+    handle = create_phase_worktree(repo, phase="extract", target_branch=branch, base_sha=resolve_base_sha(repo))
+    try:
+        (handle.worktree_path / "owned").mkdir()
+        _git(handle.worktree_path, "mv", "unowned/parent.py", "owned/destination.py")
+        _git(handle.worktree_path, "commit", "-m", "rename into owned destination")
+        rename = _git(
+            handle.worktree_path,
+            "diff",
+            "--name-status",
+            "-M",
+            handle.base_sha,
+            handle.temp_branch,
+        ).stdout.strip()
+        assert rename == "R100\tunowned/parent.py\towned/destination.py"
+
+        try:
+            transfer = transfer_phase_worktree_dirty(
+                repo,
+                handle,
+                owns_path=lambda path: path == "owned/destination.py",
+            )
+        except TypeError:
+            # The pre-repair API cannot receive the runner's ownership policy;
+            # still exercise its real Git transfer so the bad rename is observable.
+            transfer = transfer_phase_worktree_dirty(repo, handle)
+
+        assert transfer.had_changes is True
+        assert transfer.applied is False
+        assert source.read_text(encoding="utf-8") == "keep = True\n"
+        assert not (repo / "owned" / "destination.py").exists()
+    finally:
+        teardown_phase_worktree(repo, handle)
 
 
 def test_overlapping_change_surfaces_conflict_and_aborts(tmp_path):
