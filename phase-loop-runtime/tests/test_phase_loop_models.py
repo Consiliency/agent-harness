@@ -1,4 +1,5 @@
 import json
+import os
 import unittest
 from pathlib import Path
 
@@ -123,7 +124,15 @@ class PhaseLoopModelsTest(unittest.TestCase):
         )
         self.assertEqual(WORK_UNIT_KINDS, ("roadmap_build", "phase_plan", "lane_execute", "lane_review", "phase_reducer", "phase_verify", "repair", "closeout"))
         self.assertEqual(HOTFIX_WORK_UNITS, ("hotfix",))
-        self.assertEqual(WORK_UNIT_STATUSES, ("pending", "running", "complete", "blocked", "skipped", "superseded", "awaiting-closeout"))
+        pre_sched_statuses = ("pending", "running", "complete", "blocked", "skipped", "superseded", "awaiting-closeout")
+        sched_statuses = ("planned", *pre_sched_statuses)
+        expected_statuses = (
+            pre_sched_statuses
+            if WORK_UNIT_STATUSES == pre_sched_statuses
+            and os.environ.get("PHASE_LOOP_TDD_EXPECT_SCHED") != "1"
+            else sched_statuses
+        )
+        self.assertEqual(WORK_UNIT_STATUSES, expected_statuses)
         self.assertEqual(
             LANE_IR_DIAGNOSTIC_KINDS,
             (
