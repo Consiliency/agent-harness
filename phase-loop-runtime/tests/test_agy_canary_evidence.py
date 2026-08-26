@@ -6602,7 +6602,7 @@ def test_the_xdg_variables_that_DO_relocate_agy_state_still_trip_the_guard(tmp_p
             )
 
 
-def test_every_exemption_is_stated_once(tmp_path):
+def test_every_exemption_is_stated_once():
     """Both call sites must consult the same exemption set.
 
     The exemption was duplicated as a literal at each site; adding an entry to
@@ -6612,8 +6612,62 @@ def test_every_exemption_is_stated_once(tmp_path):
     """
     assert "AGY_CANARY_SETTINGS_PATH" in evidence._CUSTOMIZATION_ENV_EXEMPT
     assert "XDG_RUNTIME_DIR" in evidence._CUSTOMIZATION_ENV_EXEMPT
+
+    # Parsed, not grepped. Counting one double-quoted literal let a SINGLE-quoted
+    # re-inline slip through, and a PARTIAL re-inline ({"XDG_RUNTIME_DIR"} at one
+    # site) -- the exact drift this names -- passed too. Walk the AST for any set
+    # literal of plain strings that overlaps the exemption but is not the
+    # constant's own definition.
+    import ast
+
     source = Path(evidence.__file__).read_text(encoding="utf-8")
-    # The literal may appear only in the constant's own definition.
-    assert source.count('"AGY_CANARY_SETTINGS_PATH"') == 1, (
-        "the exemption set is stated more than once"
+    tree = ast.parse(source)
+    exempt = set(evidence._CUSTOMIZATION_ENV_EXEMPT)
+
+    # The constant's OWN definition is the one legitimate site; identify it by
+    # node identity so the test does not depend on a line number.
+    definition = None
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and any(
+            isinstance(tgt, ast.Name) and tgt.id == "_CUSTOMIZATION_ENV_EXEMPT"
+            for tgt in node.targets
+        ):
+            definition = next(
+                (n for n in ast.walk(node) if isinstance(n, ast.Set)), None
+            )
+    assert definition is not None, "could not locate the exemption constant"
+
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Set) or node is definition:
+            continue
+        names = {
+            e.value for e in node.elts
+            if isinstance(e, ast.Constant) and isinstance(e.value, str)
+        }
+        if names & exempt:
+            offenders.append((node.lineno, sorted(names)))
+    assert offenders == [], (
+        f"exemption names restated outside the constant: {offenders}"
     )
+
+
+def test_the_settings_path_exemption_is_honoured_through_the_freeze_path(tmp_path):
+    """Behavioural cover for the OTHER exempt name.
+
+    `test_every_exemption_is_stated_once` is structural. Nothing exercised
+    `AGY_CANARY_SETTINGS_PATH` through `freeze_customization_inventory`, so a
+    partial re-inline that dropped it from one site stayed green -- a vacuity
+    that predates this change (the literal-at-both-sites era had it too).
+
+    Mutation that must kill this: remove "AGY_CANARY_SETTINGS_PATH" from
+    `_CUSTOMIZATION_ENV_EXEMPT`, or restate the set at the freeze site without it.
+    """
+    frozen = evidence.freeze_customization_inventory(
+        home=tmp_path, project_dir=tmp_path,
+        env={
+            "AGY_CANARY_SETTINGS_PATH": "/tmp/canary-settings.json",
+            "XDG_RUNTIME_DIR": "/run/user/1000",
+        },
+    )
+    assert frozen["environment_names"] == []
