@@ -305,6 +305,27 @@ def _parse_lane(
                     message=str(exc),
                 )
             )
+    raw_lane_policy = fields.get("execution policy", "")
+    lane_kind = re.search(r"\bwork_unit_kind\s*=\s*`?([a-z_]+)`?", raw_lane_policy, re.IGNORECASE)
+    if lane_kind:
+        from .models import ExecutionPolicyRule
+
+        try:
+            policy = ExecutionPolicyRule(
+                selector=lane_id,
+                action="execute",
+                lane=lane_id,
+                work_unit_kind=lane_kind.group(1).lower(),
+                source="lane",
+            )
+        except ValueError as exc:
+            diagnostics.append(
+                LaneIRDiagnostic(
+                    kind="unsupported_lane_policy",
+                    lane_id=lane_id,
+                    message=str(exc),
+                )
+            )
 
     return diagnostics, PhasePlanLane(
         lane_id=lane_id,

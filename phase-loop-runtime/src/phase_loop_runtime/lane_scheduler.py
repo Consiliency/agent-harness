@@ -106,6 +106,14 @@ def select_ready_lane_wave(
             lane_ids=tuple(lane.lane_id for lane in selected),
             mode=mode,
             assignments=wave_assignments,
+            work_unit_kinds={
+                lane.lane_id: (
+                    lane.execution_policy.work_unit_kind
+                    if lane.execution_policy and lane.execution_policy.work_unit_kind
+                    else ("phase_reducer" if lane.reducer_kind != "none" or not lane.owned_files else "lane_execute")
+                )
+                for lane in selected
+            },
         ),
         pending_lane_ids=pending,
         completed_lane_ids=tuple(_stable_lane_order(ir, completed)),
@@ -164,6 +172,7 @@ def worktree_assignments_for_wave(
     branch: str,
     mode: str,
     base_sha: str | None = None,
+    handles: dict[str, object] | None = None,
 ) -> tuple[LaneWorktreeAssignment, ...]:
     if mode == "serialized":
         return tuple(
@@ -171,7 +180,9 @@ def worktree_assignments_for_wave(
             for lane in lanes
         )
     return tuple(
-        LaneWorktreeAssignment(
+        _assignment_from_handle(lane.lane_id, handle)
+        if (handle := (handles or {}).get(lane.lane_id)) is not None
+        else LaneWorktreeAssignment(
             lane_id=lane.lane_id,
             worktree_path=str(lane_worktree_path(repo, branch=branch, lane_id=lane.lane_id)),
             isolation_mode="git_worktree",
@@ -189,6 +200,7 @@ def worktree_assignments_for_phase_wave(
     branch: str,
     mode: str,
     base_sha: str | None = None,
+    handles: dict[str, object] | None = None,
 ) -> tuple[LaneWorktreeAssignment, ...]:
     if mode == "serialized":
         return tuple(
@@ -196,7 +208,9 @@ def worktree_assignments_for_phase_wave(
             for phase in phases
         )
     return tuple(
-        LaneWorktreeAssignment(
+        _assignment_from_handle(phase, handle)
+        if (handle := (handles or {}).get(phase)) is not None
+        else LaneWorktreeAssignment(
             lane_id=phase,
             worktree_path=str(lane_worktree_path(repo, branch=branch, lane_id=phase)),
             isolation_mode="git_worktree",
@@ -204,6 +218,29 @@ def worktree_assignments_for_phase_wave(
             base_sha=base_sha,
         )
         for phase in phases
+    )
+
+
+def _assignment_from_handle(lane_id: str, handle: object) -> LaneWorktreeAssignment:
+    worktree_path = getattr(handle, "worktree_path", None)
+    if worktree_path is None:
+        raise ValueError(f"{lane_id} is missing its creator-returned worktree handle")
+    authority = getattr(handle, "lease_authority", None)
+    raw_identity = getattr(authority, "identity", None)
+    lease_identity = (
+        tuple(int(part) for part in raw_identity)
+        if isinstance(raw_identity, (list, tuple)) and len(raw_identity) == 2
+        else None
+    )
+    return LaneWorktreeAssignment(
+        lane_id=lane_id,
+        worktree_path=str(worktree_path),
+        isolation_mode="git_worktree",
+        branch=getattr(handle, "target_branch", None),
+        base_sha=getattr(handle, "base_sha", None),
+        generation=getattr(handle, "generation", None),
+        temp_branch=getattr(handle, "temp_branch", None),
+        lease_identity=lease_identity,
     )
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import uuid
 import re
 import secrets
 import subprocess
@@ -178,7 +179,6 @@ from .phase_worktree_executor import (
     current_branch,
     integrate_phase_worktree,
     resolve_base_sha,
-    teardown_phase_worktree,
     transfer_phase_worktree_dirty,
 )
 from .plan_ir import iter_waves
@@ -219,6 +219,7 @@ from .release_guard import (
     release_dispatch_blocker,
 )
 from .runtime_paths import phase_loop_dir
+from .harness_env_signatures import child_executor_env as _child_executor_env
 from .discovery import parse_frontmatter, roadmap_repo_relative_path
 from .state import load_work_unit_state, state_path, write_state, write_work_unit_state
 from .state_degradation import record_degradation
@@ -245,6 +246,14 @@ try:  # Optional in the adapter runtime; tests and normal installs provide it.
     import yaml
 except Exception:  # pragma: no cover - exercised only in stripped runtimes
     yaml = None
+
+
+def child_executor_env(*, caller_run_id: str | None = None, base: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Build a child environment while preserving the coordinator identity."""
+    result = _child_executor_env(base)
+    if caller_run_id:
+        result["PHASE_LOOP_CALLER_RUN_ID"] = caller_run_id
+    return result
 
 
 # Issue #83: stable prefix of the post-switch roadmap-orphan blocker summary (the
@@ -1281,6 +1290,8 @@ def run_loop(
     dispatch_lock_enabled: bool = True,
     parallel_dispatch: bool = False,
     phase_scheduler_mode: str = "off",
+    caller_run_id: str | None = None,
+    lease_authority: object | None = None,
     allow_cross_phase_dirty_reason: str | None = None,
     allow_unowned_reason: str | None = None,
     run_mode: str = "autonomous",
@@ -1467,10 +1478,11 @@ def run_loop(
     selected = _select_ready_phase(repo, roadmap, classifications, phase)
     results: list[LaunchResult] = []
     selection = resolve_profile(model_profile or explicit_product_action or "execute", model=model, effort=effort)
+    caller_run_id = caller_run_id or os.environ.get("PHASE_LOOP_CALLER_RUN_ID") or f"phase-loop-{uuid.uuid4().hex}"
     dispatch_lock_context = _null_context()
     if dispatch_lock_enabled and not dry_run:
         try:
-            dispatch_lock_context = DispatchLock(repo, roadmap).acquire()
+            dispatch_lock_context = DispatchLock(repo, roadmap, caller_run_id=caller_run_id).acquire()
         except DispatchLockContention as exc:
             blocker = {
                 "human_required": False,
@@ -3795,14 +3807,24 @@ def run_loop(
             if not dry_run:
                 verification_plan = post_launch_plan or plan
                 if launch_action == "execute" and verification_plan is not None:
-                    runner_verification = _run_execute_verification(
-                        repo=repo,
-                        roadmap=roadmap,
-                        plan=verification_plan,
-                        artifacts=artifacts,
-                        phase_alias=alias,  # ah#85: the live run alias, so verification.json
-                        # is attributed to this run's phase (not re-derived current_phase).
-                    )
+                    artifact_diff = getattr(result, "changed_paths", None)
+                    if artifact_diff == ():
+                        runner_verification = {
+                            "ok": True,
+                            "status": "skipped_no_diff",
+                            "artifact_diff": [],
+                        }
+                    else:
+                        runner_verification = _run_execute_verification(
+                            repo=repo,
+                            roadmap=roadmap,
+                            plan=verification_plan,
+                            artifacts=artifacts,
+                            phase_alias=alias,  # ah#85: the live run alias, so verification.json
+                            # is attributed to this run's phase (not re-derived current_phase).
+                        )
+                        if runner_verification is not None and artifact_diff is not None:
+                            runner_verification["artifact_diff"] = list(artifact_diff)
                     if runner_verification and artifacts:
                         merge_launch_metadata(artifacts.get("metadata"), {"runner_verification": runner_verification})
                     if _runner_verification_fails_closed(runner_verification):
@@ -4473,6 +4495,8 @@ def run_loop(
                 missing_plan_after_planning=missing_plan_after_planning,
                 execution_policy=execution_policy.to_json(),
             )
+            if runner_verification is not None:
+                launch_metadata["runner_verification"] = runner_verification
             if artifacts:
                 # #145: surface the injected operator approval in the launch EVENT
                 # metadata (durable in the ledger + carried to state), not only the
@@ -4617,6 +4641,8 @@ def run_loop(
                 heartbeat_interval_seconds=heartbeat_interval_seconds,
                 quiet_warning_seconds=quiet_warning_seconds,
                 quiet_blocker_seconds=quiet_blocker_seconds,
+                caller_run_id=caller_run_id,
+                lease_authority=lease_authority,
             )
             results.append(result)
             return _finalize_phase_launch(prep, result)
@@ -4637,7 +4663,7 @@ def run_loop(
             # SAFE CUTOVER (#130): default-off. When on, a real executor's dirty
             # worktree work is transported onto main and committed by the parent
             # closeout; when off, the legacy committed-only merge is used.
-            real_exec_integration = concurrent_real_exec_integration_enabled()
+            real_exec_integration = closeout_mode == "commit" or concurrent_real_exec_integration_enabled()
             # Reality-reconcile (no-op until RECONCILE/#129 lands) before readiness.
             reconciled = reconcile_against_git_reality(repo, roadmap, dict(classifications))
             waves = tuple(iter_waves(roadmap))
@@ -4680,6 +4706,7 @@ def run_loop(
             # Temp branches to PRESERVE on teardown (integration conflict) so a
             # phase's committed work isn't force-deleted with no recovery ref.
             preserve_branches: set[str] = set()
+            staged_artifacts: list[str] = []
             # "halt" propagates an operator stop or human-required gate detected
             # during prepare/finalize up to the main loop (serial mode honors these
             # via break; the wave must too, not silently run to completion).
@@ -4690,6 +4717,7 @@ def run_loop(
                     handle = create_phase_worktree(
                         repo, phase=ready_phase, target_branch=target_branch, base_sha=base_sha
                     )
+                    _attach_scheduler_generation(handle, lease_authority=lease_authority)
                     handles[ready_phase] = handle
                     concurrent_exec_repo = handle.worktree_path
                     try:
@@ -4717,6 +4745,10 @@ def run_loop(
                             heartbeat_interval_seconds=heartbeat_interval_seconds,
                             quiet_warning_seconds=quiet_warning_seconds,
                             quiet_blocker_seconds=quiet_blocker_seconds,
+                            worktree_handle=handle,
+                            caller_run_id=caller_run_id,
+                            lease_authority=lease_authority,
+                            closeout_mode=closeout_mode,
                         )
                     )
                 if not halt and jobs:
@@ -4744,6 +4776,24 @@ def run_loop(
                                 handles[ready_phase],
                                 commit_message=f"phase-loop sched: transport {ready_phase}",
                             )
+                            if transfer.applied:
+                                staged_artifacts.extend(
+                                    path for path in _dirty_paths(repo) if path.startswith("plans/")
+                                )
+                                _append_coordinator_event(
+                                    repo=repo,
+                                    roadmap=roadmap,
+                                    phase=ready_phase,
+                                    action="coordinator.concurrent_parent_reduction",
+                                    status=classifications.get(ready_phase, "unknown"),
+                                    selection=selection,
+                                    metadata={
+                                        "transfer": transfer.to_json(),
+                                        "staged_artifacts": [
+                                            path for path in _dirty_paths(repo) if path.startswith("plans/")
+                                        ],
+                                    },
+                                )
                             if transfer.had_changes and not transfer.applied:
                                 # Apply failed (gate bypassed): KEEP the temp branch
                                 # so the committed work is recoverable, and let
@@ -4797,14 +4847,21 @@ def run_loop(
                             phase_cycles_completed += 1
                         if wave_outcome.control == "break":
                             halt = True
-            finally:
-                # Guarantee teardown of every created worktree even if prepare, the
-                # pool, integrate, or finalize raised mid-wave (otherwise worktrees
-                # and temp branches leak on disk). Idempotent + best-effort.
-                for ready_phase, handle in handles.items():
-                    teardown_phase_worktree(
-                        repo, handle, delete_branch=ready_phase not in preserve_branches
+                if staged_artifacts:
+                    _append_coordinator_event(
+                        repo=repo,
+                        roadmap=roadmap,
+                        phase=wave[0],
+                        action="coordinator.concurrent_parent_reduction",
+                        status=classifications.get(wave[0], "unknown"),
+                        selection=selection,
+                        metadata={"staged_artifacts": sorted(set(staged_artifacts))},
                     )
+            finally:
+                # SL-4 owns authenticated empty-inventory reclamation. Until its
+                # lease authority is published, preserve every generation rather
+                # than treating a missing receipt as permission to force-remove it.
+                pass
             return "halt" if halt else "dispatched"
 
         while iterations_remaining > 0 and (not full_phase or phase_cycles_completed < max_phases):
@@ -5228,6 +5285,27 @@ def launch_delegated_child(
     }
 
 
+class _SchedulerLeaseDescriptor(NamedTuple):
+    identity: tuple[int, int]
+
+
+def _attach_scheduler_generation(handle: object, *, lease_authority: object | None) -> None:
+    """Keep the creator's handle as the one nonserialized scheduler identity."""
+    material = "\0".join(
+        str(getattr(handle, field, ""))
+        for field in ("worktree_path", "temp_branch", "base_sha")
+    ).encode("utf-8")
+    digest = hashlib.sha256(material).hexdigest()
+    if not getattr(handle, "generation", None):
+        object.__setattr__(handle, "generation", f"sched-{digest[:16]}")
+    if not hasattr(handle, "lease_authority"):
+        object.__setattr__(
+            handle,
+            "lease_authority",
+            lease_authority or _SchedulerLeaseDescriptor((int(digest[:8], 16), int(digest[8:16], 16))),
+        )
+
+
 def _launch_ready_lane_wave(
     *,
     repo: Path,
@@ -5300,7 +5378,7 @@ def _launch_ready_lane_wave(
                 stopped = True
                 break
             lane = lane_by_id[lane_id]
-            kind = "phase_reducer" if lane.reducer_kind != "none" or lane.read_only else "lane_execute"
+            kind = decision.ready_wave.work_unit_kinds[lane_id]
             lane_executor = default_executor_for_work_unit(kind, scheduler_assigned=True)
             assignment = assignment_by_lane.get(lane_id)
             identity = WorkUnitIdentity(
@@ -5436,11 +5514,15 @@ def select_next_work_unit(repo: Path, plan: Path, phase: str) -> WorkUnitState |
             return None
         if any(by_lane.get(dep) is None or by_lane[dep].status != "complete" for dep in lane.depends_on):
             continue
-        kind = "phase_reducer" if lane.reducer_kind != "none" or not lane.owned_files else "lane_execute"
+        kind = (
+            lane.execution_policy.work_unit_kind
+            if lane.execution_policy and lane.execution_policy.work_unit_kind
+            else ("phase_reducer" if lane.reducer_kind != "none" or not lane.owned_files else "lane_execute")
+        )
         attempt = _next_work_unit_attempt(existing, phase.upper(), kind, lane.lane_id)
         return WorkUnitState(
             identity=WorkUnitIdentity(phase=phase.upper(), kind=kind, lane_id=lane.lane_id, attempt=attempt),
-            status="pending",
+            status="planned" if kind == "phase_reducer" else "pending",
             policy=lane.execution_policy.to_json() if lane.execution_policy else {},
         )
     return None
@@ -6065,6 +6147,9 @@ def _append_coordinator_event(
     # recomputing event_provenance here would crash FileNotFoundError.
     if provenance is None:
         provenance = event_provenance(roadmap, phase)
+    coordinator_metadata = {"coordinator": metadata}
+    if action == "coordinator.concurrent_parent_reduction" and "staged_artifacts" in metadata:
+        coordinator_metadata["staged_artifacts"] = metadata["staged_artifacts"]
     append_event(
         repo,
         LoopEvent(
@@ -6084,9 +6169,9 @@ def _append_coordinator_event(
             # headline field — exactly where the route record is meant to annotate
             # the routed tier (code-review finding, verified).
             metadata=(
-                with_route_log({"coordinator": metadata}, selection)
+                with_route_log(coordinator_metadata, selection)
                 if getattr(selection, "model_class", None) is not None
-                else {"coordinator": metadata}
+                else coordinator_metadata
             ),
             **provenance,
         ),

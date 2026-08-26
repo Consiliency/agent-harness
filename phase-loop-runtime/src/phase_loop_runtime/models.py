@@ -61,6 +61,7 @@ HARNESS_WORK_UNIT_PROMPT_KINDS = (
     "closeout",
 )
 WORK_UNIT_STATUSES = (
+    "planned",
     "pending",
     "running",
     "complete",
@@ -2193,6 +2194,9 @@ class LaneWorktreeAssignment:
     isolation_mode: str = "main_worktree"
     branch: str | None = None
     base_sha: str | None = None
+    generation: str | None = None
+    temp_branch: str | None = None
+    lease_identity: tuple[int, int] | None = None
 
     def __post_init__(self) -> None:
         if not self.lane_id.strip():
@@ -2211,6 +2215,7 @@ class LaneWave:
     lane_ids: tuple[str, ...]
     mode: str = "serialized"
     assignments: tuple[LaneWorktreeAssignment, ...] = ()
+    work_unit_kinds: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.wave_id.strip():
@@ -2228,6 +2233,7 @@ class LaneWave:
                 "lane_ids": self.lane_ids,
                 "mode": self.mode,
                 "assignments": tuple(assignment.to_json() for assignment in self.assignments),
+                "work_unit_kinds": self.work_unit_kinds,
             }
         )
 
@@ -2351,6 +2357,14 @@ class HarnessLaneAssignment:
                     isolation_mode=str(assignment_data.get("isolation_mode") or "main_worktree"),
                     branch=assignment_data.get("branch"),
                     base_sha=assignment_data.get("base_sha"),
+                    generation=assignment_data.get("generation"),
+                    temp_branch=assignment_data.get("temp_branch"),
+                    lease_identity=(
+                        tuple(int(part) for part in assignment_data["lease_identity"])
+                        if isinstance(assignment_data.get("lease_identity"), (list, tuple))
+                        and len(assignment_data["lease_identity"]) == 2
+                        else None
+                    ),
                 )
                 if isinstance(assignment_data, dict)
                 else None
