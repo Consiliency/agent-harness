@@ -247,6 +247,59 @@ class PhaseLoopExecutionPolicyTest(unittest.TestCase):
             "phase-loop-execute-medium",
         )
 
+    def test_a_padded_internal_token_cannot_slip_past_the_guard(self):
+        """agent-harness#671 round 3 (codex seat), reproduced before fixing.
+
+        The guard validated the RAW pin while the renderer strips whitespace
+        downstream, so `" phase-loop-execute-mediumX"` failed the `startswith`
+        check, passed through, and reached agy STRIPPED as
+        `phase-loop-execute-mediumX`. Validation and consumption were reading
+        different strings.
+
+        Fixed by normalizing once at acceptance rather than adding a second
+        strip inside the check -- the asymmetry is the defect, not the missing
+        strip. Asserted through the PUBLIC path, since a unit test on the
+        already-normalized value could not have seen it.
+
+        Mutation that must kill this: drop `.strip()` from the operator-pin
+        acceptance.
+        """
+        for pin in (" phase-loop-execute-mediumX", "phase-loop-execute-mediumX\t"):
+            with self.assertRaises(ValueError) as caught:
+                resolve_execution_policy(
+                    action="execute",
+                    executor="gemini",
+                    model_selection=ModelSelection(
+                        profile="execute", model="gemini-3.6-flash", effort="medium",
+                    ),
+                    operator_model=pin,
+                    operator_effort="high",
+                )
+            self.assertIn("internal phase-loop alias", str(caught.exception))
+
+    def test_a_padded_valid_pin_normalizes_and_launches(self):
+        """The same normalization must HELP a legitimate padded pin, not just
+        block a bad one -- `--model " gemini-3.6-flash "` should launch, and the
+        emitted argv must carry the clean id.
+        """
+        resolved = resolve_execution_policy(
+            action="execute",
+            executor="gemini",
+            model_selection=ModelSelection(
+                profile="execute", model="gemini-3.6-flash", effort="medium",
+            ),
+            operator_model="  gemini-3.6-flash  ",
+            operator_effort="high",
+        )
+        selection = resolve_model_selection_from_policy(
+            profile="execute", resolved_policy=resolved,
+        )
+        self.assertEqual(resolved.model, "gemini-3.6-flash")
+        self.assertEqual(
+            _gemini_cli_model(selection.model, selection.effort),
+            "gemini-3.6-flash-high",
+        )
+
     def test_omitting_the_operator_model_is_still_fine(self):
         """The guard must reject BLANK, not absent. `None` means "no override"
         and must keep working, or the fix breaks every non-override launch.

@@ -786,7 +786,13 @@ def resolve_execution_policy(
                 "operator supplied an empty --model; pass a concrete model id "
                 "or omit the flag"
             )
-        policy_model = operator_model
+        # NORMALIZE ONCE, HERE. The renderer strips whitespace downstream
+        # (harness_mapping.render_agy_model), so validating the raw value while
+        # the launch consumes a stripped one lets `" phase-loop-execute-mediumX"`
+        # slip past a `startswith` guard and reach agy stripped (codex seat,
+        # round 2). Validation and consumption must see the SAME string; the
+        # only way to guarantee that is to normalize before either.
+        policy_model = operator_model.strip()
         model_source = "CLI/operator override"
         override_reason = "operator supplied --model"
     if operator_effort is not None:
