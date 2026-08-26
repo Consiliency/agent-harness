@@ -548,7 +548,7 @@ class TestCounterfactualPicksTheRelievablePhase(unittest.TestCase):
     def test_the_phase_named_is_the_one_whose_removal_clears_the_most(self):
         """Mutation that must kill this: rank by frequency, i.e.
         `sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]`.
-        That picks WIDE (5 appearances vs 3) and reports 8/8 still flagged --
+        That picks WIDE (6 appearances vs 3) and reports 9/9 still flagged --
         pointing remediation at a phase that cannot relieve a single change.
         """
         out = ro.render_report(self._rows())
