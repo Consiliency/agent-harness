@@ -6,6 +6,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### roadmap-ownership: name the phase worth narrowing (Consiliency/agent-harness#683)
+
+- The `--report` counterfactual now selects the phase with the most **solely-claimed**
+  changes rather than the most **appearances**. A phase can appear on more rows than any
+  other while sole-claiming none of them — narrowing that one clears nothing, so pointing
+  remediation at it is actively misleading. Rows a phase claims alone are exactly the rows
+  its removal frees.
+- No change to the published figures: where one phase dominates, as GOVLEAN does today
+  (23 of 33 flagged rows claimed alone), both rankings agree. They diverge under skewed
+  overlap, and there the old ranking understated what narrowing could achieve.
+
 ### roadmap-ownership: the graduation instrument (Consiliency/agent-harness#633)
 
 - `--report N` replays the check over the last N landed changes — merge commits **and**

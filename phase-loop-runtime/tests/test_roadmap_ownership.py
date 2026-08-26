@@ -524,6 +524,97 @@ class TestCounterfactual(unittest.TestCase):
         self.assertNotIn("NOT SUFFICIENT", out)
 
 
+class TestCounterfactualPicksTheRelievablePhase(unittest.TestCase):
+    """ah#683: rank by rows a phase claims ALONE, not by how often it appears.
+
+    A phase can appear on more rows than any other while sole-claiming none of
+    them -- narrowing it then clears nothing. The counterfactual exists to steer
+    remediation, so it must name the phase actually worth narrowing.
+    """
+
+    def _rows(self):
+        # WIDE appears on 6 rows but NEVER alone -- removing it clears nothing.
+        # NARROW appears on 3 and owns all 3 alone -- removing it clears 3.
+        # WIDE must out-count every other alias outright, or the frequency
+        # ranking breaks the tie alphabetically and the fixture stops
+        # demonstrating the divergence it names.
+        rows = [ro.ReplayRow(f"{i:040x}", f"co{i}", 1, 0, ("WIDE", "OTHER"))
+                for i in range(5)]
+        rows += [ro.ReplayRow(f"{80:040x}", "co5", 1, 0, ("WIDE", "THIRD"))]
+        rows += [ro.ReplayRow(f"{i+90:040x}", f"solo{i}", 1, 0, ("NARROW",))
+                 for i in range(3)]
+        return rows
+
+    def test_the_phase_named_is_the_one_whose_removal_clears_the_most(self):
+        """Mutation that must kill this: rank by frequency, i.e.
+        `sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]`.
+        That picks WIDE (6 appearances vs 3) and reports 9/9 still flagged --
+        pointing remediation at a phase that cannot relieve a single change.
+        """
+        out = ro.render_report(self._rows())
+        self.assertIn("if NARROW claimed nothing", out)
+        self.assertNotIn("if WIDE claimed nothing", out)
+        self.assertIn("would STILL flag: 6/9", out)
+
+    def test_frequency_would_have_named_the_useless_phase(self):
+        """Pins the divergence itself, so the fixture cannot silently drift into
+        a shape where both rankings agree and the test stops discriminating.
+        """
+        rows = self._rows()
+        flagged = [r for r in rows if r.notable]
+        counts = {}
+        for r in flagged:
+            for a in r.phases:
+                counts[a] = counts.get(a, 0) + 1
+        by_frequency = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
+        self.assertEqual(by_frequency, "WIDE", "fixture must make the rankings disagree")
+        self.assertEqual(ro._most_relievable_phase(flagged, counts), "NARROW")
+
+    def test_with_no_sole_claims_the_tiebreak_is_frequency_not_alphabet(self):
+        """With nothing solely claimed, every phase scores 0 and the SECOND key
+        decides. It must be frequency, so the report still names the phase a
+        reader would expect rather than whichever alias sorts first.
+
+        The fixture deliberately makes the most-frequent alias sort LAST, or the
+        two orderings agree and the test cannot tell them apart -- which is
+        exactly how my first version of it passed under the mutation it names.
+
+        Mutation that must kill this: drop `-counts[a]`, leaving `(-sole, a)`.
+        """
+        rows = [ro.ReplayRow(f"{i:040x}", f"r{i}", 1, 0, ("ZETA", "ALPHA"))
+                for i in range(4)]
+        rows += [ro.ReplayRow(f"{i+90:040x}", f"s{i}", 1, 0, ("ZETA", "BETA"))
+                 for i in range(2)]
+        flagged = list(rows)
+        counts = {}
+        for r in flagged:
+            for a in r.phases:
+                counts[a] = counts.get(a, 0) + 1
+        self.assertEqual(counts["ZETA"], 6)
+        self.assertEqual(counts["ALPHA"], 4)
+        self.assertEqual(ro._most_relievable_phase(flagged, counts), "ZETA",
+                         "frequency must break the tie, not alphabetical order")
+
+    def test_the_real_repo_shape_is_unaffected(self):
+        """Where one phase dominates -- the current data -- both rankings agree,
+        so this refinement must not move the published figure.
+        """
+        rows = [ro.ReplayRow(f"{i:040x}", f"g{i}", 1, 0, ("GOVLEAN",))
+                for i in range(23)]
+        rows += [ro.ReplayRow(f"{i+90:040x}", f"m{i}", 2, 0, ("GOVLEAN", "OTHER"))
+                 for i in range(10)]
+        # The 7 scored-but-unflagged rows matter: the rate's denominator is
+        # SCORED rows, not flagged ones. Without them the fixture reports 10/33
+        # while the published figure is 10/40, so a test named for the real
+        # shape would not have reproduced it.
+        rows += [ro.ReplayRow(f"{i+200:040x}", f"clean{i}", 0, 0, ())
+                 for i in range(7)]
+        out = ro.render_report(rows)
+        self.assertIn("if GOVLEAN claimed nothing", out)
+        self.assertIn("would STILL flag: 10/40 (25%)", out)
+        self.assertIn("would have flagged: 33/40 (82%)", out)
+
+
 class TestReportCliContract(unittest.TestCase):
     def test_report_zero_does_not_fall_through_to_audit_mode(self):
         """`--report 0` is falsy. `if args.report:` silently ran the ordinary

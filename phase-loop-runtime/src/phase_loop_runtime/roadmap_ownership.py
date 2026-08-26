@@ -584,6 +584,35 @@ def _replay_rows(repo: Path, limit: int, rev: str, tmp_root: Path) -> List[Repla
     return rows
 
 
+def _most_relievable_phase(
+    flagged: Sequence[ReplayRow], counts: Dict[str, int]
+) -> str:
+    """The phase whose removal would clear the MOST changes.
+
+    The counterfactual exists to steer remediation, so the phase it names should
+    be the one worth narrowing. Frequency is the wrong ranking for that: a phase
+    can appear on many rows while sole-claiming none of them, in which case
+    narrowing it clears nothing at all. What a reader can act on is the number of
+    rows a phase claims ALONE, because those are exactly the rows its removal
+    frees.
+
+    The two agree whenever one phase dominates -- on this repo GOVLEAN sole-claims
+    23 of 33 flagged rows -- which is why the frequency version reported the right
+    figure. They diverge under skewed overlap, and there the frequency pick
+    understates what narrowing could achieve.
+
+    Ties break on frequency, then alias, so the choice is deterministic and, when
+    nothing is solely claimed, still lands on the phase a reader would expect.
+    """
+
+    def solely_claimed(alias: str) -> int:
+        return sum(1 for r in flagged if set(r.phases) == {alias})
+
+    return sorted(
+        counts, key=lambda a: (-solely_claimed(a), -counts[a], a)
+    )[0]
+
+
 def render_report(rows: Sequence[ReplayRow]) -> str:
     total = len(rows)
     skipped = [r for r in rows if r.skipped_reason]
@@ -620,26 +649,26 @@ def render_report(rows: Sequence[ReplayRow]) -> str:
         # Exact, not an estimate: `phases` aggregates the owners of a row's
         # notable paths, so a row survives the counterfactual iff some OTHER
         # phase still claims one of them.
-        dominant = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
-        remaining = [r for r in flagged if set(r.phases) - {dominant}]
+        relievable = _most_relievable_phase(flagged, counts)
+        remaining = [r for r in flagged if set(r.phases) - {relievable}]
         rpct = 100.0 * len(remaining) / len(scored)
-        lines += ["", f"  counterfactual — if {dominant} claimed nothing:"]
+        lines += ["", f"  counterfactual — if {relievable} claimed nothing:"]
         lines.append(f"    would STILL flag: {len(remaining)}/{len(scored)} ({rpct:.0f}%)")
         if len(remaining) == len(flagged):
             # Removing it changes nothing, so it is not even necessary --
             # calling it necessary here would misdirect the remediation.
             lines.append(
-                f"    ^ {dominant} is NOT the binding constraint: every flagged "
+                f"    ^ {relievable} is NOT the binding constraint: every flagged "
                 "change is claimed by some other phase as well."
             )
         elif remaining:
             lines.append(
-                f"    ^ narrowing {dominant} is NECESSARY but NOT SUFFICIENT — "
+                f"    ^ narrowing {relievable} is NECESSARY but NOT SUFFICIENT — "
                 f"{len(remaining)} change(s) are claimed by other phases too."
             )
         else:
             lines.append(
-                f"    ^ {dominant} is the sole cause; narrowing it alone would "
+                f"    ^ {relievable} is the sole cause; narrowing it alone would "
                 "clear the gate."
             )
     if skipped:
