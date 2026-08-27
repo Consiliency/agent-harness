@@ -163,7 +163,7 @@ OPENAI_WORKER_MODEL = "gpt-5.6-luna"
 # OPENCODE_OPENAI_IMPLEMENTER_MODEL is hoisted near OPENCODE_OPENAI_HEAVY_MODEL (top).
 OPENCODE_OPENAI_WORKER_MODEL = "openai/gpt-5.6-luna"
 # Gemini authoring/review stays on the CLI `pro` alias. Implementation uses the
-# base `gemini-3.6-flash` id on both class and executor paths; the adapter appends
+# base `gemini-3.7-flash` id on both class and executor paths; the adapter appends
 # the policy-normalized effort. Worker (lite) uses the canonical
 # agy 3.5 Flash id: `agy models` exposes NO flash-lite, so the matrix's gemini-3.5-flash-lite
 # lite cell is ASPIRATIONAL (target, not live) — the live worker degrades to real 3.5 Flash,
@@ -380,7 +380,7 @@ def supervise_selection(vendor: str = "claude") -> TierResolution:
 # enumeration; each is intentional, with the reason it can't be a one-line derive):
 #   • gemini — the MODEL-PATH split is FIXED (CR round-4) and the REGULAR VERSION is now
 #     ALIGNED (CR round-5 finding B): implementation on BOTH the class and executor paths
-#     stores the base `gemini-3.6-flash` id; the adapter appends the normalized
+#     stores the base `gemini-3.7-flash` id; the adapter appends the normalized
 #     effort to emit agy's canonical id. Two things remain: (a) the PRO/
 #     planning path still routes via the `pro` CLI alias / "Gemini 3.1 Pro (High)" DISPLAY
 #     label rather than a canonical agy id — REPRESENTATIONAL only (same Pro model), and out
