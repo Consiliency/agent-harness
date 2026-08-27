@@ -47,7 +47,7 @@ class ModelClassResolutionTest(unittest.TestCase):
         # → the matrix's gemini-3.5-flash-lite lite cell is aspirational).
         self.assertEqual(resolve_model_class("gemini", "planner"), "pro")
         self.assertEqual(resolve_model_class("gemini", "reviewer"), "pro")
-        self.assertEqual(resolve_model_class("gemini", "implementer"), "gemini-3.6-flash")
+        self.assertEqual(resolve_model_class("gemini", "implementer"), "gemini-3.7-flash")
         self.assertEqual(resolve_model_class("gemini", "worker"), "gemini-3.5-flash-high")
         self.assertIsNone(resolve_model_class("claude", "bogus"))
 

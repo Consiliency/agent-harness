@@ -1527,9 +1527,9 @@ class PhaseLoopLauncherTest(unittest.TestCase):
             bypass_approvals=False,
         )
         spec = build_launch_spec(request)
-        self.assertEqual(spec.selected_model, "gemini-3.6-flash")
+        self.assertEqual(spec.selected_model, "gemini-3.7-flash")
         self.assertIn("--model", spec.command)
-        self.assertIn("gemini-3.6-flash-medium", spec.command)
+        self.assertIn("gemini-3.7-flash-medium", spec.command)
 
     def test_launch_metadata_records_policy_and_adapter_effort(self):
         roadmap = Path("/repo/specs/phase-plans-v1.md")
