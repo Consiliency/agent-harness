@@ -6,6 +6,28 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### executor policy: an operator's explicit model is never substituted (Consiliency/agent-harness#671)
+
+- `--executor gemini --model gemini-3.6-flash --effort high` reached agy as the internal
+  token `phase-loop-execute-medium`, which the CLI rejects before creating a session.
+  `_resolve_policy_model` compared the model against the provider's **internal alias
+  values**, not against models the provider supports — so a canonical id was absent from
+  that set and `inherit_default` replaced the operator's explicit pin.
+- "Not one of our internal aliases" is not "unsupported by the provider", and default
+  inheritance must not outrank a CLI/operator override. An operator pin may be validated
+  and normalized downstream; it is never substituted during policy resolution.
+- Policy-derived selection is unchanged: without an operator model, `inherit_default`
+  still applies.
+- A blank or whitespace-only `--model` now fails loudly. It passed every `is not None`
+  check and the renderer stripped it and fell through to the provider's HEAVY default,
+  so `--model "$UNSET_VAR"` silently launched `Gemini 3.1 Pro (High)`. Pre-existing, and
+  fixed here because this path now promises an operator pin is never substituted.
+- The operator pin is normalized once at the ENTRY seam, before any consumer. Executor
+  routing reads the model first and matches on `startswith("claude")`, so a padded pin
+  reached the wrong provider (` claude-opus-4-8 ` → `pi` instead of `claude`) while the
+  model itself normalized correctly further down. Normalizing at the acceptance point
+  fixed the renderer but left that earlier reader on the raw value.
+
 ### agy canary: XDG_RUNTIME_DIR is not a customization (Consiliency/agent-harness#711)
 
 - `XDG_RUNTIME_DIR` no longer counts as an active agy customization source. systemd sets

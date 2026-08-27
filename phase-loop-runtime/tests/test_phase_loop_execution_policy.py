@@ -10,6 +10,7 @@ from phase_loop_runtime.launcher import (
     build_grok_command,
 )
 from phase_loop_runtime.models import ExecutionPolicyRule, ModelSelection
+from phase_loop_runtime.profiles import _resolve_policy_model
 from phase_loop_runtime.profiles import resolve_execution_policy, resolve_model_selection_from_policy, resolve_profile_for_executor
 
 
@@ -136,6 +137,245 @@ class PhaseLoopExecutionPolicyTest(unittest.TestCase):
         self.assertEqual(selection.effort, "high")
         self.assertEqual(resolved.model_source, "CLI/operator override")
         self.assertEqual(resolved.effort_source, "CLI/operator override")
+
+    def test_operator_gemini_model_survives_inherit_default_end_to_end(self):
+        """agent-harness#671, the reported RESIDUAL launch, end to end.
+
+        The precedence test above is codex-only, and codex has NO model_aliases,
+        so it never reaches the substitution branch. Gemini does: `allowed` is
+        the set of INTERNAL alias values, a canonical id is absent from it, and
+        `inherit_default` replaced the operator's explicit `--model` with
+        `phase-loop-execute-medium` -- which agy rejects before session creation.
+
+        Asserts the whole chain the operator experiences: resolution keeps the
+        pin, the source records the override, and the emitted argv carries the
+        canonical id with NO internal token anywhere in it.
+
+        Mutation that must kill this: drop `operator_pinned` from
+        `_resolve_policy_model`, or stop threading it at the call site.
+        """
+        plan = ExecutionPolicyRule(
+            selector="execute",
+            action="execute",
+            executor="gemini",
+            model="gemini-3.6-flash",
+            effort="medium",
+            work_unit_kind="lane_execute",
+            source="plan:execute",
+            unsupported_policy_behavior="inherit_default",
+            inherit_default=True,
+        )
+
+        resolved = resolve_execution_policy(
+            action="execute",
+            executor="gemini",
+            model_selection=ModelSelection(
+                profile="execute", model="gemini-3.6-flash", effort="medium",
+            ),
+            operator_model="gemini-3.6-flash",
+            operator_effort="high",
+            plan_policy=plan,
+        )
+        selection = resolve_model_selection_from_policy(
+            profile="execute", resolved_policy=resolved,
+        )
+
+        self.assertEqual(selection.model, "gemini-3.6-flash")
+        self.assertEqual(resolved.model_source, "CLI/operator override")
+        self.assertNotIn("phase-loop-", resolved.model)
+
+        argv_model = _gemini_cli_model(selection.model, selection.effort)
+        self.assertEqual(argv_model, "gemini-3.6-flash-high")
+        self.assertNotIn("phase-loop-", argv_model)
+
+    def test_a_blank_operator_model_fails_loudly_instead_of_launching_HEAVY(self):
+        """agent-harness#671 round 2 (codex seat), reproduced before fixing.
+
+        A blank or whitespace-only pin passes every `is not None` check, and the
+        renderer strips it and falls through to the provider's HEAVY default --
+        so `--model "$UNSET_VAR"` silently launched `Gemini 3.1 Pro (High)`
+        instead of failing. Verified byte-identical on clean origin/main, so this
+        is PRE-EXISTING rather than a regression; it is fixed here because this
+        function now promises an operator pin is never substituted, and that
+        promise has to cover the blank case.
+
+        Mutation that must kill this: drop the `.strip()` emptiness check.
+        """
+        for pin in ("", "   ", "\t"):
+            with self.assertRaises(ValueError) as caught:
+                resolve_execution_policy(
+                    action="execute",
+                    executor="gemini",
+                    model_selection=ModelSelection(
+                        profile="execute", model="gemini-3.6-flash", effort="medium",
+                    ),
+                    operator_model=pin,
+                    operator_effort="high",
+                )
+            self.assertIn("empty --model", str(caught.exception))
+
+    def test_an_internal_alias_typed_as_an_operator_pin_is_REJECTED(self):
+        """Rejecting is not substituting (fable seat).
+
+        The operator-pin guard returns before the `phase-loop-` fail-closed
+        raise, so a MISSPELLED internal token reached agy verbatim and failed
+        there with a vaguer message. The repo knows these names are its own
+        vocabulary, so it can refuse precisely — without violating the
+        never-substitute invariant, since nothing is swapped in.
+
+        A RECOGNISED alias is deliberately still allowed through: the codex seat
+        noted an operator may define these locally as `modelConfigs.customAliases`,
+        so refusing them would break a legitimate workflow. Only an
+        unrecognised `phase-loop-*` token — a typo by construction — is refused.
+
+        Mutation that must kill this: drop the prefix check inside the
+        operator-pin branch.
+        """
+        with self.assertRaises(ValueError) as caught:
+            _resolve_policy_model(
+                "gemini", "lane_execute", "phase-loop-execute-mediumX", None,
+                "inherit_default", operator_pinned=True,
+            )
+        self.assertIn("internal phase-loop alias", str(caught.exception))
+
+        # A recognised alias still passes: operators may define it locally.
+        self.assertEqual(
+            _resolve_policy_model(
+                "gemini", "lane_execute", "phase-loop-execute-medium", None,
+                "inherit_default", operator_pinned=True,
+            ),
+            "phase-loop-execute-medium",
+        )
+
+    def test_a_padded_internal_token_cannot_slip_past_the_guard(self):
+        """agent-harness#671 round 3 (codex seat), reproduced before fixing.
+
+        The guard validated the RAW pin while the renderer strips whitespace
+        downstream, so `" phase-loop-execute-mediumX"` failed the `startswith`
+        check, passed through, and reached agy STRIPPED as
+        `phase-loop-execute-mediumX`. Validation and consumption were reading
+        different strings.
+
+        Fixed by normalizing once at acceptance rather than adding a second
+        strip inside the check -- the asymmetry is the defect, not the missing
+        strip. Asserted through the PUBLIC path, since a unit test on the
+        already-normalized value could not have seen it.
+
+        Mutation that must kill this: drop `.strip()` from the operator-pin
+        acceptance.
+        """
+        for pin in (" phase-loop-execute-mediumX", "phase-loop-execute-mediumX\t"):
+            with self.assertRaises(ValueError) as caught:
+                resolve_execution_policy(
+                    action="execute",
+                    executor="gemini",
+                    model_selection=ModelSelection(
+                        profile="execute", model="gemini-3.6-flash", effort="medium",
+                    ),
+                    operator_model=pin,
+                    operator_effort="high",
+                )
+            self.assertIn("internal phase-loop alias", str(caught.exception))
+
+    def test_a_padded_pin_cannot_reach_the_WRONG_EXECUTOR(self):
+        """agent-harness#671 round 3 (codex seat), reproduced before fixing.
+
+        Executor ROUTING reads the model before normalization did:
+        `_claude_model_needs_claude_executor` matches `startswith("claude")`, so
+        a leading space routed ` claude-opus-4-8 ` to the `pi` executor while
+        the model itself normalized correctly further down. A padded pin reached
+        the WRONG PROVIDER — worse than the token bypass that prompted the
+        earlier fix, because the model looks right in the result.
+
+        Fixed by normalizing at the ENTRY seam rather than at the acceptance
+        point, so every consumer reads one string.
+
+        Mutation that must kill this: move the normalization back below the
+        routing predicate (or drop the `model_selection` normalization).
+        """
+        for pin in (" claude-opus-4-8 ", "\tclaude-opus-4-8"):
+            resolved = resolve_execution_policy(
+                action="execute",
+                executor="pi",
+                model_selection=ModelSelection(
+                    profile="execute", model=pin, effort="medium",
+                ),
+                operator_model=pin,
+                operator_effort="high",
+            )
+            self.assertEqual(resolved.executor, "claude", f"{pin!r} misrouted")
+            self.assertEqual(resolved.model, "claude-opus-4-8")
+
+    def test_the_unpadded_routing_invariant_is_unchanged(self):
+        """The guard must not change routing for a clean pin — otherwise the fix
+        would be indistinguishable from breaking the invariant it protects.
+        """
+        resolved = resolve_execution_policy(
+            action="execute",
+            executor="pi",
+            model_selection=ModelSelection(
+                profile="execute", model="claude-opus-4-8", effort="medium",
+            ),
+            operator_model="claude-opus-4-8",
+            operator_effort="high",
+        )
+        self.assertEqual(resolved.executor, "claude")
+
+    def test_a_padded_valid_pin_normalizes_and_launches(self):
+        """The same normalization must HELP a legitimate padded pin, not just
+        block a bad one -- `--model " gemini-3.6-flash "` should launch, and the
+        emitted argv must carry the clean id.
+        """
+        resolved = resolve_execution_policy(
+            action="execute",
+            executor="gemini",
+            model_selection=ModelSelection(
+                profile="execute", model="gemini-3.6-flash", effort="medium",
+            ),
+            operator_model="  gemini-3.6-flash  ",
+            operator_effort="high",
+        )
+        selection = resolve_model_selection_from_policy(
+            profile="execute", resolved_policy=resolved,
+        )
+        self.assertEqual(resolved.model, "gemini-3.6-flash")
+        self.assertEqual(
+            _gemini_cli_model(selection.model, selection.effort),
+            "gemini-3.6-flash-high",
+        )
+
+    def test_omitting_the_operator_model_is_still_fine(self):
+        """The guard must reject BLANK, not absent. `None` means "no override"
+        and must keep working, or the fix breaks every non-override launch.
+
+        Mutation that must kill this: reject `operator_model is None` too.
+        """
+        resolved = resolve_execution_policy(
+            action="execute",
+            executor="gemini",
+            model_selection=ModelSelection(
+                profile="execute", model="gemini-3.6-flash", effort="medium",
+            ),
+            operator_model=None,
+            operator_effort=None,
+        )
+        self.assertNotEqual(resolved.model_source, "CLI/operator override")
+
+    def test_policy_derived_gemini_model_still_inherits_the_default(self):
+        """The fix must NOT disable inheritance generally -- only stop it
+        outranking an operator pin. Without an operator model the policy path is
+        unchanged.
+
+        Mutation that must kill this: make `_resolve_policy_model` return the
+        model unconditionally, which would "fix" ah#671 by deleting the feature.
+        """
+        self.assertEqual(
+            _resolve_policy_model(
+                "gemini", "lane_execute", "gemini-3.6-flash", None,
+                "inherit_default", operator_pinned=False,
+            ),
+            "phase-loop-execute-medium",
+        )
 
     def test_invalid_gemini_alias_fails_closed_without_explicit_fallback(self):
         policy = ExecutionPolicyRule(
