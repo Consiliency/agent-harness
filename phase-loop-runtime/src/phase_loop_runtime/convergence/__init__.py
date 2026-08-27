@@ -48,7 +48,18 @@ from phase_loop_runtime.convergence.broker import (
     publish_committed_branch_idempotency_key,
 )
 
+#: RUNTIME's completed public gate. The terminal reducer alone sets this, and
+#: only after all three functional writers -- the durable event log, exact-state
+#: reconciliation, and the adapter/status surface -- have integrated. A consumer
+#: that sees it may rely on the whole IF-0-RUNTIME-1 surface above; its absence
+#: means the substrate is not yet complete. Frozen contract shapes
+#: (``CoordinatorEvent``, ``ConvergenceResultEnvelope``, ``AdmissionRequest``,
+#: ``AuthoritySource``, ``InvalidationTrigger``) and the existing BROKER/INTEG
+#: exports are unchanged by it.
+RUNTIME_CAPABILITY_VERSION = 1
+
 __all__ = [
+    "RUNTIME_CAPABILITY_VERSION",
     "AdmissionRequest",
     "AuthoritySource",
     "BrokerRequest",

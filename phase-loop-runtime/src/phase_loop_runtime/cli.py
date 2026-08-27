@@ -4244,6 +4244,13 @@ def _run_train_status_command(*, parser: argparse.ArgumentParser, args: argparse
             return 2
         from .convergence import build_train_status, read_convergence_events, recover_train_state, render_train_status
         path = Path(event_log)
+        # An absent log is unknown state, not an empty successful train: reading
+        # it as "no events" would render a clean status for a train whose ledger
+        # was never written, moved, or is being addressed by the wrong path.
+        # This mode stays read-only, so the missing log is reported, never created.
+        if not path.is_file():
+            print(f"train-status: event log not found: {path}", file=sys.stderr)
+            return 1
         try:
             snapshot = build_train_status(recover_train_state(read_convergence_events(path)), path)
         except Exception as exc:
