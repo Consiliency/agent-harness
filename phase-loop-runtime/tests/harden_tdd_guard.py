@@ -23,7 +23,7 @@ import pytest
 
 
 HARDEN_ACTIVATION_ENV = "PHASE_LOOP_TDD_EXPECT_HARDEN"
-HARDEN_MARKER_MODULE = "phase_loop_runtime.harden_capability"
+HARDEN_MARKER_MODULE = "phase_loop_runtime.capability_registry"
 HARDEN_MARKER_ATTRIBUTE = "HARDEN_CAPABILITY_VERSION"
 HARDEN_SKIP_REASON = (
     "HARDEN production capability is absent (SL-0 tests-only boundary): "

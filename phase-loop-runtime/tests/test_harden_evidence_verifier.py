@@ -5,13 +5,19 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from harden_tdd_guard import HARDEN_CASES, HARDEN_RED_ANCHORS, HARDEN_TEST_PATHS
+from harden_tdd_guard import (
+    HARDEN_CASES,
+    HARDEN_MARKER_MODULE,
+    HARDEN_RED_ANCHORS,
+    HARDEN_TEST_PATHS,
+)
 
 
 def test_harden_guard_inventory_and_case_bindings_are_frozen():
     root = Path(__file__).resolve().parents[2]
     assert len(HARDEN_TEST_PATHS) == 26
     assert len(set(HARDEN_TEST_PATHS)) == 26
+    assert HARDEN_MARKER_MODULE == "phase_loop_runtime.capability_registry"
     assert set(HARDEN_RED_ANCHORS) == set(HARDEN_CASES)
     assert set(HARDEN_RED_ANCHORS.values()) == {
         "HARDEN-RED-ANCHOR::staged-tree-containment",
