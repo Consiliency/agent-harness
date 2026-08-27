@@ -736,6 +736,31 @@ def resolve_execution_policy(
     lane: str | None = None,
 ) -> ResolvedExecutionPolicy:
     require_literal(action, tuple(ACTION_WORK_UNITS.keys()), "execution policy action")
+
+    # agent-harness#671 round 3 (codex seat): normalize at the ENTRY seam, before ANY
+    # consumer, not at the point the operator pin is accepted. Executor ROUTING
+    # (`_claude_model_needs_claude_executor`, immediately below) reads the model
+    # first, and it matches on `startswith("claude")` -- so a leading space sent
+    # ` claude-opus-4-8 ` to the `pi` executor while the model itself normalized
+    # correctly further down. A padded pin reached the WRONG PROVIDER, which is worse
+    # than the token bypass that prompted the first fix.
+    #
+    # One seam, at the top: every consumer below sees the same string. Normalizing at
+    # the acceptance point instead left this earlier reader on the raw value -- the
+    # same validation/consumption asymmetry, one caller up.
+    if operator_model is not None:
+        if not operator_model.strip():
+            # A blank pin is not a model. It survives every `is not None` check, and
+            # the renderer strips it and falls through to the provider's HEAVY
+            # default, so `--model "$UNSET_VAR"` silently launched Pro.
+            raise ValueError(
+                "operator supplied an empty --model; pass a concrete model id "
+                "or omit the flag"
+            )
+        operator_model = operator_model.strip()
+    if model_selection.model is not None and model_selection.model != model_selection.model.strip():
+        model_selection = replace(model_selection, model=model_selection.model.strip())
+
     policy, source = _merge_policies(plan_policy, roadmap_policy, model_policy_rule)
     if _claude_model_needs_claude_executor(executor, model_selection.model, policy):
         executor = "claude"
@@ -774,25 +799,8 @@ def resolve_execution_policy(
             effort_source = source or policy.source
 
     if operator_model is not None:
-        if not operator_model.strip():
-            # agent-harness#671 round 2 (codex seat). A blank or whitespace-only pin is
-            # not a model. It survives every `is not None` check, and the
-            # renderer strips it and falls through to the provider's HEAVY
-            # default -- so `--model "$UNSET_VAR"` silently launches Pro instead
-            # of failing. Pre-existing behaviour, but this function now promises
-            # that an operator pin is never substituted, and a promise that an
-            # invalid pin fails loudly has to hold for the blank case too.
-            raise ValueError(
-                "operator supplied an empty --model; pass a concrete model id "
-                "or omit the flag"
-            )
-        # NORMALIZE ONCE, HERE. The renderer strips whitespace downstream
-        # (harness_mapping.render_agy_model), so validating the raw value while
-        # the launch consumes a stripped one lets `" phase-loop-execute-mediumX"`
-        # slip past a `startswith` guard and reach agy stripped (codex seat,
-        # round 2). Validation and consumption must see the SAME string; the
-        # only way to guarantee that is to normalize before either.
-        policy_model = operator_model.strip()
+        # Already validated and normalized at the entry seam above.
+        policy_model = operator_model
         model_source = "CLI/operator override"
         override_reason = "operator supplied --model"
     if operator_effort is not None:

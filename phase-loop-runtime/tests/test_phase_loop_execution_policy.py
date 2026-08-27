@@ -277,6 +277,50 @@ class PhaseLoopExecutionPolicyTest(unittest.TestCase):
                 )
             self.assertIn("internal phase-loop alias", str(caught.exception))
 
+    def test_a_padded_pin_cannot_reach_the_WRONG_EXECUTOR(self):
+        """agent-harness#671 round 3 (codex seat), reproduced before fixing.
+
+        Executor ROUTING reads the model before normalization did:
+        `_claude_model_needs_claude_executor` matches `startswith("claude")`, so
+        a leading space routed ` claude-opus-4-8 ` to the `pi` executor while
+        the model itself normalized correctly further down. A padded pin reached
+        the WRONG PROVIDER — worse than the token bypass that prompted the
+        earlier fix, because the model looks right in the result.
+
+        Fixed by normalizing at the ENTRY seam rather than at the acceptance
+        point, so every consumer reads one string.
+
+        Mutation that must kill this: move the normalization back below the
+        routing predicate (or drop the `model_selection` normalization).
+        """
+        for pin in (" claude-opus-4-8 ", "\tclaude-opus-4-8"):
+            resolved = resolve_execution_policy(
+                action="execute",
+                executor="pi",
+                model_selection=ModelSelection(
+                    profile="execute", model=pin, effort="medium",
+                ),
+                operator_model=pin,
+                operator_effort="high",
+            )
+            self.assertEqual(resolved.executor, "claude", f"{pin!r} misrouted")
+            self.assertEqual(resolved.model, "claude-opus-4-8")
+
+    def test_the_unpadded_routing_invariant_is_unchanged(self):
+        """The guard must not change routing for a clean pin — otherwise the fix
+        would be indistinguishable from breaking the invariant it protects.
+        """
+        resolved = resolve_execution_policy(
+            action="execute",
+            executor="pi",
+            model_selection=ModelSelection(
+                profile="execute", model="claude-opus-4-8", effort="medium",
+            ),
+            operator_model="claude-opus-4-8",
+            operator_effort="high",
+        )
+        self.assertEqual(resolved.executor, "claude")
+
     def test_a_padded_valid_pin_normalizes_and_launches(self):
         """The same normalization must HELP a legitimate padded pin, not just
         block a bad one -- `--model " gemini-3.6-flash "` should launch, and the
