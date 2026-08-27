@@ -2381,6 +2381,42 @@
             }
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-08-27T07:51:42Z",
+          "by": "codex-phase-loop",
+          "metadata": {
+            "sched_harden_handoff": {
+              "actual_sl2_commit": "d184ea635cdaf1ee36a80c4a6bf0e37c501d3493",
+              "actual_sl2_reviewed_head": "8cc784cce81357b81014ad7c34a7c4ae9bdb6cae",
+              "actual_sl2_tree": "5feba0004729aedc82c503a61825bfa8d69d9079",
+              "handoff_status": "candidate_awaiting_review",
+              "harden_plan_sha256": "58097b447da799f9d8a70e2c3da67204258751dff16f77ba072628d1457480f6",
+              "manifest_contract_digest_domain": "v10.sched-harden-handoff.v1\n",
+              "manifest_contract_sha256": "218effeb3b827d898096a4095de6818a1b16fb912d63958ac4016831a0579eee",
+              "required_path_set": [
+                "phase-loop-runtime/src/phase_loop_runtime/lane_scheduler.py",
+                "phase-loop-runtime/src/phase_loop_runtime/launcher.py",
+                "phase-loop-runtime/src/phase_loop_runtime/models.py",
+                "phase-loop-runtime/src/phase_loop_runtime/plan_ir.py",
+                "phase-loop-runtime/src/phase_loop_runtime/runner.py",
+                "phase-loop-runtime/src/phase_loop_runtime/worker_pool.py"
+              ],
+              "required_review_seats": [
+                "native_codex",
+                "claude",
+                "gemini",
+                "grok"
+              ],
+              "review_receipt_path": "plans/evidence/v10-SCHED-HARDEN-review.json",
+              "review_receipt_schema": "v10.sched-harden-review-receipt.v1",
+              "review_request_digest_domain": "v10.sched-harden-review-request.v1\n",
+              "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+              "sched_plan_sha256": "3b1dba40791bfb5c3584777894ce9262d18b012dd09df2f32262617f3e20b8e9",
+              "schema": "v10.sched-harden-handoff.v1"
+            }
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -2428,7 +2464,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-26T14:15:10Z"
+      "updated_at": "2026-08-27T07:51:42Z"
     },
     {
       "acceptance_criteria_count": null,
