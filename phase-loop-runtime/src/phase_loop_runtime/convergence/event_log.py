@@ -97,34 +97,36 @@ def _write_fully(fd: int, raw: bytes) -> None:
         written += chunk
 
 
-def _durable_prefix(raw: bytes) -> int:
-    """Bytes of ``raw`` that form whole, parseable records.
+def _durable_records(raw: bytes) -> tuple[int, tuple[CoordinatorEvent, ...]]:
+    """The durable prefix length of ``raw`` and the records it holds.
 
     Only the final record may be torn -- it is the sole record an interrupted
-    append can have been writing. Any earlier malformed line is real corruption
-    and is reported rather than silently truncated away.
+    append can have been writing -- so a malformed final record reports the
+    offset it starts at, and everything before it is kept verbatim. Any earlier
+    malformed line is real corruption and is raised rather than truncated away.
     """
 
     end = raw.rfind(b"\n") + 1
-    complete = raw[:end]
-    lines = [line for line in complete.split(b"\n") if line.strip()]
-    for index, line in enumerate(lines):
+    # ``split`` on the newline-terminated prefix leaves one empty tail element;
+    # offsets are tracked explicitly so a blank line can never shift the cut.
+    complete: list[tuple[int, bytes]] = []
+    offset = 0
+    for line in raw[:end].split(b"\n")[:-1]:
+        if line.strip():
+            complete.append((offset, line))
+        offset += len(line) + 1
+    events: list[CoordinatorEvent] = []
+    for index, (start, line) in enumerate(complete):
         try:
-            _event(json.loads(line.decode("utf-8")))
+            events.append(_event(json.loads(line.decode("utf-8"))))
         except (ValueError, TypeError, UnicodeDecodeError) as exc:
-            if index == len(lines) - 1:
-                # A complete-but-unparseable *final* record is still a torn
-                # append: drop exactly that record and keep everything before it.
-                return end - (len(line) + 1)
-            raise ValueError(
-                f"malformed convergence event at line {index + 1}"
-            ) from exc
-    return end
+            if index == len(complete) - 1:
+                return start, tuple(events)
+            raise ValueError(f"malformed convergence event at line {index + 1}") from exc
+    return end, tuple(events)
 
 
-def _repair_torn_tail(fd: int) -> None:
-    """Truncate a torn final record so the next append lands on a clean boundary."""
-
+def _read_all(fd: int) -> bytes:
     os.lseek(fd, 0, os.SEEK_SET)
     chunks: list[bytes] = []
     while True:
@@ -132,26 +134,7 @@ def _repair_torn_tail(fd: int) -> None:
         if not chunk:
             break
         chunks.append(chunk)
-    raw = b"".join(chunks)
-    if not raw:
-        return
-    keep = _durable_prefix(raw)
-    if keep != len(raw):
-        os.ftruncate(fd, keep)
-        os.fsync(fd)
-
-
-def _existing_events(fd: int) -> tuple[CoordinatorEvent, ...]:
-    """Replay the already-durable records held open by ``fd``."""
-
-    os.lseek(fd, 0, os.SEEK_SET)
-    chunks: list[bytes] = []
-    while True:
-        chunk = os.read(fd, 65536)
-        if not chunk:
-            break
-        chunks.append(chunk)
-    return _parse(b"".join(chunks).decode("utf-8"))
+    return b"".join(chunks)
 
 
 def _append(path: Path, event: CoordinatorEvent, *, require_intent: bool) -> None:
@@ -174,8 +157,13 @@ def _append(path: Path, event: CoordinatorEvent, *, require_intent: bool) -> Non
         fd = os.open(str(path), os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
-            _repair_torn_tail(fd)
-            existing = _existing_events(fd)
+            raw_existing = _read_all(fd)
+            keep, existing = _durable_records(raw_existing)
+            if keep != len(raw_existing):
+                # Truncate the torn final record so this append lands on a clean
+                # boundary instead of being concatenated onto a half-written line.
+                os.ftruncate(fd, keep)
+                os.fsync(fd)
             if _is_already_recorded(existing, event, require_intent=require_intent):
                 return
             _write_fully(fd, raw)
