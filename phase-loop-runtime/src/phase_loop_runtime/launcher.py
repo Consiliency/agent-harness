@@ -490,6 +490,12 @@ class _ForkedExecutor:
         return self.returncode
 
 
+def _close_supervisor_descriptors(lease_fd: int) -> None:
+    max_fd = int(os.sysconf("SC_OPEN_MAX"))
+    os.closerange(0, lease_fd)
+    os.closerange(lease_fd + 1, max_fd)
+
+
 def _supervise_forked_executor(lease_fd: int) -> None:
     """Turn the Popen child into a subreaping supervisor for its executor fork."""
     if not os.get_inheritable(lease_fd):
@@ -500,6 +506,8 @@ def _supervise_forked_executor(lease_fd: int) -> None:
         os.setsid()
         LeaseSupervisor.enable_subreaper()
         return
+
+    _close_supervisor_descriptors(lease_fd)
 
     def terminate_executor(_signum, _frame) -> None:
         try:

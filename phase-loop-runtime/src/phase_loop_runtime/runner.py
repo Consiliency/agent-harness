@@ -3538,7 +3538,12 @@ def run_loop(
                 ),
             ))
 
-        def _finalize_phase_launch(prep: "_DispatchPrep", result) -> "_DispatchOutcome":
+        def _finalize_phase_launch(
+            prep: "_DispatchPrep",
+            result,
+            *,
+            reduction_blocker: dict[str, object] | None = None,
+        ) -> "_DispatchOutcome":
             nonlocal current, phase_aliases, snapshot, wave_index
             artifacts = prep.artifacts
             dispatch_decision = prep.dispatch_decision
@@ -3554,6 +3559,68 @@ def run_loop(
             rotation_preferred_executor = prep.rotation_preferred_executor
             selection = prep.selection
             spec = prep.spec
+            if reduction_blocker is not None:
+                classifications[alias] = "blocked"
+                terminal_summary = _persist_terminal_summary(
+                    artifacts,
+                    build_terminal_summary(
+                        terminal_status="blocked",
+                        terminal_blocker=reduction_blocker,
+                        verification_status="blocked",
+                        next_action=str(reduction_blocker["blocker_summary"]),
+                        artifact_paths={key: str(value) for key, value in artifacts.items()} if artifacts else {},
+                    ),
+                )
+                append_event(
+                    repo,
+                    LoopEvent(
+                        timestamp=utc_now(),
+                        repo=str(repo),
+                        roadmap=str(roadmap),
+                        phase=alias,
+                        action=action,
+                        status="blocked",
+                        model=selection.model,
+                        reasoning_effort=selection.effort,
+                        source=selection.source,
+                        override_reason=selection.override_reason,
+                        command=metadata_command(spec.command, spec.prompt_bundle.render_prompt()),
+                        blocker=reduction_blocker,
+                        metadata={
+                            "launch": result.event_metadata(),
+                            "terminal_summary": terminal_summary,
+                        },
+                        selected_executor=dispatch_decision.selected_executor,
+                        **event_provenance(roadmap, alias),
+                    ),
+                )
+                snapshot = StateSnapshot(
+                    timestamp=utc_now(),
+                    repo=str(repo),
+                    roadmap=str(roadmap),
+                    phases=classifications,
+                    current_phase=alias,
+                    last_action=action,
+                    model=selection.model,
+                    reasoning_effort=selection.effort,
+                    source=selection.source,
+                    override_reason=selection.override_reason,
+                    terminal_summary={"phase": alias, **terminal_summary},
+                    **snapshot_provenance(roadmap),
+                )
+                _write_state_and_handoff(
+                    repo,
+                    roadmap,
+                    snapshot,
+                    action=action,
+                    results=results,
+                    output_path=output_path,
+                    override_phase=selected,
+                    source_bundle_path=effective_source_bundle_path,
+                    pipeline_mode=effective_pipeline_mode,
+                )
+                current = alias
+                return _DispatchOutcome("break", None)
             if artifacts:
                 merge_launch_metadata(
                     artifacts.get("metadata"),
@@ -4795,6 +4862,7 @@ def run_loop(
                             and ownership.valid
                         )
                         parent_reduced = False
+                        reduction_blocker: dict[str, object] | None = None
                         # Bring the child's work onto the pipeline branch BEFORE
                         # finalize — finalize's closeout/reconcile run on the main
                         # repo, so the work must be present there first.
@@ -4868,8 +4936,20 @@ def run_loop(
                                         "preserved_branch": handles[ready_phase].temp_branch,
                                     },
                                 )
+                                reduction_blocker = {
+                                    "human_required": False,
+                                    "blocker_class": "merge_conflict",
+                                    "blocker_summary": (
+                                        "Trusted child output was preserved because its worktree transfer did not apply; "
+                                        "resolve the preserved generation before reducing this phase."
+                                    ),
+                                    "required_human_inputs": (),
+                                    "access_attempts": (),
+                                }
                         alias = ready_phase
-                        wave_outcome = _finalize_phase_launch(preps[ready_phase], result)
+                        wave_outcome = _finalize_phase_launch(
+                            preps[ready_phase], result, reduction_blocker=reduction_blocker
+                        )
                         if (
                             parent_reduced
                             and ready_phase not in preserve_branches

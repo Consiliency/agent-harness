@@ -648,10 +648,29 @@ def _worktree_change_paths(
             dirty_paths.add(os.fsdecode(records[index]))
             index += 1
 
-    committed = _git_bytes(worktree, "diff", "--name-only", "-z", base_sha, temp_branch)
+    committed = _git_bytes(worktree, "diff", "--name-status", "-z", "-M", base_sha, temp_branch)
     if committed.returncode != 0:
         return None
-    total_paths = dirty_paths | {os.fsdecode(path) for path in committed.stdout.split(b"\0") if path}
+    committed_paths: set[str] = set()
+    records = committed.stdout.split(b"\0")
+    index = 0
+    while index < len(records) - 1:
+        status = records[index]
+        index += 1
+        if not status:
+            continue
+        if status[:1] in {b"R", b"C"}:
+            if index + 1 >= len(records):
+                return None
+            committed_paths.add(os.fsdecode(records[index]))
+            committed_paths.add(os.fsdecode(records[index + 1]))
+            index += 2
+        else:
+            if index >= len(records):
+                return None
+            committed_paths.add(os.fsdecode(records[index]))
+            index += 1
+    total_paths = dirty_paths | committed_paths
     return tuple(sorted(dirty_paths)), tuple(sorted(total_paths))
 
 
