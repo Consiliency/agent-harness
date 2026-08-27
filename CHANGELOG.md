@@ -37,6 +37,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   lists `gemini-3.7-flash-{high,medium,low}`, and `gemini-3.7-flash-high` was exercised
   end to end through the CLI. The base id renders to each of those three under
   `_gemini_cli_model`.
+- Advisor-board preset seats follow: the five compositions that pinned `gemini-3.6-flash`
+  (brainstorm, legal-review, legal-strategy-review, legal-brainstorm, general) now seat
+  `gemini-3.7-flash`. Both ids remain registered on the gemini lane, so an explicitly
+  configured legacy seat still resolves.
 - Other tiers are unchanged: worker stays `gemini-3.5-flash-high`, and heavy/lite keep
   their existing pins.
 

@@ -123,12 +123,12 @@ the matrix at load time).
 | ----------------------- | --------------------- | ---------------------------------------- |
 | `default`               | premerge-review       | gpt-5.6-sol · max · codex · red-team ; gemini-3.7-flash · high · gemini · alternative-approach ; claude-fable-5 · max · claude · correctness ; grok-4.6 · max · grok · adversarial |
 | `code-review`           | code-review           | grok-4.6 · max · grok · adversarial ; claude-fable-5 · max · claude · correctness ; gpt-5.6-sol · max · codex · red-team ; gemini-3.7-flash · high · gemini · alternative-approach |
-| `brainstorm`            | brainstorm            | claude-sonnet-5 · high · claude · adversarial ; gpt-5.6-sol · high · codex · supportive ; gemini-3.6-flash · high · gemini · lateral |
+| `brainstorm`            | brainstorm            | claude-sonnet-5 · high · claude · adversarial ; gpt-5.6-sol · high · codex · supportive ; gemini-3.7-flash · high · gemini · lateral |
 | `doc-edit`              | doc-edit              | claude-sonnet-5 · medium · claude · copyedit ; gpt-5.5 · medium · codex · structure |
-| `legal-review`          | legal-review          | gpt-5.6-sol · max · codex · opposing-counsel ; gemini-3.6-flash · high · gemini · risk-liability ; claude-fable-5 · max · claude · authority-verification |
-| `legal-strategy-review` | legal-strategy-review | gpt-5.6-sol · max · codex · red-team ; gemini-3.6-flash · high · gemini · alternatives ; claude-fable-5 · max · claude · downside-ethics |
-| `legal-brainstorm`      | legal-brainstorm      | claude-sonnet-5 · high · claude · aggressive ; gpt-5.6-sol · high · codex · conservative ; gemini-3.6-flash · high · gemini · creative |
-| `general`               | general               | gpt-5.6-sol · max · codex · adversarial ; gemini-3.6-flash · high · gemini · alternative ; claude-fable-5 · max · claude · completeness |
+| `legal-review`          | legal-review          | gpt-5.6-sol · max · codex · opposing-counsel ; gemini-3.7-flash · high · gemini · risk-liability ; claude-fable-5 · max · claude · authority-verification |
+| `legal-strategy-review` | legal-strategy-review | gpt-5.6-sol · max · codex · red-team ; gemini-3.7-flash · high · gemini · alternatives ; claude-fable-5 · max · claude · downside-ethics |
+| `legal-brainstorm`      | legal-brainstorm      | claude-sonnet-5 · high · claude · aggressive ; gpt-5.6-sol · high · codex · conservative ; gemini-3.7-flash · high · gemini · creative |
+| `general`               | general               | gpt-5.6-sol · max · codex · adversarial ; gemini-3.7-flash · high · gemini · alternative ; claude-fable-5 · max · claude · completeness |
 | `solo`                  | general               | claude-fable-5 · max · claude · completeness |
 
 **Catch-alls for unmodeled tasks.** `general` (top-tier cross-vendor panel) and
