@@ -26,9 +26,15 @@ participates in merge-back.
 """
 from __future__ import annotations
 
+import fcntl
+import hashlib
+import os
+import stat
 import subprocess
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 from .runtime_paths import lane_worktree_path
 
@@ -42,6 +48,51 @@ class PhaseWorktreeHandle:
     temp_branch: str
     target_branch: str
     base_sha: str
+    generation: str = "legacy"
+    lease_authority: "LeaseAuthority | None" = None
+    lease_identity: str | None = None
+
+
+class LeaseAuthority:
+    """A process-local, non-serializable lease for one worktree generation."""
+
+    def __init__(self, path: Path, fd: int, identity: str, generation: str | None = None) -> None:
+        self.path = path
+        self._fd = fd
+        self.identity = identity
+        self.generation = generation or identity.partition(":")[0]
+
+    def fileno(self) -> int:
+        return self._fd
+
+    def is_open(self) -> bool:
+        if self._fd < 0:
+            return False
+        try:
+            os.fstat(self._fd)
+        except OSError:
+            return False
+        return True
+
+    def close(self) -> None:
+        if self.is_open():
+            os.close(self._fd)
+        self._fd = -1
+
+    def with_identity(self, identity: str) -> "LeaseAuthority":
+        return LeaseAuthority(self.path, self._fd, identity, self.generation)
+
+
+@dataclass(frozen=True)
+class WorktreeReclamationResult:
+    reclaimed: bool
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class WorktreeTeardownResult:
+    removed: bool
+    reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -87,6 +138,7 @@ class WorktreeTransferResult:
     applied: bool
     conflict: bool = False
     reason: str | None = None
+    unowned_paths: tuple[str, ...] = field(default_factory=tuple)
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -96,6 +148,7 @@ class WorktreeTransferResult:
             "applied": self.applied,
             "conflict": self.conflict,
             "reason": self.reason,
+            "unowned_paths": list(self.unowned_paths),
         }
 
 
@@ -156,7 +209,7 @@ def current_branch(repo: Path) -> str:
     return _git(repo, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
 
 
-def phase_temp_branch(target_branch: str, phase: str) -> str:
+def phase_temp_branch(target_branch: str, phase: str, generation: str | None = None) -> str:
     """Deterministic temp-branch name for a phase's isolated worktree.
 
     Slashes in the pipeline branch are preserved (git refs allow them); the
@@ -164,7 +217,8 @@ def phase_temp_branch(target_branch: str, phase: str) -> str:
     sweeps can recognize them.
     """
 
-    return f"phase-loop/sched/{target_branch}/{phase.upper()}"
+    suffix = f"-{generation}" if generation else ""
+    return f"phase-loop/sched/{target_branch}/{phase.upper()}{suffix}"
 
 
 def _branch_exists(repo: Path, branch: str) -> bool:
@@ -172,7 +226,267 @@ def _branch_exists(repo: Path, branch: str) -> bool:
 
 
 def _remove_worktree(repo: Path, path: Path) -> None:
-    _git(repo, "worktree", "remove", "--force", str(path), check=False)
+    removed = _git(repo, "worktree", "remove", "--force", str(path), check=False)
+    if removed.returncode != 0:
+        raise OSError(removed.stderr.strip() or removed.stdout.strip() or "could not remove worktree")
+
+
+def _git_dir(repo: Path) -> Path:
+    root = repo / ".git"
+    if not root.is_file():
+        return root
+    pointer = root.read_text(encoding="utf-8").strip()
+    if not pointer.startswith("gitdir: "):
+        raise OSError("could not resolve git directory")
+    gitdir = Path(pointer.removeprefix("gitdir: "))
+    return gitdir if gitdir.is_absolute() else root.parent / gitdir
+
+
+def _lease_path(repo: Path, generation: str) -> Path:
+    root = _git_dir(repo)
+    path = root / "phase-loop-leases" / f"{generation}.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _generation_marker(repo: Path, target_branch: str, phase: str) -> Path:
+    token = hashlib.sha256(f"{target_branch}\0{phase}".encode("utf-8")).hexdigest()
+    root = _git_dir(repo)
+    path = root / "phase-loop-generations" / token
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _new_lease(repo: Path, generation: str) -> LeaseAuthority:
+    path = _lease_path(repo, generation)
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    lease_stat = os.fstat(fd)
+    identity = f"{generation}:{lease_stat.st_dev}:{lease_stat.st_ino}"
+    return LeaseAuthority(path, fd, identity, generation)
+
+
+def _mount_filesystem_type(path: Path) -> str | None:
+    """Return the known filesystem type for ``path`` without guessing."""
+
+    try:
+        target = str(path.resolve())
+        mountinfo = Path("/proc/self/mountinfo").read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+    best: tuple[int, str] | None = None
+    for line in mountinfo.splitlines():
+        before, separator, after = line.partition(" - ")
+        fields = before.split()
+        post_fields = after.split()
+        if not separator or len(fields) < 5 or not post_fields:
+            continue
+        mount_path = (
+            fields[4]
+            .replace(r"\040", " ")
+            .replace(r"\011", "\t")
+            .replace(r"\012", "\n")
+            .replace(r"\134", "\\")
+        )
+        prefix = mount_path.rstrip("/") or "/"
+        if target == prefix or target.startswith(prefix.rstrip("/") + "/"):
+            candidate = (len(prefix), post_fields[0])
+            if best is None or candidate[0] > best[0]:
+                best = candidate
+    return best[1] if best is not None else None
+
+
+def _supports_safe_reclamation(path: Path) -> bool:
+    """Require a known-local POSIX filesystem before crash reclamation.
+
+    The nonblocking ``flock`` below is then a same-kernel proof for the held
+    lease.  Unknown or network filesystems fail closed rather than relying on
+    lock semantics we cannot establish here.
+    """
+
+    if os.name != "posix" or not all(
+        hasattr(os, attribute) for attribute in ("O_DIRECTORY", "O_NOFOLLOW", "O_NONBLOCK")
+    ):
+        return False
+    try:
+        if not stat.S_ISDIR(os.lstat(path).st_mode):
+            return False
+    except OSError:
+        return False
+    return _mount_filesystem_type(path) in {"apfs", "btrfs", "ext2", "ext3", "ext4", "overlay", "tmpfs", "xfs", "zfs"}
+
+
+def _relative_inventory_path(raw_path: bytes) -> tuple[str, tuple[str, ...]]:
+    rendered = os.fsdecode(raw_path)
+    parts = Path(rendered).parts
+    if not parts or Path(rendered).is_absolute() or any(part in {"", ".", ".."} for part in parts):
+        raise OSError("invalid git status path in worktree inventory")
+    return rendered, tuple(parts)
+
+
+def _open_inventory_parent(path: Path, parts: tuple[str, ...]) -> tuple[int, str]:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_NONBLOCK
+    descriptor = os.open(path, flags)
+    try:
+        for component in parts[:-1]:
+            child = os.open(component, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+        return descriptor, parts[-1]
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _stat_snapshot(file_stat: os.stat_result) -> tuple[int, int, int, int, int, int]:
+    return (
+        file_stat.st_dev,
+        file_stat.st_ino,
+        file_stat.st_mode,
+        file_stat.st_size,
+        file_stat.st_mtime_ns,
+        file_stat.st_ctime_ns,
+    )
+
+
+def _inventory_entry(path: Path, raw_path: bytes, status_code: str) -> tuple[object, ...]:
+    rendered, parts = _relative_inventory_path(raw_path)
+    parent_fd, name = _open_inventory_parent(path, parts)
+    try:
+        try:
+            initial = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            if "?" in status_code or "!" in status_code:
+                raise OSError("worktree inventory changed during scan")
+            return ("worktree", status_code, rendered, "missing")
+        initial_snapshot = _stat_snapshot(initial)
+        if stat.S_ISLNK(initial.st_mode):
+            target = os.readlink(name, dir_fd=parent_fd)
+            current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            if _stat_snapshot(current) != initial_snapshot:
+                raise OSError("worktree link changed during scan")
+            digest = hashlib.sha256(os.fsencode(target)).hexdigest()
+            return ("worktree", status_code, rendered, "symlink", *initial_snapshot, digest)
+        if stat.S_ISREG(initial.st_mode):
+            flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+            descriptor = os.open(name, flags, dir_fd=parent_fd)
+            try:
+                if _stat_snapshot(os.fstat(descriptor)) != initial_snapshot:
+                    raise OSError("worktree file changed during scan")
+                digest = hashlib.sha256()
+                while chunk := os.read(descriptor, 131072):
+                    digest.update(chunk)
+            finally:
+                os.close(descriptor)
+            current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            if _stat_snapshot(current) != initial_snapshot:
+                raise OSError("worktree file changed during scan")
+            return ("worktree", status_code, rendered, "regular", *initial_snapshot, digest.hexdigest())
+        current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if _stat_snapshot(current) != initial_snapshot:
+            raise OSError("worktree special file changed during scan")
+        return ("worktree", status_code, rendered, "special", *initial_snapshot)
+    finally:
+        os.close(parent_fd)
+
+
+def _stable_inventory(path: Path, *, base_sha: str | None = None) -> tuple[tuple[object, ...], ...]:
+    """Fingerprint all recoverable delta state without following links.
+
+    A clean status is not an empty generation: commits after ``base_sha`` are
+    separately bound to both their commit identity and binary diff bytes.
+    """
+
+    status = _git_bytes(path, "status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching", "-z")
+    if status.returncode != 0:
+        raise OSError(status.stderr.decode("utf-8", "replace").strip() or "could not inspect worktree inventory")
+
+    entries: list[tuple[object, ...]] = []
+    records = status.stdout.split(b"\0")
+    index = 0
+    while index < len(records) - 1:
+        record = records[index]
+        index += 1
+        if len(record) < 4 or record[2:3] != b" ":
+            raise OSError("malformed git status inventory")
+        status_code = record[:2].decode("ascii")
+        entries.append(_inventory_entry(path, record[3:], status_code))
+        if b"R" in record[:2] or b"C" in record[:2]:
+            if index >= len(records) - 1:
+                raise OSError("malformed git rename inventory")
+            entries.append(("rename-source", status_code, os.fsdecode(records[index])))
+            index += 1
+
+    base = base_sha or resolve_base_sha(path)
+    head = _git(path, "rev-parse", "HEAD", check=False)
+    if head.returncode != 0:
+        raise OSError(head.stderr.strip() or "could not resolve worktree HEAD")
+    head_sha = head.stdout.strip()
+    if head_sha != base:
+        committed = _git_bytes(path, "diff", "--binary", "--full-index", base, head_sha)
+        if committed.returncode != 0:
+            raise OSError(committed.stderr.decode("utf-8", "replace").strip() or "could not inspect committed worktree state")
+        entries.append(("committed", base, head_sha, hashlib.sha256(committed.stdout).hexdigest()))
+    return tuple(sorted(entries, key=repr))
+
+
+def _empty_stable_inventory(path: Path, base_sha: str) -> str | None:
+    before = _stable_inventory(path, base_sha=base_sha)
+    after = _stable_inventory(path, base_sha=base_sha)
+    if before != after:
+        return "inventory_changed"
+    return "inventory_nonempty" if before else None
+
+
+def _delete_reclaimed_generation(repo: Path, handle: PhaseWorktreeHandle) -> None:
+    _remove_worktree(repo, handle.worktree_path)
+    pruned = _git(repo, "worktree", "prune", check=False)
+    if pruned.returncode != 0:
+        raise OSError(pruned.stderr.strip() or pruned.stdout.strip() or "could not prune worktree metadata")
+    if _branch_exists(repo, handle.temp_branch):
+        deleted = _git(repo, "branch", "-D", handle.temp_branch, check=False)
+        if deleted.returncode != 0:
+            raise OSError(deleted.stderr.strip() or deleted.stdout.strip() or "could not delete worktree branch")
+
+
+def reclaim_phase_worktree(repo: Path, handle: PhaseWorktreeHandle) -> WorktreeReclamationResult:
+    """Reclaim only a released, stably empty generation; preserve on doubt."""
+    authority = handle.lease_authority
+    if (
+        authority is None
+        or handle.lease_identity != getattr(authority, "identity", None)
+        or getattr(authority, "generation", None) != handle.generation
+        or not callable(getattr(authority, "is_open", None))
+    ):
+        return WorktreeReclamationResult(False, "lease_identity_drift")
+    if authority.is_open():
+        return WorktreeReclamationResult(False, "live_lease")
+    lease_path = getattr(authority, "path", None)
+    if not isinstance(lease_path, Path):
+        return WorktreeReclamationResult(False, "lease_identity_drift")
+    if not _supports_safe_reclamation(handle.worktree_path):
+        return WorktreeReclamationResult(False, "unsupported_filesystem")
+    try:
+        fd = os.open(lease_path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(fd)
+            return WorktreeReclamationResult(False, "live_lease")
+        try:
+            lease_stat = os.fstat(fd)
+            if f"{handle.generation}:{lease_stat.st_dev}:{lease_stat.st_ino}" != handle.lease_identity:
+                return WorktreeReclamationResult(False, "lease_identity_drift")
+            inventory_reason = _empty_stable_inventory(handle.worktree_path, handle.base_sha)
+            if inventory_reason is not None:
+                return WorktreeReclamationResult(False, inventory_reason)
+            _delete_reclaimed_generation(repo, handle)
+            return WorktreeReclamationResult(True)
+        finally:
+            os.close(fd)
+    except OSError:
+        return WorktreeReclamationResult(False, "inventory_error")
 
 
 def create_phase_worktree(
@@ -185,27 +499,26 @@ def create_phase_worktree(
 ) -> PhaseWorktreeHandle:
     """Create an isolated worktree for ``phase`` on its own temp branch.
 
-    Idempotent: a stale worktree at the computed path or a stale temp branch
-    (from a crashed prior run) is pruned/deleted before recreation. The new
-    worktree is checked out at ``base_sha`` so every concurrent sibling starts
-    from the same pipeline-branch tip.
+    An occupied or preserved generation is never removed here. Instead, creation
+    mints a collision-resistant path and branch while retaining the recoverable
+    generation intact. Every new worktree starts from ``base_sha`` so concurrent
+    siblings share the same pipeline-branch tip.
     """
 
     phase = phase.upper()
-    worktree_path = lane_worktree_path(
+    base_path = lane_worktree_path(
         repo,
         branch=target_branch,
         lane_id=phase,
         workspace_mount=workspace_mount,
     )
-    temp_branch = phase_temp_branch(target_branch, phase)
-
-    # Clear stale state from an interrupted prior run before recreating.
-    if worktree_path.exists():
-        _remove_worktree(repo, worktree_path)
-    _git(repo, "worktree", "prune", check=False)
-    if _branch_exists(repo, temp_branch):
-        _git(repo, "branch", "-D", temp_branch, check=False)
+    generation = uuid.uuid4().hex
+    base_branch = phase_temp_branch(target_branch, phase)
+    marker = _generation_marker(repo, target_branch, phase)
+    occupied = marker.exists() or base_path.exists() or _branch_exists(repo, base_branch)
+    worktree_path = base_path.parent / f"{base_path.name}-{generation}" if occupied else base_path
+    temp_branch = phase_temp_branch(target_branch, phase, generation) if occupied else base_branch
+    lease = _new_lease(repo, generation)
 
     worktree_path.parent.mkdir(parents=True, exist_ok=True)
     created = _git(
@@ -219,16 +532,21 @@ def create_phase_worktree(
         check=False,
     )
     if created.returncode != 0:
+        lease.close()
         raise PhaseWorktreeError(
             f"failed to create worktree for phase {phase} at {worktree_path}: "
             f"{created.stderr.strip() or created.stdout.strip()}"
         )
+    marker.write_text(generation, encoding="utf-8")
     return PhaseWorktreeHandle(
         phase=phase,
         worktree_path=worktree_path,
         temp_branch=temp_branch,
         target_branch=target_branch,
         base_sha=base_sha,
+        generation=generation,
+        lease_authority=lease,
+        lease_identity=lease.identity,
     )
 
 
@@ -303,11 +621,65 @@ def integrate_phase_worktree(
     )
 
 
+def _worktree_change_paths(
+    worktree: Path,
+    *,
+    base_sha: str,
+    temp_branch: str,
+) -> tuple[tuple[str, ...], tuple[str, ...]] | None:
+    """Return dirty and total changed paths without decoding patch bytes."""
+
+    status = _git_bytes(worktree, "status", "--porcelain=v1", "--untracked-files=all", "-z")
+    if status.returncode != 0:
+        return None
+    dirty_paths: set[str] = set()
+    records = status.stdout.split(b"\0")
+    index = 0
+    while index < len(records) - 1:
+        record = records[index]
+        index += 1
+        if len(record) < 4 or record[2:3] != b" ":
+            return None
+        status_code = record[:2]
+        dirty_paths.add(os.fsdecode(record[3:]))
+        if b"R" in status_code or b"C" in status_code:
+            if index >= len(records) - 1:
+                return None
+            dirty_paths.add(os.fsdecode(records[index]))
+            index += 1
+
+    committed = _git_bytes(worktree, "diff", "--name-status", "-z", "-M", base_sha, temp_branch)
+    if committed.returncode != 0:
+        return None
+    committed_paths: set[str] = set()
+    records = committed.stdout.split(b"\0")
+    index = 0
+    while index < len(records) - 1:
+        status = records[index]
+        index += 1
+        if not status:
+            continue
+        if status[:1] in {b"R", b"C"}:
+            if index + 1 >= len(records):
+                return None
+            committed_paths.add(os.fsdecode(records[index]))
+            committed_paths.add(os.fsdecode(records[index + 1]))
+            index += 2
+        else:
+            if index >= len(records):
+                return None
+            committed_paths.add(os.fsdecode(records[index]))
+            index += 1
+    total_paths = dirty_paths | committed_paths
+    return tuple(sorted(dirty_paths)), tuple(sorted(total_paths))
+
+
 def transfer_phase_worktree_dirty(
     repo: Path,
     handle: PhaseWorktreeHandle,
     *,
     commit_message: str | None = None,
+    owns_path: Callable[[str], bool] | None = None,
 ) -> WorktreeTransferResult:
     """Transport a phase child's worktree work onto main as UNSTAGED changes.
 
@@ -315,11 +687,10 @@ def transfer_phase_worktree_dirty(
     a real phase executor leaves its verified work DIRTY in the worktree and
     emits ``awaiting_phase_closeout`` — the parent runner's closeout is what
     stages+commits the dirty phase-owned files. So the committed-only merge is a
-    no-op against a real child and the work is lost. This brings the child's full
+    no-op against a real child and the work is lost. This brings the child's owned
     delta (uncommitted + any self-commits) onto the *main* working tree without
-    committing it, so the parent's existing closeout — whose selective
-    ``git add -- <owned>`` is what enforces the ownership gate — commits it on the
-    pipeline branch exactly as in serial mode.
+    committing it. When ``owns_path`` is supplied, every changed path must match
+    it before any child bytes are staged or applied.
 
     The work is first committed onto ``temp_branch`` (preserving it on a ref), then
     transported via ``git diff base..temp | git apply`` rather than a
@@ -330,9 +701,49 @@ def transfer_phase_worktree_dirty(
     """
 
     worktree = handle.worktree_path
-    # Stage everything dirty (captures untracked new files too) and commit it onto
-    # the temp branch so the work survives on a ref even if the apply to main fails.
-    _git(worktree, "add", "-A", check=False)
+    change_paths = _worktree_change_paths(
+        worktree,
+        base_sha=handle.base_sha,
+        temp_branch=handle.temp_branch,
+    )
+    if change_paths is None:
+        return WorktreeTransferResult(
+            phase=handle.phase,
+            temp_branch=handle.temp_branch,
+            had_changes=True,
+            applied=False,
+            conflict=True,
+            reason="could not inspect worktree changes for ownership-gated transport",
+        )
+    dirty_paths, total_paths = change_paths
+    unowned_paths = tuple(path for path in total_paths if owns_path is not None and not owns_path(path))
+    if unowned_paths:
+        return WorktreeTransferResult(
+            phase=handle.phase,
+            temp_branch=handle.temp_branch,
+            had_changes=True,
+            applied=False,
+            conflict=True,
+            reason="worktree changes exceed phase ownership",
+            unowned_paths=unowned_paths,
+        )
+
+    # Stage only inspected dirty paths (including untracked files), never a broad
+    # ``git add -A`` that could carry an unowned child write into the parent.
+    if dirty_paths:
+        staged = _git(worktree, "add", "--", *dirty_paths, check=False)
+        if staged.returncode != 0:
+            return WorktreeTransferResult(
+                phase=handle.phase,
+                temp_branch=handle.temp_branch,
+                had_changes=True,
+                applied=False,
+                conflict=True,
+                reason=(
+                    "failed to stage ownership-gated worktree changes for transport: "
+                    f"{staged.stderr.strip() or staged.stdout.strip()}"
+                ),
+            )
     has_staged = _git(worktree, "diff", "--cached", "--quiet", check=False).returncode != 0
     if has_staged:
         message = commit_message or f"phase-loop sched transport: {handle.phase}"
@@ -420,14 +831,48 @@ def teardown_phase_worktree(
     handle: PhaseWorktreeHandle,
     *,
     delete_branch: bool = True,
-) -> None:
-    """Remove the phase's worktree and (by default) delete its temp branch.
+    supervisor_receipt: dict[str, object] | None = None,
+    transferred_to_parent: bool = False,
+) -> WorktreeTeardownResult:
+    """Remove only an owner-authorized, stably empty worktree generation."""
 
-    Best-effort: missing worktree/branch is not an error so this is safe to call
-    in a ``finally`` even if creation partially failed.
-    """
-
-    _remove_worktree(repo, handle.worktree_path)
-    _git(repo, "worktree", "prune", check=False)
-    if delete_branch and _branch_exists(repo, handle.temp_branch):
-        _git(repo, "branch", "-D", handle.temp_branch, check=False)
+    authority = handle.lease_authority
+    if (
+        supervisor_receipt is None
+        or authority is None
+        or not authority.is_open()
+        or authority.generation != handle.generation
+        or handle.lease_identity != authority.identity
+        or supervisor_receipt.get("generation") != handle.generation
+        or supervisor_receipt.get("receipt_binding") != handle.lease_identity
+        or supervisor_receipt.get("process_tree_empty") is not True
+        or supervisor_receipt.get("terminal_status") != "complete"
+    ):
+        return WorktreeTeardownResult(False, "invalid_supervisor_receipt")
+    try:
+        inventory_reason = _empty_stable_inventory(handle.worktree_path, handle.base_sha)
+    except OSError:
+        return WorktreeTeardownResult(False, "inventory_error")
+    if inventory_reason == "inventory_nonempty" and transferred_to_parent:
+        reset = _git(handle.worktree_path, "reset", "--hard", handle.base_sha, check=False)
+        if reset.returncode != 0:
+            return WorktreeTeardownResult(False, "transport_reset_error")
+        try:
+            inventory_reason = _empty_stable_inventory(handle.worktree_path, handle.base_sha)
+        except OSError:
+            return WorktreeTeardownResult(False, "inventory_error")
+    if inventory_reason is not None:
+        return WorktreeTeardownResult(False, inventory_reason)
+    try:
+        _remove_worktree(repo, handle.worktree_path)
+        pruned = _git(repo, "worktree", "prune", check=False)
+        if pruned.returncode != 0:
+            raise OSError(pruned.stderr.strip() or pruned.stdout.strip() or "could not prune worktree metadata")
+        if delete_branch and _branch_exists(repo, handle.temp_branch):
+            deleted = _git(repo, "branch", "-D", handle.temp_branch, check=False)
+            if deleted.returncode != 0:
+                raise OSError(deleted.stderr.strip() or deleted.stdout.strip() or "could not delete worktree branch")
+    except OSError:
+        return WorktreeTeardownResult(False, "removal_error")
+    authority.close()
+    return WorktreeTeardownResult(True)

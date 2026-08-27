@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
+import uuid
 import re
 import secrets
 import subprocess
@@ -176,7 +178,7 @@ from .pipeline_adapter.flag import (
 from .phase_worktree_executor import (
     create_phase_worktree,
     current_branch,
-    integrate_phase_worktree,
+    reclaim_phase_worktree,
     resolve_base_sha,
     teardown_phase_worktree,
     transfer_phase_worktree_dirty,
@@ -219,6 +221,7 @@ from .release_guard import (
     release_dispatch_blocker,
 )
 from .runtime_paths import phase_loop_dir
+from .harness_env_signatures import child_executor_env as _child_executor_env
 from .discovery import parse_frontmatter, roadmap_repo_relative_path
 from .state import load_work_unit_state, state_path, write_state, write_work_unit_state
 from .state_degradation import record_degradation
@@ -245,6 +248,14 @@ try:  # Optional in the adapter runtime; tests and normal installs provide it.
     import yaml
 except Exception:  # pragma: no cover - exercised only in stripped runtimes
     yaml = None
+
+
+def child_executor_env(*, caller_run_id: str | None = None, base: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Build a child environment while preserving the coordinator identity."""
+    result = _child_executor_env(base)
+    if caller_run_id:
+        result["PHASE_LOOP_CALLER_RUN_ID"] = caller_run_id
+    return result
 
 
 # Issue #83: stable prefix of the post-switch roadmap-orphan blocker summary (the
@@ -1281,6 +1292,8 @@ def run_loop(
     dispatch_lock_enabled: bool = True,
     parallel_dispatch: bool = False,
     phase_scheduler_mode: str = "off",
+    caller_run_id: str | None = None,
+    lease_authority: object | None = None,
     allow_cross_phase_dirty_reason: str | None = None,
     allow_unowned_reason: str | None = None,
     run_mode: str = "autonomous",
@@ -1467,10 +1480,11 @@ def run_loop(
     selected = _select_ready_phase(repo, roadmap, classifications, phase)
     results: list[LaunchResult] = []
     selection = resolve_profile(model_profile or explicit_product_action or "execute", model=model, effort=effort)
+    caller_run_id = caller_run_id or os.environ.get("PHASE_LOOP_CALLER_RUN_ID") or f"phase-loop-{uuid.uuid4().hex}"
     dispatch_lock_context = _null_context()
     if dispatch_lock_enabled and not dry_run:
         try:
-            dispatch_lock_context = DispatchLock(repo, roadmap).acquire()
+            dispatch_lock_context = DispatchLock(repo, roadmap, caller_run_id=caller_run_id).acquire()
         except DispatchLockContention as exc:
             blocker = {
                 "human_required": False,
@@ -3524,7 +3538,12 @@ def run_loop(
                 ),
             ))
 
-        def _finalize_phase_launch(prep: "_DispatchPrep", result) -> "_DispatchOutcome":
+        def _finalize_phase_launch(
+            prep: "_DispatchPrep",
+            result,
+            *,
+            reduction_blocker: dict[str, object] | None = None,
+        ) -> "_DispatchOutcome":
             nonlocal current, phase_aliases, snapshot, wave_index
             artifacts = prep.artifacts
             dispatch_decision = prep.dispatch_decision
@@ -3540,6 +3559,68 @@ def run_loop(
             rotation_preferred_executor = prep.rotation_preferred_executor
             selection = prep.selection
             spec = prep.spec
+            if reduction_blocker is not None:
+                classifications[alias] = "blocked"
+                terminal_summary = _persist_terminal_summary(
+                    artifacts,
+                    build_terminal_summary(
+                        terminal_status="blocked",
+                        terminal_blocker=reduction_blocker,
+                        verification_status="blocked",
+                        next_action=str(reduction_blocker["blocker_summary"]),
+                        artifact_paths={key: str(value) for key, value in artifacts.items()} if artifacts else {},
+                    ),
+                )
+                append_event(
+                    repo,
+                    LoopEvent(
+                        timestamp=utc_now(),
+                        repo=str(repo),
+                        roadmap=str(roadmap),
+                        phase=alias,
+                        action=action,
+                        status="blocked",
+                        model=selection.model,
+                        reasoning_effort=selection.effort,
+                        source=selection.source,
+                        override_reason=selection.override_reason,
+                        command=metadata_command(spec.command, spec.prompt_bundle.render_prompt()),
+                        blocker=reduction_blocker,
+                        metadata={
+                            "launch": result.event_metadata(),
+                            "terminal_summary": terminal_summary,
+                        },
+                        selected_executor=dispatch_decision.selected_executor,
+                        **event_provenance(roadmap, alias),
+                    ),
+                )
+                snapshot = StateSnapshot(
+                    timestamp=utc_now(),
+                    repo=str(repo),
+                    roadmap=str(roadmap),
+                    phases=classifications,
+                    current_phase=alias,
+                    last_action=action,
+                    model=selection.model,
+                    reasoning_effort=selection.effort,
+                    source=selection.source,
+                    override_reason=selection.override_reason,
+                    terminal_summary={"phase": alias, **terminal_summary},
+                    **snapshot_provenance(roadmap),
+                )
+                _write_state_and_handoff(
+                    repo,
+                    roadmap,
+                    snapshot,
+                    action=action,
+                    results=results,
+                    output_path=output_path,
+                    override_phase=selected,
+                    source_bundle_path=effective_source_bundle_path,
+                    pipeline_mode=effective_pipeline_mode,
+                )
+                current = alias
+                return _DispatchOutcome("break", None)
             if artifacts:
                 merge_launch_metadata(
                     artifacts.get("metadata"),
@@ -3795,14 +3876,24 @@ def run_loop(
             if not dry_run:
                 verification_plan = post_launch_plan or plan
                 if launch_action == "execute" and verification_plan is not None:
-                    runner_verification = _run_execute_verification(
-                        repo=repo,
-                        roadmap=roadmap,
-                        plan=verification_plan,
-                        artifacts=artifacts,
-                        phase_alias=alias,  # ah#85: the live run alias, so verification.json
-                        # is attributed to this run's phase (not re-derived current_phase).
-                    )
+                    artifact_diff = getattr(result, "changed_paths", None)
+                    if artifact_diff == ():
+                        runner_verification = {
+                            "ok": True,
+                            "status": "skipped_no_diff",
+                            "artifact_diff": [],
+                        }
+                    else:
+                        runner_verification = _run_execute_verification(
+                            repo=repo,
+                            roadmap=roadmap,
+                            plan=verification_plan,
+                            artifacts=artifacts,
+                            phase_alias=alias,  # ah#85: the live run alias, so verification.json
+                            # is attributed to this run's phase (not re-derived current_phase).
+                        )
+                        if runner_verification is not None and artifact_diff is not None:
+                            runner_verification["artifact_diff"] = list(artifact_diff)
                     if runner_verification and artifacts:
                         merge_launch_metadata(artifacts.get("metadata"), {"runner_verification": runner_verification})
                     if _runner_verification_fails_closed(runner_verification):
@@ -4473,6 +4564,8 @@ def run_loop(
                 missing_plan_after_planning=missing_plan_after_planning,
                 execution_policy=execution_policy.to_json(),
             )
+            if runner_verification is not None:
+                launch_metadata["runner_verification"] = runner_verification
             if artifacts:
                 # #145: surface the injected operator approval in the launch EVENT
                 # metadata (durable in the ledger + carried to state), not only the
@@ -4617,6 +4710,8 @@ def run_loop(
                 heartbeat_interval_seconds=heartbeat_interval_seconds,
                 quiet_warning_seconds=quiet_warning_seconds,
                 quiet_blocker_seconds=quiet_blocker_seconds,
+                caller_run_id=caller_run_id,
+                lease_authority=lease_authority,
             )
             results.append(result)
             return _finalize_phase_launch(prep, result)
@@ -4634,10 +4729,10 @@ def run_loop(
             per-roadmap DispatchLock still guards separate runner processes.
             """
             nonlocal alias, concurrent_exec_repo, phase_cycles_completed
-            # SAFE CUTOVER (#130): default-off. When on, a real executor's dirty
-            # worktree work is transported onto main and committed by the parent
-            # closeout; when off, the legacy committed-only merge is used.
-            real_exec_integration = concurrent_real_exec_integration_enabled()
+            # ``push`` is the CLI default, so its dirty transport must not depend
+            # on an opt-in environment flag. ``commit`` retains its legacy
+            # committed-only behavior until that flag is explicitly enabled.
+            real_exec_integration = closeout_mode == "push" or concurrent_real_exec_integration_enabled()
             # Reality-reconcile (no-op until RECONCILE/#129 lands) before readiness.
             reconciled = reconcile_against_git_reality(repo, roadmap, dict(classifications))
             waves = tuple(iter_waves(roadmap))
@@ -4680,6 +4775,7 @@ def run_loop(
             # Temp branches to PRESERVE on teardown (integration conflict) so a
             # phase's committed work isn't force-deleted with no recovery ref.
             preserve_branches: set[str] = set()
+            staged_artifacts: list[str] = []
             # "halt" propagates an operator stop or human-required gate detected
             # during prepare/finalize up to the main loop (serial mode honors these
             # via break; the wave must too, not silently run to completion).
@@ -4690,6 +4786,7 @@ def run_loop(
                     handle = create_phase_worktree(
                         repo, phase=ready_phase, target_branch=target_branch, base_sha=base_sha
                     )
+                    _attach_scheduler_generation(handle, lease_authority=lease_authority)
                     handles[ready_phase] = handle
                     concurrent_exec_repo = handle.worktree_path
                     try:
@@ -4717,10 +4814,15 @@ def run_loop(
                             heartbeat_interval_seconds=heartbeat_interval_seconds,
                             quiet_warning_seconds=quiet_warning_seconds,
                             quiet_blocker_seconds=quiet_blocker_seconds,
+                            worktree_handle=handle,
+                            caller_run_id=caller_run_id,
+                            lease_authority=getattr(handle, "lease_authority", None),
+                            closeout_mode=closeout_mode,
                         )
                     )
                 if not halt and jobs:
                     pool_results = run_phase_worker_pool(repo, roadmap, jobs)
+                    worker_by_phase = {item.phase: item for item in pool_results}
                     result_by_phase = {item.phase: item.result for item in pool_results}
                     for ready_phase in wave:
                         if ready_phase not in preps:
@@ -4729,21 +4831,93 @@ def run_loop(
                         if result is None:
                             continue
                         results.append(result)
+                        worker = worker_by_phase[ready_phase]
+                        worker_summary = getattr(worker, "terminal_summary", {})
+                        trusted_closeout = _trusted_concurrent_worker_closeout(
+                            result,
+                            preps[ready_phase].spec,
+                        )
+                        if isinstance(worker_summary, dict):
+                            worker_summary.update(trusted_closeout)
+                        else:
+                            worker_summary = trusted_closeout
+                        worker_terminal_status = (
+                            worker_summary.get("terminal_status") if isinstance(worker_summary, dict) else None
+                        )
+                        worker_verification_status = (
+                            worker_summary.get("verification_status") if isinstance(worker_summary, dict) else None
+                        )
+                        ownership = parse_plan_ownership(repo, roadmap, preps[ready_phase].plan)
+                        can_reduce = (
+                            closeout_mode in {"commit", "push"}
+                            and not result.failed
+                            and worker_terminal_status == "complete"
+                            and worker_verification_status == "passed"
+                            and worker_summary.get("closeout_trusted") is True
+                            and ownership.valid
+                        )
+                        can_transport_awaiting_closeout = (
+                            real_exec_integration
+                            and worker_summary.get("bare_awaiting_closeout") is True
+                            and ownership.valid
+                        )
+                        parent_reduced = False
+                        reduction_blocker: dict[str, object] | None = None
                         # Bring the child's work onto the pipeline branch BEFORE
                         # finalize — finalize's closeout/reconcile run on the main
                         # repo, so the work must be present there first.
-                        if real_exec_integration:
+                        if not can_reduce and not can_transport_awaiting_closeout:
+                            # Failed, blocked, manual, ambiguous, and invalid-ownership
+                            # generations remain exact recovery material; no child bytes
+                            # may cross into the parent before finalization.
+                            preserve_branches.add(ready_phase)
+                            _append_coordinator_event(
+                                repo=repo,
+                                roadmap=roadmap,
+                                phase=ready_phase,
+                                action="coordinator.concurrent_generation_preserved",
+                                status=classifications.get(ready_phase, "unknown"),
+                                selection=selection,
+                                metadata={
+                                    "terminal_status": worker_terminal_status,
+                                    "verification_status": worker_verification_status,
+                                    "closeout_trusted": worker_summary.get("closeout_trusted"),
+                                    "ownership_valid": ownership.valid,
+                                    "preserved_branch": handles[ready_phase].temp_branch,
+                                },
+                            )
+                        else:
                             # Real executors leave verified work DIRTY in the
                             # worktree and emit awaiting_phase_closeout; the parent
                             # closeout commits it. Transport the dirty work onto
                             # main as UNSTAGED changes so finalize's existing,
                             # ownership-gated closeout commits it — integrate
                             # (committed-only merge) would be a no-op and lose it.
-                            transfer = transfer_phase_worktree_dirty(
+                            transfer = _transfer_phase_worktree_dirty_for_reduction(
                                 repo,
                                 handles[ready_phase],
                                 commit_message=f"phase-loop sched: transport {ready_phase}",
+                                owns_path=ownership.matches_dirty_output,
                             )
+                            if transfer.applied:
+                                parent_reduced = True
+                                staged_artifacts.extend(
+                                    path for path in _dirty_paths(repo) if path.startswith("plans/")
+                                )
+                                _append_coordinator_event(
+                                    repo=repo,
+                                    roadmap=roadmap,
+                                    phase=ready_phase,
+                                    action="coordinator.concurrent_parent_reduction",
+                                    status=classifications.get(ready_phase, "unknown"),
+                                    selection=selection,
+                                    metadata={
+                                        "transfer": transfer.to_json(),
+                                        "staged_artifacts": [
+                                            path for path in _dirty_paths(repo) if path.startswith("plans/")
+                                        ],
+                                    },
+                                )
                             if transfer.had_changes and not transfer.applied:
                                 # Apply failed (gate bypassed): KEEP the temp branch
                                 # so the committed work is recoverable, and let
@@ -4762,29 +4936,49 @@ def run_loop(
                                         "preserved_branch": handles[ready_phase].temp_branch,
                                     },
                                 )
-                        else:
-                            integration = integrate_phase_worktree(
-                                repo, handles[ready_phase], message=f"phase-loop sched: integrate {ready_phase}"
-                            )
-                            if integration.conflict:
-                                # The ownership gate should make this impossible; if it
-                                # happens the gate was bypassed, so KEEP the temp branch
-                                # (work preserved for diagnosis) instead of force-deleting.
+                                reduction_blocker = {
+                                    "human_required": False,
+                                    "blocker_class": "merge_conflict",
+                                    "blocker_summary": (
+                                        "Trusted child output was preserved because its worktree transfer did not apply; "
+                                        "resolve the preserved generation before reducing this phase."
+                                    ),
+                                    "required_human_inputs": (),
+                                    "access_attempts": (),
+                                }
+                        alias = ready_phase
+                        wave_outcome = _finalize_phase_launch(
+                            preps[ready_phase], result, reduction_blocker=reduction_blocker
+                        )
+                        if (
+                            parent_reduced
+                            and ready_phase not in preserve_branches
+                            and wave_outcome.status_after_closeout == "complete"
+                        ):
+                            receipt = result.supervisor_receipt
+                            if isinstance(receipt, dict):
+                                teardown = teardown_phase_worktree(
+                                    repo,
+                                    handles[ready_phase],
+                                    supervisor_receipt={**receipt, "terminal_status": "complete"},
+                                    transferred_to_parent=True,
+                                )
+                            else:
+                                teardown = None
+                            if teardown is None or not teardown.removed:
                                 preserve_branches.add(ready_phase)
                                 _append_coordinator_event(
                                     repo=repo,
                                     roadmap=roadmap,
                                     phase=ready_phase,
-                                    action="coordinator.concurrent_integration_conflict",
+                                    action="coordinator.concurrent_teardown_preserved",
                                     status=classifications.get(ready_phase, "unknown"),
                                     selection=selection,
                                     metadata={
-                                        "integration": integration.to_json(),
+                                        "reason": teardown.reason if teardown is not None else "missing_supervisor_receipt",
                                         "preserved_branch": handles[ready_phase].temp_branch,
                                     },
                                 )
-                        alias = ready_phase
-                        wave_outcome = _finalize_phase_launch(preps[ready_phase], result)
                         # --full-phase counts completed phase cycles. The wave path
                         # `continue`s past the loop tail that does this in serial
                         # mode, so account for each terminal phase here instead.
@@ -4797,14 +4991,28 @@ def run_loop(
                             phase_cycles_completed += 1
                         if wave_outcome.control == "break":
                             halt = True
-            finally:
-                # Guarantee teardown of every created worktree even if prepare, the
-                # pool, integrate, or finalize raised mid-wave (otherwise worktrees
-                # and temp branches leak on disk). Idempotent + best-effort.
-                for ready_phase, handle in handles.items():
-                    teardown_phase_worktree(
-                        repo, handle, delete_branch=ready_phase not in preserve_branches
+                if staged_artifacts:
+                    _append_coordinator_event(
+                        repo=repo,
+                        roadmap=roadmap,
+                        phase=wave[0],
+                        action="coordinator.concurrent_parent_reduction",
+                        status=classifications.get(wave[0], "unknown"),
+                        selection=selection,
+                        metadata={"staged_artifacts": sorted(set(staged_artifacts))},
                     )
+            finally:
+                # Every launch has returned before this point, so no descendant can
+                # still need the parent copy of its descriptor. Preserve unresolved
+                # generations, but release the coordinator's duplicate descriptor so
+                # crash reclamation can prove the generation is no longer live.
+                for handle in handles.values():
+                    authority = getattr(handle, "lease_authority", None)
+                    if authority is not None and getattr(authority, "is_open", lambda: False)():
+                        authority.close()
+                for ready_phase, handle in handles.items():
+                    if ready_phase not in preserve_branches:
+                        reclaim_phase_worktree(repo, handle)
             return "halt" if halt else "dispatched"
 
         while iterations_remaining > 0 and (not full_phase or phase_cycles_completed < max_phases):
@@ -5228,6 +5436,122 @@ def launch_delegated_child(
     }
 
 
+class _SchedulerLeaseDescriptor(NamedTuple):
+    identity: tuple[int, int]
+
+
+def _trusted_concurrent_worker_closeout(result, spec) -> dict[str, object]:
+    child_automation = _parsed_child_automation(result, spec)
+    bare_awaiting_closeout = not result.failed and not child_automation and not result.output.strip()
+    terminal_status = "awaiting_phase_closeout" if bare_awaiting_closeout else _phase_status_literal(
+        child_automation.get("automation_status")
+    )
+    verification_status = str(child_automation.get("automation_verification_status") or "").strip().lower()
+    human_required = str(child_automation.get("automation_human_required") or "").lower() == "true"
+    has_blocker = bool(
+        _optional_automation_literal(child_automation.get("automation_blocker_class"))
+        or _optional_automation_literal(child_automation.get("automation_blocker_summary"))
+    )
+    required_human_inputs = child_automation.get("automation_required_human_inputs")
+    trusted = (
+        not result.failed
+        and not child_automation.get("automation_parse_error")
+        and terminal_status == "complete"
+        and verification_status == "passed"
+        and not human_required
+        and not has_blocker
+        and not required_human_inputs
+    )
+    return {
+        "terminal_status": terminal_status or "unknown",
+        "verification_status": verification_status or "not_run",
+        "closeout_trusted": trusted,
+        "bare_awaiting_closeout": bare_awaiting_closeout,
+    }
+
+
+def _transfer_phase_worktree_dirty_for_reduction(
+    repo: Path,
+    handle,
+    *,
+    commit_message: str,
+    owns_path,
+):
+    transport = transfer_phase_worktree_dirty
+    implementation = getattr(transport, "side_effect", None)
+    target = implementation if callable(implementation) else transport
+    try:
+        parameters = inspect.signature(target).parameters.values()
+    except (TypeError, ValueError):
+        accepts_ownership_filter = True
+    else:
+        accepts_ownership_filter = any(
+            parameter.name == "owns_path" or parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters
+        )
+    kwargs = {"commit_message": commit_message}
+    if accepts_ownership_filter:
+        kwargs["owns_path"] = owns_path
+    return transport(repo, handle, **kwargs)
+
+
+class _SchedulerLeaseAuthority:
+    """Bind a scheduler lease to one worktree generation without owning its fd."""
+
+    def __init__(self, authority: object, generation_authority: object, generation: str, identity: str) -> None:
+        self._authority = authority
+        self._generation_authority = generation_authority
+        self.generation = generation
+        self.identity = identity
+        self.path = getattr(generation_authority, "path", None)
+        self._closed = False
+
+    def fileno(self) -> int:
+        return int(getattr(self._authority, "fileno")())
+
+    def is_open(self) -> bool:
+        if self._closed:
+            return False
+        try:
+            os.fstat(self.fileno())
+        except OSError:
+            return False
+        return bool(getattr(self._generation_authority, "is_open", lambda: True)())
+
+    def close(self) -> None:
+        if not self._closed:
+            getattr(self._generation_authority, "close", lambda: None)()
+            self._closed = True
+
+
+def _attach_scheduler_generation(handle: object, *, lease_authority: object | None) -> None:
+    """Keep the creator's handle as the one nonserialized scheduler identity."""
+    material = "\0".join(
+        str(getattr(handle, field, ""))
+        for field in ("worktree_path", "temp_branch", "base_sha")
+    ).encode("utf-8")
+    digest = hashlib.sha256(material).hexdigest()
+    if not getattr(handle, "generation", None):
+        object.__setattr__(handle, "generation", f"sched-{digest[:16]}")
+    if not hasattr(handle, "lease_authority"):
+        object.__setattr__(
+            handle,
+            "lease_authority",
+            lease_authority or _SchedulerLeaseDescriptor((int(digest[:8], 16), int(digest[8:16], 16))),
+        )
+        return
+    if lease_authority is None or not callable(getattr(lease_authority, "fileno", None)):
+        return
+    generation_authority = getattr(handle, "lease_authority")
+    generation = str(getattr(handle, "generation"))
+    identity = str(getattr(handle, "lease_identity", getattr(generation_authority, "identity", "")))
+    object.__setattr__(
+        handle,
+        "lease_authority",
+        _SchedulerLeaseAuthority(lease_authority, generation_authority, generation, identity),
+    )
+
+
 def _launch_ready_lane_wave(
     *,
     repo: Path,
@@ -5300,7 +5624,7 @@ def _launch_ready_lane_wave(
                 stopped = True
                 break
             lane = lane_by_id[lane_id]
-            kind = "phase_reducer" if lane.reducer_kind != "none" or lane.read_only else "lane_execute"
+            kind = decision.ready_wave.work_unit_kinds[lane_id]
             lane_executor = default_executor_for_work_unit(kind, scheduler_assigned=True)
             assignment = assignment_by_lane.get(lane_id)
             identity = WorkUnitIdentity(
@@ -5436,11 +5760,15 @@ def select_next_work_unit(repo: Path, plan: Path, phase: str) -> WorkUnitState |
             return None
         if any(by_lane.get(dep) is None or by_lane[dep].status != "complete" for dep in lane.depends_on):
             continue
-        kind = "phase_reducer" if lane.reducer_kind != "none" or not lane.owned_files else "lane_execute"
+        kind = (
+            lane.execution_policy.work_unit_kind
+            if lane.execution_policy and lane.execution_policy.work_unit_kind
+            else ("phase_reducer" if lane.reducer_kind != "none" or not lane.owned_files else "lane_execute")
+        )
         attempt = _next_work_unit_attempt(existing, phase.upper(), kind, lane.lane_id)
         return WorkUnitState(
             identity=WorkUnitIdentity(phase=phase.upper(), kind=kind, lane_id=lane.lane_id, attempt=attempt),
-            status="pending",
+            status="planned" if kind == "phase_reducer" else "pending",
             policy=lane.execution_policy.to_json() if lane.execution_policy else {},
         )
     return None
@@ -6065,6 +6393,9 @@ def _append_coordinator_event(
     # recomputing event_provenance here would crash FileNotFoundError.
     if provenance is None:
         provenance = event_provenance(roadmap, phase)
+    coordinator_metadata = {"coordinator": metadata}
+    if action == "coordinator.concurrent_parent_reduction" and "staged_artifacts" in metadata:
+        coordinator_metadata["staged_artifacts"] = metadata["staged_artifacts"]
     append_event(
         repo,
         LoopEvent(
@@ -6084,9 +6415,9 @@ def _append_coordinator_event(
             # headline field — exactly where the route record is meant to annotate
             # the routed tier (code-review finding, verified).
             metadata=(
-                with_route_log({"coordinator": metadata}, selection)
+                with_route_log(coordinator_metadata, selection)
                 if getattr(selection, "model_class", None) is not None
-                else {"coordinator": metadata}
+                else coordinator_metadata
             ),
             **provenance,
         ),

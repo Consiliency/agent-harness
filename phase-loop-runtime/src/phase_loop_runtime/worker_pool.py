@@ -24,6 +24,10 @@ class PhaseWorkerJob:
     heartbeat_interval_seconds: float = 30.0
     quiet_warning_seconds: float = 300.0
     quiet_blocker_seconds: float = 900.0
+    worktree_handle: object | None = None
+    caller_run_id: str | None = None
+    lease_authority: object | None = None
+    closeout_mode: str = "manual"
 
 
 @dataclass(frozen=True)
@@ -102,15 +106,48 @@ def _run_one(repo: Path, roadmap: Path, job: PhaseWorkerJob) -> PhaseWorkerResul
         heartbeat_interval_seconds=job.heartbeat_interval_seconds,
         quiet_warning_seconds=job.quiet_warning_seconds,
         quiet_blocker_seconds=job.quiet_blocker_seconds,
+        caller_run_id=job.caller_run_id,
+        lease_authority=job.lease_authority,
     )
     summary = {
         "phase": job.phase,
-        "terminal_status": "blocked" if result.failed else "complete",
-        "verification_status": "blocked" if result.failed else "passed",
         "returncode": result.returncode,
         "executor": result.executor,
         "log_path": result.log_path,
+        "supervisor_receipt": result.supervisor_receipt,
     }
+    if job.worktree_handle is None:
+        summary.update(
+            {
+                "terminal_status": "blocked" if result.failed else "complete",
+                "verification_status": "blocked" if result.failed else "passed",
+                "status_source": "legacy_returncode",
+            }
+        )
+    else:
+        summary.update(
+            {
+                "terminal_status": "blocked" if result.failed else "unknown",
+                "verification_status": "blocked" if result.failed else "not_run",
+                "status_source": "launch_failure" if result.failed else "awaiting_trusted_closeout",
+            }
+        )
+    if result.failed and job.worktree_handle is not None:
+        handle = job.worktree_handle
+        if isinstance(handle, dict):
+            recoverable_generation = {
+                key: handle.get(key)
+                for key in ("generation", "worktree_path", "temp_branch")
+            }
+        else:
+            recoverable_generation = {
+                key: getattr(handle, key, None)
+                for key in ("generation", "worktree_path", "temp_branch")
+            }
+        worktree_path = recoverable_generation.get("worktree_path")
+        if isinstance(worktree_path, Path):
+            recoverable_generation["worktree_path"] = str(worktree_path)
+        summary["recoverable_generation"] = recoverable_generation
     path = write_worker_summary(repo, roadmap, job.phase, summary)
     return PhaseWorkerResult(phase=job.phase, result=result, summary_path=path, terminal_summary=summary)
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import ctypes
+import hashlib
 import json
 import os
 import re
@@ -13,6 +15,7 @@ import threading
 import time
 import urllib.parse
 from dataclasses import dataclass, replace
+from functools import partial
 from pathlib import Path
 from queue import Empty, Queue
 from typing import Any, Callable, Mapping
@@ -329,6 +332,9 @@ class LaunchResult:
     #     residual limit (a state-layer stamp is out of scope).
     claude_route_warnings: tuple[str, ...] = ()
     cleanup_evidence: dict[str, Any] | None = None
+    supervisor_receipt: dict[str, Any] | None = None
+    changed_paths: tuple[str, ...] | None = None
+
 
     @property
     def failed(self) -> bool:
@@ -391,7 +397,141 @@ class LaunchResult:
             data["claude_route_result"] = self.claude_route_result
         if self.cleanup_evidence:
             data["cleanup_evidence"] = self.cleanup_evidence
+        if self.supervisor_receipt is not None:
+            data["supervisor_receipt"] = self.supervisor_receipt
+        if self.changed_paths is not None:
+            data["changed_paths"] = list(self.changed_paths)
         return {key: value for key, value in data.items() if value not in (None, [])}
+
+
+class LeaseSupervisor:
+    """POSIX supervisor retaining a lease until its executor tree is gone."""
+
+    _DESCENDANT_REAP_GRACE_SECONDS = 5.0
+    _DESCENDANT_KILL_GRACE_SECONDS = 1.0
+
+    @staticmethod
+    def enable_subreaper() -> None:
+        ctypes.CDLL(None).prctl(36, 1, 0, 0, 0)  # PR_SET_CHILD_SUBREAPER
+
+    def reap_direct_child(self, process: subprocess.Popen) -> None:
+        process.wait()
+
+    @staticmethod
+    def _adopted_descendants() -> tuple[int, ...]:
+        """List the subreaper's live descendant tree without using a process group."""
+
+        parent_by_pid: dict[int, int] = {}
+        for stat_path in Path("/proc").glob("[0-9]*/stat"):
+            try:
+                pid = int(stat_path.parts[-2])
+                fields = stat_path.read_text(encoding="utf-8").rsplit(")", 1)[1].split()
+                parent_by_pid[pid] = int(fields[1])
+            except (IndexError, OSError, ValueError):
+                continue
+        descendants: set[int] = set()
+        parents = {os.getpid()}
+        while parents:
+            children = {pid for pid, parent in parent_by_pid.items() if parent in parents}
+            children.difference_update(descendants)
+            descendants.update(children)
+            parents = children
+        return tuple(sorted(descendants))
+
+    def _signal_adopted_descendants(self, signum: int) -> None:
+        for pid in self._adopted_descendants():
+            try:
+                os.killpg(os.getpgid(pid), signum)
+            except ProcessLookupError:
+                continue
+
+    def reap_descendants(self, process: subprocess.Popen) -> int:
+        returncode = process.wait()
+        # The executor is a session leader, but descendants can call ``setsid``
+        # and leave that group. The subreaper adopts every surviving descendant,
+        # so explicit child reaping establishes complete-tree emptiness and /proc
+        # provides the signal targets for session-detached descendants at the
+        # grace limit.
+        reap_deadline = time.monotonic() + self._DESCENDANT_REAP_GRACE_SECONDS
+        kill_deadline: float | None = None
+        sent_sigkill = False
+        while True:
+            descendants = self._adopted_descendants()
+            if not descendants:
+                break
+            for pid in descendants:
+                try:
+                    os.waitpid(pid, os.WNOHANG)
+                except ChildProcessError:
+                    continue
+            now = time.monotonic()
+            if kill_deadline is None and now >= reap_deadline:
+                self._signal_adopted_descendants(signal.SIGTERM)
+                kill_deadline = now + self._DESCENDANT_KILL_GRACE_SECONDS
+            elif kill_deadline is not None and not sent_sigkill and now >= kill_deadline:
+                self._signal_adopted_descendants(signal.SIGKILL)
+                sent_sigkill = True
+            time.sleep(0.01)
+        return returncode
+
+
+class _ForkedExecutor:
+    """Small Popen-compatible wait surface for the forked executor child."""
+
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+        self.process_group_id = pid
+        self.returncode: int | None = None
+
+    def wait(self) -> int:
+        if self.returncode is None:
+            _, status = os.waitpid(self.pid, 0)
+            self.returncode = os.waitstatus_to_exitcode(status)
+        return self.returncode
+
+
+def _close_supervisor_descriptors(lease_fd: int) -> None:
+    max_fd = int(os.sysconf("SC_OPEN_MAX"))
+    os.closerange(0, lease_fd)
+    os.closerange(lease_fd + 1, max_fd)
+
+
+def _supervise_forked_executor(lease_fd: int) -> None:
+    """Turn the Popen child into a subreaping supervisor for its executor fork."""
+    if not os.get_inheritable(lease_fd):
+        os.close(lease_fd)
+    LeaseSupervisor.enable_subreaper()
+    executor_pid = os.fork()
+    if executor_pid == 0:
+        os.setsid()
+        LeaseSupervisor.enable_subreaper()
+        return
+
+    _close_supervisor_descriptors(lease_fd)
+
+    def terminate_executor(_signum, _frame) -> None:
+        try:
+            os.killpg(executor_pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+
+        def force_kill(_alarm_signum, _alarm_frame) -> None:
+            try:
+                os.killpg(executor_pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+        signal.signal(signal.SIGALRM, force_kill)
+        signal.setitimer(signal.ITIMER_REAL, 1)
+
+    signal.signal(signal.SIGTERM, terminate_executor)
+    signal.signal(signal.SIGINT, terminate_executor)
+    try:
+        executor = _ForkedExecutor(executor_pid)
+        returncode = LeaseSupervisor().reap_descendants(executor)
+    except BaseException:
+        returncode = 1
+    os._exit(returncode if isinstance(returncode, int) and 0 <= returncode <= 255 else 1)
 
 
 @dataclass(frozen=True)
@@ -1951,6 +2091,8 @@ def launch_with_spec(
     heartbeat_interval_seconds: int = 30,
     quiet_warning_seconds: int = 600,
     quiet_blocker_seconds: int = 1800,
+    caller_run_id: str | None = None,
+    lease_authority: object | None = None,
 ) -> LaunchResult:
     if not spec.available and not dry_run:
         raise ValueError("live launch requested for unavailable executor")
@@ -1981,6 +2123,8 @@ def launch_with_spec(
             quiet_blocker_seconds=quiet_blocker_seconds,
             timeout_seconds=spec.launch_timeout_seconds,
             cwd=spec.wrapped_cwd,
+            caller_run_id=caller_run_id,
+            lease_authority=lease_authority,
             # #61/#86: even an unobserved (--no-observe) executor child must get
             # quiet-child / stall detection so it can't hang the parent silently.
             ephemeral_monitor=log_path is None,
@@ -2232,6 +2376,51 @@ def _extract_pi_output_text(raw: str) -> str:
     return raw
 
 
+def _launch_with_lease_supervisor(
+    command: list[str],
+    *,
+    lease_authority: object,
+    log_path: Path | None,
+    stdin_text: str | None,
+    cwd: str | Path | None,
+    env: dict[str, str],
+    stream_output: bool,
+    heartbeat_path: Path | None,
+    heartbeat_interval_seconds: int,
+    quiet_warning_seconds: int,
+    quiet_blocker_seconds: int,
+    timeout_seconds: int | None,
+) -> LaunchResult:
+    """Run an executor under a subreaping supervisor that retains a live lease."""
+    lease_fd = int(getattr(lease_authority, "fileno")())
+    generation = str(getattr(lease_authority, "generation", "unknown"))
+    result = launch(
+        command,
+        log_path=log_path,
+        stdin_text=stdin_text,
+        stream_output=stream_output,
+        heartbeat_path=heartbeat_path,
+        heartbeat_interval_seconds=heartbeat_interval_seconds,
+        quiet_warning_seconds=quiet_warning_seconds,
+        quiet_blocker_seconds=quiet_blocker_seconds,
+        timeout_seconds=timeout_seconds,
+        cwd=cwd,
+        env=env,
+        ephemeral_monitor=True,
+        _supervisor_lease_fd=lease_fd,
+    )
+    return replace(
+        result,
+        supervisor_receipt={
+            "generation": generation,
+            "pass_fds": [lease_fd],
+            "process_tree_empty": not (result.timed_out or result.interrupted or result.stalled),
+            "receipt_binding": getattr(lease_authority, "identity", None),
+            "terminal_status": "complete" if not result.failed else "blocked",
+        },
+    )
+
+
 def launch(
     command: list[str],
     dry_run: bool = False,
@@ -2246,6 +2435,9 @@ def launch(
     cwd: str | Path | None = None,
     env: dict[str, str] | None = None,
     ephemeral_monitor: bool = False,
+    caller_run_id: str | None = None,
+    lease_authority: object | None = None,
+    _supervisor_lease_fd: int | None = None,
 ) -> LaunchResult:
     # AUTOSEL (change #5): the CLI executor-child spawn path gets a scrubbed +
     # sentinel-stamped env — Claude Code's self-markers removed and PHASE_LOOP_CHILD=1
@@ -2257,6 +2449,23 @@ def launch(
     # never auto-picks claude, so those routes don't need the run-from sentinel.
     # ``env`` is injectable for tests; None => derive from the live environment.
     child_env = child_executor_env(env) if env is not None else child_executor_env()
+    if caller_run_id:
+        child_env["PHASE_LOOP_CALLER_RUN_ID"] = caller_run_id
+    if lease_authority is not None and not dry_run:
+        return _launch_with_lease_supervisor(
+            command,
+            lease_authority=lease_authority,
+            log_path=log_path,
+            stdin_text=stdin_text,
+            cwd=cwd,
+            env=child_env,
+            stream_output=stream_output,
+            heartbeat_path=heartbeat_path,
+            heartbeat_interval_seconds=heartbeat_interval_seconds,
+            quiet_warning_seconds=quiet_warning_seconds,
+            quiet_blocker_seconds=quiet_blocker_seconds,
+            timeout_seconds=timeout_seconds,
+        )
     # #61/#86: an UNOBSERVED (--no-observe) executor child would otherwise fall to
     # the bare `subprocess.run` branch below, which has no heartbeat, no quiet-child
     # / stall detection, and no timeout — so an idle planner/execute child hangs the
@@ -2269,7 +2478,7 @@ def launch(
     # instead of wedging. Wall-clock timeout stays opt-in (the "no short timeout on
     # CLI legs" rule); the quiet/CPU-idle detector is what catches the wedge.
     ephemeral_run_dir: tempfile.TemporaryDirectory | None = None
-    if log_path is None and ephemeral_monitor and not dry_run:
+    if log_path is None and (ephemeral_monitor or _supervisor_lease_fd is not None) and not dry_run:
         ephemeral_run_dir = tempfile.TemporaryDirectory(prefix="phase-loop-ephemeral-run-")
         log_path = Path(ephemeral_run_dir.name) / "output.log"
     if log_path is not None and heartbeat_path is None:
@@ -2300,7 +2509,9 @@ def launch(
             heartbeat_summary=heartbeat_summary,
             started_at=_utc_now(),
             finished_at=_utc_now(),
+            changed_paths=(),
         )
+    change_snapshot = _worktree_change_snapshot(cwd)
     if log_path is None:
         run_kwargs: dict[str, Any] = {
             "text": True,
@@ -2314,7 +2525,11 @@ def launch(
         else:
             run_kwargs["input"] = stdin_text
         completed = subprocess.run(command, **run_kwargs)
-        return LaunchResult(command=command, returncode=completed.returncode, output=completed.stdout + completed.stderr)
+        return _with_changed_paths(
+            LaunchResult(command=command, returncode=completed.returncode, output=completed.stdout + completed.stderr),
+            change_snapshot,
+            cwd,
+        )
 
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2324,16 +2539,22 @@ def launch(
         started_monotonic = time.monotonic()
 
         with log_path.open("w", encoding="utf-8") as log:
-            process = subprocess.Popen(
-                command,
-                text=True,
-                stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-                cwd=str(cwd) if cwd else None,
-                env=child_env,
-            )
+            popen_kwargs: dict[str, Any] = {
+                "text": True,
+                "stdin": subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.STDOUT,
+                "start_new_session": True,
+                "cwd": str(cwd) if cwd else None,
+                "env": child_env,
+            }
+            if _supervisor_lease_fd is not None:
+                popen_kwargs.update(
+                    close_fds=True,
+                    pass_fds=(_supervisor_lease_fd,),
+                    preexec_fn=partial(_supervise_forked_executor, _supervisor_lease_fd),
+                )
+            process = subprocess.Popen(command, **popen_kwargs)
             process_group_id = _process_group_id(process.pid)
             assert process.stdout is not None
             if stdin_text is not None and process.stdin is not None:
@@ -2472,7 +2693,7 @@ def launch(
             stalled=stalled,
             cleanup_evidence=cleanup_evidence,
         )
-        return result
+        return _with_changed_paths(result, change_snapshot, cwd)
     finally:
         if ephemeral_run_dir is not None:
             ephemeral_run_dir.cleanup()
@@ -3309,7 +3530,109 @@ def _result_with_spec(result: LaunchResult, spec: LaunchSpec) -> LaunchResult:
         claude_route_warnings=spec.claude_route_warnings,
         claude_route_result=result.claude_route_result,
         cleanup_evidence=result.cleanup_evidence,
+        supervisor_receipt=result.supervisor_receipt,
+        changed_paths=result.changed_paths,
     )
+
+
+def _worktree_change_snapshot(
+    cwd: str | Path | None,
+) -> tuple[str, str, str, str, tuple[str, ...]] | None:
+    if cwd is None:
+        return None
+    root = Path(cwd)
+    status = subprocess.run(
+        ["git", "-C", str(root), "status", "--porcelain=v1", "--untracked-files=all", "-z"],
+        capture_output=True,
+        check=False,
+    )
+    head = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "HEAD"],
+        capture_output=True,
+        check=False,
+    )
+    index_diff = subprocess.run(
+        ["git", "-C", str(root), "diff", "--cached", "--binary", "--full-index"],
+        capture_output=True,
+        check=False,
+    )
+    worktree_diff = subprocess.run(
+        ["git", "-C", str(root), "diff", "--binary", "--full-index"],
+        capture_output=True,
+        check=False,
+    )
+    untracked = subprocess.run(
+        ["git", "-C", str(root), "ls-files", "--others", "--exclude-standard", "-z"],
+        capture_output=True,
+        check=False,
+    )
+    if any(command.returncode != 0 for command in (status, head, index_diff, worktree_diff, untracked)):
+        return None
+
+    paths: set[str] = set()
+    records = status.stdout.split(b"\0")
+    index = 0
+    while index < len(records) - 1:
+        record = records[index]
+        index += 1
+        if len(record) < 4 or record[2:3] != b" ":
+            return None
+        status_code = record[:2]
+        paths.add(os.fsdecode(record[3:]))
+        if b"R" in status_code or b"C" in status_code:
+            if index >= len(records) - 1:
+                return None
+            paths.add(os.fsdecode(records[index]))
+            index += 1
+
+    untracked_digest = hashlib.sha256()
+    for raw_path in (path for path in untracked.stdout.split(b"\0") if path):
+        path = root / os.fsdecode(raw_path)
+        untracked_digest.update(raw_path)
+        try:
+            if path.is_symlink():
+                untracked_digest.update(b"symlink\0")
+                untracked_digest.update(os.fsencode(os.readlink(path)))
+            elif path.is_file():
+                untracked_digest.update(b"file\0")
+                untracked_digest.update(path.read_bytes())
+            else:
+                untracked_digest.update(f"special:{path.lstat().st_mode}".encode("ascii"))
+        except OSError:
+            return None
+
+    return (
+        os.fsdecode(head.stdout).strip(),
+        hashlib.sha256(index_diff.stdout).hexdigest(),
+        hashlib.sha256(worktree_diff.stdout).hexdigest(),
+        untracked_digest.hexdigest(),
+        tuple(sorted(paths)),
+    )
+
+
+def _with_changed_paths(
+    result: LaunchResult,
+    before: tuple[str, str, str, str, tuple[str, ...]] | None,
+    cwd: str | Path | None,
+) -> LaunchResult:
+    after = _worktree_change_snapshot(cwd)
+    if before is None or after is None:
+        return result
+    before_head, _before_index, _before_worktree, _before_untracked, before_paths = before
+    after_head, _after_index, _after_worktree, _after_untracked, after_paths = after
+    if before == after:
+        return replace(result, changed_paths=())
+    paths = set(before_paths) | set(after_paths)
+    if before_head != after_head:
+        committed = subprocess.run(
+            ["git", "-C", str(cwd), "diff", "--name-only", f"{before_head}..{after_head}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if committed.returncode == 0:
+            paths.update(path for path in committed.stdout.splitlines() if path)
+    return replace(result, changed_paths=tuple(sorted(paths)))
 
 
 def _read_lines(stdout, line_queue: Queue[str | None]) -> None:
