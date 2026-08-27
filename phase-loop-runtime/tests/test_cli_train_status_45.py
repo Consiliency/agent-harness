@@ -5,9 +5,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from phase_loop_runtime.cli import main as cli_main
 from phase_loop_runtime.train_ledger import CoordinatorEvent, CoordinatorEventKind, LedgerRecord, append_record, default_ledger_path
 from phase_loop_runtime.convergence.event_log import record_intent
+
+from _runtime_tdd_guard import RuntimeCapabilityMissing
+from runtime_content_tdd_adapter import run_mapped_case
 
 TRAIN_MD = """# Release Train: t
 
@@ -98,3 +103,53 @@ def test_train_status_event_log_without_train(tmp_path, capsys):
     rc = cli_main(["train-status", "--event-log", str(log), "--json"])
     assert rc == 0
     assert json.loads(capsys.readouterr().out)["train_id"] == "t"
+
+
+# ---------------------------------------------------------------------------
+# RUNTIME SL-3: event-log mode is read-only, restart-only, and fails closed
+
+
+def test_train_status_event_log_round_trips_after_restart(tmp_path, capsys):
+    """EC-RUNTIME-4 path-entered control: identical events render identically twice."""
+    log = tmp_path / "events.jsonl"
+    record_intent(log, CoordinatorEvent(
+        kind=CoordinatorEventKind.INTENT, train_id="t", node_id="n", roadmap_path="r",
+        roadmap_digest="d", workspace_id=None, branch=None, base_ref=None, base_sha=None,
+        head_sha=None, phase=None, action="execute", attempt_id="a", epoch=1,
+    ))
+    before = log.read_bytes()
+    assert cli_main(["train-status", "--event-log", str(log), "--json"]) == 0
+    first = capsys.readouterr().out
+    assert cli_main(["train-status", "--event-log", str(log), "--json"]) == 0
+    assert capsys.readouterr().out == first
+    assert log.read_bytes() == before, "event-log mode must never mutate the log"
+
+
+def test_train_status_event_log_is_mutually_exclusive_with_train(tmp_path, capsys):
+    log = tmp_path / "events.jsonl"
+    record_intent(log, CoordinatorEvent(
+        kind=CoordinatorEventKind.INTENT, train_id="t", node_id="n", roadmap_path="r",
+        roadmap_digest="d", workspace_id=None, branch=None, base_ref=None, base_sha=None,
+        head_sha=None, phase=None, action="execute", attempt_id="a", epoch=1,
+    ))
+    with pytest.raises(SystemExit):
+        cli_main(["train-status", "--event-log", str(log), "--train", str(tmp_path / "train.md")])
+    assert "mutually exclusive" in capsys.readouterr().err
+
+
+def test_train_status_missing_event_log_fails_closed(tmp_path, capsys):
+    """An absent event log is unknown state, never an empty successful train."""
+    missing = tmp_path / "absent.jsonl"
+    rc = cli_main(["train-status", "--event-log", str(missing), "--json"])
+    captured = capsys.readouterr()
+
+    def probe():
+        if rc == 0:
+            raise RuntimeCapabilityMissing("a missing event log is reported as an empty train")
+
+    def assertion():
+        assert rc != 0
+        assert not missing.exists(), "event-log mode must stay read-only"
+        assert captured.err.strip()
+
+    run_mapped_case("cli.event-log-mode-fails-closed", probe=probe, assertion=assertion)
