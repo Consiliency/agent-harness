@@ -1,4 +1,5 @@
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -6,6 +7,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
+from harden_tdd_guard import harden_require
 import phase_loop_runtime.verification_evidence as ve
 from phase_loop_runtime.verification_evidence import (
     _build_interpreter_shim,
@@ -26,6 +30,49 @@ SHADOW = "python3.8"
 def _write_pyproject(repo: Path, requires_python: str | None) -> None:
     rp = f'requires-python = "{requires_python}"\n' if requires_python else ""
     (repo / "pyproject.toml").write_text(f'[project]\nname = "t"\nversion = "0"\n{rp}', encoding="utf-8")
+
+
+def test_argument_consuming_bash_options_and_profile_patch_version_fail_closed():
+    harden_require("login-shell-interpreter")
+    if shutil.which("bash") is None:
+        pytest.skip("bash is unavailable")
+    with tempfile.TemporaryDirectory() as td, tempfile.TemporaryDirectory() as home:
+        repo = Path(td)
+        _write_pyproject(repo, SATISFIED_SPEC)
+        badbin = Path(home) / "badbin"
+        badbin.mkdir()
+        fake = badbin / SHADOW
+        fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        fake.chmod(0o755)
+        (Path(home) / ".bash_profile").write_text(
+            f'export PATH="{badbin}:$PATH"\n', encoding="utf-8"
+        )
+        profile = Path(home) / "profile.sh"
+        profile.write_text("true\n", encoding="utf-8")
+        option_arguments = (
+            ("-o", "nounset"),
+            ("+o", "nounset"),
+            ("-O", "extglob"),
+            ("+O", "extglob"),
+            ("--rcfile", str(profile)),
+            ("--init-file", str(profile)),
+        )
+        for option, value in option_arguments:
+            command = ["bash", "--login", option, value, "-c", f"{SHADOW} -c 'print(1)'"]
+            rewritten = _relogin_shell_shim(command, Path("/run/harden-interpreter-shim"))
+            assert rewritten[-1].startswith("export PATH='/run/harden-interpreter-shim':\"$PATH\"; ")
+        run_dir = repo / ".phase-loop" / "runs" / "profile-patch"
+        with mock.patch.dict(os.environ, {"HOME": home}):
+            result = run_verification(
+                repo,
+                run_dir,
+                [["bash", "--login", "-O", "extglob", "-c", f"{SHADOW} -c 'print(1)'"]],
+                None,
+                None,
+                20,
+            )
+        assert result.commands[0].exit_code != 0
+        assert "does not satisfy" in (run_dir / "verification.log").read_text(encoding="utf-8")
 
 
 def _shim_names(run_path: Path, repo: Path, python_pin=None):

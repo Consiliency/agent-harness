@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from harden_tdd_guard import harden_require
 from phase_loop_runtime import discovery
 from phase_loop_runtime.goal_coverage import check_goal_coverage, extract_plan_goal_refs
 from phase_loop_runtime.roadmap_lint import _extract_phases, lint_roadmap_text
@@ -36,6 +37,28 @@ def _build(td: Path, exit_lines, acc_lines, *, alias="P1", plan_alias=None, brea
         encoding="utf-8",
     )
     return td, plan
+
+
+def test_enforce_blocks_every_zero_declared_and_all_bare_legacy_is_distinct():
+    harden_require("non-vacuous-goal-coverage")
+    from phase_loop_runtime.runner import _execute_goal_coverage_preflight
+
+    with tempfile.TemporaryDirectory() as t:
+        repo, plan = _build(Path(t), ["bare legacy goal"], [])
+        roadmap = repo / "specs" / "phase-plans-v1.md"
+        prior = os.environ.get("PHASE_LOOP_ACCEPTANCE_ENFORCE")
+        try:
+            os.environ["PHASE_LOOP_ACCEPTANCE_ENFORCE"] = "block"
+            blocker = _execute_goal_coverage_preflight(repo, roadmap, plan)
+            assert blocker is not None
+            assert blocker["blocker_class"] == "contract_bug"
+            os.environ.pop("PHASE_LOOP_ACCEPTANCE_ENFORCE")
+            assert _execute_goal_coverage_preflight(repo, roadmap, plan) is None
+        finally:
+            if prior is None:
+                os.environ.pop("PHASE_LOOP_ACCEPTANCE_ENFORCE", None)
+            else:
+                os.environ["PHASE_LOOP_ACCEPTANCE_ENFORCE"] = prior
 
 
 class RoadmapECIdTest(unittest.TestCase):
