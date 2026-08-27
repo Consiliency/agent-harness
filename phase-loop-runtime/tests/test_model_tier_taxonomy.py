@@ -34,7 +34,7 @@ class TierMatrixTest(unittest.TestCase):
             ("lite", "codex"): ("gpt-5.6-luna", "low", False),
             ("ultra", "gemini"): ("gemini-3.1-pro-preview", "max", True),
             ("heavy", "gemini"): ("gemini-3.1-pro-preview", "xhigh", True),
-            ("regular", "gemini"): ("gemini-3.6-flash", "medium", False),
+            ("regular", "gemini"): ("gemini-3.7-flash", "medium", False),
             ("lite", "gemini"): ("gemini-3.5-flash-lite", "low", False),
             # grok: no dated snapshot published → every cell volatile (blocker 2).
             ("ultra", "grok"): ("grok-4.5", "max", True),
