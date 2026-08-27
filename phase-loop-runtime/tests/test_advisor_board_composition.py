@@ -16,6 +16,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
+from harden_tdd_guard import harden_require
 from phase_loop_runtime.advisor_board import (
     DEFAULT_TARGET_SEATS,
     FLOOR_SEATS,
@@ -39,6 +40,22 @@ def _probe(up):
 def _keys(board):
     """Dedup identity per seat = (vendor-lane, model, lens)."""
     return [(s.harness, s.model, s.lens) for s in board.seats]
+
+
+def test_review_leg_isolation_refuses_unbound_direct_invocation():
+    harden_require("review-leg-isolation")
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+    from phase_loop_runtime.panel_invoker import invoke_board
+
+    effects: list[object] = []
+
+    def direct_effect(*args, **kwargs):
+        effects.append((args, kwargs))
+        return "OK", "unexpected direct provider effect"
+
+    result = invoke_board(DEFAULT_BOARD, "review bundle", spawn=direct_effect, mode="review")
+    assert not effects
+    assert all(leg.status in {"DEGRADED", "UNAVAILABLE"} for leg in result.legs)
 
 
 class AvailabilitySimulationTests(unittest.TestCase):

@@ -35,6 +35,7 @@ from pathlib import Path
 
 import pytest
 
+from harden_tdd_guard import harden_require
 from phase_loop_runtime import launcher
 from phase_loop_runtime.launcher import (
     GEMINI_REVIEW_STAGE_PREFIX,
@@ -111,6 +112,21 @@ def test_stage_review_tree_is_gitignore_aware_working_tree_copy(tmp_path):
         assert not (staged / ".git").exists()
     finally:
         shutil.rmtree(staged, ignore_errors=True)
+
+
+def test_review_stage_rejects_every_escape_form_before_launch(tmp_path):
+    harden_require("staged-tree-containment")
+    repo = _git_review_repo(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret.py").write_text("outside\n", encoding="utf-8")
+    nested = repo / "nested"
+    nested.mkdir()
+    (repo / "absolute-escape").symlink_to(outside, target_is_directory=True)
+    (nested / "relative-escape").symlink_to("../../outside", target_is_directory=True)
+    (repo / "chain-escape").symlink_to(nested / "relative-escape", target_is_directory=True)
+    with pytest.raises(ValueError):
+        _stage_review_tree(repo, None)
 
 
 def test_review_leg_write_cannot_touch_the_reviewed_tree(tmp_path):

@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from harden_tdd_guard import harden_require
 from phase_loop_runtime.classifier import classify_phase
 from phase_loop_runtime.events import append_event, append_payload
 from phase_loop_runtime.models import LoopEvent, utc_now
@@ -64,6 +65,24 @@ class RoadmapPathsMatchTest(unittest.TestCase):
         roadmap = repo / "specs" / "phase-plans-v1.md"
         self.assertEqual(roadmap_paths_match(None, None, repo, roadmap), (False, False))
         self.assertEqual(roadmap_paths_match(str(repo), "", repo, roadmap), (False, False))
+
+
+def test_cwd_independent_reconcile_is_repo_anchored(tmp_path):
+    harden_require("cwd-independent-reconcile")
+    repo = make_repo(tmp_path / "repo")
+    roadmap = repo / "specs" / "phase-plans-v1.md"
+    write_phase_plan(repo, "RUNNER", roadmap)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    cwd = Path.cwd()
+    try:
+        os.chdir(outside)
+        from_outside = reconcile(repo, roadmap, read_only=True)
+        os.chdir(repo)
+        from_repo = reconcile(repo, roadmap, read_only=True)
+    finally:
+        os.chdir(cwd)
+    assert from_outside == from_repo
 
 
 class ReconcileRepoRelocationTest(unittest.TestCase):
