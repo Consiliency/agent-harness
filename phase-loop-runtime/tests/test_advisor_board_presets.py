@@ -35,7 +35,7 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(len(general.seats), 3)
         self.assertEqual(
             {s.model for s in general.seats},
-            {"gpt-5.6-sol", "gemini-3.6-flash", "claude-fable-5"},
+            {"gpt-5.6-sol", "gemini-3.7-flash", "claude-fable-5"},
         )
         solo = PRESETS["solo"]
         self.assertEqual(len(solo.seats), 1)  # a 1-seat board is fully valid
@@ -102,7 +102,7 @@ class PresetTests(unittest.TestCase):
             "brainstorm": (
                 ("claude-sonnet-5", "high", "claude", "adversarial"),
                 ("gpt-5.6-sol", "high", "codex", "supportive"),
-                ("gemini-3.6-flash", "high", "gemini", "lateral"),
+                ("gemini-3.7-flash", "high", "gemini", "lateral"),
             ),
             "doc-edit": (
                 ("claude-sonnet-5", "medium", "claude", "copyedit"),
@@ -120,18 +120,18 @@ class PresetTests(unittest.TestCase):
         legal = {
             "legal-review": (
                 ("gpt-5.6-sol", "max", "codex", "opposing-counsel"),
-                ("gemini-3.6-flash", "high", "gemini", "risk-liability"),
+                ("gemini-3.7-flash", "high", "gemini", "risk-liability"),
                 ("claude-fable-5", "max", "claude", "authority-verification"),
             ),
             "legal-strategy-review": (
                 ("gpt-5.6-sol", "max", "codex", "red-team"),
-                ("gemini-3.6-flash", "high", "gemini", "alternatives"),
+                ("gemini-3.7-flash", "high", "gemini", "alternatives"),
                 ("claude-fable-5", "max", "claude", "downside-ethics"),
             ),
             "legal-brainstorm": (
                 ("claude-sonnet-5", "high", "claude", "aggressive"),
                 ("gpt-5.6-sol", "high", "codex", "conservative"),
-                ("gemini-3.6-flash", "high", "gemini", "creative"),
+                ("gemini-3.7-flash", "high", "gemini", "creative"),
             ),
         }
         for name, expected in legal.items():

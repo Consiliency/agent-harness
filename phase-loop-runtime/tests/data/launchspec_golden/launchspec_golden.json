@@ -545,7 +545,7 @@
     "command": [
       "agy",
       "--model",
-      "gemini-3.6-flash-medium",
+      "gemini-3.7-flash-medium",
       "--dangerously-skip-permissions",
       "--add-dir",
       "/repo",
@@ -579,7 +579,7 @@
     "requested_effort": "medium",
     "selected_agent": null,
     "selected_effort": "medium",
-    "selected_model": "gemini-3.6-flash",
+    "selected_model": "gemini-3.7-flash",
     "selected_variant": null,
     "terminal_summary_artifact": "terminal-summary.json",
     "timeout_posture": "runner_managed",

@@ -28,6 +28,22 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   model itself normalized correctly further down. Normalizing at the acceptance point
   fixed the renderer but left that earlier reader on the raw value.
 
+### gemini executor default moves to 3.7 Flash
+
+- `GEMINI_IMPLEMENTER_MODEL` and `GEMINI_REGULAR_MODEL` retarget from `gemini-3.6-flash`
+  to `gemini-3.7-flash` on operator instruction. The panel seats were already on 3.7;
+  this brings the executor/tier path in line.
+- Verified against the live provider before moving the pin: `agy models` (agy 1.1.21)
+  lists `gemini-3.7-flash-{high,medium,low}`, and `gemini-3.7-flash-high` was exercised
+  end to end through the CLI. The base id renders to each of those three under
+  `_gemini_cli_model`.
+- Advisor-board preset seats follow: the five compositions that pinned `gemini-3.6-flash`
+  (brainstorm, legal-review, legal-strategy-review, legal-brainstorm, general) now seat
+  `gemini-3.7-flash`. Both ids remain registered on the gemini lane, so an explicitly
+  configured legacy seat still resolves.
+- Other tiers are unchanged: worker stays `gemini-3.5-flash-high`, and heavy/lite keep
+  their existing pins.
+
 ### agy canary: XDG_RUNTIME_DIR is not a customization (Consiliency/agent-harness#711)
 
 - `XDG_RUNTIME_DIR` no longer counts as an active agy customization source. systemd sets

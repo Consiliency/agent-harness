@@ -36,11 +36,14 @@ GEMINI_PRO_ROUTED_MODEL = "pro"
 GEMINI_AUTO_ROUTED_MODEL = "auto"
 # Gemini implementer (regular tier) — the CANONICAL agy model id from `agy models`
 # (authoritative list), NOT a display label. CR round-5 finding B: the operator asked us
-# to adopt the newest gemini light/medium models; `agy models` exposes gemini-3.6-flash-*
-# (GA), so the regular tier retargets from the old 3.5 Flash to the newest 3.6 Flash.
+# to adopt the newest gemini light/medium models; `agy models` exposes the Flash family
+# (GA), so the regular tier tracks the newest GA Flash.
 # (agy's ids are `gemini-<ver>-<family>-<effort>`; the old "Gemini 3.5 Flash (High)" display
 # label is NOT in `agy models` — hoisted here so EXECUTOR_MODEL_OVERRIDES can reference it.)
-GEMINI_IMPLEMENTER_MODEL = "gemini-3.6-flash"
+# 2026-08-27: retargeted 3.6 -> 3.7 Flash on operator instruction. `agy models` (agy
+# 1.1.21) lists gemini-3.7-flash-{high,medium,low}, and `gemini-3.7-flash-high` was
+# verified live through the CLI before this pin was moved.
+GEMINI_IMPLEMENTER_MODEL = "gemini-3.7-flash"
 PI_AUTO_ROUTED_MODEL = "auto"
 # xAI-family grok executor default (GROKEXEC). Single source for the grok live
 # adapter model alias; the grok CLI takes it verbatim via `-m`.
@@ -160,7 +163,7 @@ OPENAI_WORKER_MODEL = "gpt-5.6-luna"
 # OPENCODE_OPENAI_IMPLEMENTER_MODEL is hoisted near OPENCODE_OPENAI_HEAVY_MODEL (top).
 OPENCODE_OPENAI_WORKER_MODEL = "openai/gpt-5.6-luna"
 # Gemini authoring/review stays on the CLI `pro` alias. Implementation uses the
-# base `gemini-3.6-flash` id on both class and executor paths; the adapter appends
+# base `gemini-3.7-flash` id on both class and executor paths; the adapter appends
 # the policy-normalized effort. Worker (lite) uses the canonical
 # agy 3.5 Flash id: `agy models` exposes NO flash-lite, so the matrix's gemini-3.5-flash-lite
 # lite cell is ASPIRATIONAL (target, not live) — the live worker degrades to real 3.5 Flash,
@@ -217,7 +220,7 @@ CODEX_LITE_MODEL = OPENAI_WORKER_MODEL
 # heavy is a PREVIEW model (Google already retired gemini-3-pro-preview) → marked
 # volatile in the matrix; regular/lite are stable GA ids.
 GEMINI_HEAVY_MODEL = "gemini-3.1-pro-preview"
-GEMINI_REGULAR_MODEL = "gemini-3.6-flash"
+GEMINI_REGULAR_MODEL = "gemini-3.7-flash"
 GEMINI_LITE_MODEL = "gemini-3.5-flash-lite"
 
 # grok/xAI per-tier ids. heavy reuses the existing GROK_DEFAULT_MODEL SSOT.
@@ -377,7 +380,7 @@ def supervise_selection(vendor: str = "claude") -> TierResolution:
 # enumeration; each is intentional, with the reason it can't be a one-line derive):
 #   • gemini — the MODEL-PATH split is FIXED (CR round-4) and the REGULAR VERSION is now
 #     ALIGNED (CR round-5 finding B): implementation on BOTH the class and executor paths
-#     stores the base `gemini-3.6-flash` id; the adapter appends the normalized
+#     stores the base `gemini-3.7-flash` id; the adapter appends the normalized
 #     effort to emit agy's canonical id. Two things remain: (a) the PRO/
 #     planning path still routes via the `pro` CLI alias / "Gemini 3.1 Pro (High)" DISPLAY
 #     label rather than a canonical agy id — REPRESENTATIONAL only (same Pro model), and out
