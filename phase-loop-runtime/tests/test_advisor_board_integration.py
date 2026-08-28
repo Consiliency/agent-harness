@@ -27,7 +27,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from harden_tdd_guard import invoke_sanctioned_review_transport
+from harden_tdd_guard import invoke_sanctioned_board_control
 from phase_loop_runtime import panel_invoker as pi
 from phase_loop_runtime.advisor_board import (
     AUTH_API_KEY,
@@ -52,11 +52,9 @@ def _ok_spawn(leg: str, artifact: str):
 
 
 def _invoke_board_control(board, artifact: str, **kwargs):
-    """Keep advisory fixtures direct while binding every derived review run."""
+    """Run every executable fixture through the explicit control protocol."""
 
-    if pi._mode_for_purpose(board.purpose) == "review":
-        return invoke_sanctioned_review_transport(board, artifact, **kwargs)
-    return pi.invoke_board(board, artifact, **kwargs)
+    return invoke_sanctioned_board_control(board, artifact, **kwargs)
 
 
 class _FakeOmnigent:
@@ -98,10 +96,34 @@ class EndToEndHomebrewIntegrationTests(unittest.TestCase):
         # resolve (real resolver + stand-in catalog) → validate (real matrix) → run.
         board = resolve_board("default", matrix=default_matrix())
         validate_board(board, matrix=default_matrix())
-        res = _invoke_board_control(board, "artifact", spawn=_ok_spawn)
+        seen_artifacts: list[str] = []
+
+        def resolved_spawn(leg: str, artifact: str):
+            seen_artifacts.append(artifact)
+            return _ok_spawn(leg, artifact)
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            artifact_ref = root / "board-artifact.md"
+            context_ref = root / "board-context.txt"
+            artifact_ref.write_text("FROM_BOARD_REF", encoding="utf-8")
+            context_ref.write_text("context stays by reference", encoding="utf-8")
+            expected_artifact = pi._apply_context_refs(
+                pi._resolve_artifact("INLINE", str(artifact_ref)),
+                (str(context_ref),),
+                soft_warn=False,
+            )
+            res = _invoke_board_control(
+                board,
+                "INLINE",
+                spawn=resolved_spawn,
+                artifact_ref=str(artifact_ref),
+                context_refs=(str(context_ref),),
+            )
         self.assertEqual(tuple(r.leg for r in res.legs), DEFAULT_BOARD_VENDOR_ORDER)
         self.assertTrue(all(r.status == "OK" for r in res.legs))
         self.assertTrue(all(r.seat_key for r in res.legs))
+        self.assertEqual(seen_artifacts, [expected_artifact] * len(board.seats))
 
     def test_ad_hoc_seats_resolve_and_run(self) -> None:
         # the `--seats model:effort[:harness]` ad-hoc path, end-to-end.

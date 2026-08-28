@@ -6,22 +6,28 @@ import ast
 import copy
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from harden_tdd_guard import (
     HARDEN_CASES,
     HARDEN_MARKER_MODULE,
     HARDEN_RED_ANCHORS,
     HARDEN_TEST_PATHS,
+    _replicate_test_repository,
     harden_require,
 )
 
 
-def test_harden_guard_inventory_and_case_bindings_are_frozen():
+def test_harden_guard_inventory_and_case_bindings_are_frozen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     root = Path(__file__).resolve().parents[2]
     assert len(HARDEN_TEST_PATHS) == 26
     assert len(set(HARDEN_TEST_PATHS)) == 26
@@ -43,6 +49,117 @@ def test_harden_guard_inventory_and_case_bindings_are_frozen():
         assert len(matches) == 1, f"{case_id}: missing or duplicate {test_name}"
         source = ast.unparse(matches[0])
         assert f"harden_require('{case_id}')" in source or f'harden_require("{case_id}")' in source
+
+    projection_source = tmp_path / "projection-source"
+    projection_source.mkdir()
+    (projection_source / "payload.txt").write_text("projected", encoding="utf-8")
+    (projection_source / ".git").mkdir()
+    (projection_source / ".git" / "config").write_text(
+        "must not copy Git authority", encoding="utf-8"
+    )
+    projection = tmp_path / "projection"
+    projection.mkdir(mode=0o700)
+    real_open = os.open
+    git_authority_open_attempts: list[str] = []
+
+    def refuse_git_authority_open(path, flags, *args, **kwargs):
+        if isinstance(path, str) and path.casefold() == ".git":
+            git_authority_open_attempts.append(path)
+            raise AssertionError("repository projection opened Git authority")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", refuse_git_authority_open)
+    _replicate_test_repository(projection_source, projection)
+    assert projection.stat().st_mode & 0o777 == 0o700
+    assert not (projection / ".git").exists()
+    assert (projection / "payload.txt").read_text(encoding="utf-8") == "projected"
+    for entry in projection.rglob("*"):
+        expected_mode = 0o700 if entry.is_dir() else 0o600
+        assert entry.stat().st_mode & 0o777 == expected_mode
+
+    caller_git_authority = tmp_path / "caller-git-authority"
+    caller_git_authority.mkdir()
+    caller_git_config = b"caller write authority must remain outside scratch"
+    (caller_git_authority / "config").write_bytes(caller_git_config)
+    forbidden_git_payloads = {caller_git_config}
+    alias_projections: list[Path] = []
+    for source_name, alias_name, alias_kind in (
+        ("uppercase-git-directory", ".GIT", "directory"),
+        ("mixed-case-gitfile", ".GiT", "gitfile"),
+    ):
+        alias_source = tmp_path / f"{source_name}-source"
+        alias_source.mkdir()
+        (alias_source / "payload.txt").write_text("projected", encoding="utf-8")
+        alias = alias_source / alias_name
+        if alias_kind == "directory":
+            alias.mkdir()
+            alias_payload = b"uppercase Git authority must not project"
+            (alias / "config").write_bytes(alias_payload)
+        else:
+            alias_payload = f"gitdir: {caller_git_authority}\n".encode()
+            alias.write_bytes(alias_payload)
+        forbidden_git_payloads.add(alias_payload)
+        alias_projection = tmp_path / f"{source_name}-projection"
+        alias_projection.mkdir(mode=0o700)
+        _replicate_test_repository(alias_source, alias_projection)
+        alias_projections.append(alias_projection)
+        assert alias_projection.stat().st_mode & 0o777 == 0o700
+        assert (alias_projection / "payload.txt").is_file()
+        assert all(
+            entry.name.casefold() != ".git"
+            for entry in alias_projection.iterdir()
+        )
+    projected_payloads = {
+        entry.read_bytes()
+        for alias_projection in alias_projections
+        for entry in alias_projection.rglob("*")
+        if entry.is_file()
+    }
+    assert projected_payloads.isdisjoint(forbidden_git_payloads)
+    assert git_authority_open_attempts == []
+    monkeypatch.setattr(os, "open", real_open)
+
+    source_link = tmp_path / "projection-source-link"
+    source_link.symlink_to(projection_source, target_is_directory=True)
+    linked_projection = tmp_path / "linked-projection"
+    linked_projection.mkdir(mode=0o700)
+    with pytest.raises(AssertionError, match="source root is unsafe"):
+        _replicate_test_repository(source_link, linked_projection)
+    assert not tuple(linked_projection.iterdir())
+
+    race_source = tmp_path / "race-source"
+    race_source.mkdir()
+    (race_source / "race.txt").write_text("safe-before-open", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("must not cross the source boundary", encoding="utf-8")
+    race_projection = tmp_path / "race-projection"
+    race_projection.mkdir(mode=0o700)
+    swaps: list[str] = []
+
+    def swap_before_open(path, flags, *args, **kwargs):
+        if path == "race.txt" and not swaps:
+            (race_source / "race.txt").unlink()
+            (race_source / "race.txt").symlink_to(outside)
+            swaps.append(path)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", swap_before_open)
+    with pytest.raises(AssertionError, match="entry changed or is unsafe"):
+        _replicate_test_repository(race_source, race_projection)
+    monkeypatch.setattr(os, "open", real_open)
+    assert swaps == ["race.txt"]
+    assert race_projection.stat().st_mode & 0o777 == 0o700
+    assert not (race_projection / "race.txt").exists()
+
+    special_source = tmp_path / "special-source"
+    special_source.mkdir()
+    os.mkfifo(special_source / "capability.fifo")
+    special_projection = tmp_path / "special-projection"
+    special_projection.mkdir(mode=0o700)
+    with pytest.raises(AssertionError, match="refuses special entry"):
+        _replicate_test_repository(special_source, special_projection)
+    assert special_projection.stat().st_mode & 0o777 == 0o700
+    assert not (special_projection / "capability.fifo").exists()
 
 
 def _load_harden_evidence_verifier() -> Any:
