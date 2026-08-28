@@ -8520,6 +8520,11 @@ def _run_legible_panel(
     finally:
         if instruction_token is not None:
             reset_review_instruction_digest(instruction_token)
+    tree = subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", expected_head + "^{tree}"],
+        text=True,
+        stderr=subprocess.DEVNULL,
+    ).strip()
     legs: list[dict[str, object]] = []
     verdicts: dict[str, str] = {}
     for seat, outcome in zip(CODE_REVIEW_BOARD.seats, result.legs, strict=True):
@@ -8541,6 +8546,28 @@ def _run_legible_panel(
             # execution boundary, retained beside the run-owned seat result so
             # a later HARDEN evidence reducer need not trust a copied summary.
             leg_payload["harden_isolation_evidence"] = dict(broker_evidence)
+            receipt_payload = {
+                "schema": "harden_broker_run_receipt.v1",
+                "head": expected_head,
+                "tree": tree,
+                "harness": outcome.leg,
+                "model": seat.model,
+                "seat_key": outcome.seat_key,
+                "status": outcome.status,
+                "report": outcome.text,
+                "report_sha256": hashlib.sha256(outcome.text.encode("utf-8")).hexdigest(),
+                "report_bytes": len(outcome.text.encode("utf-8")),
+                "broker": dict(broker_evidence),
+            }
+            receipt_path = run_dir / f"implementation-panel-{outcome.leg}.harden-broker-run.json"
+            receipt_path.write_text(
+                json.dumps(receipt_payload, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            leg_payload["harden_isolation_receipt"] = {
+                "path": receipt_path.relative_to(repo).as_posix(),
+                "sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest(),
+            }
         leg_path.write_text(json.dumps(leg_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         legs.append(
             {

@@ -340,6 +340,29 @@ class ArtifactStore:
         return value
 
 
+def run_owned_receipt(store: ArtifactStore, repo: Path, ref: dict[str, str], label: str) -> dict[str, Any]:
+    """Bind a copied evidence artifact to the original run-owned receipt."""
+    relative = ref["path"]
+    candidate = Path(relative)
+    if len(candidate.parts) < 4 or candidate.parts[:2] != (".phase-loop", "runs"):
+        fail(f"{label}: receipt is not under the canonical run root")
+    copied = store.read(ref, label)
+    current = repo
+    for part in candidate.parts:
+        current = current / part
+        try:
+            entry = current.lstat()
+        except OSError:
+            fail(f"{label}: canonical run receipt is unavailable")
+        if stat.S_ISLNK(entry.st_mode):
+            fail(f"{label}: canonical run receipt is a symlink")
+    if not stat.S_ISREG(current.lstat().st_mode) or current.read_bytes() != copied:
+        fail(f"{label}: copied receipt differs from canonical run receipt")
+    value = parse_canonical_json(copied, label)
+    reject_secret_payloads(value, label)
+    return value
+
+
 def git(repo: Path, *args: str) -> str:
     command = ("git", "-C", str(repo), "--no-replace-objects", "-c", "core.hooksPath=/dev/null", *args)
     completed = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
@@ -1073,12 +1096,35 @@ def verify_review_round(store: ArtifactStore, repo: Path, value: Any, round_name
         if harness not in ROUTES or harness in seen_harnesses:
             fail("duplicate or unsupported review harness")
         seen_harnesses.add(harness)
-        seat = closed(store.json(artifact_ref(item["artifact"], "seat artifact"), "seat artifact"), {"schema", "round", "head", "tree", "request_sha256", "harness", "requested_model", "resolved_model", "seat_id", "session_sha256", "harness_provenance", "status", "result_kind", "report", "report_sha256", "report_bytes", "broker"}, "seat artifact")
+        seat = closed(store.json(artifact_ref(item["artifact"], "seat artifact"), "seat artifact"), {"schema", "round", "head", "tree", "request_sha256", "harness", "requested_model", "resolved_model", "seat_id", "session_sha256", "harness_provenance", "status", "result_kind", "report", "report_sha256", "report_bytes", "broker", "runtime_receipt"}, "seat artifact")
         requested, resolved = ROUTES[harness]
         if (seat["schema"], seat["round"], seat["head"], seat["tree"], seat["request_sha256"], seat["harness"], seat["requested_model"], seat["resolved_model"]) != ("harden_review_seat.v1", round_name, head, tree, request_ref["sha256"], harness, requested, resolved):
             fail("seat route/head/request binding mismatch")
         if seat["harness_provenance"] != "brokered_subscription_cli" or seat["status"] != "usable" or seat["result_kind"] != "real_subscription_inference":
             fail("synthetic, unavailable, or non-brokered review seat")
+        runtime = closed(
+            run_owned_receipt(
+                store,
+                repo,
+                artifact_ref(seat["runtime_receipt"], "seat runtime receipt"),
+                "seat runtime receipt",
+            ),
+            {"schema", "head", "tree", "harness", "model", "seat_key", "status", "report", "report_sha256", "report_bytes", "broker"},
+            "seat runtime receipt",
+        )
+        if (
+            runtime["schema"] != "harden_broker_run_receipt.v1"
+            or runtime["head"] != head
+            or runtime["tree"] != tree
+            or runtime["harness"] != harness
+            or runtime["model"] != seat["resolved_model"]
+            or runtime["status"] != "OK"
+            or runtime["report"] != seat["report"]
+            or runtime["report_sha256"] != seat["report_sha256"]
+            or runtime["report_bytes"] != seat["report_bytes"]
+            or runtime["broker"] != seat["broker"]
+        ):
+            fail("seat artifact is detached from its run-owned broker receipt")
         seat_id = text(seat["seat_id"], "seat identity", pattern=IDENTITY)
         session = text(seat["session_sha256"], "seat session", pattern=HEX64)
         if seat_id in used_seat_ids or session in seat_sessions:
@@ -1327,6 +1373,17 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
         data = value if raw else canonical_bytes(value)
         (artifacts / path).write_bytes(data)
         return {"path": path, "sha256": sha256(data)}
+
+    def put_runtime_receipt(round_name: str, harness: str, value: dict[str, Any]) -> dict[str, str]:
+        """Retain an exact copy of the run-owned receipt outside evidence artifacts."""
+        path = f".phase-loop/runs/self-{round_name}/implementation-panel-{harness}.harden-broker-run.json"
+        data = canonical_bytes(value)
+        target = repo / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        (artifacts / path).parent.mkdir(parents=True, exist_ok=True)
+        (artifacts / path).write_bytes(data)
+        return {"path": path, "sha256": sha256(data)}
     def nonce(label: str) -> str: return sha256(label.encode())
     reviewed, reviewed_tree = refs["reviewed_sl0"]
     candidate, candidate_tree = refs["candidate"]
@@ -1524,7 +1581,24 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
                 "provider_response_sha256": sha256(report.encode()),
                 "provider_response_bytes": len(report.encode()),
             })
-            seat = put("seat-" + round_name + "-" + harness, {"schema": "harden_review_seat.v1", "round": round_name, "head": head, "tree": tree, "request_sha256": request["sha256"], "harness": harness, "requested_model": requested, "resolved_model": resolved, "seat_id": round_name + "-" + harness + "-seat", "session_sha256": nonce(round_name + harness + "session"), "harness_provenance": "brokered_subscription_cli", "status": "usable", "result_kind": "real_subscription_inference", "report": report, "report_sha256": sha256(report.encode()), "report_bytes": len(report.encode()), "broker": broker_record})
+            runtime_receipt = put_runtime_receipt(
+                round_name,
+                harness,
+                {
+                    "schema": "harden_broker_run_receipt.v1",
+                    "head": head,
+                    "tree": tree,
+                    "harness": harness,
+                    "model": resolved,
+                    "seat_key": round_name + "-" + harness + "-seat",
+                    "status": "OK",
+                    "report": report,
+                    "report_sha256": sha256(report.encode()),
+                    "report_bytes": len(report.encode()),
+                    "broker": broker_record,
+                },
+            )
+            seat = put("seat-" + round_name + "-" + harness, {"schema": "harden_review_seat.v1", "round": round_name, "head": head, "tree": tree, "request_sha256": request["sha256"], "harness": harness, "requested_model": requested, "resolved_model": resolved, "seat_id": round_name + "-" + harness + "-seat", "session_sha256": nonce(round_name + harness + "session"), "harness_provenance": "brokered_subscription_cli", "status": "usable", "result_kind": "real_subscription_inference", "report": report, "report_sha256": sha256(report.encode()), "report_bytes": len(report.encode()), "broker": broker_record, "runtime_receipt": runtime_receipt})
             seats.append({"harness": harness, "artifact": seat})
         return {"head": head, "tree": tree, "request": request, "seats": seats}
     reviews = {"candidate": review("candidate", candidate, candidate_tree), "canonical_main": review("canonical_main", main, main_tree)}
@@ -1818,6 +1892,12 @@ def self_test() -> None:
         rejected("extra-no-tool-control", seat_mutation(lambda seat: seat["broker"]["provider_no_tool_controls"].append("extra")))
         rejected("duplicate-no-tool-control", seat_mutation(lambda seat: seat["broker"]["provider_no_tool_controls"].append(seat["broker"]["provider_no_tool_controls"][0])))
         rejected("detached-broker-provider-response", seat_mutation(lambda seat: seat["broker"].__setitem__("provider_response_sha256", "f" * 64)))
+        def detached_run_owned_receipt(model: dict[str, Any], local_root: Path, artifact_root: Path) -> None:
+            seat_ref = model["reviews"]["candidate"]["seats"][0]["artifact"]
+            seat = parse_canonical_json((artifact_root / seat_ref["path"]).read_bytes(), "self-test seat")
+            receipt_path = local_root / "repo" / seat["runtime_receipt"]["path"]
+            receipt_path.write_bytes(canonical_bytes({"schema": "detached"}))
+        rejected("detached-run-owned-receipt", detached_run_owned_receipt)
         def malformed_empty_argv(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
             for item in model["reviews"]["candidate"]["seats"]:
                 seat_ref = item["artifact"]
