@@ -126,6 +126,20 @@ def _registry(selected: str, entries) -> str:
     })
 
 
+def _repo_with_two_phases(tmp: str) -> Path:
+    """A roadmap where ALPHA owns src/alpha.py and BETA owns src/beta.py."""
+    repo = Path(tmp)
+    (repo / "specs").mkdir(parents=True, exist_ok=True)
+    body = ROADMAP.replace(
+        "- `src/alpha.py`",
+        "- `src/alpha.py`",
+    )
+    (repo / "specs" / "phase-plans-v10.md").write_text(body)
+    (repo / "src").mkdir(exist_ok=True)
+    (repo / "src" / "alpha.py").write_text("x = 1\n")
+    return repo
+
+
 def _repo(tmp: str, *, roadmap: str = ROADMAP, current: str | None = "ALPHA") -> Path:
     repo = Path(tmp)
     (repo / "specs").mkdir(parents=True, exist_ok=True)
@@ -1161,6 +1175,79 @@ class TestNegativeReportIsRejected(unittest.TestCase):
                               "--base", "main"])
             self.assertEqual(rc, 2)
             self.assertIn("must be >= 0", buf.getvalue())
+
+
+class TestPreflight(unittest.TestCase):
+    """agent-harness#633: answer the pre-EDIT question before the work exists.
+
+    The issue was filed after nine commits of good work were closed as
+    superseded for touching a phase's key files. Ownership is machine-readable,
+    so that specific miss is mechanically catchable -- which is what this does.
+    """
+
+    def _repo(self, tmp):
+        repo = _repo_with_two_phases(tmp)
+        run = lambda *a: subprocess.run(["git", "-C", tmp, *a], check=True,
+                                        capture_output=True)
+        run("init", "-q", "-b", "main")
+        run("config", "user.email", "t@t")
+        run("config", "user.name", "t")
+        run("add", "-A")
+        run("commit", "-qm", "seed")
+        return repo
+
+    def test_a_path_owned_by_ANOTHER_phase_is_reported(self):
+        """Mutation that must kill this: return {} unconditionally."""
+        with TemporaryDirectory() as tmp:
+            repo = self._repo(tmp)
+            owned = ro.preflight(repo, ["src/alpha.py"])
+            self.assertIn("src/alpha.py", owned)
+            self.assertEqual(owned["src/alpha.py"], ["ALPHA"])
+
+    def test_your_OWN_phase_is_excluded(self):
+        """The question is "does this belong to somebody ELSE?" -- a phase
+        editing its own key files is the normal case and must not be flagged.
+
+        Mutation that must kill this: ignore `current_phase`.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = self._repo(tmp)
+            self.assertEqual(ro.preflight(repo, ["src/alpha.py"], "ALPHA"), {})
+
+    def test_an_unclaimed_path_is_not_reported(self):
+        with TemporaryDirectory() as tmp:
+            repo = self._repo(tmp)
+            self.assertEqual(ro.preflight(repo, ["src/unclaimed.py"]), {})
+
+    def test_the_exit_code_carries_the_answer(self):
+        """1 = a path belongs to another phase, 0 = clear. A caller scripting a
+        pre-edit guard reads the code, not the prose.
+
+        Mutation that must kill this: always return 0.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = self._repo(tmp)
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc_owned = ro.main(["prog", "--repo", str(repo),
+                                    "--preflight", "src/alpha.py"])
+            self.assertEqual(rc_owned, 1)
+            self.assertIn("claimed by", buf.getvalue())
+            with redirect_stdout(io.StringIO()):
+                rc_clear = ro.main(["prog", "--repo", str(repo),
+                                    "--preflight", "src/unclaimed.py"])
+            self.assertEqual(rc_clear, 0)
+
+    def test_the_report_does_not_claim_to_know_BLOCK_state(self):
+        """The honesty property, and the reason this is not the ah#633 gate.
+
+        Scanning phase bodies for a BLOCKED marker matches 6 phases in v10 of
+        which one is a real block; a gate on that signal fires falsely on five.
+        The output must say ownership only, and say so.
+        """
+        out = ro.render_preflight({"src/alpha.py": ["ALPHA"]})
+        self.assertIn("BLOCK STATE IS NOT", out)
+        self.assertIn("does not authorize", out)
 
 
 class TestPartialDrift(unittest.TestCase):

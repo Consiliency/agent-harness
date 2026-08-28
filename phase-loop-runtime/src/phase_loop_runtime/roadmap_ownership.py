@@ -613,6 +613,53 @@ def _most_relievable_phase(
     )[0]
 
 
+def preflight(repo: Path, paths: Sequence[str], current_phase: str | None = None) -> Dict[str, List[str]]:
+    """Which phases claim each of ``paths`` -- the pre-EDIT question.
+
+    agent-harness#633 asks for a gate that fails a change touching a BLOCKED phase's key
+    files. Ownership is machine-readable and answered exactly here; **block state
+    is not**, so this reports and does not decide.
+
+    Measured, not assumed: scanning phase bodies for a ``BLOCKED`` marker matches
+    6 phases in v10 of which exactly ONE is a real phase-level block. The others
+    are exit-criteria prose containing ``OUTCOME_AMBIGUOUS_BLOCKED``, "a merge
+    blocked on president-unavailability", and similar. A gate keyed on that
+    signal would fire falsely on five phases, so this deliberately stops at
+    ownership and leaves the disposition to a reader who can see the phase.
+
+    ``current_phase`` excludes your own phase, which is the form the question
+    actually takes: "does this path belong to somebody ELSE?"
+    """
+
+    mapping = ownership_map(declared_active_roadmap(repo).read_text(encoding="utf-8"))
+    owned: Dict[str, List[str]] = {}
+    for path in paths:
+        aliases = sorted(
+            {p.alias for p in owners_for(path, mapping)}
+            - ({current_phase} if current_phase else set())
+        )
+        if aliases:
+            owned[path] = aliases
+    return owned
+
+
+def render_preflight(owned: Dict[str, List[str]], current_phase: str | None = None) -> str:
+    if not owned:
+        scope = f" outside {current_phase}" if current_phase else ""
+        return f"roadmap-ownership --preflight: no path is claimed by a phase{scope}."
+    lines = [
+        f"roadmap-ownership --preflight: {len(owned)} path(s) claimed by another phase.",
+        "",
+        "  Ownership is machine-readable; BLOCK STATE IS NOT (agent-harness#633). Read the",
+        "  owning phase before editing -- this reports, it does not authorize.",
+        "",
+    ]
+    for path in sorted(owned):
+        lines.append(f"    {path}")
+        lines.append(f"        claimed by: {', '.join(owned[path])}")
+    return "\n".join(lines)
+
+
 def render_report(rows: Sequence[ReplayRow]) -> str:
     total = len(rows)
     skipped = [r for r in rows if r.skipped_reason]
@@ -686,6 +733,12 @@ def main(argv: List[str]) -> int:
     parser.add_argument("--body", default="", help="PR body, scanned for the trailer")
     parser.add_argument("--json", action="store_true")
     parser.add_argument(
+        "--preflight", nargs="+", metavar="PATH",
+        help="before editing: report which phases claim these paths; exit 1 if any is "
+             "claimed by a phase other than --current-phase",
+    )
+    parser.add_argument("--current-phase", default=None)
+    parser.add_argument(
         "--report",
         type=int,
         metavar="N",
@@ -693,6 +746,15 @@ def main(argv: List[str]) -> int:
              "this is the measurement a graduation decision needs",
     )
     args = parser.parse_args(argv[1:])
+
+    if args.preflight:
+        try:
+            owned = preflight(args.repo, args.preflight, args.current_phase)
+        except RoadmapUnreadable as exc:
+            print(f"roadmap-ownership: CANNOT EVALUATE — {exc}")
+            return 2
+        print(render_preflight(owned, args.current_phase))
+        return 1 if owned else 0
 
     if args.report is not None:
         if args.report < 0:

@@ -6,6 +6,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### roadmap-ownership: answer the pre-EDIT question (Consiliency/agent-harness#633)
+
+- `--preflight PATH...` reports which phases claim the given paths before the work
+  exists, with `--current-phase` to exclude your own. Exit 1 when a path belongs to
+  another phase, 0 when clear — a caller scripting a guard reads the code, not the prose.
+- It reports ownership and **does not decide disposition**. Ownership is machine-readable;
+  phase BLOCK state is not. Scanning phase bodies for a `BLOCKED` marker matches six
+  phases in v10 of which exactly one is a real phase-level block — the rest are
+  exit-criteria prose (`OUTCOME_AMBIGUOUS_BLOCKED`, "a merge blocked on
+  president-unavailability"). A gate keyed on that signal would fire falsely on five
+  phases, so the tool stops where the data is trustworthy.
+
 ### executor policy: an operator's explicit model is never substituted (Consiliency/agent-harness#671)
 
 - `--executor gemini --model gemini-3.6-flash --effort high` reached agy as the internal
