@@ -244,48 +244,56 @@ class HardenEvidenceVerifierContractTests(unittest.TestCase):
                         self.assertEqual(seat["broker"][stage_field], digest)
 
         def rejected(mutate) -> None:
-            with tempfile.TemporaryDirectory() as td:
-                layout = _verifier_fixture(verifier, Path(td) / "mutated")
-                mutate(layout)
-                _persist_evidence(verifier, layout)
-                with self.assertRaises(verifier.EvidenceError):
-                    _verify_fixture(verifier, layout)
+            for round_name in ("candidate", "canonical_main"):
+                with self.subTest(round_name=round_name, mutation=mutate.__name__), \
+                        tempfile.TemporaryDirectory() as td:
+                    layout = _verifier_fixture(verifier, Path(td) / "mutated")
+                    mutate(layout, round_name)
+                    _persist_evidence(verifier, layout)
+                    with self.assertRaises(verifier.EvidenceError):
+                        _verify_fixture(verifier, layout)
 
-        def self_asserted_digest(layout: dict[str, Any]) -> None:
-            request = _request(verifier, layout, "candidate")
+        def self_asserted_digest(layout: dict[str, Any], round_name: str) -> None:
+            request = _request(verifier, layout, round_name)
             request["input_sha256"] = "a" * 64
             request["instructions_sha256"] = "b" * 64
-            _replace_request(verifier, layout, "candidate", request)
+            _replace_request(verifier, layout, round_name, request)
 
-        def detached_bundle_content(layout: dict[str, Any]) -> None:
-            request = _request(verifier, layout, "candidate")
-            bundle_ref = request["bundle"]
-            bundle = _artifact_json(verifier, layout, bundle_ref)
-            bundle["content"] += "\nsource-tree drift must not be accepted"
-            _replace_artifact_json(verifier, layout, bundle_ref, bundle)
+        def resealed_input_content(
+            layout: dict[str, Any],
+            round_name: str,
+            kind: str,
+            stage_field: str,
+        ) -> None:
+            request = _request(verifier, layout, round_name)
+            input_ref = request[kind]
+            input_record = _artifact_json(verifier, layout, input_ref)
+            input_record["content"] += "\nretained-input drift must not be accepted"
+            _replace_artifact_json(verifier, layout, input_ref, input_record)
             _replace_broker_stage_digest(
                 verifier,
                 layout,
-                "candidate",
-                "stage_bundle_sha256",
-                verifier.sha256(bundle["content"].encode("utf-8")),
+                round_name,
+                stage_field,
+                verifier.sha256(input_record["content"].encode("utf-8")),
             )
-            _replace_request(verifier, layout, "candidate", request)
+            _replace_request(verifier, layout, round_name, request)
 
-        def detached_instruction_digest(layout: dict[str, Any]) -> None:
-            request = _request(verifier, layout, "candidate")
-            _replace_broker_stage_digest(
-                verifier,
-                layout,
-                "candidate",
-                "stage_instructions_sha256",
-                "f" * 64,
+        def detached_bundle_content(layout: dict[str, Any], round_name: str) -> None:
+            resealed_input_content(
+                layout, round_name, "bundle", "stage_bundle_sha256"
             )
-            _replace_request(verifier, layout, "candidate", request)
+
+        def detached_instruction_content(
+            layout: dict[str, Any], round_name: str
+        ) -> None:
+            resealed_input_content(
+                layout, round_name, "instructions", "stage_instructions_sha256"
+            )
 
         rejected(self_asserted_digest)
         rejected(detached_bundle_content)
-        rejected(detached_instruction_digest)
+        rejected(detached_instruction_content)
 
     def test_harden_candidate_and_main_ci_are_separate_authoritative_records(self) -> None:
         """A final main CI run cannot stand in for the candidate CI gate."""
