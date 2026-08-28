@@ -13,7 +13,9 @@ or PATH.
 """
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from harden_tdd_guard import harden_require
@@ -229,6 +231,84 @@ class AuthAwareCompositionTests(unittest.TestCase):
             board = compose_review_board()
         self.assertEqual(len(board.seats), DEFAULT_TARGET_SEATS)
         self.assertNotIn("grok", {s.harness for s in board.seats})
+
+    def test_harden_preflight_authorizes_before_every_capability_auth_ok(self) -> None:
+        """The default composer may not touch a capability/auth probe unbound."""
+        harden_require("review-leg-isolation")
+        real_preflight = _composition.prepare_review_composition_authorization
+        effects: list[tuple[str, str] | tuple[str]] = []
+
+        def preflight(*args, **kwargs):
+            effects.append(("preflight",))
+            return real_preflight(*args, **kwargs)
+
+        def available(vendor: str) -> bool:
+            self.assertTrue(effects and effects[0] == ("preflight",))
+            effects.append(("availability", vendor))
+            return True
+
+        def authenticated(vendor: str) -> bool:
+            self.assertTrue(effects and effects[0] == ("preflight",))
+            effects.append(("auth", vendor))
+            return True
+
+        with patch.object(
+            _composition,
+            "prepare_review_composition_authorization",
+            side_effect=preflight,
+        ), patch.object(
+            _composition.DEFAULT_HARNESS_REGISTRY, "is_available", available
+        ), patch.object(_composition, "default_board_auth_ok", authenticated):
+            board = compose_review_board()
+
+        self.assertEqual(len(board.seats), DEFAULT_TARGET_SEATS)
+        self.assertEqual(effects[0], ("preflight",))
+        self.assertEqual(
+            {entry[1] for entry in effects if entry[0] == "availability"},
+            set(ALL_VENDORS),
+        )
+        self.assertEqual(
+            {entry[1] for entry in effects if entry[0] == "auth"},
+            set(ALL_VENDORS),
+        )
+
+    def test_harden_preflight_covers_default_load_boards_probes(self) -> None:
+        """``load_boards`` inherits the same pre-effect composition boundary."""
+        harden_require("review-leg-isolation")
+        from phase_loop_runtime.advisor_board import config as config_mod
+
+        real_preflight = _composition.prepare_review_composition_authorization
+        effects: list[tuple[str, str] | tuple[str]] = []
+
+        def preflight(*args, **kwargs):
+            effects.append(("preflight",))
+            return real_preflight(*args, **kwargs)
+
+        def available(vendor: str) -> bool:
+            self.assertTrue(effects and effects[0] == ("preflight",))
+            effects.append(("availability", vendor))
+            return True
+
+        def authenticated(vendor: str) -> bool:
+            self.assertTrue(effects and effects[0] == ("preflight",))
+            effects.append(("auth", vendor))
+            return True
+
+        with tempfile.TemporaryDirectory() as td, patch.object(
+            _composition,
+            "prepare_review_composition_authorization",
+            side_effect=preflight,
+        ), patch.object(
+            _composition.DEFAULT_HARNESS_REGISTRY, "is_available", available
+        ), patch.object(config_mod, "default_board_auth_ok", authenticated):
+            loaded = config_mod.load_boards(
+                path=Path(td) / "missing.toml", validate=False
+            )
+
+        self.assertIn("code-review", loaded.boards)
+        self.assertEqual(effects[0], ("preflight",))
+        self.assertTrue(any(kind == "availability" for kind, *_ in effects))
+        self.assertTrue(any(kind == "auth" for kind, *_ in effects))
 
     def test_default_board_auth_ok_fails_closed_on_unknown_vendor(self) -> None:
         # An unregistered vendor (or any lookup/probe error) fails CLOSED — treated

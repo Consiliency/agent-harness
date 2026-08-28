@@ -14,11 +14,13 @@ patch `invoke_board` so no vendor CLI is spawned.
 """
 from __future__ import annotations
 
+import subprocess
 import tempfile
 import unittest
 import unittest.mock
 from pathlib import Path
 
+from harden_tdd_guard import harden_require
 from phase_loop_runtime import panel_invoker as pi_mod
 from phase_loop_runtime.advisor_board import composition as comp_mod
 from phase_loop_runtime.cli import main as cli_main
@@ -76,6 +78,86 @@ class AdvisorBoardCliTest(unittest.TestCase):
             self.assertNotEqual(Path(kwargs["repo_dir"]).resolve(), Path.cwd().resolve())
             # It dispatched the composed board (invoke_board's first positional).
             self.assertTrue(getattr(invoke_spy.call_args.args[0], "seats", None))
+
+    def test_cli_harden_preflight_authorizes_before_compose_and_invoke(self):
+        """The live entrypoint binds pre-composition and final review authority.
+
+        Composition's availability/auth probes are executable capability effects, so
+        the CLI needs a fresh preflight before invoking the no-kwargs production
+        composer.  The final isolation authorization is intentionally minted only
+        after the final composed board exists, and it must bind that exact board plus
+        a canonical Git authority rather than the temporary provider scratch dir.
+        """
+        harden_require("review-leg-isolation")
+        from phase_loop_runtime.advisor_board import backing as backing_mod
+
+        events: list[str] = []
+        precomposition_authority = object()
+        final_authority = object()
+        composed = _hermetic_board()
+        canonical_repo = Path(
+            subprocess.check_output(
+                ["git", "rev-parse", "--show-toplevel"], text=True
+            ).strip()
+        ).resolve()
+
+        def prepare_composition(*_args, **_kwargs):
+            events.append("precomposition_authorization")
+            return precomposition_authority
+
+        def compose():
+            self.assertIn("precomposition_authorization", events)
+            self.assertNotIn("final_authorization", events)
+            events.append("compose")
+            return composed
+
+        def prepare_final(board, artifact, *, mode):
+            self.assertIs(board, composed)
+            self.assertEqual(artifact, "review me\n")
+            self.assertEqual(mode, "review")
+            events.append("final_authorization")
+            return final_authority
+
+        def invoke(board, _artifact, **kwargs):
+            self.assertIs(board, composed)
+            self.assertIn("precomposition_authorization", events)
+            self.assertIn("final_authorization", events)
+            self.assertIs(kwargs.get("review_authorization"), final_authority)
+            self.assertEqual(
+                Path(kwargs["canonical_repo_authority"]).resolve(), canonical_repo
+            )
+            self.assertNotEqual(
+                Path(kwargs["repo_dir"]).resolve(), canonical_repo
+            )
+            events.append("invoke")
+            return _CANNED
+
+        with tempfile.TemporaryDirectory() as td:
+            artifact = Path(td) / "bundle.md"
+            artifact.write_text("review me\n")
+            with unittest.mock.patch.object(
+                backing_mod,
+                "prepare_review_composition_authorization",
+                side_effect=prepare_composition,
+            ), unittest.mock.patch.object(
+                backing_mod,
+                "prepare_review_isolation_authorization",
+                side_effect=prepare_final,
+            ), unittest.mock.patch.object(
+                comp_mod, "compose_review_board", side_effect=compose
+            ) as compose_spy, unittest.mock.patch.object(
+                pi_mod, "invoke_board", side_effect=invoke
+            ) as invoke_spy:
+                rc = cli_main(["advisor-board", str(artifact)])
+
+        self.assertEqual(rc, 0)
+        compose_spy.assert_called_once_with()
+        invoke_spy.assert_called_once()
+        self.assertLess(
+            events.index("precomposition_authorization"), events.index("compose")
+        )
+        self.assertLess(events.index("compose"), events.index("final_authorization"))
+        self.assertLess(events.index("final_authorization"), events.index("invoke"))
 
     def test_compose_drops_unauthed_vendor_at_the_seam(self):
         # Item 1: the auth-aware seam the CLI uses drops an on-PATH-but-UNAUTHED vendor
