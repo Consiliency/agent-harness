@@ -28,7 +28,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Callable, Mapping
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from hashlib import sha256
 import json
 import os
@@ -49,6 +49,7 @@ from .schema import (
     BACKING_HOMEBREW,
     BACKING_OMNIGENT,
     PROVIDER_BACKINGS,
+    Board,
     Seat,
     seat_vendor_family,
 )
@@ -70,9 +71,38 @@ PARENT_UNIX_BROKER_V1 = "parent_unix_broker_v1"
 HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES: dict[str, str] = {
     "claude": "claude-fable-5",  # model-id-source: HARDEN Fable 5 subscription route
     "codex": "gpt-5.6-sol",  # model-id-source: HARDEN Sol subscription route
-    "gemini": "gemini-3.7-flash",  # model-id-source: current review-board Gemini subscription route
-    "grok": "grok-4.6",  # model-id-source: current review-board Grok subscription route
+    "gemini": "gemini-3.6-flash",  # model-id-source: HARDEN Gemini 3.6 Flash subscription route
+    "grok": "grok-4.5",  # model-id-source: HARDEN Grok 4.5 subscription route
 }
+_HARDEN_ACCEPTED_CONFIGURED_MODELS: dict[str, tuple[str, ...]] = {
+    "claude": ("claude-fable-5",),  # model-id-source: HARDEN configured Fable compatibility edge
+    "codex": ("gpt-5.6-sol",),  # model-id-source: HARDEN configured Sol compatibility edge
+    # Keep the current fleet defaults structurally intact while the brokered
+    # HARDEN operation resolves its plan-pinned subscription route.
+    "gemini": ("gemini-3.6-flash", "gemini-3.7-flash"),  # model-id-source: HARDEN exact and fleet-default compatibility edge
+    "grok": ("grok-4.5", "grok-4.6"),  # model-id-source: HARDEN exact and fleet-default compatibility edge
+}
+
+
+def harden_subscription_model(harness: str, configured_model: str) -> str:
+    """Resolve an allowed fleet configuration to HARDEN's exact provider route."""
+    route = HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES.get(harness)
+    if route is None:
+        raise ValueError("HARDEN review route is unsupported")
+    return route if configured_model in _HARDEN_ACCEPTED_CONFIGURED_MODELS[harness] else configured_model
+
+
+def harden_subscription_review_board(board: Board) -> Board:
+    """Use HARDEN's fixed review fleet without changing ordinary board defaults."""
+    seats: list[Seat] = []
+    for seat in board.seats:
+        harness = str(seat.harness or "").lower()
+        try:
+            model = harden_subscription_model(harness, seat.model)
+        except ValueError:
+            model = None
+        seats.append(replace(seat, model=model) if model is not None else seat)
+    return replace(board, seats=tuple(seats))
 _REVIEW_READONLY_TOOLS = ("Read", "Glob", "Grep", "LS")
 _AUTHORIZATION_SEAL = object()
 _BROKER_MAX_BYTES = 16384
@@ -601,7 +631,7 @@ def prepare_review_isolation_authorization(
             if advisory_only:
                 continue
             raise ValueError("HARDEN review requires subscription homebrew seats")
-        routes.append((harness, model))
+        routes.append((harness, harden_subscription_model(harness, model)))
     if not routes and not advisory_only:
         raise ValueError("HARDEN review requires at least one supported brokered seat")
     canonical_repo_sha256 = _canonical_repo_digest(canonical_repo_authority)
@@ -636,7 +666,7 @@ def _expected_review_fields(
         model = str(getattr(seat, "model", ""))
         if getattr(seat, "auth", None) != AUTH_SUBSCRIPTION or getattr(seat, "backing", None) != BACKING_HOMEBREW:
             raise ValueError("HARDEN review requires subscription homebrew seats")
-        routes.append((harness, model))
+        routes.append((harness, harden_subscription_model(harness, model)))
     if not routes:
         raise ValueError("HARDEN review requires at least one supported brokered seat")
     return {
@@ -895,6 +925,8 @@ def resolve_seat_env(
 __all__ = [
     "PARENT_UNIX_BROKER_V1",
     "HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES",
+    "harden_subscription_model",
+    "harden_subscription_review_board",
     "ReviewIsolationAuthorization",
     "ReviewCompositionAuthorization",
     "ReviewLegAuthorization",
