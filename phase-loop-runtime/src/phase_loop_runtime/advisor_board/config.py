@@ -226,7 +226,7 @@ def load_boards(
     # control.  Any default probe (including the default auth gate) remains an
     # executable pre-effect boundary and must carry composition authority.
     composition_authorization = None
-    if not (is_available is not None and auth_ok is not None):
+    if composition._uses_production_composition_probe(compose_probe, compose_auth):
         composition_authorization = composition.prepare_review_composition_authorization()
     try:
         if composition_authorization is not None:

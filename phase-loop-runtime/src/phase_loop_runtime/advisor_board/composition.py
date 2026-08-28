@@ -66,6 +66,27 @@ def _clear_composition_authorization() -> None:
 
     clear_review_composition_authorization()
 
+
+def _uses_production_composition_probe(
+    is_available: Callable[[str], bool] | None,
+    auth_ok: Callable[[str], bool] | None,
+) -> bool:
+    """Keep static injected probes hermetic, never treat real probes as static."""
+    production_availability = (
+        is_available is DEFAULT_HARNESS_REGISTRY.is_available
+        or (
+            getattr(is_available, "__self__", None) is DEFAULT_HARNESS_REGISTRY
+            and getattr(is_available, "__func__", None)
+            is getattr(type(DEFAULT_HARNESS_REGISTRY), "is_available", None)
+        )
+    )
+    return (
+        is_available is None
+        or auth_ok is None
+        or production_availability
+        or auth_ok is default_board_auth_ok
+    )
+
 # Ideal per-vendor seat, in deterministic composition order. Each vendor runs at
 # its MAX thinking (gemini's ceiling is ``high``) with a distinct primary lens.
 _VENDOR_ORDER: tuple[str, ...] = ("grok", "claude", "codex", "gemini")
@@ -169,7 +190,7 @@ def compose_review_board(
     # probes. Bind and validate one operation before either probe can run. Injected
     # static probes remain pure configuration controls and require no authority.
     authorization = None
-    if is_available is None and auth_ok is None:
+    if _uses_production_composition_probe(is_available, auth_ok):
         authorization = _composition_authorization()
         if authorization is None:
             authorization = prepare_review_composition_authorization()

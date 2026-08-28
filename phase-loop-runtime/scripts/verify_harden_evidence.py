@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import ast
 import copy
+import fcntl
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
@@ -138,7 +139,7 @@ _ACTIVATED_REVIEW_RED_COUNT = 12
 ROUTES = {
     "claude": ("claude-fable-5", "claude-fable-5"),
     "codex": ("gpt-5.6-sol", "gpt-5.6-sol"),
-    "gemini": ("gemini-3.6-flash", "gemini-3.6-flash-high"),
+    "gemini": ("gemini-3.6-flash-high", "gemini-3.6-flash-high"),
     "grok": ("grok-4.5", "grok-4.5"),
 }
 NO_TOOL_CONTROLS = {
@@ -155,6 +156,7 @@ PROMPT_TRANSPORT = {
 }
 FINAL_RUN_SPECS = {
     "focused": {
+        "cwd": ".",
         "argv": (
             "env", "PHASE_LOOP_TDD_EXPECT_HARDEN=1",
             "PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests",
@@ -164,6 +166,7 @@ FINAL_RUN_SPECS = {
         "passed": 454, "skipped": 4, "subtests": 23,
     },
     "pure_control": {
+        "cwd": ".",
         "argv": (
             "env", "PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests",
             "python3", "-m", "pytest", "-q",
@@ -171,9 +174,10 @@ FINAL_RUN_SPECS = {
             "phase-loop-runtime/tests/test_advisor_board_composition.py",
         ),
         "env_keys": ["PYTHONPATH"],
-        "passed": 32, "skipped": 0, "subtests": 8,
+        "passed": 40, "skipped": 0, "subtests": 8,
     },
     "broad": {
+        "cwd": ".",
         "argv": (
             "PYTHONPATH=phase-loop-runtime/src", "python3", "-m", "pytest",
             "phase-loop-runtime/tests", "-q", "-m", "not dotfiles_integration",
@@ -552,7 +556,7 @@ def receipt(store: ArtifactStore, ref: dict[str, str], label: str, *, head: str,
     if source_binding is not None and (data["source_path"], data["source_sha256"]) != source_binding:
         fail(f"{label}: receipt source binding mismatch")
     if final_spec is not None:
-        if data["argv"] != list(final_spec["argv"]) or data["cwd"] != "phase-loop-runtime" or data["env_keys"] != final_spec["env_keys"] or data["source_tree"] != tree:
+        if data["argv"] != list(final_spec["argv"]) or data["cwd"] != final_spec["cwd"] or data["env_keys"] != final_spec["env_keys"] or data["source_tree"] != tree:
             fail(f"{label}: command, cwd, environment, or source tree mismatch")
         summary = closed(data["summary"], {"passed", "failed", "errors", "skipped", "xfails", "subtests", "deselected"}, label + ".summary")
         if any(integer(summary[key], label + ".summary." + key) != 0 for key in ("failed", "errors", "xfails")):
@@ -605,6 +609,26 @@ def _marker_state(repo: Path, revision: str, *, required: bool) -> None:
         fail("final capability marker is missing, duplicate, or nonliteral")
     if not required and assignments:
         fail("pre-production capability marker is present")
+
+
+def verify_authority_paths(repo: Path, revision: str, value: Any) -> None:
+    """Bind the governing plan and manifest to retained Git objects, not prose."""
+    authority = closed(value, {"plan", "manifest"}, "authority")
+    expected_paths = {
+        "plan": "plans/phase-plan-v10-HARDEN.md",
+        "manifest": "plans/manifest.json",
+    }
+    for name, path in expected_paths.items():
+        record = closed(authority[name], {"path", "blob", "sha256", "bytes"}, "authority." + name)
+        if record["path"] != path:
+            fail("authority path is not the HARDEN governing object")
+        object_id, contents = blob(repo, revision, path)
+        if (
+            record["blob"] != object_id
+            or record["sha256"] != sha256(contents)
+            or integer(record["bytes"], "authority." + name + ".bytes") != len(contents)
+        ):
+            fail("authority object is detached from canonical-main Git")
 
 
 def verify_git_and_inventory(repo: Path, git_data: dict[str, Any], sl0: dict[str, Any]) -> dict[str, tuple[str, str]]:
@@ -693,8 +717,18 @@ def verify_preproduction(store: ArtifactStore, sl0: dict[str, Any], reviewed: st
     pure = closed(sl0["pure_control"], {"receipt", "raw", "junit"}, "pre-production pure control")
     pure_raw = artifact_ref(pure["raw"], "pre-production pure raw")
     pure_junit = artifact_ref(pure["junit"], "pre-production pure junit")
-    claim_nonce(receipt(store, artifact_ref(pure["receipt"], "pre-production pure receipt"), "pre-production pure receipt", head=reviewed, tree=reviewed_tree, kind="pure_control", argv_class="pytest_harden_pure_control_v1", exit_code=0, raw=pure_raw, junit=pure_junit)["process_nonce"], used_nonces, "pre-production pure")
-    all_passed(parse_junit(store.read(pure_junit, "pre-production pure junit"), "pre-production pure junit"), "pre-production pure control")
+    pure_receipt = receipt(
+        store, artifact_ref(pure["receipt"], "pre-production pure receipt"),
+        "pre-production pure receipt", head=reviewed, tree=reviewed_tree,
+        kind="pure_control", argv_class="pytest_harden_pure_control_v1",
+        exit_code=0, raw=pure_raw, junit=pure_junit,
+        final_spec=FINAL_RUN_SPECS["pure_control"],
+    )
+    claim_nonce(pure_receipt["process_nonce"], used_nonces, "pre-production pure")
+    pure_cases = parse_junit(store.read(pure_junit, "pre-production pure junit"), "pre-production pure junit")
+    all_passed(pure_cases, "pre-production pure control")
+    if len(pure_cases) != FINAL_RUN_SPECS["pure_control"]["passed"]:
+        fail("pre-production pure control inventory is incomplete")
     mutations = sl0["mutations"]
     if not isinstance(mutations, list) or len(mutations) != len(ANCHORS):
         fail("source-entered mutation coverage is incomplete")
@@ -1062,6 +1096,8 @@ def verify_roles(store: ArtifactStore, value: Any, evidence_id: str, expected_co
         text(record["issued_at"], "role timestamp", pattern=IDENTITY)
         if identity in identities or session in sessions or identity.lower() in {"unknown", "none", "null", "placeholder"}:
             fail("role identity/session is reused or placeholder")
+        if session in seat_sessions:
+            fail("role session is reused by a review seat")
         identities.add(identity)
         sessions.add(session)
         if role == "coordinator" and session != expected_coordinator_session:
@@ -1092,6 +1128,31 @@ def verify_reuse_registry(registry_path: Path, evidence_root: Path, evidence_id:
         fail("evidence or operation nonce was already used")
 
 
+def claim_reuse_registry(registry_path: Path, evidence_id: str, operation_nonces: set[str]) -> None:
+    """Atomically consume a post-completion evidence identity exactly once."""
+    try:
+        with registry_path.open("r+b") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            raw = handle.read()
+            registry = closed(parse_canonical_json(raw, "reuse registry"), {"schema", "evidence_ids", "operation_nonces"}, "reuse registry")
+            if registry["schema"] != "harden_evidence_registry.v1":
+                fail("reuse registry schema mismatch")
+            ids = [text(item, "registered evidence id", pattern=HEX64) for item in registry["evidence_ids"]]
+            nonces = [text(item, "registered operation nonce", pattern=HEX64) for item in registry["operation_nonces"]]
+            if len(ids) != len(set(ids)) or len(nonces) != len(set(nonces)) or evidence_id in ids or operation_nonces & set(nonces):
+                fail("evidence or operation nonce was already used")
+            registry["evidence_ids"] = [*ids, evidence_id]
+            registry["operation_nonces"] = [*nonces, *sorted(operation_nonces)]
+            encoded = canonical_bytes(registry)
+            handle.seek(0)
+            handle.truncate()
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except OSError:
+        fail("external reuse registry cannot record completion")
+
+
 def normalized_precompletion_digest(evidence: dict[str, Any]) -> str:
     """Stable digest first verified before a normal completion ledger append."""
     normalized = copy.deepcopy(evidence)
@@ -1099,7 +1160,7 @@ def normalized_precompletion_digest(evidence: dict[str, Any]) -> str:
     return sha256(canonical_bytes(normalized))
 
 
-def verify_completion(store: ArtifactStore, value: Any, evidence_digest: str, main: str, tree: str) -> None:
+def verify_completion(store: ArtifactStore, value: Any, evidence_digest: str, main: str, tree: str, repo: Path) -> None:
     if not isinstance(value, dict) or "authorized" in value:
         fail("completion authority cannot be self-reported")
     mode = value.get("mode")
@@ -1110,6 +1171,14 @@ def verify_completion(store: ArtifactStore, value: Any, evidence_digest: str, ma
     if completion["mode"] != "post_completion":
         fail("unsupported completion mode")
     ledger = store.read(artifact_ref(completion["ledger"], "completion ledger"), "completion ledger")
+    canonical_ledger = repo / ".phase-loop" / "events.jsonl"
+    try:
+        ledger_stat = canonical_ledger.lstat()
+        canonical_bytes_on_disk = canonical_ledger.read_bytes()
+    except OSError:
+        fail("canonical completion ledger is unavailable")
+    if stat.S_ISLNK(ledger_stat.st_mode) or not stat.S_ISREG(ledger_stat.st_mode) or canonical_bytes_on_disk != ledger:
+        fail("retained completion ledger is detached from canonical ledger")
     matches = 0
     for line in ledger.splitlines():
         try:
@@ -1135,7 +1204,7 @@ def verify(evidence_path: Path, evidence_root: Path, repo: Path, *, reuse_regist
     evidence_bytes = evidence_path.read_bytes()
     evidence = parse_canonical_json(evidence_bytes, "verification evidence")
     reject_secret_payloads(evidence)
-    data = closed(evidence, {"schema", "evidence_id", "repository", "git", "sl0", "verification", "ci", "reviews", "roles", "completion"}, "verification evidence")
+    data = closed(evidence, {"schema", "evidence_id", "repository", "git", "authority", "sl0", "verification", "ci", "reviews", "roles", "completion"}, "verification evidence")
     if data["schema"] != SCHEMA:
         fail("unsupported evidence schema")
     evidence_id = text(data["evidence_id"], "evidence_id", pattern=HEX64)
@@ -1153,6 +1222,7 @@ def verify(evidence_path: Path, evidence_root: Path, repo: Path, *, reuse_regist
     landing, landing_tree = commits["landing"]
     candidate, candidate_tree = commits["candidate"]
     main, main_tree = commits["canonical_main"]
+    verify_authority_paths(repo, main, data["authority"])
     nonces: set[str] = set()
     verify_preproduction(store, data["sl0"], reviewed, reviewed_tree, nonces, repo)
     verification = closed(data["verification"], {"candidate", "canonical_main"}, "verification")
@@ -1168,7 +1238,9 @@ def verify(evidence_path: Path, evidence_root: Path, repo: Path, *, reuse_regist
         fail("reviewer authority lacks eight unique seat sessions")
     verify_roles(store, data["roles"], evidence_id, expected_coordinator_session, expected_author_session, seat_sessions)
     verify_reuse_registry(reuse_registry, evidence_root, evidence_id, nonces)
-    verify_completion(store, data["completion"], normalized_precompletion_digest(data), main, main_tree)
+    verify_completion(store, data["completion"], normalized_precompletion_digest(data), main, main_tree, repo)
+    if data["completion"].get("mode") == "post_completion":
+        claim_reuse_registry(reuse_registry, evidence_id, nonces)
 
 
 # The fixture below is deliberately ephemeral.  It is a verifier exercise, not
@@ -1201,6 +1273,7 @@ def _self_git(root: Path) -> tuple[Path, dict[str, tuple[str, str]]]:
     plan = repo / "plans/phase-plan-v10-HARDEN.md"
     plan.parent.mkdir(parents=True, exist_ok=True)
     plan.write_text("# HARDEN self-test plan\n\nAuthoritative review instructions.\n")
+    (repo / "plans/manifest.json").write_text("{\"plans\":[]}\n")
     _run(["git", "add", "."], repo); _run(["git", "commit", "-qm", "base"], repo)
     base = _run(["git", "rev-parse", "HEAD"], repo)
     _run(["git", "checkout", "-qb", "review"], repo)
@@ -1271,8 +1344,34 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
     red_cases += "".join(f'<testcase classname="tests.preexisting" name="skip_{index}"><skipped /></testcase>' for index in range(3))
     red_junit = put("activated-red.xml", ("<testsuite>" + red_cases + "</testsuite>").encode(), raw=True)
     activated = {"receipt": receipt_art("activated_red", reviewed, reviewed_tree, red_raw, red_junit, 1, "pytest_harden_activated_v1"), "raw": red_raw, "junit": red_junit}
-    pure = pytest_art("pre-pure", reviewed, reviewed_tree, "passed", "pkg::pure", "pytest_harden_pure_control_v1")
-    pure["receipt"] = receipt_art("pure_control", reviewed, reviewed_tree, pure["raw"], pure["junit"], 0, "pytest_harden_pure_control_v1")
+    pure_nodes = [
+        "phase-loop-runtime/tests/test_panel_native_fill_183.py::test_" + str(index)
+        for index in range(20)
+    ] + [
+        "phase-loop-runtime/tests/test_advisor_board_composition.py::test_" + str(index)
+        for index in range(20)
+    ]
+    pure_cases = "".join(
+        f'<testcase classname="{fixture_junit_identity(nodeid)[0]}" name="{fixture_junit_identity(nodeid)[1]}" />'
+        for nodeid in pure_nodes
+    )
+    pure_junit = put("pre-pure.xml", ("<testsuite>" + pure_cases + "</testsuite>").encode(), raw=True)
+    pure_raw = put("pre-pure.raw", b"40 passed, 0 skipped, 8 subtests passed\n", raw=True)
+    pure_receipt = {
+        "schema": "harden_pytest_receipt.v1", "kind": "pure_control",
+        "head": reviewed, "tree": reviewed_tree,
+        "process_nonce": nonce("pre-pure-receipt"), "exit_code": 0,
+        "argv_class": "pytest_harden_pure_control_v1", "raw_sha256": pure_raw["sha256"],
+        "junit_sha256": pure_junit["sha256"],
+        "argv": list(FINAL_RUN_SPECS["pure_control"]["argv"]),
+        "cwd": FINAL_RUN_SPECS["pure_control"]["cwd"],
+        "env_keys": FINAL_RUN_SPECS["pure_control"]["env_keys"],
+        "source_tree": reviewed_tree,
+        "summary": {"passed": 40, "failed": 0, "errors": 0, "skipped": 0, "xfails": 0, "subtests": 8, "deselected": 0},
+        "nodeids_sha256": sha256(canonical_bytes(sorted("::".join(fixture_junit_identity(nodeid)) for nodeid in pure_nodes))),
+        "baseline": {"schema": "harden_broad_baseline.v1", "commit": refs["landing"][0], "tree": refs["landing"][1], "inherited_failures": [], "inherited_skips": [], "inherited_deselected": []},
+    }
+    pure = {"receipt": put("pre-pure.receipt", pure_receipt), "raw": pure_raw, "junit": pure_junit}
     mutations = []
     for case_id, anchor in ANCHORS.items():
         _, source_bytes = blob(repo, reviewed, anchor["source"])
@@ -1324,7 +1423,7 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
                 "process_nonce": nonce("receipt-" + label + "-" + key),
                 "exit_code": 0, "argv_class": argv,
                 "raw_sha256": raw_ref["sha256"], "junit_sha256": junit_ref["sha256"],
-                "argv": list(spec["argv"]), "cwd": "phase-loop-runtime",
+                "argv": list(spec["argv"]), "cwd": spec["cwd"],
                 "env_keys": spec["env_keys"], "source_tree": tree,
                 "summary": {"passed": passed, "failed": 0, "errors": 0, "skipped": skipped, "xfails": 0, "subtests": subtests, "deselected": 0},
                 "nodeids_sha256": sha256(canonical_bytes(sorted(observed_nodes))),
@@ -1421,9 +1520,18 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
         )
         return {"provider": "github_actions", "repository": "Consiliency/agent-harness", "run_id": run_id, "workflow": "HARDEN", "event": "push", "run_attempt": 1, "head": head, "check": "HARDEN", "provider_receipt": provider_receipt}
 
+    authority: dict[str, Any] = {}
+    for name, path in (("plan", "plans/phase-plan-v10-HARDEN.md"), ("manifest", "plans/manifest.json")):
+        object_id, contents = blob(repo, main, path)
+        authority[name] = {
+            "path": path, "blob": object_id,
+            "sha256": sha256(contents), "bytes": len(contents),
+        }
+
     evidence: dict[str, Any] = {
         "schema": SCHEMA, "evidence_id": evidence_id, "repository": "Consiliency/agent-harness",
         "git": {name: {"commit": commit_id, "tree": tree} for name, (commit_id, tree) in refs.items()},
+        "authority": authority,
         "sl0": {"frozen_inventory": inventory, "activated_red": activated, "pure_control": pure, "mutations": mutations},
         "verification": {"candidate": final_group("candidate", candidate, candidate_tree), "canonical_main": final_group("main", main, main_tree)},
         "ci": {"candidate": ci_record("candidate", 98, candidate), "canonical_main": ci_record("canonical-main", 99, main)},
@@ -1478,9 +1586,21 @@ def self_test() -> None:
         event = {"timestamp": "2026-08-27T00:00:00Z", "phase": "HARDEN", "action": "phase_execute", "status": "complete", "metadata": {"harden_completion": {"schema": "harden_completion.v1", "evidence_sha256": normalized_precompletion_digest(post_model), "canonical_commit": main["commit"], "canonical_tree": main["tree"], "visual_render_declared": False}}}
         ledger = (json.dumps(event, sort_keys=True) + "\n").encode(); ledger_ref = {"path": "completion-ledger.jsonl", "sha256": sha256(ledger)}
         (post_root / "artifacts" / ledger_ref["path"]).write_bytes(ledger)
+        canonical_ledger = post_root / "repo" / ".phase-loop" / "events.jsonl"
+        canonical_ledger.parent.mkdir(parents=True, exist_ok=True)
+        canonical_ledger.write_bytes(ledger)
         post_model["completion"] = {"mode": "post_completion", "ledger": ledger_ref}
         _write_evidence(post_path, post_model)
         verify(post_path, post_root / "artifacts", post_root / "repo", reuse_registry=post_root / "operator-reuse-registry.json", expected_coordinator_session=coordinator, expected_author_session=author, ci_query=post_root / "fake-gh")
+        detached_root = root / "detached-completion-ledger"
+        shutil.copytree(post_root, detached_root, symlinks=True)
+        (detached_root / "repo" / ".phase-loop" / "events.jsonl").write_bytes(b"{}\n")
+        try:
+            verify(detached_root / "evidence.json", detached_root / "artifacts", detached_root / "repo", reuse_registry=detached_root / "operator-reuse-registry.json", expected_coordinator_session=coordinator, expected_author_session=author, ci_query=detached_root / "fake-gh")
+        except EvidenceError:
+            pass
+        else:
+            raise AssertionError("detached canonical completion ledger was accepted")
         def marker_rejected(name: str, body: str) -> None:
             marker_root = root / name
             shutil.copytree(baseline / "repo", marker_root)
@@ -1527,6 +1647,7 @@ def self_test() -> None:
             model["sl0"]["activated_red"]["raw"]["path"] = "symlink"
         rejected("symlink", symlink_escape)
         rejected("blob-drift", lambda model, _root, _artifacts: model["sl0"]["frozen_inventory"][0]["candidate"].__setitem__("sha256", "0" * 64))
+        rejected("authority-manifest-drift", lambda model, _root, _artifacts: model["authority"]["manifest"].__setitem__("sha256", "0" * 64))
         rejected("topology", lambda model, _root, _artifacts: model["git"]["landing"].__setitem__("commit", model["git"]["candidate"]["commit"]))
         def landing_merge_extra_production_path(model: dict[str, Any], local_root: Path, _artifacts: Path) -> None:
             local_repo = local_root / "repo"
@@ -1718,6 +1839,10 @@ def self_test() -> None:
         rejected("substituted-coordinator", role_mutation("coordinator", lambda role: role.__setitem__("session_sha256", "f" * 64)))
         rejected("substituted-author", role_mutation("author", lambda role: role.__setitem__("session_sha256", "e" * 64)))
         rejected("substituted-reviewer", role_mutation("reviewer", lambda role: role.__setitem__("identity", "unknown")))
+        def role_reuses_seat_session(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
+            session = parse_canonical_json((artifact_root / model["reviews"]["candidate"]["seats"][0]["artifact"]["path"]).read_bytes(), "seat")["session_sha256"]
+            mutate_json(model["roles"]["coordinator"], artifact_root, lambda role: role.__setitem__("session_sha256", session))
+        rejected("role-reuses-seat-session", role_reuses_seat_session)
         def reused_evidence_id(model: dict[str, Any], local_root: Path, _artifacts: Path) -> None:
             registry = {"schema": "harden_evidence_registry.v1", "evidence_ids": [model["evidence_id"]], "operation_nonces": []}
             (local_root / "operator-reuse-registry.json").write_bytes(canonical_bytes(registry))
@@ -1746,7 +1871,7 @@ def self_test() -> None:
         rejected("repository-mismatch", lambda model, _root, _artifacts: model.__setitem__("repository", "other/repository"))
         with ThreadPoolExecutor(max_workers=4) as executor:
             list(executor.map(run_rejected, checks))
-    print(f"self-test: valid topology and post-completion ledger accepted; {len(checks)} adversarial mutations rejected")
+    print(f"self-test: valid topology and post-completion ledger accepted; {len(checks) + 1} adversarial mutations rejected")
 
 
 def main(argv: list[str] | None = None) -> int:
