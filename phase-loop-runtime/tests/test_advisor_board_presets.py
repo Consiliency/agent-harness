@@ -95,9 +95,9 @@ class PresetTests(unittest.TestCase):
                 self.assertEqual(s.model, "claude-fable-5", f"{name}: {s.model}")
 
     def test_brainstorm_and_doc_edit_are_byte_neutral(self) -> None:
-        # The divergent-thinking boards deliberately KEEP Sonnet and are otherwise
-        # UNCHANGED by the Fable review-path fix. Pin the full seat tuples (model /
-        # effort / harness / lens) so any drift — not just a dropped Sonnet — trips.
+        # The divergent-thinking boards deliberately KEEP Sonnet; their Gemini seat
+        # follows the fleet default updated by agent-harness#715. Pin the full seat
+        # tuples (model / effort / harness / lens) so any other drift trips.
         unchanged = {
             "brainstorm": (
                 ("claude-sonnet-5", "high", "claude", "adversarial"),
