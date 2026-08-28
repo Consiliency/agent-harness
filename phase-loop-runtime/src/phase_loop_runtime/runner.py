@@ -8490,8 +8490,9 @@ def _run_legible_panel(
     from .panel_invoker import _resolve_brief, invoke_board
 
     invoke_kwargs: dict[str, object] = {
-        # Review children see only their materialized snapshot; never the live repo.
-        "repo_dir": None,
+        # This is canonical authority only.  The broker still launches providers
+        # in its private output scratch and never mounts this live tree.
+        "repo_dir": repo,
         "artifact_ref": str(bundle_path),
         "stream_dir": run_dir / "implementation-panel-stream",
     }
@@ -8546,12 +8547,17 @@ def _run_legible_panel(
             # execution boundary, retained beside the run-owned seat result so
             # a later HARDEN evidence reducer need not trust a copied summary.
             leg_payload["harden_isolation_evidence"] = dict(broker_evidence)
+            provider_model = broker_evidence.get("provider_model")
+            if not isinstance(provider_model, str) or not provider_model:
+                raise legible_evidence.LegibleProcessBootstrapError(
+                    "brokered implementation-panel leg lacks resolved provider model"
+                )
             receipt_payload = {
                 "schema": "harden_broker_run_receipt.v1",
                 "head": expected_head,
                 "tree": tree,
                 "harness": outcome.leg,
-                "model": seat.model,
+                "model": provider_model,
                 "seat_key": outcome.seat_key,
                 "status": outcome.status,
                 "report": outcome.text,

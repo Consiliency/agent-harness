@@ -1661,48 +1661,77 @@ def _broker_gemini_stream_result(
 ) -> tuple[int, str, str, dict[str, object]]:
     """Accept acknowledged ingestion turns and one no-tool terminal response."""
     results: list[Mapping[str, object]] = []
+    conversation_ids: set[str] = set()
+
+    def metadata(
+        outcome: str, *, acknowledgements_verified: bool = False,
+        final_no_truncation: bool = False,
+    ) -> dict[str, object]:
+        return {
+            "provider_stream_protocol": _BROKER_AGY_STREAM_PROTOCOL,
+            "provider_stream_chunk_count": len(protocol.chunk_sha256),
+            "provider_stream_chunk_sha256": protocol.chunk_sha256,
+            "provider_stream_chunk_bytes": protocol.chunk_bytes,
+            "provider_stream_final_event_sha256": protocol.final_event_sha256,
+            "provider_stream_acknowledgements": protocol.acknowledgements,
+            "provider_stream_result_count": len(results),
+            "provider_stream_output_sha256": sha256(raw.encode("utf-8", errors="strict")).hexdigest(),
+            "provider_stream_output_bytes": len(raw.encode("utf-8", errors="strict")),
+            "provider_stream_outcome": outcome,
+            "provider_stream_acknowledgements_verified": acknowledgements_verified,
+            "provider_stream_final_no_truncation": final_no_truncation,
+        }
+
     try:
         for line in raw.splitlines():
             event = json.loads(line)
             if not isinstance(event, dict) or not isinstance(event.get("event"), str):
                 raise ValueError("malformed stream event")
+            event_conversation = event.get("conversation_id")
+            if isinstance(event_conversation, str) and event_conversation:
+                conversation_ids.add(event_conversation)
             if event["event"] == "step_update":
                 step = event.get("step_update")
                 if not isinstance(step, dict):
                     raise ValueError("malformed stream step")
+                step_conversation = step.get("conversation_id")
+                if isinstance(step_conversation, str) and step_conversation:
+                    conversation_ids.add(step_conversation)
                 if step.get("step_type") == "tool" or "tool_info" in step or "subagent_info" in step:
                     raise ValueError("tool or subagent activity observed")
             elif event["event"] == "result":
                 candidate = event.get("result")
                 if not isinstance(candidate, dict):
                     raise ValueError("malformed terminal stream result")
+                result_conversation = candidate.get("conversation_id")
+                if isinstance(result_conversation, str) and result_conversation:
+                    conversation_ids.add(result_conversation)
                 results.append(candidate)
             elif event["event"] != "init":
                 raise ValueError("unexpected stream event")
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
-        return 1, "", f"Gemini broker stream rejected: {exc}", {}
+        return 1, "", f"Gemini broker stream rejected: {exc}", metadata("parse_error")
+    if len(conversation_ids) != 1:
+        return 1, "", "Gemini broker stream changed or omitted its conversation", metadata("session_reset")
     if len(results) != len(protocol.acknowledgements) + 1:
-        return 1, "", "Gemini broker stream has an incomplete ingestion result sequence", {}
+        return 1, "", "Gemini broker stream has an incomplete ingestion result sequence", metadata("result_count_mismatch")
     for result, acknowledgement in zip(results[:-1], protocol.acknowledgements, strict=True):
-        if result.get("status") != "SUCCESS" or result.get("response") != acknowledgement:
-            return 1, "", "Gemini broker stream has a malformed chunk acknowledgement", {}
+        response = result.get("response")
+        if (
+            result.get("status") != "SUCCESS"
+            or not isinstance(response, str)
+            or response.strip() != acknowledgement
+        ):
+            return 1, "", "Gemini broker stream has a malformed chunk acknowledgement", metadata("acknowledgement_mismatch")
     final = results[-1]
     if final.get("status") != "SUCCESS" or not isinstance(final.get("response"), str):
-        return 1, "", "Gemini broker stream has no successful terminal response", {}
+        return 1, "", "Gemini broker stream has no successful terminal response", metadata("final_result_invalid")
     response = str(final["response"])
     if _PROVIDER_TRUNCATION_MARKER.search(response):
-        return 1, "", "Gemini broker stream final response reports truncation", {}
-    return 0, response, "", {
-        "provider_stream_protocol": _BROKER_AGY_STREAM_PROTOCOL,
-        "provider_stream_chunk_count": len(protocol.chunk_sha256),
-        "provider_stream_chunk_sha256": protocol.chunk_sha256,
-        "provider_stream_chunk_bytes": protocol.chunk_bytes,
-        "provider_stream_final_event_sha256": protocol.final_event_sha256,
-        "provider_stream_acknowledgements": protocol.acknowledgements,
-        "provider_stream_result_count": len(results),
-        "provider_stream_acknowledgements_verified": True,
-        "provider_stream_final_no_truncation": True,
-    }
+        return 1, "", "Gemini broker stream final response reports truncation", metadata("truncation_marker")
+    return 0, response, "", metadata(
+        "accepted", acknowledgements_verified=True, final_no_truncation=True,
+    )
 
 
 def _broker_subscription_env(base_env: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -4466,6 +4495,7 @@ def _exec_leg(
                 "agy", "--model", gemini_model, "--sandbox", "--mode", "plan",
                 "--disable-slash-commands",
                 "--input-format", "stream-json", "--output-format", "stream-json",
+                "--print=",
                 "--print-timeout", f"{deadline_s}s",
             ]
         if agy_capture is not None:
@@ -4801,21 +4831,6 @@ def _has_injected_review_execution_seam(
         or _run_claude_tui_session is not _PRODUCTION_RUN_CLAUDE_TUI_SESSION
     ):
         return True
-    # Claude support/auth probes are an existing hermetic TUI control only for a
-    # Claude-only invocation.  They cannot make a mixed board (or another
-    # harness) appear effect-free and therefore cannot unlock a real provider.
-    claude_probe_control = (
-        _claude_code_support_status is not _PRODUCTION_CLAUDE_CODE_SUPPORT_STATUS
-        or _claude_subscription_auth_ok is not _PRODUCTION_CLAUDE_SUBSCRIPTION_AUTH_OK
-    )
-    if not claude_probe_control:
-        return False
-    if leg is not None:
-        return leg == "claude"
-    if board is not None:
-        return bool(board.seats) and all(
-            (seat.harness or "").lower() == "claude" for seat in board.seats
-        )
     return False
 
 
@@ -4956,7 +4971,6 @@ def _default_spawn(
         native_host_deferral_only = (
             leg == "claude"
             and model is not None
-            and not _claude_tui_policy_model(model)
             and _under_claude_code(env)
         )
         if (
@@ -5492,6 +5506,8 @@ def invoke_panel(
     # staging / metadata all see the resolved content. A ref reads from disk (a
     # missing path fails closed); no ref keeps ``artifact`` byte-for-byte. Warn on a
     # large INLINE artifact (never on a from-ref one, never refuse, never mutate).
+    # Frozen in-process transport controls bind their pre-resolution argument;
+    # real brokered routes always bind the resolved immutable bytes below.
     authorization_artifact = artifact
     artifact = _resolve_artifact(artifact, artifact_ref)
     _maybe_warn_inline_size(artifact, from_ref=artifact_ref is not None)
@@ -6008,14 +6024,13 @@ def invoke_board(
     governed_review_request = (
         review_authorization is not None or canonical_repo_authority is not None
     )
+    # Under an existing Claude Code host this is a typed, non-executing native-fill
+    # deferral: `_exec_claude_tui_leg` returns before creating a provider process.
+    # It is never a route to host/native inference.
     native_host_deferral_only = (
         _under_claude_code(base_env)
         and bool(board.seats)
-        and all(
-            (seat.harness or "").lower() == "claude"
-            and not _claude_tui_policy_model(seat.model)
-            for seat in board.seats
-        )
+        and all((seat.harness or "").lower() == "claude" for seat in board.seats)
     )
     try:
         exact_broker_routes = all(
@@ -6028,6 +6043,55 @@ def invoke_board(
         )
     except (KeyError, ValueError):
         exact_broker_routes = False
+    if mode == "review" and native_host_deferral_only and not injected_execution_seam:
+        # A nested Claude Code host cannot run the TUI.  Return only the typed
+        # deferral request; it is data for an outer driver, never an execution path.
+        try:
+            effective_instructions = _resolve_brief(mode, brief_ref)
+        except (OSError, UnicodeError, ValueError) as exc:
+            return review_refusal(str(exc))
+        deferred: list[PanelLegResult] = []
+        for seat in board.seats:
+            leg = (seat.harness or "").lower()
+            result = PanelLegResult(
+                leg=leg, status="UNAVAILABLE", text="",
+                detail="tui_adapter_required", seat_key=seat.seat_key,
+            )
+            if not _claude_tui_policy_model(seat.model):
+                attach_native_agent_request(
+                    result,
+                    native_agent_leg_request(
+                        leg=leg, mode=mode, env=base_env, model=seat.model,
+                        seat_key=seat.seat_key, effort=seat.effort, lens=seat.lens,
+                        artifact_ref=str(artifact_ref) if isinstance(artifact_ref, str) else None,
+                        brief_ref=brief_ref, instructions=effective_instructions,
+                    ),
+                )
+            deferred.append(result)
+        return PanelResult(tuple(deferred))
+    if (
+        mode == "review"
+        and not injected_execution_seam
+        and _claude_code_support_status is not _PRODUCTION_CLAUDE_CODE_SUPPORT_STATUS
+        and bool(board.seats)
+        and all((seat.harness or "").lower() == "claude" for seat in board.seats)
+    ):
+        supported, detail = _claude_code_support_status()
+        if not supported:
+            return PanelResult(tuple(
+                PanelLegResult(
+                    leg="claude", status="UNAVAILABLE", text=detail,
+                    seat_key=seat.seat_key,
+                )
+                for seat in board.seats
+            ))
+    # ``x`` is the frozen generic legacy transport surface.  It is retained for
+    # its existing non-production compatibility contract; it can never provide a
+    # brokered HARDEN review receipt. All other real advisory public routes refuse
+    # before catalog/session/provider work unless their execution adapter is
+    # explicitly replaced by an effect-free control seam.
+    if mode == "advisory" and board.purpose != "x" and not hermetic_review_seam:
+        return review_refusal("harden_advisory_execution_refused")
     if mode == "review":
         if not hermetic_review_seam:
             try:
