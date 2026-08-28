@@ -782,6 +782,18 @@ def verify_git_and_inventory(repo: Path, git_data: dict[str, Any], sl0: dict[str
     return commits
 
 
+def verify_clean_canonical_main_context(repo: Path, canonical_main: str) -> None:
+    """Require the verifier to run from the fetched, clean canonical main head."""
+    if git(repo, "rev-parse", "HEAD^{commit}") != canonical_main:
+        fail("audit checkout is not the exact canonical-main head")
+    if git(repo, "symbolic-ref", "-q", "HEAD") != "refs/heads/main":
+        fail("audit checkout is detached or not the canonical main branch")
+    if git(repo, "rev-parse", "refs/remotes/origin/main^{commit}") != canonical_main:
+        fail("canonical-main is not the fetched origin/main head")
+    if git(repo, "status", "--porcelain=v1", "--untracked-files=all"):
+        fail("audit checkout is not clean")
+
+
 def claim_nonce(value: str, used: set[str], label: str) -> None:
     if value in used:
         fail(f"{label}: reused operation nonce")
@@ -988,7 +1000,7 @@ def verify_broker(value: Any, harness: str, requested: str, resolved: str, bundl
         "schema", "stage_bundle_sha256", "stage_instructions_sha256", "leg_authorization_instructions_sha256", "leg_authorization_issued_monotonic_ns", "leg_authorization_expires_monotonic_ns", "canonical_repo_sha256", "canonical_repo_probe_file_sha256", "cleanup_root_removed", "host_secret_probe_removed", "child_quiescent", "peer_pid", "peer_uid", "peer_gid", "peer_ancestry_verified", "bwrap", "outer_bwrap_pid", "outer_bwrap_start", "network_unshared", "close_fds_requested", "socket", "stage", "argv_sha256", "socket_present_before_launch", "stage_bundle_mode", "stage_instructions_mode", "client_probe_program_sha256", "client_probe_assertions", "canonical_repo_file_denied", "canonical_repo_directory_denied", "host_stage_path_denied", "no_inherited_fd_observed", "child_stderr_sha256", "child_returncode", "operation_deadline_s", "child_timeout", "broker_thread_quiescent", "provider_adapter_quiescent", "provider_cancel_requested", "provider_input_sha256", "provider_input_bytes", "provider_input_inline", "provider_live_tree_cwd", "provider_harness", "provider_model", "provider_argv_shape", "provider_argv_sha256", "provider_prompt_sha256", "provider_prompt_bytes", "provider_transport_sha256", "provider_transport_bytes", "provider_prompt_transport", "provider_cwd_class", "provider_cwd_sha256", "provider_env_keys", "provider_env_api_keys_scrubbed", "provider_env_direct_routes_scrubbed", "provider_no_tool_controls", "provider_response_status", "provider_response_sha256", "provider_response_bytes",
     }
     claude = {"claude_session_id_sha256", "claude_session_resume_forbidden", "claude_transcript_exact_path_sha256", "claude_transcript_preexisting", "claude_transcript_existed", "claude_transcript_sha256", "claude_transcript_bytes", "claude_transcript_cleanup_verified", "provider_liveness_profile", "provider_liveness_stall_threshold_s", "provider_liveness_prompt_bytes"}
-    gemini = {"provider_isolation_profile", "provider_agy_deny_actions", "provider_agy_settings_sha256", "provider_agy_subscription_reference", "provider_agy_home_cleanup_verified", "provider_stream_protocol", "provider_stream_chunk_count", "provider_stream_chunk_sha256", "provider_stream_chunk_bytes", "provider_stream_final_event_sha256", "provider_stream_acknowledgements", "provider_stream_result_count", "provider_stream_acknowledgements_verified", "provider_stream_final_no_truncation"}
+    gemini = {"provider_isolation_profile", "provider_agy_deny_actions", "provider_agy_settings_sha256", "provider_agy_subscription_reference", "provider_agy_home_cleanup_verified", "provider_stream_protocol", "provider_stream_chunk_count", "provider_stream_chunk_sha256", "provider_stream_chunk_bytes", "provider_stream_final_event_sha256", "provider_stream_acknowledgements", "provider_stream_result_count", "provider_stream_output_sha256", "provider_stream_output_bytes", "provider_stream_outcome", "provider_stream_acknowledgements_verified", "provider_stream_final_no_truncation"}
     broker = closed(value, common | (claude if harness == "claude" else set()) | (gemini if harness == "gemini" else set()), "broker evidence")
     for field in ("stage_bundle_sha256", "stage_instructions_sha256", "canonical_repo_sha256", "canonical_repo_probe_file_sha256", "argv_sha256", "client_probe_program_sha256", "child_stderr_sha256", "provider_input_sha256", "provider_argv_sha256", "provider_prompt_sha256", "provider_transport_sha256", "provider_cwd_sha256", "provider_response_sha256"):
         if text(broker[field], "broker." + field, pattern=HEX64) == "0" * 64:
@@ -1102,10 +1114,16 @@ def verify_broker(value: Any, harness: str, requested: str, resolved: str, bundl
             or broker["provider_stream_final_event_sha256"] != protocol["final_event_sha256"]
             or broker["provider_stream_acknowledgements"] != list(protocol["acknowledgements"])
             or broker["provider_stream_result_count"] != len(protocol["acknowledgements"]) + 1
+            or text(broker["provider_stream_output_sha256"], "broker.provider_stream_output_sha256", pattern=HEX64) == "0" * 64
+            or integer(broker["provider_stream_output_bytes"], "broker.provider_stream_output_bytes", minimum=1) < broker["provider_stream_result_count"]
+            or broker["provider_stream_outcome"] != "accepted"
             or broker["provider_stream_acknowledgements_verified"] is not True
             or broker["provider_stream_final_no_truncation"] is not True
         ):
             fail("Gemini broker same-session ingestion provenance is incomplete")
+        for required in ("--input-format", "stream-json", "--output-format", "--print=", "--sandbox", "--mode", "plan"):
+            if required not in argv_shape:
+                fail("Gemini broker argv does not select the documented stream print transport")
     if harness in {"codex", "gemini"}:
         if broker["provider_argv_shape"].count("<STDIN_SEALED_INLINE_PROMPT>") != 1:
             fail("stdin broker evidence has unsafe prompt transport")
@@ -1356,6 +1374,7 @@ def verify(evidence_path: Path, evidence_root: Path, repo: Path, *, reuse_regist
     landing, landing_tree = commits["landing"]
     candidate, candidate_tree = commits["candidate"]
     main, main_tree = commits["canonical_main"]
+    verify_clean_canonical_main_context(repo, main)
     verify_authority_paths(repo, main, data["authority"])
     nonces: set[str] = set()
     verify_preproduction(store, data["sl0"], reviewed, reviewed_tree, nonces, repo)
@@ -1389,7 +1408,7 @@ def _run(command: list[str], cwd: Path) -> str:
 def _self_git(root: Path) -> tuple[Path, dict[str, tuple[str, str]]]:
     repo = root / "repo"
     repo.mkdir()
-    _run(["git", "init", "-q"], repo)
+    _run(["git", "init", "-q", "--initial-branch=main"], repo)
     _run(["git", "config", "user.email", "self-test@example.invalid"], repo)
     _run(["git", "config", "user.name", "HARDEN self-test"], repo)
     for path in FROZEN_SL0_PATHS:
@@ -1408,6 +1427,7 @@ def _self_git(root: Path) -> tuple[Path, dict[str, tuple[str, str]]]:
     plan.parent.mkdir(parents=True, exist_ok=True)
     plan.write_text("# HARDEN self-test plan\n\nAuthoritative review instructions.\n")
     (repo / "plans/manifest.json").write_text("{\"plans\":[]}\n")
+    (repo / ".gitignore").write_text(".phase-loop/\n")
     _run(["git", "add", "."], repo); _run(["git", "commit", "-qm", "base"], repo)
     base = _run(["git", "rev-parse", "HEAD"], repo)
     _run(["git", "checkout", "-qb", "review"], repo)
@@ -1416,7 +1436,7 @@ def _self_git(root: Path) -> tuple[Path, dict[str, tuple[str, str]]]:
         target.write_text("reviewed " + path + "\n")
     _run(["git", "add", "."], repo); _run(["git", "commit", "-qm", "reviewed sl0"], repo)
     reviewed = _run(["git", "rev-parse", "HEAD"], repo)
-    _run(["git", "checkout", "-q", "master"], repo)
+    _run(["git", "checkout", "-q", "main"], repo)
     (repo / "unrelated-current-main-input.txt").write_text("intervening current-main input\n")
     _run(["git", "add", "."], repo); _run(["git", "commit", "-qm", "intervening runtime"], repo)
     first_parent = _run(["git", "rev-parse", "HEAD"], repo)
@@ -1430,6 +1450,7 @@ def _self_git(root: Path) -> tuple[Path, dict[str, tuple[str, str]]]:
     candidate = _run(["git", "rev-parse", "HEAD"], repo)
     _run(["git", "commit", "--allow-empty", "-qm", "canonical main"], repo)
     main = _run(["git", "rev-parse", "HEAD"], repo)
+    _run(["git", "update-ref", "refs/remotes/origin/main", main], repo)
     def record(commit_id: str) -> tuple[str, str]:
         return commit_id, _run(["git", "rev-parse", commit_id + "^{tree}"], repo)
     return repo, {"sl0_base": record(base), "landing_first_parent": record(first_parent), "reviewed_sl0": record(reviewed), "landing": record(landing), "candidate": record(candidate), "canonical_main": record(main)}
@@ -1601,7 +1622,12 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
                 "Bash,Read,Edit,Write,WebFetch,WebSearch,Task,NotebookEdit",
             ],
             "codex": ["codex", "exec", "--sandbox", "read-only", "<STDIN_SEALED_INLINE_PROMPT>"],
-            "gemini": ["agy", "--sandbox", "--mode", "plan", "<STDIN_SEALED_INLINE_PROMPT>"],
+            "gemini": [
+                "agy", "--model", "gemini-3.6-flash-high", "--sandbox", "--mode", "plan",
+                "--disable-slash-commands", "--input-format", "stream-json",
+                "--output-format", "stream-json", "--print=", "--print-timeout", "30s",
+                "<STDIN_SEALED_INLINE_PROMPT>",
+            ],
             "grok": [
                 "grok", "--disable-web-search", "--no-memory", "--no-subagents",
                 "--permission-mode", "plan", "--prompt-file", "<STDIN_SEALED_INLINE_PROMPT>",
@@ -1644,6 +1670,9 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
                 "provider_stream_final_event_sha256": stream["final_event_sha256"],
                 "provider_stream_acknowledgements": list(stream["acknowledgements"]),
                 "provider_stream_result_count": len(stream["acknowledgements"]) + 1,
+                "provider_stream_output_sha256": nonce(label + "stream-output"),
+                "provider_stream_output_bytes": len(stream["acknowledgements"]) + 1,
+                "provider_stream_outcome": "accepted",
                 "provider_stream_acknowledgements_verified": True,
                 "provider_stream_final_no_truncation": True,
             })
@@ -1885,6 +1914,24 @@ def self_test() -> None:
         def conflated_base_and_first_parent(model: dict[str, Any], _root: Path, _artifacts: Path) -> None:
             model["git"]["landing_first_parent"] = copy.deepcopy(model["git"]["sl0_base"])
         rejected("base-first-parent-conflation", conflated_base_and_first_parent)
+        def feature_branch_empty_commit(_model: dict[str, Any], local_root: Path, _artifacts: Path) -> None:
+            local_repo = local_root / "repo"
+            _run(["git", "checkout", "-qb", "audit-feature"], local_repo)
+            _run(["git", "commit", "--allow-empty", "-qm", "audit feature"], local_repo)
+        rejected("feature-branch-empty-commit", feature_branch_empty_commit)
+        def stale_origin_main(model: dict[str, Any], local_root: Path, _artifacts: Path) -> None:
+            _run(["git", "update-ref", "refs/remotes/origin/main", model["git"]["candidate"]["commit"]], local_root / "repo")
+        rejected("stale-origin-main", stale_origin_main)
+        def dirty_tracked_audit_checkout(_model: dict[str, Any], local_root: Path, _artifacts: Path) -> None:
+            target = local_root / "repo" / "plans" / "phase-plan-v10-HARDEN.md"
+            target.write_text(target.read_text() + "dirty audit checkout\n")
+        rejected("dirty-tracked-audit-checkout", dirty_tracked_audit_checkout)
+        def dirty_untracked_audit_checkout(_model: dict[str, Any], local_root: Path, _artifacts: Path) -> None:
+            (local_root / "repo" / "audit-untracked.txt").write_text("dirty audit checkout\n")
+        rejected("dirty-untracked-audit-checkout", dirty_untracked_audit_checkout)
+        def detached_audit_checkout(model: dict[str, Any], local_root: Path, _artifacts: Path) -> None:
+            _run(["git", "checkout", "--detach", "-q", model["git"]["canonical_main"]["commit"]], local_root / "repo")
+        rejected("detached-audit-checkout", detached_audit_checkout)
         rejected("tree-drift", lambda model, _root, _artifacts: model["git"]["candidate"].__setitem__("tree", "0" * 40))
         rejected("missing-red", lambda model, _root, _artifacts: model["sl0"]["mutations"].pop())
         def extra_anchor(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
