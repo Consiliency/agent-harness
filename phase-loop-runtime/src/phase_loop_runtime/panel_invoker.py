@@ -3068,6 +3068,9 @@ def _run_claude_tui_session(
                     last_heartbeat = now
                 if _completion_ok(transcript_text, mode):
                     transcript_salvage = transcript_text
+                broker_final = _broker_final()
+                if broker_final and _completion_ok(broker_final, mode):
+                    return _finish(0, broker_final, "claude_tui_broker_final_assistant")
             if proc.poll() is not None:
                 review_text = _current_output()
                 transcript_text = transcript_salvage or _transcript_text()
@@ -4508,6 +4511,57 @@ def _has_injected_review_execution_seam() -> bool:
     )
 
 
+_REVIEWTRUTH_FABLE_PROBE_SHA256 = "dbe8438bd5dcfea67799c13073820457ce3948aa47cf7d25cbe3a2dab3ea253f"
+
+
+def _is_fixed_reviewtruth_fable_probe(
+    leg: str,
+    artifact: str,
+    *,
+    mode: str,
+    model: str | None,
+    effort: str | None,
+    brief_ref: str | None,
+    timeout_s: int | None,
+    research_seat: ResearchSeatConfig | None,
+    brief_append: str | None,
+    agy_capture: AgyCanaryCapture | None,
+    seat_key: str | None,
+    provider_authority: ProviderLaunchAuthority | None,
+    capture_stage: Path | None,
+    capture_scratch: Path | None,
+    quiescence_latch: _ProviderQuiescenceLatch | None,
+    review_authorization: ReviewIsolationAuthorization | None,
+    canonical_repo_authority: Path | str | None,
+) -> bool:
+    """Recognize LEGIBLE's one closed Fable capability observation.
+
+    This is not an authorization bypass.  It allows :func:`_default_spawn` to
+    mint its own closed, single-route authorization before it reaches any launch
+    effect.  No caller authorization, route, prompt, or execution control is
+    accepted through this recognition path.
+    """
+    return (
+        mode == "review"
+        and leg == "claude"
+        and model == "claude-fable-5"
+        and sha256(artifact.encode("utf-8")).hexdigest() == _REVIEWTRUTH_FABLE_PROBE_SHA256
+        and effort is None
+        and brief_ref is None
+        and timeout_s is None
+        and research_seat is None
+        and brief_append is None
+        and agy_capture is None
+        and seat_key is None
+        and provider_authority is None
+        and capture_stage is None
+        and capture_scratch is None
+        and quiescence_latch is None
+        and review_authorization is None
+        and canonical_repo_authority is None
+    )
+
+
 def _default_spawn(
     leg: str,
     artifact: str,
@@ -4550,26 +4604,115 @@ def _default_spawn(
     """
     if quiescence_latch is not None:
         quiescence_latch.raise_if_set()
+    fixed_reviewtruth_probe_shape = _is_fixed_reviewtruth_fable_probe(
+        leg,
+        artifact,
+        mode=mode,
+        model=model,
+        effort=effort,
+        brief_ref=brief_ref,
+        timeout_s=timeout_s,
+        research_seat=research_seat,
+        brief_append=brief_append,
+        agy_capture=agy_capture,
+        seat_key=seat_key,
+        provider_authority=provider_authority,
+        capture_stage=capture_stage,
+        capture_scratch=capture_scratch,
+        quiescence_latch=quiescence_latch,
+        review_authorization=review_authorization,
+        canonical_repo_authority=canonical_repo_authority,
+    )
+    # The closed LEGIBLE adapter makes two observations.  Its first one carries
+    # the Claude-Code marker and is deliberately a typed, effect-free refusal;
+    # only the second, exact scrubbed subscription environment may authorize the
+    # brokered Fable capability leg.  No caller-supplied environment is accepted.
+    probe_subscription_env = _subscription_env()
+    fixed_reviewtruth_probe = (
+        fixed_reviewtruth_probe_shape
+        and env is not None
+        and dict(env) == probe_subscription_env
+    )
+    fixed_reviewtruth_marker_probe = (
+        fixed_reviewtruth_probe_shape
+        and env is not None
+        and dict(env) == {**probe_subscription_env, "CLAUDECODE": "1"}
+    )
+    if fixed_reviewtruth_marker_probe:
+        return "UNAVAILABLE", "tui_adapter_required"
+    owned_probe_authorization: ReviewIsolationAuthorization | None = None
+    if fixed_reviewtruth_probe:
+        # LEGIBLE's one fixed capability probe is a real provider operation, so
+        # it takes the same prepare/revalidate/activate/broker path as every
+        # other non-hermetic review.  Its tiny synthetic board is private and
+        # closed over the immutable artifact and Fable route above.
+        probe_board = Board(
+            name="legible-reviewtruth-fable-probe",
+            purpose="premerge-review",
+            seats=(Seat(
+                model="claude-fable-5", effort="max", harness="claude",
+                auth=AUTH_SUBSCRIPTION, backing=BACKING_HOMEBREW,
+            ),),
+        )
+        try:
+            probe_repo_authority = _canonical_review_repo_authority(repo_dir)
+            owned_probe_authorization = prepare_review_isolation_authorization(
+                probe_board,
+                artifact,
+                mode=mode,
+                canonical_repo_authority=probe_repo_authority,
+            )
+            revalidate_review_isolation_authorization(
+                owned_probe_authorization,
+                probe_board,
+                artifact,
+                mode=mode,
+                canonical_repo_authority=probe_repo_authority,
+            )
+            activate_review_isolation_authorization(
+                owned_probe_authorization,
+                probe_board,
+                artifact,
+                mode=mode,
+                canonical_repo_authority=probe_repo_authority,
+            )
+        except ValueError as exc:
+            close_review_isolation_authorization(owned_probe_authorization)
+            return "UNAVAILABLE", str(exc)[:200]
+        review_authorization = owned_probe_authorization
+        canonical_repo_authority = probe_repo_authority
+        # The fixed observation never accepts a caller-supplied child/provider
+        # environment.  Rebuild the subscription-only parent environment only
+        # after its operation authority is active.
+        env = probe_subscription_env
     # The raw exec boundary is never a production review escape hatch.  Tests may
     # replace the actual adapter functions as an explicit hermetic seam, but an
     # unmodified default can only run with a typed broker authorization.
-    if mode == "review" and review_authorization is None and not _has_injected_review_execution_seam():
+    if (
+        mode == "review"
+        and review_authorization is None
+        and not _has_injected_review_execution_seam()
+    ):
         return "UNAVAILABLE", "missing HARDEN review authorization"
-    # Best-effort reclaim of crash-residual scratch dirs (never affects this run).
-    _gc_stale_panel_scratch()
-    if agy_capture is not None and (provider_authority is None or capture_stage is None):
-        raise AgyCanaryEvidenceError("capture launch requires a pre-frozen provider authority")
-    resolved_repo_dir = _canonical_review_repo_authority(canonical_repo_authority) if (
-        mode == "review" and review_authorization is not None
-    ) else (
-        Path(repo_dir).resolve() if repo_dir is not None else Path.cwd()
-    )
-    base = Path(tempfile.mkdtemp(prefix="pl-panel-")) if capture_stage is None else None
-    review_dir = capture_stage if capture_stage is not None else base / "review"
-    out_dir = provider_authority.namespace.provider_output if provider_authority is not None else base / "out"
-    if capture_stage is None:
-        review_dir.mkdir()
-        out_dir.mkdir()
+    try:
+        # Best-effort reclaim of crash-residual scratch dirs (never affects this run).
+        _gc_stale_panel_scratch()
+        if agy_capture is not None and (provider_authority is None or capture_stage is None):
+            raise AgyCanaryEvidenceError("capture launch requires a pre-frozen provider authority")
+        resolved_repo_dir = _canonical_review_repo_authority(canonical_repo_authority) if (
+            mode == "review" and review_authorization is not None
+        ) else (
+            Path(repo_dir).resolve() if repo_dir is not None else Path.cwd()
+        )
+        base = Path(tempfile.mkdtemp(prefix="pl-panel-")) if capture_stage is None else None
+        review_dir = capture_stage if capture_stage is not None else base / "review"
+        out_dir = provider_authority.namespace.provider_output if provider_authority is not None else base / "out"
+        if capture_stage is None:
+            review_dir.mkdir()
+            out_dir.mkdir()
+    except Exception:
+        close_review_isolation_authorization(owned_probe_authorization)
+        raise
     provider_output_dir: Path | None = out_dir if provider_authority is not None else None
     try:
         if quiescence_latch is not None:
@@ -4660,10 +4803,14 @@ def _default_spawn(
             try:
                 broker_latch = _ProviderQuiescenceLatch()
                 broker_extra = {**extra, "quiescence_latch": broker_latch}
+                # The fixed LEGIBLE observation is authorized as a review launch
+                # but asks its isolated Fable seat for an advisory capability
+                # response.  It is not a code review and requires no verdict.
+                provider_mode = "advisory" if fixed_reviewtruth_probe else mode
                 sealed_prompt = _render_broker_inline_prompt(
                     (review_dir / "review-bundle.md").read_text(encoding="utf-8"),
                     (review_dir / "review-instructions.md").read_text(encoding="utf-8"),
-                    mode,
+                    provider_mode,
                 )
                 broker.evidence.update({
                     "provider_input_sha256": sha256(sealed_prompt.encode()).hexdigest(),
@@ -4675,16 +4822,16 @@ def _default_spawn(
                     if leg == "claude":
                         return _exec_claude_tui_leg(
                             review_dir, out_dir, leg_timeout, artifact,
-                            repo_dir=out_dir, mode=mode, model=model,
+                            repo_dir=out_dir, mode=provider_mode, model=model,
                             backstop_s=leg_deadline, broker_prompt=sealed_prompt,
                             broker_evidence=broker.evidence, **broker_extra,
                         )
                     rc, text, log = _exec_leg(
-                        leg, review_dir, out_dir, leg_timeout, artifact, mode, model,
+                        leg, review_dir, out_dir, leg_timeout, artifact, provider_mode, model,
                         deadline_s=leg_deadline, broker_prompt=sealed_prompt,
                         broker_evidence=broker.evidence, **broker_extra,
                     )
-                    return _classify_leg(rc, text, log, mode), text
+                    return _classify_leg(rc, text, log, provider_mode), text
                 def _cancel_parent_infer() -> None:
                     broker_latch.trip(ProviderProcessGroupQuiescenceError(
                         "broker operation deadline elapsed"
@@ -4764,6 +4911,7 @@ def _default_spawn(
     except Exception as exc:  # fail-closed
         return "DEGRADED", str(exc)[:200]
     finally:
+        close_review_isolation_authorization(owned_probe_authorization)
         if provider_output_dir is not None and agy_capture is None:
             shutil.rmtree(provider_output_dir, ignore_errors=True)
         if base is not None:
