@@ -31,6 +31,7 @@ import threading
 import unittest
 from pathlib import Path
 
+from harden_tdd_guard import invoke_sanctioned_review_transport
 from phase_loop_runtime import panel_invoker as pi
 from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD, DEFAULT_BOARD_VENDOR_ORDER
 
@@ -178,7 +179,7 @@ class InvokeStreamingOptInTests(unittest.TestCase):
                 with lock:
                     seen.append(r.leg)
 
-            res = pi.invoke_board(
+            res = invoke_sanctioned_review_transport(
                 DEFAULT_BOARD, "artifact",
                 spawn=lambda leg, art: ("OK", f"{leg}\nAGREE"),
                 on_leg_complete=on_leg_complete,

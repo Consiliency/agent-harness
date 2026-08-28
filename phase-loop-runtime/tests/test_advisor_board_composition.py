@@ -13,7 +13,9 @@ or PATH.
 """
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from harden_tdd_guard import harden_require
@@ -56,6 +58,187 @@ def test_review_leg_isolation_refuses_unbound_direct_invocation():
     result = invoke_board(DEFAULT_BOARD, "review bundle", spawn=direct_effect, mode="review")
     assert not effects
     assert all(leg.status in {"DEGRADED", "UNAVAILABLE"} for leg in result.legs)
+
+
+def test_derived_review_refuses_missing_or_forged_authority_before_callback():
+    """A mode-omitted premerge board cannot spend either execution seam unbound."""
+
+    harden_require("review-leg-isolation")
+    import subprocess
+
+    from phase_loop_runtime import panel_invoker as invoker
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+
+    canonical_repo = Path(
+        subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip()
+    ).resolve()
+    callback_effects: list[str] = []
+
+    def callback(*_args, **_kwargs):
+        callback_effects.append("callback")
+        return "OK", "unexpected unbound callback\nAGREE"
+
+    with tempfile.TemporaryDirectory() as td:
+        scratch = Path(td) / "private-scratch"
+        scratch.mkdir()
+        with patch.object(
+            invoker,
+            "_default_spawn_via_provider",
+            side_effect=AssertionError("provider path ran before authorization"),
+        ) as provider_spy:
+            missing = invoker.invoke_board(
+                DEFAULT_BOARD,
+                "bounded derived-review fixture",
+                spawn=callback,
+                repo_dir=scratch,
+                canonical_repo_authority=canonical_repo,
+            )
+            forged = invoker.invoke_board(
+                DEFAULT_BOARD,
+                "bounded derived-review fixture",
+                spawn=callback,
+                repo_dir=scratch,
+                canonical_repo_authority=canonical_repo,
+                review_authorization=object(),
+            )
+
+    provider_spy.assert_not_called()
+    assert not callback_effects
+    assert all(leg.status == "UNAVAILABLE" for leg in missing.legs)
+    assert all(leg.status == "UNAVAILABLE" for leg in forged.legs)
+
+
+def test_derived_review_explicit_spawn_remains_hermetic_after_marker():
+    """A caller-owned spawn stays a no-auth in-process review control.
+
+    This is deliberately mode-derived and carries a governed landing tier, matching
+    legacy caller controls that must retain their semantic ``OK`` result without
+    reaching an auth or provider boundary.
+    """
+
+    harden_require("review-leg-isolation")
+    from phase_loop_runtime import panel_invoker as invoker
+    from phase_loop_runtime.advisor_board import backing as backing_mod
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+
+    callback_calls: list[str] = []
+
+    def hermetic_spawn(leg: str, _artifact: str):
+        callback_calls.append(leg)
+        return "OK", f"{leg} hermetic control\nAGREE"
+
+    with tempfile.TemporaryDirectory() as td:
+        with patch.object(
+            backing_mod,
+            "prepare_review_isolation_authorization",
+            side_effect=AssertionError("a hermetic spawn must not prepare authorization"),
+        ) as prepare_spy, patch.object(
+            invoker,
+            "revalidate_review_isolation_authorization",
+            side_effect=AssertionError("a hermetic spawn must not revalidate authorization"),
+        ) as revalidate_spy, patch.object(
+            invoker,
+            "_default_spawn_via_provider",
+            side_effect=AssertionError("a hermetic spawn must not reach provider launch"),
+        ) as provider_spy:
+            result = invoker.invoke_board(
+                DEFAULT_BOARD,
+                "bounded hermetic control",
+                spawn=hermetic_spawn,
+                repo_dir=Path(td),
+                base_env={},
+                landing_tier=invoker.ReviewLandingTier.PRODUCTION_CODE,
+                max_concurrency=1,
+            )
+
+    prepare_spy.assert_not_called()
+    revalidate_spy.assert_not_called()
+    provider_spy.assert_not_called()
+    assert [leg.status for leg in result.legs] == ["OK"] * len(DEFAULT_BOARD.seats)
+    assert sorted(callback_calls) == sorted(seat.harness for seat in DEFAULT_BOARD.seats)
+
+
+def test_derived_review_bounded_capture_control_reaches_stage_without_auth():
+    """An explicit private capture control reaches staging, never a provider seam."""
+
+    harden_require("review-leg-isolation")
+    from phase_loop_runtime import agy_canary_evidence as evidence
+    from phase_loop_runtime import panel_invoker as invoker
+    from phase_loop_runtime.advisor_board import backing as backing_mod
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+
+    class StopAfterStage(Exception):
+        pass
+
+    staged: list[Path] = []
+    with tempfile.TemporaryDirectory(prefix="harden-capture-", dir="/tmp") as td:
+        root = Path(td)
+        capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
+        try:
+            def bind_stage(*, capture: object, review_dir: Path, bundle_bytes: bytes,
+                           instruction_bytes: bytes, **_kwargs: object) -> None:
+                assert capture is bounded_capture
+                assert review_dir.is_dir()
+                assert (review_dir / "review-bundle.md").read_bytes() == bundle_bytes
+                assert (
+                    review_dir / "review-instructions.md"
+                ).read_bytes() == instruction_bytes
+                staged.append(review_dir)
+
+            def stop_after_stage(*, capture: object, stage: Path,
+                                 providers: tuple[str, ...]) -> object:
+                assert capture is bounded_capture
+                assert staged == [stage]
+                assert providers == ("codex",)
+                raise StopAfterStage
+
+            bounded_capture = capture
+            assert root.parent == Path("/tmp")
+            assert root.stat().st_mode & 0o777 == 0o700
+            with patch.object(
+                backing_mod,
+                "prepare_review_isolation_authorization",
+                side_effect=AssertionError("a bounded capture control must not prepare authorization"),
+            ) as prepare_spy, patch.object(
+                invoker,
+                "revalidate_review_isolation_authorization",
+                side_effect=AssertionError("a bounded capture control must not revalidate authorization"),
+            ) as revalidate_spy, patch.object(
+                invoker,
+                "bind_staged_review_inputs",
+                side_effect=bind_stage,
+            ), patch.object(
+                invoker,
+                "prepare_provider_launch_authorities",
+                side_effect=stop_after_stage,
+            ), patch.object(
+                invoker,
+                "_leg_auth_ok",
+                side_effect=AssertionError("capture must not reach auth probing"),
+            ), patch.object(
+                invoker,
+                "_default_spawn_via_provider",
+                side_effect=AssertionError("capture must not reach provider launch"),
+            ) as provider_spy:
+                try:
+                    invoker.invoke_board(
+                        DEFAULT_BOARD,
+                        "bounded capture control",
+                        agy_canary_capture=bounded_capture,
+                        base_env={},
+                        max_concurrency=1,
+                    )
+                except StopAfterStage:
+                    pass
+                else:
+                    raise AssertionError("bounded capture did not stop at staging")
+
+            prepare_spy.assert_not_called()
+            revalidate_spy.assert_not_called()
+            provider_spy.assert_not_called()
+            assert len(staged) == 1
+        finally:
+            capture.close()
 
 
 class AvailabilitySimulationTests(unittest.TestCase):
@@ -229,6 +412,266 @@ class AuthAwareCompositionTests(unittest.TestCase):
             board = compose_review_board()
         self.assertEqual(len(board.seats), DEFAULT_TARGET_SEATS)
         self.assertNotIn("grok", {s.harness for s in board.seats})
+
+    def test_harden_preflight_authorizes_before_every_capability_auth_ok(self) -> None:
+        """The default composer uses one real, validated preflight before probes."""
+        harden_require("review-leg-isolation")
+        real_preflight = _composition.prepare_review_composition_authorization
+        real_revalidate = _composition.revalidate_review_composition_authorization
+        effects: list[tuple[str, str] | tuple[str]] = []
+        prepared: list[object] = []
+        validated: list[object] = []
+
+        def preflight(*args, **kwargs):
+            self.assertFalse(effects, "preflight itself must precede every probe")
+            authorization = real_preflight(*args, **kwargs)
+            self.assertIsNotNone(authorization)
+            prepared.append(authorization)
+            effects.append(("preflight",))
+            return authorization
+
+        def revalidate(authorization, *args, **kwargs):
+            self.assertEqual(prepared, [authorization])
+            self.assertFalse(
+                any(kind in {"availability", "auth_session_provider"} for kind, *_ in effects)
+            )
+            result = real_revalidate(authorization, *args, **kwargs)
+            validated.append(authorization)
+            effects.append(("validated",))
+            return result
+
+        def available(vendor: str) -> bool:
+            self.assertTrue(validated and validated[-1] is prepared[0])
+            effects.append(("availability", vendor))
+            return True
+
+        def authenticated(vendor: str) -> bool:
+            self.assertTrue(validated and validated[-1] is prepared[0])
+            effects.append(("auth_session_provider", vendor))
+            return True
+
+        with patch.object(
+            _composition,
+            "prepare_review_composition_authorization",
+            side_effect=preflight,
+        ), patch.object(
+            _composition,
+            "revalidate_review_composition_authorization",
+            side_effect=revalidate,
+        ), patch.object(
+            _composition.DEFAULT_HARNESS_REGISTRY, "is_available", available
+        ), patch.object(_composition, "default_board_auth_ok", authenticated):
+            board = compose_review_board()
+
+        self.assertEqual(len(board.seats), DEFAULT_TARGET_SEATS)
+        self.assertEqual(len(prepared), 1)
+        self.assertTrue(validated)
+        self.assertTrue(all(value is prepared[0] for value in validated))
+        self.assertLess(
+            next(i for i, effect in enumerate(effects) if effect[0] == "validated"),
+            next(i for i, effect in enumerate(effects) if effect[0] == "availability"),
+        )
+        self.assertEqual(
+            {entry[1] for entry in effects if entry[0] == "availability"},
+            set(ALL_VENDORS),
+        )
+        self.assertEqual(
+            {entry[1] for entry in effects if entry[0] == "auth_session_provider"},
+            set(ALL_VENDORS),
+        )
+
+    def test_harden_preflight_denial_blocks_compose_before_every_probe(self) -> None:
+        """A failed or forged composer preflight cannot reach a probe seam."""
+        harden_require("review-leg-isolation")
+        effects: list[tuple[str, str] | tuple[str]] = []
+
+        def forbidden(kind: str):
+            def probe(vendor: str) -> bool:
+                effects.append((kind, vendor))
+                self.fail(f"{kind} effect reached after failed HARDEN preflight")
+
+            return probe
+
+        def denied(*_args, **_kwargs):
+            effects.append(("preflight_denied",))
+            raise ValueError("denied HARDEN composition preflight")
+
+        with patch.object(
+            _composition,
+            "prepare_review_composition_authorization",
+            side_effect=denied,
+        ), patch.object(
+            _composition,
+            "revalidate_review_composition_authorization",
+            side_effect=AssertionError("a denied preflight must not be revalidated"),
+        ) as validate_spy, patch.object(
+            _composition.DEFAULT_HARNESS_REGISTRY,
+            "is_available",
+            forbidden("availability"),
+        ), patch.object(
+            _composition,
+            "default_board_auth_ok",
+            forbidden("auth_session_provider"),
+        ):
+            with self.assertRaisesRegex(ValueError, "denied HARDEN composition preflight"):
+                compose_review_board()
+
+        validate_spy.assert_not_called()
+        self.assertEqual(effects, [("preflight_denied",)])
+
+        effects.clear()
+
+        def forged(*_args, **_kwargs):
+            effects.append(("preflight_forged",))
+            return object()
+
+        with patch.object(
+            _composition,
+            "prepare_review_composition_authorization",
+            side_effect=forged,
+        ), patch.object(
+            _composition.DEFAULT_HARNESS_REGISTRY,
+            "is_available",
+            forbidden("availability"),
+        ), patch.object(
+            _composition,
+            "default_board_auth_ok",
+            forbidden("auth_session_provider"),
+        ):
+            with self.assertRaises(ValueError):
+                compose_review_board()
+
+        self.assertEqual(effects, [("preflight_forged",)])
+
+    def test_harden_preflight_covers_default_load_boards_probes(self) -> None:
+        """``load_boards`` uses the same real, validated preflight boundary."""
+        harden_require("review-leg-isolation")
+        from phase_loop_runtime.advisor_board import config as config_mod
+
+        real_preflight = _composition.prepare_review_composition_authorization
+        real_revalidate = _composition.revalidate_review_composition_authorization
+        effects: list[tuple[str, str] | tuple[str]] = []
+        prepared: list[object] = []
+        validated: list[object] = []
+
+        def preflight(*args, **kwargs):
+            self.assertFalse(effects, "preflight itself must precede every probe")
+            authorization = real_preflight(*args, **kwargs)
+            self.assertIsNotNone(authorization)
+            prepared.append(authorization)
+            effects.append(("preflight",))
+            return authorization
+
+        def revalidate(authorization, *args, **kwargs):
+            self.assertEqual(prepared, [authorization])
+            self.assertFalse(
+                any(kind in {"availability", "auth_session_provider"} for kind, *_ in effects)
+            )
+            result = real_revalidate(authorization, *args, **kwargs)
+            validated.append(authorization)
+            effects.append(("validated",))
+            return result
+
+        def available(vendor: str) -> bool:
+            self.assertTrue(validated and validated[-1] is prepared[0])
+            effects.append(("availability", vendor))
+            return True
+
+        def authenticated(vendor: str) -> bool:
+            self.assertTrue(validated and validated[-1] is prepared[0])
+            effects.append(("auth_session_provider", vendor))
+            return True
+
+        with tempfile.TemporaryDirectory() as td, patch.object(
+            _composition,
+            "prepare_review_composition_authorization",
+            side_effect=preflight,
+        ), patch.object(
+            _composition,
+            "revalidate_review_composition_authorization",
+            side_effect=revalidate,
+        ), patch.object(
+            _composition.DEFAULT_HARNESS_REGISTRY, "is_available", available
+        ), patch.object(config_mod, "default_board_auth_ok", authenticated):
+            loaded = config_mod.load_boards(
+                path=Path(td) / "missing.toml", validate=False
+            )
+
+        self.assertIn("code-review", loaded.boards)
+        self.assertEqual(len(prepared), 1)
+        self.assertTrue(validated)
+        self.assertTrue(all(value is prepared[0] for value in validated))
+        self.assertLess(
+            next(i for i, effect in enumerate(effects) if effect[0] == "validated"),
+            next(i for i, effect in enumerate(effects) if effect[0] == "availability"),
+        )
+        self.assertTrue(any(kind == "availability" for kind, *_ in effects))
+        self.assertTrue(any(kind == "auth_session_provider" for kind, *_ in effects))
+
+    def test_harden_preflight_denial_blocks_load_boards_before_every_probe(self) -> None:
+        """``load_boards`` fails closed before capability/auth/session effects."""
+        harden_require("review-leg-isolation")
+        from phase_loop_runtime.advisor_board import config as config_mod
+
+        effects: list[tuple[str, str] | tuple[str]] = []
+
+        def forbidden(kind: str):
+            def probe(vendor: str) -> bool:
+                effects.append((kind, vendor))
+                self.fail(f"{kind} effect reached after failed HARDEN preflight")
+
+            return probe
+
+        def denied(*_args, **_kwargs):
+            effects.append(("preflight_denied",))
+            raise ValueError("denied HARDEN load_boards preflight")
+
+        with tempfile.TemporaryDirectory() as td, patch.object(
+            _composition,
+            "prepare_review_composition_authorization",
+            side_effect=denied,
+        ), patch.object(
+            _composition,
+            "revalidate_review_composition_authorization",
+            side_effect=AssertionError("a denied preflight must not be revalidated"),
+        ) as validate_spy, patch.object(
+            _composition.DEFAULT_HARNESS_REGISTRY,
+            "is_available",
+            forbidden("availability"),
+        ), patch.object(
+            config_mod,
+            "default_board_auth_ok",
+            forbidden("auth_session_provider"),
+        ):
+            with self.assertRaisesRegex(ValueError, "denied HARDEN load_boards preflight"):
+                config_mod.load_boards(path=Path(td) / "missing.toml", validate=False)
+
+        validate_spy.assert_not_called()
+        self.assertEqual(effects, [("preflight_denied",)])
+
+        effects.clear()
+
+        def forged(*_args, **_kwargs):
+            effects.append(("preflight_forged",))
+            return object()
+
+        with tempfile.TemporaryDirectory() as td, patch.object(
+            _composition,
+            "prepare_review_composition_authorization",
+            side_effect=forged,
+        ), patch.object(
+            _composition.DEFAULT_HARNESS_REGISTRY,
+            "is_available",
+            forbidden("availability"),
+        ), patch.object(
+            config_mod,
+            "default_board_auth_ok",
+            forbidden("auth_session_provider"),
+        ):
+            with self.assertRaises(ValueError):
+                config_mod.load_boards(path=Path(td) / "missing.toml", validate=False)
+
+        self.assertEqual(effects, [("preflight_forged",)])
 
     def test_default_board_auth_ok_fails_closed_on_unknown_vendor(self) -> None:
         # An unregistered vendor (or any lookup/probe error) fails CLOSED — treated

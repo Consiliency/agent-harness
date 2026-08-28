@@ -27,6 +27,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from harden_tdd_guard import invoke_sanctioned_review_transport
 from phase_loop_runtime import panel_invoker as pi
 from phase_loop_runtime.advisor_board import (
     AUTH_API_KEY,
@@ -48,6 +49,14 @@ from phase_loop_runtime.advisor_board.presets import PRESET_NAMES, PRESETS
 
 def _ok_spawn(leg: str, artifact: str):
     return ("OK", f"{leg}\nAGREE")
+
+
+def _invoke_board_control(board, artifact: str, **kwargs):
+    """Keep advisory fixtures direct while binding every derived review run."""
+
+    if pi._mode_for_purpose(board.purpose) == "review":
+        return invoke_sanctioned_review_transport(board, artifact, **kwargs)
+    return pi.invoke_board(board, artifact, **kwargs)
 
 
 class _FakeOmnigent:
@@ -89,7 +98,7 @@ class EndToEndHomebrewIntegrationTests(unittest.TestCase):
         # resolve (real resolver + stand-in catalog) → validate (real matrix) → run.
         board = resolve_board("default", matrix=default_matrix())
         validate_board(board, matrix=default_matrix())
-        res = pi.invoke_board(board, "artifact", spawn=_ok_spawn)
+        res = _invoke_board_control(board, "artifact", spawn=_ok_spawn)
         self.assertEqual(tuple(r.leg for r in res.legs), DEFAULT_BOARD_VENDOR_ORDER)
         self.assertTrue(all(r.status == "OK" for r in res.legs))
         self.assertTrue(all(r.seat_key for r in res.legs))
@@ -97,13 +106,13 @@ class EndToEndHomebrewIntegrationTests(unittest.TestCase):
     def test_ad_hoc_seats_resolve_and_run(self) -> None:
         # the `--seats model:effort[:harness]` ad-hoc path, end-to-end.
         board = resolve_board(seats="gpt-5.6-sol:high:codex", matrix=default_matrix())
-        res = pi.invoke_board(board, "artifact", spawn=_ok_spawn)
+        res = _invoke_board_control(board, "artifact", spawn=_ok_spawn)
         self.assertEqual(res.legs[0].leg, "codex")
         self.assertEqual(res.legs[0].status, "OK")
 
     def test_bare_seat_resolves_to_its_default_lane_end_to_end(self) -> None:
         board = Board(name="bare", purpose="x", seats=(Seat(model="claude-sonnet-5", effort="max"),))
-        res = pi.invoke_board(board, "artifact", spawn=_ok_spawn)
+        res = _invoke_board_control(board, "artifact", spawn=_ok_spawn)
         self.assertEqual(res.legs[0].leg, "claude")
         self.assertEqual(res.legs[0].status, "OK")
 
@@ -127,7 +136,7 @@ class PresetsSmokeTests(unittest.TestCase):
             with self.subTest(preset=name):
                 board = PRESETS[name]
                 validate_board(board, matrix=default_matrix())
-                res = pi.invoke_board(board, "artifact", spawn=_ok_spawn)
+                res = _invoke_board_control(board, "artifact", spawn=_ok_spawn)
                 self.assertEqual(len(res.legs), len(board.seats))
                 # every preset seat is a built-3 homebrew lane → all OK, none skipped.
                 self.assertTrue(all(r.status == "OK" for r in res.legs), f"{name}: {[ (r.leg,r.status) for r in res.legs]}")
@@ -138,7 +147,7 @@ class PresetsSmokeTests(unittest.TestCase):
             Seat(model="claude-sonnet-5", effort="max", harness="claude", lens="adversarial"),
             Seat(model="claude-sonnet-5", effort="max", harness="claude", lens="supportive"),
         ))
-        res = pi.invoke_board(board, "artifact", spawn=_ok_spawn)
+        res = _invoke_board_control(board, "artifact", spawn=_ok_spawn)
         self.assertEqual([r.leg for r in res.legs], ["claude", "claude"])
         self.assertNotEqual(res.legs[0].seat_key, res.legs[1].seat_key)
 
@@ -154,7 +163,7 @@ class FailClosedMatrixTests(unittest.TestCase):
             if leg == "gemini":
                 raise FileNotFoundError("agy: command not found")
             return ("OK", f"{leg}\nAGREE")
-        res = pi.invoke_board(DEFAULT_BOARD, "artifact", spawn=_spawn)
+        res = _invoke_board_control(DEFAULT_BOARD, "artifact", spawn=_spawn)
         by = {r.leg: r for r in res.legs}
         self.assertEqual(by["gemini"].status, "DEGRADED")
         self.assertEqual(by["codex"].status, "OK")
@@ -179,7 +188,9 @@ class FailClosedMatrixTests(unittest.TestCase):
         )
         # base_env has NO anthropic key → the api-key seat has nothing to inject, but
         # crucially the subscription codex seat still runs and the board is not blocked.
-        res = pi.invoke_board(board, "artifact", base_env={"PATH": "/usr/bin"}, spawn=_spawn)
+        res = _invoke_board_control(
+            board, "artifact", base_env={"PATH": "/usr/bin"}, spawn=_spawn
+        )
         by = {r.leg: r for r in res.legs}
         self.assertEqual(by["codex"].status, "OK")
         self.assertIn("codex", spawned)
@@ -206,7 +217,7 @@ class FailClosedMatrixTests(unittest.TestCase):
             Seat(model="gpt-5.6-sol", effort="high", harness="opencode", backing=BACKING_OMNIGENT),  # omnigent
         ))
         omni = _FakeOmnigent({"opencode"}, down=True)
-        res = pi.invoke_board(board, "artifact", omnigent=omni, spawn=_ok_spawn)
+        res = _invoke_board_control(board, "artifact", omnigent=omni, spawn=_ok_spawn)
         by = {r.leg: r for r in res.legs}
         self.assertEqual(by["codex"].status, "OK")
         self.assertEqual(by["opencode"].status, "UNAVAILABLE")  # skip-with-warning
@@ -231,7 +242,7 @@ class OmnigentLegJoinsMatrixTests(unittest.TestCase):
             Seat(model="gpt-5.6-sol", effort="high", harness="opencode", backing=BACKING_OMNIGENT),
         ))
         omni = _FakeOmnigent({"opencode", "pi"})
-        res = pi.invoke_board(board, "artifact", omnigent=omni)
+        res = _invoke_board_control(board, "artifact", omnigent=omni)
         self.assertEqual(res.legs[0].leg, "opencode")
         self.assertEqual(res.legs[0].status, "OK")
 
@@ -241,7 +252,7 @@ class OmnigentLegJoinsMatrixTests(unittest.TestCase):
             Seat(model="gpt-5.6-sol", effort="high", harness="opencode", backing=BACKING_OMNIGENT),
         ))
         omni = _FakeOmnigent(frozenset())  # gateway up, but catalog omits opencode
-        res = pi.invoke_board(board, "artifact", omnigent=omni)
+        res = _invoke_board_control(board, "artifact", omnigent=omni)
         self.assertEqual(res.legs[0].status, "UNAVAILABLE")
         self.assertIn("not in live Omnigent catalog", res.legs[0].detail)
 
@@ -251,7 +262,7 @@ class OmnigentLegJoinsMatrixTests(unittest.TestCase):
         board = Board(name="breadth", purpose="x", seats=(
             Seat(model="gpt-5.6-sol", effort="high", harness="opencode", backing=BACKING_OMNIGENT),
         ))
-        res = pi.invoke_board(board, "artifact", gateway_available=True)
+        res = _invoke_board_control(board, "artifact", gateway_available=True)
         self.assertEqual(res.legs[0].status, "UNAVAILABLE")
         self.assertIn("ABDOMNI", res.legs[0].detail)
 
@@ -266,7 +277,7 @@ class OmnigentLegJoinsMatrixTests(unittest.TestCase):
                 ),
             ))
             omni = _FakeOmnigent({"claude"})
-            res = pi.invoke_board(board, "artifact", omnigent=omni)
+            res = _invoke_board_control(board, "artifact", omnigent=omni)
             self.assertEqual(res.legs[0].status, "UNAVAILABLE")
             self.assertEqual(res.legs[0].detail, "tui_backing_required")
             self.assertEqual(omni.catalog_calls, 0)
@@ -279,7 +290,7 @@ class ObservabilityLegJoinsMatrixTests(unittest.TestCase):
 
     def test_board_run_with_sink_emits_the_frozen_envelope(self) -> None:
         sink = CollectingSink()
-        pi.invoke_board(DEFAULT_BOARD, "artifact", spawn=_ok_spawn, sink=sink)
+        _invoke_board_control(DEFAULT_BOARD, "artifact", spawn=_ok_spawn, sink=sink)
         kinds = [e.kind for e in sink.events]
         self.assertIn("board.started", kinds)
         self.assertIn("board.completed", kinds)
@@ -292,8 +303,10 @@ class ObservabilityLegJoinsMatrixTests(unittest.TestCase):
     def test_sink_none_is_byte_neutral(self) -> None:
         # sink=None builds no envelope — the default board result is identical to a
         # run with an (unused) collecting sink on the result axis.
-        no_sink = pi.invoke_board(DEFAULT_BOARD, "artifact", spawn=_ok_spawn)
-        with_sink = pi.invoke_board(DEFAULT_BOARD, "artifact", spawn=_ok_spawn, sink=CollectingSink())
+        no_sink = _invoke_board_control(DEFAULT_BOARD, "artifact", spawn=_ok_spawn)
+        with_sink = _invoke_board_control(
+            DEFAULT_BOARD, "artifact", spawn=_ok_spawn, sink=CollectingSink()
+        )
         self.assertEqual(
             [(r.leg, r.status, r.text, r.seat_key) for r in no_sink.legs],
             [(r.leg, r.status, r.text, r.seat_key) for r in with_sink.legs],
@@ -306,7 +319,9 @@ class ObservabilityLegJoinsMatrixTests(unittest.TestCase):
             def emit(self, event):
                 raise RuntimeError("sink exploded")
 
-        res = pi.invoke_board(DEFAULT_BOARD, "artifact", spawn=_ok_spawn, sink=_BoomSink())
+        res = _invoke_board_control(
+            DEFAULT_BOARD, "artifact", spawn=_ok_spawn, sink=_BoomSink()
+        )
         self.assertEqual(tuple(r.leg for r in res.legs), DEFAULT_BOARD_VENDOR_ORDER)
         self.assertTrue(all(r.status == "OK" for r in res.legs))
 

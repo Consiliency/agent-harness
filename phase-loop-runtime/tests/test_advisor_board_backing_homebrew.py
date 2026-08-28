@@ -30,6 +30,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
+from harden_tdd_guard import invoke_sanctioned_review_transport
 from phase_loop_runtime import panel_invoker as pi
 from phase_loop_runtime.advisor_board import (
     AUTH_API_KEY,
@@ -48,6 +49,14 @@ from phase_loop_runtime.advisor_board.fixtures import (
     TWO_SAME_VENDOR_BOARD,
 )
 from phase_loop_runtime.advisor_board.harness_mapping import render_gemini_model
+
+
+def _invoke_board_control(board, artifact: str, **kwargs):
+    """Bind executable derived-review controls; leave static refusals direct."""
+
+    if pi._mode_for_purpose(board.purpose) == "review":
+        return invoke_sanctioned_review_transport(board, artifact, **kwargs)
+    return pi.invoke_board(board, artifact, **kwargs)
 
 
 @contextmanager
@@ -171,7 +180,7 @@ class DefaultBoardByteEquivalenceTests(unittest.TestCase):
     def test_default_board_seam_calls_default_spawn_with_seat_effort_and_scrubbed_env(self) -> None:
         base = {var: "secret" for var in pi._API_KEY_VARS} | {"PATH": "/usr/bin"}
         with patch.object(pi, "_default_spawn", return_value=("OK", "AGREE")) as ds:
-            pi.invoke_board(DEFAULT_BOARD, "artifact", base_env=base)
+            _invoke_board_control(DEFAULT_BOARD, "artifact", base_env=base)
         by_leg = {c.args[0]: c.kwargs for c in ds.call_args_list}
         self.assertEqual(set(by_leg), set(DEFAULT_BOARD_VENDOR_ORDER))
         self.assertEqual(by_leg["codex"]["effort"], "max")
@@ -278,7 +287,7 @@ class ActiveEnvScrubbingNegativeTests(unittest.TestCase):
         board = Board(name="b", purpose="x", seats=(self._codex_seat(AUTH_API_KEY),),
                       allow_api_key_fallback=True)
         with patch.object(pi, "_default_spawn", return_value=("OK", "AGREE")) as ds:
-            pi.invoke_board(board, "artifact", base_env=self._all_keys_base())
+            _invoke_board_control(board, "artifact", base_env=self._all_keys_base())
         env = ds.call_args_list[0].kwargs["env"]
         self.assertEqual(env["OPENAI_API_KEY"], "secret")
         self.assertNotIn("ANTHROPIC_API_KEY", env)
@@ -291,8 +300,10 @@ class NativeHostLegStaysNativeTests(unittest.TestCase):
     def test_standalone_runner_has_no_host_leg(self) -> None:
         # host_harness=None → every leg a subprocess, exactly as today (byte-neutral).
         self.assertIsNone(pi.enforce_native_host_leg(DEFAULT_BOARD, None))
-        res = pi.invoke_board(DEFAULT_BOARD, "artifact", host=None,
-                              spawn=lambda leg, art: ("OK", f"{leg}\nAGREE"))
+        res = _invoke_board_control(
+            DEFAULT_BOARD, "artifact", host=None,
+            spawn=lambda leg, art: ("OK", f"{leg}\nAGREE"),
+        )
         self.assertEqual(tuple(l.leg for l in res.legs), DEFAULT_BOARD_VENDOR_ORDER)
         self.assertTrue(all(l.status == "OK" for l in res.legs))
 
@@ -318,7 +329,7 @@ class NativeHostLegStaysNativeTests(unittest.TestCase):
     def test_inside_claude_homebrew_host_leg_spawns_natively(self) -> None:
         host = HostContext(host_harness="claude")
         with patch.object(pi, "_default_spawn", return_value=("OK", "AGREE")) as ds:
-            res = pi.invoke_board(DEFAULT_BOARD, "artifact", host=host)
+            res = _invoke_board_control(DEFAULT_BOARD, "artifact", host=host)
         # The claude host leg spawned through the native homebrew path (never a gateway).
         self.assertIn("claude", {c.args[0] for c in ds.call_args_list})
         self.assertTrue(any(l.leg == "claude" and l.status == "OK" for l in res.legs))
@@ -328,8 +339,10 @@ class SkipWithWarningTests(unittest.TestCase):
     """An unavailable lane degrades the seat gracefully without blocking the board."""
 
     def test_breadth_homebrew_seat_skips_with_warning(self) -> None:
-        res = pi.invoke_board(TWO_SAME_VENDOR_BOARD, "artifact",
-                              spawn=lambda leg, art: ("OK", f"{leg}\nAGREE"))
+        res = _invoke_board_control(
+            TWO_SAME_VENDOR_BOARD, "artifact",
+            spawn=lambda leg, art: ("OK", f"{leg}\nAGREE"),
+        )
         by_leg = {l.leg: l for l in res.legs}
         self.assertEqual(by_leg["codex"].status, "OK")            # built-3 homebrew spawns
         self.assertEqual(by_leg["opencode"].status, "UNAVAILABLE")  # breadth → skip
@@ -360,7 +373,9 @@ class SkipWithWarningTests(unittest.TestCase):
             Seat(model="gpt-5.6-sol", effort="max", harness="codex", backing=BACKING_HOMEBREW),
             Seat(model="gpt-5.6-sol", effort="high", harness="opencode", backing=BACKING_OMNIGENT),
         ))
-        res = pi.invoke_board(board, "artifact", spawn=lambda leg, art: ("OK", f"{leg}\nAGREE"))
+        res = _invoke_board_control(
+            board, "artifact", spawn=lambda leg, art: ("OK", f"{leg}\nAGREE")
+        )
         self.assertEqual(res.legs[0].status, "OK")
         self.assertEqual(res.legs[1].status, "UNAVAILABLE")
 
@@ -373,7 +388,9 @@ class BoardSeamValidationTests(unittest.TestCase):
         # finding 6: a bare seat (harness=None) must resolve to its default lane
         # (claude-sonnet-5 -> claude) and RUN, not skip on an empty ('') lane.
         board = Board(name="bare", purpose="x", seats=(Seat(model="claude-sonnet-5", effort="max"),))
-        res = pi.invoke_board(board, "artifact", spawn=lambda leg, art: ("OK", f"{leg}\nAGREE"))
+        res = _invoke_board_control(
+            board, "artifact", spawn=lambda leg, art: ("OK", f"{leg}\nAGREE")
+        )
         self.assertEqual(res.legs[0].leg, "claude")
         self.assertEqual(res.legs[0].status, "OK")
 
@@ -406,7 +423,9 @@ class BoardSeamValidationTests(unittest.TestCase):
 
     def test_every_result_carries_a_seat_key(self) -> None:
         # finding 4: both OK and skip results carry seat_key.
-        res = pi.invoke_board(TWO_SAME_VENDOR_BOARD, "artifact", spawn=lambda leg, art: ("OK", f"{leg}\nAGREE"))
+        res = _invoke_board_control(
+            TWO_SAME_VENDOR_BOARD, "artifact", spawn=lambda leg, art: ("OK", f"{leg}\nAGREE")
+        )
         self.assertTrue(all(l.seat_key for l in res.legs))
 
     def test_two_same_lane_seats_are_distinguishable_by_seat_key(self) -> None:
@@ -416,7 +435,9 @@ class BoardSeamValidationTests(unittest.TestCase):
             Seat(model="claude-sonnet-5", effort="max", harness="claude", lens="adversarial"),
             Seat(model="claude-sonnet-5", effort="max", harness="claude", lens="supportive"),
         ))
-        res = pi.invoke_board(board, "artifact", spawn=lambda leg, art: ("OK", "AGREE"))
+        res = _invoke_board_control(
+            board, "artifact", spawn=lambda leg, art: ("OK", "AGREE")
+        )
         self.assertEqual([l.leg for l in res.legs], ["claude", "claude"])
         self.assertNotEqual(res.legs[0].seat_key, res.legs[1].seat_key)
 

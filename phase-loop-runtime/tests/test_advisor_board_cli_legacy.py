@@ -14,11 +14,13 @@ patch `invoke_board` so no vendor CLI is spawned.
 """
 from __future__ import annotations
 
+import subprocess
 import tempfile
 import unittest
 import unittest.mock
 from pathlib import Path
 
+from harden_tdd_guard import harden_require
 from phase_loop_runtime import panel_invoker as pi_mod
 from phase_loop_runtime.advisor_board import composition as comp_mod
 from phase_loop_runtime.cli import main as cli_main
@@ -76,6 +78,243 @@ class AdvisorBoardCliTest(unittest.TestCase):
             self.assertNotEqual(Path(kwargs["repo_dir"]).resolve(), Path.cwd().resolve())
             # It dispatched the composed board (invoke_board's first positional).
             self.assertTrue(getattr(invoke_spy.call_args.args[0], "seats", None))
+
+    def test_cli_harden_preflight_authorizes_before_compose_and_invoke(self):
+        """The live entrypoint binds pre-composition and final review authority.
+
+        Composition's availability/auth probes are executable capability effects, so
+        the CLI needs a fresh preflight before invoking the no-kwargs production
+        composer.  The final isolation authorization is intentionally minted only
+        after the final composed board exists, and it must bind that exact board plus
+        a canonical Git authority rather than the temporary provider scratch dir.
+        """
+        harden_require("review-leg-isolation")
+        from phase_loop_runtime.advisor_board import backing as backing_mod
+
+        events: list[str] = []
+        precomposition_authority = object()
+        final_authority = object()
+        composed = _hermetic_board()
+        canonical_repo = Path(
+            subprocess.check_output(
+                ["git", "rev-parse", "--show-toplevel"], text=True
+            ).strip()
+        ).resolve()
+
+        def prepare_composition(*_args, **_kwargs):
+            events.append("precomposition_authorization")
+            return precomposition_authority
+
+        def compose():
+            self.assertIn("precomposition_authorization", events)
+            self.assertNotIn("final_authorization", events)
+            events.append("compose")
+            return composed
+
+        def prepare_final(board, artifact, *, mode, canonical_repo_authority):
+            self.assertIs(board, composed)
+            self.assertEqual(artifact, "review me\n")
+            self.assertEqual(mode, "review")
+            self.assertEqual(Path(canonical_repo_authority).resolve(), canonical_repo)
+            events.append("final_authorization")
+            return final_authority
+
+        def invoke(board, _artifact, **kwargs):
+            self.assertIs(board, composed)
+            self.assertIn("precomposition_authorization", events)
+            self.assertIn("final_authorization", events)
+            self.assertIs(kwargs.get("review_authorization"), final_authority)
+            self.assertEqual(
+                Path(kwargs["canonical_repo_authority"]).resolve(), canonical_repo
+            )
+            self.assertNotEqual(
+                Path(kwargs["repo_dir"]).resolve(), canonical_repo
+            )
+            events.append("invoke")
+            return _CANNED
+
+        with tempfile.TemporaryDirectory() as td:
+            artifact = Path(td) / "bundle.md"
+            artifact.write_text("review me\n")
+            with unittest.mock.patch.object(
+                backing_mod,
+                "prepare_review_composition_authorization",
+                side_effect=prepare_composition,
+            ), unittest.mock.patch.object(
+                backing_mod,
+                "prepare_review_isolation_authorization",
+                side_effect=prepare_final,
+            ), unittest.mock.patch.object(
+                comp_mod, "compose_review_board", side_effect=compose
+            ) as compose_spy, unittest.mock.patch.object(
+                pi_mod, "invoke_board", side_effect=invoke
+            ) as invoke_spy:
+                rc = cli_main(["advisor-board", str(artifact)])
+
+        self.assertEqual(rc, 0)
+        compose_spy.assert_called_once_with()
+        invoke_spy.assert_called_once()
+        self.assertLess(
+            events.index("precomposition_authorization"), events.index("compose")
+        )
+        self.assertLess(events.index("compose"), events.index("final_authorization"))
+        self.assertLess(events.index("final_authorization"), events.index("invoke"))
+
+    def test_harden_real_invoker_revalidates_canonical_repository_authority(self):
+        """A governed review validates canonical Git authority before a pure spawn.
+
+        Supplying a review authorization makes this a governed review path: the real
+        invoker must independently bind the canonical Git authority while retaining
+        a distinct private ``repo_dir`` scratch.  A scratch substitution, another
+        valid Git repository, or forged authorization must refuse before a callback
+        can execute.  Every call deliberately omits ``mode`` so the check covers the
+        derived ``code-review`` mode rather than only an explicit override.
+        """
+        harden_require("review-leg-isolation")
+        from phase_loop_runtime.advisor_board import backing as backing_mod
+        from phase_loop_runtime.advisor_board.matrix import default_matrix
+        from phase_loop_runtime.advisor_board.schema import Board, Seat
+
+        canonical_repo = Path(
+            subprocess.check_output(
+                ["git", "rev-parse", "--show-toplevel"], text=True
+            ).strip()
+        ).resolve()
+        board = Board(
+            name="harden-canonical-authority",
+            purpose="code-review",
+            seats=(
+                Seat(
+                    model=backing_mod.HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["codex"],
+                    effort="max",
+                    harness="codex",
+                ),
+            ),
+        )
+        artifact = "bounded canonical-authority fixture\n"
+        matrix = default_matrix(env={}, probe=lambda _vendor: True)
+
+        def authorization():
+            return backing_mod.prepare_review_isolation_authorization(
+                board,
+                artifact,
+                mode="review",
+                canonical_repo_authority=canonical_repo,
+            )
+
+        with tempfile.TemporaryDirectory() as td:
+            scratch = Path(td) / "provider-scratch"
+            scratch.mkdir()
+            alternate_repo = Path(td) / "different-valid-git-repository"
+            subprocess.run(["git", "init", "-q", str(alternate_repo)], check=True)
+            self.assertNotEqual(alternate_repo.resolve(), canonical_repo)
+            self.assertNotEqual(alternate_repo.resolve(), scratch.resolve())
+            effects: list[str] = []
+            revalidated_authorities: list[Path] = []
+            real_revalidate = pi_mod.revalidate_review_isolation_authorization
+
+            def revalidate(auth, review_board, review_artifact, **kwargs):
+                if review_board == board:
+                    self.assertEqual(review_artifact, artifact)
+                    self.assertEqual(kwargs.get("mode"), "review")
+                    canonical = Path(kwargs["canonical_repo_authority"]).resolve()
+                    self.assertEqual(canonical, canonical_repo)
+                    self.assertNotEqual(canonical, scratch.resolve())
+                    revalidated_authorities.append(canonical)
+                    effects.append("revalidated")
+                return real_revalidate(auth, review_board, review_artifact, **kwargs)
+
+            def hermetic_spawn(*_args, **_kwargs):
+                self.assertTrue(revalidated_authorities)
+                effects.append("spawn")
+                return "OK", "bounded hermetic control\nAGREE"
+
+            with unittest.mock.patch.object(
+                pi_mod,
+                "revalidate_review_isolation_authorization",
+                side_effect=revalidate,
+            ):
+                result = pi_mod.invoke_board(
+                    board,
+                    artifact,
+                    spawn=hermetic_spawn,
+                    repo_dir=scratch,
+                    canonical_repo_authority=canonical_repo,
+                    review_authorization=authorization(),
+                    base_env={},
+                    matrix=matrix,
+                    max_concurrency=1,
+                )
+
+            self.assertEqual([leg.status for leg in result.legs], ["OK"])
+            self.assertEqual(effects[-1], "spawn")
+            self.assertTrue(revalidated_authorities)
+
+            scratch_effects: list[str] = []
+
+            def scratch_spawn(*_args, **_kwargs):
+                scratch_effects.append("spawn")
+                return "OK", "unexpected scratch authority\nAGREE"
+
+            scratch_result = pi_mod.invoke_board(
+                board,
+                artifact,
+                spawn=scratch_spawn,
+                repo_dir=scratch,
+                canonical_repo_authority=scratch,
+                review_authorization=authorization(),
+                base_env={},
+                matrix=matrix,
+                max_concurrency=1,
+            )
+            self.assertFalse(scratch_effects)
+            self.assertTrue(
+                all(leg.status == "UNAVAILABLE" for leg in scratch_result.legs)
+            )
+
+            alternate_effects: list[str] = []
+
+            def alternate_spawn(*_args, **_kwargs):
+                alternate_effects.append("spawn")
+                return "OK", "unexpected alternate repository authority\nAGREE"
+
+            alternate_result = pi_mod.invoke_board(
+                board,
+                artifact,
+                spawn=alternate_spawn,
+                repo_dir=scratch,
+                canonical_repo_authority=alternate_repo,
+                review_authorization=authorization(),
+                base_env={},
+                matrix=matrix,
+                max_concurrency=1,
+            )
+            self.assertFalse(alternate_effects)
+            self.assertTrue(
+                all(leg.status == "UNAVAILABLE" for leg in alternate_result.legs)
+            )
+
+            forged_effects: list[str] = []
+
+            def forged_spawn(*_args, **_kwargs):
+                forged_effects.append("spawn")
+                return "OK", "unexpected forged authority\nAGREE"
+
+            forged_result = pi_mod.invoke_board(
+                board,
+                artifact,
+                spawn=forged_spawn,
+                repo_dir=scratch,
+                canonical_repo_authority=canonical_repo,
+                review_authorization=object(),
+                base_env={},
+                matrix=matrix,
+                max_concurrency=1,
+            )
+            self.assertFalse(forged_effects)
+            self.assertTrue(
+                all(leg.status == "UNAVAILABLE" for leg in forged_result.legs)
+            )
 
     def test_compose_drops_unauthed_vendor_at_the_seam(self):
         # Item 1: the auth-aware seam the CLI uses drops an on-PATH-but-UNAUTHED vendor

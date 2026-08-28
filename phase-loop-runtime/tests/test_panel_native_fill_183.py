@@ -24,6 +24,7 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
+from harden_tdd_guard import invoke_sanctioned_review_transport
 from phase_loop_runtime import panel_invoker as pi
 from phase_loop_runtime.advisor_board import Board, Seat
 from phase_loop_runtime.advisor_board import composition as comp_mod
@@ -54,7 +55,7 @@ class DeferredSeatSurfacesNativeFillRequest(unittest.TestCase):
                 ),
                 unittest.mock.patch.object(pi, "_run_claude_tui_session", session),
             ):
-                result = pi.invoke_board(
+                result = invoke_sanctioned_review_transport(
                     _claude_board(),
                     "",
                     artifact_ref=str(artifact.resolve()),
@@ -71,7 +72,7 @@ class DeferredSeatSurfacesNativeFillRequest(unittest.TestCase):
         self.assertEqual(result.native_fill_requests, ())
 
     def test_ok_board_has_no_native_request(self):
-        result = pi.invoke_board(
+        result = invoke_sanctioned_review_transport(
             _claude_board(),
             "x",
             spawn=lambda leg, art: ("OK", f"{leg}\nAGREE"),
@@ -91,7 +92,7 @@ class DeferredSeatSurfacesNativeFillRequest(unittest.TestCase):
             with unittest.mock.patch.object(
                 pi, "_claude_code_support_status", return_value=supported
             ):
-                return pi.invoke_board(
+                return invoke_sanctioned_review_transport(
                     _claude_board(), "", artifact_ref=str(artifact.resolve()),
                     repo_dir=str(scratch), base_env=base_env,
                 )
@@ -146,7 +147,7 @@ class HeadlessNonClaudeRunsLeg(unittest.TestCase):
                 ),
                 unittest.mock.patch.object(pi, "_run_claude_tui_session", session),
             ):
-                result = pi.invoke_board(
+                result = invoke_sanctioned_review_transport(
                     _claude_board(),
                     "",
                     artifact_ref=str(artifact.resolve()),
@@ -307,7 +308,7 @@ class DefaultClaudeSeatNeverCarriesNativeFill(unittest.TestCase):
                 ),
                 unittest.mock.patch.object(pi, "_run_claude_tui_session", session),
             ):
-                result = pi.invoke_board(
+                result = invoke_sanctioned_review_transport(
                     _claude_board(), "", artifact_ref=str(artifact.resolve()),
                     brief_ref=str(brief.resolve()), repo_dir=str(scratch),
                     base_env={"CLAUDECODE": "1", "PATH": os.environ.get("PATH", "")},
@@ -348,7 +349,7 @@ class TypedDeferralReachesTheAttachGate(unittest.TestCase):
             with unittest.mock.patch.object(
                 pi, "_claude_code_support_status", return_value=(True, "supported")
             ):
-                result = pi.invoke_board(
+                result = invoke_sanctioned_review_transport(
                     board,
                     "",
                     artifact_ref=str(artifact.resolve()),
