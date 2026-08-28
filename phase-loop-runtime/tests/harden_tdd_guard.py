@@ -19,6 +19,7 @@ from pathlib import Path
 import subprocess
 import sysconfig
 import tempfile
+from unittest import mock
 
 import pytest
 
@@ -200,6 +201,9 @@ def invoke_sanctioned_review_transport(
     assertions remain part of the default and activated corpora.  Once the marker
     exists, it mints fresh authority bound to the exact board, artifact, review
     mode, and canonical checkout, then supplies a separate private scratch root.
+    Its temporary recording factory marks only this explicit test-owned transport
+    and returns the same pre-minted authorization for independent validation.  An
+    exact post-call assertion makes the injected-control signal non-vacuous.
     """
 
     invoker = importlib.import_module("phase_loop_runtime.panel_invoker")
@@ -223,7 +227,10 @@ def invoke_sanctioned_review_transport(
 
     backing = importlib.import_module("phase_loop_runtime.advisor_board.backing")
     canonical_repo = _repo_root()
-    authorization = backing.prepare_review_isolation_authorization(
+    prepare_review_isolation_authorization = (
+        backing.prepare_review_isolation_authorization
+    )
+    authorization = prepare_review_isolation_authorization(
         board,
         artifact,
         mode="review",
@@ -237,4 +244,23 @@ def invoke_sanctioned_review_transport(
         scratch = Path(td).resolve()
         assert scratch != canonical_repo
         call_kwargs["repo_dir"] = scratch
-        return invoker.invoke_board(board, artifact, **call_kwargs)
+        authorization_canary = mock.Mock(return_value=authorization)
+        with mock.patch.object(
+            backing,
+            "prepare_review_isolation_authorization",
+            authorization_canary,
+        ):
+            result = invoker.invoke_board(board, artifact, **call_kwargs)
+
+        expected_call = mock.call(
+            board,
+            artifact,
+            mode="review",
+            canonical_repo_authority=canonical_repo,
+        )
+        if authorization_canary.call_args_list != [expected_call]:
+            raise AssertionError(
+                "sanctioned review transport requires exactly one invocation-time "
+                "backing-factory lookup bound to its pre-minted authorization"
+            )
+        return result
