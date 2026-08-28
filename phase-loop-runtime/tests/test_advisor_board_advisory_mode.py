@@ -23,6 +23,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 
+from harden_tdd_guard import invoke_sanctioned_review_transport
 from phase_loop_runtime import panel_invoker as pi
 from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
 from phase_loop_runtime.advisor_board.presets import (
@@ -73,7 +74,13 @@ def _capture_board_mode(board, *, mode=None):
 
     kwargs = {} if mode is None else {"mode": mode}
     with patch.object(pi, "_default_spawn_via_provider", side_effect=fake_provider):
-        res = pi.invoke_board(board, "STAGED-ARTIFACT", **kwargs)
+        resolved_mode = mode if mode is not None else pi._mode_for_purpose(board.purpose)
+        if resolved_mode == "review":
+            res = invoke_sanctioned_review_transport(
+                board, "STAGED-ARTIFACT", **kwargs
+            )
+        else:
+            res = pi.invoke_board(board, "STAGED-ARTIFACT", **kwargs)
     return seen, res
 
 

@@ -23,6 +23,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from harden_tdd_guard import invoke_sanctioned_review_transport
 from phase_loop_runtime import panel_invoker as pi
 from phase_loop_runtime.advisor_board import (
     BACKING_OMNIGENT,
@@ -39,6 +40,12 @@ def _ok_spawn(leg, art):
     return ("OK", f"{leg}\nAGREE")
 
 
+def _invoke_board_control(board, artifact: str, **kwargs):
+    """Observability remains a pure sink test after review transport is bound."""
+
+    return invoke_sanctioned_review_transport(board, artifact, **kwargs)
+
+
 # ---------------------------------------------------------------------------
 # 1. Envelope emit — a natively-launched board emits the frozen envelope.
 
@@ -46,7 +53,7 @@ def _ok_spawn(leg, art):
 class EnvelopeEmitTests(unittest.TestCase):
     def test_default_board_emits_board_and_seat_envelope_sequence(self) -> None:
         sink = obs.CollectingSink()
-        res = pi.invoke_board(DEFAULT_BOARD, "artifact", spawn=_ok_spawn, sink=sink)
+        res = _invoke_board_control(DEFAULT_BOARD, "artifact", spawn=_ok_spawn, sink=sink)
         self.assertTrue(all(l.status == "OK" for l in res.legs))
         kinds = [e.kind for e in sink.events]
         # board brackets the run; every seat emits started + a terminal.
@@ -62,7 +69,7 @@ class EnvelopeEmitTests(unittest.TestCase):
 
     def test_seat_events_carry_seat_key_vendor_family_and_harness(self) -> None:
         sink = obs.CollectingSink()
-        pi.invoke_board(DEFAULT_BOARD, "artifact", spawn=_ok_spawn, sink=sink)
+        _invoke_board_control(DEFAULT_BOARD, "artifact", spawn=_ok_spawn, sink=sink)
         seat_events = [e for e in sink.events if e.kind.startswith("seat.")]
         self.assertTrue(seat_events)
         for e in seat_events:
@@ -82,7 +89,7 @@ class EnvelopeEmitTests(unittest.TestCase):
             Seat(model="gpt-5.6-sol", effort="max", harness="codex"),
             Seat(model="gpt-5.6-sol", effort="high", harness="opencode", backing=BACKING_OMNIGENT),
         ))
-        pi.invoke_board(board, "artifact", spawn=_ok_spawn, sink=sink)
+        _invoke_board_control(board, "artifact", spawn=_ok_spawn, sink=sink)
         by_kind = [e.kind for e in sink.events]
         self.assertIn("seat.completed", by_kind)  # codex OK
         self.assertIn("seat.skipped", by_kind)    # opencode UNAVAILABLE
@@ -128,7 +135,9 @@ class NeverFailsTheLegTests(unittest.TestCase):
             def emit(self, event: AdvisorBoardEvent) -> None:
                 raise RuntimeError("sink boom")
 
-        res = pi.invoke_board(DEFAULT_BOARD, "artifact", spawn=_ok_spawn, sink=RaisingSink())
+        res = _invoke_board_control(
+            DEFAULT_BOARD, "artifact", spawn=_ok_spawn, sink=RaisingSink()
+        )
         self.assertEqual(tuple(l.leg for l in res.legs), tuple(s.harness for s in DEFAULT_BOARD.seats))
         self.assertTrue(all(l.status == "OK" for l in res.legs))  # leg unaffected
 
@@ -138,7 +147,7 @@ class NeverFailsTheLegTests(unittest.TestCase):
                 raise RuntimeError("sink boom")
 
         async_sink = obs.AsyncForwardingSink(RaisingSink())
-        res = pi.invoke_board(DEFAULT_BOARD, "artifact", spawn=_ok_spawn, sink=async_sink)
+        res = _invoke_board_control(DEFAULT_BOARD, "artifact", spawn=_ok_spawn, sink=async_sink)
         async_sink.close()  # deterministic drain; must not raise
         self.assertTrue(all(l.status == "OK" for l in res.legs))
 
@@ -169,7 +178,7 @@ class NeverFailsTheLegTests(unittest.TestCase):
 
         blocking = BlockingSink()
         async_sink = obs.AsyncForwardingSink(blocking)
-        res = pi.invoke_board(DEFAULT_BOARD, "artifact", spawn=_ok_spawn, sink=async_sink)
+        res = _invoke_board_control(DEFAULT_BOARD, "artifact", spawn=_ok_spawn, sink=async_sink)
         # We are HERE (board returned) while the bg thread is parked in emit:
         self.assertTrue(blocking.entered.wait(5), "async dispatch never ran")
         self.assertFalse(release.is_set())            # sink still blocked
@@ -182,7 +191,7 @@ class NeverFailsTheLegTests(unittest.TestCase):
     def test_async_close_drains_every_enqueued_event(self) -> None:
         collecting = obs.CollectingSink()
         async_sink = obs.AsyncForwardingSink(collecting)
-        pi.invoke_board(DEFAULT_BOARD, "artifact", spawn=_ok_spawn, sink=async_sink)
+        _invoke_board_control(DEFAULT_BOARD, "artifact", spawn=_ok_spawn, sink=async_sink)
         async_sink.close()  # FIFO + sentinel → all prior events dispatched
         kinds = [e.kind for e in collecting.events]
         self.assertEqual(kinds[0], "board.started")
@@ -279,7 +288,7 @@ class JsonlLedgerWriterSeamTests(unittest.TestCase):
             path = Path(d) / "ledger.ndjson"
             writer = obs.JsonlLedgerWriter(path)
             sink = obs.StateLedgerSink(writer, session_id="session-fixed")
-            res = pi.invoke_board(DEFAULT_BOARD, "artifact", spawn=_ok_spawn, sink=sink)
+            res = _invoke_board_control(DEFAULT_BOARD, "artifact", spawn=_ok_spawn, sink=sink)
             self.assertTrue(all(l.status == "OK" for l in res.legs))
             lines = path.read_text().splitlines()
             self.assertTrue(lines)
@@ -305,7 +314,7 @@ class JsonlLedgerWriterSeamTests(unittest.TestCase):
 
         self.assertIsInstance(FakeBinding(), obs.LedgerWriter)
         sink = obs.StateLedgerSink(FakeBinding(), session_id="s")
-        pi.invoke_board(DEFAULT_BOARD, "artifact", spawn=_ok_spawn, sink=sink)
+        _invoke_board_control(DEFAULT_BOARD, "artifact", spawn=_ok_spawn, sink=sink)
         self.assertTrue(captured)
         self.assertTrue(all(r["kind"] == "runtime_event" for r in captured))
 
@@ -319,7 +328,7 @@ class NativeHostLegInThePlaneTests(unittest.TestCase):
         host = HostContext(host_harness="claude")
         sink = obs.CollectingSink()
         with patch.object(pi, "_default_spawn", return_value=("OK", "AGREE")) as ds:
-            res = pi.invoke_board(DEFAULT_BOARD, "artifact", host=host, sink=sink)
+            res = _invoke_board_control(DEFAULT_BOARD, "artifact", host=host, sink=sink)
         # native homebrew spawn (never a gateway) …
         self.assertIn("claude", {c.args[0] for c in ds.call_args_list})
         self.assertTrue(any(l.leg == "claude" and l.status == "OK" for l in res.legs))
@@ -352,9 +361,11 @@ class PerWorkloadBoundaryTests(unittest.TestCase):
         # Same call with and without a sink returns identical leg tuples; sink=None
         # builds no envelope at all (default board unchanged).
         with patch.object(pi, "_default_spawn", return_value=("OK", "AGREE")):
-            base = pi.invoke_board(DEFAULT_BOARD, "artifact")
+            base = _invoke_board_control(DEFAULT_BOARD, "artifact")
         with patch.object(pi, "_default_spawn", return_value=("OK", "AGREE")):
-            withsink = pi.invoke_board(DEFAULT_BOARD, "artifact", sink=obs.CollectingSink())
+            withsink = _invoke_board_control(
+                DEFAULT_BOARD, "artifact", sink=obs.CollectingSink()
+            )
         self.assertEqual(
             [(l.leg, l.status, l.seat_key) for l in base.legs],
             [(l.leg, l.status, l.seat_key) for l in withsink.legs],

@@ -24,6 +24,7 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
+from harden_tdd_guard import invoke_sanctioned_review_transport
 from phase_loop_runtime import panel_invoker as pi
 from phase_loop_runtime.advisor_board import Board, Seat
 from phase_loop_runtime.advisor_board import composition as comp_mod
@@ -71,7 +72,7 @@ class DeferredSeatSurfacesNativeFillRequest(unittest.TestCase):
         self.assertEqual(result.native_fill_requests, ())
 
     def test_ok_board_has_no_native_request(self):
-        result = pi.invoke_board(
+        result = invoke_sanctioned_review_transport(
             _claude_board(),
             "x",
             spawn=lambda leg, art: ("OK", f"{leg}\nAGREE"),
@@ -146,7 +147,7 @@ class HeadlessNonClaudeRunsLeg(unittest.TestCase):
                 ),
                 unittest.mock.patch.object(pi, "_run_claude_tui_session", session),
             ):
-                result = pi.invoke_board(
+                result = invoke_sanctioned_review_transport(
                     _claude_board(),
                     "",
                     artifact_ref=str(artifact.resolve()),

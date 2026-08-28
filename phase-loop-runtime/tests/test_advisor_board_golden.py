@@ -50,6 +50,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
+from harden_tdd_guard import invoke_sanctioned_review_transport
 from phase_loop_runtime import panel_invoker as pi
 from phase_loop_runtime.advisor_board import Seat, resolve_seat_env
 from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD, DEFAULT_BOARD_VENDOR_ORDER
@@ -178,7 +179,9 @@ class GoldenWholeBoardBehaviorTests(unittest.TestCase):
         panel_spawn = _RecordingSpawn(reply)
         board_spawn = _RecordingSpawn(reply)
         panel = pi.invoke_panel(self.ARTIFACT, pi.PANEL_LEGS, spawn=panel_spawn)
-        board = pi.invoke_board(DEFAULT_BOARD, self.ARTIFACT, spawn=board_spawn)
+        board = invoke_sanctioned_review_transport(
+            DEFAULT_BOARD, self.ARTIFACT, spawn=board_spawn
+        )
         return panel, board, panel_spawn, board_spawn
 
     def _assert_shared_leg_status_text_parity(self, panel, board) -> None:
@@ -262,14 +265,18 @@ class GoldenApiStabilityTests(unittest.TestCase):
     """The legacy API stays frozen while the model-first default has four seats."""
 
     def test_default_board_yields_four_legs_in_board_order(self) -> None:
-        board = pi.invoke_board(DEFAULT_BOARD, "x", spawn=lambda leg, art: ("OK", f"{leg}\nAGREE"))
+        board = invoke_sanctioned_review_transport(
+            DEFAULT_BOARD, "x", spawn=lambda leg, art: ("OK", f"{leg}\nAGREE")
+        )
         self.assertEqual(tuple(r.leg for r in board.legs), DEFAULT_BOARD_VENDOR_ORDER)
 
     def test_invoke_board_default_matches_invoke_panel_usable_semantics(self) -> None:
         # .usable (status OK + non-empty text) is what governed_review keys on.
         reply = lambda leg, art: ("OK", f"{leg}\nAGREE")
         panel = pi.invoke_panel("x", pi.PANEL_LEGS, spawn=lambda leg, art: reply(leg, art))
-        board = pi.invoke_board(DEFAULT_BOARD, "x", spawn=lambda leg, art: reply(leg, art))
+        board = invoke_sanctioned_review_transport(
+            DEFAULT_BOARD, "x", spawn=lambda leg, art: reply(leg, art)
+        )
         self.assertEqual([r.usable for r in panel.legs], [r.usable for r in board.legs[:3]])
         self.assertTrue(board.legs[3].usable)
 
@@ -302,7 +309,9 @@ class ConcurrencyProofTests(unittest.TestCase):
 
     def test_invoke_board_runs_seats_concurrently(self) -> None:
         n = len(DEFAULT_BOARD.seats)
-        res = pi.invoke_board(DEFAULT_BOARD, "artifact", spawn=self._barrier_spawn(n))
+        res = invoke_sanctioned_review_transport(
+            DEFAULT_BOARD, "artifact", spawn=self._barrier_spawn(n)
+        )
         self.assertTrue(
             all(r.status == "OK" for r in res.legs),
             f"a leg did not run concurrently (barrier timed out): "
@@ -338,7 +347,7 @@ class ConcurrencyProofTests(unittest.TestCase):
         # Barrier(N) is unsatisfiable → every leg's wait() breaks → fail-closed
         # DEGRADED. That DEGRADED result IS the proof the seats never overlapped.
         n = len(DEFAULT_BOARD.seats)
-        res = pi.invoke_board(
+        res = invoke_sanctioned_review_transport(
             DEFAULT_BOARD, "artifact", spawn=self._unsatisfiable_barrier_spawn(n), max_concurrency=1
         )
         self.assertTrue(
@@ -364,8 +373,10 @@ class ConcurrencyProofTests(unittest.TestCase):
         # Sequential mode still produces the same ordered, byte-identical results as
         # the parallel default — concurrency is a timing knob, never an outcome one.
         reply = lambda leg, art: ("OK", f"{leg}\nAGREE")
-        par = pi.invoke_board(DEFAULT_BOARD, "artifact", spawn=reply)
-        seq = pi.invoke_board(DEFAULT_BOARD, "artifact", spawn=reply, max_concurrency=1)
+        par = invoke_sanctioned_review_transport(DEFAULT_BOARD, "artifact", spawn=reply)
+        seq = invoke_sanctioned_review_transport(
+            DEFAULT_BOARD, "artifact", spawn=reply, max_concurrency=1
+        )
         self.assertEqual([r.leg for r in seq.legs], list(DEFAULT_BOARD_VENDOR_ORDER))
         self.assertTrue(all(r.status == "OK" for r in seq.legs))
         for p, s in zip(par.legs, seq.legs):

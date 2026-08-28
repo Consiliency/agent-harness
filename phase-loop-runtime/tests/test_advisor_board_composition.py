@@ -60,6 +60,54 @@ def test_review_leg_isolation_refuses_unbound_direct_invocation():
     assert all(leg.status in {"DEGRADED", "UNAVAILABLE"} for leg in result.legs)
 
 
+def test_derived_review_refuses_missing_or_forged_authority_before_callback():
+    """A mode-omitted premerge board cannot spend either execution seam unbound."""
+
+    harden_require("review-leg-isolation")
+    import subprocess
+
+    from phase_loop_runtime import panel_invoker as invoker
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+
+    canonical_repo = Path(
+        subprocess.check_output(["git", "rev-parse", "--show-toplevel"], text=True).strip()
+    ).resolve()
+    callback_effects: list[str] = []
+
+    def callback(*_args, **_kwargs):
+        callback_effects.append("callback")
+        return "OK", "unexpected unbound callback\nAGREE"
+
+    with tempfile.TemporaryDirectory() as td:
+        scratch = Path(td) / "private-scratch"
+        scratch.mkdir()
+        with patch.object(
+            invoker,
+            "_default_spawn_via_provider",
+            side_effect=AssertionError("provider path ran before authorization"),
+        ) as provider_spy:
+            missing = invoker.invoke_board(
+                DEFAULT_BOARD,
+                "bounded derived-review fixture",
+                spawn=callback,
+                repo_dir=scratch,
+                canonical_repo_authority=canonical_repo,
+            )
+            forged = invoker.invoke_board(
+                DEFAULT_BOARD,
+                "bounded derived-review fixture",
+                spawn=callback,
+                repo_dir=scratch,
+                canonical_repo_authority=canonical_repo,
+                review_authorization=object(),
+            )
+
+    provider_spy.assert_not_called()
+    assert not callback_effects
+    assert all(leg.status == "UNAVAILABLE" for leg in missing.legs)
+    assert all(leg.status == "UNAVAILABLE" for leg in forged.legs)
+
+
 class AvailabilitySimulationTests(unittest.TestCase):
     def _assert_full_and_clean(self, board, *, expect_vendors):
         # (a) exactly the target seat count …

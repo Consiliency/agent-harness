@@ -27,6 +27,7 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from harden_tdd_guard import invoke_sanctioned_review_transport
 import phase_loop_runtime.panel_invoker as pi
 from phase_loop_runtime.advisor_board import (
     HARNESS_ENDPOINT,
@@ -229,6 +230,12 @@ def _board(*seats: Seat, allow_api_key_fallback: bool = False) -> Board:
                  allow_api_key_fallback=allow_api_key_fallback)
 
 
+def _invoke_board_control(board, artifact: str, **kwargs):
+    """Every fake-gateway board run still binds the derived review operation."""
+
+    return invoke_sanctioned_review_transport(board, artifact, **kwargs)
+
+
 # --- contract conformance (lock: did NOT fork the transport) -----------------
 
 
@@ -259,8 +266,10 @@ class ContractConformanceTests(unittest.TestCase):
 class PrimaryRoutingTests(unittest.TestCase):
     def test_opencode_seat_routes_through_omnigent_ok_with_text(self) -> None:
         with FakeOmnigentServer() as srv:
-            res = pi.invoke_board(_board(_opencode_seat()), "please review",
-                                  omnigent=srv.backing(), base_env={})
+            res = _invoke_board_control(
+                _board(_opencode_seat()), "please review",
+                omnigent=srv.backing(), base_env={},
+            )
         leg = res.legs[0]
         self.assertEqual(leg.leg, "opencode")
         self.assertEqual(leg.status, "OK")
@@ -289,8 +298,10 @@ class AuthLaneOnTheWireTests(unittest.TestCase):
     def test_subscription_seat_leaks_no_vendor_key_material(self) -> None:
         base_env = {"OPENAI_API_KEY": "sk-open", "ANTHROPIC_API_KEY": "sk-anthropic"}
         with FakeOmnigentServer() as srv:
-            res = pi.invoke_board(_board(_opencode_seat("subscription")), "review",
-                                  omnigent=srv.backing(), base_env=base_env)
+            res = _invoke_board_control(
+                _board(_opencode_seat("subscription")), "review",
+                omnigent=srv.backing(), base_env=base_env,
+            )
             create = srv.session_requests()[0]
             snapshot = srv.created_snapshots[0]
         # On the wire: ZERO vendor-key headers. Reported lane derived from that.
@@ -304,7 +315,9 @@ class AuthLaneOnTheWireTests(unittest.TestCase):
         base_env = {"OPENAI_API_KEY": "sk-open", "ANTHROPIC_API_KEY": "sk-anthropic"}
         board = _board(_opencode_seat("api_key"), allow_api_key_fallback=True)
         with FakeOmnigentServer() as srv:
-            res = pi.invoke_board(board, "review", omnigent=srv.backing(), base_env=base_env)
+            res = _invoke_board_control(
+                board, "review", omnigent=srv.backing(), base_env=base_env
+            )
             create = srv.session_requests()[0]
             snapshot = srv.created_snapshots[0]
         # Exactly the openai key var, nothing else — and the gateway DERIVED api_key.
@@ -346,8 +359,9 @@ class GatewayDownTests(unittest.TestCase):
         # Point the backing at a closed port: the None gateway_available probe
         # fails -> select_backing degrades the seat skip-with-warning.
         backing = OmnigentBacking.from_config(base_url="http://127.0.0.1:1")
-        res = pi.invoke_board(_board(_opencode_seat()), "review",
-                              omnigent=backing, base_env={})
+        res = _invoke_board_control(
+            _board(_opencode_seat()), "review", omnigent=backing, base_env={}
+        )
         self.assertEqual(res.legs[0].status, "UNAVAILABLE")
         self.assertIn("gateway unavailable", res.legs[0].detail or "")
 
@@ -362,8 +376,10 @@ class GatewayDownTests(unittest.TestCase):
             _opencode_seat(),
         )
         backing = OmnigentBacking.from_config(base_url="http://127.0.0.1:1")  # nothing listening
-        res = pi.invoke_board(board, "review", omnigent=backing, base_env={},
-                              spawn=lambda leg, art: ("OK", f"{leg}\nAGREE"))
+        res = _invoke_board_control(
+            board, "review", omnigent=backing, base_env={},
+            spawn=lambda leg, art: ("OK", f"{leg}\nAGREE"),
+        )
         by_leg = {l.leg: l for l in res.legs}
         self.assertEqual(by_leg["codex"].status, "OK")
         self.assertEqual(by_leg["codex"].text, "codex\nAGREE")
@@ -383,16 +399,18 @@ class DynamicCatalogGateTests(unittest.TestCase):
         # opencode dropped from the live catalog → skip-with-warning, a DISTINCT
         # reason from gateway-down (both are fail-closed but they are not the same).
         with FakeOmnigentServer(harnesses=set()) as srv:
-            res = pi.invoke_board(_board(_opencode_seat()), "review",
-                                  omnigent=srv.backing(), base_env={})
+            res = _invoke_board_control(
+                _board(_opencode_seat()), "review", omnigent=srv.backing(), base_env={}
+            )
         self.assertEqual(res.legs[0].status, "UNAVAILABLE")
         self.assertIn("not in live Omnigent catalog", res.legs[0].detail or "")
         self.assertNotIn("gateway unavailable", res.legs[0].detail or "")
 
     def test_seat_present_in_catalog_routes(self) -> None:
         with FakeOmnigentServer(harnesses={"opencode"}) as srv:
-            res = pi.invoke_board(_board(_opencode_seat()), "review",
-                                  omnigent=srv.backing(), base_env={})
+            res = _invoke_board_control(
+                _board(_opencode_seat()), "review", omnigent=srv.backing(), base_env={}
+            )
         self.assertEqual(res.legs[0].status, "OK")
 
     def test_cursor_is_catalog_gated(self) -> None:
@@ -420,8 +438,10 @@ class BuiltThreeAndNativeUnaffectedTests(unittest.TestCase):
             _opencode_seat(),
         )
         with FakeOmnigentServer() as srv:
-            res = pi.invoke_board(board, "review", omnigent=srv.backing(), base_env={},
-                                  spawn=lambda leg, art: ("OK", f"{leg}\nAGREE"))
+            res = _invoke_board_control(
+                board, "review", omnigent=srv.backing(), base_env={},
+                spawn=lambda leg, art: ("OK", f"{leg}\nAGREE"),
+            )
         by_leg = {l.leg: l for l in res.legs}
         self.assertEqual(by_leg["codex"].status, "OK")       # homebrew spawn
         self.assertEqual(by_leg["codex"].text, "codex\nAGREE")
@@ -440,8 +460,10 @@ class BuiltThreeAndNativeUnaffectedTests(unittest.TestCase):
     def test_default_board_stays_all_homebrew_even_with_omnigent_wired(self) -> None:
         from phase_loop_runtime.advisor_board import DEFAULT_BOARD, DEFAULT_BOARD_VENDOR_ORDER
         with FakeOmnigentServer() as srv:
-            res = pi.invoke_board(DEFAULT_BOARD, "review", omnigent=srv.backing(),
-                                  spawn=lambda leg, art: ("OK", f"{leg}\nAGREE"))
+            res = _invoke_board_control(
+                DEFAULT_BOARD, "review", omnigent=srv.backing(),
+                spawn=lambda leg, art: ("OK", f"{leg}\nAGREE"),
+            )
             # No session was ever created on the gateway — the default board is
             # all-homebrew, so the omnigent transport is never consulted.
             self.assertEqual(srv.session_requests(), [])
@@ -461,8 +483,10 @@ class SkipDoesNotBlockTests(unittest.TestCase):
             _opencode_seat(),
         )
         with FakeOmnigentServer(harnesses=set()) as srv:
-            res = pi.invoke_board(board, "review", omnigent=srv.backing(), base_env={},
-                                  spawn=lambda leg, art: ("OK", f"{leg}\nAGREE"))
+            res = _invoke_board_control(
+                board, "review", omnigent=srv.backing(), base_env={},
+                spawn=lambda leg, art: ("OK", f"{leg}\nAGREE"),
+            )
         by_leg = {l.leg: l for l in res.legs}
         self.assertEqual(by_leg["codex"].status, "OK")
         self.assertEqual(by_leg["opencode"].status, "UNAVAILABLE")
@@ -484,8 +508,9 @@ class FailureMappingTests(unittest.TestCase):
 
     def _run_with_rejection(self, rejection: str) -> str:
         with FakeOmnigentServer(reject_next_turn_with=rejection) as srv:
-            res = pi.invoke_board(_board(_opencode_seat()), "review",
-                                  omnigent=srv.backing(), base_env={})
+            res = _invoke_board_control(
+                _board(_opencode_seat()), "review", omnigent=srv.backing(), base_env={}
+            )
         return res.legs[0]
 
     def test_turn_rejections_degrade_the_seat(self) -> None:

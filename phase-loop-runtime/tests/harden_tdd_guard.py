@@ -18,6 +18,7 @@ import os
 from pathlib import Path
 import subprocess
 import sysconfig
+import tempfile
 
 import pytest
 
@@ -181,3 +182,59 @@ def harden_require(case_id: str) -> None:
     if os.environ.get(HARDEN_ACTIVATION_ENV) == "1":
         raise AssertionError(HARDEN_RED_ANCHORS[case_id])
     pytest.skip(HARDEN_SKIP_REASON)
+
+
+def invoke_sanctioned_review_transport(
+    board: object,
+    artifact: str,
+    *,
+    spawn: object | None = None,
+    mode: str | None = None,
+    **kwargs: object,
+) -> object:
+    """Run one explicit review transport without changing pre-marker semantics.
+
+    This is deliberately an explicit helper, not a fixture installed globally: a
+    test must opt in at the exact execution boundary.  Before production exposes
+    the marker it calls the historical direct path verbatim, so legacy semantic
+    assertions remain part of the default and activated corpora.  Once the marker
+    exists, it mints fresh authority bound to the exact board, artifact, review
+    mode, and canonical checkout, then supplies a separate private scratch root.
+    """
+
+    invoker = importlib.import_module("phase_loop_runtime.panel_invoker")
+    call_kwargs = dict(kwargs)
+    if mode is not None:
+        call_kwargs["mode"] = mode
+    if spawn is not None:
+        call_kwargs["spawn"] = spawn
+
+    marker = _marker_version()
+    assert marker in (None, 1), (
+        f"{HARDEN_MARKER_MODULE}.{HARDEN_MARKER_ATTRIBUTE} must be absent or equal 1"
+    )
+    if marker != 1:
+        return invoker.invoke_board(board, artifact, **call_kwargs)
+
+    if mode not in (None, "review"):
+        raise AssertionError("sanctioned review transport requires review mode")
+    if "review_authorization" in call_kwargs or "canonical_repo_authority" in call_kwargs:
+        raise AssertionError("the sanctioned transport owns review authority binding")
+
+    backing = importlib.import_module("phase_loop_runtime.advisor_board.backing")
+    canonical_repo = _repo_root()
+    authorization = backing.prepare_review_isolation_authorization(
+        board,
+        artifact,
+        mode="review",
+        canonical_repo_authority=canonical_repo,
+    )
+
+    call_kwargs.pop("repo_dir", None)
+    call_kwargs["canonical_repo_authority"] = canonical_repo
+    call_kwargs["review_authorization"] = authorization
+    with tempfile.TemporaryDirectory(prefix="harden-review-scratch-") as td:
+        scratch = Path(td).resolve()
+        assert scratch != canonical_repo
+        call_kwargs["repo_dir"] = scratch
+        return invoker.invoke_board(board, artifact, **call_kwargs)

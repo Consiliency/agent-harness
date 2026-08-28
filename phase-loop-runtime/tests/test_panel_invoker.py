@@ -5,6 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
+from harden_tdd_guard import invoke_sanctioned_review_transport
 from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
 from phase_loop_runtime.panel_invoker import (
     LEG_STATUSES,
@@ -12,7 +13,6 @@ from phase_loop_runtime.panel_invoker import (
     PanelLegResult,
     PanelRequest,
     available_panel_legs,
-    invoke_board,
     invoke_panel,
     invoke_panel_request,
     panel_leg_timeout_seconds,
@@ -114,7 +114,7 @@ class PanelInvokerTest(unittest.TestCase):
             bundle.write_text("FROM_BOARD_REF", encoding="utf-8")
             ref = Path(td) / "private.txt"
             ref.write_text("PRIVATE_BODY_ABSENT", encoding="utf-8")
-            invoke_board(
+            invoke_sanctioned_review_transport(
                 DEFAULT_BOARD,
                 "INLINE",
                 artifact_ref=str(bundle),
@@ -134,7 +134,7 @@ class PanelInvokerTest(unittest.TestCase):
             return ("OK", "AGREE")
 
         with patch("phase_loop_runtime.panel_invoker._default_spawn_via_provider", side_effect=spawn):
-            invoke_board(
+            invoke_sanctioned_review_transport(
                 DEFAULT_BOARD,
                 "ARTIFACT",
                 timeouts_by_leg={"gemini": 137},

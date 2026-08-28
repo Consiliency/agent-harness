@@ -111,10 +111,11 @@ class AdvisorBoardCliTest(unittest.TestCase):
             events.append("compose")
             return composed
 
-        def prepare_final(board, artifact, *, mode):
+        def prepare_final(board, artifact, *, mode, canonical_repo_authority):
             self.assertIs(board, composed)
             self.assertEqual(artifact, "review me\n")
             self.assertEqual(mode, "review")
+            self.assertEqual(Path(canonical_repo_authority).resolve(), canonical_repo)
             events.append("final_authorization")
             return final_authority
 
@@ -162,11 +163,12 @@ class AdvisorBoardCliTest(unittest.TestCase):
     def test_harden_real_invoker_revalidates_canonical_repository_authority(self):
         """A governed review validates canonical Git authority before a pure spawn.
 
-        A caller-owned spawn remains a hermetic no-provider control only when it is
-        bare.  Supplying a review authorization makes this a governed review path:
-        the real invoker must independently bind the canonical Git authority while
-        retaining a distinct private ``repo_dir`` scratch.  A scratch substitution
-        or forged authorization must refuse before that callback can execute.
+        Supplying a review authorization makes this a governed review path: the real
+        invoker must independently bind the canonical Git authority while retaining
+        a distinct private ``repo_dir`` scratch.  A scratch substitution, another
+        valid Git repository, or forged authorization must refuse before a callback
+        can execute.  Every call deliberately omits ``mode`` so the check covers the
+        derived ``code-review`` mode rather than only an explicit override.
         """
         harden_require("review-leg-isolation")
         from phase_loop_runtime.advisor_board import backing as backing_mod
@@ -194,12 +196,19 @@ class AdvisorBoardCliTest(unittest.TestCase):
 
         def authorization():
             return backing_mod.prepare_review_isolation_authorization(
-                board, artifact, mode="review"
+                board,
+                artifact,
+                mode="review",
+                canonical_repo_authority=canonical_repo,
             )
 
         with tempfile.TemporaryDirectory() as td:
             scratch = Path(td) / "provider-scratch"
             scratch.mkdir()
+            alternate_repo = Path(td) / "different-valid-git-repository"
+            subprocess.run(["git", "init", "-q", str(alternate_repo)], check=True)
+            self.assertNotEqual(alternate_repo.resolve(), canonical_repo)
+            self.assertNotEqual(alternate_repo.resolve(), scratch.resolve())
             effects: list[str] = []
             revalidated_authorities: list[Path] = []
             real_revalidate = pi_mod.revalidate_review_isolation_authorization
@@ -261,6 +270,28 @@ class AdvisorBoardCliTest(unittest.TestCase):
             self.assertFalse(scratch_effects)
             self.assertTrue(
                 all(leg.status == "UNAVAILABLE" for leg in scratch_result.legs)
+            )
+
+            alternate_effects: list[str] = []
+
+            def alternate_spawn(*_args, **_kwargs):
+                alternate_effects.append("spawn")
+                return "OK", "unexpected alternate repository authority\nAGREE"
+
+            alternate_result = pi_mod.invoke_board(
+                board,
+                artifact,
+                spawn=alternate_spawn,
+                repo_dir=scratch,
+                canonical_repo_authority=alternate_repo,
+                review_authorization=authorization(),
+                base_env={},
+                matrix=matrix,
+                max_concurrency=1,
+            )
+            self.assertFalse(alternate_effects)
+            self.assertTrue(
+                all(leg.status == "UNAVAILABLE" for leg in alternate_result.legs)
             )
 
             forged_effects: list[str] = []
