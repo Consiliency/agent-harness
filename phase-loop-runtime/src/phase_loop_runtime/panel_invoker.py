@@ -29,6 +29,7 @@ import json
 import threading
 import uuid
 from collections import Counter
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -73,6 +74,7 @@ from .advisor_board.backing import (
     ParentUnixBroker,
     ReviewIsolationAuthorization,
     HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES,
+    harden_subscription_model,
     _make_broker_inference_adapter,
     activate_review_isolation_authorization,
     close_review_isolation_authorization,
@@ -1486,6 +1488,20 @@ def _artifact_metadata(artifact: str) -> tuple[str, int]:
 # Claude PTY; never a single Linux argv element.  Keep an
 # explicit upper bound because this remains one bounded review operation.
 _BROKER_SEALED_PROMPT_MAX_BYTES = 512 * 1024
+_BROKER_AGY_DENY_ACTIONS: tuple[str, ...] = (
+    "read_file(*)",
+    "write_file(*)",
+    "read_url(*)",
+    "execute_url(*)",
+    "command(*)",
+    "unsandboxed(*)",
+    "mcp(*)",
+)
+_BROKER_AGY_ISOLATION_PROFILE = "agy_temp_home_deny_all_v1"
+_BROKER_CLAUDE_STALL_PROFILE = "broker_prompt_scaled_v1"
+_BROKER_CLAUDE_STALL_BASE_S = 180
+_BROKER_CLAUDE_STALL_BYTES_PER_S = 2048
+_BROKER_CLAUDE_STALL_TRANSPORT_RESERVE_S = 15
 _BROKER_CODEX_DISABLED_FEATURES: tuple[str, ...] = (
     "auth_elicitation",
     "shell_tool",
@@ -1604,6 +1620,71 @@ def _broker_subscription_env(base_env: Mapping[str, str] | None = None) -> dict[
         ):
             env.pop(key, None)
     return env
+
+
+@contextmanager
+def _brokered_agy_environment(
+    base_env: Mapping[str, str], evidence: dict[str, object] | None,
+):
+    """Provide agy an owned profile and a symlink-only subscription reference.
+
+    The broker never reads or copies the OAuth token.  The temporary HOME contains
+    only a fixed deny-all action profile and a private symlink that agy itself may
+    follow for its existing subscription login.  It is reclaimed before the parent
+    broker reports the provider result.
+    """
+    token = Path.home() / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
+    try:
+        token_stat = token.stat()
+    except OSError as exc:
+        raise ValueError("brokered Gemini subscription credential reference is unavailable") from exc
+    if not stat.S_ISREG(token_stat.st_mode):
+        raise ValueError("brokered Gemini subscription credential reference is invalid")
+    holder = tempfile.TemporaryDirectory(prefix="phase-loop-broker-agy-")
+    root = Path(holder.name)
+    root.chmod(0o700)
+    config_dir = root / ".gemini" / "antigravity-cli"
+    config_dir.mkdir(parents=True, mode=0o700)
+    token_ref = config_dir / "antigravity-oauth-token"
+    os.symlink(token, token_ref)
+    settings = {
+        "permissions": {"deny": list(_BROKER_AGY_DENY_ACTIONS)},
+        "toolPermission": "request-review",
+        "allowNonWorkspaceAccess": False,
+    }
+    settings_bytes = (json.dumps(settings, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    settings_path = config_dir / "settings.json"
+    settings_path.write_bytes(settings_bytes)
+    settings_path.chmod(0o400)
+    config_home = root / ".config"
+    config_home.mkdir(mode=0o700)
+    env = dict(base_env)
+    env["HOME"] = str(root)
+    env["XDG_CONFIG_HOME"] = str(config_home)
+    if evidence is not None:
+        evidence.update({
+            "provider_isolation_profile": _BROKER_AGY_ISOLATION_PROFILE,
+            "provider_agy_deny_actions": _BROKER_AGY_DENY_ACTIONS,
+            "provider_agy_settings_sha256": sha256(settings_bytes).hexdigest(),
+            "provider_agy_subscription_reference": "private_symlink",
+            "provider_agy_home_cleanup_verified": False,
+        })
+    try:
+        yield env
+    finally:
+        holder.cleanup()
+        if evidence is not None:
+            evidence["provider_agy_home_cleanup_verified"] = not root.exists()
+
+
+def _broker_claude_stall_threshold(prompt: str, deadline_s: int | float) -> float:
+    """Scale brokered-TUI silence tolerance with sealed input, below deadline."""
+    prompt_bytes = len(prompt.encode("utf-8", errors="strict"))
+    requested = _BROKER_CLAUDE_STALL_BASE_S + (
+        (prompt_bytes + _BROKER_CLAUDE_STALL_BYTES_PER_S - 1)
+        // _BROKER_CLAUDE_STALL_BYTES_PER_S
+    )
+    return float(max(1, min(requested, max(1, int(deadline_s) - _BROKER_CLAUDE_STALL_TRANSPORT_RESERVE_S))))
 
 
 def _record_broker_provider_evidence(
@@ -3649,6 +3730,16 @@ def _exec_claude_tui_leg(
     prompt = broker_prompt or _render_claude_tui_prompt(
         artifact, child_review_dir, child_output_file, mode
     )
+    broker_backstop_s = (
+        max(1, int(backstop_s))
+        if backstop_s is not None
+        else max(1, int(timeout_s), _MAX_LEG_TIMEOUT_S)
+    )
+    broker_stall_threshold_s = (
+        _broker_claude_stall_threshold(prompt, broker_backstop_s)
+        if brokered
+        else None
+    )
     command = (
         _broker_claude_tui_command(
             model=model, effort=effort, session_id=broker_session_id or "",
@@ -3680,6 +3771,9 @@ def _exec_claude_tui_leg(
                     str(broker_transcript_path).encode()
                 ).hexdigest(),
                 "claude_transcript_preexisting": False,
+                "provider_liveness_profile": _BROKER_CLAUDE_STALL_PROFILE,
+                "provider_liveness_stall_threshold_s": broker_stall_threshold_s,
+                "provider_liveness_prompt_bytes": len(prompt.encode("utf-8", errors="strict")),
             })
     if agy_capture is not None:
         if quiescence_latch is not None:
@@ -3720,6 +3814,7 @@ def _exec_claude_tui_leg(
         tui_session_kwargs.update(
             allow_transcript_final=True,
             broker_transcript_path=broker_transcript_path,
+            stall_threshold_s=broker_stall_threshold_s,
         )
     try:
         rc, review_text, log_text, pty_tail = _run_claude_tui_session(
@@ -4266,21 +4361,14 @@ def _exec_leg(
             # The installed OAuth subscription route reads documented NDJSON user
             # events from stdin.  ``-p -`` is not that interface (it ignores the
             # bytes), and a complete review patch cannot safely be an argv item.
-            gemini_model = "gemini-3.7-flash-high"  # model-id-source: current brokered Gemini high-effort route
+            gemini_model = "gemini-3.6-flash-high"  # model-id-source: HARDEN brokered Gemini 3.6 Flash high-effort route
             broker_stream_input = _broker_gemini_stream_input(prompt)
             cmd = [
-                "agy", "--model", gemini_model, "--disable-slash-commands",
+                "agy", "--model", gemini_model, "--sandbox", "--mode", "plan",
+                "--disable-slash-commands",
                 "--input-format", "stream-json", "--output-format", "stream-json",
                 "--print-timeout", f"{deadline_s}s",
             ]
-            _record_broker_provider_evidence(
-                broker_evidence, harness="gemini", model=gemini_model,
-                command=cmd, prompt=prompt, cwd=out_dir, env=env,
-                prompt_transport="stream_json_stdin",
-                no_tool_controls=("disable-slash-commands", "stream-json-stdin-sealed-input", "no-add-dir", "no-dangerous-permissions"),
-                stdin_prompt=True,
-                transport_payload=broker_stream_input,
-            )
         if agy_capture is not None:
             if provider_authority is None:
                 raise AgyCanaryEvidenceError("capture-enabled Gemini launch has no prepared namespace")
@@ -4315,16 +4403,33 @@ def _exec_leg(
                         attempt_id=f"gemini-{_attempt + 1}",
                         quiescence_latch=quiescence_latch,
                     )
-                # Brokered agy uses its documented stream-json stdin transport;
-                # the legacy ``-p`` path remains byte-identical.
-                proc = _run_leg_with_liveness(
-                    cmd,
-                    cwd=provider_cwd,
-                    env=env,
-                    deadline_s=deadline_s,
-                    input_text=broker_stream_input if brokered else None,
-                    quiescence_latch=quiescence_latch,
-                )
+                # Brokered agy uses its documented stream-json stdin transport
+                # inside an owned HOME whose fixed settings deny every action.
+                # The legacy ``-p`` path remains byte-identical.
+                if brokered:
+                    with _brokered_agy_environment(env, broker_evidence) as agy_env:
+                        _record_broker_provider_evidence(
+                            broker_evidence, harness="gemini", model=gemini_model,
+                            command=cmd, prompt=prompt, cwd=out_dir, env=agy_env,
+                            prompt_transport="stream_json_stdin",
+                            no_tool_controls=(
+                                "sandbox", "mode-plan", "disable-slash-commands",
+                                "deny-all-actions", "stream-json-stdin-sealed-input",
+                                "no-add-dir", "no-dangerous-permissions",
+                            ),
+                            stdin_prompt=True,
+                            transport_payload=broker_stream_input,
+                        )
+                        proc = _run_leg_with_liveness(
+                            cmd, cwd=provider_cwd, env=agy_env,
+                            deadline_s=deadline_s, input_text=broker_stream_input,
+                            quiescence_latch=quiescence_latch,
+                        )
+                else:
+                    proc = _run_leg_with_liveness(
+                        cmd, cwd=provider_cwd, env=env, deadline_s=deadline_s,
+                        input_text=None, quiescence_latch=quiescence_latch,
+                    )
             except subprocess.TimeoutExpired as exc:
                 if quiescence_latch is not None:
                     quiescence_latch.raise_if_set()
@@ -4849,23 +4954,33 @@ def _default_spawn(
             extra["provider_authority"] = provider_authority
         if quiescence_latch is not None:
             extra["quiescence_latch"] = quiescence_latch
+        native_host_deferral_only = (
+            leg == "claude"
+            and model is not None
+            and not _claude_tui_policy_model(model)
+            and _under_claude_code(env)
+        )
         if (
             mode == "review"
             and review_authorization is not None
             and not _has_injected_review_execution_seam()
+            and not native_host_deferral_only
         ):
             # The namespace child can only submit this one bound request. The
             # parent, after validating it, retains the subscription adapter and
             # is the sole component that can contact a provider.
+            broker_model = harden_subscription_model(
+                leg, model or DEFAULT_LEG_MODELS[leg],
+            )
             leg_authorization = derive_review_leg_authorization(
                 review_authorization, artifact,
-                harness=leg, model=model or DEFAULT_LEG_MODELS[leg],
+                harness=leg, model=broker_model,
                 deadline_s=float(leg_deadline), mode=mode,
             )
             broker = ParentUnixBroker(
                 leg_authorization,
                 harness=leg,
-                model=model or DEFAULT_LEG_MODELS[leg],
+                model=broker_model,
                 staged_dir=review_dir,
                 canonical_repo=resolved_repo_dir,
             )
@@ -4893,12 +5008,12 @@ def _default_spawn(
                     if leg == "claude":
                         return _exec_claude_tui_leg(
                             review_dir, out_dir, leg_timeout, artifact,
-                            repo_dir=out_dir, mode=provider_mode, model=model,
+                            repo_dir=out_dir, mode=provider_mode, model=broker_model,
                             backstop_s=leg_deadline, broker_prompt=sealed_prompt,
                             broker_evidence=broker.evidence, **broker_extra,
                         )
                     rc, text, log = _exec_leg(
-                        leg, review_dir, out_dir, leg_timeout, artifact, provider_mode, model,
+                        leg, review_dir, out_dir, leg_timeout, artifact, provider_mode, broker_model,
                         deadline_s=leg_deadline, broker_prompt=sealed_prompt,
                         broker_evidence=broker.evidence, **broker_extra,
                     )
@@ -5886,21 +6001,32 @@ def invoke_board(
     governed_review_request = (
         review_authorization is not None or canonical_repo_authority is not None
     )
-    exact_broker_routes = all(
-        seat.auth == AUTH_SUBSCRIPTION
-        and seat.backing == BACKING_HOMEBREW
-        and not seat.host_leg
-        and seat.model == HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES.get(
-            (seat.harness or "").lower()
+    native_host_deferral_only = (
+        _under_claude_code(base_env)
+        and bool(board.seats)
+        and all(
+            (seat.harness or "").lower() == "claude"
+            and not _claude_tui_policy_model(seat.model)
+            for seat in board.seats
         )
-        for seat in board.seats
     )
+    try:
+        exact_broker_routes = all(
+            seat.auth == AUTH_SUBSCRIPTION
+            and seat.backing == BACKING_HOMEBREW
+            and not seat.host_leg
+            and harden_subscription_model((seat.harness or "").lower(), seat.model)
+            == HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES[(seat.harness or "").lower()]
+            for seat in board.seats
+        )
+    except (KeyError, ValueError):
+        exact_broker_routes = False
     if mode == "review":
         # These modes use a direct gateway, research transport, or capture-owned
         # provider authority.  HARDEN deliberately has no brokered implementation
         # for them, so refuse before catalog, auth, callback, child, or spawn work.
         if review_authorization is not None:
-            if not injected_execution_seam and not exact_broker_routes:
+            if not injected_execution_seam and not exact_broker_routes and not native_host_deferral_only:
                 return review_refusal("harden_review_unsupported_route_refused")
             try:
                 canonical_repo_authority = _canonical_review_repo_authority(
@@ -5926,7 +6052,7 @@ def invoke_board(
                 return review_refusal("harden_review_gateway_route_refused")
             if gateway_available is not None:
                 return review_refusal("harden_review_gateway_route_refused: ABDOMNI")
-            if not exact_broker_routes:
+            if not exact_broker_routes and not native_host_deferral_only:
                 return review_refusal("harden_review_unsupported_route_refused")
             try:
                 # A normal phase-loop CLI route need not pass a filesystem path;

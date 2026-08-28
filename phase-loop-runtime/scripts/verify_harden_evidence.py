@@ -138,13 +138,13 @@ _ACTIVATED_REVIEW_RED_COUNT = 12
 ROUTES = {
     "claude": ("claude-fable-5", "claude-fable-5"),
     "codex": ("gpt-5.6-sol", "gpt-5.6-sol"),
-    "gemini": ("gemini-3.7-flash", "gemini-3.7-flash-high"),
-    "grok": ("grok-4.6", "grok-4.6"),
+    "gemini": ("gemini-3.6-flash", "gemini-3.6-flash-high"),
+    "grok": ("grok-4.5", "grok-4.5"),
 }
 NO_TOOL_CONTROLS = {
     "claude": ("safe-mode", "no-chrome", "disable-slash-commands", "strict-mcp-config", "empty-mcp", "empty-agents", "tools-empty"),
     "codex": ("ignore-user-config", "ignore-rules", "ephemeral", "auth_elicitation", "shell_tool", "apps", "browser_use", "browser_use_external", "browser_use_full_cdp_access", "image_generation", "computer_use", "code_mode_host", "in_app_browser", "in_app_local_automation", "goals", "guardian_approval", "memories", "multi_agent", "hooks", "plugins", "plugin_sharing", "remote_plugin", "shell_snapshot", "skill_mcp_dependency_install", "skill_search", "tool_call_mcp_elicitation", "tool_suggest", "unified_exec", "view_image", "workspace_dependencies", "stdin-sealed-input", "read-only"),
-    "gemini": ("disable-slash-commands", "stream-json-stdin-sealed-input", "no-add-dir", "no-dangerous-permissions"),
+    "gemini": ("sandbox", "mode-plan", "disable-slash-commands", "deny-all-actions", "stream-json-stdin-sealed-input", "no-add-dir", "no-dangerous-permissions"),
     "grok": ("tools-empty", "disable-web-search", "no-memory", "no-subagents", "permission-plan", "prompt-file-stdin-sealed"),
 }
 PROMPT_TRANSPORT = {
@@ -153,6 +153,42 @@ PROMPT_TRANSPORT = {
     "gemini": "stream_json_stdin",
     "grok": "stdin_sealed",
 }
+FINAL_RUN_SPECS = {
+    "focused": {
+        "argv": (
+            "env", "PHASE_LOOP_TDD_EXPECT_HARDEN=1",
+            "PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests",
+            "python3", "-m", "pytest", "-q", *FROZEN_SL0_PATHS,
+        ),
+        "env_keys": ["PHASE_LOOP_TDD_EXPECT_HARDEN", "PYTHONPATH"],
+        "passed": 454, "skipped": 4, "subtests": 23,
+    },
+    "pure_control": {
+        "argv": (
+            "env", "PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests",
+            "python3", "-m", "pytest", "-q",
+            "phase-loop-runtime/tests/test_panel_native_fill_183.py",
+            "phase-loop-runtime/tests/test_advisor_board_composition.py",
+        ),
+        "env_keys": ["PYTHONPATH"],
+        "passed": 32, "skipped": 0, "subtests": 8,
+    },
+    "broad": {
+        "argv": (
+            "PYTHONPATH=phase-loop-runtime/src", "python3", "-m", "pytest",
+            "phase-loop-runtime/tests", "-q", "-m", "not dotfiles_integration",
+        ),
+        "env_keys": ["PYTHONPATH"],
+        "passed": None, "skipped": None, "subtests": None,
+    },
+}
+AGY_DENY_ACTIONS = (
+    "read_file(*)", "write_file(*)", "read_url(*)", "execute_url(*)",
+    "command(*)", "unsandboxed(*)", "mcp(*)",
+)
+BROKER_CLAUDE_STALL_BASE_S = 180
+BROKER_CLAUDE_STALL_BYTES_PER_S = 2048
+BROKER_CLAUDE_STALL_TRANSPORT_RESERVE_S = 15
 
 
 class EvidenceError(ValueError):
@@ -472,13 +508,24 @@ def all_passed(cases: list[dict[str, str]], label: str) -> None:
         fail(f"{label}: failures, errors, skips, or xfails are forbidden")
 
 
-def receipt(store: ArtifactStore, ref: dict[str, str], label: str, *, head: str, tree: str, kind: str, argv_class: str, exit_code: int, raw: dict[str, str], junit: dict[str, str] | None, source_binding: tuple[str, str] | None = None) -> dict[str, Any]:
+def executable_source_shape(data: bytes, label: str) -> str:
+    """Normalize Python executable syntax so comment-only mutations cannot bite."""
+    try:
+        tree = ast.parse(data.decode("utf-8", errors="strict"))
+    except (SyntaxError, UnicodeDecodeError):
+        fail(f"{label}: source bytes are not parseable Python")
+    return ast.dump(tree, annotate_fields=True, include_attributes=False)
+
+
+def receipt(store: ArtifactStore, ref: dict[str, str], label: str, *, head: str, tree: str, kind: str, argv_class: str, exit_code: int, raw: dict[str, str], junit: dict[str, str] | None, source_binding: tuple[str, str] | None = None, final_spec: dict[str, Any] | None = None) -> dict[str, Any]:
     value = store.json(ref, label)
     expected = {"schema", "kind", "head", "tree", "process_nonce", "exit_code", "argv_class", "raw_sha256"}
     if junit is not None:
         expected.add("junit_sha256")
     if source_binding is not None:
         expected.update({"source_path", "source_sha256"})
+    if final_spec is not None:
+        expected.update({"argv", "cwd", "env_keys", "source_tree", "summary", "nodeids_sha256", "baseline"})
     data = closed(value, expected, label)
     if data["schema"] != "harden_pytest_receipt.v1" or data["kind"] != kind or data["head"] != head or data["tree"] != tree:
         fail(f"{label}: receipt binding mismatch")
@@ -490,6 +537,24 @@ def receipt(store: ArtifactStore, ref: dict[str, str], label: str, *, head: str,
         fail(f"{label}: receipt JUnit digest mismatch")
     if source_binding is not None and (data["source_path"], data["source_sha256"]) != source_binding:
         fail(f"{label}: receipt source binding mismatch")
+    if final_spec is not None:
+        if data["argv"] != list(final_spec["argv"]) or data["cwd"] != "phase-loop-runtime" or data["env_keys"] != final_spec["env_keys"] or data["source_tree"] != tree:
+            fail(f"{label}: command, cwd, environment, or source tree mismatch")
+        summary = closed(data["summary"], {"passed", "failed", "errors", "skipped", "xfails", "subtests", "deselected"}, label + ".summary")
+        if any(integer(summary[key], label + ".summary." + key) != 0 for key in ("failed", "errors", "xfails")):
+            fail(f"{label}: final receipt has failed outcomes")
+        for key in ("passed", "skipped", "subtests"):
+            expected_count = final_spec[key]
+            if expected_count is not None and integer(summary[key], label + ".summary." + key) != expected_count:
+                fail(f"{label}: final receipt inventory count mismatch")
+        if final_spec["passed"] is None and integer(summary["passed"], label + ".summary.passed", minimum=1000) < 1000:
+            fail(f"{label}: broad receipt is not a complete inventory")
+        baseline = closed(data["baseline"], {"schema", "commit", "tree", "inherited_failures", "inherited_skips", "inherited_deselected"}, label + ".baseline")
+        if baseline["schema"] != "harden_broad_baseline.v1" or baseline["commit"] == head or baseline["tree"] == tree or baseline["inherited_failures"] != []:
+            fail(f"{label}: inherited baseline accounting is incomplete")
+        if not isinstance(baseline["inherited_skips"], list) or not isinstance(baseline["inherited_deselected"], list):
+            fail(f"{label}: inherited baseline accounting is malformed")
+        text(data["nodeids_sha256"], label + ".nodeids_sha256", pattern=HEX64)
     return data
 
 
@@ -626,6 +691,8 @@ def verify_preproduction(store: ArtifactStore, sl0: dict[str, Any], reviewed: st
         mutated_bytes = store.read(mutated_source, "mutated source")
         if restored_bytes != reviewed_bytes or restored_source["sha256"] != sha256(reviewed_bytes) or mutated_bytes == reviewed_bytes:
             fail("source mutation/restoration bytes do not bind reviewed source")
+        if executable_source_shape(mutated_bytes, "mutated source") == executable_source_shape(reviewed_bytes, "reviewed source"):
+            fail("source mutation is comment-only or otherwise non-executable")
         for phase, expected_kind, expected_exit, expected_argv, expected_status, marker in (
             ("mutation", "source_mutation", 1, "pytest_harden_source_mutation_v1", "failure", "HARDEN-MUTATION-BITE::" + case_id),
             ("restored", "restored_control", 0, "pytest_harden_restored_control_v1", "passed", "HARDEN-RESTORED-CONTROL::" + case_id),
@@ -666,12 +733,25 @@ def verify_final_group(store: ArtifactStore, group: Any, label: str, commit_id: 
         result = closed(data[key], {"receipt", "raw", "junit"}, label + "." + key)
         raw = artifact_ref(result["raw"], label + "." + key + ".raw")
         junit = artifact_ref(result["junit"], label + "." + key + ".junit")
-        record = receipt(store, artifact_ref(result["receipt"], label + "." + key + ".receipt"), label + "." + key + ".receipt", head=commit_id, tree=tree_id, kind=kind, argv_class=argv, exit_code=0, raw=raw, junit=junit)
+        record = receipt(store, artifact_ref(result["receipt"], label + "." + key + ".receipt"), label + "." + key + ".receipt", head=commit_id, tree=tree_id, kind=kind, argv_class=argv, exit_code=0, raw=raw, junit=junit, final_spec=FINAL_RUN_SPECS[key])
         nonce = record["process_nonce"]
         if nonce in used_nonces:
             fail(f"{label}: reused fresh-process nonce")
         used_nonces.add(nonce)
-        all_passed(parse_junit(store.read(junit, label + "." + key + ".junit"), label + "." + key + ".junit"), label + "." + key)
+        cases = parse_junit(store.read(junit, label + "." + key + ".junit"), label + "." + key + ".junit")
+        summary = record["summary"]
+        counts = {status: sum(case["status"] == status for case in cases) for status in ("passed", "failure", "error", "skipped")}
+        if counts["failure"] or counts["error"] or counts["passed"] != summary["passed"] or counts["skipped"] != summary["skipped"]:
+            fail(f"{label}.{key}: JUnit inventory does not bind receipt summary")
+        if sha256(canonical_bytes(sorted(case["node"] for case in cases))) != record["nodeids_sha256"]:
+            fail(f"{label}.{key}: JUnit nodeids do not bind receipt")
+        if key == "focused":
+            for nodeid in ACTIVATED_RED_NODEIDS:
+                exact_case(cases, nodeid, "passed", label + ".focused")
+        raw_text = store.read(raw, label + "." + key + ".raw").decode("utf-8", "replace")
+        expected_summary = f"{summary['passed']} passed, {summary['skipped']} skipped, {summary['subtests']} subtests passed"
+        if expected_summary not in raw_text:
+            fail(f"{label}.{key}: raw summary does not bind receipt inventory")
     lint = closed(data["lint"], {"receipt", "raw"}, label + ".lint")
     lint_raw = artifact_ref(lint["raw"], label + ".lint.raw")
     lint_nonce = lint_receipt(store, artifact_ref(lint["receipt"], label + ".lint.receipt"), label + ".lint.receipt", head=commit_id, tree=tree_id, raw=lint_raw)
@@ -682,10 +762,10 @@ def verify_final_group(store: ArtifactStore, group: Any, label: str, commit_id: 
         fail(f"{label}: empty lint receipt output")
 
 
-def query_ci(ci: dict[str, Any], query: Path) -> None:
+def query_ci(store: ArtifactStore, ci: dict[str, Any], query: Path) -> None:
     if not query.is_file() or not os.access(query, os.X_OK):
         fail("authoritative CI query is unavailable")
-    command = (str(query), "run", "view", str(ci["run_id"]), "--repo", ci["repository"], "--json", "databaseId,headSha,status,conclusion,event,workflowName,attempt")
+    command = (str(query), "run", "view", str(ci["run_id"]), "--repo", ci["repository"], "--json", "databaseId,headSha,status,conclusion,event,workflowName,attempt,jobs")
     completed = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False, timeout=20)
     if completed.returncode:
         fail("authoritative CI query failed")
@@ -693,35 +773,55 @@ def query_ci(ci: dict[str, Any], query: Path) -> None:
         response = json.loads(completed.stdout.decode("utf-8"), object_pairs_hook=json_no_duplicates)
     except (UnicodeDecodeError, json.JSONDecodeError):
         fail("CI provider returned invalid JSON")
-    response = closed(response, {"databaseId", "headSha", "status", "conclusion", "event", "workflowName", "attempt"}, "CI provider response")
-    if response != {"databaseId": ci["run_id"], "headSha": ci["head"], "status": "completed", "conclusion": "success", "event": ci["event"], "workflowName": ci["workflow"], "attempt": ci["run_attempt"]}:
+    core = {"databaseId", "headSha", "status", "conclusion", "event", "workflowName", "attempt"}
+    is_canonical_query = query.resolve() == CANONICAL_GH
+    if not isinstance(response, dict) or set(response) not in (core, core | {"jobs"}):
+        fail("CI provider response has an unexpected schema")
+    if "jobs" not in response:
+        # Frozen hermetic verifier callers inject a minimal provider surface.
+        # The production CLI never exposes that injection and therefore always
+        # requires the exact successful check below.
+        if is_canonical_query:
+            fail("canonical CI response omitted the required check receipt")
+        jobs = [{"name": ci["check"], "conclusion": "success"}]
+    else:
+        jobs = response["jobs"]
+        if not isinstance(jobs, list) or any(not isinstance(job, dict) or set(job) != {"name", "conclusion"} for job in jobs):
+            fail("CI provider job receipt is malformed")
+    normalized = {"databaseId": response["databaseId"], "headSha": response["headSha"], "status": response["status"], "conclusion": response["conclusion"], "event": response["event"], "workflowName": response["workflowName"], "attempt": response["attempt"], "jobs": jobs}
+    receipt = store.json(artifact_ref(ci["provider_receipt"], "CI provider receipt"), "CI provider receipt")
+    if receipt != normalized or sha256(canonical_bytes(receipt)) != ci["provider_receipt"]["sha256"]:
+        fail("retained CI receipt is detached from authoritative provider output")
+    if normalized != {"databaseId": ci["run_id"], "headSha": ci["head"], "status": "completed", "conclusion": "success", "event": ci["event"], "workflowName": ci["workflow"], "attempt": ci["run_attempt"], "jobs": [{"name": ci["check"], "conclusion": "success"}]}:
         fail("authoritative CI state does not bind evidence")
 
 
-def verify_ci(data: Any, candidate: str, main: str, repository: str, query: Path) -> None:
+def verify_ci(store: ArtifactStore, data: Any, candidate: str, main: str, repository: str, query: Path) -> None:
     groups = closed(data, {"candidate", "canonical_main"}, "ci")
     run_ids: set[int] = set()
     for label, head in (("candidate", candidate), ("canonical_main", main)):
-        ci = closed(groups[label], {"provider", "repository", "run_id", "workflow", "event", "run_attempt", "head"}, "ci." + label)
+        ci = closed(groups[label], {"provider", "repository", "run_id", "workflow", "event", "run_attempt", "head", "check", "provider_receipt"}, "ci." + label)
         if ci["provider"] != "github_actions" or ci["head"] != head or ci["repository"] != repository:
             fail("unsupported CI provider or wrong CI head")
         text(ci["repository"], "ci.repository", pattern=IDENTITY)
         text(ci["workflow"], "ci.workflow", pattern=IDENTITY)
         text(ci["event"], "ci.event", pattern=IDENTITY)
+        text(ci["check"], "ci.check", pattern=IDENTITY)
         run_id = integer(ci["run_id"], "ci.run_id", minimum=1)
         if run_id in run_ids:
             fail("candidate and canonical-main CI runs must be distinct")
         run_ids.add(run_id)
         integer(ci["run_attempt"], "ci.run_attempt", minimum=1)
-        query_ci(ci, query)
+        query_ci(store, ci, query)
 
 
 def verify_broker(value: Any, harness: str, requested: str, resolved: str, bundle_sha256: str, instructions_sha256: str, sealed_prompt: str) -> None:
     common = {
         "schema", "stage_bundle_sha256", "stage_instructions_sha256", "leg_authorization_issued_monotonic_ns", "leg_authorization_expires_monotonic_ns", "canonical_repo_sha256", "canonical_repo_probe_file_sha256", "cleanup_root_removed", "host_secret_probe_removed", "child_quiescent", "peer_pid", "peer_uid", "peer_gid", "peer_ancestry_verified", "bwrap", "outer_bwrap_pid", "outer_bwrap_start", "network_unshared", "close_fds_requested", "socket", "stage", "argv_sha256", "socket_present_before_launch", "stage_bundle_mode", "stage_instructions_mode", "client_probe_program_sha256", "client_probe_assertions", "canonical_repo_file_denied", "canonical_repo_directory_denied", "host_stage_path_denied", "no_inherited_fd_observed", "child_stderr_sha256", "child_returncode", "operation_deadline_s", "child_timeout", "broker_thread_quiescent", "provider_adapter_quiescent", "provider_cancel_requested", "provider_input_sha256", "provider_input_bytes", "provider_input_inline", "provider_live_tree_cwd", "provider_harness", "provider_model", "provider_argv_shape", "provider_argv_sha256", "provider_prompt_sha256", "provider_prompt_bytes", "provider_transport_sha256", "provider_transport_bytes", "provider_prompt_transport", "provider_cwd_class", "provider_cwd_sha256", "provider_env_keys", "provider_env_api_keys_scrubbed", "provider_env_direct_routes_scrubbed", "provider_no_tool_controls",
     }
-    claude = {"claude_session_id_sha256", "claude_session_resume_forbidden", "claude_transcript_exact_path_sha256", "claude_transcript_preexisting", "claude_transcript_existed", "claude_transcript_sha256", "claude_transcript_bytes", "claude_transcript_cleanup_verified"}
-    broker = closed(value, common | (claude if harness == "claude" else set()), "broker evidence")
+    claude = {"claude_session_id_sha256", "claude_session_resume_forbidden", "claude_transcript_exact_path_sha256", "claude_transcript_preexisting", "claude_transcript_existed", "claude_transcript_sha256", "claude_transcript_bytes", "claude_transcript_cleanup_verified", "provider_liveness_profile", "provider_liveness_stall_threshold_s", "provider_liveness_prompt_bytes"}
+    gemini = {"provider_isolation_profile", "provider_agy_deny_actions", "provider_agy_settings_sha256", "provider_agy_subscription_reference", "provider_agy_home_cleanup_verified"}
+    broker = closed(value, common | (claude if harness == "claude" else set()) | (gemini if harness == "gemini" else set()), "broker evidence")
     for field in ("stage_bundle_sha256", "stage_instructions_sha256", "canonical_repo_sha256", "canonical_repo_probe_file_sha256", "argv_sha256", "client_probe_program_sha256", "child_stderr_sha256", "provider_input_sha256", "provider_argv_sha256", "provider_prompt_sha256", "provider_transport_sha256", "provider_cwd_sha256"):
         if text(broker[field], "broker." + field, pattern=HEX64) == "0" * 64:
             fail("broker digest placeholder")
@@ -759,7 +859,8 @@ def verify_broker(value: Any, harness: str, requested: str, resolved: str, bundl
     ):
         fail("broker provider input/prompt does not bind retained review input")
     env_keys = broker["provider_env_keys"]
-    if not isinstance(env_keys, list) or any(not isinstance(key, str) or not key for key in env_keys) or env_keys != sorted(env_keys) or len(env_keys) != len(set(env_keys)) or any(re.search(r"API_KEY|BASE_URL|GATEWAY|RESEARCH|PROVIDER|^(?:AGY|ANTIGRAVITY|GEMINI|XDG_CONFIG)_", key, re.I) for key in env_keys):
+    allowed_isolated_keys = {"HOME", "XDG_CONFIG_HOME"} if harness == "gemini" else set()
+    if not isinstance(env_keys, list) or any(not isinstance(key, str) or not key for key in env_keys) or env_keys != sorted(env_keys) or len(env_keys) != len(set(env_keys)) or any(re.search(r"API_KEY|BASE_URL|GATEWAY|RESEARCH|PROVIDER|^(?:AGY|ANTIGRAVITY|GEMINI|XDG_CONFIG)_", key, re.I) and key not in allowed_isolated_keys for key in env_keys):
         fail("broker provider environment permits direct route metadata")
     controls = broker["provider_no_tool_controls"]
     if controls != list(NO_TOOL_CONTROLS[harness]):
@@ -776,7 +877,25 @@ def verify_broker(value: Any, harness: str, requested: str, resolved: str, bundl
         for field in ("claude_session_id_sha256", "claude_transcript_exact_path_sha256", "claude_transcript_sha256"):
             text(broker[field], "broker." + field, pattern=HEX64)
         integer(broker["claude_transcript_bytes"], "broker.claude_transcript_bytes", minimum=1)
-    elif harness in {"codex", "gemini"}:
+        if broker["provider_liveness_profile"] != "broker_prompt_scaled_v1" or broker["provider_liveness_prompt_bytes"] != broker["provider_prompt_bytes"]:
+            fail("Claude broker liveness profile is not input-bound")
+        expected_stall = max(1, min(
+            BROKER_CLAUDE_STALL_BASE_S + ((broker["provider_prompt_bytes"] + BROKER_CLAUDE_STALL_BYTES_PER_S - 1) // BROKER_CLAUDE_STALL_BYTES_PER_S),
+            max(1, int(broker["operation_deadline_s"]) - BROKER_CLAUDE_STALL_TRANSPORT_RESERVE_S),
+        ))
+        if broker["provider_liveness_stall_threshold_s"] != float(expected_stall):
+            fail("Claude broker liveness threshold is not recomputable")
+    elif harness == "gemini":
+        if (
+            broker["provider_isolation_profile"] != "agy_temp_home_deny_all_v1"
+            or broker["provider_agy_deny_actions"] != list(AGY_DENY_ACTIONS)
+            or broker["provider_agy_subscription_reference"] != "private_symlink"
+            or broker["provider_agy_home_cleanup_verified"] is not True
+            or text(broker["provider_agy_settings_sha256"], "broker.provider_agy_settings_sha256", pattern=HEX64) == "0" * 64
+            or not {"HOME", "XDG_CONFIG_HOME"}.issubset(env_keys)
+        ):
+            fail("Gemini broker pre-effect isolation is incomplete")
+    if harness in {"codex", "gemini"}:
         if broker["provider_argv_shape"].count("<STDIN_SEALED_INLINE_PROMPT>") != 1:
             fail("stdin broker evidence has unsafe prompt transport")
     elif harness == "grok" and broker["provider_argv_shape"].count("<STDIN_SEALED_INLINE_PROMPT>") != 1:
@@ -968,7 +1087,7 @@ def verify(evidence_path: Path, evidence_root: Path, repo: Path, *, reuse_regist
     verification = closed(data["verification"], {"candidate", "canonical_main"}, "verification")
     verify_final_group(store, verification["candidate"], "candidate verification", candidate, candidate_tree, nonces)
     verify_final_group(store, verification["canonical_main"], "canonical-main verification", main, main_tree, nonces)
-    verify_ci(data["ci"], candidate, main, data["repository"], ci_query)
+    verify_ci(store, data["ci"], candidate, main, data["repository"], ci_query)
     reviews = closed(data["reviews"], {"candidate", "canonical_main"}, "reviews")
     seat_ids: set[str] = set()
     seat_sessions: set[str] = set()
@@ -1001,13 +1120,13 @@ def _self_git(root: Path) -> tuple[Path, dict[str, tuple[str, str]]]:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("base " + path + "\n")
     (repo / "phase-loop-runtime/src/phase_loop_runtime").mkdir(parents=True)
-    (repo / "phase-loop-runtime/src/phase_loop_runtime/runner.py").write_text("base\n")
+    (repo / "phase-loop-runtime/src/phase_loop_runtime/runner.py").write_text("HARDEN_SOURCE = 'base'\n")
     (repo / "phase-loop-runtime/src/phase_loop_runtime/capability_registry.py").write_text("# marker intentionally absent before HARDEN final heads\n")
     for anchor in ANCHORS.values():
         target = repo / anchor["source"]
         target.parent.mkdir(parents=True, exist_ok=True)
         if not target.exists():
-            target.write_text("source " + anchor["source"] + "\n")
+            target.write_text("HARDEN_SOURCE = " + repr(anchor["source"]) + "\n")
     plan = repo / "plans/phase-plan-v10-HARDEN.md"
     plan.parent.mkdir(parents=True, exist_ok=True)
     plan.write_text("# HARDEN self-test plan\n\nAuthoritative review instructions.\n")
@@ -1025,7 +1144,7 @@ def _self_git(root: Path) -> tuple[Path, dict[str, tuple[str, str]]]:
     first_parent = _run(["git", "rev-parse", "HEAD"], repo)
     _run(["git", "merge", "--no-ff", "-qm", "landing", "review"], repo)
     landing = _run(["git", "rev-parse", "HEAD"], repo)
-    (repo / "phase-loop-runtime/src/phase_loop_runtime/runner.py").write_text("candidate\n")
+    (repo / "phase-loop-runtime/src/phase_loop_runtime/runner.py").write_text("HARDEN_SOURCE = 'candidate'\n")
     (repo / "phase-loop-runtime/src/phase_loop_runtime/capability_registry.py").write_text("HARDEN_CAPABILITY_VERSION = 1\n")
     _run(["git", "add", "."], repo); _run(["git", "commit", "-qm", "candidate"], repo)
     candidate = _run(["git", "rev-parse", "HEAD"], repo)
@@ -1080,7 +1199,11 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
     for case_id, anchor in ANCHORS.items():
         _, source_bytes = blob(repo, reviewed, anchor["source"])
         restored_source = put("restored-source-" + case_id, source_bytes, raw=True)
-        mutated_source = put("mutated-source-" + case_id, source_bytes + b"# source-entered mutation\n", raw=True)
+        mutated_source = put(
+            "mutated-source-" + case_id,
+            source_bytes.replace(b"HARDEN_SOURCE", b"HARDEN_MUTATED_SOURCE", 1),
+            raw=True,
+        )
         mutation = pytest_art("mutation-" + case_id, reviewed, reviewed_tree, "failure", anchor["nodeid"], "pytest_harden_source_mutation_v1", "HARDEN-MUTATION-BITE::" + case_id)
         mutation["receipt"] = receipt_art("source_mutation", reviewed, reviewed_tree, mutation["raw"], mutation["junit"], 1, "pytest_harden_source_mutation_v1", (anchor["source"], mutated_source["sha256"]))
         restored = pytest_art("restored-" + case_id, reviewed, reviewed_tree, "passed", anchor["nodeid"], "pytest_harden_restored_control_v1", "HARDEN-RESTORED-CONTROL::" + case_id)
@@ -1096,9 +1219,40 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
         inventory.append(entry)
     def final_group(label: str, head: str, tree: str) -> dict[str, Any]:
         group: dict[str, Any] = {"commit": head, "tree": tree, "run_nonce": nonce("run-" + label)}
+        landing, landing_tree = refs["landing"]
         for key, kind, argv in (("focused", "focused_activated", "pytest_harden_focused_activated_v1"), ("pure_control", "pure_control", "pytest_harden_pure_control_v1"), ("broad", "broad", "pytest_harden_broad_v1")):
-            group[key] = pytest_art(label + "-" + key, head, tree, "passed", "pkg::" + key, argv)
-            group[key]["receipt"] = receipt_art(kind, head, tree, group[key]["raw"], group[key]["junit"], 0, argv)
+            spec = FINAL_RUN_SPECS[key]
+            passed = spec["passed"] if spec["passed"] is not None else 1000
+            skipped = spec["skipped"] if spec["skipped"] is not None else 0
+            subtests = spec["subtests"] if spec["subtests"] is not None else 0
+            nodeids = list(ACTIVATED_RED_NODEIDS) if key == "focused" else []
+            nodeids.extend(f"tests.inventory_{key}::case_{index:04d}" for index in range(passed - len(nodeids)))
+            cases = "".join(
+                f'<testcase classname="{nodeid.rsplit("::", 1)[0].removeprefix("phase-loop-runtime/").removesuffix(".py").replace("/", ".")}" name="{nodeid.rsplit("::", 1)[1]}">{f"<system-out>{label}</system-out>" if index == 0 else ""}</testcase>'
+                for index, nodeid in enumerate(nodeids)
+            ) + "".join(
+                f'<testcase classname="tests.inherited" name="skip_{index}"><skipped /></testcase>'
+                for index in range(skipped)
+            )
+            junit_ref = put(label + "-" + key + ".xml", ("<testsuite>" + cases + "</testsuite>").encode(), raw=True)
+            raw_ref = put(label + "-" + key + ".raw", f"{passed} passed, {skipped} skipped, {subtests} subtests passed\nrun={label}-{key}\n".encode(), raw=True)
+            observed_nodes = [
+                nodeid.rsplit("::", 1)[0].removeprefix("phase-loop-runtime/").removesuffix(".py").replace("/", ".") + "::" + nodeid.rsplit("::", 1)[1]
+                for nodeid in nodeids
+            ] + [f"tests.inherited::skip_{index}" for index in range(skipped)]
+            receipt_value = {
+                "schema": "harden_pytest_receipt.v1", "kind": kind,
+                "head": head, "tree": tree,
+                "process_nonce": nonce("receipt-" + label + "-" + key),
+                "exit_code": 0, "argv_class": argv,
+                "raw_sha256": raw_ref["sha256"], "junit_sha256": junit_ref["sha256"],
+                "argv": list(spec["argv"]), "cwd": "phase-loop-runtime",
+                "env_keys": spec["env_keys"], "source_tree": tree,
+                "summary": {"passed": passed, "failed": 0, "errors": 0, "skipped": skipped, "xfails": 0, "subtests": subtests, "deselected": 0},
+                "nodeids_sha256": sha256(canonical_bytes(sorted(observed_nodes))),
+                "baseline": {"schema": "harden_broad_baseline.v1", "commit": landing, "tree": landing_tree, "inherited_failures": [], "inherited_skips": [], "inherited_deselected": []},
+            }
+            group[key] = {"receipt": put(label + "-" + key + ".receipt", receipt_value), "raw": raw_ref, "junit": junit_ref}
         lint_raw = put(label + "-lint.raw", (label + ": py_compile ruff git diff --check passed\n").encode(), raw=True)
         group["lint"] = {"raw": lint_raw, "receipt": put(label + "-lint.receipt", {"schema": "harden_static_receipt.v1", "head": head, "tree": tree, "process_nonce": nonce("lint-" + label), "exit_code": 0, "tool_identity": "harden_static_gate.v1", "argv_class": "harden_static_metadata_only_v1", "checks": ["py_compile", "ruff", "git_diff_check"], "raw_sha256": lint_raw["sha256"]})}
         return group
@@ -1125,10 +1279,14 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
             "child_stderr_sha256": nonce(label + "stderr"), "child_returncode": 0, "operation_deadline_s": 30.0, "child_timeout": False, "broker_thread_quiescent": True, "provider_adapter_quiescent": True, "provider_cancel_requested": False,
             "provider_input_sha256": sha256(sealed_prompt.encode()), "provider_input_bytes": len(sealed_prompt.encode()), "provider_input_inline": True, "provider_live_tree_cwd": False,
             "provider_harness": harness, "provider_model": resolved, "provider_argv_shape": shape, "provider_argv_sha256": nonce(label + "providerargv"),
-            "provider_prompt_sha256": sha256(sealed_prompt.encode()), "provider_prompt_bytes": len(sealed_prompt.encode()), "provider_transport_sha256": sha256(transport.encode()), "provider_transport_bytes": len(transport.encode()), "provider_prompt_transport": PROMPT_TRANSPORT[harness], "provider_cwd_class": "owned_empty_scratch", "provider_cwd_sha256": nonce(label + "cwd"), "provider_env_keys": ["LANG", "PATH"], "provider_env_api_keys_scrubbed": True, "provider_env_direct_routes_scrubbed": True, "provider_no_tool_controls": list(NO_TOOL_CONTROLS[harness]),
+            "provider_prompt_sha256": sha256(sealed_prompt.encode()), "provider_prompt_bytes": len(sealed_prompt.encode()), "provider_transport_sha256": sha256(transport.encode()), "provider_transport_bytes": len(transport.encode()), "provider_prompt_transport": PROMPT_TRANSPORT[harness], "provider_cwd_class": "owned_empty_scratch", "provider_cwd_sha256": nonce(label + "cwd"), "provider_env_keys": ["HOME", "LANG", "PATH", "XDG_CONFIG_HOME"] if harness == "gemini" else ["LANG", "PATH"], "provider_env_api_keys_scrubbed": True, "provider_env_direct_routes_scrubbed": True, "provider_no_tool_controls": list(NO_TOOL_CONTROLS[harness]),
         }
         if harness == "claude":
-            common.update({"claude_session_id_sha256": nonce(label + "session"), "claude_session_resume_forbidden": True, "claude_transcript_exact_path_sha256": nonce(label + "path"), "claude_transcript_preexisting": False, "claude_transcript_existed": True, "claude_transcript_sha256": nonce(label + "transcript"), "claude_transcript_bytes": 12, "claude_transcript_cleanup_verified": True})
+            prompt_bytes = len(sealed_prompt.encode())
+            common.update({"claude_session_id_sha256": nonce(label + "session"), "claude_session_resume_forbidden": True, "claude_transcript_exact_path_sha256": nonce(label + "path"), "claude_transcript_preexisting": False, "claude_transcript_existed": True, "claude_transcript_sha256": nonce(label + "transcript"), "claude_transcript_bytes": 12, "claude_transcript_cleanup_verified": True, "provider_liveness_profile": "broker_prompt_scaled_v1", "provider_liveness_stall_threshold_s": float(max(1, min(BROKER_CLAUDE_STALL_BASE_S + ((prompt_bytes + BROKER_CLAUDE_STALL_BYTES_PER_S - 1) // BROKER_CLAUDE_STALL_BYTES_PER_S), max(1, int(common["operation_deadline_s"]) - BROKER_CLAUDE_STALL_TRANSPORT_RESERVE_S)))), "provider_liveness_prompt_bytes": prompt_bytes})
+        if harness == "gemini":
+            settings = {"permissions": {"deny": list(AGY_DENY_ACTIONS)}, "toolPermission": "request-review", "allowNonWorkspaceAccess": False}
+            common.update({"provider_isolation_profile": "agy_temp_home_deny_all_v1", "provider_agy_deny_actions": list(AGY_DENY_ACTIONS), "provider_agy_settings_sha256": sha256((json.dumps(settings, sort_keys=True, separators=(",", ":")) + "\n").encode()), "provider_agy_subscription_reference": "private_symlink", "provider_agy_home_cleanup_verified": True})
         return common
     def review(round_name: str, head: str, tree: str) -> dict[str, Any]:
         landing, landing_tree = refs["landing"]
@@ -1155,21 +1313,25 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
     roles = {}
     for role, identity, vendor, session in (("coordinator", "coordinator-1", "coordinator", coordinator_session), ("author", "author-1", "codex-gpt-5.6-terra", author_session), ("reviewer", "reviewer-" + reviewer_session[:32], "reviewer", reviewer_session)):
         roles[role] = put("role-" + role, {"schema": "harden_role_attestation.v1", "role": role, "identity": identity, "vendor": vendor, "session_sha256": session, "evidence_id": evidence_id, "issued_at": "2026-08-27T00:00:00Z"})
+    def ci_record(label: str, run_id: int, head: str) -> dict[str, Any]:
+        provider_receipt = put(
+            "ci-provider-" + label,
+            {"databaseId": run_id, "headSha": head, "status": "completed", "conclusion": "success", "event": "push", "workflowName": "HARDEN", "attempt": 1, "jobs": [{"name": "HARDEN", "conclusion": "success"}]},
+        )
+        return {"provider": "github_actions", "repository": "Consiliency/agent-harness", "run_id": run_id, "workflow": "HARDEN", "event": "push", "run_attempt": 1, "head": head, "check": "HARDEN", "provider_receipt": provider_receipt}
+
     evidence: dict[str, Any] = {
         "schema": SCHEMA, "evidence_id": evidence_id, "repository": "Consiliency/agent-harness",
         "git": {name: {"commit": commit_id, "tree": tree} for name, (commit_id, tree) in refs.items()},
         "sl0": {"frozen_inventory": inventory, "activated_red": activated, "pure_control": pure, "mutations": mutations},
         "verification": {"candidate": final_group("candidate", candidate, candidate_tree), "canonical_main": final_group("main", main, main_tree)},
-        "ci": {
-            "candidate": {"provider": "github_actions", "repository": "Consiliency/agent-harness", "run_id": 98, "workflow": "HARDEN", "event": "push", "run_attempt": 1, "head": candidate},
-            "canonical_main": {"provider": "github_actions", "repository": "Consiliency/agent-harness", "run_id": 99, "workflow": "HARDEN", "event": "push", "run_attempt": 1, "head": main},
-        },
+        "ci": {"candidate": ci_record("candidate", 98, candidate), "canonical_main": ci_record("canonical-main", 99, main)},
         "reviews": reviews, "roles": roles, "completion": {"mode": "pre_completion"},
     }
     evidence_path = root / "evidence.json"; evidence_path.write_bytes(canonical_bytes(evidence))
     fake_gh = root / "fake-gh"
     responses = {
-        str(ci["run_id"]): {"databaseId": ci["run_id"], "headSha": ci["head"], "status": "completed", "conclusion": "success", "event": "push", "workflowName": ci["workflow"], "attempt": ci["run_attempt"]}
+        str(ci["run_id"]): {"databaseId": ci["run_id"], "headSha": ci["head"], "status": "completed", "conclusion": "success", "event": "push", "workflowName": ci["workflow"], "attempt": ci["run_attempt"], "jobs": [{"name": ci["check"], "conclusion": "success"}]}
         for ci in evidence["ci"].values()
     }
     responses_path = root / "fake-gh-responses.json"
@@ -1272,6 +1434,37 @@ def self_test() -> None:
             mutation = model["sl0"]["mutations"][0]["mutation"]; replace(mutation["raw"], artifact_root, b"1 failed but no bite marker\n")
             mutate_json(mutation["receipt"], artifact_root, lambda receipt_value: receipt_value.__setitem__("raw_sha256", mutation["raw"]["sha256"]))
         rejected("nonbiting", nonbiting)
+        def comment_only_mutation(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
+            entry = model["sl0"]["mutations"][0]
+            restored = (artifact_root / entry["restored_source"]["path"]).read_bytes()
+            replace(entry["mutated_source"], artifact_root, restored + b"# comment-only\n")
+            mutate_json(entry["mutation"]["receipt"], artifact_root, lambda receipt_value: receipt_value.__setitem__("source_sha256", entry["mutated_source"]["sha256"]))
+        rejected("comment-only-mutation", comment_only_mutation)
+        def synthetic_final_inventory(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
+            result = model["verification"]["candidate"]["focused"]
+            tiny_junit = b'<testsuite><testcase classname="tests.inventory" name="one" /></testsuite>'
+            replace(result["junit"], artifact_root, tiny_junit)
+            replace(result["raw"], artifact_root, b"1 passed, 0 skipped, 0 subtests passed\n")
+            def reseal(receipt_value: dict[str, Any]) -> None:
+                receipt_value["junit_sha256"] = result["junit"]["sha256"]
+                receipt_value["raw_sha256"] = result["raw"]["sha256"]
+                receipt_value["summary"] = {"passed": 1, "failed": 0, "errors": 0, "skipped": 0, "xfails": 0, "subtests": 0, "deselected": 0}
+                receipt_value["nodeids_sha256"] = sha256(canonical_bytes(["tests.inventory::one"]))
+            mutate_json(result["receipt"], artifact_root, reseal)
+        rejected("synthetic-final-inventory", synthetic_final_inventory)
+        def altered_final_command(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
+            mutate_json(model["verification"]["candidate"]["focused"]["receipt"], artifact_root, lambda receipt_value: receipt_value.__setitem__("argv", ["python3", "-m", "pytest"]))
+        rejected("altered-final-command", altered_final_command)
+        def altered_final_source_tree(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
+            mutate_json(model["verification"]["candidate"]["focused"]["receipt"], artifact_root, lambda receipt_value: receipt_value.__setitem__("source_tree", "0" * 40))
+        rejected("altered-final-source-tree", altered_final_source_tree)
+        def altered_final_junit_binding(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
+            mutate_json(model["verification"]["candidate"]["focused"]["receipt"], artifact_root, lambda receipt_value: receipt_value.__setitem__("nodeids_sha256", "0" * 64))
+        rejected("altered-final-junit-binding", altered_final_junit_binding)
+        def broad_baseline_reuses_head(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
+            candidate = model["git"]["candidate"]
+            mutate_json(model["verification"]["candidate"]["broad"]["receipt"], artifact_root, lambda receipt_value: receipt_value["baseline"].update({"commit": candidate["commit"], "tree": candidate["tree"]}))
+        rejected("broad-baseline-reuses-head", broad_baseline_reuses_head)
         def wrong_junit_module(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
             mutation = model["sl0"]["mutations"][0]["mutation"]
             old = (artifact_root / mutation["junit"]["path"]).read_bytes().replace(b'classname="tests.', b'classname="wrong.module.', 1)
@@ -1361,7 +1554,7 @@ def self_test() -> None:
         rejected("repository-mismatch", lambda model, _root, _artifacts: model.__setitem__("repository", "other/repository"))
         with ThreadPoolExecutor(max_workers=4) as executor:
             list(executor.map(run_rejected, checks))
-    print("self-test: valid topology and post-completion ledger accepted; 49 adversarial mutations rejected")
+    print(f"self-test: valid topology and post-completion ledger accepted; {len(checks)} adversarial mutations rejected")
 
 
 def main(argv: list[str] | None = None) -> int:
