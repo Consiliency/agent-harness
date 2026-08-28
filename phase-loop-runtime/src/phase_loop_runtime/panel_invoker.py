@@ -81,7 +81,9 @@ from .advisor_board.backing import (
     derive_review_leg_authorization,
     prepare_review_isolation_authorization,
     revalidate_review_isolation_authorization,
+    reset_review_instruction_digest,
     resolve_seat_env,
+    set_review_instruction_digest,
     scrub_subscription_env,
     select_backing,
 )
@@ -1500,7 +1502,7 @@ _BROKER_AGY_DENY_ACTIONS: tuple[str, ...] = (
 _BROKER_AGY_ISOLATION_PROFILE = "agy_temp_home_deny_all_v1"
 _BROKER_CLAUDE_STALL_PROFILE = "broker_prompt_scaled_v1"
 _BROKER_CLAUDE_STALL_BASE_S = 180
-_BROKER_CLAUDE_STALL_BYTES_PER_S = 2048
+_BROKER_CLAUDE_STALL_BYTES_PER_S = 512
 _BROKER_CLAUDE_STALL_TRANSPORT_RESERVE_S = 15
 _BROKER_CODEX_DISABLED_FEATURES: tuple[str, ...] = (
     "auth_elicitation",
@@ -4830,6 +4832,9 @@ def _default_spawn(
                 auth=AUTH_SUBSCRIPTION, backing=BACKING_HOMEBREW,
             ),),
         )
+        instruction_token = set_review_instruction_digest(
+            _resolve_brief(mode, None)
+        )
         try:
             probe_repo_authority = _canonical_review_repo_authority(repo_dir)
             owned_probe_authorization = prepare_review_isolation_authorization(
@@ -4855,6 +4860,8 @@ def _default_spawn(
         except ValueError as exc:
             close_review_isolation_authorization(owned_probe_authorization)
             return "UNAVAILABLE", str(exc)[:200]
+        finally:
+            reset_review_instruction_digest(instruction_token)
         review_authorization = owned_probe_authorization
         canonical_repo_authority = probe_repo_authority
         # The fixed observation never accepts a caller-supplied child/provider
@@ -5972,7 +5979,12 @@ def invoke_board(
     artifact = _apply_context_refs(
         artifact, context_refs, soft_warn=context_refs_soft_warn
     )
+    review_instruction_token: object | None = None
     def review_refusal(detail: str) -> PanelResult:
+        nonlocal review_instruction_token
+        if review_instruction_token is not None:
+            reset_review_instruction_digest(review_instruction_token)
+            review_instruction_token = None
         return PanelResult(tuple(
             PanelLegResult(
                 leg=seat.harness or seat.vendor_family,
@@ -6022,6 +6034,16 @@ def invoke_board(
     except (KeyError, ValueError):
         exact_broker_routes = False
     if mode == "review":
+        if not hermetic_review_seam:
+            try:
+                # Resolve the exact brief before any operation authority exists;
+                # the digest is consumed by the sealed authorization factory, not
+                # exposed to a child or a provider environment.
+                review_instruction_token = set_review_instruction_digest(
+                    _resolve_brief(mode, brief_ref)
+                )
+            except (OSError, UnicodeError, ValueError) as exc:
+                return review_refusal(str(exc))
         # These modes use a direct gateway, research transport, or capture-owned
         # provider authority.  HARDEN deliberately has no brokered implementation
         # for them, so refuse before catalog, auth, callback, child, or spawn work.
@@ -6507,6 +6529,9 @@ def invoke_board(
                     canonical_repo_authority=canonical_repo_authority,
                 )
                 review_lease_active = True
+                if review_instruction_token is not None:
+                    reset_review_instruction_digest(review_instruction_token)
+                    review_instruction_token = None
             except ValueError as exc:
                 return review_refusal(str(exc))
         results = _run_legs_ordered(
@@ -6551,6 +6576,8 @@ def invoke_board(
             object.__setattr__(panel_result, "_agy_canary_capture", capture_summary(agy_canary_capture))
         return panel_result
     finally:
+        if review_instruction_token is not None:
+            reset_review_instruction_digest(review_instruction_token)
         if review_lease_active:
             close_review_isolation_authorization(review_authorization)
         if research_run is not None:
