@@ -108,6 +108,139 @@ def test_derived_review_refuses_missing_or_forged_authority_before_callback():
     assert all(leg.status == "UNAVAILABLE" for leg in forged.legs)
 
 
+def test_derived_review_explicit_spawn_remains_hermetic_after_marker():
+    """A caller-owned spawn stays a no-auth in-process review control.
+
+    This is deliberately mode-derived and carries a governed landing tier, matching
+    legacy caller controls that must retain their semantic ``OK`` result without
+    reaching an auth or provider boundary.
+    """
+
+    harden_require("review-leg-isolation")
+    from phase_loop_runtime import panel_invoker as invoker
+    from phase_loop_runtime.advisor_board import backing as backing_mod
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+
+    callback_calls: list[str] = []
+
+    def hermetic_spawn(leg: str, _artifact: str):
+        callback_calls.append(leg)
+        return "OK", f"{leg} hermetic control\nAGREE"
+
+    with tempfile.TemporaryDirectory() as td:
+        with patch.object(
+            backing_mod,
+            "prepare_review_isolation_authorization",
+            side_effect=AssertionError("a hermetic spawn must not prepare authorization"),
+        ) as prepare_spy, patch.object(
+            invoker,
+            "revalidate_review_isolation_authorization",
+            side_effect=AssertionError("a hermetic spawn must not revalidate authorization"),
+        ) as revalidate_spy, patch.object(
+            invoker,
+            "_default_spawn_via_provider",
+            side_effect=AssertionError("a hermetic spawn must not reach provider launch"),
+        ) as provider_spy:
+            result = invoker.invoke_board(
+                DEFAULT_BOARD,
+                "bounded hermetic control",
+                spawn=hermetic_spawn,
+                repo_dir=Path(td),
+                base_env={},
+                landing_tier=invoker.ReviewLandingTier.PRODUCTION_CODE,
+                max_concurrency=1,
+            )
+
+    prepare_spy.assert_not_called()
+    revalidate_spy.assert_not_called()
+    provider_spy.assert_not_called()
+    assert [leg.status for leg in result.legs] == ["OK"] * len(DEFAULT_BOARD.seats)
+    assert sorted(callback_calls) == sorted(seat.harness for seat in DEFAULT_BOARD.seats)
+
+
+def test_derived_review_bounded_capture_control_reaches_stage_without_auth():
+    """An explicit private capture control reaches staging, never a provider seam."""
+
+    harden_require("review-leg-isolation")
+    from phase_loop_runtime import agy_canary_evidence as evidence
+    from phase_loop_runtime import panel_invoker as invoker
+    from phase_loop_runtime.advisor_board import backing as backing_mod
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+
+    class StopAfterStage(Exception):
+        pass
+
+    staged: list[Path] = []
+    with tempfile.TemporaryDirectory(prefix="harden-capture-", dir="/tmp") as td:
+        root = Path(td)
+        capture = evidence.AgyCanaryCapture(*evidence._validate_private_root(root))
+        try:
+            def bind_stage(*, capture: object, review_dir: Path, bundle_bytes: bytes,
+                           instruction_bytes: bytes, **_kwargs: object) -> None:
+                assert capture is bounded_capture
+                assert review_dir.is_dir()
+                assert (review_dir / "review-bundle.md").read_bytes() == bundle_bytes
+                assert (
+                    review_dir / "review-instructions.md"
+                ).read_bytes() == instruction_bytes
+                staged.append(review_dir)
+
+            def stop_after_stage(*, capture: object, stage: Path,
+                                 providers: tuple[str, ...]) -> object:
+                assert capture is bounded_capture
+                assert staged == [stage]
+                assert providers == ("codex",)
+                raise StopAfterStage
+
+            bounded_capture = capture
+            assert root.parent == Path("/tmp")
+            assert root.stat().st_mode & 0o777 == 0o700
+            with patch.object(
+                backing_mod,
+                "prepare_review_isolation_authorization",
+                side_effect=AssertionError("a bounded capture control must not prepare authorization"),
+            ) as prepare_spy, patch.object(
+                invoker,
+                "revalidate_review_isolation_authorization",
+                side_effect=AssertionError("a bounded capture control must not revalidate authorization"),
+            ) as revalidate_spy, patch.object(
+                invoker,
+                "bind_staged_review_inputs",
+                side_effect=bind_stage,
+            ), patch.object(
+                invoker,
+                "prepare_provider_launch_authorities",
+                side_effect=stop_after_stage,
+            ), patch.object(
+                invoker,
+                "_leg_auth_ok",
+                side_effect=AssertionError("capture must not reach auth probing"),
+            ), patch.object(
+                invoker,
+                "_default_spawn_via_provider",
+                side_effect=AssertionError("capture must not reach provider launch"),
+            ) as provider_spy:
+                try:
+                    invoker.invoke_board(
+                        DEFAULT_BOARD,
+                        "bounded capture control",
+                        agy_canary_capture=bounded_capture,
+                        base_env={},
+                        max_concurrency=1,
+                    )
+                except StopAfterStage:
+                    pass
+                else:
+                    raise AssertionError("bounded capture did not stop at staging")
+
+            prepare_spy.assert_not_called()
+            revalidate_spy.assert_not_called()
+            provider_spy.assert_not_called()
+            assert len(staged) == 1
+        finally:
+            capture.close()
+
+
 class AvailabilitySimulationTests(unittest.TestCase):
     def _assert_full_and_clean(self, board, *, expect_vendors):
         # (a) exactly the target seat count …
