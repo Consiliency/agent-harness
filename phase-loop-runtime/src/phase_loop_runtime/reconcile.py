@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .classifier import classify_all
@@ -33,7 +34,21 @@ RECONCILE_EVENT_STATUSES = {
 }
 
 
+def _reconcile_timestamp(repo: Path, roadmap: Path, *, read_only: bool) -> str:
+    """Keep a read-only reconciliation a pure observation of repo-owned inputs."""
+    if not read_only:
+        return utc_now()
+    observed = [roadmap]
+    for relative in (".phase-loop/state.json", ".phase-loop/events.jsonl"):
+        candidate = repo / relative
+        if candidate.exists():
+            observed.append(candidate)
+    newest = max(path.stat().st_mtime for path in observed)
+    return datetime.fromtimestamp(newest, timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
 def reconcile(repo: Path, roadmap: Path, *, read_only: bool = False) -> StateSnapshot:
+    observed_timestamp = _reconcile_timestamp(repo, roadmap, read_only=read_only)
     phases = classify_all(repo, roadmap)
     current_roadmap_sha = roadmap_sha256(roadmap)
     current_phase_sha = phase_provenance_map(roadmap)
@@ -357,7 +372,7 @@ def reconcile(repo: Path, roadmap: Path, *, read_only: bool = False) -> StateSna
                 _ledger_warning("event", repaired_phase, "complete", "clean_verified_dirty_closeout_recovery_superseded_nonhuman_blocker")
             )
             return StateSnapshot(
-                timestamp=utc_now(),
+                timestamp=observed_timestamp,
                 repo=str(repo),
                 roadmap=str(roadmap),
                 phases=phases,
@@ -465,7 +480,7 @@ def reconcile(repo: Path, roadmap: Path, *, read_only: bool = False) -> StateSna
         )
         current = _current_phase(phases)
     return StateSnapshot(
-        timestamp=utc_now(),
+        timestamp=observed_timestamp,
         repo=str(repo),
         roadmap=str(roadmap),
         phases=phases,

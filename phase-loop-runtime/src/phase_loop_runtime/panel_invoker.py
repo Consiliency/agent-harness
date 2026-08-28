@@ -1607,21 +1607,12 @@ def _broker_gemini_stream_result(raw: str) -> tuple[int, str, str]:
 
 
 def _broker_subscription_env(base_env: Mapping[str, str] | None = None) -> dict[str, str]:
-    """Retain subscription login state but reject every direct/provider override."""
+    """Pass only runtime and subscription-login ambient state to a broker parent."""
     env = _subscription_env(base_env)
-    for key in tuple(env):
-        upper = key.upper()
-        if (
-            "API_KEY" in upper
-            or "BASE_URL" in upper
-            or "GATEWAY" in upper
-            or "PROVIDER" in upper
-            or "RESEARCH" in upper
-            or upper.startswith(("AGY_", "ANTIGRAVITY_", "GEMINI_", "XDG_CONFIG_"))
-            or upper.startswith(("OMNIGENT_", "ANTHROPIC_BEDROCK_", "ANTHROPIC_VERTEX_"))
-        ):
-            env.pop(key, None)
-    return env
+    allowed = {
+        "HOME", "LANG", "LC_ALL", "LC_CTYPE", "NO_COLOR", "PATH", "TERM",
+    }
+    return {key: value for key, value in env.items() if key in allowed}
 
 
 @contextmanager
@@ -4678,7 +4669,12 @@ class _BrokeredSpawnResult(tuple):
 
 
 def _has_injected_review_execution_seam() -> bool:
-    """True only when the executable adapter or one of its callbacks changed."""
+    """True for the frozen in-process advisor-board control seam.
+
+    This is not evidence of a brokered subscription execution.  Final HARDEN
+    evidence requires an actual ``parent_unix_broker_v1`` receipt, so an injected
+    control can never satisfy a real-review seat.
+    """
     return (
         _exec_leg is not _PRODUCTION_EXEC_LEG
         or _exec_claude_tui_leg is not _PRODUCTION_EXEC_CLAUDE_TUI_LEG
@@ -5042,8 +5038,14 @@ def _default_spawn(
                 broker.close()
             if response is None or probe is None:
                 raise ValueError("broker completed without a response")
+            response_text = str(response["text"])
+            broker.evidence.update({
+                "provider_response_status": str(response["status"]),
+                "provider_response_sha256": sha256(response_text.encode()).hexdigest(),
+                "provider_response_bytes": len(response_text.encode()),
+            })
             return _BrokeredSpawnResult(
-                str(response["status"]), str(response["text"]), evidence=probe
+                str(response["status"]), response_text, evidence=probe
             )
         if leg == "claude":
             if quiescence_latch is not None:
