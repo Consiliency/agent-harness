@@ -1768,6 +1768,8 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
         clear_review_composition_authorization,
         prepare_review_composition_authorization,
         prepare_review_isolation_authorization,
+        reset_review_instruction_digest,
+        set_review_instruction_digest,
     )
     from .advisor_board.composition import FLOOR_SEATS, board_independence, compose_review_board
     from .advisor_board.fixtures import DEFAULT_BOARD
@@ -1777,7 +1779,7 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
         consume_capture_environment,
         write_private_board,
     )
-    from .panel_invoker import invoke_board
+    from .panel_invoker import _mode_instructions, invoke_board
 
     artifact_path = Path(args.artifact)
     # Accept ONLY a regular file: a directory passes exists() then tracebacks in the
@@ -1841,6 +1843,9 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
         )
         return 2
     if capture is None:
+        instruction_token = set_review_instruction_digest(
+            _mode_instructions("review")
+        )
         try:
             artifact_text = artifact_path.read_text(encoding="utf-8")
             review_authorization = prepare_review_isolation_authorization(
@@ -1852,6 +1857,8 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
         except (OSError, UnicodeError, ValueError) as exc:
             print(f"advisor-board: review isolation unavailable: {exc}", file=sys.stderr)
             return 2
+        finally:
+            reset_review_instruction_digest(instruction_token)
     # Constrain the spawn cwd (write boundary): the native/claude route otherwise
     # gets Write access to the process CWD. A dedicated scratch dir bounds the blast
     # radius for this standalone entrypoint. The artifact is passed by ABSOLUTE ref so

@@ -115,6 +115,9 @@ _LEG_CLAIMS: dict[int, tuple[weakref.ReferenceType["ReviewLegAuthorization"], "_
 _COMPOSITION_AUTHORIZATION: ContextVar["ReviewCompositionAuthorization | None"] = ContextVar(
     "harden_review_composition_authorization", default=None
 )
+_REVIEW_INSTRUCTIONS_SHA256: ContextVar[str | None] = ContextVar(
+    "harden_review_instructions_sha256", default=None
+)
 
 
 @dataclass(frozen=True)
@@ -134,6 +137,7 @@ class ReviewLegAuthorization:
     operation: str
     purpose: str
     input_sha256: str
+    instructions_sha256: str
     broker_contract: str
     harness: str
     model: str
@@ -301,6 +305,7 @@ class ParentUnixBroker:
             or bundle.stat().st_mode & 0o222
             or instructions.stat().st_mode & 0o222
             or sha256(bundle.read_bytes()).hexdigest() != authorization.input_sha256
+            or sha256(instructions.read_bytes()).hexdigest() != authorization.instructions_sha256
         ):
             raise ValueError("broker stage is not immutable and bound")
         self.authorization, self.harness, self.model = authorization, harness, model
@@ -325,6 +330,7 @@ class ParentUnixBroker:
             "schema": PARENT_UNIX_BROKER_V1,
             "stage_bundle_sha256": authorization.input_sha256,
             "stage_instructions_sha256": self._instruction_sha256,
+            "leg_authorization_instructions_sha256": authorization.instructions_sha256,
             "leg_authorization_issued_monotonic_ns": authorization.issued_monotonic_ns,
             "leg_authorization_expires_monotonic_ns": authorization.expires_monotonic_ns,
             "canonical_repo_sha256": sha256(str(self.canonical_repo).encode()).hexdigest(),
@@ -541,6 +547,7 @@ class ReviewIsolationAuthorization:
     operation: str
     purpose: str
     input_sha256: str
+    instructions_sha256: str | None
     broker_contract: str
     routes: tuple[tuple[str, str], ...]
     readonly_tools: tuple[str, ...]
@@ -567,6 +574,22 @@ def _canonical_repo_digest(canonical_repo_authority: Path | str | None) -> str:
     if not root:
         raise ValueError("HARDEN review has no canonical repository authority")
     return sha256(str(Path(root).resolve()).encode("utf-8")).hexdigest()
+
+
+def set_review_instruction_digest(instructions: str):
+    """Bind resolved immutable instructions to the current public operation.
+
+    The context is process-local authority only.  It is never retained in the
+    authorization's serialized evidence and lets existing injectable factory
+    seams keep their frozen call signature.
+    """
+    return _REVIEW_INSTRUCTIONS_SHA256.set(
+        sha256(instructions.encode("utf-8", errors="strict")).hexdigest()
+    )
+
+
+def reset_review_instruction_digest(token: object) -> None:
+    _REVIEW_INSTRUCTIONS_SHA256.reset(token)  # type: ignore[arg-type]
 
 
 def prepare_review_composition_authorization() -> ReviewCompositionAuthorization:
@@ -635,10 +658,12 @@ def prepare_review_isolation_authorization(
     if not routes and not advisory_only:
         raise ValueError("HARDEN review requires at least one supported brokered seat")
     canonical_repo_sha256 = _canonical_repo_digest(canonical_repo_authority)
+    instructions_sha256 = _REVIEW_INSTRUCTIONS_SHA256.get()
     issued = time.monotonic_ns()
     authorization = ReviewIsolationAuthorization(
         operation="public_board_review.v1", purpose=purpose,
         input_sha256=sha256(artifact.encode("utf-8")).hexdigest(),
+        instructions_sha256=instructions_sha256,
         broker_contract=PARENT_UNIX_BROKER_V1, routes=tuple(routes),
         readonly_tools=_REVIEW_READONLY_TOOLS, child_credentialless=True,
         child_network_egress=False, live_tree_exposed=False, api_fallback=False,
@@ -673,6 +698,7 @@ def _expected_review_fields(
         "operation": "public_board_review.v1",
         "purpose": str(getattr(board, "purpose", "")),
         "input_sha256": sha256(artifact.encode("utf-8")).hexdigest(),
+        "instructions_sha256": _REVIEW_INSTRUCTIONS_SHA256.get(),
         "broker_contract": PARENT_UNIX_BROKER_V1,
         "routes": tuple(routes),
         "readonly_tools": _REVIEW_READONLY_TOOLS,
@@ -716,6 +742,8 @@ def revalidate_review_isolation_authorization(
             not bundle.is_file()
             or not instructions.is_file()
             or sha256(bundle.read_bytes()).hexdigest() != authorization.input_sha256
+            or authorization.instructions_sha256 is None
+            or sha256(instructions.read_bytes()).hexdigest() != authorization.instructions_sha256
         ):
             raise ValueError("HARDEN review staged input does not match authorization")
         if bundle.stat().st_mode & 0o222 or instructions.stat().st_mode & 0o222:
@@ -789,6 +817,7 @@ def derive_review_leg_authorization(
     leg = ReviewLegAuthorization(
         operation=authorization.operation, purpose=authorization.purpose,
         input_sha256=authorization.input_sha256,
+        instructions_sha256=authorization.instructions_sha256 or "",
         broker_contract=PARENT_UNIX_BROKER_V1, harness=harness, model=model,
         issued_monotonic_ns=issued,
         expires_monotonic_ns=issued + int(float(deadline_s) * 1_000_000_000) + _BROKER_TRANSPORT_ALLOWANCE_NS,

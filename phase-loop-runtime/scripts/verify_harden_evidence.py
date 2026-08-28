@@ -187,7 +187,7 @@ AGY_DENY_ACTIONS = (
     "command(*)", "unsandboxed(*)", "mcp(*)",
 )
 BROKER_CLAUDE_STALL_BASE_S = 180
-BROKER_CLAUDE_STALL_BYTES_PER_S = 2048
+BROKER_CLAUDE_STALL_BYTES_PER_S = 512
 BROKER_CLAUDE_STALL_TRANSPORT_RESERVE_S = 15
 
 
@@ -491,13 +491,25 @@ def parse_junit(data: bytes, label: str) -> list[dict[str, str]]:
     return cases
 
 
-def exact_case(cases: list[dict[str, str]], nodeid: str, status: str, label: str) -> dict[str, str]:
-    module_path, function = nodeid.rsplit("::", 1)
+def pytest_junit_identity(nodeid: str, label: str) -> tuple[str, str]:
+    """Return pytest's xunit2 classname/name identity for a frozen nodeid."""
+    parts = nodeid.split("::")
+    if len(parts) < 2:
+        fail(f"{label}: malformed pytest nodeid")
+    module_path, qualifiers, function = parts[0], parts[1:-1], parts[-1]
     prefix = "phase-loop-runtime/"
     if not module_path.startswith(prefix):
         fail(f"{label}: nodeid is outside phase-loop-runtime")
     module = module_path.removeprefix(prefix).removesuffix(".py").replace("/", ".")
-    matches = [case for case in cases if case["node"] == f"{module}::{function}"]
+    if not module or not function:
+        fail(f"{label}: malformed pytest nodeid")
+    classname = module + ("." + ".".join(qualifiers) if qualifiers else "")
+    return classname, function
+
+
+def exact_case(cases: list[dict[str, str]], nodeid: str, status: str, label: str) -> dict[str, str]:
+    classname, function = pytest_junit_identity(nodeid, label)
+    matches = [case for case in cases if case["node"] == f"{classname}::{function}"]
     if len(matches) != 1 or matches[0]["status"] != status:
         fail(f"{label}: expected exact testcase result")
     return matches[0]
@@ -609,6 +621,14 @@ def verify_git_and_inventory(repo: Path, git_data: dict[str, Any], sl0: dict[str
     parents = git(repo, "show", "-s", "--format=%P", landing).split()
     if parents != [first_parent, reviewed]:
         fail("landing merge topology is not landing-first-parent plus reviewed SL-0")
+    landing_delta = changed_paths(repo, first_parent, landing)
+    if landing_delta != reviewed_changes:
+        fail("landing merge does not introduce exactly the reviewed tests-only delta")
+    for path in reviewed_changes:
+        landing_blob, _landing_bytes = blob(repo, landing, path)
+        reviewed_blob, _reviewed_bytes = blob(repo, reviewed, path)
+        if landing_blob != reviewed_blob:
+            fail("landing merge does not retain the reviewed tests-only content")
     ancestor(repo, landing, candidate, "candidate")
     ancestor(repo, candidate, main, "canonical main")
     if commits["candidate"][1] != commits["canonical_main"][1] or changed_paths(repo, candidate, main):
@@ -785,9 +805,28 @@ def query_ci(store: ArtifactStore, ci: dict[str, Any], query: Path) -> None:
             fail("canonical CI response omitted the required check receipt")
         jobs = [{"name": ci["check"], "conclusion": "success"}]
     else:
-        jobs = response["jobs"]
-        if not isinstance(jobs, list) or any(not isinstance(job, dict) or set(job) != {"name", "conclusion"} for job in jobs):
+        raw_jobs = response["jobs"]
+        if not isinstance(raw_jobs, list):
             fail("CI provider job receipt is malformed")
+        jobs: list[dict[str, Any]] = []
+        rich_keys = {
+            "completedAt", "conclusion", "databaseId", "name", "startedAt",
+            "status", "steps", "url",
+        }
+        for job in raw_jobs:
+            if not isinstance(job, dict):
+                fail("CI provider job receipt is malformed")
+            if set(job) == {"name", "conclusion"} and not is_canonical_query:
+                normalized_job = job
+            else:
+                if set(job) != rich_keys or job["status"] != "completed":
+                    fail("CI provider job receipt is malformed")
+                normalized_job = {"name": job["name"], "conclusion": job["conclusion"]}
+            if not isinstance(normalized_job["name"], str) or not isinstance(normalized_job["conclusion"], str):
+                fail("CI provider job receipt is malformed")
+            jobs.append(normalized_job)
+        if jobs != [{"name": ci["check"], "conclusion": "success"}]:
+            fail("authoritative CI check evidence is missing, duplicated, failed, or unexpected")
     normalized = {"databaseId": response["databaseId"], "headSha": response["headSha"], "status": response["status"], "conclusion": response["conclusion"], "event": response["event"], "workflowName": response["workflowName"], "attempt": response["attempt"], "jobs": jobs}
     receipt = store.json(artifact_ref(ci["provider_receipt"], "CI provider receipt"), "CI provider receipt")
     if receipt != normalized or sha256(canonical_bytes(receipt)) != ci["provider_receipt"]["sha256"]:
@@ -817,7 +856,7 @@ def verify_ci(store: ArtifactStore, data: Any, candidate: str, main: str, reposi
 
 def verify_broker(value: Any, harness: str, requested: str, resolved: str, bundle_sha256: str, instructions_sha256: str, sealed_prompt: str) -> None:
     common = {
-        "schema", "stage_bundle_sha256", "stage_instructions_sha256", "leg_authorization_issued_monotonic_ns", "leg_authorization_expires_monotonic_ns", "canonical_repo_sha256", "canonical_repo_probe_file_sha256", "cleanup_root_removed", "host_secret_probe_removed", "child_quiescent", "peer_pid", "peer_uid", "peer_gid", "peer_ancestry_verified", "bwrap", "outer_bwrap_pid", "outer_bwrap_start", "network_unshared", "close_fds_requested", "socket", "stage", "argv_sha256", "socket_present_before_launch", "stage_bundle_mode", "stage_instructions_mode", "client_probe_program_sha256", "client_probe_assertions", "canonical_repo_file_denied", "canonical_repo_directory_denied", "host_stage_path_denied", "no_inherited_fd_observed", "child_stderr_sha256", "child_returncode", "operation_deadline_s", "child_timeout", "broker_thread_quiescent", "provider_adapter_quiescent", "provider_cancel_requested", "provider_input_sha256", "provider_input_bytes", "provider_input_inline", "provider_live_tree_cwd", "provider_harness", "provider_model", "provider_argv_shape", "provider_argv_sha256", "provider_prompt_sha256", "provider_prompt_bytes", "provider_transport_sha256", "provider_transport_bytes", "provider_prompt_transport", "provider_cwd_class", "provider_cwd_sha256", "provider_env_keys", "provider_env_api_keys_scrubbed", "provider_env_direct_routes_scrubbed", "provider_no_tool_controls",
+        "schema", "stage_bundle_sha256", "stage_instructions_sha256", "leg_authorization_instructions_sha256", "leg_authorization_issued_monotonic_ns", "leg_authorization_expires_monotonic_ns", "canonical_repo_sha256", "canonical_repo_probe_file_sha256", "cleanup_root_removed", "host_secret_probe_removed", "child_quiescent", "peer_pid", "peer_uid", "peer_gid", "peer_ancestry_verified", "bwrap", "outer_bwrap_pid", "outer_bwrap_start", "network_unshared", "close_fds_requested", "socket", "stage", "argv_sha256", "socket_present_before_launch", "stage_bundle_mode", "stage_instructions_mode", "client_probe_program_sha256", "client_probe_assertions", "canonical_repo_file_denied", "canonical_repo_directory_denied", "host_stage_path_denied", "no_inherited_fd_observed", "child_stderr_sha256", "child_returncode", "operation_deadline_s", "child_timeout", "broker_thread_quiescent", "provider_adapter_quiescent", "provider_cancel_requested", "provider_input_sha256", "provider_input_bytes", "provider_input_inline", "provider_live_tree_cwd", "provider_harness", "provider_model", "provider_argv_shape", "provider_argv_sha256", "provider_prompt_sha256", "provider_prompt_bytes", "provider_transport_sha256", "provider_transport_bytes", "provider_prompt_transport", "provider_cwd_class", "provider_cwd_sha256", "provider_env_keys", "provider_env_api_keys_scrubbed", "provider_env_direct_routes_scrubbed", "provider_no_tool_controls",
     }
     claude = {"claude_session_id_sha256", "claude_session_resume_forbidden", "claude_transcript_exact_path_sha256", "claude_transcript_preexisting", "claude_transcript_existed", "claude_transcript_sha256", "claude_transcript_bytes", "claude_transcript_cleanup_verified", "provider_liveness_profile", "provider_liveness_stall_threshold_s", "provider_liveness_prompt_bytes"}
     gemini = {"provider_isolation_profile", "provider_agy_deny_actions", "provider_agy_settings_sha256", "provider_agy_subscription_reference", "provider_agy_home_cleanup_verified"}
@@ -825,7 +864,11 @@ def verify_broker(value: Any, harness: str, requested: str, resolved: str, bundl
     for field in ("stage_bundle_sha256", "stage_instructions_sha256", "canonical_repo_sha256", "canonical_repo_probe_file_sha256", "argv_sha256", "client_probe_program_sha256", "child_stderr_sha256", "provider_input_sha256", "provider_argv_sha256", "provider_prompt_sha256", "provider_transport_sha256", "provider_cwd_sha256"):
         if text(broker[field], "broker." + field, pattern=HEX64) == "0" * 64:
             fail("broker digest placeholder")
-    if broker["stage_bundle_sha256"] != bundle_sha256 or broker["stage_instructions_sha256"] != instructions_sha256:
+    if (
+        broker["stage_bundle_sha256"] != bundle_sha256
+        or broker["stage_instructions_sha256"] != instructions_sha256
+        or broker["leg_authorization_instructions_sha256"] != instructions_sha256
+    ):
         fail("broker staged inputs do not bind review request")
     if broker["schema"] != BROKER_SCHEMA or broker["bwrap"] != "/usr/bin/bwrap" or broker["socket"] != "/run/phase-loop-broker/intended-inference.sock" or broker["stage"] != "/run/phase-loop-review":
         fail("broker transport is not the required isolated transport")
@@ -1170,10 +1213,14 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
     reviewed, reviewed_tree = refs["reviewed_sl0"]
     candidate, candidate_tree = refs["candidate"]
     main, main_tree = refs["canonical_main"]
+    def fixture_junit_identity(nodeid: str) -> tuple[str, str]:
+        if nodeid.startswith("phase-loop-runtime/"):
+            return pytest_junit_identity(nodeid, "self-test nodeid")
+        module, function = nodeid.rsplit("::", 1)
+        return module, function
+
     def junit(name: str, status: str, nodeid: str = "pkg::case") -> dict[str, str]:
-        function = nodeid.rsplit("::", 1)[1]
-        module_path = nodeid.rsplit("::", 1)[0]
-        module = module_path.removeprefix("phase-loop-runtime/").removesuffix(".py").replace("/", ".")
+        module, function = fixture_junit_identity(nodeid)
         tag = "" if status == "passed" else f"<{status}>{name}</{status}>"
         return put(name + ".xml", f'<testsuite><testcase classname="{module}" name="{function}">{tag}<system-out>{name}</system-out></testcase></testsuite>'.encode(), raw=True)
     def receipt_art(kind: str, head: str, tree: str, raw: dict[str, str], junit_ref: dict[str, str] | None, exit_code: int, argv: str, source: tuple[str, str] | None = None) -> dict[str, str]:
@@ -1188,7 +1235,10 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
     def red_anchor(nodeid: str) -> str:
         return ANCHORS["review-leg-isolation"]["anchor"] if "advisor_board_" in nodeid or "harden_evidence_verifier" in nodeid else next(item["anchor"] for item in ANCHORS.values() if item["nodeid"] == nodeid)
     red_raw = put("activated-red", ("16 failed, 439 passed, 3 skipped, 17 subtests passed\n" + "\n".join(red_anchor(nodeid) for nodeid in ACTIVATED_RED_NODEIDS)).encode(), raw=True)
-    red_cases = "".join(f'<testcase classname="{nodeid.rsplit("::",1)[0].removeprefix("phase-loop-runtime/").removesuffix(".py").replace("/", ".")}" name="{nodeid.rsplit("::",1)[1]}"><failure>{red_anchor(nodeid)}</failure></testcase>' for nodeid in ACTIVATED_RED_NODEIDS)
+    red_cases = "".join(
+        f'<testcase classname="{fixture_junit_identity(nodeid)[0]}" name="{fixture_junit_identity(nodeid)[1]}"><failure>{red_anchor(nodeid)}</failure></testcase>'
+        for nodeid in ACTIVATED_RED_NODEIDS
+    )
     red_cases += "".join(f'<testcase classname="tests.preexisting" name="pass_{index}" />' for index in range(439))
     red_cases += "".join(f'<testcase classname="tests.preexisting" name="skip_{index}"><skipped /></testcase>' for index in range(3))
     red_junit = put("activated-red.xml", ("<testsuite>" + red_cases + "</testsuite>").encode(), raw=True)
@@ -1228,7 +1278,7 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
             nodeids = list(ACTIVATED_RED_NODEIDS) if key == "focused" else []
             nodeids.extend(f"tests.inventory_{key}::case_{index:04d}" for index in range(passed - len(nodeids)))
             cases = "".join(
-                f'<testcase classname="{nodeid.rsplit("::", 1)[0].removeprefix("phase-loop-runtime/").removesuffix(".py").replace("/", ".")}" name="{nodeid.rsplit("::", 1)[1]}">{f"<system-out>{label}</system-out>" if index == 0 else ""}</testcase>'
+                f'<testcase classname="{fixture_junit_identity(nodeid)[0]}" name="{fixture_junit_identity(nodeid)[1]}">{f"<system-out>{label}</system-out>" if index == 0 else ""}</testcase>'
                 for index, nodeid in enumerate(nodeids)
             ) + "".join(
                 f'<testcase classname="tests.inherited" name="skip_{index}"><skipped /></testcase>'
@@ -1237,7 +1287,7 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
             junit_ref = put(label + "-" + key + ".xml", ("<testsuite>" + cases + "</testsuite>").encode(), raw=True)
             raw_ref = put(label + "-" + key + ".raw", f"{passed} passed, {skipped} skipped, {subtests} subtests passed\nrun={label}-{key}\n".encode(), raw=True)
             observed_nodes = [
-                nodeid.rsplit("::", 1)[0].removeprefix("phase-loop-runtime/").removesuffix(".py").replace("/", ".") + "::" + nodeid.rsplit("::", 1)[1]
+                "::".join(fixture_junit_identity(nodeid))
                 for nodeid in nodeids
             ] + [f"tests.inherited::skip_{index}" for index in range(skipped)]
             receipt_value = {
@@ -1266,7 +1316,7 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
             "grok": ["grok", "<STDIN_SEALED_INLINE_PROMPT>"],
         }[harness]
         common: dict[str, Any] = {
-            "schema": BROKER_SCHEMA, "stage_bundle_sha256": bundle_sha256, "stage_instructions_sha256": instructions_sha256,
+            "schema": BROKER_SCHEMA, "stage_bundle_sha256": bundle_sha256, "stage_instructions_sha256": instructions_sha256, "leg_authorization_instructions_sha256": instructions_sha256,
             "leg_authorization_issued_monotonic_ns": 1, "leg_authorization_expires_monotonic_ns": 2_000_000_000,
             "canonical_repo_sha256": nonce(label + "repo"), "canonical_repo_probe_file_sha256": nonce(label + "probe"),
             "cleanup_root_removed": True, "host_secret_probe_removed": True, "child_quiescent": True,
@@ -1331,7 +1381,17 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
     evidence_path = root / "evidence.json"; evidence_path.write_bytes(canonical_bytes(evidence))
     fake_gh = root / "fake-gh"
     responses = {
-        str(ci["run_id"]): {"databaseId": ci["run_id"], "headSha": ci["head"], "status": "completed", "conclusion": "success", "event": "push", "workflowName": ci["workflow"], "attempt": ci["run_attempt"], "jobs": [{"name": ci["check"], "conclusion": "success"}]}
+        str(ci["run_id"]): {
+            "databaseId": ci["run_id"], "headSha": ci["head"],
+            "status": "completed", "conclusion": "success", "event": "push",
+            "workflowName": ci["workflow"], "attempt": ci["run_attempt"],
+            "jobs": [{
+                "completedAt": "2026-08-27T00:00:01Z", "conclusion": "success",
+                "databaseId": ci["run_id"] + 1000, "name": ci["check"],
+                "startedAt": "2026-08-27T00:00:00Z", "status": "completed",
+                "steps": [], "url": "https://example.invalid/job",
+            }],
+        }
         for ci in evidence["ci"].values()
     }
     responses_path = root / "fake-gh-responses.json"
@@ -1417,6 +1477,30 @@ def self_test() -> None:
         rejected("symlink", symlink_escape)
         rejected("blob-drift", lambda model, _root, _artifacts: model["sl0"]["frozen_inventory"][0]["candidate"].__setitem__("sha256", "0" * 64))
         rejected("topology", lambda model, _root, _artifacts: model["git"]["landing"].__setitem__("commit", model["git"]["candidate"]["commit"]))
+        def landing_merge_extra_production_path(model: dict[str, Any], local_root: Path, _artifacts: Path) -> None:
+            local_repo = local_root / "repo"
+            first = model["git"]["landing_first_parent"]["commit"]
+            reviewed = model["git"]["reviewed_sl0"]["commit"]
+            _run(["git", "read-tree", first], local_repo)
+            extra = local_repo / "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py"
+            extra.parent.mkdir(parents=True, exist_ok=True)
+            extra.write_text("malicious merge-only production delta\n")
+            _run(["git", "add", str(extra.relative_to(local_repo))], local_repo)
+            merge_tree = _run(["git", "write-tree"], local_repo)
+            malicious_landing = _run(
+                ["git", "commit-tree", merge_tree, "-p", first, "-p", reviewed, "-m", "malicious landing"],
+                local_repo,
+            )
+            _run(["git", "read-tree", malicious_landing], local_repo)
+            marker = local_repo / "phase-loop-runtime/src/phase_loop_runtime/capability_registry.py"
+            marker.write_text("HARDEN_CAPABILITY_VERSION = 1\n")
+            _run(["git", "add", str(marker.relative_to(local_repo))], local_repo)
+            candidate_tree = _run(["git", "write-tree"], local_repo)
+            candidate = _run(["git", "commit-tree", candidate_tree, "-p", malicious_landing, "-m", "candidate"], local_repo)
+            main = _run(["git", "commit-tree", candidate_tree, "-p", candidate, "-m", "main"], local_repo)
+            for name, commit_id in (("landing", malicious_landing), ("candidate", candidate), ("canonical_main", main)):
+                model["git"][name] = {"commit": commit_id, "tree": _run(["git", "rev-parse", commit_id + "^{tree}"], local_repo)}
+        rejected("landing-merge-extra-production-delta", landing_merge_extra_production_path)
         def conflated_base_and_first_parent(model: dict[str, Any], _root: Path, _artifacts: Path) -> None:
             model["git"]["landing_first_parent"] = copy.deepcopy(model["git"]["sl0_base"])
         rejected("base-first-parent-conflation", conflated_base_and_first_parent)
@@ -1471,6 +1555,16 @@ def self_test() -> None:
             replace(mutation["junit"], artifact_root, old)
             mutate_json(mutation["receipt"], artifact_root, lambda receipt_value: receipt_value.__setitem__("junit_sha256", mutation["junit"]["sha256"]))
         rejected("wrong-module-same-function", wrong_junit_module)
+        def old_class_nodeid_transform(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
+            red = model["sl0"]["activated_red"]
+            old = (artifact_root / red["junit"]["path"]).read_bytes().replace(
+                b'classname="tests.test_advisor_board_composition.AuthAwareCompositionTests"',
+                b'classname="tests.test_advisor_board_composition.py::AuthAwareCompositionTests"',
+                1,
+            )
+            replace(red["junit"], artifact_root, old)
+            mutate_json(red["receipt"], artifact_root, lambda value: value.__setitem__("junit_sha256", red["junit"]["sha256"]))
+        rejected("old-class-nodeid-transform", old_class_nodeid_transform)
         def old_prefixed_junit_module(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
             mutation = model["sl0"]["mutations"][0]["mutation"]
             old = (artifact_root / mutation["junit"]["path"]).read_bytes().replace(b'classname="tests.', b'classname="phase-loop-runtime.tests.', 1)
@@ -1506,6 +1600,41 @@ def self_test() -> None:
         rejected("stage-mode-0444", seat_mutation(lambda seat: seat["broker"].__setitem__("stage_bundle_mode", 0o444)))
         rejected("extra-no-tool-control", seat_mutation(lambda seat: seat["broker"]["provider_no_tool_controls"].append("extra")))
         rejected("duplicate-no-tool-control", seat_mutation(lambda seat: seat["broker"]["provider_no_tool_controls"].append(seat["broker"]["provider_no_tool_controls"][0])))
+        def fully_resealed_instruction_replacement(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
+            review = model["reviews"]["candidate"]
+            request_ref = review["request"]
+            request = parse_canonical_json((artifact_root / request_ref["path"]).read_bytes(), "self-test request")
+            instructions_ref = request["instructions"]
+            instructions = parse_canonical_json((artifact_root / instructions_ref["path"]).read_bytes(), "self-test instructions")
+            instructions["content"] += "\nfully resealed replacement instruction bytes\n"
+            replace(instructions_ref, artifact_root, canonical_bytes(instructions))
+            request["instructions"] = instructions_ref
+            replace(request_ref, artifact_root, canonical_bytes(request))
+            bundle = parse_canonical_json((artifact_root / request["bundle"]["path"]).read_bytes(), "self-test bundle")["content"]
+            sealed = broker_sealed_prompt(bundle, instructions["content"])
+            instruction_sha = sha256(instructions["content"].encode())
+            for item in review["seats"]:
+                seat_ref = item["artifact"]
+                seat = parse_canonical_json((artifact_root / seat_ref["path"]).read_bytes(), "self-test seat")
+                broker = seat["broker"]
+                seat["request_sha256"] = request_ref["sha256"]
+                broker["stage_instructions_sha256"] = instruction_sha
+                broker["leg_authorization_instructions_sha256"] = instruction_sha
+                broker["provider_input_sha256"] = sha256(sealed.encode())
+                broker["provider_prompt_sha256"] = sha256(sealed.encode())
+                broker["provider_input_bytes"] = len(sealed.encode())
+                broker["provider_prompt_bytes"] = len(sealed.encode())
+                transport = broker_gemini_stream_input(sealed) if seat["harness"] == "gemini" else sealed
+                broker["provider_transport_sha256"] = sha256(transport.encode())
+                broker["provider_transport_bytes"] = len(transport.encode())
+                if seat["harness"] == "claude":
+                    broker["provider_liveness_prompt_bytes"] = len(sealed.encode())
+                    broker["provider_liveness_stall_threshold_s"] = float(max(1, min(
+                        BROKER_CLAUDE_STALL_BASE_S + ((len(sealed.encode()) + BROKER_CLAUDE_STALL_BYTES_PER_S - 1) // BROKER_CLAUDE_STALL_BYTES_PER_S),
+                        max(1, int(broker["operation_deadline_s"]) - BROKER_CLAUDE_STALL_TRANSPORT_RESERVE_S),
+                    )))
+                replace(seat_ref, artifact_root, canonical_bytes(seat))
+        rejected("fully-resealed-instruction-replacement", fully_resealed_instruction_replacement)
         def request_mutation(change: Callable[[dict[str, Any]], None]) -> Callable[[dict[str, Any], Path, Path], None]:
             def mutate(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
                 ref = model["reviews"]["candidate"]["request"]
