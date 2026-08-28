@@ -108,11 +108,16 @@ from .config import (
     load_boards,
 )
 from .backing import (
+    HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES,
+    PARENT_UNIX_BROKER_V1,
+    ReviewIsolationAuthorization,
     CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS,
     VENDOR_API_KEY_VARS,
     BackingDecision,
     all_vendor_key_vars,
     resolve_seat_env,
+    prepare_review_isolation_authorization,
+    revalidate_review_isolation_authorization,
     scrub_subscription_env,
     select_backing,
 )
@@ -276,12 +281,17 @@ __all__ = [
     "load_boards",
     # backing + auth
     "VENDOR_API_KEY_VARS",
+    "PARENT_UNIX_BROKER_V1",
+    "HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES",
+    "ReviewIsolationAuthorization",
     "CLAUDE_SUBSCRIPTION_BLOCKED_ENV_VARS",
     "all_vendor_key_vars",
     "scrub_subscription_env",
     "BackingDecision",
     "select_backing",
     "resolve_seat_env",
+    "prepare_review_isolation_authorization",
+    "revalidate_review_isolation_authorization",
     # backing — omnigent transport (ABDOMNI)
     "OMNIGENT_FREEZE_TARGET",
     "HARNESS_ENDPOINT",

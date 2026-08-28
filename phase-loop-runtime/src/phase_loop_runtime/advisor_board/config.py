@@ -32,6 +32,7 @@ except ModuleNotFoundError:  # Python 3.10 — the requires-python floor
     import tomli as tomllib  # type: ignore[no-redef]
 
 from .validation import SeatValidationError, validate_board
+from . import composition
 from .composition import compose_review_board, default_board_auth_ok
 from .presets import DEFAULT_BOARD_NAME, PRESETS
 from .schema import (
@@ -221,9 +222,18 @@ def load_boards(
     # gate short-circuits for vendors that fail the availability probe, so a host
     # with no vendor CLI never shells out.
     compose_auth = auth_ok if auth_ok is not None else default_board_auth_ok
-    composed_review = compose_review_board(
-        is_available=compose_probe, auth_ok=compose_auth
-    )
+    # ``load_boards`` supplies the probes explicitly, so it owns the same
+    # pre-effect HARDEN boundary as the bare composer.
+    composition_authorization = composition.prepare_review_composition_authorization()
+    try:
+        composition.revalidate_review_composition_authorization(
+            composition_authorization
+        )
+        composed_review = compose_review_board(
+            is_available=compose_probe, auth_ok=compose_auth
+        )
+    finally:
+        composition._clear_composition_authorization()
     boards[composed_review.name] = composed_review
 
     cfg_path = path if path is not None else board_config_path(env)

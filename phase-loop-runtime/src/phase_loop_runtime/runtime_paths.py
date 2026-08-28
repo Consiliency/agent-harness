@@ -36,6 +36,14 @@ def roadmap_paths_match(
     stored_roadmap_str = str(stored_roadmap) if stored_roadmap is not None else ""
     if not stored_roadmap_str:
         return (False, False)
+    # Ledger paths are absolute by contract. Resolving a relative value through
+    # the caller's CWD makes reconciliation non-portable and non-deterministic.
+    try:
+        stored_roadmap_path = Path(stored_roadmap_str)
+        if not stored_roadmap_path.is_absolute():
+            return (False, False)
+    except (OSError, ValueError, TypeError):
+        return (False, False)
     try:
         current = roadmap.resolve()
     except (OSError, ValueError, RuntimeError):
@@ -48,7 +56,7 @@ def roadmap_paths_match(
     # unreadable path -> OSError) must fall through to "does not match" rather than crash
     # reconciliation.
     try:
-        if Path(stored_roadmap_str).expanduser().resolve() == current:
+        if stored_roadmap_path.resolve() == current:
             return (True, False)
     except (OSError, ValueError, RuntimeError, TypeError):
         pass
@@ -58,9 +66,10 @@ def roadmap_paths_match(
     if not stored_repo_str:
         return (False, False)
     try:
-        stored_rel = Path(stored_roadmap_str).expanduser().resolve().relative_to(
-            Path(stored_repo_str).expanduser().resolve()
-        )
+        stored_repo_path = Path(stored_repo_str)
+        if not stored_repo_path.is_absolute():
+            return (False, False)
+        stored_rel = stored_roadmap_path.resolve().relative_to(stored_repo_path.resolve())
         current_rel = current.relative_to(repo.resolve())
     except (ValueError, OSError, RuntimeError, TypeError):
         return (False, False)

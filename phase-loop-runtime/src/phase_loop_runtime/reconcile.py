@@ -1434,7 +1434,12 @@ def _normalize_automation_event(repo: Path, roadmap: Path, event: dict, current_
     # non-str/non-PathLike JSON type slipping past str() -> TypeError) must not crash
     # reconciliation; treat it as "does not normalize" and fall through to the raw event.
     try:
-        artifact_path = Path(str(artifact)).expanduser().resolve()
+        artifact_value = Path(str(artifact)).expanduser()
+        artifact_path = (
+            artifact_value.resolve()
+            if artifact_value.is_absolute()
+            else (repo.resolve() / artifact_value).resolve()
+        )
     except (OSError, ValueError, RuntimeError, TypeError):
         return event
     try:
