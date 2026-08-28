@@ -67,6 +67,7 @@ from .agy_canary_evidence import (
 )
 from .claude_agent_view import ClaudeAgentViewAdapter
 from .launcher import GROK_REVIEW_READONLY_TOOLS
+from .capability_registry import CLAUDE_ULTRA_MODEL
 from .profiles import CLAUDE_IMPLEMENTER_MODEL  # noqa: F401 - public compatibility export
 from .advisor_board.backing import (
     ParentUnixBroker,
@@ -4544,7 +4545,7 @@ def _is_fixed_reviewtruth_fable_probe(
     return (
         mode == "review"
         and leg == "claude"
-        and model == "claude-fable-5"
+        and model == CLAUDE_ULTRA_MODEL
         and sha256(artifact.encode("utf-8")).hexdigest() == _REVIEWTRUTH_FABLE_PROBE_SHA256
         and effort is None
         and brief_ref is None
@@ -4650,7 +4651,7 @@ def _default_spawn(
             name="legible-reviewtruth-fable-probe",
             purpose="premerge-review",
             seats=(Seat(
-                model="claude-fable-5", effort="max", harness="claude",
+                model=CLAUDE_ULTRA_MODEL, effort="max", harness="claude",
                 auth=AUTH_SUBSCRIPTION, backing=BACKING_HOMEBREW,
             ),),
         )
