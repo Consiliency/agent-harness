@@ -233,23 +233,40 @@ class AuthAwareCompositionTests(unittest.TestCase):
         self.assertNotIn("grok", {s.harness for s in board.seats})
 
     def test_harden_preflight_authorizes_before_every_capability_auth_ok(self) -> None:
-        """The default composer may not touch a capability/auth probe unbound."""
+        """The default composer uses one real, validated preflight before probes."""
         harden_require("review-leg-isolation")
         real_preflight = _composition.prepare_review_composition_authorization
+        real_revalidate = _composition.revalidate_review_composition_authorization
         effects: list[tuple[str, str] | tuple[str]] = []
+        prepared: list[object] = []
+        validated: list[object] = []
 
         def preflight(*args, **kwargs):
+            self.assertFalse(effects, "preflight itself must precede every probe")
+            authorization = real_preflight(*args, **kwargs)
+            self.assertIsNotNone(authorization)
+            prepared.append(authorization)
             effects.append(("preflight",))
-            return real_preflight(*args, **kwargs)
+            return authorization
+
+        def revalidate(authorization, *args, **kwargs):
+            self.assertEqual(prepared, [authorization])
+            self.assertFalse(
+                any(kind in {"availability", "auth_session_provider"} for kind, *_ in effects)
+            )
+            result = real_revalidate(authorization, *args, **kwargs)
+            validated.append(authorization)
+            effects.append(("validated",))
+            return result
 
         def available(vendor: str) -> bool:
-            self.assertTrue(effects and effects[0] == ("preflight",))
+            self.assertTrue(validated and validated[-1] is prepared[0])
             effects.append(("availability", vendor))
             return True
 
         def authenticated(vendor: str) -> bool:
-            self.assertTrue(effects and effects[0] == ("preflight",))
-            effects.append(("auth", vendor))
+            self.assertTrue(validated and validated[-1] is prepared[0])
+            effects.append(("auth_session_provider", vendor))
             return True
 
         with patch.object(
@@ -257,47 +274,141 @@ class AuthAwareCompositionTests(unittest.TestCase):
             "prepare_review_composition_authorization",
             side_effect=preflight,
         ), patch.object(
+            _composition,
+            "revalidate_review_composition_authorization",
+            side_effect=revalidate,
+        ), patch.object(
             _composition.DEFAULT_HARNESS_REGISTRY, "is_available", available
         ), patch.object(_composition, "default_board_auth_ok", authenticated):
             board = compose_review_board()
 
         self.assertEqual(len(board.seats), DEFAULT_TARGET_SEATS)
-        self.assertEqual(effects[0], ("preflight",))
+        self.assertEqual(len(prepared), 1)
+        self.assertTrue(validated)
+        self.assertTrue(all(value is prepared[0] for value in validated))
+        self.assertLess(
+            next(i for i, effect in enumerate(effects) if effect[0] == "validated"),
+            next(i for i, effect in enumerate(effects) if effect[0] == "availability"),
+        )
         self.assertEqual(
             {entry[1] for entry in effects if entry[0] == "availability"},
             set(ALL_VENDORS),
         )
         self.assertEqual(
-            {entry[1] for entry in effects if entry[0] == "auth"},
+            {entry[1] for entry in effects if entry[0] == "auth_session_provider"},
             set(ALL_VENDORS),
         )
 
+    def test_harden_preflight_denial_blocks_compose_before_every_probe(self) -> None:
+        """A failed or forged composer preflight cannot reach a probe seam."""
+        harden_require("review-leg-isolation")
+        effects: list[tuple[str, str] | tuple[str]] = []
+
+        def forbidden(kind: str):
+            def probe(vendor: str) -> bool:
+                effects.append((kind, vendor))
+                self.fail(f"{kind} effect reached after failed HARDEN preflight")
+
+            return probe
+
+        def denied(*_args, **_kwargs):
+            effects.append(("preflight_denied",))
+            raise ValueError("denied HARDEN composition preflight")
+
+        with patch.object(
+            _composition,
+            "prepare_review_composition_authorization",
+            side_effect=denied,
+        ), patch.object(
+            _composition,
+            "revalidate_review_composition_authorization",
+            side_effect=AssertionError("a denied preflight must not be revalidated"),
+        ) as validate_spy, patch.object(
+            _composition.DEFAULT_HARNESS_REGISTRY,
+            "is_available",
+            forbidden("availability"),
+        ), patch.object(
+            _composition,
+            "default_board_auth_ok",
+            forbidden("auth_session_provider"),
+        ):
+            with self.assertRaisesRegex(ValueError, "denied HARDEN composition preflight"):
+                compose_review_board()
+
+        validate_spy.assert_not_called()
+        self.assertEqual(effects, [("preflight_denied",)])
+
+        effects.clear()
+
+        def forged(*_args, **_kwargs):
+            effects.append(("preflight_forged",))
+            return object()
+
+        with patch.object(
+            _composition,
+            "prepare_review_composition_authorization",
+            side_effect=forged,
+        ), patch.object(
+            _composition.DEFAULT_HARNESS_REGISTRY,
+            "is_available",
+            forbidden("availability"),
+        ), patch.object(
+            _composition,
+            "default_board_auth_ok",
+            forbidden("auth_session_provider"),
+        ):
+            with self.assertRaises(ValueError):
+                compose_review_board()
+
+        self.assertEqual(effects, [("preflight_forged",)])
+
     def test_harden_preflight_covers_default_load_boards_probes(self) -> None:
-        """``load_boards`` inherits the same pre-effect composition boundary."""
+        """``load_boards`` uses the same real, validated preflight boundary."""
         harden_require("review-leg-isolation")
         from phase_loop_runtime.advisor_board import config as config_mod
 
         real_preflight = _composition.prepare_review_composition_authorization
+        real_revalidate = _composition.revalidate_review_composition_authorization
         effects: list[tuple[str, str] | tuple[str]] = []
+        prepared: list[object] = []
+        validated: list[object] = []
 
         def preflight(*args, **kwargs):
+            self.assertFalse(effects, "preflight itself must precede every probe")
+            authorization = real_preflight(*args, **kwargs)
+            self.assertIsNotNone(authorization)
+            prepared.append(authorization)
             effects.append(("preflight",))
-            return real_preflight(*args, **kwargs)
+            return authorization
+
+        def revalidate(authorization, *args, **kwargs):
+            self.assertEqual(prepared, [authorization])
+            self.assertFalse(
+                any(kind in {"availability", "auth_session_provider"} for kind, *_ in effects)
+            )
+            result = real_revalidate(authorization, *args, **kwargs)
+            validated.append(authorization)
+            effects.append(("validated",))
+            return result
 
         def available(vendor: str) -> bool:
-            self.assertTrue(effects and effects[0] == ("preflight",))
+            self.assertTrue(validated and validated[-1] is prepared[0])
             effects.append(("availability", vendor))
             return True
 
         def authenticated(vendor: str) -> bool:
-            self.assertTrue(effects and effects[0] == ("preflight",))
-            effects.append(("auth", vendor))
+            self.assertTrue(validated and validated[-1] is prepared[0])
+            effects.append(("auth_session_provider", vendor))
             return True
 
         with tempfile.TemporaryDirectory() as td, patch.object(
             _composition,
             "prepare_review_composition_authorization",
             side_effect=preflight,
+        ), patch.object(
+            _composition,
+            "revalidate_review_composition_authorization",
+            side_effect=revalidate,
         ), patch.object(
             _composition.DEFAULT_HARNESS_REGISTRY, "is_available", available
         ), patch.object(config_mod, "default_board_auth_ok", authenticated):
@@ -306,9 +417,80 @@ class AuthAwareCompositionTests(unittest.TestCase):
             )
 
         self.assertIn("code-review", loaded.boards)
-        self.assertEqual(effects[0], ("preflight",))
+        self.assertEqual(len(prepared), 1)
+        self.assertTrue(validated)
+        self.assertTrue(all(value is prepared[0] for value in validated))
+        self.assertLess(
+            next(i for i, effect in enumerate(effects) if effect[0] == "validated"),
+            next(i for i, effect in enumerate(effects) if effect[0] == "availability"),
+        )
         self.assertTrue(any(kind == "availability" for kind, *_ in effects))
-        self.assertTrue(any(kind == "auth" for kind, *_ in effects))
+        self.assertTrue(any(kind == "auth_session_provider" for kind, *_ in effects))
+
+    def test_harden_preflight_denial_blocks_load_boards_before_every_probe(self) -> None:
+        """``load_boards`` fails closed before capability/auth/session effects."""
+        harden_require("review-leg-isolation")
+        from phase_loop_runtime.advisor_board import config as config_mod
+
+        effects: list[tuple[str, str] | tuple[str]] = []
+
+        def forbidden(kind: str):
+            def probe(vendor: str) -> bool:
+                effects.append((kind, vendor))
+                self.fail(f"{kind} effect reached after failed HARDEN preflight")
+
+            return probe
+
+        def denied(*_args, **_kwargs):
+            effects.append(("preflight_denied",))
+            raise ValueError("denied HARDEN load_boards preflight")
+
+        with tempfile.TemporaryDirectory() as td, patch.object(
+            _composition,
+            "prepare_review_composition_authorization",
+            side_effect=denied,
+        ), patch.object(
+            _composition,
+            "revalidate_review_composition_authorization",
+            side_effect=AssertionError("a denied preflight must not be revalidated"),
+        ) as validate_spy, patch.object(
+            _composition.DEFAULT_HARNESS_REGISTRY,
+            "is_available",
+            forbidden("availability"),
+        ), patch.object(
+            config_mod,
+            "default_board_auth_ok",
+            forbidden("auth_session_provider"),
+        ):
+            with self.assertRaisesRegex(ValueError, "denied HARDEN load_boards preflight"):
+                config_mod.load_boards(path=Path(td) / "missing.toml", validate=False)
+
+        validate_spy.assert_not_called()
+        self.assertEqual(effects, [("preflight_denied",)])
+
+        effects.clear()
+
+        def forged(*_args, **_kwargs):
+            effects.append(("preflight_forged",))
+            return object()
+
+        with tempfile.TemporaryDirectory() as td, patch.object(
+            _composition,
+            "prepare_review_composition_authorization",
+            side_effect=forged,
+        ), patch.object(
+            _composition.DEFAULT_HARNESS_REGISTRY,
+            "is_available",
+            forbidden("availability"),
+        ), patch.object(
+            config_mod,
+            "default_board_auth_ok",
+            forbidden("auth_session_provider"),
+        ):
+            with self.assertRaises(ValueError):
+                config_mod.load_boards(path=Path(td) / "missing.toml", validate=False)
+
+        self.assertEqual(effects, [("preflight_forged",)])
 
     def test_default_board_auth_ok_fails_closed_on_unknown_vendor(self) -> None:
         # An unregistered vendor (or any lookup/probe error) fails CLOSED — treated

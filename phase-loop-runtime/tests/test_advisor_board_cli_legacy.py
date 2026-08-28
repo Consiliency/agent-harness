@@ -159,6 +159,132 @@ class AdvisorBoardCliTest(unittest.TestCase):
         self.assertLess(events.index("compose"), events.index("final_authorization"))
         self.assertLess(events.index("final_authorization"), events.index("invoke"))
 
+    def test_harden_real_invoker_revalidates_canonical_repository_authority(self):
+        """A governed review validates canonical Git authority before a pure spawn.
+
+        A caller-owned spawn remains a hermetic no-provider control only when it is
+        bare.  Supplying a review authorization makes this a governed review path:
+        the real invoker must independently bind the canonical Git authority while
+        retaining a distinct private ``repo_dir`` scratch.  A scratch substitution
+        or forged authorization must refuse before that callback can execute.
+        """
+        harden_require("review-leg-isolation")
+        from phase_loop_runtime.advisor_board import backing as backing_mod
+        from phase_loop_runtime.advisor_board.matrix import default_matrix
+        from phase_loop_runtime.advisor_board.schema import Board, Seat
+
+        canonical_repo = Path(
+            subprocess.check_output(
+                ["git", "rev-parse", "--show-toplevel"], text=True
+            ).strip()
+        ).resolve()
+        board = Board(
+            name="harden-canonical-authority",
+            purpose="code-review",
+            seats=(
+                Seat(
+                    model=backing_mod.HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["codex"],
+                    effort="max",
+                    harness="codex",
+                ),
+            ),
+        )
+        artifact = "bounded canonical-authority fixture\n"
+        matrix = default_matrix(env={}, probe=lambda _vendor: True)
+
+        def authorization():
+            return backing_mod.prepare_review_isolation_authorization(
+                board, artifact, mode="review"
+            )
+
+        with tempfile.TemporaryDirectory() as td:
+            scratch = Path(td) / "provider-scratch"
+            scratch.mkdir()
+            effects: list[str] = []
+            revalidated_authorities: list[Path] = []
+            real_revalidate = pi_mod.revalidate_review_isolation_authorization
+
+            def revalidate(auth, review_board, review_artifact, **kwargs):
+                if review_board == board:
+                    self.assertEqual(review_artifact, artifact)
+                    self.assertEqual(kwargs.get("mode"), "review")
+                    canonical = Path(kwargs["canonical_repo_authority"]).resolve()
+                    self.assertEqual(canonical, canonical_repo)
+                    self.assertNotEqual(canonical, scratch.resolve())
+                    revalidated_authorities.append(canonical)
+                    effects.append("revalidated")
+                return real_revalidate(auth, review_board, review_artifact, **kwargs)
+
+            def hermetic_spawn(*_args, **_kwargs):
+                self.assertTrue(revalidated_authorities)
+                effects.append("spawn")
+                return "OK", "bounded hermetic control\nAGREE"
+
+            with unittest.mock.patch.object(
+                pi_mod,
+                "revalidate_review_isolation_authorization",
+                side_effect=revalidate,
+            ):
+                result = pi_mod.invoke_board(
+                    board,
+                    artifact,
+                    spawn=hermetic_spawn,
+                    repo_dir=scratch,
+                    canonical_repo_authority=canonical_repo,
+                    review_authorization=authorization(),
+                    base_env={},
+                    matrix=matrix,
+                    max_concurrency=1,
+                )
+
+            self.assertEqual([leg.status for leg in result.legs], ["OK"])
+            self.assertEqual(effects[-1], "spawn")
+            self.assertTrue(revalidated_authorities)
+
+            scratch_effects: list[str] = []
+
+            def scratch_spawn(*_args, **_kwargs):
+                scratch_effects.append("spawn")
+                return "OK", "unexpected scratch authority\nAGREE"
+
+            scratch_result = pi_mod.invoke_board(
+                board,
+                artifact,
+                spawn=scratch_spawn,
+                repo_dir=scratch,
+                canonical_repo_authority=scratch,
+                review_authorization=authorization(),
+                base_env={},
+                matrix=matrix,
+                max_concurrency=1,
+            )
+            self.assertFalse(scratch_effects)
+            self.assertTrue(
+                all(leg.status == "UNAVAILABLE" for leg in scratch_result.legs)
+            )
+
+            forged_effects: list[str] = []
+
+            def forged_spawn(*_args, **_kwargs):
+                forged_effects.append("spawn")
+                return "OK", "unexpected forged authority\nAGREE"
+
+            forged_result = pi_mod.invoke_board(
+                board,
+                artifact,
+                spawn=forged_spawn,
+                repo_dir=scratch,
+                canonical_repo_authority=canonical_repo,
+                review_authorization=object(),
+                base_env={},
+                matrix=matrix,
+                max_concurrency=1,
+            )
+            self.assertFalse(forged_effects)
+            self.assertTrue(
+                all(leg.status == "UNAVAILABLE" for leg in forged_result.legs)
+            )
+
     def test_compose_drops_unauthed_vendor_at_the_seam(self):
         # Item 1: the auth-aware seam the CLI uses drops an on-PATH-but-UNAUTHED vendor
         # at COMPOSE and backfills onto authed vendors (board stays 4 seats, all authed
