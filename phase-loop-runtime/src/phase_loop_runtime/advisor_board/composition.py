@@ -40,6 +40,32 @@ from typing import NamedTuple
 from .registries import DEFAULT_HARNESS_REGISTRY
 from .schema import Board, Seat, vendor_family
 
+
+def prepare_review_composition_authorization():
+    """Expose the pre-effect review authorization at the composition seam."""
+    from .backing import prepare_review_composition_authorization as prepare
+
+    return prepare()
+
+
+def revalidate_review_composition_authorization(authorization) -> None:
+    """Reject an absent or forged composition authorization before probes."""
+    from .backing import revalidate_review_composition_authorization as revalidate
+
+    revalidate(authorization)
+
+
+def _composition_authorization():
+    from .backing import current_review_composition_authorization
+
+    return current_review_composition_authorization()
+
+
+def _clear_composition_authorization() -> None:
+    from .backing import clear_review_composition_authorization
+
+    clear_review_composition_authorization()
+
 # Ideal per-vendor seat, in deterministic composition order. Each vendor runs at
 # its MAX thinking (gemini's ceiling is ``high``) with a distinct primary lens.
 _VENDOR_ORDER: tuple[str, ...] = ("grok", "claude", "codex", "gemini")
@@ -139,6 +165,19 @@ def compose_review_board(
     """
     if target < floor:
         raise ValueError(f"target {target} is below the floor {floor}")
+    # A bare production composition executes availability and subscription-auth
+    # probes. Bind and validate one operation before either probe can run. Injected
+    # static probes remain pure configuration controls and require no authority.
+    authorization = None
+    if is_available is None and auth_ok is None:
+        authorization = _composition_authorization()
+        if authorization is None:
+            authorization = prepare_review_composition_authorization()
+        try:
+            revalidate_review_composition_authorization(authorization)
+        except Exception:
+            _clear_composition_authorization()
+            raise
     avail_probe = is_available if is_available is not None else DEFAULT_HARNESS_REGISTRY.is_available
     if auth_ok is not None:
         auth_probe = auth_ok
@@ -148,7 +187,11 @@ def compose_review_board(
         auth_probe = lambda _vendor: True  # noqa: E731
     else:
         auth_probe = default_board_auth_ok
-    available = [v for v in _VENDOR_ORDER if avail_probe(v) and auth_probe(v)]
+    try:
+        available = [v for v in _VENDOR_ORDER if avail_probe(v) and auth_probe(v)]
+    finally:
+        if authorization is not None:
+            _clear_composition_authorization()
     if not available:
         # Nothing to compose — the caller's run degrades wholesale. (The floor is a
         # count of INDEPENDENT reviewers to seat on AVAILABLE vendors; with zero up

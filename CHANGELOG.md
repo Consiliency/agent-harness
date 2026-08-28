@@ -232,6 +232,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   module form cannot import and exits 1 — again the "claimed by another phase" code — so a
   module-only tool reported a phantom ownership block for every path on the supported
   install (same shape as #670/#693).
+### HARDEN: isolated review and verification contracts
+
+- Review staging rejects every symlink path that resolves outside its source tree, and
+  explicitly requested review operations refuse unbound direct provider callables.
+- Reconciliation no longer resolves persisted relative paths through the caller's CWD;
+  enforced goal coverage now rejects an empty declared-goal contract, and login-shell
+  verification parsing consumes shell option arguments before locating the command.
+- HARDEN verification evidence is metadata-only and independently verifiable as
+  `verification_evidence.v3`.
 
 ### executor policy: an operator's explicit model is never substituted (Consiliency/agent-harness#671)
 

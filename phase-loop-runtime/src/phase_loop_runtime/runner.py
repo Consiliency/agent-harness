@@ -208,7 +208,7 @@ from .governed_premerge import (
     run_governed_premerge_loop,
 )
 from .governed_bundle import render_governed_bundle, staged_index_diff
-from .panel_invoker import available_panel_legs
+from .panel_invoker import available_panel_legs, invoke_board as _PRODUCTION_INVOKE_BOARD
 from .reconcile import reconcile
 from .redaction import apply_diagnostics_redaction
 from .review_summary import summarize_run
@@ -6672,7 +6672,10 @@ def _execute_goal_coverage_preflight(repo: Path, roadmap: Path, plan: Path) -> d
         from .goal_coverage import extract_acceptance_contracts, check_acceptance_falsifiers
         contracts = extract_acceptance_contracts(plan)
         falsifier_res = check_acceptance_falsifiers(contracts)
-        if not falsifier_res.get("valid", True):
+        # No acceptance items is a legacy/no-goal shape, not an invalid
+        # falsifier claim.  Its non-vacuous enforcement is handled below by the
+        # goal-coverage result, while the default path remains advisory.
+        if contracts and not falsifier_res.get("valid", True):
             reason = falsifier_res.get("reason", "acceptance_falsifier_contract_invalid")
             return {
                 "human_required": False,
@@ -6733,7 +6736,20 @@ def _execute_goal_coverage_preflight(repo: Path, roadmap: Path, plan: Path) -> d
     # ERROR (stale roadmap_sha256, unresolvable phase, un-auditable plan) is also
     # applicable=False — it must NOT silently pass the gate (CR codex/Fable): an
     # un-auditable plan under enforcement fails closed, matching the CLI's exit-2.
-    if result.not_applicable() or result.is_clean():
+    if result.not_applicable():
+        if enforce_block:
+            return {
+                "human_required": False,
+                "blocker_class": "contract_bug",
+                "blocker_summary": (
+                    "Goal-coverage gate (PHASE_LOOP_ACCEPTANCE_ENFORCE=block): "
+                    "no declared EC goal IDs; add a non-vacuous acceptance contract."
+                ),
+                "required_human_inputs": (),
+                "access_attempts": (),
+            }
+        return None
+    if result.is_clean():
         return None
     gate = result.has_gaps() or result.has_setup_errors()
     print(
@@ -6778,10 +6794,15 @@ def _goal_coverage_closeout_outcome(
         try:
             from .goal_coverage import extract_acceptance_contracts, check_acceptance_falsifiers
             contracts = extract_acceptance_contracts(plan)
-            falsifier_res = check_acceptance_falsifiers(contracts)
-            if not falsifier_res.get("valid", True):
-                reason = falsifier_res.get("reason", "acceptance_falsifier_contract_invalid")
-                return None, _blocker(f"Acceptance falsifier contract failed at closeout: {reason}")
+            if contracts:
+                falsifier_res = check_acceptance_falsifiers(contracts)
+                if not falsifier_res.get("valid", True):
+                    reason = falsifier_res.get("reason", "acceptance_falsifier_contract_invalid")
+                    return None, _blocker(f"Acceptance falsifier contract failed at closeout: {reason}")
+            elif enforce_block:
+                return None, _blocker(
+                    "Acceptance falsifier contract failed at closeout: missing_falsifier"
+                )
         except Exception as _falsifier_exc:
             return None, _blocker(f"Acceptance falsifier contract errored at closeout: {_falsifier_exc}")
 
@@ -6795,6 +6816,11 @@ def _goal_coverage_closeout_outcome(
             return None, _blocker(f"Goal-coverage closeout audit failed under PHASE_LOOP_ACCEPTANCE_ENFORCE=block: {exc}")
         return None, None
     if coverage.not_applicable():
+        if enforce_block and is_complete:
+            return coverage.to_json(), _blocker(
+                "Goal-coverage closeout gate (PHASE_LOOP_ACCEPTANCE_ENFORCE=block): "
+                "no declared EC goal IDs; add a non-vacuous acceptance contract."
+            )
         return None, None
     evidence = coverage.to_json()
     if coverage.is_clean():
@@ -8452,14 +8478,20 @@ def _run_legible_panel(
     *,
     brief_path: Path | None = None,
 ) -> Path:
+    from .advisor_board.backing import prepare_review_isolation_authorization
     from .advisor_board.presets import CODE_REVIEW_BOARD
     from .panel_invoker import invoke_board
 
     invoke_kwargs: dict[str, object] = {
-        "repo_dir": repo,
+        # Review children see only their materialized snapshot; never the live repo.
+        "repo_dir": None,
         "artifact_ref": str(bundle_path),
         "stream_dir": run_dir / "implementation-panel-stream",
     }
+    if invoke_board is _PRODUCTION_INVOKE_BOARD:
+        invoke_kwargs["review_authorization"] = prepare_review_isolation_authorization(
+            CODE_REVIEW_BOARD, bundle_path.read_text(encoding="utf-8"), mode="review"
+        )
     if brief_path is not None:
         invoke_kwargs["brief_ref"] = str(brief_path)
     result = invoke_board(CODE_REVIEW_BOARD, "", **invoke_kwargs)

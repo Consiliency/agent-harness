@@ -15,6 +15,7 @@ from .models import (
 )
 from .state_degradation import active_degraded_executors
 
+HARDEN_CAPABILITY_VERSION = 1
 
 DEFAULT_EXECUTOR = "codex"
 DEFAULT_LANE_EXECUTOR = "pi"

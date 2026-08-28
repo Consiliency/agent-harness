@@ -2946,6 +2946,28 @@ def _stage_review_tree(repo: Path, log_path: Path | None) -> Path:
     # (or complete) tree snapshot would otherwise leak if copying raises — the caller
     # only records paths for cleanup that this function successfully RETURNS (#177 CR-F3).
     try:
+        review_root = repo.resolve(strict=True)
+        if not review_root.is_dir():
+            raise ValueError(f"review root is not a directory: {repo}")
+        # ``copy2(..., follow_symlinks=False)`` preserves a link.  Reject any link
+        # whose endpoint escapes before staging anything, including the non-git
+        # fallback, so a review copy cannot retain a path to the live tree.
+        for candidate in repo.rglob("*"):
+            if not candidate.is_symlink():
+                continue
+            # Preserving an absolute source link would leave the staged tree with
+            # a path back into the live worktree, even when its source endpoint is
+            # otherwise contained by ``review_root``.
+            if Path(os.readlink(candidate)).is_absolute():
+                raise ValueError(
+                    f"review staging refuses absolute symlink: {candidate}"
+                )
+            try:
+                candidate.resolve(strict=True).relative_to(review_root)
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise ValueError(
+                    f"review staging refuses symlink escaping source tree: {candidate}"
+                ) from exc
         rel_paths = _git_review_tree_paths(repo)
         if rel_paths is None:
             # Not a git tree (or git unavailable): copy the whole tree minus VCS metadata.
@@ -2963,6 +2985,12 @@ def _stage_review_tree(repo: Path, log_path: Path | None) -> Path:
             # tracked file deleted-but-unstaged); skip it rather than fail the leg.
             if not src.exists() and not src.is_symlink():
                 continue
+            try:
+                src.resolve(strict=True).relative_to(review_root)
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise ValueError(
+                    f"review staging refuses path escaping source tree: {src}"
+                ) from exc
             dest = staged / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
             if src.is_symlink() or src.is_file():
