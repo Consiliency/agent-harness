@@ -1805,6 +1805,7 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
         capture.close()
         return 2
     review_authorization = None
+    instruction_token: object | None = None
     canonical_repo_authority: Path | None = None
     artifact_text: str | None = None
     if capture is None:
@@ -1855,10 +1856,10 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
                 canonical_repo_authority=canonical_repo_authority,
             )
         except (OSError, UnicodeError, ValueError) as exc:
+            reset_review_instruction_digest(instruction_token)
+            instruction_token = None
             print(f"advisor-board: review isolation unavailable: {exc}", file=sys.stderr)
             return 2
-        finally:
-            reset_review_instruction_digest(instruction_token)
     # Constrain the spawn cwd (write boundary): the native/claude route otherwise
     # gets Write access to the process CWD. A dedicated scratch dir bounds the blast
     # radius for this standalone entrypoint. The artifact is passed by ABSOLUTE ref so
@@ -1881,6 +1882,9 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
         if capture is not None:
             capture.close()
         return 2
+    finally:
+        if instruction_token is not None:
+            reset_review_instruction_digest(instruction_token)
     independence = board_independence(board)
     usable_count = len(result.usable_legs)
     usable_vendors = {leg.leg for leg in result.usable_legs}

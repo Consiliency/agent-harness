@@ -526,6 +526,18 @@ def all_passed(cases: list[dict[str, str]], label: str) -> None:
         fail(f"{label}: failures, errors, skips, or xfails are forbidden")
 
 
+def verify_pytest_raw_summary(raw: str, summary: dict[str, Any], label: str) -> None:
+    """Bind receipts to genuine pytest output without inventing zero categories."""
+    for field, noun in (("passed", "passed"), ("skipped", "skipped"), ("subtests", "subtests passed")):
+        count = integer(summary[field], label + ".summary." + field)
+        if count and not re.search(rf"(?<!\d){count}\s+{re.escape(noun)}\b", raw):
+            fail(f"{label}: raw pytest summary does not bind {field}")
+    for field, noun in (("failed", "failed"), ("errors", "error"), ("xfails", "xfailed")):
+        count = integer(summary[field], label + ".summary." + field)
+        if count == 0 and re.search(rf"(?<!\d)[1-9]\d*\s+{noun}s?\b", raw):
+            fail(f"{label}: raw pytest summary contradicts zero {field}")
+
+
 def executable_source_shape(data: bytes, label: str) -> str:
     """Normalize Python executable syntax so comment-only mutations cannot bite."""
     try:
@@ -641,6 +653,8 @@ def verify_git_and_inventory(repo: Path, git_data: dict[str, Any], sl0: dict[str
     base, first_parent, reviewed, landing, candidate, main = (commits[name][0] for name in ("sl0_base", "landing_first_parent", "reviewed_sl0", "landing", "candidate", "canonical_main"))
     ancestor(repo, base, first_parent, "landing first parent")
     ancestor(repo, base, reviewed, "reviewed SL-0")
+    if changed_paths(repo, base, first_parent) & PLAN_PRODUCTION_PATHS:
+        fail("HARDEN production change precedes the reviewed tests-only landing")
     reviewed_changes = changed_paths(repo, base, reviewed)
     if git(repo, "merge-base", first_parent, reviewed) != base or not reviewed_changes or not reviewed_changes <= set(FROZEN_SL0_PATHS):
         fail("reviewed SL-0 is not a nonempty frozen-tests-only change from SL-0 base")
@@ -805,9 +819,7 @@ def verify_final_group(store: ArtifactStore, group: Any, label: str, commit_id: 
             for nodeid in ACTIVATED_RED_NODEIDS:
                 exact_case(cases, nodeid, "passed", label + ".focused")
         raw_text = store.read(raw, label + "." + key + ".raw").decode("utf-8", "replace")
-        expected_summary = f"{summary['passed']} passed, {summary['skipped']} skipped, {summary['subtests']} subtests passed"
-        if expected_summary not in raw_text:
-            fail(f"{label}.{key}: raw summary does not bind receipt inventory")
+        verify_pytest_raw_summary(raw_text, summary, label + "." + key)
     lint = closed(data["lint"], {"receipt", "raw"}, label + ".lint")
     lint_raw = artifact_ref(lint["raw"], label + ".lint.raw")
     lint_nonce = lint_receipt(store, artifact_ref(lint["receipt"], label + ".lint.receipt"), label + ".lint.receipt", head=commit_id, tree=tree_id, raw=lint_raw)
@@ -1075,7 +1087,12 @@ def verify_review_round(store: ArtifactStore, repo: Path, value: Any, round_name
         seat_sessions.add(session)
         claim_nonce(session, operation_nonces, "review seat")
         report = text(seat["report"], "seat report")
-        if report.rstrip().splitlines()[-1] != "AGREE" or sha256(report.encode()) != seat["report_sha256"] or integer(seat["report_bytes"], "seat report bytes") != len(report.encode()):
+        if (
+            re.search(r"<truncated\s+\d+\s+bytes>", report, re.IGNORECASE)
+            or report.rstrip().splitlines()[-1] != "AGREE"
+            or sha256(report.encode()) != seat["report_sha256"]
+            or integer(seat["report_bytes"], "seat report bytes") != len(report.encode())
+        ):
             fail("review seat has no terminal usable AGREE")
         verify_broker(seat["broker"], harness, requested, resolved, input_digests["bundle"], input_digests["instructions"], sealed_prompt, report)
     if seen_harnesses != set(ROUTES):
@@ -1283,7 +1300,7 @@ def _self_git(root: Path) -> tuple[Path, dict[str, tuple[str, str]]]:
     _run(["git", "add", "."], repo); _run(["git", "commit", "-qm", "reviewed sl0"], repo)
     reviewed = _run(["git", "rev-parse", "HEAD"], repo)
     _run(["git", "checkout", "-q", "master"], repo)
-    (repo / "phase-loop-runtime/src/phase_loop_runtime/runtime_paths.py").write_text("intervening runtime merge input\n")
+    (repo / "unrelated-current-main-input.txt").write_text("intervening current-main input\n")
     _run(["git", "add", "."], repo); _run(["git", "commit", "-qm", "intervening runtime"], repo)
     first_parent = _run(["git", "rev-parse", "HEAD"], repo)
     _run(["git", "merge", "--no-ff", "-qm", "landing", "review"], repo)
@@ -1356,7 +1373,7 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
         for nodeid in pure_nodes
     )
     pure_junit = put("pre-pure.xml", ("<testsuite>" + pure_cases + "</testsuite>").encode(), raw=True)
-    pure_raw = put("pre-pure.raw", b"40 passed, 0 skipped, 8 subtests passed\n", raw=True)
+    pure_raw = put("pre-pure.raw", b"40 passed, 8 subtests passed\n", raw=True)
     pure_receipt = {
         "schema": "harden_pytest_receipt.v1", "kind": "pure_control",
         "head": reviewed, "tree": reviewed_tree,
@@ -1412,7 +1429,12 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
                 for index in range(skipped)
             )
             junit_ref = put(label + "-" + key + ".xml", ("<testsuite>" + cases + "</testsuite>").encode(), raw=True)
-            raw_ref = put(label + "-" + key + ".raw", f"{passed} passed, {skipped} skipped, {subtests} subtests passed\nrun={label}-{key}\n".encode(), raw=True)
+            summary_fields = [f"{passed} passed"]
+            if skipped:
+                summary_fields.append(f"{skipped} skipped")
+            if subtests:
+                summary_fields.append(f"{subtests} subtests passed")
+            raw_ref = put(label + "-" + key + ".raw", (", ".join(summary_fields) + f"\nrun={label}-{key}\n").encode(), raw=True)
             observed_nodes = [
                 "::".join(fixture_junit_identity(nodeid))
                 for nodeid in nodeids
@@ -1649,6 +1671,29 @@ def self_test() -> None:
         rejected("blob-drift", lambda model, _root, _artifacts: model["sl0"]["frozen_inventory"][0]["candidate"].__setitem__("sha256", "0" * 64))
         rejected("authority-manifest-drift", lambda model, _root, _artifacts: model["authority"]["manifest"].__setitem__("sha256", "0" * 64))
         rejected("topology", lambda model, _root, _artifacts: model["git"]["landing"].__setitem__("commit", model["git"]["candidate"]["commit"]))
+        def production_before_sl0_landing(model: dict[str, Any], local_root: Path, _artifacts: Path) -> None:
+            local_repo = local_root / "repo"
+            base = model["git"]["sl0_base"]["commit"]
+            reviewed = model["git"]["reviewed_sl0"]["commit"]
+            _run(["git", "read-tree", base], local_repo)
+            target = local_repo / "phase-loop-runtime/src/phase_loop_runtime/runtime_paths.py"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("production change before SL-0 landing\n")
+            _run(["git", "add", str(target.relative_to(local_repo))], local_repo)
+            first = _run(["git", "commit-tree", _run(["git", "write-tree"], local_repo), "-p", base, "-m", "bad first parent"], local_repo)
+            _run(["git", "read-tree", first], local_repo)
+            landing_tree = _run(["git", "write-tree"], local_repo)
+            landing = _run(["git", "commit-tree", landing_tree, "-p", first, "-p", reviewed, "-m", "bad landing"], local_repo)
+            _run(["git", "read-tree", landing], local_repo)
+            marker = local_repo / "phase-loop-runtime/src/phase_loop_runtime/capability_registry.py"
+            marker.write_text("HARDEN_CAPABILITY_VERSION = 1\n")
+            _run(["git", "add", str(marker.relative_to(local_repo))], local_repo)
+            candidate_tree = _run(["git", "write-tree"], local_repo)
+            candidate = _run(["git", "commit-tree", candidate_tree, "-p", landing, "-m", "candidate"], local_repo)
+            main = _run(["git", "commit-tree", candidate_tree, "-p", candidate, "-m", "main"], local_repo)
+            for name, commit_id in (("landing_first_parent", first), ("landing", landing), ("candidate", candidate), ("canonical_main", main)):
+                model["git"][name] = {"commit": commit_id, "tree": _run(["git", "rev-parse", commit_id + "^{tree}"], local_repo)}
+        rejected("production-before-reviewed-sl0-landing", production_before_sl0_landing)
         def landing_merge_extra_production_path(model: dict[str, Any], local_root: Path, _artifacts: Path) -> None:
             local_repo = local_root / "repo"
             first = model["git"]["landing_first_parent"]["commit"]

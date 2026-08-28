@@ -1532,6 +1532,7 @@ _BROKER_CODEX_DISABLED_FEATURES: tuple[str, ...] = (
     "view_image",
     "workspace_dependencies",
 )
+_PROVIDER_TRUNCATION_MARKER = re.compile(r"<truncated\s+\d+\s+bytes>", re.IGNORECASE)
 
 
 def _render_broker_inline_prompt(
@@ -2031,6 +2032,8 @@ def _classify_leg(
     if rc == 124:  # `timeout` binary / our own timeout maps here
         return "TIMEOUT"
     body = (review_text or "").strip()
+    if _PROVIDER_TRUNCATION_MARKER.search(body):
+        return "DEGRADED"
     if rc == 0 and body and mode == "review" and _completion_ok(body, mode):
         return "OK"
     if _AUTH_SIGNATURE.search(log_text or ""):
@@ -4796,7 +4799,7 @@ def _default_spawn(
             revalidate_review_isolation_authorization(
                 review_authorization, None, artifact,
                 mode=mode, staged_dir=review_dir,
-                canonical_repo_authority=canonical_repo_authority,
+                canonical_repo_authority=resolved_repo_dir,
             )
         capture_staged: dict[str, dict[str, object]] | None = None
         if agy_capture is not None:
@@ -4858,6 +4861,7 @@ def _default_spawn(
                 review_authorization, artifact,
                 harness=leg, model=broker_model,
                 deadline_s=float(leg_deadline), mode=mode,
+                canonical_repo_authority=resolved_repo_dir,
             )
             broker = ParentUnixBroker(
                 leg_authorization,
