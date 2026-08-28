@@ -71,7 +71,7 @@ PARENT_UNIX_BROKER_V1 = "parent_unix_broker_v1"
 HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES: dict[str, str] = {
     "claude": "claude-fable-5",  # model-id-source: HARDEN Fable 5 subscription route
     "codex": "gpt-5.6-sol",  # model-id-source: HARDEN Sol subscription route
-    "gemini": "gemini-3.6-flash",  # model-id-source: HARDEN Gemini 3.6 Flash subscription route
+    "gemini": "gemini-3.6-flash-high",  # model-id-source: HARDEN Gemini 3.6 Flash high subscription route
     "grok": "grok-4.5",  # model-id-source: HARDEN Grok 4.5 subscription route
 }
 _HARDEN_ACCEPTED_CONFIGURED_MODELS: dict[str, tuple[str, ...]] = {
@@ -79,7 +79,7 @@ _HARDEN_ACCEPTED_CONFIGURED_MODELS: dict[str, tuple[str, ...]] = {
     "codex": ("gpt-5.6-sol",),  # model-id-source: HARDEN configured Sol compatibility edge
     # Keep the current fleet defaults structurally intact while the brokered
     # HARDEN operation resolves its plan-pinned subscription route.
-    "gemini": ("gemini-3.6-flash", "gemini-3.7-flash"),  # model-id-source: HARDEN exact and fleet-default compatibility edge
+    "gemini": ("gemini-3.6-flash-high", "gemini-3.7-flash"),  # model-id-source: HARDEN exact and fleet-default compatibility edge
     "grok": ("grok-4.5", "grok-4.6"),  # model-id-source: HARDEN exact and fleet-default compatibility edge
 }
 
