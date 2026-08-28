@@ -8478,9 +8478,13 @@ def _run_legible_panel(
     *,
     brief_path: Path | None = None,
 ) -> Path:
-    from .advisor_board.backing import prepare_review_isolation_authorization
+    from .advisor_board.backing import (
+        prepare_review_isolation_authorization,
+        reset_review_instruction_digest,
+        set_review_instruction_digest,
+    )
     from .advisor_board.presets import CODE_REVIEW_BOARD
-    from .panel_invoker import invoke_board
+    from .panel_invoker import _resolve_brief, invoke_board
 
     invoke_kwargs: dict[str, object] = {
         # Review children see only their materialized snapshot; never the live repo.
@@ -8488,13 +8492,31 @@ def _run_legible_panel(
         "artifact_ref": str(bundle_path),
         "stream_dir": run_dir / "implementation-panel-stream",
     }
-    if invoke_board is _PRODUCTION_INVOKE_BOARD:
-        invoke_kwargs["review_authorization"] = prepare_review_isolation_authorization(
-            CODE_REVIEW_BOARD, bundle_path.read_text(encoding="utf-8"), mode="review"
-        )
     if brief_path is not None:
         invoke_kwargs["brief_ref"] = str(brief_path)
-    result = invoke_board(CODE_REVIEW_BOARD, "", **invoke_kwargs)
+    instruction_token: object | None = None
+    if invoke_board is _PRODUCTION_INVOKE_BOARD:
+        # The operation capability must bind the exact brief that the eventual
+        # invoker stages, and the canonical repository that owns the candidate.
+        # Provider scratch remains private to the panel implementation.
+        resolved_brief = _resolve_brief("review", str(brief_path) if brief_path else None)
+        instruction_token = set_review_instruction_digest(resolved_brief)
+        try:
+            invoke_kwargs["review_authorization"] = prepare_review_isolation_authorization(
+                CODE_REVIEW_BOARD,
+                bundle_path.read_text(encoding="utf-8"),
+                mode="review",
+                canonical_repo_authority=repo,
+            )
+            invoke_kwargs["canonical_repo_authority"] = repo
+        except Exception:
+            reset_review_instruction_digest(instruction_token)
+            raise
+    try:
+        result = invoke_board(CODE_REVIEW_BOARD, "", **invoke_kwargs)
+    finally:
+        if instruction_token is not None:
+            reset_review_instruction_digest(instruction_token)
     legs: list[dict[str, object]] = []
     verdicts: dict[str, str] = {}
     for seat, outcome in zip(CODE_REVIEW_BOARD.seats, result.legs, strict=True):

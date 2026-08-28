@@ -311,8 +311,27 @@ class ParentUnixBroker:
         self.authorization, self.harness, self.model = authorization, harness, model
         self.staged_dir = staged_dir.resolve()
         self.canonical_repo = canonical_repo.resolve()
-        probe_file = self.canonical_repo / "AGENTS.md"
-        if not self.canonical_repo.is_dir() or not probe_file.is_file():
+        if not self.canonical_repo.is_dir():
+            raise ValueError("broker canonical repository authority is not probeable")
+        try:
+            listed = subprocess.check_output(
+                ["git", "-C", str(self.canonical_repo), "ls-files", "-z"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+                timeout=3,
+            ).split("\0")
+            probe_file = next(
+                (
+                    self.canonical_repo / relative
+                    for relative in listed
+                    if relative
+                    and (self.canonical_repo / relative).is_file()
+                ),
+                None,
+            )
+        except (OSError, subprocess.SubprocessError):
+            probe_file = None
+        if probe_file is None:
             raise ValueError("broker canonical repository authority is not probeable")
         self._canonical_probe_file = probe_file
         self._instruction_sha256 = sha256(instructions.read_bytes()).hexdigest()

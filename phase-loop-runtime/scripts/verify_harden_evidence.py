@@ -263,7 +263,9 @@ def reject_secret_payloads(value: Any, path: str = "evidence") -> None:
             reject_secret_payloads(item, f"{path}[{index}]")
     elif isinstance(value, str):
         lowered = value.lower()
-        if any(marker in lowered for marker in ("bearer ", "sk-", "ghp_", "akia", "AIza")):
+        if any(marker in lowered for marker in ("bearer ", "ghp_", "akia")) or re.search(
+            r"(?:\bsk-[A-Za-z0-9_-]{16,}\b|\bAIza[A-Za-z0-9_-]{20,}\b)", value
+        ):
             fail(f"{path}: possible raw credential payload")
 
 
@@ -794,7 +796,7 @@ def query_ci(store: ArtifactStore, ci: dict[str, Any], query: Path) -> None:
     except (UnicodeDecodeError, json.JSONDecodeError):
         fail("CI provider returned invalid JSON")
     core = {"databaseId", "headSha", "status", "conclusion", "event", "workflowName", "attempt"}
-    is_canonical_query = query.resolve() == CANONICAL_GH
+    is_canonical_query = query == CANONICAL_GH
     if not isinstance(response, dict) or set(response) not in (core, core | {"jobs"}):
         fail("CI provider response has an unexpected schema")
     if "jobs" not in response:
@@ -854,14 +856,14 @@ def verify_ci(store: ArtifactStore, data: Any, candidate: str, main: str, reposi
         query_ci(store, ci, query)
 
 
-def verify_broker(value: Any, harness: str, requested: str, resolved: str, bundle_sha256: str, instructions_sha256: str, sealed_prompt: str) -> None:
+def verify_broker(value: Any, harness: str, requested: str, resolved: str, bundle_sha256: str, instructions_sha256: str, sealed_prompt: str, report: str) -> None:
     common = {
-        "schema", "stage_bundle_sha256", "stage_instructions_sha256", "leg_authorization_instructions_sha256", "leg_authorization_issued_monotonic_ns", "leg_authorization_expires_monotonic_ns", "canonical_repo_sha256", "canonical_repo_probe_file_sha256", "cleanup_root_removed", "host_secret_probe_removed", "child_quiescent", "peer_pid", "peer_uid", "peer_gid", "peer_ancestry_verified", "bwrap", "outer_bwrap_pid", "outer_bwrap_start", "network_unshared", "close_fds_requested", "socket", "stage", "argv_sha256", "socket_present_before_launch", "stage_bundle_mode", "stage_instructions_mode", "client_probe_program_sha256", "client_probe_assertions", "canonical_repo_file_denied", "canonical_repo_directory_denied", "host_stage_path_denied", "no_inherited_fd_observed", "child_stderr_sha256", "child_returncode", "operation_deadline_s", "child_timeout", "broker_thread_quiescent", "provider_adapter_quiescent", "provider_cancel_requested", "provider_input_sha256", "provider_input_bytes", "provider_input_inline", "provider_live_tree_cwd", "provider_harness", "provider_model", "provider_argv_shape", "provider_argv_sha256", "provider_prompt_sha256", "provider_prompt_bytes", "provider_transport_sha256", "provider_transport_bytes", "provider_prompt_transport", "provider_cwd_class", "provider_cwd_sha256", "provider_env_keys", "provider_env_api_keys_scrubbed", "provider_env_direct_routes_scrubbed", "provider_no_tool_controls",
+        "schema", "stage_bundle_sha256", "stage_instructions_sha256", "leg_authorization_instructions_sha256", "leg_authorization_issued_monotonic_ns", "leg_authorization_expires_monotonic_ns", "canonical_repo_sha256", "canonical_repo_probe_file_sha256", "cleanup_root_removed", "host_secret_probe_removed", "child_quiescent", "peer_pid", "peer_uid", "peer_gid", "peer_ancestry_verified", "bwrap", "outer_bwrap_pid", "outer_bwrap_start", "network_unshared", "close_fds_requested", "socket", "stage", "argv_sha256", "socket_present_before_launch", "stage_bundle_mode", "stage_instructions_mode", "client_probe_program_sha256", "client_probe_assertions", "canonical_repo_file_denied", "canonical_repo_directory_denied", "host_stage_path_denied", "no_inherited_fd_observed", "child_stderr_sha256", "child_returncode", "operation_deadline_s", "child_timeout", "broker_thread_quiescent", "provider_adapter_quiescent", "provider_cancel_requested", "provider_input_sha256", "provider_input_bytes", "provider_input_inline", "provider_live_tree_cwd", "provider_harness", "provider_model", "provider_argv_shape", "provider_argv_sha256", "provider_prompt_sha256", "provider_prompt_bytes", "provider_transport_sha256", "provider_transport_bytes", "provider_prompt_transport", "provider_cwd_class", "provider_cwd_sha256", "provider_env_keys", "provider_env_api_keys_scrubbed", "provider_env_direct_routes_scrubbed", "provider_no_tool_controls", "provider_response_status", "provider_response_sha256", "provider_response_bytes",
     }
     claude = {"claude_session_id_sha256", "claude_session_resume_forbidden", "claude_transcript_exact_path_sha256", "claude_transcript_preexisting", "claude_transcript_existed", "claude_transcript_sha256", "claude_transcript_bytes", "claude_transcript_cleanup_verified", "provider_liveness_profile", "provider_liveness_stall_threshold_s", "provider_liveness_prompt_bytes"}
     gemini = {"provider_isolation_profile", "provider_agy_deny_actions", "provider_agy_settings_sha256", "provider_agy_subscription_reference", "provider_agy_home_cleanup_verified"}
     broker = closed(value, common | (claude if harness == "claude" else set()) | (gemini if harness == "gemini" else set()), "broker evidence")
-    for field in ("stage_bundle_sha256", "stage_instructions_sha256", "canonical_repo_sha256", "canonical_repo_probe_file_sha256", "argv_sha256", "client_probe_program_sha256", "child_stderr_sha256", "provider_input_sha256", "provider_argv_sha256", "provider_prompt_sha256", "provider_transport_sha256", "provider_cwd_sha256"):
+    for field in ("stage_bundle_sha256", "stage_instructions_sha256", "canonical_repo_sha256", "canonical_repo_probe_file_sha256", "argv_sha256", "client_probe_program_sha256", "child_stderr_sha256", "provider_input_sha256", "provider_argv_sha256", "provider_prompt_sha256", "provider_transport_sha256", "provider_cwd_sha256", "provider_response_sha256"):
         if text(broker[field], "broker." + field, pattern=HEX64) == "0" * 64:
             fail("broker digest placeholder")
     if (
@@ -891,8 +893,24 @@ def verify_broker(value: Any, harness: str, requested: str, resolved: str, bundl
         fail("broker client probes are incomplete")
     if broker["provider_harness"] != harness or broker["provider_model"] != resolved or broker["provider_cwd_class"] != "owned_empty_scratch":
         fail("broker harness/model provenance mismatch")
-    if not isinstance(broker["provider_argv_shape"], list) or not broker["provider_argv_shape"] or any(not isinstance(item, str) or not item for item in broker["provider_argv_shape"]):
+    if (
+        broker["provider_response_status"] != "OK"
+        or broker["provider_response_sha256"] != sha256(report.encode("utf-8", errors="strict"))
+        or integer(broker["provider_response_bytes"], "broker.provider_response_bytes") != len(report.encode("utf-8", errors="strict"))
+    ):
+        fail("broker provider response is detached from retained seat report")
+    argv_shape = broker["provider_argv_shape"]
+    if not isinstance(argv_shape, list) or not argv_shape or any(not isinstance(item, str) for item in argv_shape):
         fail("broker provider argv shape is malformed")
+    empty_positions = {
+        "claude": {"--setting-sources", "--tools", "--allowedTools"},
+        "grok": {"--tools"},
+    }.get(harness, set())
+    for index, item in enumerate(argv_shape):
+        if item:
+            continue
+        if index == 0 or argv_shape[index - 1] not in empty_positions:
+            fail("broker provider argv shape has an unbound empty value")
     prompt_bytes = sealed_prompt.encode("utf-8", errors="strict")
     if (
         broker["provider_input_sha256"] != sha256(prompt_bytes)
@@ -902,8 +920,18 @@ def verify_broker(value: Any, harness: str, requested: str, resolved: str, bundl
     ):
         fail("broker provider input/prompt does not bind retained review input")
     env_keys = broker["provider_env_keys"]
-    allowed_isolated_keys = {"HOME", "XDG_CONFIG_HOME"} if harness == "gemini" else set()
-    if not isinstance(env_keys, list) or any(not isinstance(key, str) or not key for key in env_keys) or env_keys != sorted(env_keys) or len(env_keys) != len(set(env_keys)) or any(re.search(r"API_KEY|BASE_URL|GATEWAY|RESEARCH|PROVIDER|^(?:AGY|ANTIGRAVITY|GEMINI|XDG_CONFIG)_", key, re.I) and key not in allowed_isolated_keys for key in env_keys):
+    allowed_env_keys = {
+        "HOME", "LANG", "LC_ALL", "LC_CTYPE", "NO_COLOR", "PATH", "TERM",
+    }
+    if harness == "gemini":
+        allowed_env_keys.add("XDG_CONFIG_HOME")
+    if (
+        not isinstance(env_keys, list)
+        or any(not isinstance(key, str) or not key for key in env_keys)
+        or env_keys != sorted(env_keys)
+        or len(env_keys) != len(set(env_keys))
+        or not set(env_keys).issubset(allowed_env_keys)
+    ):
         fail("broker provider environment permits direct route metadata")
     controls = broker["provider_no_tool_controls"]
     if controls != list(NO_TOOL_CONTROLS[harness]):
@@ -1015,7 +1043,7 @@ def verify_review_round(store: ArtifactStore, repo: Path, value: Any, round_name
         report = text(seat["report"], "seat report")
         if report.rstrip().splitlines()[-1] != "AGREE" or sha256(report.encode()) != seat["report_sha256"] or integer(seat["report_bytes"], "seat report bytes") != len(report.encode()):
             fail("review seat has no terminal usable AGREE")
-        verify_broker(seat["broker"], harness, requested, resolved, input_digests["bundle"], input_digests["instructions"], sealed_prompt)
+        verify_broker(seat["broker"], harness, requested, resolved, input_digests["bundle"], input_digests["instructions"], sealed_prompt, report)
     if seen_harnesses != set(ROUTES):
         fail("review round lacks a required route")
 
@@ -1310,10 +1338,24 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
     def broker(harness: str, requested: str, resolved: str, label: str, bundle_sha256: str, instructions_sha256: str, sealed_prompt: str) -> dict[str, Any]:
         transport = broker_gemini_stream_input(sealed_prompt) if harness == "gemini" else sealed_prompt
         shape = {
-            "claude": ["claude"],
-            "codex": ["codex", "<STDIN_SEALED_INLINE_PROMPT>"],
-            "gemini": ["agy", "<STDIN_SEALED_INLINE_PROMPT>"],
-            "grok": ["grok", "<STDIN_SEALED_INLINE_PROMPT>"],
+            "claude": [
+                "claude", "--ax-screen-reader", "--safe-mode", "--no-chrome",
+                "--disable-slash-commands", "--model", "claude-fable-5",
+                "--session-id", "<CLAUDE_SESSION_ID>", "--effort", "max",
+                "--permission-mode", "plan", "--setting-sources", "",
+                "--settings", "{\"apiKeyHelper\": \"\"}", "--strict-mcp-config",
+                "--mcp-config", "{\"mcpServers\": {}}", "--agents", "{}",
+                "--tools", "", "--allowedTools", "", "--disallowedTools",
+                "Bash,Read,Edit,Write,WebFetch,WebSearch,Task,NotebookEdit",
+            ],
+            "codex": ["codex", "exec", "--sandbox", "read-only", "<STDIN_SEALED_INLINE_PROMPT>"],
+            "gemini": ["agy", "--sandbox", "--mode", "plan", "<STDIN_SEALED_INLINE_PROMPT>"],
+            "grok": [
+                "grok", "--disable-web-search", "--no-memory", "--no-subagents",
+                "--permission-mode", "plan", "--prompt-file", "<STDIN_SEALED_INLINE_PROMPT>",
+                "--output-format", "plain", "--cwd", "/tmp/owned-empty-scratch",
+                "-m", "grok-4.5", "--reasoning-effort", "high", "--tools", "",
+            ],
         }[harness]
         common: dict[str, Any] = {
             "schema": BROKER_SCHEMA, "stage_bundle_sha256": bundle_sha256, "stage_instructions_sha256": instructions_sha256, "leg_authorization_instructions_sha256": instructions_sha256,
@@ -1352,7 +1394,16 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
         seats = []
         for harness, (requested, resolved) in ROUTES.items():
             report = "Independent retained-artifact review\nAGREE"
-            seat = put("seat-" + round_name + "-" + harness, {"schema": "harden_review_seat.v1", "round": round_name, "head": head, "tree": tree, "request_sha256": request["sha256"], "harness": harness, "requested_model": requested, "resolved_model": resolved, "seat_id": round_name + "-" + harness + "-seat", "session_sha256": nonce(round_name + harness + "session"), "harness_provenance": "brokered_subscription_cli", "status": "usable", "result_kind": "real_subscription_inference", "report": report, "report_sha256": sha256(report.encode()), "report_bytes": len(report.encode()), "broker": broker(harness, requested, resolved, round_name + harness, input_sha256, instructions_sha256, sealed_prompt)})
+            broker_record = broker(
+                harness, requested, resolved, round_name + harness,
+                input_sha256, instructions_sha256, sealed_prompt,
+            )
+            broker_record.update({
+                "provider_response_status": "OK",
+                "provider_response_sha256": sha256(report.encode()),
+                "provider_response_bytes": len(report.encode()),
+            })
+            seat = put("seat-" + round_name + "-" + harness, {"schema": "harden_review_seat.v1", "round": round_name, "head": head, "tree": tree, "request_sha256": request["sha256"], "harness": harness, "requested_model": requested, "resolved_model": resolved, "seat_id": round_name + "-" + harness + "-seat", "session_sha256": nonce(round_name + harness + "session"), "harness_provenance": "brokered_subscription_cli", "status": "usable", "result_kind": "real_subscription_inference", "report": report, "report_sha256": sha256(report.encode()), "report_bytes": len(report.encode()), "broker": broker_record})
             seats.append({"harness": harness, "artifact": seat})
         return {"head": head, "tree": tree, "request": request, "seats": seats}
     reviews = {"candidate": review("candidate", candidate, candidate_tree), "canonical_main": review("canonical_main", main, main_tree)}
@@ -1600,6 +1651,18 @@ def self_test() -> None:
         rejected("stage-mode-0444", seat_mutation(lambda seat: seat["broker"].__setitem__("stage_bundle_mode", 0o444)))
         rejected("extra-no-tool-control", seat_mutation(lambda seat: seat["broker"]["provider_no_tool_controls"].append("extra")))
         rejected("duplicate-no-tool-control", seat_mutation(lambda seat: seat["broker"]["provider_no_tool_controls"].append(seat["broker"]["provider_no_tool_controls"][0])))
+        rejected("detached-broker-provider-response", seat_mutation(lambda seat: seat["broker"].__setitem__("provider_response_sha256", "f" * 64)))
+        def malformed_empty_argv(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
+            for item in model["reviews"]["candidate"]["seats"]:
+                seat_ref = item["artifact"]
+                seat = parse_canonical_json((artifact_root / seat_ref["path"]).read_bytes(), "self-test seat")
+                if seat["harness"] == "grok":
+                    seat["broker"]["provider_argv_shape"].insert(1, "")
+                    replace(seat_ref, artifact_root, canonical_bytes(seat))
+                    return
+            raise AssertionError("fixture lacks Grok seat")
+        rejected("malformed-empty-provider-argv", malformed_empty_argv)
+        rejected("ambient-token-provider-env", seat_mutation(lambda seat: seat["broker"].__setitem__("provider_env_keys", ["AWS_SESSION_TOKEN", "PATH"])))
         def fully_resealed_instruction_replacement(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
             review = model["reviews"]["candidate"]
             request_ref = review["request"]
