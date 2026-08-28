@@ -6794,15 +6794,18 @@ def _goal_coverage_closeout_outcome(
         try:
             from .goal_coverage import extract_acceptance_contracts, check_acceptance_falsifiers
             contracts = extract_acceptance_contracts(plan)
-            if contracts:
+            if not contracts:
+                if enforce_block:
+                    return None, _blocker(
+                        "Goal-coverage closeout gate (PHASE_LOOP_ACCEPTANCE_ENFORCE=block): "
+                        "no declared EC goal IDs; add a non-vacuous acceptance contract "
+                        "(legacy missing_falsifier classification superseded)."
+                    )
+            else:
                 falsifier_res = check_acceptance_falsifiers(contracts)
                 if not falsifier_res.get("valid", True):
                     reason = falsifier_res.get("reason", "acceptance_falsifier_contract_invalid")
                     return None, _blocker(f"Acceptance falsifier contract failed at closeout: {reason}")
-            elif enforce_block:
-                return None, _blocker(
-                    "Acceptance falsifier contract failed at closeout: missing_falsifier"
-                )
         except Exception as _falsifier_exc:
             return None, _blocker(f"Acceptance falsifier contract errored at closeout: {_falsifier_exc}")
 
@@ -8532,6 +8535,12 @@ def _run_legible_panel(
             "verdict": verdict,
             "text": outcome.text,
         }
+        broker_evidence = getattr(outcome, "harden_isolation_evidence", None)
+        if isinstance(broker_evidence, Mapping):
+            # This is the actual parent_unix_broker_v1 observation from the
+            # execution boundary, retained beside the run-owned seat result so
+            # a later HARDEN evidence reducer need not trust a copied summary.
+            leg_payload["harden_isolation_evidence"] = dict(broker_evidence)
         leg_path.write_text(json.dumps(leg_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         legs.append(
             {

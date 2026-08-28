@@ -87,9 +87,9 @@ _HARDEN_ACCEPTED_CONFIGURED_MODELS: dict[str, tuple[str, ...]] = {
 def harden_subscription_model(harness: str, configured_model: str) -> str:
     """Resolve an allowed fleet configuration to HARDEN's exact provider route."""
     route = HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES.get(harness)
-    if route is None:
+    if route is None or configured_model not in _HARDEN_ACCEPTED_CONFIGURED_MODELS.get(harness, ()):
         raise ValueError("HARDEN review route is unsupported")
-    return route if configured_model in _HARDEN_ACCEPTED_CONFIGURED_MODELS[harness] else configured_model
+    return route
 
 
 def harden_subscription_review_board(board: Board) -> Board:
@@ -97,11 +97,8 @@ def harden_subscription_review_board(board: Board) -> Board:
     seats: list[Seat] = []
     for seat in board.seats:
         harness = str(seat.harness or "").lower()
-        try:
-            model = harden_subscription_model(harness, seat.model)
-        except ValueError:
-            model = None
-        seats.append(replace(seat, model=model) if model is not None else seat)
+        model = harden_subscription_model(harness, seat.model)
+        seats.append(replace(seat, model=model))
     return replace(board, seats=tuple(seats))
 _REVIEW_READONLY_TOOLS = ("Read", "Glob", "Grep", "LS")
 _AUTHORIZATION_SEAL = object()
@@ -138,6 +135,7 @@ class ReviewLegAuthorization:
     purpose: str
     input_sha256: str
     instructions_sha256: str
+    canonical_repo_sha256: str
     broker_contract: str
     harness: str
     model: str
@@ -311,7 +309,11 @@ class ParentUnixBroker:
         self.authorization, self.harness, self.model = authorization, harness, model
         self.staged_dir = staged_dir.resolve()
         self.canonical_repo = canonical_repo.resolve()
-        if not self.canonical_repo.is_dir():
+        if (
+            not self.canonical_repo.is_dir()
+            or _canonical_repo_digest(self.canonical_repo)
+            != authorization.canonical_repo_sha256
+        ):
             raise ValueError("broker canonical repository authority is not probeable")
         try:
             listed = subprocess.check_output(
@@ -352,7 +354,7 @@ class ParentUnixBroker:
             "leg_authorization_instructions_sha256": authorization.instructions_sha256,
             "leg_authorization_issued_monotonic_ns": authorization.issued_monotonic_ns,
             "leg_authorization_expires_monotonic_ns": authorization.expires_monotonic_ns,
-            "canonical_repo_sha256": sha256(str(self.canonical_repo).encode()).hexdigest(),
+            "canonical_repo_sha256": authorization.canonical_repo_sha256,
             "canonical_repo_probe_file_sha256": sha256(str(probe_file).encode()).hexdigest(),
             "cleanup_root_removed": False,
             "child_quiescent": False,
@@ -673,8 +675,19 @@ def prepare_review_isolation_authorization(
             if advisory_only:
                 continue
             raise ValueError("HARDEN review requires subscription homebrew seats")
-        routes.append((harness, harden_subscription_model(harness, model)))
-    if not routes and not advisory_only:
+        try:
+            routes.append((harness, harden_subscription_model(harness, model)))
+        except ValueError:
+            # A non-policy Claude seat under Claude Code is a typed native-host
+            # deferral, never a brokered provider route.  Retain its no-effect
+            # authorization shape; invoke_board independently rejects it unless
+            # the actual native-host deferral predicate holds.
+            if harness != "claude":
+                raise
+    if not routes and not advisory_only and (not seats or not all(
+        str(getattr(seat, "harness", "") or "").lower() == "claude"
+        for seat in seats
+    )):
         raise ValueError("HARDEN review requires at least one supported brokered seat")
     canonical_repo_sha256 = _canonical_repo_digest(canonical_repo_authority)
     instructions_sha256 = _REVIEW_INSTRUCTIONS_SHA256.get()
@@ -710,8 +723,16 @@ def _expected_review_fields(
         model = str(getattr(seat, "model", ""))
         if getattr(seat, "auth", None) != AUTH_SUBSCRIPTION or getattr(seat, "backing", None) != BACKING_HOMEBREW:
             raise ValueError("HARDEN review requires subscription homebrew seats")
-        routes.append((harness, harden_subscription_model(harness, model)))
-    if not routes:
+        try:
+            routes.append((harness, harden_subscription_model(harness, model)))
+        except ValueError:
+            if harness != "claude":
+                raise
+    seats = tuple(getattr(board, "seats", ()))
+    if not routes and (not seats or not all(
+        str(getattr(seat, "harness", "") or "").lower() == "claude"
+        for seat in seats
+    )):
         raise ValueError("HARDEN review requires at least one supported brokered seat")
     return {
         "operation": "public_board_review.v1",
@@ -754,6 +775,11 @@ def revalidate_review_isolation_authorization(
           authorization.child_network_egress or authorization.live_tree_exposed or authorization.api_fallback or
           authorization.input_sha256 != sha256(artifact.encode("utf-8")).hexdigest()):
         raise ValueError("invalid HARDEN review launch authorization")
+    if canonical_repo_authority is not None and (
+        _canonical_repo_digest(canonical_repo_authority)
+        != authorization.canonical_repo_sha256
+    ):
+        raise ValueError("HARDEN review canonical repository authority mismatch")
     if staged_dir is not None:
         bundle = staged_dir / "review-bundle.md"
         instructions = staged_dir / "review-instructions.md"
@@ -815,9 +841,16 @@ def derive_review_leg_authorization(
     authorization: ReviewIsolationAuthorization | None,
     artifact: str,
     *, harness: str, model: str, deadline_s: float, mode: str,
+    canonical_repo_authority: Path | str | None,
 ) -> ReviewLegAuthorization:
     """Mint the short-lived, single-route capability immediately before launch."""
-    revalidate_review_isolation_authorization(authorization, None, artifact, mode=mode)
+    revalidate_review_isolation_authorization(
+        authorization,
+        None,
+        artifact,
+        mode=mode,
+        canonical_repo_authority=canonical_repo_authority,
+    )
     if (
         not isinstance(authorization, ReviewIsolationAuthorization)
         or (harness, model) not in authorization.routes
@@ -837,6 +870,7 @@ def derive_review_leg_authorization(
         operation=authorization.operation, purpose=authorization.purpose,
         input_sha256=authorization.input_sha256,
         instructions_sha256=authorization.instructions_sha256 or "",
+        canonical_repo_sha256=authorization.canonical_repo_sha256,
         broker_contract=PARENT_UNIX_BROKER_V1, harness=harness, model=model,
         issued_monotonic_ns=issued,
         expires_monotonic_ns=issued + int(float(deadline_s) * 1_000_000_000) + _BROKER_TRANSPORT_ALLOWANCE_NS,
