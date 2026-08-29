@@ -662,19 +662,14 @@ def prepare_review_isolation_authorization(
     if platform.system() != "Linux" or mode != "review":
         raise ValueError("HARDEN review isolation requires a Linux review operation")
     seats = getattr(board, "seats", ())
-    purpose = str(getattr(board, "purpose", ""))
     routes: list[tuple[str, str]] = []
-    advisory_only = purpose in {
-        "x", "general", "legal-review", "legal-strategy-review",
-        "legal-brainstorm", "brainstorm", "doc-edit",
-    }
     for seat in seats:
         harness = str(getattr(seat, "harness", "") or "").lower()
         model = str(getattr(seat, "model", ""))
+        if not harness:
+            continue
         if getattr(seat, "auth", None) != AUTH_SUBSCRIPTION or getattr(seat, "backing", None) != BACKING_HOMEBREW:
-            if advisory_only:
-                continue
-            raise ValueError("HARDEN review requires subscription homebrew seats")
+            continue
         try:
             routes.append((harness, harden_subscription_model(harness, model)))
         except ValueError:
@@ -684,16 +679,11 @@ def prepare_review_isolation_authorization(
             # the actual native-host deferral predicate holds.
             if harness != "claude":
                 raise
-    if not routes and not advisory_only and (not seats or not all(
-        str(getattr(seat, "harness", "") or "").lower() == "claude"
-        for seat in seats
-    )):
-        raise ValueError("HARDEN review requires at least one supported brokered seat")
     canonical_repo_sha256 = _canonical_repo_digest(canonical_repo_authority)
     instructions_sha256 = _REVIEW_INSTRUCTIONS_SHA256.get()
     issued = time.monotonic_ns()
     authorization = ReviewIsolationAuthorization(
-        operation="public_board_review.v1", purpose=purpose,
+        operation="public_board_review.v1", purpose=str(getattr(board, "purpose", "")),
         input_sha256=sha256(artifact.encode("utf-8")).hexdigest(),
         instructions_sha256=instructions_sha256,
         broker_contract=PARENT_UNIX_BROKER_V1, routes=tuple(routes),
@@ -721,19 +711,15 @@ def _expected_review_fields(
     for seat in getattr(board, "seats", ()):
         harness = str(getattr(seat, "harness", "") or "").lower()
         model = str(getattr(seat, "model", ""))
+        if not harness:
+            continue
         if getattr(seat, "auth", None) != AUTH_SUBSCRIPTION or getattr(seat, "backing", None) != BACKING_HOMEBREW:
-            raise ValueError("HARDEN review requires subscription homebrew seats")
+            continue
         try:
             routes.append((harness, harden_subscription_model(harness, model)))
         except ValueError:
             if harness != "claude":
                 raise
-    seats = tuple(getattr(board, "seats", ()))
-    if not routes and (not seats or not all(
-        str(getattr(seat, "harness", "") or "").lower() == "claude"
-        for seat in seats
-    )):
-        raise ValueError("HARDEN review requires at least one supported brokered seat")
     return {
         "operation": "public_board_review.v1",
         "purpose": str(getattr(board, "purpose", "")),

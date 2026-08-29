@@ -31,6 +31,7 @@ import uuid
 from collections import Counter
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from hashlib import sha256
@@ -69,6 +70,8 @@ from .agy_canary_evidence import (
 from .claude_agent_view import ClaudeAgentViewAdapter
 from .launcher import GROK_REVIEW_READONLY_TOOLS
 from .profiles import CLAUDE_IMPLEMENTER_MODEL  # noqa: F401 - public compatibility export
+from .advisor_board import backing as _advisor_board_backing
+from .advisor_board import matrix as _advisor_board_matrix
 from .advisor_board.backing import (
     ParentUnixBroker,
     ReviewIsolationAuthorization,
@@ -78,7 +81,6 @@ from .advisor_board.backing import (
     activate_review_isolation_authorization,
     close_review_isolation_authorization,
     derive_review_leg_authorization,
-    prepare_review_isolation_authorization,
     revalidate_review_isolation_authorization,
     reset_review_instruction_digest,
     resolve_seat_env,
@@ -122,6 +124,52 @@ from .advisor_board.research import (
 )
 from ._proc_cpu import group_cpu_ticks
 from .advisor_board.validation import validate_seat
+
+
+_INJECTED_CAPTURE_CONTROL: ContextVar[bool] = ContextVar(
+    "harden_injected_capture_control", default=False
+)
+_REAL_BIND_STAGED_REVIEW_INPUTS = bind_staged_review_inputs
+_REAL_PREPARE_PROVIDER_LAUNCH_AUTHORITIES = prepare_provider_launch_authorities
+_REAL_SEAL_PROVIDER_LAUNCHES = seal_provider_launches
+_REAL_RECORD_PROVIDER_RESULT = record_provider_result
+_REAL_CAPTURE_SUMMARY = capture_summary
+
+
+def bind_staged_review_inputs(*args: object, **kwargs: object) -> object:
+    """Keep the explicit, factory-marked capture control provider-free."""
+    if _INJECTED_CAPTURE_CONTROL.get():
+        return {}
+    return _REAL_BIND_STAGED_REVIEW_INPUTS(*args, **kwargs)
+
+
+def prepare_provider_launch_authorities(*args: object, **kwargs: object) -> object:
+    if _INJECTED_CAPTURE_CONTROL.get():
+        providers = kwargs.get("providers")
+        if not isinstance(providers, tuple) or not all(
+            isinstance(provider, str) and provider for provider in providers
+        ):
+            raise AgyCanaryEvidenceError("capture control provider set is malformed")
+        return {provider: object() for provider in providers}
+    return _REAL_PREPARE_PROVIDER_LAUNCH_AUTHORITIES(*args, **kwargs)
+
+
+def seal_provider_launches(*args: object, **kwargs: object) -> object:
+    if _INJECTED_CAPTURE_CONTROL.get():
+        return None
+    return _REAL_SEAL_PROVIDER_LAUNCHES(*args, **kwargs)
+
+
+def record_provider_result(*args: object, **kwargs: object) -> object:
+    if _INJECTED_CAPTURE_CONTROL.get():
+        return None
+    return _REAL_RECORD_PROVIDER_RESULT(*args, **kwargs)
+
+
+def capture_summary(capture: AgyCanaryCapture) -> object:
+    if _INJECTED_CAPTURE_CONTROL.get():
+        return {"schema": "harden_injected_capture_control.v1"}
+    return _REAL_CAPTURE_SUMMARY(capture)
 
 # Panel legs are vendor identities (one model class per vendor for the panel).
 PANEL_LEGS: tuple[str, ...] = ("codex", "gemini", "claude")
@@ -1066,10 +1114,6 @@ _ADVISORY_CLASS_PURPOSES: frozenset[str] = frozenset(
         "brainstorm",
         "doc-edit",
         "general",
-        # Historical generic board fixtures are advisory analyses, not public
-        # pre-merge operations.  Keeping this explicit preserves their transport
-        # compatibility without weakening unknown-purpose review fallback.
-        "x",
     }
 )
 
@@ -5261,6 +5305,9 @@ _PRODUCTION_CLAUDE_SUBSCRIPTION_AUTH_OK = _claude_subscription_auth_ok
 _PRODUCTION_DEFAULT_SPAWN = _default_spawn
 _PRODUCTION_DEFAULT_SPAWN_VIA_PROVIDER = _default_spawn_via_provider
 _PRODUCTION_PREPARE_PROVIDER_LAUNCH_AUTHORITIES = prepare_provider_launch_authorities
+_PRODUCTION_PREPARE_REVIEW_ISOLATION_AUTHORIZATION = (
+    _advisor_board_backing.prepare_review_isolation_authorization
+)
 
 
 def _write_incremental_verdict(
@@ -5951,21 +5998,7 @@ def invoke_board(
     if mode not in PANEL_MODES:
         raise ValueError(f"unknown panel mode {mode!r}; expected one of {PANEL_MODES}")
     review_lease_active = False
-    # An explicit review operation cannot execute a caller-supplied callable: it
-    # lacks operation-bound launch authority, staged-input binding, and the
-    # independent subscription-environment revalidation of the production seam.
-    if explicit_mode and mode == "review" and spawn is not None:
-        return PanelResult(
-            tuple(
-                PanelLegResult(
-                    leg=seat.harness or seat.provider,
-                    status="UNAVAILABLE",
-                    detail="unbound_direct_review_invocation_refused",
-                    seat_key=seat.seat_key,
-                )
-                for seat in board.seats
-            )
-        )
+    explicit_spawn_refusal = explicit_mode and mode == "review" and spawn is not None
     switched = _govlean_authority_switched(repo_dir)
     if landing_tier is None and review_policy is None:
         if switched:
@@ -5982,7 +6015,6 @@ def invoke_board(
     # missing ref path) so every downstream use sees resolved content; warn on a
     # large INLINE artifact only. No ref ⇒ ``artifact`` byte-for-byte (the default
     # board's golden byte-identity is preserved).
-    authorization_artifact = artifact
     artifact = _resolve_artifact(artifact, artifact_ref)
     _maybe_warn_inline_size(artifact, from_ref=artifact_ref is not None)
     # #114 TRUE by-reference manifest (path+metadata ONLY, never file contents);
@@ -5990,6 +6022,7 @@ def invoke_board(
     artifact = _apply_context_refs(
         artifact, context_refs, soft_warn=context_refs_soft_warn
     )
+    authorization_artifact = artifact
     review_instruction_token: object | None = None
     def review_refusal(detail: str) -> PanelResult:
         nonlocal review_instruction_token
@@ -6004,23 +6037,6 @@ def invoke_board(
             for seat in board.seats
         ))
 
-    # A public review can be a pure control only when its executable callback was
-    # actually replaced.  Ordinary configuration (including env, matrix, capture,
-    # gateway, research, and an Omnigent object) is never an authorization bypass.
-    injected_execution_seam = (
-        spawn is not None
-        or _has_injected_review_execution_seam(board=board)
-        or _default_spawn is not _PRODUCTION_DEFAULT_SPAWN
-        or _default_spawn_via_provider is not _PRODUCTION_DEFAULT_SPAWN_VIA_PROVIDER
-    )
-    injected_capture_preparation_seam = (
-        agy_canary_capture is not None
-        and prepare_provider_launch_authorities
-        is not _PRODUCTION_PREPARE_PROVIDER_LAUNCH_AUTHORITIES
-    )
-    hermetic_review_seam = (
-        injected_execution_seam or injected_capture_preparation_seam
-    )
     governed_review_request = (
         review_authorization is not None or canonical_repo_authority is not None
     )
@@ -6043,120 +6059,161 @@ def invoke_board(
         )
     except (KeyError, ValueError):
         exact_broker_routes = False
-    if mode == "review" and native_host_deferral_only and not injected_execution_seam:
-        # A nested Claude Code host cannot run the TUI.  Return only the typed
-        # deferral request; it is data for an outer driver, never an execution path.
+    # The only public pure-control marker is a dynamic replacement of the backing
+    # factory. A plain callback, patched availability probe, or configuration value
+    # is never executable authority. The frozen helper supplies a pre-minted
+    # capability and requires this lookup to return that identical object.
+    dynamic_factory = _advisor_board_backing.prepare_review_isolation_authorization
+    factory_replaced = (
+        dynamic_factory is not _PRODUCTION_PREPARE_REVIEW_ISOLATION_AUTHORIZATION
+    )
+    if spawn is not None and not factory_replaced:
+        # Retain pure structural validation for legacy direct controls, but never
+        # let their callback become an execution route. This matrix has an
+        # explicit static probe and cannot consume live availability or auth.
+        static_board = _resolve_and_validate_board(
+            board,
+            _advisor_board_matrix.default_matrix(env={}, probe=_LEG_CLI.__contains__),
+        )
+        enforce_native_host_leg(static_board, host)
+        return review_refusal(
+            "unbound_direct_review_invocation_refused"
+            if mode == "review"
+            else "harden_advisory_execution_refused"
+        )
+    factory_marker: object | None = None
+    if factory_replaced:
         try:
-            effective_instructions = _resolve_brief(mode, brief_ref)
-        except (OSError, UnicodeError, ValueError) as exc:
-            return review_refusal(str(exc))
-        deferred: list[PanelLegResult] = []
-        for seat in board.seats:
-            leg = (seat.harness or "").lower()
-            result = PanelLegResult(
-                leg=leg, status="UNAVAILABLE", text="",
-                detail="tui_adapter_required", seat_key=seat.seat_key,
+            factory_marker = dynamic_factory(
+                board,
+                authorization_artifact,
+                mode=mode,
+                canonical_repo_authority=canonical_repo_authority,
             )
-            if not _claude_tui_policy_model(seat.model):
-                attach_native_agent_request(
-                    result,
-                    native_agent_leg_request(
-                        leg=leg, mode=mode, env=base_env, model=seat.model,
-                        seat_key=seat.seat_key, effort=seat.effort, lens=seat.lens,
-                        artifact_ref=str(artifact_ref) if isinstance(artifact_ref, str) else None,
-                        brief_ref=brief_ref, instructions=effective_instructions,
-                    ),
-                )
-            deferred.append(result)
-        return PanelResult(tuple(deferred))
-    if (
-        mode == "review"
-        and not injected_execution_seam
-        and _claude_code_support_status is not _PRODUCTION_CLAUDE_CODE_SUPPORT_STATUS
-        and bool(board.seats)
-        and all((seat.harness or "").lower() == "claude" for seat in board.seats)
-    ):
-        supported, detail = _claude_code_support_status()
-        if not supported:
-            return PanelResult(tuple(
-                PanelLegResult(
-                    leg="claude", status="UNAVAILABLE", text=detail,
-                    seat_key=seat.seat_key,
-                )
-                for seat in board.seats
-            ))
-    # ``x`` is the frozen generic legacy transport surface.  It is retained for
-    # its existing non-production compatibility contract; it can never provide a
-    # brokered HARDEN review receipt. All other real advisory public routes refuse
-    # before catalog/session/provider work unless their execution adapter is
-    # explicitly replaced by an effect-free control seam.
-    if mode == "advisory" and board.purpose != "x" and not hermetic_review_seam:
-        return review_refusal("harden_advisory_execution_refused")
-    if mode == "review":
-        if not hermetic_review_seam:
+        except ValueError as exc:
+            return review_refusal(str(exc))
+    injected_execution_seam = factory_replaced and (
+        mode == "advisory" or factory_marker is review_authorization
+    )
+    unbound_execution_replacement = (
+        _has_injected_review_execution_seam(board=board)
+        or _default_spawn is not _PRODUCTION_DEFAULT_SPAWN
+        or _default_spawn_via_provider is not _PRODUCTION_DEFAULT_SPAWN_VIA_PROVIDER
+    )
+    injected_capture_preparation_seam = (
+        injected_execution_seam
+        and agy_canary_capture is not None
+        and prepare_provider_launch_authorities
+        is not _PRODUCTION_PREPARE_PROVIDER_LAUNCH_AUTHORITIES
+    )
+    if mode == "advisory":
+        if not injected_execution_seam:
+            return review_refusal("harden_advisory_execution_refused")
+    else:
+        if factory_replaced and not injected_execution_seam:
+            return review_refusal("missing or forged HARDEN review authorization")
+        if spawn is not None and not injected_execution_seam:
+            return review_refusal("unbound_direct_review_invocation_refused")
+        if unbound_execution_replacement and not injected_execution_seam:
+            return review_refusal("unbound_review_execution_replacement_refused")
+        if not injected_execution_seam:
             try:
-                # Resolve the exact brief before any operation authority exists;
-                # the digest is consumed by the sealed authorization factory, not
-                # exposed to a child or a provider environment.
                 review_instruction_token = set_review_instruction_digest(
                     _resolve_brief(mode, brief_ref)
                 )
+                canonical_repo_authority = _canonical_review_repo_authority(
+                    canonical_repo_authority
+                )
             except (OSError, UnicodeError, ValueError) as exc:
                 return review_refusal(str(exc))
-        # These modes use a direct gateway, research transport, or capture-owned
-        # provider authority.  HARDEN deliberately has no brokered implementation
-        # for them, so refuse before catalog, auth, callback, child, or spawn work.
-        if review_authorization is not None:
-            if not injected_execution_seam and not exact_broker_routes and not native_host_deferral_only:
-                return review_refusal("harden_review_unsupported_route_refused")
+        elif canonical_repo_authority is not None:
             try:
                 canonical_repo_authority = _canonical_review_repo_authority(
                     canonical_repo_authority
                 )
-                revalidate_review_isolation_authorization(
-                    review_authorization,
-                    board,
-                    authorization_artifact if injected_execution_seam else artifact,
-                    mode=mode,
-                    canonical_repo_authority=canonical_repo_authority,
-                )
             except ValueError as exc:
                 return review_refusal(str(exc))
-        elif governed_review_request:
-            return review_refusal("missing or forged HARDEN review authorization")
-        elif not hermetic_review_seam:
+        if review_authorization is None:
+            if governed_review_request:
+                return review_refusal("missing or forged HARDEN review authorization")
             if effective_research.enabled:
                 return review_refusal("harden_review_research_route_refused")
             if agy_canary_capture is not None:
                 return review_refusal("harden_review_capture_route_refused")
-            if omnigent is not None:
+            if omnigent is not None or gateway_available is not None:
                 return review_refusal("harden_review_gateway_route_refused")
-            if gateway_available is not None:
-                return review_refusal("harden_review_gateway_route_refused: ABDOMNI")
             if not exact_broker_routes and not native_host_deferral_only:
                 return review_refusal("harden_review_unsupported_route_refused")
             try:
-                # A normal phase-loop CLI route need not pass a filesystem path;
-                # bind its canonical Git authority here, but never pass that tree to
-                # a model-facing command.
-                canonical_repo_authority = _canonical_review_repo_authority(
-                    canonical_repo_authority
-                )
-                review_authorization = prepare_review_isolation_authorization(
+                review_authorization = dynamic_factory(
                     board,
-                    artifact,
-                    mode=mode,
-                    canonical_repo_authority=canonical_repo_authority,
-                )
-                revalidate_review_isolation_authorization(
-                    review_authorization,
-                    board,
-                    artifact,
+                    authorization_artifact,
                     mode=mode,
                     canonical_repo_authority=canonical_repo_authority,
                 )
             except ValueError as exc:
                 return review_refusal(str(exc))
+        if not injected_execution_seam and not exact_broker_routes and not native_host_deferral_only:
+            return review_refusal("harden_review_unsupported_route_refused")
+        try:
+            revalidate_review_isolation_authorization(
+                review_authorization,
+                board,
+                authorization_artifact,
+                mode=mode,
+                canonical_repo_authority=canonical_repo_authority,
+            )
+        except ValueError as exc:
+            return review_refusal(str(exc))
+        # Native-host deferral is a typed data result, never a path to host
+        # execution. It is reached only after the same factory/revalidation gate.
+        if native_host_deferral_only and spawn is None:
+            try:
+                effective_instructions = _resolve_brief(mode, brief_ref)
+            except (OSError, UnicodeError, ValueError) as exc:
+                return review_refusal(str(exc))
+            deferred: list[PanelLegResult] = []
+            for seat in board.seats:
+                leg = (seat.harness or "").lower()
+                result = PanelLegResult(
+                    leg=leg, status="UNAVAILABLE", text="",
+                    detail="tui_adapter_required", seat_key=seat.seat_key,
+                )
+                if not _claude_tui_policy_model(seat.model):
+                    attach_native_agent_request(
+                        result,
+                        native_agent_leg_request(
+                            leg=leg, mode=mode, env=base_env, model=seat.model,
+                            seat_key=seat.seat_key, effort=seat.effort, lens=seat.lens,
+                            artifact_ref=str(artifact_ref) if isinstance(artifact_ref, str) else None,
+                            brief_ref=brief_ref, instructions=effective_instructions,
+                        ),
+                    )
+                deferred.append(result)
+            return PanelResult(tuple(deferred))
+        # This validates a host/native pairing before a gateway catalog, support
+        # check, or a capability probe can be reached.
+        host_seat = enforce_native_host_leg(board, host)
+        if (
+            not native_host_deferral_only
+            and
+            _claude_code_support_status is not _PRODUCTION_CLAUDE_CODE_SUPPORT_STATUS
+            and bool(board.seats)
+            and all((seat.harness or "").lower() == "claude" for seat in board.seats)
+        ):
+            supported, detail = _claude_code_support_status()
+            if not supported:
+                return PanelResult(tuple(
+                    PanelLegResult(
+                        leg="claude", status="UNAVAILABLE", text=detail,
+                        seat_key=seat.seat_key,
+                    )
+                    for seat in board.seats
+                ))
+        if explicit_spawn_refusal:
+            return review_refusal("unbound_direct_review_invocation_refused")
+    if mode == "advisory":
+        host_seat = enforce_native_host_leg(board, host)
     leg_timeouts = dict(timeouts_by_leg or {})
     observer = BoardObserver(sink, board_name=board.name) if sink is not None else None
     # Tri-state gateway availability + a SINGLE catalog fetch. ``catalog_harnesses``
@@ -6189,29 +6246,17 @@ def invoke_board(
         # Capture validates only frozen model/harness metadata.  The static probe
         # supplies compatibility-lane availability without consulting ambient
         # PATH, auth, environment keys, or the process-running registry.
-        default_matrix(env={}, probe=_LEG_CLI.__contains__)
+        _advisor_board_matrix.default_matrix(env={}, probe=_LEG_CLI.__contains__)
         if agy_canary_capture is not None
         else (matrix or default_matrix(env=base_env))
     )
     board = _resolve_and_validate_board(board, validation_matrix)
-    if mode == "review" and review_authorization is not None:
-        try:
-            revalidate_review_isolation_authorization(
-                review_authorization,
-                board,
-                authorization_artifact if injected_execution_seam else artifact,
-                mode=mode,
-                canonical_repo_authority=canonical_repo_authority,
-            )
-        except ValueError as exc:
-            return review_refusal(str(exc))
     gemini_seats = [seat for seat in board.seats if (seat.harness or "").lower() == "gemini"]
     if agy_canary_capture is not None:
         if spawn is not None:
             raise ValueError("capture-enabled board requires the production Gemini spawn path")
         if len(gemini_seats) != 1:
             raise ValueError("capture-enabled board requires exactly one resolved Gemini seat")
-    host_seat = enforce_native_host_leg(board, host)
     env_source: Mapping[str, str] = os.environ if base_env is None else base_env
     research_run: ResearchRunConfig | None = None
     research_unavailable_detail: str | None = None
@@ -6234,11 +6279,17 @@ def invoke_board(
     capture_scratches: list[_OwnedCleanupRoot] = []
     capture_seats: list[Seat] = []
     capture_quiescence = _ProviderQuiescenceLatch()
+    capture_control_token: object | None = None
 
     def _cleanup_capture_resources() -> None:
+        if _INJECTED_CAPTURE_CONTROL.get():
+            _cleanup_owned_roots(capture_scratches)
+            return
         _cleanup_capture_launches(capture_launches, capture_scratches)
 
     if agy_canary_capture is not None:
+        if injected_capture_preparation_seam:
+            capture_control_token = _INJECTED_CAPTURE_CONTROL.set(True)
         if effective_research.enabled:
             raise ValueError("capture-enabled board does not permit research seats")
         capture_seats = [
@@ -6297,6 +6348,14 @@ def invoke_board(
         except Exception:
             _cleanup_capture_resources()
             raise
+
+        # Capture has sealed its exact allocation/stage/provider chain. Only now
+        # may the ordinary matrix consume live availability/auth state.
+        live_capture_matrix = default_matrix(env=base_env)
+        for capture_seat in board.seats:
+            live_capture_matrix.is_valid(
+                capture_seat.model, capture_seat.harness or ""
+            )
 
     def _skip(seat: Seat, leg: str, detail: str) -> PanelLegResult:
         return PanelLegResult(
@@ -6573,17 +6632,10 @@ def invoke_board(
     try:
         if mode == "review" and review_authorization is not None:
             try:
-                revalidate_review_isolation_authorization(
-                    review_authorization,
-                    board,
-                    authorization_artifact if injected_execution_seam else artifact,
-                    mode=mode,
-                    canonical_repo_authority=canonical_repo_authority,
-                )
                 activate_review_isolation_authorization(
                     review_authorization,
                     board,
-                    authorization_artifact if injected_execution_seam else artifact,
+                    authorization_artifact,
                     mode=mode,
                     canonical_repo_authority=canonical_repo_authority,
                 )
@@ -6635,12 +6687,16 @@ def invoke_board(
             object.__setattr__(panel_result, "_agy_canary_capture", capture_summary(agy_canary_capture))
         return panel_result
     finally:
-        if review_instruction_token is not None:
-            reset_review_instruction_digest(review_instruction_token)
-        if review_lease_active:
-            close_review_isolation_authorization(review_authorization)
-        if research_run is not None:
-            research_run.close()
-        if (agy_canary_capture is not None and
-                not capture_quiescence.is_set()):
-            _cleanup_capture_resources()
+        try:
+            if review_instruction_token is not None:
+                reset_review_instruction_digest(review_instruction_token)
+            if review_lease_active:
+                close_review_isolation_authorization(review_authorization)
+            if research_run is not None:
+                research_run.close()
+            if (agy_canary_capture is not None and
+                    not capture_quiescence.is_set()):
+                _cleanup_capture_resources()
+        finally:
+            if capture_control_token is not None:
+                _INJECTED_CAPTURE_CONTROL.reset(capture_control_token)
