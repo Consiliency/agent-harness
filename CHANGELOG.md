@@ -39,8 +39,21 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   which normalizes every failure to `RoadmapUnreadable`; calling `declared_active_roadmap`
   directly let a `RoadmapStatusError` escape uncaught, and Python's exit 1 is the code this
   command defines as "claimed by another phase" — so an unreadable roadmap was
-  indistinguishable from an ownership block. The roadmap **read** is normalized too: a
-  non-UTF-8 or unreadable file raised past the handler for the same wrong exit code.
+  indistinguishable from an ownership block. The roadmap **read** is normalized too — in
+  `audit` as well as `preflight`, via one shared `read_roadmap`; the first version of that
+  fix lived only in `preflight`, which is exactly how `audit` kept the hole.
+- Argument normalization is **lexical first**, resolving symlinks only as a fallback for a
+  symlinked checkout root. Resolving first rewrote a repo-*internal* symlink to its target,
+  so a token naming a symlinked directory matched nothing: ownership describes the
+  repository's paths, not where they point. A symlink loop or unreadable path now reports
+  CANNOT EVALUATE instead of raising past the handler as exit 1.
+- The qualification shown comes from the claim with the **longest literal prefix** (the part
+  before any wildcard), exact matches first. Two earlier rankings were wrong in opposite
+  directions and both surfaced the same way — a broad qualification on a narrow path: raw
+  length let a long glob outrank the exact file it matched, and its repair let any
+  wildcard-free directory outrank a far narrower glob. A wildcard's presence says nothing
+  about breadth; its position does. Ranking now runs over every claiming token, so a
+  specific but unqualified claim no longer inherits a broader claim's note.
 - **Scoped claims stay scoped.** The roadmap qualifies some entries (GOVLEAN's directory
   claim reads "(new evidence, lint, and governance modules)"); `--preflight` now carries
   that parenthetical verbatim as the audit output already did, instead of presenting a

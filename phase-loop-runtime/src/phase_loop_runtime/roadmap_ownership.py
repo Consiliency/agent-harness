@@ -270,9 +270,30 @@ def changed_paths(repo: Path, base: str) -> List[str]:
     return [line for line in result.stdout.splitlines() if line.strip()]
 
 
+def read_roadmap(roadmap: Path) -> str:
+    """The roadmap's text, with read failures normalized to ``RoadmapUnreadable``.
+
+    ``resolve_roadmap`` normalizes RESOLUTION failures; this normalizes the READ.
+    Both call sites need it and only ``preflight`` had it: an unreadable or
+    non-UTF-8 roadmap escaped ``audit`` as an uncaught exception, and the
+    interpreter's exit 1 is the code ``--preflight`` reserves for "claimed by
+    another phase". Stated once here rather than at each call site, because the
+    version of this fix that lived in one caller is exactly how the other kept
+    the hole.
+    """
+
+    try:
+        return roadmap.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise RoadmapUnreadable(
+            f"could not read the active roadmap {roadmap}: {exc}. Refusing to "
+            f"report ownership from a roadmap this command cannot read."
+        ) from exc
+
+
 def audit(repo: Path, base: str) -> List[Ownership]:
     roadmap = resolve_roadmap(repo)
-    mapping = ownership_map(roadmap.read_text(encoding="utf-8"))
+    mapping = ownership_map(read_roadmap(roadmap))
     active = current_phase(repo)
     found: List[Ownership] = []
     for path in changed_paths(repo, base):
@@ -302,29 +323,41 @@ def _note_for(alias: str, path: str, mapping: Dict[str, List[Phase]]) -> str:
     Ranked, most specific first:
 
     1. an EXACT token (``owned == path``) -- it claims that path and nothing else;
-    2. a literal (non-glob) token, longest first -- a longer directory prefix is
-       the narrower claim;
-    3. a GLOB, longest last.
+    2. otherwise, the longest LITERAL PREFIX (the part before the first wildcard),
+       because that prefix is what actually bounds the claim;
+    3. then overall length, as a tie-break within the same prefix.
 
-    Length alone is not specificity once globs exist: ``<long>/**/*.py`` can be
-    longer than the exact file it matches while claiming far more. Ordering by
-    length only *within* a class avoids comparing the two.
+    Two earlier versions of this ranking were wrong in opposite directions, and
+    both are worth naming because the shape recurs:
+
+    * **Raw length** -- ``src/beta/[xyz][.]py`` is 19 characters and matches the
+      13-character ``src/beta/x.py``, so a longer GLOB outranked the exact file.
+    * **Literal-beats-glob** -- the repair for that ranked any token without a
+      wildcard above any token with one, so the broad directory ``src/beta/``
+      outranked the far narrower ``src/beta/parser_*.py``. A glob character says
+      nothing about breadth; where the wildcard SITS does.
+
+    Both produced the same user-visible error the ordering fix existed to stop:
+    a broad qualification attached to a narrow path.
     """
 
-    matches = [
-        owned
-        for owned in mapping
-        if _claims(owned, path) and _NOTES.get(f"{alias}\x00{owned}")
-    ]
+    matches = [owned for owned in mapping if _claims(owned, path)]
     if not matches:
         return ""
 
     def specificity(owned: str) -> "tuple[int, int, int]":
-        exact = owned == path
-        glob = any(ch in owned for ch in "*?[")
-        return (1 if exact else 0, 0 if glob else 1, len(owned))
+        wildcard = min(
+            (owned.index(ch) for ch in "*?[" if ch in owned),
+            default=len(owned),
+        )
+        return (1 if owned == path else 0, wildcard, len(owned))
 
-    return _NOTES[f"{alias}\x00{max(matches, key=specificity)}"]
+    # Ranked over EVERY claiming token, not only the qualified ones. Filtering to
+    # tokens that carry a note first meant a broad qualified claim could outrank a
+    # narrower unqualified one and lend it a qualification that does not apply to
+    # it. If the most specific claim carries no qualification, there is none to
+    # show.
+    return _NOTES.get(f"{alias}\x00{max(matches, key=specificity)}", "")
 
 
 def has_disposition(text: str) -> bool:
@@ -692,18 +725,7 @@ def preflight(
     """
 
     repo = Path(repo)
-    roadmap = resolve_roadmap(repo)
-    try:
-        text = roadmap.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
-        # `resolve_roadmap` normalizes RESOLUTION failures, but the READ was still
-        # bare: an unreadable or non-UTF-8 roadmap raised out of `main`, and the
-        # interpreter's exit 1 is the code this command defines as "claimed".
-        raise RoadmapUnreadable(
-            f"could not read the active roadmap {roadmap}: {exc}. Refusing to "
-            f"report ownership from a roadmap this command cannot read."
-        ) from exc
-    mapping = ownership_map(text)
+    mapping = ownership_map(read_roadmap(resolve_roadmap(repo)))
     owned: Dict[str, List[Ownership]] = {}
     for raw in paths:
         path = _normalize_preflight_path(repo, raw)
@@ -751,27 +773,56 @@ def _normalize_preflight_path(repo: Path, raw: str) -> str:
     because the wrong answer is the reassuring one. ``audit`` never hit this: its
     paths come from ``git diff --name-only``, which is always repo-relative.
 
-    Both ends are resolved before comparison so a symlinked checkout (``/mnt/workspace``
-    -> ``/mnt/HC_Volume_...``) still lands inside the repo.
+    Normalization is LEXICAL first and only falls back to symlink resolution.
+    Resolving first was wrong: it rewrites a repo-internal symlink to its target,
+    so a `bin/` ownership token whose directory links elsewhere in the tree
+    normalized to the target's path and matched no token -- pasting the roadmap's
+    own text exited 0 as unclaimed. Ownership is a statement about the repository's
+    PATHS, not about where those paths happen to point. The resolving fallback
+    remains for the case that motivated it: a symlinked CHECKOUT ROOT
+    (``/mnt/workspace`` -> ``/mnt/HC_Volume_...``), where the lexical form is
+    genuinely outside the root as written.
     """
 
-    root = Path(repo).resolve()
     if not raw:
         raise PathNotInRepo(
             "an empty --preflight argument names no path. Refusing to report it "
             "as unclaimed -- it matches no ownership token, so it would exit 0."
         )
-    candidate = Path(raw)
-    absolute = candidate if candidate.is_absolute() else root / candidate
-    resolved = absolute.resolve()
+    root_lexical = Path(os.path.normpath(os.path.abspath(str(Path(repo)))))
     try:
-        relative = resolved.relative_to(root).as_posix()
-    except ValueError as exc:
+        root = Path(repo).resolve()
+    except (OSError, RuntimeError) as exc:
+        # `Path.resolve()` raises RuntimeError on a symlink loop and OSError on
+        # assorted filesystem failures. Uncaught, either escaped `main` as the
+        # interpreter's exit 1 -- the code reserved for "claimed by another phase".
         raise PathNotInRepo(
-            f"{raw!r} does not resolve to a path inside {root}. Refusing to "
-            f"report it as unclaimed -- this command cannot evaluate ownership "
-            f"for a path it cannot place in the repository."
+            f"could not resolve the repository root {Path(repo)}: {exc}"
         ) from exc
+    candidate = Path(raw)
+    lexical = Path(
+        os.path.normpath(
+            str(candidate if candidate.is_absolute() else root_lexical / candidate)
+        )
+    )
+    try:
+        resolved = lexical.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise PathNotInRepo(
+            f"could not resolve {raw!r}: {exc}. Refusing to report it as "
+            f"unclaimed -- this command could not evaluate it at all."
+        ) from exc
+    try:
+        relative = lexical.relative_to(root_lexical).as_posix()
+    except ValueError:
+        try:
+            relative = resolved.relative_to(root).as_posix()
+        except ValueError as exc:
+            raise PathNotInRepo(
+                f"{raw!r} does not resolve to a path inside {root}. Refusing to "
+                f"report it as unclaimed -- this command cannot evaluate "
+                f"ownership for a path it cannot place in the repository."
+            ) from exc
     if relative == ".":
         # `""`, `.`, and the absolute repo root all land here. None matches any
         # ownership token, so each exited 0 -- "the whole repository is unclaimed",

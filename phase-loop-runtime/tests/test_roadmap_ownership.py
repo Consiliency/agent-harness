@@ -1379,8 +1379,13 @@ class TestPreflight(unittest.TestCase):
 
         Mutations that must kill this: drop the `directoryish` branch in
         `_normalize_preflight_path`, OR drop the `rstrip("/")` arm of `_claims`.
-        (Either alone leaves the other covering it -- that redundancy is
-        deliberate, so this asserts through the CLI where both are live.)
+        Each is killed independently -- the path assertion below pins the
+        normalizer, and the slash-free spelling of a not-yet-existing directory
+        pins the `_claims` arm, because nothing there can tell the normalizer it
+        is a directory.
+
+        Exercises `preflight` directly, not the CLI; the exit-code mapping is
+        covered by `test_the_exit_code_carries_the_answer`.
         """
         with TemporaryDirectory() as tmp:
             repo = self._repo(tmp)
@@ -1486,6 +1491,105 @@ class TestPreflight(unittest.TestCase):
             repo = _repo_with_two_phases(tmp, roadmap=globbed)
             owned = ro.preflight(repo, [exact])
             self.assertEqual(owned[exact][0].note, "(only the parser)")
+
+    def test_a_narrower_GLOB_outranks_a_broader_directory(self):
+        """codex and gemini both caught this, independently.
+
+        The repair for "a longer glob outranked the exact file" ranked any token
+        WITHOUT a wildcard above any token with one -- so the broad directory
+        `src/beta/` outranked the far narrower `src/beta/parser_*.py`. A glob
+        character says nothing about breadth; where the wildcard SITS does. Both
+        that ranking and the raw-length one produced the same user-visible error:
+        a broad qualification attached to a narrow path.
+
+        Mutation that must kill this: rank non-glob above glob, i.e. restore
+        `(exact, 0 if glob else 1, len(owned))`.
+        """
+        roadmap = ROADMAP.replace(
+            "- `src/beta/`",
+            "- `src/beta/` (the whole lane-B tree)\n"
+            "- `src/beta/parser_*.py` (only parser modules)",
+        )
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=roadmap)
+            owned = ro.preflight(repo, ["src/beta/parser_impl.py"])
+            self.assertEqual(
+                owned["src/beta/parser_impl.py"][0].note, "(only parser modules)"
+            )
+
+    def test_an_unqualified_specific_claim_shows_NO_qualification(self):
+        """`_note_for` filtered to tokens carrying a note BEFORE ranking, so a
+        broad qualified claim could outrank a narrower unqualified one and lend
+        its qualification to a path that claim does not describe.
+
+        If the most specific claim carries no qualification, there is none.
+
+        Mutation that must kill this: filter `matches` to tokens with a note
+        before ranking.
+        """
+        roadmap = ROADMAP.replace(
+            "- `src/beta/`",
+            "- `src/beta/` (the whole lane-B tree)\n- `src/beta/plain.py`",
+        )
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=roadmap)
+            owned = ro.preflight(repo, ["src/beta/plain.py"])
+            self.assertEqual(owned["src/beta/plain.py"][0].note, "")
+
+    def test_a_repo_INTERNAL_symlink_still_matches_its_own_token(self):
+        """Resolving before comparing rewrote a repo-internal symlink to its
+        target, so the roadmap's own token normalized to a different path and
+        matched nothing -- exit 0, unclaimed.
+
+        Ownership describes the repository's PATHS, not where they point.
+
+        Mutation that must kill this: compute `relative` from `resolved` first
+        instead of from the lexical path.
+        """
+        roadmap = ROADMAP.replace("- `src/alpha.py`", "- `src/link/`")
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=roadmap)
+            (repo / "src" / "real").mkdir(parents=True, exist_ok=True)
+            (repo / "src" / "link").symlink_to(repo / "src" / "real")
+            owned = ro.preflight(repo, ["src/link/"])
+            self.assertEqual(
+                [o.phase_alias for o in owned.get("src/link/", [])],
+                ["ALPHA"],
+                "a symlinked directory must still match the token naming it",
+            )
+
+    def test_a_symlink_LOOP_cannot_evaluate_rather_than_exiting_1(self):
+        """`Path.resolve()` raises RuntimeError on a symlink loop and OSError on
+        assorted filesystem failures. Uncaught, either escaped `main` as the
+        interpreter's exit 1 -- the code reserved for "claimed by another phase".
+
+        Mutation that must kill this: drop the `(OSError, RuntimeError)` handler
+        around the argument's `resolve()`.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = self._repo(tmp)
+            (repo / "src" / "loop_a").symlink_to(repo / "src" / "loop_b")
+            (repo / "src" / "loop_b").symlink_to(repo / "src" / "loop_a")
+            with redirect_stdout(io.StringIO()) as buf:
+                rc = ro.main(["prog", "--repo", str(repo),
+                              "--preflight", "src/loop_a/x.py"])
+            self.assertIn(rc, (0, 2), "must never be 1 -- that means 'claimed'")
+            if rc == 2:
+                self.assertIn("CANNOT EVALUATE", buf.getvalue())
+
+    def test_AUDIT_also_normalizes_an_unreadable_roadmap(self):
+        """Round 3 wrapped the read in `preflight` and left `audit` bare two
+        hundred lines away, so the same non-UTF-8 roadmap still escaped there.
+        The fix that lives in one caller is how the other keeps the hole.
+
+        Mutation that must kill this: `read_roadmap(...)` -> `roadmap.read_text(...)`
+        in `audit`.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = self._repo(tmp)
+            (repo / "specs" / "phase-plans-v10.md").write_bytes(b"\xff\xfe bad")
+            with self.assertRaises(ro.RoadmapUnreadable):
+                ro.audit(repo, "HEAD")
 
     def test_without_current_phase_the_output_does_not_say_another_phase(self):
         """"another phase" implies an exclusion that only happened if one was
