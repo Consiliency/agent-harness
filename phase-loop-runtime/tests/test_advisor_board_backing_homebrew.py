@@ -30,7 +30,10 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
-from harden_tdd_guard import invoke_sanctioned_review_transport
+from harden_tdd_guard import (
+    assert_exact_unavailable,
+    invoke_sanctioned_board_control,
+)
 from phase_loop_runtime import panel_invoker as pi
 from phase_loop_runtime.advisor_board import (
     AUTH_API_KEY,
@@ -52,11 +55,9 @@ from phase_loop_runtime.advisor_board.harness_mapping import render_gemini_model
 
 
 def _invoke_board_control(board, artifact: str, **kwargs):
-    """Bind executable derived-review controls; leave static refusals direct."""
+    """Bind every executable board control; leave static refusals direct."""
 
-    if pi._mode_for_purpose(board.purpose) == "review":
-        return invoke_sanctioned_review_transport(board, artifact, **kwargs)
-    return pi.invoke_board(board, artifact, **kwargs)
+    return invoke_sanctioned_board_control(board, artifact, **kwargs)
 
 
 @contextmanager
@@ -352,9 +353,21 @@ class SkipWithWarningTests(unittest.TestCase):
         board = Board(name="o", purpose="x", seats=(
             Seat(model="gpt-5.6-sol", effort="high", harness="opencode", backing=BACKING_OMNIGENT),
         ))
-        res = pi.invoke_board(board, "artifact", gateway_available=False,
-                              spawn=lambda leg, art: ("OK", "AGREE"))
-        self.assertEqual(res.legs[0].status, "UNAVAILABLE")
+        effects: list[tuple[str, str]] = []
+
+        def spawn(leg: str, artifact: str):
+            effects.append((leg, artifact))
+            return ("OK", "AGREE")
+
+        res = _invoke_board_control(
+            board,
+            "artifact",
+            gateway_available=False,
+            spawn=spawn,
+            require_live_matrix_probe=True,
+        )
+        assert_exact_unavailable(board, res)
+        self.assertEqual(effects, [])
         self.assertIn("gateway unavailable", res.legs[0].detail)
 
     def test_omnigent_seat_with_gateway_is_not_served_by_homebrew(self) -> None:
@@ -363,9 +376,21 @@ class SkipWithWarningTests(unittest.TestCase):
         board = Board(name="o", purpose="x", seats=(
             Seat(model="gpt-5.6-sol", effort="high", harness="opencode", backing=BACKING_OMNIGENT),
         ))
-        res = pi.invoke_board(board, "artifact", gateway_available=True,
-                              spawn=lambda leg, art: ("OK", "AGREE"))
-        self.assertEqual(res.legs[0].status, "UNAVAILABLE")
+        effects: list[tuple[str, str]] = []
+
+        def spawn(leg: str, artifact: str):
+            effects.append((leg, artifact))
+            return ("OK", "AGREE")
+
+        res = _invoke_board_control(
+            board,
+            "artifact",
+            gateway_available=True,
+            spawn=spawn,
+            require_live_matrix_probe=True,
+        )
+        assert_exact_unavailable(board, res)
+        self.assertEqual(effects, [])
         self.assertIn("ABDOMNI", res.legs[0].detail)
 
     def test_a_skipped_seat_does_not_block_a_healthy_seat(self) -> None:

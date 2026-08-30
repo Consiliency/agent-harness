@@ -20,7 +20,11 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
-from harden_tdd_guard import harden_require
+from harden_tdd_guard import (
+    assert_exact_unavailable,
+    harden_require,
+    invoke_sanctioned_board_control,
+)
 from phase_loop_runtime import panel_invoker as pi_mod
 from phase_loop_runtime.advisor_board import composition as comp_mod
 from phase_loop_runtime.cli import main as cli_main
@@ -172,6 +176,7 @@ class AdvisorBoardCliTest(unittest.TestCase):
         """
         harden_require("review-leg-isolation")
         from phase_loop_runtime.advisor_board import backing as backing_mod
+        from phase_loop_runtime.advisor_board import matrix as matrix_mod
         from phase_loop_runtime.advisor_board.matrix import default_matrix
         from phase_loop_runtime.advisor_board.schema import Board, Seat
 
@@ -234,13 +239,11 @@ class AdvisorBoardCliTest(unittest.TestCase):
                 "revalidate_review_isolation_authorization",
                 side_effect=revalidate,
             ):
-                result = pi_mod.invoke_board(
+                result = invoke_sanctioned_board_control(
                     board,
                     artifact,
                     spawn=hermetic_spawn,
                     repo_dir=scratch,
-                    canonical_repo_authority=canonical_repo,
-                    review_authorization=authorization(),
                     base_env={},
                     matrix=matrix,
                     max_concurrency=1,
@@ -250,27 +253,62 @@ class AdvisorBoardCliTest(unittest.TestCase):
             self.assertEqual(effects[-1], "spawn")
             self.assertTrue(revalidated_authorities)
 
+            raw_matrix_calls: list[object] = []
+            raw_availability_calls: list[object] = []
+            raw_writer_calls: list[object] = []
+            raw_provider_calls: list[object] = []
+            raw_child_calls: list[object] = []
+            raw_completion_calls: list[object] = []
+            raw_sink_calls: list[object] = []
+            raw_leg_auth_calls: list[object] = []
+            raw_claude_auth_calls: list[object] = []
+            raw_claude_support_calls: list[object] = []
+            original_default_matrix = pi_mod.default_matrix
+            original_writer = pi_mod._write_incremental_verdict
+
+            def raw_default_matrix(*args, **kwargs):
+                raw_matrix_calls.append((args, kwargs))
+                deterministic_kwargs = dict(kwargs)
+                deterministic_kwargs["env"] = {}
+                return original_default_matrix(*args, **deterministic_kwargs)
+
+            def raw_live_availability(*args, **kwargs):
+                raw_availability_calls.append((args, kwargs))
+                return True
+
+            def raw_writer(*args, **kwargs):
+                raw_writer_calls.append((args, kwargs))
+                return original_writer(*args, **kwargs)
+
+            def raw_provider(*args, **kwargs):
+                raw_provider_calls.append((args, kwargs))
+                return "OK", "unexpected raw provider effect"
+
+            def raw_child(*args, **kwargs):
+                raw_child_calls.append((args, kwargs))
+                return "OK", "unexpected raw child effect"
+
+            def raw_leg_auth_ok(*args, **kwargs):
+                raw_leg_auth_calls.append((args, kwargs))
+                return True, ""
+
+            def raw_claude_subscription_auth_ok(*args, **kwargs):
+                raw_claude_auth_calls.append((args, kwargs))
+                return True, ""
+
+            def raw_claude_code_support_status(*args, **kwargs):
+                raw_claude_support_calls.append((args, kwargs))
+                return True, ""
+
+            class RawRefusalSink:
+                def emit(self, event) -> None:
+                    raw_sink_calls.append(event)
+
             scratch_effects: list[str] = []
 
             def scratch_spawn(*_args, **_kwargs):
                 scratch_effects.append("spawn")
                 return "OK", "unexpected scratch authority\nAGREE"
-
-            scratch_result = pi_mod.invoke_board(
-                board,
-                artifact,
-                spawn=scratch_spawn,
-                repo_dir=scratch,
-                canonical_repo_authority=scratch,
-                review_authorization=authorization(),
-                base_env={},
-                matrix=matrix,
-                max_concurrency=1,
-            )
-            self.assertFalse(scratch_effects)
-            self.assertTrue(
-                all(leg.status == "UNAVAILABLE" for leg in scratch_result.legs)
-            )
 
             alternate_effects: list[str] = []
 
@@ -278,43 +316,103 @@ class AdvisorBoardCliTest(unittest.TestCase):
                 alternate_effects.append("spawn")
                 return "OK", "unexpected alternate repository authority\nAGREE"
 
-            alternate_result = pi_mod.invoke_board(
-                board,
-                artifact,
-                spawn=alternate_spawn,
-                repo_dir=scratch,
-                canonical_repo_authority=alternate_repo,
-                review_authorization=authorization(),
-                base_env={},
-                matrix=matrix,
-                max_concurrency=1,
-            )
-            self.assertFalse(alternate_effects)
-            self.assertTrue(
-                all(leg.status == "UNAVAILABLE" for leg in alternate_result.legs)
-            )
-
             forged_effects: list[str] = []
 
             def forged_spawn(*_args, **_kwargs):
                 forged_effects.append("spawn")
                 return "OK", "unexpected forged authority\nAGREE"
 
-            forged_result = pi_mod.invoke_board(
-                board,
-                artifact,
-                spawn=forged_spawn,
-                repo_dir=scratch,
-                canonical_repo_authority=canonical_repo,
-                review_authorization=object(),
-                base_env={},
-                matrix=matrix,
-                max_concurrency=1,
-            )
+            stream_dir = Path(td) / "raw-refusal-stream"
+            with unittest.mock.patch.object(
+                pi_mod,
+                "default_matrix",
+                side_effect=raw_default_matrix,
+            ), unittest.mock.patch.object(
+                matrix_mod.DEFAULT_HARNESS_REGISTRY,
+                "is_available",
+                side_effect=raw_live_availability,
+            ), unittest.mock.patch.object(
+                pi_mod,
+                "_write_incremental_verdict",
+                side_effect=raw_writer,
+            ), unittest.mock.patch.object(
+                pi_mod,
+                "_default_spawn_via_provider",
+                side_effect=raw_provider,
+            ), unittest.mock.patch.object(
+                pi_mod,
+                "_default_spawn",
+                side_effect=raw_child,
+            ), unittest.mock.patch.object(
+                pi_mod,
+                "_leg_auth_ok",
+                side_effect=raw_leg_auth_ok,
+            ), unittest.mock.patch.object(
+                pi_mod,
+                "_claude_subscription_auth_ok",
+                side_effect=raw_claude_subscription_auth_ok,
+            ), unittest.mock.patch.object(
+                pi_mod,
+                "_claude_code_support_status",
+                side_effect=raw_claude_code_support_status,
+            ):
+                scratch_result = pi_mod.invoke_board(
+                    board,
+                    artifact,
+                    spawn=scratch_spawn,
+                    repo_dir=scratch,
+                    canonical_repo_authority=scratch,
+                    review_authorization=authorization(),
+                    base_env={},
+                    max_concurrency=1,
+                    on_leg_complete=raw_completion_calls.append,
+                    sink=RawRefusalSink(),
+                    stream_dir=stream_dir,
+                )
+                alternate_result = pi_mod.invoke_board(
+                    board,
+                    artifact,
+                    spawn=alternate_spawn,
+                    repo_dir=scratch,
+                    canonical_repo_authority=alternate_repo,
+                    review_authorization=authorization(),
+                    base_env={},
+                    max_concurrency=1,
+                    on_leg_complete=raw_completion_calls.append,
+                    sink=RawRefusalSink(),
+                    stream_dir=stream_dir,
+                )
+                forged_result = pi_mod.invoke_board(
+                    board,
+                    artifact,
+                    spawn=forged_spawn,
+                    repo_dir=scratch,
+                    canonical_repo_authority=canonical_repo,
+                    review_authorization=object(),
+                    base_env={},
+                    max_concurrency=1,
+                    on_leg_complete=raw_completion_calls.append,
+                    sink=RawRefusalSink(),
+                    stream_dir=stream_dir,
+                )
+
+            self.assertFalse(scratch_effects)
+            self.assertFalse(alternate_effects)
             self.assertFalse(forged_effects)
-            self.assertTrue(
-                all(leg.status == "UNAVAILABLE" for leg in forged_result.legs)
-            )
+            self.assertFalse(raw_matrix_calls)
+            self.assertFalse(raw_availability_calls)
+            self.assertFalse(raw_writer_calls)
+            self.assertFalse(raw_provider_calls)
+            self.assertFalse(raw_child_calls)
+            self.assertFalse(raw_completion_calls)
+            self.assertFalse(raw_sink_calls)
+            self.assertFalse(raw_leg_auth_calls)
+            self.assertFalse(raw_claude_auth_calls)
+            self.assertFalse(raw_claude_support_calls)
+            self.assertFalse(list(stream_dir.glob("*.verdict.json")))
+            assert_exact_unavailable(board, scratch_result)
+            assert_exact_unavailable(board, alternate_result)
+            assert_exact_unavailable(board, forged_result)
 
     def test_compose_drops_unauthed_vendor_at_the_seam(self):
         # Item 1: the auth-aware seam the CLI uses drops an on-PATH-but-UNAUTHED vendor

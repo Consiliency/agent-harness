@@ -19,12 +19,15 @@ board (``premerge-review``) derives ``review`` so the golden byte-identity holds
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
-from unittest.mock import patch
+import tempfile
+from unittest.mock import call, patch
 
 
-from harden_tdd_guard import invoke_sanctioned_review_transport
+from harden_tdd_guard import invoke_sanctioned_board_control
 from phase_loop_runtime import panel_invoker as pi
+from phase_loop_runtime.advisor_board import matrix as matrix_module
 from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
 from phase_loop_runtime.advisor_board.presets import (
     CODE_REVIEW_BOARD,
@@ -73,19 +76,134 @@ def _capture_board_mode(board, *, mode=None):
         return "OK", _LEGAL_PROSE
 
     kwargs = {} if mode is None else {"mode": mode}
-    with patch.object(pi, "_default_spawn_via_provider", side_effect=fake_provider):
-        resolved_mode = mode if mode is not None else pi._mode_for_purpose(board.purpose)
-        if resolved_mode == "review":
-            res = invoke_sanctioned_review_transport(
-                board, "STAGED-ARTIFACT", **kwargs
-            )
-        else:
-            res = pi.invoke_board(board, "STAGED-ARTIFACT", **kwargs)
+    with (
+        tempfile.TemporaryDirectory(prefix="advisory-mode-repo-") as td,
+        patch.object(
+            matrix_module.DEFAULT_HARNESS_REGISTRY,
+            "is_available",
+            return_value=True,
+        ),
+        patch.object(pi, "_default_spawn_via_provider", side_effect=fake_provider),
+    ):
+        res = invoke_sanctioned_board_control(
+            board,
+            "STAGED-ARTIFACT",
+            repo_dir=Path(td),
+            require_live_matrix_probe=True,
+            **kwargs,
+        )
     return seen, res
 
 
-def test_legal_board_no_mode_resolves_to_advisory():
-    seen, res = _capture_board_mode(LEGAL_REVIEW_BOARD)
+def test_legal_board_no_mode_resolves_to_advisory(monkeypatch):
+    import phase_loop_runtime.capability_registry as capability_module
+    from phase_loop_runtime.advisor_board import backing
+
+    marker_version = getattr(capability_module, "HARDEN_CAPABILITY_VERSION", None)
+    assert marker_version in (None, 1)
+    simulation_requested = (
+        os.environ.get("HARDEN_TEST_POST_MARKER_SIMULATION") == "1"
+    )
+    simulate_marker = simulation_requested and marker_version is None
+    marker_invocations: list[tuple[object, str, str, Path, object]] = []
+    if simulate_marker:
+        original_invoke_board = pi.invoke_board
+        monkeypatch.setattr(
+            backing,
+            "prepare_review_isolation_authorization",
+            lambda *_args, **_kwargs: object(),
+            raising=False,
+        )
+        monkeypatch.setattr(
+            pi,
+            "revalidate_review_isolation_authorization",
+            lambda *_args, **_kwargs: True,
+            raising=False,
+        )
+        monkeypatch.setattr(
+            capability_module, "HARDEN_CAPABILITY_VERSION", 1, raising=False
+        )
+
+        def simulated_advisory_marker_invoke(
+            board: object, artifact: str, **invoke_kwargs: object
+        ) -> object:
+            if "review_authorization" in invoke_kwargs:
+                raise AssertionError("advisory control received review authorization")
+            try:
+                canonical_repo_authority = Path(
+                    invoke_kwargs.pop("canonical_repo_authority")
+                ).resolve()
+            except KeyError as exc:
+                raise AssertionError(
+                    "advisory control took the legacy unmarked invocation path"
+                ) from exc
+            effective_mode = invoke_kwargs.get("mode") or pi._mode_for_purpose(
+                board.purpose
+            )
+            assert effective_mode == "advisory"
+            repo_dir = invoke_kwargs.get("repo_dir")
+            switched = pi._govlean_authority_switched(repo_dir)
+            assert switched is False
+            resolved_inline = pi._resolve_artifact(
+                artifact, invoke_kwargs.get("artifact_ref")
+            )
+            resolved_artifact = pi._apply_context_refs(
+                resolved_inline,
+                invoke_kwargs.get("context_refs"),
+                soft_warn=bool(invoke_kwargs.get("context_refs_soft_warn", False)),
+            )
+            factory_marker = backing.prepare_review_isolation_authorization(
+                board,
+                resolved_artifact,
+                mode=effective_mode,
+                canonical_repo_authority=canonical_repo_authority,
+            )
+            marker_invocations.append(
+                (
+                    board,
+                    resolved_artifact,
+                    effective_mode,
+                    canonical_repo_authority,
+                    factory_marker,
+                )
+            )
+            with patch.object(
+                pi, "_govlean_authority_switched", return_value=switched
+            ), patch.object(
+                pi, "_resolve_artifact", return_value=resolved_inline
+            ), patch.object(
+                pi, "_apply_context_refs", return_value=resolved_artifact
+            ):
+                return original_invoke_board(board, artifact, **invoke_kwargs)
+
+        monkeypatch.setattr(pi, "invoke_board", simulated_advisory_marker_invoke)
+
+    if marker_version is None and not simulate_marker:
+        with patch.object(
+            pi,
+            "_govlean_authority_switched",
+            wraps=pi._govlean_authority_switched,
+        ) as policy_probe, patch.object(
+            pi,
+            "_resolve_artifact",
+            wraps=pi._resolve_artifact,
+        ) as artifact_probe, patch.object(
+            pi,
+            "_apply_context_refs",
+            wraps=pi._apply_context_refs,
+        ) as context_probe:
+            seen, res = _capture_board_mode(LEGAL_REVIEW_BOARD)
+        assert policy_probe.call_count == 1
+        assert artifact_probe.call_args_list == [call("STAGED-ARTIFACT", None)]
+        assert context_probe.call_args_list == [
+            call("STAGED-ARTIFACT", None, soft_warn=False)
+        ]
+    else:
+        seen, res = _capture_board_mode(LEGAL_REVIEW_BOARD)
+    if simulate_marker:
+        assert len(marker_invocations) == 1
+        assert marker_invocations[0][0] is LEGAL_REVIEW_BOARD
+        assert marker_invocations[0][1:3] == ("STAGED-ARTIFACT", "advisory")
     assert seen, "no leg spawned"
     assert all(m == "advisory" for m in seen), seen
     # advisory completion accepts substantial prose (no verdict) — NOT rejected.

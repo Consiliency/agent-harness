@@ -21,13 +21,16 @@ genuinely exercised — no mock of the transport):
 """
 from __future__ import annotations
 
+from contextlib import ExitStack
 import json
+import tempfile
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
-from harden_tdd_guard import invoke_sanctioned_review_transport
+from harden_tdd_guard import harden_finish_probe, invoke_sanctioned_review_transport
 import phase_loop_runtime.panel_invoker as pi
 from phase_loop_runtime.advisor_board import (
     HARNESS_ENDPOINT,
@@ -449,13 +452,154 @@ class BuiltThreeAndNativeUnaffectedTests(unittest.TestCase):
         self.assertIn("Echo:", by_leg["opencode"].text)
 
     def test_native_host_leg_omnigent_still_rejected_loud(self) -> None:
-        # Wiring an omnigent backing must not weaken the native-host-leg invariant.
+        import phase_loop_runtime.capability_registry as capability_module
+        from phase_loop_runtime.advisor_board import matrix as matrix_module
+
+        # Wiring an omnigent backing must refuse the native host leg after the
+        # sanctioned marker protocol but before catalog, matrix, or downstream work.
         host = HostContext(host_harness="claude")
         board = _board(Seat(model="claude-sonnet-5", effort="max", harness="claude",
                             backing=BACKING_OMNIGENT, host_leg=True))
-        with FakeOmnigentServer() as srv:
-            with self.assertRaises(ValueError):
-                pi.invoke_board(board, "review", host=host, omnigent=srv.backing(), base_env={})
+        marker_version = getattr(capability_module, "HARDEN_CAPABILITY_VERSION", None)
+        self.assertIn(marker_version, (None, 1))
+        effects: dict[str, list[object]] = {
+            name: []
+            for name in (
+                "matrix",
+                "availability",
+                "allocation",
+                "stage",
+                "authority",
+                "seal",
+                "provider",
+                "direct_child",
+                "spawn",
+                "completion",
+                "sink",
+                "research",
+                "writer",
+                "leg_auth",
+                "claude_auth",
+                "claude_support",
+            )
+        }
+
+        def effect_spawn(*args: object, **kwargs: object) -> tuple[str, str]:
+            effects["spawn"].append((args, kwargs))
+            return "OK", "AGREE"
+
+        class EffectSink:
+            def emit(self, event: object) -> None:
+                effects["sink"].append(event)
+
+        def forbidden_effect(name: str):
+            def record(*args: object, **kwargs: object) -> object:
+                effects[name].append((args, kwargs))
+                raise AssertionError(
+                    f"{name} effect occurred before native host-leg refusal"
+                )
+
+            return record
+
+        original_default_matrix = pi.default_matrix
+
+        def recording_default_matrix(*args: object, **kwargs: object) -> object:
+            effects["matrix"].append((args, kwargs))
+            return original_default_matrix(*args, **kwargs)
+
+        def recording_availability(*args: object, **kwargs: object) -> bool:
+            effects["availability"].append((args, kwargs))
+            return True
+
+        with tempfile.TemporaryDirectory(
+            prefix="harden-host-leg-refusal-"
+        ) as td, FakeOmnigentServer() as srv, ExitStack() as effect_stack:
+            private_repo = Path(td) / "repo"
+            private_repo.mkdir(mode=0o700)
+            stream_dir = Path(td) / "stream"
+            effect_stack.enter_context(mock.patch.object(
+                pi, "default_matrix", side_effect=recording_default_matrix
+            ))
+            effect_stack.enter_context(mock.patch.object(
+                matrix_module.DEFAULT_HARNESS_REGISTRY,
+                "is_available",
+                side_effect=recording_availability,
+            ))
+            for seam, name in (
+                ("_create_owned_cleanup_root", "allocation"),
+                ("bind_staged_review_inputs", "stage"),
+                ("prepare_provider_launch_authorities", "authority"),
+                ("seal_provider_launches", "seal"),
+                ("_default_spawn_via_provider", "provider"),
+                ("_default_spawn", "direct_child"),
+                ("materialize_research_run", "research"),
+                ("_write_incremental_verdict", "writer"),
+                ("_leg_auth_ok", "leg_auth"),
+                ("_claude_subscription_auth_ok", "claude_auth"),
+                ("_claude_code_support_status", "claude_support"),
+            ):
+                effect_stack.enter_context(mock.patch.object(
+                    pi, seam, side_effect=forbidden_effect(name)
+                ))
+
+            refusal: Exception | None = None
+            try:
+                if marker_version == 1:
+                    _invoke_board_control(
+                        board,
+                        "review",
+                        mode="review",
+                        host=host,
+                        omnigent=srv.backing(),
+                        base_env={},
+                        spawn=effect_spawn,
+                        on_leg_complete=lambda leg: effects["completion"].append(leg),
+                        sink=EffectSink(),
+                        stream_dir=stream_dir,
+                        repo_dir=private_repo,
+                        require_live_matrix_probe=True,
+                        expect_static_refusal_before_effects=True,
+                    )
+                else:
+                    pi.invoke_board(
+                        board,
+                        "review",
+                        mode="review",
+                        host=host,
+                        omnigent=srv.backing(),
+                        base_env={},
+                        spawn=effect_spawn,
+                        on_leg_complete=lambda leg: effects["completion"].append(leg),
+                        sink=EffectSink(),
+                        stream_dir=stream_dir,
+                        repo_dir=private_repo,
+                    )
+            except Exception as exc:
+                refusal = exc
+
+            expected_refusal = (
+                isinstance(refusal, ValueError)
+                and "native host leg" in str(refusal)
+                and "may not be routed through a gateway" in str(refusal)
+            )
+            self.assertTrue(expected_refusal, f"unexpected host-leg outcome: {refusal!r}")
+            stream_entries = tuple(stream_dir.rglob("*")) if stream_dir.exists() else ()
+            satisfied = (
+                expected_refusal
+                and not srv.request_log
+                and all(not calls for calls in effects.values())
+                and not stream_entries
+            )
+            effect_counts = {name: len(calls) for name, calls in effects.items()}
+            harden_finish_probe(
+                "review-leg-isolation",
+                satisfied=satisfied,
+                detail=(
+                    "native host-leg gateway refusal was not the first observable "
+                    f"effect: refusal={refusal!r}, gateway_requests={srv.request_log!r}, "
+                    f"effects={effect_counts!r}, stream_entries={stream_entries!r}"
+                ),
+            )
 
     def test_default_board_stays_all_homebrew_even_with_omnigent_wired(self) -> None:
         from phase_loop_runtime.advisor_board import DEFAULT_BOARD, DEFAULT_BOARD_VENDOR_ORDER

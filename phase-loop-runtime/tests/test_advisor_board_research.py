@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from phase_loop_runtime import panel_invoker as pi
+from harden_tdd_guard import invoke_sanctioned_board_control
 from phase_loop_runtime.advisor_board import (
     Board,
     BoardObserver,
@@ -557,7 +558,9 @@ class InvocationAndCompatibilityTests(unittest.TestCase):
                     pi, "_default_spawn_via_provider", side_effect=fake_provider
                 ),
             ):
-                result = pi.invoke_board(board, "material under review")
+                result = invoke_sanctioned_board_control(
+                    board, "material under review"
+                )
 
             self.assertEqual(
                 [(leg.status, leg.research_status) for leg in result.legs],

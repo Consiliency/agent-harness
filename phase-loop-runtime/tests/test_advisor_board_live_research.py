@@ -7,8 +7,8 @@ import os
 import unittest
 from pathlib import Path
 
+from harden_tdd_guard import invoke_sanctioned_board_control
 from phase_loop_runtime.advisor_board import Board, ResearchPolicy, Seat
-from phase_loop_runtime.panel_invoker import invoke_board
 
 
 @unittest.skipUnless(
@@ -37,7 +37,7 @@ end with a clear recommendation."""
                 Seat(model="gpt-5.6-sol", effort="max", harness="codex"),
             ),
         )
-        result = invoke_board(
+        result = invoke_sanctioned_board_control(
             board,
             prompt,
             mode="advisory",
@@ -114,7 +114,7 @@ end with a clear recommendation."""
                 Seat(model="claude-opus-5", effort="max", harness="claude"),
             ),
         )
-        result = invoke_board(
+        result = invoke_sanctioned_board_control(
             board,
             """Use only the session-local `pmcp_advisor` MCP server. Read the governed
 research section and put its exact three correlation fields at the TOP LEVEL of every
