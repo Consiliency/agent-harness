@@ -465,13 +465,14 @@ def git_environment() -> dict[str, str]:
     }
 
 
-def _git_output(command: tuple[str, ...]) -> bytes:
+def _git_output(command: tuple[str, ...], *, cwd: Path | None = None) -> bytes:
     try:
         completed = subprocess.run(
             command,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             check=False,
+            cwd=cwd,
             env=git_environment(),
         )
     except OSError:
@@ -487,12 +488,12 @@ def git_bytes(repo: Path, *args: str) -> bytes:
     ))
 
 
-def git_authority_bytes(git_dir: Path, worktree: Path, *args: str) -> bytes:
+def git_authority_bytes(git_dir: Path, *args: str) -> bytes:
     """Read objects through a fresh bare authority with no source config/attrs."""
     return _git_output((
-        "git", f"--git-dir={git_dir}", f"--work-tree={worktree}",
+        "git", f"--git-dir={git_dir}",
         "--no-replace-objects", *_GIT_CONFIG, *args,
-    ))
+    ), cwd=git_dir)
 
 
 def git_scalar(repo: Path, *args: str) -> str:
@@ -547,8 +548,8 @@ def git_object_directory(repo: Path) -> Path:
 
 
 @contextmanager
-def hermetic_git_authority(repo: Path) -> Iterator[tuple[Path, Path]]:
-    """Expose source objects to a fresh bare Git directory and empty worktree."""
+def hermetic_git_authority(repo: Path) -> Iterator[Path]:
+    """Expose source objects to a fresh bare Git directory with empty attributes."""
     objects = git_object_directory(repo)
     object_path = os.fspath(objects)
     if "\n" in object_path or "\r" in object_path:
@@ -556,10 +557,9 @@ def hermetic_git_authority(repo: Path) -> Iterator[tuple[Path, Path]]:
     with tempfile.TemporaryDirectory(prefix="harden-git-authority-") as temporary:
         root = Path(temporary)
         git_dir = root / "git"
-        worktree = root / "worktree"
         (git_dir / "objects" / "info").mkdir(parents=True, mode=0o700)
+        (git_dir / "info").mkdir(mode=0o700)
         (git_dir / "refs").mkdir(mode=0o700)
-        worktree.mkdir(mode=0o700)
         (git_dir / "HEAD").write_text("ref: refs/heads/harden-empty\n", encoding="ascii")
         (git_dir / "config").write_text(
             "[core]\n"
@@ -571,7 +571,8 @@ def hermetic_git_authority(repo: Path) -> Iterator[tuple[Path, Path]]:
         (git_dir / "objects" / "info" / "alternates").write_text(
             object_path + "\n", encoding="utf-8"
         )
-        yield git_dir, worktree
+        (git_dir / "info" / "attributes").write_bytes(b"")
+        yield git_dir
 
 
 def _commit_object_id(line: bytes, prefix: bytes, label: str) -> str:
@@ -767,10 +768,9 @@ def git_bound_review_input(
         if len(rendered.encode("utf-8", errors="strict")) > REVIEW_INPUT_MAX_BYTES:
             fail("review input HARDEN plan exceeds bounded transport")
         return rendered
-    with hermetic_git_authority(repo) as (git_dir, worktree):
+    with hermetic_git_authority(repo) as git_dir:
         raw_blob_delta = git_authority_bytes(
             git_dir,
-            worktree,
             "diff-tree",
             "-r",
             "--raw",
@@ -789,7 +789,6 @@ def git_bound_review_input(
         )
         rendered_paths = changed_path_records(git_authority_bytes(
             git_dir,
-            worktree,
             "diff",
             "--name-only",
             "-z",
@@ -807,7 +806,6 @@ def git_bound_review_input(
         ), "review input Git paths")
         patch = git_authority_bytes(
             git_dir,
-            worktree,
             "diff",
             "--text",
             "--full-index",
@@ -2315,6 +2313,12 @@ def self_test() -> None:
                 encoding="utf-8",
             )
             helper.chmod(0o700)
+            hostile_cwd = isolated_root / "hostile-launch-cwd"
+            hostile_cwd.mkdir()
+            (hostile_cwd / ".gitattributes").write_text(
+                "*.py -diff diff=hardenprobe\n",
+                encoding="utf-8",
+            )
             (isolated_repo / ".gitattributes").write_text(
                 "phase-loop-runtime/src/phase_loop_runtime/runner.py -diff\n",
                 encoding="utf-8",
@@ -2340,8 +2344,10 @@ def self_test() -> None:
                 "GIT_EXTERNAL_DIFF": str(helper),
             }
             previous = {key: os.environ.get(key) for key in inherited}
+            previous_cwd = Path.cwd()
             os.environ.update(inherited)
             try:
+                os.chdir(hostile_cwd)
                 observed = git_bound_review_input(
                     isolated_repo,
                     base_head,
@@ -2351,6 +2357,7 @@ def self_test() -> None:
                     "bundle",
                 )
             finally:
+                os.chdir(previous_cwd)
                 for key, value in previous.items():
                     if value is None:
                         os.environ.pop(key, None)
