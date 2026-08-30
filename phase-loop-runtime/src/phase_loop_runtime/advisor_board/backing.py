@@ -104,6 +104,9 @@ _REVIEW_READONLY_TOOLS = ("Read", "Glob", "Grep", "LS")
 _AUTHORIZATION_SEAL = object()
 _BROKER_MAX_BYTES = 16384
 _BROKER_RESPONSE_MAX_BYTES = 65536
+_BROKER_RESPONSE_STATUSES = frozenset({
+    "OK", "EMPTY", "TIMEOUT", "ERROR", "DEGRADED", "UNAVAILABLE",
+})
 _BROKER_TRANSPORT_ALLOWANCE_NS = 2_000_000_000
 _PRE_ACTIVATION_FRESHNESS_NS = 30_000_000_000
 _LEASES_LOCK = threading.RLock()
@@ -412,7 +415,7 @@ class ParentUnixBroker:
             if self._used or data != {"schema":PARENT_UNIX_BROKER_V1,"operation":self.authorization.operation,"nonce":self.nonce,"harness":self.harness,"model":self.model,"purpose":self.authorization.purpose,"input_sha256":self.authorization.input_sha256}: raise ValueError("broker request binding")
             self._used = True; status, text = adapter.invoke()
             if (
-                status not in {"OK", "EMPTY", "ERROR", "DEGRADED", "UNAVAILABLE"}
+                status not in _BROKER_RESPONSE_STATUSES
                 or not isinstance(text, str)
                 or len(text.encode()) > _BROKER_RESPONSE_MAX_BYTES
             ):
@@ -467,7 +470,7 @@ class ParentUnixBroker:
             "assert response_size <= 65536",
             "response = json.loads(exact(response_size))",
             "assert set(response) == {'schema','status','text'} and response['schema'] == 'parent_unix_broker_v1'",
-            "assert response['status'] in {'OK','EMPTY','ERROR','DEGRADED','UNAVAILABLE'} and isinstance(response['text'], str)",
+            "assert response['status'] in {'OK','EMPTY','TIMEOUT','ERROR','DEGRADED','UNAVAILABLE'} and isinstance(response['text'], str)",
             "print(json.dumps(response, separators=(',', ':')))",
         ))
         runtime_binds: list[str] = ["--ro-bind", "/usr", "/usr"]
