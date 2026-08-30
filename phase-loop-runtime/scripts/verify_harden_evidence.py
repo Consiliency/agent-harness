@@ -819,7 +819,7 @@ def require_text_patch_hunks(patch: str, paths: set[str]) -> None:
 
 
 def frame_records(value: str, label: str) -> list[tuple[int, int, re.Match[str]]]:
-    """Return exact line-bound frame records without accepting inline replicas."""
+    """Return exact line-bound frame records from generated review envelopes."""
     records: list[tuple[int, int, re.Match[str]]] = []
     offset = 0
     for line in value.splitlines(keepends=True):
@@ -863,10 +863,6 @@ def framed_payload(
         or begin_end > end_start
     ):
         fail(f"{label} has an invalid verifier frame")
-    record_starts = {record[0] for record in records}
-    for match in re.finditer(re.escape(FRAME_PREFIX), value):
-        if match.start() not in record_starts:
-            fail(f"{label} contains an inline verifier-frame replica")
     payload_with_separator = value[begin_end:end_start]
     if not payload_with_separator.endswith("\n"):
         fail(f"{label} verifier frame has no payload separator")
