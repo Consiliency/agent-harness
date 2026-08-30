@@ -869,9 +869,30 @@ def _preflight_identities(repo: Path, raw: str) -> List[str]:
                 continue
         return None
 
+    # Keep the lexical identity when it NAMES THE SAME FILE, drop it when
+    # resolution proves it phantom. The earlier rule -- drop whenever `..` appears
+    # -- was a PROXY for that property, and it diverges exactly where `..` cancels
+    # an ordinary directory rather than the symlink:
+    #
+    #     /lib -> usr/lib ,  argument  lib/python3/../os-release
+    #       lexical   lib/os-release        <- REAL; the proxy discarded it
+    #       resolved  usr/lib/os-release
+    #
+    # Both name one file. Dropping the lexical form there loses a real claim: with
+    # ALPHA owning `lib/` and BETA owning `usr/lib/`, preflighting as BETA reported
+    # nothing and exited 0 -- permitting the cross-phase edit this exists to block.
+    #
+    # Testing the property instead of a symptom also covers the original case:
+    # `link/../owned.py` with `link -> a/b` has a lexical form that resolves
+    # somewhere else entirely, so it is still correctly discarded.
     sources = [resolved]
-    if ".." not in candidate.parts:
-        sources.insert(0, lexical)
+    try:
+        if lexical.resolve() == resolved:
+            sources.insert(0, lexical)
+    except (OSError, RuntimeError):
+        # Unresolvable lexical form cannot be shown to name the same file, so it
+        # is not offered as an identity. The resolved form still answers.
+        pass
 
     forms: List[str] = []
     for base in sources:

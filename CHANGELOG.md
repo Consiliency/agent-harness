@@ -47,9 +47,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `src/link/x.py` makes `git diff --name-only` report `src/real/x.py`, the *target*, so `audit`
   already answers about targets and a name-only preflight would be strictly weaker than the
   audit it precedes. Pass the link-name's owner as `--current-phase` and it would exit 0 while
-  the edit modified another phase's tracked file. The lexical identity is dropped when `..`
-  cancelled a symlink, because there it denotes neither: `link/../owned.py` with `link -> a/b`
-  names `a/owned.py`, and reporting `owned.py` would claim an edit that never happens.
+  the edit modified another phase's tracked file. The lexical identity is kept when it names the
+  same file and dropped when resolution proves it phantom: `link/../owned.py` with
+  `link -> a/b` names `a/owned.py`, so reporting `owned.py` too would claim an edit that never
+  happens. Testing that property directly matters — an earlier rule used "does the argument
+  contain `..`" as a proxy, which discards a REAL identity when `..` cancels an ordinary
+  directory rather than the symlink (`link/sub/../owned.py`), losing a claim and exiting 0 on
+  a genuine cross-phase edit.
 - The **most specific root wins** when a repo is addressed through a self-referential symlink
   (`X11 -> .`), where an argument sits beneath both the lexical and the resolved root; taking
   the resolved root first reported `X11/python3` and missed an exact `python3` claim.

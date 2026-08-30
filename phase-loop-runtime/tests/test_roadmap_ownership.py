@@ -1465,6 +1465,41 @@ class TestPreflight(unittest.TestCase):
             ids = ro._preflight_identities(repo, "link/../owned.py")
             self.assertEqual(ids, ["a/owned.py"])
 
+    def test_dotdot_cancelling_an_ORDINARY_directory_keeps_the_lexical_identity(self):
+        """codex, round 10. `".." in parts` was a PROXY, and it diverges.
+
+        The property that matters is "does the lexical form name the same file".
+        `..` cancelling the SYMLINK makes it phantom; `..` cancelling an ordinary
+        directory beneath the symlink does not:
+
+            link -> real ,  argument  link/sub/../owned.py
+              lexical   link/owned.py       <- REAL; the proxy discarded it
+              resolved  real/owned.py
+
+        Both name one file. Dropping the lexical form loses a real claim: with
+        ALPHA owning `link/` and BETA owning `real/`, preflighting as BETA reported
+        nothing and exited 0 — permitting the cross-phase edit this exists to block.
+
+        Mutation that must kill this: restore `if ".." not in candidate.parts`.
+        """
+        roadmap = ROADMAP.replace("- `src/alpha.py`", "- `link/`").replace(
+            "- `src/beta/`", "- `real/`"
+        )
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=roadmap)
+            (repo / "real" / "sub").mkdir(parents=True, exist_ok=True)
+            (repo / "real" / "owned.py").write_text("x = 1\n")
+            (repo / "link").symlink_to(repo / "real")
+            ids = ro._preflight_identities(repo, "link/sub/../owned.py")
+            self.assertEqual(sorted(ids), ["link/owned.py", "real/owned.py"])
+            # The safety property, end to end: BETA owns the target, so excluding
+            # BETA must NOT clear a path ALPHA also claims.
+            owned = ro.preflight(repo, ["link/sub/../owned.py"], "BETA")
+            self.assertIn(
+                "ALPHA",
+                [o.phase_alias for o in owned.get("link/sub/../owned.py", [])],
+            )
+
     def test_the_MOST_SPECIFIC_root_wins_when_roots_overlap(self):
         """codex, round 9. When the lexical root lies inside its own target, an
         argument sits beneath BOTH roots.
