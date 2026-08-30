@@ -1416,6 +1416,99 @@ class TestPreflight(unittest.TestCase):
                         # is the reason both layers exist.
                         self.assertEqual(owned[spelling][0].path, "src/beta/")
 
+    def test_ownership_is_answered_BY_NAME_not_by_symlink_target(self):
+        """The rule the whole normalization reduces to: resolve the repo ROOT,
+        never the argument.
+
+        `Path.resolve()` does not only collapse `.` and `..` — it rewrites every
+        symlink in the path. Nothing here needed that; it arrived as a side effect
+        of the tool reached for to handle `./` and absolute spellings, and then
+        cost four review rounds to contain (an internal symlink rewritten to its
+        target and matching no token; `..` cancelling a symlink and naming a file
+        the caller never typed; a "both identities" union reporting a phantom
+        third path). Every one of those was downstream of resolving the ARGUMENT.
+
+        Answering by name also makes `--preflight` agree with `audit`, which has
+        always worked this way: its paths come from `git diff --name-only`, which
+        reports names and never targets.
+
+        Mutation that must kill this: resolve the argument as well as the root.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp)
+            (repo / "src" / "real").mkdir(parents=True, exist_ok=True)
+            (repo / "src" / "link").symlink_to(repo / "src" / "real")
+            # The symlinked directory keeps its own name, so a token naming it
+            # still matches. Resolving the argument turned this into `src/real/`.
+            self.assertEqual(
+                ro._normalize_preflight_path(repo, "src/link/"), "src/link/"
+            )
+            self.assertEqual(
+                ro._normalize_preflight_path(repo, "src/link/x.py"), "src/link/x.py"
+            )
+            # `..` is pure text under name semantics, which is self-consistent:
+            # there is no symlink-following anywhere for it to disagree with.
+            (repo / "a" / "b").mkdir(parents=True, exist_ok=True)
+            (repo / "link").symlink_to(repo / "a" / "b")
+            self.assertEqual(
+                ro._normalize_preflight_path(repo, "link/../owned.py"), "owned.py"
+            )
+
+    def test_a_symlinked_CHECKOUT_ROOT_still_accepts_either_spelling(self):
+        """The one case that genuinely motivated resolving anything.
+
+        On this fleet a worktree root is itself a symlink (`/mnt/workspace` ->
+        `/mnt/HC_Volume_...`), so an absolute argument may be spelled under one
+        root while `--repo` is given as the other. Resolving the ROOT covers it
+        without touching the argument's own name.
+
+        Mutation that must kill this: try only one of the two roots.
+        """
+        with TemporaryDirectory() as tmp:
+            real = Path(tmp) / "real"
+            real.mkdir()
+            repo = _repo_with_two_phases(str(real))
+            link = Path(tmp) / "linked"
+            link.symlink_to(real)
+            # --repo given as the SYMLINK, argument given as the REAL path
+            self.assertEqual(
+                ro._normalize_preflight_path(link, str(real / "src" / "alpha.py")),
+                "src/alpha.py",
+            )
+            # ...and the reverse spelling
+            self.assertEqual(
+                ro._normalize_preflight_path(link, str(link / "src" / "alpha.py")),
+                "src/alpha.py",
+            )
+
+    def test_KNOWN_LIMITATION_an_edit_through_a_symlink_reports_the_name_only(self):
+        """Documented, not concealed.
+
+        In a repo containing an internal symlink, editing through it modifies the
+        TARGET's file, and this reports only the typed name's owner. `audit` has
+        the same limitation for the same reason, and every attempt to close it
+        introduced a worse defect than the one it closed — a false claim against a
+        phase whose file is never touched, and a false whole-repository abort.
+
+        This test exists so the limitation is a decision on the record rather than
+        a surprise, and so that anyone who later chooses to close it starts from
+        the knowledge that the obvious fixes were tried and rejected.
+        """
+        roadmap = ROADMAP.replace("- `src/alpha.py`", "- `src/link/`").replace(
+            "- `src/beta/`", "- `src/real/`"
+        )
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=roadmap)
+            (repo / "src" / "real").mkdir(parents=True, exist_ok=True)
+            (repo / "src" / "link").symlink_to(repo / "src" / "real")
+            owned = ro.preflight(repo, ["src/link/owned.py"])
+            self.assertEqual(
+                [o.phase_alias for o in owned["src/link/owned.py"]],
+                ["ALPHA"],
+                "reports the NAME's owner (ALPHA); BETA owns the target and is "
+                "not reported — this is the documented limitation",
+            )
+
     def test_a_whole_repository_scope_cannot_evaluate(self):
         """`""`, `.`, and the absolute repo root match no ownership token, so each
         exited 0 -- "the whole repository is unclaimed", the most confidently
@@ -1634,120 +1727,6 @@ class TestPreflight(unittest.TestCase):
             self.assertIn("(the whole lane-B tree)", note)
             self.assertIn("`src/beta/`", note)
 
-    def test_dotdot_across_a_repo_internal_symlink_uses_the_REAL_path(self):
-        """Also codex, round 5. `..` is the only construct that makes lexical
-        collapsing unsound: it cancels the preceding component without knowing
-        whether that component was a symlink.
-
-        With `link -> <repo>/a/b`, `link/../owned.py` collapses lexically to
-        `owned.py` while it really names `a/owned.py`. Both are INSIDE the repo,
-        so the containment guard passes and ownership is evaluated for a path the
-        caller never named -- exit 0 while `a/owned.py` is claimed.
-
-        Mutation that must kill this: drop the `".." in candidate.parts` branch.
-        """
-        with TemporaryDirectory() as tmp:
-            repo = _repo_with_two_phases(tmp)
-            (repo / "a" / "b").mkdir(parents=True, exist_ok=True)
-            (repo / "link").symlink_to(repo / "a" / "b")
-            # assertEqual, not assertIn. Round 7 weakened this to membership,
-            # which still passes while the unsound lexical `owned.py` is ALSO
-            # returned -- so the phantom identity it exists to forbid went
-            # untested, and a seat had to find it instead. A pin that tolerates
-            # the defect is not a pin.
-            self.assertEqual(
-                ro._preflight_identities(repo, "link/../owned.py"), ["a/owned.py"]
-            )
-
-    def test_a_cancelled_symlink_yields_NO_phantom_identity(self):
-        """codex and grok, round 7, converging.
-
-        The lexical form is an identity the argument denotes only when no `..`
-        cancelled a symlink. With `link -> a/b`, `link/../owned.py` denotes
-        `a/owned.py`; the lexical `owned.py` is neither the name typed nor the
-        bytes written. Unioning it reports whoever owns `owned.py` for an edit
-        that never touches it — exit 1 on a false claim, the same over-claim
-        class this PR already treats as a defect.
-
-        Mutation that must kill this: include the lexical form unconditionally.
-        """
-        roadmap = ROADMAP.replace("- `src/alpha.py`", "- `owned.py`")
-        with TemporaryDirectory() as tmp:
-            repo = _repo_with_two_phases(tmp, roadmap=roadmap)
-            (repo / "a" / "b").mkdir(parents=True, exist_ok=True)
-            (repo / "link").symlink_to(repo / "a" / "b")
-            self.assertNotIn(
-                "owned.py", ro._preflight_identities(repo, "link/../owned.py")
-            )
-            self.assertEqual(ro.preflight(repo, ["link/../owned.py"]), {})
-
-    def test_a_cancelled_symlink_to_a_real_directory_is_not_the_repo_root(self):
-        """The second manifestation of the same phantom.
-
-        `link/..` collapses LEXICALLY to `.` and tripped the whole-repository
-        guard, which raised before the real identity was considered — exit 2 on
-        an argument that names the perfectly ordinary directory `a/`. The guard
-        now skips a root-valued identity and only fires when EVERY identity is
-        the root.
-
-        Mutation that must kill this: raise on the first root-valued identity
-        instead of skipping it.
-        """
-        with TemporaryDirectory() as tmp:
-            repo = _repo_with_two_phases(tmp)
-            (repo / "a" / "b").mkdir(parents=True, exist_ok=True)
-            (repo / "link").symlink_to(repo / "a" / "b")
-            self.assertEqual(ro._preflight_identities(repo, "link/.."), ["a/"])
-            # A genuine whole-repo scope must still be refused.
-            with self.assertRaises(ro.PathNotInRepo):
-                ro._preflight_identities(repo, ".")
-
-    def test_a_symlinked_directory_without_dotdot_keeps_its_OWN_name(self):
-        """The other half of the same rule, and why `..` is special-cased rather
-        than resolving everything: without `..`, the lexical form is what the
-        caller named, and a token naming the symlinked directory must still match
-        it. Ownership describes the repository's paths, not their targets.
-
-        Mutation that must kill this: always use the resolved form.
-        """
-        with TemporaryDirectory() as tmp:
-            repo = _repo_with_two_phases(tmp)
-            (repo / "src" / "real").mkdir(parents=True, exist_ok=True)
-            (repo / "src" / "link").symlink_to(repo / "src" / "real")
-            self.assertIn("src/link/", ro._preflight_identities(repo, "src/link/"))
-
-    def test_BOTH_identities_of_a_symlinked_path_are_evaluated(self):
-        """codex, round 6 — the hole in choosing lexical.
-
-        With `link -> real`, ALPHA owning `src/link/` and BETA owning `src/real/`,
-        ALPHA preflighting `src/link/owned.py` saw only the lexical name, matched
-        its OWN claim, filtered it as current-phase, and exited 0 — while the edit
-        mutates BETA's `src/real/owned.py`. Choosing the resolved form instead
-        fails the mirror case (a token naming the symlink stops matching), so
-        neither is correct alone.
-
-        An edit through a symlink touches both the name typed and the bytes the
-        target owns, so both are the caller's business: the union is the answer,
-        not a hedge.
-
-        Mutation that must kill this: return only the first identity from
-        `_preflight_identities`.
-        """
-        roadmap = ROADMAP.replace("- `src/alpha.py`", "- `src/link/`").replace(
-            "- `src/beta/`", "- `src/real/`"
-        )
-        with TemporaryDirectory() as tmp:
-            repo = _repo_with_two_phases(tmp, roadmap=roadmap)
-            (repo / "src" / "real").mkdir(parents=True, exist_ok=True)
-            (repo / "src" / "link").symlink_to(repo / "src" / "real")
-            owned = ro.preflight(repo, ["src/link/owned.py"], "ALPHA")
-            self.assertIn(
-                "BETA",
-                [o.phase_alias for o in owned.get("src/link/owned.py", [])],
-                "editing through ALPHA's symlink writes BETA's file; excluding "
-                "ALPHA must not clear the path",
-            )
-
     def test_a_repo_INTERNAL_symlink_still_matches_its_own_token(self):
         """Resolving before comparing rewrote a repo-internal symlink to its
         target, so the roadmap's own token normalized to a different path and
@@ -1788,22 +1767,6 @@ class TestPreflight(unittest.TestCase):
             self.assertIn(rc, (0, 2), "must never be 1 -- that means 'claimed'")
             if rc == 2:
                 self.assertIn("CANNOT EVALUATE", buf.getvalue())
-
-    def test_a_symlink_ERASED_by_lexical_dotdot_cannot_evaluate(self):
-        """Lexical `..` collapsing is not filesystem-truthful: it erases a symlink
-        before containment is checked. With `link -> /tmp/outside`, the argument
-        `link/../x` reads lexically as `<repo>/x` (inside) while really resolving
-        outside the repo — so ownership would be evaluated for a path the caller
-        never named.
-
-        Mutation that must kill this: drop the `resolved.relative_to(root)` guard
-        and trust the lexical form.
-        """
-        with TemporaryDirectory() as tmp, TemporaryDirectory() as outside:
-            repo = self._repo(tmp)
-            (repo / "link").symlink_to(outside)
-            with self.assertRaises(ro.PathNotInRepo):
-                ro.preflight(repo, ["link/../src/alpha.py"])
 
     def test_a_non_object_state_file_does_not_exit_1(self):
         """Valid JSON need not be an OBJECT. A state file containing `[]` reached

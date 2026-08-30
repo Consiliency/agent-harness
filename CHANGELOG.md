@@ -42,6 +42,34 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   indistinguishable from an ownership block. The roadmap **read** is normalized too — in
   `audit` as well as `preflight`, via one shared `read_roadmap`; the first version of that
   fix lived only in `preflight`, which is exactly how `audit` kept the hole.
+- Ownership is answered **by NAME**: the repository ROOT is resolved, the argument never is.
+  `Path.resolve()` does not merely collapse `.` and `..` — it rewrites every symlink in the
+  path — and that rewriting arrived as a side effect of handling `./` and absolute spellings,
+  not as a requirement. Containing it cost four review rounds (an internal symlink rewritten
+  to its target and matching no token; `..` cancelling a symlink and naming a file the caller
+  never typed; a "both identities" union reporting a phantom third path), and every one of
+  those defects was downstream of resolving the argument. Resolving only the root keeps the
+  case that motivated it — a symlinked checkout root, where an absolute argument and `--repo`
+  may be spelled under different roots — and drops the rest. It also makes `--preflight` agree
+  with `audit`, which has always worked by name because `git diff --name-only` reports names.
+  **Known limitation, documented rather than patched:** in a repo containing an internal
+  symlink, editing through it modifies the target's file and this reports only the typed
+  name's owner — the same limitation `audit` has.
+- **A whole-repository scope reports CANNOT EVALUATE.** `""`, `.`, and the absolute repo
+  root match no ownership token, so each exited 0 — "the entire repository is unclaimed".
+  Likewise a path that cannot be placed inside the repo, which was previously skipped: a
+  skipped argument vanishes into an empty result that prints as a clean pass.
+- The **qualification shown is the most specific claim's.** A phase can claim a file and
+  its parent directory with different qualifications; taking the first match made the
+  answer depend on bullet order in the roadmap, so reordering two equivalent lines could
+  swap an exact file's narrow scope for the broad directory note.
+- **Cannot-evaluate is exit 2, never exit 1.** Resolution goes through `resolve_roadmap`,
+  which normalizes every failure to `RoadmapUnreadable`; calling `declared_active_roadmap`
+  directly let a `RoadmapStatusError` escape uncaught, and Python's exit 1 is the code this
+  command defines as "claimed by another phase" — so an unreadable roadmap was
+  indistinguishable from an ownership block. The roadmap **read** is normalized too — in
+  `audit` as well as `preflight`, via one shared `read_roadmap`; the first version of that
+  fix lived only in `preflight`, which is exactly how `audit` kept the hole.
 - A path is evaluated under **both identities it denotes** — the name as written and the
   symlink-resolved target — and the owning phases are unioned. Choosing either alone
   fail-opens in a different direction: lexical-only let a phase preflight `src/link/owned.py`,
