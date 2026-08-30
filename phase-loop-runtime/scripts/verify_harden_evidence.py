@@ -16,6 +16,7 @@ import fcntl
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -57,6 +58,7 @@ HEX64 = re.compile(r"^[0-9a-f]{64}$")
 IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}$")
 MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
 MAX_JSON_BYTES = 2 * 1024 * 1024
+MAX_JSON_INTEGER_DIGITS = 4096
 REVIEW_INPUT_MAX_BYTES = 512 * 1024
 GEMINI_STREAM_PROTOCOL = "agy_ndjson_same_session_ingestion_v1"
 GEMINI_STREAM_CHUNK_MAX_BYTES = 96 * 1024
@@ -246,6 +248,7 @@ FINAL_RUN_SPECS = {
             "failed": 0,
             "errors": 0,
             "xfails": 0,
+            "xpasses": 0,
             "skipped": "baseline_bound",
             "subtests": "receipt_bound",
             "deselected": "baseline_bound",
@@ -283,7 +286,7 @@ def canonical_bytes(value: Any) -> bytes:
             allow_nan=False,
         )
         return (rendered + "\n").encode("utf-8", errors="strict")
-    except (TypeError, ValueError, UnicodeEncodeError):
+    except (RecursionError, TypeError, ValueError, UnicodeEncodeError, OverflowError):
         fail("canonical JSON contains an invalid value")
 
 
@@ -301,17 +304,48 @@ def json_no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def parse_canonical_json(data: bytes, label: str) -> Any:
+def parse_json_integer(token: str) -> int:
+    if len(token.removeprefix("-")) > MAX_JSON_INTEGER_DIGITS:
+        fail("JSON integer literal is too long")
+    try:
+        return int(token)
+    except ValueError:
+        fail("JSON integer literal is invalid")
+
+
+def parse_json_float(token: str) -> float:
+    try:
+        value = float(token)
+    except ValueError:
+        fail("JSON float literal is invalid")
+    if not math.isfinite(value):
+        fail("JSON contains a non-finite numeric constant")
+    return value
+
+
+def strict_json_loads(data: bytes, label: str) -> Any:
     if not data or len(data) > MAX_JSON_BYTES:
         fail(f"{label}: invalid JSON byte size")
     try:
-        value = json.loads(
-            data.decode("utf-8"),
+        decoded = data.decode("utf-8")
+    except UnicodeDecodeError:
+        fail(f"{label}: invalid JSON")
+    try:
+        return json.loads(
+            decoded,
             object_pairs_hook=json_no_duplicates,
             parse_constant=reject_json_constant,
+            parse_int=parse_json_integer,
+            parse_float=parse_json_float,
         )
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except EvidenceError:
+        raise
+    except (OverflowError, RecursionError, ValueError):
         fail(f"{label}: invalid JSON")
+
+
+def parse_canonical_json(data: bytes, label: str) -> Any:
+    value = strict_json_loads(data, label)
     try:
         encoded = canonical_bytes(value)
     except EvidenceError:
@@ -1392,6 +1426,7 @@ def verify_pytest_raw_summary(raw: str, summary: dict[str, Any], label: str) -> 
         ("failed", "failed"),
         ("errors", "errors?"),
         ("xfails", "xfailed"),
+        ("xpasses", "xpassed"),
     ):
         count = integer(summary[field], label + ".summary." + field)
         if count and not re.search(rf"(?<!\d){count}\s+{noun}\b", raw):
@@ -1434,10 +1469,10 @@ def receipt(store: ArtifactStore, ref: dict[str, str], label: str, *, head: str,
     if final_spec is not None:
         if data["argv"] != list(final_spec["argv"]) or data["cwd"] != final_spec["cwd"] or data["env_keys"] != final_spec["env_keys"] or data["source_tree"] != tree:
             fail(f"{label}: command, cwd, environment, or source tree mismatch")
-        summary = closed(data["summary"], {"passed", "failed", "errors", "skipped", "xfails", "subtests", "deselected"}, label + ".summary")
+        summary = closed(data["summary"], {"passed", "failed", "errors", "skipped", "xfails", "xpasses", "subtests", "deselected"}, label + ".summary")
         for key in summary:
             integer(summary[key], label + ".summary." + key)
-        if any(integer(summary[key], label + ".summary." + key) != 0 for key in ("failed", "errors", "xfails")):
+        if any(integer(summary[key], label + ".summary." + key) != 0 for key in ("failed", "errors", "xfails", "xpasses")):
             fail(f"{label}: final receipt has failed outcomes")
         outcome_policy = final_spec.get("outcome_policy")
         if outcome_policy is None:
@@ -1448,14 +1483,14 @@ def receipt(store: ArtifactStore, ref: dict[str, str], label: str, *, head: str,
             policy = closed(
                 outcome_policy,
                 {
-                    "schema", "minimum_passed", "failed", "errors", "xfails",
+                    "schema", "minimum_passed", "failed", "errors", "xfails", "xpasses",
                     "skipped", "subtests", "deselected",
                 },
                 label + ".outcome_policy",
             )
             if policy["schema"] != "harden_broad_outcomes.v1":
                 fail(f"{label}: unsupported broad outcome policy")
-            if any(policy[key] != 0 for key in ("failed", "errors", "xfails")):
+            if any(policy[key] != 0 for key in ("failed", "errors", "xfails", "xpasses")):
                 fail(f"{label}: unsafe broad outcome policy")
             if policy["skipped"] != "baseline_bound" or policy["subtests"] != "receipt_bound" or policy["deselected"] != "baseline_bound":
                 fail(f"{label}: unsupported broad outcome policy")
@@ -1468,7 +1503,7 @@ def receipt(store: ArtifactStore, ref: dict[str, str], label: str, *, head: str,
                 fail(f"{label}: broad receipt is not a complete inventory")
             declared = closed(
                 data["declared_outcomes"],
-                {"passed", "failed", "errors", "skipped", "xfails", "subtests", "deselected"},
+                {"passed", "failed", "errors", "skipped", "xfails", "xpasses", "subtests", "deselected"},
                 label + ".declared_outcomes",
             )
             if declared != summary:
@@ -1909,14 +1944,7 @@ def query_ci(store: ArtifactStore, ci: dict[str, Any], query: Path, expected_eve
         )
     if completed.returncode:
         fail("authoritative CI query failed")
-    try:
-        response = json.loads(
-            completed.stdout.decode("utf-8"),
-            object_pairs_hook=json_no_duplicates,
-            parse_constant=reject_json_constant,
-        )
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        fail("CI provider returned invalid JSON")
+    response = strict_json_loads(completed.stdout, "CI provider response")
     if not isinstance(response, dict) or set(response) not in (CI_RESPONSE_CORE, CI_RESPONSE_CORE | {"jobs"}):
         fail("CI provider response has an unexpected schema")
     if "jobs" in response:
@@ -2309,14 +2337,7 @@ def verify_completion(store: ArtifactStore, value: Any, evidence_digest: str, ma
         fail("retained completion ledger is detached from canonical ledger")
     matches = 0
     for line in ledger.splitlines():
-        try:
-            event = json.loads(
-                line.decode("utf-8"),
-                object_pairs_hook=json_no_duplicates,
-                parse_constant=reject_json_constant,
-            )
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            fail("completion ledger event is invalid JSON")
+        event = strict_json_loads(line, "completion ledger event")
         if not isinstance(event, dict):
             fail("completion ledger event is not an object")
         if event.get("phase") != "HARDEN" or event.get("status") != "complete":
@@ -2564,7 +2585,7 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
         "cwd": FINAL_RUN_SPECS["pure_control"]["cwd"],
         "env_keys": FINAL_RUN_SPECS["pure_control"]["env_keys"],
         "source_tree": reviewed_tree,
-        "summary": {"passed": 40, "failed": 0, "errors": 0, "skipped": 0, "xfails": 0, "subtests": 8, "deselected": 0},
+        "summary": {"passed": 40, "failed": 0, "errors": 0, "skipped": 0, "xfails": 0, "xpasses": 0, "subtests": 8, "deselected": 0},
         "nodeids_sha256": sha256(canonical_bytes(sorted("::".join(fixture_junit_identity(nodeid)) for nodeid in pure_nodes))),
         "baseline": {"schema": "harden_broad_baseline.v1", "commit": refs["sl0_base"][0], "tree": refs["sl0_base"][1], "inherited_failures": [], "inherited_skips": [], "inherited_deselected": []},
     }
@@ -2624,7 +2645,7 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
                 "::".join(fixture_junit_identity(nodeid))
                 for nodeid in nodeids
             ] + [f"tests.inherited::skip_{index}" for index in range(skipped)]
-            summary = {"passed": passed, "failed": 0, "errors": 0, "skipped": skipped, "xfails": 0, "subtests": subtests, "deselected": 0}
+            summary = {"passed": passed, "failed": 0, "errors": 0, "skipped": skipped, "xfails": 0, "xpasses": 0, "subtests": subtests, "deselected": 0}
             receipt_value = {
                 "schema": "harden_pytest_receipt.v1", "kind": kind,
                 "head": head, "tree": tree,
@@ -2923,6 +2944,20 @@ def self_test() -> None:
             "canonical-json-lone-surrogate",
             lambda: parse_canonical_json(
                 b'{"value":"\\ud800"}\n', "self-test lone surrogate"
+            ),
+        )
+        direct_rejected(
+            "canonical-json-deep-nesting",
+            lambda: parse_canonical_json(
+                b"[" * 2048 + b"0" + b"]" * 2048 + b"\n",
+                "self-test deep nesting",
+            ),
+        )
+        direct_rejected(
+            "canonical-json-oversized-integer",
+            lambda: parse_canonical_json(
+                b'{"value":' + b"9" * (MAX_JSON_INTEGER_DIGITS + 1024) + b"}\n",
+                "self-test oversized integer",
             ),
         )
         synthetic_secret_forms = {
@@ -3748,7 +3783,7 @@ def self_test() -> None:
             def reseal(receipt_value: dict[str, Any]) -> None:
                 receipt_value["junit_sha256"] = result["junit"]["sha256"]
                 receipt_value["raw_sha256"] = result["raw"]["sha256"]
-                receipt_value["summary"] = {"passed": 1, "failed": 0, "errors": 0, "skipped": 0, "xfails": 0, "subtests": 0, "deselected": 0}
+                receipt_value["summary"] = {"passed": 1, "failed": 0, "errors": 0, "skipped": 0, "xfails": 0, "xpasses": 0, "subtests": 0, "deselected": 0}
                 receipt_value["nodeids_sha256"] = sha256(canonical_bytes(["tests.inventory::one"]))
             mutate_json(result["receipt"], artifact_root, reseal)
         rejected("synthetic-final-inventory", synthetic_final_inventory)
@@ -3807,6 +3842,37 @@ def self_test() -> None:
                 receipt_value["declared_outcomes"]["deselected"] = 1
             mutate_json(result["receipt"], artifact_root, mutate)
         rejected("broad-unbound-deselected", broad_unbound_deselected)
+        def broad_reported_xpass(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
+            result = model["verification"]["candidate"]["broad"]
+            raw = result["raw"]
+            replace(
+                raw,
+                artifact_root,
+                (artifact_root / raw["path"]).read_bytes().replace(
+                    b" passed", b" passed, 1 xpassed", 1
+                ),
+            )
+            def mutate(receipt_value: dict[str, Any]) -> None:
+                receipt_value["raw_sha256"] = raw["sha256"]
+                receipt_value["summary"]["xpasses"] = 1
+                receipt_value["declared_outcomes"]["xpasses"] = 1
+            mutate_json(result["receipt"], artifact_root, mutate)
+        rejected("broad-reported-xpass", broad_reported_xpass)
+        def broad_hidden_xpass(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
+            result = model["verification"]["candidate"]["broad"]
+            raw = result["raw"]
+            replace(
+                raw,
+                artifact_root,
+                (artifact_root / raw["path"]).read_bytes().replace(
+                    b" passed", b" passed, 1 xpassed", 1
+                ),
+            )
+            mutate_json(
+                result["receipt"], artifact_root,
+                lambda receipt_value: receipt_value.__setitem__("raw_sha256", raw["sha256"]),
+            )
+        rejected("broad-hidden-xpass", broad_hidden_xpass)
         def wrong_junit_module(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
             mutation = model["sl0"]["mutations"][0]["mutation"]
             old = (artifact_root / mutation["junit"]["path"]).read_bytes().replace(b'classname="tests.', b'classname="wrong.module.', 1)
