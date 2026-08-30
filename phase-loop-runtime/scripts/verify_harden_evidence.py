@@ -236,11 +236,20 @@ FINAL_RUN_SPECS = {
     "broad": {
         "cwd": ".",
         "argv": (
-            "PYTHONPATH=phase-loop-runtime/src", "python3", "-m", "pytest",
+            "env", "PYTHONPATH=phase-loop-runtime/src", "python3", "-m", "pytest",
             "phase-loop-runtime/tests", "-q", "-m", "not dotfiles_integration",
         ),
         "env_keys": ["PYTHONPATH"],
-        "passed": None, "skipped": None, "subtests": None,
+        "outcome_policy": {
+            "schema": "harden_broad_outcomes.v1",
+            "minimum_passed": 1000,
+            "failed": 0,
+            "errors": 0,
+            "xfails": 0,
+            "skipped": "baseline_bound",
+            "subtests": "receipt_bound",
+            "deselected": "baseline_bound",
+        },
     },
 }
 AGY_DENY_ACTIONS = (
@@ -314,8 +323,23 @@ def artifact_ref(value: Any, label: str) -> dict[str, str]:
     return {"path": text(ref["path"], label + ".path"), "sha256": text(ref["sha256"], label + ".sha256", pattern=HEX64)}
 
 
+_RAW_SECRET = re.compile(
+    rb"(?:-----BEGIN (?:[A-Z ]*PRIVATE KEY|OPENSSH PRIVATE KEY)-----|"
+    rb"\bbearer\s+['\"]?[A-Za-z0-9_./+=-]{16,}|"
+    rb"(?:[\"'](?:authorization|token|access[_-]?token|refresh[_-]?token|"
+    rb"api[_-]?key|secret|client[_-]?secret)[\"']|"
+    rb"\b(?:authorization|token|access[_-]?token|refresh[_-]?token|"
+    rb"api[_-]?key|secret|client[_-]?secret)\b)\s*[:=]\s*['\"]?"
+    rb"[A-Za-z0-9_./+=-]{16,}|"
+    rb"\b(?:sk-[A-Za-z0-9_-]{16,}|xai-[A-Za-z0-9_-]{16,}|"
+    rb"gh[opusr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
+    rb"AIza[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16})\b)",
+    re.IGNORECASE,
+)
+
+
 def reject_secret_payloads(value: Any, path: str = "evidence") -> None:
-    """Reject likely secret values, while allowing metadata *field names*."""
+    """Reject credential values in parsed JSON using the raw-artifact policy."""
     if isinstance(value, dict):
         for key, item in value.items():
             reject_secret_payloads(item, f"{path}.{key}")
@@ -323,19 +347,10 @@ def reject_secret_payloads(value: Any, path: str = "evidence") -> None:
         for index, item in enumerate(value):
             reject_secret_payloads(item, f"{path}[{index}]")
     elif isinstance(value, str):
-        lowered = value.lower()
-        if any(marker in lowered for marker in ("bearer ", "ghp_", "akia")) or re.search(
-            r"(?:\bsk-[A-Za-z0-9_-]{16,}\b|\bAIza[A-Za-z0-9_-]{20,}\b)", value
-        ):
-            fail(f"{path}: possible raw credential payload")
-
-
-_RAW_SECRET = re.compile(
-    rb"(?:-----BEGIN (?:[A-Z ]*PRIVATE KEY|OPENSSH PRIVATE KEY)-----|"
-    rb"\b(?:bearer|token|api[_-]?key|secret)\s*[:=]\s*['\"]?[A-Za-z0-9_./+=-]{16,}|"
-    rb"\b(?:sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|AIza[A-Za-z0-9_-]{20,}|AKIA[0-9A-Z]{16})\b)",
-    re.IGNORECASE,
-)
+        try:
+            reject_raw_secret_bytes(value.encode("utf-8", errors="strict"), path)
+        except UnicodeEncodeError:
+            fail(f"{path}: non-UTF-8 text payload")
 
 
 def reject_raw_secret_bytes(data: bytes, label: str) -> None:
@@ -1346,13 +1361,19 @@ def all_passed(cases: list[dict[str, str]], label: str) -> None:
 
 def verify_pytest_raw_summary(raw: str, summary: dict[str, Any], label: str) -> None:
     """Bind receipts to genuine pytest output without inventing zero categories."""
-    for field, noun in (("passed", "passed"), ("skipped", "skipped"), ("subtests", "subtests passed")):
+    for field, noun in (
+        ("passed", "passed"),
+        ("skipped", "skipped"),
+        ("subtests", "subtests passed"),
+        ("deselected", "deselected"),
+        ("failed", "failed"),
+        ("errors", "errors?"),
+        ("xfails", "xfailed"),
+    ):
         count = integer(summary[field], label + ".summary." + field)
-        if count and not re.search(rf"(?<!\d){count}\s+{re.escape(noun)}\b", raw):
+        if count and not re.search(rf"(?<!\d){count}\s+{noun}\b", raw):
             fail(f"{label}: raw pytest summary does not bind {field}")
-    for field, noun in (("failed", "failed"), ("errors", "error"), ("xfails", "xfailed")):
-        count = integer(summary[field], label + ".summary." + field)
-        if count == 0 and re.search(rf"(?<!\d)[1-9]\d*\s+{noun}s?\b", raw):
+        if count == 0 and re.search(rf"(?<!\d)[1-9]\d*\s+{noun}\b", raw):
             fail(f"{label}: raw pytest summary contradicts zero {field}")
 
 
@@ -1374,6 +1395,8 @@ def receipt(store: ArtifactStore, ref: dict[str, str], label: str, *, head: str,
         expected.update({"source_path", "source_sha256"})
     if final_spec is not None:
         expected.update({"argv", "cwd", "env_keys", "source_tree", "summary", "nodeids_sha256", "baseline"})
+        if "outcome_policy" in final_spec:
+            expected.add("declared_outcomes")
     data = closed(value, expected, label)
     if data["schema"] != "harden_pytest_receipt.v1" or data["kind"] != kind or data["head"] != head or data["tree"] != tree:
         fail(f"{label}: receipt binding mismatch")
@@ -1389,19 +1412,56 @@ def receipt(store: ArtifactStore, ref: dict[str, str], label: str, *, head: str,
         if data["argv"] != list(final_spec["argv"]) or data["cwd"] != final_spec["cwd"] or data["env_keys"] != final_spec["env_keys"] or data["source_tree"] != tree:
             fail(f"{label}: command, cwd, environment, or source tree mismatch")
         summary = closed(data["summary"], {"passed", "failed", "errors", "skipped", "xfails", "subtests", "deselected"}, label + ".summary")
+        for key in summary:
+            integer(summary[key], label + ".summary." + key)
         if any(integer(summary[key], label + ".summary." + key) != 0 for key in ("failed", "errors", "xfails")):
             fail(f"{label}: final receipt has failed outcomes")
-        for key in ("passed", "skipped", "subtests"):
-            expected_count = final_spec[key]
-            if expected_count is not None and integer(summary[key], label + ".summary." + key) != expected_count:
-                fail(f"{label}: final receipt inventory count mismatch")
-        if final_spec["passed"] is None and integer(summary["passed"], label + ".summary.passed", minimum=1000) < 1000:
-            fail(f"{label}: broad receipt is not a complete inventory")
+        outcome_policy = final_spec.get("outcome_policy")
+        if outcome_policy is None:
+            for key in ("passed", "skipped", "subtests"):
+                if integer(summary[key], label + ".summary." + key) != final_spec[key]:
+                    fail(f"{label}: final receipt inventory count mismatch")
+        else:
+            policy = closed(
+                outcome_policy,
+                {
+                    "schema", "minimum_passed", "failed", "errors", "xfails",
+                    "skipped", "subtests", "deselected",
+                },
+                label + ".outcome_policy",
+            )
+            if policy["schema"] != "harden_broad_outcomes.v1":
+                fail(f"{label}: unsupported broad outcome policy")
+            if any(policy[key] != 0 for key in ("failed", "errors", "xfails")):
+                fail(f"{label}: unsafe broad outcome policy")
+            if policy["skipped"] != "baseline_bound" or policy["subtests"] != "receipt_bound" or policy["deselected"] != "baseline_bound":
+                fail(f"{label}: unsupported broad outcome policy")
+            minimum_passed = integer(
+                policy["minimum_passed"],
+                label + ".outcome_policy.minimum_passed",
+                minimum=1,
+            )
+            if integer(summary["passed"], label + ".summary.passed", minimum=minimum_passed) < minimum_passed:
+                fail(f"{label}: broad receipt is not a complete inventory")
+            declared = closed(
+                data["declared_outcomes"],
+                {"passed", "failed", "errors", "skipped", "xfails", "subtests", "deselected"},
+                label + ".declared_outcomes",
+            )
+            if declared != summary:
+                fail(f"{label}: broad declared outcomes do not bind receipt summary")
         baseline = closed(data["baseline"], {"schema", "commit", "tree", "inherited_failures", "inherited_skips", "inherited_deselected"}, label + ".baseline")
         if baseline["schema"] != "harden_broad_baseline.v1" or baseline["commit"] == head or baseline["tree"] == tree or baseline["inherited_failures"] != []:
             fail(f"{label}: inherited baseline accounting is incomplete")
         if not isinstance(baseline["inherited_skips"], list) or not isinstance(baseline["inherited_deselected"], list):
             fail(f"{label}: inherited baseline accounting is malformed")
+        if outcome_policy is not None:
+            for field in ("inherited_skips", "inherited_deselected"):
+                values = baseline[field]
+                if any(not isinstance(item, str) or not item for item in values) or len(set(values)) != len(values):
+                    fail(f"{label}: inherited baseline accounting is malformed")
+            if len(baseline["inherited_skips"]) != summary["skipped"] or len(baseline["inherited_deselected"]) != summary["deselected"]:
+                fail(f"{label}: broad baseline outcomes do not bind receipt summary")
         text(data["nodeids_sha256"], label + ".nodeids_sha256", pattern=HEX64)
     return data
 
@@ -2505,9 +2565,14 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
         landing, landing_tree = refs["landing"]
         for key, kind, argv in (("focused", "focused_activated", "pytest_harden_focused_activated_v1"), ("pure_control", "pure_control", "pytest_harden_pure_control_v1"), ("broad", "broad", "pytest_harden_broad_v1")):
             spec = FINAL_RUN_SPECS[key]
-            passed = spec["passed"] if spec["passed"] is not None else 1000
-            skipped = spec["skipped"] if spec["skipped"] is not None else 0
-            subtests = spec["subtests"] if spec["subtests"] is not None else 0
+            if "outcome_policy" in spec:
+                passed = spec["outcome_policy"]["minimum_passed"]
+                skipped = 0
+                subtests = 0
+            else:
+                passed = spec["passed"]
+                skipped = spec["skipped"]
+                subtests = spec["subtests"]
             nodeids = list(ACTIVATED_RED_NODEIDS) if key == "focused" else []
             nodeids.extend(f"tests.inventory_{key}::case_{index:04d}" for index in range(passed - len(nodeids)))
             cases = "".join(
@@ -2528,6 +2593,7 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
                 "::".join(fixture_junit_identity(nodeid))
                 for nodeid in nodeids
             ] + [f"tests.inherited::skip_{index}" for index in range(skipped)]
+            summary = {"passed": passed, "failed": 0, "errors": 0, "skipped": skipped, "xfails": 0, "subtests": subtests, "deselected": 0}
             receipt_value = {
                 "schema": "harden_pytest_receipt.v1", "kind": kind,
                 "head": head, "tree": tree,
@@ -2536,10 +2602,12 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
                 "raw_sha256": raw_ref["sha256"], "junit_sha256": junit_ref["sha256"],
                 "argv": list(spec["argv"]), "cwd": spec["cwd"],
                 "env_keys": spec["env_keys"], "source_tree": tree,
-                "summary": {"passed": passed, "failed": 0, "errors": 0, "skipped": skipped, "xfails": 0, "subtests": subtests, "deselected": 0},
+                "summary": summary,
                 "nodeids_sha256": sha256(canonical_bytes(sorted(observed_nodes))),
                 "baseline": {"schema": "harden_broad_baseline.v1", "commit": landing, "tree": landing_tree, "inherited_failures": [], "inherited_skips": [], "inherited_deselected": []},
             }
+            if "outcome_policy" in spec:
+                receipt_value["declared_outcomes"] = dict(summary)
             group[key] = {"receipt": put(label + "-" + key + ".receipt", receipt_value), "raw": raw_ref, "junit": junit_ref}
         lint_raw = put(label + "-lint.raw", (label + ": py_compile ruff git diff --check passed\n").encode(), raw=True)
         group["lint"] = {"raw": lint_raw, "receipt": put(label + "-lint.receipt", {"schema": "harden_static_receipt.v1", "head": head, "tree": tree, "process_nonce": nonce("lint-" + label), "exit_code": 0, "tool_identity": "harden_static_gate.v1", "argv_class": "harden_static_metadata_only_v1", "checks": ["py_compile", "ruff", "git_diff_check"], "raw_sha256": lint_raw["sha256"]})}
@@ -2805,6 +2873,31 @@ def self_test() -> None:
                 ".phase-loop/runs/../escaped-receipt.json", "self-test run root"
             ),
         )
+        synthetic_secret_forms = {
+            "authorization-bearer": b"Authorization: Bearer synthetic-token-0123456789abcdef",
+            "json-token": b'{"token":"synthetic-token-0123456789abcdef"}',
+            "json-api-key": b'{"api_key":"synthetic-token-0123456789abcdef"}',
+            "json-secret": b'{"secret":"synthetic-token-0123456789abcdef"}',
+            "xai": b"xai-synthetic-token-0123456789abcdef",
+            "github-oauth": b"gho_abcdefghijklmnopqrstuvwxyz123456",
+            "github-server": b"ghs_abcdefghijklmnopqrstuvwxyz123456",
+            "github-fine-grained": b"github_pat_abcdefghijklmnopqrstuvwxyz123456",
+        }
+        for name, payload in synthetic_secret_forms.items():
+            direct_rejected(
+                "raw-secret-" + name,
+                lambda name=name, payload=payload: reject_raw_secret_bytes(
+                    payload, "self-test " + name
+                ),
+            )
+            direct_rejected(
+                "parsed-secret-" + name,
+                lambda name=name, payload=payload: reject_secret_payloads(
+                    {"report": payload.decode("ascii")}, "self-test " + name
+                ),
+            )
+        reject_raw_secret_bytes(b"ordinary review text about Slovakia\n", "self-test ordinary text")
+        reject_secret_payloads({"report": "ordinary review text about Slovakia"}, "self-test ordinary text")
 
         def digest_frame_collision() -> None:
             global sha256
@@ -3620,6 +3713,48 @@ def self_test() -> None:
             candidate = model["git"]["candidate"]
             mutate_json(model["verification"]["candidate"]["broad"]["receipt"], artifact_root, lambda receipt_value: receipt_value["baseline"].update({"commit": candidate["commit"], "tree": candidate["tree"]}))
         rejected("broad-baseline-reuses-head", broad_baseline_reuses_head)
+        def broad_nonexecutable_argv(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
+            mutate_json(
+                model["verification"]["candidate"]["broad"]["receipt"],
+                artifact_root,
+                lambda receipt_value: receipt_value.__setitem__(
+                    "argv",
+                    [
+                        "PYTHONPATH=phase-loop-runtime/src", "python3", "-m", "pytest",
+                        "phase-loop-runtime/tests", "-q", "-m", "not dotfiles_integration",
+                    ],
+                ),
+            )
+        rejected("broad-nonexecutable-argv", broad_nonexecutable_argv)
+        def broad_missing_declared_outcomes(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
+            mutate_json(
+                model["verification"]["candidate"]["broad"]["receipt"],
+                artifact_root,
+                lambda receipt_value: receipt_value.pop("declared_outcomes"),
+            )
+        rejected("broad-missing-declared-outcomes", broad_missing_declared_outcomes)
+        def broad_declared_outcomes_mismatch(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
+            def mutate(receipt_value: dict[str, Any]) -> None:
+                receipt_value["declared_outcomes"]["passed"] += 1
+            mutate_json(model["verification"]["candidate"]["broad"]["receipt"], artifact_root, mutate)
+        rejected("broad-declared-outcomes-mismatch", broad_declared_outcomes_mismatch)
+        def broad_aborted_receipt(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
+            mutate_json(
+                model["verification"]["candidate"]["broad"]["receipt"],
+                artifact_root,
+                lambda receipt_value: receipt_value.__setitem__("exit_code", 1),
+            )
+        rejected("broad-aborted-receipt", broad_aborted_receipt)
+        def broad_unbound_deselected(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
+            result = model["verification"]["candidate"]["broad"]
+            raw = result["raw"]
+            replace(raw, artifact_root, (artifact_root / raw["path"]).read_bytes().replace(b" passed", b" passed, 1 deselected", 1))
+            def mutate(receipt_value: dict[str, Any]) -> None:
+                receipt_value["raw_sha256"] = raw["sha256"]
+                receipt_value["summary"]["deselected"] = 1
+                receipt_value["declared_outcomes"]["deselected"] = 1
+            mutate_json(result["receipt"], artifact_root, mutate)
+        rejected("broad-unbound-deselected", broad_unbound_deselected)
         def wrong_junit_module(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
             mutation = model["sl0"]["mutations"][0]["mutation"]
             old = (artifact_root / mutation["junit"]["path"]).read_bytes().replace(b'classname="tests.', b'classname="wrong.module.', 1)
@@ -3875,6 +4010,26 @@ def self_test() -> None:
             replace(raw, artifact_root, b"token=0123456789abcdef0123456789abcdef\n")
             mutate_json(model["verification"]["candidate"]["lint"]["receipt"], artifact_root, lambda receipt_value: receipt_value.__setitem__("raw_sha256", raw["sha256"]))
         rejected("retained-secret", retained_secret)
+        def retained_secret_form(name: str, payload: bytes) -> None:
+            def mutate(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
+                raw = model["verification"]["candidate"]["lint"]["raw"]
+                replace(raw, artifact_root, payload + b"\n")
+                mutate_json(
+                    model["verification"]["candidate"]["lint"]["receipt"],
+                    artifact_root,
+                    lambda receipt_value: receipt_value.__setitem__("raw_sha256", raw["sha256"]),
+                )
+            rejected("retained-secret-" + name, mutate)
+        retained_secret_form(
+            "authorization-bearer",
+            b"Authorization: Bearer synthetic-token-0123456789abcdef",
+        )
+        retained_secret_form(
+            "json-key-value",
+            b'{"api_key":"synthetic-token-0123456789abcdef"}',
+        )
+        retained_secret_form("xai", b"xai-synthetic-token-0123456789abcdef")
+        retained_secret_form("github-oauth", b"gho_abcdefghijklmnopqrstuvwxyz123456")
         rejected("premature-ledger", lambda model, _root, _artifacts: model.__setitem__("completion", {"mode": "post_completion", "ledger": {"path": "missing", "sha256": "0" * 64}}))
         def duplicate_ledger(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
             digest = normalized_precompletion_digest(model); main = model["git"]["canonical_main"]
