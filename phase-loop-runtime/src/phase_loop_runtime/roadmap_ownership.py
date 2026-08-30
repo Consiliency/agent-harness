@@ -880,8 +880,27 @@ def _preflight_identities(repo: Path, raw: str) -> List[str]:
     # bytes the target owns, so both are genuinely the caller's business and the
     # union is not a hedge -- it is the answer. Same shape as the qualification
     # fix one function up: the bug was trying to choose.
+    #
+    # BUT the lexical form is only an identity the argument DENOTES when no `..`
+    # cancelled a symlink. With `link -> a/b`, `link/../owned.py` denotes
+    # `a/owned.py`; the lexical `owned.py` is neither the name typed nor the bytes
+    # written -- it is a phantom. Unioning it produced the two failures both seats
+    # found in round 7:
+    #
+    #   false claim (exit 1)   whoever owns `owned.py` is reported for an edit
+    #                          that never touches it.
+    #   false abort (exit 2)   `link/..` collapses lexically to `.`, tripping the
+    #                          whole-repository guard, although it resolves to the
+    #                          perfectly ordinary directory `a/`.
+    #
+    # Round 6 had this right and round 7 dropped it while adding the union. Both
+    # are needed: union when the lexical form is sound, resolved alone when it is
+    # not.
+    sources = [(resolved, root)]
+    if ".." not in candidate.parts:
+        sources.insert(0, (lexical, root_lexical))
     forms: List[str] = []
-    for base, base_root in ((lexical, root_lexical), (resolved, root)):
+    for base, base_root in sources:
         try:
             relative = base.relative_to(base_root).as_posix()
         except ValueError:
@@ -889,14 +908,18 @@ def _preflight_identities(repo: Path, raw: str) -> List[str]:
             # outside the lexical root; the resolved form covers it.
             continue
         if relative == ".":
-            # `""`, `.`, and the absolute repo root all land here. None matches
-            # any ownership token, so each exited 0 -- "the whole repository is
+            # `""`, `.`, and the absolute repo root land here. None matches any
+            # ownership token, so each exited 0 -- "the whole repository is
             # unclaimed", the most confidently wrong answer this command can give.
-            raise PathNotInRepo(
-                f"{raw!r} resolves to the repository root. Ownership is per-path; "
-                f"this command cannot evaluate a whole-repository scope, and must "
-                f"not report one as unclaimed."
-            )
+            # Skipped rather than raised, then reported once below if NOTHING
+            # survives. That mattered in round 7, where the lexical form was
+            # unioned unconditionally: `link/..` collapsed lexically to `.` and
+            # aborted the argument before the real identity `a/` was reached.
+            # Excluding the unsound lexical form already removes that case, so
+            # skipping is now equivalent to raising here -- verified: no input
+            # produces a `.` identity beside a non-`.` sibling. Kept as the
+            # single-exit shape rather than a claimed guard.
+            continue
         # `Path.resolve()` drops a trailing slash, but `_claims` reads that slash
         # as the marker of a DIRECTORY token. Losing it turned the roadmap's own
         # spelling of a claim (`skills-src/`) into an unclaimed path.
@@ -906,6 +929,12 @@ def _preflight_identities(repo: Path, raw: str) -> List[str]:
         form = f"{relative}/" if directoryish else relative
         if form not in forms:
             forms.append(form)
+    if not forms:
+        raise PathNotInRepo(
+            f"{raw!r} resolves to the repository root. Ownership is per-path; "
+            f"this command cannot evaluate a whole-repository scope, and must "
+            f"not report one as unclaimed."
+        )
     return forms
 
 

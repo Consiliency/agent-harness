@@ -1650,9 +1650,57 @@ class TestPreflight(unittest.TestCase):
             repo = _repo_with_two_phases(tmp)
             (repo / "a" / "b").mkdir(parents=True, exist_ok=True)
             (repo / "link").symlink_to(repo / "a" / "b")
-            self.assertIn(
-                "a/owned.py", ro._preflight_identities(repo, "link/../owned.py")
+            # assertEqual, not assertIn. Round 7 weakened this to membership,
+            # which still passes while the unsound lexical `owned.py` is ALSO
+            # returned -- so the phantom identity it exists to forbid went
+            # untested, and a seat had to find it instead. A pin that tolerates
+            # the defect is not a pin.
+            self.assertEqual(
+                ro._preflight_identities(repo, "link/../owned.py"), ["a/owned.py"]
             )
+
+    def test_a_cancelled_symlink_yields_NO_phantom_identity(self):
+        """codex and grok, round 7, converging.
+
+        The lexical form is an identity the argument denotes only when no `..`
+        cancelled a symlink. With `link -> a/b`, `link/../owned.py` denotes
+        `a/owned.py`; the lexical `owned.py` is neither the name typed nor the
+        bytes written. Unioning it reports whoever owns `owned.py` for an edit
+        that never touches it — exit 1 on a false claim, the same over-claim
+        class this PR already treats as a defect.
+
+        Mutation that must kill this: include the lexical form unconditionally.
+        """
+        roadmap = ROADMAP.replace("- `src/alpha.py`", "- `owned.py`")
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=roadmap)
+            (repo / "a" / "b").mkdir(parents=True, exist_ok=True)
+            (repo / "link").symlink_to(repo / "a" / "b")
+            self.assertNotIn(
+                "owned.py", ro._preflight_identities(repo, "link/../owned.py")
+            )
+            self.assertEqual(ro.preflight(repo, ["link/../owned.py"]), {})
+
+    def test_a_cancelled_symlink_to_a_real_directory_is_not_the_repo_root(self):
+        """The second manifestation of the same phantom.
+
+        `link/..` collapses LEXICALLY to `.` and tripped the whole-repository
+        guard, which raised before the real identity was considered — exit 2 on
+        an argument that names the perfectly ordinary directory `a/`. The guard
+        now skips a root-valued identity and only fires when EVERY identity is
+        the root.
+
+        Mutation that must kill this: raise on the first root-valued identity
+        instead of skipping it.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp)
+            (repo / "a" / "b").mkdir(parents=True, exist_ok=True)
+            (repo / "link").symlink_to(repo / "a" / "b")
+            self.assertEqual(ro._preflight_identities(repo, "link/.."), ["a/"])
+            # A genuine whole-repo scope must still be refused.
+            with self.assertRaises(ro.PathNotInRepo):
+                ro._preflight_identities(repo, ".")
 
     def test_a_symlinked_directory_without_dotdot_keeps_its_OWN_name(self):
         """The other half of the same rule, and why `..` is special-cased rather

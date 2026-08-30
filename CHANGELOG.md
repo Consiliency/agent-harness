@@ -48,7 +48,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   match its own claim on `src/link/`, and exit 0 while the edit mutated another phase's
   `src/real/owned.py`; resolved-only stops a token that names the symlink from matching at
   all. An edit through a symlink touches both the name typed and the bytes the target owns,
-  so both are the caller's business. Resolving first rewrote a repo-*internal* symlink to its target,
+  so both are the caller's business. The lexical form is dropped when `..` cancelled a
+  symlink, because there it denotes neither: `link/../owned.py` with `link -> a/b` names
+  `a/owned.py`, and reporting `owned.py` too would claim an edit that never happens. Resolving first rewrote a repo-*internal* symlink to its target,
   so a token naming a symlinked directory matched nothing: ownership describes the
   repository's paths, not where they point. A symlink loop or unreadable path now reports
   CANNOT EVALUATE instead of raising past the handler as exit 1.
