@@ -85,7 +85,7 @@ FRAME_LINE = re.compile(
     r"bytes=(?P<bytes>0|[1-9][0-9]*)>>>$"
 )
 UNTRUSTED_FRAME_PREFIX = re.compile(
-    r"(?m)^(?:[+-]?[ \t]*)?(?:(?:#|//|/\*|\*|--|<!--)[ \t]*)?(?:" + "|".join(
+    r"(?m)^[^\w\r\n]*(?:" + "|".join(
         re.escape(prefix)
         for prefix in (
             FRAME_PREFIX,
@@ -2818,6 +2818,63 @@ def self_test() -> None:
                 {"demo.py"},
             ),
         )
+        replica_payload = b"correct-digest replica payload"
+        replica_frame, _replica_end = digest_bound_delimiters(
+            AUTHORITY_FRAME_LABEL,
+            replica_payload,
+        )
+        replica_metadata = (
+            f"{AUTHORITY_METADATA_PREFIX}{sha256(replica_payload)} "
+            f"bytes={len(replica_payload)}"
+        )
+
+        def replica_patch(line: str) -> None:
+            require_text_patch_hunks(
+                "diff --git a/demo.py b/demo.py\n"
+                "--- a/demo.py\n"
+                "+++ b/demo.py\n"
+                "@@ -1 +1 @@\n"
+                "-old\n"
+                + line + "\n",
+                {"demo.py"},
+            )
+
+        visual_leaders = (
+            ("markdown-heading", "##"),
+            ("triple-slash", "///"),
+            ("doc-comment", "/**"),
+            ("rule", "---"),
+            ("semicolon", ";;"),
+            ("percent", "%"),
+            ("blockquote", ">"),
+            ("list-bullet", "-"),
+        )
+        for leader_name, leader in visual_leaders:
+            direct_rejected(
+                "patch-added-leading-frame-" + leader_name,
+                lambda leader=leader: replica_patch("+" + leader + " " + replica_frame),
+            )
+            direct_rejected(
+                "patch-context-leading-metadata-" + leader_name,
+                lambda leader=leader: replica_patch(" " + leader + " " + replica_metadata),
+            )
+            direct_rejected(
+                "plan-leading-frame-" + leader_name,
+                lambda leader=leader: untrusted_transport_text(
+                    leader + " " + replica_frame,
+                    "self-test leading plan frame replica",
+                ),
+            )
+            direct_rejected(
+                "plan-leading-metadata-" + leader_name,
+                lambda leader=leader: untrusted_transport_text(
+                    leader + " " + replica_metadata,
+                    "self-test leading plan metadata replica",
+                ),
+            )
+        source_literal = 'frame_literal = "' + replica_frame + '"'
+        if untrusted_transport_text(source_literal, "self-test source literal") != source_literal:
+            raise AssertionError("identifier-prefixed source literal was not preserved")
         transport_controls = {
             "carriage-return": "\r",
             "escape": "\x1b",
