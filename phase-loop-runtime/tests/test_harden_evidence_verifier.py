@@ -7,6 +7,8 @@ import copy
 import importlib.util
 import json
 import os
+import re
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -23,6 +25,114 @@ from harden_tdd_guard import (
     _replicate_test_repository,
     harden_require,
 )
+
+
+def test_the_frozen_inventory_is_BOUND_to_the_plan_and_to_collection():
+    """The 26-path set is GOVERNED, not merely counted.
+
+    Raised in cross-vendor review of agent-harness#726: the inventory check
+    asserted only `len(...) == 26` and uniqueness, then validated the five
+    anchors. The other 21 entries were unbound — **replacing any non-anchor path
+    with another unique path stayed green**, so an "exact frozen set" was enforced
+    only in cardinality. A frozen inventory nothing reads is decoration, which is
+    the property IF-0-HARDEN-1 exists to provide.
+
+    The same 26 paths are written down three times: this tuple, the plan's
+    `**Owned files**` line, and the plan's gate block. That is the ah#693 shape —
+    one fact in several places drifts silently — so this asserts the two
+    authoritative statements are equal rather than re-listing them a fourth time.
+
+    Three bindings, each independently killable:
+
+    1. **plan parity** — set equality with `**Owned files**`;
+    2. **existence** — every entry is a real file;
+    3. **collection** — every test module contributes at least one collected node,
+       so an entry cannot be frozen while contributing nothing.
+    """
+
+    root = Path(__file__).resolve().parents[2]
+    plan = (root / "plans" / "phase-plan-v10-HARDEN.md").read_text(encoding="utf-8")
+
+    # Each swim lane states its own `**Owned files**`; SL-0's is the frozen set.
+    # Selected by walking to the SL-0 heading rather than taking the first match,
+    # so a reordered plan cannot silently bind this to another lane's inventory.
+    lane, owned_line = None, None
+    for line in plan.splitlines():
+        heading = re.match(r"^#+\s*(SL-\d\S*)", line.strip()) or re.match(
+            r"^\*\*(SL-\d\S*)", line.strip()
+        )
+        if heading:
+            lane = heading.group(1)
+        if line.startswith("- **Owned files**") and lane == "SL-0":
+            assert owned_line is None, "SL-0 states its owned files more than once"
+            owned_line = line
+    assert owned_line is not None, "the plan has no SL-0 **Owned files** line"
+    declared = set(re.findall(r"`([^`]+\.py)`", owned_line))
+
+    assert declared == set(HARDEN_TEST_PATHS), (
+        "the guard's frozen inventory and the plan's **Owned files** disagree; "
+        f"only in guard: {sorted(set(HARDEN_TEST_PATHS) - declared)}; "
+        f"only in plan: {sorted(declared - set(HARDEN_TEST_PATHS))}"
+    )
+    assert len(HARDEN_TEST_PATHS) == len(set(HARDEN_TEST_PATHS)) == 26
+
+    # The gate block enumerates the same set minus the guard helper itself.
+    gate = set(re.findall(r"^\s+(phase-loop-runtime/tests/\S+\.py)", plan, re.M))
+    assert gate <= set(HARDEN_TEST_PATHS), (
+        f"the gate block names paths outside the inventory: "
+        f"{sorted(gate - set(HARDEN_TEST_PATHS))}"
+    )
+
+    missing = [p for p in HARDEN_TEST_PATHS if not (root / p).is_file()]
+    assert not missing, f"frozen inventory names paths that do not exist: {missing}"
+
+    # Collection binding: a path can be present, unique, and still contribute
+    # nothing. Assert each test module yields at least one node.
+    modules = [p for p in HARDEN_TEST_PATHS if Path(p).name.startswith("test_")]
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q", "--no-header", *modules],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PYTHONPATH": f"{root / 'phase-loop-runtime' / 'src'}:{root / 'phase-loop-runtime' / 'tests'}",
+        },
+    )
+    # Node IDs are printed relative to pytest's rootdir (`phase-loop-runtime/`),
+    # so match on the module BASENAME rather than the repo-relative path — the
+    # first version compared against the repo-relative form and reported every
+    # module as uncollected.
+    collected = proc.stdout
+    uncollected = {m for m in modules if f"{Path(m).name}::" not in collected}
+
+    # `test_phase_loop_injection.py` skips at MODULE level in the extracted
+    # agent-harness layout: it reads dotfiles fleet paths that do not exist here,
+    # and the `dotfiles_integration` marker keeps it deselected in CI. It
+    # therefore contributes zero nodes legitimately.
+    #
+    # Pinned as an exact set rather than relaxed to "zero is fine": that would
+    # readmit the defect this test exists to close, since an entry contributing
+    # nothing is precisely what "frozen but unbound" looks like. A NEW silent
+    # skip has to be added here deliberately.
+    module_skipped = {"phase-loop-runtime/tests/test_phase_loop_injection.py"}
+    assert uncollected == module_skipped, (
+        f"frozen inventory entries contribute no collected node: "
+        f"{sorted(uncollected - module_skipped)}; expected-but-now-collecting: "
+        f"{sorted(module_skipped - uncollected)}\n{proc.stdout[-1500:]}"
+    )
+
+    # The module-skipped entry must still CONTAIN tests, or it is frozen for
+    # nothing — collection cannot speak for it, so the AST does.
+    for path in sorted(module_skipped):
+        tree = ast.parse((root / path).read_text(encoding="utf-8"), filename=path)
+        defined = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name.startswith("test_")
+        ]
+        assert defined, f"{path} is frozen but defines no tests"
 
 
 def test_harden_guard_inventory_and_case_bindings_are_frozen(
