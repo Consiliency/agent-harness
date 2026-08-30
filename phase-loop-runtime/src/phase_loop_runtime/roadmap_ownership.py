@@ -246,7 +246,7 @@ def _claims(owned: str, path: str) -> bool:
         return True
     if owned.endswith("/") and path.startswith(owned):
         return True
-    if owned.endswith("/") and path.rstrip("/") == owned.rstrip("/"):
+    if (owned.endswith("/") or path.endswith("/")) and path.rstrip("/") == owned.rstrip("/"):
         # The directory ITSELF, spelled without the trailing slash. `--preflight`
         # normalizes through `Path.resolve()`, which drops it, so the exact token
         # the roadmap uses (`skills-src/`, `phase-loop-runtime/tests/`) arrived
@@ -752,27 +752,31 @@ def preflight(
     to 2.
 
     Paths are normalized before matching, and an uninterpretable one RAISES rather
-    than being skipped -- see ``_normalize_preflight_path``.
+    than being skipped -- see ``_preflight_identities``.
     """
 
     repo = Path(repo)
     mapping = ownership_map(read_roadmap(resolve_roadmap(repo)))
     owned: Dict[str, List[Ownership]] = {}
     for raw in paths:
-        path = _normalize_preflight_path(repo, raw)
-        claims = [
-            Ownership(
-                path=path,
-                phase_alias=phase.alias,
-                phase_name=phase.name,
-                is_current=False,
-                note=_note_for(phase.alias, path, mapping),
-            )
-            for phase in owners_for(path, mapping)
-            if phase.alias != current_phase
-        ]
+        claims: List[Ownership] = []
+        seen: set = set()
+        for path in _preflight_identities(repo, raw):
+            for phase in owners_for(path, mapping):
+                if phase.alias == current_phase or (phase.alias, path) in seen:
+                    continue
+                seen.add((phase.alias, path))
+                claims.append(
+                    Ownership(
+                        path=path,
+                        phase_alias=phase.alias,
+                        phase_name=phase.name,
+                        is_current=False,
+                        note=_note_for(phase.alias, path, mapping),
+                    )
+                )
         if claims:
-            owned[raw] = sorted(claims, key=lambda o: o.phase_alias)
+            owned[raw] = sorted(claims, key=lambda o: (o.phase_alias, o.path))
     return owned
 
 
@@ -786,50 +790,30 @@ class PathNotInRepo(ValueError):
     """
 
 
-def _normalize_preflight_path(repo: Path, raw: str) -> str:
-    """A ``--preflight`` argument as a repo-relative POSIX path, BY NAME.
+def _preflight_identities(repo: Path, raw: str) -> List[str]:
+    """Every repo-relative POSIX identity a ``--preflight`` argument denotes.
 
-    Ownership tokens in the roadmap are repo-relative names
-    (``phase-loop-runtime/src/...``) and ``_claims`` compares them by equality or
-    prefix, so the matcher only ever saw the argument as typed. The same file
-    answered differently depending on spelling::
+    Ownership tokens are repo-relative names and ``_claims`` compares by equality
+    or prefix, so the matcher saw the argument as typed and the same file answered
+    differently by spelling (`x`, `./x`, `/abs/x`). That was fail-OPEN, on the two
+    forms people most often type.
 
-        phase-loop-runtime/src/.../roadmap_ownership.py   -> exit 1, claimed
-        ./phase-loop-runtime/src/.../roadmap_ownership.py -> exit 0, "no path is claimed"
-        /abs/path/to/.../roadmap_ownership.py             -> exit 0, "no path is claimed"
+    **Both identities are returned when both are real.** A symlink gives one file
+    two valid names, and an edit through it touches BOTH: the name typed, and the
+    bytes the target owns. Git proves the second half — editing `src/link/x.py`
+    makes `git diff --name-only` report `src/real/x.py`, the TARGET — so `audit`
+    already answers about targets, and a preflight that answered only about names
+    would be strictly weaker than the audit it precedes. That is not a theoretical
+    gap: pass the link-name's owner as ``--current-phase`` and a name-only
+    preflight exits 0 while the edit modifies another phase's tracked file, which
+    is the cross-phase failure ah#633 exists to prevent.
 
-    Both false-clear forms are what people actually type -- shell completion
-    produces ``./``, tooling passes absolute paths -- and the failure is
-    fail-OPEN, so the wrong answer is the reassuring one.
-
-    **Only the repository ROOT is resolved; the argument never is.** That is the
-    whole rule, and it is deliberate.
-
-    An earlier version normalized the argument with ``Path.resolve()``. That call
-    does not merely collapse ``.`` and ``..`` -- it also REWRITES every symlink in
-    the path. Nothing here ever needed that: it arrived as a side effect of the
-    tool reached for to handle ``./`` and absolute spellings, and then had to be
-    contained. Containing it consumed four review rounds (a repo-internal symlink
-    rewritten to its target and matching no token; ``..`` cancelling a symlink and
-    naming a file the caller never typed; a "both identities" union that reported
-    a phantom third path). Every one of those defects was downstream of resolving
-    the argument, and none of them existed before it.
-
-    Resolving only the root keeps the case that genuinely motivated resolution --
-    a symlinked CHECKOUT ROOT (``/mnt/workspace`` -> ``/mnt/HC_Volume_...``), where
-    an absolute argument is spelled under one root and the repo under the other --
-    and drops the rest.
-
-    It also makes ``--preflight`` agree with ``audit``, which has ALWAYS worked by
-    name: its paths come from ``git diff --name-only``, which reports names and
-    never symlink targets. Two halves of one tool were answering different
-    questions about the same file.
-
-    **Known limitation, deliberate:** in a repo containing an internal symlink,
-    editing through it modifies the target's file, and this reports only the typed
-    name's owner. That is the same limitation ``audit`` has, and it is documented
-    rather than silently patched, because every attempt to close it reintroduced a
-    worse defect than the one it closed.
+    **Except when ``..`` cancelled a symlink.** With `link -> a/b`,
+    `link/../owned.py` denotes `a/owned.py`; the lexically collapsed `owned.py` is
+    neither the name typed nor the bytes written, and reporting it claims an edit
+    that never happens. ``..`` is the only construct that makes lexical collapsing
+    unsound -- it cancels a component without knowing whether that component was a
+    symlink -- so the lexical identity is dropped exactly there.
     """
 
     if not raw:
@@ -849,50 +833,81 @@ def _normalize_preflight_path(repo: Path, raw: str) -> str:
         ) from exc
 
     candidate = Path(raw)
-    if candidate.is_absolute():
-        # An absolute argument may be spelled under either root when the checkout
-        # itself is symlinked, so try both. This compares roots, not the argument.
-        absolute = Path(os.path.normpath(str(candidate)))
-        for base in (root, root_lexical):
+    uncollapsed = candidate if candidate.is_absolute() else root_lexical / candidate
+    lexical = Path(os.path.normpath(str(uncollapsed)))
+    try:
+        resolved = uncollapsed.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise PathNotInRepo(
+            f"could not resolve {raw!r}: {exc}. Refusing to report it as "
+            f"unclaimed -- this command could not evaluate it at all."
+        ) from exc
+
+    # Containment is judged on the RESOLVED form, and on the UNCOLLAPSED path so
+    # `..` cannot erase a symlink before the check: with `link -> /outside`,
+    # `link/../x` reads lexically as inside while really resolving out of the repo.
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise PathNotInRepo(
+            f"{raw!r} resolves to {resolved}, outside {root}. Refusing to report "
+            f"it as unclaimed -- this command cannot evaluate ownership for a "
+            f"path it cannot place in the repository."
+        ) from exc
+
+    # MOST SPECIFIC root wins. When the lexical root lies inside its own target
+    # (`/usr/bin/X11 -> .` with repo `/usr/bin/X11`), an argument sits beneath
+    # BOTH roots; taking the resolved root first yielded `X11/python3` instead of
+    # `python3`, so an exact `python3` claim was missed and preflight exited 0.
+    roots = sorted({root, root_lexical}, key=lambda r: len(str(r)), reverse=True)
+
+    def _relative(base: Path) -> "str | None":
+        for candidate_root in roots:
             try:
-                relative = absolute.relative_to(base).as_posix()
-                break
+                return base.relative_to(candidate_root).as_posix()
             except ValueError:
                 continue
-        else:
-            raise PathNotInRepo(
-                f"{raw!r} is not inside {root}. Refusing to report it as "
-                f"unclaimed -- this command cannot evaluate ownership for a path "
-                f"it cannot place in the repository."
-            )
-    else:
-        joined = Path(os.path.normpath(str(root_lexical / candidate)))
-        try:
-            relative = joined.relative_to(root_lexical).as_posix()
-        except ValueError:
-            raise PathNotInRepo(
-                f"{raw!r} points outside the repository. Refusing to report it as "
-                f"unclaimed -- this command cannot evaluate ownership for a path "
-                f"it cannot place in the repository."
-            )
+        return None
 
-    if relative == ".":
-        # `""`, `.`, and the repo root itself land here. None matches any
-        # ownership token, so each exited 0 -- "the whole repository is
-        # unclaimed", the most confidently wrong answer this command can give.
+    sources = [resolved]
+    if ".." not in candidate.parts:
+        sources.insert(0, lexical)
+
+    forms: List[str] = []
+    for base in sources:
+        relative = _relative(base)
+        if relative is None:
+            # The lexical form of a symlinked CHECKOUT ROOT can sit outside both;
+            # the resolved form covers it.
+            continue
+        if relative == ".":
+            # `""`, `.`, and the repo root land here. None matches any ownership
+            # token, so each exited 0 -- "the whole repository is unclaimed", the
+            # most confidently wrong answer this command can give. Skipped here
+            # and reported once below if NOTHING survives.
+            continue
+        # `_claims` reads a trailing slash as the marker of a DIRECTORY token, and
+        # normalization drops it -- which turned the roadmap's own spelling of a
+        # claim (`skills-src/`) into an unclaimed path.
+        #
+        # `is_dir()` FOLLOWS symlinks, so an exact token naming a directory
+        # symlink (`X11`) became `X11/` and stopped matching. A symlink is
+        # therefore not treated as directory-ish on its own name; the resolved
+        # identity carries the directory form.
+        directoryish = raw.endswith(("/", os.sep)) or (
+            base.is_dir() and not base.is_symlink()
+        )
+        form = f"{relative}/" if directoryish else relative
+        if form not in forms:
+            forms.append(form)
+
+    if not forms:
         raise PathNotInRepo(
             f"{raw!r} names the repository root. Ownership is per-path; this "
             f"command cannot evaluate a whole-repository scope, and must not "
             f"report one as unclaimed."
         )
-
-    # `_claims` reads a trailing slash as the marker of a DIRECTORY token, and
-    # normalization drops it -- which turned the roadmap's own spelling of a
-    # claim (`skills-src/`) into an unclaimed path. Asking whether the path IS a
-    # directory is a property query, not a rewrite: it never changes the name
-    # returned.
-    directoryish = raw.endswith(("/", os.sep)) or (root / relative).is_dir()
-    return f"{relative}/" if directoryish else relative
+    return forms
 
 
 def render_preflight(
