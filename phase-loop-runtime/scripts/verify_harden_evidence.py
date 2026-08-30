@@ -10,6 +10,8 @@ from __future__ import annotations
 import argparse
 import ast
 import copy
+from collections.abc import Iterator
+from contextlib import contextmanager
 import fcntl
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
@@ -463,10 +465,7 @@ def git_environment() -> dict[str, str]:
     }
 
 
-def git_bytes(repo: Path, *args: str) -> bytes:
-    command = (
-        "git", "-C", str(repo), "--no-replace-objects", *_GIT_CONFIG, *args,
-    )
+def _git_output(command: tuple[str, ...]) -> bytes:
     try:
         completed = subprocess.run(
             command,
@@ -480,6 +479,20 @@ def git_bytes(repo: Path, *args: str) -> bytes:
     if completed.returncode:
         fail("Git authority check failed")
     return completed.stdout
+
+
+def git_bytes(repo: Path, *args: str) -> bytes:
+    return _git_output((
+        "git", "-C", str(repo), "--no-replace-objects", *_GIT_CONFIG, *args,
+    ))
+
+
+def git_authority_bytes(git_dir: Path, worktree: Path, *args: str) -> bytes:
+    """Read objects through a fresh bare authority with no source config/attrs."""
+    return _git_output((
+        "git", f"--git-dir={git_dir}", f"--work-tree={worktree}",
+        "--no-replace-objects", *_GIT_CONFIG, *args,
+    ))
 
 
 def git_scalar(repo: Path, *args: str) -> str:
@@ -496,34 +509,111 @@ def git_scalar(repo: Path, *args: str) -> str:
         fail("Git scalar authority record is not ASCII")
 
 
+def git_object_directory(repo: Path) -> Path:
+    """Return a standalone source object directory, rejecting alternate authority."""
+    common_dir = Path(git_scalar(repo, "rev-parse", "--git-common-dir"))
+    if not common_dir.is_absolute():
+        common_dir = repo / common_dir
+    try:
+        common_stat = common_dir.lstat()
+        if stat.S_ISLNK(common_stat.st_mode) or not stat.S_ISDIR(common_stat.st_mode):
+            fail("Git common directory is not a real directory")
+        common_dir = common_dir.resolve(strict=True)
+        objects = common_dir / "objects"
+        objects_stat = objects.lstat()
+        if stat.S_ISLNK(objects_stat.st_mode) or not stat.S_ISDIR(objects_stat.st_mode):
+            fail("Git object directory is not a real directory")
+    except OSError:
+        fail("Git object authority is unavailable")
+    info = objects / "info"
+    try:
+        info_stat = info.lstat()
+    except FileNotFoundError:
+        return objects
+    if stat.S_ISLNK(info_stat.st_mode) or not stat.S_ISDIR(info_stat.st_mode):
+        fail("Git object info directory is not a real directory")
+    alternates = info / "alternates"
+    try:
+        alternates_stat = alternates.lstat()
+    except FileNotFoundError:
+        return objects
+    if (
+        stat.S_ISLNK(alternates_stat.st_mode)
+        or not stat.S_ISREG(alternates_stat.st_mode)
+        or alternates_stat.st_size
+    ):
+        fail("Git source object authority has alternates")
+    return objects
+
+
+@contextmanager
+def hermetic_git_authority(repo: Path) -> Iterator[tuple[Path, Path]]:
+    """Expose source objects to a fresh bare Git directory and empty worktree."""
+    objects = git_object_directory(repo)
+    object_path = os.fspath(objects)
+    if "\n" in object_path or "\r" in object_path:
+        fail("Git object authority path is not line-safe")
+    with tempfile.TemporaryDirectory(prefix="harden-git-authority-") as temporary:
+        root = Path(temporary)
+        git_dir = root / "git"
+        worktree = root / "worktree"
+        (git_dir / "objects" / "info").mkdir(parents=True, mode=0o700)
+        (git_dir / "refs").mkdir(mode=0o700)
+        worktree.mkdir(mode=0o700)
+        (git_dir / "HEAD").write_text("ref: refs/heads/harden-empty\n", encoding="ascii")
+        (git_dir / "config").write_text(
+            "[core]\n"
+            "\trepositoryformatversion = 0\n"
+            "\tbare = true\n"
+            "\tattributesFile = /dev/null\n",
+            encoding="ascii",
+        )
+        (git_dir / "objects" / "info" / "alternates").write_text(
+            object_path + "\n", encoding="utf-8"
+        )
+        yield git_dir, worktree
+
+
+def _commit_object_id(line: bytes, prefix: bytes, label: str) -> str:
+    if not line.startswith(prefix):
+        fail(f"{label}: raw commit object has an invalid header order")
+    object_bytes = line[len(prefix):]
+    try:
+        object_id = object_bytes.decode("ascii", "strict")
+    except UnicodeDecodeError:
+        fail(f"{label}: raw commit object has a non-ASCII object ID")
+    if not HEX40.fullmatch(object_id):
+        fail(f"{label}: raw commit object has an invalid object ID")
+    return object_id
+
+
 def raw_commit_metadata(repo: Path, commit_id: str, label: str) -> tuple[str, tuple[str, ...]]:
-    """Read tree and parents from immutable raw commit headers, never graft views."""
+    """Read Git-grammar tree/parent headers from an exact commit object."""
     text(commit_id, label + ".commit", pattern=HEX40)
+    if git_scalar(repo, "cat-file", "-t", commit_id) != "commit":
+        fail(f"{label}: exact object is not a commit")
     raw = git_bytes(repo, "cat-file", "commit", commit_id)
     headers, separator, _body = raw.partition(b"\n\n")
-    if not separator:
+    if not separator or b"\r" in headers:
         fail(f"{label}: raw commit object has no header delimiter")
-    trees: list[str] = []
+    lines = headers.split(b"\n")
+    if not lines:
+        fail(f"{label}: raw commit object has no headers")
+    tree = _commit_object_id(lines[0], b"tree ", label)
     parents: list[str] = []
-    for line in headers.splitlines():
-        if line.startswith(b"tree "):
-            values = trees
-            object_id = line[len(b"tree "):]
-        elif line.startswith(b"parent "):
-            values = parents
-            object_id = line[len(b"parent "):]
-        else:
-            continue
-        try:
-            decoded = object_id.decode("ascii", "strict")
-        except UnicodeDecodeError:
-            fail(f"{label}: raw commit object has a non-ASCII object ID")
-        if not HEX40.fullmatch(decoded):
-            fail(f"{label}: raw commit object has an invalid object ID")
-        values.append(decoded)
-    if len(trees) != 1:
-        fail(f"{label}: raw commit object has an invalid tree header")
-    return trees[0], tuple(parents)
+    index = 1
+    while index < len(lines) and lines[index].startswith(b"parent "):
+        parents.append(_commit_object_id(lines[index], b"parent ", label))
+        index += 1
+    if index >= len(lines) or not lines[index].startswith(b"author ") or len(lines[index]) == len(b"author "):
+        fail(f"{label}: raw commit object has no author after parent headers")
+    index += 1
+    if index >= len(lines) or not lines[index].startswith(b"committer ") or len(lines[index]) == len(b"committer "):
+        fail(f"{label}: raw commit object has no committer after author")
+    for line in lines[index + 1:]:
+        if line.startswith((b"tree ", b"parent ")):
+            fail(f"{label}: raw commit object has a relocated topology header")
+    return tree, tuple(parents)
 
 
 def commit_parents(repo: Path, commit_id: str, label: str) -> tuple[str, ...]:
@@ -556,9 +646,29 @@ def ancestor(repo: Path, older: str, newer: str, label: str) -> None:
     fail(f"{label}: ancestry mismatch")
 
 
+def changed_path_records(out: bytes, label: str) -> set[str]:
+    """Parse exact NUL Git path records; leading/trailing whitespace is significant."""
+    if not out:
+        return set()
+    if not out.endswith(b"\0"):
+        fail(f"{label}: Git changed-path records are not NUL-delimited")
+    paths: set[str] = set()
+    for raw in out[:-1].split(b"\0"):
+        if not raw:
+            fail(f"{label}: Git changed-path record is empty")
+        try:
+            path = raw.decode("utf-8", "strict")
+        except UnicodeDecodeError:
+            fail(f"{label}: Git changed-path record is not UTF-8")
+        if path in paths:
+            fail(f"{label}: Git changed-path record is duplicated")
+        paths.add(path)
+    return paths
+
+
 def changed_paths(repo: Path, older: str, newer: str) -> set[str]:
     """Return exact Git path records; leading/trailing whitespace is significant."""
-    out = git_bytes(
+    return changed_path_records(git_bytes(
         repo,
         "diff",
         "--name-only",
@@ -574,21 +684,7 @@ def changed_paths(repo: Path, older: str, newer: str) -> set[str]:
         "-O/dev/null",
         older,
         newer,
-    )
-    if not out:
-        return set()
-    if not out.endswith(b"\0"):
-        fail("Git changed-path records are not NUL-delimited")
-    paths: set[str] = set()
-    for raw in out[:-1].split(b"\0"):
-        if not raw:
-            fail("Git changed-path record is empty")
-        try:
-            path = raw.decode("utf-8", "strict")
-        except UnicodeDecodeError:
-            fail("Git changed-path record is not UTF-8")
-        paths.add(path)
-    return paths
+    ), "Git changed paths")
 
 
 def blob(repo: Path, revision: str, path: str) -> tuple[str, bytes]:
@@ -608,6 +704,24 @@ def digest_bound_delimiters(label: str, payload: bytes) -> tuple[str, str]:
     if begin.encode("utf-8") in payload or end.encode("utf-8") in payload:
         fail("retained review input contains its digest-bound frame delimiter")
     return begin, end
+
+
+def require_text_patch_hunks(patch: str, paths: set[str]) -> None:
+    """Require one reviewer-visible text hunk for every exact changed path."""
+    if not paths or "\0" in patch:
+        fail("review input Git patch is not a complete text rendering")
+    lines = patch.splitlines()
+    if any(line == "GIT binary patch" or line.startswith("Binary files ") for line in lines):
+        fail("review input Git patch contains opaque binary content")
+    for path in paths:
+        header = f"diff --git a/{path} b/{path}\n"
+        start = patch.find(header)
+        if start < 0:
+            fail("review input Git patch omits an exact changed path")
+        next_header = patch.find("diff --git ", start + len(header))
+        section = patch[start:next_header if next_header >= 0 else None]
+        if not any(line.startswith("@@ ") for line in section.splitlines()):
+            fail("review input Git patch omits a text hunk")
 
 
 def git_bound_review_input(
@@ -649,53 +763,75 @@ def git_bound_review_input(
         if len(rendered.encode("utf-8", errors="strict")) > REVIEW_INPUT_MAX_BYTES:
             fail("review input HARDEN plan exceeds bounded transport")
         return rendered
-    raw_blob_delta = git_bytes(
-        repo,
-        "diff-tree",
-        "-r",
-        "--raw",
-        "-z",
-        "--no-abbrev",
-        "--no-color",
-        "--no-ext-diff",
-        "--no-textconv",
-        "--no-renames",
-        "--ignore-submodules=none",
-        "--diff-algorithm=myers",
-        "--no-indent-heuristic",
-        "-O/dev/null",
-        base_tree,
-        tree,
-    )
-    patch = git_bytes(
-        repo,
-        "diff",
-        "--binary",
-        "--full-index",
-        "--no-color",
-        "--no-ext-diff",
-        "--no-textconv",
-        "--no-relative",
-        "--no-renames",
-        "--ignore-submodules=none",
-        "--diff-algorithm=myers",
-        "--no-indent-heuristic",
-        "--unified=3",
-        "--src-prefix=a/",
-        "--dst-prefix=b/",
-        "-O/dev/null",
-        base_head,
-        head,
-    )
+    with hermetic_git_authority(repo) as (git_dir, worktree):
+        raw_blob_delta = git_authority_bytes(
+            git_dir,
+            worktree,
+            "diff-tree",
+            "-r",
+            "--raw",
+            "-z",
+            "--no-abbrev",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-renames",
+            "--ignore-submodules=none",
+            "--diff-algorithm=myers",
+            "--no-indent-heuristic",
+            "-O/dev/null",
+            base_tree,
+            tree,
+        )
+        rendered_paths = changed_path_records(git_authority_bytes(
+            git_dir,
+            worktree,
+            "diff",
+            "--name-only",
+            "-z",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-relative",
+            "--no-renames",
+            "--ignore-submodules=none",
+            "--diff-algorithm=myers",
+            "--no-indent-heuristic",
+            "-O/dev/null",
+            base_tree,
+            tree,
+        ), "review input Git paths")
+        patch = git_authority_bytes(
+            git_dir,
+            worktree,
+            "diff",
+            "--text",
+            "--full-index",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-relative",
+            "--no-renames",
+            "--ignore-submodules=none",
+            "--diff-algorithm=myers",
+            "--no-indent-heuristic",
+            "--unified=3",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "-O/dev/null",
+            base_tree,
+            tree,
+        )
     if not patch or not raw_blob_delta:
         fail("review input Git patch is empty")
     try:
         patch_text = patch.decode("utf-8", errors="strict")
     except UnicodeDecodeError:
         fail("review input Git patch is not UTF-8 transport-safe")
+    require_text_patch_hunks(patch_text, rendered_paths)
     begin, end = digest_bound_delimiters("COMPLETE-GIT-PATCH", patch)
     rendered = "\n".join((
-        "HARDEN-GIT-BOUND-REVIEW-BUNDLE.v2",
+        "HARDEN-GIT-BOUND-REVIEW-BUNDLE.v3",
         f"base_head={base_head}", f"base_tree={base_tree}",
         f"head={head}", f"tree={tree}",
         f"git_patch_sha256={sha256(patch)}", f"git_patch_bytes={len(patch)}",
@@ -1655,6 +1791,23 @@ def _run(command: list[str], cwd: Path) -> str:
     return done.stdout.strip()
 
 
+def _write_commit_object(repo: Path, contents: bytes) -> str:
+    done = subprocess.run(
+        ["git", "-C", str(repo), "hash-object", "-w", "-t", "commit", "--stdin"],
+        input=contents,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        env=git_environment(),
+    )
+    if done.returncode or not done.stdout.endswith(b"\n"):
+        raise RuntimeError("self-test commit object setup failed")
+    object_id = done.stdout[:-1].decode("ascii", "strict")
+    if not HEX40.fullmatch(object_id):
+        raise RuntimeError("self-test commit object ID is invalid")
+    return object_id
+
+
 def _self_git(
     root: Path,
     *,
@@ -2092,6 +2245,40 @@ def self_test() -> None:
         evidence_path, artifacts, repo, evidence, registry, coordinator, author = _fixture(baseline)
         verify(evidence_path, artifacts, repo, reuse_registry=registry, expected_coordinator_session=coordinator, expected_author_session=author, ci_query=baseline / "fake-gh")
 
+        def relocated_parent_header() -> None:
+            candidate = evidence["git"]["candidate"]
+            contents = (
+                f"tree {candidate['tree']}\n"
+                "author HARDEN <self-test@example.invalid> 0 +0000\n"
+                "committer HARDEN <self-test@example.invalid> 0 +0000\n"
+                f"parent {candidate['commit']}\n\n"
+                "relocated parent header\n"
+            ).encode("ascii")
+            raw_commit_metadata(repo, _write_commit_object(repo, contents), "self-test relocated parent")
+
+        direct_rejected("relocated-commit-parent-header", relocated_parent_header)
+
+        def carriage_return_parent_header() -> None:
+            candidate = evidence["git"]["candidate"]
+            contents = (
+                f"tree {candidate['tree']}\n"
+                "author HARDEN <self-test@example.invalid> 0 +0000\n"
+                "committer HARDEN <self-test@example.invalid> 0 +0000\n"
+                f"gpgsig forged\rparent {candidate['commit']}\n\n"
+                "carriage-return topology header\n"
+            ).encode("ascii")
+            raw_commit_metadata(repo, _write_commit_object(repo, contents), "self-test carriage return")
+
+        direct_rejected("carriage-return-commit-parent-header", carriage_return_parent_header)
+
+        def annotated_tag_commit_alias() -> None:
+            candidate = evidence["git"]["candidate"]["commit"]
+            _run(["git", "tag", "-a", "-m", "self-test annotated tag", "self-test-commit-alias", candidate], repo)
+            tag_id = _run(["git", "rev-parse", "self-test-commit-alias^{tag}"], repo)
+            raw_commit_metadata(repo, tag_id, "self-test annotated tag")
+
+        direct_rejected("annotated-tag-commit-alias", annotated_tag_commit_alias)
+
         def git_environment_isolation() -> None:
             isolated_root = root / "git-environment-isolation"
             isolated_root.mkdir()
@@ -2117,14 +2304,23 @@ def self_test() -> None:
                 encoding="utf-8",
             )
             helper.chmod(0o700)
-            (isolated_repo / ".git" / "info" / "attributes").write_text(
-                "phase-loop-runtime/src/phase_loop_runtime/runner.py diff=hardenprobe\n",
+            (isolated_repo / ".gitattributes").write_text(
+                "phase-loop-runtime/src/phase_loop_runtime/runner.py -diff\n",
                 encoding="utf-8",
             )
-            _run(
-                ["git", "config", "diff.hardenprobe.textconv", str(helper)],
-                isolated_repo,
+            (isolated_repo / ".git" / "info" / "attributes").write_text(
+                "phase-loop-runtime/src/phase_loop_runtime/runner.py -diff diff=hardenprobe\n",
+                encoding="utf-8",
             )
+            for key, value in (
+                ("core.bigFileThreshold", "1"),
+                ("diff.hardenprobe.binary", "true"),
+                ("diff.hardenprobe.textconv", str(helper)),
+                ("diff.hardenprobe.xfuncname", "^HARDEN_SOURCE"),
+                ("diff.interHunkContext", "99"),
+                ("diff.suppressBlankEmpty", "true"),
+            ):
+                _run(["git", "config", key, value], isolated_repo)
             inherited = {
                 "GIT_CONFIG_COUNT": "1",
                 "GIT_CONFIG_KEY_0": "diff.external",
@@ -2153,6 +2349,21 @@ def self_test() -> None:
                 raise AssertionError("ambient Git config changed or executed review rendering")
 
         git_environment_isolation()
+
+        def opaque_binary_patch() -> None:
+            opaque_root = root / "opaque-binary-patch"
+            opaque_root.mkdir()
+            opaque_repo, refs = _self_git(opaque_root)
+            base, base_tree = refs["canonical_main"]
+            target = opaque_repo / "phase-loop-runtime/src/phase_loop_runtime/runner.py"
+            target.write_bytes(b"HARDEN_SOURCE = b'" + bytes((0,)) + b"opaque'\n")
+            _run(["git", "add", str(target.relative_to(opaque_repo))], opaque_repo)
+            _run(["git", "commit", "-qm", "opaque binary review input"], opaque_repo)
+            head = _run(["git", "rev-parse", "HEAD"], opaque_repo)
+            tree = _run(["git", "rev-parse", "HEAD^{tree}"], opaque_repo)
+            git_bound_review_input(opaque_repo, base, base_tree, head, tree, "bundle")
+
+        direct_rejected("opaque-binary-review-patch", opaque_binary_patch)
 
         def intervening_landing_first_parent() -> None:
             intervening_root = root / "intervening-landing-first-parent"
