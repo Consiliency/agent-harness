@@ -25,6 +25,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 import json
 import threading
 import uuid
@@ -1582,12 +1583,54 @@ _BROKER_CODEX_DISABLED_FEATURES: tuple[str, ...] = (
     "workspace_dependencies",
 )
 _PROVIDER_TRUNCATION_MARKER = re.compile(r"<truncated\s+\d+\s+bytes>", re.IGNORECASE)
+_BROKER_FRAME_PREFIX = "<<<HARDEN-FRAME "
+_BROKER_REVIEW_INPUT_HEADER_PREFIX = "HARDEN-GIT-BOUND-REVIEW-"
+_BROKER_AUTHORITY_METADATA_PREFIX = "AUTHORITATIVE-INSTRUCTIONS sha256="
+_BROKER_BUNDLE_METADATA_PREFIX = "UNTRUSTED-REVIEW-BUNDLE sha256="
+_BROKER_SEALED_HEADER = "HARDEN-BROKER-SEALED-PROMPT.v1"
+_BROKER_UNTRUSTED_FRAME_PREFIX = re.compile(
+    r"(?m)^[^A-Za-z0-9_\r\n]*(?:" + "|".join(
+        re.escape(prefix)
+        for prefix in (
+            _BROKER_FRAME_PREFIX,
+            _BROKER_REVIEW_INPUT_HEADER_PREFIX,
+            _BROKER_SEALED_HEADER,
+            _BROKER_AUTHORITY_METADATA_PREFIX,
+            _BROKER_BUNDLE_METADATA_PREFIX,
+            _BROKER_AGY_STREAM_ACK_PREFIX + " ",
+        )
+    ) + r")"
+)
 
 
-def _digest_bound_broker_delimiters(label: str, payload: bytes) -> tuple[str, str]:
+def _broker_untrusted_transport_text(payload: bytes, label: str) -> str:
+    """Reject raw provider input that can impersonate parent-owned framing."""
+    try:
+        text = payload.decode("utf-8", errors="strict")
+        text.encode("utf-8", errors="strict")
+    except UnicodeError as exc:
+        raise ValueError(f"{label} is not UTF-8 transport-safe") from exc
+    for character in text:
+        if character in {"\n", "\t"}:
+            continue
+        if unicodedata.category(character) in {"Cc", "Cf", "Cs", "Zl", "Zp"}:
+            raise ValueError(f"{label} contains a transport-active control character")
+    if _BROKER_UNTRUSTED_FRAME_PREFIX.search(text):
+        raise ValueError(f"{label} contains a broker frame or authority-header replica")
+    return text
+
+
+def _digest_bound_broker_delimiters(
+    label: str,
+    payload: bytes,
+    *,
+    validated_generated_payload: bool = False,
+) -> tuple[str, str]:
     """Return exact parent-owned framing for one untrusted inline payload."""
     if not re.fullmatch(r"[A-Z0-9-]+", label):
         raise ValueError("invalid broker frame label")
+    if not validated_generated_payload:
+        _broker_untrusted_transport_text(payload, "brokered review input")
     digest = sha256(payload).hexdigest()
     begin = f"<<<HARDEN-FRAME {label} BEGIN sha256={digest} bytes={len(payload)}>>>"
     end = f"<<<HARDEN-FRAME {label} END sha256={digest} bytes={len(payload)}>>>"
@@ -1681,7 +1724,9 @@ def _broker_gemini_stream_protocol(prompt: str) -> _BrokerGeminiStreamProtocol:
         zip(chunks, chunk_sha256, acknowledgements, strict=True), start=1
     ):
         chunk_begin, chunk_end = _digest_bound_broker_delimiters(
-            "SEALED-PROMPT-CHUNK", chunk.encode("utf-8", errors="strict"),
+            "SEALED-PROMPT-CHUNK",
+            chunk.encode("utf-8", errors="strict"),
+            validated_generated_payload=True,
         )
         content = "\n".join((
             _BROKER_AGY_STREAM_PROTOCOL,

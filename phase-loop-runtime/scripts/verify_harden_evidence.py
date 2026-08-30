@@ -85,7 +85,7 @@ FRAME_LINE = re.compile(
     r"bytes=(?P<bytes>0|[1-9][0-9]*)>>>$"
 )
 UNTRUSTED_FRAME_PREFIX = re.compile(
-    r"(?m)^[^\w\r\n]*(?:" + "|".join(
+    r"(?m)^[^A-Za-z0-9_\r\n]*(?:" + "|".join(
         re.escape(prefix)
         for prefix in (
             FRAME_PREFIX,
@@ -2872,6 +2872,36 @@ def self_test() -> None:
                     "self-test leading plan metadata replica",
                 ),
             )
+        ignorable_word_leaders = (
+            ("hangul-choseong-filler", "\u115f"),
+            ("hangul-jungseong-filler", "\u1160"),
+            ("hangul-filler", "\u3164"),
+            ("halfwidth-hangul-filler", "\uffa0"),
+        )
+        for leader_name, leader in ignorable_word_leaders:
+            for replica_name, replica in (
+                ("frame", replica_frame),
+                ("metadata", replica_metadata),
+            ):
+                direct_rejected(
+                    "patch-added-ignorable-" + replica_name + "-" + leader_name,
+                    lambda leader=leader, replica=replica: replica_patch(
+                        "+" + leader + replica
+                    ),
+                )
+                direct_rejected(
+                    "patch-context-ignorable-" + replica_name + "-" + leader_name,
+                    lambda leader=leader, replica=replica: replica_patch(
+                        " " + leader + replica
+                    ),
+                )
+                direct_rejected(
+                    "plan-ignorable-" + replica_name + "-" + leader_name,
+                    lambda leader=leader, replica=replica: untrusted_transport_text(
+                        leader + replica,
+                        "self-test ignorable leader replica",
+                    ),
+                )
         source_literal = 'frame_literal = "' + replica_frame + '"'
         if untrusted_transport_text(source_literal, "self-test source literal") != source_literal:
             raise AssertionError("identifier-prefixed source literal was not preserved")
