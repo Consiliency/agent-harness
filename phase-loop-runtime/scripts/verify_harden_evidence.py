@@ -31,6 +31,26 @@ from typing import Any, Callable
 SCHEMA = "verification_evidence.v3"
 BROKER_SCHEMA = "parent_unix_broker_v1"
 CANONICAL_GH = Path("/usr/bin/gh")
+CANONICAL_GITHUB_HOST = "github.com"
+CANONICAL_CI_REPOSITORY = "Consiliency/agent-harness"
+CANONICAL_CI_WORKFLOW_PATH = ".github/workflows/test.yml"
+CANONICAL_CI_WORKFLOW_NAME = "test"
+CANONICAL_CI_SUITE_GATE = "suite gate"
+CANONICAL_CI_EVENTS = {
+    "candidate": "pull_request",
+    "canonical_main": "push",
+}
+CI_QUERY_FIELDS = (
+    "databaseId,headSha,status,conclusion,event,workflowName,attempt,jobs"
+)
+CI_RESPONSE_CORE = {
+    "databaseId", "headSha", "status", "conclusion", "event",
+    "workflowName", "attempt",
+}
+CI_RICH_JOB_FIELDS = {
+    "completedAt", "conclusion", "databaseId", "name", "startedAt",
+    "status", "steps", "url",
+}
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}$")
@@ -1303,76 +1323,229 @@ def verify_final_group(store: ArtifactStore, group: Any, label: str, commit_id: 
         fail(f"{label}: empty lint receipt output")
 
 
-def query_ci(store: ArtifactStore, ci: dict[str, Any], query: Path) -> None:
-    if not query.is_file() or not os.access(query, os.X_OK):
+def canonical_ci_workflow(repo: Path, candidate: str, main: str) -> None:
+    """Derive the mandatory CI identity from the canonical Git workflow blob."""
+    candidate_blob, candidate_bytes = blob(repo, candidate, CANONICAL_CI_WORKFLOW_PATH)
+    main_blob, main_bytes = blob(repo, main, CANONICAL_CI_WORKFLOW_PATH)
+    if candidate_blob != main_blob or candidate_bytes != main_bytes:
+        fail("candidate CI workflow differs from canonical-main workflow")
+    try:
+        lines = main_bytes.decode("utf-8", "strict").splitlines()
+    except UnicodeDecodeError:
+        fail("canonical CI workflow is not UTF-8")
+    if not lines or lines[0] != "name: " + CANONICAL_CI_WORKFLOW_NAME:
+        fail("canonical CI workflow has the wrong name")
+    if lines.count("on:") != 1 or "  push:" not in lines or "  pull_request:" not in lines:
+        fail("canonical CI workflow lacks required push/pull-request triggers")
+    if lines.count("jobs:") != 1:
+        fail("canonical CI workflow has an ambiguous jobs section")
+    gate_positions = [index for index, line in enumerate(lines) if line == "  gate:"]
+    if len(gate_positions) != 1:
+        fail("canonical CI workflow has an ambiguous suite gate")
+    gate = gate_positions[0]
+    gate_name_count = 0
+    for line in lines[gate + 1:]:
+        if line and not line.startswith(" "):
+            break
+        if line.startswith("  ") and not line.startswith("    "):
+            break
+        if line == "    name: " + CANONICAL_CI_SUITE_GATE:
+            gate_name_count += 1
+    if gate_name_count != 1:
+        fail("canonical CI workflow has the wrong suite-gate name")
+
+
+def ci_command(run_id: int) -> tuple[str, ...]:
+    """Build the fixed github.com read-only query without evidence-selected IDs."""
+    return (
+        str(CANONICAL_GH), "run", "view", str(run_id), "--repo",
+        CANONICAL_GITHUB_HOST + "/" + CANONICAL_CI_REPOSITORY,
+        "--json", CI_QUERY_FIELDS,
+    )
+
+
+def github_cli_environment(config_dir: Path, *, canonical: bool) -> dict[str, str]:
+    """Return the only environment allowed for a bounded GitHub API read."""
+    environment = {
+        "PATH": os.defpath,
+        "HOME": str(config_dir),
+        "XDG_CONFIG_HOME": str(config_dir),
+        "XDG_CACHE_HOME": str(config_dir),
+        "XDG_STATE_HOME": str(config_dir),
+        "GH_CONFIG_DIR": str(config_dir),
+        "GH_HOST": CANONICAL_GITHUB_HOST,
+        "GH_NO_UPDATE_NOTIFIER": "1",
+        "GH_NO_EXTENSION_UPDATE_NOTIFIER": "1",
+        "GH_PAGER": "cat",
+        "GH_PROMPT_DISABLED": "1",
+        "NO_COLOR": "1",
+        "CLICOLOR": "0",
+        "GIT_TERMINAL_PROMPT": "0",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "TZ": "UTC",
+    }
+    if canonical:
+        for credential_name in ("GH_TOKEN", "GITHUB_TOKEN"):
+            credential = os.environ.get(credential_name)
+            if credential:
+                environment[credential_name] = credential
+                break
+        else:
+            fail("canonical GitHub query lacks an explicit github.com credential")
+    return environment
+
+
+def _ci_query_mode(store: ArtifactStore, query: Path) -> bool:
+    """Return canonical mode; allow a contained fake only for in-process tests."""
+    try:
+        query_stat = query.lstat()
+    except OSError:
         fail("authoritative CI query is unavailable")
-    command = (str(query), "run", "view", str(ci["run_id"]), "--repo", ci["repository"], "--json", "databaseId,headSha,status,conclusion,event,workflowName,attempt,jobs")
-    completed = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False, timeout=20)
+    if stat.S_ISLNK(query_stat.st_mode) or not stat.S_ISREG(query_stat.st_mode) or not os.access(query, os.X_OK):
+        fail("authoritative CI query is unavailable")
+    if query == CANONICAL_GH:
+        return True
+    try:
+        query_parent = query.resolve(strict=True).parent
+    except OSError:
+        fail("injected CI query is unavailable")
+    if query_parent != store.root.parent:
+        fail("injected CI query is not contained by its hermetic fixture")
+    return False
+
+
+def normalize_ci_jobs(value: Any, *, canonical: bool) -> list[dict[str, Any]]:
+    """Normalize real rich job metadata without retaining logs or step content."""
+    if not isinstance(value, list) or not value:
+        fail("CI provider job receipt is malformed")
+    jobs: list[dict[str, Any]] = []
+    job_ids: set[int] = set()
+    for job in value:
+        if not isinstance(job, dict):
+            fail("CI provider job receipt is malformed")
+        if set(job) == {"name", "conclusion"} and not canonical:
+            name = text(job["name"], "CI provider injected job name")
+            conclusion = text(job["conclusion"], "CI provider injected job conclusion")
+            jobs.append({"name": name, "conclusion": conclusion})
+            continue
+        if set(job) == {"databaseId", "name", "status", "conclusion"} and not canonical:
+            job_id = integer(job["databaseId"], "CI provider injected job id", minimum=1)
+            if job_id in job_ids or job["status"] != "completed":
+                fail("CI provider job receipt is malformed")
+            job_ids.add(job_id)
+            jobs.append({
+                "databaseId": job_id,
+                "name": text(job["name"], "CI provider injected job name"),
+                "status": "completed",
+                "conclusion": text(job["conclusion"], "CI provider injected job conclusion"),
+            })
+            continue
+        if set(job) != CI_RICH_JOB_FIELDS:
+            fail("CI provider job receipt is malformed")
+        job_id = integer(job["databaseId"], "CI provider job id", minimum=1)
+        if job_id in job_ids:
+            fail("CI provider job receipt has duplicate job IDs")
+        job_ids.add(job_id)
+        name = text(job["name"], "CI provider job name")
+        conclusion = text(job["conclusion"], "CI provider job conclusion")
+        if job["status"] != "completed":
+            fail("CI provider job receipt is not completed")
+        if not isinstance(job["steps"], list):
+            fail("CI provider job receipt has malformed steps")
+        for field in ("completedAt", "startedAt", "url"):
+            if not isinstance(job[field], str) or not job[field]:
+                fail("CI provider job receipt is malformed")
+        jobs.append({
+            "databaseId": job_id,
+            "name": name,
+            "status": "completed",
+            "conclusion": conclusion,
+        })
+    gates = [job for job in jobs if job["name"] == CANONICAL_CI_SUITE_GATE]
+    if len(gates) != 1 or gates[0]["conclusion"] != "success":
+        fail("authoritative CI suite gate is missing, duplicated, or failed")
+    return jobs
+
+
+def query_ci(store: ArtifactStore, ci: dict[str, Any], query: Path, expected_event: str) -> None:
+    canonical = _ci_query_mode(store, query)
+    receipt = store.json(artifact_ref(ci["provider_receipt"], "CI provider receipt"), "CI provider receipt")
+    executable = CANONICAL_GH if canonical else query
+    command = ci_command(integer(ci["run_id"], "ci.run_id", minimum=1)) if canonical else (
+        str(executable), "run", "view", str(ci["run_id"]), "--repo",
+        CANONICAL_GITHUB_HOST + "/" + CANONICAL_CI_REPOSITORY,
+        "--json", CI_QUERY_FIELDS,
+    )
+    with tempfile.TemporaryDirectory(prefix="harden-gh-authority-") as temporary:
+        authority_root = Path(temporary)
+        completed = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=20,
+            cwd=authority_root,
+            env=github_cli_environment(authority_root, canonical=canonical),
+        )
     if completed.returncode:
         fail("authoritative CI query failed")
     try:
         response = json.loads(completed.stdout.decode("utf-8"), object_pairs_hook=json_no_duplicates)
     except (UnicodeDecodeError, json.JSONDecodeError):
         fail("CI provider returned invalid JSON")
-    core = {"databaseId", "headSha", "status", "conclusion", "event", "workflowName", "attempt"}
-    is_canonical_query = query == CANONICAL_GH
-    if not isinstance(response, dict) or set(response) not in (core, core | {"jobs"}):
+    if not isinstance(response, dict) or set(response) not in (CI_RESPONSE_CORE, CI_RESPONSE_CORE | {"jobs"}):
         fail("CI provider response has an unexpected schema")
-    if "jobs" not in response:
-        # Frozen hermetic verifier callers inject a minimal provider surface.
-        # The production CLI never exposes that injection and therefore always
-        # requires the exact successful check below.
-        if is_canonical_query:
-            fail("canonical CI response omitted the required check receipt")
-        jobs = [{"name": ci["check"], "conclusion": "success"}]
+    if "jobs" in response:
+        jobs = normalize_ci_jobs(response["jobs"], canonical=canonical)
     else:
-        raw_jobs = response["jobs"]
-        if not isinstance(raw_jobs, list):
-            fail("CI provider job receipt is malformed")
-        jobs: list[dict[str, Any]] = []
-        rich_keys = {
-            "completedAt", "conclusion", "databaseId", "name", "startedAt",
-            "status", "steps", "url",
-        }
-        for job in raw_jobs:
-            if not isinstance(job, dict):
-                fail("CI provider job receipt is malformed")
-            if set(job) == {"name", "conclusion"} and not is_canonical_query:
-                normalized_job = job
-            else:
-                if set(job) != rich_keys or job["status"] != "completed":
-                    fail("CI provider job receipt is malformed")
-                normalized_job = {"name": job["name"], "conclusion": job["conclusion"]}
-            if not isinstance(normalized_job["name"], str) or not isinstance(normalized_job["conclusion"], str):
-                fail("CI provider job receipt is malformed")
-            jobs.append(normalized_job)
-        if jobs != [{"name": ci["check"], "conclusion": "success"}]:
-            fail("authoritative CI check evidence is missing, duplicated, failed, or unexpected")
-    normalized = {"databaseId": response["databaseId"], "headSha": response["headSha"], "status": response["status"], "conclusion": response["conclusion"], "event": response["event"], "workflowName": response["workflowName"], "attempt": response["attempt"], "jobs": jobs}
-    receipt = store.json(artifact_ref(ci["provider_receipt"], "CI provider receipt"), "CI provider receipt")
+        if canonical:
+            fail("canonical CI response omitted the required suite-gate receipt")
+        if not isinstance(receipt, dict) or "jobs" not in receipt:
+            fail("injected CI response omitted the required suite-gate receipt")
+        jobs = normalize_ci_jobs(receipt["jobs"], canonical=False)
+    normalized = {
+        "databaseId": response["databaseId"], "headSha": response["headSha"],
+        "status": response["status"], "conclusion": response["conclusion"],
+        "event": response["event"], "workflowName": response["workflowName"],
+        "attempt": response["attempt"], "jobs": jobs,
+    }
     if receipt != normalized or sha256(canonical_bytes(receipt)) != ci["provider_receipt"]["sha256"]:
         fail("retained CI receipt is detached from authoritative provider output")
-    if normalized != {"databaseId": ci["run_id"], "headSha": ci["head"], "status": "completed", "conclusion": "success", "event": ci["event"], "workflowName": ci["workflow"], "attempt": ci["run_attempt"], "jobs": [{"name": ci["check"], "conclusion": "success"}]}:
-        fail("authoritative CI state does not bind evidence")
+    expected = {
+        "databaseId": ci["run_id"], "headSha": ci["head"],
+        "status": "completed", "conclusion": "success", "event": expected_event,
+        "workflowName": CANONICAL_CI_WORKFLOW_NAME,
+        "attempt": ci["run_attempt"], "jobs": jobs,
+    }
+    if normalized != expected:
+        fail("authoritative CI state does not bind the pinned suite gate")
 
 
-def verify_ci(store: ArtifactStore, data: Any, candidate: str, main: str, repository: str, query: Path) -> None:
+def verify_ci(store: ArtifactStore, data: Any, repo: Path, candidate: str, main: str, repository: str, query: Path) -> None:
+    if repository != CANONICAL_CI_REPOSITORY:
+        fail("CI repository is not the canonical HARDEN repository")
+    canonical_ci_workflow(repo, candidate, main)
     groups = closed(data, {"candidate", "canonical_main"}, "ci")
     run_ids: set[int] = set()
     for label, head in (("candidate", candidate), ("canonical_main", main)):
         ci = closed(groups[label], {"provider", "repository", "run_id", "workflow", "event", "run_attempt", "head", "check", "provider_receipt"}, "ci." + label)
-        if ci["provider"] != "github_actions" or ci["head"] != head or ci["repository"] != repository:
-            fail("unsupported CI provider or wrong CI head")
-        text(ci["repository"], "ci.repository", pattern=IDENTITY)
-        text(ci["workflow"], "ci.workflow", pattern=IDENTITY)
-        text(ci["event"], "ci.event", pattern=IDENTITY)
-        text(ci["check"], "ci.check", pattern=IDENTITY)
+        expected_event = CANONICAL_CI_EVENTS[label]
+        if (
+            ci["provider"] != "github_actions"
+            or ci["head"] != head
+            or ci["repository"] != CANONICAL_CI_REPOSITORY
+            or ci["workflow"] != CANONICAL_CI_WORKFLOW_NAME
+            or ci["event"] != expected_event
+            or ci["check"] != CANONICAL_CI_SUITE_GATE
+        ):
+            fail("unsupported CI provider or unpinned CI identity")
         run_id = integer(ci["run_id"], "ci.run_id", minimum=1)
         if run_id in run_ids:
             fail("candidate and canonical-main CI runs must be distinct")
         run_ids.add(run_id)
         integer(ci["run_attempt"], "ci.run_attempt", minimum=1)
-        query_ci(store, ci, query)
+        query_ci(store, ci, query, expected_event)
 
 
 def verify_broker(value: Any, harness: str, requested: str, resolved: str, bundle_sha256: str, instructions_sha256: str, sealed_prompt: str, report: str) -> None:
@@ -1761,7 +1934,7 @@ def verify(evidence_path: Path, evidence_root: Path, repo: Path, *, reuse_regist
     verification = closed(data["verification"], {"candidate", "canonical_main"}, "verification")
     verify_final_group(store, verification["candidate"], "candidate verification", candidate, candidate_tree, nonces)
     verify_final_group(store, verification["canonical_main"], "canonical-main verification", main, main_tree, nonces)
-    verify_ci(store, data["ci"], candidate, main, data["repository"], ci_query)
+    verify_ci(store, data["ci"], repo, candidate, main, data["repository"], ci_query)
     reviews = closed(data["reviews"], {"candidate", "canonical_main"}, "reviews")
     seat_ids: set[str] = set()
     seat_sessions: set[str] = set()
@@ -1837,6 +2010,20 @@ def _self_git(
     plan.parent.mkdir(parents=True, exist_ok=True)
     plan.write_text("# HARDEN self-test plan\n\nAuthoritative review instructions.\n")
     (repo / "plans/manifest.json").write_text("{\"plans\":[]}\n")
+    workflow = repo / CANONICAL_CI_WORKFLOW_PATH
+    workflow.parent.mkdir(parents=True, exist_ok=True)
+    workflow.write_text(
+        "name: test\n\n"
+        "on:\n"
+        "  push:\n"
+        "    branches: [main]\n"
+        "  pull_request:\n\n"
+        "jobs:\n"
+        "  gate:\n"
+        "    name: suite gate\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps: []\n"
+    )
     (repo / ".gitignore").write_text(".phase-loop/\n")
     _run(["git", "add", "."], repo); _run(["git", "commit", "-qm", "base"], repo)
     base = _run(["git", "rev-parse", "HEAD"], repo)
@@ -2143,12 +2330,54 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
     roles = {}
     for role, identity, vendor, session in (("coordinator", "coordinator-1", "coordinator", coordinator_session), ("author", "author-1", "codex-gpt-5.6-terra", author_session), ("reviewer", "reviewer-" + reviewer_session[:32], "reviewer", reviewer_session)):
         roles[role] = put("role-" + role, {"schema": "harden_role_attestation.v1", "role": role, "identity": identity, "vendor": vendor, "session_sha256": session, "evidence_id": evidence_id, "issued_at": "2026-08-27T00:00:00Z"})
-    def ci_record(label: str, run_id: int, head: str) -> dict[str, Any]:
+    def ci_jobs(run_id: int) -> list[dict[str, Any]]:
+        return [
+            {
+                "databaseId": run_id * 100 + 1,
+                "name": "CI-offload eligibility",
+                "status": "completed",
+                "conclusion": "success",
+            },
+            {
+                "databaseId": run_id * 100 + 2,
+                "name": CANONICAL_CI_SUITE_GATE,
+                "status": "completed",
+                "conclusion": "success",
+            },
+            {
+                "databaseId": run_id * 100 + 3,
+                "name": "lint (pyflakes)",
+                "status": "completed",
+                "conclusion": "success",
+            },
+        ]
+
+    def ci_record(label: str, run_id: int, head: str, event: str) -> dict[str, Any]:
+        jobs = ci_jobs(run_id)
         provider_receipt = put(
             "ci-provider-" + label,
-            {"databaseId": run_id, "headSha": head, "status": "completed", "conclusion": "success", "event": "push", "workflowName": "HARDEN", "attempt": 1, "jobs": [{"name": "HARDEN", "conclusion": "success"}]},
+            {
+                "databaseId": run_id,
+                "headSha": head,
+                "status": "completed",
+                "conclusion": "success",
+                "event": event,
+                "workflowName": CANONICAL_CI_WORKFLOW_NAME,
+                "attempt": 1,
+                "jobs": jobs,
+            },
         )
-        return {"provider": "github_actions", "repository": "Consiliency/agent-harness", "run_id": run_id, "workflow": "HARDEN", "event": "push", "run_attempt": 1, "head": head, "check": "HARDEN", "provider_receipt": provider_receipt}
+        return {
+            "provider": "github_actions",
+            "repository": CANONICAL_CI_REPOSITORY,
+            "run_id": run_id,
+            "workflow": CANONICAL_CI_WORKFLOW_NAME,
+            "event": event,
+            "run_attempt": 1,
+            "head": head,
+            "check": CANONICAL_CI_SUITE_GATE,
+            "provider_receipt": provider_receipt,
+        }
 
     authority: dict[str, Any] = {}
     for name, path in (("plan", "plans/phase-plan-v10-HARDEN.md"), ("manifest", "plans/manifest.json")):
@@ -2159,36 +2388,54 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
         }
 
     evidence: dict[str, Any] = {
-        "schema": SCHEMA, "evidence_id": evidence_id, "repository": "Consiliency/agent-harness",
+        "schema": SCHEMA, "evidence_id": evidence_id, "repository": CANONICAL_CI_REPOSITORY,
         "git": {name: {"commit": commit_id, "tree": tree} for name, (commit_id, tree) in refs.items()},
         "authority": authority,
         "sl0": {"frozen_inventory": inventory, "activated_red": activated, "pure_control": pure, "mutations": mutations},
         "verification": {"candidate": final_group("candidate", candidate, candidate_tree), "canonical_main": final_group("main", main, main_tree)},
-        "ci": {"candidate": ci_record("candidate", 98, candidate), "canonical_main": ci_record("canonical-main", 99, main)},
+        "ci": {
+            "candidate": ci_record("candidate", 98, candidate, CANONICAL_CI_EVENTS["candidate"]),
+            "canonical_main": ci_record("canonical-main", 99, main, CANONICAL_CI_EVENTS["canonical_main"]),
+        },
         "reviews": reviews, "roles": roles, "completion": {"mode": "pre_completion"},
     }
     evidence_path = root / "evidence.json"; evidence_path.write_bytes(canonical_bytes(evidence))
     fake_gh = root / "fake-gh"
-    responses = {
-        str(ci["run_id"]): {
+    responses = {}
+    for ci in evidence["ci"].values():
+        provider_receipt = parse_canonical_json(
+            (artifacts / ci["provider_receipt"]["path"]).read_bytes(),
+            "self-test CI provider receipt",
+        )
+        responses[str(ci["run_id"])] = {
             "databaseId": ci["run_id"], "headSha": ci["head"],
-            "status": "completed", "conclusion": "success", "event": "push",
+            "status": "completed", "conclusion": "success", "event": ci["event"],
             "workflowName": ci["workflow"], "attempt": ci["run_attempt"],
-            "jobs": [{
-                "completedAt": "2026-08-27T00:00:01Z", "conclusion": "success",
-                "databaseId": ci["run_id"] + 1000, "name": ci["check"],
-                "startedAt": "2026-08-27T00:00:00Z", "status": "completed",
-                "steps": [], "url": "https://example.invalid/job",
-            }],
-        }
-        for ci in evidence["ci"].values()
+            "jobs": [
+                {
+                    "completedAt": "2026-08-27T00:00:01Z",
+                    "conclusion": job["conclusion"],
+                    "databaseId": job["databaseId"],
+                    "name": job["name"],
+                    "startedAt": "2026-08-27T00:00:00Z",
+                    "status": job["status"],
+                    "steps": [],
+                    "url": "https://example.invalid/job/" + str(job["databaseId"]),
+                }
+                for job in provider_receipt["jobs"]
+            ],
     }
     responses_path = root / "fake-gh-responses.json"
     responses_path.write_bytes(canonical_bytes(responses))
     fake_gh.write_text(
         "#!/usr/bin/env python3\n"
-        "import json, sys\n"
-        f"responses = json.loads(open({str(responses_path)!r}, encoding='utf-8').read())\n"
+        "import json, os, sys\n"
+        "from pathlib import Path\n"
+        "root = Path(__file__).resolve().parent\n"
+        "responses = json.loads((root / 'fake-gh-responses.json').read_text(encoding='utf-8'))\n"
+        "trace = root / 'fake-gh-trace.jsonl'\n"
+        "record = {'args': sys.argv[1:], 'env_keys': sorted(os.environ), 'gh_host': os.environ.get('GH_HOST', '')}\n"
+        "trace.write_text((trace.read_text(encoding='utf-8') if trace.exists() else '') + json.dumps(record) + '\\n', encoding='utf-8')\n"
         "print(json.dumps(responses[sys.argv[3]]))\n"
     )
     fake_gh.chmod(0o700)
@@ -2253,6 +2500,68 @@ def self_test() -> None:
         baseline.mkdir()
         evidence_path, artifacts, repo, evidence, registry, coordinator, author = _fixture(baseline)
         verify(evidence_path, artifacts, repo, reuse_registry=registry, expected_coordinator_session=coordinator, expected_author_session=author, ci_query=baseline / "fake-gh")
+
+        def github_environment_isolation() -> None:
+            hostile = {
+                "GH_HOST": "hostile.invalid",
+                "GH_CONFIG_DIR": str(root / "hostile-gh-config"),
+                "GH_REPO": "hostile/echo",
+                "GH_PATH": "/tmp/hostile-gh",
+                "HTTP_PROXY": "http://127.0.0.1:9",
+                "HTTPS_PROXY": "http://127.0.0.1:9",
+                "ALL_PROXY": "http://127.0.0.1:9",
+                "SSL_CERT_FILE": "/tmp/hostile-ca",
+                "SSL_CERT_DIR": "/tmp/hostile-ca-dir",
+                "CURL_CA_BUNDLE": "/tmp/hostile-ca",
+                "REQUESTS_CA_BUNDLE": "/tmp/hostile-ca",
+                "GH_TOKEN": "self-test-gh-credential",
+            }
+            prior = {key: os.environ.get(key) for key in hostile}
+            os.environ.update(hostile)
+            try:
+                with tempfile.TemporaryDirectory(prefix="harden-gh-self-test-") as temporary:
+                    authority_root = Path(temporary)
+                    canonical_environment = github_cli_environment(authority_root, canonical=True)
+                    if (
+                        canonical_environment.get("GH_HOST") != CANONICAL_GITHUB_HOST
+                        or canonical_environment.get("GH_CONFIG_DIR") != str(authority_root)
+                        or canonical_environment.get("GH_TOKEN") != hostile["GH_TOKEN"]
+                        or "GITHUB_TOKEN" in canonical_environment
+                    ):
+                        raise AssertionError("canonical GitHub environment did not select the fixed authority")
+                    if any(key in canonical_environment for key in (
+                        "GH_REPO", "GH_PATH", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+                        "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE",
+                    )):
+                        raise AssertionError("ambient GitHub transport authority leaked into canonical query")
+                    expected_command = list(ci_command(evidence["ci"]["candidate"]["run_id"]))
+                    if expected_command[5] != CANONICAL_GITHUB_HOST + "/" + CANONICAL_CI_REPOSITORY:
+                        raise AssertionError("canonical GitHub command did not pin github.com repository")
+                trace = baseline / "fake-gh-trace.jsonl"
+                trace.unlink(missing_ok=True)
+                verify(evidence_path, artifacts, repo, reuse_registry=registry, expected_coordinator_session=coordinator, expected_author_session=author, ci_query=baseline / "fake-gh")
+                records = [json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()]
+                if len(records) != 2 or any(record["gh_host"] != CANONICAL_GITHUB_HOST for record in records):
+                    raise AssertionError("injected CI query did not receive fixed github.com authority")
+                forbidden = {
+                    "GH_TOKEN", "GITHUB_TOKEN", "GH_REPO", "GH_PATH", "HTTP_PROXY",
+                    "HTTPS_PROXY", "ALL_PROXY", "SSL_CERT_FILE", "SSL_CERT_DIR",
+                    "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE",
+                }
+                if any(forbidden & set(record["env_keys"]) for record in records):
+                    raise AssertionError("ambient GitHub authority reached injected CI query")
+                expected_prefix = ["run", "view"]
+                expected_repo = CANONICAL_GITHUB_HOST + "/" + CANONICAL_CI_REPOSITORY
+                if any(record["args"][:2] != expected_prefix or record["args"][4] != expected_repo for record in records):
+                    raise AssertionError("GitHub query command did not pin the canonical repository")
+            finally:
+                for key, value in prior.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+
+        github_environment_isolation()
 
         def relocated_parent_header() -> None:
             candidate = evidence["git"]["candidate"]
@@ -2656,11 +2965,49 @@ def self_test() -> None:
         rejected("stale-process", lambda model, _root, _artifacts: model["verification"]["canonical_main"].__setitem__("run_nonce", model["verification"]["candidate"]["run_nonce"]))
         rejected("detached-ci", lambda model, _root, _artifacts: model["ci"]["candidate"].__setitem__("run_id", 100))
         rejected("wrong-ci-head", lambda model, _root, _artifacts: model["ci"]["canonical_main"].__setitem__("head", model["git"]["candidate"]["commit"]))
+        rejected("wrong-ci-workflow", lambda model, _root, _artifacts: model["ci"]["candidate"].__setitem__("workflow", "other-workflow"))
+        rejected("wrong-ci-check", lambda model, _root, _artifacts: model["ci"]["candidate"].__setitem__("check", "other check"))
+        rejected("wrong-candidate-ci-event", lambda model, _root, _artifacts: model["ci"]["candidate"].__setitem__("event", "push"))
+        rejected("wrong-canonical-main-ci-event", lambda model, _root, _artifacts: model["ci"]["canonical_main"].__setitem__("event", "pull_request"))
         def failed_ci(model: dict[str, Any], local_root: Path, _artifacts: Path) -> None:
             ci = model["ci"]["candidate"]
             response = {"databaseId": ci["run_id"], "headSha": ci["head"], "status": "completed", "conclusion": "failure", "event": ci["event"], "workflowName": ci["workflow"], "attempt": ci["run_attempt"]}
             (local_root / "fake-gh").write_text("#!/bin/sh\nprintf '%s' '" + canonical_bytes(response).decode().replace("'", "'\\''") + "'\n"); (local_root / "fake-gh").chmod(0o700)
         rejected("failed-ci", failed_ci)
+        def ci_response_mutation(change: Callable[[dict[str, Any]], None]) -> Callable[[dict[str, Any], Path, Path], None]:
+            def mutate(model: dict[str, Any], local_root: Path, _artifacts: Path) -> None:
+                path = local_root / "fake-gh-responses.json"
+                responses = parse_canonical_json(path.read_bytes(), "self-test CI responses")
+                candidate_response = responses[str(model["ci"]["candidate"]["run_id"])]
+                change(candidate_response)
+                path.write_bytes(canonical_bytes(responses))
+            return mutate
+        rejected("missing-ci-suite-gate", ci_response_mutation(
+            lambda response: response.__setitem__(
+                "jobs",
+                [job for job in response["jobs"] if job["name"] != CANONICAL_CI_SUITE_GATE],
+            )
+        ))
+        rejected("wrong-provider-ci-workflow", ci_response_mutation(
+            lambda response: response.__setitem__("workflowName", "other-workflow")
+        ))
+        rejected("wrong-provider-ci-event", ci_response_mutation(
+            lambda response: response.__setitem__("event", "workflow_dispatch")
+        ))
+        def wrong_provider_ci_check(response: dict[str, Any]) -> None:
+            gate = next(job for job in response["jobs"] if job["name"] == CANONICAL_CI_SUITE_GATE)
+            gate["name"] = "other check"
+        rejected("wrong-provider-ci-check", ci_response_mutation(wrong_provider_ci_check))
+        def duplicate_ci_suite_gate(response: dict[str, Any]) -> None:
+            gate = next(job for job in response["jobs"] if job["name"] == CANONICAL_CI_SUITE_GATE)
+            duplicate = copy.deepcopy(gate)
+            duplicate["databaseId"] += 10_000
+            response["jobs"].append(duplicate)
+        rejected("duplicate-ci-suite-gate", ci_response_mutation(duplicate_ci_suite_gate))
+        def failed_ci_suite_gate(response: dict[str, Any]) -> None:
+            gate = next(job for job in response["jobs"] if job["name"] == CANONICAL_CI_SUITE_GATE)
+            gate["conclusion"] = "failure"
+        rejected("failed-ci-suite-gate", ci_response_mutation(failed_ci_suite_gate))
         def seat_mutation(change: Callable[[dict[str, Any]], None]) -> Callable[[dict[str, Any], Path, Path], None]:
             def mutate(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
                 ref = model["reviews"]["candidate"]["seats"][0]["artifact"]; mutate_json(ref, artifact_root, change)
