@@ -126,15 +126,29 @@ def _registry(selected: str, entries) -> str:
     })
 
 
-def _repo_with_two_phases(tmp: str) -> Path:
-    """A roadmap where ALPHA owns src/alpha.py and BETA owns src/beta.py."""
+def _own(path: str, alias: str, name: str = "First Thing", note: str = "") -> ro.Ownership:
+    """An Ownership for renderer tests, which take the structure not the repo."""
+    return ro.Ownership(
+        path=path, phase_alias=alias, phase_name=name, is_current=False, note=note
+    )
+
+
+def _repo_with_two_phases(tmp: str, roadmap: str = ROADMAP) -> Path:
+    """A repo carrying the shared ROADMAP fixture.
+
+    ALPHA claims ``src/alpha.py`` and ``src/shared.py``; BETA claims ``src/beta/``
+    and ``src/shared.py``.
+
+    The docstring used to promise a roadmap this function built, via a
+    ``ROADMAP.replace("- `src/alpha.py`", "- `src/alpha.py`")`` that replaced a
+    string with itself. The tests passed because the shared fixture already said
+    what was needed, so the no-op was invisible -- but any test trusting the
+    docstring's "BETA owns src/beta.py" was reading a claim nothing established.
+    ``roadmap`` is a real parameter now, for cases needing a variant.
+    """
     repo = Path(tmp)
     (repo / "specs").mkdir(parents=True, exist_ok=True)
-    body = ROADMAP.replace(
-        "- `src/alpha.py`",
-        "- `src/alpha.py`",
-    )
-    (repo / "specs" / "phase-plans-v10.md").write_text(body)
+    (repo / "specs" / "phase-plans-v10.md").write_text(roadmap)
     (repo / "src").mkdir(exist_ok=True)
     (repo / "src" / "alpha.py").write_text("x = 1\n")
     return repo
@@ -1202,7 +1216,9 @@ class TestPreflight(unittest.TestCase):
             repo = self._repo(tmp)
             owned = ro.preflight(repo, ["src/alpha.py"])
             self.assertIn("src/alpha.py", owned)
-            self.assertEqual(owned["src/alpha.py"], ["ALPHA"])
+            self.assertEqual(
+                [o.phase_alias for o in owned["src/alpha.py"]], ["ALPHA"]
+            )
 
     def test_your_OWN_phase_is_excluded(self):
         """The question is "does this belong to somebody ELSE?" -- a phase
@@ -1245,9 +1261,120 @@ class TestPreflight(unittest.TestCase):
         which one is a real block; a gate on that signal fires falsely on five.
         The output must say ownership only, and say so.
         """
-        out = ro.render_preflight({"src/alpha.py": ["ALPHA"]})
+        out = ro.render_preflight({"src/alpha.py": [_own("src/alpha.py", "ALPHA")]})
         self.assertIn("BLOCK STATE IS NOT", out)
         self.assertIn("does not authorize", out)
+
+    def test_the_SAME_file_answers_the_same_however_it_is_spelled(self):
+        """The fail-open a cross-vendor panel caught (codex + grok, PR 725).
+
+        `_claims` compares the argument to repo-relative roadmap tokens by exact
+        match and `startswith`, so before normalization the same claimed file
+        answered three different ways:
+
+            src/alpha.py    -> exit 1, claimed
+            ./src/alpha.py  -> exit 0, "no path is claimed"
+            <abs>/src/alpha.py -> exit 0, "no path is claimed"
+
+        Both false forms are what people actually type. The failure is
+        fail-OPEN -- the wrong answer is the reassuring one -- in the guard whose
+        entire purpose is catching an edit into another phase's files.
+
+        Mutation that must kill this: drop the `_normalize_preflight_path` call
+        and pass `raw` straight to `owners_for`.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = self._repo(tmp)
+            spellings = [
+                "src/alpha.py",
+                "./src/alpha.py",
+                "src/./alpha.py",
+                "src/beta/../alpha.py",
+                str(Path(tmp) / "src" / "alpha.py"),
+            ]
+            for spelling in spellings:
+                with self.subTest(spelling=spelling):
+                    owned = ro.preflight(repo, [spelling])
+                    self.assertEqual(
+                        [o.phase_alias for o in owned.get(spelling, [])],
+                        ["ALPHA"],
+                        f"{spelling!r} must resolve to the same claim as the "
+                        f"repo-relative form",
+                    )
+
+    def test_a_path_OUTSIDE_the_repo_cannot_evaluate_rather_than_clearing(self):
+        """A path this command cannot place in the repo must not be silently
+        skipped: skipping empties the result, and an empty result prints "no path
+        is claimed" and exits 0 -- a pass produced by not having looked.
+
+        Mutation that must kill this: `continue` instead of raising in
+        `_normalize_preflight_path`, which yields exit 0.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = self._repo(tmp)
+            with self.assertRaises(ro.PathNotInRepo):
+                ro.preflight(repo, ["/etc/passwd"])
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = ro.main(["prog", "--repo", str(repo),
+                              "--preflight", "/etc/passwd"])
+            self.assertEqual(rc, 2, "cannot-evaluate is 2, never 0 and never 1")
+            self.assertIn("CANNOT EVALUATE", buf.getvalue())
+
+    def test_an_unresolvable_roadmap_exits_2_not_1(self):
+        """Both panel seats found this independently.
+
+        `preflight` called `declared_active_roadmap` directly, whose
+        `RoadmapStatusError` subclasses no caller catches. The exception escaped,
+        Python exited 1, and 1 is the code this command DEFINES as "claimed by
+        another phase" -- so "I cannot tell which roadmap is active" was
+        indistinguishable from "you are blocked".
+
+        Mutation that must kill this: call `declared_active_roadmap(repo)` in
+        `preflight` instead of `resolve_roadmap(repo)`.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = Path(tmp)  # no specs/, no registry -> unresolvable
+            (repo / "src").mkdir()
+            with self.assertRaises(ro.RoadmapUnreadable):
+                ro.preflight(repo, ["src/alpha.py"])
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = ro.main(["prog", "--repo", str(repo),
+                              "--preflight", "src/alpha.py"])
+            self.assertEqual(rc, 2)
+            self.assertIn("CANNOT EVALUATE", buf.getvalue())
+
+    def test_a_SCOPED_claim_is_not_presented_as_an_unconditional_one(self):
+        """The roadmap qualifies some claims -- GOVLEAN's directory entry reads
+        "`<dir>/` (new evidence, lint, and governance modules)", scoping it to
+        PART of that directory. `audit` already surfaces the parenthetical
+        verbatim; `preflight` kept only aliases, so it reported the whole
+        directory as owned outright. That over-report is how this module briefly
+        had GOVLEAN owning the entire source tree.
+
+        Mutation that must kill this: drop `note=` from the Ownership built in
+        `preflight`.
+        """
+        scoped = ROADMAP.replace(
+            "- `src/beta/`", "- `src/beta/` (only the lane-B evidence modules)"
+        )
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=scoped)
+            owned = ro.preflight(repo, ["src/beta/thing.py"])
+            claims = owned["src/beta/thing.py"]
+            self.assertEqual([o.phase_alias for o in claims], ["BETA"])
+            self.assertEqual(claims[0].note, "(only the lane-B evidence modules)")
+            self.assertIn("SCOPED", ro.render_preflight(owned))
+
+    def test_without_current_phase_the_output_does_not_say_another_phase(self):
+        """"another phase" implies an exclusion that only happened if one was
+        named. Without `--current-phase` the question is "does ANY phase claim
+        this?", and the answer must not imply otherwise.
+        """
+        owned = {"src/alpha.py": [_own("src/alpha.py", "ALPHA")]}
+        self.assertNotIn("another phase", ro.render_preflight(owned))
+        self.assertIn("another phase", ro.render_preflight(owned, "BETA"))
 
 
 class TestPartialDrift(unittest.TestCase):

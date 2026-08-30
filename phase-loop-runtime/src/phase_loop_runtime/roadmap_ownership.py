@@ -13,12 +13,19 @@ present and machine-readable the whole time -- ``roadmap_lint`` already parses
 ``Key files`` into ``Phase.key_files`` and already ERRORS when a phase omits them.
 Nothing consumed it as ownership.
 
-Deliberately ADVISORY in this first form: it annotates, it never fails. A gate
-that blocks merges is only worth turning on once its flag rate has been measured
-against real history (the flag rate, not the false-positive rate: nothing here
-establishes which flags were wrong) -- which is what ``--report`` does. Shipping it
-blocking-first would red the repo on the day it landed, which is how a gate gets
-disabled rather than fixed.
+The POST-hoc audit (``audit`` / ``--report``) is deliberately ADVISORY: it
+annotates, it never fails. A gate that blocks merges is only worth turning on once
+its flag rate has been measured against real history (the flag rate, not the
+false-positive rate: nothing here establishes which flags were wrong) -- which is
+what ``--report`` does. Shipping it blocking-first would red the repo on the day it
+landed, which is how a gate gets disabled rather than fixed.
+
+``--preflight`` is the PRE-edit question and is scriptable, so it does exit
+non-zero -- 1 when somebody else claims a path, 2 when ownership cannot be
+evaluated at all. Those two must never collide: a caller that reads "cannot
+evaluate" as "you are blocked" (or the reverse) is exactly the confusion the
+module exists to prevent, so every failure to resolve the roadmap is normalized
+through ``resolve_roadmap`` into ``RoadmapUnreadable`` and reported as 2.
 
 This module IMPORTS ``roadmap_lint`` rather than editing it: that file belongs to
 Phase 0 (LEGIBLE), and the point of this check is to stop people writing into
@@ -629,26 +636,97 @@ def preflight(repo: Path, paths: Sequence[str], current_phase: str | None = None
 
     ``current_phase`` excludes your own phase, which is the form the question
     actually takes: "does this path belong to somebody ELSE?"
+
+    Resolution goes through ``resolve_roadmap``, NOT ``declared_active_roadmap``
+    directly. The raw reader raises ``RoadmapStatusError`` subclasses that no
+    caller here catches, so an incoherent roadmap escaped as an uncaught exception
+    and Python exited 1 -- the code this command defines as "claimed by another
+    phase". "I cannot tell" then read as "you are blocked". ``resolve_roadmap``
+    normalizes every such failure into ``RoadmapUnreadable``, which the CLI maps
+    to 2.
+
+    Paths are normalized before matching, and an uninterpretable one RAISES rather
+    than being skipped -- see ``_normalize_preflight_path``.
     """
 
-    mapping = ownership_map(declared_active_roadmap(repo).read_text(encoding="utf-8"))
-    owned: Dict[str, List[str]] = {}
-    for path in paths:
-        aliases = sorted(
-            {p.alias for p in owners_for(path, mapping)}
-            - ({current_phase} if current_phase else set())
-        )
-        if aliases:
-            owned[path] = aliases
+    repo = Path(repo)
+    mapping = ownership_map(resolve_roadmap(repo).read_text(encoding="utf-8"))
+    owned: Dict[str, List[Ownership]] = {}
+    for raw in paths:
+        path = _normalize_preflight_path(repo, raw)
+        claims = [
+            Ownership(
+                path=path,
+                phase_alias=phase.alias,
+                phase_name=phase.name,
+                is_current=False,
+                note=_note_for(phase.alias, path, mapping),
+            )
+            for phase in owners_for(path, mapping)
+            if phase.alias != current_phase
+        ]
+        if claims:
+            owned[raw] = sorted(claims, key=lambda o: o.phase_alias)
     return owned
 
 
-def render_preflight(owned: Dict[str, List[str]], current_phase: str | None = None) -> str:
+class PathNotInRepo(ValueError):
+    """A ``--preflight`` argument that cannot be read as a path inside the repo.
+
+    Raised rather than skipped. Skipping an argument this command cannot
+    interpret makes it vanish from the result, and an empty result is printed as
+    "no path is claimed" and exits 0 -- a clean bill of health produced by not
+    having looked. Same absence-reads-as-success shape as ``RoadmapUnreadable``.
+    """
+
+
+def _normalize_preflight_path(repo: Path, raw: str) -> str:
+    """A ``--preflight`` argument as a repo-relative POSIX path.
+
+    Ownership tokens in the roadmap are repo-relative (``phase-loop-runtime/src/...``)
+    and ``_claims`` compares them by exact match or ``str.startswith``. So the
+    matcher only ever saw the argument as typed, and the SAME file answered
+    differently depending on how it was written::
+
+        phase-loop-runtime/src/.../roadmap_ownership.py   -> exit 1, claimed
+        ./phase-loop-runtime/src/.../roadmap_ownership.py -> exit 0, "no path is claimed"
+        /abs/path/to/.../roadmap_ownership.py             -> exit 0, "no path is claimed"
+
+    Both false-clear forms are what a human or an agent actually types -- shell tab
+    completion produces ``./``, and tooling passes absolute paths. A safety
+    preflight whose answer depends on the spelling of its input is worse than none,
+    because the wrong answer is the reassuring one. ``audit`` never hit this: its
+    paths come from ``git diff --name-only``, which is always repo-relative.
+
+    Both ends are resolved before comparison so a symlinked checkout (``/mnt/workspace``
+    -> ``/mnt/HC_Volume_...``) still lands inside the repo.
+    """
+
+    root = Path(repo).resolve()
+    candidate = Path(raw)
+    absolute = candidate if candidate.is_absolute() else root / candidate
+    try:
+        return absolute.resolve().relative_to(root).as_posix()
+    except ValueError as exc:
+        raise PathNotInRepo(
+            f"{raw!r} does not resolve to a path inside {root}. Refusing to "
+            f"report it as unclaimed -- this command cannot evaluate ownership "
+            f"for a path it cannot place in the repository."
+        ) from exc
+
+
+def render_preflight(
+    owned: Dict[str, List[Ownership]], current_phase: str | None = None
+) -> str:
+    # "another phase" is only true when a current phase was named to be excluded.
+    # Without --current-phase the question is "does ANY phase claim this?", and
+    # calling the answer "another phase" implies an exclusion that never happened.
+    other = "another phase" if current_phase else "a phase"
     if not owned:
         scope = f" outside {current_phase}" if current_phase else ""
         return f"roadmap-ownership --preflight: no path is claimed by a phase{scope}."
     lines = [
-        f"roadmap-ownership --preflight: {len(owned)} path(s) claimed by another phase.",
+        f"roadmap-ownership --preflight: {len(owned)} path(s) claimed by {other}.",
         "",
         "  Ownership is machine-readable; BLOCK STATE IS NOT (agent-harness#633). Read the",
         "  owning phase before editing -- this reports, it does not authorize.",
@@ -656,7 +734,18 @@ def render_preflight(owned: Dict[str, List[str]], current_phase: str | None = No
     ]
     for path in sorted(owned):
         lines.append(f"    {path}")
-        lines.append(f"        claimed by: {', '.join(owned[path])}")
+        for own in owned[path]:
+            lines.append(f"        claimed by: {own.phase_alias} — {own.phase_name}")
+            if own.note:
+                # Verbatim, for the same reason `audit` does it: a parenthetical
+                # like "(new evidence, lint, and governance modules)" scopes a
+                # directory claim to PART of that directory, and this matcher
+                # cannot tell which part. Dropping it presents a scoped claim as
+                # an unconditional one -- the reading that once had GOVLEAN
+                # owning the whole source tree.
+                lines.append(
+                    f"            SCOPED — the roadmap qualifies this: {own.note}"
+                )
     return "\n".join(lines)
 
 
@@ -750,7 +839,10 @@ def main(argv: List[str]) -> int:
     if args.preflight:
         try:
             owned = preflight(args.repo, args.preflight, args.current_phase)
-        except RoadmapUnreadable as exc:
+        except (RoadmapUnreadable, PathNotInRepo) as exc:
+            # BOTH map to 2, never to 1. Exit 1 means "somebody else claims this";
+            # anything that means "I could not evaluate" must be distinguishable
+            # from it, or a caller reads a broken roadmap as an ownership block.
             print(f"roadmap-ownership: CANNOT EVALUATE — {exc}")
             return 2
         print(render_preflight(owned, args.current_phase))
@@ -806,6 +898,24 @@ def main(argv: List[str]) -> int:
     else:
         print(render(found, disposition))
     return 0
+
+
+def console_main() -> int:
+    """Console-script entrypoint (``roadmap-ownership``).
+
+    A ``[project.scripts]`` target is invoked with NO arguments, so it cannot be
+    ``main`` directly -- that signature takes an argv list.
+
+    Needed for the same reason ``phase-loop-closeout-audit`` is (ah#670, ah#693):
+    the primary installer is ``uv tool install``, which puts the package in an
+    isolated environment where ``python -m phase_loop_runtime.roadmap_ownership``
+    fails to import. That import failure exits 1 -- the exact code ``--preflight``
+    defines as "claimed by another phase" -- so on the supported install a tool
+    with only a module form reports a phantom ownership block for every path. A
+    guard whose failure mode is a false BLOCK gets switched off.
+    """
+
+    return main(sys.argv)
 
 
 if __name__ == "__main__":  # pragma: no cover

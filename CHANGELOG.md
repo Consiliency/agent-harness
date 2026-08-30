@@ -17,6 +17,25 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   exit-criteria prose (`OUTCOME_AMBIGUOUS_BLOCKED`, "a merge blocked on
   president-unavailability"). A gate keyed on that signal would fire falsely on five
   phases, so the tool stops where the data is trustworthy.
+- Paths are **normalized before matching**, so the same file answers the same way however
+  it is spelled. Ownership tokens are repo-relative, so `./src/x.py` and an absolute path
+  both missed every claim and printed "no path is claimed" — a fail-OPEN in which the
+  wrong answer is the reassuring one, on the two forms people most often type. A path that
+  cannot be placed inside the repo now reports CANNOT EVALUATE rather than being skipped,
+  because a skipped argument vanishes into an empty result that reads as a pass.
+- **Cannot-evaluate is exit 2, never exit 1.** Resolution goes through `resolve_roadmap`,
+  which normalizes every failure to `RoadmapUnreadable`; calling `declared_active_roadmap`
+  directly let a `RoadmapStatusError` escape uncaught, and Python's exit 1 is the code this
+  command defines as "claimed by another phase" — so an unreadable roadmap was
+  indistinguishable from an ownership block.
+- **Scoped claims stay scoped.** The roadmap qualifies some entries (GOVLEAN's directory
+  claim reads "(new evidence, lint, and governance modules)"); `--preflight` now carries
+  that parenthetical verbatim as the audit output already did, instead of presenting a
+  claim on part of a directory as a claim on all of it.
+- Ships as a **`roadmap-ownership` console script**. Under `uv tool install` isolation the
+  module form cannot import and exits 1 — again the "claimed by another phase" code — so a
+  module-only tool reported a phantom ownership block for every path on the supported
+  install (same shape as #670/#693).
 
 ### executor policy: an operator's explicit model is never substituted (Consiliency/agent-harness#671)
 
