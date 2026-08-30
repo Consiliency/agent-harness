@@ -1367,6 +1367,103 @@ class TestPreflight(unittest.TestCase):
             self.assertEqual(claims[0].note, "(only the lane-B evidence modules)")
             self.assertIn("SCOPED", ro.render_preflight(owned))
 
+    def test_a_DIRECTORY_token_is_claimed_in_both_spellings(self):
+        """The regression my own round-2 fix introduced, caught by the panel.
+
+        `Path.resolve()` drops a trailing slash, and `_claims` reads that slash as
+        the marker of a directory token. So normalizing turned the roadmap's OWN
+        spelling of a claim into an unclaimed path: `src/beta/x.py` was flagged
+        while `src/beta/` -- the literal text of the bullet -- came back "no path
+        is claimed". Closing one fail-open opened another on the most obvious
+        input there is.
+
+        Mutations that must kill this: drop the `directoryish` branch in
+        `_normalize_preflight_path`, OR drop the `rstrip("/")` arm of `_claims`.
+        (Either alone leaves the other covering it -- that redundancy is
+        deliberate, so this asserts through the CLI where both are live.)
+        """
+        with TemporaryDirectory() as tmp:
+            repo = self._repo(tmp)
+            for spelling in ("src/beta/", "src/beta"):
+                with self.subTest(spelling=spelling):
+                    owned = ro.preflight(repo, [spelling])
+                    self.assertEqual(
+                        [o.phase_alias for o in owned.get(spelling, [])],
+                        ["BETA"],
+                        f"{spelling!r} is BETA's claim as the roadmap writes it",
+                    )
+                    if spelling.endswith("/"):
+                        # Observes the NORMALIZER, not just the match. Without it
+                        # the two layers are only killable together: `_claims`'
+                        # rstrip arm alone satisfies the assertion above, so
+                        # deleting the directory-ness preservation killed nothing
+                        # and that layer sat unpinned.
+                        #
+                        # Only asserted for the directory-SHAPED spelling: for
+                        # `src/beta` naming a directory that does not exist on
+                        # disk yet, nothing in the argument or the filesystem says
+                        # "directory", so the normalizer cannot know -- and the
+                        # `_claims` arm is what carries that case. That asymmetry
+                        # is the reason both layers exist.
+                        self.assertEqual(owned[spelling][0].path, "src/beta/")
+
+    def test_a_whole_repository_scope_cannot_evaluate(self):
+        """`""`, `.`, and the absolute repo root match no ownership token, so each
+        exited 0 -- "the whole repository is unclaimed", the most confidently
+        wrong answer available.
+
+        Mutation that must kill this: return `relative` unconditionally instead of
+        raising on `"."`.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = self._repo(tmp)
+            for scope in ("", ".", str(Path(tmp))):
+                with self.subTest(scope=scope):
+                    with self.assertRaises(ro.PathNotInRepo):
+                        ro.preflight(repo, [scope])
+                    with redirect_stdout(io.StringIO()) as buf:
+                        rc = ro.main(["prog", "--repo", str(repo),
+                                      "--preflight", scope])
+                    self.assertEqual(rc, 2)
+
+    def test_an_unreadable_roadmap_exits_2_not_1(self):
+        """`resolve_roadmap` normalizes RESOLUTION failures, but the READ was
+        bare: a non-UTF-8 roadmap raised out of `main`, and the interpreter's
+        exit 1 is this command's "claimed by another phase".
+
+        Mutation that must kill this: drop the try/except around `read_text`.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = self._repo(tmp)
+            (repo / "specs" / "phase-plans-v10.md").write_bytes(b"\xff\xfe not utf-8")
+            with self.assertRaises(ro.RoadmapUnreadable):
+                ro.preflight(repo, ["src/alpha.py"])
+            with redirect_stdout(io.StringIO()) as buf:
+                rc = ro.main(["prog", "--repo", str(repo),
+                              "--preflight", "src/alpha.py"])
+            self.assertEqual(rc, 2)
+            self.assertIn("CANNOT EVALUATE", buf.getvalue())
+
+    def test_the_note_comes_from_the_most_specific_claim(self):
+        """A phase can claim a file AND its parent directory with different
+        qualifications -- GOVLEAN does in v10. Returning the first match made the
+        answer depend on bullet ORDER, so reordering two equivalent lines could
+        swap an exact file's narrow qualification for the broad directory note,
+        silently widening the scope a reader believes they have.
+
+        Mutation that must kill this: `max(matches, key=len)` -> `matches[0]`.
+        """
+        both = ROADMAP.replace(
+            "- `src/beta/`",
+            "- `src/beta/` (the whole lane-B tree)\n- `src/beta/narrow.py` (only the parser)",
+        )
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=both)
+            owned = ro.preflight(repo, ["src/beta/narrow.py"])
+            self.assertEqual(
+                owned["src/beta/narrow.py"][0].note, "(only the parser)"
+            )
+
     def test_without_current_phase_the_output_does_not_say_another_phase(self):
         """"another phase" implies an exclusion that only happened if one was
         named. Without `--current-phase` the question is "does ANY phase claim

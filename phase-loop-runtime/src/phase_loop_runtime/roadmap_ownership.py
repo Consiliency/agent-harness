@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
+import os
 import re
 import tempfile
 import subprocess
@@ -239,6 +240,16 @@ def _claims(owned: str, path: str) -> bool:
         return True
     if owned.endswith("/") and path.startswith(owned):
         return True
+    if owned.endswith("/") and path.rstrip("/") == owned.rstrip("/"):
+        # The directory ITSELF, spelled without the trailing slash. `--preflight`
+        # normalizes through `Path.resolve()`, which drops it, so the exact token
+        # the roadmap uses (`skills-src/`, `phase-loop-runtime/tests/`) arrived
+        # here as `skills-src` and matched nothing: files UNDER a claimed
+        # directory were flagged while the directory itself came back "no path is
+        # claimed". Normalization preserves directory-ness now, and this handles
+        # it from the other side too -- a fail-open on the most obvious spelling
+        # of a claim is worth closing twice.
+        return True
     if any(ch in owned for ch in "*?[") and fnmatch.fnmatch(path, owned):
         return True
     return False
@@ -279,12 +290,25 @@ def audit(repo: Path, base: str) -> List[Ownership]:
 
 
 def _note_for(alias: str, path: str, mapping: Dict[str, List[Phase]]) -> str:
-    for owned in mapping:
-        if _claims(owned, path):
-            note = _NOTES.get(f"{alias}\x00{owned}")
-            if note:
-                return note
-    return ""
+    """The qualification on the MOST SPECIFIC token claiming ``path``.
+
+    A phase can claim both a file and its parent directory with different
+    qualifications -- GOVLEAN does exactly that in v10. Returning the first
+    match made the answer depend on bullet ORDER in the roadmap: reordering two
+    semantically identical lines could replace an exact file's narrow
+    qualification with the broad directory note, which silently widens the scope
+    a reader believes they have. Longest token wins, because a longer ownership
+    token is always the narrower claim.
+    """
+
+    matches = [
+        owned
+        for owned in mapping
+        if _claims(owned, path) and _NOTES.get(f"{alias}\x00{owned}")
+    ]
+    if not matches:
+        return ""
+    return _NOTES[f"{alias}\x00{max(matches, key=len)}"]
 
 
 def has_disposition(text: str) -> bool:
@@ -620,7 +644,9 @@ def _most_relievable_phase(
     )[0]
 
 
-def preflight(repo: Path, paths: Sequence[str], current_phase: str | None = None) -> Dict[str, List[str]]:
+def preflight(
+    repo: Path, paths: Sequence[str], current_phase: str | None = None
+) -> Dict[str, List[Ownership]]:
     """Which phases claim each of ``paths`` -- the pre-EDIT question.
 
     agent-harness#633 asks for a gate that fails a change touching a BLOCKED phase's key
@@ -650,7 +676,18 @@ def preflight(repo: Path, paths: Sequence[str], current_phase: str | None = None
     """
 
     repo = Path(repo)
-    mapping = ownership_map(resolve_roadmap(repo).read_text(encoding="utf-8"))
+    roadmap = resolve_roadmap(repo)
+    try:
+        text = roadmap.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        # `resolve_roadmap` normalizes RESOLUTION failures, but the READ was still
+        # bare: an unreadable or non-UTF-8 roadmap raised out of `main`, and the
+        # interpreter's exit 1 is the code this command defines as "claimed".
+        raise RoadmapUnreadable(
+            f"could not read the active roadmap {roadmap}: {exc}. Refusing to "
+            f"report ownership from a roadmap this command cannot read."
+        ) from exc
+    mapping = ownership_map(text)
     owned: Dict[str, List[Ownership]] = {}
     for raw in paths:
         path = _normalize_preflight_path(repo, raw)
@@ -703,16 +740,38 @@ def _normalize_preflight_path(repo: Path, raw: str) -> str:
     """
 
     root = Path(repo).resolve()
+    if not raw:
+        raise PathNotInRepo(
+            "an empty --preflight argument names no path. Refusing to report it "
+            "as unclaimed -- it matches no ownership token, so it would exit 0."
+        )
     candidate = Path(raw)
     absolute = candidate if candidate.is_absolute() else root / candidate
+    resolved = absolute.resolve()
     try:
-        return absolute.resolve().relative_to(root).as_posix()
+        relative = resolved.relative_to(root).as_posix()
     except ValueError as exc:
         raise PathNotInRepo(
             f"{raw!r} does not resolve to a path inside {root}. Refusing to "
             f"report it as unclaimed -- this command cannot evaluate ownership "
             f"for a path it cannot place in the repository."
         ) from exc
+    if relative == ".":
+        # `""`, `.`, and the absolute repo root all land here. None matches any
+        # ownership token, so each exited 0 -- "the whole repository is unclaimed",
+        # the most confidently wrong answer this command can give.
+        raise PathNotInRepo(
+            f"{raw!r} resolves to the repository root. Ownership is per-path; "
+            f"this command cannot evaluate a whole-repository scope, and must "
+            f"not report one as unclaimed."
+        )
+    # `Path.resolve()` drops a trailing slash, but `_claims` reads that slash as
+    # the marker of a DIRECTORY token. Losing it turned the roadmap's own
+    # spelling of a claim (`skills-src/`) into an unclaimed path.
+    directoryish = resolved.is_dir() or (
+        raw.endswith(("/", os.sep)) and not resolved.is_file()
+    )
+    return f"{relative}/" if directoryish else relative
 
 
 def render_preflight(

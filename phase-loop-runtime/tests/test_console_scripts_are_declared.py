@@ -103,7 +103,13 @@ def test_declared_console_script_target_is_invocable_with_no_arguments(script: s
         for parameter in inspect.signature(function).parameters.values()
         if parameter.default is inspect.Parameter.empty
         and parameter.kind
-        in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            # A required KEYWORD_ONLY parameter is just as fatal under a launcher
+            # that passes nothing, and omitting it here let one through.
+            inspect.Parameter.KEYWORD_ONLY,
+        )
     ]
     assert not required, (
         f"{script} points at {target!r}, which requires {required}; a "

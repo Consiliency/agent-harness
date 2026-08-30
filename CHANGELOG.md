@@ -20,14 +20,27 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Paths are **normalized before matching**, so the same file answers the same way however
   it is spelled. Ownership tokens are repo-relative, so `./src/x.py` and an absolute path
   both missed every claim and printed "no path is claimed" — a fail-OPEN in which the
-  wrong answer is the reassuring one, on the two forms people most often type. A path that
-  cannot be placed inside the repo now reports CANNOT EVALUATE rather than being skipped,
-  because a skipped argument vanishes into an empty result that reads as a pass.
+  wrong answer is the reassuring one, on the two forms people most often type.
+- **Directory tokens are claimed in both spellings.** `_claims` reads a trailing slash as
+  the marker of a directory claim and `Path.resolve()` drops it, so `skills-src/` — the
+  literal text of the roadmap bullet — resolved to `skills-src` and matched nothing, while
+  files *under* it were flagged correctly. Normalization preserves directory-ness and
+  `_claims` also matches the slash-free form; a fail-open on the roadmap's own spelling is
+  worth closing on both sides.
+- **A whole-repository scope reports CANNOT EVALUATE.** `""`, `.`, and the absolute repo
+  root match no ownership token, so each exited 0 — "the entire repository is unclaimed".
+  Likewise a path that cannot be placed inside the repo, which was previously skipped: a
+  skipped argument vanishes into an empty result that prints as a clean pass.
+- The **qualification shown is the most specific claim's.** A phase can claim a file and
+  its parent directory with different qualifications; taking the first match made the
+  answer depend on bullet order in the roadmap, so reordering two equivalent lines could
+  swap an exact file's narrow scope for the broad directory note.
 - **Cannot-evaluate is exit 2, never exit 1.** Resolution goes through `resolve_roadmap`,
   which normalizes every failure to `RoadmapUnreadable`; calling `declared_active_roadmap`
   directly let a `RoadmapStatusError` escape uncaught, and Python's exit 1 is the code this
   command defines as "claimed by another phase" — so an unreadable roadmap was
-  indistinguishable from an ownership block.
+  indistinguishable from an ownership block. The roadmap **read** is normalized too: a
+  non-UTF-8 or unreadable file raised past the handler for the same wrong exit code.
 - **Scoped claims stay scoped.** The roadmap qualifies some entries (GOVLEAN's directory
   claim reads "(new evidence, lint, and governance modules)"); `--preflight` now carries
   that parenthetical verbatim as the audit output already did, instead of presenting a
