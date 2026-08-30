@@ -274,7 +274,22 @@ def sha256(data: bytes) -> str:
 
 
 def canonical_bytes(value: Any) -> bytes:
-    return (json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
+    try:
+        rendered = json.dumps(
+            value,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+        return (rendered + "\n").encode("utf-8", errors="strict")
+    except (TypeError, ValueError, UnicodeEncodeError):
+        fail("canonical JSON contains an invalid value")
+
+
+def reject_json_constant(_token: str) -> Any:
+    """Reject non-RFC-8259 numeric constants before they enter evidence state."""
+    fail("JSON contains a non-finite numeric constant")
 
 
 def json_no_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -290,10 +305,18 @@ def parse_canonical_json(data: bytes, label: str) -> Any:
     if not data or len(data) > MAX_JSON_BYTES:
         fail(f"{label}: invalid JSON byte size")
     try:
-        value = json.loads(data.decode("utf-8"), object_pairs_hook=json_no_duplicates)
+        value = json.loads(
+            data.decode("utf-8"),
+            object_pairs_hook=json_no_duplicates,
+            parse_constant=reject_json_constant,
+        )
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         fail(f"{label}: invalid JSON")
-    if canonical_bytes(value) != data:
+    try:
+        encoded = canonical_bytes(value)
+    except EvidenceError:
+        fail(f"{label}: invalid JSON")
+    if encoded != data:
         fail(f"{label}: JSON is not canonical")
     return value
 
@@ -1887,7 +1910,11 @@ def query_ci(store: ArtifactStore, ci: dict[str, Any], query: Path, expected_eve
     if completed.returncode:
         fail("authoritative CI query failed")
     try:
-        response = json.loads(completed.stdout.decode("utf-8"), object_pairs_hook=json_no_duplicates)
+        response = json.loads(
+            completed.stdout.decode("utf-8"),
+            object_pairs_hook=json_no_duplicates,
+            parse_constant=reject_json_constant,
+        )
     except (UnicodeDecodeError, json.JSONDecodeError):
         fail("CI provider returned invalid JSON")
     if not isinstance(response, dict) or set(response) not in (CI_RESPONSE_CORE, CI_RESPONSE_CORE | {"jobs"}):
@@ -2283,7 +2310,11 @@ def verify_completion(store: ArtifactStore, value: Any, evidence_digest: str, ma
     matches = 0
     for line in ledger.splitlines():
         try:
-            event = json.loads(line.decode("utf-8"), object_pairs_hook=json_no_duplicates)
+            event = json.loads(
+                line.decode("utf-8"),
+                object_pairs_hook=json_no_duplicates,
+                parse_constant=reject_json_constant,
+            )
         except (UnicodeDecodeError, json.JSONDecodeError):
             fail("completion ledger event is invalid JSON")
         if not isinstance(event, dict):
@@ -2871,6 +2902,27 @@ def self_test() -> None:
             "run-root-parent-traversal",
             lambda: canonical_relative_parts(
                 ".phase-loop/runs/../escaped-receipt.json", "self-test run root"
+            ),
+        )
+        for name, value, token in (
+            ("nan", float("nan"), b"NaN"),
+            ("infinity", float("inf"), b"Infinity"),
+            ("negative-infinity", float("-inf"), b"-Infinity"),
+        ):
+            direct_rejected(
+                "canonical-bytes-" + name,
+                lambda value=value: canonical_bytes({"value": value}),
+            )
+            direct_rejected(
+                "canonical-json-" + name,
+                lambda name=name, token=token: parse_canonical_json(
+                    b'{"value":' + token + b"}\n", "self-test " + name
+                ),
+            )
+        direct_rejected(
+            "canonical-json-lone-surrogate",
+            lambda: parse_canonical_json(
+                b'{"value":"\\ud800"}\n', "self-test lone surrogate"
             ),
         )
         synthetic_secret_forms = {
