@@ -825,10 +825,9 @@ def verify_git_and_inventory(repo: Path, git_data: dict[str, Any], sl0: dict[str
         git_commit(repo, item["commit"], item["tree"], "git." + name)
         commits[name] = (item["commit"], item["tree"])
     base, first_parent, reviewed, landing, candidate, main = (commits[name][0] for name in ("sl0_base", "landing_first_parent", "reviewed_sl0", "landing", "candidate", "canonical_main"))
-    ancestor(repo, base, first_parent, "landing first parent")
+    if first_parent != base:
+        fail("landing first parent is not the exact SL-0 base")
     ancestor(repo, base, reviewed, "reviewed SL-0")
-    if changed_paths(repo, base, first_parent) & PLAN_PRODUCTION_PATHS:
-        fail("HARDEN production change precedes the reviewed tests-only landing")
     reviewed_changes = changed_paths(repo, base, reviewed)
     if git_scalar(repo, "merge-base", first_parent, reviewed) != base or not reviewed_changes or not reviewed_changes <= set(FROZEN_SL0_PATHS):
         fail("reviewed SL-0 is not a nonempty frozen-tests-only change from SL-0 base")
@@ -1498,7 +1497,9 @@ def _run(command: list[str], cwd: Path) -> str:
     return done.stdout.strip()
 
 
-def _self_git(root: Path) -> tuple[Path, dict[str, tuple[str, str]]]:
+def _self_git(
+    root: Path, *, intervening_first_parent: bool = False,
+) -> tuple[Path, dict[str, tuple[str, str]]]:
     repo = root / "repo"
     repo.mkdir()
     _run(["git", "init", "-q", "--initial-branch=main"], repo)
@@ -1530,8 +1531,10 @@ def _self_git(root: Path) -> tuple[Path, dict[str, tuple[str, str]]]:
     _run(["git", "add", "."], repo); _run(["git", "commit", "-qm", "reviewed sl0"], repo)
     reviewed = _run(["git", "rev-parse", "HEAD"], repo)
     _run(["git", "checkout", "-q", "main"], repo)
-    (repo / "unrelated-current-main-input.txt").write_text("intervening current-main input\n")
-    _run(["git", "add", "."], repo); _run(["git", "commit", "-qm", "intervening runtime"], repo)
+    if intervening_first_parent:
+        (repo / "unrelated-current-main-input.txt").write_text("intervening current-main input\n")
+        _run(["git", "add", "."], repo)
+        _run(["git", "commit", "-qm", "intervening current main"], repo)
     first_parent = _run(["git", "rev-parse", "HEAD"], repo)
     _run(["git", "merge", "--no-ff", "-qm", "landing", "review"], repo)
     landing = _run(["git", "rev-parse", "HEAD"], repo)
@@ -1630,7 +1633,7 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
         "source_tree": reviewed_tree,
         "summary": {"passed": 40, "failed": 0, "errors": 0, "skipped": 0, "xfails": 0, "subtests": 8, "deselected": 0},
         "nodeids_sha256": sha256(canonical_bytes(sorted("::".join(fixture_junit_identity(nodeid)) for nodeid in pure_nodes))),
-        "baseline": {"schema": "harden_broad_baseline.v1", "commit": refs["landing"][0], "tree": refs["landing"][1], "inherited_failures": [], "inherited_skips": [], "inherited_deselected": []},
+        "baseline": {"schema": "harden_broad_baseline.v1", "commit": refs["sl0_base"][0], "tree": refs["sl0_base"][1], "inherited_failures": [], "inherited_skips": [], "inherited_deselected": []},
     }
     pure = {"receipt": put("pre-pure.receipt", pure_receipt), "raw": pure_raw, "junit": pure_junit}
     mutations = []
@@ -1924,6 +1927,27 @@ def self_test() -> None:
         baseline.mkdir()
         evidence_path, artifacts, repo, evidence, registry, coordinator, author = _fixture(baseline)
         verify(evidence_path, artifacts, repo, reuse_registry=registry, expected_coordinator_session=coordinator, expected_author_session=author, ci_query=baseline / "fake-gh")
+
+        def intervening_landing_first_parent() -> None:
+            intervening_root = root / "intervening-landing-first-parent"
+            intervening_root.mkdir()
+            intervening_repo, refs = _self_git(
+                intervening_root,
+                intervening_first_parent=True,
+            )
+            verify_git_and_inventory(
+                intervening_repo,
+                {
+                    name: {"commit": commit_id, "tree": tree}
+                    for name, (commit_id, tree) in refs.items()
+                },
+                copy.deepcopy(evidence["sl0"]),
+            )
+
+        direct_rejected(
+            "intervening-landing-first-parent",
+            intervening_landing_first_parent,
+        )
         post_root = root / "post-completion"
         shutil.copytree(baseline, post_root, symlinks=True)
         post_path = post_root / "evidence.json"; post_model = parse_canonical_json(post_path.read_bytes(), "post-completion evidence")
@@ -2041,9 +2065,6 @@ def self_test() -> None:
             for name, commit_id in (("landing", malicious_landing), ("candidate", candidate), ("canonical_main", main)):
                 model["git"][name] = {"commit": commit_id, "tree": _run(["git", "rev-parse", commit_id + "^{tree}"], local_repo)}
         rejected("landing-merge-extra-production-delta", landing_merge_extra_production_path)
-        def conflated_base_and_first_parent(model: dict[str, Any], _root: Path, _artifacts: Path) -> None:
-            model["git"]["landing_first_parent"] = copy.deepcopy(model["git"]["sl0_base"])
-        rejected("base-first-parent-conflation", conflated_base_and_first_parent)
         def feature_branch_empty_commit(_model: dict[str, Any], local_root: Path, _artifacts: Path) -> None:
             local_repo = local_root / "repo"
             _run(["git", "checkout", "-qb", "audit-feature"], local_repo)
