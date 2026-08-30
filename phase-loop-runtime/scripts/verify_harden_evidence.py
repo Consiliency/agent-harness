@@ -713,14 +713,18 @@ def require_text_patch_hunks(patch: str, paths: set[str]) -> None:
     lines = patch.splitlines()
     if any(line == "GIT binary patch" or line.startswith("Binary files ") for line in lines):
         fail("review input Git patch contains opaque binary content")
+    expected_headers = {f"diff --git a/{path} b/{path}" for path in paths}
+    actual_headers = [line for line in lines if line.startswith("diff --git ")]
+    if len(actual_headers) != len(paths) or set(actual_headers) != expected_headers:
+        fail("review input Git patch has an incomplete or duplicated path section")
     for path in paths:
-        header = f"diff --git a/{path} b/{path}\n"
-        start = patch.find(header)
-        if start < 0:
-            fail("review input Git patch omits an exact changed path")
-        next_header = patch.find("diff --git ", start + len(header))
-        section = patch[start:next_header if next_header >= 0 else None]
-        if not any(line.startswith("@@ ") for line in section.splitlines()):
+        header = f"diff --git a/{path} b/{path}"
+        start = lines.index(header)
+        next_header = next(
+            (index for index in range(start + 1, len(lines)) if lines[index].startswith("diff --git ")),
+            len(lines),
+        )
+        if not any(line.startswith("@@ ") for line in lines[start + 1:next_header]):
             fail("review input Git patch omits a text hunk")
 
 
@@ -2240,6 +2244,13 @@ def self_test() -> None:
                 sha256 = original
 
         direct_rejected("digest-bound-frame-collision", digest_frame_collision)
+        direct_rejected(
+            "forged-patch-section-in-content",
+            lambda: require_text_patch_hunks(
+                "diff --git a/real.py b/real.py\n@@ -1 +1 @@\n-real\n+diff --git a/missing.py b/missing.py\n@@ -1 +1 @@\n+forged\n",
+                {"missing.py"},
+            ),
+        )
         baseline = root / "baseline"
         baseline.mkdir()
         evidence_path, artifacts, repo, evidence, registry, coordinator, author = _fixture(baseline)
