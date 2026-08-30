@@ -759,20 +759,24 @@ def preflight(
     mapping = ownership_map(read_roadmap(resolve_roadmap(repo)))
     owned: Dict[str, List[Ownership]] = {}
     for raw in paths:
-        path = _normalize_preflight_path(repo, raw)
-        claims = [
-            Ownership(
-                path=path,
-                phase_alias=phase.alias,
-                phase_name=phase.name,
-                is_current=False,
-                note=_note_for(phase.alias, path, mapping),
-            )
-            for phase in owners_for(path, mapping)
-            if phase.alias != current_phase
-        ]
+        claims: List[Ownership] = []
+        seen: set = set()
+        for path in _preflight_identities(repo, raw):
+            for phase in owners_for(path, mapping):
+                if phase.alias == current_phase or (phase.alias, path) in seen:
+                    continue
+                seen.add((phase.alias, path))
+                claims.append(
+                    Ownership(
+                        path=path,
+                        phase_alias=phase.alias,
+                        phase_name=phase.name,
+                        is_current=False,
+                        note=_note_for(phase.alias, path, mapping),
+                    )
+                )
         if claims:
-            owned[raw] = sorted(claims, key=lambda o: o.phase_alias)
+            owned[raw] = sorted(claims, key=lambda o: (o.phase_alias, o.path))
     return owned
 
 
@@ -786,8 +790,8 @@ class PathNotInRepo(ValueError):
     """
 
 
-def _normalize_preflight_path(repo: Path, raw: str) -> str:
-    """A ``--preflight`` argument as a repo-relative POSIX path.
+def _preflight_identities(repo: Path, raw: str) -> List[str]:
+    """Every repo-relative POSIX identity a ``--preflight`` argument denotes.
 
     Ownership tokens in the roadmap are repo-relative (``phase-loop-runtime/src/...``)
     and ``_claims`` compares them by exact match or ``str.startswith``. So the
@@ -859,39 +863,50 @@ def _normalize_preflight_path(repo: Path, raw: str) -> str:
             f"it as unclaimed -- this command cannot evaluate ownership for a "
             f"path it cannot place in the repository."
         ) from exc
-    if ".." in candidate.parts:
-        # `..` is the ONLY construct that makes lexical collapsing unsound: it
-        # cancels the preceding component without knowing whether that component
-        # was a symlink. With `link -> <repo>/a/b`, `link/../owned.py` collapses
-        # lexically to `owned.py` while it really names `a/owned.py` -- both
-        # inside the repo, so the containment guard passes and ownership gets
-        # evaluated for a path the caller never named.
-        #
-        # Without `..`, lexical is what we want: it preserves a repo-internal
-        # symlink's OWN name, so a token naming the symlinked directory still
-        # matches. Ownership is a statement about the repository's paths.
-        relative = resolved.relative_to(root).as_posix()
-    else:
+    # BOTH identities are returned; neither is chosen. Every attempt to pick one
+    # was wrong in one direction or the other, and the panel found each:
+    #
+    #   lexical only    a path under a symlinked directory is evaluated only under
+    #                   the link's name. If ALPHA owns `src/link/` and BETA owns
+    #                   `src/real/` with `link -> real`, ALPHA preflighting
+    #                   `src/link/owned.py` is filtered as its own phase and exits
+    #                   0 -- while the edit mutates BETA's file.
+    #   resolved only   `Path.resolve()` realpaths EVERY component, not just a
+    #                   symlink that `..` cancelled, so a token naming the symlink
+    #                   stops matching and the answer names a path the caller did
+    #                   not.
+    #
+    # An edit through a symlink mutates both the name the caller typed and the
+    # bytes the target owns, so both are genuinely the caller's business and the
+    # union is not a hedge -- it is the answer. Same shape as the qualification
+    # fix one function up: the bug was trying to choose.
+    forms: List[str] = []
+    for base, base_root in ((lexical, root_lexical), (resolved, root)):
         try:
-            relative = lexical.relative_to(root_lexical).as_posix()
+            relative = base.relative_to(base_root).as_posix()
         except ValueError:
-            relative = resolved.relative_to(root).as_posix()
-    if relative == ".":
-        # `""`, `.`, and the absolute repo root all land here. None matches any
-        # ownership token, so each exited 0 -- "the whole repository is unclaimed",
-        # the most confidently wrong answer this command can give.
-        raise PathNotInRepo(
-            f"{raw!r} resolves to the repository root. Ownership is per-path; "
-            f"this command cannot evaluate a whole-repository scope, and must "
-            f"not report one as unclaimed."
+            # The lexical form of a symlinked CHECKOUT ROOT legitimately sits
+            # outside the lexical root; the resolved form covers it.
+            continue
+        if relative == ".":
+            # `""`, `.`, and the absolute repo root all land here. None matches
+            # any ownership token, so each exited 0 -- "the whole repository is
+            # unclaimed", the most confidently wrong answer this command can give.
+            raise PathNotInRepo(
+                f"{raw!r} resolves to the repository root. Ownership is per-path; "
+                f"this command cannot evaluate a whole-repository scope, and must "
+                f"not report one as unclaimed."
+            )
+        # `Path.resolve()` drops a trailing slash, but `_claims` reads that slash
+        # as the marker of a DIRECTORY token. Losing it turned the roadmap's own
+        # spelling of a claim (`skills-src/`) into an unclaimed path.
+        directoryish = base.is_dir() or (
+            raw.endswith(("/", os.sep)) and not base.is_file()
         )
-    # `Path.resolve()` drops a trailing slash, but `_claims` reads that slash as
-    # the marker of a DIRECTORY token. Losing it turned the roadmap's own
-    # spelling of a claim (`skills-src/`) into an unclaimed path.
-    directoryish = resolved.is_dir() or (
-        raw.endswith(("/", os.sep)) and not resolved.is_file()
-    )
-    return f"{relative}/" if directoryish else relative
+        form = f"{relative}/" if directoryish else relative
+        if form not in forms:
+            forms.append(form)
+    return forms
 
 
 def render_preflight(

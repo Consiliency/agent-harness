@@ -42,8 +42,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   indistinguishable from an ownership block. The roadmap **read** is normalized too — in
   `audit` as well as `preflight`, via one shared `read_roadmap`; the first version of that
   fix lived only in `preflight`, which is exactly how `audit` kept the hole.
-- Argument normalization is **lexical first**, resolving symlinks only as a fallback for a
-  symlinked checkout root. Resolving first rewrote a repo-*internal* symlink to its target,
+- A path is evaluated under **both identities it denotes** — the name as written and the
+  symlink-resolved target — and the owning phases are unioned. Choosing either alone
+  fail-opens in a different direction: lexical-only let a phase preflight `src/link/owned.py`,
+  match its own claim on `src/link/`, and exit 0 while the edit mutated another phase's
+  `src/real/owned.py`; resolved-only stops a token that names the symlink from matching at
+  all. An edit through a symlink touches both the name typed and the bytes the target owns,
+  so both are the caller's business. Resolving first rewrote a repo-*internal* symlink to its target,
   so a token naming a symlinked directory matched nothing: ownership describes the
   repository's paths, not where they point. A symlink loop or unreadable path now reports
   CANNOT EVALUATE instead of raising past the handler as exit 1.

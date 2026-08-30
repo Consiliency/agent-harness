@@ -1650,9 +1650,8 @@ class TestPreflight(unittest.TestCase):
             repo = _repo_with_two_phases(tmp)
             (repo / "a" / "b").mkdir(parents=True, exist_ok=True)
             (repo / "link").symlink_to(repo / "a" / "b")
-            self.assertEqual(
-                ro._normalize_preflight_path(repo, "link/../owned.py"),
-                "a/owned.py",
+            self.assertIn(
+                "a/owned.py", ro._preflight_identities(repo, "link/../owned.py")
             )
 
     def test_a_symlinked_directory_without_dotdot_keeps_its_OWN_name(self):
@@ -1667,8 +1666,38 @@ class TestPreflight(unittest.TestCase):
             repo = _repo_with_two_phases(tmp)
             (repo / "src" / "real").mkdir(parents=True, exist_ok=True)
             (repo / "src" / "link").symlink_to(repo / "src" / "real")
-            self.assertEqual(
-                ro._normalize_preflight_path(repo, "src/link/"), "src/link/"
+            self.assertIn("src/link/", ro._preflight_identities(repo, "src/link/"))
+
+    def test_BOTH_identities_of_a_symlinked_path_are_evaluated(self):
+        """codex, round 6 — the hole in choosing lexical.
+
+        With `link -> real`, ALPHA owning `src/link/` and BETA owning `src/real/`,
+        ALPHA preflighting `src/link/owned.py` saw only the lexical name, matched
+        its OWN claim, filtered it as current-phase, and exited 0 — while the edit
+        mutates BETA's `src/real/owned.py`. Choosing the resolved form instead
+        fails the mirror case (a token naming the symlink stops matching), so
+        neither is correct alone.
+
+        An edit through a symlink touches both the name typed and the bytes the
+        target owns, so both are the caller's business: the union is the answer,
+        not a hedge.
+
+        Mutation that must kill this: return only the first identity from
+        `_preflight_identities`.
+        """
+        roadmap = ROADMAP.replace("- `src/alpha.py`", "- `src/link/`").replace(
+            "- `src/beta/`", "- `src/real/`"
+        )
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=roadmap)
+            (repo / "src" / "real").mkdir(parents=True, exist_ok=True)
+            (repo / "src" / "link").symlink_to(repo / "src" / "real")
+            owned = ro.preflight(repo, ["src/link/owned.py"], "ALPHA")
+            self.assertIn(
+                "BETA",
+                [o.phase_alias for o in owned.get("src/link/owned.py", [])],
+                "editing through ALPHA's symlink writes BETA's file; excluding "
+                "ALPHA must not clear the path",
             )
 
     def test_a_repo_INTERNAL_symlink_still_matches_its_own_token(self):
