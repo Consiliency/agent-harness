@@ -1364,7 +1364,11 @@ class TestPreflight(unittest.TestCase):
             owned = ro.preflight(repo, ["src/beta/thing.py"])
             claims = owned["src/beta/thing.py"]
             self.assertEqual([o.phase_alias for o in claims], ["BETA"])
-            self.assertEqual(claims[0].note, "(only the lane-B evidence modules)")
+            # Attributed to the token carrying it, so a reader can see the
+            # qualification is on the DIRECTORY claim rather than on their file.
+            self.assertEqual(
+                claims[0].note, "`src/beta/` (only the lane-B evidence modules)"
+            )
             self.assertIn("SCOPED", ro.render_preflight(owned))
 
     def test_a_DIRECTORY_token_is_claimed_in_both_spellings(self):
@@ -1567,28 +1571,105 @@ class TestPreflight(unittest.TestCase):
             # the directory WITH a qualification. BETA's note must survive.
             self.assertEqual(
                 ro._note_for("BETA", "src/beta/shared.py", mapping),
-                "(only the lane-B evidence modules)",
+                "`src/beta/` (only the lane-B evidence modules)",
             )
             self.assertEqual(ro._note_for("ALPHA", "src/beta/shared.py", mapping), "")
 
-    def test_an_unqualified_specific_claim_shows_NO_qualification(self):
-        """`_note_for` filtered to tokens carrying a note BEFORE ranking, so a
-        broad qualified claim could outrank a narrower unqualified one and lend
-        its qualification to a path that claim does not describe.
+    def test_a_broader_qualification_is_ATTRIBUTED_never_asserted_of_this_path(self):
+        """The last form of the recurring defect, caught by codex in round 5.
 
-        If the most specific claim carries no qualification, there is none.
+        Given a qualified `src/beta/` and an UNQUALIFIED narrower claim, the
+        directory's "(the whole lane-B tree)" was returned as the qualification
+        ON the narrower path -- a broader qualification attached to a narrower,
+        unconditional claim, for the fourth time in this PR.
 
-        Mutation that must kill this: filter `matches` to tokens with a note
-        before ranking.
+        The bug was never the ORDERING. It was reporting a qualification without
+        saying which claim it qualifies. Naming the token makes the
+        misattribution unrepresentable, which is why no ranking is attempted.
+
+        Mutation that must kill this: emit the bare note instead of the
+        ```token` note`` form.
         """
         roadmap = ROADMAP.replace(
             "- `src/beta/`",
-            "- `src/beta/` (the whole lane-B tree)\n- `src/beta/plain.py`",
+            "- `src/beta/` (the whole lane-B tree)\n- `src/beta/parser_*.py`",
         )
         with TemporaryDirectory() as tmp:
             repo = _repo_with_two_phases(tmp, roadmap=roadmap)
-            owned = ro.preflight(repo, ["src/beta/plain.py"])
-            self.assertEqual(owned["src/beta/plain.py"][0].note, "")
+            note = ro.preflight(repo, ["src/beta/parser_impl.py"])[
+                "src/beta/parser_impl.py"
+            ][0].note
+            self.assertIn("(the whole lane-B tree)", note)
+            self.assertIn(
+                "`src/beta/`",
+                note,
+                "the qualification must name the claim it belongs to, or it "
+                "reads as qualifying the narrower unconditional claim",
+            )
+
+    def test_an_UNQUALIFIED_exact_claim_does_not_suppress_a_scope_note(self):
+        """The exact-match short-circuit fires only when the exact token actually
+        carries a qualification.
+
+        A phase can claim a file exactly with no note AND its parent directory
+        with a scope note. Short-circuiting on the exact token regardless would
+        return "" and hide the directory's scope entirely -- the reader loses the
+        one sentence saying how far that claim reaches. Now that qualifications
+        are attributed to their token, showing it cannot be misread as a claim
+        about this file, so there is no reason to suppress it.
+
+        This is the branch a mutation run found unpinned: flipping the
+        short-circuit to `if owned == path:` changed behaviour and killed nothing.
+
+        Mutation that must kill this: drop `and note_of(owned)` from the
+        short-circuit condition.
+        """
+        roadmap = ROADMAP.replace(
+            "- `src/beta/`",
+            "- `src/beta/` (the whole lane-B tree)\n- `src/beta/bare.py`",
+        )
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=roadmap)
+            note = ro.preflight(repo, ["src/beta/bare.py"])["src/beta/bare.py"][0].note
+            self.assertIn("(the whole lane-B tree)", note)
+            self.assertIn("`src/beta/`", note)
+
+    def test_dotdot_across_a_repo_internal_symlink_uses_the_REAL_path(self):
+        """Also codex, round 5. `..` is the only construct that makes lexical
+        collapsing unsound: it cancels the preceding component without knowing
+        whether that component was a symlink.
+
+        With `link -> <repo>/a/b`, `link/../owned.py` collapses lexically to
+        `owned.py` while it really names `a/owned.py`. Both are INSIDE the repo,
+        so the containment guard passes and ownership is evaluated for a path the
+        caller never named -- exit 0 while `a/owned.py` is claimed.
+
+        Mutation that must kill this: drop the `".." in candidate.parts` branch.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp)
+            (repo / "a" / "b").mkdir(parents=True, exist_ok=True)
+            (repo / "link").symlink_to(repo / "a" / "b")
+            self.assertEqual(
+                ro._normalize_preflight_path(repo, "link/../owned.py"),
+                "a/owned.py",
+            )
+
+    def test_a_symlinked_directory_without_dotdot_keeps_its_OWN_name(self):
+        """The other half of the same rule, and why `..` is special-cased rather
+        than resolving everything: without `..`, the lexical form is what the
+        caller named, and a token naming the symlinked directory must still match
+        it. Ownership describes the repository's paths, not their targets.
+
+        Mutation that must kill this: always use the resolved form.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp)
+            (repo / "src" / "real").mkdir(parents=True, exist_ok=True)
+            (repo / "src" / "link").symlink_to(repo / "src" / "real")
+            self.assertEqual(
+                ro._normalize_preflight_path(repo, "src/link/"), "src/link/"
+            )
 
     def test_a_repo_INTERNAL_symlink_still_matches_its_own_token(self):
         """Resolving before comparing rewrote a repo-internal symlink to its

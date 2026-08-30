@@ -47,9 +47,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   so a token naming a symlinked directory matched nothing: ownership describes the
   repository's paths, not where they point. A symlink loop or unreadable path now reports
   CANNOT EVALUATE instead of raising past the handler as exit 1.
-- Qualifications are **scoped to the phase being reported, and no longer ranked**. An exact
-  token settles the matter alone; otherwise every qualification on that phase's claiming
-  tokens is shown. Three successive attempts to rank them each attached a *broader*
+- Qualifications are **scoped to the phase being reported, attributed to their claim, and no
+  longer ranked**. Each is rendered as ``` `<token>` (qualification) ``` so it names the claim
+  it belongs to; an exact token carrying its own qualification settles the matter alone. Three successive attempts to rank them each attached a *broader*
   qualification to a narrower path — by raw length (a long glob outranked the exact file it
   matched), then by wildcard-free-beats-glob (a directory outranked a far narrower glob),
   then by longest literal prefix (`[a-z]*.py` outranks the narrower `[a]*.py`). For two globs

@@ -366,25 +366,29 @@ def _note_for(alias: str, path: str, mapping: Dict[str, List[Phase]]) -> str:
     def note_of(owned: str) -> str:
         return _NOTES.get(f"{alias}\x00{owned}", "")
 
-    # An EXACT token claims this path and nothing else, so its qualification is
-    # authoritative -- including when it has none.
+    # An EXACT token claims this path and nothing else, so a qualification on it
+    # describes this path unambiguously and needs no attribution.
     for owned in matches:
-        if owned == path:
+        if owned == path and note_of(owned):
             return note_of(owned)
 
-    qualified = sorted({note_of(owned) for owned in matches if note_of(owned)})
-    if len(qualified) <= 1:
-        return qualified[0] if qualified else ""
-
-    # Several qualified claims and no exact one. There is no honest total order
-    # here: for two globs sharing a literal prefix, breadth is not length --
-    # `[a]*.py` is narrower than `[a-z]*.py` and shorter. Three successive
-    # attempts at a ranking (raw length, literal-beats-glob, longest-prefix) each
-    # attached a broader qualification to a narrower path. So this stops guessing
-    # and surfaces all of them, which is what the module already says it does with
-    # prose it cannot interpret: reporting the whole directory as owned would
-    # overstate; dropping the entry would understate.
-    return " | ".join(qualified)
+    # Every other qualification is ATTRIBUTED to the token carrying it.
+    #
+    # Returning a bare note was the last form of the recurring defect: given a
+    # qualified `src/beta/` and an UNQUALIFIED `src/beta/parser_*.py`, the
+    # directory's "(the whole lane-B tree)" came back as the qualification on
+    # `parser_impl.py` -- a broader qualification attached to a narrower,
+    # unconditional claim, for the fourth time.
+    #
+    # The bug was never the ordering; it was reporting a qualification without
+    # saying WHICH claim it qualifies. Naming the token makes the misattribution
+    # unrepresentable, so no ranking is needed and none is attempted -- for two
+    # globs sharing a literal prefix, breadth is not length anyway (`[a]*.py` is
+    # narrower than `[a-z]*.py` and shorter), so no honest total order exists.
+    attributed = sorted(
+        f"`{owned}` {note_of(owned)}" for owned in matches if note_of(owned)
+    )
+    return " | ".join(attributed)
 
 
 def has_disposition(text: str) -> bool:
@@ -855,10 +859,23 @@ def _normalize_preflight_path(repo: Path, raw: str) -> str:
             f"it as unclaimed -- this command cannot evaluate ownership for a "
             f"path it cannot place in the repository."
         ) from exc
-    try:
-        relative = lexical.relative_to(root_lexical).as_posix()
-    except ValueError:
+    if ".." in candidate.parts:
+        # `..` is the ONLY construct that makes lexical collapsing unsound: it
+        # cancels the preceding component without knowing whether that component
+        # was a symlink. With `link -> <repo>/a/b`, `link/../owned.py` collapses
+        # lexically to `owned.py` while it really names `a/owned.py` -- both
+        # inside the repo, so the containment guard passes and ownership gets
+        # evaluated for a path the caller never named.
+        #
+        # Without `..`, lexical is what we want: it preserves a repo-internal
+        # symlink's OWN name, so a token naming the symlinked directory still
+        # matches. Ownership is a statement about the repository's paths.
         relative = resolved.relative_to(root).as_posix()
+    else:
+        try:
+            relative = lexical.relative_to(root_lexical).as_posix()
+        except ValueError:
+            relative = resolved.relative_to(root).as_posix()
     if relative == ".":
         # `""`, `.`, and the absolute repo root all land here. None matches any
         # ownership token, so each exited 0 -- "the whole repository is unclaimed",
