@@ -1958,8 +1958,18 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
             ],
         }
         if capture is not None:
+            bound_capture = getattr(result, "_agy_canary_capture", None)
+            # A governed invocation may refuse before it has allocated and sealed
+            # any provider launch authorities.  Such a result has no capture
+            # summary by definition; never manufacture one from an unsealed root.
+            # Once a summary is present, recompute and compare it before writing
+            # any private board output.
+            if bound_capture is None:
+                print("advisor-board: capture summary was not bound by invocation", file=sys.stderr)
+                capture.close()
+                return 2
             expected_capture = capture_summary(capture)
-            if getattr(result, "_agy_canary_capture", None) != expected_capture:
+            if bound_capture != expected_capture:
                 print("advisor-board: capture summary was not bound by invocation", file=sys.stderr)
                 capture.close()
                 return 2

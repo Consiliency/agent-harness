@@ -6092,19 +6092,30 @@ def invoke_board(
             )
         except ValueError as exc:
             return review_refusal(str(exc))
-    injected_execution_seam = factory_replaced and (
-        mode == "advisory" or factory_marker is review_authorization
+    injected_capture_preparation_seam = (
+        agy_canary_capture is not None
+        and prepare_provider_launch_authorities
+        is not _PRODUCTION_PREPARE_PROVIDER_LAUNCH_AUTHORITIES
+        # The bounded CLI capture control resolves a file reference and allocates
+        # its private scratch before entering the invoker.  A raw capture object
+        # alone is not an authority to allocate or stage provider inputs.
+        and artifact_ref is not None
+        and repo_dir is not None
     )
+    auth_free_capture_control = (
+        injected_capture_preparation_seam
+        and review_authorization is None
+        and not factory_replaced
+    )
+    injected_execution_seam = (
+        factory_replaced and (
+            mode == "advisory" or factory_marker is review_authorization
+        )
+    ) or auth_free_capture_control
     unbound_execution_replacement = (
         _has_injected_review_execution_seam(board=board)
         or _default_spawn is not _PRODUCTION_DEFAULT_SPAWN
         or _default_spawn_via_provider is not _PRODUCTION_DEFAULT_SPAWN_VIA_PROVIDER
-    )
-    injected_capture_preparation_seam = (
-        injected_execution_seam
-        and agy_canary_capture is not None
-        and prepare_provider_launch_authorities
-        is not _PRODUCTION_PREPARE_PROVIDER_LAUNCH_AUTHORITIES
     )
     if mode == "advisory":
         if not injected_execution_seam:
@@ -6133,7 +6144,7 @@ def invoke_board(
                 )
             except ValueError as exc:
                 return review_refusal(str(exc))
-        if review_authorization is None:
+        if review_authorization is None and not auth_free_capture_control:
             if governed_review_request:
                 return review_refusal("missing or forged HARDEN review authorization")
             if effective_research.enabled:
@@ -6155,16 +6166,17 @@ def invoke_board(
                 return review_refusal(str(exc))
         if not injected_execution_seam and not exact_broker_routes and not native_host_deferral_only:
             return review_refusal("harden_review_unsupported_route_refused")
-        try:
-            revalidate_review_isolation_authorization(
-                review_authorization,
-                board,
-                authorization_artifact,
-                mode=mode,
-                canonical_repo_authority=canonical_repo_authority,
-            )
-        except ValueError as exc:
-            return review_refusal(str(exc))
+        if not auth_free_capture_control:
+            try:
+                revalidate_review_isolation_authorization(
+                    review_authorization,
+                    board,
+                    authorization_artifact,
+                    mode=mode,
+                    canonical_repo_authority=canonical_repo_authority,
+                )
+            except ValueError as exc:
+                return review_refusal(str(exc))
         # Native-host deferral is a typed data result, never a path to host
         # execution. It is reached only after the same factory/revalidation gate.
         if native_host_deferral_only and spawn is None:
