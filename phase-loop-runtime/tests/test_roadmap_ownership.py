@@ -1464,6 +1464,29 @@ class TestPreflight(unittest.TestCase):
                 owned["src/beta/narrow.py"][0].note, "(only the parser)"
             )
 
+    def test_a_LONGER_glob_does_not_outrank_the_exact_file(self):
+        """Length alone is not specificity once globs exist.
+
+        A glob can be textually longer than the exact file it matches while
+        claiming far more, so ranking purely by length hands the broad
+        qualification to the narrow path — the same over-report the ordering fix
+        was meant to end, reintroduced by its own tie-breaker.
+
+        Mutation that must kill this: `key=specificity` -> `key=len`.
+        """
+        # `src/beta/[xyz][.]py` is 19 characters and matches the 13-character
+        # `src/beta/x.py`, so a length-only ranking prefers the GLOB.
+        broad, exact = "src/beta/[xyz][.]py", "src/beta/x.py"
+        self.assertGreater(len(broad), len(exact), "the glob must out-length the file")
+        globbed = ROADMAP.replace(
+            "- `src/beta/`",
+            f"- `{broad}` (the whole lane-B tree)\n- `{exact}` (only the parser)",
+        )
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=globbed)
+            owned = ro.preflight(repo, [exact])
+            self.assertEqual(owned[exact][0].note, "(only the parser)")
+
     def test_without_current_phase_the_output_does_not_say_another_phase(self):
         """"another phase" implies an exclusion that only happened if one was
         named. Without `--current-phase` the question is "does ANY phase claim

@@ -297,8 +297,18 @@ def _note_for(alias: str, path: str, mapping: Dict[str, List[Phase]]) -> str:
     match made the answer depend on bullet ORDER in the roadmap: reordering two
     semantically identical lines could replace an exact file's narrow
     qualification with the broad directory note, which silently widens the scope
-    a reader believes they have. Longest token wins, because a longer ownership
-    token is always the narrower claim.
+    a reader believes they have.
+
+    Ranked, most specific first:
+
+    1. an EXACT token (``owned == path``) -- it claims that path and nothing else;
+    2. a literal (non-glob) token, longest first -- a longer directory prefix is
+       the narrower claim;
+    3. a GLOB, longest last.
+
+    Length alone is not specificity once globs exist: ``<long>/**/*.py`` can be
+    longer than the exact file it matches while claiming far more. Ordering by
+    length only *within* a class avoids comparing the two.
     """
 
     matches = [
@@ -308,7 +318,13 @@ def _note_for(alias: str, path: str, mapping: Dict[str, List[Phase]]) -> str:
     ]
     if not matches:
         return ""
-    return _NOTES[f"{alias}\x00{max(matches, key=len)}"]
+
+    def specificity(owned: str) -> "tuple[int, int, int]":
+        exact = owned == path
+        glob = any(ch in owned for ch in "*?[")
+        return (1 if exact else 0, 0 if glob else 1, len(owned))
+
+    return _NOTES[f"{alias}\x00{max(matches, key=specificity)}"]
 
 
 def has_disposition(text: str) -> bool:
