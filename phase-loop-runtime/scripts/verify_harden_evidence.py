@@ -352,7 +352,12 @@ def read_regular_file_nofollow(
     directory = getattr(os, "O_DIRECTORY", 0)
     if not nofollow or not directory:
         fail(f"{label}: no-follow descriptor traversal is unavailable")
-    base_flags = os.O_RDONLY | nofollow | getattr(os, "O_CLOEXEC", 0)
+    base_flags = (
+        os.O_RDONLY
+        | nofollow
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
     descriptors: list[int] = []
     try:
         try:
@@ -418,9 +423,60 @@ def run_owned_receipt(store: ArtifactStore, repo: Path, ref: dict[str, str], lab
     return value
 
 
+_GIT_CONFIG = (
+    "-c", "color.ui=false",
+    "-c", "core.attributesFile=/dev/null",
+    "-c", "core.fsmonitor=false",
+    "-c", "core.hooksPath=/dev/null",
+    "-c", "core.pager=cat",
+    "-c", "core.quotePath=true",
+    "-c", "core.useBuiltinFSMonitor=false",
+    "-c", "diff.algorithm=myers",
+    "-c", "diff.external=",
+    "-c", "diff.ignoreSubmodules=none",
+    "-c", "diff.indentHeuristic=false",
+    "-c", "diff.mnemonicPrefix=false",
+    "-c", "diff.noprefix=false",
+    "-c", "diff.orderFile=/dev/null",
+    "-c", "diff.renames=false",
+    "-c", "diff.submodule=short",
+)
+_MAX_GIT_ANCESTRY_COMMITS = 100_000
+
+
+def git_environment() -> dict[str, str]:
+    """Return a minimal authority environment, never inherited from the caller."""
+    return {
+        "PATH": os.defpath,
+        "HOME": os.devnull,
+        "XDG_CONFIG_HOME": os.devnull,
+        "LANG": "C",
+        "LC_ALL": "C",
+        "TZ": "UTC",
+        "GIT_ATTR_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_GRAFT_FILE": os.devnull,
+        "GIT_OPTIONAL_LOCKS": "0",
+        "GIT_PAGER": "cat",
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+
+
 def git_bytes(repo: Path, *args: str) -> bytes:
-    command = ("git", "-C", str(repo), "--no-replace-objects", "-c", "core.hooksPath=/dev/null", *args)
-    completed = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+    command = (
+        "git", "-C", str(repo), "--no-replace-objects", *_GIT_CONFIG, *args,
+    )
+    try:
+        completed = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            env=git_environment(),
+        )
+    except OSError:
+        fail("Git authority check failed")
     if completed.returncode:
         fail("Git authority check failed")
     return completed.stdout
@@ -440,24 +496,85 @@ def git_scalar(repo: Path, *args: str) -> str:
         fail("Git scalar authority record is not ASCII")
 
 
-def git_commit(repo: Path, commit_id: str, tree_id: str, label: str) -> None:
+def raw_commit_metadata(repo: Path, commit_id: str, label: str) -> tuple[str, tuple[str, ...]]:
+    """Read tree and parents from immutable raw commit headers, never graft views."""
     text(commit_id, label + ".commit", pattern=HEX40)
+    raw = git_bytes(repo, "cat-file", "commit", commit_id)
+    headers, separator, _body = raw.partition(b"\n\n")
+    if not separator:
+        fail(f"{label}: raw commit object has no header delimiter")
+    trees: list[str] = []
+    parents: list[str] = []
+    for line in headers.splitlines():
+        if line.startswith(b"tree "):
+            values = trees
+            object_id = line[len(b"tree "):]
+        elif line.startswith(b"parent "):
+            values = parents
+            object_id = line[len(b"parent "):]
+        else:
+            continue
+        try:
+            decoded = object_id.decode("ascii", "strict")
+        except UnicodeDecodeError:
+            fail(f"{label}: raw commit object has a non-ASCII object ID")
+        if not HEX40.fullmatch(decoded):
+            fail(f"{label}: raw commit object has an invalid object ID")
+        values.append(decoded)
+    if len(trees) != 1:
+        fail(f"{label}: raw commit object has an invalid tree header")
+    return trees[0], tuple(parents)
+
+
+def commit_parents(repo: Path, commit_id: str, label: str) -> tuple[str, ...]:
+    return raw_commit_metadata(repo, commit_id, label)[1]
+
+
+def git_commit(repo: Path, commit_id: str, tree_id: str, label: str) -> None:
     text(tree_id, label + ".tree", pattern=HEX40)
-    if git_scalar(repo, "rev-parse", commit_id + "^{commit}") != commit_id:
-        fail(f"{label}: commit is not exact")
-    if git_scalar(repo, "rev-parse", commit_id + "^{tree}") != tree_id:
+    actual_tree, _parents = raw_commit_metadata(repo, commit_id, label)
+    if actual_tree != tree_id:
         fail(f"{label}: commit/tree mismatch")
 
 
 def ancestor(repo: Path, older: str, newer: str, label: str) -> None:
-    completed = subprocess.run(("git", "-C", str(repo), "--no-replace-objects", "merge-base", "--is-ancestor", older, newer), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-    if completed.returncode:
-        fail(f"{label}: ancestry mismatch")
+    """Prove ancestry by raw parent traversal, unaffected by graft/replace views."""
+    text(older, label + ".older", pattern=HEX40)
+    text(newer, label + ".newer", pattern=HEX40)
+    pending = [newer]
+    seen: set[str] = set()
+    while pending:
+        current = pending.pop()
+        if current == older:
+            return
+        if current in seen:
+            continue
+        seen.add(current)
+        if len(seen) > _MAX_GIT_ANCESTRY_COMMITS:
+            fail(f"{label}: ancestry graph exceeds bounded traversal")
+        pending.extend(commit_parents(repo, current, label))
+    fail(f"{label}: ancestry mismatch")
 
 
 def changed_paths(repo: Path, older: str, newer: str) -> set[str]:
     """Return exact Git path records; leading/trailing whitespace is significant."""
-    out = git_bytes(repo, "diff", "--name-only", "-z", "--no-renames", older, newer)
+    out = git_bytes(
+        repo,
+        "diff",
+        "--name-only",
+        "-z",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-relative",
+        "--no-renames",
+        "--ignore-submodules=none",
+        "--diff-algorithm=myers",
+        "--no-indent-heuristic",
+        "-O/dev/null",
+        older,
+        newer,
+    )
     if not out:
         return set()
     if not out.endswith(b"\0"):
@@ -478,10 +595,7 @@ def blob(repo: Path, revision: str, path: str) -> tuple[str, bytes]:
     object_id = git_scalar(repo, "rev-parse", f"{revision}:{path}")
     if not HEX40.fullmatch(object_id):
         fail("invalid frozen blob")
-    data = subprocess.run(("git", "-C", str(repo), "--no-replace-objects", "show", f"{revision}:{path}"), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
-    if data.returncode:
-        fail("frozen blob unavailable")
-    return object_id, data.stdout
+    return object_id, git_bytes(repo, "cat-file", "blob", object_id)
 
 
 def digest_bound_delimiters(label: str, payload: bytes) -> tuple[str, str]:
@@ -535,11 +649,45 @@ def git_bound_review_input(
         if len(rendered.encode("utf-8", errors="strict")) > REVIEW_INPUT_MAX_BYTES:
             fail("review input HARDEN plan exceeds bounded transport")
         return rendered
-    patch = git_bytes(
-        repo, "diff", "--binary", "--full-index", "--no-ext-diff", "--no-renames",
-        base_head, head,
+    raw_blob_delta = git_bytes(
+        repo,
+        "diff-tree",
+        "-r",
+        "--raw",
+        "-z",
+        "--no-abbrev",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-renames",
+        "--ignore-submodules=none",
+        "--diff-algorithm=myers",
+        "--no-indent-heuristic",
+        "-O/dev/null",
+        base_tree,
+        tree,
     )
-    if not patch:
+    patch = git_bytes(
+        repo,
+        "diff",
+        "--binary",
+        "--full-index",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-relative",
+        "--no-renames",
+        "--ignore-submodules=none",
+        "--diff-algorithm=myers",
+        "--no-indent-heuristic",
+        "--unified=3",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        "-O/dev/null",
+        base_head,
+        head,
+    )
+    if not patch or not raw_blob_delta:
         fail("review input Git patch is empty")
     try:
         patch_text = patch.decode("utf-8", errors="strict")
@@ -551,6 +699,8 @@ def git_bound_review_input(
         f"base_head={base_head}", f"base_tree={base_tree}",
         f"head={head}", f"tree={tree}",
         f"git_patch_sha256={sha256(patch)}", f"git_patch_bytes={len(patch)}",
+        f"git_raw_blob_delta_sha256={sha256(raw_blob_delta)}",
+        f"git_raw_blob_delta_bytes={len(raw_blob_delta)}",
         begin, patch_text, end, "",
     ))
     if len(rendered.encode("utf-8", errors="strict")) > REVIEW_INPUT_MAX_BYTES:
@@ -829,10 +979,10 @@ def verify_git_and_inventory(repo: Path, git_data: dict[str, Any], sl0: dict[str
         fail("landing first parent is not the exact SL-0 base")
     ancestor(repo, base, reviewed, "reviewed SL-0")
     reviewed_changes = changed_paths(repo, base, reviewed)
-    if git_scalar(repo, "merge-base", first_parent, reviewed) != base or not reviewed_changes or not reviewed_changes <= set(FROZEN_SL0_PATHS):
+    if not reviewed_changes or not reviewed_changes <= set(FROZEN_SL0_PATHS):
         fail("reviewed SL-0 is not a nonempty frozen-tests-only change from SL-0 base")
-    parents = git_scalar(repo, "show", "-s", "--format=%P", landing).split(" ")
-    if parents != [first_parent, reviewed]:
+    parents = commit_parents(repo, landing, "landing merge")
+    if parents != (first_parent, reviewed):
         fail("landing merge topology is not landing-first-parent plus reviewed SL-0")
     landing_delta = changed_paths(repo, first_parent, landing)
     if landing_delta != reviewed_changes:
@@ -1491,14 +1641,25 @@ def verify(evidence_path: Path, evidence_root: Path, repo: Path, *, reuse_regist
 # The fixture below is deliberately ephemeral.  It is a verifier exercise, not
 # retained evidence and it never imports the runtime or invokes a provider.
 def _run(command: list[str], cwd: Path) -> str:
-    done = subprocess.run(command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+    done = subprocess.run(
+        command,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+        env=git_environment(),
+    )
     if done.returncode:
         raise RuntimeError("self-test git setup failed")
     return done.stdout.strip()
 
 
 def _self_git(
-    root: Path, *, intervening_first_parent: bool = False,
+    root: Path,
+    *,
+    intervening_first_parent: bool = False,
+    empty_intervening_first_parent: bool = False,
 ) -> tuple[Path, dict[str, tuple[str, str]]]:
     repo = root / "repo"
     repo.mkdir()
@@ -1532,9 +1693,12 @@ def _self_git(
     reviewed = _run(["git", "rev-parse", "HEAD"], repo)
     _run(["git", "checkout", "-q", "main"], repo)
     if intervening_first_parent:
-        (repo / "unrelated-current-main-input.txt").write_text("intervening current-main input\n")
-        _run(["git", "add", "."], repo)
-        _run(["git", "commit", "-qm", "intervening current main"], repo)
+        if empty_intervening_first_parent:
+            _run(["git", "commit", "--allow-empty", "-qm", "intervening current main"], repo)
+        else:
+            (repo / "unrelated-current-main-input.txt").write_text("intervening current-main input\n")
+            _run(["git", "add", "."], repo)
+            _run(["git", "commit", "-qm", "intervening current main"], repo)
     first_parent = _run(["git", "rev-parse", "HEAD"], repo)
     _run(["git", "merge", "--no-ff", "-qm", "landing", "review"], repo)
     landing = _run(["git", "rev-parse", "HEAD"], repo)
@@ -1928,6 +2092,68 @@ def self_test() -> None:
         evidence_path, artifacts, repo, evidence, registry, coordinator, author = _fixture(baseline)
         verify(evidence_path, artifacts, repo, reuse_registry=registry, expected_coordinator_session=coordinator, expected_author_session=author, ci_query=baseline / "fake-gh")
 
+        def git_environment_isolation() -> None:
+            isolated_root = root / "git-environment-isolation"
+            isolated_root.mkdir()
+            isolated_repo, refs = _self_git(isolated_root)
+            base_head, base_tree = refs["landing"]
+            head, tree = refs["candidate"]
+            expected = git_bound_review_input(
+                isolated_repo,
+                base_head,
+                base_tree,
+                head,
+                tree,
+                "bundle",
+            )
+            marker = isolated_root / "textconv-or-external-diff-ran"
+            helper = isolated_root / "hostile-diff-helper"
+            helper.write_text(
+                "#!/usr/bin/env python3\n"
+                "from pathlib import Path\n"
+                "import sys\n"
+                f"Path({str(marker)!r}).write_text('ran')\n"
+                "sys.stdout.buffer.write(Path(sys.argv[1]).read_bytes())\n",
+                encoding="utf-8",
+            )
+            helper.chmod(0o700)
+            (isolated_repo / ".git" / "info" / "attributes").write_text(
+                "phase-loop-runtime/src/phase_loop_runtime/runner.py diff=hardenprobe\n",
+                encoding="utf-8",
+            )
+            _run(
+                ["git", "config", "diff.hardenprobe.textconv", str(helper)],
+                isolated_repo,
+            )
+            inherited = {
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_KEY_0": "diff.external",
+                "GIT_CONFIG_VALUE_0": str(helper),
+                "GIT_DIFF_OPTS": "--stat",
+                "GIT_EXTERNAL_DIFF": str(helper),
+            }
+            previous = {key: os.environ.get(key) for key in inherited}
+            os.environ.update(inherited)
+            try:
+                observed = git_bound_review_input(
+                    isolated_repo,
+                    base_head,
+                    base_tree,
+                    head,
+                    tree,
+                    "bundle",
+                )
+            finally:
+                for key, value in previous.items():
+                    if value is None:
+                        os.environ.pop(key, None)
+                    else:
+                        os.environ[key] = value
+            if marker.exists() or observed != expected:
+                raise AssertionError("ambient Git config changed or executed review rendering")
+
+        git_environment_isolation()
+
         def intervening_landing_first_parent() -> None:
             intervening_root = root / "intervening-landing-first-parent"
             intervening_root.mkdir()
@@ -1948,6 +2174,48 @@ def self_test() -> None:
             "intervening-landing-first-parent",
             intervening_landing_first_parent,
         )
+
+        def grafted_landing_parent() -> None:
+            graft_root = root / "grafted-landing-parent"
+            graft_root.mkdir()
+            graft_repo, refs = _self_git(
+                graft_root,
+                intervening_first_parent=True,
+                empty_intervening_first_parent=True,
+            )
+            base, base_tree = refs["sl0_base"]
+            reviewed, _reviewed_tree = refs["reviewed_sl0"]
+            landing, _landing_tree = refs["landing"]
+            graft = f"{landing} {base} {reviewed}\n"
+            graft_path = graft_root / "grafts"
+            graft_path.write_text(graft, encoding="ascii")
+            (graft_repo / ".git" / "info" / "grafts").write_text(
+                graft,
+                encoding="ascii",
+            )
+            previous = os.environ.get("GIT_GRAFT_FILE")
+            os.environ["GIT_GRAFT_FILE"] = str(graft_path)
+            try:
+                forged = {
+                    name: {"commit": commit_id, "tree": tree}
+                    for name, (commit_id, tree) in refs.items()
+                }
+                forged["landing_first_parent"] = {
+                    "commit": base,
+                    "tree": base_tree,
+                }
+                verify_git_and_inventory(
+                    graft_repo,
+                    forged,
+                    copy.deepcopy(evidence["sl0"]),
+                )
+            finally:
+                if previous is None:
+                    os.environ.pop("GIT_GRAFT_FILE", None)
+                else:
+                    os.environ["GIT_GRAFT_FILE"] = previous
+
+        direct_rejected("grafted-landing-parent", grafted_landing_parent)
         post_root = root / "post-completion"
         shutil.copytree(baseline, post_root, symlinks=True)
         post_path = post_root / "evidence.json"; post_model = parse_canonical_json(post_path.read_bytes(), "post-completion evidence")
