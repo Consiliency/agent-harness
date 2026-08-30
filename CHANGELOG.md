@@ -47,13 +47,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   so a token naming a symlinked directory matched nothing: ownership describes the
   repository's paths, not where they point. A symlink loop or unreadable path now reports
   CANNOT EVALUATE instead of raising past the handler as exit 1.
-- The qualification shown comes from the claim with the **longest literal prefix** (the part
-  before any wildcard), exact matches first. Two earlier rankings were wrong in opposite
-  directions and both surfaced the same way — a broad qualification on a narrow path: raw
-  length let a long glob outrank the exact file it matched, and its repair let any
-  wildcard-free directory outrank a far narrower glob. A wildcard's presence says nothing
-  about breadth; its position does. Ranking now runs over every claiming token, so a
-  specific but unqualified claim no longer inherits a broader claim's note.
+- Qualifications are **scoped to the phase being reported, and no longer ranked**. An exact
+  token settles the matter alone; otherwise every qualification on that phase's claiming
+  tokens is shown. Three successive attempts to rank them each attached a *broader*
+  qualification to a narrower path — by raw length (a long glob outranked the exact file it
+  matched), then by wildcard-free-beats-glob (a directory outranked a far narrower glob),
+  then by longest literal prefix (`[a-z]*.py` outranks the narrower `[a]*.py`). For two globs
+  sharing a prefix, breadth simply is not length, so the ranking was removed rather than
+  repaired again. This matches what the module already does with prose it cannot interpret:
+  surface it rather than guess. Scoping matters as much as ordering — ranking across *all*
+  phases let another phase's exact claim win and silently erased GOVLEAN's directory
+  qualification from every file some other phase names exactly.
 - **Scoped claims stay scoped.** The roadmap qualifies some entries (GOVLEAN's directory
   claim reads "(new evidence, lint, and governance modules)"); `--preflight` now carries
   that parenthetical verbatim as the audit output already did, instead of presenting a

@@ -1492,18 +1492,24 @@ class TestPreflight(unittest.TestCase):
             owned = ro.preflight(repo, [exact])
             self.assertEqual(owned[exact][0].note, "(only the parser)")
 
-    def test_a_narrower_GLOB_outranks_a_broader_directory(self):
-        """codex and gemini both caught this, independently.
+    def test_MULTIPLE_qualified_claims_are_all_surfaced_not_ranked(self):
+        """Three successive rankings each attached a BROADER qualification to a
+        narrower path, so the ranking was removed rather than repaired a fourth
+        time:
 
-        The repair for "a longer glob outranked the exact file" ranked any token
-        WITHOUT a wildcard above any token with one -- so the broad directory
-        `src/beta/` outranked the far narrower `src/beta/parser_*.py`. A glob
-        character says nothing about breadth; where the wildcard SITS does. Both
-        that ranking and the raw-length one produced the same user-visible error:
-        a broad qualification attached to a narrow path.
+            raw length            a 19-char glob outranked the 13-char exact file
+            literal-beats-glob    `src/beta/` outranked `src/beta/parser_*.py`
+            longest-prefix        `[a-z]*.py` outranked the narrower `[a]*.py`
 
-        Mutation that must kill this: rank non-glob above glob, i.e. restore
-        `(exact, 0 if glob else 1, len(owned))`.
+        For two globs sharing a literal prefix, breadth is not length -- `[a]*.py`
+        is narrower than `[a-z]*.py` and shorter -- so no cheap total order
+        exists. When several of a phase's claims are qualified and none is exact,
+        every qualification is shown. That matches what this module already says
+        it does with prose it cannot interpret: reporting the whole directory as
+        owned would overstate, dropping the entry would understate.
+
+        Mutation that must kill this: return only the first qualified note instead
+        of joining them.
         """
         roadmap = ROADMAP.replace(
             "- `src/beta/`",
@@ -1512,10 +1518,58 @@ class TestPreflight(unittest.TestCase):
         )
         with TemporaryDirectory() as tmp:
             repo = _repo_with_two_phases(tmp, roadmap=roadmap)
-            owned = ro.preflight(repo, ["src/beta/parser_impl.py"])
+            note = ro.preflight(repo, ["src/beta/parser_impl.py"])[
+                "src/beta/parser_impl.py"
+            ][0].note
+            self.assertIn("(only parser modules)", note)
+            self.assertIn("(the whole lane-B tree)", note)
+
+    def test_an_EXACT_claim_settles_the_qualification_alone(self):
+        """An exact token claims this path and nothing else, so its qualification
+        is authoritative and the broader ones are not shown alongside it.
+
+        Mutation that must kill this: drop the exact-match short-circuit and fall
+        through to joining every qualified claim.
+        """
+        roadmap = ROADMAP.replace(
+            "- `src/beta/`",
+            "- `src/beta/` (the whole lane-B tree)\n"
+            "- `src/beta/exact.py` (only the parser)",
+        )
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=roadmap)
             self.assertEqual(
-                owned["src/beta/parser_impl.py"][0].note, "(only parser modules)"
+                ro.preflight(repo, ["src/beta/exact.py"])["src/beta/exact.py"][0].note,
+                "(only the parser)",
             )
+
+    def test_the_note_is_scoped_to_the_PHASE_being_reported(self):
+        """Both dissenting seats found this, with a worked example on live v10.
+
+        Ranking over every phase's tokens let ANOTHER phase's exact claim win, and
+        the note lookup is per-alias — so GOVLEAN's scoped directory note vanished
+        from every file some other phase happens to name exactly (`runner.py`,
+        `test_reviewtruth_phase.py`, dozens more). A scoped claim presented as
+        unconditional is the exact failure `Ownership.note` exists to prevent.
+
+        The earlier same-phase fixture could not catch it: with both tokens on one
+        alias, alias-scoped and global ranking coincide.
+
+        Mutation that must kill this: drop the `any(p.alias == alias ...)` filter.
+        """
+        roadmap = ROADMAP.replace(
+            "- `src/beta/`", "- `src/beta/` (only the lane-B evidence modules)"
+        ).replace("- `src/alpha.py`", "- `src/beta/shared.py`")
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=roadmap)
+            mapping = ro.ownership_map(roadmap)
+            # ALPHA claims src/beta/shared.py exactly and unqualified; BETA claims
+            # the directory WITH a qualification. BETA's note must survive.
+            self.assertEqual(
+                ro._note_for("BETA", "src/beta/shared.py", mapping),
+                "(only the lane-B evidence modules)",
+            )
+            self.assertEqual(ro._note_for("ALPHA", "src/beta/shared.py", mapping), "")
 
     def test_an_unqualified_specific_claim_shows_NO_qualification(self):
         """`_note_for` filtered to tokens carrying a note BEFORE ranking, so a
@@ -1576,6 +1630,35 @@ class TestPreflight(unittest.TestCase):
             self.assertIn(rc, (0, 2), "must never be 1 -- that means 'claimed'")
             if rc == 2:
                 self.assertIn("CANNOT EVALUATE", buf.getvalue())
+
+    def test_a_symlink_ERASED_by_lexical_dotdot_cannot_evaluate(self):
+        """Lexical `..` collapsing is not filesystem-truthful: it erases a symlink
+        before containment is checked. With `link -> /tmp/outside`, the argument
+        `link/../x` reads lexically as `<repo>/x` (inside) while really resolving
+        outside the repo — so ownership would be evaluated for a path the caller
+        never named.
+
+        Mutation that must kill this: drop the `resolved.relative_to(root)` guard
+        and trust the lexical form.
+        """
+        with TemporaryDirectory() as tmp, TemporaryDirectory() as outside:
+            repo = self._repo(tmp)
+            (repo / "link").symlink_to(outside)
+            with self.assertRaises(ro.PathNotInRepo):
+                ro.preflight(repo, ["link/../src/alpha.py"])
+
+    def test_a_non_object_state_file_does_not_exit_1(self):
+        """Valid JSON need not be an OBJECT. A state file containing `[]` reached
+        `.get` on a list and raised AttributeError, which audit-mode `main` does
+        not catch — exiting 1 with no ownership claim at all.
+
+        Mutation that must kill this: drop the `isinstance(loaded, dict)` guard.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = self._repo(tmp)
+            (repo / ".phase-loop").mkdir(exist_ok=True)
+            (repo / ".phase-loop" / "state.json").write_text("[]")
+            self.assertIsNone(ro.current_phase(repo))
 
     def test_AUDIT_also_normalizes_an_unreadable_roadmap(self):
         """Round 3 wrapped the read in `preflight` and left `audit` bare two

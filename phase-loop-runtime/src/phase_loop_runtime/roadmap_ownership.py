@@ -120,9 +120,15 @@ def current_phase(repo: Path) -> Optional[str]:
     if not state.is_file():
         return None
     try:
-        return json.loads(state.read_text()).get("current_phase")
+        loaded = json.loads(state.read_text())
     except (OSError, ValueError):
         return None
+    if not isinstance(loaded, dict):
+        # Valid JSON is not necessarily an OBJECT. A state file containing `[]`
+        # reached `.get` on a list and raised AttributeError, which audit-mode
+        # `main` does not catch -- exiting 1 with no ownership claim at all.
+        return None
+    return loaded.get("current_phase")
 
 
 _BACKTICKED = re.compile(r"`([^`]+)`")
@@ -341,23 +347,44 @@ def _note_for(alias: str, path: str, mapping: Dict[str, List[Phase]]) -> str:
     a broad qualification attached to a narrow path.
     """
 
-    matches = [owned for owned in mapping if _claims(owned, path)]
+    # Scoped to THIS alias. The round-3 filter `_NOTES.get(f"{alias}\x00{owned}")`
+    # was quietly doing two jobs: skipping unqualified tokens, and keeping the
+    # ranking inside one phase. Round 4 removed both, and only the first removal
+    # was intended -- so another phase's exact claim won the global rank and
+    # GOVLEAN's scoped directory note vanished from every file some other phase
+    # names exactly (`runner.py`, `test_reviewtruth_phase.py`, dozens more on live
+    # v10). That is a scoped claim presented as unconditional: the exact failure
+    # `Ownership.note` exists to prevent.
+    matches = [
+        owned
+        for owned, phases in mapping.items()
+        if _claims(owned, path) and any(p.alias == alias for p in phases)
+    ]
     if not matches:
         return ""
 
-    def specificity(owned: str) -> "tuple[int, int, int]":
-        wildcard = min(
-            (owned.index(ch) for ch in "*?[" if ch in owned),
-            default=len(owned),
-        )
-        return (1 if owned == path else 0, wildcard, len(owned))
+    def note_of(owned: str) -> str:
+        return _NOTES.get(f"{alias}\x00{owned}", "")
 
-    # Ranked over EVERY claiming token, not only the qualified ones. Filtering to
-    # tokens that carry a note first meant a broad qualified claim could outrank a
-    # narrower unqualified one and lend it a qualification that does not apply to
-    # it. If the most specific claim carries no qualification, there is none to
-    # show.
-    return _NOTES.get(f"{alias}\x00{max(matches, key=specificity)}", "")
+    # An EXACT token claims this path and nothing else, so its qualification is
+    # authoritative -- including when it has none.
+    for owned in matches:
+        if owned == path:
+            return note_of(owned)
+
+    qualified = sorted({note_of(owned) for owned in matches if note_of(owned)})
+    if len(qualified) <= 1:
+        return qualified[0] if qualified else ""
+
+    # Several qualified claims and no exact one. There is no honest total order
+    # here: for two globs sharing a literal prefix, breadth is not length --
+    # `[a]*.py` is narrower than `[a-z]*.py` and shorter. Three successive
+    # attempts at a ranking (raw length, literal-beats-glob, longest-prefix) each
+    # attached a broader qualification to a narrower path. So this stops guessing
+    # and surfaces all of them, which is what the module already says it does with
+    # prose it cannot interpret: reporting the whole directory as owned would
+    # overstate; dropping the entry would understate.
+    return " | ".join(qualified)
 
 
 def has_disposition(text: str) -> bool:
@@ -800,29 +827,38 @@ def _normalize_preflight_path(repo: Path, raw: str) -> str:
             f"could not resolve the repository root {Path(repo)}: {exc}"
         ) from exc
     candidate = Path(raw)
-    lexical = Path(
-        os.path.normpath(
-            str(candidate if candidate.is_absolute() else root_lexical / candidate)
-        )
-    )
+    uncollapsed = candidate if candidate.is_absolute() else root_lexical / candidate
+    lexical = Path(os.path.normpath(str(uncollapsed)))
     try:
-        resolved = lexical.resolve()
+        # Resolve the UNCOLLAPSED path. Resolving the lexical form instead is
+        # useless as a safety check: `os.path.normpath` has already erased the
+        # symlink that `..` crossed, so `resolve()` never sees it and reports the
+        # rewritten path as inside. The first version of this guard made exactly
+        # that mistake and its own test caught it.
+        resolved = uncollapsed.resolve()
     except (OSError, RuntimeError) as exc:
         raise PathNotInRepo(
             f"could not resolve {raw!r}: {exc}. Refusing to report it as "
             f"unclaimed -- this command could not evaluate it at all."
         ) from exc
+    # Containment is checked against the RESOLVED path regardless of which form
+    # supplies the answer. Lexical `..` collapsing is not filesystem-truthful: it
+    # erases a symlink before the check, so with `/var/run -> /run` the argument
+    # `run/../etc/passwd` reads as `/var/etc/passwd` -- inside -- while it really
+    # resolves to `/etc/passwd`, outside. Ownership would then be evaluated for a
+    # path the caller never named.
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise PathNotInRepo(
+            f"{raw!r} resolves to {resolved}, outside {root}. Refusing to report "
+            f"it as unclaimed -- this command cannot evaluate ownership for a "
+            f"path it cannot place in the repository."
+        ) from exc
     try:
         relative = lexical.relative_to(root_lexical).as_posix()
     except ValueError:
-        try:
-            relative = resolved.relative_to(root).as_posix()
-        except ValueError as exc:
-            raise PathNotInRepo(
-                f"{raw!r} does not resolve to a path inside {root}. Refusing to "
-                f"report it as unclaimed -- this command cannot evaluate "
-                f"ownership for a path it cannot place in the repository."
-            ) from exc
+        relative = resolved.relative_to(root).as_posix()
     if relative == ".":
         # `""`, `.`, and the absolute repo root all land here. None matches any
         # ownership token, so each exited 0 -- "the whole repository is unclaimed",
