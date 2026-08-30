@@ -1588,6 +1588,7 @@ _BROKER_REVIEW_INPUT_HEADER_PREFIX = "HARDEN-GIT-BOUND-REVIEW-"
 _BROKER_AUTHORITY_METADATA_PREFIX = "AUTHORITATIVE-INSTRUCTIONS sha256="
 _BROKER_BUNDLE_METADATA_PREFIX = "UNTRUSTED-REVIEW-BUNDLE sha256="
 _BROKER_SEALED_HEADER = "HARDEN-BROKER-SEALED-PROMPT.v1"
+_BROKER_MAX_VISUAL_PREFIX_CHARS = 256
 _BROKER_UNTRUSTED_FRAME_PREFIXES = (
     _BROKER_FRAME_PREFIX,
     _BROKER_REVIEW_INPUT_HEADER_PREFIX,
@@ -1614,18 +1615,26 @@ def _broker_visible_ascii_identifier(character: str) -> bool:
 
 
 def _broker_visual_prefix_replica(line: str, start: int, prefix: str) -> bool:
-    """Match only visible ASCII exactly; non-ASCII and tabs are unsafe wildcards."""
-    positions = {0}
-    for character in line[start:]:
-        next_positions: set[int] = set()
-        for position in positions:
+    """Match visible ASCII exactly with bounded visual-glyph wildcard runs."""
+    positions = {(0, False, False)}
+    for offset, character in enumerate(line[start:]):
+        if offset >= _BROKER_MAX_VISUAL_PREFIX_CHARS:
+            return bool(positions)
+        next_positions: set[tuple[int, bool, bool]] = set()
+        for position, wildcard_seen, literal_seen in positions:
             if position < len(prefix) and character == prefix[position]:
-                next_positions.add(position + 1)
+                next_positions.add((
+                    position + 1,
+                    wildcard_seen,
+                    True,
+                ))
             if not character.isascii() or character == "\t":
-                next_positions.add(position)
-                if position < len(prefix):
-                    next_positions.add(position + 1)
-        if len(prefix) in next_positions:
+                for advance in range(position, len(prefix) + 1):
+                    next_positions.add((advance, True, literal_seen))
+        if any(
+            position == len(prefix) and (not wildcard_seen or literal_seen)
+            for position, wildcard_seen, literal_seen in next_positions
+        ):
             return True
         if not next_positions:
             return False
@@ -1638,6 +1647,8 @@ def _broker_contains_untrusted_frame_replica(text: str) -> bool:
     for line in text.split("\n"):
         start = 0
         while start < len(line):
+            if start >= _BROKER_MAX_VISUAL_PREFIX_CHARS:
+                return True
             if any(
                 _broker_visual_prefix_replica(line, start, prefix)
                 for prefix in _BROKER_UNTRUSTED_FRAME_PREFIXES

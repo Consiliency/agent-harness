@@ -59,6 +59,7 @@ IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}$")
 MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
 MAX_JSON_BYTES = 2 * 1024 * 1024
 MAX_JSON_INTEGER_DIGITS = 4096
+MAX_VISUAL_PREFIX_CHARS = 256
 REVIEW_INPUT_MAX_BYTES = 512 * 1024
 GEMINI_STREAM_PROTOCOL = "agy_ndjson_same_session_ingestion_v1"
 GEMINI_STREAM_CHUNK_MAX_BYTES = 96 * 1024
@@ -846,24 +847,34 @@ def visible_ascii_identifier(character: str) -> bool:
 
 
 def visual_prefix_replica(line: str, start: int, prefix: str) -> bool:
-    """Treat each non-ASCII glyph as an unknown visual marker character.
+    """Treat non-ASCII glyphs and tabs as bounded visual marker wildcards.
 
     A raw line has no authority.  Rather than enumerate Unicode confusables,
     reject it when its initial visual token can be the fixed parent-owned token:
     an unknown non-ASCII glyph or horizontal tab may be a reader-confusable
-    substitution or an invisible insertion, but visible ASCII must remain exact.
+    substitution, insertion, or multi-character visual run, but visible ASCII
+    must remain exact.  A bounded scan prevents untrusted visual leaders from
+    turning this fail-closed screen into a quadratic parser.
     """
-    positions = {0}
-    for character in line[start:]:
-        next_positions: set[int] = set()
-        for position in positions:
+    positions = {(0, False, False)}
+    for offset, character in enumerate(line[start:]):
+        if offset >= MAX_VISUAL_PREFIX_CHARS:
+            return bool(positions)
+        next_positions: set[tuple[int, bool, bool]] = set()
+        for position, wildcard_seen, literal_seen in positions:
             if position < len(prefix) and character == prefix[position]:
-                next_positions.add(position + 1)
+                next_positions.add((
+                    position + 1,
+                    wildcard_seen,
+                    True,
+                ))
             if not character.isascii() or character == "\t":
-                next_positions.add(position)
-                if position < len(prefix):
-                    next_positions.add(position + 1)
-        if len(prefix) in next_positions:
+                for advance in range(position, len(prefix) + 1):
+                    next_positions.add((advance, True, literal_seen))
+        if any(
+            position == len(prefix) and (not wildcard_seen or literal_seen)
+            for position, wildcard_seen, literal_seen in next_positions
+        ):
             return True
         if not next_positions:
             return False
@@ -876,6 +887,8 @@ def contains_untrusted_frame_replica(text_value: str) -> bool:
     for line in text_value.split("\n"):
         start = 0
         while start < len(line):
+            if start >= MAX_VISUAL_PREFIX_CHARS:
+                return True
             if any(
                 visual_prefix_replica(line, start, prefix)
                 for prefix in UNTRUSTED_FRAME_PREFIXES
@@ -3158,6 +3171,14 @@ def self_test() -> None:
                 "header-cyrillic-h",
                 REVIEW_INPUT_HEADERS["instructions"].replace("HARDEN", "\u041dARDEN", 1),
             ),
+            (
+                "frame-triple-left-angle",
+                "\u22d8" + replica_frame.removeprefix("<<<"),
+            ),
+            (
+                "frame-double-left-angle-plus",
+                "\u226a<" + replica_frame.removeprefix("<<<"),
+            ),
         )
         for replica_name, replica in prefix_confusables:
             direct_rejected(
@@ -3175,6 +3196,13 @@ def self_test() -> None:
                     "self-test prefix-confusable replica",
                 ),
             )
+        direct_rejected(
+            "visual-prefix-leader-scan-bound",
+            lambda: untrusted_transport_text(
+                "#" * (MAX_VISUAL_PREFIX_CHARS + 1),
+                "self-test visual leader bound",
+            ),
+        )
         source_literal = 'frame_literal = "' + replica_frame + '"'
         if untrusted_transport_text(source_literal, "self-test source literal") != source_literal:
             raise AssertionError("identifier-prefixed source literal was not preserved")
