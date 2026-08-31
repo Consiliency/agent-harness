@@ -50,10 +50,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   the edit modified another phase's tracked file. The lexical identity is kept when it names the
   same file and dropped when resolution proves it phantom: `link/../owned.py` with
   `link -> a/b` names `a/owned.py`, so reporting `owned.py` too would claim an edit that never
-  happens. Testing that property directly matters — an earlier rule used "does the argument
-  contain `..`" as a proxy, which discards a REAL identity when `..` cancels an ordinary
-  directory rather than the symlink (`link/sub/../owned.py`), losing a claim and exiting 0 on
-  a genuine cross-phase edit.
+  happens. "Same file" is asked of the kernel (`os.path.samefile`, device + inode) when both
+  paths exist, falling back to canonical-path comparison only for a not-yet-created file —
+  the normal input for a pre-edit check. Two weaker rules were tried first and each lost a
+  real claim: "does the argument contain `..`" discards a valid identity when `..` cancels an
+  ordinary directory rather than the symlink, and canonical-path equality alone misses
+  HARDLINKS, where one inode has two names that canonicalize differently. Both exited 0 on a
+  genuine cross-phase edit.
 - The **most specific root wins** when a repo is addressed through a self-referential symlink
   (`X11 -> .`), where an argument sits beneath both the lexical and the resolved root; taking
   the resolved root first reported `X11/python3` and missed an exact `python3` claim.

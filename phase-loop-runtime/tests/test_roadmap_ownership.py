@@ -1500,6 +1500,78 @@ class TestPreflight(unittest.TestCase):
                 [o.phase_alias for o in owned.get("link/sub/../owned.py", [])],
             )
 
+    def test_a_NOT_YET_CREATED_file_still_gets_both_identities(self):
+        """The normal input for a PRE-edit check is a file that does not exist yet.
+
+        `os.path.samefile` needs both paths to exist, so this is precisely where
+        the canonical-path fallback carries the answer. Without it, a brand-new
+        file's lexical identity is dropped and `--current-phase` on the target's
+        owner clears a path the name's owner also claims.
+
+        I verified this by hand when the fallback was written and did not turn it
+        into a test; a mutation deleting the fallback then killed NOTHING, which is
+        how an unprotected branch survives review.
+
+        Mutation that must kill this: remove the canonical-path fallback.
+        """
+        roadmap = ROADMAP.replace("- `src/alpha.py`", "- `link/`").replace(
+            "- `src/beta/`", "- `real/`"
+        )
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=roadmap)
+            (repo / "real").mkdir(parents=True, exist_ok=True)
+            (repo / "link").symlink_to(repo / "real")
+            for arg in ("link/brand_new.py", "link/newdir/new.py"):
+                with self.subTest(arg=arg):
+                    self.assertFalse(
+                        (repo / arg).exists(), "the fixture must not pre-create it"
+                    )
+                    owned = ro.preflight(repo, [arg], "BETA")
+                    self.assertIn(
+                        "ALPHA",
+                        [o.phase_alias for o in owned.get(arg, [])],
+                        "a not-yet-created file must still carry the name's claim",
+                    )
+
+    def test_a_HARDLINKED_alias_is_the_same_file_and_keeps_its_claim(self):
+        """codex, round 11. Canonical-path equality is a proxy for file identity.
+
+        Hardlinks are where it diverges: two names for ONE inode canonicalize
+        differently. With `link -> a/b`, hardlinked `owned.py` and `a/owned.py`,
+        ALPHA owning the first and BETA the second, preflighting
+        `link/../owned.py` as BETA dropped ALPHA's identity and exited 0 — while
+        the edit changes ALPHA's inode.
+
+        Measured on the reproduction: `samefile()` True, `resolve()` equality
+        False. The kernel answers identity; string comparison guesses at it.
+
+        Mutation that must kill this: compare `lexical.resolve() == resolved`
+        instead of asking `os.path.samefile`.
+        """
+        roadmap = ROADMAP.replace("- `src/alpha.py`", "- `owned.py`").replace(
+            "- `src/beta/`", "- `a/`"
+        )
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=roadmap)
+            (repo / "a" / "b").mkdir(parents=True, exist_ok=True)
+            (repo / "a" / "owned.py").write_text("x = 1\n")
+            os.link(repo / "a" / "owned.py", repo / "owned.py")
+            (repo / "link").symlink_to(repo / "a" / "b")
+            self.assertTrue(
+                (repo / "owned.py").samefile(repo / "a" / "owned.py"),
+                "the fixture must actually hardlink, or this proves nothing",
+            )
+            self.assertEqual(
+                sorted(ro._preflight_identities(repo, "link/../owned.py")),
+                ["a/owned.py", "owned.py"],
+            )
+            owned = ro.preflight(repo, ["link/../owned.py"], "BETA")
+            self.assertIn(
+                "ALPHA",
+                [o.phase_alias for o in owned.get("link/../owned.py", [])],
+                "ALPHA owns the same inode; excluding BETA must not clear it",
+            )
+
     def test_the_MOST_SPECIFIC_root_wins_when_roots_overlap(self):
         """codex, round 9. When the lexical root lies inside its own target, an
         argument sits beneath BOTH roots.

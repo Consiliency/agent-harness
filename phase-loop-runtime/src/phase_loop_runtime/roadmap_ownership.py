@@ -790,6 +790,38 @@ class PathNotInRepo(ValueError):
     """
 
 
+def _names_the_same_file(lexical: Path, resolved: Path) -> bool:
+    """Do these two paths name the same FILE?
+
+    Identity, not spelling. When both exist the kernel answers via
+    ``os.path.samefile`` (device + inode); only when one does not exist -- the
+    normal case for a PRE-edit check -- does this fall back to comparing
+    canonicalized paths.
+
+    The fallback alone was the fifth proxy-instead-of-property defect in this PR.
+    Canonical-path equality is a proxy for file identity, and HARDLINKS are where
+    it diverges: two names for one inode canonicalize differently, so with
+    ``link -> a/b``, hardlinked ``owned.py`` and ``a/owned.py``, ALPHA owning the
+    first and BETA the second, preflighting ``link/../owned.py`` as BETA dropped
+    ALPHA's identity and exited 0 -- while the edit changes ALPHA's inode.
+
+    Erring toward "same" is the safe direction: it can only ADD an identity, and
+    an extra identity over-reports ownership rather than clearing a real claim.
+    """
+
+    try:
+        if lexical.exists() and resolved.exists():
+            return os.path.samefile(lexical, resolved)
+    except OSError:
+        return False
+    try:
+        return lexical.resolve() == resolved
+    except (OSError, RuntimeError):
+        # Unresolvable: cannot be shown to name the same file, so it is not
+        # offered as an identity. The resolved form still answers.
+        return False
+
+
 def _preflight_identities(repo: Path, raw: str) -> List[str]:
     """Every repo-relative POSIX identity a ``--preflight`` argument denotes.
 
@@ -886,13 +918,8 @@ def _preflight_identities(repo: Path, raw: str) -> List[str]:
     # `link/../owned.py` with `link -> a/b` has a lexical form that resolves
     # somewhere else entirely, so it is still correctly discarded.
     sources = [resolved]
-    try:
-        if lexical.resolve() == resolved:
-            sources.insert(0, lexical)
-    except (OSError, RuntimeError):
-        # Unresolvable lexical form cannot be shown to name the same file, so it
-        # is not offered as an identity. The resolved form still answers.
-        pass
+    if _names_the_same_file(lexical, resolved):
+        sources.insert(0, lexical)
 
     forms: List[str] = []
     for base in sources:
