@@ -1551,25 +1551,109 @@ def lint_receipt(store: ArtifactStore, ref: dict[str, str], label: str, *, head:
     return nonce
 
 
+_MARKER_NAME = "HARDEN_CAPABILITY_VERSION"
+_MARKER_DYNAMIC_MUTATORS = frozenset(("exec", "setattr", "delattr"))
+_MARKER_NAMESPACE_MUTATORS = frozenset((
+    "__delitem__", "__setitem__", "clear", "pop", "setdefault", "update",
+))
+
+
+def _marker_namespace(node: ast.AST) -> bool:
+    """Recognize direct module-namespace mutation without executing the source."""
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in {"globals", "locals", "vars"}
+    ) or (
+        isinstance(node, ast.Attribute)
+        and node.attr == "__dict__"
+    )
+
+
+def _marker_bindings(tree: ast.Module) -> list[ast.AST]:
+    """Return every syntactic marker binding, rebind, deletion, or mutation.
+
+    This registry has one deliberately isolated module-level marker.  Rather than
+    emulate Python's nested scope rules and risk missing a ``global``/``exec`` or
+    namespace-dict rebinding, the verifier rejects every noncanonical occurrence
+    that could bind or mutate that name in any lexical scope.  It never imports or
+    executes the registry.
+    """
+    bindings: list[ast.AST] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id == _MARKER_NAME:
+            bindings.append(node)
+            continue
+        if isinstance(node, ast.arg) and node.arg == _MARKER_NAME:
+            bindings.append(node)
+            continue
+        if isinstance(node, ast.alias):
+            bound = node.asname or node.name.split(".", 1)[0]
+            if bound == _MARKER_NAME or node.name == "*":
+                bindings.append(node)
+            continue
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == _MARKER_NAME:
+            bindings.append(node)
+            continue
+        if isinstance(node, ast.ExceptHandler) and node.name == _MARKER_NAME:
+            bindings.append(node)
+            continue
+        if isinstance(node, ast.MatchAs) and node.name == _MARKER_NAME:
+            bindings.append(node)
+            continue
+        if isinstance(node, ast.MatchStar) and node.name == _MARKER_NAME:
+            bindings.append(node)
+            continue
+        if isinstance(node, ast.MatchMapping) and node.rest == _MARKER_NAME:
+            bindings.append(node)
+            continue
+        if isinstance(node, (ast.Global, ast.Nonlocal)) and _MARKER_NAME in node.names:
+            bindings.append(node)
+            continue
+        if type(node).__name__ in {"TypeAlias", "TypeVar", "ParamSpec", "TypeVarTuple"} and getattr(node, "name", None) == _MARKER_NAME:
+            bindings.append(node)
+            continue
+        if isinstance(node, ast.Attribute) and node.attr == _MARKER_NAME and isinstance(node.ctx, (ast.Store, ast.Del)):
+            bindings.append(node)
+            continue
+        if isinstance(node, ast.Subscript) and isinstance(node.ctx, (ast.Store, ast.Del)) and _marker_namespace(node.value):
+            bindings.append(node)
+            continue
+        if not isinstance(node, ast.Call):
+            continue
+        if isinstance(node.func, ast.Name) and node.func.id in _MARKER_DYNAMIC_MUTATORS:
+            bindings.append(node)
+            continue
+        if isinstance(node.func, ast.Attribute) and node.func.attr in _MARKER_NAMESPACE_MUTATORS and _marker_namespace(node.func.value):
+            bindings.append(node)
+    return bindings
+
+
 def _marker_state(repo: Path, revision: str, *, required: bool) -> None:
-    """Require the final literal marker and reject it on pre-production heads."""
+    """Require the sole final literal marker and reject every other binding form."""
     _, data = blob(repo, revision, "phase-loop-runtime/src/phase_loop_runtime/capability_registry.py")
     try:
-        tree = ast.parse(data.decode("utf-8"))
-    except (SyntaxError, UnicodeDecodeError):
+        tree = ast.parse(data.decode("utf-8", errors="strict"))
+    except (SyntaxError, UnicodeDecodeError, ValueError):
         fail("capability registry is not parseable Python")
-    assignments = [
+    bindings = _marker_bindings(tree)
+    intended = [
         node for node in tree.body
         if isinstance(node, ast.Assign)
         and len(node.targets) == 1
         and isinstance(node.targets[0], ast.Name)
-        and node.targets[0].id == "HARDEN_CAPABILITY_VERSION"
+        and node.targets[0].id == _MARKER_NAME
+        and isinstance(node.value, ast.Constant)
+        and type(node.value.value) is int
+        and node.value.value == 1
     ]
-    literal_one = [node for node in assignments if isinstance(node.value, ast.Constant) and type(node.value.value) is int and node.value.value == 1]
-    if required and len(assignments) != 1 or required and len(literal_one) != 1:
-        fail("final capability marker is missing, duplicate, or nonliteral")
-    if not required and assignments:
-        fail("pre-production capability marker is present")
+    intended_target = intended[0].targets[0] if len(intended) == 1 else None
+    if required:
+        if len(bindings) != 1 or bindings[0] is not intended_target:
+            fail("final capability marker is missing, rebound, or nonliteral")
+        return
+    if bindings:
+        fail("pre-production capability marker is present or noncanonical")
 
 
 def verify_authority_paths(repo: Path, revision: str, value: Any) -> None:
@@ -3670,22 +3754,38 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("detached canonical completion ledger was accepted")
-        def marker_rejected(name: str, body: str) -> None:
-            marker_root = root / name
-            shutil.copytree(baseline / "repo", marker_root)
-            target = marker_root / "phase-loop-runtime/src/phase_loop_runtime/capability_registry.py"
-            target.write_text(body)
-            _run(["git", "add", str(target.relative_to(marker_root))], marker_root)
-            _run(["git", "commit", "-qm", name], marker_root)
-            try:
-                _marker_state(marker_root, _run(["git", "rev-parse", "HEAD"], marker_root), required=True)
-            except EvidenceError:
-                return
-            raise AssertionError(name + " marker was accepted")
+        def marker_rejected(name: str, body: str, *, required: bool = True) -> None:
+            def check() -> None:
+                marker_root = root / name
+                shutil.copytree(baseline / "repo", marker_root)
+                target = marker_root / "phase-loop-runtime/src/phase_loop_runtime/capability_registry.py"
+                target.write_text(body)
+                _run(["git", "add", str(target.relative_to(marker_root))], marker_root)
+                _run(["git", "commit", "-qm", name], marker_root)
+                _marker_state(
+                    marker_root,
+                    _run(["git", "rev-parse", "HEAD"], marker_root),
+                    required=required,
+                )
+
+            direct_rejected(name, check)
+
         marker_rejected("marker-missing", "# absent\n")
         marker_rejected("marker-wrong", "HARDEN_CAPABILITY_VERSION = 2\n")
         marker_rejected("marker-duplicate", "HARDEN_CAPABILITY_VERSION = 1\nHARDEN_CAPABILITY_VERSION = 1\n")
         marker_rejected("marker-nonliteral", "HARDEN_CAPABILITY_VERSION = int('1')\n")
+        marker_rejected("marker-annotated-required", "HARDEN_CAPABILITY_VERSION: int = 1\n")
+        marker_rejected("marker-annotated-preproduction", "HARDEN_CAPABILITY_VERSION: int = 1\n", required=False)
+        marker_rejected("marker-nested-preproduction", "if True:\n    HARDEN_CAPABILITY_VERSION = 1\n", required=False)
+        marker_rejected("marker-later-annotation-rebind", "HARDEN_CAPABILITY_VERSION = 1\nHARDEN_CAPABILITY_VERSION: int = 2\n")
+        marker_rejected("marker-augassign-rebind", "HARDEN_CAPABILITY_VERSION = 1\nHARDEN_CAPABILITY_VERSION += 1\n")
+        marker_rejected("marker-multi-target", "HARDEN_CAPABILITY_VERSION = other = 1\n")
+        marker_rejected("marker-walrus", "(HARDEN_CAPABILITY_VERSION := 1)\n")
+        marker_rejected("marker-import", "from marker_source import HARDEN_CAPABILITY_VERSION\n")
+        marker_rejected("marker-definition", "def HARDEN_CAPABILITY_VERSION():\n    return 1\n")
+        marker_rejected("marker-delete", "HARDEN_CAPABILITY_VERSION = 1\ndel HARDEN_CAPABILITY_VERSION\n")
+        marker_rejected("marker-global-rebind", "HARDEN_CAPABILITY_VERSION = 1\ndef rebind():\n    global HARDEN_CAPABILITY_VERSION\n    HARDEN_CAPABILITY_VERSION = 2\n")
+        marker_rejected("marker-namespace-rebind", "globals()['HARDEN_CAPABILITY_VERSION'] = 1\n")
         def replace(ref: dict[str, str], artifact_root: Path, data: bytes) -> None:
             (artifact_root / ref["path"]).write_bytes(data)
             ref["sha256"] = sha256(data)
