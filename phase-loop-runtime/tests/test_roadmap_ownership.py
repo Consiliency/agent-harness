@@ -1573,6 +1573,40 @@ class TestPreflight(unittest.TestCase):
                     ro.ownership_map(broken)
                 self.assertIn("intend to declare a phase", str(caught.exception))
 
+    def test_a_roadmap_DOCUMENTING_ITS_OWN_FORMAT_is_not_rejected(self):
+        """The false positive my own body-count fix introduced.
+
+        A roadmap that shows its own format in a fenced example — a sample
+        `**Key files**` block, or a sample `### Phase 1 — ...` heading — inflates
+        the count and fails closed on a perfectly VALID roadmap. Verified on live
+        v10: one fenced `**Key files**` took bodies from 14 to 15 against
+        parsed=14, which raises CANNOT EVALUATE.
+
+        No roadmap in this repo does it today, but a template or a documentation
+        section plausibly would, and a guard that rejects valid input gets
+        switched off. Found by probing my own fix rather than by review.
+
+        Mutation that must kill this: count on the raw text instead of stripping
+        fences.
+        """
+        fenced = "```\n**Key files**\n- `x.py`\n```"
+        documented = ROADMAP.replace(
+            "## Execution Notes", f"## Execution Notes\n\n{fenced}\n", 1
+        )
+        self.assertNotEqual(documented, ROADMAP, "fixture must insert the block")
+        # Must still parse normally — no CANNOT EVALUATE.
+        mapping = ro.ownership_map(documented)
+        self.assertIn("src/alpha.py", mapping)
+
+        # SCOPE NOTE, verified not assumed: a fenced sample HEADING
+        # ("### Phase 9 — Example (EXAMPLE)") is still rejected — but by the
+        # canonical linter, not by these counts. `_extract_phases` treats it as a
+        # real phase and the linter then reports it missing Objective / Exit
+        # criteria / Scope notes. That is pre-existing `roadmap_lint` behaviour,
+        # and this module deliberately IMPORTS roadmap_lint rather than editing
+        # it (LEGIBLE owns that file), so it is out of scope here rather than
+        # something to paper over locally.
+
     def test_a_malformed_heading_whose_BODY_IS_ALSO_MISSING_is_caught(self):
         """Why the heading-intent check is not redundant with the body count.
 

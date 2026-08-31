@@ -147,6 +147,24 @@ _BACKTICKED = re.compile(r"`([^`]+)`")
 #: nothing.
 _PHASE_BODY_FIELD = re.compile(r"^\*\*Key files\*\*", re.MULTILINE)
 
+#: A fenced code block. Both counts below are taken on text with fences REMOVED:
+#: a roadmap that documents its own format in an example block (`**Key files**`,
+#: or a sample `### Phase 1 — ...` heading) would otherwise inflate a count and
+#: fail-closed on a perfectly valid roadmap. Found by probing my own fix before
+#: the panel did: a fenced `**Key files**` took v10 from bodies=14 to bodies=15
+#: against parsed=14, which raises.
+_CODE_FENCE = re.compile(r"^```.*?^```", re.MULTILINE | re.DOTALL)
+
+
+def _without_code_fences(text: str) -> str:
+    """``text`` with fenced blocks blanked, preserving line structure.
+
+    Blanked rather than deleted so that any line-based reasoning elsewhere sees
+    the same number of lines.
+    """
+
+    return _CODE_FENCE.sub(lambda m: "\n" * m.group(0).count("\n"), text)
+
 #: A heading that INTENDS to declare a phase, in any case, at any level, with or
 #: without the space before the number. Number-anchored on purpose (grok, r15):
 #: a bare `phase\b` also matches `## Phase Dependency DAG`, which every roadmap
@@ -234,8 +252,9 @@ def ownership_map(roadmap_text: str) -> Dict[str, List[Phase]]:
     # says. Verified as exact parity across all 11 roadmap versions in this repo,
     # and it catches the lowercase, colon, and missing-alias malformations alike.
     parsed = len(_extract_phases(roadmap_text))
-    bodies = len(_PHASE_BODY_FIELD.findall(roadmap_text))
-    intended = len(_INTENDED_PHASE_HEADING.findall(roadmap_text))
+    prose = _without_code_fences(roadmap_text)
+    bodies = len(_PHASE_BODY_FIELD.findall(prose))
+    intended = len(_INTENDED_PHASE_HEADING.findall(prose))
     # Strictly GREATER-THAN, not inequality. `bodies > parsed` means a phase body
     # exists whose heading did not parse -- the silent-drop defect. The converse,
     # `bodies < parsed`, means a parsed phase omits `Key files`, which is the
