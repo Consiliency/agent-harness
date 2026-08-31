@@ -567,6 +567,7 @@ def run_owned_receipt(store: ArtifactStore, repo: Path, ref: dict[str, str], lab
 _GIT_CONFIG = (
     "-c", "color.ui=false",
     "-c", "core.attributesFile=/dev/null",
+    "-c", "core.commitGraph=false",
     "-c", "core.fsmonitor=false",
     "-c", "core.hooksPath=/dev/null",
     "-c", "core.pager=cat",
@@ -704,7 +705,8 @@ def hermetic_git_authority(repo: Path) -> Iterator[Path]:
             "[core]\n"
             "\trepositoryformatversion = 0\n"
             "\tbare = true\n"
-            "\tattributesFile = /dev/null\n",
+            "\tattributesFile = /dev/null\n"
+            "\tcommitGraph = false\n",
             encoding="ascii",
         )
         (git_dir / "objects" / "info" / "alternates").write_text(
@@ -3778,6 +3780,81 @@ def self_test() -> None:
                 raise AssertionError("ambient Git config changed or executed review rendering")
 
         git_environment_isolation()
+
+        def commit_graph_authority_configuration() -> None:
+            graph_root = root / "commit-graph-authority-configuration"
+            graph_root.mkdir()
+            graph_repo, refs = _self_git(graph_root)
+            base, _base_tree = refs["landing"]
+            head, _head_tree = refs["candidate"]
+            _run(["git", "commit-graph", "write", "--reachable"], graph_repo)
+            with hermetic_git_authority(graph_repo) as git_dir:
+                config = (git_dir / "config").read_text(encoding="ascii")
+                if "\tcommitGraph = false\n" not in config:
+                    raise AssertionError("hermetic Git authority did not disable commit graphs")
+                rendered_paths = git_authority_bytes(
+                    git_dir,
+                    "diff",
+                    "--name-only",
+                    "-z",
+                    base,
+                    head,
+                )
+            if not rendered_paths:
+                raise AssertionError("commit-graph-disabled authority did not render Git paths")
+
+        commit_graph_authority_configuration()
+
+        def graph_repo_with_missing_raw_head(name: str) -> tuple[Path, str, str]:
+            graph_root = root / name
+            graph_root.mkdir()
+            graph_repo, refs = _self_git(graph_root)
+            base, _base_tree = refs["landing"]
+            head, _head_tree = refs["candidate"]
+            _run(["git", "commit-graph", "write", "--reachable"], graph_repo)
+            objects = git_object_directory(graph_repo)
+            graph = objects / "info" / "commit-graph"
+            if not graph.is_file():
+                raise AssertionError("self-test source commit graph was not created")
+            raw_head = objects / head[:2] / head[2:]
+            try:
+                raw_head_stat = raw_head.lstat()
+            except OSError as exc:
+                raise AssertionError("self-test source commit object is unavailable") from exc
+            if not stat.S_ISREG(raw_head_stat.st_mode):
+                raise AssertionError("self-test source commit object is not a regular file")
+            raw_head.unlink()
+            return graph_repo, base, head
+
+        def alternate_commit_graph_authority() -> None:
+            graph_repo, base, head = graph_repo_with_missing_raw_head(
+                "alternate-commit-graph-authority"
+            )
+            with hermetic_git_authority(graph_repo) as git_dir:
+                git_authority_bytes(
+                    git_dir,
+                    "diff",
+                    "--name-only",
+                    "-z",
+                    base,
+                    head,
+                )
+
+        direct_rejected(
+            "alternate-commit-graph-authority",
+            alternate_commit_graph_authority,
+        )
+
+        def source_commit_graph_changed_paths() -> None:
+            graph_repo, base, head = graph_repo_with_missing_raw_head(
+                "source-commit-graph-changed-paths"
+            )
+            changed_paths(graph_repo, base, head)
+
+        direct_rejected(
+            "source-commit-graph-changed-paths",
+            source_commit_graph_changed_paths,
+        )
 
         def opaque_binary_patch() -> None:
             opaque_root = root / "opaque-binary-patch"
