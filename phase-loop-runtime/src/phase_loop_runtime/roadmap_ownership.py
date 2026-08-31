@@ -138,6 +138,13 @@ def current_phase(repo: Path) -> Optional[str]:
 
 _BACKTICKED = re.compile(r"`([^`]+)`")
 
+#: A level-3+ heading whose first word is "phase", in ANY case. Deliberately
+#: weaker than `roadmap_lint.ANY_PHASE_HEADING_RE`, which requires an uppercase
+#: `Phase` and a phase number: a detector for malformed headings must be weaker
+#: than the parser it audits, or the malformations it exists to catch are exactly
+#: the ones it cannot see.
+_INTENDED_PHASE_HEADING = re.compile(r"^#{3,}\s*phase\b", re.IGNORECASE | re.MULTILINE)
+
 
 def _strip_token(raw: str) -> str:
     """The PATH out of a `Key files` bullet.
@@ -197,6 +204,35 @@ def ownership_map(roadmap_text: str) -> Dict[str, List[Phase]]:
     # built to avoid -- the roadmap the repo's own linter rejects cannot be a
     # trustworthy ownership map. All three CLI modes map RoadmapUnreadable to
     # exit 2, so this reports CANNOT EVALUATE rather than a false clear.
+    # INTENT vs PARSE, before the linter -- because the linter shares the
+    # extractor's blind spot and cannot see this class.
+    #
+    # The round-13 gate was CIRCULAR: it detected a malformed heading with
+    # `ANY_PHASE_HEADING_RE`, which requires the heading to be well-formed enough
+    # to recognise. Both it and `_extract_phases` demand an uppercase `Phase`, so
+    # a one-character typo is invisible to BOTH -- measured on live v10:
+    #
+    #     "### Phase 12 — ... (RELEASE)"  ->  "### phase 12 — ..."
+    #     canonical lint errors   0          <- the round-13 gate keyed on this
+    #     phases lost             ['RELEASE']
+    #     pyproject.toml owners   ['RELEASE'] -> []
+    #     preflight exit          1 -> 0
+    #
+    # A detector for malformed headings must be WEAKER than the thing it audits.
+    # Any level-3+ heading whose first word is "phase" INTENDS to be a phase; if
+    # one of those does not parse, the map is missing a phase whatever the linter
+    # says. Verified as exact parity across all 11 roadmap versions in this repo,
+    # and it catches the lowercase, colon, and missing-alias malformations alike.
+    intended = len(_INTENDED_PHASE_HEADING.findall(roadmap_text))
+    parsed = len(_extract_phases(roadmap_text))
+    if intended != parsed:
+        raise RoadmapUnreadable(
+            f"{intended} heading(s) intend to declare a phase but only {parsed} "
+            f"parse; a malformed heading removes that phase from the ownership "
+            f"map silently, so its files would report as unclaimed. Refusing to "
+            f"answer from a map that is missing a phase."
+        )
+
     lint_errors = lint_roadmap_text(roadmap_text)
     if lint_errors:
         raise RoadmapUnreadable(

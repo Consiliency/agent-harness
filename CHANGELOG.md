@@ -20,6 +20,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   pre-existing guards catch "zero phases" and "a parsed phase with no Key files"; neither sees
   a phase that never parsed. A roadmap the repository's own linter rejects now reports CANNOT
   EVALUATE rather than a false clear.
+- The heading check compares **intent against parse**, because gating on the linter alone was
+  CIRCULAR: both it and the extractor require an uppercase `Phase`, so `### phase 12 — …` is
+  invisible to both — lint reports zero errors while RELEASE vanishes and
+  `phase-loop-runtime/pyproject.toml` goes from owned to unclaimed, turning exit 1 into exit 0.
+  A detector for malformed headings has to be WEAKER than the parser it audits. Any level-3+
+  heading whose first word is "phase", in any case, is required to parse; verified as exact
+  parity across all 11 roadmap versions in the repo.
 - It reports ownership and **does not decide disposition**. Ownership is machine-readable;
   phase BLOCK state is not. Scanning phase bodies for a `BLOCKED` marker matches six
   phases in v10 of which exactly one is a real phase-level block — the rest are

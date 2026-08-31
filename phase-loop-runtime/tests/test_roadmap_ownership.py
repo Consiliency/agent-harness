@@ -1533,6 +1533,40 @@ class TestPreflight(unittest.TestCase):
                         "a not-yet-created file must still carry the name's claim",
                     )
 
+    def test_a_heading_malformation_the_LINTER_CANNOT_SEE_still_fails_closed(self):
+        """codex, round 14 — my round-13 fix was CIRCULAR.
+
+        That gate detected a malformed heading with `ANY_PHASE_HEADING_RE`, which
+        requires the heading to be well-formed enough to recognise. Both it and
+        `_extract_phases` demand an uppercase `Phase`, so a one-character typo is
+        invisible to BOTH. Measured on live v10:
+
+            "### Phase 12 — ... (RELEASE)" -> "### phase 12 — ..."
+            canonical lint errors   0        <- the round-13 gate keyed on this
+            phases lost             ['RELEASE']
+            pyproject.toml owners   ['RELEASE'] -> []
+            preflight exit          1 -> 0
+
+        A detector for malformed headings must be WEAKER than the parser it
+        audits, or the malformations it exists to catch are precisely the ones it
+        cannot see. `_INTENDED_PHASE_HEADING` matches any level-3+ heading whose
+        first word is "phase", in any case, and requires every one to parse.
+
+        Mutation that must kill this: make the detector case-sensitive, or drop
+        the intended-vs-parsed comparison.
+        """
+        for label, broken in (
+            ("lowercase", ROADMAP.replace("### Phase 0 — First Thing (ALPHA)",
+                                          "### phase 0 — First Thing (ALPHA)", 1)),
+            ("no alias", ROADMAP.replace("### Phase 0 — First Thing (ALPHA)",
+                                         "### Phase 0 — First Thing", 1)),
+        ):
+            with self.subTest(malformation=label):
+                self.assertNotEqual(broken, ROADMAP)
+                with self.assertRaises(ro.RoadmapUnreadable) as caught:
+                    ro.ownership_map(broken)
+                self.assertIn("intend to declare a phase", str(caught.exception))
+
     def test_a_MALFORMED_PHASE_HEADING_cannot_evaluate_rather_than_clear(self):
         """codex, round 13 — reachable in a real repository, no fault injection.
 
@@ -1560,7 +1594,17 @@ class TestPreflight(unittest.TestCase):
         self.assertNotEqual(broken, ROADMAP, "the fixture must actually change a heading")
         with self.assertRaises(ro.RoadmapUnreadable) as caught:
             ro.ownership_map(broken)
-        self.assertIn("linter", str(caught.exception))
+        # Two layers can catch this: the intended-vs-parsed count (which runs
+        # first and sees malformations the linter cannot) and the canonical lint
+        # gate. Assert the PROPERTY — it refuses rather than clearing, and says
+        # a phase went missing — not which layer got there first. Asserting the
+        # linter's phrasing made this test fail the moment the stronger check
+        # was added in front of it.
+        message = str(caught.exception)
+        self.assertTrue(
+            "linter" in message or "intend to declare a phase" in message,
+            f"must name the real problem; got: {message}",
+        )
         # And end to end: CANNOT EVALUATE (2), never a clear (0).
         with TemporaryDirectory() as tmp:
             repo = _repo_with_two_phases(tmp, roadmap=broken)
