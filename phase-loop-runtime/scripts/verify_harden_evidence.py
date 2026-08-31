@@ -224,7 +224,7 @@ FINAL_RUN_SPECS = {
             "python3", "-m", "pytest", "-q", *FROZEN_SL0_PATHS,
         ),
         "env_keys": ["PHASE_LOOP_TDD_EXPECT_HARDEN", "PYTHONPATH"],
-        "passed": 454, "skipped": 4, "subtests": 23,
+        "passed": 454, "skipped": 4, "subtests": 23, "deselected": 0,
     },
     "pure_control": {
         "cwd": ".",
@@ -235,7 +235,7 @@ FINAL_RUN_SPECS = {
             "phase-loop-runtime/tests/test_advisor_board_composition.py",
         ),
         "env_keys": ["PYTHONPATH"],
-        "passed": 40, "skipped": 0, "subtests": 8,
+        "passed": 40, "skipped": 0, "subtests": 8, "deselected": 0,
     },
     "broad": {
         "cwd": ".",
@@ -1471,7 +1471,7 @@ def executable_source_shape(data: bytes, label: str) -> str:
     return ast.dump(tree, annotate_fields=True, include_attributes=False)
 
 
-def receipt(store: ArtifactStore, ref: dict[str, str], label: str, *, head: str, tree: str, kind: str, argv_class: str, exit_code: int, raw: dict[str, str], junit: dict[str, str] | None, source_binding: tuple[str, str] | None = None, final_spec: dict[str, Any] | None = None) -> dict[str, Any]:
+def receipt(store: ArtifactStore, ref: dict[str, str], label: str, *, head: str, tree: str, kind: str, argv_class: str, exit_code: int, raw: dict[str, str], junit: dict[str, str] | None, source_binding: tuple[str, str] | None = None, final_spec: dict[str, Any] | None = None, baseline_binding: tuple[str, str] | None = None) -> dict[str, Any]:
     value = store.json(ref, label)
     expected = {"schema", "kind", "head", "tree", "process_nonce", "exit_code", "argv_class", "raw_sha256"}
     if junit is not None:
@@ -1494,6 +1494,8 @@ def receipt(store: ArtifactStore, ref: dict[str, str], label: str, *, head: str,
     if source_binding is not None and (data["source_path"], data["source_sha256"]) != source_binding:
         fail(f"{label}: receipt source binding mismatch")
     if final_spec is not None:
+        if baseline_binding is None:
+            fail(f"{label}: final receipt lacks a trusted baseline binding")
         if data["argv"] != list(final_spec["argv"]) or data["cwd"] != final_spec["cwd"] or data["env_keys"] != final_spec["env_keys"] or data["source_tree"] != tree:
             fail(f"{label}: command, cwd, environment, or source tree mismatch")
         summary = closed(data["summary"], {"passed", "failed", "errors", "skipped", "xfails", "xpasses", "subtests", "deselected"}, label + ".summary")
@@ -1503,7 +1505,7 @@ def receipt(store: ArtifactStore, ref: dict[str, str], label: str, *, head: str,
             fail(f"{label}: final receipt has failed outcomes")
         outcome_policy = final_spec.get("outcome_policy")
         if outcome_policy is None:
-            for key in ("passed", "skipped", "subtests"):
+            for key in ("passed", "skipped", "subtests", "deselected"):
                 if integer(summary[key], label + ".summary." + key) != final_spec[key]:
                     fail(f"{label}: final receipt inventory count mismatch")
         else:
@@ -1536,15 +1538,26 @@ def receipt(store: ArtifactStore, ref: dict[str, str], label: str, *, head: str,
             if declared != summary:
                 fail(f"{label}: broad declared outcomes do not bind receipt summary")
         baseline = closed(data["baseline"], {"schema", "commit", "tree", "inherited_failures", "inherited_skips", "inherited_deselected"}, label + ".baseline")
-        if baseline["schema"] != "harden_broad_baseline.v1" or baseline["commit"] == head or baseline["tree"] == tree or baseline["inherited_failures"] != []:
+        baseline_commit = text(baseline["commit"], label + ".baseline.commit", pattern=HEX40)
+        baseline_tree = text(baseline["tree"], label + ".baseline.tree", pattern=HEX40)
+        if (
+            baseline["schema"] != "harden_broad_baseline.v1"
+            or (baseline_commit, baseline_tree) != baseline_binding
+            or baseline["inherited_failures"] != []
+        ):
             fail(f"{label}: inherited baseline accounting is incomplete")
-        if not isinstance(baseline["inherited_skips"], list) or not isinstance(baseline["inherited_deselected"], list):
-            fail(f"{label}: inherited baseline accounting is malformed")
-        if outcome_policy is not None:
-            for field in ("inherited_skips", "inherited_deselected"):
-                values = baseline[field]
-                if any(not isinstance(item, str) or not item for item in values) or len(set(values)) != len(values):
-                    fail(f"{label}: inherited baseline accounting is malformed")
+        for field in ("inherited_skips", "inherited_deselected"):
+            values = baseline[field]
+            if (
+                not isinstance(values, list)
+                or any(not isinstance(item, str) or not item for item in values)
+                or len(set(values)) != len(values)
+            ):
+                fail(f"{label}: inherited baseline accounting is malformed")
+        if outcome_policy is None:
+            if baseline["inherited_skips"] or baseline["inherited_deselected"]:
+                fail(f"{label}: exact final inventory cannot self-report inherited outcomes")
+        else:
             if len(baseline["inherited_skips"]) != summary["skipped"] or len(baseline["inherited_deselected"]) != summary["deselected"]:
                 fail(f"{label}: broad baseline outcomes do not bind receipt summary")
         text(data["nodeids_sha256"], label + ".nodeids_sha256", pattern=HEX64)
@@ -1765,7 +1778,7 @@ def claim_nonce(value: str, used: set[str], label: str) -> None:
     used.add(value)
 
 
-def verify_preproduction(store: ArtifactStore, sl0: dict[str, Any], reviewed: str, reviewed_tree: str, used_nonces: set[str], repo: Path) -> None:
+def verify_preproduction(store: ArtifactStore, sl0: dict[str, Any], reviewed: str, reviewed_tree: str, sl0_base: tuple[str, str], used_nonces: set[str], repo: Path) -> None:
     activated = closed(sl0["activated_red"], {"receipt", "raw", "junit"}, "activated RED")
     raw = artifact_ref(activated["raw"], "activated RED.raw")
     junit = artifact_ref(activated["junit"], "activated RED.junit")
@@ -1795,6 +1808,7 @@ def verify_preproduction(store: ArtifactStore, sl0: dict[str, Any], reviewed: st
         kind="pure_control", argv_class="pytest_harden_pure_control_v1",
         exit_code=0, raw=pure_raw, junit=pure_junit,
         final_spec=FINAL_RUN_SPECS["pure_control"],
+        baseline_binding=sl0_base,
     )
     claim_nonce(pure_receipt["process_nonce"], used_nonces, "pre-production pure")
     pure_cases = parse_junit(store.read(pure_junit, "pre-production pure junit"), "pre-production pure junit")
@@ -1845,7 +1859,7 @@ def verify_preproduction(store: ArtifactStore, sl0: dict[str, Any], reviewed: st
         fail("mutation cases do not cover every HARDEN anchor")
 
 
-def verify_final_group(store: ArtifactStore, group: Any, label: str, commit_id: str, tree_id: str, used_nonces: set[str]) -> None:
+def verify_final_group(store: ArtifactStore, group: Any, label: str, commit_id: str, tree_id: str, baseline: tuple[str, str], used_nonces: set[str]) -> None:
     data = closed(group, {"commit", "tree", "run_nonce", "focused", "pure_control", "broad", "lint"}, label)
     if data["commit"] != commit_id or data["tree"] != tree_id:
         fail(f"{label}: head/tree mismatch")
@@ -1861,7 +1875,7 @@ def verify_final_group(store: ArtifactStore, group: Any, label: str, commit_id: 
         result = closed(data[key], {"receipt", "raw", "junit"}, label + "." + key)
         raw = artifact_ref(result["raw"], label + "." + key + ".raw")
         junit = artifact_ref(result["junit"], label + "." + key + ".junit")
-        record = receipt(store, artifact_ref(result["receipt"], label + "." + key + ".receipt"), label + "." + key + ".receipt", head=commit_id, tree=tree_id, kind=kind, argv_class=argv, exit_code=0, raw=raw, junit=junit, final_spec=FINAL_RUN_SPECS[key])
+        record = receipt(store, artifact_ref(result["receipt"], label + "." + key + ".receipt"), label + "." + key + ".receipt", head=commit_id, tree=tree_id, kind=kind, argv_class=argv, exit_code=0, raw=raw, junit=junit, final_spec=FINAL_RUN_SPECS[key], baseline_binding=baseline)
         nonce = record["process_nonce"]
         if nonce in used_nonces:
             fail(f"{label}: reused fresh-process nonce")
@@ -2489,10 +2503,10 @@ def verify(evidence_path: Path, evidence_root: Path, repo: Path, *, reuse_regist
     verify_clean_canonical_main_context(repo, main)
     verify_authority_paths(repo, main, data["authority"])
     nonces: set[str] = set()
-    verify_preproduction(store, data["sl0"], reviewed, reviewed_tree, nonces, repo)
+    verify_preproduction(store, data["sl0"], reviewed, reviewed_tree, commits["sl0_base"], nonces, repo)
     verification = closed(data["verification"], {"candidate", "canonical_main"}, "verification")
-    verify_final_group(store, verification["candidate"], "candidate verification", candidate, candidate_tree, nonces)
-    verify_final_group(store, verification["canonical_main"], "canonical-main verification", main, main_tree, nonces)
+    verify_final_group(store, verification["candidate"], "candidate verification", candidate, candidate_tree, commits["landing"], nonces)
+    verify_final_group(store, verification["canonical_main"], "canonical-main verification", main, main_tree, commits["landing"], nonces)
     verify_ci(store, data["ci"], repo, candidate, main, data["repository"], ci_query)
     reviews = closed(data["reviews"], {"candidate", "canonical_main"}, "reviews")
     seat_ids: set[str] = set()
@@ -4032,10 +4046,51 @@ def self_test() -> None:
         def altered_final_junit_binding(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
             mutate_json(model["verification"]["candidate"]["focused"]["receipt"], artifact_root, lambda receipt_value: receipt_value.__setitem__("nodeids_sha256", "0" * 64))
         rejected("altered-final-junit-binding", altered_final_junit_binding)
+        def exact_inventory_deselected(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
+            result = model["verification"]["candidate"]["focused"]
+            raw = result["raw"]
+            replace(
+                raw,
+                artifact_root,
+                (artifact_root / raw["path"]).read_bytes().replace(
+                    b"454 passed", b"454 passed, 1 deselected", 1
+                ),
+            )
+            def mutate(receipt_value: dict[str, Any]) -> None:
+                receipt_value["raw_sha256"] = raw["sha256"]
+                receipt_value["summary"]["deselected"] = 1
+            mutate_json(result["receipt"], artifact_root, mutate)
+        rejected("exact-inventory-deselected", exact_inventory_deselected)
+        def malformed_exact_baseline_list(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
+            mutate_json(
+                model["verification"]["candidate"]["focused"]["receipt"],
+                artifact_root,
+                lambda receipt_value: receipt_value["baseline"].__setitem__("inherited_skips", [1]),
+            )
+        rejected("malformed-exact-baseline-list", malformed_exact_baseline_list)
         def broad_baseline_reuses_head(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
             candidate = model["git"]["candidate"]
             mutate_json(model["verification"]["candidate"]["broad"]["receipt"], artifact_root, lambda receipt_value: receipt_value["baseline"].update({"commit": candidate["commit"], "tree": candidate["tree"]}))
         rejected("broad-baseline-reuses-head", broad_baseline_reuses_head)
+        def broad_baseline_wrong_trusted_commit(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
+            base = model["git"]["sl0_base"]
+            mutate_json(
+                model["verification"]["candidate"]["broad"]["receipt"],
+                artifact_root,
+                lambda receipt_value: receipt_value["baseline"].update(
+                    {"commit": base["commit"], "tree": base["tree"]}
+                ),
+            )
+        rejected("broad-baseline-wrong-trusted-commit", broad_baseline_wrong_trusted_commit)
+        def malformed_broad_baseline_identity(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
+            mutate_json(
+                model["verification"]["candidate"]["broad"]["receipt"],
+                artifact_root,
+                lambda receipt_value: receipt_value["baseline"].update(
+                    {"commit": 1, "tree": {"untrusted": True}}
+                ),
+            )
+        rejected("malformed-broad-baseline-identity", malformed_broad_baseline_identity)
         def broad_nonexecutable_argv(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
             mutate_json(
                 model["verification"]["candidate"]["broad"]["receipt"],
