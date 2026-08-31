@@ -1533,6 +1533,43 @@ class TestPreflight(unittest.TestCase):
                         "a not-yet-created file must still carry the name's claim",
                     )
 
+    def test_a_MALFORMED_PHASE_HEADING_cannot_evaluate_rather_than_clear(self):
+        """codex, round 13 — reachable in a real repository, no fault injection.
+
+        `ownership_map` consumed `_extract_phases`, one PIECE of the canonical
+        linter. A phase whose HEADING is malformed is not extracted as a phase at
+        all: it vanishes while the map stays non-empty and plausible. Measured
+        against live v10 by changing one character — the em-dash in the SCHED
+        heading to a colon:
+
+            owners of lane_scheduler.py   intact: {GOVLEAN, SCHED}
+                                          broken: {GOVLEAN}
+
+        so preflighting it as GOVLEAN excluded the only surviving claim and exited
+        0 on a file SCHED explicitly claims.
+
+        The pre-existing guards catch "zero phases" and "a parsed phase with no
+        Key files"; neither sees a phase that never parsed. Consuming a piece of a
+        validator instead of the validator is the mistake this module was written
+        to avoid.
+
+        Mutation that must kill this: drop the `lint_roadmap_text` call.
+        """
+        broken = ROADMAP.replace("### Phase 0 — First Thing (ALPHA)",
+                                 "### Phase 0: First Thing (ALPHA)", 1)
+        self.assertNotEqual(broken, ROADMAP, "the fixture must actually change a heading")
+        with self.assertRaises(ro.RoadmapUnreadable) as caught:
+            ro.ownership_map(broken)
+        self.assertIn("linter", str(caught.exception))
+        # And end to end: CANNOT EVALUATE (2), never a clear (0).
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=broken)
+            with redirect_stdout(io.StringIO()) as buf:
+                rc = ro.main(["prog", "--repo", str(repo),
+                              "--preflight", "src/alpha.py", "--current-phase", "BETA"])
+            self.assertEqual(rc, 2, "a malformed roadmap must never read as clear")
+            self.assertIn("CANNOT EVALUATE", buf.getvalue())
+
     def test_an_OSError_during_identity_means_UNKNOWN_never_different(self):
         """codex, round 12. My code contradicted my own docstring.
 
@@ -2128,7 +2165,9 @@ class TestFailsLoudly(unittest.TestCase):
         # Assert WHICH guard fired. The two are redundant for this input -- zero
         # phases also yields an empty mapping -- so without pinning the message,
         # deleting the first guard leaves every test green. Verified by mutation.
-        self.assertIn("zero phases", str(caught.exception))
+        # Same layering: the linter reports "no phases found" before the
+        # zero-phases guard is reached.
+        self.assertIn("no phases", str(caught.exception))
 
     def test_phases_without_key_files_raises(self):
         stripped = "\n".join(
@@ -2138,7 +2177,12 @@ class TestFailsLoudly(unittest.TestCase):
         )
         with self.assertRaises(ro.RoadmapUnreadable) as caught:
             ro.ownership_map(stripped)
-        self.assertIn("no Key files", str(caught.exception))
+        # The canonical linter now runs FIRST and reports this as
+        # "**Key files** missing or empty", subsuming the downstream guard. The
+        # property under test is unchanged — it fails loudly rather than
+        # reporting nothing owned — so assert the property, not the phrasing of
+        # whichever layer catches it.
+        self.assertIn("Key files", str(caught.exception))
 
     def test_unresolvable_base_raises_rather_than_reporting_no_changes(self):
         """The THIRD operand, unpinned until review found it.

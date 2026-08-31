@@ -49,7 +49,12 @@ from .roadmap_lint import (
     RoadmapStatusError,
     validate_roadmap_status_coherence,
 )
-from .roadmap_lint import Phase, _extract_phases, declared_active_roadmap
+from .roadmap_lint import (
+    Phase,
+    _extract_phases,
+    declared_active_roadmap,
+    lint_roadmap_text,
+)
 
 #: A PR body/commit trailer that records a deliberate edit into an owned file.
 #: The goal is NOT to prevent the edit -- an urgent fix in a reserved file is a
@@ -178,6 +183,27 @@ def ownership_map(roadmap_text: str) -> Dict[str, List[Phase]]:
     a pass on every PR.
     """
 
+    # The CANONICAL linter first, not just the phase extractor. `_extract_phases`
+    # is one piece of `lint_roadmap_text`, and a phase whose HEADING is malformed
+    # is not extracted as a phase at all -- it vanishes while the map stays
+    # non-empty and plausible. Changing the em-dash in v10's SCHED heading to a
+    # colon (one character) drops SCHED entirely: `lane_scheduler.py` goes from
+    # owners {GOVLEAN, SCHED} to {GOVLEAN}, so preflighting it as GOVLEAN excludes
+    # the only surviving claim and exits 0 on a file SCHED explicitly claims.
+    #
+    # The existing guards below catch "zero phases" and "a parsed phase with no
+    # Key files"; neither sees a phase that never parsed. Consuming a PIECE of a
+    # validator instead of the validator is the recurring mistake this module was
+    # built to avoid -- the roadmap the repo's own linter rejects cannot be a
+    # trustworthy ownership map. All three CLI modes map RoadmapUnreadable to
+    # exit 2, so this reports CANNOT EVALUATE rather than a false clear.
+    lint_errors = lint_roadmap_text(roadmap_text)
+    if lint_errors:
+        raise RoadmapUnreadable(
+            "the roadmap does not satisfy its own linter, so ownership parsed "
+            "from it cannot be trusted; a malformed phase heading silently "
+            f"removes that phase from the map. Errors: {'; '.join(lint_errors[:3])}"
+        )
     phases = _extract_phases(roadmap_text)
     if not phases:
         raise RoadmapUnreadable(

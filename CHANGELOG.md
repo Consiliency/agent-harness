@@ -11,6 +11,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - `--preflight PATH...` reports which phases claim the given paths before the work
   exists, with `--current-phase` to exclude your own. Exit 1 when a path belongs to
   another phase, 0 when clear — a caller scripting a guard reads the code, not the prose.
+- The **canonical linter gates the ownership map**. `ownership_map` consumed `_extract_phases`,
+  one piece of `lint_roadmap_text`, and a phase whose HEADING is malformed is not extracted as
+  a phase at all — it vanishes while the map stays non-empty and plausible. Changing one
+  character in v10's SCHED heading (em-dash to colon) drops SCHED entirely, taking
+  `lane_scheduler.py` from owners {GOVLEAN, SCHED} to {GOVLEAN}, so preflighting it as GOVLEAN
+  excluded the only surviving claim and exited 0 on a file SCHED explicitly claims. The
+  pre-existing guards catch "zero phases" and "a parsed phase with no Key files"; neither sees
+  a phase that never parsed. A roadmap the repository's own linter rejects now reports CANNOT
+  EVALUATE rather than a false clear.
 - It reports ownership and **does not decide disposition**. Ownership is machine-readable;
   phase BLOCK state is not. Scanning phase bodies for a `BLOCKED` marker matches six
   phases in v10 of which exactly one is a real phase-level block — the rest are
