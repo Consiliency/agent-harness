@@ -808,6 +808,8 @@ def changed_path_records(out: bytes, label: str) -> set[str]:
 
 def changed_paths(repo: Path, older: str, newer: str) -> set[str]:
     """Return exact Git path records; leading/trailing whitespace is significant."""
+    text(older, "Git changed paths older revision", pattern=HEX40)
+    text(newer, "Git changed paths newer revision", pattern=HEX40)
     return changed_path_records(git_bytes(
         repo,
         "diff",
@@ -4453,6 +4455,52 @@ def self_test() -> None:
         rejected("repository-mismatch", lambda model, _root, _artifacts: model.__setitem__("repository", "other/repository"))
         with ThreadPoolExecutor(max_workers=4) as executor:
             list(executor.map(run_rejected, checks))
+        def changed_path_revision_rejected(name: str, older: str, newer: str) -> None:
+            original_git_bytes = git_bytes
+            invocations: list[tuple[str, ...]] = []
+
+            def unexpected_git_bytes(_repo: Path, *args: str) -> bytes:
+                invocations.append(args)
+                return b""
+
+            globals()["git_bytes"] = unexpected_git_bytes
+            try:
+                try:
+                    changed_paths(repo, older, newer)
+                except EvidenceError:
+                    if invocations:
+                        raise AssertionError(name + " reached Git before revision validation")
+                    raise
+                raise AssertionError(name + " was accepted")
+            finally:
+                globals()["git_bytes"] = original_git_bytes
+
+        candidate_revision = evidence["git"]["candidate"]["commit"]
+        output_target = root / "unexpected-changed-path-output"
+        direct_rejected(
+            "changed-path-symbolic-revision",
+            lambda: changed_path_revision_rejected(
+                "symbolic changed-path revision", "HEAD", candidate_revision
+            ),
+        )
+        direct_rejected(
+            "changed-path-range-revision",
+            lambda: changed_path_revision_rejected(
+                "range changed-path revision",
+                candidate_revision + ".." + candidate_revision,
+                candidate_revision,
+            ),
+        )
+        direct_rejected(
+            "changed-path-option-revision",
+            lambda: changed_path_revision_rejected(
+                "option changed-path revision",
+                "--output=" + str(output_target),
+                candidate_revision,
+            ),
+        )
+        if output_target.exists():
+            raise AssertionError("changed-path revision validation created an output file")
         path_base = _run(["git", "rev-parse", "HEAD"], repo)
         leading_path = " leading-space.py"
         trailing_path = "trailing-space.py "
