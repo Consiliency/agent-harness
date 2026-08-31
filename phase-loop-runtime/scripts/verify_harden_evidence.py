@@ -404,16 +404,22 @@ def reject_secret_text(value: str, label: str) -> None:
 
 
 def reject_secret_payloads(value: Any, path: str = "evidence") -> None:
-    """Reject credentials in every decoded JSON key and value without echoing it."""
+    """Reject credentials in canonical JSON containers and decoded strings."""
+    reject_raw_secret_bytes(canonical_bytes(value), path)
+    _reject_decoded_secret_payloads(value, path)
+
+
+def _reject_decoded_secret_payloads(value: Any, path: str) -> None:
+    """Scan decoded keys individually so escaped control characters cannot hide."""
     if isinstance(value, dict):
         for index, (key, item) in enumerate(value.items()):
             if not isinstance(key, str):
                 fail(f"{path}: non-string object key")
             reject_secret_text(key, f"{path}.<key[{index}]>")
-            reject_secret_payloads(item, f"{path}[{index}]")
+            _reject_decoded_secret_payloads(item, f"{path}[{index}]")
     elif isinstance(value, list):
         for index, item in enumerate(value):
-            reject_secret_payloads(item, f"{path}[{index}]")
+            _reject_decoded_secret_payloads(item, f"{path}[{index}]")
     elif isinstance(value, str):
         reject_secret_text(value, path)
 
@@ -3105,6 +3111,20 @@ def self_test() -> None:
                 "parsed-secret-key-" + name,
                 lambda name=name, value=value: decoded_key_secret(name, value),
             )
+
+        def keyword_opaque_pair_secret() -> None:
+            value = {"token": "q7Rt9vXz2LmN4pQ8"}
+            encoded = canonical_bytes(value)
+            if not _RAW_SECRET.search(encoded):
+                raise AssertionError("opaque keyword/value pair misses the raw secret policy")
+            reject_secret_text("token", "self-test opaque keyword")
+            reject_secret_text("q7Rt9vXz2LmN4pQ8", "self-test opaque value")
+            reject_secret_payloads(
+                parse_canonical_json(encoded, "self-test opaque keyword/value pair"),
+                "self-test opaque keyword/value pair",
+            )
+
+        direct_rejected("parsed-secret-keyword-opaque-pair", keyword_opaque_pair_secret)
         reject_raw_secret_bytes(b"ordinary review text about Slovakia\n", "self-test ordinary text")
         reject_secret_payloads({"report": "ordinary review text about Slovakia"}, "self-test ordinary text")
         reject_secret_payloads(
