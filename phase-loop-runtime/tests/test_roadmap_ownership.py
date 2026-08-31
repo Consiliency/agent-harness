@@ -1555,17 +1555,57 @@ class TestPreflight(unittest.TestCase):
         Mutation that must kill this: make the detector case-sensitive, or drop
         the intended-vs-parsed comparison.
         """
+        head = "### Phase 0 — First Thing (ALPHA)"
         for label, broken in (
-            ("lowercase", ROADMAP.replace("### Phase 0 — First Thing (ALPHA)",
-                                          "### phase 0 — First Thing (ALPHA)", 1)),
-            ("no alias", ROADMAP.replace("### Phase 0 — First Thing (ALPHA)",
-                                         "### Phase 0 — First Thing", 1)),
+            ("lowercase",       ROADMAP.replace(head, "### phase 0 — First Thing (ALPHA)", 1)),
+            ("no alias",        ROADMAP.replace(head, "### Phase 0 — First Thing", 1)),
+            # Round 15: each of these escaped a PREVIOUS detector while the
+            # canonical linter reported zero errors, so intended and parsed fell
+            # TOGETHER and the comparison saw nothing. The body count is
+            # independent of heading syntax, which is why it catches all three.
+            ("one hash fewer",  ROADMAP.replace(head, "## Phase 0 — First Thing (ALPHA)", 1)),
+            ("leading space",   ROADMAP.replace(head, " ### Phase 0 — First Thing (ALPHA)", 1)),
+            ("no space Phase0", ROADMAP.replace(head, "### Phase0 — First Thing (ALPHA)", 1)),
         ):
             with self.subTest(malformation=label):
                 self.assertNotEqual(broken, ROADMAP)
                 with self.assertRaises(ro.RoadmapUnreadable) as caught:
                     ro.ownership_map(broken)
                 self.assertIn("intend to declare a phase", str(caught.exception))
+
+    def test_a_malformed_heading_whose_BODY_IS_ALSO_MISSING_is_caught(self):
+        """Why the heading-intent check is not redundant with the body count.
+
+        The body count catches a phase body whose heading did not parse. It
+        cannot catch a phase that lost BOTH: with the heading malformed and the
+        `Key files` body gone, `bodies` falls in step with `parsed` and the
+        comparison sees nothing. The heading-intent count still sees it, because
+        the malformed heading is text that intends to declare a phase.
+
+        A mutation run showed the heading check killing NOTHING, which said it was
+        untested — not that it was useless. This is the case that distinguishes
+        the two checks.
+
+        Mutation that must kill this: drop the `intended > parsed` term.
+        """
+        head = "### Phase 0 — First Thing (ALPHA)"
+        # Both spellings must be caught. `## Phase 0` is the one the round-14
+        # detector (`#{3,}`) could not see, so this is also what makes the
+        # BREADTH of the pattern observable rather than merely asserted.
+        for label, bad_head in (
+            ("lowercase", "### phase 0 — First Thing (ALPHA)"),
+            ("one hash fewer", "## Phase 0 — First Thing (ALPHA)"),
+        ):
+            with self.subTest(heading=label):
+                broken = ROADMAP.replace(head, bad_head, 1)
+                # ...and remove that phase's Key files block, so the body count
+                # falls in step with the parse count and cannot see it.
+                broken = broken.replace(
+                    "**Key files**\n- `src/alpha.py`\n- `src/shared.py`\n", "", 1
+                )
+                with self.assertRaises(ro.RoadmapUnreadable) as caught:
+                    ro.ownership_map(broken)
+                self.assertIn("intend to declare", str(caught.exception))
 
     def test_a_MALFORMED_PHASE_HEADING_cannot_evaluate_rather_than_clear(self):
         """codex, round 13 — reachable in a real repository, no fault injection.

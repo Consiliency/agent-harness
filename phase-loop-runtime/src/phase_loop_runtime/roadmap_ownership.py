@@ -138,12 +138,22 @@ def current_phase(repo: Path) -> Optional[str]:
 
 _BACKTICKED = re.compile(r"`([^`]+)`")
 
-#: A level-3+ heading whose first word is "phase", in ANY case. Deliberately
-#: weaker than `roadmap_lint.ANY_PHASE_HEADING_RE`, which requires an uppercase
-#: `Phase` and a phase number: a detector for malformed headings must be weaker
-#: than the parser it audits, or the malformations it exists to catch are exactly
-#: the ones it cannot see.
-_INTENDED_PHASE_HEADING = re.compile(r"^#{3,}\s*phase\b", re.IGNORECASE | re.MULTILINE)
+#: Every phase BODY carries this field, and `roadmap_lint` errors when one omits
+#: it. Counting bodies is independent of heading SYNTAX entirely, which is what
+#: makes it the right detector: a mangled heading cannot hide a phase whose body
+#: is still present. Two earlier heading-shaped detectors each left a hole --
+#: `#{3,}` missed `## Phase 12`, and a number-anchored `#{2,}...\d` still missed a
+#: leading space -- because both counts fell together and the comparison saw
+#: nothing.
+_PHASE_BODY_FIELD = re.compile(r"^\*\*Key files\*\*", re.MULTILINE)
+
+#: A heading that INTENDS to declare a phase, in any case, at any level, with or
+#: without the space before the number. Number-anchored on purpose (grok, r15):
+#: a bare `phase\b` also matches `## Phase Dependency DAG`, which every roadmap
+#: has, and would fail-closed on 3 of the 11 real roadmaps in this repo.
+#: Secondary to the body count -- it catches the converse case, a heading present
+#: whose body is missing.
+_INTENDED_PHASE_HEADING = re.compile(r"^#{2,}\s*phase\s*\d", re.IGNORECASE | re.MULTILINE)
 
 
 def _strip_token(raw: str) -> str:
@@ -223,12 +233,19 @@ def ownership_map(roadmap_text: str) -> Dict[str, List[Phase]]:
     # one of those does not parse, the map is missing a phase whatever the linter
     # says. Verified as exact parity across all 11 roadmap versions in this repo,
     # and it catches the lowercase, colon, and missing-alias malformations alike.
-    intended = len(_INTENDED_PHASE_HEADING.findall(roadmap_text))
     parsed = len(_extract_phases(roadmap_text))
-    if intended != parsed:
+    bodies = len(_PHASE_BODY_FIELD.findall(roadmap_text))
+    intended = len(_INTENDED_PHASE_HEADING.findall(roadmap_text))
+    # Strictly GREATER-THAN, not inequality. `bodies > parsed` means a phase body
+    # exists whose heading did not parse -- the silent-drop defect. The converse,
+    # `bodies < parsed`, means a parsed phase omits `Key files`, which is the
+    # linter's finding and is reported below with its own precise message; firing
+    # here would relabel it as "a phase went missing", which is not what happened.
+    if bodies > parsed or intended > parsed:
         raise RoadmapUnreadable(
-            f"{intended} heading(s) intend to declare a phase but only {parsed} "
-            f"parse; a malformed heading removes that phase from the ownership "
+            f"only {parsed} phase(s) parse, but the roadmap contains {bodies} "
+            f"phase body/bodies and {intended} heading(s) that intend to declare "
+            f"a phase; a malformed heading removes that phase from the ownership "
             f"map silently, so its files would report as unclaimed. Refusing to "
             f"answer from a map that is missing a phase."
         )
