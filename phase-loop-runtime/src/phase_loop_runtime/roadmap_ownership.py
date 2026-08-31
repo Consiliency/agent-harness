@@ -813,13 +813,26 @@ def _names_the_same_file(lexical: Path, resolved: Path) -> bool:
         if lexical.exists() and resolved.exists():
             return os.path.samefile(lexical, resolved)
     except OSError:
-        return False
+        # UNKNOWN, not "different". An ESTALE, a permission change, or a
+        # concurrent replacement between `exists()` and `samefile()` says nothing
+        # about identity -- and returning False here DROPPED the lexical identity,
+        # the exact opposite of the safe direction this function documents.
+        #
+        # CLI-reachable with an ordinary repository symlink: ALPHA owns `link/`,
+        # BETA owns `real/`, `link -> real`, and `--preflight link/file
+        # --current-phase BETA` then excluded the only surviving claim and exited
+        # 0 on a real cross-phase edit.
+        #
+        # Keeping the identity can only ADD a claim, so the worst case is a false
+        # BLOCK (exit 1) that a reader resolves by looking. Dropping it produces a
+        # false CLEAR (exit 0), which is the failure class this command exists to
+        # prevent and which nobody looks at.
+        return True
     try:
         return lexical.resolve() == resolved
     except (OSError, RuntimeError):
-        # Unresolvable: cannot be shown to name the same file, so it is not
-        # offered as an identity. The resolved form still answers.
-        return False
+        # Same reasoning: unresolvable means unknown, so retain rather than drop.
+        return True
 
 
 def _preflight_identities(repo: Path, raw: str) -> List[str]:

@@ -56,7 +56,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   real claim: "does the argument contain `..`" discards a valid identity when `..` cancels an
   ordinary directory rather than the symlink, and canonical-path equality alone misses
   HARDLINKS, where one inode has two names that canonicalize differently. Both exited 0 on a
-  genuine cross-phase edit.
+  genuine cross-phase edit. When identity cannot be determined at all — an `ESTALE`, a
+  permission change, a concurrent replacement — the identity is RETAINED rather than dropped:
+  keeping it risks a false block that a reader resolves by looking, while dropping it produces
+  a false clear that nobody looks at.
 - The **most specific root wins** when a repo is addressed through a self-referential symlink
   (`X11 -> .`), where an argument sits beneath both the lexical and the resolved root; taking
   the resolved root first reported `X11/python3` and missed an exact `python3` claim.

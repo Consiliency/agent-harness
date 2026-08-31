@@ -1533,6 +1533,99 @@ class TestPreflight(unittest.TestCase):
                         "a not-yet-created file must still carry the name's claim",
                     )
 
+    def test_an_OSError_during_identity_means_UNKNOWN_never_different(self):
+        """codex, round 12. My code contradicted my own docstring.
+
+        `_names_the_same_file` documents that erring toward "same" is the safe
+        direction because it can only ADD an identity — then returned False on
+        `OSError`, which DROPS one. An ESTALE, a permission transition, or a
+        concurrent replacement between `exists()` and `samefile()` says nothing
+        about identity, and treating it as "different" turns a transient
+        filesystem error into exit 0 on a real cross-phase edit.
+
+        CLI-reachable with an ordinary repository symlink — no exotic filesystem
+        required, which is why this is a blocker and the hardlink case was merely
+        a defect.
+
+        Mutation that must kill this: return False from the OSError handler.
+        """
+        roadmap = ROADMAP.replace("- `src/alpha.py`", "- `link/`").replace(
+            "- `src/beta/`", "- `real/`"
+        )
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=roadmap)
+            (repo / "real").mkdir(parents=True, exist_ok=True)
+            (repo / "real" / "file.py").write_text("x = 1\n")
+            (repo / "link").symlink_to(repo / "real")
+
+            real_samefile = os.path.samefile
+
+            def raising_samefile(a, b):
+                raise OSError(116, "Stale file handle")
+
+            os.path.samefile = raising_samefile
+            try:
+                owned = ro.preflight(repo, ["link/file.py"], "BETA")
+            finally:
+                os.path.samefile = real_samefile
+
+            self.assertIn(
+                "ALPHA",
+                [o.phase_alias for o in owned.get("link/file.py", [])],
+                "an unknown identity must be retained, not dropped: keeping it "
+                "risks a false BLOCK, dropping it produces a false CLEAR",
+            )
+
+    def test_an_UNRESOLVABLE_lexical_form_is_also_unknown_not_different(self):
+        """The second arm of the same rule, for the not-yet-exists path.
+
+        When one side does not exist, identity falls back to comparing canonical
+        paths — and that `resolve()` can itself raise (symlink loop -> RuntimeError,
+        filesystem trouble -> OSError). Returning False there drops the identity for
+        the same wrong reason as the `samefile` arm.
+
+        Reached by injection rather than by fixture: the earlier `resolve()` on the
+        UNCOLLAPSED path traverses a superset of these components, so it raises
+        first in any filesystem I can build. A mutation showed this branch was
+        unpinned, and a branch that cannot be reached naturally still has to behave
+        correctly when it is.
+
+        Mutation that must kill this: return False from the resolve() handler.
+        """
+        roadmap = ROADMAP.replace("- `src/alpha.py`", "- `link/`").replace(
+            "- `src/beta/`", "- `real/`"
+        )
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=roadmap)
+            (repo / "real").mkdir(parents=True, exist_ok=True)
+            (repo / "link").symlink_to(repo / "real")
+
+            real_resolve = Path.resolve
+            state = {"armed": False}
+
+            def raising_resolve(self, *a, **kw):
+                # Only the identity check's resolve raises; the earlier
+                # containment resolve must still work or nothing gets that far.
+                if state["armed"]:
+                    raise RuntimeError("symlink loop")
+                return real_resolve(self, *a, **kw)
+
+            owned = None
+            try:
+                Path.resolve = raising_resolve
+                state["armed"] = False
+                ids_ok = ro._preflight_identities(repo, "link/absent.py")
+                state["armed"] = True
+                same = ro._names_the_same_file(
+                    Path(repo) / "link" / "absent.py", Path(repo) / "real" / "absent.py"
+                )
+            finally:
+                Path.resolve = real_resolve
+            self.assertTrue(
+                same, "an unresolvable lexical form is UNKNOWN, so it is retained"
+            )
+            self.assertEqual(sorted(ids_ok), ["link/absent.py", "real/absent.py"])
+
     def test_a_HARDLINKED_alias_is_the_same_file_and_keeps_its_claim(self):
         """codex, round 11. Canonical-path equality is a proxy for file identity.
 
