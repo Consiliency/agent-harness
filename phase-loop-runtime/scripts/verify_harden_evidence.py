@@ -61,6 +61,7 @@ MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
 MAX_JSON_BYTES = 2 * 1024 * 1024
 MAX_JSON_INTEGER_DIGITS = 4096
 MAX_VISUAL_PREFIX_CHARS = 256
+MAX_VISUAL_WILDCARD_ADVANCE = 3
 REVIEW_INPUT_MAX_BYTES = 512 * 1024
 GEMINI_STREAM_PROTOCOL = "agy_ndjson_same_session_ingestion_v1"
 GEMINI_STREAM_CHUNK_MAX_BYTES = 96 * 1024
@@ -870,34 +871,66 @@ def visual_prefix_replica(line: str, start: int, prefix: str) -> bool:
     A raw line has no authority.  Rather than enumerate Unicode confusables,
     reject it when its initial visual token can be the fixed parent-owned token:
     an unknown non-ASCII glyph or horizontal tab may be a reader-confusable
-    substitution, insertion, or multi-character visual run, but visible ASCII
-    must remain exact.  A bounded scan prevents untrusted visual leaders from
-    turning this fail-closed screen into a quadratic parser.
+    substitution, insertion, or short multi-character visual run.  A Unicode
+    letter may substitute one expected ASCII letter, while punctuation and
+    whitespace runs are capped; NFKC-equivalent ASCII fragments match exactly.
+    This admits a complete glyph-for-glyph marker without treating unrelated
+    non-ASCII prose as a marker.  A bounded scan prevents untrusted visual
+    leaders from turning this fail-closed screen into a quadratic parser.
     """
-    positions = {(0, False, False)}
+    positions = {(0, False)}
     for offset, character in enumerate(line[start:]):
         if offset >= MAX_VISUAL_PREFIX_CHARS:
-            return bool(positions)
-        next_positions: set[tuple[int, bool, bool]] = set()
-        for position, wildcard_seen, literal_seen in positions:
+            return any(
+                position == len(prefix) and anchored
+                for position, anchored in positions
+            )
+        next_positions: set[tuple[int, bool]] = set()
+        for position, anchored in positions:
             if position < len(prefix) and character == prefix[position]:
-                next_positions.add((
-                    position + 1,
-                    wildcard_seen,
-                    True,
-                ))
+                next_positions.add((position + 1, True))
             if not character.isascii() or character == "\t":
-                for advance in range(position, len(prefix) + 1):
-                    next_positions.add((advance, True, literal_seen))
+                if not character.isascii():
+                    normalized = unicodedata.normalize("NFKC", character)
+                    if (
+                        normalized
+                        and normalized.isascii()
+                        and prefix.startswith(normalized, position)
+                    ):
+                        next_positions.add((position + len(normalized), True))
+                    if (
+                        unicodedata.category(character).startswith("L")
+                        and position < len(prefix)
+                        and prefix[position].isalpha()
+                    ):
+                        next_positions.add((position + 1, True))
+                    if unicodedata.category(character).startswith("L"):
+                        continue
+                for advance in range(
+                    position,
+                    min(position + MAX_VISUAL_WILDCARD_ADVANCE, len(prefix)) + 1,
+                ):
+                    next_positions.add((advance, anchored))
         if any(
-            position == len(prefix) and (not wildcard_seen or literal_seen)
-            for position, wildcard_seen, literal_seen in next_positions
+            position == len(prefix) and anchored
+            for position, anchored in next_positions
         ):
             return True
         if not next_positions:
             return False
         positions = next_positions
-    return len(prefix) in positions
+    return any(
+        position == len(prefix) and anchored
+        for position, anchored in positions
+    )
+
+
+def visually_ambiguous_leader(character: str) -> bool:
+    """Return whether a bounded visual leader can impersonate ASCII syntax."""
+    if character == "\t":
+        return True
+    normalized = unicodedata.normalize("NFKC", character)
+    return normalized.isascii() and not normalized.isspace()
 
 
 def contains_untrusted_frame_replica(text_value: str) -> bool:
@@ -906,7 +939,10 @@ def contains_untrusted_frame_replica(text_value: str) -> bool:
         start = 0
         while start < len(line):
             if start >= MAX_VISUAL_PREFIX_CHARS:
-                return True
+                return any(
+                    visually_ambiguous_leader(character)
+                    for character in line[:MAX_VISUAL_PREFIX_CHARS]
+                )
             if any(
                 visual_prefix_replica(line, start, prefix)
                 for prefix in UNTRUSTED_FRAME_PREFIXES
@@ -3348,6 +3384,37 @@ def self_test() -> None:
                     "self-test prefix-confusable replica",
                 ),
             )
+        def all_fullwidth(value: str) -> str:
+            return "".join(
+                "\u3000" if character == " " else chr(ord(character) + 0xFEE0)
+                if "!" <= character <= "~" else character
+                for character in value
+            )
+
+        for replica_name, replica in (
+            ("frame-all-fullwidth", all_fullwidth(replica_frame)),
+            ("metadata-all-fullwidth", all_fullwidth(replica_metadata)),
+            (
+                "frame-all-glyph",
+                "\u22d8\u041d\u0391\u042f\u0414\u0415\u039d\u2010\u03a6\u03a1\u0391\u039c\u0415\u3000"
+                + all_fullwidth(replica_frame.removeprefix(FRAME_PREFIX)),
+            ),
+        ):
+            direct_rejected(
+                "patch-added-prefix-confusable-" + replica_name,
+                lambda replica=replica: replica_patch("+" + replica),
+            )
+            direct_rejected(
+                "patch-context-prefix-confusable-" + replica_name,
+                lambda replica=replica: replica_patch(" " + replica),
+            )
+            direct_rejected(
+                "plan-prefix-confusable-" + replica_name,
+                lambda replica=replica: untrusted_transport_text(
+                    replica,
+                    "self-test all-fullwidth replica",
+                ),
+            )
         direct_rejected(
             "visual-prefix-leader-scan-bound",
             lambda: untrusted_transport_text(
@@ -3361,6 +3428,15 @@ def self_test() -> None:
         ordinary_unicode = "reviewer note: café 東京 Δ — ordinary code text"
         if untrusted_transport_text(ordinary_unicode, "self-test ordinary Unicode") != ordinary_unicode:
             raise AssertionError("ordinary Unicode review content was not preserved")
+        long_unrelated_unicode = "東京" * (MAX_VISUAL_PREFIX_CHARS + 1)
+        if (
+            untrusted_transport_text(
+                long_unrelated_unicode,
+                "self-test long unrelated Unicode",
+            )
+            != long_unrelated_unicode
+        ):
+            raise AssertionError("long unrelated Unicode review content was not preserved")
         transport_controls = {
             "carriage-return": "\r",
             "escape": "\x1b",

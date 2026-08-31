@@ -1589,6 +1589,7 @@ _BROKER_AUTHORITY_METADATA_PREFIX = "AUTHORITATIVE-INSTRUCTIONS sha256="
 _BROKER_BUNDLE_METADATA_PREFIX = "UNTRUSTED-REVIEW-BUNDLE sha256="
 _BROKER_SEALED_HEADER = "HARDEN-BROKER-SEALED-PROMPT.v1"
 _BROKER_MAX_VISUAL_PREFIX_CHARS = 256
+_BROKER_MAX_VISUAL_WILDCARD_ADVANCE = 3
 _BROKER_UNTRUSTED_FRAME_PREFIXES = (
     _BROKER_FRAME_PREFIX,
     _BROKER_REVIEW_INPUT_HEADER_PREFIX,
@@ -1616,30 +1617,62 @@ def _broker_visible_ascii_identifier(character: str) -> bool:
 
 def _broker_visual_prefix_replica(line: str, start: int, prefix: str) -> bool:
     """Match visible ASCII exactly with bounded visual-glyph wildcard runs."""
-    positions = {(0, False, False)}
+    positions = {(0, False)}
     for offset, character in enumerate(line[start:]):
         if offset >= _BROKER_MAX_VISUAL_PREFIX_CHARS:
-            return bool(positions)
-        next_positions: set[tuple[int, bool, bool]] = set()
-        for position, wildcard_seen, literal_seen in positions:
+            return any(
+                position == len(prefix) and anchored
+                for position, anchored in positions
+            )
+        next_positions: set[tuple[int, bool]] = set()
+        for position, anchored in positions:
             if position < len(prefix) and character == prefix[position]:
-                next_positions.add((
-                    position + 1,
-                    wildcard_seen,
-                    True,
-                ))
+                next_positions.add((position + 1, True))
             if not character.isascii() or character == "\t":
-                for advance in range(position, len(prefix) + 1):
-                    next_positions.add((advance, True, literal_seen))
+                if not character.isascii():
+                    normalized = unicodedata.normalize("NFKC", character)
+                    if (
+                        normalized
+                        and normalized.isascii()
+                        and prefix.startswith(normalized, position)
+                    ):
+                        next_positions.add((position + len(normalized), True))
+                    if (
+                        unicodedata.category(character).startswith("L")
+                        and position < len(prefix)
+                        and prefix[position].isalpha()
+                    ):
+                        next_positions.add((position + 1, True))
+                    if unicodedata.category(character).startswith("L"):
+                        continue
+                for advance in range(
+                    position,
+                    min(
+                        position + _BROKER_MAX_VISUAL_WILDCARD_ADVANCE,
+                        len(prefix),
+                    ) + 1,
+                ):
+                    next_positions.add((advance, anchored))
         if any(
-            position == len(prefix) and (not wildcard_seen or literal_seen)
-            for position, wildcard_seen, literal_seen in next_positions
+            position == len(prefix) and anchored
+            for position, anchored in next_positions
         ):
             return True
         if not next_positions:
             return False
         positions = next_positions
-    return len(prefix) in positions
+    return any(
+        position == len(prefix) and anchored
+        for position, anchored in positions
+    )
+
+
+def _broker_visually_ambiguous_leader(character: str) -> bool:
+    """Return whether a bounded visual leader can impersonate ASCII syntax."""
+    if character == "\t":
+        return True
+    normalized = unicodedata.normalize("NFKC", character)
+    return normalized.isascii() and not normalized.isspace()
 
 
 def _broker_contains_untrusted_frame_replica(text: str) -> bool:
@@ -1648,7 +1681,10 @@ def _broker_contains_untrusted_frame_replica(text: str) -> bool:
         start = 0
         while start < len(line):
             if start >= _BROKER_MAX_VISUAL_PREFIX_CHARS:
-                return True
+                return any(
+                    _broker_visually_ambiguous_leader(character)
+                    for character in line[:_BROKER_MAX_VISUAL_PREFIX_CHARS]
+                )
             if any(
                 _broker_visual_prefix_replica(line, start, prefix)
                 for prefix in _BROKER_UNTRUSTED_FRAME_PREFIXES
