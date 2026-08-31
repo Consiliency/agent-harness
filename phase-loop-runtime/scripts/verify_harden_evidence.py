@@ -396,19 +396,26 @@ _RAW_SECRET = re.compile(
 )
 
 
+def reject_secret_text(value: str, label: str) -> None:
+    try:
+        reject_raw_secret_bytes(value.encode("utf-8", errors="strict"), label)
+    except UnicodeEncodeError:
+        fail(f"{label}: non-UTF-8 text payload")
+
+
 def reject_secret_payloads(value: Any, path: str = "evidence") -> None:
-    """Reject credential values in parsed JSON using the raw-artifact policy."""
+    """Reject credentials in every decoded JSON key and value without echoing it."""
     if isinstance(value, dict):
-        for key, item in value.items():
-            reject_secret_payloads(item, f"{path}.{key}")
+        for index, (key, item) in enumerate(value.items()):
+            if not isinstance(key, str):
+                fail(f"{path}: non-string object key")
+            reject_secret_text(key, f"{path}.<key[{index}]>")
+            reject_secret_payloads(item, f"{path}[{index}]")
     elif isinstance(value, list):
         for index, item in enumerate(value):
             reject_secret_payloads(item, f"{path}[{index}]")
     elif isinstance(value, str):
-        try:
-            reject_raw_secret_bytes(value.encode("utf-8", errors="strict"), path)
-        except UnicodeEncodeError:
-            fail(f"{path}: non-UTF-8 text payload")
+        reject_secret_text(value, path)
 
 
 def reject_raw_secret_bytes(data: bytes, label: str) -> None:
@@ -3080,8 +3087,30 @@ def self_test() -> None:
                     {"report": payload.decode("ascii")}, "self-test " + name
                 ),
             )
+
+        def decoded_key_secret(name: str, value: dict[str, str]) -> None:
+            encoded = canonical_bytes(value)
+            if _RAW_SECRET.search(encoded):
+                raise AssertionError(name + " no longer exercises escaped JSON key handling")
+            reject_secret_payloads(
+                parse_canonical_json(encoded, "self-test " + name),
+                "self-test " + name,
+            )
+
+        for name, value in (
+            ("escaped-bearer-key", {"bearer\nsynthetic-token-0123456789abcdef": "metadata"}),
+            ("escaped-assignment-key", {"api_key\n=synthetic-token-0123456789abcdef": "metadata"}),
+        ):
+            direct_rejected(
+                "parsed-secret-key-" + name,
+                lambda name=name, value=value: decoded_key_secret(name, value),
+            )
         reject_raw_secret_bytes(b"ordinary review text about Slovakia\n", "self-test ordinary text")
         reject_secret_payloads({"report": "ordinary review text about Slovakia"}, "self-test ordinary text")
+        reject_secret_payloads(
+            {"authorization_sha256": "0" * 64, "transcript_sha256": "1" * 64},
+            "self-test metadata keys",
+        )
 
         def digest_frame_collision() -> None:
             global sha256
