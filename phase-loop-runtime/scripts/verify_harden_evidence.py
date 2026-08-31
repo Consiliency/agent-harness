@@ -34,6 +34,7 @@ SCHEMA = "verification_evidence.v3"
 BROKER_SCHEMA = "parent_unix_broker_v1"
 CANONICAL_GH = Path("/usr/bin/gh")
 CANONICAL_GITHUB_HOST = "github.com"
+VERIFIER_EXECUTABLE_PATH = "/usr/bin:/bin"
 CANONICAL_CI_REPOSITORY = "Consiliency/agent-harness"
 CANONICAL_CI_WORKFLOW_PATH = ".github/workflows/test.yml"
 CANONICAL_CI_WORKFLOW_NAME = "test"
@@ -587,7 +588,7 @@ _MAX_GIT_ANCESTRY_COMMITS = 100_000
 def git_environment() -> dict[str, str]:
     """Return a minimal authority environment, never inherited from the caller."""
     return {
-        "PATH": os.defpath,
+        "PATH": VERIFIER_EXECUTABLE_PATH,
         "HOME": os.devnull,
         "XDG_CONFIG_HOME": os.devnull,
         "LANG": "C",
@@ -1931,7 +1932,7 @@ def ci_command(run_id: int) -> tuple[str, ...]:
 def github_cli_environment(config_dir: Path, *, canonical: bool) -> dict[str, str]:
     """Return the only environment allowed for a bounded GitHub API read."""
     environment = {
-        "PATH": os.defpath,
+        "PATH": VERIFIER_EXECUTABLE_PATH,
         "HOME": str(config_dir),
         "XDG_CONFIG_HOME": str(config_dir),
         "XDG_CACHE_HOME": str(config_dir),
@@ -3589,6 +3590,64 @@ def self_test() -> None:
                         os.environ[key] = value
 
         github_environment_isolation()
+
+        def verifier_path_isolation() -> None:
+            isolated_root = root / "verifier-path-isolation"
+            isolated_root.mkdir()
+            git_marker = isolated_root / "cwd-git-ran"
+            python_marker = isolated_root / "cwd-python-ran"
+            (isolated_root / "git").write_text(
+                "#!/bin/sh\n: > cwd-git-ran\nprintf hostile-git\\n",
+                encoding="utf-8",
+            )
+            (isolated_root / "git").chmod(0o700)
+            (isolated_root / "python3").write_text(
+                "#!/bin/sh\n: > cwd-python-ran\nexit 99\n",
+                encoding="utf-8",
+            )
+            (isolated_root / "python3").chmod(0o700)
+            probe = isolated_root / "python-path-probe"
+            probe.write_text(
+                "#!/usr/bin/env python3\nprint('VERIFIER_PATH_OK')\n",
+                encoding="utf-8",
+            )
+            probe.chmod(0o700)
+            original_defpath = os.defpath
+            os.defpath = ":."
+            try:
+                environments = (
+                    git_environment(),
+                    github_cli_environment(isolated_root, canonical=False),
+                )
+                for environment in environments:
+                    entries = environment["PATH"].split(os.pathsep)
+                    if (
+                        environment["PATH"] != VERIFIER_EXECUTABLE_PATH
+                        or not entries
+                        or any(not entry or not os.path.isabs(entry) for entry in entries)
+                    ):
+                        raise AssertionError("verifier subprocess PATH is not absolute and CWD-free")
+                if not _run(["git", "--version"], isolated_root).startswith("git version "):
+                    raise AssertionError("verifier Git authority did not use the canonical executable path")
+                completed = subprocess.run(
+                    [str(probe)],
+                    cwd=isolated_root,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                    env=github_cli_environment(isolated_root, canonical=False),
+                )
+            finally:
+                os.defpath = original_defpath
+            if (
+                git_marker.exists()
+                or python_marker.exists()
+                or completed.returncode
+                or completed.stdout != b"VERIFIER_PATH_OK\n"
+            ):
+                raise AssertionError("verifier subprocess PATH searched the hostile CWD")
+
+        verifier_path_isolation()
 
         def relocated_parent_header() -> None:
             candidate = evidence["git"]["candidate"]
