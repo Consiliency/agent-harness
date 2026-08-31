@@ -1203,7 +1203,7 @@ def git_bound_review_input(
     ancestor(repo, base_head, head, "review input base")
     if kind == "instructions":
         plan_path = "plans/phase-plan-v10-HARDEN.md"
-        plan_blob, plan_bytes = blob(repo, head, plan_path)
+        plan_blob, plan_bytes = blob(repo, base_head, plan_path)
         plan_text = untrusted_transport_text(plan_bytes, "review input HARDEN plan")
         begin, end = digest_bound_delimiters("AUTHORITATIVE-HARDEN-PLAN", plan_bytes)
         rendered = "\n".join((
@@ -3780,6 +3780,42 @@ def self_test() -> None:
                 raise AssertionError("ambient Git config changed or executed review rendering")
 
         git_environment_isolation()
+
+        def candidate_plan_cannot_control_instructions() -> None:
+            plan_root = root / "candidate-plan-instruction-origin"
+            plan_root.mkdir()
+            plan_repo, refs = _self_git(plan_root)
+            base, base_tree = refs["landing"]
+            plan_path = "plans/phase-plan-v10-HARDEN.md"
+            trusted_blob, trusted_plan = blob(plan_repo, base, plan_path)
+            candidate_marker = "candidate-only authoritative-plan replacement\n"
+            candidate_plan = plan_repo / plan_path
+            candidate_plan.write_bytes(trusted_plan + candidate_marker.encode("utf-8"))
+            _run(["git", "add", plan_path], plan_repo)
+            _run(["git", "commit", "-qm", "candidate plan replacement"], plan_repo)
+            head = _run(["git", "rev-parse", "HEAD"], plan_repo)
+            tree = _run(["git", "rev-parse", "HEAD^{tree}"], plan_repo)
+            rendered = git_bound_review_input(
+                plan_repo,
+                base,
+                base_tree,
+                head,
+                tree,
+                "instructions",
+            )
+            payload, _begin, _end = framed_payload(
+                rendered,
+                "self-test trusted instruction origin",
+                "AUTHORITATIVE-HARDEN-PLAN",
+            )
+            if (
+                payload.encode("utf-8", errors="strict") != trusted_plan
+                or candidate_marker in payload
+                or f"plan_blob={trusted_blob}\n" not in rendered
+            ):
+                raise AssertionError("candidate plan bytes controlled authoritative instructions")
+
+        candidate_plan_cannot_control_instructions()
 
         def commit_graph_authority_configuration() -> None:
             graph_root = root / "commit-graph-authority-configuration"
