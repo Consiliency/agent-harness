@@ -872,11 +872,12 @@ def visual_prefix_replica(line: str, start: int, prefix: str) -> bool:
     reject it when its initial visual token can be the fixed parent-owned token:
     an unknown non-ASCII glyph or horizontal tab may be a reader-confusable
     substitution, insertion, or short multi-character visual run.  A Unicode
-    letter may substitute one expected ASCII letter, while punctuation and
-    whitespace runs are capped; NFKC-equivalent ASCII fragments match exactly.
-    This admits a complete glyph-for-glyph marker without treating unrelated
-    non-ASCII prose as a marker.  A bounded scan prevents untrusted visual
-    leaders from turning this fail-closed screen into a quadratic parser.
+    letter may substitute one expected ASCII letter inside an anchored visual
+    candidate, while punctuation and whitespace runs are capped;
+    NFKC-equivalent ASCII fragments match exactly.  This admits a complete
+    glyph-for-glyph marker without treating unrelated non-ASCII prose as a
+    marker.  A bounded scan prevents untrusted visual leaders from turning this
+    fail-closed screen into a quadratic parser.
     """
     positions = {(0, False)}
     for offset, character in enumerate(line[start:]):
@@ -892,6 +893,7 @@ def visual_prefix_replica(line: str, start: int, prefix: str) -> bool:
             if not character.isascii() or character == "\t":
                 if not character.isascii():
                     normalized = unicodedata.normalize("NFKC", character)
+                    category = unicodedata.category(character)
                     if (
                         normalized
                         and normalized.isascii()
@@ -899,18 +901,25 @@ def visual_prefix_replica(line: str, start: int, prefix: str) -> bool:
                     ):
                         next_positions.add((position + len(normalized), True))
                     if (
-                        unicodedata.category(character).startswith("L")
+                        category.startswith("L")
                         and position < len(prefix)
                         and prefix[position].isalpha()
                     ):
-                        next_positions.add((position + 1, True))
-                    if unicodedata.category(character).startswith("L"):
+                        next_positions.add((position + 1, anchored))
                         continue
                 for advance in range(
                     position,
                     min(position + MAX_VISUAL_WILDCARD_ADVANCE, len(prefix)) + 1,
                 ):
-                    next_positions.add((advance, anchored))
+                    next_positions.add((
+                        advance,
+                        anchored
+                        or (
+                            not character.isascii()
+                            and category == "Sm"
+                            and "<" in prefix[position:advance]
+                        ),
+                    ))
         if any(
             position == len(prefix) and anchored
             for position, anchored in next_positions
@@ -3368,6 +3377,22 @@ def self_test() -> None:
             (
                 "frame-double-left-angle-plus",
                 "\u226a<" + replica_frame.removeprefix("<<<"),
+            ),
+            (
+                "frame-canadian-syllabics-less-than",
+                replica_frame.replace("<", "\u1438", 1),
+            ),
+            (
+                "frame-katakana-hyphen",
+                replica_frame.replace("-", "\u30fc", 1),
+            ),
+            (
+                "frame-cjk-hyphen",
+                replica_frame.replace("-", "\u4e00", 1),
+            ),
+            (
+                "frame-default-ignorable-less-than",
+                replica_frame.replace("<", "\u115f", 1),
             ),
         )
         for replica_name, replica in prefix_confusables:

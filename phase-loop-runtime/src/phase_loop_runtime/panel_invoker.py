@@ -1631,6 +1631,7 @@ def _broker_visual_prefix_replica(line: str, start: int, prefix: str) -> bool:
             if not character.isascii() or character == "\t":
                 if not character.isascii():
                     normalized = unicodedata.normalize("NFKC", character)
+                    category = unicodedata.category(character)
                     if (
                         normalized
                         and normalized.isascii()
@@ -1638,12 +1639,11 @@ def _broker_visual_prefix_replica(line: str, start: int, prefix: str) -> bool:
                     ):
                         next_positions.add((position + len(normalized), True))
                     if (
-                        unicodedata.category(character).startswith("L")
+                        category.startswith("L")
                         and position < len(prefix)
                         and prefix[position].isalpha()
                     ):
-                        next_positions.add((position + 1, True))
-                    if unicodedata.category(character).startswith("L"):
+                        next_positions.add((position + 1, anchored))
                         continue
                 for advance in range(
                     position,
@@ -1652,7 +1652,15 @@ def _broker_visual_prefix_replica(line: str, start: int, prefix: str) -> bool:
                         len(prefix),
                     ) + 1,
                 ):
-                    next_positions.add((advance, anchored))
+                    next_positions.add((
+                        advance,
+                        anchored
+                        or (
+                            not character.isascii()
+                            and category == "Sm"
+                            and "<" in prefix[position:advance]
+                        ),
+                    ))
         if any(
             position == len(prefix) and anchored
             for position, anchored in next_positions
