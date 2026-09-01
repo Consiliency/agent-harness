@@ -14,9 +14,10 @@ guaranteed kill. That is not hypothetical: it is how several governed panels in 
 killed by their own callers, including panels whose parent process died before any verdict was
 written.
 
-The same fact lives in EIGHT places — four canonical `skills-src/<harness>/` sources and four
-generated `phase-loop-skills/` outputs — so this asserts by OCCURRENCE across every site
-rather than spot-checking one file. That is the ah#693 shape: one fact stated in several
+The same fact lives in SIXTEEN places — four canonical `skills-src/<harness>/` sources, four
+generated `phase-loop-skills/` outputs, and the eight wheel-shipped `skills_bundle/` copies
+(four boards plus their `advisor-panel` aliases) that a pinned install actually reads — so
+this asserts by OCCURRENCE across every site rather than spot-checking one file. That is the ah#693 shape: one fact stated in several
 places drifts silently, and a `grep -l` sweep reports a file as covered when only its first
 mention was fixed.
 """
