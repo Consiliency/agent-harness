@@ -14,16 +14,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   LEGIBLE-owned roadmap. The commit sample and per-commit diffs are identical to a plain run;
   only the ownership map differs. A candidate run applies ONE map — the candidate text — to
   every commit, where a plain run reads each commit's own roadmap, so a candidate identical to
-  the live roadmap reproduces the historical number exactly only over a window in which the
-  roadmap's ownership map did not change (this repo: 37/40 and 53/60 identical; at 150 the
-  live text as a candidate flags 140 vs 93 historically, because 47 of those commits predate
-  the phases the live map claims). That is the instrument's purpose, not a defect — and the
-  reason every candidate rate line is labelled a projection.
+  the live roadmap reproduces the historical number exactly only when no commit's flag outcome
+  differs between its own roadmap and the candidate (this repo: identical at 40 and 60 even
+  though window 60 spans three roadmap blobs — the one commit touching a changed claim was
+  flagged either way; at 150 the live text as a candidate flags 140 vs 93 historically, because
+  47 commits predate the phases the live map claims). That is the instrument's purpose, not a
+  defect — and the reason every candidate rate line is labelled a projection.
 - A candidate run prints as `(CANDIDATE roadmap, not history)`, labels every rate line —
   `would have flagged (CANDIDATE PROJECTION):` and the counterfactual `would STILL flag
   (CANDIDATE PROJECTION):` — so a consumer that greps a line out of a log gets the label with
   it, and prints a PROJECTION note in place of the graduation line —
-  a projection can never be mistaken for a measurement.
+  no consumer of the report text can take a projection for a measurement (`render_report` is
+  the only production renderer of `ReplayRow`s).
 - The candidate goes through `ownership_map` and therefore every gate a real roadmap does: a
   malformed proposal reports CANNOT EVALUATE rather than scoring against a map that is quietly
   missing a phase. `--candidate-roadmap` without `--report` is refused, and `--preflight` with

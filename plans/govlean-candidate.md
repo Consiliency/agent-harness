@@ -1193,7 +1193,6 @@ never coupled to fleet infrastructure.
 - `phase-loop-runtime/tests/test_roadmap_ownership.py`
 - `phase-loop-runtime/tests/test_closeout_classifier.py`
 - `phase-loop-runtime/tests/test_agy_canary_evidence.py`
-- `phase-loop-runtime/tests/test_console_scripts_are_declared.py`
 - `phase-loop-runtime/tests/test_phase_loop_execution_policy.py`
 - `phase-loop-runtime/tests/test_model_class_policy.py`
 - `phase-loop-runtime/tests/test_model_tier_taxonomy.py`
