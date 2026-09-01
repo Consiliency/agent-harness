@@ -655,6 +655,24 @@
       "updated_at": "2026-07-28T22:28:34Z"
     },
     {
+      "acceptance_criteria_count": 5,
+      "created_at": "2026-09-01T06:13:52Z",
+      "file": ".consiliency/plans/detailed-narrow-govlean-ownership-claims-20260901-0612.md",
+      "handoff_ref": ".dev-skills/handoffs/claude-plan-detailed/latest.md",
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [],
+      "owner_skill": "claude-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "narrow-govlean-ownership-claims",
+      "status": "committed",
+      "task_summary": "ah#688: add --candidate-roadmap to the --report replay so a proposed GOVLEAN Key files narrowing can be scored against the same landed changes; produce a measured, paste-ready proposal without editing the LEGIBLE-owned roadmap.",
+      "type": "detailed",
+      "updated_at": "2026-09-01T06:13:52Z"
+    },
+    {
       "acceptance_criteria_count": 4,
       "created_at": "2026-07-18T20:00:00Z",
       "file": "plans/detailed-phase-arg-subparser-clobber-84-20260718.md",
@@ -2741,6 +2759,108 @@
     },
     {
       "acceptance_criteria_count": null,
+      "created_at": "2026-08-25T15:17:29Z",
+      "file": "plans/phase-plan-v10-LEGLIFE.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260825T151729Z-01-leglife-plan.md",
+      "if_gates_produced": [],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2",
+        "SL-3"
+      ],
+      "lifecycle": [
+        {
+          "at": "2026-08-25T15:17:29Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "phase_alias": "LEGLIFE",
+            "planning_base": "3a10b03191f10bdb70c8238b535dcc6afdb5a6d7",
+            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+            "run_id": "20260825T151729Z-01-leglife-plan"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-08-25T16:35:34Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "plan_repair_record_id": "v10-LEGLIFE.plan-review-repair.v1",
+            "plan_sha256": "642f30ffae912a0368854be9fb5cad123ab50e4d87e8bd4f2ebe4a542bc945ea",
+            "predecessor_plan_sha256": "984b31a03f4ab365bf3c99cc21664c3d5f83c20b40015f36af51c216989e8649",
+            "repair_scope": [
+              "disjoint_lane_nodeid_partitions_and_markers",
+              "sl1_to_sl2_material_attestation_dependency",
+              "default_green_complete_machine_readable_verification",
+              "upstream_authority_and_provenance_reconciliation",
+              "supported_ablation"
+            ],
+            "review_status": "binding_board_and_president_blockers_repaired_requires_fresh_exact_digest_review",
+            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+            "source": "Consiliency/agent-harness#375"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-08-25T17:16:25Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "absorbed_deferred_findings": [
+              "nodeid_path_tokens_removed_from_extracted_verification",
+              "golden_amendment_default_green_then_load_bearing",
+              "sl2_capability_marker_host_named"
+            ],
+            "phase_alias": "LEGLIFE",
+            "plan_sha256": "91bf9886be634125d663b01e4a27f6d6ed27fb353b5a7a58bc82fe69cb62c6c3",
+            "predecessor_plan_sha256": "642f30ffae912a0368854be9fb5cad123ab50e4d87e8bd4f2ebe4a542bc945ea",
+            "president_forcing_decision": "block_tests_first_dispatch",
+            "president_model": "grok-4.6",
+            "repaired_blocking_defects": [
+              "intentional_red_commands_removed_from_extracted_runner_contract"
+            ],
+            "review_artifacts": {
+              "consolidated_findings_sha256": "c2a08be3f0591dbf171451fb51719cdce5f98604dc16373dfa17f713f9fd54f7",
+              "president_ruling_sha256": "e8a6fd3ca808a383776c2e3d925555d747a5277b55e828c3e31a28775f4e1f96"
+            },
+            "review_status": "fresh_exact_digest_review_required",
+            "reviewed_candidate_commit": "6356064b5482ab67c000ed52921efa13a0486a74",
+            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+            "source": "Consiliency/agent-harness#375"
+          },
+          "transition": "committed"
+        }
+      ],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "LEGLIFE",
+      "plan_authority_history": [
+        {
+          "plan_sha256": "642f30ffae912a0368854be9fb5cad123ab50e4d87e8bd4f2ebe4a542bc945ea",
+          "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#375"
+        },
+        {
+          "plan_sha256": "91bf9886be634125d663b01e4a27f6d6ed27fb353b5a7a58bc82fe69cb62c6c3",
+          "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#375"
+        }
+      ],
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/7ae6c600/codex-v10-leglife-plan/20260825T151729Z-01-leglife-plan.md",
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v10.md",
+        "slug": "phase-plans-v10",
+        "status": "imported",
+        "type": "phase"
+      },
+      "slug": "v10-LEGLIFE",
+      "status": "committed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-08-25T17:16:25Z"
+    },
+    {
+      "acceptance_criteria_count": null,
       "created_at": "2026-07-30T04:08:46Z",
       "file": "plans/phase-plan-v10-PROOFGATE.md",
       "handoff_ref": null,
@@ -3556,473 +3676,6 @@
     },
     {
       "acceptance_criteria_count": null,
-      "created_at": "2026-08-20T00:36:00Z",
-      "file": "plans/phase-plan-v10-SCHED.md",
-      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260820T003600Z-01-sched-plan.md",
-      "if_gates_produced": [
-        "IF-0-SCHED-1",
-        "IF-0-SCHED-2",
-        "IF-0-SCHED-3",
-        "IF-0-SCHED-4",
-        "IF-0-SCHED-5",
-        "IF-0-SCHED-6",
-        "IF-0-SCHED-7"
-      ],
-      "lanes": [
-        "SL-0",
-        "SL-1",
-        "SL-2",
-        "SL-3",
-        "SL-4",
-        "SL-5",
-        "SL-6"
-      ],
-      "lifecycle": [
-        {
-          "at": "2026-08-20T00:36:00Z",
-          "by": "codex-plan-phase",
-          "metadata": {
-            "design": "leased_generation_addressed_worktree_recovery",
-            "issues": [
-              "Consiliency/agent-harness#300",
-              "Consiliency/agent-harness#301",
-              "Consiliency/agent-harness#353",
-              "Consiliency/agent-harness#354"
-            ],
-            "plan_sha256": "aa6983d0416b6bee4cfa1319c580421d843e1d14b1da3b78816bae723d508e8a",
-            "review_status": "unreviewed_not_approved",
-            "roadmap_sha256": "c66949236043e46e956caec1c09d0c19d0e8751e4ce2891de1fe2edf24e9fea1",
-            "run_id": "20260820T003600Z-01-sched-plan"
-          },
-          "transition": "committed"
-        },
-        {
-          "at": "2026-08-20T01:09:12Z",
-          "by": "codex-plan-phase",
-          "metadata": {
-            "external_board_artifact_sha256": "bc3e336d2d77c60ca0586479ed010b251cee2363c193ad0998140c4864861840",
-            "external_board_statuses": {
-              "claude": "DEGRADED_no_verdict",
-              "gemini": "AGREE",
-              "grok": "DISAGREE"
-            },
-            "native_codex_status": "DISAGREE",
-            "plan_sha256": "0adb168e8aa26aeb31d6c8220dcb4fed523b627206da77f03563005230bdd8d7",
-            "predecessor_plan_sha256": "aa6983d0416b6bee4cfa1319c580421d843e1d14b1da3b78816bae723d508e8a",
-            "reconciled_findings": [
-              "writer_safe_sched_lane_b_before_harden",
-              "dirty_generation_bytes_not_branch_only",
-              "both_declared_work_unit_kind_directions_at_both_sites",
-              "ec_sched_7_unmet_accepted_residual",
-              "launcher_and_worker_pool_run_identity_ownership"
-            ],
-            "review_status": "dissent_reconciled_requires_fresh_exact_digest_review"
-          },
-          "transition": "committed"
-        },
-        {
-          "at": "2026-08-20T01:39:28Z",
-          "by": "codex-plan-phase",
-          "metadata": {
-            "external_board_artifact_sha256": "a0a38621f3041d2818560491efcd1424c43e1986b7c94c3917a3dba7caf17cde",
-            "external_board_statuses": {
-              "claude": "TIMEOUT_no_verdict",
-              "gemini": "AGREE",
-              "grok": "AGREE"
-            },
-            "native_codex_status": "DISAGREE",
-            "plan_sha256": "820bc052067463d0d230cb8701f741d7f74e2840443aa67eb17b79cc05c897a6",
-            "predecessor_plan_sha256": "0adb168e8aa26aeb31d6c8220dcb4fed523b627206da77f03563005230bdd8d7",
-            "reconciled_findings": [
-              "independent_scheduler_and_reclamation_landing_proofs",
-              "worker_pool_test_ownership_and_verification",
-              "executable_sched_to_harden_digest_handoff",
-              "roadmap_overlap_and_spec_delta_truthfulness"
-            ],
-            "review_status": "second_dissent_reconciled_requires_fresh_exact_digest_review",
-            "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68"
-          },
-          "transition": "committed"
-        },
-        {
-          "at": "2026-08-20T01:48:57Z",
-          "by": "codex-plan-phase",
-          "metadata": {
-            "external_board_statuses": {
-              "claude": "CANCELLED_after_native_material_dissent",
-              "gemini": "COMPLETED_result_discarded_after_material_fix",
-              "grok": "CANCELLED_after_native_material_dissent"
-            },
-            "native_codex_status": "DISAGREE",
-            "plan_sha256": "a676d52580978492bf9201cf93cccf072687f5a8f7b9f1cf09906a334915d119",
-            "predecessor_plan_sha256": "820bc052067463d0d230cb8701f741d7f74e2840443aa67eb17b79cc05c897a6",
-            "reconciled_findings": [
-              "host_capable_worker_pool_soak_and_sched_harden_integration_gate",
-              "lane_level_handoff_without_full_sched_harden_dependency_cycle",
-              "non_self_referential_manifest_contract_and_review_receipt_topology"
-            ],
-            "review_status": "third_native_dissent_reconciled_requires_fresh_exact_digest_review",
-            "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68"
-          },
-          "transition": "committed"
-        },
-        {
-          "at": "2026-08-20T02:08:16Z",
-          "by": "codex-plan-phase",
-          "metadata": {
-            "external_board_artifact": "absent_cancelled_before_reducer_after_native_material_dissent",
-            "external_board_statuses": {
-              "claude": "CANCELLED_after_native_material_dissent",
-              "gemini": "COMPLETED_result_discarded_after_material_fix",
-              "grok": "COMPLETED_result_discarded_after_material_fix"
-            },
-            "native_codex_status": "DISAGREE",
-            "plan_sha256": "5206018d279a056a6b6144e53b39d5aea0bdc1c18ccaa9be22634d167ba2b70d",
-            "predecessor_plan_sha256": "a676d52580978492bf9201cf93cccf072687f5a8f7b9f1cf09906a334915d119",
-            "reconciled_findings": [
-              "complete_thirteen_module_zero_skip_host_gate",
-              "canonical_review_request_and_artifact_schema",
-              "literal_harden_git_object_receipt_preflight"
-            ],
-            "review_status": "fourth_native_dissent_reconciled_requires_fresh_exact_digest_review",
-            "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68"
-          },
-          "transition": "committed"
-        },
-        {
-          "at": "2026-08-20T02:19:15Z",
-          "by": "codex-plan-phase",
-          "metadata": {
-            "external_board_artifact": "absent_cancelled_before_reducer_after_native_material_dissent",
-            "external_board_statuses": {
-              "claude": "CANCELLED_after_native_material_dissent",
-              "gemini": "COMPLETED_result_discarded_after_material_fix",
-              "grok": "CANCELLED_after_native_material_dissent"
-            },
-            "native_codex_status": "DISAGREE",
-            "plan_sha256": "8ff62a723173f44b6cfa285b96cabb46aea4dd1225e215fc901e64275fb41d4f",
-            "predecessor_plan_sha256": "5206018d279a056a6b6144e53b39d5aea0bdc1c18ccaa9be22634d167ba2b70d",
-            "reconciled_findings": [
-              "actual_sl2_two_parent_canonical_merge_semantics",
-              "actual_sl2_merge_ancestor_of_candidate_c",
-              "receipt_r_admitted_to_fetched_canonical_main_before_harden"
-            ],
-            "review_status": "fifth_native_dissent_reconciled_requires_fresh_exact_digest_review",
-            "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68"
-          },
-          "transition": "committed"
-        },
-        {
-          "at": "2026-08-20T02:34:24Z",
-          "by": "codex-plan-phase",
-          "metadata": {
-            "external_board_artifact": "absent_cancelled_before_reducer_after_native_material_dissent",
-            "external_board_statuses": {
-              "claude": "DEGRADED_claude_tui_stalled",
-              "gemini": "COMPLETED_result_discarded_after_material_fix",
-              "grok": "CANCELLED_after_native_material_dissent"
-            },
-            "native_codex_status": "DISAGREE",
-            "plan_sha256": "9e9bfc05c6db9cfe17b23d0d994a853fb485aff066295f128643e036156f7db4",
-            "predecessor_plan_sha256": "8ff62a723173f44b6cfa285b96cabb46aea4dd1225e215fc901e64275fb41d4f",
-            "reconciled_findings": [
-              "included_git_config_redirect_rejection_before_object_resolution",
-              "actual_sl2_reviewed_head_and_first_parent_chain_binding",
-              "literal_handoff_digest_domain"
-            ],
-            "review_status": "sixth_native_dissent_reconciled_requires_fresh_exact_digest_review",
-            "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68"
-          },
-          "transition": "committed"
-        },
-        {
-          "at": "2026-08-20T02:46:58Z",
-          "by": "codex-plan-phase",
-          "metadata": {
-            "external_board_artifact": "absent_cancelled_before_reducer_after_native_material_dissent",
-            "external_board_statuses": {
-              "claude": "CANCELLED_after_native_material_dissent",
-              "gemini": "COMPLETED_result_discarded_after_material_fix",
-              "grok": "CANCELLED_after_native_material_dissent"
-            },
-            "native_codex_status": "DISAGREE",
-            "plan_sha256": "90edd225d9f066c6a251496a1eb8f09daebbf376f271348a0b7f261eca904a02",
-            "predecessor_plan_sha256": "9e9bfc05c6db9cfe17b23d0d994a853fb485aff066295f128643e036156f7db4",
-            "reconciled_findings": [
-              "worktree_config_include_and_redirect_rejection_before_object_resolution",
-              "effective_worktree_aware_origin_selection",
-              "harden_plan_validator_zero_findings"
-            ],
-            "review_status": "seventh_native_dissent_reconciled_requires_fresh_exact_digest_review",
-            "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68"
-          },
-          "transition": "committed"
-        },
-        {
-          "at": "2026-08-20T02:54:27Z",
-          "by": "codex-plan-phase",
-          "metadata": {
-            "external_board_artifact": "absent_cancelled_before_reducer_after_native_material_dissent",
-            "external_board_statuses": {
-              "claude": "CANCELLED_after_native_material_dissent",
-              "gemini": "COMPLETED_result_discarded_after_material_fix",
-              "grok": "CANCELLED_after_native_material_dissent"
-            },
-            "harden_plan_sha256": "378677e125cf9b5a64f944fb8f5ad52489312469a68ef3acf130f6970384ca6d",
-            "native_codex_status": "DISAGREE",
-            "plan_sha256": "90edd225d9f066c6a251496a1eb8f09daebbf376f271348a0b7f261eca904a02",
-            "predecessor_harden_plan_sha256": "0745b91b66cd02df3b22c93564cf0ece73a59e0af7b3deaa6b2c5da2d8c93802",
-            "predecessor_plan_sha256": "90edd225d9f066c6a251496a1eb8f09daebbf376f271348a0b7f261eca904a02",
-            "reconciled_findings": [
-              "per_fact_harden_aggregate_falsifier_records",
-              "criterion_specific_harden_mutation_anchors",
-              "criterion_specific_harden_failure_observables"
-            ],
-            "review_status": "eighth_native_dissent_reconciled_requires_fresh_exact_digest_review",
-            "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68"
-          },
-          "transition": "committed"
-        },
-        {
-          "at": "2026-08-20T02:59:17Z",
-          "by": "codex-plan-phase",
-          "metadata": {
-            "external_board_artifact": "absent_cancelled_before_reducer_after_native_material_dissent",
-            "external_board_statuses": {
-              "claude": "CANCELLED_after_native_material_dissent",
-              "gemini": "COMPLETED_result_discarded_after_material_fix",
-              "grok": "CANCELLED_after_native_material_dissent"
-            },
-            "harden_plan_sha256": "5ce7b9eb43e13856d7e0d7060dd43367f9874fc728c5fe8e15e8b1542fce1a96",
-            "native_codex_status": "DISAGREE",
-            "plan_sha256": "90edd225d9f066c6a251496a1eb8f09daebbf376f271348a0b7f261eca904a02",
-            "predecessor_harden_plan_sha256": "378677e125cf9b5a64f944fb8f5ad52489312469a68ef3acf130f6970384ca6d",
-            "predecessor_plan_sha256": "90edd225d9f066c6a251496a1eb8f09daebbf376f271348a0b7f261eca904a02",
-            "reconciled_findings": [
-              "ec_harden_5_exact_proven_by_command_parser_binding"
-            ],
-            "review_status": "ninth_native_dissent_reconciled_requires_fresh_exact_digest_review",
-            "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68"
-          },
-          "transition": "committed"
-        },
-        {
-          "at": "2026-08-23T23:16:22Z",
-          "by": "codex-plan-phase",
-          "metadata": {
-            "external_board_statuses": {
-              "claude": "PARTIALLY_AGREE_native_claude_harness",
-              "gemini": "STALE_requires_fresh_exact_digest_review",
-              "grok": "STALE_requires_fresh_exact_digest_review"
-            },
-            "harden_plan_sha256": "4a480880b4e73cacbc6e5490f2dd56b2207fd70d89124785c7cebc76ddef3868",
-            "native_codex_status": "STALE_requires_fresh_exact_digest_review",
-            "plan_sha256": "71253c313eec64c8cb98b2c1d9a91ce761fbb8c7ba49f4039ffb15185ea2bd2d",
-            "predecessor_harden_plan_sha256": "5ce7b9eb43e13856d7e0d7060dd43367f9874fc728c5fe8e15e8b1542fce1a96",
-            "predecessor_plan_sha256": "90edd225d9f066c6a251496a1eb8f09daebbf376f271348a0b7f261eca904a02",
-            "reconciled_findings": [
-              "append_only_sched_harden_template_then_candidate_selection",
-              "explicit_sched_red_activation_and_zero_skip_boundary",
-              "process_tree_shared_open_file_description_lease"
-            ],
-            "review_status": "tenth_native_fable_findings_reconciled_requires_fresh_exact_digest_review",
-            "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68"
-          },
-          "transition": "committed"
-        },
-        {
-          "at": "2026-08-23T23:29:45Z",
-          "by": "codex-plan-phase",
-          "metadata": {
-            "external_board_statuses": {
-              "claude": "STALE_requires_fresh_exact_digest_review",
-              "gemini": "PARTIALLY_AGREE_unusable_context_unopened",
-              "grok": "AGREE_stale_after_material_native_dissent"
-            },
-            "harden_plan_sha256": "b46805dec76792ddb066d9891fb5c731585576d9439270053e98013f28a480ee",
-            "native_codex_status": "DISAGREE",
-            "plan_sha256": "be571ee0c0c0669b5c634b673412edd777596bcf66d6fd3faccc17be8e918041",
-            "predecessor_harden_plan_sha256": "4a480880b4e73cacbc6e5490f2dd56b2207fd70d89124785c7cebc76ddef3868",
-            "predecessor_plan_sha256": "71253c313eec64c8cb98b2c1d9a91ce761fbb8c7ba49f4039ffb15185ea2bd2d",
-            "reconciled_findings": [
-              "candidate_recomputes_sched_harden_and_roadmap_digests",
-              "immutable_template_contract_digest_is_pinned",
-              "lane_specific_sl2_sl4_then_joined_zero_skip_gates"
-            ],
-            "review_status": "eleventh_native_dissent_reconciled_requires_fresh_exact_digest_review",
-            "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68"
-          },
-          "transition": "committed"
-        },
-        {
-          "at": "2026-08-23T23:39:36Z",
-          "by": "codex-plan-phase",
-          "metadata": {
-            "external_board_statuses": {
-              "claude": "STALE_requires_fresh_exact_digest_review",
-              "gemini": "AGREE_stale_after_material_grok_dissent",
-              "grok": "DISAGREE"
-            },
-            "harden_plan_sha256": "b46805dec76792ddb066d9891fb5c731585576d9439270053e98013f28a480ee",
-            "native_codex_status": "AGREE_stale_after_material_grok_dissent",
-            "plan_sha256": "19df6996aae646c761d9c844bbd09f9d117685f77dc20e0d7daeb7ac80335ed4",
-            "predecessor_harden_plan_sha256": "b46805dec76792ddb066d9891fb5c731585576d9439270053e98013f28a480ee",
-            "predecessor_plan_sha256": "be571ee0c0c0669b5c634b673412edd777596bcf66d6fd3faccc17be8e918041",
-            "reconciled_findings": [
-              "typed_lease_descriptor_authority_crosses_real_spawn_path",
-              "launcher_and_worker_pool_pass_fds_obligation",
-              "real_spawn_parent_dead_child_alive_grandchild_falsifier"
-            ],
-            "review_status": "twelfth_external_dissent_reconciled_requires_fresh_exact_digest_review",
-            "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68"
-          },
-          "transition": "committed"
-        },
-        {
-          "at": "2026-08-23T23:49:06Z",
-          "by": "codex-plan-phase",
-          "metadata": {
-            "external_board_statuses": {
-              "claude": "STALE_requires_fresh_exact_digest_review",
-              "gemini": "AGREE_stale_after_material_grok_dissent",
-              "grok": "DISAGREE"
-            },
-            "harden_plan_sha256": "b46805dec76792ddb066d9891fb5c731585576d9439270053e98013f28a480ee",
-            "native_codex_status": "DISAGREE",
-            "plan_sha256": "7bdab8155c945666f750e19085686dfc10024717dc39a493f47d168cd725c5e6",
-            "predecessor_harden_plan_sha256": "b46805dec76792ddb066d9891fb5c731585576d9439270053e98013f28a480ee",
-            "predecessor_plan_sha256": "19df6996aae646c761d9c844bbd09f9d117685f77dc20e0d7daeb7ac80335ed4",
-            "reconciled_findings": [
-              "lane_b_supervisor_consumer_precedes_lane_a_authority_activation",
-              "owner_teardown_and_crash_reclamation_are_distinct_lease_paths",
-              "subreaper_supervisor_retains_lease_until_complete_tree_reaped",
-              "sl2_sl4_and_joined_nodeid_partitions_are_disjoint",
-              "cross_lane_parent_death_falsifier_runs_only_after_both_landings",
-              "sl3_atomically_refreshes_harden_current_authority_plan_digests"
-            ],
-            "review_status": "thirteenth_native_and_external_dissent_reconciled_requires_fresh_exact_digest_review",
-            "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68"
-          },
-          "transition": "committed"
-        },
-        {
-          "at": "2026-08-25T09:10:11Z",
-          "by": "codex-plan-phase",
-          "metadata": {
-            "harden_plan_sha256": "bea77577ed3ecc5cd2c631d20d253427a5b771b3261454e8f700f9f374bc4a3c",
-            "plan_sha256": "50ef2f5a7678a657a186fc3dc206e86cfd5fc41b6369fa1d35fa4258e6ad8761",
-            "predecessor_harden_plan_sha256": "b46805dec76792ddb066d9891fb5c731585576d9439270053e98013f28a480ee",
-            "predecessor_plan_sha256": "7bdab8155c945666f750e19085686dfc10024717dc39a493f47d168cd725c5e6",
-            "reconciled_findings": [
-              "preserve_immutable_harden_lifecycle_contracts",
-              "append_live_harden_plan_authority",
-              "bind_harden_verifier_to_history_and_current_authority",
-              "record_sched_current_authority"
-            ],
-            "review_status": "initial_board_blockers_repaired_requires_fresh_exact_digest_review",
-            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
-            "source": "Consiliency/agent-harness#616"
-          },
-          "transition": "committed"
-        },
-        {
-          "at": "2026-08-25T09:51:31Z",
-          "by": "codex-plan-phase",
-          "metadata": {
-            "board_artifacts": {
-              "consolidated_findings_sha256": "71029aa6c1beb84b817dc4761e8d636d4ef7c62d81801e78111590696ac5c24d",
-              "critics_sha256": "2e25fd4a1757f024992892222d49fd7337c1f9d581579a6a57520162687e056a",
-              "early_prover_sha256": "761d0276d13cef3b99676b5ad98fb71fedf143a7c69eac2e22c9bbe90e494c04",
-              "president_ruling_sha256": "d1319d4b50c2533f7dc70de7b4a415696454e99a1385a926a820281dc9a580b7"
-            },
-            "deferred_findings_issue": "Consiliency/agent-harness#660",
-            "external_board_statuses": {
-              "claude_opus_5_early_prover": "PARTIALLY_AGREE_no_blocking_finding",
-              "gemini_3_6_flash": "PARTIALLY_AGREE_no_blocking_finding",
-              "gpt_5_6_sol": "AGREE",
-              "grok_4_5": "PARTIALLY_AGREE_no_blocking_finding"
-            },
-            "harden_plan_sha256": "bea77577ed3ecc5cd2c631d20d253427a5b771b3261454e8f700f9f374bc4a3c",
-            "plan_sha256": "50ef2f5a7678a657a186fc3dc206e86cfd5fc41b6369fa1d35fa4258e6ad8761",
-            "president_forcing_decision": "PROCEED_WITH_DOWNSTREAM",
-            "president_model": "grok-4.6",
-            "president_status": "recovered_usable_ruling_after_parser_false_negative",
-            "rebased_artifact_identity_preserved": true,
-            "rebased_equivalent_commit": "9017aeca3218b6b1eb0f36e8cc848a16104dca23",
-            "review_status": "exact_digest_board_accepted_with_issue_bound_deferred_findings",
-            "reviewed_candidate_commit": "e393fd9870aa0c19de49334d2a010c765d2eff22",
-            "reviewed_manifest_sha256": "5fb8fc53623d940b3575bd70f75ba206ee6bf0ceb414cbb441ece4f187afacc2",
-            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
-            "source": "Consiliency/agent-harness#616"
-          },
-          "transition": "committed"
-        },
-        {
-          "at": "2026-08-25T10:56:30Z",
-          "by": "clawdbot-agent-harness-codex",
-          "metadata": {
-            "board_status": "exact_digest_board_accepted_with_issue_bound_deferred_findings",
-            "deferred_findings_issue": "Consiliency/agent-harness#660",
-            "phase_alias": "SCHED",
-            "plan_sha256": "50ef2f5a7678a657a186fc3dc206e86cfd5fc41b6369fa1d35fa4258e6ad8761",
-            "planning_merge": "bab3bbc7038ed5b01df8216051051f3796bfe3ba",
-            "planning_pr": "Consiliency/agent-harness#661",
-            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
-            "run_id": "20260825T105611Z-v10-sched-execution",
-            "work_unit_bootstrap": "runner_owned_explicit_assignments_due_to_Consiliency/agent-harness#301"
-          },
-          "transition": "executing"
-        },
-        {
-          "at": "2026-08-25T16:03:23Z",
-          "by": "codex-plan-phase",
-          "metadata": {
-            "board_repair_rationale": "tests_only_head_e421a32d_unanimously_rejected_all_six_finding_clusters_blocking_tests_only_successor_required_before_sl2_sl4",
-            "plan_sha256": "3b1dba40791bfb5c3584777894ce9262d18b012dd09df2f32262617f3e20b8e9",
-            "predecessor_plan_sha256": "50ef2f5a7678a657a186fc3dc206e86cfd5fc41b6369fa1d35fa4258e6ad8761",
-            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
-            "source": "Consiliency/agent-harness#660"
-          },
-          "transition": "executing"
-        }
-      ],
-      "owner_skill": "codex-plan-phase",
-      "phase_alias": "SCHED",
-      "plan_authority_history": [
-        {
-          "plan_sha256": "7bdab8155c945666f750e19085686dfc10024717dc39a493f47d168cd725c5e6",
-          "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68",
-          "schema": "plan_current_authority.v1",
-          "source": "Consiliency/agent-harness#616"
-        },
-        {
-          "plan_sha256": "50ef2f5a7678a657a186fc3dc206e86cfd5fc41b6369fa1d35fa4258e6ad8761",
-          "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
-          "schema": "plan_current_authority.v1",
-          "source": "Consiliency/agent-harness#616"
-        },
-        {
-          "plan_sha256": "3b1dba40791bfb5c3584777894ce9262d18b012dd09df2f32262617f3e20b8e9",
-          "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
-          "schema": "plan_current_authority.v1",
-          "source": "Consiliency/agent-harness#660"
-        }
-      ],
-      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/ea0bef92/codex-v10-sched-plan/20260820T003600Z-01-sched-plan.md",
-      "roadmap_ref": {
-        "file": "specs/phase-plans-v10.md",
-        "slug": "phase-plans-v10",
-        "status": "imported",
-        "type": "phase"
-      },
-      "slug": "v10-SCHED",
-      "status": "executing",
-      "task_summary": null,
-      "type": "phase",
-      "updated_at": "2026-08-25T16:03:23Z"
-    },
-    {
-      "acceptance_criteria_count": null,
       "created_at": "2026-07-30T04:13:47Z",
       "file": "plans/phase-plan-v10-REVIEWTRUTH.md",
       "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260730T035938Z-01-reviewtruth-plan.md",
@@ -4681,6 +4334,599 @@
       "task_summary": null,
       "type": "phase",
       "updated_at": "2026-08-19T19:40:18Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-08-25T14:49:13Z",
+      "file": "plans/phase-plan-v10-RUNTIME.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260825T144913Z-01-runtime-plan.md",
+      "if_gates_produced": [
+        "IF-0-RUNTIME-1"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2",
+        "SL-3",
+        "SL-4",
+        "SL-5"
+      ],
+      "lifecycle": [
+        {
+          "at": "2026-08-25T14:49:13Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "phase_alias": "RUNTIME",
+            "planning_base": "3a10b03191f10bdb70c8238b535dcc6afdb5a6d7",
+            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+            "run_id": "20260825T144913Z-01-runtime-plan"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-08-25T16:25:15Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "absorbed_deferred_observations": [
+              "keyword_only_render_train_status_signature",
+              "whole_phase_sl0_through_sl5_write_set",
+              "exact_environment_scrubber_symbols",
+              "runtime_residual_cli_serialization",
+              "ancestral_planning_base_wording",
+              "whole_phase_single_vendor_ownership",
+              "additive_convergence_init_exports"
+            ],
+            "applied_ablations": [
+              "duplicate_context_roadmap_digest",
+              "duplicate_execution_policy_plan_row"
+            ],
+            "authority_source": "Consiliency/agent-harness#375",
+            "phase_alias": "RUNTIME",
+            "plan_sha256": "092b3db8edcb441e7486e49eabca66506cbfcce4a4ca9637bd09818a9cac7385",
+            "predecessor_plan_sha256": "80e0216157b7a9cfe0f16c7c0de5ad2b3fbeb02b45a40b51cfbc6a53840de540",
+            "president_forcing_decision": "block",
+            "president_model": "grok-4.6",
+            "repair_status": "blocking_and_deferred_findings_absorbed_requires_fresh_exact_digest_board",
+            "resolved_blocking_clusters": [
+              "exact_production_target_binding_rejects_test_helper_and_runtime_tdd_guard_targets",
+              "status_projection_scoped_to_recovered_train_state_without_reconciliation_verdict_claim"
+            ],
+            "review_artifacts": {
+              "consolidated_findings_sha256": "9f6542e327c2f888660f4808d9252205141bd26ac05e0ecfca2c0c46ed5a46b4",
+              "critics_sha256": "f3fd77639c70ef2f2e354245425a23f78f8160857e52f2ca6b07df487aafaf86",
+              "early_prover_sha256": "d82790826bde83a5cf72453a3e5f48c9b55ee13f6fa7691866554d87222d390a",
+              "president_ruling_sha256": "6e2826272704f831277644178155924d6d96f382f6c63ec2d131661dc65799f3"
+            },
+            "reviewed_candidate_commit": "3b03dc4a00fab096c261e51b93ac5a973ed74508",
+            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+            "roadmap_source_authority": "Consiliency/agent-harness#375"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-08-25T17:08:16Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "absorbed_deferred_findings": [
+              "broker_adapter_symbol_fence_with_pure_credsep_exemption",
+              "zero_based_durable_record_offset_and_replay_order_fold",
+              "replay_derived_status_validity_vs_live_reconciliation_authority",
+              "goal_coverage_classifier_repair_recorded_downstream",
+              "six_focused_test_inventory_prose_correction"
+            ],
+            "applied_ablations": [
+              "redundant_legacy_dot_codex_phase_loop_context_sentence"
+            ],
+            "phase_alias": "RUNTIME",
+            "plan_sha256": "535fd027200ff8b925955363ab9e0cd3923425946f57eebf533e0047af6f8988",
+            "predecessor_plan_sha256": "092b3db8edcb441e7486e49eabca66506cbfcce4a4ca9637bd09818a9cac7385",
+            "president_forcing_decision": "block",
+            "president_model": "grok-4.6",
+            "repaired_blocking_defects": [
+              "verification_commands_machine_extracted_nonempty_complete",
+              "runtime_content_tdd_adapter_consumes_shipped_content_receipt"
+            ],
+            "review_artifacts": {
+              "consolidated_findings_sha256": "fd486ea1140b15e2d2872f8db45e0ba17376dee80c7794a0ba0e8650edc5f48c",
+              "president_ruling_sha256": "9aecfe6fb2b05269846b8069191573c65c3e8b481374c48ea94941fff7ad17d3"
+            },
+            "review_status": "fresh_exact_digest_review_required",
+            "reviewed_candidate_commit": "9cd83617ab12ded01fc84e2f342727e591879611",
+            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+            "source": "Consiliency/agent-harness#375"
+          },
+          "transition": "committed"
+        }
+      ],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "RUNTIME",
+      "plan_authority_history": [
+        {
+          "plan_sha256": "535fd027200ff8b925955363ab9e0cd3923425946f57eebf533e0047af6f8988",
+          "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#375"
+        }
+      ],
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/84b1ecde/codex-v10-runtime-plan/20260825T144913Z-01-runtime-plan.md",
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v10.md",
+        "slug": "phase-plans-v10",
+        "status": "imported",
+        "type": "phase"
+      },
+      "slug": "v10-RUNTIME",
+      "status": "committed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-08-25T16:25:15Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-08-20T00:36:00Z",
+      "file": "plans/phase-plan-v10-SCHED.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260820T003600Z-01-sched-plan.md",
+      "if_gates_produced": [
+        "IF-0-SCHED-1",
+        "IF-0-SCHED-2",
+        "IF-0-SCHED-3",
+        "IF-0-SCHED-4",
+        "IF-0-SCHED-5",
+        "IF-0-SCHED-6",
+        "IF-0-SCHED-7"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2",
+        "SL-3",
+        "SL-4",
+        "SL-5",
+        "SL-6"
+      ],
+      "lifecycle": [
+        {
+          "at": "2026-08-20T00:36:00Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "design": "leased_generation_addressed_worktree_recovery",
+            "issues": [
+              "Consiliency/agent-harness#300",
+              "Consiliency/agent-harness#301",
+              "Consiliency/agent-harness#353",
+              "Consiliency/agent-harness#354"
+            ],
+            "plan_sha256": "aa6983d0416b6bee4cfa1319c580421d843e1d14b1da3b78816bae723d508e8a",
+            "review_status": "unreviewed_not_approved",
+            "roadmap_sha256": "c66949236043e46e956caec1c09d0c19d0e8751e4ce2891de1fe2edf24e9fea1",
+            "run_id": "20260820T003600Z-01-sched-plan"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-08-20T01:09:12Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "external_board_artifact_sha256": "bc3e336d2d77c60ca0586479ed010b251cee2363c193ad0998140c4864861840",
+            "external_board_statuses": {
+              "claude": "DEGRADED_no_verdict",
+              "gemini": "AGREE",
+              "grok": "DISAGREE"
+            },
+            "native_codex_status": "DISAGREE",
+            "plan_sha256": "0adb168e8aa26aeb31d6c8220dcb4fed523b627206da77f03563005230bdd8d7",
+            "predecessor_plan_sha256": "aa6983d0416b6bee4cfa1319c580421d843e1d14b1da3b78816bae723d508e8a",
+            "reconciled_findings": [
+              "writer_safe_sched_lane_b_before_harden",
+              "dirty_generation_bytes_not_branch_only",
+              "both_declared_work_unit_kind_directions_at_both_sites",
+              "ec_sched_7_unmet_accepted_residual",
+              "launcher_and_worker_pool_run_identity_ownership"
+            ],
+            "review_status": "dissent_reconciled_requires_fresh_exact_digest_review"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-08-20T01:39:28Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "external_board_artifact_sha256": "a0a38621f3041d2818560491efcd1424c43e1986b7c94c3917a3dba7caf17cde",
+            "external_board_statuses": {
+              "claude": "TIMEOUT_no_verdict",
+              "gemini": "AGREE",
+              "grok": "AGREE"
+            },
+            "native_codex_status": "DISAGREE",
+            "plan_sha256": "820bc052067463d0d230cb8701f741d7f74e2840443aa67eb17b79cc05c897a6",
+            "predecessor_plan_sha256": "0adb168e8aa26aeb31d6c8220dcb4fed523b627206da77f03563005230bdd8d7",
+            "reconciled_findings": [
+              "independent_scheduler_and_reclamation_landing_proofs",
+              "worker_pool_test_ownership_and_verification",
+              "executable_sched_to_harden_digest_handoff",
+              "roadmap_overlap_and_spec_delta_truthfulness"
+            ],
+            "review_status": "second_dissent_reconciled_requires_fresh_exact_digest_review",
+            "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-08-20T01:48:57Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "external_board_statuses": {
+              "claude": "CANCELLED_after_native_material_dissent",
+              "gemini": "COMPLETED_result_discarded_after_material_fix",
+              "grok": "CANCELLED_after_native_material_dissent"
+            },
+            "native_codex_status": "DISAGREE",
+            "plan_sha256": "a676d52580978492bf9201cf93cccf072687f5a8f7b9f1cf09906a334915d119",
+            "predecessor_plan_sha256": "820bc052067463d0d230cb8701f741d7f74e2840443aa67eb17b79cc05c897a6",
+            "reconciled_findings": [
+              "host_capable_worker_pool_soak_and_sched_harden_integration_gate",
+              "lane_level_handoff_without_full_sched_harden_dependency_cycle",
+              "non_self_referential_manifest_contract_and_review_receipt_topology"
+            ],
+            "review_status": "third_native_dissent_reconciled_requires_fresh_exact_digest_review",
+            "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-08-20T02:08:16Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "external_board_artifact": "absent_cancelled_before_reducer_after_native_material_dissent",
+            "external_board_statuses": {
+              "claude": "CANCELLED_after_native_material_dissent",
+              "gemini": "COMPLETED_result_discarded_after_material_fix",
+              "grok": "COMPLETED_result_discarded_after_material_fix"
+            },
+            "native_codex_status": "DISAGREE",
+            "plan_sha256": "5206018d279a056a6b6144e53b39d5aea0bdc1c18ccaa9be22634d167ba2b70d",
+            "predecessor_plan_sha256": "a676d52580978492bf9201cf93cccf072687f5a8f7b9f1cf09906a334915d119",
+            "reconciled_findings": [
+              "complete_thirteen_module_zero_skip_host_gate",
+              "canonical_review_request_and_artifact_schema",
+              "literal_harden_git_object_receipt_preflight"
+            ],
+            "review_status": "fourth_native_dissent_reconciled_requires_fresh_exact_digest_review",
+            "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-08-20T02:19:15Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "external_board_artifact": "absent_cancelled_before_reducer_after_native_material_dissent",
+            "external_board_statuses": {
+              "claude": "CANCELLED_after_native_material_dissent",
+              "gemini": "COMPLETED_result_discarded_after_material_fix",
+              "grok": "CANCELLED_after_native_material_dissent"
+            },
+            "native_codex_status": "DISAGREE",
+            "plan_sha256": "8ff62a723173f44b6cfa285b96cabb46aea4dd1225e215fc901e64275fb41d4f",
+            "predecessor_plan_sha256": "5206018d279a056a6b6144e53b39d5aea0bdc1c18ccaa9be22634d167ba2b70d",
+            "reconciled_findings": [
+              "actual_sl2_two_parent_canonical_merge_semantics",
+              "actual_sl2_merge_ancestor_of_candidate_c",
+              "receipt_r_admitted_to_fetched_canonical_main_before_harden"
+            ],
+            "review_status": "fifth_native_dissent_reconciled_requires_fresh_exact_digest_review",
+            "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-08-20T02:34:24Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "external_board_artifact": "absent_cancelled_before_reducer_after_native_material_dissent",
+            "external_board_statuses": {
+              "claude": "DEGRADED_claude_tui_stalled",
+              "gemini": "COMPLETED_result_discarded_after_material_fix",
+              "grok": "CANCELLED_after_native_material_dissent"
+            },
+            "native_codex_status": "DISAGREE",
+            "plan_sha256": "9e9bfc05c6db9cfe17b23d0d994a853fb485aff066295f128643e036156f7db4",
+            "predecessor_plan_sha256": "8ff62a723173f44b6cfa285b96cabb46aea4dd1225e215fc901e64275fb41d4f",
+            "reconciled_findings": [
+              "included_git_config_redirect_rejection_before_object_resolution",
+              "actual_sl2_reviewed_head_and_first_parent_chain_binding",
+              "literal_handoff_digest_domain"
+            ],
+            "review_status": "sixth_native_dissent_reconciled_requires_fresh_exact_digest_review",
+            "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-08-20T02:46:58Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "external_board_artifact": "absent_cancelled_before_reducer_after_native_material_dissent",
+            "external_board_statuses": {
+              "claude": "CANCELLED_after_native_material_dissent",
+              "gemini": "COMPLETED_result_discarded_after_material_fix",
+              "grok": "CANCELLED_after_native_material_dissent"
+            },
+            "native_codex_status": "DISAGREE",
+            "plan_sha256": "90edd225d9f066c6a251496a1eb8f09daebbf376f271348a0b7f261eca904a02",
+            "predecessor_plan_sha256": "9e9bfc05c6db9cfe17b23d0d994a853fb485aff066295f128643e036156f7db4",
+            "reconciled_findings": [
+              "worktree_config_include_and_redirect_rejection_before_object_resolution",
+              "effective_worktree_aware_origin_selection",
+              "harden_plan_validator_zero_findings"
+            ],
+            "review_status": "seventh_native_dissent_reconciled_requires_fresh_exact_digest_review",
+            "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-08-20T02:54:27Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "external_board_artifact": "absent_cancelled_before_reducer_after_native_material_dissent",
+            "external_board_statuses": {
+              "claude": "CANCELLED_after_native_material_dissent",
+              "gemini": "COMPLETED_result_discarded_after_material_fix",
+              "grok": "CANCELLED_after_native_material_dissent"
+            },
+            "harden_plan_sha256": "378677e125cf9b5a64f944fb8f5ad52489312469a68ef3acf130f6970384ca6d",
+            "native_codex_status": "DISAGREE",
+            "plan_sha256": "90edd225d9f066c6a251496a1eb8f09daebbf376f271348a0b7f261eca904a02",
+            "predecessor_harden_plan_sha256": "0745b91b66cd02df3b22c93564cf0ece73a59e0af7b3deaa6b2c5da2d8c93802",
+            "predecessor_plan_sha256": "90edd225d9f066c6a251496a1eb8f09daebbf376f271348a0b7f261eca904a02",
+            "reconciled_findings": [
+              "per_fact_harden_aggregate_falsifier_records",
+              "criterion_specific_harden_mutation_anchors",
+              "criterion_specific_harden_failure_observables"
+            ],
+            "review_status": "eighth_native_dissent_reconciled_requires_fresh_exact_digest_review",
+            "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-08-20T02:59:17Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "external_board_artifact": "absent_cancelled_before_reducer_after_native_material_dissent",
+            "external_board_statuses": {
+              "claude": "CANCELLED_after_native_material_dissent",
+              "gemini": "COMPLETED_result_discarded_after_material_fix",
+              "grok": "CANCELLED_after_native_material_dissent"
+            },
+            "harden_plan_sha256": "5ce7b9eb43e13856d7e0d7060dd43367f9874fc728c5fe8e15e8b1542fce1a96",
+            "native_codex_status": "DISAGREE",
+            "plan_sha256": "90edd225d9f066c6a251496a1eb8f09daebbf376f271348a0b7f261eca904a02",
+            "predecessor_harden_plan_sha256": "378677e125cf9b5a64f944fb8f5ad52489312469a68ef3acf130f6970384ca6d",
+            "predecessor_plan_sha256": "90edd225d9f066c6a251496a1eb8f09daebbf376f271348a0b7f261eca904a02",
+            "reconciled_findings": [
+              "ec_harden_5_exact_proven_by_command_parser_binding"
+            ],
+            "review_status": "ninth_native_dissent_reconciled_requires_fresh_exact_digest_review",
+            "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-08-23T23:16:22Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "external_board_statuses": {
+              "claude": "PARTIALLY_AGREE_native_claude_harness",
+              "gemini": "STALE_requires_fresh_exact_digest_review",
+              "grok": "STALE_requires_fresh_exact_digest_review"
+            },
+            "harden_plan_sha256": "4a480880b4e73cacbc6e5490f2dd56b2207fd70d89124785c7cebc76ddef3868",
+            "native_codex_status": "STALE_requires_fresh_exact_digest_review",
+            "plan_sha256": "71253c313eec64c8cb98b2c1d9a91ce761fbb8c7ba49f4039ffb15185ea2bd2d",
+            "predecessor_harden_plan_sha256": "5ce7b9eb43e13856d7e0d7060dd43367f9874fc728c5fe8e15e8b1542fce1a96",
+            "predecessor_plan_sha256": "90edd225d9f066c6a251496a1eb8f09daebbf376f271348a0b7f261eca904a02",
+            "reconciled_findings": [
+              "append_only_sched_harden_template_then_candidate_selection",
+              "explicit_sched_red_activation_and_zero_skip_boundary",
+              "process_tree_shared_open_file_description_lease"
+            ],
+            "review_status": "tenth_native_fable_findings_reconciled_requires_fresh_exact_digest_review",
+            "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-08-23T23:29:45Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "external_board_statuses": {
+              "claude": "STALE_requires_fresh_exact_digest_review",
+              "gemini": "PARTIALLY_AGREE_unusable_context_unopened",
+              "grok": "AGREE_stale_after_material_native_dissent"
+            },
+            "harden_plan_sha256": "b46805dec76792ddb066d9891fb5c731585576d9439270053e98013f28a480ee",
+            "native_codex_status": "DISAGREE",
+            "plan_sha256": "be571ee0c0c0669b5c634b673412edd777596bcf66d6fd3faccc17be8e918041",
+            "predecessor_harden_plan_sha256": "4a480880b4e73cacbc6e5490f2dd56b2207fd70d89124785c7cebc76ddef3868",
+            "predecessor_plan_sha256": "71253c313eec64c8cb98b2c1d9a91ce761fbb8c7ba49f4039ffb15185ea2bd2d",
+            "reconciled_findings": [
+              "candidate_recomputes_sched_harden_and_roadmap_digests",
+              "immutable_template_contract_digest_is_pinned",
+              "lane_specific_sl2_sl4_then_joined_zero_skip_gates"
+            ],
+            "review_status": "eleventh_native_dissent_reconciled_requires_fresh_exact_digest_review",
+            "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-08-23T23:39:36Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "external_board_statuses": {
+              "claude": "STALE_requires_fresh_exact_digest_review",
+              "gemini": "AGREE_stale_after_material_grok_dissent",
+              "grok": "DISAGREE"
+            },
+            "harden_plan_sha256": "b46805dec76792ddb066d9891fb5c731585576d9439270053e98013f28a480ee",
+            "native_codex_status": "AGREE_stale_after_material_grok_dissent",
+            "plan_sha256": "19df6996aae646c761d9c844bbd09f9d117685f77dc20e0d7daeb7ac80335ed4",
+            "predecessor_harden_plan_sha256": "b46805dec76792ddb066d9891fb5c731585576d9439270053e98013f28a480ee",
+            "predecessor_plan_sha256": "be571ee0c0c0669b5c634b673412edd777596bcf66d6fd3faccc17be8e918041",
+            "reconciled_findings": [
+              "typed_lease_descriptor_authority_crosses_real_spawn_path",
+              "launcher_and_worker_pool_pass_fds_obligation",
+              "real_spawn_parent_dead_child_alive_grandchild_falsifier"
+            ],
+            "review_status": "twelfth_external_dissent_reconciled_requires_fresh_exact_digest_review",
+            "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-08-23T23:49:06Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "external_board_statuses": {
+              "claude": "STALE_requires_fresh_exact_digest_review",
+              "gemini": "AGREE_stale_after_material_grok_dissent",
+              "grok": "DISAGREE"
+            },
+            "harden_plan_sha256": "b46805dec76792ddb066d9891fb5c731585576d9439270053e98013f28a480ee",
+            "native_codex_status": "DISAGREE",
+            "plan_sha256": "7bdab8155c945666f750e19085686dfc10024717dc39a493f47d168cd725c5e6",
+            "predecessor_harden_plan_sha256": "b46805dec76792ddb066d9891fb5c731585576d9439270053e98013f28a480ee",
+            "predecessor_plan_sha256": "19df6996aae646c761d9c844bbd09f9d117685f77dc20e0d7daeb7ac80335ed4",
+            "reconciled_findings": [
+              "lane_b_supervisor_consumer_precedes_lane_a_authority_activation",
+              "owner_teardown_and_crash_reclamation_are_distinct_lease_paths",
+              "subreaper_supervisor_retains_lease_until_complete_tree_reaped",
+              "sl2_sl4_and_joined_nodeid_partitions_are_disjoint",
+              "cross_lane_parent_death_falsifier_runs_only_after_both_landings",
+              "sl3_atomically_refreshes_harden_current_authority_plan_digests"
+            ],
+            "review_status": "thirteenth_native_and_external_dissent_reconciled_requires_fresh_exact_digest_review",
+            "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-08-25T09:10:11Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "harden_plan_sha256": "bea77577ed3ecc5cd2c631d20d253427a5b771b3261454e8f700f9f374bc4a3c",
+            "plan_sha256": "50ef2f5a7678a657a186fc3dc206e86cfd5fc41b6369fa1d35fa4258e6ad8761",
+            "predecessor_harden_plan_sha256": "b46805dec76792ddb066d9891fb5c731585576d9439270053e98013f28a480ee",
+            "predecessor_plan_sha256": "7bdab8155c945666f750e19085686dfc10024717dc39a493f47d168cd725c5e6",
+            "reconciled_findings": [
+              "preserve_immutable_harden_lifecycle_contracts",
+              "append_live_harden_plan_authority",
+              "bind_harden_verifier_to_history_and_current_authority",
+              "record_sched_current_authority"
+            ],
+            "review_status": "initial_board_blockers_repaired_requires_fresh_exact_digest_review",
+            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+            "source": "Consiliency/agent-harness#616"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-08-25T09:51:31Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "board_artifacts": {
+              "consolidated_findings_sha256": "71029aa6c1beb84b817dc4761e8d636d4ef7c62d81801e78111590696ac5c24d",
+              "critics_sha256": "2e25fd4a1757f024992892222d49fd7337c1f9d581579a6a57520162687e056a",
+              "early_prover_sha256": "761d0276d13cef3b99676b5ad98fb71fedf143a7c69eac2e22c9bbe90e494c04",
+              "president_ruling_sha256": "d1319d4b50c2533f7dc70de7b4a415696454e99a1385a926a820281dc9a580b7"
+            },
+            "deferred_findings_issue": "Consiliency/agent-harness#660",
+            "external_board_statuses": {
+              "claude_opus_5_early_prover": "PARTIALLY_AGREE_no_blocking_finding",
+              "gemini_3_6_flash": "PARTIALLY_AGREE_no_blocking_finding",
+              "gpt_5_6_sol": "AGREE",
+              "grok_4_5": "PARTIALLY_AGREE_no_blocking_finding"
+            },
+            "harden_plan_sha256": "bea77577ed3ecc5cd2c631d20d253427a5b771b3261454e8f700f9f374bc4a3c",
+            "plan_sha256": "50ef2f5a7678a657a186fc3dc206e86cfd5fc41b6369fa1d35fa4258e6ad8761",
+            "president_forcing_decision": "PROCEED_WITH_DOWNSTREAM",
+            "president_model": "grok-4.6",
+            "president_status": "recovered_usable_ruling_after_parser_false_negative",
+            "rebased_artifact_identity_preserved": true,
+            "rebased_equivalent_commit": "9017aeca3218b6b1eb0f36e8cc848a16104dca23",
+            "review_status": "exact_digest_board_accepted_with_issue_bound_deferred_findings",
+            "reviewed_candidate_commit": "e393fd9870aa0c19de49334d2a010c765d2eff22",
+            "reviewed_manifest_sha256": "5fb8fc53623d940b3575bd70f75ba206ee6bf0ceb414cbb441ece4f187afacc2",
+            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+            "source": "Consiliency/agent-harness#616"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-08-25T10:56:30Z",
+          "by": "clawdbot-agent-harness-codex",
+          "metadata": {
+            "board_status": "exact_digest_board_accepted_with_issue_bound_deferred_findings",
+            "deferred_findings_issue": "Consiliency/agent-harness#660",
+            "phase_alias": "SCHED",
+            "plan_sha256": "50ef2f5a7678a657a186fc3dc206e86cfd5fc41b6369fa1d35fa4258e6ad8761",
+            "planning_merge": "bab3bbc7038ed5b01df8216051051f3796bfe3ba",
+            "planning_pr": "Consiliency/agent-harness#661",
+            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+            "run_id": "20260825T105611Z-v10-sched-execution",
+            "work_unit_bootstrap": "runner_owned_explicit_assignments_due_to_Consiliency/agent-harness#301"
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-08-25T16:03:23Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "board_repair_rationale": "tests_only_head_e421a32d_unanimously_rejected_all_six_finding_clusters_blocking_tests_only_successor_required_before_sl2_sl4",
+            "plan_sha256": "3b1dba40791bfb5c3584777894ce9262d18b012dd09df2f32262617f3e20b8e9",
+            "predecessor_plan_sha256": "50ef2f5a7678a657a186fc3dc206e86cfd5fc41b6369fa1d35fa4258e6ad8761",
+            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+            "source": "Consiliency/agent-harness#660"
+          },
+          "transition": "executing"
+        }
+      ],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "SCHED",
+      "plan_authority_history": [
+        {
+          "plan_sha256": "7bdab8155c945666f750e19085686dfc10024717dc39a493f47d168cd725c5e6",
+          "roadmap_sha256": "6b2e6cabe9b6728e0f0639ea79497d92ec17ee2ab74d583e56b883ab79f0fc68",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#616"
+        },
+        {
+          "plan_sha256": "50ef2f5a7678a657a186fc3dc206e86cfd5fc41b6369fa1d35fa4258e6ad8761",
+          "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#616"
+        },
+        {
+          "plan_sha256": "3b1dba40791bfb5c3584777894ce9262d18b012dd09df2f32262617f3e20b8e9",
+          "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#660"
+        }
+      ],
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/ea0bef92/codex-v10-sched-plan/20260820T003600Z-01-sched-plan.md",
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v10.md",
+        "slug": "phase-plans-v10",
+        "status": "imported",
+        "type": "phase"
+      },
+      "slug": "v10-SCHED",
+      "status": "executing",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-08-25T16:03:23Z"
     },
     {
       "acceptance_criteria_count": null,
@@ -5584,234 +5830,6 @@
       "task_summary": "Thread live run alias into verification.json (ah#85b)",
       "type": "detailed",
       "updated_at": "2026-07-28T22:28:34Z"
-    },
-    {
-      "acceptance_criteria_count": null,
-      "created_at": "2026-08-25T14:49:13Z",
-      "file": "plans/phase-plan-v10-RUNTIME.md",
-      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260825T144913Z-01-runtime-plan.md",
-      "if_gates_produced": [
-        "IF-0-RUNTIME-1"
-      ],
-      "lanes": [
-        "SL-0",
-        "SL-1",
-        "SL-2",
-        "SL-3",
-        "SL-4",
-        "SL-5"
-      ],
-      "lifecycle": [
-        {
-          "at": "2026-08-25T14:49:13Z",
-          "by": "codex-plan-phase",
-          "metadata": {
-            "phase_alias": "RUNTIME",
-            "planning_base": "3a10b03191f10bdb70c8238b535dcc6afdb5a6d7",
-            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
-            "run_id": "20260825T144913Z-01-runtime-plan"
-          },
-          "transition": "committed"
-        },
-        {
-          "at": "2026-08-25T16:25:15Z",
-          "by": "codex-plan-phase",
-          "metadata": {
-            "absorbed_deferred_observations": [
-              "keyword_only_render_train_status_signature",
-              "whole_phase_sl0_through_sl5_write_set",
-              "exact_environment_scrubber_symbols",
-              "runtime_residual_cli_serialization",
-              "ancestral_planning_base_wording",
-              "whole_phase_single_vendor_ownership",
-              "additive_convergence_init_exports"
-            ],
-            "applied_ablations": [
-              "duplicate_context_roadmap_digest",
-              "duplicate_execution_policy_plan_row"
-            ],
-            "authority_source": "Consiliency/agent-harness#375",
-            "phase_alias": "RUNTIME",
-            "plan_sha256": "092b3db8edcb441e7486e49eabca66506cbfcce4a4ca9637bd09818a9cac7385",
-            "predecessor_plan_sha256": "80e0216157b7a9cfe0f16c7c0de5ad2b3fbeb02b45a40b51cfbc6a53840de540",
-            "president_forcing_decision": "block",
-            "president_model": "grok-4.6",
-            "repair_status": "blocking_and_deferred_findings_absorbed_requires_fresh_exact_digest_board",
-            "resolved_blocking_clusters": [
-              "exact_production_target_binding_rejects_test_helper_and_runtime_tdd_guard_targets",
-              "status_projection_scoped_to_recovered_train_state_without_reconciliation_verdict_claim"
-            ],
-            "review_artifacts": {
-              "consolidated_findings_sha256": "9f6542e327c2f888660f4808d9252205141bd26ac05e0ecfca2c0c46ed5a46b4",
-              "critics_sha256": "f3fd77639c70ef2f2e354245425a23f78f8160857e52f2ca6b07df487aafaf86",
-              "early_prover_sha256": "d82790826bde83a5cf72453a3e5f48c9b55ee13f6fa7691866554d87222d390a",
-              "president_ruling_sha256": "6e2826272704f831277644178155924d6d96f382f6c63ec2d131661dc65799f3"
-            },
-            "reviewed_candidate_commit": "3b03dc4a00fab096c261e51b93ac5a973ed74508",
-            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
-            "roadmap_source_authority": "Consiliency/agent-harness#375"
-          },
-          "transition": "committed"
-        },
-        {
-          "at": "2026-08-25T17:08:16Z",
-          "by": "codex-plan-phase",
-          "metadata": {
-            "absorbed_deferred_findings": [
-              "broker_adapter_symbol_fence_with_pure_credsep_exemption",
-              "zero_based_durable_record_offset_and_replay_order_fold",
-              "replay_derived_status_validity_vs_live_reconciliation_authority",
-              "goal_coverage_classifier_repair_recorded_downstream",
-              "six_focused_test_inventory_prose_correction"
-            ],
-            "applied_ablations": [
-              "redundant_legacy_dot_codex_phase_loop_context_sentence"
-            ],
-            "phase_alias": "RUNTIME",
-            "plan_sha256": "535fd027200ff8b925955363ab9e0cd3923425946f57eebf533e0047af6f8988",
-            "predecessor_plan_sha256": "092b3db8edcb441e7486e49eabca66506cbfcce4a4ca9637bd09818a9cac7385",
-            "president_forcing_decision": "block",
-            "president_model": "grok-4.6",
-            "repaired_blocking_defects": [
-              "verification_commands_machine_extracted_nonempty_complete",
-              "runtime_content_tdd_adapter_consumes_shipped_content_receipt"
-            ],
-            "review_artifacts": {
-              "consolidated_findings_sha256": "fd486ea1140b15e2d2872f8db45e0ba17376dee80c7794a0ba0e8650edc5f48c",
-              "president_ruling_sha256": "9aecfe6fb2b05269846b8069191573c65c3e8b481374c48ea94941fff7ad17d3"
-            },
-            "review_status": "fresh_exact_digest_review_required",
-            "reviewed_candidate_commit": "9cd83617ab12ded01fc84e2f342727e591879611",
-            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
-            "source": "Consiliency/agent-harness#375"
-          },
-          "transition": "committed"
-        }
-      ],
-      "owner_skill": "codex-plan-phase",
-      "phase_alias": "RUNTIME",
-      "plan_authority_history": [
-        {
-          "plan_sha256": "535fd027200ff8b925955363ab9e0cd3923425946f57eebf533e0047af6f8988",
-          "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
-          "schema": "plan_current_authority.v1",
-          "source": "Consiliency/agent-harness#375"
-        }
-      ],
-      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/84b1ecde/codex-v10-runtime-plan/20260825T144913Z-01-runtime-plan.md",
-      "roadmap_ref": {
-        "file": "specs/phase-plans-v10.md",
-        "slug": "phase-plans-v10",
-        "status": "imported",
-        "type": "phase"
-      },
-      "slug": "v10-RUNTIME",
-      "status": "committed",
-      "task_summary": null,
-      "type": "phase",
-      "updated_at": "2026-08-25T16:25:15Z"
-    },
-    {
-      "acceptance_criteria_count": null,
-      "created_at": "2026-08-25T15:17:29Z",
-      "file": "plans/phase-plan-v10-LEGLIFE.md",
-      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260825T151729Z-01-leglife-plan.md",
-      "if_gates_produced": [],
-      "lanes": [
-        "SL-0",
-        "SL-1",
-        "SL-2",
-        "SL-3"
-      ],
-      "lifecycle": [
-        {
-          "at": "2026-08-25T15:17:29Z",
-          "by": "codex-plan-phase",
-          "metadata": {
-            "phase_alias": "LEGLIFE",
-            "planning_base": "3a10b03191f10bdb70c8238b535dcc6afdb5a6d7",
-            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
-            "run_id": "20260825T151729Z-01-leglife-plan"
-          },
-          "transition": "committed"
-        },
-        {
-          "at": "2026-08-25T16:35:34Z",
-          "by": "codex-plan-phase",
-          "metadata": {
-            "plan_repair_record_id": "v10-LEGLIFE.plan-review-repair.v1",
-            "plan_sha256": "642f30ffae912a0368854be9fb5cad123ab50e4d87e8bd4f2ebe4a542bc945ea",
-            "predecessor_plan_sha256": "984b31a03f4ab365bf3c99cc21664c3d5f83c20b40015f36af51c216989e8649",
-            "repair_scope": [
-              "disjoint_lane_nodeid_partitions_and_markers",
-              "sl1_to_sl2_material_attestation_dependency",
-              "default_green_complete_machine_readable_verification",
-              "upstream_authority_and_provenance_reconciliation",
-              "supported_ablation"
-            ],
-            "review_status": "binding_board_and_president_blockers_repaired_requires_fresh_exact_digest_review",
-            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
-            "source": "Consiliency/agent-harness#375"
-          },
-          "transition": "committed"
-        },
-        {
-          "at": "2026-08-25T17:16:25Z",
-          "by": "codex-plan-phase",
-          "metadata": {
-            "absorbed_deferred_findings": [
-              "nodeid_path_tokens_removed_from_extracted_verification",
-              "golden_amendment_default_green_then_load_bearing",
-              "sl2_capability_marker_host_named"
-            ],
-            "phase_alias": "LEGLIFE",
-            "plan_sha256": "91bf9886be634125d663b01e4a27f6d6ed27fb353b5a7a58bc82fe69cb62c6c3",
-            "predecessor_plan_sha256": "642f30ffae912a0368854be9fb5cad123ab50e4d87e8bd4f2ebe4a542bc945ea",
-            "president_forcing_decision": "block_tests_first_dispatch",
-            "president_model": "grok-4.6",
-            "repaired_blocking_defects": [
-              "intentional_red_commands_removed_from_extracted_runner_contract"
-            ],
-            "review_artifacts": {
-              "consolidated_findings_sha256": "c2a08be3f0591dbf171451fb51719cdce5f98604dc16373dfa17f713f9fd54f7",
-              "president_ruling_sha256": "e8a6fd3ca808a383776c2e3d925555d747a5277b55e828c3e31a28775f4e1f96"
-            },
-            "review_status": "fresh_exact_digest_review_required",
-            "reviewed_candidate_commit": "6356064b5482ab67c000ed52921efa13a0486a74",
-            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
-            "source": "Consiliency/agent-harness#375"
-          },
-          "transition": "committed"
-        }
-      ],
-      "owner_skill": "codex-plan-phase",
-      "phase_alias": "LEGLIFE",
-      "plan_authority_history": [
-        {
-          "plan_sha256": "642f30ffae912a0368854be9fb5cad123ab50e4d87e8bd4f2ebe4a542bc945ea",
-          "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
-          "schema": "plan_current_authority.v1",
-          "source": "Consiliency/agent-harness#375"
-        },
-        {
-          "plan_sha256": "91bf9886be634125d663b01e4a27f6d6ed27fb353b5a7a58bc82fe69cb62c6c3",
-          "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
-          "schema": "plan_current_authority.v1",
-          "source": "Consiliency/agent-harness#375"
-        }
-      ],
-      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/7ae6c600/codex-v10-leglife-plan/20260825T151729Z-01-leglife-plan.md",
-      "roadmap_ref": {
-        "file": "specs/phase-plans-v10.md",
-        "slug": "phase-plans-v10",
-        "status": "imported",
-        "type": "phase"
-      },
-      "slug": "v10-LEGLIFE",
-      "status": "committed",
-      "task_summary": null,
-      "type": "phase",
-      "updated_at": "2026-08-25T17:16:25Z"
     }
   ],
   "schema_version": 1
