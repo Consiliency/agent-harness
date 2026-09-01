@@ -26,10 +26,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   actually reads — by occurrence rather than by file. It fails if a source is fixed without
   regenerating and syncing; the first version swept only the first two layers and passed while
   every packaged copy still carried the old guidance.
-- The override is a deadline **per attempt**, not a leg-wide ceiling: a soft-empty first attempt
-  that failed fast (under half the budget) is retried once with a fresh deadline and liveness
-  clock, so a leg's wall-clock can reach ~1.5× the value. The skills say so; the runtime offers
-  no cumulative ceiling today.
+- What the override bounds differs by route, and the skills now say so per seat: on the print
+  routes (`codex`, `gemini`, `grok`) it is a deadline **per attempt** — a soft-empty first attempt
+  that failed fast is retried once with a fresh deadline, so a leg can exceed the value; on the
+  Claude TUI route one backstop is shared across the retry, so the value IS the leg-wide ceiling.
+  The exact retry thresholds and worst cases are stated in the skill section and are DERIVED
+  from `panel_invoker` by the guard, not restated here.
 - The runtime's own docstrings for `timeout_s` / `timeouts_by_leg` in `panel_invoker.py` still
   say an explicit value "bounds a slow/stalled leg" — the same defect, outside any skill sweep.
   `panel_invoker.py` is HARDEN-claimed and HARDEN is frozen, so they are NOT fixed here; the
