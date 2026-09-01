@@ -1630,6 +1630,7 @@ def lint_receipt(store: ArtifactStore, ref: dict[str, str], label: str, *, head:
 
 
 _MARKER_NAME = "HARDEN_CAPABILITY_VERSION"
+_MARKER_REQUIRED_SOURCE_SHA256 = "1320d5ea7634d71f45acaef2da45dda676317d03a6bee0778af0ed0e6eba5119"
 _MARKER_DYNAMIC_MUTATORS = frozenset(("exec", "setattr", "delattr"))
 _MARKER_NAMESPACE_MUTATORS = frozenset((
     "__delitem__", "__setitem__", "clear", "pop", "setdefault", "update",
@@ -1660,6 +1661,9 @@ def _marker_bindings(tree: ast.Module) -> list[ast.AST]:
     bindings: list[ast.AST] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Name) and node.id == _MARKER_NAME:
+            bindings.append(node)
+            continue
+        if isinstance(node, ast.Constant) and node.value == _MARKER_NAME:
             bindings.append(node)
             continue
         if isinstance(node, ast.arg) and node.arg == _MARKER_NAME:
@@ -1707,8 +1711,13 @@ def _marker_bindings(tree: ast.Module) -> list[ast.AST]:
     return bindings
 
 
-def _marker_state(repo: Path, revision: str, *, required: bool) -> None:
-    """Require the sole final literal marker and reject every other binding form."""
+def _marker_state(
+    repo: Path,
+    revision: str,
+    *,
+    required: bool,
+) -> None:
+    """Require the exact reviewed registry source and its sole literal marker."""
     _, data = blob(repo, revision, "phase-loop-runtime/src/phase_loop_runtime/capability_registry.py")
     try:
         tree = ast.parse(data.decode("utf-8", errors="strict"))
@@ -1727,7 +1736,16 @@ def _marker_state(repo: Path, revision: str, *, required: bool) -> None:
     ]
     intended_target = intended[0].targets[0] if len(intended) == 1 else None
     if required:
-        if len(bindings) != 1 or bindings[0] is not intended_target:
+        if (
+            text(
+                _MARKER_REQUIRED_SOURCE_SHA256,
+                "required capability registry source digest",
+                pattern=HEX64,
+            )
+            != sha256(data)
+            or len(bindings) != 1
+            or bindings[0] is not intended_target
+        ):
             fail("final capability marker is missing, rebound, or nonliteral")
         return
     if bindings:
@@ -1754,7 +1772,11 @@ def verify_authority_paths(repo: Path, revision: str, value: Any) -> None:
             fail("authority object is detached from canonical-main Git")
 
 
-def verify_git_and_inventory(repo: Path, git_data: dict[str, Any], sl0: dict[str, Any]) -> dict[str, tuple[str, str]]:
+def verify_git_and_inventory(
+    repo: Path,
+    git_data: dict[str, Any],
+    sl0: dict[str, Any],
+) -> dict[str, tuple[str, str]]:
     git_data = closed(git_data, {"sl0_base", "landing_first_parent", "reviewed_sl0", "landing", "candidate", "canonical_main"}, "git")
     commits: dict[str, tuple[str, str]] = {}
     for name in git_data:
@@ -2531,7 +2553,16 @@ def verify_completion(store: ArtifactStore, value: Any, evidence_digest: str, ma
         fail("completion ledger has missing or duplicate HARDEN completion")
 
 
-def verify(evidence_path: Path, evidence_root: Path, repo: Path, *, reuse_registry: Path, expected_coordinator_session: str, expected_author_session: str, ci_query: Path = CANONICAL_GH) -> None:
+def verify(
+    evidence_path: Path,
+    evidence_root: Path,
+    repo: Path,
+    *,
+    reuse_registry: Path,
+    expected_coordinator_session: str,
+    expected_author_session: str,
+    ci_query: Path = CANONICAL_GH,
+) -> None:
     evidence_bytes = evidence_path.read_bytes()
     evidence = parse_canonical_json(evidence_bytes, "verification evidence")
     reject_secret_payloads(evidence)
@@ -2673,7 +2704,15 @@ def _self_git(
     (repo / "phase-loop-runtime/src/phase_loop_runtime/runner.py").write_text(
         "HARDEN_SOURCE = 'candidate'\n#" + ("x" * (2 * GEMINI_STREAM_CHUNK_MAX_BYTES)) + "\n"
     )
-    (repo / "phase-loop-runtime/src/phase_loop_runtime/capability_registry.py").write_text("HARDEN_CAPABILITY_VERSION = 1\n")
+    marker_source = (
+        Path(__file__).resolve().parents[1]
+        / "src/phase_loop_runtime/capability_registry.py"
+    ).read_bytes()
+    if sha256(marker_source) != _MARKER_REQUIRED_SOURCE_SHA256:
+        raise RuntimeError("self-test capability registry source digest drifted")
+    (repo / "phase-loop-runtime/src/phase_loop_runtime/capability_registry.py").write_bytes(
+        marker_source
+    )
     _run(["git", "add", "."], repo); _run(["git", "commit", "-qm", "candidate"], repo)
     candidate = _run(["git", "rev-parse", "HEAD"], repo)
     _run(["git", "commit", "--allow-empty", "-qm", "canonical main"], repo)
@@ -4190,6 +4229,14 @@ def self_test() -> None:
 
             direct_rejected(name, check)
 
+        def marker_mutator_rejected(name: str, body: str) -> None:
+            tree = ast.parse(body)
+            bindings = _marker_bindings(tree)
+            intended = tree.body[0].targets[0]
+            if len(bindings) <= 1 and bindings == [intended]:
+                raise AssertionError(name + " escaped the syntactic marker scanner")
+            marker_rejected(name, body)
+
         marker_rejected("marker-missing", "# absent\n")
         marker_rejected("marker-wrong", "HARDEN_CAPABILITY_VERSION = 2\n")
         marker_rejected("marker-duplicate", "HARDEN_CAPABILITY_VERSION = 1\nHARDEN_CAPABILITY_VERSION = 1\n")
@@ -4206,6 +4253,35 @@ def self_test() -> None:
         marker_rejected("marker-delete", "HARDEN_CAPABILITY_VERSION = 1\ndel HARDEN_CAPABILITY_VERSION\n")
         marker_rejected("marker-global-rebind", "HARDEN_CAPABILITY_VERSION = 1\ndef rebind():\n    global HARDEN_CAPABILITY_VERSION\n    HARDEN_CAPABILITY_VERSION = 2\n")
         marker_rejected("marker-namespace-rebind", "globals()['HARDEN_CAPABILITY_VERSION'] = 1\n")
+        marker_mutator_rejected(
+            "marker-aliased-setattr",
+            "HARDEN_CAPABILITY_VERSION = 1\n"
+            "from builtins import setattr as _sa\n"
+            "import sys\n"
+            "_sa(sys.modules[__name__], 'HARDEN_CAPABILITY_VERSION', 2)\n",
+        )
+        marker_mutator_rejected(
+            "marker-builtins-setattr",
+            "HARDEN_CAPABILITY_VERSION = 1\n"
+            "import builtins, sys\n"
+            "builtins.setattr(sys.modules[__name__], 'HARDEN_CAPABILITY_VERSION', 2)\n",
+        )
+        marker_mutator_rejected(
+            "marker-dunder-setattr",
+            "HARDEN_CAPABILITY_VERSION = 1\n"
+            "import sys\n"
+            "sys.modules[__name__].__setattr__('HARDEN_CAPABILITY_VERSION', 2)\n",
+        )
+        marker_mutator_rejected(
+            "marker-unbound-dict-update",
+            "HARDEN_CAPABILITY_VERSION = 1\n"
+            "dict.update(globals(), {'HARDEN_CAPABILITY_VERSION': 2})\n",
+        )
+        marker_mutator_rejected(
+            "marker-getattr-update",
+            "HARDEN_CAPABILITY_VERSION = 1\n"
+            "getattr(globals(), 'update')({'HARDEN_CAPABILITY_VERSION': 2})\n",
+        )
         def replace(ref: dict[str, str], artifact_root: Path, data: bytes) -> None:
             (artifact_root / ref["path"]).write_bytes(data)
             ref["sha256"] = sha256(data)
