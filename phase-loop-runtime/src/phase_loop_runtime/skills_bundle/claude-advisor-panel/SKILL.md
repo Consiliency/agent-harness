@@ -55,7 +55,11 @@ makes that generous backstop safe.
 
 **`timeouts_by_leg` is a HARD DEADLINE, not a stall threshold.** Passing an explicit value
 REPLACES the backstop with your number for that leg, and it fires even while the leg is making
-healthy progress: `{"gemini": 300}` kills that leg at 300s whether or not it is still streaming.
+healthy progress: `{"gemini": 300}` kills an attempt at 300s whether or not it is still streaming.
+It is a deadline **per ATTEMPT, not a leg-wide ceiling**: a soft-empty first attempt that failed
+FAST (under half the budget) is retried once with a fresh deadline and a fresh liveness clock, so
+a leg's total wall-clock can reach ~1.5× your value. If policy needs an absolute leg-wide ceiling,
+the runtime does not provide one today — set the value accordingly and say so in the policy.
 
 - **Default: omit it.** Heartbeat extinction already reclaims dead legs, normally long before
   any deadline is reached.

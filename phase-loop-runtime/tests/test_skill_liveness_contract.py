@@ -47,6 +47,7 @@ REQUIRED_SEMANTICS = (
     "stdout/stderr byte",   # what actually counts as a heartbeat
     "process-group CPU",    # the secondary, extend-only signal
     "REPLACES the backstop",  # what an explicit override does to the default
+    "per ATTEMPT, not a leg-wide ceiling",  # a fast soft-empty retry gets a fresh deadline (codex, ah#731 r5)
 )
 
 
