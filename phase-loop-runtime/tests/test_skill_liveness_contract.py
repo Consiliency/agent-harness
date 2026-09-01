@@ -72,15 +72,41 @@ def _skill_sites() -> list[Path]:
     return sites
 
 
+#: Exact site counts, not floors. A floor (`>= 16`) can be satisfied by a wrong state --
+#: one source missing and one stray extra -- so the counts are identities; enrolling a new
+#: site is a deliberate edit here, never an accident that still passes.
+PACKAGED_SITES = 8   # 4 boards + 4 `advisor-panel` aliases, shipped in the wheel
+FULL_TREE_SITES = 16  # + 4 `skills-src/` sources + 4 generated `phase-loop-skills/` outputs
+
+
+def _full_tree() -> bool:
+    """Gate A runs this file from a sparse standalone tree (ah#598): the packaged layer is
+    there (the wheel ships it) but `phase-loop-skills/` and the advisor-board sources are not.
+    Key on the GENERATED layer: Gate A's sparse set does include `skills-src/codex/
+    codex-execute-phase/`, so "`skills-src/` exists" proves nothing about the boards."""
+    return (REPO_ROOT / "phase-loop-skills/advisor-board/SKILL.md").is_file()
+
+
 def test_the_sites_are_discovered_at_all() -> None:
     """A sweep that finds nothing passes every other assertion vacuously."""
     sites = _skill_sites()
     packaged = [s for s in sites if "skills_bundle" in str(s)]
-    assert len(sites) >= 16, f"expected 4 sources + 4 generated + 8 packaged, found {len(sites)}"
-    assert len(packaged) >= 8, (
-        "the wheel-shipped copies (4 boards + 4 panel aliases) must be swept; "
-        f"found {len(packaged)}"
+    assert len(packaged) == PACKAGED_SITES, (
+        "the wheel-shipped copies (4 boards + 4 panel aliases) must ALL be swept, and only "
+        f"them; found {len(packaged)}: {[str(p.relative_to(REPO_ROOT)) for p in packaged]}"
     )
+    if _full_tree():
+        assert len(sites) == FULL_TREE_SITES, (
+            f"expected 4 sources + 4 generated + 8 packaged, found {len(sites)}; a new site must "
+            "be enrolled here deliberately, a missing one is a dropout"
+        )
+    else:
+        # From-wheel layout (Gate A): only the packaged layer can be present. Anything
+        # else would be a stray copy the sparse checkout was not supposed to carry.
+        assert len(sites) == PACKAGED_SITES, (
+            f"from-wheel layout: expected only the {PACKAGED_SITES} packaged copies, found "
+            f"{len(sites)}"
+        )
 
 
 @pytest.mark.parametrize("site", _skill_sites(), ids=lambda p: str(p.relative_to(REPO_ROOT)))
@@ -177,8 +203,11 @@ def test_heartbeat_semantics_are_described(site: Path) -> None:
 def test_generated_copies_match_their_canonical_sources() -> None:
     """The generated bundle is regenerated from `skills-src/`, so the section must agree.
 
-    Without this, a source fix silently fails to reach the surface operators actually read —
-    which is the half of ah#693 that made a corrected contract look shipped.
+    Without this, a source fix silently fails to reach the surface operators actually read --
+    which is the half of ah#693 that made a corrected contract look shipped. In the from-wheel
+    layout (Gate A) only the eight packaged copies are present, so there this proves only that
+    they agree with EACH OTHER; the source-to-generated-to-packaged agreement is proven in the
+    full tree.
     """
     bodies = {}
     for site in _skill_sites():
