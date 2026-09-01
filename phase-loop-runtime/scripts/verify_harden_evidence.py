@@ -939,10 +939,12 @@ def contains_untrusted_frame_replica(text_value: str) -> bool:
         start = 0
         while start < len(line):
             if start >= MAX_VISUAL_PREFIX_CHARS:
-                return any(
+                if any(
                     visually_ambiguous_leader(character)
                     for character in line[:MAX_VISUAL_PREFIX_CHARS]
-                )
+                ):
+                    return True
+                break
             if any(
                 visual_prefix_replica(line, start, prefix)
                 for prefix in UNTRUSTED_FRAME_PREFIXES
@@ -3437,6 +3439,21 @@ def self_test() -> None:
             != long_unrelated_unicode
         ):
             raise AssertionError("long unrelated Unicode review content was not preserved")
+        for padding_name, padding in (
+            ("spaces", " " * (MAX_VISUAL_PREFIX_CHARS + 1)),
+            ("cjk", long_unrelated_unicode),
+        ):
+            for marker_name, marker in (
+                ("frame", replica_frame),
+                ("metadata", replica_metadata),
+            ):
+                direct_rejected(
+                    "visual-prefix-padding-then-" + marker_name + "-" + padding_name,
+                    lambda padding=padding, marker=marker: untrusted_transport_text(
+                        padding + "\n" + marker,
+                        "self-test multiline visual replica",
+                    ),
+                )
         transport_controls = {
             "carriage-return": "\r",
             "escape": "\x1b",

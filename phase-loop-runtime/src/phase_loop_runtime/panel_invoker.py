@@ -1681,10 +1681,12 @@ def _broker_contains_untrusted_frame_replica(text: str) -> bool:
         start = 0
         while start < len(line):
             if start >= _BROKER_MAX_VISUAL_PREFIX_CHARS:
-                return any(
+                if any(
                     _broker_visually_ambiguous_leader(character)
                     for character in line[:_BROKER_MAX_VISUAL_PREFIX_CHARS]
-                )
+                ):
+                    return True
+                break
             if any(
                 _broker_visual_prefix_replica(line, start, prefix)
                 for prefix in _BROKER_UNTRUSTED_FRAME_PREFIXES
