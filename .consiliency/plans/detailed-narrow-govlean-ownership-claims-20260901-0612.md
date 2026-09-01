@@ -138,8 +138,10 @@ PYTHONPATH=phase-loop-runtime/src python3 -m phase_loop_runtime.cli docs-audit -
 ```
 Edge cases: candidate file missing → exit 2; candidate with a malformed phase heading → exit 2
 via the ah#725 gates, NOT a silently smaller map; candidate identical to the live roadmap →
-numbers identical to baseline (a sanity check that the candidate path changes nothing but the
-text).
+numbers identical to baseline over a window in which the roadmap's ownership map did not change
+(a sanity check that the candidate path changes nothing but the text; a candidate applies one
+map to every commit, so across a roadmap change it is a projection by design — amended
+2026-09-01 after the agent-harness#732 CR, codex round 4).
 
 ## Acceptance criteria
 - [ ] `--report 40 --candidate-roadmap <file>` replays the identical sha sequence as

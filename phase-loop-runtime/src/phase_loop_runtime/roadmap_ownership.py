@@ -1186,6 +1186,7 @@ def render_report(rows: Sequence[ReplayRow]) -> str:
     flagged = [r for r in scored if r.notable]
     is_candidate = any(r.candidate for r in rows)
     mode = " (CANDIDATE roadmap, not history)" if is_candidate else ""
+    tag = " (CANDIDATE PROJECTION)" if is_candidate else ""
     lines = [
         f"roadmap-ownership --report{mode}: {total} landed change(s) replayed "
         f"({len(scored)} scored, {len(skipped)} unscorable)",
@@ -1195,7 +1196,6 @@ def render_report(rows: Sequence[ReplayRow]) -> str:
         pct = 100.0 * len(flagged) / len(scored)
         # The marker is ON the number's line, not beside it: a consumer that
         # greps this line out of a log must get the projection label with it.
-        tag = " (CANDIDATE PROJECTION)" if is_candidate else ""
         lines.append(
             f"  would have flagged{tag}: {len(flagged)}/{len(scored)} ({pct:.0f}%)"
         )
@@ -1203,8 +1203,9 @@ def render_report(rows: Sequence[ReplayRow]) -> str:
             # A projection is NOT the graduation number. Printing both lines
             # would hand a reader two contradictory safety statements.
             lines.append(
-                "  ^ a PROJECTION under the proposed roadmap text, not a measurement of "
-                "history. Compare against a plain --report run on the same window."
+                "  ^ a PROJECTION: the candidate text applied to EVERY commit, not a "
+                "measurement of history (a plain --report reads each commit's own roadmap). "
+                "Compare against a plain --report run on the same window."
             )
         else:
             lines.append(
@@ -1232,7 +1233,7 @@ def render_report(rows: Sequence[ReplayRow]) -> str:
         remaining = [r for r in flagged if set(r.phases) - {relievable}]
         rpct = 100.0 * len(remaining) / len(scored)
         lines += ["", f"  counterfactual — if {relievable} claimed nothing:"]
-        lines.append(f"    would STILL flag: {len(remaining)}/{len(scored)} ({rpct:.0f}%)")
+        lines.append(f"    would STILL flag{tag}: {len(remaining)}/{len(scored)} ({rpct:.0f}%)")
         if len(remaining) == len(flagged):
             # Removing it changes nothing, so it is not even necessary --
             # calling it necessary here would misdirect the remediation.

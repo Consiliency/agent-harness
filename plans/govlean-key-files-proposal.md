@@ -19,7 +19,8 @@ with `--candidate-roadmap` for the projections (ah#688 adds that flag; it scores
 | v3 — v2 plus every file GOVLEAN's plan names (32) | 18/40 (45%) | 11 | 8 | **3** |
 | v4 — v2 plus 18 plan-named files | 18/40 (45%) | 8 | 8 | 0 |
 | v5 — v4 minus the `panel_invoker.py` dual-claim | 18/40 (45%) | 8 | 8 | 0 |
-| **v6 — v5 with `skills-src/` narrowed to the 12 skill directories GOVLEAN's plan names** | **18/40 (45%)** | **8** | **8** | **0** |
+| v6 — v5 with `skills-src/` narrowed to the 12 skill directories GOVLEAN's plan names | 18/40 (45%) | 8 | 8 | 0 |
+| **v7 — v6 with those directories replaced by their 12 `SKILL.md` files plus the one plan-owned validator; every entry is a literal file** | **18/40 (45%)** | **8** | **8** | **0** |
 | floor — GOVLEAN claims nothing | 13/40 (32%) | — | — | — |
 
 **"over-claim" means a GOVLEAN flag on a file GOVLEAN does not own by a named authority** —
@@ -32,16 +33,24 @@ below at a second window to show it is not an artefact of the 40-commit cutoff:
 |---|---|---|---|---|
 | v4 | 24/60 (40%) | 12 | 8 | **4**: ah#643, ah#632, `4e45af61`, ah#545 — all via `panel_invoker.py`, the live roadmap's "(EC-GOVLEAN-5 bounded edits)" dual-claim; HARDEN owns the file and EC-GOVLEAN-5 is verified (phase `completed`), so the bounded edits are done |
 | v5 | 24/60 (40%) | 10 | 8 | **2**: ah#643 via `test_govlean_panel_policy.py` AND via `skills-src/` — that PR edited the four `*-advisor-board` skills, which GOVLEAN's plan does not own; a directory token matches every descendant |
-| **v6** | 24/60 (40%) | 10 | 8 | **2**: ah#643 via `test_govlean_panel_policy.py` (a board-defaults change updating the expectations of GOVLEAN's EC-GOVLEAN-5 proof test — GOVLEAN plan line 118); ah#545 via `agy_canary_evidence.py` (the commit that CREATED the file, before GOVLEAN's four subsequent landings on it) |
+| **v6 = v7** | 24/60 (40%) | 10 | 8 | **2**: ah#643 via `test_govlean_panel_policy.py` (a board-defaults change updating the expectations of GOVLEAN's EC-GOVLEAN-5 proof test — GOVLEAN plan line 118); ah#545 via `agy_canary_evidence.py` (the commit that CREATED the file, before GOVLEAN's four subsequent landings on it — ah#670, ah#711, ah#725, ah#633; GOVLEAN's authority here is adoption by landed history under the live `src/phase_loop_runtime/` claim, NOT the plan's `Owned files`, which does not list this file) |
 
-Both v6 rows at window 60 are foreign edits to files GOVLEAN owns by its plan's `Owned files`
-declaration (`plans/phase-plan-v10-GOVLEAN.md` line 70). They are correct flags. v4's four
+Both rows at window 60 are foreign edits to files GOVLEAN owns — one by its plan's `Owned
+files` declaration (`test_govlean_panel_policy.py`, `plans/phase-plan-v10-GOVLEAN.md` line 70),
+one by adoption (`agy_canary_evidence.py`: created by ah#545, then four GOVLEAN landings and no
+other phase's since). They are correct flags, with two different authorities, both named. v4's four
 extra rows were not: they came through a file whose owner is HARDEN.
 
-Sanity: a candidate identical to the live roadmap reproduces 37/40 exactly, so the candidate
+Sanity: a candidate identical to the live roadmap reproduces 37/40 exactly (and 53/60 at window
+60), so within these windows the candidate path changes nothing but the text. That holds only
+because the roadmap's ownership map did not change across them — a candidate applies ONE map to
+every commit, a plain run reads each commit's own roadmap. At window 150 the live text as a
+candidate flags 140/150 against 93/150 historically (47 rows, all older than the phases the
+live map claims). Do not compare a candidate number to a historical one across a window in
+which the roadmap changed. Also: the candidate
 path changes nothing but the text.
 
-**v6 is the proposal** (`plans/govlean-candidate.md` IS v6). Under it every remaining GOVLEAN
+**v7 is the proposal** (`plans/govlean-candidate.md` IS v7). Under it every remaining GOVLEAN
 flag sits on a commit GOVLEAN itself landed. The 13-point gap to the floor is not over-claim;
 it is GOVLEAN owning its own work.
 
@@ -54,6 +63,9 @@ drops the one pre-existing dual-claim (`panel_invoker.py`) that a second window 
 be the source of every foreign flag beyond the first — the round-2 CR (codex) caught that
 "zero" was window-bound. v6 applies the same lesson to the last directory token: `skills-src/`
 matched the advisor-board skills ah#643 edited, which GOVLEAN's plan does not own (round 3).
+v7 finishes the job: even a single-skill directory covers that skill's `scripts/` (19 such files
+across the 12), which the plan does not name, so the entries are the 12 `SKILL.md` files plus
+the one validator the plan does own (round 4, grok).
 
 ## Why v1 was not enough — attribution of its 15 over-claims
 
@@ -100,18 +112,19 @@ If GOVLEAN later builds a closeout-gate artifact under `plans/`, claim that FILE
 - `phase-loop-runtime/tests/test_govlean_tdd_receipts.py`
 - `phase-loop-runtime/tests/test_review_policy_govlean_repairs.py`
 - `plans/phase-plan-v10-GOVLEAN.md`
-- `skills-src/claude/claude-plan-phase/`
-- `skills-src/claude/claude-phase-roadmap-builder/`
-- `skills-src/claude/claude-execute-phase/`
-- `skills-src/codex/codex-plan-phase/`
-- `skills-src/codex/codex-phase-roadmap-builder/`
-- `skills-src/codex/codex-execute-phase/`
-- `skills-src/gemini/gemini-plan-phase/`
-- `skills-src/gemini/gemini-phase-roadmap-builder/`
-- `skills-src/gemini/gemini-execute-phase/`
-- `skills-src/opencode/opencode-plan-phase/`
-- `skills-src/opencode/opencode-phase-roadmap-builder/`
-- `skills-src/opencode/opencode-execute-phase/`
+- `skills-src/claude/claude-plan-phase/SKILL.md`
+- `skills-src/claude/claude-phase-roadmap-builder/SKILL.md`
+- `skills-src/claude/claude-execute-phase/SKILL.md`
+- `skills-src/codex/codex-plan-phase/SKILL.md`
+- `skills-src/codex/codex-phase-roadmap-builder/SKILL.md`
+- `skills-src/codex/codex-execute-phase/SKILL.md`
+- `skills-src/gemini/gemini-plan-phase/SKILL.md`
+- `skills-src/gemini/gemini-phase-roadmap-builder/SKILL.md`
+- `skills-src/gemini/gemini-execute-phase/SKILL.md`
+- `skills-src/opencode/opencode-plan-phase/SKILL.md`
+- `skills-src/opencode/opencode-phase-roadmap-builder/SKILL.md`
+- `skills-src/opencode/opencode-execute-phase/SKILL.md`
+- `skills-src/claude/claude-plan-phase/scripts/validate_plan_doc.py`
 
 **Dispatch holds**
 - PROOFGATE — plan dispatch for PROOFGATE fails closed until this phase (GOVLEAN) is
@@ -134,10 +147,12 @@ flag. `panel_invoker.py` is NOT listed although the live roadmap claims it for G
 and at window 60 that single bullet produced every foreign GOVLEAN flag (table above). `skills-src/` is NOT kept as a
 directory claim: its qualification ("planner and roadmap skills") is prose the matcher never
 reads — the token matches every skill, and at window 60 it flagged ah#643's edits to the four
-`*-advisor-board` skills. The 12 directories listed are exactly the planner, roadmap-builder,
-and execute-phase skills GOVLEAN's plan names, one per harness; regeneration outputs under
-`phase-loop-skills/` and the packaged `skills_bundle/` are NOT claimed (other phases regenerate
-them too). `test_skill_liveness_contract.py` (agent-harness#731) is NOT
+`*-advisor-board` skills. The 12 `SKILL.md` files are exactly the planner, roadmap-builder, and
+execute-phase skills GOVLEAN's plan names, one per harness, plus `claude-plan-phase/scripts/
+validate_plan_doc.py` which the plan's `Owned files` names; the other 18 files under those skill
+directories (execute-phase `scripts/`, roadmap-builder `scripts/`, `assets/`) are NOT claimed —
+the plan does not name them. Regeneration outputs under `phase-loop-skills/` and the packaged
+`skills_bundle/` are NOT claimed either (other phases regenerate them too). `test_skill_liveness_contract.py` (agent-harness#731) is NOT
 listed: it is not on `main` yet, and an entry that never appears in a diff is unmeasured.
 Add it when #731 lands.
 

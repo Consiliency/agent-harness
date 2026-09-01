@@ -2407,8 +2407,10 @@ class TestCandidateRoadmap(unittest.TestCase):
             # The number's OWN line carries the label. A consumer that greps
             # "would have flagged" out of a log must not get a bare projection
             # (ah#732 CR round 3, codex).
-            flagged_line = next(l for l in out.splitlines() if "would have flagged" in l)
-            self.assertIn("CANDIDATE PROJECTION", flagged_line)
+            rate_lines = [l for l in out.splitlines() if "would" in l and "flag" in l]
+            self.assertTrue(rate_lines)
+            for l in rate_lines:  # the headline AND the counterfactual, if printed
+                self.assertIn("CANDIDATE PROJECTION", l, l)
             plain = ro.render_report(ro.replay(repo, 3, "specs/phase-plans-v10.md", "HEAD"))
             self.assertNotIn("CANDIDATE", plain)
             self.assertIn("graduation number", plain)  # positive control
