@@ -2336,6 +2336,123 @@ class TestPreflight(unittest.TestCase):
         self.assertIn("another phase", ro.render_preflight(owned, "BETA"))
 
 
+class TestCandidateRoadmap(unittest.TestCase):
+    """`--report --candidate-roadmap` scores the SAME landed changes against a
+    hypothetical roadmap text (ah#688). It exists so a narrowing proposal can be
+    measured before anyone edits the LEGIBLE-owned roadmap.
+    """
+
+    def _repo_with_history(self, tmp):
+        """Two landed commits: one touching ALPHA's file, one touching BETA's."""
+        repo = _repo_with_two_phases(tmp)
+        run = lambda *a: subprocess.run(["git", "-C", tmp, *a], check=True,
+                                        capture_output=True)
+        run("init", "-q", "-b", "main")
+        run("config", "user.email", "t@t"); run("config", "user.name", "t")
+        run("add", "-A"); run("commit", "-qm", "seed")
+        (repo / "src" / "alpha.py").write_text("x = 2\n")
+        run("add", "-A"); run("commit", "-qm", "touch alpha")
+        (repo / "src" / "beta").mkdir(exist_ok=True)
+        (repo / "src" / "beta" / "b.py").write_text("y = 1\n")
+        run("add", "-A"); run("commit", "-qm", "touch beta")
+        return repo
+
+    def test_the_candidate_walks_the_IDENTICAL_commit_sample(self):
+        """The whole point is comparing like with like: a candidate run must score
+        exactly the commits a historical run scores, in the same order.
+
+        Mutation that must kill this: walk a different `rev` for the candidate.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = self._repo_with_history(tmp)
+            hist = ro.replay(repo, 3, "specs/phase-plans-v10.md", "HEAD")
+            cand = ro.replay(repo, 3, "specs/phase-plans-v10.md", "HEAD",
+                             candidate_roadmap=ROADMAP)
+            self.assertEqual([r.sha for r in hist], [r.sha for r in cand])
+            self.assertTrue(all(r.candidate for r in cand))
+            self.assertFalse(any(r.candidate for r in hist))
+
+    def test_a_candidate_that_drops_a_claim_LOWERS_the_flag_for_that_commit(self):
+        """A candidate is only useful if its text actually changes the score.
+
+        Mutation that must kill this: ignore `candidate_roadmap` and score the
+        historical blob anyway.
+        """
+        narrowed = ROADMAP.replace("- `src/alpha.py`\n", "")   # ALPHA no longer claims it
+        with TemporaryDirectory() as tmp:
+            repo = self._repo_with_history(tmp)
+            hist = {r.subject: r for r in ro.replay(repo, 3, "specs/phase-plans-v10.md", "HEAD")}
+            cand = {r.subject: r for r in ro.replay(repo, 3, "specs/phase-plans-v10.md", "HEAD",
+                                                    candidate_roadmap=narrowed)}
+            self.assertEqual(hist["touch alpha"].notable, 1, "history flags the alpha edit")
+            self.assertEqual(cand["touch alpha"].notable, 0, "the candidate does not")
+            self.assertEqual(hist["touch beta"].notable, cand["touch beta"].notable,
+                             "an untouched claim scores identically")
+
+    def test_the_report_header_says_CANDIDATE(self):
+        """A projection that prints like a measurement is the confusion this module
+        exists to prevent.
+
+        Mutation that must kill this: drop the header branch in `render_report`.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = self._repo_with_history(tmp)
+            out = ro.render_report(ro.replay(repo, 3, "specs/phase-plans-v10.md", "HEAD",
+                                             candidate_roadmap=ROADMAP))
+            self.assertIn("CANDIDATE roadmap, not history", out.splitlines()[0])
+            self.assertIn("PROJECTION", out)
+            plain = ro.render_report(ro.replay(repo, 3, "specs/phase-plans-v10.md", "HEAD"))
+            self.assertNotIn("CANDIDATE", plain)
+
+    def test_candidate_without_report_is_refused(self):
+        """Mutation that must kill this: drop the argument check in `main`."""
+        with TemporaryDirectory() as tmp:
+            repo = self._repo_with_history(tmp)
+            cand = Path(tmp) / "cand.md"; cand.write_text(ROADMAP)
+            with redirect_stdout(io.StringIO()) as buf:
+                rc = ro.main(["prog", "--repo", str(repo), "--candidate-roadmap", str(cand)])
+            self.assertEqual(rc, 2)
+            self.assertIn("requires --report", buf.getvalue())
+
+    def test_a_MALFORMED_candidate_cannot_evaluate_rather_than_scoring_smaller(self):
+        """The candidate goes through `ownership_map`, so every ah#725 gate applies:
+        a proposal with a malformed phase heading must exit 2, not quietly score
+        against a map that is missing a phase.
+
+        Mutation that must kill this: build the candidate map without validation
+        (bypass `ownership_map`).
+        """
+        broken = ROADMAP.replace("### Phase 0 — First Thing (ALPHA)",
+                                 "### phase 0 — First Thing (ALPHA)", 1)
+        with TemporaryDirectory() as tmp:
+            repo = self._repo_with_history(tmp)
+            cand = Path(tmp) / "cand.md"; cand.write_text(broken)
+            # `--base HEAD`: the fixture has no `origin`, and main()'s default
+            # `--base origin/main` makes `_landed_commits` score NOTHING — which is
+            # its own exit-2 path. The first version of this test passed on THAT
+            # exit 2 while the candidate validation it claims to pin was bypassed.
+            # A mutation swallowing the lint failure killed nothing. Evaluated and
+            # rejected must be distinguishable from never evaluated.
+            with redirect_stdout(io.StringIO()) as buf:
+                rc = ro.main(["prog", "--repo", str(repo), "--report", "3", "--base", "HEAD",
+                              "--candidate-roadmap", str(cand)])
+            self.assertEqual(rc, 2)
+            self.assertIn("CANNOT EVALUATE", buf.getvalue())
+            self.assertIn("intend to declare", buf.getvalue(),
+                          "must be the candidate's own validation, not an empty sample")
+            # control: the SAME invocation with a VALID candidate scores and exits 0
+            good = Path(tmp) / "good.md"; good.write_text(ROADMAP)
+            with redirect_stdout(io.StringIO()):
+                rc_ok = ro.main(["prog", "--repo", str(repo), "--report", "3", "--base", "HEAD",
+                                 "--candidate-roadmap", str(good)])
+            self.assertEqual(rc_ok, 0, "the positive control proves replay actually ran")
+            # and an unreadable file is the same class
+            with redirect_stdout(io.StringIO()) as buf2:
+                rc2 = ro.main(["prog", "--repo", str(repo), "--report", "3", "--base", "HEAD",
+                               "--candidate-roadmap", str(Path(tmp) / "missing.md")])
+            self.assertEqual(rc2, 2)
+            self.assertIn("could not read candidate roadmap", buf2.getvalue())
+
 class TestPartialDrift(unittest.TestCase):
     def test_one_phase_losing_key_files_raises(self):
         """The third mutation, found by review: PARTIAL drift passed silently.

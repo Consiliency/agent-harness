@@ -617,6 +617,11 @@ class ReplayRow:
     expected: int
     phases: "tuple[str, ...]"
     skipped_reason: str = ""
+    #: True when this row was scored against a CANDIDATE roadmap text rather than
+    #: the roadmap as it existed at the commit. Rendered loudly, because a
+    #: projection that prints like a measurement is exactly the confusion this
+    #: module exists to prevent.
+    candidate: bool = False
 
 
 def _landed_commits(repo: Path, limit: int, rev: str = "HEAD") -> List["tuple[str, str]"]:
@@ -753,8 +758,23 @@ def _is_shallow(repo: Path) -> bool:
     return out.stdout.strip() == "true"
 
 
-def replay(repo: Path, limit: int, roadmap_rel: str, rev: str = "HEAD") -> List[ReplayRow]:
+def replay(
+    repo: Path,
+    limit: int,
+    roadmap_rel: str,
+    rev: str = "HEAD",
+    *,
+    candidate_roadmap: "str | None" = None,
+) -> List[ReplayRow]:
     """Replay the check over the last ``limit`` LANDED changes.
+
+    ``candidate_roadmap`` scores the SAME landed changes against one hypothetical
+    roadmap text instead of the historical roadmap at each commit. That answers
+    "what would this proposal have flagged" -- the question a narrowing decision
+    needs (ah#688) -- without editing the roadmap. The commit sample and the diff
+    per commit are identical to the historical run; only the ownership map differs.
+    The candidate goes through ``ownership_map`` and therefore through every gate a
+    real roadmap does, so a malformed proposal raises rather than scoring smaller.
 
     Uses the roadmap **as it existed at each commit**, not today's. Measuring
     historical PRs against the current roadmap would answer "what would fire
@@ -774,29 +794,43 @@ def replay(repo: Path, limit: int, roadmap_rel: str, rev: str = "HEAD") -> List[
     is the one number this exists to produce honestly.
     """
 
+    candidate_map = ownership_map(candidate_roadmap) if candidate_roadmap is not None else None
     with tempfile.TemporaryDirectory(prefix="roadmap-replay-") as tmp_root:
-        return _replay_rows(repo, limit, rev, Path(tmp_root))
+        return _replay_rows(repo, limit, rev, Path(tmp_root), candidate_map=candidate_map)
 
 
-def _replay_rows(repo: Path, limit: int, rev: str, tmp_root: Path) -> List[ReplayRow]:
+def _replay_rows(
+    repo: Path,
+    limit: int,
+    rev: str,
+    tmp_root: Path,
+    *,
+    candidate_map: "Dict[str, List[Phase]] | None" = None,
+) -> List[ReplayRow]:
     rows: List[ReplayRow] = []
+    is_candidate = candidate_map is not None
     for sha, subject in _landed_commits(repo, limit, rev):
-        rel_at_sha, registry_reason = _roadmap_rel_at(repo, sha, tmp_root)
-        if registry_reason:
-            rows.append(ReplayRow(sha, subject, 0, 0, (), registry_reason))
-            continue
-        blob = subprocess.run(
-            ["git", "-C", str(repo), "show", f"{sha}:{rel_at_sha}"],
-            capture_output=True, text=True, check=False,
-        )
-        if blob.returncode != 0:
-            rows.append(ReplayRow(sha, subject, 0, 0, (), "roadmap absent at commit"))
-            continue
-        try:
-            mapping = ownership_map(blob.stdout)
-        except RoadmapUnreadable as exc:
-            rows.append(ReplayRow(sha, subject, 0, 0, (), f"unparseable: {exc}"))
-            continue
+        if is_candidate:
+            # One hypothetical map for every commit; the per-sha resolution below
+            # is what a candidate run deliberately replaces.
+            mapping = candidate_map
+        else:
+            rel_at_sha, registry_reason = _roadmap_rel_at(repo, sha, tmp_root)
+            if registry_reason:
+                rows.append(ReplayRow(sha, subject, 0, 0, (), registry_reason))
+                continue
+            blob = subprocess.run(
+                ["git", "-C", str(repo), "show", f"{sha}:{rel_at_sha}"],
+                capture_output=True, text=True, check=False,
+            )
+            if blob.returncode != 0:
+                rows.append(ReplayRow(sha, subject, 0, 0, (), "roadmap absent at commit"))
+                continue
+            try:
+                mapping = ownership_map(blob.stdout)
+            except RoadmapUnreadable as exc:
+                rows.append(ReplayRow(sha, subject, 0, 0, (), f"unparseable: {exc}"))
+                continue
         has_parent = subprocess.run(
             ["git", "-C", str(repo), "rev-parse", "--verify", "-q", f"{sha}^1"],
             capture_output=True, text=True, check=False,
@@ -809,14 +843,14 @@ def _replay_rows(repo: Path, limit: int, rev: str, tmp_root: Path) -> List[Repla
             # as a tooling error.
             reason = ("shallow-clone boundary (no parent to diff)" if _is_shallow(repo)
                       else "root commit (no parent to diff)")
-            rows.append(ReplayRow(sha, subject, 0, 0, (), reason))
+            rows.append(ReplayRow(sha, subject, 0, 0, (), reason, is_candidate))
             continue
         diff = subprocess.run(
             ["git", "-C", str(repo), "diff", "--name-only", f"{sha}^1", sha],
             capture_output=True, text=True, check=False,
         )
         if diff.returncode != 0:
-            rows.append(ReplayRow(sha, subject, 0, 0, (), "diff failed"))
+            rows.append(ReplayRow(sha, subject, 0, 0, (), "diff failed", is_candidate))
             continue
         notable = expected = 0
         phases: List[str] = []
@@ -829,7 +863,9 @@ def _replay_rows(repo: Path, limit: int, rev: str, tmp_root: Path) -> List[Repla
             else:
                 notable += 1
                 phases.extend(p.alias for p in owners)
-        rows.append(ReplayRow(sha, subject, notable, expected, tuple(sorted(set(phases)))))
+        rows.append(
+            ReplayRow(sha, subject, notable, expected, tuple(sorted(set(phases))), "", is_candidate)
+        )
     return rows
 
 
@@ -1148,8 +1184,10 @@ def render_report(rows: Sequence[ReplayRow]) -> str:
     skipped = [r for r in rows if r.skipped_reason]
     scored = [r for r in rows if not r.skipped_reason]
     flagged = [r for r in scored if r.notable]
+    is_candidate = any(r.candidate for r in rows)
+    mode = " (CANDIDATE roadmap, not history)" if is_candidate else ""
     lines = [
-        f"roadmap-ownership --report: {total} landed change(s) replayed "
+        f"roadmap-ownership --report{mode}: {total} landed change(s) replayed "
         f"({len(scored)} scored, {len(skipped)} unscorable)",
         "",
     ]
@@ -1158,6 +1196,11 @@ def render_report(rows: Sequence[ReplayRow]) -> str:
         lines.append(
             f"  would have flagged: {len(flagged)}/{len(scored)} ({pct:.0f}%)"
         )
+        if is_candidate:
+            lines.append(
+                "  ^ a PROJECTION under the proposed roadmap text, not a measurement of "
+                "history. Compare against a plain --report run on the same window."
+            )
         lines.append(
             "  ^ THIS is the graduation number. A blocking gate at this rate stops "
             f"{pct:.0f}% of merges."
@@ -1222,6 +1265,11 @@ def main(argv: List[str]) -> int:
     )
     parser.add_argument("--current-phase", default=None)
     parser.add_argument(
+        "--candidate-roadmap", type=Path, metavar="PATH", default=None,
+        help="with --report: score the same landed changes against this roadmap TEXT "
+             "instead of the roadmap as it existed at each commit (ah#688)",
+    )
+    parser.add_argument(
         "--report",
         type=int,
         metavar="N",
@@ -1242,6 +1290,10 @@ def main(argv: List[str]) -> int:
         print(render_preflight(owned, args.current_phase))
         return 1 if owned else 0
 
+    if args.candidate_roadmap is not None and args.report is None:
+        print("roadmap-ownership: --candidate-roadmap requires --report N")
+        return 2
+
     if args.report is not None:
         if args.report < 0:
             # `git log -n -1` is not "one"; it is unlimited. A negative N would
@@ -1249,10 +1301,21 @@ def main(argv: List[str]) -> int:
             print("roadmap-ownership: --report N must be >= 0")
             return 2
         try:
+            candidate_text = None
+            if args.candidate_roadmap is not None:
+                try:
+                    candidate_text = args.candidate_roadmap.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError) as exc:
+                    raise RoadmapUnreadable(
+                        f"could not read candidate roadmap {args.candidate_roadmap}: {exc}"
+                    ) from exc
             roadmap_rel = str(
                 resolve_roadmap(args.repo).relative_to(Path(args.repo).resolve())
             )
-            rows = replay(args.repo, args.report, roadmap_rel, args.base)
+            rows = replay(
+                args.repo, args.report, roadmap_rel, args.base,
+                candidate_roadmap=candidate_text,
+            )
         except RoadmapUnreadable as exc:
             print(f"roadmap-ownership: CANNOT EVALUATE — {exc}")
             return 2

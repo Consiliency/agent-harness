@@ -6,6 +6,20 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### roadmap-ownership: score a proposed roadmap before editing the real one (Consiliency/agent-harness#688)
+
+- `--report N --candidate-roadmap PATH` replays the same landed changes against a hypothetical
+  roadmap text instead of the roadmap as it existed at each commit. A narrowing proposal can
+  now be measured — "what would this Key files block have flagged" — without touching the
+  LEGIBLE-owned roadmap. The commit sample and per-commit diffs are identical to a plain run;
+  only the ownership map differs, and a candidate identical to the live roadmap reproduces the
+  historical number exactly.
+- A candidate run prints as `(CANDIDATE roadmap, not history)` with a PROJECTION note in place
+  of the graduation line, so a projection can never be mistaken for a measurement.
+- The candidate goes through `ownership_map` and therefore every gate a real roadmap does: a
+  malformed proposal reports CANNOT EVALUATE rather than scoring against a map that is quietly
+  missing a phase. `--candidate-roadmap` without `--report` is refused.
+
 ### roadmap-ownership: answer the pre-EDIT question (Consiliency/agent-harness#633)
 
 - `--preflight PATH...` reports which phases claim the given paths before the work
