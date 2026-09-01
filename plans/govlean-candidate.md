@@ -1198,7 +1198,24 @@ never coupled to fleet infrastructure.
 - `phase-loop-runtime/tests/test_phase_loop_execution_policy.py`
 - `phase-loop-runtime/tests/test_model_class_policy.py`
 - `phase-loop-runtime/tests/test_model_tier_taxonomy.py`
-- `phase-loop-runtime/tests/test_skill_liveness_contract.py`
+- `phase-loop-runtime/src/phase_loop_runtime/declared_identity.py`
+- `phase-loop-runtime/src/phase_loop_runtime/plan_pin_lint.py`
+- `phase-loop-runtime/src/phase_loop_runtime/producer_manifest.py`
+- `phase-loop-runtime/src/phase_loop_runtime/proof_stages.py`
+- `phase-loop-runtime/src/phase_loop_runtime/roadmap_reseal.py`
+- `phase-loop-runtime/src/phase_loop_runtime/tdd_receipts.py`
+- `phase-loop-runtime/tests/govlean_freeze_receipt.py`
+- `phase-loop-runtime/tests/test_govlean_declared_identity.py`
+- `phase-loop-runtime/tests/test_govlean_panel_policy.py`
+- `phase-loop-runtime/tests/test_govlean_plan_manifest_issue_dispositions.py`
+- `phase-loop-runtime/tests/test_govlean_plan_pin_lint.py`
+- `phase-loop-runtime/tests/test_govlean_producer_manifest.py`
+- `phase-loop-runtime/tests/test_govlean_proof_stages.py`
+- `phase-loop-runtime/tests/test_govlean_roadmap_reseal.py`
+- `phase-loop-runtime/tests/test_govlean_skill_policy_parity.py`
+- `phase-loop-runtime/tests/test_govlean_tdd_receipts.py`
+- `phase-loop-runtime/tests/test_review_policy_govlean_repairs.py`
+- `plans/phase-plan-v10-GOVLEAN.md`
 - `skills-src/` planner and roadmap skills plus regeneration outputs
 
 **Dispatch holds**

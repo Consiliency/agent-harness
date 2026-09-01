@@ -1197,14 +1197,17 @@ def render_report(rows: Sequence[ReplayRow]) -> str:
             f"  would have flagged: {len(flagged)}/{len(scored)} ({pct:.0f}%)"
         )
         if is_candidate:
+            # A projection is NOT the graduation number. Printing both lines
+            # would hand a reader two contradictory safety statements.
             lines.append(
                 "  ^ a PROJECTION under the proposed roadmap text, not a measurement of "
                 "history. Compare against a plain --report run on the same window."
             )
-        lines.append(
-            "  ^ THIS is the graduation number. A blocking gate at this rate stops "
-            f"{pct:.0f}% of merges."
-        )
+        else:
+            lines.append(
+                "  ^ THIS is the graduation number. A blocking gate at this rate stops "
+                f"{pct:.0f}% of merges."
+            )
     counts: Dict[str, int] = {}
     for r in flagged:
         for a in r.phases:
@@ -1278,6 +1281,13 @@ def main(argv: List[str]) -> int:
     )
     args = parser.parse_args(argv[1:])
 
+    # Checked before ANY mode dispatches. --preflight returns from main() on
+    # its own, so a check placed after it would let `--preflight X
+    # --candidate-roadmap Y` exit 0 with the candidate silently ignored.
+    if args.candidate_roadmap is not None and args.report is None:
+        print("roadmap-ownership: --candidate-roadmap requires --report N")
+        return 2
+
     if args.preflight:
         try:
             owned = preflight(args.repo, args.preflight, args.current_phase)
@@ -1289,10 +1299,6 @@ def main(argv: List[str]) -> int:
             return 2
         print(render_preflight(owned, args.current_phase))
         return 1 if owned else 0
-
-    if args.candidate_roadmap is not None and args.report is None:
-        print("roadmap-ownership: --candidate-roadmap requires --report N")
-        return 2
 
     if args.report is not None:
         if args.report < 0:

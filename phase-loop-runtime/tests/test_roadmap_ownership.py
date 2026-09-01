@@ -2401,8 +2401,12 @@ class TestCandidateRoadmap(unittest.TestCase):
                                              candidate_roadmap=ROADMAP))
             self.assertIn("CANDIDATE roadmap, not history", out.splitlines()[0])
             self.assertIn("PROJECTION", out)
+            # The projection line REPLACES the graduation line. Printing both
+            # hands the reader two contradictory safety statements (ah#732 CR).
+            self.assertNotIn("graduation number", out)
             plain = ro.render_report(ro.replay(repo, 3, "specs/phase-plans-v10.md", "HEAD"))
             self.assertNotIn("CANDIDATE", plain)
+            self.assertIn("graduation number", plain)  # positive control
 
     def test_candidate_without_report_is_refused(self):
         """Mutation that must kill this: drop the argument check in `main`."""
@@ -2413,6 +2417,17 @@ class TestCandidateRoadmap(unittest.TestCase):
                 rc = ro.main(["prog", "--repo", str(repo), "--candidate-roadmap", str(cand)])
             self.assertEqual(rc, 2)
             self.assertIn("requires --report", buf.getvalue())
+            # ...in EVERY mode. --preflight returns from main() on its own, so a
+            # check placed after it let this exact invocation exit 0 with the
+            # candidate silently ignored (ah#732 CR, codex finding 2).
+            with redirect_stdout(io.StringIO()) as buf:
+                rc = ro.main(["prog", "--repo", str(repo), "--preflight", "src/alpha.py",
+                              "--candidate-roadmap", str(cand)])
+            self.assertEqual(rc, 2)
+            self.assertIn("requires --report", buf.getvalue())
+            with redirect_stdout(io.StringIO()):  # positive control: preflight itself still runs
+                self.assertIn(ro.main(["prog", "--repo", str(repo), "--preflight", "src/alpha.py"]),
+                              (0, 1))
 
     def test_a_MALFORMED_candidate_cannot_evaluate_rather_than_scoring_smaller(self):
         """The candidate goes through `ownership_map`, so every ah#725 gate applies:
