@@ -923,7 +923,7 @@ def _synthetic_wheel(
         "phase_loop_runtime/__init__.py": b'__version__ = "0.7.14"\n',
         f"{dist_info}/METADATA": b"Name: phase-loop-runtime\nVersion: 0.7.14\n",
         f"{dist_info}/WHEEL": b"Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
-        f"{dist_info}/entry_points.txt": b"[console_scripts]\nphase-loop = phase_loop_runtime.cli:main\ncodex-phase-loop = phase_loop_runtime.cli:main\nphase-loop-closeout-audit = phase_loop_runtime.closeout_classifier:console_main\n",
+        f"{dist_info}/entry_points.txt": b"[console_scripts]\nphase-loop = phase_loop_runtime.cli:main\ncodex-phase-loop = phase_loop_runtime.cli:main\nphase-loop-closeout-audit = phase_loop_runtime.closeout_classifier:console_main\nroadmap-ownership = phase_loop_runtime.roadmap_ownership:console_main\n",
         "phase_loop_runtime-0.7.14.data/data/share/phase-loop-runtime/protocol/protocol.md": b"protocol\n",
     }
     if members:
@@ -1012,6 +1012,10 @@ def _installed_wheel_fixture(
         environment_root / "bin" / "phase-loop-closeout-audit": evidence._uv_console_script_bytes(
             interpreter=interpreter,
             target="phase_loop_runtime.closeout_classifier:console_main",
+        ),
+        environment_root / "bin" / "roadmap-ownership": evidence._uv_console_script_bytes(
+            interpreter=interpreter,
+            target="phase_loop_runtime.roadmap_ownership:console_main",
         ),
     }
     for target, data in generated.items():
@@ -6289,7 +6293,7 @@ def test_wheel_binding_rejects_archive_path_traversal_and_wrong_wheel():
 @pytest.mark.parametrize("entry_points", [
     b"[console_scripts]\nphase-loop = phase_loop_runtime.cli:main\n",
     b"[console_scripts]\nphase-loop = phase_loop_runtime.cli:run\ncodex-phase-loop = phase_loop_runtime.cli:main\n",
-    b"[console_scripts]\nphase-loop = phase_loop_runtime.cli:main\ncodex-phase-loop = phase_loop_runtime.cli:main\nphase-loop-closeout-audit = phase_loop_runtime.closeout_classifier:console_main\nextra = phase_loop_runtime.cli:main\n",
+    b"[console_scripts]\nphase-loop = phase_loop_runtime.cli:main\ncodex-phase-loop = phase_loop_runtime.cli:main\nphase-loop-closeout-audit = phase_loop_runtime.closeout_classifier:console_main\nroadmap-ownership = phase_loop_runtime.roadmap_ownership:console_main\nextra = phase_loop_runtime.cli:main\n",
 ])
 def test_wheel_binding_rejects_missing_aliased_or_extra_console_entry_points(entry_points):
     wheel = _synthetic_wheel(members={

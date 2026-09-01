@@ -27,6 +27,7 @@ arm fails; both names are asserted by name, not counted.
 from __future__ import annotations
 
 import importlib
+import inspect
 import importlib.metadata as importlib_metadata
 from pathlib import Path
 
@@ -44,7 +45,12 @@ DISTRIBUTION = "phase-loop-runtime"
 # Both names are load-bearing: `phase-loop` is the neutral entry point Gate A's
 # clean-room probe drives, and `codex-phase-loop` is the name the fleet's installed
 # shims and the smoke fixtures historically used.
-REQUIRED_SCRIPTS = ("phase-loop", "codex-phase-loop")
+#
+# `roadmap-ownership` is load-bearing for a third reason: under `uv tool install`
+# isolation the module form fails to import and exits 1, which `--preflight`
+# defines as "claimed by another phase" -- so losing the script turns the guard
+# into a phantom block on every path rather than a visible breakage (ah#633).
+REQUIRED_SCRIPTS = ("phase-loop", "codex-phase-loop", "roadmap-ownership")
 
 
 def _declared_scripts() -> dict[str, str]:
@@ -72,6 +78,42 @@ def test_declared_console_script_target_is_importable_and_callable(script: str) 
     module = importlib.import_module(module_path)
     assert callable(getattr(module, attribute, None)), (
         f"{script} points at {target!r}, which is not a callable on the imported module"
+    )
+
+
+@pytest.mark.parametrize("script", REQUIRED_SCRIPTS)
+def test_declared_console_script_target_is_invocable_with_no_arguments(script: str) -> None:
+    """Callable is not enough: a console script is invoked with NO arguments.
+
+    `importlib` resolving the attribute proves it exists, not that it can be
+    CALLED the way a launcher calls it. Declaring `...:main` for a `main(argv)`
+    satisfies every other arm here and then raises TypeError on first use --
+    visible only to whoever runs the installed command. `phase-loop` survives
+    because its `main` defaults `argv=None`; a target without that default would
+    not, and nothing said so until now.
+
+    Mutation that must kill this: point any REQUIRED_SCRIPTS entry at a callable
+    taking a required positional argument.
+    """
+    target = _declared_scripts()[script]
+    module_path, _, attribute = target.partition(":")
+    function = getattr(importlib.import_module(module_path), attribute)
+    required = [
+        parameter.name
+        for parameter in inspect.signature(function).parameters.values()
+        if parameter.default is inspect.Parameter.empty
+        and parameter.kind
+        in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            # A required KEYWORD_ONLY parameter is just as fatal under a launcher
+            # that passes nothing, and omitting it here let one through.
+            inspect.Parameter.KEYWORD_ONLY,
+        )
+    ]
+    assert not required, (
+        f"{script} points at {target!r}, which requires {required}; a "
+        f"[project.scripts] launcher passes no arguments, so this fails at runtime"
     )
 
 

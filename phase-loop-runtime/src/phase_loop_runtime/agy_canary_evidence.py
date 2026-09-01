@@ -6770,6 +6770,10 @@ _CANONICAL_CONSOLE_SCRIPTS = [
         "name": "phase-loop-closeout-audit",
         "target": "phase_loop_runtime.closeout_classifier:console_main",
     },
+    {
+        "name": "roadmap-ownership",
+        "target": "phase_loop_runtime.roadmap_ownership:console_main",
+    },
 ]
 
 

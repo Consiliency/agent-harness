@@ -13,12 +13,19 @@ present and machine-readable the whole time -- ``roadmap_lint`` already parses
 ``Key files`` into ``Phase.key_files`` and already ERRORS when a phase omits them.
 Nothing consumed it as ownership.
 
-Deliberately ADVISORY in this first form: it annotates, it never fails. A gate
-that blocks merges is only worth turning on once its flag rate has been measured
-against real history (the flag rate, not the false-positive rate: nothing here
-establishes which flags were wrong) -- which is what ``--report`` does. Shipping it
-blocking-first would red the repo on the day it landed, which is how a gate gets
-disabled rather than fixed.
+The POST-hoc audit (``audit`` / ``--report``) is deliberately ADVISORY: it
+annotates, it never fails. A gate that blocks merges is only worth turning on once
+its flag rate has been measured against real history (the flag rate, not the
+false-positive rate: nothing here establishes which flags were wrong) -- which is
+what ``--report`` does. Shipping it blocking-first would red the repo on the day it
+landed, which is how a gate gets disabled rather than fixed.
+
+``--preflight`` is the PRE-edit question and is scriptable, so it does exit
+non-zero -- 1 when somebody else claims a path, 2 when ownership cannot be
+evaluated at all. Those two must never collide: a caller that reads "cannot
+evaluate" as "you are blocked" (or the reverse) is exactly the confusion the
+module exists to prevent, so every failure to resolve the roadmap is normalized
+through ``resolve_roadmap`` into ``RoadmapUnreadable`` and reported as 2.
 
 This module IMPORTS ``roadmap_lint`` rather than editing it: that file belongs to
 Phase 0 (LEGIBLE), and the point of this check is to stop people writing into
@@ -29,6 +36,7 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import json
+import os
 import re
 import tempfile
 import subprocess
@@ -41,7 +49,12 @@ from .roadmap_lint import (
     RoadmapStatusError,
     validate_roadmap_status_coherence,
 )
-from .roadmap_lint import Phase, _extract_phases, declared_active_roadmap
+from .roadmap_lint import (
+    Phase,
+    _extract_phases,
+    declared_active_roadmap,
+    lint_roadmap_text,
+)
 
 #: A PR body/commit trailer that records a deliberate edit into an owned file.
 #: The goal is NOT to prevent the edit -- an urgent fix in a reserved file is a
@@ -112,12 +125,93 @@ def current_phase(repo: Path) -> Optional[str]:
     if not state.is_file():
         return None
     try:
-        return json.loads(state.read_text()).get("current_phase")
+        loaded = json.loads(state.read_text())
     except (OSError, ValueError):
         return None
+    if not isinstance(loaded, dict):
+        # Valid JSON is not necessarily an OBJECT. A state file containing `[]`
+        # reached `.get` on a list and raised AttributeError, which audit-mode
+        # `main` does not catch -- exiting 1 with no ownership claim at all.
+        return None
+    return loaded.get("current_phase")
 
 
 _BACKTICKED = re.compile(r"`([^`]+)`")
+
+#: LEADING WHITESPACE IS ALLOWED in both patterns below, and it is UNICODE
+#: whitespace (`[^\S\n]`), not just ASCII space/tab: a whole-block indent
+#: with U+00A0 non-breaking spaces reproduced the round-16 fail-open exactly
+#: (parsed=13, bodies=13, headings=13, zero linter errors, RELEASE dropped).
+#: Newline is excluded so the class cannot swallow line boundaries.
+#:
+#: KNOWN LIMITATION, stated rather than claimed closed. This is BEST-EFFORT
+#: detection, not a guarantee. `\S` keys on Unicode category Zs, so a format
+#: character such as U+FEFF (category Cf) indents a block without being seen as
+#: whitespace, and the fail-open returns. Four rounds of review found four
+#: successive variants of this one class -- case, heading level, column, and
+#: whitespace class -- and each time I claimed the class was closed and was
+#: wrong within a round. The honest conclusion is that a regex over prose cannot
+#: enumerate the ways a heading can be malformed.
+#:
+#: The real fix belongs in `roadmap_lint`, which owns the parser: a phase that
+#: does not parse should be an error THERE, where the shape is defined, rather
+#: than something this consumer tries to infer afterwards. That file is
+#: LEGIBLE-owned, so this module does not edit it. What remains here catches the
+#: ordinary typos (wrong case, wrong heading level, indented block, tab/NBSP)
+#: and is worth keeping for that -- but nobody should read it as a guarantee
+#: that a malformed roadmap cannot produce a false clear. The parser anchors at
+#: column zero, so indenting an entire phase block by one space drops it from
+#: `_extract_phases` -- and a detector that also anchors at column zero drops it
+#: too, making all three counts fall together and the comparison see nothing.
+#: Measured on live v10: block-indenting RELEASE gives parsed=13/bodies=13/
+#: headings=13, accepted, `pyproject.toml` owners ['RELEASE'] -> [], exit 1 -> 0.
+#: Third variant of one lesson: the detector must not share ANY assumption with
+#: the parser it audits -- not its case, not its heading level, not its column.
+#:
+#: Every phase BODY carries this field, and `roadmap_lint` errors when one omits
+#: it. Counting bodies is independent of heading SYNTAX entirely, which is what
+#: makes it the right detector: a mangled heading cannot hide a phase whose body
+#: is still present. Two earlier heading-shaped detectors each left a hole --
+#: `#{3,}` missed `## Phase 12`, and a number-anchored `#{2,}...\d` still missed a
+#: leading space -- because both counts fell together and the comparison saw
+#: nothing.
+_PHASE_BODY_FIELD = re.compile(r"^[^\S\n]*\*\*Key files\*\*", re.MULTILINE)
+
+#: A fenced code block. Both counts below are taken on text with fences REMOVED:
+#: a roadmap that documents its own format in an example block (`**Key files**`,
+#: or a sample `### Phase 1 — ...` heading) would otherwise inflate a count and
+#: fail-closed on a perfectly valid roadmap. Found by probing my own fix before
+#: the panel did: a fenced `**Key files**` took v10 from bodies=14 to bodies=15
+#: against parsed=14, which raises.
+_CODE_FENCE = re.compile(
+    # ``` or ~~~, either fence marker, with up to three spaces of
+    # indentation (CommonMark allows that; four makes it a code block).
+    # The opening marker's kind and indent are captured so a ``` block
+    # is not closed by a ~~~ line. My first version matched only ``` at
+    # column zero -- the SAME column-zero assumption I had just removed
+    # from the phase patterns -- so a `~~~` or indented fence went
+    # unstripped and produced a false CANNOT EVALUATE on a VALID roadmap.
+    r"^[^\S\n]{0,3}(?P<fence>```|~~~).*?^[^\S\n]{0,3}(?P=fence)",
+    re.MULTILINE | re.DOTALL,
+)
+
+
+def _without_code_fences(text: str) -> str:
+    """``text`` with fenced blocks blanked, preserving line structure.
+
+    Blanked rather than deleted so that any line-based reasoning elsewhere sees
+    the same number of lines.
+    """
+
+    return _CODE_FENCE.sub(lambda m: "\n" * m.group(0).count("\n"), text)
+
+#: A heading that INTENDS to declare a phase, in any case, at any level, with or
+#: without the space before the number. Number-anchored on purpose (grok, r15):
+#: a bare `phase\b` also matches `## Phase Dependency DAG`, which every roadmap
+#: has, and would fail-closed on 3 of the 11 real roadmaps in this repo.
+#: Secondary to the body count -- it catches the converse case, a heading present
+#: whose body is missing.
+_INTENDED_PHASE_HEADING = re.compile(r"^[^\S\n]*#{2,}\s*phase\s*\d", re.IGNORECASE | re.MULTILINE)
 
 
 def _strip_token(raw: str) -> str:
@@ -164,6 +258,64 @@ def ownership_map(roadmap_text: str) -> Dict[str, List[Phase]]:
     a pass on every PR.
     """
 
+    # The CANONICAL linter first, not just the phase extractor. `_extract_phases`
+    # is one piece of `lint_roadmap_text`, and a phase whose HEADING is malformed
+    # is not extracted as a phase at all -- it vanishes while the map stays
+    # non-empty and plausible. Changing the em-dash in v10's SCHED heading to a
+    # colon (one character) drops SCHED entirely: `lane_scheduler.py` goes from
+    # owners {GOVLEAN, SCHED} to {GOVLEAN}, so preflighting it as GOVLEAN excludes
+    # the only surviving claim and exits 0 on a file SCHED explicitly claims.
+    #
+    # The existing guards below catch "zero phases" and "a parsed phase with no
+    # Key files"; neither sees a phase that never parsed. Consuming a PIECE of a
+    # validator instead of the validator is the recurring mistake this module was
+    # built to avoid -- the roadmap the repo's own linter rejects cannot be a
+    # trustworthy ownership map. All three CLI modes map RoadmapUnreadable to
+    # exit 2, so this reports CANNOT EVALUATE rather than a false clear.
+    # INTENT vs PARSE, before the linter -- because the linter shares the
+    # extractor's blind spot and cannot see this class.
+    #
+    # The round-13 gate was CIRCULAR: it detected a malformed heading with
+    # `ANY_PHASE_HEADING_RE`, which requires the heading to be well-formed enough
+    # to recognise. Both it and `_extract_phases` demand an uppercase `Phase`, so
+    # a one-character typo is invisible to BOTH -- measured on live v10:
+    #
+    #     "### Phase 12 — ... (RELEASE)"  ->  "### phase 12 — ..."
+    #     canonical lint errors   0          <- the round-13 gate keyed on this
+    #     phases lost             ['RELEASE']
+    #     pyproject.toml owners   ['RELEASE'] -> []
+    #     preflight exit          1 -> 0
+    #
+    # A detector for malformed headings must be WEAKER than the thing it audits.
+    # Any level-3+ heading whose first word is "phase" INTENDS to be a phase; if
+    # one of those does not parse, the map is missing a phase whatever the linter
+    # says. Verified as exact parity across all 11 roadmap versions in this repo,
+    # and it catches the lowercase, colon, and missing-alias malformations alike.
+    parsed = len(_extract_phases(roadmap_text))
+    prose = _without_code_fences(roadmap_text)
+    bodies = len(_PHASE_BODY_FIELD.findall(prose))
+    intended = len(_INTENDED_PHASE_HEADING.findall(prose))
+    # Strictly GREATER-THAN, not inequality. `bodies > parsed` means a phase body
+    # exists whose heading did not parse -- the silent-drop defect. The converse,
+    # `bodies < parsed`, means a parsed phase omits `Key files`, which is the
+    # linter's finding and is reported below with its own precise message; firing
+    # here would relabel it as "a phase went missing", which is not what happened.
+    if bodies > parsed or intended > parsed:
+        raise RoadmapUnreadable(
+            f"only {parsed} phase(s) parse, but the roadmap contains {bodies} "
+            f"phase body/bodies and {intended} heading(s) that intend to declare "
+            f"a phase; a malformed heading removes that phase from the ownership "
+            f"map silently, so its files would report as unclaimed. Refusing to "
+            f"answer from a map that is missing a phase."
+        )
+
+    lint_errors = lint_roadmap_text(roadmap_text)
+    if lint_errors:
+        raise RoadmapUnreadable(
+            "the roadmap does not satisfy its own linter, so ownership parsed "
+            "from it cannot be trusted; a malformed phase heading silently "
+            f"removes that phase from the map. Errors: {'; '.join(lint_errors[:3])}"
+        )
     phases = _extract_phases(roadmap_text)
     if not phases:
         raise RoadmapUnreadable(
@@ -232,6 +384,16 @@ def _claims(owned: str, path: str) -> bool:
         return True
     if owned.endswith("/") and path.startswith(owned):
         return True
+    if (owned.endswith("/") or path.endswith("/")) and path.rstrip("/") == owned.rstrip("/"):
+        # The directory ITSELF, spelled without the trailing slash. `--preflight`
+        # normalizes through `Path.resolve()`, which drops it, so the exact token
+        # the roadmap uses (`skills-src/`, `phase-loop-runtime/tests/`) arrived
+        # here as `skills-src` and matched nothing: files UNDER a claimed
+        # directory were flagged while the directory itself came back "no path is
+        # claimed". Normalization preserves directory-ness now, and this handles
+        # it from the other side too -- a fail-open on the most obvious spelling
+        # of a claim is worth closing twice.
+        return True
     if any(ch in owned for ch in "*?[") and fnmatch.fnmatch(path, owned):
         return True
     return False
@@ -252,9 +414,30 @@ def changed_paths(repo: Path, base: str) -> List[str]:
     return [line for line in result.stdout.splitlines() if line.strip()]
 
 
+def read_roadmap(roadmap: Path) -> str:
+    """The roadmap's text, with read failures normalized to ``RoadmapUnreadable``.
+
+    ``resolve_roadmap`` normalizes RESOLUTION failures; this normalizes the READ.
+    Both call sites need it and only ``preflight`` had it: an unreadable or
+    non-UTF-8 roadmap escaped ``audit`` as an uncaught exception, and the
+    interpreter's exit 1 is the code ``--preflight`` reserves for "claimed by
+    another phase". Stated once here rather than at each call site, because the
+    version of this fix that lived in one caller is exactly how the other kept
+    the hole.
+    """
+
+    try:
+        return roadmap.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise RoadmapUnreadable(
+            f"could not read the active roadmap {roadmap}: {exc}. Refusing to "
+            f"report ownership from a roadmap this command cannot read."
+        ) from exc
+
+
 def audit(repo: Path, base: str) -> List[Ownership]:
     roadmap = resolve_roadmap(repo)
-    mapping = ownership_map(roadmap.read_text(encoding="utf-8"))
+    mapping = ownership_map(read_roadmap(roadmap))
     active = current_phase(repo)
     found: List[Ownership] = []
     for path in changed_paths(repo, base):
@@ -272,12 +455,78 @@ def audit(repo: Path, base: str) -> List[Ownership]:
 
 
 def _note_for(alias: str, path: str, mapping: Dict[str, List[Phase]]) -> str:
-    for owned in mapping:
-        if _claims(owned, path):
-            note = _NOTES.get(f"{alias}\x00{owned}")
-            if note:
-                return note
-    return ""
+    """The qualification on the MOST SPECIFIC token claiming ``path``.
+
+    A phase can claim both a file and its parent directory with different
+    qualifications -- GOVLEAN does exactly that in v10. Returning the first
+    match made the answer depend on bullet ORDER in the roadmap: reordering two
+    semantically identical lines could replace an exact file's narrow
+    qualification with the broad directory note, which silently widens the scope
+    a reader believes they have.
+
+    Ranked, most specific first:
+
+    1. an EXACT token (``owned == path``) -- it claims that path and nothing else;
+    2. otherwise, the longest LITERAL PREFIX (the part before the first wildcard),
+       because that prefix is what actually bounds the claim;
+    3. then overall length, as a tie-break within the same prefix.
+
+    Two earlier versions of this ranking were wrong in opposite directions, and
+    both are worth naming because the shape recurs:
+
+    * **Raw length** -- ``src/beta/[xyz][.]py`` is 19 characters and matches the
+      13-character ``src/beta/x.py``, so a longer GLOB outranked the exact file.
+    * **Literal-beats-glob** -- the repair for that ranked any token without a
+      wildcard above any token with one, so the broad directory ``src/beta/``
+      outranked the far narrower ``src/beta/parser_*.py``. A glob character says
+      nothing about breadth; where the wildcard SITS does.
+
+    Both produced the same user-visible error the ordering fix existed to stop:
+    a broad qualification attached to a narrow path.
+    """
+
+    # Scoped to THIS alias. The round-3 filter `_NOTES.get(f"{alias}\x00{owned}")`
+    # was quietly doing two jobs: skipping unqualified tokens, and keeping the
+    # ranking inside one phase. Round 4 removed both, and only the first removal
+    # was intended -- so another phase's exact claim won the global rank and
+    # GOVLEAN's scoped directory note vanished from every file some other phase
+    # names exactly (`runner.py`, `test_reviewtruth_phase.py`, dozens more on live
+    # v10). That is a scoped claim presented as unconditional: the exact failure
+    # `Ownership.note` exists to prevent.
+    matches = [
+        owned
+        for owned, phases in mapping.items()
+        if _claims(owned, path) and any(p.alias == alias for p in phases)
+    ]
+    if not matches:
+        return ""
+
+    def note_of(owned: str) -> str:
+        return _NOTES.get(f"{alias}\x00{owned}", "")
+
+    # An EXACT token claims this path and nothing else, so a qualification on it
+    # describes this path unambiguously and needs no attribution.
+    for owned in matches:
+        if owned == path and note_of(owned):
+            return note_of(owned)
+
+    # Every other qualification is ATTRIBUTED to the token carrying it.
+    #
+    # Returning a bare note was the last form of the recurring defect: given a
+    # qualified `src/beta/` and an UNQUALIFIED `src/beta/parser_*.py`, the
+    # directory's "(the whole lane-B tree)" came back as the qualification on
+    # `parser_impl.py` -- a broader qualification attached to a narrower,
+    # unconditional claim, for the fourth time.
+    #
+    # The bug was never the ordering; it was reporting a qualification without
+    # saying WHICH claim it qualifies. Naming the token makes the misattribution
+    # unrepresentable, so no ranking is needed and none is attempted -- for two
+    # globs sharing a literal prefix, breadth is not length anyway (`[a]*.py` is
+    # narrower than `[a-z]*.py` and shorter), so no honest total order exists.
+    attributed = sorted(
+        f"`{owned}` {note_of(owned)}" for owned in matches if note_of(owned)
+    )
+    return " | ".join(attributed)
 
 
 def has_disposition(text: str) -> bool:
@@ -613,6 +862,287 @@ def _most_relievable_phase(
     )[0]
 
 
+def preflight(
+    repo: Path, paths: Sequence[str], current_phase: str | None = None
+) -> Dict[str, List[Ownership]]:
+    """Which phases claim each of ``paths`` -- the pre-EDIT question.
+
+    agent-harness#633 asks for a gate that fails a change touching a BLOCKED phase's key
+    files. Ownership is machine-readable and answered exactly here; **block state
+    is not**, so this reports and does not decide.
+
+    Measured, not assumed: scanning phase bodies for a ``BLOCKED`` marker matches
+    6 phases in v10 of which exactly ONE is a real phase-level block. The others
+    are exit-criteria prose containing ``OUTCOME_AMBIGUOUS_BLOCKED``, "a merge
+    blocked on president-unavailability", and similar. A gate keyed on that
+    signal would fire falsely on five phases, so this deliberately stops at
+    ownership and leaves the disposition to a reader who can see the phase.
+
+    ``current_phase`` excludes your own phase, which is the form the question
+    actually takes: "does this path belong to somebody ELSE?"
+
+    Resolution goes through ``resolve_roadmap``, NOT ``declared_active_roadmap``
+    directly. The raw reader raises ``RoadmapStatusError`` subclasses that no
+    caller here catches, so an incoherent roadmap escaped as an uncaught exception
+    and Python exited 1 -- the code this command defines as "claimed by another
+    phase". "I cannot tell" then read as "you are blocked". ``resolve_roadmap``
+    normalizes every such failure into ``RoadmapUnreadable``, which the CLI maps
+    to 2.
+
+    Paths are normalized before matching, and an uninterpretable one RAISES rather
+    than being skipped -- see ``_preflight_identities``.
+    """
+
+    repo = Path(repo)
+    mapping = ownership_map(read_roadmap(resolve_roadmap(repo)))
+    owned: Dict[str, List[Ownership]] = {}
+    for raw in paths:
+        claims: List[Ownership] = []
+        seen: set = set()
+        for path in _preflight_identities(repo, raw):
+            for phase in owners_for(path, mapping):
+                if phase.alias == current_phase or (phase.alias, path) in seen:
+                    continue
+                seen.add((phase.alias, path))
+                claims.append(
+                    Ownership(
+                        path=path,
+                        phase_alias=phase.alias,
+                        phase_name=phase.name,
+                        is_current=False,
+                        note=_note_for(phase.alias, path, mapping),
+                    )
+                )
+        if claims:
+            owned[raw] = sorted(claims, key=lambda o: (o.phase_alias, o.path))
+    return owned
+
+
+class PathNotInRepo(ValueError):
+    """A ``--preflight`` argument that cannot be read as a path inside the repo.
+
+    Raised rather than skipped. Skipping an argument this command cannot
+    interpret makes it vanish from the result, and an empty result is printed as
+    "no path is claimed" and exits 0 -- a clean bill of health produced by not
+    having looked. Same absence-reads-as-success shape as ``RoadmapUnreadable``.
+    """
+
+
+def _names_the_same_file(lexical: Path, resolved: Path) -> bool:
+    """Do these two paths name the same FILE?
+
+    Identity, not spelling. When both exist the kernel answers via
+    ``os.path.samefile`` (device + inode); only when one does not exist -- the
+    normal case for a PRE-edit check -- does this fall back to comparing
+    canonicalized paths.
+
+    The fallback alone was the fifth proxy-instead-of-property defect in this PR.
+    Canonical-path equality is a proxy for file identity, and HARDLINKS are where
+    it diverges: two names for one inode canonicalize differently, so with
+    ``link -> a/b``, hardlinked ``owned.py`` and ``a/owned.py``, ALPHA owning the
+    first and BETA the second, preflighting ``link/../owned.py`` as BETA dropped
+    ALPHA's identity and exited 0 -- while the edit changes ALPHA's inode.
+
+    Erring toward "same" is the safe direction: it can only ADD an identity, and
+    an extra identity over-reports ownership rather than clearing a real claim.
+    """
+
+    try:
+        if lexical.exists() and resolved.exists():
+            return os.path.samefile(lexical, resolved)
+    except OSError:
+        # UNKNOWN, not "different". An ESTALE, a permission change, or a
+        # concurrent replacement between `exists()` and `samefile()` says nothing
+        # about identity -- and returning False here DROPPED the lexical identity,
+        # the exact opposite of the safe direction this function documents.
+        #
+        # CLI-reachable with an ordinary repository symlink: ALPHA owns `link/`,
+        # BETA owns `real/`, `link -> real`, and `--preflight link/file
+        # --current-phase BETA` then excluded the only surviving claim and exited
+        # 0 on a real cross-phase edit.
+        #
+        # Keeping the identity can only ADD a claim, so the worst case is a false
+        # BLOCK (exit 1) that a reader resolves by looking. Dropping it produces a
+        # false CLEAR (exit 0), which is the failure class this command exists to
+        # prevent and which nobody looks at.
+        return True
+    try:
+        return lexical.resolve() == resolved
+    except (OSError, RuntimeError):
+        # Same reasoning: unresolvable means unknown, so retain rather than drop.
+        return True
+
+
+def _preflight_identities(repo: Path, raw: str) -> List[str]:
+    """Every repo-relative POSIX identity a ``--preflight`` argument denotes.
+
+    Ownership tokens are repo-relative names and ``_claims`` compares by equality
+    or prefix, so the matcher saw the argument as typed and the same file answered
+    differently by spelling (`x`, `./x`, `/abs/x`). That was fail-OPEN, on the two
+    forms people most often type.
+
+    **Both identities are returned when both are real.** A symlink gives one file
+    two valid names, and an edit through it touches BOTH: the name typed, and the
+    bytes the target owns. Git proves the second half — editing `src/link/x.py`
+    makes `git diff --name-only` report `src/real/x.py`, the TARGET — so `audit`
+    already answers about targets, and a preflight that answered only about names
+    would be strictly weaker than the audit it precedes. That is not a theoretical
+    gap: pass the link-name's owner as ``--current-phase`` and a name-only
+    preflight exits 0 while the edit modifies another phase's tracked file, which
+    is the cross-phase failure ah#633 exists to prevent.
+
+    **Except when ``..`` cancelled a symlink.** With `link -> a/b`,
+    `link/../owned.py` denotes `a/owned.py`; the lexically collapsed `owned.py` is
+    neither the name typed nor the bytes written, and reporting it claims an edit
+    that never happens. ``..`` is the only construct that makes lexical collapsing
+    unsound -- it cancels a component without knowing whether that component was a
+    symlink -- so the lexical identity is dropped exactly there.
+    """
+
+    if not raw:
+        raise PathNotInRepo(
+            "an empty --preflight argument names no path. Refusing to report it "
+            "as unclaimed -- it matches no ownership token, so it would exit 0."
+        )
+    root_lexical = Path(os.path.normpath(os.path.abspath(str(Path(repo)))))
+    try:
+        root = Path(repo).resolve()
+    except (OSError, RuntimeError) as exc:
+        # RuntimeError on a symlink loop, OSError on other filesystem failures.
+        # Uncaught, either escaped `main` as exit 1 -- the code reserved for
+        # "claimed by another phase".
+        raise PathNotInRepo(
+            f"could not resolve the repository root {Path(repo)}: {exc}"
+        ) from exc
+
+    candidate = Path(raw)
+    uncollapsed = candidate if candidate.is_absolute() else root_lexical / candidate
+    lexical = Path(os.path.normpath(str(uncollapsed)))
+    try:
+        resolved = uncollapsed.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise PathNotInRepo(
+            f"could not resolve {raw!r}: {exc}. Refusing to report it as "
+            f"unclaimed -- this command could not evaluate it at all."
+        ) from exc
+
+    # Containment is judged on the RESOLVED form, and on the UNCOLLAPSED path so
+    # `..` cannot erase a symlink before the check: with `link -> /outside`,
+    # `link/../x` reads lexically as inside while really resolving out of the repo.
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise PathNotInRepo(
+            f"{raw!r} resolves to {resolved}, outside {root}. Refusing to report "
+            f"it as unclaimed -- this command cannot evaluate ownership for a "
+            f"path it cannot place in the repository."
+        ) from exc
+
+    # MOST SPECIFIC root wins. When the lexical root lies inside its own target
+    # (`/usr/bin/X11 -> .` with repo `/usr/bin/X11`), an argument sits beneath
+    # BOTH roots; taking the resolved root first yielded `X11/python3` instead of
+    # `python3`, so an exact `python3` claim was missed and preflight exited 0.
+    roots = sorted({root, root_lexical}, key=lambda r: len(str(r)), reverse=True)
+
+    def _relative(base: Path) -> "str | None":
+        for candidate_root in roots:
+            try:
+                return base.relative_to(candidate_root).as_posix()
+            except ValueError:
+                continue
+        return None
+
+    # Keep the lexical identity when it NAMES THE SAME FILE, drop it when
+    # resolution proves it phantom. The earlier rule -- drop whenever `..` appears
+    # -- was a PROXY for that property, and it diverges exactly where `..` cancels
+    # an ordinary directory rather than the symlink:
+    #
+    #     /lib -> usr/lib ,  argument  lib/python3/../os-release
+    #       lexical   lib/os-release        <- REAL; the proxy discarded it
+    #       resolved  usr/lib/os-release
+    #
+    # Both name one file. Dropping the lexical form there loses a real claim: with
+    # ALPHA owning `lib/` and BETA owning `usr/lib/`, preflighting as BETA reported
+    # nothing and exited 0 -- permitting the cross-phase edit this exists to block.
+    #
+    # Testing the property instead of a symptom also covers the original case:
+    # `link/../owned.py` with `link -> a/b` has a lexical form that resolves
+    # somewhere else entirely, so it is still correctly discarded.
+    sources = [resolved]
+    if _names_the_same_file(lexical, resolved):
+        sources.insert(0, lexical)
+
+    forms: List[str] = []
+    for base in sources:
+        relative = _relative(base)
+        if relative is None:
+            # The lexical form of a symlinked CHECKOUT ROOT can sit outside both;
+            # the resolved form covers it.
+            continue
+        if relative == ".":
+            # `""`, `.`, and the repo root land here. None matches any ownership
+            # token, so each exited 0 -- "the whole repository is unclaimed", the
+            # most confidently wrong answer this command can give. Skipped here
+            # and reported once below if NOTHING survives.
+            continue
+        # `_claims` reads a trailing slash as the marker of a DIRECTORY token, and
+        # normalization drops it -- which turned the roadmap's own spelling of a
+        # claim (`skills-src/`) into an unclaimed path.
+        #
+        # `is_dir()` FOLLOWS symlinks, so an exact token naming a directory
+        # symlink (`X11`) became `X11/` and stopped matching. A symlink is
+        # therefore not treated as directory-ish on its own name; the resolved
+        # identity carries the directory form.
+        directoryish = raw.endswith(("/", os.sep)) or (
+            base.is_dir() and not base.is_symlink()
+        )
+        form = f"{relative}/" if directoryish else relative
+        if form not in forms:
+            forms.append(form)
+
+    if not forms:
+        raise PathNotInRepo(
+            f"{raw!r} names the repository root. Ownership is per-path; this "
+            f"command cannot evaluate a whole-repository scope, and must not "
+            f"report one as unclaimed."
+        )
+    return forms
+
+
+def render_preflight(
+    owned: Dict[str, List[Ownership]], current_phase: str | None = None
+) -> str:
+    # "another phase" is only true when a current phase was named to be excluded.
+    # Without --current-phase the question is "does ANY phase claim this?", and
+    # calling the answer "another phase" implies an exclusion that never happened.
+    other = "another phase" if current_phase else "a phase"
+    if not owned:
+        scope = f" outside {current_phase}" if current_phase else ""
+        return f"roadmap-ownership --preflight: no path is claimed by a phase{scope}."
+    lines = [
+        f"roadmap-ownership --preflight: {len(owned)} path(s) claimed by {other}.",
+        "",
+        "  Ownership is machine-readable; BLOCK STATE IS NOT (agent-harness#633). Read the",
+        "  owning phase before editing -- this reports, it does not authorize.",
+        "",
+    ]
+    for path in sorted(owned):
+        lines.append(f"    {path}")
+        for own in owned[path]:
+            lines.append(f"        claimed by: {own.phase_alias} — {own.phase_name}")
+            if own.note:
+                # Verbatim, for the same reason `audit` does it: a parenthetical
+                # like "(new evidence, lint, and governance modules)" scopes a
+                # directory claim to PART of that directory, and this matcher
+                # cannot tell which part. Dropping it presents a scoped claim as
+                # an unconditional one -- the reading that once had GOVLEAN
+                # owning the whole source tree.
+                lines.append(
+                    f"            SCOPED — the roadmap qualifies this: {own.note}"
+                )
+    return "\n".join(lines)
+
+
 def render_report(rows: Sequence[ReplayRow]) -> str:
     total = len(rows)
     skipped = [r for r in rows if r.skipped_reason]
@@ -686,6 +1216,12 @@ def main(argv: List[str]) -> int:
     parser.add_argument("--body", default="", help="PR body, scanned for the trailer")
     parser.add_argument("--json", action="store_true")
     parser.add_argument(
+        "--preflight", nargs="+", metavar="PATH",
+        help="before editing: report which phases claim these paths; exit 1 if any is "
+             "claimed by a phase other than --current-phase",
+    )
+    parser.add_argument("--current-phase", default=None)
+    parser.add_argument(
         "--report",
         type=int,
         metavar="N",
@@ -693,6 +1229,18 @@ def main(argv: List[str]) -> int:
              "this is the measurement a graduation decision needs",
     )
     args = parser.parse_args(argv[1:])
+
+    if args.preflight:
+        try:
+            owned = preflight(args.repo, args.preflight, args.current_phase)
+        except (RoadmapUnreadable, PathNotInRepo) as exc:
+            # BOTH map to 2, never to 1. Exit 1 means "somebody else claims this";
+            # anything that means "I could not evaluate" must be distinguishable
+            # from it, or a caller reads a broken roadmap as an ownership block.
+            print(f"roadmap-ownership: CANNOT EVALUATE — {exc}")
+            return 2
+        print(render_preflight(owned, args.current_phase))
+        return 1 if owned else 0
 
     if args.report is not None:
         if args.report < 0:
@@ -744,6 +1292,24 @@ def main(argv: List[str]) -> int:
     else:
         print(render(found, disposition))
     return 0
+
+
+def console_main() -> int:
+    """Console-script entrypoint (``roadmap-ownership``).
+
+    A ``[project.scripts]`` target is invoked with NO arguments, so it cannot be
+    ``main`` directly -- that signature takes an argv list.
+
+    Needed for the same reason ``phase-loop-closeout-audit`` is (ah#670, ah#693):
+    the primary installer is ``uv tool install``, which puts the package in an
+    isolated environment where ``python -m phase_loop_runtime.roadmap_ownership``
+    fails to import. That import failure exits 1 -- the exact code ``--preflight``
+    defines as "claimed by another phase" -- so on the supported install a tool
+    with only a module form reports a phantom ownership block for every path. A
+    guard whose failure mode is a false BLOCK gets switched off.
+    """
+
+    return main(sys.argv)
 
 
 if __name__ == "__main__":  # pragma: no cover

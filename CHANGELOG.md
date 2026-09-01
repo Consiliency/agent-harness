@@ -6,6 +6,173 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### roadmap-ownership: answer the pre-EDIT question (Consiliency/agent-harness#633)
+
+- `--preflight PATH...` reports which phases claim the given paths before the work
+  exists, with `--current-phase` to exclude your own. Exit 1 when a path belongs to
+  another phase, 0 when clear — a caller scripting a guard reads the code, not the prose.
+- The **canonical linter gates the ownership map**. `ownership_map` consumed `_extract_phases`,
+  one piece of `lint_roadmap_text`, and a phase whose HEADING is malformed is not extracted as
+  a phase at all — it vanishes while the map stays non-empty and plausible. Changing one
+  character in v10's SCHED heading (em-dash to colon) drops SCHED entirely, taking
+  `lane_scheduler.py` from owners {GOVLEAN, SCHED} to {GOVLEAN}, so preflighting it as GOVLEAN
+  excluded the only surviving claim and exited 0 on a file SCHED explicitly claims. The
+  pre-existing guards catch "zero phases" and "a parsed phase with no Key files"; neither sees
+  a phase that never parsed. A roadmap the repository's own linter rejects now reports CANNOT
+  EVALUATE rather than a false clear.
+- The heading check compares **intent against parse**, because gating on the linter alone was
+  CIRCULAR: both it and the extractor require an uppercase `Phase`, so `### phase 12 — …` is
+  invisible to both — lint reports zero errors while RELEASE vanishes and
+  `phase-loop-runtime/pyproject.toml` goes from owned to unclaimed, turning exit 1 into exit 0.
+  A detector for malformed headings has to be WEAKER than the parser it audits — and two
+  heading-shaped attempts still left holes, because a heading nobody's regex matches makes
+  BOTH counts fall together and the comparison see nothing (`## Phase 12`, a leading space,
+  `### Phase12`). The primary check therefore counts phase BODIES (`**Key files**`), which is
+  independent of heading syntax entirely: a mangled heading cannot hide a phase whose body is
+  still there. A number-anchored heading count backs it up for the converse case — a heading
+  present whose body is also gone — and is number-anchored because a bare `phase` also matches
+  the `## Phase Dependency DAG` section every roadmap has. Both compare with `>` rather than
+  `!=`: fewer bodies than phases means a phase omits `Key files`, which is the linter's finding
+  and keeps its own precise message. Both counts are taken with fenced code blocks removed, so
+  a roadmap that documents its own format in an example does not fail closed — for ``` and ~~~
+  fences alike, indented or not, since the fence stripper first repeated the same column-zero
+  assumption. An UNTERMINATED fence deliberately fails closed: with nothing to pair with, the
+  safe answer is CANNOT EVALUATE rather than guessing that the text is code and erasing a real
+  phase body from the count. Both patterns also allow
+  LEADING WHITESPACE — the parser anchors at column zero, so indenting an entire phase block
+  by one space drops it from the parser and from any detector that anchors there too, making
+  every count fall together. Verified as exact parity across all 11 roadmap versions.
+- It reports ownership and **does not decide disposition**. Ownership is machine-readable;
+  phase BLOCK state is not. Scanning phase bodies for a `BLOCKED` marker matches six
+  phases in v10 of which exactly one is a real phase-level block — the rest are
+  exit-criteria prose (`OUTCOME_AMBIGUOUS_BLOCKED`, "a merge blocked on
+  president-unavailability"). A gate keyed on that signal would fire falsely on five
+  phases, so the tool stops where the data is trustworthy.
+- Paths are **normalized before matching**, so the same file answers the same way however
+  it is spelled. Ownership tokens are repo-relative, so `./src/x.py` and an absolute path
+  both missed every claim and printed "no path is claimed" — a fail-OPEN in which the
+  wrong answer is the reassuring one, on the two forms people most often type.
+- **Directory tokens are claimed in both spellings.** `_claims` reads a trailing slash as
+  the marker of a directory claim and `Path.resolve()` drops it, so `skills-src/` — the
+  literal text of the roadmap bullet — resolved to `skills-src` and matched nothing, while
+  files *under* it were flagged correctly. Normalization preserves directory-ness and
+  `_claims` also matches the slash-free form; a fail-open on the roadmap's own spelling is
+  worth closing on both sides.
+- **A whole-repository scope reports CANNOT EVALUATE.** `""`, `.`, and the absolute repo
+  root match no ownership token, so each exited 0 — "the entire repository is unclaimed".
+  Likewise a path that cannot be placed inside the repo, which was previously skipped: a
+  skipped argument vanishes into an empty result that prints as a clean pass.
+- The **qualification shown is the most specific claim's.** A phase can claim a file and
+  its parent directory with different qualifications; taking the first match made the
+  answer depend on bullet order in the roadmap, so reordering two equivalent lines could
+  swap an exact file's narrow scope for the broad directory note.
+- **Cannot-evaluate is exit 2, never exit 1.** Resolution goes through `resolve_roadmap`,
+  which normalizes every failure to `RoadmapUnreadable`; calling `declared_active_roadmap`
+  directly let a `RoadmapStatusError` escape uncaught, and Python's exit 1 is the code this
+  command defines as "claimed by another phase" — so an unreadable roadmap was
+  indistinguishable from an ownership block. The roadmap **read** is normalized too — in
+  `audit` as well as `preflight`, via one shared `read_roadmap`; the first version of that
+  fix lived only in `preflight`, which is exactly how `audit` kept the hole.
+- A path is evaluated under **both identities it denotes** — the name as written and the
+  symlink-resolved target — and the owning phases are unioned. Git settles why: editing
+  `src/link/x.py` makes `git diff --name-only` report `src/real/x.py`, the *target*, so `audit`
+  already answers about targets and a name-only preflight would be strictly weaker than the
+  audit it precedes. Pass the link-name's owner as `--current-phase` and it would exit 0 while
+  the edit modified another phase's tracked file. The lexical identity is kept when it names the
+  same file and dropped when resolution proves it phantom: `link/../owned.py` with
+  `link -> a/b` names `a/owned.py`, so reporting `owned.py` too would claim an edit that never
+  happens. "Same file" is asked of the kernel (`os.path.samefile`, device + inode) when both
+  paths exist, falling back to canonical-path comparison only for a not-yet-created file —
+  the normal input for a pre-edit check. Two weaker rules were tried first and each lost a
+  real claim: "does the argument contain `..`" discards a valid identity when `..` cancels an
+  ordinary directory rather than the symlink, and canonical-path equality alone misses
+  HARDLINKS, where one inode has two names that canonicalize differently. Both exited 0 on a
+  genuine cross-phase edit. When identity cannot be determined at all — an `ESTALE`, a
+  permission change, a concurrent replacement — the identity is RETAINED rather than dropped:
+  keeping it risks a false block that a reader resolves by looking, while dropping it produces
+  a false clear that nobody looks at.
+- The **most specific root wins** when a repo is addressed through a self-referential symlink
+  (`X11 -> .`), where an argument sits beneath both the lexical and the resolved root; taking
+  the resolved root first reported `X11/python3` and missed an exact `python3` claim.
+- A **symlink is not directory-ish under its own name**. `is_dir()` follows symlinks, so an
+  exact token naming a directory symlink was normalized to `X11/` and stopped matching — which
+  meant ownership still depended on symlink state. The trailing-slash equivalence in `_claims`
+  is symmetric too, so neither spelling can miss.
+- **A whole-repository scope reports CANNOT EVALUATE.** `""`, `.`, and the absolute repo
+  root match no ownership token, so each exited 0 — "the entire repository is unclaimed".
+  Likewise a path that cannot be placed inside the repo, which was previously skipped: a
+  skipped argument vanishes into an empty result that prints as a clean pass.
+- The **qualification shown is the most specific claim's.** A phase can claim a file and
+  its parent directory with different qualifications; taking the first match made the
+  answer depend on bullet order in the roadmap, so reordering two equivalent lines could
+  swap an exact file's narrow scope for the broad directory note.
+- **Cannot-evaluate is exit 2, never exit 1.** Resolution goes through `resolve_roadmap`,
+  which normalizes every failure to `RoadmapUnreadable`; calling `declared_active_roadmap`
+  directly let a `RoadmapStatusError` escape uncaught, and Python's exit 1 is the code this
+  command defines as "claimed by another phase" — so an unreadable roadmap was
+  indistinguishable from an ownership block. The roadmap **read** is normalized too — in
+  `audit` as well as `preflight`, via one shared `read_roadmap`; the first version of that
+  fix lived only in `preflight`, which is exactly how `audit` kept the hole.
+- Ownership is answered **by NAME**: the repository ROOT is resolved, the argument never is.
+  `Path.resolve()` does not merely collapse `.` and `..` — it rewrites every symlink in the
+  path — and that rewriting arrived as a side effect of handling `./` and absolute spellings,
+  not as a requirement. Containing it cost four review rounds (an internal symlink rewritten
+  to its target and matching no token; `..` cancelling a symlink and naming a file the caller
+  never typed; a "both identities" union reporting a phantom third path), and every one of
+  those defects was downstream of resolving the argument. Resolving only the root keeps the
+  case that motivated it — a symlinked checkout root, where an absolute argument and `--repo`
+  may be spelled under different roots — and drops the rest. It also makes `--preflight` agree
+  with `audit`, which has always worked by name because `git diff --name-only` reports names.
+  **Known limitation, documented rather than patched:** in a repo containing an internal
+  symlink, editing through it modifies the target's file and this reports only the typed
+  name's owner — the same limitation `audit` has.
+- **A whole-repository scope reports CANNOT EVALUATE.** `""`, `.`, and the absolute repo
+  root match no ownership token, so each exited 0 — "the entire repository is unclaimed".
+  Likewise a path that cannot be placed inside the repo, which was previously skipped: a
+  skipped argument vanishes into an empty result that prints as a clean pass.
+- The **qualification shown is the most specific claim's.** A phase can claim a file and
+  its parent directory with different qualifications; taking the first match made the
+  answer depend on bullet order in the roadmap, so reordering two equivalent lines could
+  swap an exact file's narrow scope for the broad directory note.
+- **Cannot-evaluate is exit 2, never exit 1.** Resolution goes through `resolve_roadmap`,
+  which normalizes every failure to `RoadmapUnreadable`; calling `declared_active_roadmap`
+  directly let a `RoadmapStatusError` escape uncaught, and Python's exit 1 is the code this
+  command defines as "claimed by another phase" — so an unreadable roadmap was
+  indistinguishable from an ownership block. The roadmap **read** is normalized too — in
+  `audit` as well as `preflight`, via one shared `read_roadmap`; the first version of that
+  fix lived only in `preflight`, which is exactly how `audit` kept the hole.
+- A path is evaluated under **both identities it denotes** — the name as written and the
+  symlink-resolved target — and the owning phases are unioned. Choosing either alone
+  fail-opens in a different direction: lexical-only let a phase preflight `src/link/owned.py`,
+  match its own claim on `src/link/`, and exit 0 while the edit mutated another phase's
+  `src/real/owned.py`; resolved-only stops a token that names the symlink from matching at
+  all. An edit through a symlink touches both the name typed and the bytes the target owns,
+  so both are the caller's business. The lexical form is dropped when `..` cancelled a
+  symlink, because there it denotes neither: `link/../owned.py` with `link -> a/b` names
+  `a/owned.py`, and reporting `owned.py` too would claim an edit that never happens. Resolving first rewrote a repo-*internal* symlink to its target,
+  so a token naming a symlinked directory matched nothing: ownership describes the
+  repository's paths, not where they point. A symlink loop or unreadable path now reports
+  CANNOT EVALUATE instead of raising past the handler as exit 1.
+- Qualifications are **scoped to the phase being reported, attributed to their claim, and no
+  longer ranked**. Each is rendered as ``` `<token>` (qualification) ``` so it names the claim
+  it belongs to; an exact token carrying its own qualification settles the matter alone. Three successive attempts to rank them each attached a *broader*
+  qualification to a narrower path — by raw length (a long glob outranked the exact file it
+  matched), then by wildcard-free-beats-glob (a directory outranked a far narrower glob),
+  then by longest literal prefix (`[a-z]*.py` outranks the narrower `[a]*.py`). For two globs
+  sharing a prefix, breadth simply is not length, so the ranking was removed rather than
+  repaired again. This matches what the module already does with prose it cannot interpret:
+  surface it rather than guess. Scoping matters as much as ordering — ranking across *all*
+  phases let another phase's exact claim win and silently erased GOVLEAN's directory
+  qualification from every file some other phase names exactly.
+- **Scoped claims stay scoped.** The roadmap qualifies some entries (GOVLEAN's directory
+  claim reads "(new evidence, lint, and governance modules)"); `--preflight` now carries
+  that parenthetical verbatim as the audit output already did, instead of presenting a
+  claim on part of a directory as a claim on all of it.
+- Ships as a **`roadmap-ownership` console script**. Under `uv tool install` isolation the
+  module form cannot import and exits 1 — again the "claimed by another phase" code — so a
+  module-only tool reported a phantom ownership block for every path on the supported
+  install (same shape as #670/#693).
+
 ### executor policy: an operator's explicit model is never substituted (Consiliency/agent-harness#671)
 
 - `--executor gemini --model gemini-3.6-flash --effort high` reached agy as the internal

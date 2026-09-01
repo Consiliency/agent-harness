@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import io
+import os
 import subprocess
 from contextlib import redirect_stdout
 import unittest
@@ -124,6 +125,34 @@ def _registry(selected: str, entries) -> str:
             key=lambda e: e["path"],
         ),
     })
+
+
+def _own(path: str, alias: str, name: str = "First Thing", note: str = "") -> ro.Ownership:
+    """An Ownership for renderer tests, which take the structure not the repo."""
+    return ro.Ownership(
+        path=path, phase_alias=alias, phase_name=name, is_current=False, note=note
+    )
+
+
+def _repo_with_two_phases(tmp: str, roadmap: str = ROADMAP) -> Path:
+    """A repo carrying the shared ROADMAP fixture.
+
+    ALPHA claims ``src/alpha.py`` and ``src/shared.py``; BETA claims ``src/beta/``
+    and ``src/shared.py``.
+
+    The docstring used to promise a roadmap this function built, via a
+    ``ROADMAP.replace("- `src/alpha.py`", "- `src/alpha.py`")`` that replaced a
+    string with itself. The tests passed because the shared fixture already said
+    what was needed, so the no-op was invisible -- but any test trusting the
+    docstring's "BETA owns src/beta.py" was reading a claim nothing established.
+    ``roadmap`` is a real parameter now, for cases needing a variant.
+    """
+    repo = Path(tmp)
+    (repo / "specs").mkdir(parents=True, exist_ok=True)
+    (repo / "specs" / "phase-plans-v10.md").write_text(roadmap)
+    (repo / "src").mkdir(exist_ok=True)
+    (repo / "src" / "alpha.py").write_text("x = 1\n")
+    return repo
 
 
 def _repo(tmp: str, *, roadmap: str = ROADMAP, current: str | None = "ALPHA") -> Path:
@@ -1163,6 +1192,1150 @@ class TestNegativeReportIsRejected(unittest.TestCase):
             self.assertIn("must be >= 0", buf.getvalue())
 
 
+class TestPreflight(unittest.TestCase):
+    """agent-harness#633: answer the pre-EDIT question before the work exists.
+
+    The issue was filed after nine commits of good work were closed as
+    superseded for touching a phase's key files. Ownership is machine-readable,
+    so that specific miss is mechanically catchable -- which is what this does.
+    """
+
+    def _repo(self, tmp):
+        repo = _repo_with_two_phases(tmp)
+        run = lambda *a: subprocess.run(["git", "-C", tmp, *a], check=True,
+                                        capture_output=True)
+        run("init", "-q", "-b", "main")
+        run("config", "user.email", "t@t")
+        run("config", "user.name", "t")
+        run("add", "-A")
+        run("commit", "-qm", "seed")
+        return repo
+
+    def test_a_path_owned_by_ANOTHER_phase_is_reported(self):
+        """Mutation that must kill this: return {} unconditionally."""
+        with TemporaryDirectory() as tmp:
+            repo = self._repo(tmp)
+            owned = ro.preflight(repo, ["src/alpha.py"])
+            self.assertIn("src/alpha.py", owned)
+            self.assertEqual(
+                [o.phase_alias for o in owned["src/alpha.py"]], ["ALPHA"]
+            )
+
+    def test_your_OWN_phase_is_excluded(self):
+        """The question is "does this belong to somebody ELSE?" -- a phase
+        editing its own key files is the normal case and must not be flagged.
+
+        Mutation that must kill this: ignore `current_phase`.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = self._repo(tmp)
+            self.assertEqual(ro.preflight(repo, ["src/alpha.py"], "ALPHA"), {})
+
+    def test_an_unclaimed_path_is_not_reported(self):
+        with TemporaryDirectory() as tmp:
+            repo = self._repo(tmp)
+            self.assertEqual(ro.preflight(repo, ["src/unclaimed.py"]), {})
+
+    def test_the_exit_code_carries_the_answer(self):
+        """1 = a path belongs to another phase, 0 = clear. A caller scripting a
+        pre-edit guard reads the code, not the prose.
+
+        Mutation that must kill this: always return 0.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = self._repo(tmp)
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc_owned = ro.main(["prog", "--repo", str(repo),
+                                    "--preflight", "src/alpha.py"])
+            self.assertEqual(rc_owned, 1)
+            self.assertIn("claimed by", buf.getvalue())
+            with redirect_stdout(io.StringIO()):
+                rc_clear = ro.main(["prog", "--repo", str(repo),
+                                    "--preflight", "src/unclaimed.py"])
+            self.assertEqual(rc_clear, 0)
+
+    def test_the_report_does_not_claim_to_know_BLOCK_state(self):
+        """The honesty property, and the reason this is not the ah#633 gate.
+
+        Scanning phase bodies for a BLOCKED marker matches 6 phases in v10 of
+        which one is a real block; a gate on that signal fires falsely on five.
+        The output must say ownership only, and say so.
+        """
+        out = ro.render_preflight({"src/alpha.py": [_own("src/alpha.py", "ALPHA")]})
+        self.assertIn("BLOCK STATE IS NOT", out)
+        self.assertIn("does not authorize", out)
+
+    def test_the_SAME_file_answers_the_same_however_it_is_spelled(self):
+        """The fail-open a cross-vendor panel caught (codex + grok, PR 725).
+
+        `_claims` compares the argument to repo-relative roadmap tokens by exact
+        match and `startswith`, so before normalization the same claimed file
+        answered three different ways:
+
+            src/alpha.py    -> exit 1, claimed
+            ./src/alpha.py  -> exit 0, "no path is claimed"
+            <abs>/src/alpha.py -> exit 0, "no path is claimed"
+
+        Both false forms are what people actually type. The failure is
+        fail-OPEN -- the wrong answer is the reassuring one -- in the guard whose
+        entire purpose is catching an edit into another phase's files.
+
+        Mutation that must kill this: drop the `_normalize_preflight_path` call
+        and pass `raw` straight to `owners_for`.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = self._repo(tmp)
+            spellings = [
+                "src/alpha.py",
+                "./src/alpha.py",
+                "src/./alpha.py",
+                "src/beta/../alpha.py",
+                str(Path(tmp) / "src" / "alpha.py"),
+            ]
+            for spelling in spellings:
+                with self.subTest(spelling=spelling):
+                    owned = ro.preflight(repo, [spelling])
+                    self.assertEqual(
+                        [o.phase_alias for o in owned.get(spelling, [])],
+                        ["ALPHA"],
+                        f"{spelling!r} must resolve to the same claim as the "
+                        f"repo-relative form",
+                    )
+
+    def test_a_path_OUTSIDE_the_repo_cannot_evaluate_rather_than_clearing(self):
+        """A path this command cannot place in the repo must not be silently
+        skipped: skipping empties the result, and an empty result prints "no path
+        is claimed" and exits 0 -- a pass produced by not having looked.
+
+        Mutation that must kill this: `continue` instead of raising in
+        `_normalize_preflight_path`, which yields exit 0.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = self._repo(tmp)
+            with self.assertRaises(ro.PathNotInRepo):
+                ro.preflight(repo, ["/etc/passwd"])
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = ro.main(["prog", "--repo", str(repo),
+                              "--preflight", "/etc/passwd"])
+            self.assertEqual(rc, 2, "cannot-evaluate is 2, never 0 and never 1")
+            self.assertIn("CANNOT EVALUATE", buf.getvalue())
+
+    def test_an_unresolvable_roadmap_exits_2_not_1(self):
+        """Both panel seats found this independently.
+
+        `preflight` called `declared_active_roadmap` directly, whose
+        `RoadmapStatusError` subclasses no caller catches. The exception escaped,
+        Python exited 1, and 1 is the code this command DEFINES as "claimed by
+        another phase" -- so "I cannot tell which roadmap is active" was
+        indistinguishable from "you are blocked".
+
+        Mutation that must kill this: call `declared_active_roadmap(repo)` in
+        `preflight` instead of `resolve_roadmap(repo)`.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = Path(tmp)  # no specs/, no registry -> unresolvable
+            (repo / "src").mkdir()
+            with self.assertRaises(ro.RoadmapUnreadable):
+                ro.preflight(repo, ["src/alpha.py"])
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = ro.main(["prog", "--repo", str(repo),
+                              "--preflight", "src/alpha.py"])
+            self.assertEqual(rc, 2)
+            self.assertIn("CANNOT EVALUATE", buf.getvalue())
+
+    def test_a_SCOPED_claim_is_not_presented_as_an_unconditional_one(self):
+        """The roadmap qualifies some claims -- GOVLEAN's directory entry reads
+        "`<dir>/` (new evidence, lint, and governance modules)", scoping it to
+        PART of that directory. `audit` already surfaces the parenthetical
+        verbatim; `preflight` kept only aliases, so it reported the whole
+        directory as owned outright. That over-report is how this module briefly
+        had GOVLEAN owning the entire source tree.
+
+        Mutation that must kill this: drop `note=` from the Ownership built in
+        `preflight`.
+        """
+        scoped = ROADMAP.replace(
+            "- `src/beta/`", "- `src/beta/` (only the lane-B evidence modules)"
+        )
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=scoped)
+            owned = ro.preflight(repo, ["src/beta/thing.py"])
+            claims = owned["src/beta/thing.py"]
+            self.assertEqual([o.phase_alias for o in claims], ["BETA"])
+            # Attributed to the token carrying it, so a reader can see the
+            # qualification is on the DIRECTORY claim rather than on their file.
+            self.assertEqual(
+                claims[0].note, "`src/beta/` (only the lane-B evidence modules)"
+            )
+            self.assertIn("SCOPED", ro.render_preflight(owned))
+
+    def test_a_DIRECTORY_token_is_claimed_in_both_spellings(self):
+        """The regression my own round-2 fix introduced, caught by the panel.
+
+        `Path.resolve()` drops a trailing slash, and `_claims` reads that slash as
+        the marker of a directory token. So normalizing turned the roadmap's OWN
+        spelling of a claim into an unclaimed path: `src/beta/x.py` was flagged
+        while `src/beta/` -- the literal text of the bullet -- came back "no path
+        is claimed". Closing one fail-open opened another on the most obvious
+        input there is.
+
+        Mutations that must kill this: drop the `directoryish` branch in
+        `_normalize_preflight_path`, OR drop the `rstrip("/")` arm of `_claims`.
+        Each is killed independently -- the path assertion below pins the
+        normalizer, and the slash-free spelling of a not-yet-existing directory
+        pins the `_claims` arm, because nothing there can tell the normalizer it
+        is a directory.
+
+        Exercises `preflight` directly, not the CLI; the exit-code mapping is
+        covered by `test_the_exit_code_carries_the_answer`.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = self._repo(tmp)
+            for spelling in ("src/beta/", "src/beta"):
+                with self.subTest(spelling=spelling):
+                    owned = ro.preflight(repo, [spelling])
+                    self.assertEqual(
+                        [o.phase_alias for o in owned.get(spelling, [])],
+                        ["BETA"],
+                        f"{spelling!r} is BETA's claim as the roadmap writes it",
+                    )
+                    if spelling.endswith("/"):
+                        # Observes the NORMALIZER, not just the match. Without it
+                        # the two layers are only killable together: `_claims`'
+                        # rstrip arm alone satisfies the assertion above, so
+                        # deleting the directory-ness preservation killed nothing
+                        # and that layer sat unpinned.
+                        #
+                        # Only asserted for the directory-SHAPED spelling: for
+                        # `src/beta` naming a directory that does not exist on
+                        # disk yet, nothing in the argument or the filesystem says
+                        # "directory", so the normalizer cannot know -- and the
+                        # `_claims` arm is what carries that case. That asymmetry
+                        # is the reason both layers exist.
+                        self.assertEqual(owned[spelling][0].path, "src/beta/")
+
+    def test_BOTH_identities_of_a_symlinked_path_are_evaluated(self):
+        """An edit through a symlink touches two things, and git proves it.
+
+        Editing `src/link/x.py` makes `git diff --name-only` report
+        `src/real/x.py` — the TARGET — so `audit` already answers about targets. A
+        preflight answering only about NAMES is therefore strictly weaker than the
+        audit it precedes: pass the link-name's owner as `--current-phase` and it
+        exits 0 while the edit modifies another phase's tracked file. That is the
+        cross-phase failure ah#633 exists to prevent, and it is why the union is
+        the answer rather than a hedge.
+
+        I removed this property in round 9 on the argument that preflight should
+        match `audit`'s name semantics. That argument was wrong: `audit` never
+        needed to resolve because git resolves for it.
+
+        Mutation that must kill this: return only the first identity.
+        """
+        roadmap = ROADMAP.replace("- `src/alpha.py`", "- `src/link/`").replace(
+            "- `src/beta/`", "- `src/real/`"
+        )
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=roadmap)
+            (repo / "src" / "real").mkdir(parents=True, exist_ok=True)
+            (repo / "src" / "link").symlink_to(repo / "src" / "real")
+            owned = ro.preflight(repo, ["src/link/owned.py"], "ALPHA")
+            self.assertIn(
+                "BETA",
+                [o.phase_alias for o in owned.get("src/link/owned.py", [])],
+                "editing through ALPHA's symlink writes BETA's tracked file; "
+                "excluding ALPHA must not clear the path",
+            )
+
+    def test_a_cancelled_symlink_yields_NO_phantom_identity(self):
+        """`..` is the one construct that makes lexical collapsing unsound.
+
+        With `link -> a/b`, `link/../owned.py` denotes `a/owned.py`; the collapsed
+        `owned.py` is neither the name typed nor the bytes written. Reporting it
+        claims an edit against a phase whose file is never touched.
+
+        Mutation that must kill this: include the lexical identity unconditionally.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp)
+            (repo / "a" / "b").mkdir(parents=True, exist_ok=True)
+            (repo / "link").symlink_to(repo / "a" / "b")
+            ids = ro._preflight_identities(repo, "link/../owned.py")
+            self.assertEqual(ids, ["a/owned.py"])
+
+    def test_dotdot_cancelling_an_ORDINARY_directory_keeps_the_lexical_identity(self):
+        """codex, round 10. `".." in parts` was a PROXY, and it diverges.
+
+        The property that matters is "does the lexical form name the same file".
+        `..` cancelling the SYMLINK makes it phantom; `..` cancelling an ordinary
+        directory beneath the symlink does not:
+
+            link -> real ,  argument  link/sub/../owned.py
+              lexical   link/owned.py       <- REAL; the proxy discarded it
+              resolved  real/owned.py
+
+        Both name one file. Dropping the lexical form loses a real claim: with
+        ALPHA owning `link/` and BETA owning `real/`, preflighting as BETA reported
+        nothing and exited 0 — permitting the cross-phase edit this exists to block.
+
+        Mutation that must kill this: restore `if ".." not in candidate.parts`.
+        """
+        roadmap = ROADMAP.replace("- `src/alpha.py`", "- `link/`").replace(
+            "- `src/beta/`", "- `real/`"
+        )
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=roadmap)
+            (repo / "real" / "sub").mkdir(parents=True, exist_ok=True)
+            (repo / "real" / "owned.py").write_text("x = 1\n")
+            (repo / "link").symlink_to(repo / "real")
+            ids = ro._preflight_identities(repo, "link/sub/../owned.py")
+            self.assertEqual(sorted(ids), ["link/owned.py", "real/owned.py"])
+            # The safety property, end to end: BETA owns the target, so excluding
+            # BETA must NOT clear a path ALPHA also claims.
+            owned = ro.preflight(repo, ["link/sub/../owned.py"], "BETA")
+            self.assertIn(
+                "ALPHA",
+                [o.phase_alias for o in owned.get("link/sub/../owned.py", [])],
+            )
+
+    def test_a_NOT_YET_CREATED_file_still_gets_both_identities(self):
+        """The normal input for a PRE-edit check is a file that does not exist yet.
+
+        `os.path.samefile` needs both paths to exist, so this is precisely where
+        the canonical-path fallback carries the answer. Without it, a brand-new
+        file's lexical identity is dropped and `--current-phase` on the target's
+        owner clears a path the name's owner also claims.
+
+        I verified this by hand when the fallback was written and did not turn it
+        into a test; a mutation deleting the fallback then killed NOTHING, which is
+        how an unprotected branch survives review.
+
+        Mutation that must kill this: remove the canonical-path fallback.
+        """
+        roadmap = ROADMAP.replace("- `src/alpha.py`", "- `link/`").replace(
+            "- `src/beta/`", "- `real/`"
+        )
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=roadmap)
+            (repo / "real").mkdir(parents=True, exist_ok=True)
+            (repo / "link").symlink_to(repo / "real")
+            for arg in ("link/brand_new.py", "link/newdir/new.py"):
+                with self.subTest(arg=arg):
+                    self.assertFalse(
+                        (repo / arg).exists(), "the fixture must not pre-create it"
+                    )
+                    owned = ro.preflight(repo, [arg], "BETA")
+                    self.assertIn(
+                        "ALPHA",
+                        [o.phase_alias for o in owned.get(arg, [])],
+                        "a not-yet-created file must still carry the name's claim",
+                    )
+
+    def test_a_heading_malformation_the_LINTER_CANNOT_SEE_still_fails_closed(self):
+        """codex, round 14 — my round-13 fix was CIRCULAR.
+
+        That gate detected a malformed heading with `ANY_PHASE_HEADING_RE`, which
+        requires the heading to be well-formed enough to recognise. Both it and
+        `_extract_phases` demand an uppercase `Phase`, so a one-character typo is
+        invisible to BOTH. Measured on live v10:
+
+            "### Phase 12 — ... (RELEASE)" -> "### phase 12 — ..."
+            canonical lint errors   0        <- the round-13 gate keyed on this
+            phases lost             ['RELEASE']
+            pyproject.toml owners   ['RELEASE'] -> []
+            preflight exit          1 -> 0
+
+        A detector for malformed headings must be WEAKER than the parser it
+        audits, or the malformations it exists to catch are precisely the ones it
+        cannot see. `_INTENDED_PHASE_HEADING` matches any level-3+ heading whose
+        first word is "phase", in any case, and requires every one to parse.
+
+        Mutation that must kill this: make the detector case-sensitive, or drop
+        the intended-vs-parsed comparison.
+        """
+        head = "### Phase 0 — First Thing (ALPHA)"
+        for label, broken in (
+            ("lowercase",       ROADMAP.replace(head, "### phase 0 — First Thing (ALPHA)", 1)),
+            ("no alias",        ROADMAP.replace(head, "### Phase 0 — First Thing", 1)),
+            # Round 15: each of these escaped a PREVIOUS detector while the
+            # canonical linter reported zero errors, so intended and parsed fell
+            # TOGETHER and the comparison saw nothing. The body count is
+            # independent of heading syntax, which is why it catches all three.
+            ("one hash fewer",  ROADMAP.replace(head, "## Phase 0 — First Thing (ALPHA)", 1)),
+            ("leading space",   ROADMAP.replace(head, " ### Phase 0 — First Thing (ALPHA)", 1)),
+            ("no space Phase0", ROADMAP.replace(head, "### Phase0 — First Thing (ALPHA)", 1)),
+        ):
+            with self.subTest(malformation=label):
+                self.assertNotEqual(broken, ROADMAP)
+                with self.assertRaises(ro.RoadmapUnreadable) as caught:
+                    ro.ownership_map(broken)
+                self.assertIn("intend to declare a phase", str(caught.exception))
+
+    def test_an_UNTERMINATED_fence_fails_CLOSED(self):
+        """An unterminated fence is malformed markdown, and the safe answer is
+        CANNOT EVALUATE rather than a guess.
+
+        With no closing marker there is nothing to pair with, so the block is not
+        stripped and any `**Key files**` inside it counts — pushing bodies above
+        parsed and raising. That is the right direction: the alternative is to
+        decide unilaterally that the text is code, and if that guess is wrong a
+        real phase body is erased from the count, which is how a malformed heading
+        would slip through unnoticed.
+
+        Recorded as a deliberate choice because my first version of the fence test
+        asserted this case is ACCEPTED. It is not, and the assertion was wrong
+        rather than the code.
+
+        Mutation that must kill this: make the closing marker optional so an
+        unterminated fence swallows to end-of-file.
+        """
+        documented = ROADMAP.replace(
+            "## Execution Notes",
+            "## Execution Notes\n\n```\n**Key files**\n- `x.py`\n",
+            1,
+        )
+        with self.assertRaises(ro.RoadmapUnreadable):
+            ro.ownership_map(documented)
+
+    def test_a_WHOLE_BLOCK_INDENT_cannot_hide_a_phase(self):
+        """codex, round 16 — category (1), and the third variant of one lesson.
+
+        The parser anchors at column zero. A detector that also anchors at column
+        zero shares that assumption, so indenting an ENTIRE phase block by one
+        space drops the phase from `_extract_phases` AND from both counts — all
+        three fall together and the comparison sees nothing. Measured on live v10:
+        parsed=13, bodies=13, headings=13, accepted, `pyproject.toml` owners
+        ['RELEASE'] -> [], exit 1 -> 0.
+
+        Earlier tests indented only the HEADING while leaving `**Key files**` at
+        column zero, so the body count still caught it. That is why they passed
+        while this hole was open.
+
+        The rule, now stated three ways: the detector must not share ANY
+        assumption with the parser it audits — not its case (r14), not its
+        heading level (r15), not its column (r16).
+
+        Mutation that must kill this: re-anchor either pattern at column zero.
+        """
+        head = "### Phase 0 — First Thing (ALPHA)"
+        lines = ROADMAP.splitlines(keepends=True)
+        start = next(i for i, l in enumerate(lines) if l.startswith(head))
+        end = len(lines)
+        for j in range(start + 1, len(lines)):
+            if lines[j].startswith("### Phase "):
+                end = j
+                break
+        # Asserted on the PATTERNS, not through `ownership_map`: either pattern
+        # alone catches a block indent, so going through the map lets them mask
+        # each other and a mutation kills nothing. (That masking hid this exact
+        # gap twice already in this PR.)
+        for label, ws in (("ascii space", " "), ("tab", "\t"), ("NBSP U+00A0", "\u00a0")):
+            with self.subTest(whitespace=label):
+                block = "".join(
+                    lines[:start] + [ws + l for l in lines[start:end]] + lines[end:]
+                )
+                prose = ro._without_code_fences(block)
+                self.assertEqual(
+                    len(ro._PHASE_BODY_FIELD.findall(prose)), 2,
+                    f"body pattern must see a {label}-indented **Key files**",
+                )
+                self.assertEqual(
+                    len(ro._INTENDED_PHASE_HEADING.findall(prose)), 2,
+                    f"heading pattern must see a {label}-indented heading",
+                )
+                with self.assertRaises(ro.RoadmapUnreadable):
+                    ro.ownership_map(block)
+        # The ASCII case continues below as the detailed witness assertions.
+        indented = "".join(
+            lines[:start] + [" " + l for l in lines[start:end]] + lines[end:]
+        )
+        self.assertNotEqual(indented, ROADMAP, "fixture must indent the block")
+        with self.assertRaises(ro.RoadmapUnreadable) as caught:
+            ro.ownership_map(indented)
+        self.assertIn("intend to declare", str(caught.exception))
+
+        # Each pattern must tolerate indentation INDEPENDENTLY, and that is
+        # asserted on the PATTERNS, not through `ownership_map`. Going through
+        # the map cannot distinguish them: the lint gate raises the same
+        # `RoadmapUnreadable` for these inputs, so a re-anchored pattern is
+        # masked and the mutation kills nothing. (My first version of this made
+        # exactly that mistake, and a second fixture silently never applied
+        # because its replacement string omitted the indent on the list items.)
+        prose = ro._without_code_fences(indented)
+        self.assertEqual(
+            len(ro._PHASE_BODY_FIELD.findall(prose)), 2,
+            "the body pattern must count an INDENTED **Key files**",
+        )
+        self.assertEqual(
+            len(ro._INTENDED_PHASE_HEADING.findall(prose)), 2,
+            "the heading pattern must count an INDENTED phase heading",
+        )
+
+    def test_a_roadmap_DOCUMENTING_ITS_OWN_FORMAT_is_not_rejected(self):
+        """The false positive my own body-count fix introduced.
+
+        A roadmap that shows its own format in a fenced example — a sample
+        `**Key files**` block, or a sample `### Phase 1 — ...` heading — inflates
+        the count and fails closed on a perfectly VALID roadmap. Verified on live
+        v10: one fenced `**Key files**` took bodies from 14 to 15 against
+        parsed=14, which raises CANNOT EVALUATE.
+
+        No roadmap in this repo does it today, but a template or a documentation
+        section plausibly would, and a guard that rejects valid input gets
+        switched off. Found by probing my own fix rather than by review.
+
+        Mutation that must kill this: count on the raw text instead of stripping
+        fences.
+        """
+        # Every fence spelling CommonMark allows, because the first version of
+        # this stripper matched only ``` at column zero — repeating the very
+        # column-zero assumption just removed from the phase patterns — so a
+        # `~~~` or indented fence produced a false CANNOT EVALUATE on a VALID
+        # roadmap. Found by running this test's own attack question, not by review.
+        for label, fenced in (
+            ("backtick",      "```\n**Key files**\n- `x.py`\n```"),
+            ("tilde",         "~~~\n**Key files**\n- `x.py`\n~~~"),
+            ("indented",      "  ```\n  **Key files**\n  - `x.py`\n  ```"),
+        ):
+            with self.subTest(fence=label):
+                documented = ROADMAP.replace(
+                    "## Execution Notes", f"## Execution Notes\n\n{fenced}\n", 1
+                )
+                self.assertNotEqual(documented, ROADMAP, "fixture must insert the block")
+                # Must still parse normally — no CANNOT EVALUATE.
+                mapping = ro.ownership_map(documented)
+                self.assertIn("src/alpha.py", mapping)
+
+        # SCOPE NOTE, verified not assumed: a fenced sample HEADING
+        # ("### Phase 9 — Example (EXAMPLE)") is still rejected — but by the
+        # canonical linter, not by these counts. `_extract_phases` treats it as a
+        # real phase and the linter then reports it missing Objective / Exit
+        # criteria / Scope notes. That is pre-existing `roadmap_lint` behaviour,
+        # and this module deliberately IMPORTS roadmap_lint rather than editing
+        # it (LEGIBLE owns that file), so it is out of scope here rather than
+        # something to paper over locally.
+
+    def test_a_malformed_heading_whose_BODY_IS_ALSO_MISSING_is_caught(self):
+        """Why the heading-intent check is not redundant with the body count.
+
+        The body count catches a phase body whose heading did not parse. It
+        cannot catch a phase that lost BOTH: with the heading malformed and the
+        `Key files` body gone, `bodies` falls in step with `parsed` and the
+        comparison sees nothing. The heading-intent count still sees it, because
+        the malformed heading is text that intends to declare a phase.
+
+        A mutation run showed the heading check killing NOTHING, which said it was
+        untested — not that it was useless. This is the case that distinguishes
+        the two checks.
+
+        Mutation that must kill this: drop the `intended > parsed` term.
+        """
+        head = "### Phase 0 — First Thing (ALPHA)"
+        # Both spellings must be caught. `## Phase 0` is the one the round-14
+        # detector (`#{3,}`) could not see, so this is also what makes the
+        # BREADTH of the pattern observable rather than merely asserted.
+        for label, bad_head in (
+            ("lowercase", "### phase 0 — First Thing (ALPHA)"),
+            ("one hash fewer", "## Phase 0 — First Thing (ALPHA)"),
+        ):
+            with self.subTest(heading=label):
+                broken = ROADMAP.replace(head, bad_head, 1)
+                # ...and remove that phase's Key files block, so the body count
+                # falls in step with the parse count and cannot see it.
+                broken = broken.replace(
+                    "**Key files**\n- `src/alpha.py`\n- `src/shared.py`\n", "", 1
+                )
+                with self.assertRaises(ro.RoadmapUnreadable) as caught:
+                    ro.ownership_map(broken)
+                self.assertIn("intend to declare", str(caught.exception))
+
+    def test_a_MALFORMED_PHASE_HEADING_cannot_evaluate_rather_than_clear(self):
+        """codex, round 13 — reachable in a real repository, no fault injection.
+
+        `ownership_map` consumed `_extract_phases`, one PIECE of the canonical
+        linter. A phase whose HEADING is malformed is not extracted as a phase at
+        all: it vanishes while the map stays non-empty and plausible. Measured
+        against live v10 by changing one character — the em-dash in the SCHED
+        heading to a colon:
+
+            owners of lane_scheduler.py   intact: {GOVLEAN, SCHED}
+                                          broken: {GOVLEAN}
+
+        so preflighting it as GOVLEAN excluded the only surviving claim and exited
+        0 on a file SCHED explicitly claims.
+
+        The pre-existing guards catch "zero phases" and "a parsed phase with no
+        Key files"; neither sees a phase that never parsed. Consuming a piece of a
+        validator instead of the validator is the mistake this module was written
+        to avoid.
+
+        Mutation that must kill this: drop the `lint_roadmap_text` call.
+        """
+        broken = ROADMAP.replace("### Phase 0 — First Thing (ALPHA)",
+                                 "### Phase 0: First Thing (ALPHA)", 1)
+        self.assertNotEqual(broken, ROADMAP, "the fixture must actually change a heading")
+        with self.assertRaises(ro.RoadmapUnreadable) as caught:
+            ro.ownership_map(broken)
+        # Two layers can catch this: the intended-vs-parsed count (which runs
+        # first and sees malformations the linter cannot) and the canonical lint
+        # gate. Assert the PROPERTY — it refuses rather than clearing, and says
+        # a phase went missing — not which layer got there first. Asserting the
+        # linter's phrasing made this test fail the moment the stronger check
+        # was added in front of it.
+        message = str(caught.exception)
+        self.assertTrue(
+            "linter" in message or "intend to declare a phase" in message,
+            f"must name the real problem; got: {message}",
+        )
+        # And end to end: CANNOT EVALUATE (2), never a clear (0).
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=broken)
+            with redirect_stdout(io.StringIO()) as buf:
+                rc = ro.main(["prog", "--repo", str(repo),
+                              "--preflight", "src/alpha.py", "--current-phase", "BETA"])
+            self.assertEqual(rc, 2, "a malformed roadmap must never read as clear")
+            self.assertIn("CANNOT EVALUATE", buf.getvalue())
+
+    def test_an_OSError_during_identity_means_UNKNOWN_never_different(self):
+        """codex, round 12. My code contradicted my own docstring.
+
+        `_names_the_same_file` documents that erring toward "same" is the safe
+        direction because it can only ADD an identity — then returned False on
+        `OSError`, which DROPS one. An ESTALE, a permission transition, or a
+        concurrent replacement between `exists()` and `samefile()` says nothing
+        about identity, and treating it as "different" turns a transient
+        filesystem error into exit 0 on a real cross-phase edit.
+
+        CLI-reachable with an ordinary repository symlink — no exotic filesystem
+        required, which is why this is a blocker and the hardlink case was merely
+        a defect.
+
+        Mutation that must kill this: return False from the OSError handler.
+        """
+        roadmap = ROADMAP.replace("- `src/alpha.py`", "- `link/`").replace(
+            "- `src/beta/`", "- `real/`"
+        )
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=roadmap)
+            (repo / "real").mkdir(parents=True, exist_ok=True)
+            (repo / "real" / "file.py").write_text("x = 1\n")
+            (repo / "link").symlink_to(repo / "real")
+
+            real_samefile = os.path.samefile
+
+            def raising_samefile(a, b):
+                raise OSError(116, "Stale file handle")
+
+            os.path.samefile = raising_samefile
+            try:
+                owned = ro.preflight(repo, ["link/file.py"], "BETA")
+            finally:
+                os.path.samefile = real_samefile
+
+            self.assertIn(
+                "ALPHA",
+                [o.phase_alias for o in owned.get("link/file.py", [])],
+                "an unknown identity must be retained, not dropped: keeping it "
+                "risks a false BLOCK, dropping it produces a false CLEAR",
+            )
+
+    def test_an_UNRESOLVABLE_lexical_form_is_also_unknown_not_different(self):
+        """The second arm of the same rule, for the not-yet-exists path.
+
+        When one side does not exist, identity falls back to comparing canonical
+        paths — and that `resolve()` can itself raise (symlink loop -> RuntimeError,
+        filesystem trouble -> OSError). Returning False there drops the identity for
+        the same wrong reason as the `samefile` arm.
+
+        Reached by injection rather than by fixture: the earlier `resolve()` on the
+        UNCOLLAPSED path traverses a superset of these components, so it raises
+        first in any filesystem I can build. A mutation showed this branch was
+        unpinned, and a branch that cannot be reached naturally still has to behave
+        correctly when it is.
+
+        Mutation that must kill this: return False from the resolve() handler.
+        """
+        roadmap = ROADMAP.replace("- `src/alpha.py`", "- `link/`").replace(
+            "- `src/beta/`", "- `real/`"
+        )
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=roadmap)
+            (repo / "real").mkdir(parents=True, exist_ok=True)
+            (repo / "link").symlink_to(repo / "real")
+
+            real_resolve = Path.resolve
+            state = {"armed": False}
+
+            def raising_resolve(self, *a, **kw):
+                # Only the identity check's resolve raises; the earlier
+                # containment resolve must still work or nothing gets that far.
+                if state["armed"]:
+                    raise RuntimeError("symlink loop")
+                return real_resolve(self, *a, **kw)
+
+            owned = None
+            try:
+                Path.resolve = raising_resolve
+                state["armed"] = False
+                ids_ok = ro._preflight_identities(repo, "link/absent.py")
+                state["armed"] = True
+                same = ro._names_the_same_file(
+                    Path(repo) / "link" / "absent.py", Path(repo) / "real" / "absent.py"
+                )
+            finally:
+                Path.resolve = real_resolve
+            self.assertTrue(
+                same, "an unresolvable lexical form is UNKNOWN, so it is retained"
+            )
+            self.assertEqual(sorted(ids_ok), ["link/absent.py", "real/absent.py"])
+
+    def test_a_HARDLINKED_alias_is_the_same_file_and_keeps_its_claim(self):
+        """codex, round 11. Canonical-path equality is a proxy for file identity.
+
+        Hardlinks are where it diverges: two names for ONE inode canonicalize
+        differently. With `link -> a/b`, hardlinked `owned.py` and `a/owned.py`,
+        ALPHA owning the first and BETA the second, preflighting
+        `link/../owned.py` as BETA dropped ALPHA's identity and exited 0 — while
+        the edit changes ALPHA's inode.
+
+        Measured on the reproduction: `samefile()` True, `resolve()` equality
+        False. The kernel answers identity; string comparison guesses at it.
+
+        Mutation that must kill this: compare `lexical.resolve() == resolved`
+        instead of asking `os.path.samefile`.
+        """
+        roadmap = ROADMAP.replace("- `src/alpha.py`", "- `owned.py`").replace(
+            "- `src/beta/`", "- `a/`"
+        )
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=roadmap)
+            (repo / "a" / "b").mkdir(parents=True, exist_ok=True)
+            (repo / "a" / "owned.py").write_text("x = 1\n")
+            os.link(repo / "a" / "owned.py", repo / "owned.py")
+            (repo / "link").symlink_to(repo / "a" / "b")
+            self.assertTrue(
+                (repo / "owned.py").samefile(repo / "a" / "owned.py"),
+                "the fixture must actually hardlink, or this proves nothing",
+            )
+            self.assertEqual(
+                sorted(ro._preflight_identities(repo, "link/../owned.py")),
+                ["a/owned.py", "owned.py"],
+            )
+            owned = ro.preflight(repo, ["link/../owned.py"], "BETA")
+            self.assertIn(
+                "ALPHA",
+                [o.phase_alias for o in owned.get("link/../owned.py", [])],
+                "ALPHA owns the same inode; excluding BETA must not clear it",
+            )
+
+    def test_the_MOST_SPECIFIC_root_wins_when_roots_overlap(self):
+        """codex, round 9. When the lexical root lies inside its own target, an
+        argument sits beneath BOTH roots.
+
+        For `X11 -> .` with repo `<tmp>/X11`, the argument `<tmp>/X11/python3` is
+        under the resolved root `<tmp>` AND the lexical root `<tmp>/X11`. Taking
+        the resolved root first yielded `X11/python3`, so an exact `python3` claim
+        was missed and preflight exited 0 — a fail-open on a real claim.
+
+        Mutation that must kill this: order the roots by anything other than
+        descending specificity (e.g. resolved first).
+        """
+        roadmap = ROADMAP.replace("- `src/alpha.py`", "- `python3`")
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp) / "repo"
+            base.mkdir()
+            _repo_with_two_phases(str(base), roadmap=roadmap)
+            (base / "python3").write_text("x = 1\n")
+            # `X11 -> .` — the classic self-referential layout (`/usr/bin/X11`).
+            # Addressed as <base>/X11 the repo has TWO roots: lexical <base>/X11
+            # and resolved <base>. An argument beneath it is inside both.
+            #
+            # An earlier version of this test made X11 a real directory, so the
+            # two roots were IDENTICAL and the ordering could not matter — it
+            # passed under its own named mutation for that reason.
+            (base / "X11").symlink_to(base)
+            repo = base / "X11"
+            self.assertNotEqual(
+                Path(repo).resolve(),
+                Path(os.path.abspath(str(repo))),
+                "the two roots must differ or this proves nothing",
+            )
+            ids = ro._preflight_identities(repo, str(repo / "python3"))
+            # EXACT list, not membership: the defect ADDS a phantom identity
+            # (`X11/python3`) alongside the real one, so `assertIn` passed while
+            # the wrong path was still reported. That is how this test first
+            # failed to bite its own named mutation.
+            self.assertEqual(ids, ["python3"], f"phantom identity reported: {ids}")
+
+    def test_an_exact_token_naming_a_DIRECTORY_SYMLINK_still_matches(self):
+        """codex, round 9. `is_dir()` FOLLOWS symlinks.
+
+        An exact token naming a directory symlink (`X11`) was normalized to
+        `X11/`, and `_claims("X11", "X11/")` was false — so ownership still
+        depended on symlink state and a real exact claim exited 0. A symlink is no
+        longer treated as directory-ish on its own name, and the trailing-slash
+        equivalence in `_claims` is now symmetric so neither spelling can miss.
+
+        Mutation that must kill this: drop `and not base.is_symlink()`.
+        """
+        roadmap = ROADMAP.replace("- `src/alpha.py`", "- `src/link`")
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=roadmap)
+            (repo / "src" / "real").mkdir(parents=True, exist_ok=True)
+            (repo / "src" / "link").symlink_to(repo / "src" / "real")
+            # EXACT list: `is_dir()` following the symlink appends a slash to the
+            # NAME form, and the symmetric `_claims` arm then rescues the match —
+            # so asserting only the match let each fix mask the other's mutation.
+            self.assertEqual(
+                ro._preflight_identities(repo, "src/link"),
+                ["src/link", "src/real/"],
+                "a symlink must not be directory-ish under its own name",
+            )
+            owned = ro.preflight(repo, ["src/link"])
+            self.assertEqual(
+                [o.phase_alias for o in owned.get("src/link", [])],
+                ["ALPHA"],
+                "an exact token naming a directory symlink must still match",
+            )
+
+    def test_a_trailing_slash_spelling_matches_a_slashless_token(self):
+        """Isolates the symmetric arm of ``_claims``.
+
+        When the ARGUMENT carries a trailing slash and the roadmap token does not,
+        the old one-directional rule (``owned.endswith("/")``) could not match. The
+        directory-symlink fix hides this, so it needs its own case: the token is
+        `src/real` and the argument is spelled `src/real/`.
+
+        Mutation that must kill this: make the trailing-slash equivalence
+        one-directional again.
+        """
+        roadmap = ROADMAP.replace("- `src/alpha.py`", "- `src/real`")
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=roadmap)
+            (repo / "src" / "real").mkdir(parents=True, exist_ok=True)
+            owned = ro.preflight(repo, ["src/real/"])
+            self.assertEqual(
+                [o.phase_alias for o in owned.get("src/real/", [])], ["ALPHA"]
+            )
+
+    def test_a_symlinked_CHECKOUT_ROOT_still_accepts_either_spelling(self):
+        """The case that genuinely motivated resolving anything: on this fleet a
+        worktree root is itself a symlink (`/mnt/workspace` -> `/mnt/HC_Volume_...`),
+        so an absolute argument may be spelled under one root while `--repo` is
+        given as the other.
+
+        Mutation that must kill this: consider only one root.
+        """
+        with TemporaryDirectory() as tmp:
+            real = Path(tmp) / "real"
+            real.mkdir()
+            repo = _repo_with_two_phases(str(real))
+            link = Path(tmp) / "linked"
+            link.symlink_to(real)
+            for spelling in (real / "src" / "alpha.py", link / "src" / "alpha.py"):
+                with self.subTest(spelling=str(spelling)):
+                    self.assertIn(
+                        "src/alpha.py", ro._preflight_identities(link, str(spelling))
+                    )
+
+    def test_a_whole_repository_scope_cannot_evaluate(self):
+        """`""`, `.`, and the absolute repo root match no ownership token, so each
+        exited 0 -- "the whole repository is unclaimed", the most confidently
+        wrong answer available.
+
+        Mutation that must kill this: return `relative` unconditionally instead of
+        raising on `"."`.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = self._repo(tmp)
+            for scope in ("", ".", str(Path(tmp))):
+                with self.subTest(scope=scope):
+                    with self.assertRaises(ro.PathNotInRepo):
+                        ro.preflight(repo, [scope])
+                    with redirect_stdout(io.StringIO()) as buf:
+                        rc = ro.main(["prog", "--repo", str(repo),
+                                      "--preflight", scope])
+                    self.assertEqual(rc, 2)
+
+    def test_an_unreadable_roadmap_exits_2_not_1(self):
+        """`resolve_roadmap` normalizes RESOLUTION failures, but the READ was
+        bare: a non-UTF-8 roadmap raised out of `main`, and the interpreter's
+        exit 1 is this command's "claimed by another phase".
+
+        Mutation that must kill this: drop the try/except around `read_text`.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = self._repo(tmp)
+            (repo / "specs" / "phase-plans-v10.md").write_bytes(b"\xff\xfe not utf-8")
+            with self.assertRaises(ro.RoadmapUnreadable):
+                ro.preflight(repo, ["src/alpha.py"])
+            with redirect_stdout(io.StringIO()) as buf:
+                rc = ro.main(["prog", "--repo", str(repo),
+                              "--preflight", "src/alpha.py"])
+            self.assertEqual(rc, 2)
+            self.assertIn("CANNOT EVALUATE", buf.getvalue())
+
+    def test_the_note_comes_from_the_most_specific_claim(self):
+        """A phase can claim a file AND its parent directory with different
+        qualifications -- GOVLEAN does in v10. Returning the first match made the
+        answer depend on bullet ORDER, so reordering two equivalent lines could
+        swap an exact file's narrow qualification for the broad directory note,
+        silently widening the scope a reader believes they have.
+
+        Mutation that must kill this: `max(matches, key=len)` -> `matches[0]`.
+        """
+        both = ROADMAP.replace(
+            "- `src/beta/`",
+            "- `src/beta/` (the whole lane-B tree)\n- `src/beta/narrow.py` (only the parser)",
+        )
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=both)
+            owned = ro.preflight(repo, ["src/beta/narrow.py"])
+            self.assertEqual(
+                owned["src/beta/narrow.py"][0].note, "(only the parser)"
+            )
+
+    def test_a_LONGER_glob_does_not_outrank_the_exact_file(self):
+        """Length alone is not specificity once globs exist.
+
+        A glob can be textually longer than the exact file it matches while
+        claiming far more, so ranking purely by length hands the broad
+        qualification to the narrow path — the same over-report the ordering fix
+        was meant to end, reintroduced by its own tie-breaker.
+
+        Mutation that must kill this: `key=specificity` -> `key=len`.
+        """
+        # `src/beta/[xyz][.]py` is 19 characters and matches the 13-character
+        # `src/beta/x.py`, so a length-only ranking prefers the GLOB.
+        broad, exact = "src/beta/[xyz][.]py", "src/beta/x.py"
+        self.assertGreater(len(broad), len(exact), "the glob must out-length the file")
+        globbed = ROADMAP.replace(
+            "- `src/beta/`",
+            f"- `{broad}` (the whole lane-B tree)\n- `{exact}` (only the parser)",
+        )
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=globbed)
+            owned = ro.preflight(repo, [exact])
+            self.assertEqual(owned[exact][0].note, "(only the parser)")
+
+    def test_MULTIPLE_qualified_claims_are_all_surfaced_not_ranked(self):
+        """Three successive rankings each attached a BROADER qualification to a
+        narrower path, so the ranking was removed rather than repaired a fourth
+        time:
+
+            raw length            a 19-char glob outranked the 13-char exact file
+            literal-beats-glob    `src/beta/` outranked `src/beta/parser_*.py`
+            longest-prefix        `[a-z]*.py` outranked the narrower `[a]*.py`
+
+        For two globs sharing a literal prefix, breadth is not length -- `[a]*.py`
+        is narrower than `[a-z]*.py` and shorter -- so no cheap total order
+        exists. When several of a phase's claims are qualified and none is exact,
+        every qualification is shown. That matches what this module already says
+        it does with prose it cannot interpret: reporting the whole directory as
+        owned would overstate, dropping the entry would understate.
+
+        Mutation that must kill this: return only the first qualified note instead
+        of joining them.
+        """
+        roadmap = ROADMAP.replace(
+            "- `src/beta/`",
+            "- `src/beta/` (the whole lane-B tree)\n"
+            "- `src/beta/parser_*.py` (only parser modules)",
+        )
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=roadmap)
+            note = ro.preflight(repo, ["src/beta/parser_impl.py"])[
+                "src/beta/parser_impl.py"
+            ][0].note
+            self.assertIn("(only parser modules)", note)
+            self.assertIn("(the whole lane-B tree)", note)
+
+    def test_an_EXACT_claim_settles_the_qualification_alone(self):
+        """An exact token claims this path and nothing else, so its qualification
+        is authoritative and the broader ones are not shown alongside it.
+
+        Mutation that must kill this: drop the exact-match short-circuit and fall
+        through to joining every qualified claim.
+        """
+        roadmap = ROADMAP.replace(
+            "- `src/beta/`",
+            "- `src/beta/` (the whole lane-B tree)\n"
+            "- `src/beta/exact.py` (only the parser)",
+        )
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=roadmap)
+            self.assertEqual(
+                ro.preflight(repo, ["src/beta/exact.py"])["src/beta/exact.py"][0].note,
+                "(only the parser)",
+            )
+
+    def test_the_note_is_scoped_to_the_PHASE_being_reported(self):
+        """Both dissenting seats found this, with a worked example on live v10.
+
+        Ranking over every phase's tokens let ANOTHER phase's exact claim win, and
+        the note lookup is per-alias — so GOVLEAN's scoped directory note vanished
+        from every file some other phase happens to name exactly (`runner.py`,
+        `test_reviewtruth_phase.py`, dozens more). A scoped claim presented as
+        unconditional is the exact failure `Ownership.note` exists to prevent.
+
+        The earlier same-phase fixture could not catch it: with both tokens on one
+        alias, alias-scoped and global ranking coincide.
+
+        Mutation that must kill this: drop the `any(p.alias == alias ...)` filter.
+        """
+        roadmap = ROADMAP.replace(
+            "- `src/beta/`", "- `src/beta/` (only the lane-B evidence modules)"
+        ).replace("- `src/alpha.py`", "- `src/beta/shared.py`")
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=roadmap)
+            mapping = ro.ownership_map(roadmap)
+            # ALPHA claims src/beta/shared.py exactly and unqualified; BETA claims
+            # the directory WITH a qualification. BETA's note must survive.
+            self.assertEqual(
+                ro._note_for("BETA", "src/beta/shared.py", mapping),
+                "`src/beta/` (only the lane-B evidence modules)",
+            )
+            self.assertEqual(ro._note_for("ALPHA", "src/beta/shared.py", mapping), "")
+
+    def test_a_broader_qualification_is_ATTRIBUTED_never_asserted_of_this_path(self):
+        """The last form of the recurring defect, caught by codex in round 5.
+
+        Given a qualified `src/beta/` and an UNQUALIFIED narrower claim, the
+        directory's "(the whole lane-B tree)" was returned as the qualification
+        ON the narrower path -- a broader qualification attached to a narrower,
+        unconditional claim, for the fourth time in this PR.
+
+        The bug was never the ORDERING. It was reporting a qualification without
+        saying which claim it qualifies. Naming the token makes the
+        misattribution unrepresentable, which is why no ranking is attempted.
+
+        Mutation that must kill this: emit the bare note instead of the
+        ```token` note`` form.
+        """
+        roadmap = ROADMAP.replace(
+            "- `src/beta/`",
+            "- `src/beta/` (the whole lane-B tree)\n- `src/beta/parser_*.py`",
+        )
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=roadmap)
+            note = ro.preflight(repo, ["src/beta/parser_impl.py"])[
+                "src/beta/parser_impl.py"
+            ][0].note
+            self.assertIn("(the whole lane-B tree)", note)
+            self.assertIn(
+                "`src/beta/`",
+                note,
+                "the qualification must name the claim it belongs to, or it "
+                "reads as qualifying the narrower unconditional claim",
+            )
+
+    def test_an_UNQUALIFIED_exact_claim_does_not_suppress_a_scope_note(self):
+        """The exact-match short-circuit fires only when the exact token actually
+        carries a qualification.
+
+        A phase can claim a file exactly with no note AND its parent directory
+        with a scope note. Short-circuiting on the exact token regardless would
+        return "" and hide the directory's scope entirely -- the reader loses the
+        one sentence saying how far that claim reaches. Now that qualifications
+        are attributed to their token, showing it cannot be misread as a claim
+        about this file, so there is no reason to suppress it.
+
+        This is the branch a mutation run found unpinned: flipping the
+        short-circuit to `if owned == path:` changed behaviour and killed nothing.
+
+        Mutation that must kill this: drop `and note_of(owned)` from the
+        short-circuit condition.
+        """
+        roadmap = ROADMAP.replace(
+            "- `src/beta/`",
+            "- `src/beta/` (the whole lane-B tree)\n- `src/beta/bare.py`",
+        )
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=roadmap)
+            note = ro.preflight(repo, ["src/beta/bare.py"])["src/beta/bare.py"][0].note
+            self.assertIn("(the whole lane-B tree)", note)
+            self.assertIn("`src/beta/`", note)
+
+    def test_a_repo_INTERNAL_symlink_still_matches_its_own_token(self):
+        """Resolving before comparing rewrote a repo-internal symlink to its
+        target, so the roadmap's own token normalized to a different path and
+        matched nothing -- exit 0, unclaimed.
+
+        Ownership describes the repository's PATHS, not where they point.
+
+        Mutation that must kill this: compute `relative` from `resolved` first
+        instead of from the lexical path.
+        """
+        roadmap = ROADMAP.replace("- `src/alpha.py`", "- `src/link/`")
+        with TemporaryDirectory() as tmp:
+            repo = _repo_with_two_phases(tmp, roadmap=roadmap)
+            (repo / "src" / "real").mkdir(parents=True, exist_ok=True)
+            (repo / "src" / "link").symlink_to(repo / "src" / "real")
+            owned = ro.preflight(repo, ["src/link/"])
+            self.assertEqual(
+                [o.phase_alias for o in owned.get("src/link/", [])],
+                ["ALPHA"],
+                "a symlinked directory must still match the token naming it",
+            )
+
+    def test_a_symlink_LOOP_cannot_evaluate_rather_than_exiting_1(self):
+        """`Path.resolve()` raises RuntimeError on a symlink loop and OSError on
+        assorted filesystem failures. Uncaught, either escaped `main` as the
+        interpreter's exit 1 -- the code reserved for "claimed by another phase".
+
+        Mutation that must kill this: drop the `(OSError, RuntimeError)` handler
+        around the argument's `resolve()`.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = self._repo(tmp)
+            (repo / "src" / "loop_a").symlink_to(repo / "src" / "loop_b")
+            (repo / "src" / "loop_b").symlink_to(repo / "src" / "loop_a")
+            with redirect_stdout(io.StringIO()) as buf:
+                rc = ro.main(["prog", "--repo", str(repo),
+                              "--preflight", "src/loop_a/x.py"])
+            self.assertIn(rc, (0, 2), "must never be 1 -- that means 'claimed'")
+            if rc == 2:
+                self.assertIn("CANNOT EVALUATE", buf.getvalue())
+
+    def test_a_non_object_state_file_does_not_exit_1(self):
+        """Valid JSON need not be an OBJECT. A state file containing `[]` reached
+        `.get` on a list and raised AttributeError, which audit-mode `main` does
+        not catch — exiting 1 with no ownership claim at all.
+
+        Mutation that must kill this: drop the `isinstance(loaded, dict)` guard.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = self._repo(tmp)
+            (repo / ".phase-loop").mkdir(exist_ok=True)
+            (repo / ".phase-loop" / "state.json").write_text("[]")
+            self.assertIsNone(ro.current_phase(repo))
+
+    def test_AUDIT_also_normalizes_an_unreadable_roadmap(self):
+        """Round 3 wrapped the read in `preflight` and left `audit` bare two
+        hundred lines away, so the same non-UTF-8 roadmap still escaped there.
+        The fix that lives in one caller is how the other keeps the hole.
+
+        Mutation that must kill this: `read_roadmap(...)` -> `roadmap.read_text(...)`
+        in `audit`.
+        """
+        with TemporaryDirectory() as tmp:
+            repo = self._repo(tmp)
+            (repo / "specs" / "phase-plans-v10.md").write_bytes(b"\xff\xfe bad")
+            with self.assertRaises(ro.RoadmapUnreadable):
+                ro.audit(repo, "HEAD")
+
+    def test_without_current_phase_the_output_does_not_say_another_phase(self):
+        """"another phase" implies an exclusion that only happened if one was
+        named. Without `--current-phase` the question is "does ANY phase claim
+        this?", and the answer must not imply otherwise.
+        """
+        owned = {"src/alpha.py": [_own("src/alpha.py", "ALPHA")]}
+        self.assertNotIn("another phase", ro.render_preflight(owned))
+        self.assertIn("another phase", ro.render_preflight(owned, "BETA"))
+
+
 class TestPartialDrift(unittest.TestCase):
     def test_one_phase_losing_key_files_raises(self):
         """The third mutation, found by review: PARTIAL drift passed silently.
@@ -1220,7 +2393,9 @@ class TestFailsLoudly(unittest.TestCase):
         # Assert WHICH guard fired. The two are redundant for this input -- zero
         # phases also yields an empty mapping -- so without pinning the message,
         # deleting the first guard leaves every test green. Verified by mutation.
-        self.assertIn("zero phases", str(caught.exception))
+        # Same layering: the linter reports "no phases found" before the
+        # zero-phases guard is reached.
+        self.assertIn("no phases", str(caught.exception))
 
     def test_phases_without_key_files_raises(self):
         stripped = "\n".join(
@@ -1230,7 +2405,12 @@ class TestFailsLoudly(unittest.TestCase):
         )
         with self.assertRaises(ro.RoadmapUnreadable) as caught:
             ro.ownership_map(stripped)
-        self.assertIn("no Key files", str(caught.exception))
+        # The canonical linter now runs FIRST and reports this as
+        # "**Key files** missing or empty", subsuming the downstream guard. The
+        # property under test is unchanged — it fails loudly rather than
+        # reporting nothing owned — so assert the property, not the phrasing of
+        # whichever layer catches it.
+        self.assertIn("Key files", str(caught.exception))
 
     def test_unresolvable_base_raises_rather_than_reporting_no_changes(self):
         """The THIRD operand, unpinned until review found it.
