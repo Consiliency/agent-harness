@@ -1627,6 +1627,27 @@ class TestPreflight(unittest.TestCase):
             if lines[j].startswith("### Phase "):
                 end = j
                 break
+        # Asserted on the PATTERNS, not through `ownership_map`: either pattern
+        # alone catches a block indent, so going through the map lets them mask
+        # each other and a mutation kills nothing. (That masking hid this exact
+        # gap twice already in this PR.)
+        for label, ws in (("ascii space", " "), ("tab", "\t"), ("NBSP U+00A0", "\u00a0")):
+            with self.subTest(whitespace=label):
+                block = "".join(
+                    lines[:start] + [ws + l for l in lines[start:end]] + lines[end:]
+                )
+                prose = ro._without_code_fences(block)
+                self.assertEqual(
+                    len(ro._PHASE_BODY_FIELD.findall(prose)), 2,
+                    f"body pattern must see a {label}-indented **Key files**",
+                )
+                self.assertEqual(
+                    len(ro._INTENDED_PHASE_HEADING.findall(prose)), 2,
+                    f"heading pattern must see a {label}-indented heading",
+                )
+                with self.assertRaises(ro.RoadmapUnreadable):
+                    ro.ownership_map(block)
+        # The ASCII case continues below as the detailed witness assertions.
         indented = "".join(
             lines[:start] + [" " + l for l in lines[start:end]] + lines[end:]
         )

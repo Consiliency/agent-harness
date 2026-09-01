@@ -138,7 +138,28 @@ def current_phase(repo: Path) -> Optional[str]:
 
 _BACKTICKED = re.compile(r"`([^`]+)`")
 
-#: LEADING WHITESPACE IS ALLOWED in both patterns below. The parser anchors at
+#: LEADING WHITESPACE IS ALLOWED in both patterns below, and it is UNICODE
+#: whitespace (`[^\S\n]`), not just ASCII space/tab: a whole-block indent
+#: with U+00A0 non-breaking spaces reproduced the round-16 fail-open exactly
+#: (parsed=13, bodies=13, headings=13, zero linter errors, RELEASE dropped).
+#: Newline is excluded so the class cannot swallow line boundaries.
+#:
+#: KNOWN LIMITATION, stated rather than claimed closed. This is BEST-EFFORT
+#: detection, not a guarantee. `\S` keys on Unicode category Zs, so a format
+#: character such as U+FEFF (category Cf) indents a block without being seen as
+#: whitespace, and the fail-open returns. Four rounds of review found four
+#: successive variants of this one class -- case, heading level, column, and
+#: whitespace class -- and each time I claimed the class was closed and was
+#: wrong within a round. The honest conclusion is that a regex over prose cannot
+#: enumerate the ways a heading can be malformed.
+#:
+#: The real fix belongs in `roadmap_lint`, which owns the parser: a phase that
+#: does not parse should be an error THERE, where the shape is defined, rather
+#: than something this consumer tries to infer afterwards. That file is
+#: LEGIBLE-owned, so this module does not edit it. What remains here catches the
+#: ordinary typos (wrong case, wrong heading level, indented block, tab/NBSP)
+#: and is worth keeping for that -- but nobody should read it as a guarantee
+#: that a malformed roadmap cannot produce a false clear. The parser anchors at
 #: column zero, so indenting an entire phase block by one space drops it from
 #: `_extract_phases` -- and a detector that also anchors at column zero drops it
 #: too, making all three counts fall together and the comparison see nothing.
@@ -154,7 +175,7 @@ _BACKTICKED = re.compile(r"`([^`]+)`")
 #: `#{3,}` missed `## Phase 12`, and a number-anchored `#{2,}...\d` still missed a
 #: leading space -- because both counts fell together and the comparison saw
 #: nothing.
-_PHASE_BODY_FIELD = re.compile(r"^[ \t]*\*\*Key files\*\*", re.MULTILINE)
+_PHASE_BODY_FIELD = re.compile(r"^[^\S\n]*\*\*Key files\*\*", re.MULTILINE)
 
 #: A fenced code block. Both counts below are taken on text with fences REMOVED:
 #: a roadmap that documents its own format in an example block (`**Key files**`,
@@ -170,7 +191,7 @@ _CODE_FENCE = re.compile(
     # column zero -- the SAME column-zero assumption I had just removed
     # from the phase patterns -- so a `~~~` or indented fence went
     # unstripped and produced a false CANNOT EVALUATE on a VALID roadmap.
-    r"^[ ]{0,3}(?P<fence>```|~~~).*?^[ ]{0,3}(?P=fence)",
+    r"^[^\S\n]{0,3}(?P<fence>```|~~~).*?^[^\S\n]{0,3}(?P=fence)",
     re.MULTILINE | re.DOTALL,
 )
 
@@ -190,7 +211,7 @@ def _without_code_fences(text: str) -> str:
 #: has, and would fail-closed on 3 of the 11 real roadmaps in this repo.
 #: Secondary to the body count -- it catches the converse case, a heading present
 #: whose body is missing.
-_INTENDED_PHASE_HEADING = re.compile(r"^[ \t]*#{2,}\s*phase\s*\d", re.IGNORECASE | re.MULTILINE)
+_INTENDED_PHASE_HEADING = re.compile(r"^[^\S\n]*#{2,}\s*phase\s*\d", re.IGNORECASE | re.MULTILINE)
 
 
 def _strip_token(raw: str) -> str:
