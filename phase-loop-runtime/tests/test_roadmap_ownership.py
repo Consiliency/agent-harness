@@ -1573,6 +1573,32 @@ class TestPreflight(unittest.TestCase):
                     ro.ownership_map(broken)
                 self.assertIn("intend to declare a phase", str(caught.exception))
 
+    def test_an_UNTERMINATED_fence_fails_CLOSED(self):
+        """An unterminated fence is malformed markdown, and the safe answer is
+        CANNOT EVALUATE rather than a guess.
+
+        With no closing marker there is nothing to pair with, so the block is not
+        stripped and any `**Key files**` inside it counts — pushing bodies above
+        parsed and raising. That is the right direction: the alternative is to
+        decide unilaterally that the text is code, and if that guess is wrong a
+        real phase body is erased from the count, which is how a malformed heading
+        would slip through unnoticed.
+
+        Recorded as a deliberate choice because my first version of the fence test
+        asserted this case is ACCEPTED. It is not, and the assertion was wrong
+        rather than the code.
+
+        Mutation that must kill this: make the closing marker optional so an
+        unterminated fence swallows to end-of-file.
+        """
+        documented = ROADMAP.replace(
+            "## Execution Notes",
+            "## Execution Notes\n\n```\n**Key files**\n- `x.py`\n",
+            1,
+        )
+        with self.assertRaises(ro.RoadmapUnreadable):
+            ro.ownership_map(documented)
+
     def test_a_WHOLE_BLOCK_INDENT_cannot_hide_a_phase(self):
         """codex, round 16 — category (1), and the third variant of one lesson.
 
@@ -1642,14 +1668,24 @@ class TestPreflight(unittest.TestCase):
         Mutation that must kill this: count on the raw text instead of stripping
         fences.
         """
-        fenced = "```\n**Key files**\n- `x.py`\n```"
-        documented = ROADMAP.replace(
-            "## Execution Notes", f"## Execution Notes\n\n{fenced}\n", 1
-        )
-        self.assertNotEqual(documented, ROADMAP, "fixture must insert the block")
-        # Must still parse normally — no CANNOT EVALUATE.
-        mapping = ro.ownership_map(documented)
-        self.assertIn("src/alpha.py", mapping)
+        # Every fence spelling CommonMark allows, because the first version of
+        # this stripper matched only ``` at column zero — repeating the very
+        # column-zero assumption just removed from the phase patterns — so a
+        # `~~~` or indented fence produced a false CANNOT EVALUATE on a VALID
+        # roadmap. Found by running this test's own attack question, not by review.
+        for label, fenced in (
+            ("backtick",      "```\n**Key files**\n- `x.py`\n```"),
+            ("tilde",         "~~~\n**Key files**\n- `x.py`\n~~~"),
+            ("indented",      "  ```\n  **Key files**\n  - `x.py`\n  ```"),
+        ):
+            with self.subTest(fence=label):
+                documented = ROADMAP.replace(
+                    "## Execution Notes", f"## Execution Notes\n\n{fenced}\n", 1
+                )
+                self.assertNotEqual(documented, ROADMAP, "fixture must insert the block")
+                # Must still parse normally — no CANNOT EVALUATE.
+                mapping = ro.ownership_map(documented)
+                self.assertIn("src/alpha.py", mapping)
 
         # SCOPE NOTE, verified not assumed: a fenced sample HEADING
         # ("### Phase 9 — Example (EXAMPLE)") is still rejected — but by the

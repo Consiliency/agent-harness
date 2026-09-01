@@ -162,7 +162,17 @@ _PHASE_BODY_FIELD = re.compile(r"^[ \t]*\*\*Key files\*\*", re.MULTILINE)
 #: fail-closed on a perfectly valid roadmap. Found by probing my own fix before
 #: the panel did: a fenced `**Key files**` took v10 from bodies=14 to bodies=15
 #: against parsed=14, which raises.
-_CODE_FENCE = re.compile(r"^```.*?^```", re.MULTILINE | re.DOTALL)
+_CODE_FENCE = re.compile(
+    # ``` or ~~~, either fence marker, with up to three spaces of
+    # indentation (CommonMark allows that; four makes it a code block).
+    # The opening marker's kind and indent are captured so a ``` block
+    # is not closed by a ~~~ line. My first version matched only ``` at
+    # column zero -- the SAME column-zero assumption I had just removed
+    # from the phase patterns -- so a `~~~` or indented fence went
+    # unstripped and produced a false CANNOT EVALUATE on a VALID roadmap.
+    r"^[ ]{0,3}(?P<fence>```|~~~).*?^[ ]{0,3}(?P=fence)",
+    re.MULTILINE | re.DOTALL,
+)
 
 
 def _without_code_fences(text: str) -> str:
