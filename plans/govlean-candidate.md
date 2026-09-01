@@ -1190,7 +1190,6 @@ never coupled to fleet infrastructure.
 - `phase-loop-runtime/src/phase_loop_runtime/agy_canary_evidence.py`
 - `phase-loop-runtime/src/phase_loop_runtime/profiles.py`
 - `phase-loop-runtime/src/phase_loop_runtime/prompts.py`
-- `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py` (EC-GOVLEAN-5 bounded edits)
 - `phase-loop-runtime/tests/test_roadmap_ownership.py`
 - `phase-loop-runtime/tests/test_closeout_classifier.py`
 - `phase-loop-runtime/tests/test_agy_canary_evidence.py`

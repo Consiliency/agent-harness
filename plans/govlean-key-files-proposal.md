@@ -17,13 +17,29 @@ with `--candidate-roadmap` for the projections (ah#688 adds that flag; it scores
 | v1 — src/ and tests/ made literal | 27/40 (68%) | 23 | 8 | 15 |
 | v2 — v1 minus `plans/` minus `test_phase_loop_launcher.py` | 18/40 (45%) | 8 | 8 | 0 |
 | v3 — v2 plus every file GOVLEAN's plan names (32) | 18/40 (45%) | 11 | 8 | **3** |
-| **v4 — v2 plus the 18 plan-named files with a GOVLEAN-only history** | **18/40 (45%)** | **8** | **8** | **0** |
+| v4 — v2 plus 18 plan-named files | 18/40 (45%) | 8 | 8 | 0 |
+| **v5 — v4 minus the `panel_invoker.py` dual-claim** | **18/40 (45%)** | **8** | **8** | **0** |
 | floor — GOVLEAN claims nothing | 13/40 (32%) | — | — | — |
+
+**"over-claim" means a GOVLEAN flag on a file GOVLEAN does not own by a named authority** —
+not "a flag on a commit GOVLEAN did not land". An ownership check is SUPPOSED to flag a foreign
+PR that edits your file; that is what a claim is for. The column is author attribution of the
+flagged rows (the instrument prints per-phase counts, not this column), so it is reproduced
+below at a second window to show it is not an artefact of the 40-commit cutoff:
+
+| roadmap | window 60 flagged | GOVLEAN on | on GOVLEAN's own commits | on foreign commits — via which file, and GOVLEAN's authority for it |
+|---|---|---|---|---|
+| v4 | 24/60 (40%) | 12 | 8 | **4**: ah#643, ah#632, `4e45af61`, ah#545 — all via `panel_invoker.py`, the live roadmap's "(EC-GOVLEAN-5 bounded edits)" dual-claim; HARDEN owns the file and EC-GOVLEAN-5 is verified (phase `completed`), so the bounded edits are done |
+| **v5** | 24/60 (40%) | 10 | 8 | **2**: ah#643 via `test_govlean_panel_policy.py` (a board-defaults change updating the expectations of GOVLEAN's EC-GOVLEAN-5 proof test — GOVLEAN plan line 118); ah#545 via `agy_canary_evidence.py` (the commit that CREATED the file, before GOVLEAN's four subsequent landings on it) |
+
+Both v5 rows at window 60 are foreign edits to files GOVLEAN owns by its plan's `Owned files`
+declaration (`plans/phase-plan-v10-GOVLEAN.md` line 70). They are correct flags. v4's four
+extra rows were not: they came through a file whose owner is HARDEN.
 
 Sanity: a candidate identical to the live roadmap reproduces 37/40 exactly, so the candidate
 path changes nothing but the text.
 
-**v4 is the proposal** (`plans/govlean-candidate.md` IS v4). Under it every remaining GOVLEAN
+**v5 is the proposal** (`plans/govlean-candidate.md` IS v5). Under it every remaining GOVLEAN
 flag sits on a commit GOVLEAN itself landed. The 13-point gap to the floor is not over-claim;
 it is GOVLEAN owning its own work.
 
@@ -31,7 +47,10 @@ v2 was the first cut and it had a sampling defect the cross-vendor CR of agent-h
 caught: it was derived from a 40-commit *window*, so it silently dropped GOVLEAN's
 deliverables from before the window. See "What a window-only narrowing would have dropped".
 v3 is the naive repair — add everything GOVLEAN's plan names — and the instrument shows it
-re-introduces three over-claims. v4 keeps the number and fixes the defect.
+re-introduces three over-claims. v4 keeps the number and fixes the defect; v5 additionally
+drops the one pre-existing dual-claim (`panel_invoker.py`) that a second window (60) showed to
+be the source of every foreign flag beyond the first — the round-2 CR (codex) caught that
+"zero" was window-bound.
 
 ## Why v1 was not enough — attribution of its 15 over-claims
 
@@ -53,7 +72,6 @@ If GOVLEAN later builds a closeout-gate artifact under `plans/`, claim that FILE
 - `phase-loop-runtime/src/phase_loop_runtime/agy_canary_evidence.py`
 - `phase-loop-runtime/src/phase_loop_runtime/profiles.py`
 - `phase-loop-runtime/src/phase_loop_runtime/prompts.py`
-- `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py` (EC-GOVLEAN-5 bounded edits)
 - `phase-loop-runtime/tests/test_roadmap_ownership.py`
 - `phase-loop-runtime/tests/test_closeout_classifier.py`
 - `phase-loop-runtime/tests/test_agy_canary_evidence.py`
@@ -88,12 +106,18 @@ If GOVLEAN later builds a closeout-gate artifact under `plans/`, claim that FILE
   dependencies, so the hold is declared here and enforced in the runtime)
 ```
 
-The first 13 entries are the files GOVLEAN's landed commits in the window actually touched
+The first 12 entries are the files GOVLEAN's landed commits in the window actually touched
 (ah#644 #672 #683 #725 #670/#693 #711/#712 #714/#715 #637), then filtered — see the exclusion
 list. The next 18 are GOVLEAN's deliverables from before the window: named by
 `plans/phase-plan-v10-GOVLEAN.md`, untouched by any commit in the window, and with a
-first-parent history consisting only of GOVLEAN branches (`test_govlean_panel_policy.py` has
-one additional touch from `fleet-board-defaults`, ah#643). `skills-src/` stays directory-wide:
+first-parent history consisting only of GOVLEAN branches — with one disclosed exception:
+`test_govlean_panel_policy.py` has one touch from `fleet-board-defaults` (ah#643). It stays,
+on authority rather than history: it is in GOVLEAN's plan `Owned files` (line 70) and is the
+test that PROVES EC-GOVLEAN-5 (line 118); ah#643 changed board defaults and updated that test's
+expectations, which is a foreign edit to a GOVLEAN-owned file — exactly what a claim should
+flag. `panel_invoker.py` is NOT listed although the live roadmap claims it for GOVLEAN: the
+"(EC-GOVLEAN-5 bounded edits)" are landed and verified, HARDEN owns the file under a freeze,
+and at window 60 that single bullet produced every foreign GOVLEAN flag (table above). `skills-src/` stays directory-wide:
 its qualification ("planner and roadmap skills plus regeneration outputs") is accurate, and
 it fires only on skill edits. `test_skill_liveness_contract.py` (agent-harness#731) is NOT
 listed: it is not on `main` yet, and an entry that never appears in a diff is unmeasured.
@@ -134,7 +158,46 @@ GOVLEAN's landed commits also touched these, and they are deliberately NOT claim
 
 Deriving a claim from landed commits would have laundered ah#715's mistake into a standing
 claim; deriving one from the plan's file list would have laundered five files other phases
-own (v3's three extra flags are exactly ah#723, ah#649, ah#647). The last two rows are themselves a `#688`-shaped gap: files HARDEN is actively editing
+own (v3's three extra flags are exactly ah#723, ah#649, ah#647).
+
+### Verification of the authority column
+
+`--preflight` reports ROADMAP claims. HARDEN's frozen test inventory is a different authority
+(`harden_tdd_guard.HARDEN_TEST_PATHS`) that `--preflight` cannot see — the plan's acceptance
+criterion 4 was amended to name both. Produced by the script below on `origin/main` `ee3213ea`:
+
+| excluded path | `--preflight` claimants | in `HARDEN_TEST_PATHS` |
+|---|---|---|
+| `advisor_board/presets.py` | HARDEN | — |
+| `tests/test_advisor_board_presets.py` | none outside GOVLEAN | **yes** |
+| `advisor_board/CONTRACTS.md` | none outside GOVLEAN | — (neither: freeze request only) |
+| `capability_registry.py` | none outside GOVLEAN | — (neither: freeze request only) |
+| `tests/test_phase_loop_launcher.py` | none outside GOVLEAN | — (SCHED by measurement: 3 SCHED PRs) |
+| `tests/test_panel_invoker.py` | none outside GOVLEAN | **yes** |
+| `roadmap_assumptions.py` + probes fixture | none outside GOVLEAN | — (RELEASE ah#649 + SCHED ah#616 by measurement) |
+| `plan_manifest.py` | LEGIBLE | — |
+| `tests/test_legible_review_repairs.py` | none outside GOVLEAN | — (LEGIBLE by history: 17 PRs) |
+
+```bash
+cd phase-loop-runtime && PYTHONPATH=src:tests python3 - <<'VERIFY'
+import subprocess, sys
+from harden_tdd_guard import HARDEN_TEST_PATHS
+for p in ["phase-loop-runtime/src/phase_loop_runtime/advisor_board/presets.py",
+          "phase-loop-runtime/tests/test_advisor_board_presets.py",
+          "phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md",
+          "phase-loop-runtime/src/phase_loop_runtime/capability_registry.py",
+          "phase-loop-runtime/tests/test_phase_loop_launcher.py",
+          "phase-loop-runtime/tests/test_panel_invoker.py",
+          "phase-loop-runtime/src/phase_loop_runtime/roadmap_assumptions.py",
+          "phase-loop-runtime/tests/fixtures/roadmap-assumption-probes-v10.json",
+          "phase-loop-runtime/src/phase_loop_runtime/plan_manifest.py",
+          "phase-loop-runtime/tests/test_legible_review_repairs.py"]:
+    out = subprocess.run([sys.executable, "-m", "phase_loop_runtime.roadmap_ownership", "--repo", "..",
+                          "--preflight", p, "--current-phase", "GOVLEAN"], capture_output=True, text=True).stdout
+    claimants = sorted({l.split("claimed by:")[1].split("—")[0].strip() for l in out.splitlines() if "claimed by:" in l})
+    print(f"{p:<75} {claimants or 'none outside GOVLEAN'}  frozen={p in set(HARDEN_TEST_PATHS)}")
+VERIFY
+``` The last two rows are themselves a `#688`-shaped gap: files HARDEN is actively editing
 under a freeze appear in **no** Key files list, so nothing but the freeze request protects them.
 Recorded here as input, not acted on.
 
@@ -163,6 +226,8 @@ PYTHONPATH=phase-loop-runtime/src python3 -m phase_loop_runtime.roadmap_ownershi
   --repo . --report 40 --base origin/main                                            # 37/40
 PYTHONPATH=phase-loop-runtime/src python3 -m phase_loop_runtime.roadmap_ownership \
   --repo . --report 40 --base origin/main --candidate-roadmap plans/govlean-candidate.md  # 18/40, GOVLEAN 8
+PYTHONPATH=phase-loop-runtime/src python3 -m phase_loop_runtime.roadmap_ownership \
+  --repo . --report 60 --base origin/main --candidate-roadmap plans/govlean-candidate.md  # 24/60, GOVLEAN 10
 ```
 The window moves as merges land; re-run before acting. The candidate must also lint:
 `python3 -m phase_loop_runtime.roadmap_lint plans/govlean-candidate.md` (14 phases, OK).

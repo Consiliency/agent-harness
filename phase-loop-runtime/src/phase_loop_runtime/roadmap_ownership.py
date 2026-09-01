@@ -1287,6 +1287,12 @@ def main(argv: List[str]) -> int:
     if args.candidate_roadmap is not None and args.report is None:
         print("roadmap-ownership: --candidate-roadmap requires --report N")
         return 2
+    # The modes are mutually exclusive. --preflight dispatches first and returns,
+    # so `--preflight X --report N [--candidate-roadmap Y]` would print ordinary
+    # preflight output and silently drop the report -- and its candidate.
+    if args.preflight and args.report is not None:
+        print("roadmap-ownership: --preflight and --report are mutually exclusive")
+        return 2
 
     if args.preflight:
         try:

@@ -152,8 +152,16 @@ text).
       `test_a_sole_cause_is_reported_as_a_sole_cause` kills the `if remaining:`→`if True:`
       mutation; proven by running that mutation.
 - [ ] The proposal's exclusion list contains every HARDEN-claimed path that appears in
-      GOVLEAN's measured set, verified by `roadmap-ownership --preflight <path>` reporting
-      HARDEN for each; proven by the preflight command over the list.
+      GOVLEAN's measured set, each verified against the authority the proposal names for it:
+      `roadmap-ownership --preflight <path>` reporting HARDEN for roadmap-claimed paths, and
+      membership in `harden_tdd_guard.HARDEN_TEST_PATHS` for frozen-inventory paths (which
+      `--preflight` cannot report — the frozen inventory is not roadmap ownership); paths on
+      neither list are labelled "neither" explicitly. Proven by the verification table in the
+      proposal, produced by the script quoted beside it.
+      *Amended 2026-09-01 after the agent-harness#732 CR (codex, round 2): as first written
+      the criterion could not pass for `test_advisor_board_presets.py` and
+      `test_panel_invoker.py`, which are HARDEN-frozen but not HARDEN-roadmap-claimed. The
+      amendment names the second authority instead of dropping the check.*
 - [ ] `specs/phase-plans-v10.md` is unchanged on the branch (`git diff origin/main -- specs/`
       is empty).
 

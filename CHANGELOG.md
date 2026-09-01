@@ -18,7 +18,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   of the graduation line, so a projection can never be mistaken for a measurement.
 - The candidate goes through `ownership_map` and therefore every gate a real roadmap does: a
   malformed proposal reports CANNOT EVALUATE rather than scoring against a map that is quietly
-  missing a phase. `--candidate-roadmap` without `--report` is refused.
+  missing a phase. `--candidate-roadmap` without `--report` is refused, and `--preflight` with
+  `--report` is refused as mutually exclusive — preflight dispatches first and returns, so the
+  combination used to print ordinary preflight output and silently drop the report and its
+  candidate.
 
 ### roadmap-ownership: answer the pre-EDIT question (Consiliency/agent-harness#633)
 

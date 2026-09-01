@@ -2428,6 +2428,15 @@ class TestCandidateRoadmap(unittest.TestCase):
             with redirect_stdout(io.StringIO()):  # positive control: preflight itself still runs
                 self.assertIn(ro.main(["prog", "--repo", str(repo), "--preflight", "src/alpha.py"]),
                               (0, 1))
+            # ...and the modes are mutually exclusive: with --report present the
+            # first check passes, --preflight would dispatch first, and the report
+            # (with its candidate) would silently vanish (ah#732 CR round 2).
+            with redirect_stdout(io.StringIO()) as buf:
+                rc = ro.main(["prog", "--repo", str(repo), "--preflight", "src/alpha.py",
+                              "--report", "3", "--base", "HEAD", "--candidate-roadmap", str(cand)])
+            self.assertEqual(rc, 2)
+            self.assertIn("mutually exclusive", buf.getvalue())
+            self.assertNotIn("preflight:", buf.getvalue())
 
     def test_a_MALFORMED_candidate_cannot_evaluate_rather_than_scoring_smaller(self):
         """The candidate goes through `ownership_map`, so every ah#725 gate applies:
