@@ -66,8 +66,12 @@ the routes differ, and the numbers below are derived from the runtime's retry gu
 - **`claude` seat (TUI route):** ONE backstop for the whole leg — a retry gets only the **remainder of T**,
   so there T is the leg-wide ceiling.
 
-If policy needs a leg-wide ceiling on a print-route leg, the runtime does not provide one today —
-size the value for the worst case above and record that in the policy.
+These figures are retry algebra, not absolute wall-clock ceilings. When a deadline fires the
+leg's process group is sent SIGTERM and given 5 s to exit, then SIGKILL after another 5 s — add
+~10 s of teardown to every figure above — and a process that ignores signals can hold its slot
+past any stated maximum. If policy needs a leg-wide ceiling on a print-route leg, the runtime does
+not provide one today — size the value for the worst case above, plus teardown, and record that in
+the policy.
 
 - **Default: omit it.** Heartbeat extinction already reclaims dead legs, normally long before
   any deadline is reached.

@@ -9,8 +9,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 ### advisor-board skills: a hard deadline is not a stall threshold (Consiliency/agent-harness#727)
 
 - The `Bounding A Slow Leg` section told operators to pass `timeouts_by_leg` "to BOUND a
-  slow/stalled leg", conflating two different controls. Liveness is **heartbeat-based**: a leg is
-  reclaimed when no new stdout/stderr byte and no process-group CPU advance appear for 180s.
+  slow/stalled leg", conflating two different controls. Liveness is **heartbeat-based**, per route:
+  on the print routes a leg is reclaimed when no new stdout/stderr byte and no process-group CPU
+  advance appear for 180 s; the Claude TUI route deliberately ignores CPU and heartbeats on novel
+  PTY/output/transcript progress only, granting a pending tool call one bounded extra stall window.
   An explicit `timeouts_by_leg` value is a **hard wall-clock deadline that REPLACES** the ~1800s
   backstop and fires even while the leg is making healthy progress — so reaching for it because
   a leg *stalled* converts a recoverable stall into a guaranteed kill.
@@ -3672,7 +3674,10 @@ IF-0-AHADOPT-1 + IF-0-AHADOPT-2).
   heuristic, not the kill.
   - **An EXPLICIT per-leg timeout override is honored as the hard deadline** (frozen
     contract): `timeouts_by_leg` / `timeout_seconds_by_leg` still bound a leg exactly
-    (`{"gemini": 300}` kills at 300s). Only the input-scaled DEFAULT is raised to the
+    (`{"gemini": 300}` kills at 300s). *[Superseded 2026-09-01 by the Unreleased entry for
+    Consiliency/agent-harness#727: the override is per ATTEMPT on the print routes and leg-wide
+    only on the Claude TUI route; see the advisor-board skill § "Bounding A Slow Leg".]* Only the
+    input-scaled DEFAULT is raised to the
     `_MAX_LEG_TIMEOUT_S` backstop — `_default_spawn` alone knows whether the override
     was explicit and threads the resolved `deadline_s`/`backstop_s` down. (An earlier
     revision nullified overrides via `max(timeout_s, 1800)`; caught in cross-vendor CR.)

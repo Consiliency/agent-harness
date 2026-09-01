@@ -207,12 +207,16 @@ def _runtime_worst_cases() -> dict[str, str]:
     assert src.count("timeout_s * _LEG_RETRY_ELAPSED_FRACTION") == 1, "codex retry guard shape"
     assert src.count("(timeout_s + 60) * _LEG_RETRY_ELAPSED_FRACTION") == 2, "gemini+grok guard shape"
     assert "remaining_backstop_s = total_backstop_s" in src, "TUI route shares one backstop"
+    assert "timeout=_PROCESS_GROUP_TERM_GRACE_S" in src and "timeout=_PROCESS_GROUP_KILL_GRACE_S" in src, "teardown waits"
     return {
         "print_fast": f"under {frac:g} × T",
         "print_worst": f"{1 + frac:.1f} × T",
         "gg_fast": f"under {frac:g} × (T + 60 s)",
         "gg_worst": f"{1 + frac:.1f} × T + {60 * frac:.0f} s",
         "tui": "remainder of T",
+        # deadline expiry is not free: SIGTERM + grace, then SIGKILL + grace (codex, ah#731 r8)
+        "term": f"SIGTERM and given {pi._PROCESS_GROUP_TERM_GRACE_S:g} s to exit",
+        "kill": f"SIGKILL after another {pi._PROCESS_GROUP_KILL_GRACE_S:g} s",
     }
 
 
