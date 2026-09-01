@@ -65,6 +65,13 @@ the routes differ, and the numbers below are derived from the runtime's retry gu
   worst case is **1.5 × T + 30 s** (1.6 × at T = 300; approaching 2 × as T falls toward 60).
 - **`claude` seat (TUI route):** ONE backstop for the whole leg — a retry gets only the **remainder of T**,
   so there T is the leg-wide ceiling.
+- **`gemini` seat, a THIRD clock:** the runtime also passes the leg's `timeout_s` to
+  `agy --print-timeout` — agy's own internal wait budget. By default that is the **input-scaled
+  default, NOT the raised ~1800 s backstop**, so a healthy attempt on that seat can end at ~600 s (+12 s/KB)
+  with a "timeout waiting for response" marker before either heartbeat extinction or the process
+  deadline; the runtime reads that marker as a transient stall. An explicit `timeouts_by_leg` value
+  sets both agy's budget and the process deadline to T. When diagnosing that seat, this is the
+  third cause to rule out.
 
 These figures are retry algebra, not absolute wall-clock ceilings. When a deadline fires the
 leg's process group is sent SIGTERM and given 5 s to exit, then SIGKILL after another 5 s — add
