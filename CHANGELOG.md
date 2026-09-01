@@ -6,6 +6,24 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### advisor-board skills: a hard deadline is not a stall threshold (Consiliency/agent-harness#727)
+
+- The `Bounding A Slow Leg` section told operators to pass `timeouts_by_leg` "to BOUND a
+  slow/stalled leg", conflating two different controls. Liveness is **heartbeat-based**: a leg is
+  reclaimed when no new stdout/stderr byte and no process-group CPU advance appear for 180s.
+  An explicit `timeouts_by_leg` value is a **hard wall-clock deadline that REPLACES** the ~1800s
+  backstop and fires even while the leg is making healthy progress — so reaching for it because
+  a leg *stalled* converts a recoverable stall into a guaranteed kill.
+- The skills now state the heartbeat sources, name the override as a hard deadline, tell
+  operators to omit it by default, and explain how to tell a heartbeat stall from a
+  deadline expiry when diagnosing.
+- Harness-specific literals were removed from the section: the bundle generator rewrites a
+  harness name to `<harness>`, which would have shipped a placeholder as if it were a real
+  diagnostic string, and told each harness that *it* streams to stderr.
+- A regression test asserts the contract across all **eight** surfaces — four `skills-src/`
+  sources and four generated `phase-loop-skills/` outputs — by occurrence rather than by file,
+  and fails if a source is fixed without regenerating the bundle.
+
 ### roadmap-ownership: answer the pre-EDIT question (Consiliency/agent-harness#633)
 
 - `--preflight PATH...` reports which phases claim the given paths before the work
