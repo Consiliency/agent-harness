@@ -1,0 +1,276 @@
+"""The advisor-board skills must not describe a HARD DEADLINE as a stall bound.
+
+agent-harness#727. `timeouts_by_leg` is honoured as a hard wall-clock deadline that
+REPLACES the runtime's generous backstop (`panel_invoker._leg_deadline_from`: an explicit
+value returns `(timeout_s, timeout_s)`; only the input-scaled default is raised to
+`_MAX_LEG_TIMEOUT_S`). The skill previously told operators to pass it "to BOUND a
+slow/stalled leg", which conflates two different controls:
+
+* **stall reclamation** — heartbeat extinction, automatic, already handles a dead leg;
+* **a hard ceiling** — a caller policy that fires even while the leg is healthy.
+
+Reaching for the second because you observed the first converts a recoverable stall into a
+guaranteed kill. That is not hypothetical: it is how several governed panels in this repo were
+killed by their own callers -- the leg's process group terminated at the deadline and reported
+as a timeout result, verdict unwritten.
+
+The same fact lives in SIXTEEN places — four canonical `skills-src/<harness>/` sources, four
+generated `phase-loop-skills/` outputs, and the eight wheel-shipped `skills_bundle/` copies
+(four boards plus their `advisor-panel` aliases) that a pinned install actually reads — so
+this asserts by OCCURRENCE across every site rather than spot-checking one file. That is the ah#693 shape: one fact stated in several
+places drifts silently, and a `grep -l` sweep reports a file as covered when only its first
+mention was fixed.
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+#: The operator-facing claim that must accompany every mention of the override.
+REQUIRED_WARNING = "HARD DEADLINE, not a stall threshold"
+
+#: Prose that actively misleads: it invites the override as a fix for a stall.
+FORBIDDEN = "BOUND a slow/stalled leg"
+
+#: Heartbeat semantics an operator needs in order to tell the two failures apart.
+#:
+#: These are PHRASES that carry the claim, not scattered keywords. A first version listed
+#: "heartbeat" / "stdout" / "stderr" / "backstop", and stripping the mechanism from all
+#: eight sites still passed — those words occur incidentally elsewhere in the same section,
+#: so the check tested vocabulary rather than meaning.
+REQUIRED_SEMANTICS = (
+    "stdout/stderr byte",   # what actually counts as a heartbeat
+    "process-group CPU",    # the secondary, extend-only signal
+    "REPLACES the backstop",  # what an explicit override does to the default
+    "per ATTEMPT on the print routes, not a leg-wide ceiling",  # codex, ah#731 r5/r6
+)
+
+
+#: The packaged layer's real ancestor. Classification is by ANCESTRY under REPO_ROOT, never by
+#: a substring of the absolute path: a worktree named `.../agent-harness-skills_bundle-layout/`
+#: would otherwise classify all sixteen sites as packaged (codex, ah#731 round 4).
+PACKAGED_ROOT = REPO_ROOT / "phase-loop-runtime/src/phase_loop_runtime/skills_bundle"
+
+
+def _is_packaged(site: Path) -> bool:
+    return site.is_relative_to(PACKAGED_ROOT)
+
+
+def _skill_sites() -> list[Path]:
+    """Every surface that carries the section: THREE layers, not two.
+
+        skills-src/  ->  phase-loop-skills/  ->  src/phase_loop_runtime/skills_bundle/
+
+    The third layer ships in the wheel and is what a pinned `pip install` actually
+    reads (`skill_inventory.resolve_source_skill_dir` falls back to package data).
+    The first version of this test globbed only the first two layers -- eight
+    sites -- and reported green while all eight packaged copies, including the
+    `advisor-panel` aliases, still carried the old guidance. That is the ah#693
+    shape exactly: a corrected contract that never reaches the surface operators
+    read. Cross-vendor review caught it; this file had not.
+    """
+    sites = sorted(REPO_ROOT.glob("skills-src/*/*-advisor-board/SKILL.md"))
+    sites += sorted(REPO_ROOT.glob("phase-loop-skills/advisor-board/SKILL.md"))
+    sites += sorted(REPO_ROOT.glob("phase-loop-skills/advisor-board/_overrides/*/SKILL.md"))
+    sites += sorted(REPO_ROOT.glob(
+        "phase-loop-runtime/src/phase_loop_runtime/skills_bundle/*-advisor-*/SKILL.md"
+    ))
+    return sites
+
+
+#: Exact site counts, not floors. A floor (`>= 16`) can be satisfied by a wrong state --
+#: one source missing and one stray extra -- so the counts are identities; enrolling a new
+#: site is a deliberate edit here, never an accident that still passes.
+PACKAGED_SITES = 8   # 4 boards + 4 `advisor-panel` aliases, shipped in the wheel
+FULL_TREE_SITES = 16  # + 4 `skills-src/` sources + 4 generated `phase-loop-skills/` outputs
+
+
+def _full_tree() -> bool:
+    """Gate A runs this file from a sparse standalone tree (ah#598): the packaged layer is
+    there (the wheel ships it) but `phase-loop-skills/` and the advisor-board sources are not.
+    Key on the GENERATED layer: Gate A's sparse set does include `skills-src/codex/
+    codex-execute-phase/`, so "`skills-src/` exists" proves nothing about the boards."""
+    return (REPO_ROOT / "phase-loop-skills/advisor-board/SKILL.md").is_file()
+
+
+def test_the_sites_are_discovered_at_all() -> None:
+    """A sweep that finds nothing passes every other assertion vacuously."""
+    sites = _skill_sites()
+    packaged = [s for s in sites if _is_packaged(s)]
+    assert len(packaged) == PACKAGED_SITES, (
+        "the wheel-shipped copies (4 boards + 4 panel aliases) must ALL be swept, and only "
+        f"them; found {len(packaged)}: {[str(p.relative_to(REPO_ROOT)) for p in packaged]}"
+    )
+    if _full_tree():
+        assert len(sites) == FULL_TREE_SITES, (
+            f"expected 4 sources + 4 generated + 8 packaged, found {len(sites)}; a new site must "
+            "be enrolled here deliberately, a missing one is a dropout"
+        )
+    else:
+        # From-wheel layout (Gate A): only the packaged layer can be present. Anything
+        # else would be a stray copy the sparse checkout was not supposed to carry.
+        assert len(sites) == PACKAGED_SITES, (
+            f"from-wheel layout: expected only the {PACKAGED_SITES} packaged copies, found "
+            f"{len(sites)}"
+        )
+
+
+@pytest.mark.parametrize("site", _skill_sites(), ids=lambda p: str(p.relative_to(REPO_ROOT)))
+def test_every_surface_that_mentions_the_override_carries_the_hard_deadline_warning(site: Path) -> None:
+    text = site.read_text(encoding="utf-8")
+    mentions = len(re.findall(r"timeouts_by_leg", text))
+    if not mentions:
+        pytest.skip("this surface does not mention the override")
+    # The property is per SURFACE: a surface that names the override must state, at least
+    # once, what it is. A first version was named "every MENTION" while asserting `>= 1`
+    # (grok, ah#731 round 2) -- the name claimed a per-occurrence check the body never made.
+    warnings = len(re.findall(re.escape(REQUIRED_WARNING), text))
+    assert warnings >= 1, (
+        f"{site.relative_to(REPO_ROOT)} mentions timeouts_by_leg {mentions}x but never says "
+        f"it is a {REQUIRED_WARNING!r} that replaces the backstop"
+    )
+
+
+@pytest.mark.parametrize("site", _skill_sites(), ids=lambda p: str(p.relative_to(REPO_ROOT)))
+def test_no_site_invites_the_override_as_a_stall_fix(site: Path) -> None:
+    text = " ".join(site.read_text(encoding="utf-8").split())
+    assert FORBIDDEN not in text, (
+        f"{site.relative_to(REPO_ROOT)} still tells operators to use timeouts_by_leg to "
+        f"{FORBIDDEN!r}; stalls are reclaimed by heartbeat extinction, and an override "
+        f"shorter than the real work guarantees the kill it was meant to prevent"
+    )
+
+
+#: Python surfaces carry the forbidden guidance too -- docstrings a CALLER reads -- and they
+#: are outside any SKILL.md sweep. Cross-vendor review of ah#731 (codex + grok, round 2)
+#: found three: two in `panel_invoker.py` and one in `test_panel_context_refs_114.py`.
+#: This sweeps by CONCEPT (every .py under src/ and tests/), not by the files someone named.
+# The CONFLATION phrase itself, not a verb around it: a first version required "bound(s)"
+# and sailed past `test_panel_context_refs_114.py`, which says "so a slow/stalled leg
+# fails ITS leg" -- the same claim with no "bound" in it.
+RUNTIME_FORBIDDEN = re.compile(r"slow/stalled leg", re.I)
+#: The ONLY tolerated occurrences, keyed by file with an exact count. `panel_invoker.py` is
+#: HARDEN-claimed and HARDEN is frozen at its owner's request, so its two sites are tracked
+#: in agent-harness#733 instead of fixed here. Pinned in BOTH directions: a third site
+#: there, or ANY site elsewhere, is a new defect; fewer means the fix landed and this entry
+#: must be deleted with the issue.
+FROZEN_RUNTIME_SITES = {
+    "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py": 2,  # agent-harness#733
+}
+
+
+def _python_surfaces() -> list[Path]:
+    root = REPO_ROOT / "phase-loop-runtime"
+    me = Path(__file__).resolve()
+    return sorted(p for p in (*root.glob("src/**/*.py"), *root.glob("tests/**/*.py"))
+                  if p.resolve() != me)
+
+
+def test_no_python_surface_invites_the_override_as_a_stall_fix_except_the_frozen_two() -> None:
+    surfaces = _python_surfaces()
+    assert len(surfaces) > 100, f"sweep found only {len(surfaces)} python files"
+    found = {}
+    for p in surfaces:
+        n = len(RUNTIME_FORBIDDEN.findall(" ".join(p.read_text(encoding="utf-8").split())))
+        if n:
+            found[str(p.relative_to(REPO_ROOT))] = n
+    assert found == FROZEN_RUNTIME_SITES, (
+        f"python surfaces inviting the override as a stall fix: {found}; the only tolerated "
+        f"occurrences are {FROZEN_RUNTIME_SITES}. More or elsewhere: a new defect -- fix it, do "
+        f"not widen the allowlist. Fewer: the frozen sites were fixed -- delete the entry and "
+        f"close agent-harness#733."
+    )
+
+
+SECTION = re.compile(r"^## Bounding A Slow Leg$.*?(?=^## )", re.M | re.S)
+
+
+def _runtime_worst_cases() -> dict[str, str]:
+    """The numbers the section states, DERIVED from the runtime rather than asserted as prose.
+
+    Codex, ah#731 round 6: a guard that only requires a phrase cannot tell whether the phrase is
+    true. This reads `panel_invoker` -- from the wheel in Gate A, from src/ in the full tree --
+    and computes what the section must say from the retry guards it actually contains:
+    codex retries below `timeout_s * FRACTION`; gemini and grok below `(timeout_s + 60) *
+    FRACTION`; the Claude TUI route retries with the REMAINDER of one total backstop.
+    If a constant or a guard changes, this fails until the prose is re-derived.
+    """
+    import inspect
+    from phase_loop_runtime import panel_invoker as pi
+    src = inspect.getsource(pi)
+    frac = pi._LEG_RETRY_ELAPSED_FRACTION
+    assert src.count("timeout_s * _LEG_RETRY_ELAPSED_FRACTION") == 1, "codex retry guard shape"
+    assert src.count("(timeout_s + 60) * _LEG_RETRY_ELAPSED_FRACTION") == 2, "gemini+grok guard shape"
+    assert "remaining_backstop_s = total_backstop_s" in src, "TUI route shares one backstop"
+    assert "timeout=_PROCESS_GROUP_TERM_GRACE_S" in src and "timeout=_PROCESS_GROUP_KILL_GRACE_S" in src, "teardown waits"
+    flat = " ".join(src.split())
+    assert '"--print-timeout", f"{timeout_s}s"' in flat, "gemini passes the leg timeout to agy's own budget"
+    assert "return int(timeout_s), int(timeout_s)" in flat and "max(int(ref), _MAX_LEG_TIMEOUT_S)" in flat, (
+        "explicit override -> (T, T); default -> (scaled, raised): the gemini third-clock claim rests on this")
+    return {
+        "print_fast": f"under {frac:g} × T",
+        "print_worst": f"{1 + frac:.1f} × T",
+        "gg_fast": f"under {frac:g} × (T + 60 s)",
+        "gg_worst": f"{1 + frac:.1f} × T + {60 * frac:.0f} s",
+        "tui": "remainder of T",
+        # deadline expiry is not free: SIGTERM + grace, then SIGKILL + grace (codex, ah#731 r8)
+        "term": f"SIGTERM and given {pi._PROCESS_GROUP_TERM_GRACE_S:g} s to exit",
+        "kill": f"SIGKILL after another {pi._PROCESS_GROUP_KILL_GRACE_S:g} s",
+        # gemini's THIRD clock: agy's own print-timeout receives the leg's timeout_s, which by
+        # default is the input-scaled figure, not the raised backstop (codex, ah#731 r9)
+        "agy_budget": "`agy --print-timeout`",
+        "agy_default": "input-scaled default, NOT the raised",
+    }
+
+
+@pytest.mark.parametrize("site", _skill_sites(), ids=lambda p: str(p.relative_to(REPO_ROOT)))
+def test_the_documented_worst_cases_are_derived_from_the_runtime(site: Path) -> None:
+    section = " ".join(_section(site).split())
+    for key, claim in _runtime_worst_cases().items():
+        assert claim in section, f"{site.relative_to(REPO_ROOT)}: section lacks the runtime-derived {key} claim {claim!r}"
+
+
+def _section(site: Path) -> str:
+    found = SECTION.search(site.read_text(encoding="utf-8"))
+    assert found, f"{site} has no 'Bounding A Slow Leg' section"
+    return found.group(0)
+
+
+@pytest.mark.parametrize("site", _skill_sites(), ids=lambda p: str(p.relative_to(REPO_ROOT)))
+def test_heartbeat_semantics_are_described(site: Path) -> None:
+    # Scoped to the SECTION, not the whole file. Scanning the file passed while the
+    # section itself lost the detail, because these words occur elsewhere — a
+    # mutation deleting the mechanism from the section killed only the drift test.
+    text = _section(site).lower()
+    if "timeouts_by_leg" not in text:
+        pytest.skip("this surface does not mention the override")
+    missing = [w for w in REQUIRED_SEMANTICS if w.lower() not in text]
+    assert not missing, (
+        f"{site.relative_to(REPO_ROOT)} describes the override without the semantics needed "
+        f"to tell a heartbeat stall from a hard-deadline expiry; missing: {missing}"
+    )
+
+
+def test_generated_copies_match_their_canonical_sources() -> None:
+    """The generated bundle is regenerated from `skills-src/`, so the section must agree.
+
+    Without this, a source fix silently fails to reach the surface operators actually read --
+    which is the half of ah#693 that made a corrected contract look shipped. In the from-wheel
+    layout (Gate A) only the eight packaged copies are present, so there this proves only that
+    they agree with EACH OTHER; the source-to-generated-to-packaged agreement is proven in the
+    full tree.
+    """
+    bodies = {}
+    for site in _skill_sites():
+        bodies.setdefault(" ".join(_section(site).split()), []).append(
+            str(site.relative_to(REPO_ROOT))
+        )
+    assert len(bodies) == 1, (
+        "the 'Bounding A Slow Leg' section differs across sites; regenerate the bundle from "
+        f"skills-src. Variants: { {k[:60]: v for k, v in bodies.items()} }"
+    )

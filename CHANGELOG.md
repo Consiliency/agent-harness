@@ -6,6 +6,39 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### advisor-board skills: a hard deadline is not a stall threshold (Consiliency/agent-harness#727)
+
+- The `Bounding A Slow Leg` section told operators to pass `timeouts_by_leg` "to BOUND a
+  slow/stalled leg", conflating two different controls. Liveness is **heartbeat-based**, per route:
+  on the print routes a leg is reclaimed when no new stdout/stderr byte and no process-group CPU
+  advance appear for 180 s; the Claude TUI route deliberately ignores CPU and heartbeats on novel
+  PTY/output/transcript progress only, granting a pending tool call one bounded extra stall window.
+  An explicit `timeouts_by_leg` value is a **hard wall-clock deadline that REPLACES** the ~1800s
+  backstop and fires even while the leg is making healthy progress — so reaching for it because
+  a leg *stalled* converts a recoverable stall into a guaranteed kill.
+- The skills now state the heartbeat sources, name the override as a hard deadline, tell
+  operators to omit it by default, and explain how to tell a heartbeat stall from a
+  deadline expiry when diagnosing.
+- Harness-specific literals were removed from the section: the bundle generator rewrites a
+  harness name to `<harness>`, which would have shipped a placeholder as if it were a real
+  diagnostic string, and told each harness that *it* streams to stderr.
+- A regression test asserts the contract across all **sixteen** surfaces — four `skills-src/`
+  sources, four generated `phase-loop-skills/` outputs, and the eight wheel-shipped
+  `skills_bundle/` copies (four boards plus their `advisor-panel` aliases) that a pinned install
+  actually reads — by occurrence rather than by file. It fails if a source is fixed without
+  regenerating and syncing; the first version swept only the first two layers and passed while
+  every packaged copy still carried the old guidance.
+- What the override bounds differs by route, and the skills now say so per seat: on the print
+  routes (`codex`, `gemini`, `grok`) it is a deadline **per attempt** — a soft-empty first attempt
+  that failed fast is retried once with a fresh deadline, so a leg can exceed the value; on the
+  Claude TUI route one backstop is shared across the retry, so the value IS the leg-wide ceiling.
+  The exact retry thresholds and worst cases are stated in the skill section and are DERIVED
+  from `panel_invoker` by the guard, not restated here.
+- The runtime's own docstrings for `timeout_s` / `timeouts_by_leg` in `panel_invoker.py` still
+  say an explicit value "bounds a slow/stalled leg" — the same defect, outside any skill sweep.
+  `panel_invoker.py` is HARDEN-claimed and HARDEN is frozen, so they are NOT fixed here; the
+  guard pins them as exactly two known sites tracked in Consiliency/agent-harness#733, so a
+  third site fails and the eventual fix must delete the allowlist.
 ### roadmap-ownership: score a proposed roadmap before editing the real one (Consiliency/agent-harness#688)
 
 - `--report N --candidate-roadmap PATH` replays the same landed changes against a hypothetical
@@ -3667,7 +3700,10 @@ IF-0-AHADOPT-1 + IF-0-AHADOPT-2).
   heuristic, not the kill.
   - **An EXPLICIT per-leg timeout override is honored as the hard deadline** (frozen
     contract): `timeouts_by_leg` / `timeout_seconds_by_leg` still bound a leg exactly
-    (`{"gemini": 300}` kills at 300s). Only the input-scaled DEFAULT is raised to the
+    (`{"gemini": 300}` kills at 300s). *[Superseded 2026-09-01 by the Unreleased entry for
+    Consiliency/agent-harness#727: the override is per ATTEMPT on the print routes and leg-wide
+    only on the Claude TUI route; see the advisor-board skill § "Bounding A Slow Leg".]* Only the
+    input-scaled DEFAULT is raised to the
     `_MAX_LEG_TIMEOUT_S` backstop — `_default_spawn` alone knows whether the override
     was explicit and threads the resolved `deadline_s`/`backstop_s` down. (An earlier
     revision nullified overrides via `max(timeout_s, 1800)`; caught in cross-vendor CR.)

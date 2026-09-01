@@ -37,7 +37,64 @@ There are THREE DISTINCT ways to give the panel material. The #114 fix names the
 
 ## Bounding A Slow Leg
 
-Legs fan out concurrently, so panel wall-clock ≈ max(leg), not sum. Each leg's default timeout is INPUT-SCALED (~600s floor + ~12s/KB, capped at 1800s): a ~150-line artifact is roughly ~11 min/leg, and a genuinely max-effort frontier review of a large bundle can approach the cap. Pass `timeouts_by_leg={"gemini": 300}` (or `PanelRequest.timeout_seconds_by_leg`) to BOUND a slow/stalled leg so it fails ITS leg instead of hanging the whole panel. A transient CLI stall (an empty turn or a "timeout waiting for response" marker) is retried once, but only when it fails FAST, so a retry can never double a slow leg's wall-clock.
+Legs fan out concurrently, so panel wall-clock ≈ max(leg), not sum. Each leg's default
+timeout is INPUT-SCALED (~600s floor + ~12s/KB) and then raised to a ~1800s backstop.
+
+**Liveness is heartbeat-based, not clock-based.** A leg is reclaimed when its heartbeat goes
+EXTINCT — no new stdout/stderr byte AND no process-group CPU advance for 180s — not when a
+timer expires. Print-mode legs (codex/gemini/grok) heartbeat on any new stdout OR stderr byte
+(different CLIs stream on different channels — some to stderr, some to stdout — so both
+are watched); advancing
+process-group CPU is a secondary signal that can only EXTEND a leg's life, never kill it. The
+TUI route heartbeats on genuine reviewer progress — novel transcript/output growth — and
+reports a TUI stall marker carrying the age of the last progress, so cosmetic animation and
+idle CPU do not keep a wedged leg alive.
+
+The wall-clock deadline is a rarely-hit BACKSTOP. Reliable stall detection is exactly what
+makes that generous backstop safe.
+
+**`timeouts_by_leg` is a HARD DEADLINE, not a stall threshold.** Passing an explicit value
+REPLACES the backstop with your number for that leg, and it fires even while the leg is making
+healthy progress: `{"gemini": 300}` kills an attempt at 300s whether or not it is still streaming.
+On the print routes it is a deadline **per ATTEMPT on the print routes, not a leg-wide ceiling**;
+the routes differ, and the numbers below are derived from the runtime's retry guards:
+
+- **`codex` seat (print route):** a soft-empty first attempt that failed fast (elapsed under 0.5 × T) is retried
+  once with a fresh deadline and a fresh liveness clock — worst case just under **1.5 × T**.
+- **`gemini` and `grok` seats (print route):** the same retry, but "fast" is elapsed under 0.5 × (T + 60 s), so the
+  worst case is **1.5 × T + 30 s** (1.6 × at T = 300; approaching 2 × as T falls toward 60).
+- **`claude` seat (TUI route):** ONE backstop for the whole leg — a retry gets only the **remainder of T**,
+  so there T is the leg-wide ceiling.
+- **`gemini` seat, a THIRD clock:** the runtime also passes the leg's `timeout_s` to
+  `agy --print-timeout` — agy's own internal wait budget. By default that is the **input-scaled
+  default, NOT the raised ~1800 s backstop**, so a healthy attempt on that seat can end at ~600 s (+12 s/KB)
+  with a "timeout waiting for response" marker before either heartbeat extinction or the process
+  deadline; the runtime reads that marker as a transient stall. An explicit `timeouts_by_leg` value
+  sets both agy's budget and the process deadline to T. When diagnosing that seat, this is the
+  third cause to rule out.
+
+These figures are retry algebra, not absolute wall-clock ceilings. When a deadline fires the
+leg's process group is sent SIGTERM and given 5 s to exit, then SIGKILL after another 5 s — add
+~10 s of teardown to every figure above — and a process that ignores signals can hold its slot
+past any stated maximum. If policy needs a leg-wide ceiling on a print-route leg, the runtime does
+not provide one today — size the value for the worst case above, plus teardown, and record that in
+the policy.
+
+- **Default: omit it.** Heartbeat extinction already reclaims dead legs, normally long before
+  any deadline is reached.
+- **Use it only** when policy requires an absolute ceiling on an actively-progressing leg.
+- **Do not reach for it because you saw a leg stall.** Stalls are already handled, and a value
+  shorter than the real work converts a recoverable stall into a guaranteed kill: the leg's
+  process group is terminated and it is reported as a timeout result, verdict unwritten.
+
+When a leg does end early, distinguish the two causes before diagnosing: heartbeat extinction
+(a `[leg-liveness]` stall marker, or a TUI stall marker with `last_progress_age_s`) means the
+leg went silent; a hard-deadline expiry means a wall-clock ceiling fired — your override if you
+set one, otherwise the ~1800s backstop — so an expiry alone does not prove an override was
+passed. They are not the same failure and are not retried on the same basis.
+
+A transient CLI stall (an empty turn or a "timeout waiting for response" marker) is retried
+once, but only when it fails FAST, so a retry can never double a slow leg's wall-clock.
 
 ## Use
 
