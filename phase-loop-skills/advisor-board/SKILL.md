@@ -56,10 +56,18 @@ makes that generous backstop safe.
 **`timeouts_by_leg` is a HARD DEADLINE, not a stall threshold.** Passing an explicit value
 REPLACES the backstop with your number for that leg, and it fires even while the leg is making
 healthy progress: `{"gemini": 300}` kills an attempt at 300s whether or not it is still streaming.
-It is a deadline **per ATTEMPT, not a leg-wide ceiling**: a soft-empty first attempt that failed
-FAST (under half the budget) is retried once with a fresh deadline and a fresh liveness clock, so
-a leg's total wall-clock can reach ~1.5× your value. If policy needs an absolute leg-wide ceiling,
-the runtime does not provide one today — set the value accordingly and say so in the policy.
+On the print routes it is a deadline **per ATTEMPT on the print routes, not a leg-wide ceiling**;
+the routes differ, and the numbers below are derived from the runtime's retry guards:
+
+- **`codex` seat (print route):** a soft-empty first attempt that failed fast (elapsed under 0.5 × T) is retried
+  once with a fresh deadline and a fresh liveness clock — worst case just under **1.5 × T**.
+- **`gemini` and `grok` seats (print route):** the same retry, but "fast" is elapsed under 0.5 × (T + 60 s), so the
+  worst case is **1.5 × T + 30 s** (1.6 × at T = 300; approaching 2 × as T falls toward 60).
+- **`claude` seat (TUI route):** ONE backstop for the whole leg — a retry gets only the **remainder of T**,
+  so there T is the leg-wide ceiling.
+
+If policy needs a leg-wide ceiling on a print-route leg, the runtime does not provide one today —
+size the value for the worst case above and record that in the policy.
 
 - **Default: omit it.** Heartbeat extinction already reclaims dead legs, normally long before
   any deadline is reached.

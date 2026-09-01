@@ -47,7 +47,7 @@ REQUIRED_SEMANTICS = (
     "stdout/stderr byte",   # what actually counts as a heartbeat
     "process-group CPU",    # the secondary, extend-only signal
     "REPLACES the backstop",  # what an explicit override does to the default
-    "per ATTEMPT, not a leg-wide ceiling",  # a fast soft-empty retry gets a fresh deadline (codex, ah#731 r5)
+    "per ATTEMPT on the print routes, not a leg-wide ceiling",  # codex, ah#731 r5/r6
 )
 
 
@@ -188,6 +188,39 @@ def test_no_python_surface_invites_the_override_as_a_stall_fix_except_the_frozen
 
 
 SECTION = re.compile(r"^## Bounding A Slow Leg$.*?(?=^## )", re.M | re.S)
+
+
+def _runtime_worst_cases() -> dict[str, str]:
+    """The numbers the section states, DERIVED from the runtime rather than asserted as prose.
+
+    Codex, ah#731 round 6: a guard that only requires a phrase cannot tell whether the phrase is
+    true. This reads `panel_invoker` -- from the wheel in Gate A, from src/ in the full tree --
+    and computes what the section must say from the retry guards it actually contains:
+    codex retries below `timeout_s * FRACTION`; gemini and grok below `(timeout_s + 60) *
+    FRACTION`; the Claude TUI route retries with the REMAINDER of one total backstop.
+    If a constant or a guard changes, this fails until the prose is re-derived.
+    """
+    import inspect
+    from phase_loop_runtime import panel_invoker as pi
+    src = inspect.getsource(pi)
+    frac = pi._LEG_RETRY_ELAPSED_FRACTION
+    assert src.count("timeout_s * _LEG_RETRY_ELAPSED_FRACTION") == 1, "codex retry guard shape"
+    assert src.count("(timeout_s + 60) * _LEG_RETRY_ELAPSED_FRACTION") == 2, "gemini+grok guard shape"
+    assert "remaining_backstop_s = total_backstop_s" in src, "TUI route shares one backstop"
+    return {
+        "print_fast": f"under {frac:g} × T",
+        "print_worst": f"{1 + frac:.1f} × T",
+        "gg_fast": f"under {frac:g} × (T + 60 s)",
+        "gg_worst": f"{1 + frac:.1f} × T + {60 * frac:.0f} s",
+        "tui": "remainder of T",
+    }
+
+
+@pytest.mark.parametrize("site", _skill_sites(), ids=lambda p: str(p.relative_to(REPO_ROOT)))
+def test_the_documented_worst_cases_are_derived_from_the_runtime(site: Path) -> None:
+    section = " ".join(_section(site).split())
+    for key, claim in _runtime_worst_cases().items():
+        assert claim in section, f"{site.relative_to(REPO_ROOT)}: section lacks the runtime-derived {key} claim {claim!r}"
 
 
 def _section(site: Path) -> str:
