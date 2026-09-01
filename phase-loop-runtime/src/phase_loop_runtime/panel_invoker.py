@@ -2212,7 +2212,8 @@ def _broker_claude_tui_command(
         "claude", "--ax-screen-reader", "--safe-mode", "--no-chrome",
         "--disable-slash-commands", "--model", model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["claude"],
         "--session-id", session_id,
-        *effort_args, "--permission-mode", "plan", "--setting-sources", "",
+        # Plan mode requires ExitPlanMode, which cannot exist with the empty tool surface.
+        *effort_args, "--setting-sources", "",
         "--settings", json.dumps({"apiKeyHelper": ""}), "--strict-mcp-config",
         "--mcp-config", json.dumps({"mcpServers": {}}), "--agents", "{}",
         "--tools", "", "--allowedTools", "", "--disallowedTools",

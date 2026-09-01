@@ -2230,6 +2230,8 @@ def verify_broker(value: Any, harness: str, requested: str, resolved: str, bundl
             continue
         if index == 0 or argv_shape[index - 1] not in empty_positions:
             fail("broker provider argv shape has an unbound empty value")
+    if harness == "claude" and "--permission-mode" in argv_shape:
+        fail("Claude broker may not enter a permission mode")
     prompt_bytes = sealed_prompt.encode("utf-8", errors="strict")
     if (
         broker["provider_input_sha256"] != sha256(prompt_bytes)
@@ -2849,7 +2851,7 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
                 "claude", "--ax-screen-reader", "--safe-mode", "--no-chrome",
                 "--disable-slash-commands", "--model", "claude-fable-5",
                 "--session-id", "<CLAUDE_SESSION_ID>", "--effort", "max",
-                "--permission-mode", "plan", "--setting-sources", "",
+                "--setting-sources", "",
                 "--settings", "{\"apiKeyHelper\": \"\"}", "--strict-mcp-config",
                 "--mcp-config", "{\"mcpServers\": {}}", "--agents", "{}",
                 "--tools", "", "--allowedTools", "", "--disallowedTools",
@@ -4502,6 +4504,17 @@ def self_test() -> None:
         rejected("stage-mode-0444", seat_mutation(lambda seat: seat["broker"].__setitem__("stage_bundle_mode", 0o444)))
         rejected("extra-no-tool-control", seat_mutation(lambda seat: seat["broker"]["provider_no_tool_controls"].append("extra")))
         rejected("duplicate-no-tool-control", seat_mutation(lambda seat: seat["broker"]["provider_no_tool_controls"].append(seat["broker"]["provider_no_tool_controls"][0])))
+        def claude_permission_mode(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
+            for item in model["reviews"]["candidate"]["seats"]:
+                seat_ref = item["artifact"]
+                seat = parse_canonical_json((artifact_root / seat_ref["path"]).read_bytes(), "self-test seat")
+                if seat["harness"] == "claude":
+                    shape = seat["broker"]["provider_argv_shape"]
+                    shape[shape.index("--setting-sources"):shape.index("--setting-sources")] = ["--permission-mode", "plan"]
+                    replace(seat_ref, artifact_root, canonical_bytes(seat))
+                    return
+            raise AssertionError("fixture lacks Claude seat")
+        rejected("claude-broker-permission-plan", claude_permission_mode)
         rejected("detached-broker-provider-response", seat_mutation(lambda seat: seat["broker"].__setitem__("provider_response_sha256", "f" * 64)))
         def gemini_stream_mutation(change: Callable[[dict[str, Any]], None]) -> Callable[[dict[str, Any], Path, Path], None]:
             def mutate(model: dict[str, Any], local_root: Path, artifact_root: Path) -> None:
