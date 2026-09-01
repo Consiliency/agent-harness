@@ -50,6 +50,16 @@ REQUIRED_SEMANTICS = (
 )
 
 
+#: The packaged layer's real ancestor. Classification is by ANCESTRY under REPO_ROOT, never by
+#: a substring of the absolute path: a worktree named `.../agent-harness-skills_bundle-layout/`
+#: would otherwise classify all sixteen sites as packaged (codex, ah#731 round 4).
+PACKAGED_ROOT = REPO_ROOT / "phase-loop-runtime/src/phase_loop_runtime/skills_bundle"
+
+
+def _is_packaged(site: Path) -> bool:
+    return site.is_relative_to(PACKAGED_ROOT)
+
+
 def _skill_sites() -> list[Path]:
     """Every surface that carries the section: THREE layers, not two.
 
@@ -90,7 +100,7 @@ def _full_tree() -> bool:
 def test_the_sites_are_discovered_at_all() -> None:
     """A sweep that finds nothing passes every other assertion vacuously."""
     sites = _skill_sites()
-    packaged = [s for s in sites if "skills_bundle" in str(s)]
+    packaged = [s for s in sites if _is_packaged(s)]
     assert len(packaged) == PACKAGED_SITES, (
         "the wheel-shipped copies (4 boards + 4 panel aliases) must ALL be swept, and only "
         f"them; found {len(packaged)}: {[str(p.relative_to(REPO_ROOT)) for p in packaged]}"
