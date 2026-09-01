@@ -2404,9 +2404,15 @@ class TestCandidateRoadmap(unittest.TestCase):
             # The projection line REPLACES the graduation line. Printing both
             # hands the reader two contradictory safety statements (ah#732 CR).
             self.assertNotIn("graduation number", out)
+            # The number's OWN line carries the label. A consumer that greps
+            # "would have flagged" out of a log must not get a bare projection
+            # (ah#732 CR round 3, codex).
+            flagged_line = next(l for l in out.splitlines() if "would have flagged" in l)
+            self.assertIn("CANDIDATE PROJECTION", flagged_line)
             plain = ro.render_report(ro.replay(repo, 3, "specs/phase-plans-v10.md", "HEAD"))
             self.assertNotIn("CANDIDATE", plain)
             self.assertIn("graduation number", plain)  # positive control
+            self.assertRegex(plain, r"would have flagged: \d+/\d+")  # plain line is unchanged
 
     def test_candidate_without_report_is_refused(self):
         """Mutation that must kill this: drop the argument check in `main`."""

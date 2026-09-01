@@ -1193,8 +1193,11 @@ def render_report(rows: Sequence[ReplayRow]) -> str:
     ]
     if scored:
         pct = 100.0 * len(flagged) / len(scored)
+        # The marker is ON the number's line, not beside it: a consumer that
+        # greps this line out of a log must get the projection label with it.
+        tag = " (CANDIDATE PROJECTION)" if is_candidate else ""
         lines.append(
-            f"  would have flagged: {len(flagged)}/{len(scored)} ({pct:.0f}%)"
+            f"  would have flagged{tag}: {len(flagged)}/{len(scored)} ({pct:.0f}%)"
         )
         if is_candidate:
             # A projection is NOT the graduation number. Printing both lines

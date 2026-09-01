@@ -18,7 +18,8 @@ with `--candidate-roadmap` for the projections (ah#688 adds that flag; it scores
 | v2 — v1 minus `plans/` minus `test_phase_loop_launcher.py` | 18/40 (45%) | 8 | 8 | 0 |
 | v3 — v2 plus every file GOVLEAN's plan names (32) | 18/40 (45%) | 11 | 8 | **3** |
 | v4 — v2 plus 18 plan-named files | 18/40 (45%) | 8 | 8 | 0 |
-| **v5 — v4 minus the `panel_invoker.py` dual-claim** | **18/40 (45%)** | **8** | **8** | **0** |
+| v5 — v4 minus the `panel_invoker.py` dual-claim | 18/40 (45%) | 8 | 8 | 0 |
+| **v6 — v5 with `skills-src/` narrowed to the 12 skill directories GOVLEAN's plan names** | **18/40 (45%)** | **8** | **8** | **0** |
 | floor — GOVLEAN claims nothing | 13/40 (32%) | — | — | — |
 
 **"over-claim" means a GOVLEAN flag on a file GOVLEAN does not own by a named authority** —
@@ -30,16 +31,17 @@ below at a second window to show it is not an artefact of the 40-commit cutoff:
 | roadmap | window 60 flagged | GOVLEAN on | on GOVLEAN's own commits | on foreign commits — via which file, and GOVLEAN's authority for it |
 |---|---|---|---|---|
 | v4 | 24/60 (40%) | 12 | 8 | **4**: ah#643, ah#632, `4e45af61`, ah#545 — all via `panel_invoker.py`, the live roadmap's "(EC-GOVLEAN-5 bounded edits)" dual-claim; HARDEN owns the file and EC-GOVLEAN-5 is verified (phase `completed`), so the bounded edits are done |
-| **v5** | 24/60 (40%) | 10 | 8 | **2**: ah#643 via `test_govlean_panel_policy.py` (a board-defaults change updating the expectations of GOVLEAN's EC-GOVLEAN-5 proof test — GOVLEAN plan line 118); ah#545 via `agy_canary_evidence.py` (the commit that CREATED the file, before GOVLEAN's four subsequent landings on it) |
+| v5 | 24/60 (40%) | 10 | 8 | **2**: ah#643 via `test_govlean_panel_policy.py` AND via `skills-src/` — that PR edited the four `*-advisor-board` skills, which GOVLEAN's plan does not own; a directory token matches every descendant |
+| **v6** | 24/60 (40%) | 10 | 8 | **2**: ah#643 via `test_govlean_panel_policy.py` (a board-defaults change updating the expectations of GOVLEAN's EC-GOVLEAN-5 proof test — GOVLEAN plan line 118); ah#545 via `agy_canary_evidence.py` (the commit that CREATED the file, before GOVLEAN's four subsequent landings on it) |
 
-Both v5 rows at window 60 are foreign edits to files GOVLEAN owns by its plan's `Owned files`
+Both v6 rows at window 60 are foreign edits to files GOVLEAN owns by its plan's `Owned files`
 declaration (`plans/phase-plan-v10-GOVLEAN.md` line 70). They are correct flags. v4's four
 extra rows were not: they came through a file whose owner is HARDEN.
 
 Sanity: a candidate identical to the live roadmap reproduces 37/40 exactly, so the candidate
 path changes nothing but the text.
 
-**v5 is the proposal** (`plans/govlean-candidate.md` IS v5). Under it every remaining GOVLEAN
+**v6 is the proposal** (`plans/govlean-candidate.md` IS v6). Under it every remaining GOVLEAN
 flag sits on a commit GOVLEAN itself landed. The 13-point gap to the floor is not over-claim;
 it is GOVLEAN owning its own work.
 
@@ -50,7 +52,8 @@ v3 is the naive repair — add everything GOVLEAN's plan names — and the instr
 re-introduces three over-claims. v4 keeps the number and fixes the defect; v5 additionally
 drops the one pre-existing dual-claim (`panel_invoker.py`) that a second window (60) showed to
 be the source of every foreign flag beyond the first — the round-2 CR (codex) caught that
-"zero" was window-bound.
+"zero" was window-bound. v6 applies the same lesson to the last directory token: `skills-src/`
+matched the advisor-board skills ah#643 edited, which GOVLEAN's plan does not own (round 3).
 
 ## Why v1 was not enough — attribution of its 15 over-claims
 
@@ -97,7 +100,18 @@ If GOVLEAN later builds a closeout-gate artifact under `plans/`, claim that FILE
 - `phase-loop-runtime/tests/test_govlean_tdd_receipts.py`
 - `phase-loop-runtime/tests/test_review_policy_govlean_repairs.py`
 - `plans/phase-plan-v10-GOVLEAN.md`
-- `skills-src/` planner and roadmap skills plus regeneration outputs
+- `skills-src/claude/claude-plan-phase/`
+- `skills-src/claude/claude-phase-roadmap-builder/`
+- `skills-src/claude/claude-execute-phase/`
+- `skills-src/codex/codex-plan-phase/`
+- `skills-src/codex/codex-phase-roadmap-builder/`
+- `skills-src/codex/codex-execute-phase/`
+- `skills-src/gemini/gemini-plan-phase/`
+- `skills-src/gemini/gemini-phase-roadmap-builder/`
+- `skills-src/gemini/gemini-execute-phase/`
+- `skills-src/opencode/opencode-plan-phase/`
+- `skills-src/opencode/opencode-phase-roadmap-builder/`
+- `skills-src/opencode/opencode-execute-phase/`
 
 **Dispatch holds**
 - PROOFGATE — plan dispatch for PROOFGATE fails closed until this phase (GOVLEAN) is
@@ -117,9 +131,13 @@ test that PROVES EC-GOVLEAN-5 (line 118); ah#643 changed board defaults and upda
 expectations, which is a foreign edit to a GOVLEAN-owned file — exactly what a claim should
 flag. `panel_invoker.py` is NOT listed although the live roadmap claims it for GOVLEAN: the
 "(EC-GOVLEAN-5 bounded edits)" are landed and verified, HARDEN owns the file under a freeze,
-and at window 60 that single bullet produced every foreign GOVLEAN flag (table above). `skills-src/` stays directory-wide:
-its qualification ("planner and roadmap skills plus regeneration outputs") is accurate, and
-it fires only on skill edits. `test_skill_liveness_contract.py` (agent-harness#731) is NOT
+and at window 60 that single bullet produced every foreign GOVLEAN flag (table above). `skills-src/` is NOT kept as a
+directory claim: its qualification ("planner and roadmap skills") is prose the matcher never
+reads — the token matches every skill, and at window 60 it flagged ah#643's edits to the four
+`*-advisor-board` skills. The 12 directories listed are exactly the planner, roadmap-builder,
+and execute-phase skills GOVLEAN's plan names, one per harness; regeneration outputs under
+`phase-loop-skills/` and the packaged `skills_bundle/` are NOT claimed (other phases regenerate
+them too). `test_skill_liveness_contract.py` (agent-harness#731) is NOT
 listed: it is not on `main` yet, and an entry that never appears in a diff is unmeasured.
 Add it when #731 lands.
 

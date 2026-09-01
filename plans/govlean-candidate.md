@@ -1215,7 +1215,18 @@ never coupled to fleet infrastructure.
 - `phase-loop-runtime/tests/test_govlean_tdd_receipts.py`
 - `phase-loop-runtime/tests/test_review_policy_govlean_repairs.py`
 - `plans/phase-plan-v10-GOVLEAN.md`
-- `skills-src/` planner and roadmap skills plus regeneration outputs
+- `skills-src/claude/claude-plan-phase/`
+- `skills-src/claude/claude-phase-roadmap-builder/`
+- `skills-src/claude/claude-execute-phase/`
+- `skills-src/codex/codex-plan-phase/`
+- `skills-src/codex/codex-phase-roadmap-builder/`
+- `skills-src/codex/codex-execute-phase/`
+- `skills-src/gemini/gemini-plan-phase/`
+- `skills-src/gemini/gemini-phase-roadmap-builder/`
+- `skills-src/gemini/gemini-execute-phase/`
+- `skills-src/opencode/opencode-plan-phase/`
+- `skills-src/opencode/opencode-phase-roadmap-builder/`
+- `skills-src/opencode/opencode-execute-phase/`
 
 **Dispatch holds**
 - PROOFGATE — plan dispatch for PROOFGATE fails closed until this phase (GOVLEAN) is

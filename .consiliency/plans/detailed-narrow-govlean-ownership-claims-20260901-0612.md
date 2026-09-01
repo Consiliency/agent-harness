@@ -146,8 +146,10 @@ text).
       `--report 40` and prints a header containing `CANDIDATE`; proven by
       `pytest -k Candidate` and the two report commands above diffing only in header + counts.
 - [ ] The candidate rate in the proposal document equals the instrument's printed output for
-      the committed candidate text, byte-for-byte on the `would have flagged:` line; proven by
-      re-running the candidate command and `grep`-comparing.
+      the committed candidate text, byte-for-byte on the `would have flagged (CANDIDATE
+      PROJECTION):` line; proven by re-running the candidate command and `grep`-comparing.
+      *Amended 2026-09-01 after the agent-harness#732 CR (codex, round 3): the line a consumer
+      greps out must carry the projection label itself, so the label moved onto it.*
 - [ ] `ah#683` verified fixed: `_most_relievable_phase` ranks solely-claimed first and
       `test_a_sole_cause_is_reported_as_a_sole_cause` kills the `if remaining:`→`if True:`
       mutation; proven by running that mutation.

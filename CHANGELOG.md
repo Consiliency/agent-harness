@@ -14,8 +14,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   LEGIBLE-owned roadmap. The commit sample and per-commit diffs are identical to a plain run;
   only the ownership map differs, and a candidate identical to the live roadmap reproduces the
   historical number exactly.
-- A candidate run prints as `(CANDIDATE roadmap, not history)` with a PROJECTION note in place
-  of the graduation line, so a projection can never be mistaken for a measurement.
+- A candidate run prints as `(CANDIDATE roadmap, not history)`, labels the number's own line
+  `would have flagged (CANDIDATE PROJECTION):` so a consumer that greps that line out of a
+  log gets the label with it, and prints a PROJECTION note in place of the graduation line —
+  a projection can never be mistaken for a measurement.
 - The candidate goes through `ownership_map` and therefore every gate a real roadmap does: a
   malformed proposal reports CANNOT EVALUATE rather than scoring against a map that is quietly
   missing a phase. `--candidate-roadmap` without `--report` is refused, and `--preflight` with
