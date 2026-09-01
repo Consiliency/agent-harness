@@ -138,6 +138,15 @@ def current_phase(repo: Path) -> Optional[str]:
 
 _BACKTICKED = re.compile(r"`([^`]+)`")
 
+#: LEADING WHITESPACE IS ALLOWED in both patterns below. The parser anchors at
+#: column zero, so indenting an entire phase block by one space drops it from
+#: `_extract_phases` -- and a detector that also anchors at column zero drops it
+#: too, making all three counts fall together and the comparison see nothing.
+#: Measured on live v10: block-indenting RELEASE gives parsed=13/bodies=13/
+#: headings=13, accepted, `pyproject.toml` owners ['RELEASE'] -> [], exit 1 -> 0.
+#: Third variant of one lesson: the detector must not share ANY assumption with
+#: the parser it audits -- not its case, not its heading level, not its column.
+#:
 #: Every phase BODY carries this field, and `roadmap_lint` errors when one omits
 #: it. Counting bodies is independent of heading SYNTAX entirely, which is what
 #: makes it the right detector: a mangled heading cannot hide a phase whose body
@@ -145,7 +154,7 @@ _BACKTICKED = re.compile(r"`([^`]+)`")
 #: `#{3,}` missed `## Phase 12`, and a number-anchored `#{2,}...\d` still missed a
 #: leading space -- because both counts fell together and the comparison saw
 #: nothing.
-_PHASE_BODY_FIELD = re.compile(r"^\*\*Key files\*\*", re.MULTILINE)
+_PHASE_BODY_FIELD = re.compile(r"^[ \t]*\*\*Key files\*\*", re.MULTILINE)
 
 #: A fenced code block. Both counts below are taken on text with fences REMOVED:
 #: a roadmap that documents its own format in an example block (`**Key files**`,
@@ -171,7 +180,7 @@ def _without_code_fences(text: str) -> str:
 #: has, and would fail-closed on 3 of the 11 real roadmaps in this repo.
 #: Secondary to the body count -- it catches the converse case, a heading present
 #: whose body is missing.
-_INTENDED_PHASE_HEADING = re.compile(r"^#{2,}\s*phase\s*\d", re.IGNORECASE | re.MULTILINE)
+_INTENDED_PHASE_HEADING = re.compile(r"^[ \t]*#{2,}\s*phase\s*\d", re.IGNORECASE | re.MULTILINE)
 
 
 def _strip_token(raw: str) -> str:

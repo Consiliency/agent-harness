@@ -34,8 +34,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   the `## Phase Dependency DAG` section every roadmap has. Both compare with `>` rather than
   `!=`: fewer bodies than phases means a phase omits `Key files`, which is the linter's finding
   and keeps its own precise message. Both counts are taken with fenced code blocks removed, so
-  a roadmap that documents its own format in an example does not fail closed. Verified as exact
-  parity across all 11 roadmap versions.
+  a roadmap that documents its own format in an example does not fail closed, and both allow
+  LEADING WHITESPACE — the parser anchors at column zero, so indenting an entire phase block
+  by one space drops it from the parser and from any detector that anchors there too, making
+  every count fall together. Verified as exact parity across all 11 roadmap versions.
 - It reports ownership and **does not decide disposition**. Ownership is machine-readable;
   phase BLOCK state is not. Scanning phase bodies for a `BLOCKED` marker matches six
   phases in v10 of which exactly one is a real phase-level block — the rest are

@@ -1573,6 +1573,59 @@ class TestPreflight(unittest.TestCase):
                     ro.ownership_map(broken)
                 self.assertIn("intend to declare a phase", str(caught.exception))
 
+    def test_a_WHOLE_BLOCK_INDENT_cannot_hide_a_phase(self):
+        """codex, round 16 — category (1), and the third variant of one lesson.
+
+        The parser anchors at column zero. A detector that also anchors at column
+        zero shares that assumption, so indenting an ENTIRE phase block by one
+        space drops the phase from `_extract_phases` AND from both counts — all
+        three fall together and the comparison sees nothing. Measured on live v10:
+        parsed=13, bodies=13, headings=13, accepted, `pyproject.toml` owners
+        ['RELEASE'] -> [], exit 1 -> 0.
+
+        Earlier tests indented only the HEADING while leaving `**Key files**` at
+        column zero, so the body count still caught it. That is why they passed
+        while this hole was open.
+
+        The rule, now stated three ways: the detector must not share ANY
+        assumption with the parser it audits — not its case (r14), not its
+        heading level (r15), not its column (r16).
+
+        Mutation that must kill this: re-anchor either pattern at column zero.
+        """
+        head = "### Phase 0 — First Thing (ALPHA)"
+        lines = ROADMAP.splitlines(keepends=True)
+        start = next(i for i, l in enumerate(lines) if l.startswith(head))
+        end = len(lines)
+        for j in range(start + 1, len(lines)):
+            if lines[j].startswith("### Phase "):
+                end = j
+                break
+        indented = "".join(
+            lines[:start] + [" " + l for l in lines[start:end]] + lines[end:]
+        )
+        self.assertNotEqual(indented, ROADMAP, "fixture must indent the block")
+        with self.assertRaises(ro.RoadmapUnreadable) as caught:
+            ro.ownership_map(indented)
+        self.assertIn("intend to declare", str(caught.exception))
+
+        # Each pattern must tolerate indentation INDEPENDENTLY, and that is
+        # asserted on the PATTERNS, not through `ownership_map`. Going through
+        # the map cannot distinguish them: the lint gate raises the same
+        # `RoadmapUnreadable` for these inputs, so a re-anchored pattern is
+        # masked and the mutation kills nothing. (My first version of this made
+        # exactly that mistake, and a second fixture silently never applied
+        # because its replacement string omitted the indent on the list items.)
+        prose = ro._without_code_fences(indented)
+        self.assertEqual(
+            len(ro._PHASE_BODY_FIELD.findall(prose)), 2,
+            "the body pattern must count an INDENTED **Key files**",
+        )
+        self.assertEqual(
+            len(ro._INTENDED_PHASE_HEADING.findall(prose)), 2,
+            "the heading pattern must count an INDENTED phase heading",
+        )
+
     def test_a_roadmap_DOCUMENTING_ITS_OWN_FORMAT_is_not_rejected(self):
         """The false positive my own body-count fix introduced.
 
