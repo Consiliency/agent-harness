@@ -2225,7 +2225,8 @@ def verify_broker(value: Any, harness: str, requested: str, resolved: str, bundl
         fail("broker evidence permits live tree or timeout")
     for field in ("peer_pid", "peer_uid", "peer_gid", "outer_bwrap_pid", "outer_bwrap_start", "provider_input_bytes", "provider_prompt_bytes", "provider_transport_bytes"):
         integer(broker[field], "broker." + field, minimum=1)
-    if not isinstance(broker["operation_deadline_s"], (int, float)) or isinstance(broker["operation_deadline_s"], bool) or broker["operation_deadline_s"] <= 0:
+    operation_deadline_s = broker["operation_deadline_s"]
+    if not isinstance(operation_deadline_s, (int, float)) or isinstance(operation_deadline_s, bool) or not math.isfinite(operation_deadline_s) or operation_deadline_s <= 0:
         fail("broker operation deadline is invalid")
     if broker["stage_bundle_mode"] != 0o400 or broker["stage_instructions_mode"] != 0o400:
         fail("immutable staged inputs are not read-only")
@@ -2252,7 +2253,10 @@ def verify_broker(value: Any, harness: str, requested: str, resolved: str, bundl
             continue
         if index == 0 or argv_shape[index - 1] not in empty_positions:
             fail("broker provider argv shape has an unbound empty value")
-    if harness == "claude" and "--permission-mode" in argv_shape:
+    if harness == "claude" and any(
+        item == "--permission-mode" or item.startswith("--permission-mode=")
+        for item in argv_shape
+    ):
         fail("Claude broker may not enter a permission mode")
     prompt_bytes = sealed_prompt.encode("utf-8", errors="strict")
     if (
@@ -4643,17 +4647,14 @@ def self_test() -> None:
         rejected("stage-mode-0444", seat_mutation(lambda seat: seat["broker"].__setitem__("stage_bundle_mode", 0o444)))
         rejected("extra-no-tool-control", seat_mutation(lambda seat: seat["broker"]["provider_no_tool_controls"].append("extra")))
         rejected("duplicate-no-tool-control", seat_mutation(lambda seat: seat["broker"]["provider_no_tool_controls"].append(seat["broker"]["provider_no_tool_controls"][0])))
-        def claude_permission_mode(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
-            for item in model["reviews"]["candidate"]["seats"]:
-                seat_ref = item["artifact"]
-                seat = parse_canonical_json((artifact_root / seat_ref["path"]).read_bytes(), "self-test seat")
-                if seat["harness"] == "claude":
-                    shape = seat["broker"]["provider_argv_shape"]
-                    shape[shape.index("--setting-sources"):shape.index("--setting-sources")] = ["--permission-mode", "plan"]
-                    replace(seat_ref, artifact_root, canonical_bytes(seat))
-                    return
-            raise AssertionError("fixture lacks Claude seat")
-        rejected("claude-broker-permission-plan", claude_permission_mode)
+        def claude_permission_mode(seat: dict[str, Any]) -> None:
+            shape = seat["broker"]["provider_argv_shape"]
+            shape[shape.index("--setting-sources"):shape.index("--setting-sources")] = ["--permission-mode", "plan"]
+        rejected("claude-broker-permission-plan", reseal_seat_and_runtime(claude_permission_mode))
+        def claude_permission_mode_equals(seat: dict[str, Any]) -> None:
+            shape = seat["broker"]["provider_argv_shape"]
+            shape.insert(shape.index("--setting-sources"), "--permission-mode=plan")
+        rejected("claude-broker-permission-plan-equals", reseal_seat_and_runtime(claude_permission_mode_equals))
         rejected("detached-broker-provider-response", seat_mutation(lambda seat: seat["broker"].__setitem__("provider_response_sha256", "f" * 64)))
         def gemini_stream_mutation(change: Callable[[dict[str, Any]], None]) -> Callable[[dict[str, Any], Path, Path], None]:
             def mutate(model: dict[str, Any], local_root: Path, artifact_root: Path) -> None:
