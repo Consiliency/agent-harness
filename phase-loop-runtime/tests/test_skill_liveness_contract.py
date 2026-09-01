@@ -50,16 +50,36 @@ REQUIRED_SEMANTICS = (
 
 
 def _skill_sites() -> list[Path]:
+    """Every surface that carries the section: THREE layers, not two.
+
+        skills-src/  ->  phase-loop-skills/  ->  src/phase_loop_runtime/skills_bundle/
+
+    The third layer ships in the wheel and is what a pinned `pip install` actually
+    reads (`skill_inventory.resolve_source_skill_dir` falls back to package data).
+    The first version of this test globbed only the first two layers -- eight
+    sites -- and reported green while all eight packaged copies, including the
+    `advisor-panel` aliases, still carried the old guidance. That is the ah#693
+    shape exactly: a corrected contract that never reaches the surface operators
+    read. Cross-vendor review caught it; this file had not.
+    """
     sites = sorted(REPO_ROOT.glob("skills-src/*/*-advisor-board/SKILL.md"))
     sites += sorted(REPO_ROOT.glob("phase-loop-skills/advisor-board/SKILL.md"))
     sites += sorted(REPO_ROOT.glob("phase-loop-skills/advisor-board/_overrides/*/SKILL.md"))
+    sites += sorted(REPO_ROOT.glob(
+        "phase-loop-runtime/src/phase_loop_runtime/skills_bundle/*-advisor-*/SKILL.md"
+    ))
     return sites
 
 
 def test_the_sites_are_discovered_at_all() -> None:
     """A sweep that finds nothing passes every other assertion vacuously."""
     sites = _skill_sites()
-    assert len(sites) >= 8, f"expected the 4 sources + 4 generated copies, found {sites}"
+    packaged = [s for s in sites if "skills_bundle" in str(s)]
+    assert len(sites) >= 16, f"expected 4 sources + 4 generated + 8 packaged, found {len(sites)}"
+    assert len(packaged) >= 8, (
+        "the wheel-shipped copies (4 boards + 4 panel aliases) must be swept; "
+        f"found {len(packaged)}"
+    )
 
 
 @pytest.mark.parametrize("site", _skill_sites(), ids=lambda p: str(p.relative_to(REPO_ROOT)))

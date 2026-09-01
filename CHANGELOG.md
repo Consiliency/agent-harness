@@ -20,9 +20,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Harness-specific literals were removed from the section: the bundle generator rewrites a
   harness name to `<harness>`, which would have shipped a placeholder as if it were a real
   diagnostic string, and told each harness that *it* streams to stderr.
-- A regression test asserts the contract across all **eight** surfaces — four `skills-src/`
-  sources and four generated `phase-loop-skills/` outputs — by occurrence rather than by file,
-  and fails if a source is fixed without regenerating the bundle.
+- A regression test asserts the contract across all **sixteen** surfaces — four `skills-src/`
+  sources, four generated `phase-loop-skills/` outputs, and the eight wheel-shipped
+  `skills_bundle/` copies (four boards plus their `advisor-panel` aliases) that a pinned install
+  actually reads — by occurrence rather than by file. It fails if a source is fixed without
+  regenerating and syncing; the first version swept only the first two layers and passed while
+  every packaged copy still carried the old guidance.
 
 ### roadmap-ownership: answer the pre-EDIT question (Consiliency/agent-harness#633)
 

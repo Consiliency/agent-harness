@@ -61,13 +61,14 @@ healthy progress: `{"gemini": 300}` kills that leg at 300s whether or not it is 
   any deadline is reached.
 - **Use it only** when policy requires an absolute ceiling on an actively-progressing leg.
 - **Do not reach for it because you saw a leg stall.** Stalls are already handled, and a value
-  shorter than the real work converts a recoverable stall into a guaranteed kill — including
-  killing the panel's own parent before any verdict is written.
+  shorter than the real work converts a recoverable stall into a guaranteed kill: the leg's
+  process group is terminated and it is reported as a timeout result, verdict unwritten.
 
 When a leg does end early, distinguish the two causes before diagnosing: heartbeat extinction
 (a `[leg-liveness]` stall marker, or a TUI stall marker with `last_progress_age_s`) means the
-leg went silent; a hard-deadline expiry means your override fired. They are not the same
-failure and are not retried on the same basis.
+leg went silent; a hard-deadline expiry means a wall-clock ceiling fired — your override if you
+set one, otherwise the ~1800s backstop — so an expiry alone does not prove an override was
+passed. They are not the same failure and are not retried on the same basis.
 
 A transient CLI stall (an empty turn or a "timeout waiting for response" marker) is retried
 once, but only when it fails FAST, so a retry can never double a slow leg's wall-clock.
