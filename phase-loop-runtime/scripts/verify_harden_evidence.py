@@ -62,6 +62,12 @@ MAX_JSON_BYTES = 2 * 1024 * 1024
 MAX_JSON_INTEGER_DIGITS = 4096
 MAX_VISUAL_PREFIX_CHARS = 256
 MAX_VISUAL_WILDCARD_ADVANCE = 3
+MIN_VISUAL_ANCHOR_POSITIONS = 3
+VISUAL_ASCII_FRAGMENTS = {
+    "\u1438": "<",
+    "\u226a": "<<",
+    "\u22d8": "<<<",
+}
 REVIEW_INPUT_MAX_BYTES = 512 * 1024
 GEMINI_STREAM_PROTOCOL = "agy_ndjson_same_session_ingestion_v1"
 GEMINI_STREAM_CHUNK_MAX_BYTES = 96 * 1024
@@ -870,67 +876,76 @@ def visible_ascii_identifier(character: str) -> bool:
 def visual_prefix_replica(line: str, start: int, prefix: str) -> bool:
     """Treat non-ASCII glyphs and tabs as bounded visual marker wildcards.
 
-    A raw line has no authority.  Rather than enumerate Unicode confusables,
-    reject it when its initial visual token can be the fixed parent-owned token:
+    A raw line has no authority.  Without depending on a broad Unicode
+    confusable table, reject it when its initial visual token can be the fixed
+    parent-owned token:
     an unknown non-ASCII glyph or horizontal tab may be a reader-confusable
-    substitution, insertion, or short multi-character visual run.  A Unicode
-    letter may substitute one expected ASCII letter inside an anchored visual
-    candidate, while punctuation and whitespace runs are capped;
-    NFKC-equivalent ASCII fragments match exactly.  This admits a complete
-    glyph-for-glyph marker without treating unrelated non-ASCII prose as a
-    marker.  A bounded index window prevents untrusted visual leaders from
-    turning this fail-closed screen into a quadratic parser.
+    substitution, insertion, or short multi-character visual run.  A complete
+    candidate is rejected only after three prefix positions have exact,
+    NFKC-equivalent, or narrowly structural ASCII evidence.  Unicode letters
+    may then substitute expected ASCII letters while punctuation and whitespace
+    runs remain capped.  The evidence threshold prevents a lone ASCII glyph in
+    unrelated non-ASCII prose from anchoring an entire marker.  A bounded index
+    window prevents untrusted visual leaders from turning this fail-closed
+    screen into a quadratic parser.
     """
-    positions = {(0, False)}
+    positions = {(0, 0)}
     stop = min(len(line), start + MAX_VISUAL_PREFIX_CHARS)
     for index in range(start, stop):
         character = line[index]
-        next_positions: set[tuple[int, bool]] = set()
-        for position, anchored in positions:
+        next_positions: set[tuple[int, int]] = set()
+        for position, anchor_positions in positions:
             if position < len(prefix) and character == prefix[position]:
-                next_positions.add((position + 1, True))
+                next_positions.add((
+                    position + 1,
+                    min(MIN_VISUAL_ANCHOR_POSITIONS, anchor_positions + 1),
+                ))
             if not character.isascii() or character == "\t":
                 if not character.isascii():
                     normalized = unicodedata.normalize("NFKC", character)
+                    fragment = (
+                        normalized
+                        if normalized and normalized.isascii()
+                        else VISUAL_ASCII_FRAGMENTS.get(character)
+                    )
                     category = unicodedata.category(character)
                     if (
-                        normalized
-                        and normalized.isascii()
-                        and prefix.startswith(normalized, position)
+                        fragment
+                        and prefix.startswith(fragment, position)
                     ):
-                        next_positions.add((position + len(normalized), True))
+                        next_positions.add((
+                            position + len(fragment),
+                            min(
+                                MIN_VISUAL_ANCHOR_POSITIONS,
+                                anchor_positions + len(fragment),
+                            ),
+                        ))
                     if (
                         category.startswith("L")
                         and position < len(prefix)
                         and prefix[position].isalpha()
                     ):
-                        next_positions.add((position, anchored))
-                        next_positions.add((position + 1, anchored))
+                        next_positions.add((position, anchor_positions))
+                        next_positions.add((position + 1, anchor_positions))
                         continue
                 for advance in range(
                     position,
                     min(position + MAX_VISUAL_WILDCARD_ADVANCE, len(prefix)) + 1,
                 ):
-                    next_positions.add((
-                        advance,
-                        anchored
-                        or (
-                            not character.isascii()
-                            and category == "Sm"
-                            and "<" in prefix[position:advance]
-                        ),
-                    ))
+                    next_positions.add((advance, anchor_positions))
         if any(
-            position == len(prefix) and anchored
-            for position, anchored in next_positions
+            position == len(prefix)
+            and anchor_positions >= MIN_VISUAL_ANCHOR_POSITIONS
+            for position, anchor_positions in next_positions
         ):
             return True
         if not next_positions:
             return False
         positions = next_positions
     return any(
-        position == len(prefix) and anchored
-        for position, anchored in positions
+        position == len(prefix)
+        and anchor_positions >= MIN_VISUAL_ANCHOR_POSITIONS
+        for position, anchor_positions in positions
     )
 
 
@@ -3446,6 +3461,17 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("internal ignorable letter replica was accepted")
+        all_unanchored_confusables = (
+            "\u1438\u1438\u1438\ua4e7\ua4ee\ua4e3\ua4d3\ua4f0\ua4e0\u2010"
+            "\ua4dd\ua4e3\ua4ee\ua4df\ua4f0"
+        )
+        direct_rejected(
+            "visual-prefix-all-unanchored-confusables",
+            lambda: untrusted_transport_text(
+                all_unanchored_confusables,
+                "self-test all-unanchored confusable replica",
+            ),
+        )
         source_literal = 'frame_literal = "' + replica_frame + '"'
         if untrusted_transport_text(source_literal, "self-test source literal") != source_literal:
             raise AssertionError("identifier-prefixed source literal was not preserved")
@@ -3470,6 +3496,21 @@ def self_test() -> None:
             != long_unrelated_patch_line
         ):
             raise AssertionError("long unrelated patch line was not preserved")
+        for ordinary_anchored_unicode in (
+            "\u65e5" * 9 + "-" + "\u65e5" * 5,
+            "<" + "\u65e5" * 14,
+            "\u00d7" + "\u65e5" * 14,
+            "\u2192" + "\u65e5" * 14,
+            "\u2248" * 15,
+        ):
+            if (
+                untrusted_transport_text(
+                    ordinary_anchored_unicode,
+                    "self-test ordinary anchored Unicode",
+                )
+                != ordinary_anchored_unicode
+            ):
+                raise AssertionError("ordinary anchored Unicode was not preserved")
         for padding_name, padding in (
             ("spaces", " " * (MAX_VISUAL_PREFIX_CHARS + 1)),
             ("cjk", long_unrelated_unicode),

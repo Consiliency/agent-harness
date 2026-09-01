@@ -1590,6 +1590,12 @@ _BROKER_BUNDLE_METADATA_PREFIX = "UNTRUSTED-REVIEW-BUNDLE sha256="
 _BROKER_SEALED_HEADER = "HARDEN-BROKER-SEALED-PROMPT.v1"
 _BROKER_MAX_VISUAL_PREFIX_CHARS = 256
 _BROKER_MAX_VISUAL_WILDCARD_ADVANCE = 3
+_BROKER_MIN_VISUAL_ANCHOR_POSITIONS = 3
+_BROKER_VISUAL_ASCII_FRAGMENTS = {
+    "\u1438": "<",
+    "\u226a": "<<",
+    "\u22d8": "<<<",
+}
 _BROKER_UNTRUSTED_FRAME_PREFIXES = (
     _BROKER_FRAME_PREFIX,
     _BROKER_REVIEW_INPUT_HEADER_PREFIX,
@@ -1617,33 +1623,47 @@ def _broker_visible_ascii_identifier(character: str) -> bool:
 
 def _broker_visual_prefix_replica(line: str, start: int, prefix: str) -> bool:
     """Match visible ASCII exactly with bounded visual-glyph wildcard runs."""
-    positions = {(0, False)}
-    for offset, character in enumerate(line[start:]):
-        if offset >= _BROKER_MAX_VISUAL_PREFIX_CHARS:
-            return any(
-                position == len(prefix) and anchored
-                for position, anchored in positions
-            )
-        next_positions: set[tuple[int, bool]] = set()
-        for position, anchored in positions:
+    positions = {(0, 0)}
+    stop = min(len(line), start + _BROKER_MAX_VISUAL_PREFIX_CHARS)
+    for index in range(start, stop):
+        character = line[index]
+        next_positions: set[tuple[int, int]] = set()
+        for position, anchor_positions in positions:
             if position < len(prefix) and character == prefix[position]:
-                next_positions.add((position + 1, True))
+                next_positions.add((
+                    position + 1,
+                    min(
+                        _BROKER_MIN_VISUAL_ANCHOR_POSITIONS,
+                        anchor_positions + 1,
+                    ),
+                ))
             if not character.isascii() or character == "\t":
                 if not character.isascii():
                     normalized = unicodedata.normalize("NFKC", character)
+                    fragment = (
+                        normalized
+                        if normalized and normalized.isascii()
+                        else _BROKER_VISUAL_ASCII_FRAGMENTS.get(character)
+                    )
                     category = unicodedata.category(character)
                     if (
-                        normalized
-                        and normalized.isascii()
-                        and prefix.startswith(normalized, position)
+                        fragment
+                        and prefix.startswith(fragment, position)
                     ):
-                        next_positions.add((position + len(normalized), True))
+                        next_positions.add((
+                            position + len(fragment),
+                            min(
+                                _BROKER_MIN_VISUAL_ANCHOR_POSITIONS,
+                                anchor_positions + len(fragment),
+                            ),
+                        ))
                     if (
                         category.startswith("L")
                         and position < len(prefix)
                         and prefix[position].isalpha()
                     ):
-                        next_positions.add((position + 1, anchored))
+                        next_positions.add((position, anchor_positions))
+                        next_positions.add((position + 1, anchor_positions))
                         continue
                 for advance in range(
                     position,
@@ -1652,35 +1672,21 @@ def _broker_visual_prefix_replica(line: str, start: int, prefix: str) -> bool:
                         len(prefix),
                     ) + 1,
                 ):
-                    next_positions.add((
-                        advance,
-                        anchored
-                        or (
-                            not character.isascii()
-                            and category == "Sm"
-                            and "<" in prefix[position:advance]
-                        ),
-                    ))
+                    next_positions.add((advance, anchor_positions))
         if any(
-            position == len(prefix) and anchored
-            for position, anchored in next_positions
+            position == len(prefix)
+            and anchor_positions >= _BROKER_MIN_VISUAL_ANCHOR_POSITIONS
+            for position, anchor_positions in next_positions
         ):
             return True
         if not next_positions:
             return False
         positions = next_positions
     return any(
-        position == len(prefix) and anchored
-        for position, anchored in positions
+        position == len(prefix)
+        and anchor_positions >= _BROKER_MIN_VISUAL_ANCHOR_POSITIONS
+        for position, anchor_positions in positions
     )
-
-
-def _broker_visually_ambiguous_leader(character: str) -> bool:
-    """Return whether a bounded visual leader can impersonate ASCII syntax."""
-    if character == "\t":
-        return True
-    normalized = unicodedata.normalize("NFKC", character)
-    return normalized.isascii() and not normalized.isspace()
 
 
 def _broker_contains_untrusted_frame_replica(text: str) -> bool:
@@ -1688,13 +1694,6 @@ def _broker_contains_untrusted_frame_replica(text: str) -> bool:
     for line in text.split("\n"):
         start = 0
         while start < len(line):
-            if start >= _BROKER_MAX_VISUAL_PREFIX_CHARS:
-                if any(
-                    _broker_visually_ambiguous_leader(character)
-                    for character in line[:_BROKER_MAX_VISUAL_PREFIX_CHARS]
-                ):
-                    return True
-                break
             if any(
                 _broker_visual_prefix_replica(line, start, prefix)
                 for prefix in _BROKER_UNTRUSTED_FRAME_PREFIXES
