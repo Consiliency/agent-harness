@@ -878,16 +878,13 @@ def visual_prefix_replica(line: str, start: int, prefix: str) -> bool:
     candidate, while punctuation and whitespace runs are capped;
     NFKC-equivalent ASCII fragments match exactly.  This admits a complete
     glyph-for-glyph marker without treating unrelated non-ASCII prose as a
-    marker.  A bounded scan prevents untrusted visual leaders from turning this
-    fail-closed screen into a quadratic parser.
+    marker.  A bounded index window prevents untrusted visual leaders from
+    turning this fail-closed screen into a quadratic parser.
     """
     positions = {(0, False)}
-    for offset, character in enumerate(line[start:]):
-        if offset >= MAX_VISUAL_PREFIX_CHARS:
-            return any(
-                position == len(prefix) and anchored
-                for position, anchored in positions
-            )
+    stop = min(len(line), start + MAX_VISUAL_PREFIX_CHARS)
+    for index in range(start, stop):
+        character = line[index]
         next_positions: set[tuple[int, bool]] = set()
         for position, anchored in positions:
             if position < len(prefix) and character == prefix[position]:
@@ -907,6 +904,7 @@ def visual_prefix_replica(line: str, start: int, prefix: str) -> bool:
                         and position < len(prefix)
                         and prefix[position].isalpha()
                     ):
+                        next_positions.add((position, anchored))
                         next_positions.add((position + 1, anchored))
                         continue
                 for advance in range(
@@ -936,26 +934,11 @@ def visual_prefix_replica(line: str, start: int, prefix: str) -> bool:
     )
 
 
-def visually_ambiguous_leader(character: str) -> bool:
-    """Return whether a bounded visual leader can impersonate ASCII syntax."""
-    if character == "\t":
-        return True
-    normalized = unicodedata.normalize("NFKC", character)
-    return normalized.isascii() and not normalized.isspace()
-
-
 def contains_untrusted_frame_replica(text_value: str) -> bool:
     """Reject marker-shaped visual line starts without a confusable denylist."""
     for line in text_value.split("\n"):
         start = 0
         while start < len(line):
-            if start >= MAX_VISUAL_PREFIX_CHARS:
-                if any(
-                    visually_ambiguous_leader(character)
-                    for character in line[:MAX_VISUAL_PREFIX_CHARS]
-                ):
-                    return True
-                break
             if any(
                 visual_prefix_replica(line, start, prefix)
                 for prefix in UNTRUSTED_FRAME_PREFIXES
@@ -3447,12 +3430,22 @@ def self_test() -> None:
                 ),
             )
         direct_rejected(
-            "visual-prefix-leader-scan-bound",
+            "visual-prefix-same-line-padding-bound",
             lambda: untrusted_transport_text(
-                "#" * (MAX_VISUAL_PREFIX_CHARS + 1),
-                "self-test visual leader bound",
+                " " * (MAX_VISUAL_PREFIX_CHARS + 1) + replica_frame,
+                "self-test same-line visual padding",
             ),
         )
+        internal_ignorable = replica_frame.replace("HARDEN", "H\u1160ARDEN", 1)
+        try:
+            untrusted_transport_text(
+                internal_ignorable,
+                "self-test internal ignorable letter replica",
+            )
+        except EvidenceError:
+            pass
+        else:
+            raise AssertionError("internal ignorable letter replica was accepted")
         source_literal = 'frame_literal = "' + replica_frame + '"'
         if untrusted_transport_text(source_literal, "self-test source literal") != source_literal:
             raise AssertionError("identifier-prefixed source literal was not preserved")
@@ -3468,6 +3461,15 @@ def self_test() -> None:
             != long_unrelated_unicode
         ):
             raise AssertionError("long unrelated Unicode review content was not preserved")
+        long_unrelated_patch_line = "+" + long_unrelated_unicode
+        if (
+            untrusted_transport_text(
+                long_unrelated_patch_line,
+                "self-test long unrelated patch line",
+            )
+            != long_unrelated_patch_line
+        ):
+            raise AssertionError("long unrelated patch line was not preserved")
         for padding_name, padding in (
             ("spaces", " " * (MAX_VISUAL_PREFIX_CHARS + 1)),
             ("cjk", long_unrelated_unicode),
