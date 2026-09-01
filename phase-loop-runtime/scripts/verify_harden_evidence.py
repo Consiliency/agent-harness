@@ -583,6 +583,7 @@ _GIT_CONFIG = (
     "-c", "diff.orderFile=/dev/null",
     "-c", "diff.renames=false",
     "-c", "diff.submodule=short",
+    "-c", "protocol.allow=never",
 )
 _MAX_GIT_ANCESTRY_COMMITS = 100_000
 
@@ -600,6 +601,7 @@ def git_environment() -> dict[str, str]:
         "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_GRAFT_FILE": os.devnull,
+        "GIT_NO_LAZY_FETCH": "1",
         "GIT_OPTIONAL_LOCKS": "0",
         "GIT_PAGER": "cat",
         "GIT_TERMINAL_PROMPT": "0",
@@ -3898,6 +3900,24 @@ def self_test() -> None:
                         os.environ[key] = value
             if marker.exists() or observed != expected:
                 raise AssertionError("ambient Git config changed or executed review rendering")
+
+            for key, value in (
+                ("core.repositoryformatversion", "1"),
+                ("core.sshCommand", str(helper)),
+                ("extensions.partialClone", "origin"),
+                ("remote.origin.partialclonefilter", "blob:none"),
+                ("remote.origin.promisor", "true"),
+                ("remote.origin.url", "ssh://invalid.example/repo"),
+            ):
+                _run(["git", "config", key, value], isolated_repo)
+            try:
+                git_bytes(isolated_repo, "cat-file", "-e", "1" * 40)
+            except EvidenceError:
+                pass
+            else:
+                raise AssertionError("missing promisor object was accepted")
+            if marker.exists():
+                raise AssertionError("promisor lookup executed a configured transport helper")
 
         git_environment_isolation()
 
