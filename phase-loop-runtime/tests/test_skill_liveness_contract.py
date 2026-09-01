@@ -11,8 +11,8 @@ slow/stalled leg", which conflates two different controls:
 
 Reaching for the second because you observed the first converts a recoverable stall into a
 guaranteed kill. That is not hypothetical: it is how several governed panels in this repo were
-killed by their own callers, including panels whose parent process died before any verdict was
-written.
+killed by their own callers -- the leg's process group terminated at the deadline and reported
+as a timeout result, verdict unwritten.
 
 The same fact lives in SIXTEEN places — four canonical `skills-src/<harness>/` sources, four
 generated `phase-loop-skills/` outputs, and the eight wheel-shipped `skills_bundle/` copies
@@ -84,12 +84,14 @@ def test_the_sites_are_discovered_at_all() -> None:
 
 
 @pytest.mark.parametrize("site", _skill_sites(), ids=lambda p: str(p.relative_to(REPO_ROOT)))
-def test_every_mention_of_the_override_carries_the_hard_deadline_warning(site: Path) -> None:
+def test_every_surface_that_mentions_the_override_carries_the_hard_deadline_warning(site: Path) -> None:
     text = site.read_text(encoding="utf-8")
     mentions = len(re.findall(r"timeouts_by_leg", text))
     if not mentions:
         pytest.skip("this surface does not mention the override")
-    # Counted by OCCURRENCE, not presence: a file may describe the override twice.
+    # The property is per SURFACE: a surface that names the override must state, at least
+    # once, what it is. A first version was named "every MENTION" while asserting `>= 1`
+    # (grok, ah#731 round 2) -- the name claimed a per-occurrence check the body never made.
     warnings = len(re.findall(re.escape(REQUIRED_WARNING), text))
     assert warnings >= 1, (
         f"{site.relative_to(REPO_ROOT)} mentions timeouts_by_leg {mentions}x but never says "
@@ -104,6 +106,47 @@ def test_no_site_invites_the_override_as_a_stall_fix(site: Path) -> None:
         f"{site.relative_to(REPO_ROOT)} still tells operators to use timeouts_by_leg to "
         f"{FORBIDDEN!r}; stalls are reclaimed by heartbeat extinction, and an override "
         f"shorter than the real work guarantees the kill it was meant to prevent"
+    )
+
+
+#: Python surfaces carry the forbidden guidance too -- docstrings a CALLER reads -- and they
+#: are outside any SKILL.md sweep. Cross-vendor review of ah#731 (codex + grok, round 2)
+#: found three: two in `panel_invoker.py` and one in `test_panel_context_refs_114.py`.
+#: This sweeps by CONCEPT (every .py under src/ and tests/), not by the files someone named.
+# The CONFLATION phrase itself, not a verb around it: a first version required "bound(s)"
+# and sailed past `test_panel_context_refs_114.py`, which says "so a slow/stalled leg
+# fails ITS leg" -- the same claim with no "bound" in it.
+RUNTIME_FORBIDDEN = re.compile(r"slow/stalled leg", re.I)
+#: The ONLY tolerated occurrences, keyed by file with an exact count. `panel_invoker.py` is
+#: HARDEN-claimed and HARDEN is frozen at its owner's request, so its two sites are tracked
+#: in agent-harness#733 instead of fixed here. Pinned in BOTH directions: a third site
+#: there, or ANY site elsewhere, is a new defect; fewer means the fix landed and this entry
+#: must be deleted with the issue.
+FROZEN_RUNTIME_SITES = {
+    "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py": 2,  # agent-harness#733
+}
+
+
+def _python_surfaces() -> list[Path]:
+    root = REPO_ROOT / "phase-loop-runtime"
+    me = Path(__file__).resolve()
+    return sorted(p for p in (*root.glob("src/**/*.py"), *root.glob("tests/**/*.py"))
+                  if p.resolve() != me)
+
+
+def test_no_python_surface_invites_the_override_as_a_stall_fix_except_the_frozen_two() -> None:
+    surfaces = _python_surfaces()
+    assert len(surfaces) > 100, f"sweep found only {len(surfaces)} python files"
+    found = {}
+    for p in surfaces:
+        n = len(RUNTIME_FORBIDDEN.findall(" ".join(p.read_text(encoding="utf-8").split())))
+        if n:
+            found[str(p.relative_to(REPO_ROOT))] = n
+    assert found == FROZEN_RUNTIME_SITES, (
+        f"python surfaces inviting the override as a stall fix: {found}; the only tolerated "
+        f"occurrences are {FROZEN_RUNTIME_SITES}. More or elsewhere: a new defect -- fix it, do "
+        f"not widen the allowlist. Fewer: the frozen sites were fixed -- delete the entry and "
+        f"close agent-harness#733."
     )
 
 

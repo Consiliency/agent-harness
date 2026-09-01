@@ -72,6 +72,7 @@ passed. They are not the same failure and are not retried on the same basis.
 
 A transient CLI stall (an empty turn or a "timeout waiting for response" marker) is retried
 once, but only when it fails FAST, so a retry can never double a slow leg's wall-clock.
+
 ## Use
 
 ### Optional governed research

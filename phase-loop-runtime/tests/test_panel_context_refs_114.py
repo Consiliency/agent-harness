@@ -15,9 +15,12 @@ Three reliability fixes for the advisor-panel runtime:
    transient backend stall no longer permanently drops the leg.
 
 3. A per-leg timeout override (``invoke_panel(..., timeouts_by_leg=...)`` /
-   ``PanelRequest.timeout_seconds_by_leg``) reaches the real leg so a slow/stalled
-   leg fails ITS leg instead of hanging the whole panel; the soft-empty retry is
-   bounded to FAST failures so it can never ~double a slow leg's wall-clock.
+   ``PanelRequest.timeout_seconds_by_leg``) reaches the real leg as a HARD wall-clock
+   deadline that REPLACES the input-scaled backstop, so an over-budget leg fails ITS
+   leg instead of hanging the whole panel. It is not a stall bound: a stalled leg is
+   reclaimed by heartbeat extinction without any override (agent-harness#727). The
+   soft-empty retry is bounded to FAST failures so it can never ~double a slow leg's
+   wall-clock.
 """
 from __future__ import annotations
 

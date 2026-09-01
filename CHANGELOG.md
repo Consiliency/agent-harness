@@ -26,6 +26,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   actually reads — by occurrence rather than by file. It fails if a source is fixed without
   regenerating and syncing; the first version swept only the first two layers and passed while
   every packaged copy still carried the old guidance.
+- The runtime's own docstrings for `timeout_s` / `timeouts_by_leg` in `panel_invoker.py` still
+  say an explicit value "bounds a slow/stalled leg" — the same defect, outside any skill sweep.
+  `panel_invoker.py` is HARDEN-claimed and HARDEN is frozen, so they are NOT fixed here; the
+  guard pins them as exactly two known sites tracked in Consiliency/agent-harness#733, so a
+  third site fails and the eventual fix must delete the allowlist.
 
 ### roadmap-ownership: answer the pre-EDIT question (Consiliency/agent-harness#633)
 
