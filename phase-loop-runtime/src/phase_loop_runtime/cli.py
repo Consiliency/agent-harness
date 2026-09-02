@@ -1816,7 +1816,7 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
                 ["git", "rev-parse", "--show-toplevel"], text=True, stderr=subprocess.DEVNULL
             ).strip()).resolve()
             prepare_review_composition_authorization()
-        except (OSError, UnicodeError, ValueError) as exc:
+        except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as exc:
             print(f"advisor-board: review isolation unavailable: {exc}", file=sys.stderr)
             return 2
     # Auth-aware production composition (REVIEWGOV IF-0-REVIEWGOV-1): the BARE call is
