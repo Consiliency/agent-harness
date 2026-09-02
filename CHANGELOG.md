@@ -252,7 +252,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `load_boards` runs the review
   authorization unconditionally instead of only on the availability-probe path; and review
   staging sweeps the STAGED copy for symlinks that escape it, closing the check-then-copy
-  window on the source-side checks.
+  window on the source-side checks. A second delta round bound the broker provider
+  `--cd`/`--cwd`/`--output-last-message` argv path slots to the attested
+  `provider_cwd_sha256` (and rejects a cwd at or under the canonical checkout), ran
+  `load_boards` seat validation behind its own fresh composition authority (the harness
+  PATH probe and key-var scan are the same probe class as composition), and released the
+  review-instruction digest ContextVar on the typed-deferral and support-status exits of
+  `invoke_board`.
 
 ### executor policy: an operator's explicit model is never substituted (Consiliency/agent-harness#671)
 

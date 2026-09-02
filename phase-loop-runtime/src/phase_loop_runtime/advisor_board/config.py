@@ -269,13 +269,25 @@ def load_boards(
             from .matrix import default_matrix
 
             matrix = default_matrix(env=env)
-        for board in boards.values():
-            try:
-                validate_board(board, matrix=matrix)
-            except SeatValidationError as exc:
-                # Surface matrix-level rejections under the config error type so a
-                # caller catches one exception for any load-time failure.
-                raise BoardConfigError(str(exc)) from exc
+        # Seat validation is the SAME probe class as composition: ``matrix.is_valid``
+        # reaches the harness PATH probe and the vendor key-var scan for every seat,
+        # and a caller-injected ``matrix`` is a callable whose purity the runtime
+        # cannot verify.  It therefore runs behind its own fresh, revalidated
+        # composition authority rather than after the composition grant was cleared.
+        validation_authorization = composition.prepare_review_composition_authorization()
+        try:
+            composition.revalidate_review_composition_authorization(
+                validation_authorization
+            )
+            for board in boards.values():
+                try:
+                    validate_board(board, matrix=matrix)
+                except SeatValidationError as exc:
+                    # Surface matrix-level rejections under the config error type so a
+                    # caller catches one exception for any load-time failure.
+                    raise BoardConfigError(str(exc)) from exc
+        finally:
+            composition._clear_composition_authorization()
 
     return BoardConfig(boards=boards, default_board=default_board)
 

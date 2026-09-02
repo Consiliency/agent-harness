@@ -26,7 +26,7 @@ import sys
 import tempfile
 import unicodedata
 import xml.etree.ElementTree as ET
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
 
@@ -272,6 +272,54 @@ def broker_argv_grammar(harness: str, model: str) -> list[str | re.Pattern[str]]
             "-m", model, "--reasoning-effort", ARGV_GROK_EFFORT, "--tools", "",
         ]
     fail("broker harness has no argv grammar: " + harness)
+
+
+ARGV_CWD_FLAG = {"codex": "--cd", "grok": "--cwd"}
+ARGV_OUTPUT_FLAG = {"codex": "--output-last-message"}
+
+
+def _argv_slot(argv_shape: list[str], flag: str) -> str:
+    index = argv_shape.index(flag)
+    if index + 1 >= len(argv_shape):
+        fail("broker provider argv path slot " + flag + " has no value")
+    return argv_shape[index + 1]
+
+
+def _normalized_absolute_path(value: str, label: str) -> PurePosixPath:
+    path = PurePosixPath(value)
+    if not path.is_absolute() or str(path) != value or value == "/" or any(
+        part in {"", ".", ".."} for part in path.parts[1:]
+    ):
+        fail("broker provider " + label + " path slot is not a normalized absolute path")
+    return path
+
+
+def verify_broker_argv_paths(harness: str, argv_shape: list[str], cwd_sha256: str, canonical_repo_sha256: str) -> None:
+    """Bind a harness's argv path slots to the attested owned scratch root.
+
+    ``provider_cwd_class`` is self-reported, so the retained shape is the only
+    independent witness of where the provider ran.  The cwd slot must hash to
+    the attested ``provider_cwd_sha256``; neither it nor any ancestor may hash to
+    the canonical checkout (a canonical root or descendant cwd would be a live
+    tree); and an output slot must be a direct child of that same owned root.
+    """
+    cwd_flag = ARGV_CWD_FLAG.get(harness)
+    if cwd_flag is None:
+        return
+    cwd_value = _argv_slot(argv_shape, cwd_flag)
+    cwd_path = _normalized_absolute_path(cwd_value, "cwd")
+    if sha256(cwd_value.encode("utf-8", errors="strict")) != cwd_sha256:
+        fail("broker provider cwd path slot is detached from the attested provider cwd")
+    for candidate in (cwd_path, *cwd_path.parents):
+        if sha256(str(candidate).encode("utf-8", errors="strict")) == canonical_repo_sha256:
+            fail("broker provider cwd path slot is the canonical checkout or a descendant")
+    output_flag = ARGV_OUTPUT_FLAG.get(harness)
+    if output_flag is None:
+        return
+    output_value = _argv_slot(argv_shape, output_flag)
+    output_path = _normalized_absolute_path(output_value, "output")
+    if output_path.parent != cwd_path:
+        fail("broker provider output path slot is not a direct child of the provider cwd")
 
 
 def broker_argv_matches(harness: str, model: str, argv_shape: list[str]) -> bool:
@@ -2311,6 +2359,7 @@ def verify_broker(value: Any, harness: str, requested: str, resolved: str, bundl
         fail("broker provider argv does not match the " + harness + " no-tool grammar")
     if broker["provider_argv_sha256"] != sha256("\0".join(argv_shape).encode("utf-8", errors="strict")):
         fail("broker provider argv digest is detached from its retained shape")
+    verify_broker_argv_paths(harness, argv_shape, broker["provider_cwd_sha256"], broker["canonical_repo_sha256"])
     empty_positions = {
         "claude": {"--setting-sources", "--tools", "--allowedTools"},
         "grok": {"--tools"},
@@ -3004,7 +3053,7 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
             "child_stderr_sha256": nonce(label + "stderr"), "child_returncode": 0, "operation_deadline_s": 30.0, "child_timeout": False, "broker_thread_quiescent": True, "provider_adapter_quiescent": True, "provider_cancel_requested": False,
             "provider_input_sha256": sha256(sealed_prompt.encode()), "provider_input_bytes": len(sealed_prompt.encode()), "provider_input_inline": True, "provider_live_tree_cwd": False,
             "provider_harness": harness, "provider_model": resolved, "provider_argv_shape": shape, "provider_argv_sha256": sha256("\0".join(shape).encode()),
-            "provider_prompt_sha256": sha256(sealed_prompt.encode()), "provider_prompt_bytes": len(sealed_prompt.encode()), "provider_transport_sha256": sha256(transport.encode()), "provider_transport_bytes": len(transport.encode()), "provider_prompt_transport": PROMPT_TRANSPORT[harness], "provider_cwd_class": "owned_empty_scratch", "provider_cwd_sha256": nonce(label + "cwd"), "provider_env_keys": ["HOME", "LANG", "PATH", "XDG_CONFIG_HOME"] if harness == "gemini" else ["LANG", "PATH"], "provider_env_api_keys_scrubbed": True, "provider_env_direct_routes_scrubbed": True, "provider_no_tool_controls": list(NO_TOOL_CONTROLS[harness]),
+            "provider_prompt_sha256": sha256(sealed_prompt.encode()), "provider_prompt_bytes": len(sealed_prompt.encode()), "provider_transport_sha256": sha256(transport.encode()), "provider_transport_bytes": len(transport.encode()), "provider_prompt_transport": PROMPT_TRANSPORT[harness], "provider_cwd_class": "owned_empty_scratch", "provider_cwd_sha256": sha256(b"/tmp/owned-empty-scratch"), "provider_env_keys": ["HOME", "LANG", "PATH", "XDG_CONFIG_HOME"] if harness == "gemini" else ["LANG", "PATH"], "provider_env_api_keys_scrubbed": True, "provider_env_direct_routes_scrubbed": True, "provider_no_tool_controls": list(NO_TOOL_CONTROLS[harness]),
         }
         if harness == "claude":
             prompt_bytes = len(sealed_prompt.encode())
@@ -4843,6 +4892,35 @@ def self_test() -> None:
         rejected("claude-argv-drops-safe-mode", reseal_seat_and_runtime(drop_argv_pair("--safe-mode"), harness="claude"))
         rejected("claude-argv-model-off-route", reseal_seat_and_runtime(set_argv_value("--model", "claude-opus-5"), harness="claude"))
         rejected("argv-digest-detached-from-shape", reseal_seat_and_runtime(lambda seat: seat["broker"].__setitem__("provider_argv_sha256", "f" * 64)))
+        # Argv path slots: the cwd slot must be the attested owned scratch root, never
+        # the canonical checkout or one of its descendants, and the codex output slot
+        # must stay inside that root.  Each mutation keeps the argv digest, the cwd
+        # digest, and the self-reported cwd class internally consistent so only the
+        # path binding can reject it.
+        def relocate_cwd(cwd: str, *, canonical: str | None = None, output: str | None = None) -> Callable[[dict[str, Any]], None]:
+            def change(seat: dict[str, Any]) -> None:
+                shape = seat["broker"]["provider_argv_shape"]
+                flag = ARGV_CWD_FLAG[seat["harness"]]
+                shape[shape.index(flag) + 1] = cwd
+                if output is not None:
+                    shape[shape.index("--output-last-message") + 1] = output
+                elif "--output-last-message" in shape:
+                    shape[shape.index("--output-last-message") + 1] = cwd + "/last-message.txt"
+                seat["broker"]["provider_argv_sha256"] = sha256("\0".join(shape).encode())
+                seat["broker"]["provider_cwd_sha256"] = sha256(cwd.encode())
+                if canonical is not None:
+                    seat["broker"]["canonical_repo_sha256"] = sha256(canonical.encode())
+            return change
+        rejected("codex-argv-cwd-is-canonical-root", reseal_seat_and_runtime(relocate_cwd("/srv/canonical", canonical="/srv/canonical"), harness="codex"))
+        rejected("codex-argv-cwd-under-canonical-root", reseal_seat_and_runtime(relocate_cwd("/srv/canonical/.scratch", canonical="/srv/canonical"), harness="codex"))
+        rejected("grok-argv-cwd-is-canonical-root", reseal_seat_and_runtime(relocate_cwd("/srv/canonical", canonical="/srv/canonical"), harness="grok"))
+        rejected("grok-argv-cwd-under-canonical-root", reseal_seat_and_runtime(relocate_cwd("/srv/canonical/worktree/x", canonical="/srv/canonical"), harness="grok"))
+        rejected("codex-argv-cwd-detached-from-cwd-digest", reseal_seat_and_runtime(set_argv_value("--cd", "/tmp/other-scratch"), harness="codex"))
+        rejected("grok-argv-cwd-detached-from-cwd-digest", reseal_seat_and_runtime(set_argv_value("--cwd", "/tmp/other-scratch"), harness="grok"))
+        rejected("codex-argv-output-outside-cwd", reseal_seat_and_runtime(set_argv_value("--output-last-message", "/tmp/elsewhere/last-message.txt"), harness="codex"))
+        rejected("codex-argv-output-nested-under-cwd", reseal_seat_and_runtime(set_argv_value("--output-last-message", "/tmp/owned-empty-scratch/nested/last-message.txt"), harness="codex"))
+        rejected("codex-argv-cwd-dot-dot-escape", reseal_seat_and_runtime(relocate_cwd("/tmp/owned-empty-scratch/../owned-empty-scratch"), harness="codex"))
+        rejected("grok-argv-cwd-trailing-slash", reseal_seat_and_runtime(relocate_cwd("/tmp/owned-empty-scratch/"), harness="grok"))
         rejected("ambient-token-provider-env", reseal_seat_and_runtime(lambda seat: seat["broker"].__setitem__("provider_env_keys", ["AWS_SESSION_TOKEN", "PATH"])))
         def fully_resealed_instruction_replacement(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
             review = model["reviews"]["candidate"]

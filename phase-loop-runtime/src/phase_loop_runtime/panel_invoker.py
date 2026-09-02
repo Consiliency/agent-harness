@@ -5320,7 +5320,9 @@ def _default_spawn(
         ) else (
             Path(repo_dir).resolve() if repo_dir is not None else Path.cwd()
         )
-        base = Path(tempfile.mkdtemp(prefix="pl-panel-")) if capture_stage is None else None
+        # Resolved so the provider argv path slots are byte-identical to the
+        # attested ``provider_cwd_sha256`` preimage the verifier recomputes.
+        base = Path(tempfile.mkdtemp(prefix="pl-panel-")).resolve() if capture_stage is None else None
         review_dir = capture_stage if capture_stage is not None else base / "review"
         out_dir = provider_authority.namespace.provider_output if provider_authority is not None else base / "out"
         if capture_stage is None:
@@ -6405,18 +6407,23 @@ def invoke_board(
     )
     authorization_artifact = artifact
     review_instruction_token: object | None = None
-    def review_refusal(detail: str) -> PanelResult:
+    def review_exit(result: PanelResult) -> PanelResult:
+        # Every exit after the instruction digest is bound -- refusal, typed
+        # deferral, or support-status result -- releases the ContextVar here, so
+        # a pre-lease return can never leave a stale digest on the caller's context.
         nonlocal review_instruction_token
         if review_instruction_token is not None:
             reset_review_instruction_digest(review_instruction_token)
             review_instruction_token = None
-        return PanelResult(tuple(
+        return result
+    def review_refusal(detail: str) -> PanelResult:
+        return review_exit(PanelResult(tuple(
             PanelLegResult(
                 leg=seat.harness or seat.vendor_family,
                 status="UNAVAILABLE", detail=detail, seat_key=seat.seat_key,
             )
             for seat in board.seats
-        ))
+        )))
 
     governed_review_request = (
         review_authorization is not None or canonical_repo_authority is not None
@@ -6583,7 +6590,7 @@ def invoke_board(
                         ),
                     )
                 deferred.append(result)
-            return PanelResult(tuple(deferred))
+            return review_exit(PanelResult(tuple(deferred)))
         # This validates a host/native pairing before a gateway catalog, support
         # check, or a capability probe can be reached.
         host_seat = enforce_native_host_leg(board, host)
@@ -6596,13 +6603,13 @@ def invoke_board(
         ):
             supported, detail = _claude_code_support_status()
             if not supported:
-                return PanelResult(tuple(
+                return review_exit(PanelResult(tuple(
                     PanelLegResult(
                         leg="claude", status="UNAVAILABLE", text=detail,
                         seat_key=seat.seat_key,
                     )
                     for seat in board.seats
-                ))
+                )))
         if explicit_spawn_refusal:
             return review_refusal("unbound_direct_review_invocation_refused")
     # Claim the review lease HERE, immediately after independent revalidation and
