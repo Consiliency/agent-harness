@@ -6494,6 +6494,15 @@ def invoke_board(
         injected_capture_preparation_seam
         and review_authorization is None
         and not factory_replaced
+        # The hermetic capture control is a homebrew CLI capture and nothing
+        # else.  A governed request, a research seat, or any gateway route
+        # input is an effect class the control never authorizes, so those fall
+        # through to the typed refusals below BEFORE the catalog fetch, the
+        # research materialization, or a provider launch (EC-HARDEN-5).
+        and not governed_review_request
+        and not effective_research.enabled
+        and omnigent is None
+        and gateway_available is None
     )
     injected_execution_seam = (
         factory_replaced and (
