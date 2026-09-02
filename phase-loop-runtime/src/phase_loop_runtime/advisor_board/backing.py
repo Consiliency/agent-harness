@@ -31,6 +31,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from hashlib import sha256
 import json
+import math
 import os
 import platform
 from pathlib import Path
@@ -844,6 +845,7 @@ def derive_review_leg_authorization(
     if (
         not isinstance(authorization, ReviewIsolationAuthorization)
         or (harness, model) not in authorization.routes
+        or not math.isfinite(deadline_s)
         or deadline_s <= 0
     ):
         raise ValueError("invalid HARDEN review leg authority")
