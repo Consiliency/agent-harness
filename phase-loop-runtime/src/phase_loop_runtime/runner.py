@@ -8521,11 +8521,10 @@ def _run_legible_panel(
     finally:
         if instruction_token is not None:
             reset_review_instruction_digest(instruction_token)
-    tree = subprocess.check_output(
-        ["git", "-C", str(repo), "rev-parse", expected_head + "^{tree}"],
-        text=True,
-        stderr=subprocess.DEVNULL,
-    ).strip()
+    # The candidate tree is a receipt field, so it is resolved only when a leg
+    # actually carries broker evidence; a run without brokered legs never needs
+    # the head to be a resolvable Git object.
+    tree: str | None = None
     legs: list[dict[str, object]] = []
     verdicts: dict[str, str] = {}
     for seat, outcome in zip(CODE_REVIEW_BOARD.seats, result.legs, strict=True):
@@ -8547,6 +8546,12 @@ def _run_legible_panel(
             # execution boundary, retained beside the run-owned seat result so
             # a later HARDEN evidence reducer need not trust a copied summary.
             leg_payload["harden_isolation_evidence"] = dict(broker_evidence)
+            if tree is None:
+                tree = subprocess.check_output(
+                    ["git", "-C", str(repo), "rev-parse", expected_head + "^{tree}"],
+                    text=True,
+                    stderr=subprocess.DEVNULL,
+                ).strip()
             provider_model = broker_evidence.get("provider_model")
             if not isinstance(provider_model, str) or not provider_model:
                 raise legible_evidence.LegibleProcessBootstrapError(

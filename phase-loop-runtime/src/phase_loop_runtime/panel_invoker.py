@@ -6581,11 +6581,20 @@ def invoke_board(
                 deferred: list[PanelLegResult] = []
                 for seat in board.seats:
                     leg = (seat.harness or "").lower()
+                    tui_policy_seat = _claude_tui_policy_model(seat.model)
+                    # A TUI-policy model on a non-homebrew backing is refused for
+                    # its backing before any host/adapter question, exactly as the
+                    # per-seat matrix below orders it (no omnigent catalog touch).
+                    detail = (
+                        "tui_backing_required"
+                        if tui_policy_seat and seat.backing != BACKING_HOMEBREW
+                        else "tui_adapter_required"
+                    )
                     result = PanelLegResult(
                         leg=leg, status="UNAVAILABLE", text="",
-                        detail="tui_adapter_required", seat_key=seat.seat_key,
+                        detail=detail, seat_key=seat.seat_key,
                     )
-                    if not _claude_tui_policy_model(seat.model):
+                    if not tui_policy_seat:
                         attach_native_agent_request(
                             result,
                             native_agent_leg_request(
