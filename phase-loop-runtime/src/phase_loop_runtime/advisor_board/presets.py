@@ -5,7 +5,7 @@ Nine built-in presets, each a named, purpose-tagged, open-ended seat list:
 * ``default``     — IS ``fixtures.DEFAULT_BOARD`` (imported, not re-declared), so
                     the back-compat keystone holds by construction: the default
                     board defines the canonical four-vendor review seats (the claude seat
-                    on Fable, ``claude-fable-5``).
+                    on Fable, ``claude-fable-5-1``).
 * ``code-review`` — the 4-vendor cross-vendor board (grok / claude / codex /
                     gemini) at max thinking, distinct lenses, composed
                     availability-aware (``composition.compose_review_board``).
@@ -17,7 +17,7 @@ Nine built-in presets, each a named, purpose-tagged, open-ended seat list:
 **Review-class boards run on frontier models, never the implementer.** Pre-merge
 and legal review are mid-tier decisions where being wrong is expensive, so the
 review-class boards (``default``, ``code-review``, ``legal-review``,
-``legal-strategy-review``) seat Fable (``claude-fable-5``) on the claude lane, not
+``legal-strategy-review``) seat Fable (``claude-fable-5-1``) on the claude lane, not
 the implementer ``claude-sonnet-5``. The divergent-thinking boards (``brainstorm``,
 ``doc-edit``, ``legal-brainstorm``) deliberately KEEP Sonnet — a diverse voice / a
 low-stakes copyedit / an aggressive-but-cheap ideation seat — where it is the right
@@ -55,7 +55,7 @@ BRAINSTORM_BOARD: Board = Board(
     seats=(
         Seat(model="claude-sonnet-5", effort="high", harness="claude", lens="adversarial"),
         Seat(model="gpt-5.6-sol", effort="high", harness="codex", lens="supportive"),
-        Seat(model="gemini-3.7-flash", effort="high", harness="gemini", lens="lateral"),
+        Seat(model="gemini-3.8-flash", effort="high", harness="gemini", lens="lateral"),
     ),
 )
 
@@ -84,8 +84,8 @@ LEGAL_REVIEW_BOARD: Board = Board(
     purpose="legal-review",
     seats=(
         Seat(model="gpt-5.6-sol", effort="max", harness="codex", lens="opposing-counsel"),
-        Seat(model="gemini-3.7-flash", effort="high", harness="gemini", lens="risk-liability"),
-        Seat(model="claude-fable-5", effort="max", harness="claude", lens="authority-verification"),
+        Seat(model="gemini-3.8-flash", effort="high", harness="gemini", lens="risk-liability"),
+        Seat(model="claude-fable-5-1", effort="max", harness="claude", lens="authority-verification"),
     ),
 )
 
@@ -96,8 +96,8 @@ LEGAL_STRATEGY_REVIEW_BOARD: Board = Board(
     purpose="legal-strategy-review",
     seats=(
         Seat(model="gpt-5.6-sol", effort="max", harness="codex", lens="red-team"),
-        Seat(model="gemini-3.7-flash", effort="high", harness="gemini", lens="alternatives"),
-        Seat(model="claude-fable-5", effort="max", harness="claude", lens="downside-ethics"),
+        Seat(model="gemini-3.8-flash", effort="high", harness="gemini", lens="alternatives"),
+        Seat(model="claude-fable-5-1", effort="max", harness="claude", lens="downside-ethics"),
     ),
 )
 
@@ -109,7 +109,7 @@ LEGAL_BRAINSTORM_BOARD: Board = Board(
     seats=(
         Seat(model="claude-sonnet-5", effort="high", harness="claude", lens="aggressive"),
         Seat(model="gpt-5.6-sol", effort="high", harness="codex", lens="conservative"),
-        Seat(model="gemini-3.7-flash", effort="high", harness="gemini", lens="creative"),
+        Seat(model="gemini-3.8-flash", effort="high", harness="gemini", lens="creative"),
     ),
 )
 
@@ -128,8 +128,8 @@ GENERAL_BOARD: Board = Board(
     purpose="general",
     seats=(
         Seat(model="gpt-5.6-sol", effort="max", harness="codex", lens="adversarial"),
-        Seat(model="gemini-3.7-flash", effort="high", harness="gemini", lens="alternative"),
-        Seat(model="claude-fable-5", effort="max", harness="claude", lens="completeness"),
+        Seat(model="gemini-3.8-flash", effort="high", harness="gemini", lens="alternative"),
+        Seat(model="claude-fable-5-1", effort="max", harness="claude", lens="completeness"),
     ),
 )
 
@@ -139,7 +139,7 @@ SOLO_BOARD: Board = Board(
     name="solo",
     purpose="general",
     seats=(
-        Seat(model="claude-fable-5", effort="max", harness="claude", lens="completeness"),
+        Seat(model="claude-fable-5-1", effort="max", harness="claude", lens="completeness"),
     ),
 )
 

@@ -212,7 +212,7 @@ class ActiveEnvScrubbingNegativeTests(unittest.TestCase):
         return Seat(model="Gemini 3.1 Pro", effort="high", harness="gemini", auth=auth)
 
     def _claude_seat(self, auth: str) -> Seat:
-        return Seat(model="claude-fable-5", effort="max", harness="claude", auth=auth)
+        return Seat(model="claude-fable-5-1", effort="max", harness="claude", auth=auth)
 
     def test_codex_launcher_subscription_scrubs_every_key(self) -> None:
         env = resolve_seat_env(self._codex_seat("subscription"), self._all_keys_base())

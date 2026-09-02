@@ -35,11 +35,11 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(len(general.seats), 3)
         self.assertEqual(
             {s.model for s in general.seats},
-            {"gpt-5.6-sol", "gemini-3.7-flash", "claude-fable-5"},
+            {"gpt-5.6-sol", "gemini-3.8-flash", "claude-fable-5-1"},
         )
         solo = PRESETS["solo"]
         self.assertEqual(len(solo.seats), 1)  # a 1-seat board is fully valid
-        self.assertEqual(solo.seats[0].model, "claude-fable-5")
+        self.assertEqual(solo.seats[0].model, "claude-fable-5-1")
         # neither seats Sonnet — an unmodeled task is not assumed low-stakes.
         for board in (general, solo):
             self.assertNotIn("claude-sonnet-5", {s.model for s in board.seats})
@@ -55,8 +55,8 @@ class PresetTests(unittest.TestCase):
             tuple((s.model, s.effort, s.harness) for s in PRESETS["default"].seats),
             (
                 ("gpt-5.6-sol", "max", "codex"),
-                ("gemini-3.7-flash", "high", "gemini"),
-                ("claude-fable-5", "max", "claude"),
+                ("gemini-3.8-flash", "high", "gemini"),
+                ("claude-fable-5-1", "max", "claude"),
                 ("grok-4.6", "max", "grok"),
             ),
         )
@@ -80,9 +80,9 @@ class PresetTests(unittest.TestCase):
             tuple((s.model, s.effort, s.harness, s.lens) for s in seats),
             (
                 ("grok-4.6", "max", "grok", "adversarial"),
-                ("claude-fable-5", "max", "claude", "correctness"),
+                ("claude-fable-5-1", "max", "claude", "correctness"),
                 ("gpt-5.6-sol", "max", "codex", "red-team"),
-                ("gemini-3.7-flash", "high", "gemini", "alternative-approach"),
+                ("gemini-3.8-flash", "high", "gemini", "alternative-approach"),
             ),
         )
 
@@ -92,7 +92,7 @@ class PresetTests(unittest.TestCase):
             claude_seats = [s for s in PRESETS[name].seats if s.harness == "claude"]
             self.assertTrue(claude_seats, name)
             for s in claude_seats:
-                self.assertEqual(s.model, "claude-fable-5", f"{name}: {s.model}")
+                self.assertEqual(s.model, "claude-fable-5-1", f"{name}: {s.model}")
 
     def test_brainstorm_and_doc_edit_are_byte_neutral(self) -> None:
         # The divergent-thinking boards deliberately KEEP Sonnet; their Gemini seat
@@ -102,7 +102,7 @@ class PresetTests(unittest.TestCase):
             "brainstorm": (
                 ("claude-sonnet-5", "high", "claude", "adversarial"),
                 ("gpt-5.6-sol", "high", "codex", "supportive"),
-                ("gemini-3.7-flash", "high", "gemini", "lateral"),
+                ("gemini-3.8-flash", "high", "gemini", "lateral"),
             ),
             "doc-edit": (
                 ("claude-sonnet-5", "medium", "claude", "copyedit"),
@@ -120,18 +120,18 @@ class PresetTests(unittest.TestCase):
         legal = {
             "legal-review": (
                 ("gpt-5.6-sol", "max", "codex", "opposing-counsel"),
-                ("gemini-3.7-flash", "high", "gemini", "risk-liability"),
-                ("claude-fable-5", "max", "claude", "authority-verification"),
+                ("gemini-3.8-flash", "high", "gemini", "risk-liability"),
+                ("claude-fable-5-1", "max", "claude", "authority-verification"),
             ),
             "legal-strategy-review": (
                 ("gpt-5.6-sol", "max", "codex", "red-team"),
-                ("gemini-3.7-flash", "high", "gemini", "alternatives"),
-                ("claude-fable-5", "max", "claude", "downside-ethics"),
+                ("gemini-3.8-flash", "high", "gemini", "alternatives"),
+                ("claude-fable-5-1", "max", "claude", "downside-ethics"),
             ),
             "legal-brainstorm": (
                 ("claude-sonnet-5", "high", "claude", "aggressive"),
                 ("gpt-5.6-sol", "high", "codex", "conservative"),
-                ("gemini-3.7-flash", "high", "gemini", "creative"),
+                ("gemini-3.8-flash", "high", "gemini", "creative"),
             ),
         }
         for name, expected in legal.items():

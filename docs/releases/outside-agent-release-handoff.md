@@ -69,8 +69,8 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 - GitHub Release: `https://github.com/Consiliency/agent-harness/releases/tag/v0.7.14`.
 - Fleet adoption: the supported installer refreshed Claude, Codex, Gemini, and
   OpenCode skill roots from `v0.7.14`. All eight installed advisor-board/panel
-  skill bodies contain `claude-fable-5`, `gpt-5.6-sol`, `grok-4.6`, and
-  `gemini-3.7-flash`, and contain none of `Harness Fable`, `Harness 3.7 Flash`,
+  skill bodies contain `claude-fable-5-1`, `gpt-5.6-sol`, `grok-4.6`, and
+  `gemini-3.8-flash`, and contain none of `Harness Fable`, `Harness 3.8 Flash`,
   or `<harness>-3.7-flash`.
 - Installed behavior: president order is Fable, Sol, Grok 4.6, then Gemini 3.7
   Flash. A blocking Fable ruling did not fall back; typed

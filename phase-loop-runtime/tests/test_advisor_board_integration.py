@@ -289,7 +289,7 @@ class OmnigentLegJoinsMatrixTests(unittest.TestCase):
         self.assertIn("ABDOMNI", res.legs[0].detail)
 
     def test_fable_and_opus_reject_omnigent_before_gateway_access(self) -> None:
-        for model in ("claude-fable-5", "claude-opus-5"):
+        for model in ("claude-fable-5-1", "claude-opus-5"):
             board = Board(name="claude-guard", purpose="x", seats=(
                 Seat(
                     model=model,

@@ -123,7 +123,7 @@ Model IDs appear only in this table. All model-routing logic in the workflow ref
 | fast      | claude-haiku-4-5-20251001 | mechanical wiring, small components against frozen types |
 
 These map to the runtime `model_class` axis: implementer = strong, worker = fast.
-(The planner class routes to the ULTRA model `claude-fable-5` — a planning-tier
+(The planner class routes to the ULTRA model `claude-fable-5-1` — a planning-tier
 model ABOVE this execute table; it is NOT `frontier`, which is the heavy model
 `claude-opus-5`.) The shipped `model_policy` dispatches **implementation at the
 implementer class**. The runtime's `model_class`-escalation bookkeeping is
