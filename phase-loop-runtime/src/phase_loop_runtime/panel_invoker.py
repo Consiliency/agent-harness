@@ -6515,124 +6515,133 @@ def invoke_board(
             return review_refusal("unbound_direct_review_invocation_refused")
         if unbound_execution_replacement and not injected_execution_seam:
             return review_refusal("unbound_review_execution_replacement_refused")
-        if not injected_execution_seam:
-            try:
-                review_instruction_token = set_review_instruction_digest(
-                    _resolve_brief(mode, brief_ref)
-                )
-                canonical_repo_authority = _canonical_review_repo_authority(
-                    canonical_repo_authority
-                )
-            except (OSError, UnicodeError, ValueError) as exc:
-                return review_refusal(str(exc))
-        elif canonical_repo_authority is not None:
-            try:
-                canonical_repo_authority = _canonical_review_repo_authority(
-                    canonical_repo_authority
-                )
-            except ValueError as exc:
-                return review_refusal(str(exc))
-        if review_authorization is None and not auth_free_capture_control:
-            if governed_review_request:
-                return review_refusal("missing or forged HARDEN review authorization")
-            if effective_research.enabled:
-                return review_refusal("harden_review_research_route_refused")
-            if agy_canary_capture is not None:
-                return review_refusal("harden_review_capture_route_refused")
-            if omnigent is not None or gateway_available is not None:
-                return review_refusal("harden_review_gateway_route_refused")
-            if not exact_broker_routes and not native_host_deferral_only:
-                return review_refusal("harden_review_unsupported_route_refused")
-            try:
-                review_authorization = dynamic_factory(
-                    board,
-                    authorization_artifact,
-                    mode=mode,
-                    canonical_repo_authority=canonical_repo_authority,
-                )
-            except ValueError as exc:
-                return review_refusal(str(exc))
-        if not injected_execution_seam and not exact_broker_routes and not native_host_deferral_only:
-            return review_refusal("harden_review_unsupported_route_refused")
-        if not auth_free_capture_control:
-            try:
-                revalidate_review_isolation_authorization(
-                    review_authorization,
-                    board,
-                    authorization_artifact,
-                    mode=mode,
-                    canonical_repo_authority=canonical_repo_authority,
-                )
-            except ValueError as exc:
-                return review_refusal(str(exc))
-        # Native-host deferral is a typed data result, never a path to host
-        # execution. It is reached only after the same factory/revalidation gate.
-        if native_host_deferral_only and spawn is None:
-            try:
-                effective_instructions = _resolve_brief(mode, brief_ref)
-            except (OSError, UnicodeError, ValueError) as exc:
-                return review_refusal(str(exc))
-            deferred: list[PanelLegResult] = []
-            for seat in board.seats:
-                leg = (seat.harness or "").lower()
-                result = PanelLegResult(
-                    leg=leg, status="UNAVAILABLE", text="",
-                    detail="tui_adapter_required", seat_key=seat.seat_key,
-                )
-                if not _claude_tui_policy_model(seat.model):
-                    attach_native_agent_request(
-                        result,
-                        native_agent_leg_request(
-                            leg=leg, mode=mode, env=base_env, model=seat.model,
-                            seat_key=seat.seat_key, effort=seat.effort, lens=seat.lens,
-                            artifact_ref=str(artifact_ref) if isinstance(artifact_ref, str) else None,
-                            brief_ref=brief_ref, instructions=effective_instructions,
-                        ),
-                    )
-                deferred.append(result)
-            return review_exit(PanelResult(tuple(deferred)))
-        # This validates a host/native pairing before a gateway catalog, support
-        # check, or a capability probe can be reached.
-        host_seat = enforce_native_host_leg(board, host)
-        if (
-            not native_host_deferral_only
-            and
-            _claude_code_support_status is not _PRODUCTION_CLAUDE_CODE_SUPPORT_STATUS
-            and bool(board.seats)
-            and all((seat.harness or "").lower() == "claude" for seat in board.seats)
-        ):
-            supported, detail = _claude_code_support_status()
-            if not supported:
-                return review_exit(PanelResult(tuple(
-                    PanelLegResult(
-                        leg="claude", status="UNAVAILABLE", text=detail,
-                        seat_key=seat.seat_key,
-                    )
-                    for seat in board.seats
-                )))
-        if explicit_spawn_refusal:
-            return review_refusal("unbound_direct_review_invocation_refused")
-    # Claim the review lease HERE, immediately after independent revalidation and
-    # before the first host effect: the live availability matrix, the gateway
-    # catalog, research materialization, and capture staging all run below.  The
-    # ``finally`` closes the lease on every later exit (refusal, raise, or result),
-    # so no probe or staging step ever runs against an authorization that another
-    # caller could still activate or that expires in the interval.
-    if mode == "review" and review_authorization is not None:
+        # The digest is bound below and consumed by the lease activation at the
+        # end of this block.  A raise anywhere in between (authority preparation,
+        # revalidation, deferral construction, the support probe, activation) must
+        # release it exactly as the typed returns do, so no crash exit can leave a
+        # stale digest on the caller's context.
         try:
-            activate_review_isolation_authorization(
-                review_authorization,
-                board,
-                authorization_artifact,
-                mode=mode,
-                canonical_repo_authority=canonical_repo_authority,
-            )
-        except ValueError as exc:
-            return review_refusal(str(exc))
-        review_lease_active = True
-        if review_instruction_token is not None:
-            reset_review_instruction_digest(review_instruction_token)
-            review_instruction_token = None
+            if not injected_execution_seam:
+                try:
+                    review_instruction_token = set_review_instruction_digest(
+                        _resolve_brief(mode, brief_ref)
+                    )
+                    canonical_repo_authority = _canonical_review_repo_authority(
+                        canonical_repo_authority
+                    )
+                except (OSError, UnicodeError, ValueError) as exc:
+                    return review_refusal(str(exc))
+            elif canonical_repo_authority is not None:
+                try:
+                    canonical_repo_authority = _canonical_review_repo_authority(
+                        canonical_repo_authority
+                    )
+                except ValueError as exc:
+                    return review_refusal(str(exc))
+            if review_authorization is None and not auth_free_capture_control:
+                if governed_review_request:
+                    return review_refusal("missing or forged HARDEN review authorization")
+                if effective_research.enabled:
+                    return review_refusal("harden_review_research_route_refused")
+                if agy_canary_capture is not None:
+                    return review_refusal("harden_review_capture_route_refused")
+                if omnigent is not None or gateway_available is not None:
+                    return review_refusal("harden_review_gateway_route_refused")
+                if not exact_broker_routes and not native_host_deferral_only:
+                    return review_refusal("harden_review_unsupported_route_refused")
+                try:
+                    review_authorization = dynamic_factory(
+                        board,
+                        authorization_artifact,
+                        mode=mode,
+                        canonical_repo_authority=canonical_repo_authority,
+                    )
+                except ValueError as exc:
+                    return review_refusal(str(exc))
+            if not injected_execution_seam and not exact_broker_routes and not native_host_deferral_only:
+                return review_refusal("harden_review_unsupported_route_refused")
+            if not auth_free_capture_control:
+                try:
+                    revalidate_review_isolation_authorization(
+                        review_authorization,
+                        board,
+                        authorization_artifact,
+                        mode=mode,
+                        canonical_repo_authority=canonical_repo_authority,
+                    )
+                except ValueError as exc:
+                    return review_refusal(str(exc))
+            # Native-host deferral is a typed data result, never a path to host
+            # execution. It is reached only after the same factory/revalidation gate.
+            if native_host_deferral_only and spawn is None:
+                try:
+                    effective_instructions = _resolve_brief(mode, brief_ref)
+                except (OSError, UnicodeError, ValueError) as exc:
+                    return review_refusal(str(exc))
+                deferred: list[PanelLegResult] = []
+                for seat in board.seats:
+                    leg = (seat.harness or "").lower()
+                    result = PanelLegResult(
+                        leg=leg, status="UNAVAILABLE", text="",
+                        detail="tui_adapter_required", seat_key=seat.seat_key,
+                    )
+                    if not _claude_tui_policy_model(seat.model):
+                        attach_native_agent_request(
+                            result,
+                            native_agent_leg_request(
+                                leg=leg, mode=mode, env=base_env, model=seat.model,
+                                seat_key=seat.seat_key, effort=seat.effort, lens=seat.lens,
+                                artifact_ref=str(artifact_ref) if isinstance(artifact_ref, str) else None,
+                                brief_ref=brief_ref, instructions=effective_instructions,
+                            ),
+                        )
+                    deferred.append(result)
+                return review_exit(PanelResult(tuple(deferred)))
+            # This validates a host/native pairing before a gateway catalog, support
+            # check, or a capability probe can be reached.
+            host_seat = enforce_native_host_leg(board, host)
+            if (
+                not native_host_deferral_only
+                and
+                _claude_code_support_status is not _PRODUCTION_CLAUDE_CODE_SUPPORT_STATUS
+                and bool(board.seats)
+                and all((seat.harness or "").lower() == "claude" for seat in board.seats)
+            ):
+                supported, detail = _claude_code_support_status()
+                if not supported:
+                    return review_exit(PanelResult(tuple(
+                        PanelLegResult(
+                            leg="claude", status="UNAVAILABLE", text=detail,
+                            seat_key=seat.seat_key,
+                        )
+                        for seat in board.seats
+                    )))
+            if explicit_spawn_refusal:
+                return review_refusal("unbound_direct_review_invocation_refused")
+            # Claim the review lease HERE, immediately after independent revalidation and
+            # before the first host effect: the live availability matrix, the gateway
+            # catalog, research materialization, and capture staging all run below.  The
+            # ``finally`` closes the lease on every later exit (refusal, raise, or result),
+            # so no probe or staging step ever runs against an authorization that another
+            # caller could still activate or that expires in the interval.
+            if mode == "review" and review_authorization is not None:
+                try:
+                    activate_review_isolation_authorization(
+                        review_authorization,
+                        board,
+                        authorization_artifact,
+                        mode=mode,
+                        canonical_repo_authority=canonical_repo_authority,
+                    )
+                except ValueError as exc:
+                    return review_refusal(str(exc))
+                review_lease_active = True
+                if review_instruction_token is not None:
+                    reset_review_instruction_digest(review_instruction_token)
+                    review_instruction_token = None
+        except BaseException:
+            review_exit(PanelResult(()))
+            raise
     research_run: ResearchRunConfig | None = None
     # Capture launches are fully materialized before the thread pool starts.  A
     # Gemini-ledger mutation therefore cannot invalidate a later Codex/Claude/Grok

@@ -258,7 +258,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `load_boards` seat validation behind its own fresh composition authority (the harness
   PATH probe and key-var scan are the same probe class as composition), and released the
   review-instruction digest ContextVar on the typed-deferral and support-status exits of
-  `invoke_board`.
+  `invoke_board`. A third delta round rejected a POSIX `//`-prefixed path slot (whose
+  ancestors never hash to the canonical checkout) and any slot under `/proc`, `/sys`, or
+  `/dev`, and released the same ContextVar on a raise anywhere between digest binding and
+  lease activation. The verifier still cannot witness the review checkout's path
+  independently: `canonical_repo_sha256` is checked for internal consistency, not derived
+  from `--repo`, because `--repo` is the retained-objects repository and the four-seat
+  reviews run in separate fresh worktrees.
 
 ### executor policy: an operator's explicit model is never substituted (Consiliency/agent-harness#671)
 

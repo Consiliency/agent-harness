@@ -285,12 +285,23 @@ def _argv_slot(argv_shape: list[str], flag: str) -> str:
     return argv_shape[index + 1]
 
 
+# Kernel pseudo-filesystems alias other processes' files and descriptors (for
+# example ``/proc/self/fd``), so a cwd or output slot rooted there is never an
+# owned scratch directory even when the string is normalized.
+_PSEUDO_FILESYSTEM_ROOTS = frozenset({"proc", "sys", "dev"})
+
+
 def _normalized_absolute_path(value: str, label: str) -> PurePosixPath:
     path = PurePosixPath(value)
-    if not path.is_absolute() or str(path) != value or value == "/" or any(
+    # ``parts[0]`` must be exactly ``/``: POSIX leaves a leading ``//`` implementation
+    # defined and ``PurePosixPath`` preserves it, so ``//<root>`` would otherwise be a
+    # distinct string whose ancestors never hash to the canonical checkout.
+    if not path.is_absolute() or path.parts[0] != "/" or str(path) != value or value == "/" or any(
         part in {"", ".", ".."} for part in path.parts[1:]
     ):
         fail("broker provider " + label + " path slot is not a normalized absolute path")
+    if path.parts[1] in _PSEUDO_FILESYSTEM_ROOTS:
+        fail("broker provider " + label + " path slot is under a kernel pseudo-filesystem root")
     return path
 
 
@@ -4921,6 +4932,13 @@ def self_test() -> None:
         rejected("codex-argv-output-nested-under-cwd", reseal_seat_and_runtime(set_argv_value("--output-last-message", "/tmp/owned-empty-scratch/nested/last-message.txt"), harness="codex"))
         rejected("codex-argv-cwd-dot-dot-escape", reseal_seat_and_runtime(relocate_cwd("/tmp/owned-empty-scratch/../owned-empty-scratch"), harness="codex"))
         rejected("grok-argv-cwd-trailing-slash", reseal_seat_and_runtime(relocate_cwd("/tmp/owned-empty-scratch/"), harness="grok"))
+        rejected("codex-argv-cwd-double-slash-canonical-root", reseal_seat_and_runtime(relocate_cwd("//srv/canonical", canonical="/srv/canonical"), harness="codex"))
+        rejected("grok-argv-cwd-double-slash-under-canonical-root", reseal_seat_and_runtime(relocate_cwd("//srv/canonical/worktree/x", canonical="/srv/canonical"), harness="grok"))
+        rejected("codex-argv-cwd-double-slash-root", reseal_seat_and_runtime(relocate_cwd("//", output="//last-message.txt"), harness="codex"))
+        rejected("codex-argv-output-double-slash", reseal_seat_and_runtime(set_argv_value("--output-last-message", "//tmp/owned-empty-scratch/last-message.txt"), harness="codex"))
+        rejected("codex-argv-cwd-proc-self-fd", reseal_seat_and_runtime(relocate_cwd("/proc/self/fd", output="/proc/self/fd/1"), harness="codex"))
+        rejected("grok-argv-cwd-dev-shm", reseal_seat_and_runtime(relocate_cwd("/dev/shm/owned-empty-scratch"), harness="grok"))
+        rejected("codex-argv-cwd-sys-root", reseal_seat_and_runtime(relocate_cwd("/sys"), harness="codex"))
         rejected("ambient-token-provider-env", reseal_seat_and_runtime(lambda seat: seat["broker"].__setitem__("provider_env_keys", ["AWS_SESSION_TOKEN", "PATH"])))
         def fully_resealed_instruction_replacement(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
             review = model["reviews"]["candidate"]
