@@ -440,6 +440,7 @@ class ParentUnixBroker:
         if platform.system() != "Linux" or not bwrap.is_file() or not os.access(bwrap, os.X_OK) or not python.is_file():
             raise ValueError("HARDEN broker requires canonical bwrap and python3")
         request = {"schema":PARENT_UNIX_BROKER_V1,"operation":self.authorization.operation,"nonce":self.nonce,"harness":self.harness,"model":self.model,"purpose":self.authorization.purpose,"input_sha256":self.authorization.input_sha256}
+        host_netns_inode = os.stat("/proc/self/ns/net").st_ino
         # This program is generated only from parent-owned constants.  It has no
         # command, provider, prompt, credential, or route parameter: it proves the
         # mount/env/socket posture before making the one fixed broker request.
@@ -460,7 +461,7 @@ class ParentUnixBroker:
             f"try:\n    Path({str(self.canonical_repo)!r}).stat()\nexcept OSError:\n    pass\nelse:\n    raise RuntimeError('canonical repo directory exposed')",
             "try:\n    os.fstat(3)\nexcept OSError:\n    pass\nelse:\n    raise RuntimeError('inherited fd')",
             "probe = socket.socket(socket.AF_UNIX)\ntry:\n    probe.connect('/run/phase-loop-broker/not-the-broker.sock')\nexcept OSError:\n    pass\nelse:\n    raise RuntimeError('alternate socket')\nfinally:\n    probe.close()",
-            "probe = socket.socket(socket.AF_INET)\nprobe.settimeout(1)\ntry:\n    probe.connect(('127.0.0.1', 9))\nexcept OSError:\n    pass\nelse:\n    raise RuntimeError('network available')\nfinally:\n    probe.close()",
+            f"if os.stat('/proc/self/ns/net').st_ino == {host_netns_inode}:\n    raise RuntimeError('network namespace shared')",
             "sock = socket.socket(socket.AF_UNIX)",
             "sock.connect('/run/phase-loop-broker/intended-inference.sock')",
             "request = sys.stdin.buffer.read()",
