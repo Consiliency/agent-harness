@@ -241,6 +241,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   verification parsing consumes shell option arguments before locating the command.
 - HARDEN verification evidence is metadata-only and independently verifiable as
   `verification_evidence.v3`.
+- Pre-merge cross-vendor review of the HARDEN head (Consiliency/agent-harness#737) landed
+  five fixes as one delta: broker prompt framing rejects payload lines that could be read as
+  frame boundaries; the retained broker `provider_argv_sha256` now binds the redacted argv
+  SHAPE (recomputable from evidence) and `verify_harden_evidence.py` checks the shape against
+  an exact per-harness no-tool argv grammar; the review-isolation lease is claimed right
+  after independent revalidation — before the live availability matrix, gateway catalog,
+  research materialization, and capture staging — and closed on every later exit, and an
+  authorization that expires or is closed before activation is refused on revalidation;
+  `load_boards` runs the review
+  authorization unconditionally instead of only on the availability-probe path; and review
+  staging sweeps the STAGED copy for symlinks that escape it, closing the check-then-copy
+  window on the source-side checks.
 
 ### executor policy: an operator's explicit model is never substituted (Consiliency/agent-harness#671)
 

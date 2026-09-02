@@ -222,23 +222,22 @@ def load_boards(
     # gate short-circuits for vendors that fail the availability probe, so a host
     # with no vendor CLI never shells out.
     compose_auth = auth_ok if auth_ok is not None else default_board_auth_ok
-    # Two caller-supplied probes are an explicitly hermetic static-composition
-    # control.  Any default probe (including the default auth gate) remains an
-    # executable pre-effect boundary and must carry composition authority.
-    composition_authorization = None
-    if composition._uses_production_composition_probe(compose_probe, compose_auth):
-        composition_authorization = composition.prepare_review_composition_authorization()
+    # ``load_boards`` is the production board-loading entry, so EVERY probe it is
+    # about to run -- the default PATH/auth gates or a caller-injected callable
+    # whose purity the runtime cannot verify -- executes behind fresh,
+    # operation-bound composition authority.  Only ``compose_review_board``
+    # itself, when handed two injected probes directly, remains the hermetic
+    # static-composition control (import-time presets).
+    composition_authorization = composition.prepare_review_composition_authorization()
     try:
-        if composition_authorization is not None:
-            composition.revalidate_review_composition_authorization(
-                composition_authorization
-            )
+        composition.revalidate_review_composition_authorization(
+            composition_authorization
+        )
         composed_review = compose_review_board(
             is_available=compose_probe, auth_ok=compose_auth
         )
     finally:
-        if composition_authorization is not None:
-            composition._clear_composition_authorization()
+        composition._clear_composition_authorization()
     boards[composed_review.name] = composed_review
 
     cfg_path = path if path is not None else board_config_path(env)

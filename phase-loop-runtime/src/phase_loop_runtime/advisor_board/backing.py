@@ -749,6 +749,19 @@ def revalidate_review_isolation_authorization(
     """Independently revalidate the operation capability immediately before use."""
     if not isinstance(authorization, ReviewIsolationAuthorization) or authorization._seal is not _AUTHORIZATION_SEAL:
         raise ValueError("missing or forged HARDEN review authorization")
+    # Lifecycle first: a closed lease is dead on every path, and a lease that was
+    # never activated must still be fresh.  Checking this here -- not only at
+    # activation -- means no pre-activation effect (matrix probe, sink event,
+    # staging) runs behind an authorization that can no longer be activated.
+    lease = _lease_for(authorization)
+    with lease.lock:
+        if lease.closed:
+            raise ValueError("HARDEN review authorization is closed")
+        if (
+            not lease.active
+            and time.monotonic_ns() - lease.prepared_monotonic_ns > _PRE_ACTIVATION_FRESHNESS_NS
+        ):
+            raise ValueError("HARDEN review authorization expired before activation")
     if board is not None:
         expected = _expected_review_fields(
             board,
@@ -794,7 +807,14 @@ def activate_review_isolation_authorization(
     mode: str,
     canonical_repo_authority: Path | str | None = None,
 ) -> None:
-    """Activate one prepared board immediately before executable seat work."""
+    """Claim one prepared board's single-use lease before its first host effect.
+
+    The board invoker calls this right after independent revalidation and
+    before any live availability probe, gateway catalog fetch, research
+    materialization, or provider staging; the same invoker closes the lease
+    on every later exit.  A second activation, a closed lease, or a lease that
+    aged past the pre-activation freshness window is refused here.
+    """
     revalidate_review_isolation_authorization(
         authorization,
         board,

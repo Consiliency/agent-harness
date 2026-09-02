@@ -222,6 +222,69 @@ PROMPT_TRANSPORT = {
     "gemini": "stream_json_same_session_ingestion",
     "grok": "stdin_sealed",
 }
+# Exact provider argv grammar per harness.  A retained ``provider_argv_shape`` must
+# match token-for-token: literals are the frozen flags, patterns are the only
+# run-varying slots (owned scratch paths, effort token, deadline, session id).
+# ``NO_TOOL_CONTROLS`` names the controls; this grammar is what proves the argv
+# actually carried them -- a control label with the flag missing fails here.
+ARGV_ABSOLUTE_PATH = re.compile(r"^/[^\0]+$")
+ARGV_CODEX_EFFORT = re.compile(r"^model_reasoning_effort=(low|medium|high|xhigh)$")
+ARGV_CLAUDE_EFFORT = re.compile(r"^(low|medium|high|max)$")
+ARGV_GROK_EFFORT = re.compile(r"^(low|medium|high)$")
+ARGV_AGY_DEADLINE = re.compile(r"^[1-9][0-9]*s$")
+STDIN_PROMPT_MARKER = "<STDIN_SEALED_INLINE_PROMPT>"
+
+
+def broker_argv_grammar(harness: str, model: str) -> list[str | re.Pattern[str]]:
+    """The one argv shape a brokered ``harness`` seat may retain for ``model``."""
+    if harness == "claude":
+        return [
+            "claude", "--ax-screen-reader", "--safe-mode", "--no-chrome",
+            "--disable-slash-commands", "--model", model,
+            "--session-id", "<CLAUDE_SESSION_ID>", "--effort", ARGV_CLAUDE_EFFORT,
+            "--setting-sources", "",
+            "--settings", "{\"apiKeyHelper\": \"\"}", "--strict-mcp-config",
+            "--mcp-config", "{\"mcpServers\": {}}", "--agents", "{}",
+            "--tools", "", "--allowedTools", "", "--disallowedTools",
+            "Bash,Read,Edit,Write,WebFetch,WebSearch,Task,NotebookEdit",
+        ]
+    if harness == "codex":
+        disabled = NO_TOOL_CONTROLS["codex"][3:-2]
+        return [
+            "codex", *(item for feature in disabled for item in ("--disable", feature)),
+            "exec", "--ignore-user-config", "--ignore-rules", "--ephemeral",
+            "--cd", ARGV_ABSOLUTE_PATH, "--skip-git-repo-check", "--sandbox", "read-only",
+            "--model", model, "-c", ARGV_CODEX_EFFORT,
+            "--output-last-message", ARGV_ABSOLUTE_PATH, "-", STDIN_PROMPT_MARKER,
+        ]
+    if harness == "gemini":
+        return [
+            "agy", "--model", model, "--sandbox", "--mode", "plan",
+            "--disable-slash-commands", "--input-format", "stream-json",
+            "--output-format", "stream-json", "--print=",
+            "--print-timeout", ARGV_AGY_DEADLINE, STDIN_PROMPT_MARKER,
+        ]
+    if harness == "grok":
+        return [
+            "grok", "--disable-web-search", "--no-memory", "--no-subagents",
+            "--permission-mode", "plan", "--prompt-file", STDIN_PROMPT_MARKER,
+            "--output-format", "plain", "--cwd", ARGV_ABSOLUTE_PATH,
+            "-m", model, "--reasoning-effort", ARGV_GROK_EFFORT, "--tools", "",
+        ]
+    fail("broker harness has no argv grammar: " + harness)
+
+
+def broker_argv_matches(harness: str, model: str, argv_shape: list[str]) -> bool:
+    grammar = broker_argv_grammar(harness, model)
+    if len(argv_shape) != len(grammar):
+        return False
+    for item, expected in zip(argv_shape, grammar):
+        if isinstance(expected, str):
+            if item != expected:
+                return False
+        elif not expected.match(item):
+            return False
+    return True
 FINAL_RUN_SPECS = {
     "focused": {
         "cwd": ".",
@@ -2244,6 +2307,10 @@ def verify_broker(value: Any, harness: str, requested: str, resolved: str, bundl
     argv_shape = broker["provider_argv_shape"]
     if not isinstance(argv_shape, list) or not argv_shape or any(not isinstance(item, str) for item in argv_shape):
         fail("broker provider argv shape is malformed")
+    if not broker_argv_matches(harness, broker["provider_model"], argv_shape):
+        fail("broker provider argv does not match the " + harness + " no-tool grammar")
+    if broker["provider_argv_sha256"] != sha256("\0".join(argv_shape).encode("utf-8", errors="strict")):
+        fail("broker provider argv digest is detached from its retained shape")
     empty_positions = {
         "claude": {"--setting-sources", "--tools", "--allowedTools"},
         "grok": {"--tools"},
@@ -2900,7 +2967,16 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
                 "--tools", "", "--allowedTools", "", "--disallowedTools",
                 "Bash,Read,Edit,Write,WebFetch,WebSearch,Task,NotebookEdit",
             ],
-            "codex": ["codex", "exec", "--sandbox", "read-only", "<STDIN_SEALED_INLINE_PROMPT>"],
+            "codex": [
+                "codex",
+                *(item for feature in NO_TOOL_CONTROLS["codex"][3:-2] for item in ("--disable", feature)),
+                "exec", "--ignore-user-config", "--ignore-rules", "--ephemeral",
+                "--cd", "/tmp/owned-empty-scratch", "--skip-git-repo-check",
+                "--sandbox", "read-only", "--model", "gpt-5.6-sol",
+                "-c", "model_reasoning_effort=xhigh",
+                "--output-last-message", "/tmp/owned-empty-scratch/last-message.txt", "-",
+                "<STDIN_SEALED_INLINE_PROMPT>",
+            ],
             "gemini": [
                 "agy", "--model", "gemini-3.6-flash-high", "--sandbox", "--mode", "plan",
                 "--disable-slash-commands", "--input-format", "stream-json",
@@ -2927,7 +3003,7 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
             "canonical_repo_file_denied": True, "canonical_repo_directory_denied": True, "host_stage_path_denied": True, "no_inherited_fd_observed": True,
             "child_stderr_sha256": nonce(label + "stderr"), "child_returncode": 0, "operation_deadline_s": 30.0, "child_timeout": False, "broker_thread_quiescent": True, "provider_adapter_quiescent": True, "provider_cancel_requested": False,
             "provider_input_sha256": sha256(sealed_prompt.encode()), "provider_input_bytes": len(sealed_prompt.encode()), "provider_input_inline": True, "provider_live_tree_cwd": False,
-            "provider_harness": harness, "provider_model": resolved, "provider_argv_shape": shape, "provider_argv_sha256": nonce(label + "providerargv"),
+            "provider_harness": harness, "provider_model": resolved, "provider_argv_shape": shape, "provider_argv_sha256": sha256("\0".join(shape).encode()),
             "provider_prompt_sha256": sha256(sealed_prompt.encode()), "provider_prompt_bytes": len(sealed_prompt.encode()), "provider_transport_sha256": sha256(transport.encode()), "provider_transport_bytes": len(transport.encode()), "provider_prompt_transport": PROMPT_TRANSPORT[harness], "provider_cwd_class": "owned_empty_scratch", "provider_cwd_sha256": nonce(label + "cwd"), "provider_env_keys": ["HOME", "LANG", "PATH", "XDG_CONFIG_HOME"] if harness == "gemini" else ["LANG", "PATH"], "provider_env_api_keys_scrubbed": True, "provider_env_direct_routes_scrubbed": True, "provider_no_tool_controls": list(NO_TOOL_CONTROLS[harness]),
         }
         if harness == "claude":
@@ -4727,6 +4803,46 @@ def self_test() -> None:
             "malformed-empty-provider-argv",
             reseal_seat_and_runtime(malformed_empty_argv, harness="grok"),
         )
+        # Argv grammar: a control label without its flag, a widened permission, a
+        # non-empty tool surface, or a digest that no longer binds the retained shape.
+        def drop_argv_pair(flag: str, value: str | None = None) -> Callable[[dict[str, Any]], None]:
+            def change(seat: dict[str, Any]) -> None:
+                shape = seat["broker"]["provider_argv_shape"]
+                index = shape.index(flag) if value is None else next(
+                    i for i in range(len(shape) - 1) if shape[i] == flag and shape[i + 1] == value
+                )
+                del shape[index:index + (1 if value is None else 2)]
+                seat["broker"]["provider_argv_sha256"] = sha256("\0".join(shape).encode())
+            return change
+        def set_argv_value(flag: str, new_value: str) -> Callable[[dict[str, Any]], None]:
+            def change(seat: dict[str, Any]) -> None:
+                shape = seat["broker"]["provider_argv_shape"]
+                shape[shape.index(flag) + 1] = new_value
+                seat["broker"]["provider_argv_sha256"] = sha256("\0".join(shape).encode())
+            return change
+        rejected("codex-argv-drops-sandbox", reseal_seat_and_runtime(drop_argv_pair("--sandbox", "read-only"), harness="codex"))
+        rejected("codex-argv-drops-disable-feature", reseal_seat_and_runtime(drop_argv_pair("--disable", "shell_tool"), harness="codex"))
+        rejected("codex-argv-drops-ephemeral", reseal_seat_and_runtime(drop_argv_pair("--ephemeral"), harness="codex"))
+        rejected("codex-argv-effort-out-of-grammar", reseal_seat_and_runtime(set_argv_value("-c", "model_reasoning_effort=max"), harness="codex"))
+        rejected("grok-argv-permission-auto", reseal_seat_and_runtime(set_argv_value("--permission-mode", "auto"), harness="grok"))
+        rejected("grok-argv-tools-nonempty", reseal_seat_and_runtime(set_argv_value("--tools", "bash"), harness="grok"))
+        rejected("grok-argv-drops-web-search-control", reseal_seat_and_runtime(drop_argv_pair("--disable-web-search"), harness="grok"))
+        rejected("gemini-argv-drops-sandbox", reseal_seat_and_runtime(drop_argv_pair("--sandbox"), harness="gemini"))
+        rejected("gemini-argv-mode-yolo", reseal_seat_and_runtime(set_argv_value("--mode", "yolo"), harness="gemini"))
+        # The two above are also caught by the older membership check; these two pass
+        # membership (every documented token still present) and fail ONLY the grammar.
+        rejected("gemini-argv-drops-slash-command-control", reseal_seat_and_runtime(drop_argv_pair("--disable-slash-commands"), harness="gemini"))
+        def append_argv_token(token: str) -> Callable[[dict[str, Any]], None]:
+            def change(seat: dict[str, Any]) -> None:
+                shape = seat["broker"]["provider_argv_shape"]
+                shape.append(token)
+                seat["broker"]["provider_argv_sha256"] = sha256("\0".join(shape).encode())
+            return change
+        rejected("gemini-argv-extra-token", reseal_seat_and_runtime(append_argv_token("--yolo"), harness="gemini"))
+        rejected("claude-argv-tools-nonempty", reseal_seat_and_runtime(set_argv_value("--tools", "Read"), harness="claude"))
+        rejected("claude-argv-drops-safe-mode", reseal_seat_and_runtime(drop_argv_pair("--safe-mode"), harness="claude"))
+        rejected("claude-argv-model-off-route", reseal_seat_and_runtime(set_argv_value("--model", "claude-opus-5"), harness="claude"))
+        rejected("argv-digest-detached-from-shape", reseal_seat_and_runtime(lambda seat: seat["broker"].__setitem__("provider_argv_sha256", "f" * 64)))
         rejected("ambient-token-provider-env", reseal_seat_and_runtime(lambda seat: seat["broker"].__setitem__("provider_env_keys", ["AWS_SESSION_TOKEN", "PATH"])))
         def fully_resealed_instruction_replacement(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
             review = model["reviews"]["candidate"]
