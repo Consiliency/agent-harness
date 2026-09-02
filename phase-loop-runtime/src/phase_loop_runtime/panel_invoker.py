@@ -6609,17 +6609,35 @@ def invoke_board(
             # This validates a host/native pairing before a gateway catalog, support
             # check, or a capability probe can be reached.
             host_seat = enforce_native_host_leg(board, host)
+
+            def _backing_refused(seat: Seat) -> bool:
+                # A TUI-policy model on a non-homebrew backing is refused for its
+                # backing statically -- before the support probe, the gateway
+                # catalog, or any other host effect -- exactly as the per-seat
+                # matrix below orders it. The probe must neither run for a board
+                # of such seats nor rewrite their typed refusal detail.
+                return (
+                    _claude_tui_policy_model(seat.model)
+                    and seat.backing != BACKING_HOMEBREW
+                )
+
             if (
                 not native_host_deferral_only
                 and
                 _claude_code_support_status is not _PRODUCTION_CLAUDE_CODE_SUPPORT_STATUS
                 and bool(board.seats)
                 and all((seat.harness or "").lower() == "claude" for seat in board.seats)
+                and not all(_backing_refused(seat) for seat in board.seats)
             ):
                 supported, detail = _claude_code_support_status()
                 if not supported:
                     return review_exit(PanelResult(tuple(
                         PanelLegResult(
+                            leg="claude", status="UNAVAILABLE", text="",
+                            detail="tui_backing_required", seat_key=seat.seat_key,
+                        )
+                        if _backing_refused(seat)
+                        else PanelLegResult(
                             leg="claude", status="UNAVAILABLE", text=detail,
                             seat_key=seat.seat_key,
                         )
