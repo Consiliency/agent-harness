@@ -17,5 +17,6 @@ title = "agent-harness gitleaks"
 useDefault = true
 
 [allowlist]
-description = "No allowlist entries — the default ruleset is clean against this tree. Add narrow per-file paths here only for confirmed synthetic-fixture false positives."
+description = "Narrow entries only, for confirmed synthetic-fixture false positives. The one regex below is the exact opaque literal the HARDEN verifier self-test feeds its OWN secret scanner to prove rejection (phase-loop-runtime/scripts/verify_harden_evidence.py, reject_secret_text(..., 'self-test opaque value')); it is not a credential and matches nothing else in history (Consiliency/agent-harness#737)."
 paths = []
+regexes = ['''q7Rt9vXz2LmN4pQ8''']
