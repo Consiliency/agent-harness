@@ -4010,6 +4010,8 @@ def _exec_claude_tui_leg(
     if quiescence_latch is not None:
         quiescence_latch.raise_if_set()
     brokered = broker_prompt is not None
+    if brokered and not broker_prompt:
+        return "UNAVAILABLE", "brokered route rejects empty prompt"
     env = _broker_subscription_env(env) if brokered else _subscription_env(env)
     if brokered and (research_seat is not None or agy_capture is not None):
         return "UNAVAILABLE", "brokered route rejects capture and research transports"
@@ -4072,8 +4074,12 @@ def _exec_claude_tui_leg(
         if not authed:
             return "UNAVAILABLE", auth_detail
 
-    prompt = broker_prompt or _render_claude_tui_prompt(
-        artifact, child_review_dir, child_output_file, mode
+    prompt = (
+        broker_prompt
+        if brokered
+        else _render_claude_tui_prompt(
+            artifact, child_review_dir, child_output_file, mode
+        )
     )
     broker_backstop_s = (
         max(1, int(backstop_s))
@@ -4432,6 +4438,8 @@ def _exec_leg(
     if quiescence_latch is not None:
         quiescence_latch.raise_if_set()
     brokered = broker_prompt is not None
+    if brokered and not broker_prompt:
+        return 1, "", "brokered route rejects empty prompt"
     env = _broker_subscription_env(env) if brokered else (
         _subscription_env() if env is None else dict(env)
     )
@@ -4480,7 +4488,11 @@ def _exec_leg(
     child_review_dir = (
         Path("/run/phase-loop-review") if agy_capture is not None else review_dir
     )
-    prompt = broker_prompt or _render_leg_prompt(artifact, child_review_dir, mode)
+    prompt = (
+        broker_prompt
+        if brokered
+        else _render_leg_prompt(artifact, child_review_dir, mode)
+    )
     provider_cwd = out_dir if brokered else review_dir
     if leg == "codex":
         out_file = out_dir / "panel-codex.txt"
