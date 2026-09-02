@@ -4621,32 +4621,41 @@ def self_test() -> None:
                 ref = model["reviews"]["candidate"]["seats"][0]["artifact"]; mutate_json(ref, artifact_root, change)
             return mutate
 
-        def reseal_seat_and_runtime(change: Callable[[dict[str, Any]], None]) -> Callable[[dict[str, Any], Path, Path], None]:
+        def reseal_seat_and_runtime(
+            change: Callable[[dict[str, Any]], None],
+            *,
+            harness: str | None = None,
+        ) -> Callable[[dict[str, Any], Path, Path], None]:
             """Model a coordinated copied-seat/runtime forgery for broker checks."""
             def mutate(model: dict[str, Any], local_root: Path, artifact_root: Path) -> None:
-                seat_ref = model["reviews"]["candidate"]["seats"][0]["artifact"]
-                seat = parse_canonical_json((artifact_root / seat_ref["path"]).read_bytes(), "self-test seat")
-                change(seat)
-                runtime_ref = seat["runtime_receipt"]
-                runtime = parse_canonical_json((artifact_root / runtime_ref["path"]).read_bytes(), "self-test runtime receipt")
-                runtime["broker"] = seat["broker"]
-                runtime_data = canonical_bytes(runtime)
-                (artifact_root / runtime_ref["path"]).write_bytes(runtime_data)
-                (local_root / "repo" / runtime_ref["path"]).write_bytes(runtime_data)
-                runtime_ref["sha256"] = sha256(runtime_data)
-                replace(seat_ref, artifact_root, canonical_bytes(seat))
+                for item in model["reviews"]["candidate"]["seats"]:
+                    seat_ref = item["artifact"]
+                    seat = parse_canonical_json((artifact_root / seat_ref["path"]).read_bytes(), "self-test seat")
+                    if harness is not None and seat["harness"] != harness:
+                        continue
+                    change(seat)
+                    runtime_ref = seat["runtime_receipt"]
+                    runtime = parse_canonical_json((artifact_root / runtime_ref["path"]).read_bytes(), "self-test runtime receipt")
+                    runtime["broker"] = seat["broker"]
+                    runtime_data = canonical_bytes(runtime)
+                    (artifact_root / runtime_ref["path"]).write_bytes(runtime_data)
+                    (local_root / "repo" / runtime_ref["path"]).write_bytes(runtime_data)
+                    runtime_ref["sha256"] = sha256(runtime_data)
+                    replace(seat_ref, artifact_root, canonical_bytes(seat))
+                    return
+                raise AssertionError("fixture lacks requested broker seat")
             return mutate
         rejected("synthetic-seat", seat_mutation(lambda seat: seat.__setitem__("result_kind", "synthetic")))
         rejected("wrong-model-seat", seat_mutation(lambda seat: seat.__setitem__("resolved_model", "wrong-model")))
-        rejected("direct-route-seat", seat_mutation(lambda seat: seat["broker"].__setitem__("provider_env_keys", ["API_KEY"])))
-        rejected("missing-broker-probe", seat_mutation(lambda seat: seat["broker"].__setitem__("client_probe_assertions", [])))
-        rejected("cleanup-failure", seat_mutation(lambda seat: seat["broker"].__setitem__("cleanup_root_removed", False)))
-        rejected("broker-stage-mismatch", seat_mutation(lambda seat: seat["broker"].__setitem__("stage_bundle_sha256", "0" * 64)))
-        rejected("broker-child-nonzero", seat_mutation(lambda seat: seat["broker"].__setitem__("child_returncode", 1)))
-        rejected("provider-input-prompt-mismatch", seat_mutation(lambda seat: seat["broker"].__setitem__("provider_input_sha256", "f" * 64)))
-        rejected("stage-mode-0444", seat_mutation(lambda seat: seat["broker"].__setitem__("stage_bundle_mode", 0o444)))
-        rejected("extra-no-tool-control", seat_mutation(lambda seat: seat["broker"]["provider_no_tool_controls"].append("extra")))
-        rejected("duplicate-no-tool-control", seat_mutation(lambda seat: seat["broker"]["provider_no_tool_controls"].append(seat["broker"]["provider_no_tool_controls"][0])))
+        rejected("direct-route-seat", reseal_seat_and_runtime(lambda seat: seat["broker"].__setitem__("provider_env_keys", ["API_KEY"])))
+        rejected("missing-broker-probe", reseal_seat_and_runtime(lambda seat: seat["broker"].__setitem__("client_probe_assertions", [])))
+        rejected("cleanup-failure", reseal_seat_and_runtime(lambda seat: seat["broker"].__setitem__("cleanup_root_removed", False)))
+        rejected("broker-stage-mismatch", reseal_seat_and_runtime(lambda seat: seat["broker"].__setitem__("stage_bundle_sha256", "0" * 64)))
+        rejected("broker-child-nonzero", reseal_seat_and_runtime(lambda seat: seat["broker"].__setitem__("child_returncode", 1)))
+        rejected("provider-input-prompt-mismatch", reseal_seat_and_runtime(lambda seat: seat["broker"].__setitem__("provider_input_sha256", "f" * 64)))
+        rejected("stage-mode-0444", reseal_seat_and_runtime(lambda seat: seat["broker"].__setitem__("stage_bundle_mode", 0o444)))
+        rejected("extra-no-tool-control", reseal_seat_and_runtime(lambda seat: seat["broker"]["provider_no_tool_controls"].append("extra")))
+        rejected("duplicate-no-tool-control", reseal_seat_and_runtime(lambda seat: seat["broker"]["provider_no_tool_controls"].append(seat["broker"]["provider_no_tool_controls"][0])))
         def claude_permission_mode(seat: dict[str, Any]) -> None:
             shape = seat["broker"]["provider_argv_shape"]
             shape[shape.index("--setting-sources"):shape.index("--setting-sources")] = ["--permission-mode", "plan"]
@@ -4690,9 +4699,14 @@ def self_test() -> None:
             receipt_path = local_root / "repo" / seat["runtime_receipt"]["path"]
             receipt_path.write_bytes(canonical_bytes({"schema": "detached"}))
         rejected("detached-run-owned-receipt", detached_run_owned_receipt)
-        def run_owned_parent_traversal(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
+        def run_owned_parent_traversal(model: dict[str, Any], local_root: Path, artifact_root: Path) -> None:
             seat_ref = model["reviews"]["candidate"]["seats"][0]["artifact"]
             seat = parse_canonical_json((artifact_root / seat_ref["path"]).read_bytes(), "self-test seat")
+            runtime_ref = seat["runtime_receipt"]
+            runtime_data = (artifact_root / runtime_ref["path"]).read_bytes()
+            escaped_path = Path(".phase-loop/escaped-receipt.json")
+            (artifact_root / escaped_path).write_bytes(runtime_data)
+            (local_root / "repo" / escaped_path).write_bytes(runtime_data)
             seat["runtime_receipt"]["path"] = ".phase-loop/runs/../escaped-receipt.json"
             replace(seat_ref, artifact_root, canonical_bytes(seat))
         rejected("run-owned-receipt-parent-traversal", run_owned_parent_traversal)
@@ -4700,20 +4714,20 @@ def self_test() -> None:
             seat_ref = model["reviews"]["candidate"]["seats"][0]["artifact"]
             seat = parse_canonical_json((artifact_root / seat_ref["path"]).read_bytes(), "self-test seat")
             receipt_path = local_root / "repo" / seat["runtime_receipt"]["path"]
+            receipt_data = receipt_path.read_bytes()
+            target = local_root / "symlink-receipt-target.json"
+            target.write_bytes(receipt_data)
             receipt_path.unlink()
-            receipt_path.symlink_to(local_root / "evidence.json")
+            receipt_path.symlink_to(target)
+            assert receipt_path.read_bytes() == receipt_data
         rejected("run-owned-receipt-symlink", run_owned_receipt_symlink)
-        def malformed_empty_argv(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
-            for item in model["reviews"]["candidate"]["seats"]:
-                seat_ref = item["artifact"]
-                seat = parse_canonical_json((artifact_root / seat_ref["path"]).read_bytes(), "self-test seat")
-                if seat["harness"] == "grok":
-                    seat["broker"]["provider_argv_shape"].insert(1, "")
-                    replace(seat_ref, artifact_root, canonical_bytes(seat))
-                    return
-            raise AssertionError("fixture lacks Grok seat")
-        rejected("malformed-empty-provider-argv", malformed_empty_argv)
-        rejected("ambient-token-provider-env", seat_mutation(lambda seat: seat["broker"].__setitem__("provider_env_keys", ["AWS_SESSION_TOKEN", "PATH"])))
+        def malformed_empty_argv(seat: dict[str, Any]) -> None:
+            seat["broker"]["provider_argv_shape"].insert(1, "")
+        rejected(
+            "malformed-empty-provider-argv",
+            reseal_seat_and_runtime(malformed_empty_argv, harness="grok"),
+        )
+        rejected("ambient-token-provider-env", reseal_seat_and_runtime(lambda seat: seat["broker"].__setitem__("provider_env_keys", ["AWS_SESSION_TOKEN", "PATH"])))
         def fully_resealed_instruction_replacement(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
             review = model["reviews"]["candidate"]
             request_ref = review["request"]
