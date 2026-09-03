@@ -8487,15 +8487,43 @@ def _run_legible_panel(
         set_review_instruction_digest,
     )
     from .advisor_board.presets import CODE_REVIEW_BOARD
-    from .panel_invoker import _resolve_brief, invoke_board
+    from .panel_invoker import (
+        ReviewLandingTier,
+        _govlean_authority_switched,
+        _resolve_brief,
+        invoke_board,
+        president_blocks_landing,
+        president_finding_rulings,
+        president_forcing_decision,
+        review_policy_for_tier,
+    )
+    from .president_adapter import build_president_invoke
 
+    stream_dir = run_dir / "implementation-panel-stream"
     invoke_kwargs: dict[str, object] = {
         # This is canonical authority only.  The broker still launches providers
         # in its private output scratch and never mounts this live tree.
         "repo_dir": repo,
         "artifact_ref": str(bundle_path),
-        "stream_dir": run_dir / "implementation-panel-stream",
+        "stream_dir": stream_dir,
     }
+    # ah#736: the exact-head implementation board is a production-code landing.
+    # Post-switch (GOVLEAN authority in the target's ``plans/manifest.json``) the
+    # invoker already refuses a tierless call (``review_landing_tier_required``),
+    # so the frozen tier policy -- four named seats + a mandatory president
+    # ruling -- is declared here, with the president seam bound to the same board
+    # and stream directory the legs use. Pre-switch repos keep the tierless,
+    # president-free call byte-for-byte (the invoker applies no landing policy
+    # there), so nothing is newly gated before the authority switch.
+    landing_policy = None
+    president_invoke = None
+    if _govlean_authority_switched(repo):
+        landing_policy = review_policy_for_tier(ReviewLandingTier.PRODUCTION_CODE)
+        president_invoke = build_president_invoke(
+            CODE_REVIEW_BOARD, repo_dir=repo, stream_dir=stream_dir
+        )
+        invoke_kwargs["landing_tier"] = ReviewLandingTier.PRODUCTION_CODE
+        invoke_kwargs["president_invoke"] = president_invoke
     if brief_path is not None:
         invoke_kwargs["brief_ref"] = str(brief_path)
     instruction_token: object | None = None
@@ -8595,9 +8623,56 @@ def _run_legible_panel(
         leg["status"] != "OK" or leg["usable"] is not True or leg["verdict"] != "AGREE"
         for leg in legs
     ):
+        # ah#736: a president refusal surfaces as every leg UNAVAILABLE carrying
+        # the typed reason; name it so the operator sees the ruling gap, not a
+        # generic disagreement.
+        refusal = next(
+            (
+                str(getattr(outcome, "detail", "") or "")
+                for outcome in result.legs
+                if str(getattr(outcome, "detail", "") or "").startswith("president_ruling_missing:")
+            ),
+            None,
+        )
         raise legible_evidence.LegibleProcessBootstrapError(
             "mandatory exact-head LEGIBLE implementation board did not unanimously AGREE"
+            + (f" ({refusal})" if refusal else "")
         )
+    if landing_policy is not None and landing_policy.requires_president:
+        # ah#736: the ruling is mandatory whenever the tier says so -- a result
+        # without one (a stand-in board, a refusal, an older invoker) fails the
+        # landing closed instead of passing on the seat verdicts alone.
+        ruling = getattr(result, "president", None)
+        if ruling is None:
+            raise legible_evidence.LegibleProcessBootstrapError(
+                "mandatory exact-head LEGIBLE implementation board returned no president ruling"
+            )
+        president_path = run_dir / "implementation-panel-president.json"
+        president_payload = {
+            "schema": "advisor_board_president.v1",
+            "head": expected_head,
+            "model": ruling.model,
+            "text": ruling.text,
+            "rulings": [
+                {"finding_id": r.finding_id, "disposition": r.disposition, "reason": r.reason}
+                for r in president_finding_rulings(ruling)
+            ],
+            "forcing_decision": president_forcing_decision(ruling),
+            "substantive_rounds": ruling.substantive_rounds,
+            "format_reasks": ruling.format_reasks,
+            "findings": list(getattr(result, "president_findings", ())),
+            "attempts": [
+                attempt.as_record()
+                for attempt in (president_invoke.attempts if president_invoke else ())
+            ],
+        }
+        president_path.write_text(
+            json.dumps(president_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        if president_blocks_landing(ruling):
+            raise legible_evidence.LegibleProcessBootstrapError(
+                "president ruled a LEGIBLE implementation board finding BLOCKING"
+            )
     panel_path = run_dir / "implementation-panel.json"
     panel_payload: dict[str, object] = {
         "schema": "advisor_board.v1",

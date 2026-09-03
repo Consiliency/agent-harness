@@ -6,6 +6,28 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### advisor-board: `requires_president` executes the president ladder, fail-closed (Consiliency/agent-harness#736)
+
+- `invoke_board(..., president_invoke=)` runs the president ladder once after every seat has
+  returned and before a `requires_president` board result can reach a landing: findings from all
+  usable seats (a codex/Sol fill included) get stable positional IDs, whitespace-collapsed
+  duplicates fold into one ID, the ladder descends ONLY on typed `president_unavailable`, an
+  invalid ruling gets one same-session format re-ask, and a missing ruling refuses every seat
+  (`president_ruling_missing:<code>`) so the unadjudicated verdicts cannot be read as a landing.
+  A president-requiring tier without a seam is refused at policy time (`president_seam_missing`).
+  `requires_president=False` stays byte-neutral.
+- `president_adapter.build_president_invoke` binds the ladder to a board's seats. Post-HARDEN
+  there is no sanctioned execution operation for a `FORCING DECISION:` ruling (advisory execution
+  is refused; the governed review carries the frozen AGREE grammar), so a seated rung reports a
+  typed `president_execution_route_unavailable` failure instead of spawning or laundering the
+  president through a review leg; the landing fails closed. A HARDEN-authorized president
+  operation is the follow-up.
+- `runner._run_legible_panel` declares the `production_code` tier and the seam on
+  GOVLEAN-switched repos (which the invoker already refused tierless), persists
+  `implementation-panel-president.json` (`advisor_board_president.v1`, with every ladder attempt),
+  and refuses the landing on a missing ruling or any BLOCKING disposition. Pre-switch repos are
+  byte-neutral. Contract: `advisor_board/CONTRACTS.md` → ABDPRES.
+
 ### fleet default models: Fable 5.1, Gemini 3.8 Flash, Grok 4.6
 
 - The advisor-board / panel default seats and the executor model defaults move to the ids the

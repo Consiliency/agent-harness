@@ -164,6 +164,11 @@ separately frozen for legacy callers (proven in `tests/test_advisor_board_golden
 
 The president availability ladder is Fable → Sol → Grok 4.6 → Gemini 3.8 Flash.
 It advances only on typed unavailability, not on disagreement or a blocking ruling.
+`requires_president` landing policies execute it (`invoke_board(president_invoke=)`)
+and fail the landing closed without a ruling; today no HARDEN-authorized president
+execution operation exists, so a seated rung reports
+`president_execution_route_unavailable` rather than riding a review leg
+(`advisor_board/CONTRACTS.md` → ABDPRES).
 
 ### Invoking a board
 

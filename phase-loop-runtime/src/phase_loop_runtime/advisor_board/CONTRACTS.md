@@ -190,7 +190,9 @@ the real matrix at `load_boards()` time (`tests/test_advisor_board_config.py`,
   `code-review` preserves availability-aware backfill and distinct lenses.
 - **President availability ladder.** Review findings go first to Fable, then
   Sol, Grok 4.6, and Gemini 3.8 Flash. Descent occurs only for a typed
-  `president_unavailable` result, never because a president dissents.
+  `president_unavailable` result, never because a president dissents. The ladder
+  is EXECUTED (not merely declared) by every `requires_president` landing policy —
+  see ABDPRES below.
 - **Divergent-thinking boards keep Sonnet.** `brainstorm` / `doc-edit` /
   `legal-brainstorm` deliberately retain `claude-sonnet-5` — a diverse voice, a
   low-stakes copyedit, a cheap aggressive ideation seat — where it is the right tool.
@@ -403,3 +405,57 @@ code-review-gated. `tests/test_advisor_board_advisory_mode.py`.
   "authoritative", no "untrusted material under review", no accept/reject — while
   KEEPING the instructions/material SEPARATION (injection-safe: the brief is your
   task, the bundle is only material, never authoritative instructions).
+
+## ABDPRES — President ruling on `requires_president` boards · `panel_invoker.invoke_board`, `president_adapter.py`, `runner._run_legible_panel` (Consiliency/agent-harness#736)
+
+A `ReviewLandingPolicy` with `requires_president=True` (the `plan` and
+`production_code` tiers) is no longer policy-only: `invoke_board` runs the
+president ladder after every seat has returned and before any result can reach
+a landing decision. `tests/test_president_wiring.py`.
+
+- **Seam.** `invoke_board(..., president_invoke=)` takes the ladder's
+  `invoke(rung, prompt)` callable. A president-requiring policy WITHOUT a seam is
+  refused at policy time (`PresidentPolicyError("president_seam_missing")`),
+  before any seat spends effort. `requires_president=False` policies (including
+  `tests_only` / `docs_only`) are byte-neutral: no findings are collected, no
+  president is invoked, `PanelResult.president` stays `None`.
+- **Findings → prompt.** `president_findings_from_legs` gives every usable seat's
+  finding paragraphs stable positional IDs (`F001: [seat] text`) in seat order;
+  whitespace-collapsed duplicates fold into one ID with every contributing seat
+  named, so the same text never earns two rulings.
+- **Ruling → result.** A valid ruling lands on `PanelResult.president`
+  (`PresidentRuling`) with `PanelResult.president_findings`; `president_finding_rulings`,
+  `president_forcing_decision`, and `president_blocks_landing` read it. The board
+  itself does NOT apply BLOCKING — applying the ruling to a landing is the governed
+  caller's job (the runner refuses the landing; nothing waives it).
+- **No ruling → refusal.** A typed ladder failure (`president_unavailable`,
+  `president_ruling_format_missing`, `degraded_president_validation_deferred`)
+  refuses EVERY seat with detail `president_ruling_missing:<code>` so the
+  unadjudicated verdicts cannot be read as a landing; the finding list the ladder
+  was asked to rule on is kept on the refusal. Any other `PresidentPolicyError`
+  (`president_invocation_failed`) propagates.
+- **Execution route (fail-closed by design).** `president_adapter.build_president_invoke`
+  binds the ladder to a board's seats (`seat_for_rung`: rung alias → seat model →
+  harness). An UNSEATED rung answers typed `president_unavailable` (the ladder
+  descends). A SEATED rung answers `failed` / `president_execution_route_unavailable`
+  WITHOUT spawning: post-HARDEN the only production execution operation is the
+  governed review (`public_board_review.v1`, frozen AGREE grammar) and advisory
+  execution is refused, so a `FORCING DECISION:` ruling has no sanctioned operation
+  to ride. The ladder treats that as an ordinary failure (`president_invocation_failed`,
+  no descent), the board refuses, and the landing fails closed. Routing the
+  president through `invoke_panel(mode="advisory")` or laundering it through a
+  review leg is NOT permitted (EC-HARDEN-5). A HARDEN-authorized president
+  operation (own mode, brief, completion grammar, and authorization identity) is
+  the follow-up; every attempt is recorded on the seam (`PresidentInvoke.attempts`)
+  and persisted by the runner.
+- **Runner.** `_run_legible_panel` declares `landing_tier=production_code` and the
+  seam only when `_govlean_authority_switched(repo)` — post-switch the invoker
+  already refused a tierless call (`review_landing_tier_required`), so the failure
+  reason becomes the honest president one; pre-switch repos keep the tierless call
+  byte-for-byte. Post-switch it writes `implementation-panel-president.json`
+  (`advisor_board_president.v1`: head, model, text, rulings, forcing_decision,
+  substantive_rounds, format_reasks, findings, attempts) and refuses the landing on
+  a missing ruling or any BLOCKING disposition.
+- **Standalone launchers.** A caller that wants the four-seat board without a
+  president passes an explicit `review_policy=ReviewLandingPolicy(required_seats=...,
+  requires_president=False)` rather than a president-requiring tier.
