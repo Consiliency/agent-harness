@@ -221,11 +221,12 @@ fixed before round one, bound it:
 
 1. **Delta review.** After a fix round, the seats that dissented — `DISAGREE`,
    `PARTIALLY AGREE`, or any blocking finding — review again, and they review the delta since
-   the round they dissented on; the round record names that delta's base and head. A seat is
-   carried forward, marked as carried, only when it has given a usable `AGREE` on some head of
-   this change; every seat without a usable verdict — one that errored, timed out, or returned
-   nothing, in any round — is re-run, never carried, and the loop has not converged until every
-   seat has one. Where a gate requires an exact-head unanimous board (this repository's runtime
+   the round they dissented on; the round record names that delta's base and head. A seat's
+   standing verdict is the usable verdict from its most recent run; a run that errored, timed
+   out, or returned nothing leaves no standing verdict, and that seat is re-run until it has
+   one — never carried. A seat is carried forward, marked as carried, only when its standing
+   verdict is `AGREE`. The loop has converged when every seat's standing verdict is `AGREE`,
+   fresh or carried. Where a gate requires an exact-head unanimous board (this repository's runtime
    does, for the implementation board), that board runs once on the final head after the loop
    has converged; delta review governs the fix rounds that get it there.
 2. **No cancel-on-first-blocker.** Let the round finish — a seat that reaches its bound has
