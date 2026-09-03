@@ -91,8 +91,14 @@ jobs:
             /tmp/phase-loop-release-wheel/bin/phase-loop "$sub" --help >/dev/null
           done
       - name: Gate A — verify the exact prebuilt wheel in a clean room
+        # A release tag and a manual dispatch run the FULL standalone suite. A
+        # pull_request run of this workflow is the third execution of the heavy
+        # CONFORM chronology node on the same head (test.yml already runs it
+        # wherever ci/chronology-scope.sh retains it), so it is deselected here;
+        # the script's junit witness proves the node is absent from the evidence.
         env:
           GATE_A_JUNIT: ${{ runner.temp }}/junit-release-gate-a.xml
+          GATE_A_DESELECT_CHRONOLOGY: ${{ github.event_name == 'pull_request' && '1' || '0' }}
         run: |
           shopt -s nullglob
           wheels=(dist/*.whl)

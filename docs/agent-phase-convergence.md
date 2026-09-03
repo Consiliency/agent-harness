@@ -264,6 +264,40 @@ cautions, both learned the hard way:
   test — in its own job, not inside the matrix, since an in-matrix guard disappears with the
   lane it protects.
 
+### Scope the expensive proof to the changes that can move it (portable principle)
+
+Splitting lanes bounds how many *times* the proof runs per change; it does not bound the
+change's wall clock, which is still the proof itself. Once we measured it, that one node was
+~50 minutes of a ~65-minute run — 88 % — and every pull request paid it, including the ones
+that touched only prose, a workflow, or a module the proof never reads.
+
+The proof's process reads far more than the modules it mutates — the test runner collects
+the whole test tree, the test bootstrap loads runtime plugins, sibling tests read repository
+docs — so no enumeration of "the inputs" is small, and the second step does **not** claim
+that a change outside some list cannot change the verdict. It claims something narrower that
+holds by construction: the proof runs *unconditionally* on every merge to the default branch
+and on a nightly schedule, and on a pull request whenever the diff touches the runtime
+package or the CI plumbing; for any other pull request the proof is deferred to the landing
+merge, so a regression surfaces on the default branch at the latest, never silently. Three
+properties make this safe, and each needs a guard of its own:
+
+- **The retained set is checked against the proof's own definition**, not maintained by
+  hand: a test enumerates every path the proof's frozen definitions reference and asserts the
+  scope rule classifies each one as retained. A new input that the rule would let a pull
+  request skip fails that test.
+- **The decision fails closed.** Any event the rule cannot classify, any pull request it
+  cannot diff, and any lane the decision fails to reach all retain the proof. The retention
+  guard from the previous section additionally asserts the rule answers "retain" for the
+  default branch and the schedule.
+- **The evidence witnesses the decision.** The lane that ran writes a junit report either
+  way, and the run asserts the node's name is present in it when retained and absent when
+  deselected — so a deselect that silently matched nothing, or a retain that silently did not
+  run, is a red job rather than a green one.
+
+The nightly run is the backstop: it bounds how long a regression in an untouched input can
+stay invisible, independent of merge traffic. On our numbers the quick path takes a
+prose-only pull request from ~65 minutes to under 10.
+
 ### Use one aggregate required check (GitHub-specific detail; general principle)
 
 On GitHub, **a skipped job satisfies a required status check**, so a pipeline with two
@@ -357,8 +391,9 @@ Everything else in this document is an optimisation on top of it.
 4. Define the proof before declaring a behaviour done, and demonstrate it failing. *(portable)*
 5. Pre-register convergence targets; set an abort threshold; refuse to move either mid-run.
    *(portable)*
-6. Split expensive proofs out of redundant lanes, with both guards. *(portable, needs a CI
-   matrix)*
+6. Split expensive proofs out of redundant lanes, with both guards; then scope them to the
+   changes that can move them, with a default-branch + nightly backstop and an evidence
+   witness. *(portable, needs a CI matrix)*
 7. Make one aggregate check required; never require a job that can skip. *(portable, CI-system
    specific)*
 8. Fail closed on a stale plan digest — as a CI check if you have no dispatcher. *(portable as
