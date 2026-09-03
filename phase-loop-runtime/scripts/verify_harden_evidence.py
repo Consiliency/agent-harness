@@ -15,17 +15,14 @@ from contextlib import contextmanager
 import fcntl
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
-import io
 import json
 import math
 import os
 import re
 import shutil
 import stat
-import secrets
 import subprocess
 import sys
-import tarfile
 import tempfile
 import unicodedata
 import xml.etree.ElementTree as ET
@@ -60,6 +57,8 @@ CI_RICH_JOB_FIELDS = {
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/-]{2,127}$")
+# A model id in a lane's invocation form (``claude-fable-5-1``, ``gemini-3.8-flash-high``).
+MODEL_ID = re.compile(r"^[a-z0-9][a-z0-9.-]{1,63}$")
 MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
 MAX_JSON_BYTES = 2 * 1024 * 1024
 MAX_JSON_INTEGER_DIGITS = 4096
@@ -207,12 +206,17 @@ ACTIVATED_RED_NODEIDS = (
 )
 _ACTIVATED_REVIEW_RED_COUNT = 12
 
-ROUTES = {
-    "claude": ("claude-fable-5", "claude-fable-5"),
-    "codex": ("gpt-5.6-sol", "gpt-5.6-sol"),
-    "gemini": ("gemini-3.6-flash-high", "gemini-3.6-flash-high"),
-    "grok": ("grok-4.5", "grok-4.5"),
-}
+# The four broker lanes a review round must cover, one seat each.  The models
+# on those lanes are NOT pinned here: the route table is derived from the model
+# registry and the fleet-default seats at the reviewed revision
+# (``advisor_board.backing.HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES``), and a
+# model-id literal in this verifier would pin that moving input and refuse
+# every fleet rotation (plan IF-0-HARDEN-2).  The verifier has no dependency on
+# the runtime, so it binds the routes the retained review REQUEST records and
+# requires every seat, run receipt and broker attestation to carry exactly
+# those; that the recorded request's routes are the registry-derived ones is the
+# frozen backing tests' subject at that revision, bound by the recorded run.
+REVIEW_LANES = ("claude", "codex", "gemini", "grok")
 NO_TOOL_CONTROLS = {
     "claude": ("safe-mode", "no-chrome", "disable-slash-commands", "strict-mcp-config", "empty-mcp", "empty-agents", "tools-empty"),
     "codex": ("ignore-user-config", "ignore-rules", "ephemeral", "auth_elicitation", "shell_tool", "apps", "browser_use", "browser_use_external", "browser_use_full_cdp_access", "image_generation", "computer_use", "code_mode_host", "in_app_browser", "in_app_local_automation", "goals", "guardian_approval", "memories", "multi_agent", "hooks", "plugins", "plugin_sharing", "remote_plugin", "shell_snapshot", "skill_mcp_dependency_install", "skill_search", "tool_call_mcp_elicitation", "tool_suggest", "unified_exec", "view_image", "workspace_dependencies", "stdin-sealed-input", "read-only"),
@@ -1757,24 +1761,24 @@ def lint_receipt(store: ArtifactStore, ref: dict[str, str], label: str, *, head:
 _MARKER_NAME = "HARDEN_CAPABILITY_VERSION"
 _MARKER_MODULE = "phase_loop_runtime.capability_registry"
 _MARKER_SOURCE_PREFIX = "phase-loop-runtime/src"
-_MARKER_WITNESS_TIMEOUT_S = 120.0
-# The marker is bound by two independent measurements of the SAME property the
-# frozen SL-0 guard reads (``harden_tdd_guard``: import the registry module and
-# read the attribute):
-#   1. syntactic — the marker name occurs exactly once in the module's syntax, as
-#      the sole top-level literal ``HARDEN_CAPABILITY_VERSION = 1``; and
-#   2. runtime — importing the module at the recorded revision, from a private
-#      extraction of that revision's ``phase-loop-runtime/src`` in a separate
-#      environment-scrubbed interpreter, binds the module attribute to the int ``1``.
-# Neither is a digest of the surrounding source: the candidate tree already binds
-# the exact reviewed bytes through Git, and a source digest pins a moving input
-# that every unrelated landing in the same file would break (see
-# docs/agent-phase-convergence.md).  Nor is either a denylist of mutation
-# spellings: a dynamic rebinding the syntax scan cannot name (a computed string
-# through ``builtins.exec``, an aliased ``setattr``, a namespace-dict write) is
-# measured by the import, not enumerated.  The property is the module's own
-# import-time binding at that revision; runtime mutation by OTHER code is the
-# frozen review-leg-isolation anchors' subject, not this witness's.
+# The marker is bound by ONE measurement: syntactic.  The marker name occurs
+# exactly once in the module's syntax, as the sole top-level literal
+# ``HARDEN_CAPABILITY_VERSION = 1``.  It is not a digest of the surrounding
+# source: the candidate tree already binds the exact reviewed bytes through
+# Git, and a source digest pins a moving input that every unrelated landing in
+# the same file would break (see docs/agent-phase-convergence.md).
+#
+# There is deliberately NO import-time witness here.  The frozen SL-0 guard
+# (``tests/harden_tdd_guard.py``) reads the marker by importing the registry in
+# the suite's own interpreter, and any re-import this verifier performs runs
+# under a different interpreter state (isolation flags, module path, cwd,
+# environment) that module code can observe and branch on -- so a second
+# import can only ever agree with the guard by construction, never by
+# measurement.  The guard's reading at a revision IS witnessed: it decides
+# whether that revision's HARDEN nodes are expected RED or GREEN, and the
+# recorded final run bound by ``FINAL_RUN_SPECS`` records the outcome.  The
+# syntactic measurement pins the source a reviewer reads; the recorded run pins
+# what the guard's interpreter bound.
 
 
 def _marker_occurrences(tree: ast.Module) -> list[ast.AST]:
@@ -1815,7 +1819,7 @@ def _marker_occurrences(tree: ast.Module) -> list[ast.AST]:
 
 
 def _marker_syntax(data: bytes, *, required: bool) -> None:
-    """Measurement 1: the sole literal top-level marker, and no other occurrence."""
+    """The sole literal top-level marker, and no other occurrence of its name."""
     try:
         tree = ast.parse(data.decode("utf-8", errors="strict"))
     except (SyntaxError, UnicodeDecodeError, ValueError):
@@ -1840,157 +1844,15 @@ def _marker_syntax(data: bytes, *, required: bool) -> None:
         fail("pre-production capability marker is present or noncanonical")
 
 
-# Runs in an isolated interpreter (``-I``: no PYTHON* environment, no user or
-# script-directory path entry) whose module path is set explicitly: the
-# extracted revision first, then the verifier's own library path minus every
-# entry its environment contributed.  The verifier's interpreter and installed
-# third-party closure are its trust base already; nothing a caller's
-# ``PYTHONPATH`` or working directory carries can shadow the revision, and the
-# imported module's ``__file__`` proves where it came from.  It takes the
-# marker two ways -- ``getattr`` with a default, the frozen guard's own
-# instrument (``tests/harden_tdd_guard.py``), and the module namespace
-# (``vars``) that the syntactic measurement binds -- and both readings must
-# agree, so a module whose attribute access disagrees with its namespace is
-# rejected rather than measured one way.  The nonce prefix separates the
-# record from the module's incidental output.  It is not an authentication
-# boundary: the module's own code runs in this interpreter, and no in-process
-# importer (the frozen guard included) can witness a module written to lie to
-# its importer.  That is outside this check's threat model; the syntactic
-# measurement pins the recorded source a reviewer reads.
-_MARKER_WITNESS_CHILD = r"""
-import importlib, json, os, sys
-write = os.write
-source, nonce, module_name, attribute, library = sys.argv[1:6]
-sys.path[:] = [source, *json.loads(library)]
-try:
-    module = importlib.import_module(module_name)
-except BaseException as exc:  # noqa: BLE001 - the outcome is the record
-    record = {"outcome": "import_error", "error": type(exc).__name__}
-else:
-    namespace = vars(module)
-    missing = object()
-    attribute_value = getattr(module, attribute, missing)
-    readings = []
-    for present, value in (
-        (attribute in namespace, namespace.get(attribute)),
-        (attribute_value is not missing, attribute_value),
-    ):
-        readings.append({
-            "present": present,
-            "type": type(value).__name__ if present else None,
-            "value": value if present and type(value) is int else None,
-        })
-    record = {
-        "outcome": "imported",
-        "namespace": readings[0],
-        "attribute": readings[1],
-        "file": namespace.get("__file__"),
-    }
-write(1, (nonce + json.dumps(record) + "\n").encode("utf-8"))
-"""
-
-
-def _extract_marker_source(repo: Path, revision: str, destination: Path) -> Path:
-    """Materialize ``phase-loop-runtime/src`` at ``revision`` from Git objects only."""
-    archive = git_bytes(repo, "archive", "--format=tar", revision, _MARKER_SOURCE_PREFIX)
-    root = destination.resolve()
-    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
-        for member in tar.getmembers():
-            name = PurePosixPath(member.name)
-            if name.is_absolute() or ".." in name.parts or not (member.isdir() or member.isreg()):
-                fail("capability registry archive member is not a plain tree entry")
-            if not (root / name).resolve().is_relative_to(root):
-                fail("capability registry archive member escapes the extraction root")
-            tar.extract(member, path=root, set_attrs=False)
-    source = root / _MARKER_SOURCE_PREFIX
-    if not source.is_dir():
-        fail("capability registry source tree is absent at this revision")
-    return source
-
-
-def _verifier_library_path() -> list[str]:
-    """The verifier's own module path minus its script dir and environment entries."""
-    environment = {
-        str(Path(entry).resolve())
-        for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep)
-        if entry
-    }
-    return [
-        entry for entry in sys.path[1:]
-        if entry and str(Path(entry).resolve()) not in environment
-    ]
-
-
-def _marker_runtime(repo: Path, revision: str, *, required: bool) -> None:
-    """Measurement 2: import the registry at ``revision`` and read the binding."""
-    with tempfile.TemporaryDirectory(prefix="harden-marker-") as scratch:
-        scratch_path = Path(scratch)
-        source = _extract_marker_source(repo, revision, scratch_path / "tree")
-        home = scratch_path / "home"
-        home.mkdir()
-        nonce = secrets.token_hex(16)
-        env = dict(git_environment())
-        env["HOME"] = str(home)
-        env["XDG_CONFIG_HOME"] = str(home)
-        env["PATH"] = os.pathsep.join(
-            entry for entry in (str(Path(sys.executable).parent), VERIFIER_EXECUTABLE_PATH) if entry
-        )
-        try:
-            completed = subprocess.run(
-                [
-                    sys.executable, "-I", "-B", "-c", _MARKER_WITNESS_CHILD,
-                    str(source), nonce, _MARKER_MODULE, _MARKER_NAME,
-                    json.dumps(_verifier_library_path()),
-                ],
-                cwd=scratch_path,
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                timeout=_MARKER_WITNESS_TIMEOUT_S,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError):
-            fail("capability registry runtime witness did not run")
-        records = [
-            line[len(nonce):]
-            for line in completed.stdout.decode("utf-8", errors="replace").splitlines()
-            if line.startswith(nonce)
-        ]
-        if completed.returncode != 0 or len(records) != 1:
-            fail("capability registry runtime witness did not report")
-        try:
-            record = json.loads(records[0])
-        except ValueError:
-            fail("capability registry runtime witness record is malformed")
-        if not isinstance(record, dict) or record.get("outcome") != "imported":
-            fail("capability registry did not import at this revision")
-        module_file = record.get("file")
-        if not isinstance(module_file, str) or not Path(module_file).resolve().is_relative_to(source.resolve()):
-            fail("capability registry imported from outside the recorded revision")
-        readings = [record.get("namespace"), record.get("attribute")]
-        if not all(isinstance(reading, dict) for reading in readings):
-            fail("capability registry runtime witness record is malformed")
-        if readings[0] != readings[1]:
-            fail("capability registry marker disagrees between namespace and attribute access")
-        reading = readings[0]
-        if required:
-            if reading.get("present") is not True or reading.get("type") != "int" or reading.get("value") != 1:
-                fail("final capability marker is missing, rebound, or nonliteral")
-            return
-        if reading.get("present") is not False:
-            fail("pre-production capability marker is present or noncanonical")
-
-
 def _marker_state(
     repo: Path,
     revision: str,
     *,
     required: bool,
 ) -> None:
-    """Require the registry's sole literal marker, syntactically AND at import."""
+    """Require the registry's sole literal marker in the source at ``revision``."""
     _, data = blob(repo, revision, _MARKER_SOURCE_PREFIX + "/" + _MARKER_MODULE.replace(".", "/") + ".py")
     _marker_syntax(data, required=required)
-    _marker_runtime(repo, revision, required=required)
 
 
 def verify_authority_paths(repo: Path, revision: str, value: Any) -> None:
@@ -2618,17 +2480,15 @@ def verify_review_round(store: ArtifactStore, repo: Path, value: Any, round_name
     text(request["request_nonce"], "request nonce", pattern=HEX64)
     claim_nonce(request["request_nonce"], operation_nonces, "review request")
     request_seats = request["seats"]
-    if not isinstance(request_seats, list) or len(request_seats) != len(ROUTES):
+    if not isinstance(request_seats, list) or len(request_seats) != len(REVIEW_LANES):
         fail("review request routes mismatch")
-    request_routes: set[tuple[str, str]] = set()
+    request_routes: dict[str, str] = {}
     for request_seat in request_seats:
         request_seat = closed(request_seat, {"harness", "requested_model"}, "review request seat")
-        route = (text(request_seat["harness"], "request harness"), text(request_seat["requested_model"], "request model"))
-        if route in request_routes:
-            fail("duplicate review request route")
-        request_routes.add(route)
-    if request_routes != {(harness, requested) for harness, (requested, _resolved) in ROUTES.items()}:
-        fail("review request routes mismatch")
+        harness = text(request_seat["harness"], "request harness")
+        if harness not in REVIEW_LANES or harness in request_routes:
+            fail("review request routes mismatch")
+        request_routes[harness] = text(request_seat["requested_model"], "request model", pattern=MODEL_ID)
     seats = round_data["seats"]
     if not isinstance(seats, list) or len(seats) != 4:
         fail("review round must contain exactly four seats")
@@ -2636,11 +2496,12 @@ def verify_review_round(store: ArtifactStore, repo: Path, value: Any, round_name
     for item in seats:
         item = closed(item, {"harness", "artifact"}, "review seat reference")
         harness = text(item["harness"], "seat harness")
-        if harness not in ROUTES or harness in seen_harnesses:
+        if harness not in request_routes or harness in seen_harnesses:
             fail("duplicate or unsupported review harness")
         seen_harnesses.add(harness)
         seat = closed(store.json(artifact_ref(item["artifact"], "seat artifact"), "seat artifact"), {"schema", "round", "head", "tree", "request_sha256", "harness", "requested_model", "resolved_model", "seat_id", "session_sha256", "harness_provenance", "status", "result_kind", "report", "report_sha256", "report_bytes", "broker", "runtime_receipt"}, "seat artifact")
-        requested, resolved = ROUTES[harness]
+        requested = request_routes[harness]
+        resolved = text(seat["resolved_model"], "seat resolved model", pattern=MODEL_ID)
         if (seat["schema"], seat["round"], seat["head"], seat["tree"], seat["request_sha256"], seat["harness"], seat["requested_model"], seat["resolved_model"]) != ("harden_review_seat.v1", round_name, head, tree, request_ref["sha256"], harness, requested, resolved):
             fail("seat route/head/request binding mismatch")
         if seat["harness_provenance"] != "brokered_subscription_cli" or seat["status"] != "usable" or seat["result_kind"] != "real_subscription_inference":
@@ -2684,7 +2545,7 @@ def verify_review_round(store: ArtifactStore, repo: Path, value: Any, round_name
         ):
             fail("review seat has no terminal usable AGREE")
         verify_broker(seat["broker"], harness, requested, resolved, input_digests["bundle"], input_digests["instructions"], sealed_prompt, report)
-    if seen_harnesses != set(ROUTES):
+    if seen_harnesses != set(REVIEW_LANES):
         fail("review round lacks a required route")
 
 
@@ -2983,6 +2844,17 @@ def _self_git(
     return repo, {"sl0_base": record(base), "landing_first_parent": record(first_parent), "reviewed_sl0": record(reviewed), "landing": record(landing), "candidate": record(candidate), "canonical_main": record(main)}
 
 
+# Fixture data only: the fleet-default routes in each lane's invocation form at
+# the time of writing.  The verifier never compares against this table -- a
+# retained request carrying any other registry-derived routes verifies alike.
+SELF_TEST_ROUTES = {
+    "claude": ("claude-fable-5-1", "claude-fable-5-1"),
+    "codex": ("gpt-5.6-sol", "gpt-5.6-sol"),
+    "gemini": ("gemini-3.8-flash-high", "gemini-3.8-flash-high"),
+    "grok": ("grok-4.6", "grok-4.6"),
+}
+
+
 def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
     repo, refs = _self_git(root)
     artifacts = root / "artifacts"; artifacts.mkdir()
@@ -3148,7 +3020,7 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
         shape = {
             "claude": [
                 "claude", "--ax-screen-reader", "--safe-mode", "--no-chrome",
-                "--disable-slash-commands", "--model", "claude-fable-5",
+                "--disable-slash-commands", "--model", resolved,
                 "--session-id", "<CLAUDE_SESSION_ID>", "--effort", "max",
                 "--setting-sources", "",
                 "--settings", "{\"apiKeyHelper\": \"\"}", "--strict-mcp-config",
@@ -3161,13 +3033,13 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
                 *(item for feature in NO_TOOL_CONTROLS["codex"][3:-2] for item in ("--disable", feature)),
                 "exec", "--ignore-user-config", "--ignore-rules", "--ephemeral",
                 "--cd", "/tmp/owned-empty-scratch", "--skip-git-repo-check",
-                "--sandbox", "read-only", "--model", "gpt-5.6-sol",
+                "--sandbox", "read-only", "--model", resolved,
                 "-c", "model_reasoning_effort=xhigh",
                 "--output-last-message", "/tmp/owned-empty-scratch/last-message.txt", "-",
                 "<STDIN_SEALED_INLINE_PROMPT>",
             ],
             "gemini": [
-                "agy", "--model", "gemini-3.6-flash-high", "--sandbox", "--mode", "plan",
+                "agy", "--model", resolved, "--sandbox", "--mode", "plan",
                 "--disable-slash-commands", "--input-format", "stream-json",
                 "--output-format", "stream-json", "--print=", "--print-timeout", "30s",
                 "<STDIN_SEALED_INLINE_PROMPT>",
@@ -3176,7 +3048,7 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
                 "grok", "--disable-web-search", "--no-memory", "--no-subagents",
                 "--permission-mode", "plan", "--prompt-file", "<STDIN_SEALED_INLINE_PROMPT>",
                 "--output-format", "plain", "--cwd", "/tmp/owned-empty-scratch",
-                "-m", "grok-4.5", "--reasoning-effort", "high", "--tools", "",
+                "-m", resolved, "--reasoning-effort", "high", "--tools", "",
             ],
         }[harness]
         common: dict[str, Any] = {
@@ -3223,7 +3095,7 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
         return common
     def review(round_name: str, head: str, tree: str) -> dict[str, Any]:
         landing, landing_tree = refs["landing"]
-        seats_request = [{"harness": h, "requested_model": route[0]} for h, route in ROUTES.items()]
+        seats_request = [{"harness": h, "requested_model": route[0]} for h, route in SELF_TEST_ROUTES.items()]
         bundle_content = git_bound_review_input(repo, landing, landing_tree, head, tree, "bundle")
         instructions_content = git_bound_review_input(repo, landing, landing_tree, head, tree, "instructions")
         bundle = put("bundle-" + round_name, {"schema": "harden_review_input.v1", "kind": "bundle", "head": head, "tree": tree, "content": bundle_content})
@@ -3233,7 +3105,7 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
         sealed_prompt = broker_sealed_prompt(bundle_content, instructions_content)
         request = put("request-" + round_name, {"schema": "harden_review_request.v1", "round": round_name, "head": head, "tree": tree, "bundle": bundle, "instructions": instructions, "request_nonce": nonce("request-" + round_name), "seats": seats_request})
         seats = []
-        for harness, (requested, resolved) in ROUTES.items():
+        for harness, (requested, resolved) in SELF_TEST_ROUTES.items():
             report = "Independent retained-artifact review\nAGREE"
             broker_record = broker(
                 harness, requested, resolved, round_name + harness,
@@ -3268,7 +3140,7 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
     evidence_id = nonce("evidence")
     coordinator_session = nonce("role-coordinator")
     author_session = sha256(b"01a04424-61d9-7712-94a6-e058cbe1349e")
-    reviewer_session = sha256("\0".join(sorted(nonce(round_name + harness + "session") for round_name in ("candidate", "canonical_main") for harness in ROUTES)).encode())
+    reviewer_session = sha256("\0".join(sorted(nonce(round_name + harness + "session") for round_name in ("candidate", "canonical_main") for harness in SELF_TEST_ROUTES)).encode())
     roles = {}
     for role, identity, vendor, session in (("coordinator", "coordinator-1", "coordinator", coordinator_session), ("author", "author-1", "codex-gpt-5.6-terra", author_session), ("reviewer", "reviewer-" + reviewer_session[:32], "reviewer", reviewer_session)):
         roles[role] = put("role-" + role, {"schema": "harden_role_attestation.v1", "role": role, "identity": identity, "vendor": vendor, "session_sha256": session, "evidence_id": evidence_id, "issued_at": "2026-08-27T00:00:00Z"})
@@ -4509,86 +4381,16 @@ def self_test() -> None:
         marker_rejected("marker-augassign-rebind", "HARDEN_CAPABILITY_VERSION = 1\nHARDEN_CAPABILITY_VERSION += 1\n")
         marker_rejected("marker-multi-target", "HARDEN_CAPABILITY_VERSION = other = 1\n")
         marker_rejected("marker-walrus", "(HARDEN_CAPABILITY_VERSION := 1)\n")
-        marker_rejected(
-            "marker-class-swap",
-            "HARDEN_CAPABILITY_VERSION = 1\n"
-            "import sys, types\n"
-            "class _Registry(types.ModuleType):\n"
-            "    def __getattribute__(self, name):\n"
-            "        if name.startswith('HARDEN_CAPABILITY_'):\n"
-            "            return 2\n"
-            "        return super().__getattribute__(name)\n"
-            "sys.modules[__name__].__class__ = _Registry\n",
-        )
-        marker_rejected(
-            "marker-module-getattr-preproduction",
-            "def __getattr__(name):\n"
-            "    if name == 'HARDEN_CAPABILITY_VERSION':\n"
-            "        return 1\n"
-            "    raise AttributeError(name)\n",
-            required=False,
-        )
         marker_rejected("marker-import", "from marker_source import HARDEN_CAPABILITY_VERSION\n")
         marker_rejected("marker-definition", "def HARDEN_CAPABILITY_VERSION():\n    return 1\n")
         marker_rejected("marker-delete", "HARDEN_CAPABILITY_VERSION = 1\ndel HARDEN_CAPABILITY_VERSION\n")
         marker_rejected("marker-global-rebind", "HARDEN_CAPABILITY_VERSION = 1\ndef rebind():\n    global HARDEN_CAPABILITY_VERSION\n    HARDEN_CAPABILITY_VERSION = 2\n")
         marker_rejected("marker-namespace-rebind", "globals()['HARDEN_CAPABILITY_VERSION'] = 1\n")
-        marker_rejected(
-            "marker-aliased-setattr",
-            "HARDEN_CAPABILITY_VERSION = 1\n"
-            "from builtins import setattr as _sa\n"
-            "import sys\n"
-            "_sa(sys.modules[__name__], 'HARDEN_CAPABILITY_VERSION', 2)\n",
-        )
-        marker_rejected(
-            "marker-builtins-setattr",
-            "HARDEN_CAPABILITY_VERSION = 1\n"
-            "import builtins, sys\n"
-            "builtins.setattr(sys.modules[__name__], 'HARDEN_CAPABILITY_VERSION', 2)\n",
-        )
-        marker_rejected(
-            "marker-dunder-setattr",
-            "HARDEN_CAPABILITY_VERSION = 1\n"
-            "import sys\n"
-            "sys.modules[__name__].__setattr__('HARDEN_CAPABILITY_VERSION', 2)\n",
-        )
-        marker_rejected(
-            "marker-unbound-dict-update",
-            "HARDEN_CAPABILITY_VERSION = 1\n"
-            "dict.update(globals(), {'HARDEN_CAPABILITY_VERSION': 2})\n",
-        )
-        marker_rejected(
-            "marker-getattr-update",
-            "HARDEN_CAPABILITY_VERSION = 1\n"
-            "getattr(globals(), 'update')({'HARDEN_CAPABILITY_VERSION': 2})\n",
-        )
-        # Dynamic rebindings no syntax scan can name: the marker name never
-        # occurs a second time in the source, yet the import binds another value.
-        marker_rejected(
-            "marker-computed-exec",
-            "HARDEN_CAPABILITY_VERSION = 1\n"
-            "import builtins\n"
-            "builtins.exec(\"HARDEN_CAPABILITY_\" + \"VERSION = 2\", globals())\n",
-        )
-        marker_rejected(
-            "marker-computed-delete",
-            "HARDEN_CAPABILITY_VERSION = 1\n"
-            "import builtins\n"
-            "builtins.exec(\"del HARDEN_CAPABILITY_\" + \"VERSION\", globals())\n",
-        )
-        marker_rejected(
-            "marker-computed-type",
-            "HARDEN_CAPABILITY_VERSION = 1\n"
-            "import builtins\n"
-            "builtins.exec(\"HARDEN_CAPABILITY_\" + \"VERSION = True\", globals())\n",
-        )
-        marker_rejected(
-            "marker-computed-preproduction",
-            "import builtins\n"
-            "builtins.exec(\"HARDEN_CAPABILITY_\" + \"VERSION = 1\", globals())\n",
-            required=False,
-        )
-        marker_rejected("marker-import-error", "HARDEN_CAPABILITY_VERSION = 1\nimport no_such_module_for_harden\n")
+        # Dynamic rebindings (``setattr`` through an alias, a namespace-dict
+        # write, a computed string through ``builtins.exec``, a module
+        # ``__class__`` swap or ``__getattr__``) never spell the marker name a
+        # second time, so the syntactic measurement accepts them by design; only
+        # the frozen guard's own import, recorded in the final run, sees them.
         def replace(ref: dict[str, str], artifact_root: Path, data: bytes) -> None:
             (artifact_root / ref["path"]).write_bytes(data)
             ref["sha256"] = sha256(data)
@@ -5166,6 +4968,11 @@ def self_test() -> None:
                 mutate_json(ref, artifact_root, change)
             return mutate
         rejected("extra-review-request-seat", request_mutation(lambda request: request["seats"].append({"harness": "extra", "requested_model": "extra"})))
+        # The routes are bound from the request, so a request that names a model
+        # the seats did not run, or a lane outside the four, fails the round.
+        rejected("request-model-off-seat", request_mutation(lambda request: request["seats"][0].__setitem__("requested_model", "other-model-1")))
+        rejected("request-lane-unsupported", request_mutation(lambda request: request["seats"][0].__setitem__("harness", "openai")))
+        rejected("seat-requested-model-off-request", seat_mutation(lambda seat: seat.__setitem__("requested_model", "other-model-1")))
         rejected("nondict-review-request-seat", request_mutation(lambda request: request["seats"].__setitem__(0, "not-a-seat")))
         def duplicate_seat(model: dict[str, Any], _root: Path, _artifacts: Path) -> None:
             model["reviews"]["candidate"]["seats"][1]["artifact"] = model["reviews"]["candidate"]["seats"][0]["artifact"]
