@@ -109,7 +109,7 @@ def test_every_consumer_spells_the_same_node_id() -> None:
     # The witness matches the junit ``name`` attribute, which is the bare
     # function name -- so that name must be what the node id ends in.
     node_name = CHRONOLOGY_NODE.rsplit("::", 1)[1]
-    assert f'name=\\"${{CHRONOLOGY_NODE##*::}}\\"' in gate_a
+    assert 'name=\\"${CHRONOLOGY_NODE##*::}\\"' in gate_a
     assert node_name.startswith("test_")
 
 
