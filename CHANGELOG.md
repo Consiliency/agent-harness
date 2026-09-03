@@ -10,9 +10,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 - `invoke_board(..., president_invoke=)` runs the president ladder once after every seat has
   returned and before a `requires_president` board result can reach a landing: findings from all
-  usable seats (a codex/Sol fill included) get stable positional IDs, whitespace-collapsed
-  duplicates fold into one ID, the ladder descends ONLY on typed `president_unavailable`, an
-  invalid ruling gets one same-session format re-ask, and a missing ruling refuses every seat
+  usable seats (a codex/Sol fill included) get stable positional IDs, duplicates (whitespace-collapsed,
+  casefolded) fold into one ID, the ladder descends ONLY on typed `president_unavailable`, an
+  invalid ruling gets one same-session format re-ask, and any ladder outcome without a valid ruling
+  (including `president_invocation_failed`, the production seam's answer) refuses every seat
   (`president_ruling_missing:<code>`) so the unadjudicated verdicts cannot be read as a landing.
   A president-requiring tier without a seam is refused at policy time (`president_seam_missing`).
   `requires_president=False` stays byte-neutral.
@@ -24,8 +25,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   operation is the follow-up.
 - `runner._run_legible_panel` declares the `production_code` tier and the seam on
   GOVLEAN-switched repos (which the invoker already refused tierless), persists
-  `implementation-panel-president.json` (`advisor_board_president.v1`, with every ladder attempt),
-  and refuses the landing on a missing ruling or any BLOCKING disposition. Pre-switch repos are
+  `implementation-panel-president.json` (`advisor_board_president.v1`, with every ladder attempt and
+  the refusal reason -- written before the landing is judged, so a refused landing still leaves the
+  record), and refuses the landing on a missing ruling or any BLOCKING disposition. Pre-switch repos are
   byte-neutral. Contract: `advisor_board/CONTRACTS.md` → ABDPRES.
 
 ### fleet default models: Fable 5.1, Gemini 3.8 Flash, Grok 4.6

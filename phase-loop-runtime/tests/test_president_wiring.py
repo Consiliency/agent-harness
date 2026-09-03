@@ -7,7 +7,8 @@ Acceptance (issue Consiliency/agent-harness#736):
 3. every seat's findings, including a codex (Sol) fill, reach the prompt with
    stable positional IDs;
 4. duplicate findings are represented deterministically;
-5. typed ``president_unavailable`` descends the ladder, ordinary errors do not;
+5. typed ``president_unavailable`` descends the ladder, ordinary errors do not
+   (they are the board's typed refusal);
 6. invalid grammar gets ONE same-session re-ask, then fails closed;
 7. BLOCKING/DEFERRED rulings are durable and drive the runner's landing;
 8. ``requires_president=False`` is byte-neutral.
@@ -130,8 +131,10 @@ def test_exhausted_ladder_refuses_every_leg_with_a_typed_reason():
     assert len(result.president_findings) == 4
 
 
-# 5: typed unavailability descends; an ordinary error propagates.
-def test_typed_unavailable_descends_and_ordinary_error_propagates():
+# 5: typed unavailability descends; an ordinary error does not descend -- it is
+# the board's typed refusal (the production seam answers every seated rung with
+# one, so the governed caller must receive it as a result it can persist).
+def test_typed_unavailable_descends_and_ordinary_error_refuses_without_descent():
     president = ScriptedPresident(
         [{"status": "unavailable", "code": "president_unavailable"}, deferring_president]
     )
@@ -147,16 +150,50 @@ def test_typed_unavailable_descends_and_ordinary_error_propagates():
     assert [rung for rung, _ in president.calls] == list(PRESIDENT_LADDER[:2])
 
     failing = ScriptedPresident([{"status": "failed", "code": "transport_broke"}])
-    with pytest.raises(PresidentPolicyError) as excinfo:
-        invoke_sanctioned_board_control(
-            _board(),
-            "artifact",
-            spawn=_ok_spawn,
-            landing_tier=ReviewLandingTier.PRODUCTION_CODE,
-            president_invoke=failing,
-        )
-    assert excinfo.value.code == "president_invocation_failed"
+    refused = invoke_sanctioned_board_control(
+        _board(),
+        "artifact",
+        spawn=_ok_spawn,
+        landing_tier=ReviewLandingTier.PRODUCTION_CODE,
+        president_invoke=failing,
+    )
+    assert refused.president is None
+    assert [leg.status for leg in refused.legs] == ["UNAVAILABLE"] * 4
+    assert {leg.detail for leg in refused.legs} == {
+        "president_ruling_missing:president_invocation_failed"
+    }
     assert [rung for rung, _ in failing.calls] == [PRESIDENT_LADDER[0]]
+    assert len(refused.president_findings) == 4
+
+
+def test_degraded_president_deferring_validation_is_refused():
+    def degraded(model: str, prompt: str):
+        ids = finding_ids_in_prompt(prompt)
+        lines = [f"FINDING {fid}: DEFERRED — needs validation I cannot run" for fid in ids]
+        return {"status": "degraded", "text": "\n".join(lines + ["FORCING DECISION: LAND"])}
+
+    result = invoke_sanctioned_board_control(
+        _board(),
+        "artifact",
+        spawn=_ok_spawn,
+        landing_tier=ReviewLandingTier.PRODUCTION_CODE,
+        president_invoke=ScriptedPresident([degraded]),
+    )
+    assert result.president is None
+    assert {leg.detail for leg in result.legs} == {
+        "president_ruling_missing:degraded_president_validation_deferred"
+    }
+
+
+def test_caller_contract_error_is_not_a_board_refusal():
+    # ``president_round_limit`` is a caller bug, not a ladder outcome: it must
+    # surface as the exception, never as a persisted-looking refusal.
+    with pytest.raises(PresidentPolicyError) as excinfo:
+        panel_invoker.invoke_president(
+            findings=("F001: [x] y",), invoke=deferring_president, max_substantive_rounds=0
+        )
+    assert excinfo.value.code == "president_round_limit"
+    assert excinfo.value.code not in panel_invoker._PRESIDENT_REFUSAL_CODES
 
 
 # 6: one format re-ask, then fail closed.
@@ -358,6 +395,11 @@ def test_runner_missing_ruling_fails_landing(tmp_path, monkeypatch):
     with pytest.raises(legible_evidence.LegibleProcessBootstrapError, match="no president ruling"):
         runner._run_legible_panel(repo, run_dir, "1" * 40, bundle)
     assert not (run_dir / "implementation-panel.json").exists()
+    record = json.loads((run_dir / "implementation-panel-president.json").read_text(encoding="utf-8"))
+    assert record["model"] is None and record["text"] is None
+    assert record["rulings"] == [] and record["forcing_decision"] is None
+    assert record["findings"] == ["F001: [claude] x"]
+    assert record["refusal"] is None
 
 
 def test_runner_president_refusal_names_the_reason(tmp_path, monkeypatch):
@@ -382,6 +424,52 @@ def test_runner_president_refusal_names_the_reason(tmp_path, monkeypatch):
         match=r"president_ruling_missing:president_unavailable",
     ):
         runner._run_legible_panel(repo, run_dir, "1" * 40, bundle)
+    assert not (run_dir / "implementation-panel.json").exists()
+    record = json.loads((run_dir / "implementation-panel-president.json").read_text(encoding="utf-8"))
+    assert record["refusal"] == "president_ruling_missing:president_unavailable"
+    assert record["model"] is None
+
+
+def test_runner_switched_repo_reaches_the_real_board_and_seam_and_fails_closed(tmp_path, monkeypatch):
+    # No stub result: the runner's kwargs go through the sanctioned executable
+    # control into the REAL ``invoke_board`` president tail and the REAL adapter.
+    # Post-HARDEN the seated top rung has no execution route, so the landing must
+    # fail closed as the typed refusal -- with the ladder walk persisted.
+    repo, run_dir, bundle = _runner_fixture(tmp_path)
+    seen: dict[str, object] = {}
+    real_invoke_board = panel_invoker.invoke_board
+
+    def via_control(board, artifact, **kwargs):
+        seen.update(kwargs)
+        # The control looks ``invoke_board`` up dynamically too: hand it the
+        # real one back so the runner's seam reaches production, not this shim.
+        monkeypatch.setattr(panel_invoker, "invoke_board", real_invoke_board)
+        return invoke_sanctioned_board_control(
+            board,
+            artifact,
+            spawn=_ok_spawn,
+            landing_tier=kwargs["landing_tier"],
+            president_invoke=kwargs["president_invoke"],
+        )
+
+    monkeypatch.setattr(panel_invoker, "invoke_board", via_control)
+    with _NO_SPAWN, pytest.raises(
+        legible_evidence.LegibleProcessBootstrapError,
+        match=r"president_ruling_missing:president_invocation_failed",
+    ):
+        runner._run_legible_panel(repo, run_dir, "1" * 40, bundle)
+    assert not (run_dir / "implementation-panel.json").exists()
+    seam = seen["president_invoke"]
+    assert isinstance(seam, president_adapter.PresidentInvoke)
+    record = json.loads((run_dir / "implementation-panel-president.json").read_text(encoding="utf-8"))
+    assert record["refusal"] == "president_ruling_missing:president_invocation_failed"
+    assert record["attempts"] == [a.as_record() for a in seam.attempts]
+    assert [a["rung"] for a in record["attempts"]] == [PRESIDENT_LADDER[0]]
+    assert record["attempts"][0]["status"] == "failed"
+    assert record["attempts"][0]["code"] == president_adapter.PRESIDENT_ROUTE_UNAVAILABLE
+    assert record["attempts"][0]["leg"] == "claude"
+    assert len(record["findings"]) == 4
+    assert record["head"] == "1" * 40
 
 
 def test_runner_declares_the_tier_and_a_live_seam(tmp_path, monkeypatch):
@@ -403,7 +491,9 @@ def test_runner_declares_the_tier_and_a_live_seam(tmp_path, monkeypatch):
     panel = json.loads(panel_path.read_text(encoding="utf-8"))
     assert panel["bundle_sha256"] == hashlib.sha256(bundle.read_bytes()).hexdigest()
     record = json.loads((run_dir / "implementation-panel-president.json").read_text(encoding="utf-8"))
-    assert record["attempts"] == []
+    assert record["attempts"] == []  # the stub board never called the seam
+    assert record["refusal"] is None
+    assert record["forcing_decision"] == "LAND"
 
 
 def test_runner_pre_switch_repo_is_byte_neutral(tmp_path, monkeypatch):

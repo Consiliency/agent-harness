@@ -8619,21 +8619,52 @@ def _run_legible_panel(
             }
         )
         verdicts[seat.model] = verdict
+    # ah#736: a president refusal surfaces as every leg UNAVAILABLE carrying the
+    # typed reason; name it so the operator sees the ruling gap, not a generic
+    # disagreement.
+    refusal = next(
+        (
+            str(getattr(outcome, "detail", "") or "")
+            for outcome in result.legs
+            if str(getattr(outcome, "detail", "") or "").startswith("president_ruling_missing:")
+        ),
+        None,
+    )
+    ruling = None
+    if landing_policy is not None and landing_policy.requires_president:
+        # The ladder walk is persisted BEFORE any landing decision so a refusal,
+        # a missing ruling, and a BLOCKING ruling all leave the same durable
+        # record (every seam attempt, the finding list, the ruling or the typed
+        # refusal) beside the leg artifacts; only ``implementation-panel.json``
+        # is withheld.
+        ruling = getattr(result, "president", None)
+        president_path = run_dir / "implementation-panel-president.json"
+        president_payload = {
+            "schema": "advisor_board_president.v1",
+            "head": expected_head,
+            "model": ruling.model if ruling is not None else None,
+            "text": ruling.text if ruling is not None else None,
+            "rulings": [
+                {"finding_id": r.finding_id, "disposition": r.disposition, "reason": r.reason}
+                for r in (president_finding_rulings(ruling) if ruling is not None else ())
+            ],
+            "forcing_decision": president_forcing_decision(ruling) if ruling is not None else None,
+            "substantive_rounds": ruling.substantive_rounds if ruling is not None else 0,
+            "format_reasks": ruling.format_reasks if ruling is not None else 0,
+            "findings": list(getattr(result, "president_findings", ())),
+            "attempts": [
+                attempt.as_record()
+                for attempt in (president_invoke.attempts if president_invoke else ())
+            ],
+            "refusal": refusal,
+        }
+        president_path.write_text(
+            json.dumps(president_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
     if len(legs) != 4 or any(
         leg["status"] != "OK" or leg["usable"] is not True or leg["verdict"] != "AGREE"
         for leg in legs
     ):
-        # ah#736: a president refusal surfaces as every leg UNAVAILABLE carrying
-        # the typed reason; name it so the operator sees the ruling gap, not a
-        # generic disagreement.
-        refusal = next(
-            (
-                str(getattr(outcome, "detail", "") or "")
-                for outcome in result.legs
-                if str(getattr(outcome, "detail", "") or "").startswith("president_ruling_missing:")
-            ),
-            None,
-        )
         raise legible_evidence.LegibleProcessBootstrapError(
             "mandatory exact-head LEGIBLE implementation board did not unanimously AGREE"
             + (f" ({refusal})" if refusal else "")
@@ -8642,33 +8673,10 @@ def _run_legible_panel(
         # ah#736: the ruling is mandatory whenever the tier says so -- a result
         # without one (a stand-in board, a refusal, an older invoker) fails the
         # landing closed instead of passing on the seat verdicts alone.
-        ruling = getattr(result, "president", None)
         if ruling is None:
             raise legible_evidence.LegibleProcessBootstrapError(
                 "mandatory exact-head LEGIBLE implementation board returned no president ruling"
             )
-        president_path = run_dir / "implementation-panel-president.json"
-        president_payload = {
-            "schema": "advisor_board_president.v1",
-            "head": expected_head,
-            "model": ruling.model,
-            "text": ruling.text,
-            "rulings": [
-                {"finding_id": r.finding_id, "disposition": r.disposition, "reason": r.reason}
-                for r in president_finding_rulings(ruling)
-            ],
-            "forcing_decision": president_forcing_decision(ruling),
-            "substantive_rounds": ruling.substantive_rounds,
-            "format_reasks": ruling.format_reasks,
-            "findings": list(getattr(result, "president_findings", ())),
-            "attempts": [
-                attempt.as_record()
-                for attempt in (president_invoke.attempts if president_invoke else ())
-            ],
-        }
-        president_path.write_text(
-            json.dumps(president_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
         if president_blocks_landing(ruling):
             raise legible_evidence.LegibleProcessBootstrapError(
                 "president ruled a LEGIBLE implementation board finding BLOCKING"

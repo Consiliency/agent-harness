@@ -542,9 +542,14 @@ PRESIDENT_MAX_SUBSTANTIVE_ROUNDS = 3
 
 # ``invoke_president`` failures that mean "no valid ruling exists": the board result
 # is refused (every seat UNAVAILABLE) so no caller can mistake unadjudicated seats
-# for a landing. Any other code is an ordinary error and propagates unchanged.
+# for a landing. ``president_invocation_failed`` is here because the production
+# seam answers every seated rung with a typed route failure (see
+# ``president_adapter``): the governed caller must receive that as the board's
+# refusal, not as an exception it never persists. A caller-contract error
+# (``president_round_limit``) is not a ladder outcome and propagates unchanged.
 _PRESIDENT_REFUSAL_CODES: frozenset[str] = frozenset({
     "president_unavailable",
+    "president_invocation_failed",
     "president_ruling_format_missing",
     "degraded_president_validation_deferred",
 })

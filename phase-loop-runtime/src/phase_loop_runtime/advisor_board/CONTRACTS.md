@@ -428,12 +428,16 @@ a landing decision. `tests/test_president_wiring.py`.
   `president_forcing_decision`, and `president_blocks_landing` read it. The board
   itself does NOT apply BLOCKING — applying the ruling to a landing is the governed
   caller's job (the runner refuses the landing; nothing waives it).
-- **No ruling → refusal.** A typed ladder failure (`president_unavailable`,
+- **No ruling → refusal.** Every ladder outcome that yields no valid ruling
+  (`president_unavailable`, `president_invocation_failed`,
   `president_ruling_format_missing`, `degraded_president_validation_deferred`)
   refuses EVERY seat with detail `president_ruling_missing:<code>` so the
   unadjudicated verdicts cannot be read as a landing; the finding list the ladder
-  was asked to rule on is kept on the refusal. Any other `PresidentPolicyError`
-  (`president_invocation_failed`) propagates.
+  was asked to rule on is kept on the refusal. `president_invocation_failed` is a
+  refusal rather than an exception because the production seam answers every
+  seated rung with it: the governed caller must receive that as a board result it
+  persists, not as an error it never records. Only a caller-contract error
+  (`president_round_limit`) propagates as `PresidentPolicyError`.
 - **Execution route (fail-closed by design).** `president_adapter.build_president_invoke`
   binds the ladder to a board's seats (`seat_for_rung`: rung alias → seat model →
   harness). An UNSEATED rung answers typed `president_unavailable` (the ladder
@@ -442,8 +446,9 @@ a landing decision. `tests/test_president_wiring.py`.
   governed review (`public_board_review.v1`, frozen AGREE grammar) and advisory
   execution is refused, so a `FORCING DECISION:` ruling has no sanctioned operation
   to ride. The ladder treats that as an ordinary failure (`president_invocation_failed`,
-  no descent), the board refuses, and the landing fails closed. Routing the
-  president through `invoke_panel(mode="advisory")` or laundering it through a
+  no descent), the board refuses every seat with
+  `president_ruling_missing:president_invocation_failed`, and the landing fails
+  closed. Routing the president through `invoke_panel(mode="advisory")` or laundering it through a
   review leg is NOT permitted (EC-HARDEN-5). A HARDEN-authorized president
   operation (own mode, brief, completion grammar, and authorization identity) is
   the follow-up; every attempt is recorded on the seam (`PresidentInvoke.attempts`)
@@ -454,8 +459,13 @@ a landing decision. `tests/test_president_wiring.py`.
   reason becomes the honest president one; pre-switch repos keep the tierless call
   byte-for-byte. Post-switch it writes `implementation-panel-president.json`
   (`advisor_board_president.v1`: head, model, text, rulings, forcing_decision,
-  substantive_rounds, format_reasks, findings, attempts) and refuses the landing on
-  a missing ruling or any BLOCKING disposition.
+  substantive_rounds, format_reasks, findings, attempts, refusal) BEFORE it judges
+  the board -- on a board refusal or a missing ruling the record still lands with
+  the ruling fields null, `refusal` naming the `president_ruling_missing:<code>`
+  detail, and every seam attempt -- and refuses the landing on a non-unanimous
+  board, a missing ruling, or any BLOCKING disposition. `implementation-panel.json`
+  is written only after those checks pass, so a president record without a panel
+  record is a refused landing, never a half-written one.
 - **Standalone launchers.** A caller that wants the four-seat board without a
   president passes an explicit `review_policy=ReviewLandingPolicy(required_seats=...,
   requires_president=False)` rather than a president-requiring tier.
