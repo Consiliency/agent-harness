@@ -22,6 +22,12 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "ci" / "offload-gate.sh"
 
+# Gate A runs this suite from the installed wheel in a tree without ci/; the
+# script only exists in the repository checkout, which the py3.10 lane covers.
+pytestmark = pytest.mark.skipif(
+    not SCRIPT.is_file(), reason="ci/offload-gate.sh absent (from-wheel clean-room layout); repo-tree test only"
+)
+
 assert shutil.which("flock"), "flock (util-linux) is required for these tests"
 
 _SSH_STUB = """#!/usr/bin/env bash
