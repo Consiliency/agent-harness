@@ -6,6 +6,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Review rounds are bounded before they start
+
+- `docs/agent-phase-convergence.md` gains "8. Bound the review loop (portable)": delta review
+  (only dissenting seats re-review, against the delta since the round they dissented on;
+  agreeing seats are carried; an erroring dissenter is re-run, never carried), no
+  cancel-on-first-blocker, blocking findings cite the frozen `EC-<ALIAS>-<N>` they claim is
+  violated, and a round cap written into the PR before round one that ends in descope rather
+  than another round. The adoption order and the one-machine recipe gain the matching item.
+- The four `*-advisor-board` skills (`skills-src/`, regenerated `phase-loop-skills/` and the
+  packaged `skills_bundle/`) carry the same four rules as step 6 of "Use"; the Claude
+  `execute-phase` skill's governed pre-merge paragraph points at them.
+
 ### CI: the heavy CONFORM chronology node is deferred to the landing merge for out-of-package PRs
 
 - `ci/chronology-scope.sh` decides per run whether the ~50-minute

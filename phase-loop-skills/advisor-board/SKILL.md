@@ -117,6 +117,11 @@ and custom-spawn research seats fail closed as
 3. Require every leg to end with `AGREE`, `PARTIALLY AGREE`, or `DISAGREE`.
 4. Treat `EMPTY`, `TIMEOUT`, `ERROR`, `DEGRADED`, and `UNAVAILABLE` as structured evidence, not successful reviews.
 5. Keep provider API keys and custom authorization headers out of the environment; the runtime strips known API-key variables and request-header overrides and uses local subscription CLIs.
+6. Bound a review→fix→re-review loop before round one (`docs/agent-phase-convergence.md`, "Bound the review loop"):
+   - **Delta review.** After a fix, re-run only the seats that dissented (`DISAGREE`, `PARTIALLY AGREE`, or any blocking finding) against the delta since the round they dissented on, and record that delta's base and head. Agreeing seats are carried forward and marked `(carried)`. A dissenting seat that ends `EMPTY`, `TIMEOUT`, `ERROR`, `DEGRADED`, or `UNAVAILABLE` is re-run, never carried.
+   - **No cancel-on-first-blocker.** Let every seat finish the round; collect all findings, then fix once.
+   - **Blocking findings cite the goal.** A finding blocks only when it names the `EC-<ALIAS>-<N>` (or frozen artifact) it claims is violated; a finding with no goal is a suggestion and cannot become the round's new goal.
+   - **Round cap → descope.** Write the cap into the PR body before round one (three is usual). When it trips: fix input-binding defects, carry findings that pin the change's own outputs to a follow-up, and descope the class the loop kept re-litigating as a recorded exception — do not run another round. When each fix adds a new falsifiable number, cut the number and keep the rule.
 6. Every Fable or Opus seat requires the homebrew Claude Code self-PTY adapter after `claude auth status --json` proves a first-party `claude.ai` subscription. `tui_backing_required`, `subscription_auth_unproven`, and `tui_adapter_required` are unavailable seats, never invitations to substitute a gateway, API, or native Task Agent.
 
 ## Claude Subscription TUI Boundary

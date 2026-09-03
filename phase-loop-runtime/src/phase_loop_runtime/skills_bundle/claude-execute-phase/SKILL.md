@@ -139,8 +139,11 @@ Governed mode is **live on the serial path** (`--governed` / `PHASE_LOOP_RUN_MOD
 model-routing-v2): a pre-merge panel gate (codex + gemini) reviews the
 implementation diff *before* the closeout commit and runs a bounded
 review→fix→re-review loop; a `block` finding holds the merge until fixed or the
-bounded loop terminates non-human. Autonomous runs spawn no panel. Concurrent-wave
-dispatch is not governed yet.
+bounded loop terminates non-human. The loop follows the review-round rules in
+the advisor-board skill (delta review by dissenting seats only, no
+cancel-on-first-blocker, blocking findings cite `EC-<ALIAS>-<N>`, round cap →
+descope). Autonomous runs spawn no panel. Concurrent-wave dispatch is not
+governed yet.
 
 ## Inputs
 

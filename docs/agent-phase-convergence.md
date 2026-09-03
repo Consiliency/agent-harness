@@ -211,6 +211,35 @@ plan-amendment PRs landing before any implementation PR* — and stop the phase 
 when it trips. Exclude the plan's own creation and any mandated tests-first landings, or the
 tripwire fires on every compliant run.
 
+### 8. Bound the review loop (portable)
+
+A multi-seat review has its own flail mode, distinct from the plan's: every round re-reviews
+everything, every finding becomes a fix, and each fix hands the next round something new to
+find. One plan review here ran ten rounds because each fix introduced a fresh runtime number
+for the next round to falsify; the reviewer had offered the exit at round five. Four rules,
+fixed before round one, bound it:
+
+1. **Delta review.** After a fix round, only the seats that dissented — `DISAGREE`,
+   `PARTIALLY AGREE`, or any blocking finding — review again, and they review the delta since
+   the round they dissented on; the round record names that delta's base and head. Seats that
+   agreed are carried forward, marked as carried. A dissenting seat that errors, times out, or
+   returns nothing is re-run, never carried: a carried verdict must be one somebody actually
+   gave.
+2. **No cancel-on-first-blocker.** Let the round finish. A blocker at minute three says nothing
+   about what the other seats would have found at minute twenty, and cancelling them means
+   paying for the whole round again after the fix. Collect every seat's findings, then fix once.
+3. **Findings cite the frozen goal.** A blocking finding names the `EC-<ALIAS>-<N>` (or the
+   frozen artifact) it claims is violated. A finding that cannot point at a goal is a
+   suggestion: it may be taken, but it cannot block, and it cannot become the round's new goal.
+   This is the review-side half of rule 3 — it stops a review from restating the goals in its
+   own words.
+4. **A round cap that ends in descope, not in another round.** Write the cap into the pull
+   request before round one (three is usual). When it trips, sort what remains: defects in how
+   the change binds its inputs are fixed; findings that pin the change's own outputs are carried
+   to a follow-up; and the class the loop kept re-litigating is descoped and recorded as an
+   exception (below) rather than spent on a fourth round. When each round's fix adds a new
+   falsifiable number, cut the number and keep the rule.
+
 ## Exceptions, and how to take one
 
 Every rule above has legitimate exceptions, and a rule with no exception path gets violated
@@ -379,6 +408,9 @@ a git hook, or a command someone runs before opening a pull request):
    demonstration that the proof fails when the behaviour is removed.
 5. **Write down your targets and an abort threshold before starting**, and record the outcome
    against them honestly — including misses.
+6. **Bound every review before it starts**: a round cap written into the pull request, delta
+   re-review by dissenting reviewers only, findings that cite a goal ID, and descope — not a
+   further round — when the cap trips.
 
 Nothing in that list requires containers, a second machine, a matrix, or a custom runner.
 Everything else in this document is an optimisation on top of it.
@@ -391,15 +423,17 @@ Everything else in this document is an optimisation on top of it.
 4. Define the proof before declaring a behaviour done, and demonstrate it failing. *(portable)*
 5. Pre-register convergence targets; set an abort threshold; refuse to move either mid-run.
    *(portable)*
-6. Split expensive proofs out of redundant lanes, with both guards; then scope them to the
+6. Bound the review loop: delta review by dissenting seats only, no cancel-on-first-blocker,
+   findings cite goal IDs, a pre-written round cap that ends in descope. *(portable)*
+7. Split expensive proofs out of redundant lanes, with both guards; then scope them to the
    changes that can move them, with a default-branch + nightly backstop and an evidence
    witness. *(portable, needs a CI matrix)*
-7. Make one aggregate check required; never require a job that can skip. *(portable, CI-system
+8. Make one aggregate check required; never require a job that can skip. *(portable, CI-system
    specific)*
-8. Fail closed on a stale plan digest — as a CI check if you have no dispatcher. *(portable as
+9. Fail closed on a stale plan digest — as a CI check if you have no dispatcher. *(portable as
    a check; cheap only if you already have a runtime)*
-9. Make ordering rules machine-enforced rather than prose. *(same)*
-10. Offload heavy CI to a second machine. *(optional; needs hardware)*
+10. Make ordering rules machine-enforced rather than prose. *(same)*
+11. Offload heavy CI to a second machine. *(optional; needs hardware)*
 
 ## Honest limits
 
