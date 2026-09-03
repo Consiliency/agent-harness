@@ -3111,7 +3111,13 @@ def test_fabpub_train_resume_post_commit_pre_checkpoint(tmp_path: Path, request)
             head = _fabpub_git(repo, "rev-parse", "HEAD")
             branch = _fabpub_git(repo, "branch", "--show-current")
             body = _fabpub_json.dumps(
-                    [{"headRefOid": head, "url": "https://github.com/Consiliency/agent-harness/pull/1", "baseRefName": "main"}]
+                [{
+                    "headRefOid": head,
+                    "url": "https://github.com/Consiliency/agent-harness/pull/1",
+                    "baseRefName": "main",
+                    "headRepositoryOwner": {"login": "Consiliency"},
+                    "isCrossRepository": False,
+                }]
             )
             assert "--head" in cmd and cmd[cmd.index("--head") + 1] == branch
             return _fabpub_subprocess.CompletedProcess(cmd, 0, stdout=body, stderr="")

@@ -54,6 +54,16 @@ _FABPUB_AUTHORITY_PREIMAGE = {
 }
 
 
+def _same_repo_readback(*, head: str, url: str, base: str = "main") -> dict:
+    return {
+        "headRefOid": head,
+        "url": url,
+        "baseRefName": base,
+        "headRepositoryOwner": {"login": "owner"},
+        "isCrossRepository": False,
+    }
+
+
 def _admission(key: str) -> AdmissionRequest:
     return AdmissionRequest("attempt", 1, "fence", "digest", "head == committed", "scope", key)
 
@@ -232,7 +242,7 @@ def _fake_git_gh(
             if cmd[1:3] == ["pr", "create"]:
                 return CompletedProcess(cmd, 0, stdout="", stderr="")
             if cmd[1:3] == ["pr", "list"]:
-                body = json.dumps([{"headRefOid": pr_head, "url": _URL, "baseRefName": pr_base}])
+                body = json.dumps([_same_repo_readback(head=pr_head, url=_URL, base=pr_base)])
                 return CompletedProcess(cmd, 0, stdout=body, stderr="")
         raise AssertionError(f"unexpected command: {cmd}")
 
@@ -450,7 +460,14 @@ def _routing_fake(repos, seen_paths):
             if cmd[1:3] == ["pr", "create"]:
                 return CompletedProcess(cmd, 0, stdout="", stderr="")
             if cmd[1:3] == ["pr", "list"]:
-                return CompletedProcess(cmd, 0, stdout=json.dumps([{"headRefOid": meta["head"], "url": meta["url"], "baseRefName": meta.get("base", "main")}]), stderr="")
+                return CompletedProcess(
+                    cmd,
+                    0,
+                    stdout=json.dumps([_same_repo_readback(
+                        head=meta["head"], url=meta["url"], base=meta.get("base", "main")
+                    )]),
+                    stderr="",
+                )
         raise AssertionError(f"unexpected command: {cmd}")
 
     return fake_run
@@ -637,7 +654,14 @@ def test_one_repo_ambiguous_outcome_does_not_poison_other_repos(tmp_path, reques
             if cmd[1:3] == ["pr", "create"]:
                 return CompletedProcess(cmd, 0, stdout="", stderr="")
             if cmd[1:3] == ["pr", "list"]:
-                return CompletedProcess(cmd, 0, stdout=json.dumps([{"headRefOid": meta["head"], "url": meta["url"], "baseRefName": meta.get("base", "main")}]), stderr="")
+                return CompletedProcess(
+                    cmd,
+                    0,
+                    stdout=json.dumps([_same_repo_readback(
+                        head=meta["head"], url=meta["url"], base=meta.get("base", "main")
+                    )]),
+                    stderr="",
+                )
         raise AssertionError(f"unexpected command: {cmd}")
 
     broker = (
