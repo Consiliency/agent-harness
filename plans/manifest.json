@@ -729,6 +729,24 @@
       "updated_at": "2026-07-29T00:00:00Z"
     },
     {
+      "acceptance_criteria_count": 5,
+      "created_at": "2026-09-03T06:10:04Z",
+      "file": ".consiliency/plans/detailed-split-pr-gate-chronology-746-20260903-0609.md",
+      "handoff_ref": ".dev-skills/handoffs/claude-plan-detailed/latest.md",
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [],
+      "owner_skill": "claude-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "split-pr-gate-chronology-746",
+      "status": "committed",
+      "task_summary": "Consiliency/agent-harness#746: pull_request runs never select the CONFORM chronology node (only ci/* and the two workflow files retain it); push/schedule/dispatch always do; a red main files/updates one ci-main-red issue; measured by ci/gate-metrics.py, not projected.",
+      "type": "detailed",
+      "updated_at": "2026-09-03T06:10:04Z"
+    },
+    {
       "acceptance_criteria_count": null,
       "created_at": "2026-07-11T22:48:16Z",
       "file": "plans/phase-plan-v1-task-message-sourcebroker-SOURCEBROKER.md",
