@@ -6,16 +6,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-### CI: the heavy CONFORM chronology node runs only where its result can change
+### CI: the heavy CONFORM chronology node is deferred to the landing merge for out-of-package PRs
 
 - `ci/chronology-scope.sh` decides per run whether the ~50-minute
   `test_mutation_definitions_are_frozen_but_not_executed_preimplementation` node (measured at
   ~88 % of a per-PR run's wall clock, executed two to three times per PR) is retained: always
   on a push to `main`, on the new nightly `schedule`, and on `workflow_dispatch` (input
-  `chronology`, default on); on a `pull_request` only when the diff touches one of the node's
-  inputs (the conformance modules and CLI it mutates, the CONFORM test files it invokes, its
-  own corpus, the CI scripts and workflows). Anything the script cannot classify or diff
-  retains the node (fail closed).
+  `chronology`, default on); on a `pull_request` only when the diff touches the runtime
+  package (`phase-loop-runtime/` source, tests, scripts, packaging) or the CI scripts and
+  workflows. The proof's process executes inside the package and reads repository docs, so no
+  verdict-invariance claim is made for other PRs: their proof is deferred to the landing merge.
+  Anything the script cannot classify or diff retains the node (fail closed).
 - The decision reaches every executor: `ci/offload-gate.sh` → the Dagger module's `all
   --chronology=`, the hosted py3.10 lane, Gate A via `GATE_A_DESELECT_CHRONOLOGY=1`, and
   `publish-pypi.yml`'s pull-request Gate A (a release tag still runs everything). Each

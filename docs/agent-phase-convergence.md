@@ -271,16 +271,20 @@ change's wall clock, which is still the proof itself. Once we measured it, that 
 ~50 minutes of a ~65-minute run — 88 % — and every pull request paid it, including the ones
 that touched only prose, a workflow, or a module the proof never reads.
 
-The proof's result depends on an enumerable set of inputs (the source modules it mutates, the
-test files it invokes, its own body). So the second step is to run it on a pull request **only
-when the diff touches one of those inputs**, and *unconditionally* on every merge to the
-default branch and on a nightly schedule. Three properties make this safe, and each needs a
-guard of its own:
+The proof's process reads far more than the modules it mutates — the test runner collects
+the whole test tree, the test bootstrap loads runtime plugins, sibling tests read repository
+docs — so no enumeration of "the inputs" is small, and the second step does **not** claim
+that a change outside some list cannot change the verdict. It claims something narrower that
+holds by construction: the proof runs *unconditionally* on every merge to the default branch
+and on a nightly schedule, and on a pull request whenever the diff touches the runtime
+package or the CI plumbing; for any other pull request the proof is deferred to the landing
+merge, so a regression surfaces on the default branch at the latest, never silently. Three
+properties make this safe, and each needs a guard of its own:
 
-- **The input set is checked against the proof's own definition**, not maintained by hand: a
-  test enumerates every path the proof's frozen definitions reference and asserts the scope
-  rule classifies each one as an input. A new input that the rule would let a pull request
-  skip fails that test.
+- **The retained set is checked against the proof's own definition**, not maintained by
+  hand: a test enumerates every path the proof's frozen definitions reference and asserts the
+  scope rule classifies each one as retained. A new input that the rule would let a pull
+  request skip fails that test.
 - **The decision fails closed.** Any event the rule cannot classify, any pull request it
   cannot diff, and any lane the decision fails to reach all retain the proof. The retention
   guard from the previous section additionally asserts the rule answers "retain" for the

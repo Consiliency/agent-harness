@@ -97,6 +97,10 @@ def test_every_chronology_input_is_classified_as_an_input() -> None:
     # A negative control: prose cannot change what the node computes.
     assert _scope("--match", "README.md") == "no-match"
     assert _scope("--match", "docs/agent-phase-convergence.md") == "no-match"
+    # The whole runtime package retains: the proof's process executes inside it.
+    assert _scope("--match", "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py") == "match"
+    assert _scope("--match", "phase-loop-runtime/tests/_dotfiles_tree.py") == "match"
+    assert _scope("--match", "phase-loop-runtime/tests/test_unrelated.py") == "match"
 
 
 def test_every_conftest_bootstrapped_plugin_is_a_chronology_input() -> None:
@@ -212,10 +216,11 @@ def test_pull_request_renaming_an_input_out_of_the_table_retains_the_node(
     _git(repo, "add", str(src))
     _git(repo, "commit", "-q", "-m", "add an input")
     base = _git(repo, "rev-parse", "HEAD")
-    dest = repo / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "elsewhere.py"
+    dest = repo / "tools" / "elsewhere.py"
+    dest.parent.mkdir()
     _git(repo, "mv", str(src), str(dest))
     _git(repo, "commit", "-q", "-m", "move it out of the table")
-    assert _scope("--match", "phase-loop-runtime/src/phase_loop_runtime/elsewhere.py") == "no-match"
+    assert _scope("--match", "tools/elsewhere.py") == "no-match"
     out = _scope(env={"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, cwd=repo)
     assert out == "chronology=true"
 
