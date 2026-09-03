@@ -464,8 +464,12 @@ a landing decision. `tests/test_president_wiring.py`.
   the ruling fields null, `refusal` naming the `president_ruling_missing:<code>`
   detail, and every seam attempt -- and refuses the landing on a non-unanimous
   board, a missing ruling, or any BLOCKING disposition. `implementation-panel.json`
-  is written only after those checks pass, so a president record without a panel
-  record is a refused landing, never a half-written one.
+  is written only after those checks pass. A run directory carries exactly ONE
+  attempt's records: every prior `implementation-panel*.json` (a landing, a
+  president record, a partial `.tmp`) is invalidated before the board runs, and
+  both records are published atomically (temp file + rename), so a president
+  record without a panel record is this attempt's refused landing -- never an
+  earlier attempt's landing beside a later refusal, and never a partial write.
 - **Standalone launchers.** A caller that wants the four-seat board without a
   president passes an explicit `review_policy=ReviewLandingPolicy(required_seats=...,
   requires_president=False)` rather than a president-requiring tier.

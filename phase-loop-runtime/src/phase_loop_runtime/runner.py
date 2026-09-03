@@ -8499,6 +8499,18 @@ def _run_legible_panel(
     )
     from .president_adapter import build_president_invoke
 
+    # ah#736 (CR r2): a run directory carries exactly ONE attempt's board
+    # records. A landing (``implementation-panel.json``) written by an earlier
+    # attempt must not survive beside this attempt's president record, which
+    # may be a refusal -- a reader would see a landing and a refusal for the
+    # same run and could not tell which one this attempt produced. Every prior
+    # ``implementation-panel*.json`` is invalidated BEFORE any artifact of this
+    # attempt is published, so a crash anywhere below leaves no landing record
+    # at all rather than the previous attempt's.
+    for stale in sorted(run_dir.glob("implementation-panel*.json*")):
+        if stale.is_symlink() or stale.is_file():
+            stale.unlink()
+
     stream_dir = run_dir / "implementation-panel-stream"
     invoke_kwargs: dict[str, object] = {
         # This is canonical authority only.  The broker still launches providers
@@ -8658,8 +8670,8 @@ def _run_legible_panel(
             ],
             "refusal": refusal,
         }
-        president_path.write_text(
-            json.dumps(president_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        _write_panel_record(
+            president_path, json.dumps(president_payload, indent=2, sort_keys=True) + "\n"
         )
     if len(legs) != 4 or any(
         leg["status"] != "OK" or leg["usable"] is not True or leg["verdict"] != "AGREE"
@@ -8697,16 +8709,25 @@ def _run_legible_panel(
                 "brief_sha256": hashlib.sha256(brief_path.read_bytes()).hexdigest(),
             }
         )
-    panel_path.write_text(
+    _write_panel_record(
+        panel_path,
         json.dumps(
             panel_payload,
             indent=2,
             sort_keys=True,
         )
         + "\n",
-        encoding="utf-8",
     )
     return panel_path
+
+
+def _write_panel_record(path: Path, text: str) -> None:
+    """Publish a board record atomically: the file is either the previous
+    invalidated state (absent) or the complete new record, never a partial
+    write that a later reader could mistake for a landing decision."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
 
 
 def _load_legible_builder_process(

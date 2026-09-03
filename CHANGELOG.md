@@ -27,8 +27,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   GOVLEAN-switched repos (which the invoker already refused tierless), persists
   `implementation-panel-president.json` (`advisor_board_president.v1`, with every ladder attempt and
   the refusal reason -- written before the landing is judged, so a refused landing still leaves the
-  record), and refuses the landing on a missing ruling or any BLOCKING disposition. Pre-switch repos are
-  byte-neutral. Contract: `advisor_board/CONTRACTS.md` → ABDPRES.
+  record), and refuses the landing on a missing ruling or any BLOCKING disposition. A rerun in the
+  same run directory invalidates the prior attempt's `implementation-panel*.json` before the board
+  runs and publishes both records atomically, so a run never carries an earlier landing beside a
+  later refusal. Pre-switch repos are byte-neutral. Contract: `advisor_board/CONTRACTS.md` → ABDPRES.
 
 ### CI: the heavy CONFORM chronology node is deferred to the landing merge for out-of-package PRs
 

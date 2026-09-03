@@ -430,6 +430,69 @@ def test_runner_president_refusal_names_the_reason(tmp_path, monkeypatch):
     assert record["model"] is None
 
 
+def test_runner_rerun_in_the_same_run_dir_invalidates_the_prior_landing(tmp_path, monkeypatch):
+    # CR r2 (codex): a landing attempt followed by a refused attempt in the SAME
+    # run directory must not leave the first attempt's ``implementation-panel.json``
+    # beside the second attempt's president refusal -- the run would carry both
+    # a landing and a refusal for one head.
+    repo, run_dir, bundle = _runner_fixture(tmp_path)
+    landing = _ruling("FINDING F001: DEFERRED — later\nFORCING DECISION: LAND")
+    monkeypatch.setattr(
+        panel_invoker, "invoke_board", lambda *_a, **_k: _stub_board_result(landing)
+    )
+    panel_path = runner._run_legible_panel(repo, run_dir, "1" * 40, bundle)
+    assert panel_path.is_file()
+    first = json.loads(panel_path.read_text(encoding="utf-8"))
+    assert first["head"] == "1" * 40
+    # a stray partial write from an interrupted attempt is invalidated too
+    (run_dir / "implementation-panel.json.tmp").write_text("{", encoding="utf-8")
+
+    blocking = _ruling("FINDING F001: BLOCKING — lock never released\nFORCING DECISION: REJECT")
+    monkeypatch.setattr(
+        panel_invoker, "invoke_board", lambda *_a, **_k: _stub_board_result(blocking)
+    )
+    with pytest.raises(legible_evidence.LegibleProcessBootstrapError, match="BLOCKING"):
+        runner._run_legible_panel(repo, run_dir, "1" * 40, bundle)
+    assert not (run_dir / "implementation-panel.json").exists()
+    assert not (run_dir / "implementation-panel.json.tmp").exists()
+    record = json.loads((run_dir / "implementation-panel-president.json").read_text(encoding="utf-8"))
+    assert record["forcing_decision"] == "REJECT"
+    # only this attempt's records remain: the four leg artifacts + the refusal
+    assert sorted(p.name for p in run_dir.glob("implementation-panel*.json*")) == sorted(
+        [f"implementation-panel-{seat.harness}.json" for seat in CODE_REVIEW_BOARD.seats]
+        + ["implementation-panel-president.json"]
+    )
+
+    # and the reverse order: a refusal followed by a landing leaves only the landing
+    monkeypatch.setattr(
+        panel_invoker, "invoke_board", lambda *_a, **_k: _stub_board_result(landing)
+    )
+    runner._run_legible_panel(repo, run_dir, "1" * 40, bundle)
+    record = json.loads((run_dir / "implementation-panel-president.json").read_text(encoding="utf-8"))
+    assert record["forcing_decision"] == "LAND"
+    assert (run_dir / "implementation-panel.json").is_file()
+    assert not list(run_dir.glob("*.tmp"))
+
+
+def test_runner_board_records_are_published_atomically(tmp_path, monkeypatch):
+    # A failed rename leaves no record at all -- never a partial file a later
+    # reader could take for a landing.
+    repo, run_dir, bundle = _runner_fixture(tmp_path)
+    landing = _ruling("FINDING F001: DEFERRED — later\nFORCING DECISION: LAND")
+    monkeypatch.setattr(
+        panel_invoker, "invoke_board", lambda *_a, **_k: _stub_board_result(landing)
+    )
+
+    def broken_replace(src, dst):
+        raise OSError("rename failed")
+
+    monkeypatch.setattr(runner.os, "replace", broken_replace)
+    with pytest.raises(OSError, match="rename failed"):
+        runner._run_legible_panel(repo, run_dir, "1" * 40, bundle)
+    assert not (run_dir / "implementation-panel-president.json").exists()
+    assert not (run_dir / "implementation-panel.json").exists()
+
+
 def test_runner_switched_repo_reaches_the_real_board_and_seam_and_fails_closed(tmp_path, monkeypatch):
     # No stub result: the runner's kwargs go through the sanctioned executable
     # control into the REAL ``invoke_board`` president tail and the REAL adapter.
