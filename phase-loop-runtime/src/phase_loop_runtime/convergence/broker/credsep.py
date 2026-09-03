@@ -145,7 +145,7 @@ def _parse_go_strconv_quote(text: str, start: int) -> tuple[str, int] | None:
             return "".join(decoded), index + 1
         if char != "\\":
             codepoint = ord(char)
-            if codepoint < 0x20 or codepoint == 0x7F or 0xD800 <= codepoint <= 0xDFFF:
+            if codepoint < 0x20 or 0x7F <= codepoint <= 0x9F or 0xD800 <= codepoint <= 0xDFFF:
                 return None
             decoded.append(char)
             index += 1

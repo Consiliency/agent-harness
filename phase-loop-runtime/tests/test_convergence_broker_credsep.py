@@ -230,6 +230,52 @@ def test_existing_open_pr_classifier_matches_go_strconv_quote_for_unicode_separa
     ) == "https://github.com/owner/repo/pull/9"
 
 
+def test_existing_open_pr_classifier_accepts_escaped_c1_control(tmp_path):
+    request = BrokerRequest(
+        BrokerVerb.PUBLISH_COMMITTED_BRANCH,
+        AdmissionRequest("attempt", 1, "fence", "digest", "predicate", "scope", "key"),
+        "repo",
+        "feat/next\u0085line",
+        _HEAD,
+        ("a.py",),
+    )
+    completed = SimpleNamespace(
+        stdout="",
+        stderr=(
+            'a pull request for branch "feat/next\\u0085line" '
+            'into branch "main" already exists:\n'
+            "https://github.com/owner/repo/pull/9"
+        ),
+    )
+
+    assert GitHubBrokerAdapter(tmp_path)._create_reports_existing_pr(
+        completed, request, "github.com/owner/repo"
+    ) == "https://github.com/owner/repo/pull/9"
+
+
+def test_existing_open_pr_classifier_rejects_raw_c1_control(tmp_path):
+    request = BrokerRequest(
+        BrokerVerb.PUBLISH_COMMITTED_BRANCH,
+        AdmissionRequest("attempt", 1, "fence", "digest", "predicate", "scope", "key"),
+        "repo",
+        "feat/next\u0085line",
+        _HEAD,
+        ("a.py",),
+    )
+    completed = SimpleNamespace(
+        stdout="",
+        stderr=(
+            'a pull request for branch "feat/next\u0085line" '
+            'into branch "main" already exists:\n'
+            "https://github.com/owner/repo/pull/9"
+        ),
+    )
+
+    assert GitHubBrokerAdapter(tmp_path)._create_reports_existing_pr(
+        completed, request, "github.com/owner/repo"
+    ) is None
+
+
 def test_existing_open_pr_classifier_accepts_literal_unicode_separator_without_table_coupling(tmp_path):
     request = BrokerRequest(
         BrokerVerb.PUBLISH_COMMITTED_BRANCH,
