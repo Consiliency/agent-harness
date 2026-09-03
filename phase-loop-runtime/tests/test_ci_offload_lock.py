@@ -22,13 +22,27 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "ci" / "offload-gate.sh"
 
-# Gate A runs this suite from the installed wheel in a tree without ci/; the
-# script only exists in the repository checkout, which the py3.10 lane covers.
+
+def _is_sparse_checkout(repo: Path) -> bool:
+    """Gate A's clean room is a sparse clone (scripts/gate_a_cleanroom.sh) that
+    deliberately leaves ci/ out; that setting, not the script's absence, is the
+    layout signal. A full checkout that lost the script must still fail loudly."""
+    proc = subprocess.run(
+        ["git", "-C", str(repo), "config", "--bool", "core.sparseCheckout"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc.stdout.strip() == "true"
+
+
+_SPARSE_LAYOUT = _is_sparse_checkout(REPO)
 pytestmark = pytest.mark.skipif(
-    not SCRIPT.is_file(), reason="ci/offload-gate.sh absent (from-wheel clean-room layout); repo-tree test only"
+    _SPARSE_LAYOUT, reason="sparse clean-room clone excludes ci/ (Gate A); the checkout lanes run this module"
 )
 
-assert shutil.which("flock"), "flock (util-linux) is required for these tests"
+if not _SPARSE_LAYOUT:
+    assert shutil.which("flock"), "flock (util-linux) is required for these tests"
 
 _SSH_STUB = """#!/usr/bin/env bash
 # ssh [-o OPT]... [-p PORT] <host> <command...>: run the remote command locally,
