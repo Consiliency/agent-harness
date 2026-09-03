@@ -3,6 +3,8 @@ import os
 import unittest.mock
 from types import SimpleNamespace
 
+import pytest
+
 from phase_loop_runtime.convergence.broker.credsep import BrokerEnvironmentBoundary, GitHubBrokerAdapter, build_non_force_branch_ref
 from phase_loop_runtime.convergence.contracts import AdmissionRequest, BrokerRequest, BrokerVerb
 
@@ -58,11 +60,11 @@ def _base_responses():
 def test_remote_head_match_returns_effect_observed_with_real_url(tmp_path):
     run = _FakeRun(_base_responses() + [
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
-        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "main"}]), 0),
+        (("list",), json.dumps([{"url": "https://github.com/owner/repo/pull/9", "headRefOid": _HEAD, "baseRefName": "main"}]), 0),
     ])
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
     assert evidence.terminal_state == "effect_terminal_observed"
-    assert result is not None and result.pr_url == "https://gh/pr/9"
+    assert result is not None and result.pr_url == "https://github.com/owner/repo/pull/9"
     assert result.head_sha == _HEAD
 
 
@@ -70,15 +72,41 @@ def test_existing_open_pr_create_failure_is_reconciled_by_exact_readback(tmp_pat
     run = _FakeRun(_base_responses()[:-1] + [
         (("create",), "", 1, f'a pull request for branch "{_BRANCH}" into branch "main" already exists'),
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
-        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "main"}]), 0),
+        (("list",), json.dumps([{"url": "https://github.com/owner/repo/pull/9", "headRefOid": _HEAD, "baseRefName": "main"}]), 0),
     ])
 
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
 
     assert evidence.terminal_state == "effect_terminal_observed"
-    assert result is not None and result.pr_url == "https://gh/pr/9"
+    assert result is not None and result.pr_url == "https://github.com/owner/repo/pull/9"
     listed = next(call for call in run.calls if call[:3] == ["gh", "pr", "list"])
     assert listed[listed.index("--state") + 1] == "open"
+
+
+@pytest.mark.parametrize(
+    "malformed_url",
+    [
+        {"url": "https://github.com/owner/repo/pull/9"},
+        9,
+        "not-a-pr-url",
+        "https://github.com/other/repo/pull/9",
+    ],
+    ids=["dict", "integer", "non-pr-string", "wrong-repository"],
+)
+def test_existing_open_pr_recovery_rejects_malformed_or_wrong_repo_url(tmp_path, malformed_url):
+    run = _FakeRun(_base_responses()[:-1] + [
+        (("create",), "", 1, "a pull request for this branch already exists"),
+        (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+        (("list",), json.dumps([
+            {"url": malformed_url, "headRefOid": _HEAD, "baseRefName": "main"},
+        ]), 0),
+    ])
+
+    result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
+
+    assert result is None
+    assert evidence.terminal_state == "outcome_ambiguous_blocked"
+    assert evidence.evidence_reference == "pr-url-unconfirmed"
 
 
 def test_existing_open_pr_recovery_rejects_multiple_results(tmp_path):
@@ -86,8 +114,8 @@ def test_existing_open_pr_recovery_rejects_multiple_results(tmp_path):
         (("create",), "", 1, "a pull request for this branch already exists"),
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
         (("list",), json.dumps([
-            {"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "main"},
-            {"url": "https://gh/pr/10", "headRefOid": _HEAD, "baseRefName": "main"},
+            {"url": "https://github.com/owner/repo/pull/9", "headRefOid": _HEAD, "baseRefName": "main"},
+            {"url": "https://github.com/owner/repo/pull/10", "headRefOid": _HEAD, "baseRefName": "main"},
         ]), 0),
     ])
 
@@ -103,7 +131,7 @@ def test_existing_open_pr_recovery_rejects_mismatched_base(tmp_path):
         (("create",), "", 1, "a pull request for this branch already exists"),
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
         (("list",), json.dumps([
-            {"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "release/2.0"},
+            {"url": "https://github.com/owner/repo/pull/9", "headRefOid": _HEAD, "baseRefName": "release/2.0"},
         ]), 0),
     ])
 
@@ -165,7 +193,7 @@ def test_remote_read_failure_returns_ambiguous_not_no_effect(tmp_path):
 def test_pr_head_unconfirmed_returns_ambiguous(tmp_path):
     run = _FakeRun(_base_responses() + [
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
-        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": "other-sha"}]), 0),
+        (("list",), json.dumps([{"url": "https://github.com/owner/repo/pull/9", "headRefOid": "other-sha"}]), 0),
     ])
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
     assert result is None
@@ -183,7 +211,7 @@ def test_pr_head_unconfirmed_returns_ambiguous(tmp_path):
 def test_pr_head_match_but_base_mismatch_fails_closed_to_ambiguous(tmp_path):
     run = _FakeRun(_base_responses() + [
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
-        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "some-other-base"}]), 0),
+        (("list",), json.dumps([{"url": "https://github.com/owner/repo/pull/9", "headRefOid": _HEAD, "baseRefName": "some-other-base"}]), 0),
     ])
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
     assert result is None
@@ -195,11 +223,11 @@ def test_pr_head_and_base_both_match_returns_effect_observed(tmp_path):
     # Positive case: headRefOid AND baseRefName both equal the request's -> accepted.
     run = _FakeRun(_base_responses() + [
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
-        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "main"}]), 0),
+        (("list",), json.dumps([{"url": "https://github.com/owner/repo/pull/9", "headRefOid": _HEAD, "baseRefName": "main"}]), 0),
     ])
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
     assert evidence.terminal_state == "effect_terminal_observed"
-    assert result is not None and result.pr_url == "https://gh/pr/9"
+    assert result is not None and result.pr_url == "https://github.com/owner/repo/pull/9"
 
 
 def test_pr_head_match_but_base_mismatch_on_non_default_base_fails_closed(tmp_path):
@@ -217,7 +245,7 @@ def test_pr_head_match_but_base_mismatch_on_non_default_base_fails_closed(tmp_pa
         (("create",), "", 0),
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
         (("list",), json.dumps([
-            {"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "main"},
+            {"url": "https://github.com/owner/repo/pull/9", "headRefOid": _HEAD, "baseRefName": "main"},
         ]), 0),
     ])
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request_owning("a.py", base="release/2.0"))
@@ -399,7 +427,7 @@ def test_directory_owned_entry_covers_changed_files_under_it(tmp_path):
         (("push",), "", 0),
         (("create",), "", 0),
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
-        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "main"}]), 0),
+        (("list",), json.dumps([{"url": "https://github.com/owner/repo/pull/9", "headRefOid": _HEAD, "baseRefName": "main"}]), 0),
     ])
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request_owning("src"))
     assert evidence.terminal_state == "effect_terminal_observed"
@@ -418,7 +446,7 @@ def test_broker_re_diffs_against_the_request_base(tmp_path):
         (("push",), "", 0),
         (("create",), "", 0),
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
-        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "release/2.0"}]), 0),
+        (("list",), json.dumps([{"url": "https://github.com/owner/repo/pull/9", "headRefOid": _HEAD, "baseRefName": "release/2.0"}]), 0),
     ])
     GitHubBrokerAdapter(tmp_path, run=run).execute(_request_owning("a.py", base="release/2.0"))
     diff = next(c for c in run.calls if "diff" in c)
@@ -431,7 +459,7 @@ def test_gh_calls_are_bound_to_origin_repo_slug(tmp_path):
     cannot open/read the PR on a different repo while the push+ls-remote match."""
     run = _FakeRun(_base_responses() + [
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
-        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "main"}]), 0),
+        (("list",), json.dumps([{"url": "https://github.com/owner/repo/pull/9", "headRefOid": _HEAD, "baseRefName": "main"}]), 0),
     ])
     GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
     gh = [c for c in run.calls if c and c[0] == "gh"]
@@ -451,7 +479,7 @@ def test_pr_create_is_noninteractive_with_title_body_head(tmp_path):
     request = BrokerRequest(BrokerVerb.PUBLISH_COMMITTED_BRANCH, admission, "repo", _BRANCH, _HEAD, ("a.py",), draft=True, pr_body=body)
     run = _FakeRun(_base_responses() + [
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
-        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "main"}]), 0),
+        (("list",), json.dumps([{"url": "https://github.com/owner/repo/pull/9", "headRefOid": _HEAD, "baseRefName": "main"}]), 0),
     ])
     GitHubBrokerAdapter(tmp_path, run=run).execute(request)
     create = next(c for c in run.calls if c[:3] == ["gh", "pr", "create"])
@@ -484,8 +512,6 @@ def test_broker_env_strips_repo_redirect_but_keeps_credential_and_host():
     assert broker.get("GH_HOST") == "ghe.corp"   # GH_HOST kept (host pinned by --repo; preserves GHE config)
     assert broker.get("NORMAL") == "y"
 
-
-import pytest
 @pytest.mark.parametrize("url,slug", [
     ("https://github.com/owner/repo.git", "github.com/owner/repo"),
     ("https://github.com/owner/repo", "github.com/owner/repo"),
@@ -532,7 +558,7 @@ def test_push_and_lsremote_bind_to_explicit_origin_url_not_alias(tmp_path):
     origin = "https://github.com/owner/repo.git"
     run = _FakeRun(_base_responses() + [
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
-        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "main"}]), 0),
+        (("list",), json.dumps([{"url": "https://github.com/owner/repo/pull/9", "headRefOid": _HEAD, "baseRefName": "main"}]), 0),
     ])
     GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
     push = next(c for c in run.calls if "push" in c)
@@ -573,7 +599,7 @@ def test_legit_rename_within_owned_scope_is_not_false_rejected(tmp_path):
         (("push",), "", 0),
         (("create",), "", 0),
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
-        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "main"}]), 0),
+        (("list",), json.dumps([{"url": "https://github.com/owner/repo/pull/9", "headRefOid": _HEAD, "baseRefName": "main"}]), 0),
     ])
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request_owning("owned"))
     assert evidence.terminal_state == "effect_terminal_observed"
@@ -586,7 +612,7 @@ def test_legit_rename_within_owned_scope_is_not_false_rejected(tmp_path):
 def test_push_targets_exact_head_sha_not_mutable_ref(tmp_path):
     run = _FakeRun(_base_responses() + [
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
-        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "main"}]), 0),
+        (("list",), json.dumps([{"url": "https://github.com/owner/repo/pull/9", "headRefOid": _HEAD, "baseRefName": "main"}]), 0),
     ])
     GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
     push = next(c for c in run.calls if "push" in c)
@@ -608,7 +634,7 @@ def test_pr_create_carries_explicit_base(tmp_path):
         (("push",), "", 0),
         (("create",), "", 0),
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
-        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "release/2.0"}]), 0),
+        (("list",), json.dumps([{"url": "https://github.com/owner/repo/pull/9", "headRefOid": _HEAD, "baseRefName": "release/2.0"}]), 0),
     ])
     GitHubBrokerAdapter(tmp_path, run=run).execute(_request_owning("a.py", base="release/2.0"))
     create = next(c for c in run.calls if c[:3] == ["gh", "pr", "create"])
@@ -645,7 +671,7 @@ def test_valid_base_with_slash_is_not_rejected_by_the_guard(tmp_path):
         (("push",), "", 0),
         (("create",), "", 0),
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
-        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "release/2.0"}]), 0),
+        (("list",), json.dumps([{"url": "https://github.com/owner/repo/pull/9", "headRefOid": _HEAD, "baseRefName": "release/2.0"}]), 0),
     ])
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request_owning("a.py", base="release/2.0"))
     assert evidence.terminal_state == "effect_terminal_observed"
@@ -746,7 +772,7 @@ def test_byte_identical_weird_filename_is_approved_end_to_end(tmp_path):
         (("push",), "", 0),
         (("create",), "", 0),
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
-        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "main"}]), 0),
+        (("list",), json.dumps([{"url": "https://github.com/owner/repo/pull/9", "headRefOid": _HEAD, "baseRefName": "main"}]), 0),
     ])
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request_owning(weird))
     assert evidence.terminal_state == "effect_terminal_observed"

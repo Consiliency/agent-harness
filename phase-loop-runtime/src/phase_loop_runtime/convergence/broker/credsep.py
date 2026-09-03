@@ -6,6 +6,7 @@ import os
 import subprocess
 from pathlib import Path
 from typing import Mapping
+from urllib.parse import urlsplit
 
 from phase_loop_runtime.convergence.contracts import BrokerRequest, BrokerTerminalEvidence, BrokerVerb, PublishCommittedBranchResult
 
@@ -197,6 +198,33 @@ class GitHubBrokerAdapter:
     def _create_reports_existing_pr(completed) -> bool:
         output = f"{completed.stdout or ''}\n{completed.stderr or ''}".lower()
         return "pull request" in output and "already exists" in output
+
+    @staticmethod
+    def _pr_url_matches_origin(url, origin_repo: str) -> bool:
+        if not isinstance(url, str):
+            return False
+        try:
+            host, owner, repo = origin_repo.split("/", 2)
+            parsed = urlsplit(url)
+            port = parsed.port
+        except (TypeError, ValueError):
+            return False
+        path_parts = parsed.path.split("/")
+        return (
+            parsed.scheme == "https"
+            and parsed.netloc == host
+            and parsed.hostname == host
+            and parsed.username is None
+            and parsed.password is None
+            and port is None
+            and not parsed.query
+            and not parsed.fragment
+            and path_parts[:4] == ["", owner, repo, "pull"]
+            and len(path_parts) == 5
+            and path_parts[4].isascii()
+            and path_parts[4].isdigit()
+            and int(path_parts[4]) > 0
+        )
 
     def _branch_diff_paths(self, base: str, head_sha: str):
         # agent-harness#202: the broker's OWN re-derivation of what the branch changed vs
@@ -390,10 +418,13 @@ class GitHubBrokerAdapter:
         # BOTH headRefOid AND baseRefName to equal the request's before accepting the
         # match; a head-matched/base-mismatched PR fails CLOSED as ambiguous (a PR
         # genuinely exists at that head, so this is not a provable no-effect).
-        head_matches = [p for p in prs if isinstance(p, dict) and p.get("headRefOid") == request.head_sha and p.get("url")]
+        head_matches = [p for p in prs if isinstance(p, dict) and p.get("headRefOid") == request.head_sha]
         match = next((p for p in head_matches if p.get("baseRefName") == request.base), None)
         if match is None:
             if head_matches:
                 return self._ambiguous(request, "pr-base-unconfirmed")
             return self._ambiguous(request, "pr-head-unconfirmed")
-        return PublishCommittedBranchResult(request.branch, request.head_sha, match["url"]), BrokerTerminalEvidence(request.admission.idempotency_key, "effect_terminal_observed", match["url"])
+        pr_url = match.get("url")
+        if not self._pr_url_matches_origin(pr_url, origin_repo):
+            return self._ambiguous(request, "pr-url-unconfirmed")
+        return PublishCommittedBranchResult(request.branch, request.head_sha, pr_url), BrokerTerminalEvidence(request.admission.idempotency_key, "effect_terminal_observed", pr_url)
