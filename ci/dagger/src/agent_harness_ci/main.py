@@ -188,19 +188,13 @@ class AgentHarnessCi:
             suite_args.append(f"--deselect={CHRONOLOGY_NODE}")
         selection = "suite_args=(" + " ".join(f'"{a}"' for a in suite_args) + ")"
         if python_version == CHRONOLOGY_PYTHON:
-            # The junit must WITNESS the decision: the node's name present when it
-            # ran, absent when it was deselected. A deselect that silently matched
-            # nothing (or a retain that silently skipped) fails here, not never.
+            # The junit must WITNESS the decision: the node present (ran, passed)
+            # when retained, absent when deselected. A deselect that silently
+            # matched nothing, or a retain that skipped, fails here, not never.
             expect = "present" if keeps_chronology else "absent"
             witness = f"""
-junit=/junit/junit-py{python_version.replace(".", "")}.xml
-node_name="${{CHRONOLOGY_NODE##*::}}"
-if grep -q "name=\\"$node_name\\"" "$junit"; then found=present; else found=absent; fi
-if [ "$found" != "{expect}" ]; then
-  echo "chronology witness: expected the node {expect} in $junit, found it $found" >&2
-  exit 1
-fi
-echo "chronology witness: node {expect} in $junit"
+python scripts/chronology_witness.py \\
+  --junit /junit/junit-py{python_version.replace(".", "")}.xml --node "$CHRONOLOGY_NODE" --expect {expect}
 """
         else:
             witness = ""

@@ -424,16 +424,11 @@ PYEOF
   if [ "${CHRONOLOGY_WITNESS:-0}" = "1" ]; then
     # A deselect that matched nothing (node renamed/moved) or a retain that never
     # collected it must fail HERE, against the evidence, not stay invisible.
-    if grep -q "name=\"${CHRONOLOGY_NODE##*::}\"" "$GATE_A_JUNIT"; then
-      found=present
-    else
-      found=absent
-    fi
-    if [ "$found" != "$CHRONOLOGY_EXPECT" ]; then
-      echo "GATE-A FAIL: chronology witness expected the node $CHRONOLOGY_EXPECT in $GATE_A_JUNIT, found it $found" >&2
+    if ! "$PY" "$PKG_ROOT/scripts/chronology_witness.py" \
+        --junit "$GATE_A_JUNIT" --node "$CHRONOLOGY_NODE" --expect "$CHRONOLOGY_EXPECT"; then
+      echo "GATE-A FAIL: chronology witness did not hold (see above)" >&2
       exit 1
     fi
-    echo "-- chronology witness: node $CHRONOLOGY_EXPECT in $GATE_A_JUNIT --"
   fi
   echo "-- full standalone suite: GREEN --"
 fi

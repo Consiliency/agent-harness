@@ -314,18 +314,10 @@ jobs:
             --ignore tests/test_legible_roadmap_contract.py \
             --ignore tests/test_legible_evidence.py
           if [ -n "$expect" ]; then
-            # The junit must WITNESS the decision: node present when retained,
-            # absent when deselected.
-            if grep -q "name=\"${CHRONOLOGY_NODE##*::}\"" "$RUNNER_TEMP/junit-py310.xml"; then
-              found=present
-            else
-              found=absent
-            fi
-            if [ "$found" != "$expect" ]; then
-              echo "chronology witness: expected the node $expect in the py3.10 junit, found it $found" >&2
-              exit 1
-            fi
-            echo "chronology witness: node $expect in the py3.10 junit"
+            # The junit must WITNESS the decision: node present (ran, passed)
+            # when retained, absent when deselected. A skipped row is neither.
+            python scripts/chronology_witness.py \
+              --junit "$RUNNER_TEMP/junit-py310.xml" --node "$CHRONOLOGY_NODE" --expect "$expect"
           fi
           suite_root="$(mktemp -d)/phase-loop-runtime"
           mkdir -p "$suite_root" "$(dirname "$suite_root")/specs"

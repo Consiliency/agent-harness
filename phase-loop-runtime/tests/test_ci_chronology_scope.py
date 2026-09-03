@@ -20,12 +20,13 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 import yaml
 
-from _outside_agent_canonical import CONFORM_MUTATION_DEFINITIONS
+from _outside_agent_canonical import CONFORM_MUTATION_DEFINITIONS, FIXTURE_ROOT, MANIFEST_PATH
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -34,6 +35,7 @@ WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "test.yml"
 PUBLISH_WORKFLOW_PATH = REPO_ROOT / ".github" / "workflows" / "publish-pypi.yml"
 DAGGER_MODULE = REPO_ROOT / "ci" / "dagger" / "src" / "agent_harness_ci" / "main.py"
 GATE_A_SCRIPT = REPO_ROOT / "phase-loop-runtime" / "scripts" / "gate_a_cleanroom.sh"
+WITNESS_SCRIPT = REPO_ROOT / "phase-loop-runtime" / "scripts" / "chronology_witness.py"
 
 CHRONOLOGY_NODE = (
     "tests/test_outside_agent_conform_evidence.py::"
@@ -85,6 +87,10 @@ def _chronology_inputs() -> set[str]:
 
 def test_every_chronology_input_is_classified_as_an_input() -> None:
     inputs = _chronology_inputs()
+    # The target tests read the digest-pinned fixture vectors directly; a PR that
+    # re-pins a vector (bytes + digest together) must retain the node.
+    inputs.add(str(FIXTURE_ROOT.relative_to(REPO_ROOT) / "PROVENANCE.json"))
+    inputs.add(str(MANIFEST_PATH.relative_to(REPO_ROOT)))
     assert inputs, "the frozen corpus names no inputs -- the fixture is broken"
     misses = sorted(path for path in inputs if _scope("--match", path) != "match")
     assert not misses, f"chronology inputs the scope script would let a PR skip: {misses}"
@@ -106,11 +112,14 @@ def test_every_consumer_spells_the_same_node_id() -> None:
     assert dagger_literal.group(1) + dagger_literal.group(2) == CHRONOLOGY_NODE
     gate_a = GATE_A_SCRIPT.read_text(encoding="utf-8")
     assert f'CHRONOLOGY_NODE="{CHRONOLOGY_NODE}"' in gate_a
-    # The witness matches the junit ``name`` attribute, which is the bare
-    # function name -- so that name must be what the node id ends in.
-    node_name = CHRONOLOGY_NODE.rsplit("::", 1)[1]
-    assert 'name=\\"${CHRONOLOGY_NODE##*::}\\"' in gate_a
-    assert node_name.startswith("test_")
+    # Every consumer proves its decision through the ONE witness script (which
+    # binds module + name and rejects skipped rows); none greps the junit itself.
+    witness_call = 'chronology_witness.py'
+    for label, text in (("test.yml", workflow_text), ("dagger", dagger), ("gate_a", gate_a)):
+        assert witness_call in text, f"{label} no longer runs the shared chronology witness"
+        assert 'name=\\"' not in text and "name=\\\\\"" not in text, (
+            f"{label} still greps the junit name attribute instead of using the witness"
+        )
 
 
 @pytest.mark.parametrize("event", ["push", "schedule", "workflow_dispatch", "", "unknown_event"])
@@ -176,6 +185,92 @@ def test_pull_request_touching_an_input_retains_the_node(pr_repo: tuple[Path, st
     _git(repo, "commit", "-q", "-m", "touch an input")
     out = _scope(env={"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, cwd=repo)
     assert out == "chronology=true"
+
+
+def test_pull_request_renaming_an_input_out_of_the_table_retains_the_node(
+    pr_repo: tuple[Path, str],
+) -> None:
+    """Rename detection would report only the destination; the old endpoint must count."""
+    repo, _ = pr_repo
+    src = repo / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "conformance" / "outside_agent_core.py"
+    src.parent.mkdir(parents=True)
+    src.write_text("# a conformance module large enough for rename detection\n" * 20, encoding="utf-8")
+    _git(repo, "add", str(src))
+    _git(repo, "commit", "-q", "-m", "add an input")
+    base = _git(repo, "rev-parse", "HEAD")
+    dest = repo / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "elsewhere.py"
+    _git(repo, "mv", str(src), str(dest))
+    _git(repo, "commit", "-q", "-m", "move it out of the table")
+    assert _scope("--match", "phase-loop-runtime/src/phase_loop_runtime/elsewhere.py") == "no-match"
+    out = _scope(env={"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, cwd=repo)
+    assert out == "chronology=true"
+
+
+def test_pull_request_touching_a_fixture_vector_retains_the_node(pr_repo: tuple[Path, str]) -> None:
+    repo, base = pr_repo
+    vector = repo / "phase-loop-runtime" / "tests" / "fixtures" / "outside_agent_contract_v0_2_1" / "x.json"
+    vector.parent.mkdir(parents=True)
+    vector.write_text("{}\n", encoding="utf-8")
+    _git(repo, "add", str(vector))
+    _git(repo, "commit", "-q", "-m", "touch a fixture")
+    out = _scope(env={"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, cwd=repo)
+    assert out == "chronology=true"
+
+
+def _witness(junit: Path, expect: str, node: str = CHRONOLOGY_NODE) -> tuple[int, str]:
+    result = subprocess.run(
+        [sys.executable, str(WITNESS_SCRIPT), "--junit", str(junit), "--node", node, "--expect", expect],
+        capture_output=True,
+        text=True,
+    )
+    return result.returncode, result.stdout + result.stderr
+
+
+def _junit(tmp_path: Path, *cases: str) -> Path:
+    path = tmp_path / "junit.xml"
+    path.write_text(
+        '<?xml version="1.0" encoding="utf-8"?><testsuites><testsuite name="pytest">'
+        + "".join(cases)
+        + "</testsuite></testsuites>",
+        encoding="utf-8",
+    )
+    return path
+
+
+_MODULE = "tests.test_outside_agent_conform_evidence"
+_NAME = CHRONOLOGY_NODE.rsplit("::", 1)[1]
+
+
+def test_witness_present_requires_the_node_to_have_run_and_passed(tmp_path: Path) -> None:
+    passed = _junit(tmp_path, f'<testcase classname="{_MODULE}" name="{_NAME}" time="1.0" />')
+    assert _witness(passed, "present")[0] == 0
+    assert _witness(passed, "absent")[0] == 1
+    for tag in ("skipped", "failure", "error"):
+        junit = _junit(tmp_path, f'<testcase classname="{_MODULE}" name="{_NAME}"><{tag} message="x"/></testcase>')
+        rc, out = _witness(junit, "present")
+        assert rc == 1 and f"found it {tag}" in out, (tag, out)
+        # A row that did not pass is not "absent" either: a deselect must not be
+        # proven by a skip.
+        assert _witness(junit, "absent")[0] == 1
+
+
+def test_witness_absent_requires_no_row_for_the_node(tmp_path: Path) -> None:
+    empty = _junit(tmp_path, f'<testcase classname="{_MODULE}" name="test_conform_red_assertion_catalog_is_literal" />')
+    assert _witness(empty, "absent")[0] == 0
+    assert _witness(empty, "present")[0] == 1
+    # Same function name in another module, or a parametrized variant, is not the node.
+    foreign = _junit(tmp_path, f'<testcase classname="tests.test_other_module" name="{_NAME}" />')
+    assert _witness(foreign, "absent")[0] == 0
+    variant = _junit(tmp_path, f'<testcase classname="{_MODULE}" name="{_NAME}[x]" />')
+    assert _witness(variant, "absent")[0] == 0
+
+
+def test_witness_refuses_missing_or_malformed_junit(tmp_path: Path) -> None:
+    assert _witness(tmp_path / "nope.xml", "absent")[0] == 2
+    broken = tmp_path / "broken.xml"
+    broken.write_text("<testsuites><testcase", encoding="utf-8")
+    assert _witness(broken, "absent")[0] == 2
+    assert _witness(_junit(tmp_path), "absent", node="no-separator")[0] == 2
 
 
 def test_pull_request_with_an_unresolvable_base_fails_closed(pr_repo: tuple[Path, str]) -> None:

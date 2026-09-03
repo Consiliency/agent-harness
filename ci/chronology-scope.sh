@@ -33,6 +33,7 @@ chronology_input_path() {
     phase-loop-runtime/src/phase_loop_runtime/conformance/*) return 0 ;;
     phase-loop-runtime/src/phase_loop_runtime/cli.py) return 0 ;;
     phase-loop-runtime/tests/_outside_agent_canonical.py) return 0 ;;
+    phase-loop-runtime/tests/fixtures/*) return 0 ;;
     phase-loop-runtime/tests/test_outside_agent_*) return 0 ;;
     phase-loop-runtime/tests/conftest.py) return 0 ;;
     phase-loop-runtime/scripts/gate_a_cleanroom.sh) return 0 ;;
@@ -78,7 +79,9 @@ base="${CHRONOLOGY_BASE_SHA:-}"
 if [ -z "$base" ]; then
   decide true "pull_request without CHRONOLOGY_BASE_SHA; failing closed"; exit 0
 fi
-if ! changed="$(git diff --name-only "$base...HEAD" 2>/dev/null)"; then
+# --no-renames: a rename reports BOTH endpoints, so moving an input out of the
+# table still surfaces the old (matched) path instead of only the new one.
+if ! changed="$(git diff --name-only --no-renames "$base...HEAD" 2>/dev/null)"; then
   decide true "git diff $base...HEAD failed (shallow or missing base?); failing closed"; exit 0
 fi
 while IFS= read -r path; do
