@@ -6,6 +6,7 @@ import os
 import subprocess
 from pathlib import Path
 from typing import Mapping
+from urllib.parse import urlsplit
 
 from phase_loop_runtime.convergence.contracts import BrokerRequest, BrokerTerminalEvidence, BrokerVerb, PublishCommittedBranchResult
 
@@ -109,6 +110,85 @@ def resolve_broker_repo_identity(repo_path: Path, run=subprocess.run, allowed_ho
 _UNDECLARED_GENERATION = object()
 
 
+_GO_QUOTE_SHORT_ESCAPES = {
+    "a": "\a",
+    "b": "\b",
+    "f": "\f",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    "v": "\v",
+    "\\": "\\",
+    '"': '"',
+}
+_GO_QUOTE_SHORT_CODEPOINTS = frozenset(ord(value) for value in _GO_QUOTE_SHORT_ESCAPES.values())
+_LOWER_HEX = frozenset("0123456789abcdef")
+
+
+def _parse_go_strconv_quote(text: str, start: int) -> tuple[str, int] | None:
+    """Decode one strict ``strconv.Quote`` spelling without a Unicode print table.
+
+    Go versions can disagree about whether a newly assigned Unicode code point is
+    printable.  Both the literal scalar and its canonical-width lower-case Unicode
+    escape therefore decode to the same value here.  That narrow two-spelling
+    allowance is safe because the decoded value is compared byte-for-byte with the
+    request below; redundant ASCII escapes, raw controls, invalid scalars, and
+    noncanonical widths/case remain rejected.
+    """
+    if start >= len(text) or text[start] != '"':
+        return None
+    decoded = []
+    index = start + 1
+    while index < len(text):
+        char = text[index]
+        if char == '"':
+            return "".join(decoded), index + 1
+        if char != "\\":
+            codepoint = ord(char)
+            if codepoint < 0x20 or 0x7F <= codepoint <= 0x9F or 0xD800 <= codepoint <= 0xDFFF:
+                return None
+            decoded.append(char)
+            index += 1
+            continue
+        if index + 1 >= len(text):
+            return None
+        escape = text[index + 1]
+        if escape in _GO_QUOTE_SHORT_ESCAPES:
+            decoded.append(_GO_QUOTE_SHORT_ESCAPES[escape])
+            index += 2
+            continue
+        if escape == "x":
+            end = index + 4
+            digits = text[index + 2:end]
+            if len(digits) != 2 or any(digit not in _LOWER_HEX for digit in digits):
+                return None
+            codepoint = int(digits, 16)
+            if codepoint in _GO_QUOTE_SHORT_CODEPOINTS or not (
+                codepoint < 0x20 or codepoint == 0x7F
+            ):
+                return None
+        elif escape in ("u", "U"):
+            width = 4 if escape == "u" else 8
+            end = index + 2 + width
+            digits = text[index + 2:end]
+            if len(digits) != width or any(digit not in _LOWER_HEX for digit in digits):
+                return None
+            codepoint = int(digits, 16)
+            if (
+                codepoint < 0x80
+                or codepoint > 0x10FFFF
+                or 0xD800 <= codepoint <= 0xDFFF
+                or escape == "u" and codepoint >= 0x10000
+                or escape == "U" and codepoint < 0x10000
+            ):
+                return None
+        else:
+            return None
+        decoded.append(chr(codepoint))
+        index = end
+    return None
+
+
 class GitHubBrokerAdapter:
     def __init__(
         self,
@@ -192,6 +272,61 @@ class GitHubBrokerAdapter:
         # rejected_before_start, which is only reachable pre-intent), and fails closed
         # (accepted is granted only on effect_terminal_observed).
         return None, BrokerTerminalEvidence(request.admission.idempotency_key, "no_effect_terminal_proven", reference)
+
+    def _create_reports_existing_pr(self, completed, request: BrokerRequest, origin_repo: str) -> str | None:
+        if completed.stdout not in (None, "") or not isinstance(completed.stderr, str):
+            return None
+        stderr = completed.stderr
+        if stderr.endswith("\n"):
+            stderr = stderr[:-1]
+        prefix = "a pull request for branch "
+        if not stderr.startswith(prefix):
+            return None
+        parsed_branch = _parse_go_strconv_quote(stderr, len(prefix))
+        if parsed_branch is None:
+            return None
+        branch, index = parsed_branch
+        separator = " into branch "
+        if branch != request.branch or not stderr.startswith(separator, index):
+            return None
+        parsed_base = _parse_go_strconv_quote(stderr, index + len(separator))
+        if parsed_base is None:
+            return None
+        base, index = parsed_base
+        suffix = " already exists:\n"
+        if base != request.base or not stderr.startswith(suffix, index):
+            return None
+        diagnostic_url = stderr[index + len(suffix):]
+        return diagnostic_url if self._pr_url_matches_origin(diagnostic_url, origin_repo) else None
+
+    @staticmethod
+    def _pr_url_matches_origin(url, origin_repo: str) -> bool:
+        if not isinstance(url, str):
+            return False
+        try:
+            host, owner, repo = origin_repo.split("/", 2)
+            parsed = urlsplit(url)
+            port = parsed.port
+        except (TypeError, ValueError):
+            return False
+        path_parts = parsed.path.split("/")
+        if not (
+            parsed.scheme == "https"
+            and parsed.netloc == host
+            and parsed.hostname == host
+            and parsed.username is None
+            and parsed.password is None
+            and port is None
+            and not parsed.query
+            and not parsed.fragment
+            and path_parts[:4] == ["", owner, repo, "pull"]
+            and len(path_parts) == 5
+        ):
+            return False
+        number = path_parts[4]
+        if not number or number[0] not in "123456789" or not number.isascii() or not number.isdigit():
+            return False
+        return url == f"https://{host}/{owner}/{repo}/pull/{number}"
 
     def _branch_diff_paths(self, base: str, head_sha: str):
         # agent-harness#202: the broker's OWN re-derivation of what the branch changed vs
@@ -350,7 +485,16 @@ class GitHubBrokerAdapter:
         args = ["gh", "pr", "create", "--repo", origin_repo, "--head", request.branch, "--base", request.base, "--title", title, "--body", request.pr_body or title]
         if request.draft: args.append("--draft")
         created = self.run(args, cwd=self.repo_path, capture_output=True, text=True)
-        if created.returncode: return self._ambiguous(request, "pr-unconfirmed")
+        # An exact branch may already have an open PR (for example after a prior
+        # process pushed and created it but died before recording terminal evidence).
+        # `gh pr create` reports that condition as a non-zero exit. Reconcile only
+        # that recognized response through the same server read-back below; every
+        # unrelated create failure remains permanently ambiguous.
+        diagnostic_pr_url = None
+        if created.returncode:
+            diagnostic_pr_url = self._create_reports_existing_pr(created, request, origin_repo)
+            if diagnostic_pr_url is None:
+                return self._ambiguous(request, "pr-unconfirmed")
         # Exact-published-head verification: READ the remote and confirm the branch
         # head on origin equals the pushed sha, then resolve the REAL PR url and
         # confirm its headRefOid matches.  Only then is the effect terminally observed.
@@ -359,12 +503,16 @@ class GitHubBrokerAdapter:
         remote_sha = remote.stdout.split("\t", 1)[0].strip() if remote.stdout.strip() else ""
         if not remote_sha: return self._ambiguous(request, "remote-branch-absent")
         if remote_sha != request.head_sha: return self._ambiguous(request, "remote-head-mismatch")
-        listed = self.run(["gh", "pr", "list", "--repo", origin_repo, "--head", request.branch, "--json", "url,headRefOid,baseRefName"], cwd=self.repo_path, capture_output=True, text=True)
+        listed = self.run(["gh", "pr", "list", "--repo", origin_repo, "--head", request.branch, "--state", "open", "--json", "url,headRefOid,baseRefName,headRepositoryOwner,isCrossRepository"], cwd=self.repo_path, capture_output=True, text=True)
         if listed.returncode: return self._ambiguous(request, "pr-read-failed")
         try:
             prs = json.loads(listed.stdout or "[]")
         except json.JSONDecodeError:
             return self._ambiguous(request, "pr-read-unparsable")
+        if not isinstance(prs, list):
+            return self._ambiguous(request, "pr-read-unparsable")
+        if len(prs) > 1:
+            return self._ambiguous(request, "pr-list-ambiguous")
         # Head-only matching is not enough (agent-harness#250, cross-vendor CR, codex):
         # GitHub allows a PR's base to be retargeted after creation, and a same-head PR
         # could simply target a different base than the one scope-checked above. A PR
@@ -375,10 +523,23 @@ class GitHubBrokerAdapter:
         # BOTH headRefOid AND baseRefName to equal the request's before accepting the
         # match; a head-matched/base-mismatched PR fails CLOSED as ambiguous (a PR
         # genuinely exists at that head, so this is not a provable no-effect).
-        head_matches = [p for p in prs if p.get("headRefOid") == request.head_sha and p.get("url")]
+        head_matches = [p for p in prs if isinstance(p, dict) and p.get("headRefOid") == request.head_sha]
         match = next((p for p in head_matches if p.get("baseRefName") == request.base), None)
         if match is None:
             if head_matches:
                 return self._ambiguous(request, "pr-base-unconfirmed")
             return self._ambiguous(request, "pr-head-unconfirmed")
-        return PublishCommittedBranchResult(request.branch, request.head_sha, match["url"]), BrokerTerminalEvidence(request.admission.idempotency_key, "effect_terminal_observed", match["url"])
+        _, origin_owner, _ = origin_repo.split("/", 2)
+        head_owner = match.get("headRepositoryOwner")
+        if (
+            not isinstance(head_owner, dict)
+            or head_owner.get("login") != origin_owner
+            or match.get("isCrossRepository") is not False
+        ):
+            return self._ambiguous(request, "pr-head-repository-unconfirmed")
+        pr_url = match.get("url")
+        if not self._pr_url_matches_origin(pr_url, origin_repo):
+            return self._ambiguous(request, "pr-url-unconfirmed")
+        if diagnostic_pr_url is not None and pr_url != diagnostic_pr_url:
+            return self._ambiguous(request, "pr-url-readback-mismatch")
+        return PublishCommittedBranchResult(request.branch, request.head_sha, pr_url), BrokerTerminalEvidence(request.admission.idempotency_key, "effect_terminal_observed", pr_url)
