@@ -339,9 +339,16 @@ def test_workflows_retain_the_node_on_main_nightly_and_release() -> None:
     assert "main" in [str(b) for b in triggers["push"]["branches"]]
     assert triggers["schedule"], "the nightly backstop is gone"
     assert triggers["workflow_dispatch"]["inputs"]["chronology"]["default"] is True
-    # Only pull_request runs cancel each other: a manual chronology=false dispatch
-    # on main queues behind the landing push run instead of cancelling its proof.
-    assert workflow["concurrency"]["cancel-in-progress"] == "${{ github.event_name == 'pull_request' }}"
+    # Only pull_request runs share a group (and cancel each other). Every other
+    # event's group carries its own run_id, so a manual chronology=false dispatch
+    # on main can neither cancel the landing push run nor replace it while it is
+    # still pending in the queue.
+    concurrency = workflow["concurrency"]
+    assert concurrency["cancel-in-progress"] == "${{ github.event_name == 'pull_request' }}"
+    group = concurrency["group"]
+    assert group.startswith("${{ github.event_name == 'pull_request' && ")
+    assert "github.event.pull_request.number" in group
+    assert group.endswith("|| format('test-{0}-{1}', github.ref, github.run_id) }}")
     # Every job that runs the node decides its scope with the same script and
     # feeds the decision to the runner it drives.
     jobs = workflow["jobs"]

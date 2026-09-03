@@ -21,11 +21,13 @@ on:
 permissions:
   contents: read
 
-# Only pull_request runs supersede each other. A push to main (the landing
-# proof) and the nightly/manual runs queue instead, so a manual dispatch with
-# chronology=false can never cancel a retained landing run.
+# Only pull_request runs supersede each other. Every other event (the push to
+# main that is the landing proof, the nightly, a manual dispatch) gets a group
+# unique to its own run, so it is never cancelled AND never replaced while
+# pending: a manual chronology=false dispatch can neither cancel a retained
+# landing run nor evict one that is still queued behind it.
 concurrency:
-  group: test-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.event_name == 'pull_request' && format('test-pr-{0}', github.event.pull_request.number) || format('test-{0}-{1}', github.ref, github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
