@@ -241,11 +241,12 @@ def test_success_with_nothing_open_is_a_quiet_no_op(harness) -> None:
     assert not any(v.startswith("issue close") or v.startswith("issue create") for v in h.verbs())
 
 
-@pytest.mark.parametrize("gate", ["cancelled", "skipped", ""])
-def test_other_gate_results_exit_2_without_touching_issues(harness, gate: str) -> None:
+@pytest.mark.parametrize(("gate", "code"), [("cancelled", 2), ("skipped", 2), ("", 1)])
+def test_other_gate_results_exit_nonzero_without_touching_issues(harness, gate: str, code: int) -> None:
+    """cancelled/skipped: the script's own exit 2; "": bash's required-env check (exit 1) fires first."""
     h, shas = harness
     result = h.run(gate=gate, sha=shas[3], issues=[{"number": 7, "state": "OPEN", "labels": ["ci-main-red"]}])
-    assert result.returncode in (1, 2), result.stderr  # "" trips the required-env check
+    assert result.returncode == code, result.stderr
     assert not any(v.startswith("issue") for v in h.verbs())
 
 
