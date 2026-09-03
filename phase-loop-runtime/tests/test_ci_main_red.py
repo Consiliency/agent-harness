@@ -290,6 +290,11 @@ def test_tip_lost_between_the_first_check_and_the_mutation_stops_the_report(harn
         assert result.returncode == 0, result.stderr
         assert not any(v in ("issue reopen", "issue comment") for v in h.verbs()), state
         assert h.issue_states() == {7: state}
+    # closed issue, tip lost BETWEEN the reopen and the comment: reopened, not commented
+    result = h.run(gate="failure", sha=shas[2], tip=[shas[2], shas[2], shas[3]], green=shas[1],
+                   issues=[{"number": 7, "state": "CLOSED", "labels": ["ci-main-red"]}])
+    assert result.returncode == 0, result.stderr
+    assert "issue reopen" in h.verbs() and "issue comment" not in h.verbs()
     # green: same shape, the pre-close re-read fails, the open issue is left alone
     result = h.run(gate="success", sha=shas[2], tip=[shas[2], shas[3]],
                    issues=[{"number": 7, "state": "OPEN", "labels": ["ci-main-red"]}])

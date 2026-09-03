@@ -154,6 +154,7 @@ case "$state" in
   CLOSED)
     require_tip
     gh issue reopen "$number"
+    require_tip
     gh issue comment "$number" --body-file "$body_file"
     echo "reopened + commented on #$number" >&2 ;;
   *)
