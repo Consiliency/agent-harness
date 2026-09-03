@@ -6,8 +6,13 @@ either place. Three properties are load-bearing and are asserted here rather tha
 assumed, because each one has a recorded failure mode behind it:
 
 * **Per-container lane selection.** There is no `matrix.python-version` inside
-  Dagger, so the two-lane chronology rule has to be reimplemented per container or
-  the offload silently reintroduces three ~40-minute executions of the heavy node.
+  Dagger, so the chronology selection has to be reimplemented per container or
+  the offload silently reintroduces three ~50-minute executions of the heavy node.
+  Whether the node runs AT ALL in this execution is decided outside (the
+  ``chronology`` argument, computed by ``ci/chronology-scope.sh``): it is ~88% of
+  the per-PR wall clock and its verdict depends only on an enumerable set of
+  inputs, so a PR touching none of them does not pay for it. Push-to-main,
+  nightly and dispatch always retain it.
 * **A complete `.git` object database.** The chronology proof walks real history
   and reads historical blobs. A commit-count probe passes on a blob-filtered
   clone, so the probe below touches every object `rev-list --objects` names.
@@ -23,8 +28,9 @@ import asyncio
 import dagger
 from dagger import dag, function, object_type
 
-# The heavy CONFORM chronology node (~40 min). Two-lane rule: it runs in the 3.10
-# container and in the Gate A stage, nowhere else.
+# The heavy CONFORM chronology node (~50 min). When retained, it runs in the 3.10
+# container and in the Gate A stage, nowhere else. Kept in lockstep with
+# ci/chronology-scope.sh (`--node`) by tests/test_ci_chronology_scope.py.
 CHRONOLOGY_NODE = (
     "tests/test_outside_agent_conform_evidence.py::"
     "test_mutation_definitions_are_frozen_but_not_executed_preimplementation"
@@ -165,13 +171,33 @@ class AgentHarnessCi:
             .stdout()
         )
 
-    def _suite(self, source: dagger.Directory, python_version: str) -> dagger.Container:
-        """The standalone suite for one interpreter, with the two-lane selection."""
-        keeps_chronology = python_version == CHRONOLOGY_PYTHON
-        if keeps_chronology:
-            selection = f'suite_args=("--junitxml=/junit/junit-py{python_version.replace(".", "")}.xml")'
+    def _suite(
+        self, source: dagger.Directory, python_version: str, chronology: bool = True
+    ) -> dagger.Container:
+        """The standalone suite for one interpreter, with the chronology selection.
+
+        The retaining lane always writes junit, even when ``chronology`` is off:
+        the exported evidence then WITNESSES the deselection (the node id is absent
+        from the xml) instead of the artifact silently disappearing.
+        """
+        keeps_chronology = chronology and python_version == CHRONOLOGY_PYTHON
+        suite_args = []
+        if python_version == CHRONOLOGY_PYTHON:
+            suite_args.append(f"--junitxml=/junit/junit-py{python_version.replace('.', '')}.xml")
+        if not keeps_chronology:
+            suite_args.append(f"--deselect={CHRONOLOGY_NODE}")
+        selection = "suite_args=(" + " ".join(f'"{a}"' for a in suite_args) + ")"
+        if python_version == CHRONOLOGY_PYTHON:
+            # The junit must WITNESS the decision: the node present (ran, passed)
+            # when retained, absent when deselected. A deselect that silently
+            # matched nothing, or a retain that skipped, fails here, not never.
+            expect = "present" if keeps_chronology else "absent"
+            witness = f"""
+python scripts/chronology_witness.py \\
+  --junit /junit/junit-py{python_version.replace(".", "")}.xml --node "$CHRONOLOGY_NODE" --expect {expect}
+"""
         else:
-            selection = f'suite_args=("--deselect={CHRONOLOGY_NODE}")'
+            witness = ""
 
         script = f"""
 set -euo pipefail
@@ -179,6 +205,7 @@ git config --global --add safe.directory /src
 cd /src/phase-loop-runtime
 mkdir -p /junit
 
+CHRONOLOGY_NODE="{CHRONOLOGY_NODE}"
 {selection}
 
 # The deselect must never become a silent no-op: if the node is renamed,
@@ -191,7 +218,7 @@ PYTHONPATH=src:tests python -m pytest -m "not dotfiles_integration" \\
   "${{suite_args[@]}}" \\
   --ignore tests/test_legible_roadmap_contract.py \\
   --ignore tests/test_legible_evidence.py
-
+{witness}
 # The two frozen LEGIBLE files distinguish a canonical source checkout from an
 # installed consumer; run them from a copied tests tree so this stage also
 # exercises the standalone-consumer posture.
@@ -207,28 +234,41 @@ PYTHONPATH="$suite_root/tests" python -m pytest \\
         return self._base(source, python_version).with_exec(["bash", "-c", script])
 
     @function
-    def suite(self, source: dagger.Directory, python_version: str) -> dagger.Container:
+    def suite(
+        self, source: dagger.Directory, python_version: str, chronology: bool = True
+    ) -> dagger.Container:
         """Run the standalone suite for one interpreter (3.10 keeps the chronology node)."""
-        return self._suite(source, python_version)
+        return self._suite(source, python_version, chronology)
 
     @function
-    def gate_a(self, source: dagger.Directory) -> dagger.Container:
-        """Run the Gate A clean-room stage (py3.12), which retains the chronology node."""
-        script = """
+    def gate_a(self, source: dagger.Directory, chronology: bool = True) -> dagger.Container:
+        """Run the Gate A clean-room stage (py3.12), which retains the chronology node.
+
+        With ``chronology`` off the clean-room script deselects the node itself
+        (``GATE_A_DESELECT_CHRONOLOGY=1``) and proves the deselection against its
+        own junit, so the skip is witnessed at the same place the run would be.
+        """
+        deselect = "" if chronology else "export GATE_A_DESELECT_CHRONOLOGY=1\n"
+        script = f"""
 set -euo pipefail
 git config --global --add safe.directory /src
 cd /src/phase-loop-runtime
 mkdir -p /junit
 export GATE_A_JUNIT=/junit/junit-gate-a.xml
-bash scripts/gate_a_cleanroom.sh
+{deselect}bash scripts/gate_a_cleanroom.sh
 """
         return self._base(source, "3.12", cache_scope="gate-a").with_exec(
             ["bash", "-c", script]
         )
 
     @function
-    async def all(self, source: dagger.Directory) -> dagger.Directory:
+    async def all(self, source: dagger.Directory, chronology: bool = True) -> dagger.Directory:
         """The full offloaded gate: object-database probe, three suites, Gate A.
+
+        ``chronology`` is the scope decision from ``ci/chronology-scope.sh``. It
+        defaults to True so a caller that forgets to decide gets the expensive
+        answer, and the decision is recorded in ``verdicts.txt`` so the artifact
+        says which kind of run it witnesses.
 
         The probe runs FIRST and alone: it costs seconds and catches the
         incomplete-clone class before ~40 minutes of chronology proof is spent on
@@ -265,21 +305,25 @@ bash scripts/gate_a_cleanroom.sh
         prevented by cache luck -- and the exported artifact provably comes from
         the execution that gated the run.
         """
-        results = [await self.git_probe(source)]
+        results = [
+            f"chronology: {'retained' if chronology else 'deselected'}",
+            await self.git_probe(source),
+        ]
 
         # (label, junit export subdirectory or None, container). Only the two
-        # chronology-retaining stages emit junit; the export names are derived so
-        # they cannot drift from the lane they came from.
+        # chronology-retaining stages emit junit -- also when the node is
+        # deselected, so the export witnesses its absence; the export names are
+        # derived so they cannot drift from the lane they came from.
         stages: list[tuple[str, str | None, dagger.Container]] = [
             *(
                 (
                     f"suite py{v}",
                     f"py{v.replace('.', '')}" if v == CHRONOLOGY_PYTHON else None,
-                    self._suite(source, v),
+                    self._suite(source, v, chronology),
                 )
                 for v in PYTHON_VERSIONS
             ),
-            ("gate-a", "gate-a", self.gate_a(source)),
+            ("gate-a", "gate-a", self.gate_a(source, chronology)),
         ]
         outcomes = await asyncio.gather(
             *(container.sync() for _, _, container in stages),
