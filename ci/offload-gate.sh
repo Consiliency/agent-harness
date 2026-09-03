@@ -52,6 +52,66 @@ fi
 # nightly, dispatch, or a PR touching one of the node's inputs => true) and hands
 # it over in the environment. Unset means "nobody decided" and resolves to the
 # expensive-but-correct answer, never to the skip.
+OFFLOAD_LOCK="${OFFLOAD_LOCK:-/tmp/dagger-offload.lock}"
+OFFLOAD_LOCK_WAIT_SECONDS="${OFFLOAD_LOCK_WAIT_SECONDS:-5400}"
+_lock_fifo=""
+_lock_out=""
+_lock_pid=""
+
+# The lock is held by a `flock ... -c cat` on the engine host whose stdin is a
+# pipe we keep open here; closing our end (or dying: the runner kills the ssh)
+# ends `cat`, `flock` exits, and the kernel releases the lock. No state survives
+# a crash on either side.
+offload_lock_host() {
+  case "${DOCKER_HOST:-}" in
+    ssh://*) printf '%s\n' "${DOCKER_HOST#ssh://}" ;;
+    *) printf '' ;;
+  esac
+}
+
+offload_lock_acquire() {
+  local host
+  host="$(offload_lock_host)"
+  if [ -z "$host" ]; then
+    echo "offload lock: DOCKER_HOST is not an ssh:// engine; nothing to serialise against" >&2
+    return 0
+  fi
+  # DOCKER_HOST may carry a port (ssh://user@host:2222); ssh wants it as -p.
+  local -a ssh_target=("$host")
+  case "$host" in
+    *:*) ssh_target=(-p "${host##*:}" "${host%:*}") ;;
+  esac
+  _lock_fifo="$(mktemp -u)"
+  _lock_out="$(mktemp)"
+  mkfifo "$_lock_fifo"
+  ssh "${ssh_target[@]}" "flock -w '$OFFLOAD_LOCK_WAIT_SECONDS' '$OFFLOAD_LOCK' -c 'echo acquired; exec cat'" \
+    <"$_lock_fifo" >"$_lock_out" 2>&1 &
+  _lock_pid=$!
+  exec 3>"$_lock_fifo"
+  trap offload_lock_release EXIT
+  echo "offload lock: waiting for $OFFLOAD_LOCK on $host (up to ${OFFLOAD_LOCK_WAIT_SECONDS}s)"
+  while ! grep -q '^acquired$' "$_lock_out"; do
+    if ! kill -0 "$_lock_pid" 2>/dev/null; then
+      echo "offload lock: could not take $OFFLOAD_LOCK on $host within ${OFFLOAD_LOCK_WAIT_SECONDS}s (another offloaded suite is running there); refusing to run unlocked" >&2
+      cat "$_lock_out" >&2
+      exec 3>&-
+      rm -f "$_lock_fifo" "$_lock_out"
+      exit 1
+    fi
+    sleep 1
+  done
+  echo "offload lock: held ($OFFLOAD_LOCK on $host)"
+}
+
+offload_lock_release() {
+  [ -n "$_lock_pid" ] || return 0
+  exec 3>&-
+  wait "$_lock_pid" 2>/dev/null || true
+  rm -f "$_lock_fifo" "$_lock_out"
+  _lock_pid=""
+  echo "offload lock: released"
+}
+
 CHRONOLOGY="${CHRONOLOGY:-true}"
 case "$CHRONOLOGY" in
   true|false) ;;
@@ -59,9 +119,23 @@ case "$CHRONOLOGY" in
 esac
 echo "chronology node: $([ "$CHRONOLOGY" = true ] && echo retained || echo deselected) (CHRONOLOGY=$CHRONOLOGY)"
 
+# ONE offloaded suite per engine host at a time. The engine on the tailnet host
+# prunes its store when a session ends (`dagql prune` + containerd GC), and that
+# prune removes the rootfs of containers a still-running sibling session is
+# executing in; the sibling then dies as a 200+ FileNotFoundError cascade that
+# reads as a repo regression (agent-harness#746 diagnosis; runs 33713513497 and
+# 33709063249). Serialising the calls on the HOST side -- a `flock` held on the
+# engine host for the whole `dagger call` -- makes overlap impossible regardless
+# of how many workflows dispatch at once. The lock lives on the host, not the
+# runner, because the runners are ephemeral and independent; the path is
+# deliberately generic so any repo offloading to the same engine can share it.
+# Fail closed: if the lock cannot be taken within the wait, exit non-zero with a
+# message naming the lock -- never run unlocked.
 JUNIT_DIR=./junit-offload
 rm -rf "$JUNIT_DIR"
+offload_lock_acquire
 dagger -m "$MODULE" call all --source="$SOURCE" --chronology="$CHRONOLOGY" export --path="$JUNIT_DIR"
+offload_lock_release
 
 # `all`'s per-stage verdict roll-up used to be its stdout; it travels in the
 # evidence directory now, so print it to keep the job log self-describing.
