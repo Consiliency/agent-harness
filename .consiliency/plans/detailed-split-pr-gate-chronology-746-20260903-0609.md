@@ -326,7 +326,9 @@ All commands run from the repository root; `cd` only inside subshells.
 ```bash
 # 1. Measure the deselected-node run BEFORE editing (fills the duration comment).
 gh workflow run test.yml --ref main -f chronology=false
-run_id="$(gh run list --workflow test.yml --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId')"
+sleep 20   # the dispatched run is not listed instantly; an empty list would otherwise read as `null`
+run_id="$(gh run list --workflow test.yml --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+[ -n "$run_id" ] || { echo "dispatched run not listed yet — re-run the list"; exit 1; }
 gh run watch "$run_id" --exit-status
 gh run view "$run_id" --json jobs --jq '.jobs[] | select(.name|test("offloaded")) | "\(.startedAt) \(.completedAt)"'
 gh run download "$run_id" -n junit-offloaded -D /tmp/m1
@@ -380,7 +382,8 @@ PY
 # job's python block verbatim (copy from test.yml) — it must still print "chronology node retained".
 
 # 5. Junit witness on this PR's own run (it RETAINS: it touches ci/*).
-pr_run="$(gh run list --workflow test.yml --event pull_request --branch "$(git branch --show-current)" --limit 1 --json databaseId --jq '.[0].databaseId')"
+pr_run="$(gh run list --workflow test.yml --event pull_request --branch "$(git branch --show-current)" --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+[ -n "$pr_run" ] || { echo "no pull_request run on this branch yet — push first"; exit 1; }
 gh run download "$pr_run" -n junit-offloaded -D /tmp/m5 \
   || { gh run download "$pr_run" -n chronology-junit-py310 -D /tmp/m5 \
        && gh run download "$pr_run" -n chronology-junit-gate-a -D /tmp/m5; }   # hosted-fallback path
