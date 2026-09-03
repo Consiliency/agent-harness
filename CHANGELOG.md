@@ -6,6 +6,85 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### advisor-board: `requires_president` executes the president ladder, fail-closed (Consiliency/agent-harness#736)
+
+- `invoke_board(..., president_invoke=)` runs the president ladder once after every seat has
+  returned and before a `requires_president` board result can reach a landing: findings from all
+  usable seats (a codex/Sol fill included) get stable positional IDs, duplicates (whitespace-collapsed,
+  casefolded) fold into one ID, the ladder descends ONLY on typed `president_unavailable`, an
+  invalid ruling gets one same-session format re-ask, and any ladder outcome without a valid ruling
+  (including `president_invocation_failed`, the production seam's answer) refuses every seat
+  (`president_ruling_missing:<code>`) so the unadjudicated verdicts cannot be read as a landing.
+  A president-requiring tier without a seam is refused at policy time (`president_seam_missing`).
+  `requires_president=False` stays byte-neutral.
+- `president_adapter.build_president_invoke` binds the ladder to a board's seats. Post-HARDEN
+  there is no sanctioned execution operation for a `FORCING DECISION:` ruling (advisory execution
+  is refused; the governed review carries the frozen AGREE grammar), so a seated rung reports a
+  typed `president_execution_route_unavailable` failure instead of spawning or laundering the
+  president through a review leg; the landing fails closed. A HARDEN-authorized president
+  operation is the follow-up.
+- `runner._run_legible_panel` declares the `production_code` tier and the seam on
+  GOVLEAN-switched repos (which the invoker already refused tierless), persists
+  `implementation-panel-president.json` (`advisor_board_president.v1`, with every ladder attempt and
+  the refusal reason -- written before the landing is judged, so a refused landing still leaves the
+  record), and refuses the landing on a missing ruling or any BLOCKING disposition. A rerun in the
+  same run directory invalidates the prior attempt's `implementation-panel*.json` before the board
+  runs and publishes both records atomically, so a run never carries an earlier landing beside a
+  later refusal. Pre-switch repos are byte-neutral. Contract: `advisor_board/CONTRACTS.md` → ABDPRES.
+
+### Review rounds are bounded before they start
+
+- `docs/agent-phase-convergence.md` gains "8. Bound the review loop (portable)": delta review
+  (only dissenting seats re-review, against the delta since the round they dissented on;
+  agreeing seats are carried; an erroring dissenter is re-run, never carried), no
+  cancel-on-first-blocker, blocking findings cite the frozen `EC-<ALIAS>-<N>` they claim is
+  violated, and a round cap written into the PR before round one that ends in descope rather
+  than another round. The adoption order and the one-machine recipe gain the matching item.
+- The four `*-advisor-board` skills (`skills-src/`, regenerated `phase-loop-skills/` and the
+  packaged `skills_bundle/`) carry the same four rules as step 6 of "Use"; the Claude
+  `execute-phase` skill's governed pre-merge paragraph points at them.
+
+### CI: the heavy CONFORM chronology node is deferred to the landing merge for out-of-package PRs
+
+- `ci/chronology-scope.sh` decides per run whether the ~50-minute
+  `test_mutation_definitions_are_frozen_but_not_executed_preimplementation` node (measured at
+  ~88 % of a per-PR run's wall clock, executed two to three times per PR) is retained: always
+  on a push to `main`, on the new nightly `schedule`, and on `workflow_dispatch` (input
+  `chronology`, default on); on a `pull_request` only when the diff touches the runtime
+  package (`phase-loop-runtime/` source, tests, scripts, packaging) or the CI scripts and
+  workflows. The proof's process executes inside the package and reads repository docs, so no
+  verdict-invariance claim is made for other PRs: their proof is deferred to the landing merge.
+  Anything the script cannot classify or diff retains the node (fail closed).
+- The decision reaches every executor: `ci/offload-gate.sh` → the Dagger module's `all
+  --chronology=`, the hosted py3.10 lane, Gate A via `GATE_A_DESELECT_CHRONOLOGY=1`, and
+  `publish-pypi.yml`'s pull-request Gate A (a release tag still runs everything). Each
+  retaining lane writes junit and asserts the node's name is present when retained and absent
+  when deselected, so a silent no-op deselect or a silently skipped retain is a red job.
+- `tests/test_ci_chronology_scope.py` pins the input set against the frozen
+  `CONFORM_MUTATION_DEFINITIONS`, the single node-id literal across all consumers, the
+  fail-closed branches, and the workflow wiring; the `chronology-retention` job now also
+  asserts the push-to-`main` and nightly triggers exist and that the script retains on both.
+- `docs/agent-phase-convergence.md` gains the portable version of this rule.
+
+### fleet default models: Fable 5.1, Gemini 3.8 Flash, Grok 4.6
+
+- The advisor-board / panel default seats and the executor model defaults move to the ids the
+  installed CLIs actually run today: `claude-fable-5` -> `claude-fable-5-1` (Claude Code 2.1.258),
+  `gemini-3.7-flash` -> `gemini-3.8-flash` (agy embed form `gemini-3.8-flash-high`; `agy models`
+  1.1.24 lists `gemini-3.8-flash-{high,medium,low}`), and the grok executor default
+  `GROK_DEFAULT_MODEL` `grok-4.5` -> `grok-4.6` (`grok models` reports `grok-4.6 (default)`).
+  The codex seat stays `gpt-5.6-sol`; the panel's grok seat was already `grok-4.6`.
+- The superseded ids stay REGISTERED and accepted for explicit configs — `claude-fable-5`,
+  `gemini-3.7-flash`, `gemini-3.6-flash`, and `grok-4.5` all remain in the model registry and in
+  `panel_invoker.DEFAULT_REVIEW_SEAT_ALIASES` as legacy review seats, so a pinned board config
+  naming an older id keeps resolving onto its lane.
+- Swept every current-default surface: the SSOT constants (`capability_registry.CLAUDE_ULTRA_MODEL`,
+  `profiles.GEMINI_IMPLEMENTER_MODEL` / `GEMINI_REGULAR_MODEL` / `GROK_DEFAULT_MODEL`), the board
+  presets, composition, fixtures, the president ladder, `DEFAULT_LEG_MODELS`, the capabilities card,
+  the outside-agent release handoff, the launchspec golden, `build_bundle.PRESERVE_LITERALS`, and
+  all four `skills-src/` advisor-board sources regenerated into `phase-loop-skills/` and synced into
+  the wheel-shipped `skills_bundle/`.
+
 ### advisor-board skills: a hard deadline is not a stall threshold (Consiliency/agent-harness#727)
 
 - The `Bounding A Slow Leg` section told operators to pass `timeouts_by_leg` "to BOUND a
@@ -232,6 +311,39 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   module form cannot import and exits 1 — again the "claimed by another phase" code — so a
   module-only tool reported a phantom ownership block for every path on the supported
   install (same shape as #670/#693).
+### HARDEN: isolated review and verification contracts
+
+- Review staging rejects every symlink path that resolves outside its source tree, and
+  explicitly requested review operations refuse unbound direct provider callables.
+- Reconciliation no longer resolves persisted relative paths through the caller's CWD;
+  enforced goal coverage now rejects an empty declared-goal contract, and login-shell
+  verification parsing consumes shell option arguments before locating the command.
+- HARDEN verification evidence is metadata-only and independently verifiable as
+  `verification_evidence.v3`.
+- Pre-merge cross-vendor review of the HARDEN head (Consiliency/agent-harness#737) landed
+  five fixes as one delta: broker prompt framing rejects payload lines that could be read as
+  frame boundaries; the retained broker `provider_argv_sha256` now binds the redacted argv
+  SHAPE (recomputable from evidence) and `verify_harden_evidence.py` checks the shape against
+  an exact per-harness no-tool argv grammar; the review-isolation lease is claimed right
+  after independent revalidation — before the live availability matrix, gateway catalog,
+  research materialization, and capture staging — and closed on every later exit, and an
+  authorization that expires or is closed before activation is refused on revalidation;
+  `load_boards` runs the review
+  authorization unconditionally instead of only on the availability-probe path; and review
+  staging sweeps the STAGED copy for symlinks that escape it, closing the check-then-copy
+  window on the source-side checks. A second delta round bound the broker provider
+  `--cd`/`--cwd`/`--output-last-message` argv path slots to the attested
+  `provider_cwd_sha256` (and rejects a cwd at or under the canonical checkout), ran
+  `load_boards` seat validation behind its own fresh composition authority (the harness
+  PATH probe and key-var scan are the same probe class as composition), and released the
+  review-instruction digest ContextVar on the typed-deferral and support-status exits of
+  `invoke_board`. A third delta round rejected a POSIX `//`-prefixed path slot (whose
+  ancestors never hash to the canonical checkout) and any slot under `/proc`, `/sys`, or
+  `/dev`, and released the same ContextVar on a raise anywhere between digest binding and
+  lease activation. The verifier still cannot witness the review checkout's path
+  independently: `canonical_repo_sha256` is checked for internal consistency, not derived
+  from `--repo`, because `--repo` is the retained-objects repository and the four-seat
+  reviews run in separate fresh worktrees.
 
 ### executor policy: an operator's explicit model is never substituted (Consiliency/agent-harness#671)
 

@@ -24,7 +24,7 @@ class TierMatrixTest(unittest.TestCase):
         # (tier, vendor) -> (model_id, effort, volatile). Non-claude ultra is the
         # heavy model @ max (no separate ultra catalog id for codex/gemini/grok).
         expected = {
-            ("ultra", "claude"): ("claude-fable-5", "max", False),
+            ("ultra", "claude"): ("claude-fable-5-1", "max", False),
             ("heavy", "claude"): ("claude-opus-5", "xhigh", False),
             ("regular", "claude"): ("claude-sonnet-5", "medium", False),
             ("lite", "claude"): ("claude-haiku-4-5-20251001", "low", False),
@@ -34,11 +34,11 @@ class TierMatrixTest(unittest.TestCase):
             ("lite", "codex"): ("gpt-5.6-luna", "low", False),
             ("ultra", "gemini"): ("gemini-3.1-pro-preview", "max", True),
             ("heavy", "gemini"): ("gemini-3.1-pro-preview", "xhigh", True),
-            ("regular", "gemini"): ("gemini-3.7-flash", "medium", False),
+            ("regular", "gemini"): ("gemini-3.8-flash", "medium", False),
             ("lite", "gemini"): ("gemini-3.5-flash-lite", "low", False),
             # grok: no dated snapshot published → every cell volatile (blocker 2).
-            ("ultra", "grok"): ("grok-4.5", "max", True),
-            ("heavy", "grok"): ("grok-4.5", "xhigh", True),
+            ("ultra", "grok"): ("grok-4.6", "max", True),
+            ("heavy", "grok"): ("grok-4.6", "xhigh", True),
             ("regular", "grok"): ("grok-4.3", "medium", True),
             ("lite", "grok"): ("grok-build-0.1", "low", True),
         }
@@ -102,7 +102,7 @@ class RoleToTierTest(unittest.TestCase):
         for role in ("roadmap", "plan"):
             self.assertEqual(resolve(role, "claude").model_id, "claude-opus-5")
         for role in ("review", "advise", "security"):
-            self.assertEqual(resolve(role, "claude").model_id, "claude-fable-5")
+            self.assertEqual(resolve(role, "claude").model_id, "claude-fable-5-1")
 
     def test_execute_target_is_regular_sonnet_on_claude(self):
         # resolve() encodes the taxonomy target end-state for implementation.

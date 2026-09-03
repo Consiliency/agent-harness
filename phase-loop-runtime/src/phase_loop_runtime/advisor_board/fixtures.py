@@ -28,20 +28,20 @@ DEFAULT_BOARD_VENDOR_ORDER: tuple[str, ...] = ("codex", "gemini", "claude", "gro
 # name. These reconstruct ``DEFAULT_LEG_MODELS`` under
 # ``harness_mapping.render_seat_invocation``:
 #   codex  gpt-5.6-sol           + effort max  -> ``-c model_reasoning_effort=xhigh``
-#   gemini gemini-3.7-flash   + effort high -> model ``gemini-3.7-flash-high``
-#   claude claude-fable-5    + effort max  -> ``--effort max``
+#   gemini gemini-3.8-flash   + effort high -> model ``gemini-3.8-flash-high``
+#   claude claude-fable-5-1  + effort max  -> ``--effort max``
 #   grok   grok-4.6           + effort max  -> ``--reasoning-effort high``
 #
-# The claude seat runs Fable (``claude-fable-5``): pre-merge review is a mid-tier
+# The claude seat runs Fable (``claude-fable-5-1``): pre-merge review is a mid-tier
 # decision where being wrong is expensive, so the default review board reviews on
 # Fable, not on the implementer model ``claude-sonnet-5``. This is byte-pinned to
 # ``panel_invoker.DEFAULT_LEG_MODELS["claude"]`` (also Fable) by the golden proof.
 DEFAULT_SEATS: tuple[Seat, ...] = (
     Seat(model="gpt-5.6-sol", effort="max", harness="codex", lens="red-team",
          auth=AUTH_SUBSCRIPTION, backing=BACKING_HOMEBREW),
-    Seat(model="gemini-3.7-flash", effort="high", harness="gemini", lens="alternative-approach",
+    Seat(model="gemini-3.8-flash", effort="high", harness="gemini", lens="alternative-approach",
          auth=AUTH_SUBSCRIPTION, backing=BACKING_HOMEBREW),
-    Seat(model="claude-fable-5", effort="max", harness="claude", lens="correctness",
+    Seat(model="claude-fable-5-1", effort="max", harness="claude", lens="correctness",
          auth=AUTH_SUBSCRIPTION, backing=BACKING_HOMEBREW),
     Seat(model="grok-4.6", effort="max", harness="grok", lens="adversarial",
          auth=AUTH_SUBSCRIPTION, backing=BACKING_HOMEBREW),
@@ -58,8 +58,8 @@ DEFAULT_BOARD: Board = Board(
 # back-compat test against the live ``panel_invoker`` constants).
 DEFAULT_SEAT_RENDERED_MODEL: dict[str, str] = {
     "codex": "gpt-5.6-sol",
-    "gemini": "gemini-3.7-flash-high",
-    "claude": "claude-fable-5",
+    "gemini": "gemini-3.8-flash-high",
+    "claude": "claude-fable-5-1",
     "grok": "grok-4.6",
 }
 DEFAULT_SEAT_EFFORT_ARGS: dict[str, tuple[str, ...]] = {
@@ -77,6 +77,7 @@ CANONICAL_VALID_PAIRS: tuple[tuple[str, str], ...] = (
     ("gpt-5.6-sol", "opencode"),
     ("claude-sonnet-5", "claude"),
     ("Gemini 3.1 Pro", "gemini"),
+    ("gemini-3.8-flash", "gemini"),
     ("gemini-3.7-flash", "gemini"),
     ("gemini-3.6-flash", "gemini"),
     ("grok-4.6", "grok"),

@@ -451,9 +451,9 @@ def _operational_fixture(
     bundle_path = evidence_dir / "implementation-review-bundle.md"
     bundle_path.write_text(f"exact head: {expected_head}\n", encoding="utf-8")
     panel_models = {
-        "claude": "claude-fable-5",
+        "claude": "claude-fable-5-1",
         "codex": "gpt-5.6-sol",
-        "gemini": "gemini-3.7-flash",
+        "gemini": "gemini-3.8-flash",
         "grok": "grok-4.6",
     }
     leg_records = []

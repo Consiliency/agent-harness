@@ -72,8 +72,12 @@ prescribe future commit identities, counts, or topology.
   authorizes an operation-bound, credentialless Linux isolation plus
   `parent_unix_broker_v1` intended-inference-only contract before capability, auth,
   session, provider, broker, callback, or child effects; `invoke_board()` independently
-  revalidates it. Fable 5, GPT-5.6 Sol, Gemini 3.6 Flash, and Grok 4.5 are supported
-  subscription-auth routes. Every other executable route satisfies the same invariant
+  revalidates it. A supported subscription-auth route is any seat model that resolves
+  through the advisor-board model registry to a model runnable by one of the four
+  broker lanes (claude, codex, gemini, grok), in that lane's invocation form; the
+  route table is derived from the registry and the fleet-default seats, never a
+  model-id literal (a literal pins a moving input and silently downgrades or refuses
+  fleet seats). Every other executable route satisfies the same invariant
   or refuses before effects. Pure parsing, static configuration, and explicitly
   injected hermetic controls remain auth-free and effect-free; no global/autouse shim
   or residual register satisfies this gate.

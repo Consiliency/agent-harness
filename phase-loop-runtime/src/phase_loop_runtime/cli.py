@@ -1764,6 +1764,13 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
     composition/dispatch seams without shelling out to real vendor CLIs."""
     import tempfile
 
+    from .advisor_board.backing import (
+        clear_review_composition_authorization,
+        prepare_review_composition_authorization,
+        prepare_review_isolation_authorization,
+        reset_review_instruction_digest,
+        set_review_instruction_digest,
+    )
     from .advisor_board.composition import FLOOR_SEATS, board_independence, compose_review_board
     from .advisor_board.fixtures import DEFAULT_BOARD
     from .agy_canary_evidence import (
@@ -1772,7 +1779,7 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
         consume_capture_environment,
         write_private_board,
     )
-    from .panel_invoker import invoke_board
+    from .panel_invoker import _mode_instructions, invoke_board
 
     artifact_path = Path(args.artifact)
     # Accept ONLY a regular file: a directory passes exists() then tracebacks in the
@@ -1797,6 +1804,21 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
         print("advisor-board: capture requires --json so full board output stays private", file=sys.stderr)
         capture.close()
         return 2
+    review_authorization = None
+    instruction_token: object | None = None
+    canonical_repo_authority: Path | None = None
+    artifact_text: str | None = None
+    if capture is None:
+        # Composition performs vendor auth probes.  Bind its independent pre-effect
+        # authority before composition, then mint the exact board authority below.
+        try:
+            canonical_repo_authority = Path(subprocess.check_output(
+                ["git", "rev-parse", "--show-toplevel"], text=True, stderr=subprocess.DEVNULL
+            ).strip()).resolve()
+            prepare_review_composition_authorization()
+        except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as exc:
+            print(f"advisor-board: review isolation unavailable: {exc}", file=sys.stderr)
+            return 2
     # Auth-aware production composition (REVIEWGOV IF-0-REVIEWGOV-1): the BARE call is
     # already auth-aware — with no args, ``compose_review_board`` defaults
     # ``auth_ok`` to ``default_board_auth_ok``, so a vendor is seated only when it is
@@ -1809,26 +1831,50 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
     # metadata only: availability/auth composition shells out to ambient provider
     # CLIs before the staged inputs and provider authorities exist.  Ordinary
     # non-capture invocation retains the auth-aware production composer.
-    board = DEFAULT_BOARD if capture is not None else compose_review_board()
+    try:
+        board = DEFAULT_BOARD if capture is not None else compose_review_board()
+    finally:
+        # A pre-composition authority is operation-local even when a caller has
+        # replaced the composer with a hermetic callback.
+        clear_review_composition_authorization()
     if not board.seats:
         print(
             "advisor-board: no vendor is both available and authenticated — nothing to compose.",
             file=sys.stderr,
         )
         return 2
+    if capture is None:
+        instruction_token = set_review_instruction_digest(
+            _mode_instructions("review")
+        )
+        try:
+            artifact_text = artifact_path.read_text(encoding="utf-8")
+            review_authorization = prepare_review_isolation_authorization(
+                board,
+                artifact_text,
+                mode="review",
+                canonical_repo_authority=canonical_repo_authority,
+            )
+        except (OSError, UnicodeError, ValueError) as exc:
+            reset_review_instruction_digest(instruction_token)
+            instruction_token = None
+            print(f"advisor-board: review isolation unavailable: {exc}", file=sys.stderr)
+            return 2
     # Constrain the spawn cwd (write boundary): the native/claude route otherwise
     # gets Write access to the process CWD. A dedicated scratch dir bounds the blast
     # radius for this standalone entrypoint. The artifact is passed by ABSOLUTE ref so
     # the constrained cwd never hides it.
     try:
         with tempfile.TemporaryDirectory(prefix="advisor-board-") as scratch:
-            result = invoke_board(
-                board,
-                "",
-                artifact_ref=str(artifact_path.resolve()),
-                repo_dir=scratch,
-                agy_canary_capture=capture,
-            )
+            invoke_kwargs: dict[str, object] = {
+                "artifact_ref": str(artifact_path.resolve()),
+                "repo_dir": scratch,
+                "agy_canary_capture": capture,
+            }
+            if review_authorization is not None:
+                invoke_kwargs["review_authorization"] = review_authorization
+                invoke_kwargs["canonical_repo_authority"] = canonical_repo_authority
+            result = invoke_board(board, artifact_text or "", **invoke_kwargs)
     except (OSError, ValueError, AgyCanaryEvidenceError) as exc:
         # Artifact staging / resolution failures fail closed with a recoverable exit,
         # not a traceback.
@@ -1836,6 +1882,9 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
         if capture is not None:
             capture.close()
         return 2
+    finally:
+        if instruction_token is not None:
+            reset_review_instruction_digest(instruction_token)
     independence = board_independence(board)
     usable_count = len(result.usable_legs)
     usable_vendors = {leg.leg for leg in result.usable_legs}
@@ -1909,8 +1958,18 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
             ],
         }
         if capture is not None:
+            bound_capture = getattr(result, "_agy_canary_capture", None)
+            # A governed invocation may refuse before it has allocated and sealed
+            # any provider launch authorities.  Such a result has no capture
+            # summary by definition; never manufacture one from an unsealed root.
+            # Once a summary is present, recompute and compare it before writing
+            # any private board output.
+            if bound_capture is None:
+                print("advisor-board: capture summary was not bound by invocation", file=sys.stderr)
+                capture.close()
+                return 2
             expected_capture = capture_summary(capture)
-            if getattr(result, "_agy_canary_capture", None) != expected_capture:
+            if bound_capture != expected_capture:
                 print("advisor-board: capture summary was not bound by invocation", file=sys.stderr)
                 capture.close()
                 return 2

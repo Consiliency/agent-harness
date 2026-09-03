@@ -80,7 +80,7 @@ class ClaudeTuiLegTest(unittest.TestCase):
         self.assertIn("--model", command)
         # The default claude review leg runs Fable (review-path model), not the
         # implementer claude-sonnet-5. Source of truth: DEFAULT_LEG_MODELS["claude"].
-        self.assertEqual(command[command.index("--model") + 1], "claude-fable-5")
+        self.assertEqual(command[command.index("--model") + 1], "claude-fable-5-1")
         self.assertIn("--effort", command)
         self.assertEqual(command[command.index("--effort") + 1], "max")
         self.assertIn("--permission-mode", command)
@@ -295,7 +295,7 @@ class ClaudeLegNativeAdapterRequestTest(unittest.TestCase):
         run_tui.assert_called_once()  # ran the self-PTY session, did NOT defer
 
     def test_fable_and_opus_commands_use_only_the_tui_adapter(self):
-        for model in ("claude-fable-5", "claude-opus-5"):
+        for model in ("claude-fable-5-1", "claude-opus-5"):
             command = pi._claude_tui_command(Path("/tmp/review"), Path("/tmp/repo"), model, "max")
             self.assertEqual(command[0], "claude")
             self.assertEqual(command[command.index("--model") + 1], model)
@@ -365,7 +365,7 @@ class ClaudeLegNativeAdapterRequestTest(unittest.TestCase):
         )
 
     def test_native_agent_leg_request_rejects_fable_and_opus(self):
-        for model in (None, "claude-fable-5", "claude-opus-5"):
+        for model in (None, "claude-fable-5-1", "claude-opus-5"):
             with self.assertRaisesRegex(ValueError, "subscription TUI adapter"):
                 pi.native_agent_leg_request(env={}, model=model)
 

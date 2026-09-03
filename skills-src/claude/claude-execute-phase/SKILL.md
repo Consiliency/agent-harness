@@ -123,7 +123,7 @@ Model IDs appear only in this table. All model-routing logic in the workflow ref
 | fast      | claude-haiku-4-5-20251001 | mechanical wiring, small components against frozen types |
 
 These map to the runtime `model_class` axis: implementer = strong, worker = fast.
-(The planner class routes to the ULTRA model `claude-fable-5` — a planning-tier
+(The planner class routes to the ULTRA model `claude-fable-5-1` — a planning-tier
 model ABOVE this execute table; it is NOT `frontier`, which is the heavy model
 `claude-opus-5`.) The shipped `model_policy` dispatches **implementation at the
 implementer class**. The runtime's `model_class`-escalation bookkeeping is
@@ -138,9 +138,20 @@ wait.
 Governed mode is **live on the serial path** (`--governed` / `PHASE_LOOP_RUN_MODE=governed`,
 model-routing-v2): a pre-merge panel gate (codex + gemini) reviews the
 implementation diff *before* the closeout commit and runs a bounded
-review→fix→re-review loop; a `block` finding holds the merge until fixed or the
-bounded loop terminates non-human. Autonomous runs spawn no panel. Concurrent-wave
-dispatch is not governed yet.
+review→fix→re-review loop. The runtime re-runs the full panel every round and
+stops at `max_rounds` (`governed_premerge.DEFAULT_MAX_REVIEW_ROUNDS`); it
+performs no delta review and no descope itself. A `block` finding holds the
+merge until fixed; if one still stands when the loop stops, the terminal is a
+non-human `review_gate_block` with `mergeable=False` — the loop ending never
+releases the merge. The agent applies the review-round rules from the
+advisor-board skill to what that loop returns: let every seat finish before
+fixing, fix once per round, and treat a finding as blocking only when it cites
+what it breaks under that skill's rule 3 (the citation classes are defined
+there, not here). At the cap, descope by removing the scope that carries the
+blocker and leaving its goal unclaimed; a blocker that cannot be removed with
+its scope halts the phase for the operator — never merge with a blocker
+waived. Autonomous runs spawn no panel. Concurrent-wave dispatch is not
+governed yet.
 
 ## Inputs
 
