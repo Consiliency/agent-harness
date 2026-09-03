@@ -110,34 +110,83 @@ def resolve_broker_repo_identity(repo_path: Path, run=subprocess.run, allowed_ho
 _UNDECLARED_GENERATION = object()
 
 
-def _go_strconv_quote(value: str) -> str:
-    """Render ``value`` exactly like Go's ``strconv.Quote`` for valid ref text."""
-    quoted = ['"']
-    short_escapes = {
-        "\a": r"\a",
-        "\b": r"\b",
-        "\f": r"\f",
-        "\n": r"\n",
-        "\r": r"\r",
-        "\t": r"\t",
-        "\v": r"\v",
-    }
-    for char in value:
-        codepoint = ord(char)
-        if char in ('"', "\\"):
-            quoted.append("\\" + char)
-        elif char.isprintable():
-            quoted.append(char)
-        elif char in short_escapes:
-            quoted.append(short_escapes[char])
-        elif codepoint < 0x20 or codepoint == 0x7F:
-            quoted.append(f"\\x{codepoint:02x}")
-        elif codepoint < 0x10000:
-            quoted.append(f"\\u{codepoint:04x}")
+_GO_QUOTE_SHORT_ESCAPES = {
+    "a": "\a",
+    "b": "\b",
+    "f": "\f",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    "v": "\v",
+    "\\": "\\",
+    '"': '"',
+}
+_GO_QUOTE_SHORT_CODEPOINTS = frozenset(ord(value) for value in _GO_QUOTE_SHORT_ESCAPES.values())
+_LOWER_HEX = frozenset("0123456789abcdef")
+
+
+def _parse_go_strconv_quote(text: str, start: int) -> tuple[str, int] | None:
+    """Decode one strict ``strconv.Quote`` spelling without a Unicode print table.
+
+    Go versions can disagree about whether a newly assigned Unicode code point is
+    printable.  Both the literal scalar and its canonical-width lower-case Unicode
+    escape therefore decode to the same value here.  That narrow two-spelling
+    allowance is safe because the decoded value is compared byte-for-byte with the
+    request below; redundant ASCII escapes, raw controls, invalid scalars, and
+    noncanonical widths/case remain rejected.
+    """
+    if start >= len(text) or text[start] != '"':
+        return None
+    decoded = []
+    index = start + 1
+    while index < len(text):
+        char = text[index]
+        if char == '"':
+            return "".join(decoded), index + 1
+        if char != "\\":
+            codepoint = ord(char)
+            if codepoint < 0x20 or codepoint == 0x7F or 0xD800 <= codepoint <= 0xDFFF:
+                return None
+            decoded.append(char)
+            index += 1
+            continue
+        if index + 1 >= len(text):
+            return None
+        escape = text[index + 1]
+        if escape in _GO_QUOTE_SHORT_ESCAPES:
+            decoded.append(_GO_QUOTE_SHORT_ESCAPES[escape])
+            index += 2
+            continue
+        if escape == "x":
+            end = index + 4
+            digits = text[index + 2:end]
+            if len(digits) != 2 or any(digit not in _LOWER_HEX for digit in digits):
+                return None
+            codepoint = int(digits, 16)
+            if codepoint in _GO_QUOTE_SHORT_CODEPOINTS or not (
+                codepoint < 0x20 or codepoint == 0x7F
+            ):
+                return None
+        elif escape in ("u", "U"):
+            width = 4 if escape == "u" else 8
+            end = index + 2 + width
+            digits = text[index + 2:end]
+            if len(digits) != width or any(digit not in _LOWER_HEX for digit in digits):
+                return None
+            codepoint = int(digits, 16)
+            if (
+                codepoint < 0x80
+                or codepoint > 0x10FFFF
+                or 0xD800 <= codepoint <= 0xDFFF
+                or escape == "u" and codepoint >= 0x10000
+                or escape == "U" and codepoint < 0x10000
+            ):
+                return None
         else:
-            quoted.append(f"\\U{codepoint:08x}")
-    quoted.append('"')
-    return "".join(quoted)
+            return None
+        decoded.append(chr(codepoint))
+        index = end
+    return None
 
 
 class GitHubBrokerAdapter:
@@ -227,16 +276,27 @@ class GitHubBrokerAdapter:
     def _create_reports_existing_pr(self, completed, request: BrokerRequest, origin_repo: str) -> str | None:
         if completed.stdout not in (None, "") or not isinstance(completed.stderr, str):
             return None
-        diagnostic = (
-            f"a pull request for branch {_go_strconv_quote(request.branch)} "
-            f"into branch {_go_strconv_quote(request.base)} already exists:\n"
-        )
         stderr = completed.stderr
         if stderr.endswith("\n"):
             stderr = stderr[:-1]
-        if not stderr.startswith(diagnostic):
+        prefix = "a pull request for branch "
+        if not stderr.startswith(prefix):
             return None
-        diagnostic_url = stderr[len(diagnostic):]
+        parsed_branch = _parse_go_strconv_quote(stderr, len(prefix))
+        if parsed_branch is None:
+            return None
+        branch, index = parsed_branch
+        separator = " into branch "
+        if branch != request.branch or not stderr.startswith(separator, index):
+            return None
+        parsed_base = _parse_go_strconv_quote(stderr, index + len(separator))
+        if parsed_base is None:
+            return None
+        base, index = parsed_base
+        suffix = " already exists:\n"
+        if base != request.base or not stderr.startswith(suffix, index):
+            return None
+        diagnostic_url = stderr[index + len(suffix):]
         return diagnostic_url if self._pr_url_matches_origin(diagnostic_url, origin_repo) else None
 
     @staticmethod

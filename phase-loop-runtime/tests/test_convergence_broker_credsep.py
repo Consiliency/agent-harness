@@ -5,7 +5,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from phase_loop_runtime.convergence.broker.credsep import BrokerEnvironmentBoundary, GitHubBrokerAdapter, build_non_force_branch_ref
+from phase_loop_runtime.convergence.broker.credsep import (
+    BrokerEnvironmentBoundary,
+    GitHubBrokerAdapter,
+    _parse_go_strconv_quote,
+    build_non_force_branch_ref,
+)
 from phase_loop_runtime.convergence.contracts import AdmissionRequest, BrokerRequest, BrokerVerb
 
 
@@ -111,8 +116,39 @@ def test_existing_open_pr_create_failure_is_reconciled_by_exact_readback(tmp_pat
         f"warning: {_existing_pr_diagnostic()}",
         f"{_existing_pr_diagnostic()}\nunrelated trailing output",
         "pull request lookup failed because a branch already exists",
+        (
+            'a pull request for branch "feat/\\x78" into branch "main" already exists:\n'
+            "https://github.com/owner/repo/pull/9"
+        ),
+        (
+            'a pull request for branch "feat/\\u0078" into branch "main" already exists:\n'
+            "https://github.com/owner/repo/pull/9"
+        ),
+        (
+            'a pull request for branch "feat/\\q" into branch "main" already exists:\n'
+            "https://github.com/owner/repo/pull/9"
+        ),
+        (
+            'a pull request for branch "feat/x" into branch "ma\\x69n" already exists:\n'
+            "https://github.com/owner/repo/pull/9"
+        ),
+        (
+            'a pull request for branch "feat/\x01x" into branch "main" already exists:\n'
+            "https://github.com/owner/repo/pull/9"
+        ),
     ],
-    ids=["wrong-head", "wrong-base", "leading-output", "trailing-output", "independent-substrings"],
+    ids=[
+        "wrong-head",
+        "wrong-base",
+        "leading-output",
+        "trailing-output",
+        "independent-substrings",
+        "redundant-x-escape",
+        "redundant-u-escape",
+        "unknown-escape",
+        "redundant-base-escape",
+        "raw-control",
+    ],
 )
 def test_existing_open_pr_classifier_rejects_mismatch_or_unrelated_output_without_readback(
     tmp_path, diagnostic
@@ -194,7 +230,7 @@ def test_existing_open_pr_classifier_matches_go_strconv_quote_for_unicode_separa
     ) == "https://github.com/owner/repo/pull/9"
 
 
-def test_existing_open_pr_classifier_rejects_json_style_literal_unicode_separator(tmp_path):
+def test_existing_open_pr_classifier_accepts_literal_unicode_separator_without_table_coupling(tmp_path):
     request = BrokerRequest(
         BrokerVerb.PUBLISH_COMMITTED_BRANCH,
         AdmissionRequest("attempt", 1, "fence", "digest", "predicate", "scope", "key"),
@@ -214,7 +250,53 @@ def test_existing_open_pr_classifier_rejects_json_style_literal_unicode_separato
 
     assert GitHubBrokerAdapter(tmp_path)._create_reports_existing_pr(
         completed, request, "github.com/owner/repo"
-    ) is None
+    ) == "https://github.com/owner/repo/pull/9"
+
+
+@pytest.mark.parametrize(
+    "quoted_head",
+    ['"feat/melt🫠"', '"feat/melt\\U0001fae0"'],
+    ids=["new-go-literal", "older-go-escaped"],
+)
+def test_existing_open_pr_classifier_is_independent_of_go_unicode_table(
+    tmp_path, quoted_head
+):
+    request = BrokerRequest(
+        BrokerVerb.PUBLISH_COMMITTED_BRANCH,
+        AdmissionRequest("attempt", 1, "fence", "digest", "predicate", "scope", "key"),
+        "repo",
+        "feat/melt🫠",
+        _HEAD,
+        ("a.py",),
+    )
+    completed = SimpleNamespace(
+        stdout="",
+        stderr=(
+            f"a pull request for branch {quoted_head} into branch \"main\" already exists:\n"
+            "https://github.com/owner/repo/pull/9"
+        ),
+    )
+
+    assert GitHubBrokerAdapter(tmp_path)._create_reports_existing_pr(
+        completed, request, "github.com/owner/repo"
+    ) == "https://github.com/owner/repo/pull/9"
+
+
+@pytest.mark.parametrize(
+    "quoted_head",
+    [
+        '"feat/line\\U00002028separator"',
+        '"feat/line\\u202Aseparator"',
+        '"feat/line\\ud800separator"',
+        '"feat/line\\U00110000separator"',
+        '"feat/line\\u12separator"',
+    ],
+    ids=["wrong-width", "uppercase-hex", "surrogate", "out-of-range", "truncated"],
+)
+def test_existing_open_pr_classifier_rejects_noncanonical_or_invalid_unicode_escape(
+    quoted_head,
+):
+    assert _parse_go_strconv_quote(quoted_head, 0) is None
 
 
 def test_existing_open_pr_recovery_requires_diagnostic_url_to_equal_readback(tmp_path):
