@@ -244,7 +244,8 @@ recorded with the rule, the reason, and an owner.
   proves the object-level `// empty` in the canonical-issue read), and exits 0 for
   `label create`, `issue create`, `issue comment`, `issue reopen`, `issue close`. The stub
   answers `--json ... --jq <expr>` by running the real `jq` on the fixture JSON (so the
-  `.[0].number // empty` guard is exercised against `[]`, which prints `null` without it);
+  object-level `.[0] // empty | "\(.number) \(.state)"` guard is exercised against `[]`,
+  which prints `null null` without it);
   the module asserts `shutil.which("jq")` at import — a missing `jq` is a loud failure,
   never a skip, so the guard is proven in the offload lane too;
   the test runs `ci/main-red.sh` with `PATH=<bin>:/usr/bin:/bin` inside a throwaway git repo
@@ -397,8 +398,8 @@ done
 #    close, of the `// empty` guards, and of the stale-tip no-op; live smoke = after merge, wait
 #    for the first red push to main (or the nightly) and confirm exactly one ci-main-red issue
 #    exists and is open; the concurrency group is a static pin (step 4), not reproduced live.
-#    The jq claim itself, by hand:  echo '[]' | jq -r '.[0].number'   → prints null
-#                                  echo '[]' | jq -r '.[0].number // empty' → prints nothing
+#    The jq claim itself, by hand:  echo '[]' | jq -r '.[0] | "\(.number) \(.state)"'  → prints: null null
+#                                  echo '[]' | jq -r '.[0] // empty | "\(.number) \(.state)"' → prints nothing
 
 # 7. Metrics.
 python3 ci/gate_metrics.py --last 10
@@ -406,7 +407,7 @@ python3 ci/gate_metrics.py --last 10
 Edge cases: PR with an empty diff (count=0 → `false`); PR that renames `ci/x.sh` to
 `tools/x.sh` (rename reports both endpoints → `true`); `main-red` when no green run exists
 (plain `-20` log, still files — `headSha // empty`); first-ever red with no issue at all
-(`number // empty` → create, not `comment null`); red after a green closed the issue (reopen
+(object-level `.[0] // empty` → create, not `comment null null`); red after a green closed the issue (reopen
 the canonical one, never a second issue); an older red gate finishing after a newer green gate
 (the older run's `GITHUB_SHA` is no longer the tip → it reports nothing; the newer run already
 acted for the tip); squash-landed range with no merge commits (plain log, labelled); `gh` rate
