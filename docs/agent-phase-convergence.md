@@ -219,28 +219,36 @@ find. One plan review here ran ten rounds because each fix introduced a fresh ru
 for the next round to falsify; the reviewer had offered the exit at round five. Four rules,
 fixed before round one, bound it:
 
-1. **Delta review.** After a fix round, only the seats that dissented — `DISAGREE`,
+1. **Delta review.** After a fix round, the seats that dissented — `DISAGREE`,
    `PARTIALLY AGREE`, or any blocking finding — review again, and they review the delta since
-   the round they dissented on; the round record names that delta's base and head. Seats that
-   agreed are carried forward, marked as carried. A dissenting seat that errors, times out, or
-   returns nothing is re-run, never carried: a carried verdict must be one somebody actually
-   gave. Where a gate requires an exact-head unanimous board (this repository's runtime does,
-   for the implementation board), that board runs once on the final head after the loop has
-   converged; delta review governs the fix rounds that get it there.
-2. **No cancel-on-first-blocker.** Let the round finish. A blocker at minute three says nothing
-   about what the other seats would have found at minute twenty, and cancelling them means
-   paying for the whole round again after the fix. Collect every seat's findings, then fix once.
-3. **Findings cite the frozen goal.** A blocking finding names the `EC-<ALIAS>-<N>` (or the
-   frozen artifact) it claims is violated. A finding that cannot point at a goal is a
-   suggestion: it may be taken, but it cannot block, and it cannot become the round's new goal.
-   This is the review-side half of rule 3 — it stops a review from restating the goals in its
-   own words.
+   the round they dissented on; the round record names that delta's base and head. A seat is
+   carried forward, marked as carried, only when it has given a usable `AGREE` on some head of
+   this change; every seat without a usable verdict — one that errored, timed out, or returned
+   nothing, in any round — is re-run, never carried, and the loop has not converged until every
+   seat has one. Where a gate requires an exact-head unanimous board (this repository's runtime
+   does, for the implementation board), that board runs once on the final head after the loop
+   has converged; delta review governs the fix rounds that get it there.
+2. **No cancel-on-first-blocker.** Let the round finish — a seat that reaches its bound has
+   finished, with that status. A blocker at minute three says nothing about what the other
+   seats would have found at minute twenty, and cancelling them means paying for the whole
+   round again after the fix. Collect every seat's findings, then fix once.
+3. **Findings cite the frozen goal.** A blocking finding names what it claims is violated: the
+   `EC-<ALIAS>-<N>`; for a change with no roadmap goal, the acceptance criteria or contract the
+   change itself declares; or an existing invariant, published guarantee, or test the change
+   regresses. A finding that names none of these is a suggestion: it may be taken, but it
+   cannot block, and it cannot become the round's new goal. This is the review-side half of
+   change 3 above (reference goals by ID) — it stops a review from restating the goals in its
+   own words, and it stops an author from dismissing a defect because the goal it breaks was
+   never written as a roadmap ID.
 4. **A round cap that ends in descope, not in another round.** Write the cap into the pull
    request before round one (three is usual). When it trips, sort what remains: defects in how
    the change binds its inputs are fixed; findings that pin the change's own outputs are carried
-   to a follow-up; and the class the loop kept re-litigating is descoped and recorded as an
-   exception (below) rather than spent on a fourth round. When each round's fix adds a new
-   falsifiable number, cut the number and keep the rule.
+   to a follow-up; and the class the loop kept re-litigating is descoped rather than spent on a
+   fourth round. Descoping means *removing* the scope that carries that class from the change —
+   the goal it served is left unclaimed and carried, and the removal is recorded as an exception
+   (below). It never means merging with a blocking finding waived: a blocker under rule 3 that
+   survives the cap and cannot be removed with its scope halts the change for the operator.
+   When each round's fix adds a new falsifiable number, cut the number and keep the rule.
 
 ## Exceptions, and how to take one
 
