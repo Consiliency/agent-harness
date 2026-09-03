@@ -742,9 +742,9 @@
       "roadmap_ref": null,
       "slug": "split-pr-gate-chronology-746",
       "status": "committed",
-      "task_summary": "Consiliency/agent-harness#746: pull_request runs never select the CONFORM chronology node (only ci/* and the two workflow files retain it); push/schedule/dispatch always do; a red main files/updates one ci-main-red issue; measured by ci/gate-metrics.py, not projected.",
+      "task_summary": "Consiliency/agent-harness#746: pull_request runs never select the CONFORM chronology node unless the diff touches the gate's selection plumbing (ci/*, the two workflows, the witness and Gate A scripts); push/schedule/dispatch always do; a red main files/updates one ci-main-red issue and a green closes it; measured by ci/gate_metrics.py, not projected. r2 after a 4-seat plan review.",
       "type": "detailed",
-      "updated_at": "2026-09-03T06:10:04Z"
+      "updated_at": "2026-09-03T06:58:16Z"
     },
     {
       "acceptance_criteria_count": null,
