@@ -57,6 +57,7 @@ OFFLOAD_LOCK_WAIT_SECONDS="${OFFLOAD_LOCK_WAIT_SECONDS:-5400}"
 _lock_fifo=""
 _lock_out=""
 _lock_pid=""
+_lock_host=""
 
 # The lock is held by a `flock ... -c cat` on the engine host whose stdin is a
 # pipe we keep open here; closing our end (or dying: the runner kills the ssh)
@@ -72,6 +73,7 @@ offload_lock_host() {
 offload_lock_acquire() {
   local host
   host="$(offload_lock_host)"
+  _lock_host="$host"
   if [ -z "$host" ]; then
     echo "offload lock: DOCKER_HOST is not an ssh:// engine; nothing to serialise against" >&2
     return 0
@@ -84,7 +86,10 @@ offload_lock_acquire() {
   _lock_fifo="$(mktemp -u)"
   _lock_out="$(mktemp)"
   mkfifo "$_lock_fifo"
-  ssh "${ssh_target[@]}" "flock -w '$OFFLOAD_LOCK_WAIT_SECONDS' '$OFFLOAD_LOCK' -c 'echo acquired; exec cat'" \
+  # Keepalives so a dead link surfaces as an exited ssh (which the supervisor
+  # below turns into a stopped call) instead of a holder that looks alive.
+  ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 "${ssh_target[@]}" \
+    "flock -w '$OFFLOAD_LOCK_WAIT_SECONDS' '$OFFLOAD_LOCK' -c 'echo acquired; exec cat'" \
     <"$_lock_fifo" >"$_lock_out" 2>&1 &
   _lock_pid=$!
   exec 3>"$_lock_fifo"
@@ -112,6 +117,26 @@ offload_lock_release() {
   echo "offload lock: released"
 }
 
+# Run the call while watching the lock holder. Once `acquired` has been seen the
+# holder is an idle ssh; if it dies mid-call (link drop, remote flock killed) the
+# kernel has already released the lock and a sibling may be starting, so the only
+# honest outcome is to stop this call and fail -- never to finish it unlocked.
+offload_lock_supervise() {
+  "$@" &
+  local call_pid=$!
+  while kill -0 "$call_pid" 2>/dev/null; do
+    if [ -n "$_lock_pid" ] && ! kill -0 "$_lock_pid" 2>/dev/null; then
+      echo "offload lock: lost $OFFLOAD_LOCK on $_lock_host during the call (lock holder exited); stopping the call rather than finishing unlocked" >&2
+      cat "$_lock_out" >&2
+      kill "$call_pid" 2>/dev/null || true
+      wait "$call_pid" 2>/dev/null || true
+      exit 1
+    fi
+    sleep 1
+  done
+  wait "$call_pid"
+}
+
 CHRONOLOGY="${CHRONOLOGY:-true}"
 case "$CHRONOLOGY" in
   true|false) ;;
@@ -134,7 +159,7 @@ echo "chronology node: $([ "$CHRONOLOGY" = true ] && echo retained || echo desel
 JUNIT_DIR=./junit-offload
 rm -rf "$JUNIT_DIR"
 offload_lock_acquire
-dagger -m "$MODULE" call all --source="$SOURCE" --chronology="$CHRONOLOGY" export --path="$JUNIT_DIR"
+offload_lock_supervise dagger -m "$MODULE" call all --source="$SOURCE" --chronology="$CHRONOLOGY" export --path="$JUNIT_DIR"
 offload_lock_release
 
 # `all`'s per-stage verdict roll-up used to be its stdout; it travels in the

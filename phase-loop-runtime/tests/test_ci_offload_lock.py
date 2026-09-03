@@ -25,11 +25,18 @@ SCRIPT = REPO / "ci" / "offload-gate.sh"
 assert shutil.which("flock"), "flock (util-linux) is required for these tests"
 
 _SSH_STUB = """#!/usr/bin/env bash
-# ssh [-p PORT] <host> <command...>: run the remote command locally, record the target.
+# ssh [-o OPT]... [-p PORT] <host> <command...>: run the remote command locally,
+# record the target. SSH_STUB_DIE_AFTER=<seconds> simulates the link dropping that
+# long after the remote command started (the holder exits, the kernel drops the lock).
 set -euo pipefail
+while [ "$1" = "-o" ]; do shift 2; done
 if [ "$1" = "-p" ]; then echo "port=$2" >>"$STUB_LOG.ssh"; shift 2; fi
 echo "$1" >>"$STUB_LOG.ssh"
 shift
+if [ -n "${SSH_STUB_DIE_AFTER:-}" ]; then
+  bash -c "$*" & remote=$!
+  sleep "$SSH_STUB_DIE_AFTER"; kill "$remote" 2>/dev/null; echo "ssh: link dropped" >&2; exit 255
+fi
 exec bash -c "$*"
 """
 
@@ -122,6 +129,24 @@ def test_lock_is_released_when_dagger_fails(harness) -> None:
     assert intervals("bad"), "dagger ran under the lock"
     probe = subprocess.run(["flock", "-n", str(lock), "-c", "true"])
     assert probe.returncode == 0, "lock still held after the script exited"
+
+
+def test_lock_holder_death_during_the_call_stops_the_call(harness) -> None:
+    # Consiliency/agent-harness#746 r1 (codex): after `acquired` nothing watched the
+    # holder, so a dropped link released the lock under a live call that then finished
+    # green. Two runs, the first losing its holder 0.5 s in: the first must stop and
+    # fail, and its dagger must never record a completed interval.
+    run, intervals, _, _ = harness
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        a = pool.submit(run, "lost", extra={"SSH_STUB_DIE_AFTER": "0.5", "DAGGER_STUB_SECONDS": "4"})
+        time.sleep(1.0)
+        b = pool.submit(run, "next")
+        ra, rb = a.result(), b.result()
+    assert ra.returncode == 1, ra.stdout + ra.stderr
+    assert "lost" in ra.stderr and "stopping the call" in ra.stderr
+    assert intervals("lost") == [], "the call finished after the lock was lost"
+    assert rb.returncode == 0, rb.stdout + rb.stderr
+    assert intervals("next"), "the sibling should run once the lock is free"
 
 
 def test_non_ssh_engine_skips_the_lock(harness) -> None:

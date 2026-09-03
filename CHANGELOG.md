@@ -52,7 +52,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   rootfs of containers a sibling session is still executing in -- the 200+ `FileNotFoundError`
   cascade that read as a repo regression. The lock is a pipe-held `flock -c cat`, so a killed runner
   releases it through the kernel; no lock within `OFFLOAD_LOCK_WAIT_SECONDS` (default 5400) exits 1
-  with the lock path named -- never an unlocked run. `OFFLOAD_LOCK` (default
+  with the lock path named, and a holder that dies mid-call (dropped link, remote `flock` killed)
+  stops the call and exits 1 -- never an unlocked run, never a green one that finished unlocked. `OFFLOAD_LOCK` (default
   `/tmp/dagger-offload.lock`) is deliberately generic so every repo offloading to the same engine can
   share it; a repo that does not take it can still overlap.
 - Both workflows pin `Consiliency/ci-actions/dagger-offload` at `c9272a52` (Consiliency/ci-actions#2):
