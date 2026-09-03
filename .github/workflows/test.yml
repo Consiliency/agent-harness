@@ -194,7 +194,7 @@ jobs:
 
   lint:
     name: lint (pyflakes)
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
@@ -232,7 +232,7 @@ jobs:
     # for the fork/no-secret path, where `hosted` is the suite of record.
     needs: elig
     if: needs.elig.outputs.eligible != 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 100
     strategy:
       fail-fast: false
@@ -358,7 +358,7 @@ jobs:
 
   chronology-retention:
     name: chronology retention guard
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     # Its OWN job, not a step inside the pytest matrix. A matrix-conditional step
     # silently vanishes if the matrix is ever bumped past that version, taking the
@@ -428,7 +428,7 @@ jobs:
     # for the fork/no-secret path, where `hosted` is the suite of record.
     needs: elig
     if: needs.elig.outputs.eligible != 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     timeout-minutes: 100
     steps:
       - uses: actions/checkout@v4
