@@ -23,22 +23,24 @@ REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "ci" / "offload-gate.sh"
 
 
-def _is_sparse_checkout(repo: Path) -> bool:
-    """Gate A's clean room is a sparse clone (scripts/gate_a_cleanroom.sh) that
-    deliberately leaves ci/ out; that setting, not the script's absence, is the
-    layout signal. A full checkout that lost the script must still fail loudly."""
+def _script_sparse_excluded(repo: Path) -> bool:
+    """Gate A's clean room is a sparse clone (scripts/gate_a_cleanroom.sh) whose
+    patterns deliberately leave ci/ out. The signal is the script's own index entry
+    carrying skip-worktree (`git ls-files -t` tag ``S``): the file is in the tree
+    but excluded from this working copy by the sparse patterns. A checkout that
+    merely lost the script (tag ``H``, or no entry at all) must still fail loudly."""
     proc = subprocess.run(
-        ["git", "-C", str(repo), "config", "--bool", "core.sparseCheckout"],
+        ["git", "-C", str(repo), "ls-files", "-t", "--", "ci/offload-gate.sh"],
         capture_output=True,
         text=True,
         check=False,
     )
-    return proc.stdout.strip() == "true"
+    return proc.stdout.startswith("S ")
 
 
-_SPARSE_LAYOUT = _is_sparse_checkout(REPO)
+_SPARSE_LAYOUT = _script_sparse_excluded(REPO)
 pytestmark = pytest.mark.skipif(
-    _SPARSE_LAYOUT, reason="sparse clean-room clone excludes ci/ (Gate A); the checkout lanes run this module"
+    _SPARSE_LAYOUT, reason="ci/offload-gate.sh is sparse-excluded from this clean-room clone (Gate A); the checkout lanes run this module"
 )
 
 if not _SPARSE_LAYOUT:
