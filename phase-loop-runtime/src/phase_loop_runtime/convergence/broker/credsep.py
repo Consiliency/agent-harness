@@ -194,10 +194,19 @@ class GitHubBrokerAdapter:
         # (accepted is granted only on effect_terminal_observed).
         return None, BrokerTerminalEvidence(request.admission.idempotency_key, "no_effect_terminal_proven", reference)
 
-    @staticmethod
-    def _create_reports_existing_pr(completed) -> bool:
-        output = f"{completed.stdout or ''}\n{completed.stderr or ''}".lower()
-        return "pull request" in output and "already exists" in output
+    def _create_reports_existing_pr(self, completed, request: BrokerRequest, origin_repo: str) -> bool:
+        if completed.stdout not in (None, "") or not isinstance(completed.stderr, str):
+            return False
+        diagnostic = (
+            f"a pull request for branch {json.dumps(request.branch, ensure_ascii=False)} "
+            f"into branch {json.dumps(request.base, ensure_ascii=False)} already exists:\n"
+        )
+        stderr = completed.stderr
+        if stderr.endswith("\n"):
+            stderr = stderr[:-1]
+        if not stderr.startswith(diagnostic):
+            return False
+        return self._pr_url_matches_origin(stderr[len(diagnostic):], origin_repo)
 
     @staticmethod
     def _pr_url_matches_origin(url, origin_repo: str) -> bool:
@@ -210,7 +219,7 @@ class GitHubBrokerAdapter:
         except (TypeError, ValueError):
             return False
         path_parts = parsed.path.split("/")
-        return (
+        if not (
             parsed.scheme == "https"
             and parsed.netloc == host
             and parsed.hostname == host
@@ -221,10 +230,12 @@ class GitHubBrokerAdapter:
             and not parsed.fragment
             and path_parts[:4] == ["", owner, repo, "pull"]
             and len(path_parts) == 5
-            and path_parts[4].isascii()
-            and path_parts[4].isdigit()
-            and int(path_parts[4]) > 0
-        )
+        ):
+            return False
+        number = path_parts[4]
+        if not number or number[0] not in "123456789" or not number.isascii() or not number.isdigit():
+            return False
+        return url == f"https://{host}/{owner}/{repo}/pull/{number}"
 
     def _branch_diff_paths(self, base: str, head_sha: str):
         # agent-harness#202: the broker's OWN re-derivation of what the branch changed vs
@@ -388,7 +399,7 @@ class GitHubBrokerAdapter:
         # `gh pr create` reports that condition as a non-zero exit. Reconcile only
         # that recognized response through the same server read-back below; every
         # unrelated create failure remains permanently ambiguous.
-        if created.returncode and not self._create_reports_existing_pr(created):
+        if created.returncode and not self._create_reports_existing_pr(created, request, origin_repo):
             return self._ambiguous(request, "pr-unconfirmed")
         # Exact-published-head verification: READ the remote and confirm the branch
         # head on origin equals the pushed sha, then resolve the REAL PR url and

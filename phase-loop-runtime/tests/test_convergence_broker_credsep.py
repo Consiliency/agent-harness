@@ -57,6 +57,13 @@ def _base_responses():
     ]
 
 
+def _existing_pr_diagnostic(*, head=_BRANCH, base="main", url="https://github.com/owner/repo/pull/9"):
+    return (
+        f"a pull request for branch {json.dumps(head, ensure_ascii=False)} "
+        f"into branch {json.dumps(base, ensure_ascii=False)} already exists:\n{url}"
+    )
+
+
 def test_remote_head_match_returns_effect_observed_with_real_url(tmp_path):
     run = _FakeRun(_base_responses() + [
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
@@ -70,7 +77,7 @@ def test_remote_head_match_returns_effect_observed_with_real_url(tmp_path):
 
 def test_existing_open_pr_create_failure_is_reconciled_by_exact_readback(tmp_path):
     run = _FakeRun(_base_responses()[:-1] + [
-        (("create",), "", 1, f'a pull request for branch "{_BRANCH}" into branch "main" already exists'),
+        (("create",), "", 1, _existing_pr_diagnostic()),
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
         (("list",), json.dumps([{"url": "https://github.com/owner/repo/pull/9", "headRefOid": _HEAD, "baseRefName": "main"}]), 0),
     ])
@@ -84,18 +91,106 @@ def test_existing_open_pr_create_failure_is_reconciled_by_exact_readback(tmp_pat
 
 
 @pytest.mark.parametrize(
+    "diagnostic",
+    [
+        _existing_pr_diagnostic(head="feat/other"),
+        _existing_pr_diagnostic(base="release/other"),
+        f"warning: {_existing_pr_diagnostic()}",
+        f"{_existing_pr_diagnostic()}\nunrelated trailing output",
+        "pull request lookup failed because a branch already exists",
+    ],
+    ids=["wrong-head", "wrong-base", "leading-output", "trailing-output", "independent-substrings"],
+)
+def test_existing_open_pr_classifier_rejects_mismatch_or_unrelated_output_without_readback(
+    tmp_path, diagnostic
+):
+    run = _FakeRun(_base_responses()[:-1] + [
+        (("create",), "", 1, diagnostic),
+    ])
+
+    result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
+
+    assert result is None
+    assert evidence.terminal_state == "outcome_ambiguous_blocked"
+    assert evidence.evidence_reference == "pr-unconfirmed"
+    assert not any(call[:3] == ["gh", "pr", "list"] for call in run.calls)
+    assert not any("ls-remote" in call for call in run.calls)
+
+
+def test_existing_open_pr_classifier_rejects_diagnostic_on_stdout_without_readback(tmp_path):
+    run = _FakeRun(_base_responses()[:-1] + [
+        (("create",), _existing_pr_diagnostic(), 1, ""),
+    ])
+
+    result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
+
+    assert result is None
+    assert evidence.terminal_state == "outcome_ambiguous_blocked"
+    assert evidence.evidence_reference == "pr-unconfirmed"
+    assert not any(call[:3] == ["gh", "pr", "list"] for call in run.calls)
+    assert not any("ls-remote" in call for call in run.calls)
+
+
+def test_existing_open_pr_classifier_reconstructs_quoted_head_and_base(tmp_path):
+    branch = 'feat/quoted"head'
+    base = 'release/quoted"base'
+    request = BrokerRequest(
+        BrokerVerb.PUBLISH_COMMITTED_BRANCH,
+        AdmissionRequest("attempt", 1, "fence", "digest", "predicate", "scope", "key"),
+        "repo",
+        branch,
+        _HEAD,
+        ("a.py",),
+        base=base,
+    )
+    completed = SimpleNamespace(
+        stdout="",
+        stderr=(
+            'a pull request for branch "feat/quoted\\"head" '
+            'into branch "release/quoted\\"base" already exists:\n'
+            "https://github.com/owner/repo/pull/9"
+        ),
+    )
+
+    assert GitHubBrokerAdapter(tmp_path)._create_reports_existing_pr(
+        completed, request, "github.com/owner/repo"
+    )
+
+
+@pytest.mark.parametrize(
     "malformed_url",
     [
         {"url": "https://github.com/owner/repo/pull/9"},
         9,
         "not-a-pr-url",
         "https://github.com/other/repo/pull/9",
+        " https://github.com/owner/repo/pull/9",
+        "https://github.com/owner/repo/pull/9 ",
+        "https://github.com/own\rer/repo/pull/9",
+        "https://github.com/owner/\nrepo/pull/9",
+        "https://github.com/owner/repo/pull/\t9",
+        "https://github.com/owner/repo/pull/9?",
+        "https://github.com/owner/repo/pull/9#",
+        "https://github.com/owner/repo/pull/09",
     ],
-    ids=["dict", "integer", "non-pr-string", "wrong-repository"],
+    ids=[
+        "dict",
+        "integer",
+        "non-pr-string",
+        "wrong-repository",
+        "leading-whitespace",
+        "trailing-whitespace",
+        "embedded-cr",
+        "embedded-lf",
+        "embedded-tab",
+        "empty-query-delimiter",
+        "empty-fragment-delimiter",
+        "leading-zero",
+    ],
 )
-def test_existing_open_pr_recovery_rejects_malformed_or_wrong_repo_url(tmp_path, malformed_url):
+def test_existing_open_pr_recovery_rejects_noncanonical_url_bytes(tmp_path, malformed_url):
     run = _FakeRun(_base_responses()[:-1] + [
-        (("create",), "", 1, "a pull request for this branch already exists"),
+        (("create",), "", 1, _existing_pr_diagnostic()),
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
         (("list",), json.dumps([
             {"url": malformed_url, "headRefOid": _HEAD, "baseRefName": "main"},
@@ -111,7 +206,7 @@ def test_existing_open_pr_recovery_rejects_malformed_or_wrong_repo_url(tmp_path,
 
 def test_existing_open_pr_recovery_rejects_multiple_results(tmp_path):
     run = _FakeRun(_base_responses()[:-1] + [
-        (("create",), "", 1, "a pull request for this branch already exists"),
+        (("create",), "", 1, _existing_pr_diagnostic()),
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
         (("list",), json.dumps([
             {"url": "https://github.com/owner/repo/pull/9", "headRefOid": _HEAD, "baseRefName": "main"},
@@ -128,7 +223,7 @@ def test_existing_open_pr_recovery_rejects_multiple_results(tmp_path):
 
 def test_existing_open_pr_recovery_rejects_mismatched_base(tmp_path):
     run = _FakeRun(_base_responses()[:-1] + [
-        (("create",), "", 1, "a pull request for this branch already exists"),
+        (("create",), "", 1, _existing_pr_diagnostic()),
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
         (("list",), json.dumps([
             {"url": "https://github.com/owner/repo/pull/9", "headRefOid": _HEAD, "baseRefName": "release/2.0"},
@@ -144,7 +239,7 @@ def test_existing_open_pr_recovery_rejects_mismatched_base(tmp_path):
 
 def test_existing_open_pr_recovery_rejects_unreadable_list(tmp_path):
     run = _FakeRun(_base_responses()[:-1] + [
-        (("create",), "", 1, "a pull request for this branch already exists"),
+        (("create",), "", 1, _existing_pr_diagnostic()),
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
         (("list",), "", 1),
     ])
