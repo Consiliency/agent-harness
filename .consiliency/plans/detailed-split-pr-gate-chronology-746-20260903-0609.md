@@ -121,7 +121,11 @@ recorded with the rule, the reason, and an owner.
     `gh run view "$GITHUB_RUN_ID" --json jobs --jq '[.jobs[] | select(.conclusion=="failure")
     | .name] | join(", ")'`; canonical issue =
     `gh issue list --state all --label ci-main-red --limit 1 --json number,state
-    --jq '.[0] | "\(.number) \(.state)"' ` (newest first; `// empty` guarded as above):
+    --jq '.[0] // empty | "\(.number) \(.state)"'` (newest first). The guard sits on the
+    OBJECT, before the interpolation: `.[0] | "\(.number) \(.state)"` prints `null null` on
+    `[]` (non-empty), and `// empty` appended AFTER the string cannot rescue it. Verified:
+    `echo '[]' | jq -r '.[0] // empty | "\(.number) \(.state)"'` prints nothing;
+    `echo '[{"number":7,"state":"CLOSED"}]' | …` prints `7 CLOSED`.
     none → `gh issue create --label ci-main-red --title "suite gate is red on main"
     --body-file <tmp>`; `OPEN` → `gh issue comment <n> --body-file <tmp>`; `CLOSED` →
     `gh issue reopen <n>` then `gh issue comment <n> --body-file <tmp>`. There is ONE
@@ -236,7 +240,8 @@ recorded with the rule, the reason, and an owner.
 - `_stub_gh(tmp_path, *, issues, tip, green_runs)` — add — writes an executable `gh` into a
   temp `bin/` that appends its argv to a log file and answers `api repos/.../branches/main`
   (`tip`), `run list` (the JSON list `green_runs`: `[]` or one sha), `run view` (one failed
-  job), `issue list` (the JSON list `issues`: `[]`, or one `{number,state}`), and exits 0 for
+  job), `issue list` (the JSON list `issues`: `[]`, or one `{number,state}` — the `[]` case is what
+  proves the object-level `// empty` in the canonical-issue read), and exits 0 for
   `label create`, `issue create`, `issue comment`, `issue reopen`, `issue close`. The stub
   answers `--json ... --jq <expr>` by running the real `jq` on the fixture JSON (so the
   `.[0].number // empty` guard is exercised against `[]`, which prints `null` without it);
