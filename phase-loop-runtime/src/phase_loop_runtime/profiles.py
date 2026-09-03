@@ -40,14 +40,16 @@ GEMINI_AUTO_ROUTED_MODEL = "auto"
 # (GA), so the regular tier tracks the newest GA Flash.
 # (agy's ids are `gemini-<ver>-<family>-<effort>`; the old "Gemini 3.5 Flash (High)" display
 # label is NOT in `agy models` — hoisted here so EXECUTOR_MODEL_OVERRIDES can reference it.)
-# 2026-08-27: retargeted 3.6 -> 3.7 Flash on operator instruction. `agy models` (agy
-# 1.1.21) lists gemini-3.7-flash-{high,medium,low}, and `gemini-3.7-flash-high` was
-# verified live through the CLI before this pin was moved.
-GEMINI_IMPLEMENTER_MODEL = "gemini-3.7-flash"
+# 2026-09-02: retargeted 3.7 -> 3.8 Flash on operator instruction. `agy models` (agy
+# 1.1.24) lists gemini-3.8-flash-{high,medium,low}, and `gemini-3.8-flash-high` was
+# verified live 2026-09-02 (agy 1.1.24) with a one-word `agy -p` round trip. The effort
+# must ride in the id (as it did for 3.7-high): agy rejects `--effort` alongside an
+# effort-suffixed model id.
+GEMINI_IMPLEMENTER_MODEL = "gemini-3.8-flash"
 PI_AUTO_ROUTED_MODEL = "auto"
 # xAI-family grok executor default (GROKEXEC). Single source for the grok live
 # adapter model alias; the grok CLI takes it verbatim via `-m`.
-GROK_DEFAULT_MODEL = "grok-4.5"  # model-id-source: SSOT constant definition (can't reference itself)
+GROK_DEFAULT_MODEL = "grok-4.6"  # model-id-source: SSOT constant definition (can't reference itself)
 
 DEFAULT_PROFILES = {
     "roadmap": (OPENAI_HEAVY_MODEL, "high"),
@@ -163,7 +165,7 @@ OPENAI_WORKER_MODEL = "gpt-5.6-luna"
 # OPENCODE_OPENAI_IMPLEMENTER_MODEL is hoisted near OPENCODE_OPENAI_HEAVY_MODEL (top).
 OPENCODE_OPENAI_WORKER_MODEL = "openai/gpt-5.6-luna"
 # Gemini authoring/review stays on the CLI `pro` alias. Implementation uses the
-# base `gemini-3.7-flash` id on both class and executor paths; the adapter appends
+# base `gemini-3.8-flash` id on both class and executor paths; the adapter appends
 # the policy-normalized effort. Worker (lite) uses the canonical
 # agy 3.5 Flash id: `agy models` exposes NO flash-lite, so the matrix's gemini-3.5-flash-lite
 # lite cell is ASPIRATIONAL (target, not live) — the live worker degrades to real 3.5 Flash,
@@ -220,11 +222,11 @@ CODEX_LITE_MODEL = OPENAI_WORKER_MODEL
 # heavy is a PREVIEW model (Google already retired gemini-3-pro-preview) → marked
 # volatile in the matrix; regular/lite are stable GA ids.
 GEMINI_HEAVY_MODEL = "gemini-3.1-pro-preview"
-GEMINI_REGULAR_MODEL = "gemini-3.7-flash"
+GEMINI_REGULAR_MODEL = "gemini-3.8-flash"
 GEMINI_LITE_MODEL = "gemini-3.5-flash-lite"
 
 # grok/xAI per-tier ids. heavy reuses the existing GROK_DEFAULT_MODEL SSOT.
-# VOLATILE: xAI publishes NO dated snapshot for these — a bare `grok-4.5`/`grok-4.3`
+# VOLATILE: xAI publishes NO dated snapshot for these — a bare `grok-4.6`/`grok-4.3`
 # id tracks the latest stable build per xAI docs, so these are NOT immutable pins.
 # All grok tier cells are marked volatile below; repin to dated ids when xAI ships
 # them (design-model-tier-taxonomy.md CR, blocker 2).
@@ -275,7 +277,7 @@ TIER_MODELS: dict[str, dict[str, TierModel]] = {
     },
     # grok: ALL cells volatile — xAI publishes no dated snapshot, bare ids float to
     # latest stable (blocker 2). NOTE: grok's LIVE class/executor routing stays
-    # single-model (GROK_DEFAULT_MODEL = grok-4.5) by grok's documented design; these
+    # single-model (GROK_DEFAULT_MODEL = grok-4.6) by grok's documented design; these
     # per-tier ids are the taxonomy target, consulted via resolve(), not yet the live
     # grok class path (deferred — see CLASS_MODEL_OVERRIDES: claude+codex derived).
     "grok": {
@@ -380,7 +382,7 @@ def supervise_selection(vendor: str = "claude") -> TierResolution:
 # enumeration; each is intentional, with the reason it can't be a one-line derive):
 #   • gemini — the MODEL-PATH split is FIXED (CR round-4) and the REGULAR VERSION is now
 #     ALIGNED (CR round-5 finding B): implementation on BOTH the class and executor paths
-#     stores the base `gemini-3.7-flash` id; the adapter appends the normalized
+#     stores the base `gemini-3.8-flash` id; the adapter appends the normalized
 #     effort to emit agy's canonical id. Two things remain: (a) the PRO/
 #     planning path still routes via the `pro` CLI alias / "Gemini 3.1 Pro (High)" DISPLAY
 #     label rather than a canonical agy id — REPRESENTATIONAL only (same Pro model), and out
@@ -389,7 +391,7 @@ def supervise_selection(vendor: str = "claude") -> TierResolution:
 #     degrades to the real agy 3.5 Flash (gemini-3.5-flash-high). This is a genuine
 #     version/family divergence (like grok-4.3), NOT representational — repin the lite cell
 #     when agy ships a flash-lite id.
-#   • grok class path AND grok executor path — GROK_DEFAULT_MODEL (grok-4.5) for every
+#   • grok class path AND grok executor path — GROK_DEFAULT_MODEL (grok-4.6) for every
 #     class/action by grok's documented SINGLE-MODEL design; the per-tier matrix ids
 #     (grok-4.3/grok-build-0.1, all volatile) are the taxonomy target, not yet live.
 #   • opencode — NO LONGER a bypass: its class AND executor paths now AGREE (both use
@@ -444,10 +446,10 @@ def supervise_selection(vendor: str = "claude") -> TierResolution:
 # REPRESENTATIONAL (aliases / display labels / provider-prefixes that are tier-consistent but
 # not literally the matrix ids), or the named no-tier seams (command, maintenance) and the
 # transport carve-out (channel). EXCEPT grok: grok's intentional SINGLE-MODEL routing runs
-# implementation on grok-4.5 (its HEAVY cell) — NAMED above; the taxonomy's grok-4.3 regular
+# implementation on grok-4.6 (its HEAVY cell) — NAMED above; the taxonomy's grok-4.3 regular
 # target is not yet live. There are TWO named model disagreements (grok single-model; gemini
 # LITE aspirational — agy exposes no flash-lite), not one. Panel/advisor legs
-# (panel_invoker.DEFAULT_LEG_MODELS = fable-5 / sol / 3.1-Pro / grok-4.5) are a SEPARATE
+# (panel_invoker.DEFAULT_LEG_MODELS = fable-5-1 / sol / 3.8-flash-high / grok-4.6) are a SEPARATE
 # model-bearing surface (review-only), NOT a phase-executor resolution seam — their defaults
 # are the ultra-else-heavy reviewer set, tier-correct and not a routing bypass.
 # Effort is bound by shipped action policy and recorded at requested, policy,

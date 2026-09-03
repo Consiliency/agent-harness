@@ -6,6 +6,25 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### fleet default models: Fable 5.1, Gemini 3.8 Flash, Grok 4.6
+
+- The advisor-board / panel default seats and the executor model defaults move to the ids the
+  installed CLIs actually run today: `claude-fable-5` -> `claude-fable-5-1` (Claude Code 2.1.258),
+  `gemini-3.7-flash` -> `gemini-3.8-flash` (agy embed form `gemini-3.8-flash-high`; `agy models`
+  1.1.24 lists `gemini-3.8-flash-{high,medium,low}`), and the grok executor default
+  `GROK_DEFAULT_MODEL` `grok-4.5` -> `grok-4.6` (`grok models` reports `grok-4.6 (default)`).
+  The codex seat stays `gpt-5.6-sol`; the panel's grok seat was already `grok-4.6`.
+- The superseded ids stay REGISTERED and accepted for explicit configs — `claude-fable-5`,
+  `gemini-3.7-flash`, `gemini-3.6-flash`, and `grok-4.5` all remain in the model registry and in
+  `panel_invoker.DEFAULT_REVIEW_SEAT_ALIASES` as legacy review seats, so a pinned board config
+  naming an older id keeps resolving onto its lane.
+- Swept every current-default surface: the SSOT constants (`capability_registry.CLAUDE_ULTRA_MODEL`,
+  `profiles.GEMINI_IMPLEMENTER_MODEL` / `GEMINI_REGULAR_MODEL` / `GROK_DEFAULT_MODEL`), the board
+  presets, composition, fixtures, the president ladder, `DEFAULT_LEG_MODELS`, the capabilities card,
+  the outside-agent release handoff, the launchspec golden, `build_bundle.PRESERVE_LITERALS`, and
+  all four `skills-src/` advisor-board sources regenerated into `phase-loop-skills/` and synced into
+  the wheel-shipped `skills_bundle/`.
+
 ### advisor-board skills: a hard deadline is not a stall threshold (Consiliency/agent-harness#727)
 
 - The `Bounding A Slow Leg` section told operators to pass `timeouts_by_leg` "to BOUND a

@@ -263,8 +263,10 @@ _MODEL_DEFS: tuple[tuple[str, str, str], ...] = (
     # referent was retired in CR round 1; the test reference is what keeps this justified.)
     ("claude-opus-5", "claude", "max"),
     ("claude-haiku-4-5-20251001", "claude", "max"),
+    ("claude-fable-5-1", "claude", "max"),
     ("claude-fable-5", "claude", "max"),
     ("Gemini 3.1 Pro", "gemini", "max"),
+    ("gemini-3.8-flash", "gemini", "high"),
     ("gemini-3.7-flash", "gemini", "high"),
     ("gemini-3.6-flash", "gemini", "high"),
     ("grok-4.6", "grok", "max"),

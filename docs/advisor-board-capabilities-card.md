@@ -79,8 +79,10 @@ actionable message, before any subprocess is spawned. Source of truth:
 | `claude-opus-4-8`| claude        | `claude`     | claude            | max            |
 | `claude-opus-5`  | claude        | `claude`     | claude            | max            |
 | `claude-haiku-4-5-20251001`| claude | `claude`     | claude            | max            |
+| `claude-fable-5-1` | claude      | `claude`     | claude            | max            |
 | `claude-fable-5` | claude        | `claude`     | claude            | max            |
 | `Gemini 3.1 Pro` | gemini        | `gemini`     | gemini            | max            |
+| `gemini-3.8-flash` | gemini      | `gemini`     | gemini            | high           |
 | `gemini-3.7-flash` | gemini      | `gemini`     | gemini            | high           |
 | `gemini-3.6-flash` | gemini      | `gemini`     | gemini            | high           |
 | `grok-4.6`       | grok          | `grok`       | grok              | max            |
@@ -89,7 +91,7 @@ actionable message, before any subprocess is spawned. Source of truth:
 **Effort is model-first `{model, effort}`**, split out of the model name and mapped
 per harness by `render_seat_invocation`: `claude` → `--effort <level>`, `codex` →
 `-c model_reasoning_effort=<xhigh|high|…>`, `gemini` → effort baked into the model
-token (`gemini-3.7-flash-high`; legacy display names such as
+token (`gemini-3.8-flash-high`; legacy display names such as
 `"Gemini 3.1 Pro (High)"` remain accepted). Canonical effort levels: `low, medium, high, max`.
 
 **Auth is subscription-default, never-silent-key.** A subscription seat actively
@@ -121,15 +123,15 @@ the matrix at load time).
 
 | Preset                  | Purpose               | Seats (model · effort · harness · lens) |
 | ----------------------- | --------------------- | ---------------------------------------- |
-| `default`               | premerge-review       | gpt-5.6-sol · max · codex · red-team ; gemini-3.7-flash · high · gemini · alternative-approach ; claude-fable-5 · max · claude · correctness ; grok-4.6 · max · grok · adversarial |
-| `code-review`           | code-review           | grok-4.6 · max · grok · adversarial ; claude-fable-5 · max · claude · correctness ; gpt-5.6-sol · max · codex · red-team ; gemini-3.7-flash · high · gemini · alternative-approach |
-| `brainstorm`            | brainstorm            | claude-sonnet-5 · high · claude · adversarial ; gpt-5.6-sol · high · codex · supportive ; gemini-3.7-flash · high · gemini · lateral |
+| `default`               | premerge-review       | gpt-5.6-sol · max · codex · red-team ; gemini-3.8-flash · high · gemini · alternative-approach ; claude-fable-5-1 · max · claude · correctness ; grok-4.6 · max · grok · adversarial |
+| `code-review`           | code-review           | grok-4.6 · max · grok · adversarial ; claude-fable-5-1 · max · claude · correctness ; gpt-5.6-sol · max · codex · red-team ; gemini-3.8-flash · high · gemini · alternative-approach |
+| `brainstorm`            | brainstorm            | claude-sonnet-5 · high · claude · adversarial ; gpt-5.6-sol · high · codex · supportive ; gemini-3.8-flash · high · gemini · lateral |
 | `doc-edit`              | doc-edit              | claude-sonnet-5 · medium · claude · copyedit ; gpt-5.5 · medium · codex · structure |
-| `legal-review`          | legal-review          | gpt-5.6-sol · max · codex · opposing-counsel ; gemini-3.7-flash · high · gemini · risk-liability ; claude-fable-5 · max · claude · authority-verification |
-| `legal-strategy-review` | legal-strategy-review | gpt-5.6-sol · max · codex · red-team ; gemini-3.7-flash · high · gemini · alternatives ; claude-fable-5 · max · claude · downside-ethics |
-| `legal-brainstorm`      | legal-brainstorm      | claude-sonnet-5 · high · claude · aggressive ; gpt-5.6-sol · high · codex · conservative ; gemini-3.7-flash · high · gemini · creative |
-| `general`               | general               | gpt-5.6-sol · max · codex · adversarial ; gemini-3.7-flash · high · gemini · alternative ; claude-fable-5 · max · claude · completeness |
-| `solo`                  | general               | claude-fable-5 · max · claude · completeness |
+| `legal-review`          | legal-review          | gpt-5.6-sol · max · codex · opposing-counsel ; gemini-3.8-flash · high · gemini · risk-liability ; claude-fable-5-1 · max · claude · authority-verification |
+| `legal-strategy-review` | legal-strategy-review | gpt-5.6-sol · max · codex · red-team ; gemini-3.8-flash · high · gemini · alternatives ; claude-fable-5-1 · max · claude · downside-ethics |
+| `legal-brainstorm`      | legal-brainstorm      | claude-sonnet-5 · high · claude · aggressive ; gpt-5.6-sol · high · codex · conservative ; gemini-3.8-flash · high · gemini · creative |
+| `general`               | general               | gpt-5.6-sol · max · codex · adversarial ; gemini-3.8-flash · high · gemini · alternative ; claude-fable-5-1 · max · claude · completeness |
+| `solo`                  | general               | claude-fable-5-1 · max · claude · completeness |
 
 **Catch-alls for unmodeled tasks.** `general` (top-tier cross-vendor panel) and
 `solo` (one top-end member) are the domain-agnostic fallbacks — hand either any task
@@ -146,7 +148,7 @@ host); `N` = cap at N. Result order is always preserved regardless of finish ord
 **Review-class boards run on Fable, never the implementer.** Pre-merge and legal
 review are mid-tier decisions where being wrong is expensive, so the review-class
 boards (`default`, `code-review`, `legal-review`, `legal-strategy-review`) seat
-Fable (`claude-fable-5`) on the claude lane, decoupled from the implementer model
+Fable (`claude-fable-5-1`) on the claude lane, decoupled from the implementer model
 `claude-sonnet-5` (`panel_invoker.DEFAULT_LEG_MODELS["claude"]` is the single source
 of truth, so the live governed gates `governed_review` / `governed_premerge` also
 review on Fable). The divergent-thinking boards (`brainstorm`, `doc-edit`,
@@ -160,7 +162,7 @@ citation-verification treatment is a documented deep-seat follow-on
 The explicit `PANEL_LEGS == (codex, gemini, claude)` and `invoke_panel` API stay
 separately frozen for legacy callers (proven in `tests/test_advisor_board_golden.py`).
 
-The president availability ladder is Fable → Sol → Grok 4.6 → Gemini 3.7 Flash.
+The president availability ladder is Fable → Sol → Grok 4.6 → Gemini 3.8 Flash.
 It advances only on typed unavailability, not on disagreement or a blocking ruling.
 
 ### Invoking a board

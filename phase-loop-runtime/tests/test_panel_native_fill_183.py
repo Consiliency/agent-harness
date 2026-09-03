@@ -32,7 +32,7 @@ from phase_loop_runtime.cli import main as cli_main
 
 
 def _claude_seat() -> Seat:
-    return Seat(model="claude-fable-5", effort="max", harness="claude", lens="correctness")
+    return Seat(model="claude-fable-5-1", effort="max", harness="claude", lens="correctness")
 
 
 def _claude_board() -> Board:
@@ -183,7 +183,7 @@ class AdvisorBoardLoudShortfall(unittest.TestCase):
         claude = pi.attach_native_agent_request(
             pi.PanelLegResult(
                 leg="claude", status="UNAVAILABLE", text="", detail="deferred",
-                seat_key="claude:claude-fable-5:max:correctness",
+                seat_key="claude:claude-fable-5-1:max:correctness",
             ),
             req,
         )
@@ -379,7 +379,7 @@ class TypedDeferralReachesTheAttachGate(unittest.TestCase):
         # The other half of the gate is load-bearing SECURITY, not a nicety: a
         # Fable/Opus seat is subscription-TUI only and must never be substituted by
         # a native agent, even though its deferral has the identical typed shape.
-        _result, leg = self._run("claude-fable-5")
+        _result, leg = self._run("claude-fable-5-1")
         self.assertEqual(leg.status, "UNAVAILABLE")
         self.assertEqual(leg.detail, "tui_adapter_required")
         self.assertIsNone(leg.needs_native_agent)
