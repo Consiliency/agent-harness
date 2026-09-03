@@ -76,7 +76,9 @@ recorded with the rule, the reason, and an owner.
 ### `ci/chronology-scope.sh` (modify)
 - header comment — modify — state the new property: PRs defer the node to the landing push and
   the nightly, except a PR that changes the gate's own selection plumbing; drop the paragraph
-  that justifies the runtime-wide diff table.
+  that justifies the runtime-wide diff table AND the `--match` paragraph that says every path
+  "named by the frozen mutation definitions is covered" (the tests that pinned that coverage
+  are deleted below; leaving the sentence invites an implementer to restore the old table).
 - `chronology_input_path` — modify + rename to `gate_plumbing_path` — the table becomes exactly:
   `ci/*`, `.github/workflows/test.yml`, `.github/workflows/publish-pypi.yml`,
   `phase-loop-runtime/scripts/chronology_witness.py`,
@@ -94,22 +96,37 @@ recorded with the rule, the reason, and an owner.
 ### `ci/main-red.sh` (create)
 - the reporter body, out of YAML so it is testable with a stub `gh` — add — reads env
   `GATE_RESULT` (`failure`|`success`), `GITHUB_RUN_ID`, `GITHUB_SERVER_URL`, `GITHUB_REPOSITORY`,
-  `GH_TOKEN`; `set -euo pipefail`.
-  - Both branches first: `gh label create ci-main-red --force --color B60205
+  `GITHUB_SHA`, `GH_TOKEN`; `set -euo pipefail`.
+  - Every `--jq` that reads `.[0].<field>` is written `.[0].<field> // empty`: on an empty
+    list `gh --jq '.[0].number'` prints the literal `null`, which is a non-empty string, so a
+    bare read would send the first-ever red down the comment branch (`gh issue comment null`
+    → the script dies before `issue create`). A value is "present" only when non-empty.
+  - Tip check, before anything else: `tip="$(gh api "repos/$GITHUB_REPOSITORY/branches/main"
+    --jq '.commit.sha')"`; if `tip != GITHUB_SHA` → print "stale run for $GITHUB_SHA; main is
+    at $tip; not reporting" and exit 0. The concurrency group serializes reporters but does
+    not order them by commit: an older red gate can finish after a newer green one, and
+    without this check it would file a red for a tip that is already green (or a newer green
+    would close an issue that a still-running older red is about to re-open). Only the run
+    whose commit IS the current tip may change issue state.
+  - Both branches next: `gh label create ci-main-red --force --color B60205
     --description "suite gate is red on main"` (idempotent; `--force` updates instead of
     failing when the label exists).
   - `GATE_RESULT=failure`: `green="$(gh run list --workflow test.yml --branch main --event push
-    --status success --limit 1 --json headSha --jq '.[0].headSha')"`; range text =
+    --status success --limit 1 --json headSha --jq '.[0].headSha // empty')"`; range text =
     `git log --merges --oneline "$green..HEAD"` when `green` is non-empty and resolvable, else
     `git log --oneline -20` (no green run, or a squash-landed range with no merge commits →
     the plain log, labelled as such); failing jobs =
     `gh run view "$GITHUB_RUN_ID" --json jobs --jq '[.jobs[] | select(.conclusion=="failure")
-    | .name] | join(", ")'`; `open="$(gh issue list --state open --label ci-main-red --limit 1
-    --json number --jq '.[0].number')"`; if `open` is non-empty → `gh issue comment "$open"
-    --body-file <tmp>`, else `gh issue create --label ci-main-red --title "suite gate red on
-    main: run $GITHUB_RUN_ID" --body-file <tmp>`. The body carries the run URL
-    (`$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID`), the failing job
-    names, and the range text.
+    | .name] | join(", ")'`; canonical issue =
+    `gh issue list --state all --label ci-main-red --limit 1 --json number,state
+    --jq '.[0] | "\(.number) \(.state)"' ` (newest first; `// empty` guarded as above):
+    none → `gh issue create --label ci-main-red --title "suite gate is red on main"
+    --body-file <tmp>`; `OPEN` → `gh issue comment <n> --body-file <tmp>`; `CLOSED` →
+    `gh issue reopen <n>` then `gh issue comment <n> --body-file <tmp>`. There is ONE
+    `ci-main-red` issue over the life of the repo (reopened, never re-created), so a flaky
+    red/green/red sequence produces one issue with a history, not a series. The body carries
+    the run URL (`$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID`), the
+    failing job names, and the range text.
   - `GATE_RESULT=success`: for every open `ci-main-red` issue, `gh issue close <n> --comment
     "suite gate green again on main: run <url>"`; no-op when none is open.
   - Any other `GATE_RESULT` → exit 2 with a message (never a silent no-op).
@@ -121,17 +138,22 @@ recorded with the rule, the reason, and an owner.
 ### `.github/workflows/test.yml` (modify)
 - top-of-file comment on the `schedule` trigger — modify — say PRs never run the node unless
   they touch gate plumbing; push-to-main is the landing proof, nightly the backstop.
-- `main-red` job — add — `needs: gate`; `if: always() && github.event_name != 'pull_request'
-  && github.ref == 'refs/heads/main' && (needs.gate.result == 'failure' || needs.gate.result
-  == 'success')` (cancelled/skipped gates report nothing; a dispatch on a non-default ref
-  reports nothing); job-level `permissions: { contents: read, actions: read, issues: write }`
+- `main-red` job — add — `needs: gate`; `if: always() && (github.event_name == 'push' ||
+  github.event_name == 'schedule') && github.ref == 'refs/heads/main' &&
+  (needs.gate.result == 'failure' || needs.gate.result == 'success')` (cancelled/skipped
+  gates report nothing; `pull_request` never reports; `workflow_dispatch` never reports —
+  a dispatch with `chronology=false` is the measurement lever and its green proves nothing
+  about the node, so it must not close a red issue the node caused; `gate` is an
+  `if: always()` join whose `result` is `failure` when `offload`/`hosted` fail, so a
+  chronology-node red reaches the reporter as `failure`, not `skipped`); job-level `permissions: { contents: read, actions: read, issues: write }`
   (`actions: read` is what `gh run list`/`gh run view` need — a job-level block REPLACES the
   defaults, it does not extend them; the workflow's top-level stays `contents: read`);
   job-level `concurrency: { group: main-red, cancel-in-progress: false }` so two reds landing
   close together serialize and the second one sees the first one's issue; steps: checkout
   (`fetch-depth: 0`), then `run: bash ci/main-red.sh` with `env: { GATE_RESULT:
-  ${{ needs.gate.result }}, GH_TOKEN: ${{ github.token }} }`. Not in `gate`'s `needs`, so a
-  reporter failure never masks or unmasks the gate result.
+  ${{ needs.gate.result }}, GH_TOKEN: ${{ github.token }} }` (`GITHUB_SHA` and
+  `GITHUB_REPOSITORY` are runner defaults). Not in `gate`'s `needs`, so a reporter failure
+  never masks or unmasks the gate result.
 - the `suite (offloaded to ai)` job comment "~8 min when it is deselected" — modify — replace
   with the measured value from Verification step 1.
 
@@ -148,8 +170,9 @@ recorded with the rule, the reason, and an owner.
   new attempt of the same run record, not a new record); `reruns = executions - 1`;
   `minutes = (updatedAt - startedAt)` of the newest run on that head (`run_started_at` resets
   per attempt, so this is the last attempt's wall clock); `plumbing = yes|no` from
-  `plumbing_for(number)`. A PR with no run on its final head prints `minutes=-` and is excluded
-  from the median.
+  `plumbing_for(number)`. A PR with no run on its final head prints `minutes=- executions=0
+  reruns=-` (never `-1`) and is excluded from BOTH the median and the zero-rerun share's
+  denominator.
 - `main()` — add — stdlib + `gh`: `--last N` (default 10) → `gh pr list --state merged
   --base main --limit N --json number,headRefName,headRefOid,mergedAt`; or `--pr N [N ...]`
   → `gh pr view N --json ...` each. Per PR: `gh run list --workflow test.yml --event
@@ -176,7 +199,9 @@ recorded with the rule, the reason, and an owner.
   `phase-loop-runtime/scripts/regenerate_skills_bundle.py`, `README.md` are `no-match`.
 - `test_pull_request_touching_an_input_retains_the_node`,
   `test_pull_request_renaming_an_input_out_of_the_table_retains_the_node`,
-  `test_pull_request_touching_a_fixture_vector_retains_the_node`,
+  `test_pull_request_touching_a_fixture_vector_retains_the_node` (rename to
+  `test_pull_request_touching_gate_a_plumbing_retains_the_node`; its path becomes
+  `phase-loop-runtime/scripts/gate_a_cleanroom.sh`),
   `test_pull_request_touching_a_quoted_pathname_retains_the_node` — modify — retarget the
   positive cases at gate-plumbing paths (`ci/x.sh`, `.github/workflows/test.yml`,
   `phase-loop-runtime/scripts/chronology_witness.py`) and add
@@ -186,8 +211,9 @@ recorded with the rule, the reason, and an owner.
   keeps exercising the NUL listing with a gate-plumbing path.
 - `test_workflows_retain_the_node_on_main_nightly_and_release` — modify — additionally assert
   the `main-red` job exists; its `if:` contains the literal predicates
-  `github.event_name != 'pull_request'`, `github.ref == 'refs/heads/main'`,
-  `needs.gate.result == 'failure'` and `needs.gate.result == 'success'`; its `permissions`
+  `github.event_name == 'push'`, `github.event_name == 'schedule'`,
+  `github.ref == 'refs/heads/main'`, `needs.gate.result == 'failure'` and
+  `needs.gate.result == 'success'`, and does NOT contain `workflow_dispatch`; its `permissions`
   equals `{contents: read, actions: read, issues: write}`; its `concurrency.group == "main-red"`
   with `cancel-in-progress: false`; the top-level `permissions` is still `{contents: read}`;
   and `gate.needs` does not contain `main-red`.
@@ -198,27 +224,45 @@ recorded with the rule, the reason, and an owner.
   `test_every_consumer_spells_the_same_node_id`.
 
 ### `phase-loop-runtime/tests/test_ci_main_red.py` (create)
-- `_stub_gh(tmp_path, *, open_issue)` — add — writes an executable `gh` into a temp `bin/` that
-  appends its argv to a log file and answers `run list` (a fixed sha), `run view` (one failed
-  job), `issue list` (empty, or one number), and exits 0 for `label create`, `issue create`,
-  `issue comment`, `issue close`; the test runs `ci/main-red.sh` with `PATH=<bin>:/usr/bin:/bin`
-  inside a throwaway git repo with two merge commits past the "green" sha.
-- `test_red_with_no_open_issue_creates_one` — add — the log contains exactly one
-  `issue create --label ci-main-red --title ... --body-file ...` and no `issue comment`; the
-  body file names the run URL, the failing job, and both merge subjects.
+- `_stub_gh(tmp_path, *, issues, tip, green_runs)` — add — writes an executable `gh` into a
+  temp `bin/` that appends its argv to a log file and answers `api repos/.../branches/main`
+  (`tip`), `run list` (the JSON list `green_runs`: `[]` or one sha), `run view` (one failed
+  job), `issue list` (the JSON list `issues`: `[]`, or one `{number,state}`), and exits 0 for
+  `label create`, `issue create`, `issue comment`, `issue reopen`, `issue close`. The stub
+  answers `--json ... --jq <expr>` by running the real `jq` on the fixture JSON (so the
+  `.[0].number // empty` guard is exercised against `[]`, which prints `null` without it);
+  the test runs `ci/main-red.sh` with `PATH=<bin>:/usr/bin:/bin` inside a throwaway git repo
+  with two merge commits past the "green" sha, `GITHUB_SHA` = that repo's HEAD.
+  "Mutating call" below = any `issue create|comment|reopen|close`; `issue list`, `api`,
+  `run list|view`, and `label create` are reads/idempotent and always allowed.
+- `test_red_with_no_issue_creates_one` — add — `issues=[]`: exactly one `issue create --label
+  ci-main-red --title ... --body-file ...`, no other mutating call; the body file names the
+  run URL, the failing job, and both merge subjects.
+- `test_red_with_no_green_run_still_creates_one` — add — `issues=[]`, `green_runs=[]`: one
+  `issue create`, body carries the plain `-20` log labelled as such (the `// empty` guard on
+  `headSha`; without it `git log null..HEAD` dies first).
 - `test_red_with_an_open_issue_comments_instead` — add — exactly one `issue comment <n>`,
-  zero `issue create`.
+  no other mutating call.
+- `test_red_with_a_closed_issue_reopens_the_canonical_one` — add — `issues=[{n, CLOSED}]`:
+  `issue reopen <n>` then `issue comment <n>`, zero `issue create`.
 - `test_green_closes_the_open_issue_and_is_a_noop_otherwise` — add — with an open issue: one
-  `issue close <n> --comment ...`; without: no `issue` call at all.
+  `issue close <n> --comment ...`; without: zero mutating calls (`issue list` is still called
+  — that is how "none is open" is learned).
+- `test_stale_run_reports_nothing` — add — `tip` ≠ `GITHUB_SHA`, both `GATE_RESULT` values:
+  exit 0, the "stale run" message on stdout, zero mutating calls, and no `label create`.
 - `test_label_is_ensured_idempotently_before_use` — add — `label create ci-main-red --force`
-  precedes the first `issue` call in both branches.
+  precedes the first mutating call in both branches.
 - `test_unknown_gate_result_exits_2` — add.
 
 ### `phase-loop-runtime/tests/test_ci_gate_metrics.py` (create)
 - `test_rows_joins_runs_on_head_ref_oid_not_merge_commit` — add — one PR
-  (`headRefOid=aaa`) with runs `[headSha=aaa attempt=1 success, headSha=aaa attempt=2 success,
-  headSha=bbb attempt=1 failure]`: executions=2, reruns=1, minutes from the newest `aaa` run
-  only, and a second PR whose only run is on a superseded head prints `minutes=-`.
+  (`headRefOid=aaa`) with runs `[headSha=aaa attempt=2 success, headSha=bbb attempt=1
+  failure]` (ONE run record for the final head, rerun once — `gh run list` reports a rerun
+  as the same record with its `attempt` counter advanced, never as a second record):
+  executions=2, reruns=1, minutes from the `aaa` run; and a second PR whose only run is on a
+  superseded head prints `minutes=- executions=0 reruns=-` and is in neither the median
+  nor the zero-rerun share's denominator (a summary over these two PRs reports the share
+  over 1 PR, not 2).
 - `test_cli_refuses_when_gh_is_absent` — add — run `[sys.executable, "ci/gate_metrics.py",
   "--last", "1"]` with `PATH` set to an empty temp dir: exit 2, message on stderr, nothing on
   stdout.
@@ -270,8 +314,13 @@ run_id="$(gh run list --workflow test.yml --event workflow_dispatch --limit 1 --
 gh run watch "$run_id" --exit-status
 gh run view "$run_id" --json jobs --jq '.jobs[] | select(.name|test("offloaded")) | "\(.startedAt) \(.completedAt)"'
 gh run download "$run_id" -n junit-offloaded -D /tmp/m1
-python3 phase-loop-runtime/scripts/chronology_witness.py --junit /tmp/m1/py310/junit-py310.xml \
-  --node "$(bash ci/chronology-scope.sh --node)" --expect absent
+# BOTH lanes must show the node absent: py3.10 AND Gate A (Gate A runs the same node under
+# GATE_A_DESELECT_CHRONOLOGY; a split that only deselects py3.10 leaves the 50-60 min in Gate A).
+for lane in junit-py310.xml junit-gate-a.xml; do
+  python3 phase-loop-runtime/scripts/chronology_witness.py \
+    --junit "$(find /tmp/m1 -name "$lane" | head -n 1)" \
+    --node "$(bash ci/chronology-scope.sh --node)" --expect absent
+done
 
 # 2. Hermetic contracts, CI-style (bare PATH: no agent CLIs, no real gh), bytecode-clean.
 ( cd phase-loop-runtime && env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT PATH=/usr/bin:/bin \
@@ -297,9 +346,12 @@ python3 - <<'PY'
 import yaml
 wf = yaml.safe_load(open(".github/workflows/test.yml"))
 j = wf["jobs"]["main-red"]
-for lit in ("github.event_name != 'pull_request'", "github.ref == 'refs/heads/main'",
+for lit in ("github.event_name == 'push'", "github.event_name == 'schedule'",
+            "github.ref == 'refs/heads/main'",
             "needs.gate.result == 'failure'", "needs.gate.result == 'success'"):
     assert lit in j["if"], lit
+assert "workflow_dispatch" not in j["if"]
+assert wf["jobs"]["gate"]["if"] == "always()"
 assert j["permissions"] == {"contents": "read", "actions": "read", "issues": "write"}
 assert j["concurrency"] == {"group": "main-red", "cancel-in-progress": False}
 assert wf["permissions"] == {"contents": "read"}
@@ -312,40 +364,53 @@ PY
 # 5. Junit witness on this PR's own run (it RETAINS: it touches ci/*).
 pr_run="$(gh run list --workflow test.yml --event pull_request --branch "$(git branch --show-current)" --limit 1 --json databaseId --jq '.[0].databaseId')"
 gh run download "$pr_run" -n junit-offloaded -D /tmp/m5 \
-  || gh run download "$pr_run" -n chronology-junit-py310 -D /tmp/m5   # hosted-fallback path
-python3 phase-loop-runtime/scripts/chronology_witness.py \
-  --junit "$(find /tmp/m5 -name 'junit-py310.xml' | head -n 1)" \
-  --node "$(bash ci/chronology-scope.sh --node)" --expect present
+  || { gh run download "$pr_run" -n chronology-junit-py310 -D /tmp/m5 \
+       && gh run download "$pr_run" -n chronology-junit-gate-a -D /tmp/m5; }   # hosted-fallback path
+for lane in junit-py310.xml junit-gate-a.xml; do
+  python3 phase-loop-runtime/scripts/chronology_witness.py \
+    --junit "$(find /tmp/m5 -name "$lane" | head -n 1)" \
+    --node "$(bash ci/chronology-scope.sh --node)" --expect present
+done
 
-# 6. Reporter: the hermetic stub-gh tests in step 2 are the proof of create/comment/close;
-#    live smoke = after merge, wait for the first red push to main (or the nightly) and confirm
-#    exactly one open ci-main-red issue; the concurrency group is a static pin (step 4), not
-#    reproduced live.
+# 6. Reporter: the hermetic stub-gh tests in step 2 are the proof of create/comment/reopen/
+#    close, of the `// empty` guards, and of the stale-tip no-op; live smoke = after merge, wait
+#    for the first red push to main (or the nightly) and confirm exactly one ci-main-red issue
+#    exists and is open; the concurrency group is a static pin (step 4), not reproduced live.
+#    The jq claim itself, by hand:  echo '[]' | jq -r '.[0].number'   → prints null
+#                                  echo '[]' | jq -r '.[0].number // empty' → prints nothing
 
 # 7. Metrics.
 python3 ci/gate_metrics.py --last 10
 ```
 Edge cases: PR with an empty diff (count=0 → `false`); PR that renames `ci/x.sh` to
 `tools/x.sh` (rename reports both endpoints → `true`); `main-red` when no green run exists
-(plain `-20` log, still files); squash-landed range with no merge commits (plain log,
-labelled); `gh` rate limit inside `main-red` (step fails loudly; the gate result is unaffected
-because `main-red` is not in `gate`'s `needs`); a `workflow_dispatch` on a non-`main` ref (gate
-runs, reporter skipped); `gate_metrics` PR with no run on its final head (`minutes=-`, excluded
-from the median).
+(plain `-20` log, still files — `headSha // empty`); first-ever red with no issue at all
+(`number // empty` → create, not `comment null`); red after a green closed the issue (reopen
+the canonical one, never a second issue); an older red gate finishing after a newer green gate
+(the older run's `GITHUB_SHA` is no longer the tip → it reports nothing; the newer run already
+acted for the tip); squash-landed range with no merge commits (plain log, labelled); `gh` rate
+limit inside `main-red` (step fails loudly; the gate result is unaffected because `main-red`
+is not in `gate`'s `needs`); a `workflow_dispatch` on any ref, including `main` with
+`chronology=false` (gate runs, reporter skipped — a dispatch never opens or closes the issue);
+`gate_metrics` PR with no run on its final head (`minutes=- executions=0 reruns=-`, excluded
+from the median and from the rerun-share denominator).
 
 ## Acceptance criteria
 - [ ] The first pull request merged after this lands whose `ci/gate_metrics.py --pr <N>` row
-      shows `plumbing=no` has `chronology=false` in its scope step log and its `junit-py310.xml`
-      passes `chronology_witness.py --expect absent`; its `minutes` value is recorded in the PR
-      closeout next to the Verification-step-1 measurement (the number is measured there, not
-      pinned here).
+      shows `plumbing=no` has `chronology=false` in its scope step log and BOTH its
+      `junit-py310.xml` and its `junit-gate-a.xml` pass `chronology_witness.py --expect absent`;
+      its `minutes` value is recorded in the PR closeout next to the Verification-step-1
+      measurement (the number is measured there, not pinned here).
 - [ ] Every `push` to `main`, `schedule`, and `workflow_dispatch` run retains the node unless
       the dispatch passes `chronology=false` (`chronology-retention` job green; junit witness
-      `--expect present` on `junit-py310.xml` of the first push-to-main run after merge).
-- [ ] With the stub `gh`, a red gate with no open `ci-main-red` issue creates exactly one, a red
-      with an open issue comments exactly once, and a green closes it; the live `main-red` job
-      is serialized (`concurrency.group == main-red`) and never runs on `pull_request`, a
-      non-`main` ref, or a cancelled/skipped gate.
+      `--expect present` on both `junit-py310.xml` and `junit-gate-a.xml` of the first
+      push-to-main run after merge).
+- [ ] With the stub `gh` (real `jq` behind `--jq`), a red gate with no `ci-main-red` issue
+      creates exactly one, a red with an open issue comments exactly once, a red with a closed
+      issue reopens that issue (never creates a second), a green closes it, and a run whose
+      `GITHUB_SHA` is not the `main` tip makes no mutating call; the live `main-red` job is
+      serialized (`concurrency.group == main-red`) and never runs on `pull_request`,
+      `workflow_dispatch`, a non-`main` ref, or a cancelled/skipped gate.
 - [ ] `( cd phase-loop-runtime && PATH=/usr/bin:/bin PYTHONPATH=src:tests python3 -m pytest -q
       tests/test_ci_chronology_scope.py tests/test_ci_main_red.py tests/test_ci_gate_metrics.py )`
       passes, and `ruff check` (0.15.5) is clean on the new/changed Python files.
