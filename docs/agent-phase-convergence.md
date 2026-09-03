@@ -260,6 +260,15 @@ sensible length, a pin that must be retained, a change that cannot practically b
 before it lands — all fine, once written down. What corrodes the practice is an unrecorded
 exception, because the next reader cannot tell it from a mistake.
 
+- Worked example from this repository: pull requests here no longer run the ~50-minute
+  history proof (the CONFORM chronology node) unless they touch the gate's own selection
+  plumbing. Rule relaxed: "prove it on the PR". Reason: measured at ~88 % of the per-PR wall
+  clock, the node buys no verdict the landing push does not also produce, because it proves
+  a property of frozen history rather than of the diff. Owner: the operator, accepted
+  2026-09-03. Recorded: in the CHANGELOG entry for Consiliency/agent-harness#746 and the
+  scope script's header, next to the accepted limitation (a regression surfaces on main, so
+  a red landing push files a labelled issue rather than waiting for someone to notice).
+
 ## If you want to reproduce these numbers, define them first
 
 We found our own definitions slipperier than expected — the same two phases look different

@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 # Decide whether THIS CI execution runs the heavy CONFORM chronology node.
 #
-# The node (CHRONOLOGY_NODE below) is a ~50-minute proof that the frozen CONFORM
-# mutation definitions are unchanged and were never executed pre-implementation.
-# Measured on the offloaded suite it is ~88% of the per-PR wall clock, and it ran
-# twice per run (py3.10 lane + Gate A) plus a third time on the hosted runner via
-# publish-pypi's Gate A. The proof's process reads far more than the modules it
-# mutates (pytest collects the whole `tests/` tree, conftest bootstraps runtime
-# plugins, sibling tests read repo docs), so this script does NOT claim a diff
-# outside its table cannot change the verdict. The property it provides is
-# narrower and holds by construction: the node runs unconditionally on every push
-# to main and nightly, and on every PR whose diff touches the runtime package or
-# the CI plumbing. For any other PR the proof is deferred to the landing merge --
-# a regression surfaces on main at the latest, never silently.
+# The node (CHRONOLOGY_NODE below) is a ~50-60 minute proof that the frozen
+# CONFORM mutation definitions are unchanged and were never executed
+# pre-implementation. Measured on the offloaded suite (run 33709063249) it is
+# ~88% of the per-PR wall clock, and it runs twice per run (py3.10 lane + Gate A).
+# It proves a property of frozen HISTORY, not of the diff under review, so a
+# pull request DEFERS it: the landing push to main executes it on the exact
+# merged tree, and the nightly bounds how long a regression can stay invisible.
+# The one exception is a PR that changes the gate's own selection plumbing --
+# this script, the workflows, the offload/Dagger plumbing, the witness, Gate A's
+# consumer and its probe (the table below) -- because such a PR could change
+# WHETHER the node runs, and that must be proven on the PR itself.
+# Exception record (rule / reason / owner / accepted limitation):
+# .consiliency/plans/detailed-split-pr-gate-chronology-746-*.md, and the
+# CHANGELOG entry for Consiliency/agent-harness#746.
 #
 # Output: prints `chronology=true|false` (a GITHUB_OUTPUT line) and a reason to
 # stderr. Exit 0 in both cases. FAIL CLOSED: anything this script cannot decide
@@ -20,30 +22,33 @@
 # expensive-but-correct answer -- never to `false`.
 #
 # `--match <path>` mode: prints `match` / `no-match` for one path and exits 0.
-# tests/test_ci_chronology_scope.py drives this mode to assert every input file
-# named by the frozen mutation definitions is covered, so the exclusion cannot
-# drift into a silent no-op when a mutation target moves.
+# tests/test_ci_chronology_scope.py drives this mode to pin the table to exactly
+# the selection consumers, so it can neither drift wider (re-running the node on
+# ordinary PRs) nor narrower (letting a plumbing change skip its own proof).
 set -euo pipefail
 
 CHRONOLOGY_NODE="tests/test_outside_agent_conform_evidence.py::test_mutation_definitions_are_frozen_but_not_executed_preimplementation"
 
-# Repo-relative path patterns (bash `case` globs): the whole runtime package
-# directory (the proof's process executes inside it and its packaging inputs --
-# pyproject.toml, MANIFEST.in, README.md, protocol/ -- are pinned by the frozen
-# corpus, so no per-file enumeration is attempted) and the CI plumbing that
-# selects the node in the first place.
-chronology_input_path() {
+# Repo-relative path patterns (bash `case` globs): exactly the plumbing that
+# selects, runs, or witnesses the node. Per-file under phase-loop-runtime/scripts
+# on purpose: the other scripts there (regenerate_skills_bundle.py,
+# sync_skills_bundle.py, check_model_id_sources.py, sweep_fleet_worktrees.sh) are
+# not selection plumbing. The runtime package itself is NOT in the table -- the
+# landing push proves it.
+gate_plumbing_path() {
   case "$1" in
-    phase-loop-runtime/*) return 0 ;;
     ci/*) return 0 ;;
     .github/workflows/test.yml) return 0 ;;
     .github/workflows/publish-pypi.yml) return 0 ;;
+    phase-loop-runtime/scripts/chronology_witness.py) return 0 ;;
+    phase-loop-runtime/scripts/gate_a_cleanroom.sh) return 0 ;;
+    phase-loop-runtime/scripts/_gate_a_probe.py) return 0 ;;
   esac
   return 1
 }
 
 if [ "${1:-}" = "--match" ]; then
-  if chronology_input_path "${2:?path required}"; then echo match; else echo no-match; fi
+  if gate_plumbing_path "${2:?path required}"; then echo match; else echo no-match; fi
   exit 0
 fi
 if [ "${1:-}" = "--node" ]; then
@@ -91,8 +96,8 @@ count=0
 while IFS= read -r -d '' path; do
   [ -n "$path" ] || continue
   count=$((count + 1))
-  if chronology_input_path "$path"; then
-    decide true "PR touches chronology input: $path"; exit 0
+  if gate_plumbing_path "$path"; then
+    decide true "PR touches gate plumbing: $path"; exit 0
   fi
 done <"$changed"
-decide false "PR touches no chronology input ($count paths changed)"
+decide false "PR defers the chronology node to the landing push ($count paths changed)"

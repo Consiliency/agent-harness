@@ -6,6 +6,40 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### CI: pull requests defer the chronology node; a red landing push files an issue (Consiliency/agent-harness#746)
+
+- `ci/chronology-scope.sh`'s table narrows from "the runtime package or the CI plumbing" to
+  exactly the gate's selection plumbing: `ci/*`, the two workflows, and
+  `phase-loop-runtime/scripts/{chronology_witness.py,gate_a_cleanroom.sh,_gate_a_probe.py}`.
+  A pull request that touches only the runtime, its tests, or the frozen corpus now DEFERS the
+  ~50-minute node to the landing push -- the node proves a property of frozen history, not of
+  the diff under review, and the landing push and the nightly execute it on the exact merged
+  tree. A PR that could change WHETHER the node runs still proves it on the PR. Fail-closed
+  arms, `--match`, `--node`, and `CHRONOLOGY_FORCE` are unchanged. Measured on a
+  `chronology=false` dispatch of the offloaded suite (run 33773648179): the deselected offload
+  job took 7 min 45 s, against ~60 min when the node is retained.
+- Recorded exception (rule / reason / owner): the "prove it on the PR" rule is relaxed for
+  changes outside the selection plumbing; reason: the node's ~88 % share of the per-PR wall
+  clock buys no verdict the landing push does not also produce; owner: the operator, accepted
+  2026-09-03 via the board-reviewed plan `detailed-split-pr-gate-chronology-746-*`. Accepted
+  limitation: a regression in an untouched input surfaces on main, not on the PR -- which is
+  why the reporter below exists.
+- New `main-red` job in `test.yml` (after `gate`, on `push` to `main` and the nightly, never a
+  gate input) runs `ci/main-red.sh`: a red gate creates / comments on / reopens ONE canonical
+  issue labelled `ci-main-red` with the run, the failing jobs, and the merges since the last
+  green push run; a green gate closes every open one. A run whose head is no longer the tip
+  of `main` reports nothing. The Dagger base image gains `jq` so the reporter's tests run
+  in the offloaded suite too.
+- `ci/gate_metrics.py` is the instrument that keeps the justification repeatable: per PR, the
+  test.yml wall clock on its head, executions (summed attempts), reruns, and whether the PR
+  retained the node; a PR with no run on its head prints `minutes=- executions=0 reruns=-`
+  and is excluded from the median and the retained share.
+- `tests/test_ci_chronology_scope.py` now pins the table to the selection consumers in both
+  directions (a positive and a negative list) instead of the frozen mutation corpus, and
+  asserts the `main-red` job's shape; `tests/test_ci_main_red.py` drives the reporter
+  against a `gh` stub with the real `jq` behind `--jq`; `tests/test_ci_gate_metrics.py`
+  pins the head join and the no-run exclusion.
+
 ### advisor-board: `requires_president` executes the president ladder, fail-closed (Consiliency/agent-harness#736)
 
 - `invoke_board(..., president_invoke=)` runs the president ladder once after every seat has
@@ -50,9 +84,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `test_mutation_definitions_are_frozen_but_not_executed_preimplementation` node (measured at
   ~88 % of a per-PR run's wall clock, executed two to three times per PR) is retained: always
   on a push to `main`, on the new nightly `schedule`, and on `workflow_dispatch` (input
-  `chronology`, default on); on a `pull_request` only when the diff touches the runtime
-  package (`phase-loop-runtime/` source, tests, scripts, packaging) or the CI scripts and
-  workflows. The proof's process executes inside the package and reads repository docs, so no
+  `chronology`, default on); on a `pull_request` only when the diff touches the gate's own
+  selection plumbing (the table was narrowed to exactly that set in Consiliency/agent-harness#746
+  above; as first landed it also retained on any `phase-loop-runtime/` path). No
   verdict-invariance claim is made for other PRs: their proof is deferred to the landing merge.
   Anything the script cannot classify or diff retains the node (fail closed).
 - The decision reaches every executor: `ci/offload-gate.sh` → the Dagger module's `all
@@ -60,8 +94,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `publish-pypi.yml`'s pull-request Gate A (a release tag still runs everything). Each
   retaining lane writes junit and asserts the node's name is present when retained and absent
   when deselected, so a silent no-op deselect or a silently skipped retain is a red job.
-- `tests/test_ci_chronology_scope.py` pins the input set against the frozen
-  `CONFORM_MUTATION_DEFINITIONS`, the single node-id literal across all consumers, the
+- `tests/test_ci_chronology_scope.py` pins the retained path set (originally against the frozen
+  `CONFORM_MUTATION_DEFINITIONS`; since Consiliency/agent-harness#746 against the selection
+  consumers), the single node-id literal across all consumers, the
   fail-closed branches, and the workflow wiring; the `chronology-retention` job now also
   asserts the push-to-`main` and nightly triggers exist and that the script retains on both.
 - `docs/agent-phase-convergence.md` gains the portable version of this rule.

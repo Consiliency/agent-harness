@@ -1,14 +1,16 @@
 """Static contract for the CI chronology-node scope (``ci/chronology-scope.sh``).
 
 The heavy CONFORM chronology node (~50 min, ~88 % of a per-PR CI run's wall
-clock) is retained on every push to main, on the nightly schedule, and on any
-pull request whose diff touches one of the node's inputs; every other pull
-request deselects it. This module pins the three properties that make that
-scoping safe:
+clock) proves a property of frozen HISTORY, not of the diff under review, so a
+pull request DEFERS it to the landing push: it is retained on every push to
+main, on the nightly schedule, and on a pull request only when the diff touches
+the gate's own selection plumbing (the script's table). This module pins the
+three properties that make that scoping safe:
 
-* every input the node reads -- the mutation definitions' source paths and the
-  files that hold their target node ids -- is classified as a chronology input
-  by the scope script, so a PR editing one of them can never skip the node;
+* the plumbing table is exactly the selection consumers -- the scope script,
+  the workflows, the offload/Dagger plumbing, the witness, Gate A's consumer
+  and probe -- so it can neither drift wider (re-running the node on ordinary
+  PRs) nor narrower (letting a plumbing change skip its own proof);
 * the node id is a single literal, and every consumer (the scope script, the
   Dagger module, the hosted workflow, Gate A) spells it identically;
 * the script fails CLOSED: any event it cannot classify, and any pull request
@@ -26,7 +28,6 @@ from pathlib import Path
 import pytest
 import yaml
 
-from _outside_agent_canonical import CONFORM_MUTATION_DEFINITIONS, FIXTURE_ROOT, MANIFEST_PATH
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -65,61 +66,50 @@ def _scope(*args: str, env: dict[str, str] | None = None, cwd: Path | None = Non
     return result.stdout.strip()
 
 
-def _chronology_inputs() -> set[str]:
-    """Every repo-relative path the chronology node reads, from the frozen corpus."""
-    inputs: set[str] = set()
-    for mutation in CONFORM_MUTATION_DEFINITIONS.values():
-        inputs.add(mutation.source_path)
-        for nodeid in (
-            mutation.expected_nodeid,
-            mutation.companion_expected_nodeid,
-            *mutation.argv,
-            *mutation.positive_control,
-            *(mutation.companion_argv or ()),
-        ):
-            if nodeid and "::" in nodeid:
-                inputs.add(nodeid.split("::", 1)[0])
-    # The node's own body and the shared corpus module it imports.
-    inputs.add("phase-loop-runtime/" + CHRONOLOGY_NODE.split("::", 1)[0])
-    inputs.add("phase-loop-runtime/tests/_outside_agent_canonical.py")
-    return inputs
+GATE_PLUMBING = (
+    "ci/chronology-scope.sh",
+    "ci/offload-gate.sh",
+    "ci/main-red.sh",
+    "ci/gate_metrics.py",
+    "ci/dagger/src/agent_harness_ci/main.py",
+    ".github/workflows/test.yml",
+    ".github/workflows/publish-pypi.yml",
+    "phase-loop-runtime/scripts/chronology_witness.py",
+    "phase-loop-runtime/scripts/gate_a_cleanroom.sh",
+    "phase-loop-runtime/scripts/_gate_a_probe.py",
+)
+NOT_PLUMBING = (
+    "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
+    "phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_core.py",
+    "phase-loop-runtime/tests/test_unrelated.py",
+    "phase-loop-runtime/tests/conftest.py",
+    "phase-loop-runtime/tests/_outside_agent_canonical.py",
+    "phase-loop-runtime/tests/fixtures/outside_agent_contract_v0_2_1/PROVENANCE.json",
+    "phase-loop-runtime/scripts/regenerate_skills_bundle.py",
+    "phase-loop-runtime/scripts/sync_skills_bundle.py",
+    "phase-loop-runtime/MANIFEST.in",
+    ".github/workflows/lint.yml",
+    "README.md",
+    "docs/agent-phase-convergence.md",
+)
 
 
-def test_every_chronology_input_is_classified_as_an_input() -> None:
-    inputs = _chronology_inputs()
-    # The target tests read the digest-pinned fixture vectors directly; a PR that
-    # re-pins a vector (bytes + digest together) must retain the node.
-    inputs.add(str(FIXTURE_ROOT.relative_to(REPO_ROOT) / "PROVENANCE.json"))
-    inputs.add(str(MANIFEST_PATH.relative_to(REPO_ROOT)))
-    assert inputs, "the frozen corpus names no inputs -- the fixture is broken"
-    misses = sorted(path for path in inputs if _scope("--match", path) != "match")
-    assert not misses, f"chronology inputs the scope script would let a PR skip: {misses}"
-    # A negative control: prose cannot change what the node computes.
-    assert _scope("--match", "README.md") == "no-match"
-    assert _scope("--match", "docs/agent-phase-convergence.md") == "no-match"
-    # The whole runtime package directory retains: the proof's process executes
-    # inside it, and its packaging inputs (MANIFEST.in, README.md, protocol/) are
-    # corpus-pinned package inputs, not prose.
-    assert _scope("--match", "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py") == "match"
-    assert _scope("--match", "phase-loop-runtime/tests/_dotfiles_tree.py") == "match"
-    assert _scope("--match", "phase-loop-runtime/tests/test_unrelated.py") == "match"
-    assert _scope("--match", "phase-loop-runtime/MANIFEST.in") == "match"
-    assert _scope("--match", "phase-loop-runtime/README.md") == "match"
-    assert _scope("--match", "phase-loop-runtime/protocol/protocol.md") == "match"
+def test_gate_plumbing_table_is_exactly_the_selection_consumers() -> None:
+    """The table retains the selection plumbing and nothing else.
 
-
-def test_every_conftest_bootstrapped_plugin_is_a_chronology_input() -> None:
-    """conftest.py loads plugins before any test runs; their modules are inputs too."""
-    conftest = (REPO_ROOT / "phase-loop-runtime" / "tests" / "conftest.py").read_text(encoding="utf-8")
-    modules = sorted(set(re.findall(r'"phase_loop_runtime\.([A-Za-z0-9_.]+):[A-Za-z0-9_]+"', conftest)))
-    assert modules, "conftest.py names no bootstrapped plugin -- the probe is broken"
-    misses = sorted(
-        module
-        for module in modules
-        if _scope("--match", "phase-loop-runtime/src/phase_loop_runtime/" + module.replace(".", "/") + ".py")
-        != "match"
-    )
-    assert not misses, f"conftest-bootstrapped plugin modules the scope script would let a PR skip: {misses}"
+    Positives are every file that decides, runs, or witnesses the node; a PR
+    editing one could change WHETHER the node runs, so the node must run on
+    that PR. Negatives are the runtime, its tests and corpus, non-plumbing
+    scripts and prose: those PRs defer the node to the landing push.
+    """
+    misses = sorted(path for path in GATE_PLUMBING if _scope("--match", path) != "match")
+    assert not misses, f"gate plumbing the scope script would let a PR skip: {misses}"
+    leaks = sorted(path for path in NOT_PLUMBING if _scope("--match", path) != "no-match")
+    assert not leaks, f"non-plumbing paths that would re-run the node on an ordinary PR: {leaks}"
+    # Every plumbing positive that is a real file exists (the table is not
+    # retaining ghosts) -- except the ones this very PR introduces.
+    missing = sorted(p for p in GATE_PLUMBING if not (REPO_ROOT / p).exists())
+    assert not missing, f"gate plumbing table names files that do not exist: {missing}"
 
 
 def test_every_consumer_spells_the_same_node_id() -> None:
@@ -199,46 +189,64 @@ def test_pull_request_touching_only_prose_deselects_the_node(pr_repo: tuple[Path
     assert out == "chronology=false"
 
 
-def test_pull_request_touching_an_input_retains_the_node(pr_repo: tuple[Path, str]) -> None:
+def test_pull_request_touching_gate_plumbing_retains_the_node(pr_repo: tuple[Path, str]) -> None:
     repo, base = pr_repo
-    target = repo / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "conformance" / "outside_agent_core.py"
+    target = repo / "ci" / "offload-gate.sh"
     target.parent.mkdir(parents=True)
     target.write_text("# touched\n", encoding="utf-8")
     _git(repo, "add", str(target))
-    _git(repo, "commit", "-q", "-m", "touch an input")
+    _git(repo, "commit", "-q", "-m", "touch gate plumbing")
     out = _scope(env={"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, cwd=repo)
     assert out == "chronology=true"
 
 
-def test_pull_request_renaming_an_input_out_of_the_table_retains_the_node(
+def test_pull_request_renaming_plumbing_out_of_the_table_retains_the_node(
     pr_repo: tuple[Path, str],
 ) -> None:
     """Rename detection would report only the destination; the old endpoint must count."""
     repo, _ = pr_repo
-    src = repo / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "conformance" / "outside_agent_core.py"
+    src = repo / "ci" / "offload-gate.sh"
     src.parent.mkdir(parents=True)
-    src.write_text("# a conformance module large enough for rename detection\n" * 20, encoding="utf-8")
+    src.write_text("# a plumbing script large enough for rename detection\n" * 20, encoding="utf-8")
     _git(repo, "add", str(src))
-    _git(repo, "commit", "-q", "-m", "add an input")
+    _git(repo, "commit", "-q", "-m", "add plumbing")
     base = _git(repo, "rev-parse", "HEAD")
-    dest = repo / "tools" / "elsewhere.py"
+    dest = repo / "tools" / "elsewhere.sh"
     dest.parent.mkdir()
     _git(repo, "mv", str(src), str(dest))
     _git(repo, "commit", "-q", "-m", "move it out of the table")
-    assert _scope("--match", "tools/elsewhere.py") == "no-match"
+    assert _scope("--match", "tools/elsewhere.sh") == "no-match"
     out = _scope(env={"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, cwd=repo)
     assert out == "chronology=true"
 
 
-def test_pull_request_touching_a_fixture_vector_retains_the_node(pr_repo: tuple[Path, str]) -> None:
+def test_pull_request_touching_gate_a_plumbing_retains_the_node(pr_repo: tuple[Path, str]) -> None:
     repo, base = pr_repo
-    vector = repo / "phase-loop-runtime" / "tests" / "fixtures" / "outside_agent_contract_v0_2_1" / "x.json"
-    vector.parent.mkdir(parents=True)
-    vector.write_text("{}\n", encoding="utf-8")
-    _git(repo, "add", str(vector))
-    _git(repo, "commit", "-q", "-m", "touch a fixture")
+    script = repo / "phase-loop-runtime" / "scripts" / "gate_a_cleanroom.sh"
+    script.parent.mkdir(parents=True)
+    script.write_text("# touched\n", encoding="utf-8")
+    _git(repo, "add", str(script))
+    _git(repo, "commit", "-q", "-m", "touch Gate A plumbing")
     out = _scope(env={"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, cwd=repo)
     assert out == "chronology=true"
+
+
+def test_pull_request_touching_only_the_runtime_defers_the_node(pr_repo: tuple[Path, str]) -> None:
+    """The runtime, its tests and the frozen corpus are NOT plumbing: the landing push proves them."""
+    repo, base = pr_repo
+    for rel in (
+        "phase-loop-runtime/src/phase_loop_runtime/conformance/outside_agent_core.py",
+        "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py",
+        "phase-loop-runtime/tests/fixtures/outside_agent_contract_v0_2_1/x.json",
+        "phase-loop-runtime/scripts/regenerate_skills_bundle.py",
+    ):
+        target = repo / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("# touched\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "touch the runtime only")
+    out = _scope(env={"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, cwd=repo)
+    assert out == "chronology=false"
 
 
 @pytest.mark.parametrize("name", ["test_\u00e9.py", "test_a\nb.py", 'test_"q".py', "test_a\tb.py"])
@@ -246,7 +254,7 @@ def test_pull_request_touching_a_quoted_pathname_retains_the_node(pr_repo: tuple
     # Default core.quotePath renders these as "..." with octal escapes in
     # line-oriented output; the scope script must still see the prefix.
     repo, base = pr_repo
-    target = repo / "phase-loop-runtime" / "tests" / name
+    target = repo / "ci" / name
     target.parent.mkdir(parents=True)
     target.write_text("x\n", encoding="utf-8")
     _git(repo, "add", "-A")
@@ -367,3 +375,21 @@ def test_workflows_retain_the_node_on_main_nightly_and_release() -> None:
     )
     deselect = gate_a["env"]["GATE_A_DESELECT_CHRONOLOGY"]
     assert "github.event_name == 'pull_request'" in deselect and deselect.endswith("|| '0' }}")
+    # A red landing push is reported, never silently absorbed: the main-red job
+    # runs after the gate on main pushes and the nightly, in both outcomes, with
+    # the issue-writing permission the reporter needs and without gating anything.
+    main_red = jobs["main-red"]
+    assert main_red["needs"] == "gate"
+    condition = " ".join(main_red["if"].split())
+    assert condition.startswith("always()")
+    assert "github.event_name == 'push' || github.event_name == 'schedule'" in condition
+    assert "github.ref == 'refs/heads/main'" in condition
+    assert "needs.gate.result == 'failure' || needs.gate.result == 'success'" in condition
+    assert main_red["permissions"] == {"contents": "read", "actions": "read", "issues": "write"}
+    assert main_red["concurrency"] == {"group": "main-red", "cancel-in-progress": False}
+    checkout = next(s for s in main_red["steps"] if "actions/checkout" in s.get("uses", ""))
+    assert checkout["with"]["fetch-depth"] == 0, "the reporter's merge range needs full history"
+    report = next(s for s in main_red["steps"] if s.get("run") == "bash ci/main-red.sh")
+    assert report["env"]["GATE_RESULT"] == "${{ needs.gate.result }}"
+    assert report["env"]["GH_TOKEN"] == "${{ github.token }}"
+    assert "main-red" not in (jobs["gate"].get("needs") or []), "the reporter must never gate"

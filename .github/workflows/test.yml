@@ -6,9 +6,11 @@ on:
   pull_request:
   # The heavy CONFORM chronology node (~50 min, ~88% of a per-PR run) is scoped
   # by ci/chronology-scope.sh: every push to main and this nightly run RETAIN it
-  # unconditionally; a pull_request runs it only when its diff touches one of the
-  # node's inputs. The nightly is the backstop that bounds how long a regression
-  # in an untouched input can stay invisible, independent of merge traffic.
+  # unconditionally; a pull_request DEFERS it to the landing push unless its diff
+  # touches the gate's own selection plumbing (the script's table). The nightly
+  # is the backstop that bounds how long a regression can stay invisible,
+  # independent of merge traffic; the `main-red` job below is what makes a red
+  # landing push visible (a labelled issue) without anyone watching this tab.
   schedule:
     - cron: '17 6 * * *'
   workflow_dispatch:
@@ -92,7 +94,8 @@ jobs:
     # One job runs ALL the heavy stages, so this budget is not the per-lane 100
     # the hosted jobs use. The Dagger module runs them concurrently, so the wall
     # clock is max(py3.10, Gate A) -- ~60 min on a warm engine when the chronology
-    # node is retained, ~8 min when it is deselected. 120 leaves room for a
+    # node is retained, 7:45 when it is deselected (measured on run 33773648179,
+    # a chronology=false dispatch of main). 120 leaves room for a
     # cold-image run and a Gate A slower than the ~58 min its hosted 86:36 scales
     # to. Run 4 timed out at 100 running them SEQUENTIALLY.
     timeout-minutes: 120
@@ -480,3 +483,34 @@ jobs:
           name: chronology-junit-gate-a
           path: ${{ runner.temp }}/junit-gate-a.xml
           if-no-files-found: error
+
+  # Report the gate's result on main as ONE labelled issue (`ci-main-red`):
+  # created/commented/reopened on a red landing push or nightly, closed when the
+  # gate is green again. PRs defer the chronology node to the landing push, so
+  # this job is the notification channel for a regression no PR run could see.
+  # Not a gate input: `gate` stays required-only and this job never blocks it.
+  main-red:
+    needs: gate
+    if: >-
+      always()
+      && (github.event_name == 'push' || github.event_name == 'schedule')
+      && github.ref == 'refs/heads/main'
+      && (needs.gate.result == 'failure' || needs.gate.result == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    concurrency:
+      group: main-red
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Report the gate result on main
+        env:
+          GATE_RESULT: ${{ needs.gate.result }}
+          GH_TOKEN: ${{ github.token }}
+        run: bash ci/main-red.sh
