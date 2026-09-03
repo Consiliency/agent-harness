@@ -99,6 +99,19 @@ def test_every_chronology_input_is_classified_as_an_input() -> None:
     assert _scope("--match", "docs/agent-phase-convergence.md") == "no-match"
 
 
+def test_every_conftest_bootstrapped_plugin_is_a_chronology_input() -> None:
+    """conftest.py loads plugins before any test runs; their modules are inputs too."""
+    conftest = (REPO_ROOT / "phase-loop-runtime" / "tests" / "conftest.py").read_text(encoding="utf-8")
+    modules = sorted(set(re.findall(r'"phase_loop_runtime\.([a-z_]+):[a-z_]+"', conftest)))
+    assert modules, "conftest.py names no bootstrapped plugin -- the probe is broken"
+    misses = sorted(
+        module
+        for module in modules
+        if _scope("--match", f"phase-loop-runtime/src/phase_loop_runtime/{module}.py") != "match"
+    )
+    assert not misses, f"conftest-bootstrapped plugin modules the scope script would let a PR skip: {misses}"
+
+
 def test_every_consumer_spells_the_same_node_id() -> None:
     assert _scope("--node") == CHRONOLOGY_NODE
     workflow_text = WORKFLOW_PATH.read_text(encoding="utf-8")
@@ -263,6 +276,13 @@ def test_witness_absent_requires_no_row_for_the_node(tmp_path: Path) -> None:
     assert _witness(foreign, "absent")[0] == 0
     variant = _junit(tmp_path, f'<testcase classname="{_MODULE}" name="{_NAME}[x]" />')
     assert _witness(variant, "absent")[0] == 0
+    # The module is bound by whole dotted components: a classname whose tail merely
+    # ends with the same characters (``notests.<module>``) is a different module,
+    # while a rootdir-prefixed classname (``<pkg>.tests.<module>``) is the node.
+    suffix_collision = _junit(tmp_path, f'<testcase classname="tests.no{_MODULE}" name="{_NAME}" />')
+    assert _witness(suffix_collision, "absent")[0] == 0
+    prefixed = _junit(tmp_path, f'<testcase classname="phase-loop-runtime.{_MODULE}" name="{_NAME}" />')
+    assert _witness(prefixed, "present")[0] == 0
 
 
 def test_witness_refuses_missing_or_malformed_junit(tmp_path: Path) -> None:

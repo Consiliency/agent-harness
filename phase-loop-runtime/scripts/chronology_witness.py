@@ -25,6 +25,11 @@ from pathlib import Path
 _OUTCOME_TAGS = ("skipped", "failure", "error")
 
 
+def _same_module(classname: str, module_dotted: str) -> bool:
+    """Bind by whole dotted components: ``a.tests.x`` names ``tests.x``; ``notests.x`` does not."""
+    return classname == module_dotted or classname.endswith("." + module_dotted)
+
+
 def classify(junit_path: Path, node: str) -> str:
     """Return ``present``, ``absent``, or ``<tag>`` for a row that did not pass."""
     module_path, _, name = node.rpartition("::")
@@ -37,7 +42,7 @@ def classify(junit_path: Path, node: str) -> str:
         case
         for case in root.iter("testcase")
         if case.get("name") == name
-        and (case.get("classname") or "").endswith(module_dotted)
+        and _same_module(case.get("classname") or "", module_dotted)
     ]
     if not rows:
         return "absent"

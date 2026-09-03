@@ -36,6 +36,10 @@ chronology_input_path() {
     phase-loop-runtime/tests/fixtures/*) return 0 ;;
     phase-loop-runtime/tests/test_outside_agent_*) return 0 ;;
     phase-loop-runtime/tests/conftest.py) return 0 ;;
+    # conftest.py bootstraps these two plugins suite-wide (PHASE_LOOP_PROFILE_PLUGINS /
+    # PHASE_LOOP_SKILL_SOURCE_PLUGINS); they run before any collected test does.
+    phase-loop-runtime/src/phase_loop_runtime/dotfiles_profile_plugin.py) return 0 ;;
+    phase-loop-runtime/src/phase_loop_runtime/skill_sources_plugin.py) return 0 ;;
     phase-loop-runtime/scripts/gate_a_cleanroom.sh) return 0 ;;
     phase-loop-runtime/pyproject.toml) return 0 ;;
     ci/*) return 0 ;;
