@@ -33,8 +33,8 @@ else
 fi
 
 # `all` runs the object-database probe first (seconds, catches the incomplete-clone
-# class before any long proof), then the three interpreter suites with the two-lane
-# chronology selection, then Gate A. It returns the junit evidence produced BY those
+# class before any long proof), then the three interpreter suites with the
+# chronology selection below, then Gate A. It returns the junit evidence produced BY those
 # stage executions, so the export below is a read, not a second run.
 #
 # ONE `dagger call`, deliberately. This used to be two -- `call all`, then
@@ -46,9 +46,22 @@ fi
 # a hang (agent-harness#550). Chaining `export` onto `all` keeps both in one session
 # where they are one DAG node, so the artifact cannot be anything other than the
 # output of the execution that gated the run.
+#
+# CHRONOLOGY decides whether the heavy CONFORM chronology node runs in this
+# execution. The workflow computes it with ci/chronology-scope.sh (push to main,
+# nightly, dispatch, or a PR touching one of the node's inputs => true) and hands
+# it over in the environment. Unset means "nobody decided" and resolves to the
+# expensive-but-correct answer, never to the skip.
+CHRONOLOGY="${CHRONOLOGY:-true}"
+case "$CHRONOLOGY" in
+  true|false) ;;
+  *) echo "CHRONOLOGY must be 'true' or 'false', got '$CHRONOLOGY'" >&2; exit 1 ;;
+esac
+echo "chronology node: $([ "$CHRONOLOGY" = true ] && echo retained || echo deselected) (CHRONOLOGY=$CHRONOLOGY)"
+
 JUNIT_DIR=./junit-offload
 rm -rf "$JUNIT_DIR"
-dagger -m "$MODULE" call all --source="$SOURCE" export --path="$JUNIT_DIR"
+dagger -m "$MODULE" call all --source="$SOURCE" --chronology="$CHRONOLOGY" export --path="$JUNIT_DIR"
 
 # `all`'s per-stage verdict roll-up used to be its stdout; it travels in the
 # evidence directory now, so print it to keep the job log self-describing.

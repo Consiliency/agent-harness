@@ -6,6 +6,27 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### CI: the heavy CONFORM chronology node runs only where its result can change
+
+- `ci/chronology-scope.sh` decides per run whether the ~50-minute
+  `test_mutation_definitions_are_frozen_but_not_executed_preimplementation` node (measured at
+  ~88 % of a per-PR run's wall clock, executed two to three times per PR) is retained: always
+  on a push to `main`, on the new nightly `schedule`, and on `workflow_dispatch` (input
+  `chronology`, default on); on a `pull_request` only when the diff touches one of the node's
+  inputs (the conformance modules and CLI it mutates, the CONFORM test files it invokes, its
+  own corpus, the CI scripts and workflows). Anything the script cannot classify or diff
+  retains the node (fail closed).
+- The decision reaches every executor: `ci/offload-gate.sh` → the Dagger module's `all
+  --chronology=`, the hosted py3.10 lane, Gate A via `GATE_A_DESELECT_CHRONOLOGY=1`, and
+  `publish-pypi.yml`'s pull-request Gate A (a release tag still runs everything). Each
+  retaining lane writes junit and asserts the node's name is present when retained and absent
+  when deselected, so a silent no-op deselect or a silently skipped retain is a red job.
+- `tests/test_ci_chronology_scope.py` pins the input set against the frozen
+  `CONFORM_MUTATION_DEFINITIONS`, the single node-id literal across all consumers, the
+  fail-closed branches, and the workflow wiring; the `chronology-retention` job now also
+  asserts the push-to-`main` and nightly triggers exist and that the script retains on both.
+- `docs/agent-phase-convergence.md` gains the portable version of this rule.
+
 ### fleet default models: Fable 5.1, Gemini 3.8 Flash, Grok 4.6
 
 - The advisor-board / panel default seats and the executor model defaults move to the ids the

@@ -4,6 +4,19 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The heavy CONFORM chronology node (~50 min, ~88% of a per-PR run) is scoped
+  # by ci/chronology-scope.sh: every push to main and this nightly run RETAIN it
+  # unconditionally; a pull_request runs it only when its diff touches one of the
+  # node's inputs. The nightly is the backstop that bounds how long a regression
+  # in an untouched input can stay invisible, independent of merge traffic.
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+    inputs:
+      chronology:
+        description: Run the heavy CONFORM chronology node (false = quick suite)
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -54,6 +67,11 @@ jobs:
           if [ "$EVENT_NAME" = "pull_request" ] && [ "$PR_HEAD_REPO" = "$REPO" ]; then
             trusted=true
           fi
+          # Scheduled and manually dispatched runs execute the repository's own
+          # default-branch workflow with its secrets; no fork can reach either.
+          if [ "$EVENT_NAME" = "schedule" ] || [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            trusted=true
+          fi
           eligible=false
           if [ "$trusted" = "true" ] && [ "$TS_AUTHKEY_SET" = "true" ]; then
             eligible=true
@@ -68,9 +86,10 @@ jobs:
     if: needs.elig.outputs.eligible == 'true'
     # One job runs ALL the heavy stages, so this budget is not the per-lane 100
     # the hosted jobs use. The Dagger module runs them concurrently, so the wall
-    # clock is max(py3.10, Gate A) -- ~60 min on a warm engine. 120 leaves room
-    # for a cold-image run and a Gate A slower than the ~58 min its hosted 86:36
-    # scales to. Run 4 timed out at 100 running them SEQUENTIALLY.
+    # clock is max(py3.10, Gate A) -- ~60 min on a warm engine when the chronology
+    # node is retained, ~8 min when it is deselected. 120 leaves room for a
+    # cold-image run and a Gate A slower than the ~58 min its hosted 86:36 scales
+    # to. Run 4 timed out at 100 running them SEQUENTIALLY.
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
@@ -80,9 +99,18 @@ jobs:
           # A shallow or blob-filtered checkout fails the module's object-database
           # probe by design -- fetch everything.
           fetch-depth: 0
+      - name: Decide whether this run retains the chronology node
+        id: scope
+        env:
+          CHRONOLOGY_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CHRONOLOGY_FORCE: ${{ inputs.chronology }}
+        run: bash ci/chronology-scope.sh >> "$GITHUB_OUTPUT"
       - name: Offload the suite to the tailnet host
         # Pinned to a full commit SHA, never a moving tag.
         uses: Consiliency/ci-actions/dagger-offload@ea4ba36ba29f18ae4f22e65ae4b8b63e7c7468ee
+        env:
+          # Read by ci/offload-gate.sh; unset there means "retain" (fail closed).
+          CHRONOLOGY: ${{ steps.scope.outputs.chronology }}
         with:
           command: "bash ci/offload-gate.sh"
           eligible: ${{ needs.elig.outputs.eligible }}
@@ -234,30 +262,47 @@ jobs:
         working-directory: phase-loop-runtime
         run: python3 scripts/check_model_id_sources.py
 
+      - name: Decide whether this run retains the chronology node
+        id: scope
+        env:
+          CHRONOLOGY_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CHRONOLOGY_FORCE: ${{ inputs.chronology }}
+        run: bash ci/chronology-scope.sh >> "$GITHUB_OUTPUT"
+
       - name: Run standalone test suite
         # The two frozen LEGIBLE files distinguish a canonical source checkout
         # from an installed consumer. Run them from a copied tests tree so this
         # source-checkout job also exercises the standalone-consumer posture.
         working-directory: phase-loop-runtime
+        env:
+          CHRONOLOGY: ${{ steps.scope.outputs.chronology }}
         run: |
           # tests/__init__.py prepends the sibling src tree in the TEST process
           # only; the evidence-verifier child inherits env, not sys.path. Export
           # the same PYTHONPATH the frozen command literals use so both processes
           # resolve production identically. The standalone leg below overrides it
           # deliberately to exercise the installed-consumer posture.
-          # Two-lane chronology rule: the heavy CONFORM chronology node (~40 min)
-          # runs in exactly two of the four CI executions -- this py3.10 lane
-          # (oldest supported interpreter; the node drives version-sensitive
-          # subprocess machinery, cf. the 3.10-vs-3.12 egg-info divergence in
+          # Chronology selection: when this run retains the heavy CONFORM
+          # chronology node (~50 min; see ci/chronology-scope.sh) it runs in
+          # exactly two of the four CI executions -- this py3.10 lane (oldest
+          # supported interpreter; the node drives version-sensitive subprocess
+          # machinery, cf. the 3.10-vs-3.12 egg-info divergence in
           # agent-harness#382) and Gate A (py3.12 clean room). The 3.11 and 3.12
-          # matrix lanes deselect it; 4 -> 2 executions saves ~80 billed minutes
-          # per push while keeping both interpreter endpoints covered.
-          CHRONOLOGY_NODE="tests/test_outside_agent_conform_evidence.py::test_mutation_definitions_are_frozen_but_not_executed_preimplementation"
+          # matrix lanes always deselect it. The py3.10 lane always writes junit,
+          # so the uploaded evidence witnesses the decision either way.
+          CHRONOLOGY_NODE="$(bash ../ci/chronology-scope.sh --node)"
           suite_args=()
           if [ "${{ matrix.python-version }}" = "3.10" ]; then
             suite_args+=("--junitxml=$RUNNER_TEMP/junit-py310.xml")
+            if [ "${CHRONOLOGY:-true}" = "true" ]; then
+              expect=present
+            else
+              suite_args+=("--deselect=$CHRONOLOGY_NODE")
+              expect=absent
+            fi
           else
             suite_args+=("--deselect=$CHRONOLOGY_NODE")
+            expect=""
           fi
           # The deselect must never become a silent no-op: if the node is renamed
           # or moved, `--deselect` matches nothing and pytest says nothing. Assert
@@ -268,6 +313,20 @@ jobs:
             "${suite_args[@]}" \
             --ignore tests/test_legible_roadmap_contract.py \
             --ignore tests/test_legible_evidence.py
+          if [ -n "$expect" ]; then
+            # The junit must WITNESS the decision: node present when retained,
+            # absent when deselected.
+            if grep -q "name=\"${CHRONOLOGY_NODE##*::}\"" "$RUNNER_TEMP/junit-py310.xml"; then
+              found=present
+            else
+              found=absent
+            fi
+            if [ "$found" != "$expect" ]; then
+              echo "chronology witness: expected the node $expect in the py3.10 junit, found it $found" >&2
+              exit 1
+            fi
+            echo "chronology witness: node $expect in the py3.10 junit"
+          fi
           suite_root="$(mktemp -d)/phase-loop-runtime"
           mkdir -p "$suite_root" "$(dirname "$suite_root")/specs"
           cp -r tests "$suite_root/tests"
@@ -304,20 +363,42 @@ jobs:
     # Its OWN job, not a step inside the pytest matrix. A matrix-conditional step
     # silently vanishes if the matrix is ever bumped past that version, taking the
     # guard with it and leaving CI fully green (the documented hazard recorded at
-    # the lint job above). This job reads the workflow as data and fails loudly if
-    # no lane still RUNS the heavy chronology node -- so narrowing the two-lane rule
-    # to zero lanes is impossible to do silently.
+    # the lint job above). This job reads the workflow and the scope script as
+    # data and fails loudly if no execution still RUNS the heavy chronology node:
+    # a matrix lane must retain it, the workflow must have the push-to-main and
+    # nightly triggers, and the scope script must answer "retain" on both of those
+    # events and on anything it cannot classify -- so narrowing the scope to zero
+    # executions is impossible to do silently.
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.ref }}
-      - name: Assert at least one matrix lane retains the chronology node
+      - name: Assert the chronology node is retained on main, nightly, and one matrix lane
         run: |
           python3 - <<'PYEOF'
-          import sys, yaml
-          node = ("tests/test_outside_agent_conform_evidence.py::"
-                  "test_mutation_definitions_are_frozen_but_not_executed_preimplementation")
+          import os, subprocess, sys, yaml
+          node = subprocess.run(
+              ["bash", "ci/chronology-scope.sh", "--node"], check=True,
+              capture_output=True, text=True,
+          ).stdout.strip()
+          if "::test_" not in node:
+              sys.exit(f"chronology retention guard: scope script names no node: {node!r}")
+          # yaml parses the bare `on` key as boolean True.
           wf = yaml.safe_load(open(".github/workflows/test.yml"))
+          triggers = wf.get("on", wf.get(True))
+          if "main" not in [str(b) for b in triggers["push"]["branches"]]:
+              sys.exit("chronology retention guard: push-to-main trigger is gone")
+          if not triggers.get("schedule"):
+              sys.exit("chronology retention guard: the nightly schedule trigger is gone")
+          for event in ("push", "schedule", "workflow_dispatch", "", "unknown_event"):
+              env = {k: v for k, v in os.environ.items() if not k.startswith("CHRONOLOGY")}
+              env["GITHUB_EVENT_NAME"] = event
+              out = subprocess.run(
+                  ["bash", "ci/chronology-scope.sh"], check=True, env=env,
+                  capture_output=True, text=True,
+              ).stdout.strip()
+              if out != "chronology=true":
+                  sys.exit(f"chronology retention guard: event={event!r} must retain the node, got {out!r}")
           pytest_job = wf["jobs"]["pytest"]
           versions = [str(v) for v in pytest_job["strategy"]["matrix"]["python-version"]]
           suite = next(
@@ -330,13 +411,13 @@ jobs:
           if not retaining:
               sys.exit(
                   "chronology retention guard: no matrix lane runs the heavy "
-                  f"chronology node. Versions present: {versions}. The two-lane "
-                  "rule requires one matrix lane plus Gate A; if a lane was "
-                  "removed, retarget the retained lane rather than dropping it."
+                  f"chronology node. Versions present: {versions}. The retained "
+                  "lane plus Gate A carry the node; if a lane was removed, "
+                  "retarget the retained lane rather than dropping it."
               )
-          if node not in suite:
-              sys.exit("chronology retention guard: the node id is absent from the suite step")
-          print(f"chronology node retained in matrix lane(s): {retaining}")
+          if "chronology-scope.sh --node" not in suite:
+              sys.exit("chronology retention guard: the suite step no longer takes the node id from the scope script")
+          print(f"chronology node retained on push/schedule/dispatch and in matrix lane(s): {retaining}")
           PYEOF
 
   cleanroom:
@@ -369,6 +450,13 @@ jobs:
       - name: Install build + pytest
         run: python -m pip install build pytest
 
+      - name: Decide whether this run retains the chronology node
+        id: scope
+        env:
+          CHRONOLOGY_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CHRONOLOGY_FORCE: ${{ inputs.chronology }}
+        run: bash ci/chronology-scope.sh >> "$GITHUB_OUTPUT"
+
       - name: Gate A — standalone-from-wheel clean room
         # Builds the wheel, installs it into an isolated venv, and runs the FULL
         # standalone suite (TESTDECOUPLE), apart from CONFORM's four exact
@@ -380,8 +468,12 @@ jobs:
         # script's own $WORK tree -- that tree is wiped by its `trap rm -rf EXIT`, and
         # the suite runs under `env -i`, so the path travels positionally into the
         # heredoc rather than through the environment.
+        # GATE_A_DESELECT_CHRONOLOGY=1 drops the heavy chronology node when the
+        # scope step decided this run does not retain it; the script's junit
+        # witness then proves the node is absent from the evidence.
         env:
           GATE_A_JUNIT: ${{ runner.temp }}/junit-gate-a.xml
+          GATE_A_DESELECT_CHRONOLOGY: ${{ steps.scope.outputs.chronology == 'false' && '1' || '0' }}
         run: bash scripts/gate_a_cleanroom.sh
 
       - name: Upload chronology junit (Gate A)
