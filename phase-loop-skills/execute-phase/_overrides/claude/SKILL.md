@@ -145,12 +145,11 @@ merge until fixed; if one still stands when the loop stops, the terminal is a
 non-human `review_gate_block` with `mergeable=False` — the loop ending never
 releases the merge. The agent applies the review-round rules from the
 advisor-board skill to what that loop returns: let every seat finish before
-fixing, fix once per round, and treat a finding as blocking only when it names
-what it breaks (the `EC-<ALIAS>-<N>`; the plan's own declared acceptance
-criteria or contract; or an existing invariant, published guarantee, or test
-the change regresses). At the cap, descope by removing the scope that carries
-the blocker and leaving its goal unclaimed; a blocker that cannot be removed
-with its scope halts the phase for the operator — never merge with a blocker
+fixing, fix once per round, and treat a finding as blocking only when it cites
+what it breaks under that skill's rule 3 (the citation classes are defined
+there, not here). At the cap, descope by removing the scope that carries the
+blocker and leaving its goal unclaimed; a blocker that cannot be removed with
+its scope halts the phase for the operator — never merge with a blocker
 waived. Autonomous runs spawn no panel. Concurrent-wave dispatch is not
 governed yet.
 
