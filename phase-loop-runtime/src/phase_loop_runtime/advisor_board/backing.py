@@ -28,7 +28,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Callable, Mapping
 from contextvars import ContextVar
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from hashlib import sha256
 import json
 import math
@@ -44,6 +44,9 @@ import time
 import struct
 import weakref
 
+from .fixtures import DEFAULT_SEATS
+from .harness_mapping import _AGY_CANONICAL_GEMINI, render_agy_model
+from .registries import DEFAULT_MODEL_REGISTRY, UnknownModelError
 from .schema import (
     AUTH_API_KEY,
     AUTH_SUBSCRIPTION,
@@ -68,39 +71,76 @@ VENDOR_API_KEY_VARS: dict[str, tuple[str, ...]] = {
 # HARDEN's only executable public-review routes.  The parent keeps subscription
 # state; a child receives neither credentials nor a provider client, only this
 # brokered intended-inference contract and immutable staged input.
+#
+# The route table is DERIVED, never pinned: a seat's route is its configured
+# model resolved through the model registry (``DEFAULT_MODEL_REGISTRY``) and the
+# lane's provider renderer (``render_agy_model`` for the agy leg, whose ids embed
+# effort).  A literal table pins a moving input -- it silently rewrote a
+# fleet-default seat to an older model and refused ids it had never heard of
+# (see ``docs/agent-phase-convergence.md``).  ``HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES``
+# is kept as the fleet-default view of that resolution for the four broker lanes.
 PARENT_UNIX_BROKER_V1 = "parent_unix_broker_v1"
-HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES: dict[str, str] = {
-    "claude": "claude-fable-5",  # model-id-source: HARDEN Fable 5 subscription route
-    "codex": "gpt-5.6-sol",  # model-id-source: HARDEN Sol subscription route
-    "gemini": "gemini-3.6-flash-high",  # model-id-source: HARDEN Gemini 3.6 Flash high subscription route
-    "grok": "grok-4.5",  # model-id-source: HARDEN Grok 4.5 subscription route
-}
-_HARDEN_ACCEPTED_CONFIGURED_MODELS: dict[str, tuple[str, ...]] = {
-    "claude": ("claude-fable-5",),  # model-id-source: HARDEN configured Fable compatibility edge
-    "codex": ("gpt-5.6-sol",),  # model-id-source: HARDEN configured Sol compatibility edge
-    # Keep the current fleet defaults structurally intact while the brokered
-    # HARDEN operation resolves its plan-pinned subscription route.
-    "gemini": ("gemini-3.6-flash-high", "gemini-3.7-flash"),  # model-id-source: HARDEN exact and fleet-default compatibility edge
-    "grok": ("grok-4.5", "grok-4.6"),  # model-id-source: HARDEN exact and fleet-default compatibility edge
-}
+_HARDEN_BROKER_LANES: tuple[str, ...] = ("claude", "codex", "gemini", "grok")
+_HARDEN_UNSUPPORTED = "HARDEN review route is unsupported"
+
+
+def _harden_registry_base_model(harness: str, configured_model: str) -> str:
+    """Strip the agy effort suffix so the registry sees the canonical model id."""
+    if harness == "gemini":
+        canonical = _AGY_CANONICAL_GEMINI.match(configured_model)
+        if canonical:
+            return canonical.group(1)
+    return configured_model
 
 
 def harden_subscription_model(harness: str, configured_model: str) -> str:
-    """Resolve an allowed fleet configuration to HARDEN's exact provider route."""
-    route = HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES.get(harness)
-    if route is None or configured_model not in _HARDEN_ACCEPTED_CONFIGURED_MODELS.get(harness, ()):
-        raise ValueError("HARDEN review route is unsupported")
-    return route
+    """Resolve a configured seat model to HARDEN's exact provider route.
+
+    Refuses (``ValueError``) anything that is not a registered model runnable by
+    one of the four broker lanes.  Never rewrites one model into another: the
+    route is the configured model in the lane's invocation form (agy ids carry
+    their effort suffix; every other lane invokes the registry id verbatim).
+    """
+    lane = str(harness or "").lower()
+    model = str(configured_model or "").strip()
+    if lane not in _HARDEN_BROKER_LANES or not model:
+        raise ValueError(_HARDEN_UNSUPPORTED)
+    base = _harden_registry_base_model(lane, model)
+    try:
+        spec = DEFAULT_MODEL_REGISTRY.get(base)
+    except UnknownModelError:
+        raise ValueError(_HARDEN_UNSUPPORTED) from None
+    if lane not in spec.runnable_by:
+        raise ValueError(_HARDEN_UNSUPPORTED)
+    if lane == "gemini":
+        try:
+            return render_agy_model(model)
+        except ValueError:
+            raise ValueError(_HARDEN_UNSUPPORTED) from None
+    return base
+
+
+HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES: dict[str, str] = {
+    str(seat.harness or "").lower(): harden_subscription_model(
+        str(seat.harness or "").lower(), seat.model
+    )
+    for seat in DEFAULT_SEATS
+    if str(seat.harness or "").lower() in _HARDEN_BROKER_LANES
+}
 
 
 def harden_subscription_review_board(board: Board) -> Board:
-    """Use HARDEN's fixed review fleet without changing ordinary board defaults."""
-    seats: list[Seat] = []
+    """Validate every seat against the derived HARDEN routes without rewriting it.
+
+    A seat whose model cannot resolve to a broker route raises here, at
+    composition time, instead of at the provider boundary.  The seat keeps its
+    configured model: the lane renderer (not this table) owns the invocation form.
+    """
     for seat in board.seats:
-        harness = str(seat.harness or "").lower()
-        model = harden_subscription_model(harness, seat.model)
-        seats.append(replace(seat, model=model))
-    return replace(board, seats=tuple(seats))
+        harden_subscription_model(str(seat.harness or "").lower(), seat.model)
+    return board
+
+
 _REVIEW_READONLY_TOOLS = ("Read", "Glob", "Grep", "LS")
 _AUTHORIZATION_SEAL = object()
 _BROKER_MAX_BYTES = 16384

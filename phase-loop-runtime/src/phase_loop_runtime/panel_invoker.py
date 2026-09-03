@@ -4914,7 +4914,10 @@ def _exec_leg(
             # The installed OAuth subscription route reads documented NDJSON user
             # events from stdin.  ``-p -`` is not that interface (it ignores the
             # bytes), and a complete review patch cannot safely be an argv item.
-            if gemini_model != HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["gemini"]:
+            # The broker bound ``model`` (already in agy invocation form via
+            # ``harden_subscription_model``); the rendered invocation must be that
+            # exact route, never a re-derived or defaulted one.
+            if gemini_model != model or harden_subscription_model("gemini", gemini_model) != gemini_model:
                 raise ValueError("brokered Gemini model is not the authorized HARDEN route")
             broker_stream = _broker_gemini_stream_protocol(prompt)
             broker_stream_input = broker_stream.transport
@@ -6443,8 +6446,10 @@ def invoke_board(
             seat.auth == AUTH_SUBSCRIPTION
             and seat.backing == BACKING_HOMEBREW
             and not seat.host_leg
-            and harden_subscription_model((seat.harness or "").lower(), seat.model)
-            == HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES[(seat.harness or "").lower()]
+            # A seat is broker-routable when its configured model RESOLVES to a
+            # registry-backed route for its lane (raises otherwise); the fleet
+            # default is one such route, not the only one.
+            and bool(harden_subscription_model((seat.harness or "").lower(), seat.model))
             for seat in board.seats
         )
     except (KeyError, ValueError):
