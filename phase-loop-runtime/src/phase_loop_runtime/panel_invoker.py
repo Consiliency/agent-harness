@@ -4917,7 +4917,10 @@ def _exec_leg(
             # The broker bound ``model`` (already in agy invocation form via
             # ``harden_subscription_model``); the rendered invocation must be that
             # exact route, never a re-derived or defaulted one.
-            if gemini_model != model or harden_subscription_model("gemini", gemini_model) != gemini_model:
+            if (
+                gemini_model != model
+                or harden_subscription_model("gemini", gemini_model, effort) != gemini_model
+            ):
                 raise ValueError("brokered Gemini model is not the authorized HARDEN route")
             broker_stream = _broker_gemini_stream_protocol(prompt)
             broker_stream_input = broker_stream.transport
@@ -5415,7 +5418,7 @@ def _default_spawn(
             # parent, after validating it, retains the subscription adapter and
             # is the sole component that can contact a provider.
             broker_model = harden_subscription_model(
-                leg, model or DEFAULT_LEG_MODELS[leg],
+                leg, model or DEFAULT_LEG_MODELS[leg], effort,
             )
             leg_authorization = derive_review_leg_authorization(
                 review_authorization, artifact,
@@ -6449,7 +6452,9 @@ def invoke_board(
             # A seat is broker-routable when its configured model RESOLVES to a
             # registry-backed route for its lane (raises otherwise); the fleet
             # default is one such route, not the only one.
-            and bool(harden_subscription_model((seat.harness or "").lower(), seat.model))
+            and bool(
+                harden_subscription_model((seat.harness or "").lower(), seat.model, seat.effort)
+            )
             for seat in board.seats
         )
     except (KeyError, ValueError):

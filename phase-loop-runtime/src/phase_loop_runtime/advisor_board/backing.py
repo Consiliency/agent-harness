@@ -45,7 +45,13 @@ import struct
 import weakref
 
 from .fixtures import DEFAULT_SEATS
-from .harness_mapping import _AGY_CANONICAL_GEMINI, render_agy_model
+from .harness_mapping import (
+    _AGY_CANONICAL_GEMINI,
+    agy_model_effort,
+    gemini_base_model,
+    render_agy_model,
+    render_seat_invocation,
+)
 from .registries import DEFAULT_MODEL_REGISTRY, UnknownModelError
 from .schema import (
     AUTH_API_KEY,
@@ -85,21 +91,38 @@ _HARDEN_UNSUPPORTED = "HARDEN review route is unsupported"
 
 
 def _harden_registry_base_model(harness: str, configured_model: str) -> str:
-    """Strip the agy effort suffix so the registry sees the canonical model id."""
+    """Strip any agy effort embed so the registry sees the canonical model id.
+
+    Both agy spellings are stripped: the ``-<effort>`` suffix on canonical ids and
+    the ``" (Effort)"`` embed on legacy display names.
+    """
     if harness == "gemini":
         canonical = _AGY_CANONICAL_GEMINI.match(configured_model)
         if canonical:
             return canonical.group(1)
+        return gemini_base_model(configured_model)
     return configured_model
 
 
-def harden_subscription_model(harness: str, configured_model: str) -> str:
+def harden_subscription_model(
+    harness: str, configured_model: str, effort: str | None = None,
+) -> str:
     """Resolve a configured seat model to HARDEN's exact provider route.
 
     Refuses (``ValueError``) anything that is not a registered model runnable by
     one of the four broker lanes.  Never rewrites one model into another: the
     route is the configured model in the lane's invocation form (agy ids carry
-    their effort suffix; every other lane invokes the registry id verbatim).
+    their effort; every other lane invokes the registry id verbatim).
+
+    ``effort`` is the seat's canonical effort.  The gemini route is bound to it
+    through the SAME renderer the leg invokes (``render_seat_invocation``), so the
+    authorized route and the rendered ``--model`` argument cannot diverge by
+    construction — for canonical ids (``gemini-3.8-flash`` + ``low`` ->
+    ``gemini-3.8-flash-low``) and for legacy display names alike
+    (``Gemini 3.1 Pro`` + ``high`` -> ``Gemini 3.1 Pro (High)``).  A configured
+    model that already embeds an effort disagreeing with ``effort`` is refused,
+    never silently re-rendered.  ``effort=None`` keeps the effort-absent form
+    (agy's ``high`` default for canonical ids; display names verbatim).
     """
     lane = str(harness or "").lower()
     model = str(configured_model or "").strip()
@@ -113,8 +136,13 @@ def harden_subscription_model(harness: str, configured_model: str) -> str:
     if lane not in spec.runnable_by:
         raise ValueError(_HARDEN_UNSUPPORTED)
     if lane == "gemini":
+        embedded = agy_model_effort(model)
+        if effort is not None and embedded is not None and embedded != effort:
+            raise ValueError(_HARDEN_UNSUPPORTED)
         try:
-            return render_agy_model(model)
+            if effort is None:
+                return render_agy_model(model)
+            return render_seat_invocation(lane, model, effort).model
         except ValueError:
             raise ValueError(_HARDEN_UNSUPPORTED) from None
     return base
@@ -122,7 +150,7 @@ def harden_subscription_model(harness: str, configured_model: str) -> str:
 
 HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES: dict[str, str] = {
     str(seat.harness or "").lower(): harden_subscription_model(
-        str(seat.harness or "").lower(), seat.model
+        str(seat.harness or "").lower(), seat.model, seat.effort
     )
     for seat in DEFAULT_SEATS
     if str(seat.harness or "").lower() in _HARDEN_BROKER_LANES
@@ -137,7 +165,9 @@ def harden_subscription_review_board(board: Board) -> Board:
     configured model: the lane renderer (not this table) owns the invocation form.
     """
     for seat in board.seats:
-        harden_subscription_model(str(seat.harness or "").lower(), seat.model)
+        harden_subscription_model(
+            str(seat.harness or "").lower(), seat.model, seat.effort
+        )
     return board
 
 
@@ -711,12 +741,13 @@ def prepare_review_isolation_authorization(
     for seat in seats:
         harness = str(getattr(seat, "harness", "") or "").lower()
         model = str(getattr(seat, "model", ""))
+        effort = getattr(seat, "effort", None)
         if not harness:
             continue
         if getattr(seat, "auth", None) != AUTH_SUBSCRIPTION or getattr(seat, "backing", None) != BACKING_HOMEBREW:
             continue
         try:
-            routes.append((harness, harden_subscription_model(harness, model)))
+            routes.append((harness, harden_subscription_model(harness, model, effort)))
         except ValueError:
             # A non-policy Claude seat under Claude Code is a typed native-host
             # deferral, never a brokered provider route.  Retain its no-effect
@@ -756,12 +787,13 @@ def _expected_review_fields(
     for seat in getattr(board, "seats", ()):
         harness = str(getattr(seat, "harness", "") or "").lower()
         model = str(getattr(seat, "model", ""))
+        effort = getattr(seat, "effort", None)
         if not harness:
             continue
         if getattr(seat, "auth", None) != AUTH_SUBSCRIPTION or getattr(seat, "backing", None) != BACKING_HOMEBREW:
             continue
         try:
-            routes.append((harness, harden_subscription_model(harness, model)))
+            routes.append((harness, harden_subscription_model(harness, model, effort)))
         except ValueError:
             if harness != "claude":
                 raise

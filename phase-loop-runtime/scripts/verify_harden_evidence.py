@@ -15,14 +15,17 @@ from contextlib import contextmanager
 import fcntl
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
+import io
 import json
 import math
 import os
 import re
 import shutil
 import stat
+import secrets
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unicodedata
 import xml.etree.ElementTree as ET
@@ -1752,104 +1755,72 @@ def lint_receipt(store: ArtifactStore, ref: dict[str, str], label: str, *, head:
 
 
 _MARKER_NAME = "HARDEN_CAPABILITY_VERSION"
-# The marker is bound by its syntactic PROPERTY (one literal top-level binding
-# ``HARDEN_CAPABILITY_VERSION = 1`` and no dynamic rebinding), never by a digest
-# of the surrounding source: the candidate tree already binds the exact reviewed
-# bytes through Git, and a source digest pins a moving input that every unrelated
-# landing in the same file would break (see docs/agent-phase-convergence.md).
-_MARKER_DYNAMIC_MUTATORS = frozenset(("exec", "setattr", "delattr"))
-_MARKER_NAMESPACE_MUTATORS = frozenset((
-    "__delitem__", "__setitem__", "clear", "pop", "setdefault", "update",
-))
+_MARKER_MODULE = "phase_loop_runtime.capability_registry"
+_MARKER_SOURCE_PREFIX = "phase-loop-runtime/src"
+_MARKER_WITNESS_TIMEOUT_S = 120.0
+# The marker is bound by two independent measurements of the SAME property the
+# frozen SL-0 guard reads (``harden_tdd_guard``: import the registry module and
+# read the attribute):
+#   1. syntactic — the marker name occurs exactly once in the module's syntax, as
+#      the sole top-level literal ``HARDEN_CAPABILITY_VERSION = 1``; and
+#   2. runtime — importing the module at the recorded revision, from a private
+#      extraction of that revision's ``phase-loop-runtime/src`` in a separate
+#      environment-scrubbed interpreter, binds the module attribute to the int ``1``.
+# Neither is a digest of the surrounding source: the candidate tree already binds
+# the exact reviewed bytes through Git, and a source digest pins a moving input
+# that every unrelated landing in the same file would break (see
+# docs/agent-phase-convergence.md).  Nor is either a denylist of mutation
+# spellings: a dynamic rebinding the syntax scan cannot name (a computed string
+# through ``builtins.exec``, an aliased ``setattr``, a namespace-dict write) is
+# measured by the import, not enumerated.  The property is the module's own
+# import-time binding at that revision; runtime mutation by OTHER code is the
+# frozen review-leg-isolation anchors' subject, not this witness's.
 
 
-def _marker_namespace(node: ast.AST) -> bool:
-    """Recognize direct module-namespace mutation without executing the source."""
-    return (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id in {"globals", "locals", "vars"}
-    ) or (
-        isinstance(node, ast.Attribute)
-        and node.attr == "__dict__"
-    )
+def _marker_occurrences(tree: ast.Module) -> list[ast.AST]:
+    """Return every syntactic occurrence of the marker name, in any scope.
 
-
-def _marker_bindings(tree: ast.Module) -> list[ast.AST]:
-    """Return every syntactic marker binding, rebind, deletion, or mutation.
-
-    This registry has one deliberately isolated module-level marker.  Rather than
-    emulate Python's nested scope rules and risk missing a ``global``/``exec`` or
-    namespace-dict rebinding, the verifier rejects every noncanonical occurrence
-    that could bind or mutate that name in any lexical scope.  It never imports or
-    executes the registry.
+    The registry has one deliberately isolated module-level marker, so the name
+    may not appear anywhere else: not as a load, a string literal, a parameter,
+    an import alias, a definition, an exception/match capture, a ``global`` or
+    ``nonlocal`` declaration, a type parameter, or an attribute store/delete.
     """
-    bindings: list[ast.AST] = []
+    occurrences: list[ast.AST] = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Name) and node.id == _MARKER_NAME:
-            bindings.append(node)
-            continue
-        if isinstance(node, ast.Constant) and node.value == _MARKER_NAME:
-            bindings.append(node)
-            continue
-        if isinstance(node, ast.arg) and node.arg == _MARKER_NAME:
-            bindings.append(node)
-            continue
-        if isinstance(node, ast.alias):
+            occurrences.append(node)
+        elif isinstance(node, ast.Constant) and node.value == _MARKER_NAME:
+            occurrences.append(node)
+        elif isinstance(node, ast.arg) and node.arg == _MARKER_NAME:
+            occurrences.append(node)
+        elif isinstance(node, ast.alias):
             bound = node.asname or node.name.split(".", 1)[0]
             if bound == _MARKER_NAME or node.name == "*":
-                bindings.append(node)
-            continue
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == _MARKER_NAME:
-            bindings.append(node)
-            continue
-        if isinstance(node, ast.ExceptHandler) and node.name == _MARKER_NAME:
-            bindings.append(node)
-            continue
-        if isinstance(node, ast.MatchAs) and node.name == _MARKER_NAME:
-            bindings.append(node)
-            continue
-        if isinstance(node, ast.MatchStar) and node.name == _MARKER_NAME:
-            bindings.append(node)
-            continue
-        if isinstance(node, ast.MatchMapping) and node.rest == _MARKER_NAME:
-            bindings.append(node)
-            continue
-        if isinstance(node, (ast.Global, ast.Nonlocal)) and _MARKER_NAME in node.names:
-            bindings.append(node)
-            continue
-        if type(node).__name__ in {"TypeAlias", "TypeVar", "ParamSpec", "TypeVarTuple"} and getattr(node, "name", None) == _MARKER_NAME:
-            bindings.append(node)
-            continue
-        if isinstance(node, ast.Attribute) and node.attr == _MARKER_NAME and isinstance(node.ctx, (ast.Store, ast.Del)):
-            bindings.append(node)
-            continue
-        if isinstance(node, ast.Subscript) and isinstance(node.ctx, (ast.Store, ast.Del)) and _marker_namespace(node.value):
-            bindings.append(node)
-            continue
-        if not isinstance(node, ast.Call):
-            continue
-        if isinstance(node.func, ast.Name) and node.func.id in _MARKER_DYNAMIC_MUTATORS:
-            bindings.append(node)
-            continue
-        if isinstance(node.func, ast.Attribute) and node.func.attr in _MARKER_NAMESPACE_MUTATORS and _marker_namespace(node.func.value):
-            bindings.append(node)
-    return bindings
+                occurrences.append(node)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == _MARKER_NAME:
+            occurrences.append(node)
+        elif isinstance(node, ast.ExceptHandler) and node.name == _MARKER_NAME:
+            occurrences.append(node)
+        elif isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name == _MARKER_NAME:
+            occurrences.append(node)
+        elif isinstance(node, ast.MatchMapping) and node.rest == _MARKER_NAME:
+            occurrences.append(node)
+        elif isinstance(node, (ast.Global, ast.Nonlocal)) and _MARKER_NAME in node.names:
+            occurrences.append(node)
+        elif type(node).__name__ in {"TypeAlias", "TypeVar", "ParamSpec", "TypeVarTuple"} and getattr(node, "name", None) == _MARKER_NAME:
+            occurrences.append(node)
+        elif isinstance(node, ast.Attribute) and node.attr == _MARKER_NAME and isinstance(node.ctx, (ast.Store, ast.Del)):
+            occurrences.append(node)
+    return occurrences
 
 
-def _marker_state(
-    repo: Path,
-    revision: str,
-    *,
-    required: bool,
-) -> None:
-    """Require the registry's sole literal marker (syntactic property, not a digest)."""
-    _, data = blob(repo, revision, "phase-loop-runtime/src/phase_loop_runtime/capability_registry.py")
+def _marker_syntax(data: bytes, *, required: bool) -> None:
+    """Measurement 1: the sole literal top-level marker, and no other occurrence."""
     try:
         tree = ast.parse(data.decode("utf-8", errors="strict"))
     except (SyntaxError, UnicodeDecodeError, ValueError):
         fail("capability registry is not parseable Python")
-    bindings = _marker_bindings(tree)
+    occurrences = _marker_occurrences(tree)
     intended = [
         node for node in tree.body
         if isinstance(node, ast.Assign)
@@ -1862,11 +1833,141 @@ def _marker_state(
     ]
     intended_target = intended[0].targets[0] if len(intended) == 1 else None
     if required:
-        if len(bindings) != 1 or bindings[0] is not intended_target:
+        if len(occurrences) != 1 or occurrences[0] is not intended_target:
             fail("final capability marker is missing, rebound, or nonliteral")
         return
-    if bindings:
+    if occurrences:
         fail("pre-production capability marker is present or noncanonical")
+
+
+# Runs in an isolated interpreter (``-I``: no PYTHON* environment, no user or
+# script-directory path entry) whose module path is set explicitly: the
+# extracted revision first, then the verifier's own library path minus every
+# entry its environment contributed.  The verifier's interpreter and installed
+# third-party closure are its trust base already; nothing a caller's
+# ``PYTHONPATH`` or working directory carries can shadow the revision, and the
+# imported module's ``__file__`` proves where it came from.  It reads the module
+# namespace directly (``vars``), never through attribute hooks, and reports one
+# nonce-prefixed record so nothing the module prints can forge the result.
+_MARKER_WITNESS_CHILD = r"""
+import importlib, json, os, sys
+write = os.write
+source, nonce, module_name, attribute, library = sys.argv[1:6]
+sys.path[:] = [source, *json.loads(library)]
+try:
+    module = importlib.import_module(module_name)
+except BaseException as exc:  # noqa: BLE001 - the outcome is the record
+    record = {"outcome": "import_error", "error": type(exc).__name__}
+else:
+    namespace = vars(module)
+    present = attribute in namespace
+    value = namespace.get(attribute)
+    record = {
+        "outcome": "imported",
+        "present": present,
+        "type": type(value).__name__ if present else None,
+        "value": value if present and type(value) is int else None,
+        "file": namespace.get("__file__"),
+    }
+write(1, (nonce + json.dumps(record) + "\n").encode("utf-8"))
+"""
+
+
+def _extract_marker_source(repo: Path, revision: str, destination: Path) -> Path:
+    """Materialize ``phase-loop-runtime/src`` at ``revision`` from Git objects only."""
+    archive = git_bytes(repo, "archive", "--format=tar", revision, _MARKER_SOURCE_PREFIX)
+    root = destination.resolve()
+    with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tar:
+        for member in tar.getmembers():
+            name = PurePosixPath(member.name)
+            if name.is_absolute() or ".." in name.parts or not (member.isdir() or member.isreg()):
+                fail("capability registry archive member is not a plain tree entry")
+            if not (root / name).resolve().is_relative_to(root):
+                fail("capability registry archive member escapes the extraction root")
+            tar.extract(member, path=root, set_attrs=False)
+    source = root / _MARKER_SOURCE_PREFIX
+    if not source.is_dir():
+        fail("capability registry source tree is absent at this revision")
+    return source
+
+
+def _verifier_library_path() -> list[str]:
+    """The verifier's own module path minus its script dir and environment entries."""
+    environment = {
+        str(Path(entry).resolve())
+        for entry in os.environ.get("PYTHONPATH", "").split(os.pathsep)
+        if entry
+    }
+    return [
+        entry for entry in sys.path[1:]
+        if entry and str(Path(entry).resolve()) not in environment
+    ]
+
+
+def _marker_runtime(repo: Path, revision: str, *, required: bool) -> None:
+    """Measurement 2: import the registry at ``revision`` and read the binding."""
+    with tempfile.TemporaryDirectory(prefix="harden-marker-") as scratch:
+        scratch_path = Path(scratch)
+        source = _extract_marker_source(repo, revision, scratch_path / "tree")
+        home = scratch_path / "home"
+        home.mkdir()
+        nonce = secrets.token_hex(16)
+        env = dict(git_environment())
+        env["HOME"] = str(home)
+        env["XDG_CONFIG_HOME"] = str(home)
+        env["PATH"] = os.pathsep.join(
+            entry for entry in (str(Path(sys.executable).parent), VERIFIER_EXECUTABLE_PATH) if entry
+        )
+        try:
+            completed = subprocess.run(
+                [
+                    sys.executable, "-I", "-B", "-c", _MARKER_WITNESS_CHILD,
+                    str(source), nonce, _MARKER_MODULE, _MARKER_NAME,
+                    json.dumps(_verifier_library_path()),
+                ],
+                cwd=scratch_path,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=_MARKER_WITNESS_TIMEOUT_S,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            fail("capability registry runtime witness did not run")
+        records = [
+            line[len(nonce):]
+            for line in completed.stdout.decode("utf-8", errors="replace").splitlines()
+            if line.startswith(nonce)
+        ]
+        if completed.returncode != 0 or len(records) != 1:
+            fail("capability registry runtime witness did not report")
+        try:
+            record = json.loads(records[0])
+        except ValueError:
+            fail("capability registry runtime witness record is malformed")
+        if not isinstance(record, dict) or record.get("outcome") != "imported":
+            fail("capability registry did not import at this revision")
+        module_file = record.get("file")
+        if not isinstance(module_file, str) or not Path(module_file).resolve().is_relative_to(source.resolve()):
+            fail("capability registry imported from outside the recorded revision")
+        if required:
+            if record.get("present") is not True or record.get("type") != "int" or record.get("value") != 1:
+                fail("final capability marker is missing, rebound, or nonliteral")
+            return
+        if record.get("present") is not False:
+            fail("pre-production capability marker is present or noncanonical")
+
+
+def _marker_state(
+    repo: Path,
+    revision: str,
+    *,
+    required: bool,
+) -> None:
+    """Require the registry's sole literal marker, syntactically AND at import."""
+    _, data = blob(repo, revision, _MARKER_SOURCE_PREFIX + "/" + _MARKER_MODULE.replace(".", "/") + ".py")
+    _marker_syntax(data, required=required)
+    _marker_runtime(repo, revision, required=required)
 
 
 def verify_authority_paths(repo: Path, revision: str, value: Any) -> None:
@@ -2781,7 +2882,16 @@ def _self_git(
         target = repo / path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("base " + path + "\n")
-    (repo / "phase-loop-runtime/src/phase_loop_runtime").mkdir(parents=True)
+    # The registry's runtime witness imports the module at each fixture
+    # revision, so the baseline carries the real package (its import closure),
+    # minus the anchor sources, which the fixture synthesizes below as before.
+    shutil.copytree(
+        Path(__file__).resolve().parents[1] / "src/phase_loop_runtime",
+        repo / "phase-loop-runtime/src/phase_loop_runtime",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    for anchor in ANCHORS.values():
+        (repo / anchor["source"]).unlink(missing_ok=True)
     (repo / "phase-loop-runtime/src/phase_loop_runtime/runner.py").write_text("HARDEN_SOURCE = 'base'\n")
     (repo / "phase-loop-runtime/src/phase_loop_runtime/capability_registry.py").write_text("# marker intentionally absent before HARDEN final heads\n")
     for anchor in ANCHORS.values():
@@ -4365,14 +4475,6 @@ def self_test() -> None:
 
             direct_rejected(name, check)
 
-        def marker_mutator_rejected(name: str, body: str) -> None:
-            tree = ast.parse(body)
-            bindings = _marker_bindings(tree)
-            intended = tree.body[0].targets[0]
-            if len(bindings) <= 1 and bindings == [intended]:
-                raise AssertionError(name + " escaped the syntactic marker scanner")
-            marker_rejected(name, body)
-
         marker_rejected("marker-missing", "# absent\n")
         marker_rejected("marker-wrong", "HARDEN_CAPABILITY_VERSION = 2\n")
         marker_rejected("marker-duplicate", "HARDEN_CAPABILITY_VERSION = 1\nHARDEN_CAPABILITY_VERSION = 1\n")
@@ -4389,35 +4491,62 @@ def self_test() -> None:
         marker_rejected("marker-delete", "HARDEN_CAPABILITY_VERSION = 1\ndel HARDEN_CAPABILITY_VERSION\n")
         marker_rejected("marker-global-rebind", "HARDEN_CAPABILITY_VERSION = 1\ndef rebind():\n    global HARDEN_CAPABILITY_VERSION\n    HARDEN_CAPABILITY_VERSION = 2\n")
         marker_rejected("marker-namespace-rebind", "globals()['HARDEN_CAPABILITY_VERSION'] = 1\n")
-        marker_mutator_rejected(
+        marker_rejected(
             "marker-aliased-setattr",
             "HARDEN_CAPABILITY_VERSION = 1\n"
             "from builtins import setattr as _sa\n"
             "import sys\n"
             "_sa(sys.modules[__name__], 'HARDEN_CAPABILITY_VERSION', 2)\n",
         )
-        marker_mutator_rejected(
+        marker_rejected(
             "marker-builtins-setattr",
             "HARDEN_CAPABILITY_VERSION = 1\n"
             "import builtins, sys\n"
             "builtins.setattr(sys.modules[__name__], 'HARDEN_CAPABILITY_VERSION', 2)\n",
         )
-        marker_mutator_rejected(
+        marker_rejected(
             "marker-dunder-setattr",
             "HARDEN_CAPABILITY_VERSION = 1\n"
             "import sys\n"
             "sys.modules[__name__].__setattr__('HARDEN_CAPABILITY_VERSION', 2)\n",
         )
-        marker_mutator_rejected(
+        marker_rejected(
             "marker-unbound-dict-update",
             "HARDEN_CAPABILITY_VERSION = 1\n"
             "dict.update(globals(), {'HARDEN_CAPABILITY_VERSION': 2})\n",
         )
-        marker_mutator_rejected(
+        marker_rejected(
             "marker-getattr-update",
             "HARDEN_CAPABILITY_VERSION = 1\n"
             "getattr(globals(), 'update')({'HARDEN_CAPABILITY_VERSION': 2})\n",
         )
+        # Dynamic rebindings no syntax scan can name: the marker name never
+        # occurs a second time in the source, yet the import binds another value.
+        marker_rejected(
+            "marker-computed-exec",
+            "HARDEN_CAPABILITY_VERSION = 1\n"
+            "import builtins\n"
+            "builtins.exec(\"HARDEN_CAPABILITY_\" + \"VERSION = 2\", globals())\n",
+        )
+        marker_rejected(
+            "marker-computed-delete",
+            "HARDEN_CAPABILITY_VERSION = 1\n"
+            "import builtins\n"
+            "builtins.exec(\"del HARDEN_CAPABILITY_\" + \"VERSION\", globals())\n",
+        )
+        marker_rejected(
+            "marker-computed-type",
+            "HARDEN_CAPABILITY_VERSION = 1\n"
+            "import builtins\n"
+            "builtins.exec(\"HARDEN_CAPABILITY_\" + \"VERSION = True\", globals())\n",
+        )
+        marker_rejected(
+            "marker-computed-preproduction",
+            "import builtins\n"
+            "builtins.exec(\"HARDEN_CAPABILITY_\" + \"VERSION = 1\", globals())\n",
+            required=False,
+        )
+        marker_rejected("marker-import-error", "HARDEN_CAPABILITY_VERSION = 1\nimport no_such_module_for_harden\n")
         def replace(ref: dict[str, str], artifact_root: Path, data: bytes) -> None:
             (artifact_root / ref["path"]).write_bytes(data)
             ref["sha256"] = sha256(data)
