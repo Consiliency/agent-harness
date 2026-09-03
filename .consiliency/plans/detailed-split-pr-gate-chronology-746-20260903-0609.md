@@ -106,8 +106,10 @@ recorded with the rule, the reason, and an owner.
     at $tip; not reporting" and exit 0. The concurrency group serializes reporters but does
     not order them by commit: an older red gate can finish after a newer green one, and
     without this check it would file a red for a tip that is already green (or a newer green
-    would close an issue that a still-running older red is about to re-open). Only the run
-    whose commit IS the current tip may change issue state.
+    would close an issue that a still-running older red is about to re-open). Only a run
+    whose commit was the tip at check time may change issue state; the seconds-wide window
+    between the check and the mutating call is covered by the serialized concurrency group —
+    the next reporter, for the new tip, runs after and corrects the state.
   - Both branches next: `gh label create ci-main-red --force --color B60205
     --description "suite gate is red on main"` (idempotent; `--force` updates instead of
     failing when the label exists).
@@ -143,7 +145,8 @@ recorded with the rule, the reason, and an owner.
   (needs.gate.result == 'failure' || needs.gate.result == 'success')` (cancelled/skipped
   gates report nothing; `pull_request` never reports; `workflow_dispatch` never reports —
   a dispatch with `chronology=false` is the measurement lever and its green proves nothing
-  about the node, so it must not close a red issue the node caused; `gate` is an
+  about the node, so it must not close a red issue the node caused; a dispatched FULL run is
+  likewise unreported — it is an operator action and the operator is watching it; `gate` is an
   `if: always()` join whose `result` is `failure` when `offload`/`hosted` fail, so a
   chronology-node red reaches the reporter as `failure`, not `skipped`); job-level `permissions: { contents: read, actions: read, issues: write }`
   (`actions: read` is what `gh run list`/`gh run view` need — a job-level block REPLACES the
@@ -223,6 +226,12 @@ recorded with the rule, the reason, and an owner.
   `test_pull_request_with_an_unresolvable_base_fails_closed`,
   `test_every_consumer_spells_the_same_node_id`.
 
+### `ci/dagger/src/agent_harness_ci/main.py` (modify)
+- `BASE_PACKAGES` — modify — add `"jq"`: the offload container is `python:<v>-bookworm` plus
+  `git` and `ca-certificates` only, so the stub-`gh` tests below (which run the real `jq`
+  behind `--jq`) would fail with `jq: not found` in the offload lane while passing on
+  `ubuntu-latest`. One list entry; the image is gate plumbing this plan already owns.
+
 ### `phase-loop-runtime/tests/test_ci_main_red.py` (create)
 - `_stub_gh(tmp_path, *, issues, tip, green_runs)` — add — writes an executable `gh` into a
   temp `bin/` that appends its argv to a log file and answers `api repos/.../branches/main`
@@ -231,6 +240,8 @@ recorded with the rule, the reason, and an owner.
   `label create`, `issue create`, `issue comment`, `issue reopen`, `issue close`. The stub
   answers `--json ... --jq <expr>` by running the real `jq` on the fixture JSON (so the
   `.[0].number // empty` guard is exercised against `[]`, which prints `null` without it);
+  the module asserts `shutil.which("jq")` at import — a missing `jq` is a loud failure,
+  never a skip, so the guard is proven in the offload lane too;
   the test runs `ci/main-red.sh` with `PATH=<bin>:/usr/bin:/bin` inside a throwaway git repo
   with two merge commits past the "green" sha, `GITHUB_SHA` = that repo's HEAD.
   "Mutating call" below = any `issue create|comment|reopen|close`; `issue list`, `api`,
@@ -323,6 +334,8 @@ for lane in junit-py310.xml junit-gate-a.xml; do
 done
 
 # 2. Hermetic contracts, CI-style (bare PATH: no agent CLIs, no real gh), bytecode-clean.
+PATH=/usr/bin:/bin which jq   # the stub-gh tests need it; the offload image gets it via BASE_PACKAGES
+grep -n '"jq"' ci/dagger/src/agent_harness_ci/main.py   # must hit BASE_PACKAGES
 ( cd phase-loop-runtime && env -u CLAUDECODE -u CLAUDE_CODE_ENTRYPOINT PATH=/usr/bin:/bin \
   PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:tests python3 -m pytest -q -p no:cacheprovider \
   --no-header -o addopts="" tests/test_ci_chronology_scope.py tests/test_ci_main_red.py \
