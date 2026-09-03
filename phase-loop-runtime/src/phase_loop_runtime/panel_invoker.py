@@ -534,6 +534,130 @@ def invoke_president(
     raise PresidentPolicyError(
         "president_unavailable", "no president model in the availability ladder was available"
     )
+
+
+# Ceiling handed to ``invoke_president`` by the board path; the ladder itself never
+# re-asks substantively today (one ruling per rung, one format re-ask).
+PRESIDENT_MAX_SUBSTANTIVE_ROUNDS = 3
+
+# ``invoke_president`` failures that mean "no valid ruling exists": the board result
+# is refused (every seat UNAVAILABLE) so no caller can mistake unadjudicated seats
+# for a landing. ``president_invocation_failed`` is here because the production
+# seam answers every seated rung with a typed route failure (see
+# ``president_adapter``): the governed caller must receive that as the board's
+# refusal, not as an exception it never persists. A caller-contract error
+# (``president_round_limit``) is not a ladder outcome and propagates unchanged.
+_PRESIDENT_REFUSAL_CODES: frozenset[str] = frozenset({
+    "president_unavailable",
+    "president_invocation_failed",
+    "president_ruling_format_missing",
+    "degraded_president_validation_deferred",
+})
+
+_PRESIDENT_FORCING_PREFIX = "FORCING DECISION:"
+
+
+@dataclass(frozen=True)
+class PresidentFindingRuling:
+    """One machine-readable ``FINDING <id>: BLOCKING|DEFERRED — <reason>`` line."""
+
+    finding_id: str
+    disposition: str
+    reason: str
+
+
+def president_finding_rulings(ruling: PresidentRuling) -> tuple[PresidentFindingRuling, ...]:
+    """Parse the per-finding lines of a grammar-valid ruling, in ruling order."""
+    parsed: list[PresidentFindingRuling] = []
+    for raw in ruling.text.splitlines():
+        match = _PRESIDENT_FINDING_RE.fullmatch(raw.strip())
+        if match is not None:
+            parsed.append(
+                PresidentFindingRuling(
+                    finding_id=match.group(1),
+                    disposition=match.group(2),
+                    reason=match.group(3).strip(),
+                )
+            )
+    return tuple(parsed)
+
+
+def president_forcing_decision(ruling: PresidentRuling) -> str:
+    """The ``FORCING DECISION:`` payload (the grammar pins it to the last line)."""
+    lines = [line.strip() for line in ruling.text.splitlines() if line.strip()]
+    if not lines or not lines[-1].startswith(_PRESIDENT_FORCING_PREFIX):
+        return ""
+    return lines[-1][len(_PRESIDENT_FORCING_PREFIX):].strip()
+
+
+def president_blocks_landing(ruling: PresidentRuling) -> bool:
+    """True when any finding is ruled BLOCKING (DEFERRED is recorded, never waived)."""
+    return any(item.disposition == "BLOCKING" for item in president_finding_rulings(ruling))
+
+
+_PRESIDENT_VERDICT_LINES = frozenset({"AGREE", "PARTIALLY AGREE", "DISAGREE"})
+_PRESIDENT_WS_RE = re.compile(r"\s+")
+
+
+def _president_finding_paragraphs(text: str) -> list[str]:
+    lines = [line.rstrip() for line in text.splitlines()]
+    while lines and not lines[-1].strip():
+        lines.pop()
+    # The board brief's terminal verdict line is a vote, not a finding.
+    if lines and lines[-1].strip() in _PRESIDENT_VERDICT_LINES:
+        lines.pop()
+    paragraphs: list[str] = []
+    current: list[str] = []
+    for line in lines:
+        if line.strip():
+            current.append(_PRESIDENT_WS_RE.sub(" ", line.strip()))
+        elif current:
+            paragraphs.append(" ".join(current))
+            current = []
+    if current:
+        paragraphs.append(" ".join(current))
+    return paragraphs
+
+
+def president_findings_from_legs(
+    seats: Sequence[Seat], legs: Sequence[PanelLegResult]
+) -> tuple[str, ...]:
+    """Render a board's seat outputs as the president's finding list.
+
+    ``_valid_president_grammar`` binds ruling lines to findings BY POSITION using
+    the text before the first ``:``, so this is deterministic and order-preserving:
+    seats in board order, each usable leg contributing its paragraphs minus the
+    trailing verdict line, each unusable leg contributing one synthetic
+    ``unusable (<status>)`` finding so the hole is ruled on rather than hidden.
+    Paragraphs whose whitespace-collapsed, casefolded text is identical are merged
+    into the first occurrence, with the later seat appended to its holder list.
+    IDs are ``F001``, ``F002``, … and every finding is ``F<n>: [<seats>] <text>``.
+    """
+    if len(seats) != len(legs):
+        raise ValueError("seats and legs must correspond positionally")
+    order: list[str] = []
+    texts: dict[str, str] = {}
+    holders: dict[str, list[str]] = {}
+    for seat, leg in zip(seats, legs, strict=True):
+        label = str(leg.seat_key or seat.seat_key)
+        if leg.usable:
+            items = _president_finding_paragraphs(leg.text) or [
+                f"usable seat returned no findings body ({label})"
+            ]
+        else:
+            items = [f"unusable ({leg.status})"]
+        for item in items:
+            key = _PRESIDENT_WS_RE.sub(" ", item).strip().casefold()
+            if key not in texts:
+                order.append(key)
+                texts[key] = item
+                holders[key] = [label]
+            elif label not in holders[key]:
+                holders[key].append(label)
+    return tuple(
+        f"F{index:03d}: [{','.join(holders[key])}] {texts[key]}"
+        for index, key in enumerate(order, start=1)
+    )
 _LEG_STATUS_ALIASES: dict[str, str] = {status: status for status in LEG_STATUSES} | {
     status.lower(): status for status in LEG_STATUSES
 }
@@ -920,6 +1044,13 @@ def apply_claude_refusal_fallback(
 @dataclass(frozen=True)
 class PanelResult:
     legs: tuple[PanelLegResult, ...] = ()
+    # ah#736: the president's ruling over ``president_findings`` (the exact finding
+    # list the ladder was asked to rule on). Both stay at their defaults on every
+    # path whose landing policy has ``requires_president=False``; when the policy
+    # requires one and no valid ruling exists, ``invoke_board`` refuses the whole
+    # board instead of returning ``president=None`` beside usable legs.
+    president: PresidentRuling | None = None
+    president_findings: tuple[str, ...] = ()
 
     @property
     def usable_legs(self) -> tuple[PanelLegResult, ...]:
@@ -6312,6 +6443,7 @@ def invoke_board(
     review_seat_aliases: Mapping[str, str] | None = None,
     review_authorization: ReviewIsolationAuthorization | None = None,
     canonical_repo_authority: Path | str | None = None,
+    president_invoke: Callable[[str, str], Mapping[str, str]] | None = None,
 ) -> PanelResult:
     """Run an Advisor Board's seats through the provider seam, fail-closed.
 
@@ -6391,6 +6523,7 @@ def invoke_board(
     review_lease_active = False
     explicit_spawn_refusal = explicit_mode and mode == "review" and spawn is not None
     switched = _govlean_authority_switched(repo_dir)
+    policy: ReviewLandingPolicy | None = None
     if landing_tier is None and review_policy is None:
         if switched:
             raise PresidentPolicyError(
@@ -6402,6 +6535,14 @@ def invoke_board(
             _coerce_review_landing_tier(landing_tier)  # type: ignore[arg-type]
         )
         _validate_review_board_policy(board, policy, review_seat_aliases)
+        # ah#736: a president-requiring tier without a president seam is a policy
+        # misconfiguration, refused BEFORE any seat runs (same class as the tier
+        # checks above) rather than discovered after four legs have spent effort.
+        if policy.requires_president and president_invoke is None:
+            raise PresidentPolicyError(
+                "president_seam_missing",
+                "landing policy requires a president ruling but no president_invoke was supplied",
+            )
     # 'reference, don't inline': resolve the artifact at the TOP (fail-closed on a
     # missing ref path) so every downstream use sees resolved content; warn on a
     # large INLINE artifact only. No ref ⇒ ``artifact`` byte-for-byte (the default
@@ -7146,6 +7287,31 @@ def invoke_board(
                 observer.seat_result(seat, result)
             observer.board_completed(results)
         panel_result = PanelResult(legs=tuple(results))
+        if policy is not None and policy.requires_president:
+            # ah#736: the president rules AFTER every seat has returned and BEFORE
+            # the board result can reach a landing decision. ``president_invoke``
+            # is non-None here (the policy block refused otherwise).
+            assert president_invoke is not None
+            findings = president_findings_from_legs(board.seats, results)
+            try:
+                ruling = invoke_president(
+                    findings=findings,
+                    invoke=president_invoke,
+                    max_substantive_rounds=PRESIDENT_MAX_SUBSTANTIVE_ROUNDS,
+                )
+            except PresidentPolicyError as exc:
+                if exc.code not in _PRESIDENT_REFUSAL_CODES:
+                    raise
+                # No valid ruling exists: refuse every seat so the unadjudicated
+                # verdicts cannot be read as a landing, keeping the finding list
+                # the ladder was asked to rule on for the durable record.
+                return replace(
+                    review_refusal(f"president_ruling_missing:{exc.code}"),
+                    president_findings=findings,
+                )
+            panel_result = PanelResult(
+                legs=tuple(results), president=ruling, president_findings=findings
+            )
         if agy_canary_capture is not None:
             object.__setattr__(panel_result, "_agy_canary_capture", capture_summary(agy_canary_capture))
         return panel_result
