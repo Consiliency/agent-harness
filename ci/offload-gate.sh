@@ -54,6 +54,7 @@ fi
 # expensive-but-correct answer, never to the skip.
 OFFLOAD_LOCK="${OFFLOAD_LOCK:-/tmp/dagger-offload.lock}"
 OFFLOAD_LOCK_WAIT_SECONDS="${OFFLOAD_LOCK_WAIT_SECONDS:-5400}"
+OFFLOAD_LOCK_POLL_SECONDS="${OFFLOAD_LOCK_POLL_SECONDS:-1}"
 _lock_fifo=""
 _lock_out=""
 _lock_pid=""
@@ -121,20 +122,34 @@ offload_lock_release() {
 # holder is an idle ssh; if it dies mid-call (link drop, remote flock killed) the
 # kernel has already released the lock and a sibling may be starting, so the only
 # honest outcome is to stop this call and fail -- never to finish it unlocked.
+# The holder is checked once more AFTER the call returns: a holder that died in
+# the last poll interval means the tail of the call ran unlocked, and that run
+# is reported red even when dagger itself succeeded.
+offload_lock_holder_alive() {
+  [ -z "$_lock_pid" ] || kill -0 "$_lock_pid" 2>/dev/null
+}
+
 offload_lock_supervise() {
   "$@" &
   local call_pid=$!
   while kill -0 "$call_pid" 2>/dev/null; do
-    if [ -n "$_lock_pid" ] && ! kill -0 "$_lock_pid" 2>/dev/null; then
+    if ! offload_lock_holder_alive; then
       echo "offload lock: lost $OFFLOAD_LOCK on $_lock_host during the call (lock holder exited); stopping the call rather than finishing unlocked" >&2
       cat "$_lock_out" >&2
       kill "$call_pid" 2>/dev/null || true
       wait "$call_pid" 2>/dev/null || true
       exit 1
     fi
-    sleep 1
+    sleep "$OFFLOAD_LOCK_POLL_SECONDS"
   done
-  wait "$call_pid"
+  local rc=0
+  wait "$call_pid" || rc=$?
+  if ! offload_lock_holder_alive; then
+    echo "offload lock: lost $OFFLOAD_LOCK on $_lock_host before the call returned (lock holder exited); the call's tail ran unlocked, refusing to report it" >&2
+    cat "$_lock_out" >&2
+    exit 1
+  fi
+  return "$rc"
 }
 
 CHRONOLOGY="${CHRONOLOGY:-true}"

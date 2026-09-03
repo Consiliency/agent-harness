@@ -149,6 +149,20 @@ def test_lock_holder_death_during_the_call_stops_the_call(harness) -> None:
     assert intervals("next"), "the sibling should run once the lock is free"
 
 
+def test_lock_lost_just_before_the_call_returns_is_not_reported_green(harness) -> None:
+    # r2 (codex): the supervisor polls; a holder that dies inside the last poll
+    # interval, with dagger finishing before the next check, used to come back green.
+    # The acquire loop polls at 1 s, so the call starts no later than ~1 s after the
+    # holder ssh; the holder dies at 1.5 s and dagger returns 0.2 s later, with the
+    # in-call poll interval at 5 s, so no in-call poll can land between the two:
+    # only the post-call check can catch it.
+    run, intervals, _, _ = harness
+    r = run("tail", extra={"SSH_STUB_DIE_AFTER": "1.5", "DAGGER_STUB_SECONDS": "1.7", "OFFLOAD_LOCK_POLL_SECONDS": "5"})
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "ran unlocked" in r.stderr
+    assert intervals("tail"), "dagger did complete; the point is that it must not be reported green"
+
+
 def test_non_ssh_engine_skips_the_lock(harness) -> None:
     run, intervals, ssh_hosts, _ = harness
     r = run("local", docker_host="unix:///var/run/docker.sock")
