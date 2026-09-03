@@ -6,6 +6,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from harden_tdd_guard import invoke_sanctioned_review_transport
+from president_fakes import deferring_president
 from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
 from phase_loop_runtime.panel_invoker import (
     LEG_STATUSES,
@@ -121,6 +122,7 @@ class PanelInvokerTest(unittest.TestCase):
                 context_refs=[str(ref)],
                 spawn=spawn,
                 landing_tier="production_code",
+                president_invoke=deferring_president,
             )
         self.assertIn("FROM_BOARD_REF", seen["codex"])
         self.assertNotIn("PRIVATE_BODY_ABSENT", seen["codex"])
@@ -140,6 +142,7 @@ class PanelInvokerTest(unittest.TestCase):
                 timeouts_by_leg={"gemini": 137},
                 max_concurrency=1,
                 landing_tier="production_code",
+                president_invoke=deferring_president,
             )
 
         self.assertEqual(seen_timeouts["gemini"], 137)

@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from harden_tdd_guard import invoke_sanctioned_board_control
+from president_fakes import deferring_president
 from phase_loop_runtime.advisor_board.fixtures import DEFAULT_SEATS
 from phase_loop_runtime.advisor_board.schema import Board, Seat
 from phase_loop_runtime.panel_invoker import (
@@ -105,8 +106,10 @@ def test_post_switch_full_production_board_reaches_the_real_invocation_path(tmp_
         repo_dir=tmp_path,
         spawn=_ok_spawn,
         landing_tier=ReviewLandingTier.PRODUCTION_CODE,
+        president_invoke=deferring_president,
     )
     assert [leg.status for leg in result.legs] == ["OK", "OK", "OK", "OK"]
+    assert result.president is not None
 
 
 def test_president_format_reask_unavailability_descends_the_ladder() -> None:

@@ -24,6 +24,7 @@ from harden_tdd_guard import (
     harden_require,
     invoke_sanctioned_board_control,
 )
+from president_fakes import deferring_president
 from phase_loop_runtime.advisor_board import (
     DEFAULT_TARGET_SEATS,
     FLOOR_SEATS,
@@ -722,6 +723,7 @@ def test_derived_review_explicit_spawn_remains_hermetic_after_marker():
             spawn=hermetic_spawn,
             base_env={},
             landing_tier=invoker.ReviewLandingTier.PRODUCTION_CODE,
+            president_invoke=deferring_president,
             max_concurrency=1,
         )
 
@@ -1319,6 +1321,7 @@ def test_derived_review_bounded_capture_control_reaches_stage_without_auth(monke
                     agy_canary_capture=bounded_capture,
                     base_env={},
                     landing_tier=invoker.ReviewLandingTier.PRODUCTION_CODE,
+                    president_invoke=deferring_president,
                     max_concurrency=1,
                     on_leg_complete=complete_leg,
                     sink=CaptureSink(),
