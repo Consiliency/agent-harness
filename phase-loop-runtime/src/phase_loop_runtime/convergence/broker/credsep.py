@@ -193,6 +193,11 @@ class GitHubBrokerAdapter:
         # (accepted is granted only on effect_terminal_observed).
         return None, BrokerTerminalEvidence(request.admission.idempotency_key, "no_effect_terminal_proven", reference)
 
+    @staticmethod
+    def _create_reports_existing_pr(completed) -> bool:
+        output = f"{completed.stdout or ''}\n{completed.stderr or ''}".lower()
+        return "pull request" in output and "already exists" in output
+
     def _branch_diff_paths(self, base: str, head_sha: str):
         # agent-harness#202: the broker's OWN re-derivation of what the branch changed vs
         # its declared base — `origin/<base>...head_sha` (three-dot: changes on the branch
@@ -350,7 +355,13 @@ class GitHubBrokerAdapter:
         args = ["gh", "pr", "create", "--repo", origin_repo, "--head", request.branch, "--base", request.base, "--title", title, "--body", request.pr_body or title]
         if request.draft: args.append("--draft")
         created = self.run(args, cwd=self.repo_path, capture_output=True, text=True)
-        if created.returncode: return self._ambiguous(request, "pr-unconfirmed")
+        # An exact branch may already have an open PR (for example after a prior
+        # process pushed and created it but died before recording terminal evidence).
+        # `gh pr create` reports that condition as a non-zero exit. Reconcile only
+        # that recognized response through the same server read-back below; every
+        # unrelated create failure remains permanently ambiguous.
+        if created.returncode and not self._create_reports_existing_pr(created):
+            return self._ambiguous(request, "pr-unconfirmed")
         # Exact-published-head verification: READ the remote and confirm the branch
         # head on origin equals the pushed sha, then resolve the REAL PR url and
         # confirm its headRefOid matches.  Only then is the effect terminally observed.
@@ -359,12 +370,16 @@ class GitHubBrokerAdapter:
         remote_sha = remote.stdout.split("\t", 1)[0].strip() if remote.stdout.strip() else ""
         if not remote_sha: return self._ambiguous(request, "remote-branch-absent")
         if remote_sha != request.head_sha: return self._ambiguous(request, "remote-head-mismatch")
-        listed = self.run(["gh", "pr", "list", "--repo", origin_repo, "--head", request.branch, "--json", "url,headRefOid,baseRefName"], cwd=self.repo_path, capture_output=True, text=True)
+        listed = self.run(["gh", "pr", "list", "--repo", origin_repo, "--head", request.branch, "--state", "open", "--json", "url,headRefOid,baseRefName"], cwd=self.repo_path, capture_output=True, text=True)
         if listed.returncode: return self._ambiguous(request, "pr-read-failed")
         try:
             prs = json.loads(listed.stdout or "[]")
         except json.JSONDecodeError:
             return self._ambiguous(request, "pr-read-unparsable")
+        if not isinstance(prs, list):
+            return self._ambiguous(request, "pr-read-unparsable")
+        if len(prs) > 1:
+            return self._ambiguous(request, "pr-list-ambiguous")
         # Head-only matching is not enough (agent-harness#250, cross-vendor CR, codex):
         # GitHub allows a PR's base to be retargeted after creation, and a same-head PR
         # could simply target a different base than the one scope-checked above. A PR
@@ -375,7 +390,7 @@ class GitHubBrokerAdapter:
         # BOTH headRefOid AND baseRefName to equal the request's before accepting the
         # match; a head-matched/base-mismatched PR fails CLOSED as ambiguous (a PR
         # genuinely exists at that head, so this is not a provable no-effect).
-        head_matches = [p for p in prs if p.get("headRefOid") == request.head_sha and p.get("url")]
+        head_matches = [p for p in prs if isinstance(p, dict) and p.get("headRefOid") == request.head_sha and p.get("url")]
         match = next((p for p in head_matches if p.get("baseRefName") == request.base), None)
         if match is None:
             if head_matches:

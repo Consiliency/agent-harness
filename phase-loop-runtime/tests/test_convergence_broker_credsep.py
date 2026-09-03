@@ -28,9 +28,10 @@ class _FakeRun:
 
     def __call__(self, args, **kwargs):
         self.calls.append(list(args))
-        for tokens, stdout, rc in self.responses:
+        for response in self.responses:
+            tokens, stdout, rc, *rest = response
             if all(tok in args for tok in tokens):
-                return SimpleNamespace(stdout=stdout, stderr="", returncode=rc)
+                return SimpleNamespace(stdout=stdout, stderr=rest[0] if rest else "", returncode=rc)
         raise AssertionError(f"unexpected command: {args!r}")
 
 
@@ -63,6 +64,81 @@ def test_remote_head_match_returns_effect_observed_with_real_url(tmp_path):
     assert evidence.terminal_state == "effect_terminal_observed"
     assert result is not None and result.pr_url == "https://gh/pr/9"
     assert result.head_sha == _HEAD
+
+
+def test_existing_open_pr_create_failure_is_reconciled_by_exact_readback(tmp_path):
+    run = _FakeRun(_base_responses()[:-1] + [
+        (("create",), "", 1, f'a pull request for branch "{_BRANCH}" into branch "main" already exists'),
+        (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "main"}]), 0),
+    ])
+
+    result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
+
+    assert evidence.terminal_state == "effect_terminal_observed"
+    assert result is not None and result.pr_url == "https://gh/pr/9"
+    listed = next(call for call in run.calls if call[:3] == ["gh", "pr", "list"])
+    assert listed[listed.index("--state") + 1] == "open"
+
+
+def test_existing_open_pr_recovery_rejects_multiple_results(tmp_path):
+    run = _FakeRun(_base_responses()[:-1] + [
+        (("create",), "", 1, "a pull request for this branch already exists"),
+        (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+        (("list",), json.dumps([
+            {"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "main"},
+            {"url": "https://gh/pr/10", "headRefOid": _HEAD, "baseRefName": "main"},
+        ]), 0),
+    ])
+
+    result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
+
+    assert result is None
+    assert evidence.terminal_state == "outcome_ambiguous_blocked"
+    assert evidence.evidence_reference == "pr-list-ambiguous"
+
+
+def test_existing_open_pr_recovery_rejects_mismatched_base(tmp_path):
+    run = _FakeRun(_base_responses()[:-1] + [
+        (("create",), "", 1, "a pull request for this branch already exists"),
+        (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+        (("list",), json.dumps([
+            {"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "release/2.0"},
+        ]), 0),
+    ])
+
+    result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
+
+    assert result is None
+    assert evidence.terminal_state == "outcome_ambiguous_blocked"
+    assert evidence.evidence_reference == "pr-base-unconfirmed"
+
+
+def test_existing_open_pr_recovery_rejects_unreadable_list(tmp_path):
+    run = _FakeRun(_base_responses()[:-1] + [
+        (("create",), "", 1, "a pull request for this branch already exists"),
+        (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+        (("list",), "", 1),
+    ])
+
+    result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
+
+    assert result is None
+    assert evidence.terminal_state == "outcome_ambiguous_blocked"
+    assert evidence.evidence_reference == "pr-read-failed"
+
+
+def test_unrelated_pr_create_failure_remains_ambiguous_without_readback(tmp_path):
+    run = _FakeRun(_base_responses()[:-1] + [
+        (("create",), "", 1, "HTTP 503: service unavailable"),
+    ])
+
+    result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
+
+    assert result is None
+    assert evidence.terminal_state == "outcome_ambiguous_blocked"
+    assert evidence.evidence_reference == "pr-unconfirmed"
+    assert not any(call[:3] == ["gh", "pr", "list"] for call in run.calls)
 
 
 def test_remote_head_mismatch_returns_ambiguous_not_success(tmp_path):
