@@ -28,15 +28,13 @@ set -euo pipefail
 CHRONOLOGY_NODE="tests/test_outside_agent_conform_evidence.py::test_mutation_definitions_are_frozen_but_not_executed_preimplementation"
 
 # Repo-relative path patterns (bash `case` globs): the whole runtime package
-# (source, tests, scripts, packaging -- the proof's process executes inside it,
-# so no import-closure enumeration is attempted) and the CI plumbing that
+# directory (the proof's process executes inside it and its packaging inputs --
+# pyproject.toml, MANIFEST.in, README.md, protocol/ -- are pinned by the frozen
+# corpus, so no per-file enumeration is attempted) and the CI plumbing that
 # selects the node in the first place.
 chronology_input_path() {
   case "$1" in
-    phase-loop-runtime/src/*) return 0 ;;
-    phase-loop-runtime/tests/*) return 0 ;;
-    phase-loop-runtime/scripts/*) return 0 ;;
-    phase-loop-runtime/pyproject.toml) return 0 ;;
+    phase-loop-runtime/*) return 0 ;;
     ci/*) return 0 ;;
     .github/workflows/test.yml) return 0 ;;
     .github/workflows/publish-pypi.yml) return 0 ;;
@@ -80,13 +78,21 @@ if [ -z "$base" ]; then
 fi
 # --no-renames: a rename reports BOTH endpoints, so moving an input out of the
 # table still surfaces the old (matched) path instead of only the new one.
-if ! changed="$(git diff --name-only --no-renames "$base...HEAD" 2>/dev/null)"; then
+# -z: NUL-terminated records. Without it git quotes pathnames containing
+# non-ASCII bytes, tabs, newlines or quotes (core.quotePath), and the leading
+# `"` would defeat every prefix pattern above. NUL bytes do not survive a shell
+# variable, so the listing goes through a file.
+changed="$(mktemp)"
+trap 'rm -f "$changed"' EXIT
+if ! git diff -z --name-only --no-renames "$base...HEAD" >"$changed" 2>/dev/null; then
   decide true "git diff $base...HEAD failed (shallow or missing base?); failing closed"; exit 0
 fi
-while IFS= read -r path; do
+count=0
+while IFS= read -r -d '' path; do
   [ -n "$path" ] || continue
+  count=$((count + 1))
   if chronology_input_path "$path"; then
     decide true "PR touches chronology input: $path"; exit 0
   fi
-done <<< "$changed"
-decide false "PR touches no chronology input ($(printf '%s\n' "$changed" | grep -c . || true) paths changed)"
+done <"$changed"
+decide false "PR touches no chronology input ($count paths changed)"

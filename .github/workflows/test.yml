@@ -21,9 +21,12 @@ on:
 permissions:
   contents: read
 
+# Only pull_request runs supersede each other. A push to main (the landing
+# proof) and the nightly/manual runs queue instead, so a manual dispatch with
+# chronology=false can never cancel a retained landing run.
 concurrency:
   group: test-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # ---------------------------------------------------------------------------

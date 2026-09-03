@@ -25,9 +25,16 @@ from pathlib import Path
 _OUTCOME_TAGS = ("skipped", "failure", "error")
 
 
+# The classname roots pytest emits for the node, by rootdir: the package
+# directory (``tests.<module>``) or the repository root
+# (``phase-loop-runtime.tests.<module>``). Any other root is a different module,
+# so a same-named test elsewhere cannot stand in for the node.
+_CLASSNAME_ROOTS = ("", "phase-loop-runtime.")
+
+
 def _same_module(classname: str, module_dotted: str) -> bool:
-    """Bind by whole dotted components: ``a.tests.x`` names ``tests.x``; ``notests.x`` does not."""
-    return classname == module_dotted or classname.endswith("." + module_dotted)
+    """Bind by whole dotted components under a known root: ``notests.x`` and ``shadow.tests.x`` are not ``tests.x``."""
+    return any(classname == root + module_dotted for root in _CLASSNAME_ROOTS)
 
 
 def classify(junit_path: Path, node: str) -> str:

@@ -97,10 +97,15 @@ def test_every_chronology_input_is_classified_as_an_input() -> None:
     # A negative control: prose cannot change what the node computes.
     assert _scope("--match", "README.md") == "no-match"
     assert _scope("--match", "docs/agent-phase-convergence.md") == "no-match"
-    # The whole runtime package retains: the proof's process executes inside it.
+    # The whole runtime package directory retains: the proof's process executes
+    # inside it, and its packaging inputs (MANIFEST.in, README.md, protocol/) are
+    # corpus-pinned package inputs, not prose.
     assert _scope("--match", "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py") == "match"
     assert _scope("--match", "phase-loop-runtime/tests/_dotfiles_tree.py") == "match"
     assert _scope("--match", "phase-loop-runtime/tests/test_unrelated.py") == "match"
+    assert _scope("--match", "phase-loop-runtime/MANIFEST.in") == "match"
+    assert _scope("--match", "phase-loop-runtime/README.md") == "match"
+    assert _scope("--match", "phase-loop-runtime/protocol/protocol.md") == "match"
 
 
 def test_every_conftest_bootstrapped_plugin_is_a_chronology_input() -> None:
@@ -236,6 +241,21 @@ def test_pull_request_touching_a_fixture_vector_retains_the_node(pr_repo: tuple[
     assert out == "chronology=true"
 
 
+@pytest.mark.parametrize("name", ["test_\u00e9.py", "test_a\nb.py", 'test_"q".py', "test_a\tb.py"])
+def test_pull_request_touching_a_quoted_pathname_retains_the_node(pr_repo: tuple[Path, str], name: str) -> None:
+    # Default core.quotePath renders these as "..." with octal escapes in
+    # line-oriented output; the scope script must still see the prefix.
+    repo, base = pr_repo
+    target = repo / "phase-loop-runtime" / "tests" / name
+    target.parent.mkdir(parents=True)
+    target.write_text("x\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-q", "-m", "quoted path")
+    assert _git(repo, "diff", "--name-only", f"{base}...HEAD").startswith('"'), "git did not quote the path"
+    out = _scope(env={"GITHUB_EVENT_NAME": "pull_request", "CHRONOLOGY_BASE_SHA": base}, cwd=repo)
+    assert out == "chronology=true"
+
+
 def _witness(junit: Path, expect: str, node: str = CHRONOLOGY_NODE) -> tuple[int, str]:
     result = subprocess.run(
         [sys.executable, str(WITNESS_SCRIPT), "--junit", str(junit), "--node", node, "--expect", expect],
@@ -289,6 +309,11 @@ def test_witness_absent_requires_no_row_for_the_node(tmp_path: Path) -> None:
     assert _witness(suffix_collision, "absent")[0] == 0
     prefixed = _junit(tmp_path, f'<testcase classname="phase-loop-runtime.{_MODULE}" name="{_NAME}" />')
     assert _witness(prefixed, "present")[0] == 0
+    # Only the two roots pytest can emit are the node; a same-named test under a
+    # foreign root does not stand in for it.
+    shadow = _junit(tmp_path, f'<testcase classname="shadow.{_MODULE}" name="{_NAME}" />')
+    assert _witness(shadow, "absent")[0] == 0
+    assert _witness(shadow, "present")[0] == 1
 
 
 def test_witness_refuses_missing_or_malformed_junit(tmp_path: Path) -> None:
@@ -314,6 +339,9 @@ def test_workflows_retain_the_node_on_main_nightly_and_release() -> None:
     assert "main" in [str(b) for b in triggers["push"]["branches"]]
     assert triggers["schedule"], "the nightly backstop is gone"
     assert triggers["workflow_dispatch"]["inputs"]["chronology"]["default"] is True
+    # Only pull_request runs cancel each other: a manual chronology=false dispatch
+    # on main queues behind the landing push run instead of cancelling its proof.
+    assert workflow["concurrency"]["cancel-in-progress"] == "${{ github.event_name == 'pull_request' }}"
     # Every job that runs the node decides its scope with the same script and
     # feeds the decision to the runner it drives.
     jobs = workflow["jobs"]
