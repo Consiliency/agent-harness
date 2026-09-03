@@ -615,6 +615,74 @@ class BuiltThreeAndNativeUnaffectedTests(unittest.TestCase):
         self.assertTrue(all(l.status == "OK" for l in res.legs))
 
 
+# --- the hermetic capture control never reaches the gateway ------------------
+
+
+class AuthFreeCaptureControlTests(unittest.TestCase):
+    """EC-HARDEN-5: the auth-free CLI-capture control is a homebrew capture and
+    nothing else; a gateway route through it is refused BEFORE the catalog fetch."""
+
+    def test_auth_free_capture_control_never_reaches_the_gateway_catalog(self) -> None:
+        # Recipe (Consiliency/agent-harness#738 review, codex round 2): replace ONLY
+        # ``prepare_provider_launch_authorities``; pass a capture object, an
+        # ``artifact_ref`` and a ``repo_dir``; no factory replacement, no
+        # ``review_authorization``; one omnigent-backed seat and a live gateway.
+        # The single ``GET /v1/harnesses`` catalog fetch is a real broker effect,
+        # so it must sit behind the same typed refusal every other gateway route
+        # meets.  Falsifier: drop the gateway/research/governed terms from
+        # ``auth_free_capture_control`` in ``panel_invoker.invoke_board`` -> the
+        # fake server logs a GET before any refusal.
+        def prepare_authority(*, capture: object, stage: object, providers: list[str]) -> dict:
+            raise AssertionError("provider authorities prepared before the gateway refusal")
+
+        with tempfile.TemporaryDirectory(
+            prefix="harden-capture-gateway-"
+        ) as td, FakeOmnigentServer() as srv, mock.patch.object(
+            pi, "prepare_provider_launch_authorities", prepare_authority
+        ):
+            private_repo = Path(td) / "repo"
+            private_repo.mkdir(mode=0o700)
+            artifact = private_repo / "artifact.md"
+            artifact.write_text("artifact\n")
+            outcome: Exception | None = None
+            res = None
+            try:
+                res = pi.invoke_board(
+                    _board(_opencode_seat()),
+                    "review",
+                    omnigent=srv.backing(),
+                    agy_canary_capture=object(),
+                    base_env={},
+                    max_concurrency=1,
+                    artifact_ref=str(artifact),
+                    repo_dir=private_repo,
+                )
+            except Exception as exc:  # pragma: no cover - recorded for the probe detail
+                outcome = exc
+            catalog_requests = [
+                r for r in srv.request_log
+                if (r["method"], r["path"]) == HARNESS_ENDPOINT
+            ]
+            legs = () if res is None else tuple(
+                (leg.leg, leg.status, leg.detail) for leg in res.legs
+            )
+            typed_refusal = (
+                res is not None
+                and len(legs) == 1
+                and legs[0][1] == "UNAVAILABLE"
+                and legs[0][2] == "harden_review_capture_route_refused"
+            )
+            harden_finish_probe(
+                "review-leg-isolation",
+                satisfied=typed_refusal and not srv.request_log,
+                detail=(
+                    "auth-free capture control reached the gateway before refusal: "
+                    f"catalog_requests={catalog_requests!r}, legs={legs!r}, "
+                    f"raised={outcome!r}"
+                ),
+            )
+
+
 # --- a skipped seat never blocks a healthy one -------------------------------
 
 

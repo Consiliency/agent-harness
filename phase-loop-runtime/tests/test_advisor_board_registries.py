@@ -123,11 +123,25 @@ class PopulatedRegistryTests(unittest.TestCase):
         self.assertEqual(spec.vendor_family, "grok")
         self.assertEqual(spec.runnable_by, ("grok",))  # grok-family runs only on the grok lane
 
+    def test_current_default_board_models_resolve_to_their_lanes(self) -> None:
+        # The fleet defaults: claude-fable-5-1 (claude lane) and gemini-3.8-flash
+        # (gemini lane) alongside grok-4.6 / gpt-5.6-sol above.
+        from phase_loop_runtime.advisor_board import DEFAULT_MODEL_REGISTRY
+
+        fable = DEFAULT_MODEL_REGISTRY.get("claude-fable-5-1")
+        self.assertEqual(fable.default_lane, "claude")
+        self.assertEqual(fable.vendor_family, "claude")
+        flash = DEFAULT_MODEL_REGISTRY.get("gemini-3.8-flash")
+        self.assertEqual(flash.default_lane, "gemini")
+        self.assertEqual(flash.effort_ceiling, "high")
+
     def test_previous_board_models_remain_registered_for_explicit_configs(self) -> None:
         from phase_loop_runtime.advisor_board import DEFAULT_MODEL_REGISTRY
 
         self.assertEqual(DEFAULT_MODEL_REGISTRY.get("gemini-3.6-flash").default_lane, "gemini")
+        self.assertEqual(DEFAULT_MODEL_REGISTRY.get("gemini-3.7-flash").default_lane, "gemini")
         self.assertEqual(DEFAULT_MODEL_REGISTRY.get("grok-4.5").default_lane, "grok")
+        self.assertEqual(DEFAULT_MODEL_REGISTRY.get("claude-fable-5").default_lane, "claude")
 
     def test_unknown_model_raises_with_known_list(self) -> None:
         from phase_loop_runtime.advisor_board import DEFAULT_MODEL_REGISTRY, UnknownModelError

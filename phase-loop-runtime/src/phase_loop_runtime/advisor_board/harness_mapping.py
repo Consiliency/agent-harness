@@ -6,7 +6,7 @@ canonical pair into the exact invocation token shared by launcher and board path
 
     claude  -> effort flag        ``--effort max``
     codex   -> config override    ``-c model_reasoning_effort=xhigh``
-    gemini  -> model-name embed   ``gemini-3.7-flash-high``
+    gemini  -> model-name embed   ``gemini-3.8-flash-high``
     grok    -> effort flag        ``--reasoning-effort high``
 
 Legacy Gemini Pro display names remain supported for explicit boards.
@@ -128,8 +128,8 @@ def gemini_base_model(model: str) -> str:
 def render_agy_model(model: str, effort: str | None = None) -> str:
     """Render a Gemini model for agy's effort-in-model-name convention.
 
-    Canonical ids such as ``gemini-3.7-flash`` become
-    ``gemini-3.7-flash-high``. Legacy display names retain their parenthesized
+    Canonical ids such as ``gemini-3.8-flash`` become
+    ``gemini-3.8-flash-high``. Legacy display names retain their parenthesized
     effort spelling, and the established routing aliases remain compatible.
     Unknown ``gemini-*`` ids fail loud instead of silently selecting Pro.
     """

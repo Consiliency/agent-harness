@@ -24,6 +24,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from harden_tdd_guard import invoke_sanctioned_board_control
 from phase_loop_runtime import agy_canary_evidence as evidence
 from phase_loop_runtime import panel_invoker as pi
 
@@ -846,6 +847,10 @@ def test_capture_materializes_all_provider_authorities_from_one_bound_stage(monk
         )
         return {provider: authority}
 
+    # The launch boundary is pinned one level BELOW the provider transport wrapper
+    # (``_default_spawn``, which ``_default_spawn_via_provider`` calls with the exact
+    # same capture kwargs), so the real provider seam still runs and every sealed
+    # launch is observed at both hops.
     def spawn_provider(leg, _artifact, **kwargs):
         authority, stage, _bytes = prepared[leg]
         assert kwargs["provider_authority"] is authority
@@ -868,10 +873,12 @@ def test_capture_materializes_all_provider_authorities_from_one_bound_stage(monk
     monkeypatch.setattr(pi, "prepare_provider_launch_authorities", prepare_authority)
     monkeypatch.setattr(pi, "seal_provider_launches", lambda **_kwargs: {"synthetic": True})
     monkeypatch.setattr(pi, "record_provider_result", seal_result)
-    monkeypatch.setattr(pi, "_default_spawn_via_provider", spawn_provider)
+    monkeypatch.setattr(pi, "_default_spawn", spawn_provider)
     monkeypatch.setattr(pi, "capture_summary", lambda _capture: {"synthetic": True})
 
-    result = pi.invoke_board(
+    # An execution-capable review path needs an explicit sanctioned authorization
+    # control (EC-HARDEN-5); every assertion below is unchanged.
+    result = invoke_sanctioned_board_control(
         DEFAULT_BOARD,
         "review",
         agy_canary_capture=expected_capture,
@@ -2055,7 +2062,10 @@ def test_capture_quiescence_failure_stops_siblings_and_retains_private_roots(
             pi.ProviderProcessGroupQuiescenceError,
             match="provider process group did not terminate",
         ) as caught:
-            pi.invoke_board(
+            # An execution-capable review path needs an explicit sanctioned
+            # authorization control (EC-HARDEN-5); the fatal spawn, the cleanup
+            # spy and every retention assertion below are unchanged.
+            invoke_sanctioned_board_control(
                 DEFAULT_BOARD,
                 "review",
                 agy_canary_capture=expected_capture,
@@ -2160,8 +2170,17 @@ def test_capture_setup_always_reclaims_scratch_and_provider_outputs(monkeypatch,
     real_mkdtemp = tempfile.mkdtemp
     real_cleanup = pi._cleanup_capture_launches
 
-    def capture_mkdtemp(*, prefix, dir="/tmp"):
-        scratch = Path(real_mkdtemp(prefix=prefix, dir=dir))
+    # Named by the exact production prefix rather than by "whatever asked for a
+    # temporary directory": the sanctioned authorization control allocates its own
+    # private root through the same module-level ``tempfile.mkdtemp``, and that
+    # root is not a capture scratch.
+    scratch_prefix = evidence._OWNED_CLEANUP_PREFIXES["scratch"]
+
+    def capture_mkdtemp(suffix=None, prefix=None, dir=None):
+        made = real_mkdtemp(suffix, prefix, dir)
+        if prefix != scratch_prefix:
+            return made
+        scratch = Path(made)
         scratch.chmod(0o700)
         scratches.append(scratch)
         cleanup_authorities.append(
@@ -2234,14 +2253,18 @@ def test_capture_setup_always_reclaims_scratch_and_provider_outputs(monkeypatch,
         )) if failure == "result" else lambda **_kwargs: {"synthetic": True},
     )
     monkeypatch.setattr(pi, "capture_summary", lambda _capture: {"synthetic": True})
-    monkeypatch.setattr(pi, "_default_spawn_via_provider", spawn_provider)
+    # Pinned one level BELOW the provider transport wrapper (see the sibling
+    # capture test) so the real ``_default_spawn_via_provider`` seam still runs.
+    monkeypatch.setattr(pi, "_default_spawn", spawn_provider)
     monkeypatch.setattr(pi, "_cleanup_capture_launches", observe_cleanup)
 
+    # An execution-capable review path needs an explicit sanctioned authorization
+    # control (EC-HARDEN-5); every reclamation assertion below is unchanged.
     if failure is None:
-        pi.invoke_board(DEFAULT_BOARD, "review", agy_canary_capture=object(), base_env={}, max_concurrency=1)
+        invoke_sanctioned_board_control(DEFAULT_BOARD, "review", agy_canary_capture=object(), base_env={}, max_concurrency=1)
     else:
         with pytest.raises((evidence.AgyCanaryEvidenceError, OSError)):
-            pi.invoke_board(DEFAULT_BOARD, "review", agy_canary_capture=object(), base_env={}, max_concurrency=1)
+            invoke_sanctioned_board_control(DEFAULT_BOARD, "review", agy_canary_capture=object(), base_env={}, max_concurrency=1)
     assert scratches
     if failure not in {"write", "bind"}:
         assert outputs

@@ -29,7 +29,7 @@ equivalence is proven by a test (not asserted in prose).
   (`render_gemini_model`, panel_invoker.py:1016). Built-3 lanes are concrete;
   breadth lanes raise `EffortMappingError` until ABDREG/ABDHOME/ABDOMNI.
   Round-trip (proven): claude→`--effort max`, codex→
-  `-c model_reasoning_effort=xhigh`, Gemini Flash→`gemini-3.7-flash-high`;
+  `-c model_reasoning_effort=xhigh`, Gemini Flash→`gemini-3.8-flash-high`;
   explicit legacy Pro display names remain compatible.
 - **Seat identity for result re-keying** — `Seat.seat_key` is a stable LABEL over
   every distinguishing field (lane, model, effort, lens), so lens-only-different
@@ -175,7 +175,7 @@ the real matrix at `load_boards()` time (`tests/test_advisor_board_config.py`,
 - **Review-class = Fable, decoupled from the implementer.** Pre-merge and legal
   review are mid-tier decisions where being wrong is expensive, so the review-class
   boards (`default`, `code-review`, `legal-review`, `legal-strategy-review`) seat
-  Fable (`claude-fable-5`) on the claude lane — NOT the implementer model
+  Fable (`claude-fable-5-1`) on the claude lane — NOT the implementer model
   `profiles.CLAUDE_IMPLEMENTER_MODEL` (`claude-sonnet-5`). `panel_invoker.DEFAULT_LEG_MODELS["claude"]`
   is the SINGLE source of truth for the panel's default claude model: the claude
   leg builder (`_claude_tui_command`) and the Agent-View attempt both read it, so
@@ -186,10 +186,10 @@ the real matrix at `load_boards()` time (`tests/test_advisor_board_config.py`,
   byte-pinned to this Fable `invoke_panel` panel by the golden proof
   (`tests/test_advisor_board_golden.py`); the sole sanctioned delta stays `seat_key`.
 - **`default` and `code-review` are four-vendor frontier boards.** Gemini uses
-  `gemini-3.7-flash` at its `high` ceiling alongside Sol, Fable, and Grok 4.6;
+  `gemini-3.8-flash` at its `high` ceiling alongside Sol, Fable, and Grok 4.6;
   `code-review` preserves availability-aware backfill and distinct lenses.
 - **President availability ladder.** Review findings go first to Fable, then
-  Sol, Grok 4.6, and Gemini 3.7 Flash. Descent occurs only for a typed
+  Sol, Grok 4.6, and Gemini 3.8 Flash. Descent occurs only for a typed
   `president_unavailable` result, never because a president dissents.
 - **Divergent-thinking boards keep Sonnet.** `brainstorm` / `doc-edit` /
   `legal-brainstorm` deliberately retain `claude-sonnet-5` — a diverse voice, a
@@ -199,9 +199,9 @@ the real matrix at `load_boards()` time (`tests/test_advisor_board_config.py`,
   (`schema.py`), so the legal lenses/purposes need no enum extension.
 - **Catch-alls for unmodeled tasks (`general`, `solo`).** So the board library is not
   limited to the pre-modeled domains: `general` is the domain-agnostic top-tier PANEL
-  (three frontier vendors — gpt-5.6-sol/adversarial, gemini-3.7-flash/alternative,
-  claude-fable-5/completeness — hand it any task + brief), and `solo` is the
-  single-MEMBER form (one `claude-fable-5` seat) for a quick top-end opinion when a
+  (three frontier vendors — gpt-5.6-sol/adversarial, gemini-3.8-flash/alternative,
+  claude-fable-5-1/completeness — hand it any task + brief), and `solo` is the
+  single-MEMBER form (one `claude-fable-5-1` seat) for a quick top-end opinion when a
   panel is overkill. A ONE-seat board validates + resolves through `invoke_board` like
   any other (bare/single seats are supported). Both default to TOP-END models: an
   unanticipated task cannot be assumed low-stakes, so the safe default is frontier —

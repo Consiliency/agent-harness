@@ -65,7 +65,7 @@ class DefaultBoardReproducesTodayTests(unittest.TestCase):
         src = Path(pi.__file__).read_text(encoding="utf-8")
         self.assertIn("model_reasoning_effort=xhigh", src)  # codex :992
         self.assertIn('"--effort",', src)                    # claude --effort ...
-        self.assertIn('"gemini-3.7-flash-high"', src)       # canonical agy effort suffix
+        self.assertIn('"gemini-3.8-flash-high"', src)       # canonical agy effort suffix
 
 
 class AuthScrubByteEquivalenceTests(unittest.TestCase):
