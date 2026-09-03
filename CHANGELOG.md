@@ -44,6 +44,27 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   against a `gh` stub with the real `jq` behind `--jq`; `tests/test_ci_gate_metrics.py`
   pins the head join and the no-run exclusion.
 
+### CI offload: one suite per engine host, and a CLI that follows the engine (Consiliency/agent-harness#746)
+
+- `ci/offload-gate.sh` takes a `flock` ON the Dagger engine host (over the same `ssh://` route
+  `DOCKER_HOST` names) and holds it for the whole `dagger call`. Two offloaded suites on one engine
+  used to kill each other: the engine prunes its store when a session ends and the prune removes the
+  rootfs of containers a sibling session is still executing in -- the 200+ `FileNotFoundError`
+  cascade that read as a repo regression. The lock is a pipe-held `flock -c cat`, so a killed runner
+  releases it through the kernel; no lock within `OFFLOAD_LOCK_WAIT_SECONDS` (default 5400) exits 1
+  with the lock path named, and a holder that dies mid-call (dropped link, remote `flock` killed)
+  stops the call and exits 1; the holder is checked again after the call returns, so a loss inside
+  the last poll interval (`OFFLOAD_LOCK_POLL_SECONDS`, default 1) is also red -- never an unlocked
+  run, never a green one that finished unlocked. `OFFLOAD_LOCK` (default
+  `/tmp/dagger-offload.lock`) is deliberately generic so every repo offloading to the same engine can
+  share it; a repo that does not take it can still overlap.
+- Both workflows pin `Consiliency/ci-actions/dagger-offload` at `c9272a52` (Consiliency/ci-actions#2):
+  the dagger CLI version on the runner is now derived from the `dagger-engine-v<X>` container running
+  on the host instead of a hardcoded `0.21.7`. The CLI's docker provisioner removes every
+  `dagger-engine-*` container other than its own version's, so a pinned CLI did not merely skew
+  coverage on an engine upgrade -- it evicted the live engine and any gate mid-flight on it. An
+  operator engine upgrade on the host now needs no change here.
+
 ### advisor-board: `requires_president` executes the president ladder, fail-closed (Consiliency/agent-harness#736)
 
 - `invoke_board(..., president_invoke=)` runs the president ladder once after every seat has
