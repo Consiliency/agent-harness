@@ -92,9 +92,10 @@ jobs:
           done
       - name: Gate A — verify the exact prebuilt wheel in a clean room
         # A release tag and a manual dispatch run the FULL standalone suite. A
-        # pull_request run of this workflow is the third execution of the heavy
-        # CONFORM chronology node on the same head (test.yml already runs it
-        # wherever ci/chronology-scope.sh retains it), so it is deselected here;
+        # pull_request run of this workflow deselects the heavy CONFORM chronology
+        # node: test.yml's landing push and nightly retain it (and a PR that
+        # touches the gate's selection plumbing retains it there too, per
+        # ci/chronology-scope.sh), so running it here again proves nothing new;
         # the script's junit witness proves the node is absent from the evidence.
         env:
           GATE_A_JUNIT: ${{ runner.temp }}/junit-release-gate-a.xml

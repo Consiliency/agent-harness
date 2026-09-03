@@ -50,7 +50,7 @@ VERDICTS_FILE = "verdicts.txt"
 # The suite needs a real git binary (the chronology proof shells out to it) and
 # `git merge-tree --write-tree`, which is git >= 2.38. Debian bookworm ships 2.39.
 #
-BASE_PACKAGES = ["git", "ca-certificates"]
+BASE_PACKAGES = ["git", "ca-certificates", "jq"]  # jq: ci/main-red.sh tests run a jq-backed gh stub
 
 # A SECOND, higher interpreter must be on PATH. Several suite tests resolve an
 # interpreter PIN (`automation.python: python3.12`) and assert the runtime honours
