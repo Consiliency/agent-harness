@@ -1846,9 +1846,17 @@ def _marker_syntax(data: bytes, *, required: bool) -> None:
 # entry its environment contributed.  The verifier's interpreter and installed
 # third-party closure are its trust base already; nothing a caller's
 # ``PYTHONPATH`` or working directory carries can shadow the revision, and the
-# imported module's ``__file__`` proves where it came from.  It reads the module
-# namespace directly (``vars``), never through attribute hooks, and reports one
-# nonce-prefixed record so nothing the module prints can forge the result.
+# imported module's ``__file__`` proves where it came from.  It takes the
+# marker two ways -- ``getattr`` with a default, the frozen guard's own
+# instrument (``tests/harden_tdd_guard.py``), and the module namespace
+# (``vars``) that the syntactic measurement binds -- and both readings must
+# agree, so a module whose attribute access disagrees with its namespace is
+# rejected rather than measured one way.  The nonce prefix separates the
+# record from the module's incidental output.  It is not an authentication
+# boundary: the module's own code runs in this interpreter, and no in-process
+# importer (the frozen guard included) can witness a module written to lie to
+# its importer.  That is outside this check's threat model; the syntactic
+# measurement pins the recorded source a reviewer reads.
 _MARKER_WITNESS_CHILD = r"""
 import importlib, json, os, sys
 write = os.write
@@ -1860,13 +1868,22 @@ except BaseException as exc:  # noqa: BLE001 - the outcome is the record
     record = {"outcome": "import_error", "error": type(exc).__name__}
 else:
     namespace = vars(module)
-    present = attribute in namespace
-    value = namespace.get(attribute)
+    missing = object()
+    attribute_value = getattr(module, attribute, missing)
+    readings = []
+    for present, value in (
+        (attribute in namespace, namespace.get(attribute)),
+        (attribute_value is not missing, attribute_value),
+    ):
+        readings.append({
+            "present": present,
+            "type": type(value).__name__ if present else None,
+            "value": value if present and type(value) is int else None,
+        })
     record = {
         "outcome": "imported",
-        "present": present,
-        "type": type(value).__name__ if present else None,
-        "value": value if present and type(value) is int else None,
+        "namespace": readings[0],
+        "attribute": readings[1],
         "file": namespace.get("__file__"),
     }
 write(1, (nonce + json.dumps(record) + "\n").encode("utf-8"))
@@ -1950,11 +1967,17 @@ def _marker_runtime(repo: Path, revision: str, *, required: bool) -> None:
         module_file = record.get("file")
         if not isinstance(module_file, str) or not Path(module_file).resolve().is_relative_to(source.resolve()):
             fail("capability registry imported from outside the recorded revision")
+        readings = [record.get("namespace"), record.get("attribute")]
+        if not all(isinstance(reading, dict) for reading in readings):
+            fail("capability registry runtime witness record is malformed")
+        if readings[0] != readings[1]:
+            fail("capability registry marker disagrees between namespace and attribute access")
+        reading = readings[0]
         if required:
-            if record.get("present") is not True or record.get("type") != "int" or record.get("value") != 1:
+            if reading.get("present") is not True or reading.get("type") != "int" or reading.get("value") != 1:
                 fail("final capability marker is missing, rebound, or nonliteral")
             return
-        if record.get("present") is not False:
+        if reading.get("present") is not False:
             fail("pre-production capability marker is present or noncanonical")
 
 
@@ -4486,6 +4509,25 @@ def self_test() -> None:
         marker_rejected("marker-augassign-rebind", "HARDEN_CAPABILITY_VERSION = 1\nHARDEN_CAPABILITY_VERSION += 1\n")
         marker_rejected("marker-multi-target", "HARDEN_CAPABILITY_VERSION = other = 1\n")
         marker_rejected("marker-walrus", "(HARDEN_CAPABILITY_VERSION := 1)\n")
+        marker_rejected(
+            "marker-class-swap",
+            "HARDEN_CAPABILITY_VERSION = 1\n"
+            "import sys, types\n"
+            "class _Registry(types.ModuleType):\n"
+            "    def __getattribute__(self, name):\n"
+            "        if name.startswith('HARDEN_CAPABILITY_'):\n"
+            "            return 2\n"
+            "        return super().__getattribute__(name)\n"
+            "sys.modules[__name__].__class__ = _Registry\n",
+        )
+        marker_rejected(
+            "marker-module-getattr-preproduction",
+            "def __getattr__(name):\n"
+            "    if name == 'HARDEN_CAPABILITY_VERSION':\n"
+            "        return 1\n"
+            "    raise AttributeError(name)\n",
+            required=False,
+        )
         marker_rejected("marker-import", "from marker_source import HARDEN_CAPABILITY_VERSION\n")
         marker_rejected("marker-definition", "def HARDEN_CAPABILITY_VERSION():\n    return 1\n")
         marker_rejected("marker-delete", "HARDEN_CAPABILITY_VERSION = 1\ndel HARDEN_CAPABILITY_VERSION\n")
