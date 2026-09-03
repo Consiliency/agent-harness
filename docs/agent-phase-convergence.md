@@ -224,7 +224,9 @@ fixed before round one, bound it:
    the round they dissented on; the round record names that delta's base and head. Seats that
    agreed are carried forward, marked as carried. A dissenting seat that errors, times out, or
    returns nothing is re-run, never carried: a carried verdict must be one somebody actually
-   gave.
+   gave. Where a gate requires an exact-head unanimous board (this repository's runtime does,
+   for the implementation board), that board runs once on the final head after the loop has
+   converged; delta review governs the fix rounds that get it there.
 2. **No cancel-on-first-blocker.** Let the round finish. A blocker at minute three says nothing
    about what the other seats would have found at minute twenty, and cancelling them means
    paying for the whole round again after the fix. Collect every seat's findings, then fix once.
