@@ -14,6 +14,16 @@
 #   stale run    -> a run whose head is no longer the tip of main reports
 #                   nothing (exit 0); the tip's own run is the authority.
 #
+# Ordering across heads. Reporters of DIFFERENT heads may run concurrently
+# (the job's concurrency group is per head), so two guards order every
+# mutation instead of a lock:
+#   * the tip is re-read immediately before each mutating `gh` call, not
+#     once at the top (a reporter that lost the tip mid-run stops there);
+#   * every report stamps its head into the issue (`<!-- main-red head: SHA -->`)
+#     and a reporter touches an issue only when the last stamped head is an
+#     ancestor of (or equal to) its own -- an older head can never close,
+#     reopen, or comment over a newer head's report, whatever the timing.
+#
 # Inputs (env): GATE_RESULT (needs.gate.result: success|failure|...),
 # GITHUB_RUN_ID, GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_SHA, GH_TOKEN.
 # Requires `gh`, `git` (full history: checkout fetch-depth 0) and `jq`.
@@ -30,11 +40,37 @@ LABEL="ci-main-red"
 TITLE="suite gate is red on main"
 RUN_URL="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
-tip="$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq .commit.sha)"
-if [ "$tip" != "$GITHUB_SHA" ]; then
-  echo "stale run: head $GITHUB_SHA is not the tip of main ($tip); not reporting" >&2
-  exit 0
-fi
+HEAD_STAMP="<!-- main-red head: $GITHUB_SHA -->"
+
+# Exit 0 unless this run's head is STILL the tip of main. Called once up front
+# and again right before every mutating call.
+require_tip() {
+  local tip
+  tip="$(gh api "repos/$GITHUB_REPOSITORY/branches/main" --jq .commit.sha)"
+  if [ "$tip" != "$GITHUB_SHA" ]; then
+    echo "stale run: head $GITHUB_SHA is not the tip of main ($tip); not reporting" >&2
+    exit 0
+  fi
+}
+
+# The head stamped by the most recent report on issue $1 (body, then comments
+# in order), or empty when the issue carries no stamp.
+last_reported_head() {
+  gh issue view "$1" --json body,comments \
+    --jq '[.body, .comments[].body] | map(capture("<!-- main-red head: (?<h>[0-9a-f]{40}) -->") | .h) | last // empty'
+}
+
+# True when the issue's last report is not newer than this run: no stamp, a
+# stamp this checkout cannot resolve, or a stamp that is an ancestor of HEAD.
+not_older_than_last_report() {
+  local recorded
+  recorded="$(last_reported_head "$1")"
+  [ -n "$recorded" ] || return 0
+  git cat-file -e "$recorded^{commit}" 2>/dev/null || return 0
+  git merge-base --is-ancestor "$recorded" "$GITHUB_SHA"
+}
+
+require_tip
 
 case "$GATE_RESULT" in
   failure|success) ;;
@@ -49,7 +85,12 @@ if [ "$GATE_RESULT" = "success" ]; then
   gh issue list --state open --label "$LABEL" --limit 50 --json number --jq '.[].number' \
     | while IFS= read -r number; do
         [ -n "$number" ] || continue
-        gh issue close "$number" --comment "suite gate green again on main: run $RUN_URL"
+        if ! not_older_than_last_report "$number"; then
+          echo "#$number was last reported for a newer head than $GITHUB_SHA; leaving it" >&2
+          continue
+        fi
+        require_tip
+        gh issue close "$number" --comment "suite gate green again on main: run $RUN_URL $HEAD_STAMP"
         echo "closed #$number" >&2
       done
   exit 0
@@ -87,22 +128,31 @@ trap 'rm -f "$body_file"' EXIT
   echo '```'
   echo
   echo "PRs defer the CONFORM chronology node to the landing push (\`ci/chronology-scope.sh\`), so a red here may be a regression no PR run could see. This issue closes itself when the gate is green again on main."
+  echo
+  echo "$HEAD_STAMP"
 } >"$body_file"
 
 existing="$(gh issue list --state all --label "$LABEL" --limit 1 --json number,state \
   --jq '.[0] // empty | "\(.number) \(.state)"')"
 if [ -z "$existing" ]; then
+  require_tip
   gh issue create --label "$LABEL" --title "$TITLE" --body-file "$body_file"
   echo "created issue" >&2
   exit 0
 fi
 number="${existing%% *}"
 state="${existing##* }"
+if ! not_older_than_last_report "$number"; then
+  echo "#$number was last reported for a newer head than $GITHUB_SHA; not reporting" >&2
+  exit 0
+fi
 case "$state" in
   OPEN)
+    require_tip
     gh issue comment "$number" --body-file "$body_file"
     echo "commented on open #$number" >&2 ;;
   CLOSED)
+    require_tip
     gh issue reopen "$number"
     gh issue comment "$number" --body-file "$body_file"
     echo "reopened + commented on #$number" >&2 ;;

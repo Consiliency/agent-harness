@@ -54,7 +54,12 @@ if body_file:
 open(log_path, "a").write(json.dumps(entry) + "\n")
 
 if argv[0] == "api":
-    emit({"commit": {"sha": state["tip"]}})
+    # A list of tips is consumed one per read: the last one sticks. Lets a test
+    # move the tip BETWEEN the up-front check and the pre-mutation re-read.
+    tips = state["tip"] if isinstance(state["tip"], list) else [state["tip"]]
+    tip = tips.pop(0) if len(tips) > 1 else tips[0]
+    state["tip"] = tips
+    emit({"commit": {"sha": tip}})
 elif argv[:2] == ["label", "create"]:
     pass
 elif argv[:2] == ["issue", "list"]:
@@ -65,15 +70,22 @@ elif argv[:2] == ["issue", "list"]:
     emit(issues[: int(opt("--limit"))])
 elif argv[:2] == ["issue", "create"]:
     number = max([i["number"] for i in state["issues"]] + [0]) + 1
-    state["issues"].append({"number": number, "state": "OPEN", "labels": [opt("--label")]})
+    state["issues"].append({"number": number, "state": "OPEN", "labels": [opt("--label")],
+                            "body": entry["body"], "comments": []})
     print(f"https://example.invalid/issues/{number}")
+elif argv[:2] == ["issue", "view"]:
+    issue = next(i for i in state["issues"] if i["number"] == int(argv[2]))
+    emit({"body": issue.get("body", ""), "comments": [{"body": c} for c in issue.get("comments", [])]})
 elif argv[:2] == ["issue", "comment"]:
-    pass
+    issue = next(i for i in state["issues"] if i["number"] == int(argv[2]))
+    issue.setdefault("comments", []).append(entry["body"])
 elif argv[:2] in (["issue", "reopen"], ["issue", "close"]):
     number = int(argv[2])
     for issue in state["issues"]:
         if issue["number"] == number:
             issue["state"] = "OPEN" if argv[1] == "reopen" else "CLOSED"
+            if opt("--comment"):
+                issue.setdefault("comments", []).append(opt("--comment"))
 elif argv[:2] == ["run", "list"]:
     emit([{"headSha": state["green"]}] if state.get("green") else [])
 elif argv[:2] == ["run", "view"]:
@@ -126,7 +138,8 @@ class Harness:
         self.state_path = tmp_path / "state.json"
         self.log_path = tmp_path / "calls.log"
 
-    def run(self, *, gate: str, sha: str, tip: str | None = None, issues=(), green: str | None = None, jobs=()):
+    def run(self, *, gate: str, sha: str, tip=None, issues=(), green: str | None = None, jobs=()):
+        """`tip` may be a list: successive tip reads consume it, the last sticks."""
         self.state_path.write_text(json.dumps({
             "tip": tip or sha, "issues": list(issues), "green": green,
             "jobs": list(jobs) or [{"name": "gate", "conclusion": "failure"}],
@@ -148,6 +161,9 @@ class Harness:
 
     def verbs(self) -> list[str]:
         return [" ".join(c["argv"][:2]) for c in self.calls()]
+
+    def issue_states(self) -> dict[int, str]:
+        return {i["number"]: i["state"] for i in self.state()["issues"]}
 
 
 @pytest.fixture
@@ -187,7 +203,8 @@ def test_failure_with_no_issue_creates_one_with_the_range_and_failing_jobs(harne
     assert "plain landing" in body, "a squash/direct landing is a landing too (--first-parent)"
     assert "feature work" not in body, "commits inside a merged branch are not landings"
     assert "green landing" not in body, "the range starts after the last green head"
-    assert h.state()["issues"] == [{"number": 1, "state": "OPEN", "labels": ["ci-main-red"]}]
+    assert h.issue_states() == {1: "OPEN"}
+    assert f"<!-- main-red head: {shas[3]} -->" in body, "every report stamps its head"
 
 
 def test_failure_with_an_open_issue_comments_instead_of_creating(harness) -> None:
@@ -198,7 +215,7 @@ def test_failure_with_an_open_issue_comments_instead_of_creating(harness) -> Non
     assert "issue create" not in h.verbs()
     comment = next(c for c in h.calls() if c["argv"][:2] == ["issue", "comment"])
     assert comment["argv"][2] == "7" and RUN_URL in comment["body"]
-    assert h.state()["issues"] == existing
+    assert h.issue_states() == {7: "OPEN"}
 
 
 def test_failure_with_a_closed_issue_reopens_and_comments(harness) -> None:
@@ -232,6 +249,7 @@ def test_success_closes_every_open_issue_with_the_run(harness) -> None:
     closes = [c for c in h.calls() if c["argv"][:2] == ["issue", "close"]]
     assert [c["argv"][2] for c in closes] == ["3", "8"]
     assert all(f"suite gate green again on main: run {RUN_URL}" in " ".join(c["argv"]) for c in closes)
+    assert all(f"<!-- main-red head: {shas[3]} -->" in " ".join(c["argv"]) for c in closes), "the close stamps its head"
     assert "issue create" not in h.verbs() and "run list" not in h.verbs()
     assert {i["number"]: i["state"] for i in h.state()["issues"]} == {3: "CLOSED", 5: "CLOSED", 8: "CLOSED"}
 
@@ -250,6 +268,63 @@ def test_other_gate_results_exit_nonzero_without_touching_issues(harness, gate: 
     result = h.run(gate=gate, sha=shas[3], issues=[{"number": 7, "state": "OPEN", "labels": ["ci-main-red"]}])
     assert result.returncode == code, result.stderr
     assert not any(v.startswith("issue") for v in h.verbs())
+
+
+def _stamp(sha: str) -> str:
+    return f"<!-- main-red head: {sha} -->"
+
+
+def test_tip_lost_between_the_first_check_and_the_mutation_stops_the_report(harness) -> None:
+    """Reporters of different heads run concurrently; the tip is re-read right before
+    each mutating call, so a reporter that loses the tip mid-run never creates or closes."""
+    h, shas = harness
+    # red: the up-front read says tip, the pre-create re-read says a newer head landed
+    result = h.run(gate="failure", sha=shas[2], tip=[shas[2], shas[3]], green=shas[1])
+    assert result.returncode == 0, result.stderr
+    assert "stale run" in result.stderr
+    assert "issue create" not in h.verbs() and h.state()["issues"] == []
+    # red over an existing issue: the pre-comment / pre-reopen re-read fails
+    for state in ("OPEN", "CLOSED"):
+        result = h.run(gate="failure", sha=shas[2], tip=[shas[2], shas[3]], green=shas[1],
+                       issues=[{"number": 7, "state": state, "labels": ["ci-main-red"]}])
+        assert result.returncode == 0, result.stderr
+        assert not any(v in ("issue reopen", "issue comment") for v in h.verbs()), state
+        assert h.issue_states() == {7: state}
+    # green: same shape, the pre-close re-read fails, the open issue is left alone
+    result = h.run(gate="success", sha=shas[2], tip=[shas[2], shas[3]],
+                   issues=[{"number": 7, "state": "OPEN", "labels": ["ci-main-red"]}])
+    assert result.returncode == 0, result.stderr
+    assert "issue close" not in h.verbs() and h.issue_states() == {7: "OPEN"}
+
+
+def test_an_older_head_never_closes_or_reopens_over_a_newer_heads_report(harness) -> None:
+    """Every report stamps its head; a reporter touches the issue only when the last
+    stamped head is an ancestor of its own. shas[2] is older than shas[3]."""
+    h, shas = harness
+    newer_open = [{"number": 7, "state": "OPEN", "labels": ["ci-main-red"], "body": _stamp(shas[3])}]
+    result = h.run(gate="success", sha=shas[2], issues=newer_open)
+    assert result.returncode == 0, result.stderr
+    assert "issue close" not in h.verbs() and h.issue_states() == {7: "OPEN"}
+    assert "newer head" in result.stderr
+
+    # the stamp in the LAST comment wins over the body
+    newer_closed = [{"number": 7, "state": "CLOSED", "labels": ["ci-main-red"],
+                     "body": _stamp(shas[1]), "comments": ["green again " + _stamp(shas[3])]}]
+    result = h.run(gate="failure", sha=shas[2], green=shas[1], issues=newer_closed)
+    assert result.returncode == 0, result.stderr
+    assert not any(v in ("issue reopen", "issue comment", "issue create") for v in h.verbs())
+    assert h.issue_states() == {7: "CLOSED"}
+
+    # the newer head over an older stamp proceeds (ancestor), and stamps itself
+    older_closed = [{"number": 7, "state": "CLOSED", "labels": ["ci-main-red"], "body": _stamp(shas[2])}]
+    result = h.run(gate="failure", sha=shas[3], green=shas[1], issues=older_closed)
+    assert result.returncode == 0, result.stderr
+    assert "issue reopen" in h.verbs() and h.issue_states() == {7: "OPEN"}
+    assert _stamp(shas[3]) in h.state()["issues"][0]["comments"][-1]
+    # ... and the older head now finds itself behind that stamp
+    result = h.run(gate="success", sha=shas[2], issues=h.state()["issues"])
+    assert result.returncode == 0, result.stderr
+    assert h.issue_states() == {7: "OPEN"}
 
 
 def test_script_is_executable_and_runs_with_the_bare_container_path() -> None:

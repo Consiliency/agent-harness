@@ -509,9 +509,10 @@ jobs:
     # the pending reporter of the current tip and drop its report. Keyed by
     # head, reporters of distinct heads never cancel each other; the push and
     # the nightly of the SAME head serialise and carry identical content, so
-    # losing one of them loses nothing. The residual race -- two heads both
-    # passing the tip check in the same second and both creating an issue --
-    # yields a duplicate the next green closes, never a dropped red.
+    # losing one of them loses nothing. Reporters of different heads may then
+    # overlap: ci/main-red.sh orders their mutations itself (tip re-read before
+    # every mutating call + a head stamp on every report that an older head
+    # may never write over), so no lock is needed here.
     concurrency:
       group: main-red-${{ github.sha }}
       cancel-in-progress: false

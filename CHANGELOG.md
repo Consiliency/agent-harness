@@ -27,10 +27,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   why the reporter below exists.
 - New `main-red` job in `test.yml` (after `gate`, on `push` to `main` and the nightly, never a
   gate input) runs `ci/main-red.sh`: a red gate creates / comments on / reopens ONE canonical
-  issue labelled `ci-main-red` with the run, the failing jobs, and the merges since the last
-  green push run; a green gate closes every open one. A run whose head is no longer the tip
-  of `main` reports nothing. The Dagger base image gains `jq` so the reporter's tests run
-  in the offloaded suite too.
+  issue labelled `ci-main-red` with the run, the failing jobs, and the landings
+  (`--first-parent`: merges and squashes alike) since the last green push run; a green gate
+  closes every open one. A run whose head is no longer the tip of `main` reports nothing:
+  the tip is re-read before every mutating call, and every report stamps its head so an
+  older head never closes, reopens, or comments over a newer head's report -- reporters of
+  different heads may overlap (the job's concurrency group is per head) without a lock. The
+  Dagger base image gains `jq` so the reporter's tests run in the offloaded suite too.
 - `ci/gate_metrics.py` is the instrument that keeps the justification repeatable: per PR, the
   test.yml wall clock on its head, executions (summed attempts), reruns, and whether the PR
   retained the node; a PR with no run on its head prints `minutes=- executions=0 reruns=-`
