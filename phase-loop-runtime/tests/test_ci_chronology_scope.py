@@ -102,12 +102,13 @@ def test_every_chronology_input_is_classified_as_an_input() -> None:
 def test_every_conftest_bootstrapped_plugin_is_a_chronology_input() -> None:
     """conftest.py loads plugins before any test runs; their modules are inputs too."""
     conftest = (REPO_ROOT / "phase-loop-runtime" / "tests" / "conftest.py").read_text(encoding="utf-8")
-    modules = sorted(set(re.findall(r'"phase_loop_runtime\.([a-z_]+):[a-z_]+"', conftest)))
+    modules = sorted(set(re.findall(r'"phase_loop_runtime\.([A-Za-z0-9_.]+):[A-Za-z0-9_]+"', conftest)))
     assert modules, "conftest.py names no bootstrapped plugin -- the probe is broken"
     misses = sorted(
         module
         for module in modules
-        if _scope("--match", f"phase-loop-runtime/src/phase_loop_runtime/{module}.py") != "match"
+        if _scope("--match", "phase-loop-runtime/src/phase_loop_runtime/" + module.replace(".", "/") + ".py")
+        != "match"
     )
     assert not misses, f"conftest-bootstrapped plugin modules the scope script would let a PR skip: {misses}"
 
