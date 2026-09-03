@@ -22,15 +22,18 @@
 # expensive-but-correct answer -- never to `false`.
 #
 # `--match <path>` mode: prints `match` / `no-match` for one path and exits 0.
-# tests/test_ci_chronology_scope.py drives this mode to pin the table to exactly
-# the selection consumers, so it can neither drift wider (re-running the node on
+# tests/test_ci_chronology_scope.py drives this mode to pin the table to the
+# selection consumers, so it can neither drift wider (re-running the node on
 # ordinary PRs) nor narrower (letting a plumbing change skip its own proof).
 set -euo pipefail
 
 CHRONOLOGY_NODE="tests/test_outside_agent_conform_evidence.py::test_mutation_definitions_are_frozen_but_not_executed_preimplementation"
 
-# Repo-relative path patterns (bash `case` globs): exactly the plumbing that
-# selects, runs, or witnesses the node. Per-file under phase-loop-runtime/scripts
+# Repo-relative path patterns (bash `case` globs): the plumbing that selects,
+# runs, or witnesses the node. `ci/*` is taken as a whole on purpose -- every
+# file there is CI plumbing, and a reporter or instrument (main-red.sh,
+# gate_metrics.py) retaining the node is a fail-closed over-approximation, cheap
+# and rare; a new selection consumer added under ci/ can never be forgotten. Per-file under phase-loop-runtime/scripts
 # on purpose: the other scripts there (regenerate_skills_bundle.py,
 # sync_skills_bundle.py, check_model_id_sources.py, sweep_fleet_worktrees.sh) are
 # not selection plumbing. The runtime package itself is NOT in the table -- the

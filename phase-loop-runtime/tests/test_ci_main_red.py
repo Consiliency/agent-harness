@@ -182,9 +182,11 @@ def test_failure_with_no_issue_creates_one_with_the_range_and_failing_jobs(harne
     body = create["body"]
     assert RUN_URL in body and shas[3] in body
     assert "failing jobs: gate, offload" in body
-    assert f"Merges since the last green push run ({shas[1]}):" in body
+    assert f"Landings since the last green push run ({shas[1]}):" in body
     assert "Merge feature (Consiliency/agent-harness#1)" in body
-    assert "plain landing" not in body, "--merges must filter non-merge commits"
+    assert "plain landing" in body, "a squash/direct landing is a landing too (--first-parent)"
+    assert "feature work" not in body, "commits inside a merged branch are not landings"
+    assert "green landing" not in body, "the range starts after the last green head"
     assert h.state()["issues"] == [{"number": 1, "state": "OPEN", "labels": ["ci-main-red"]}]
 
 

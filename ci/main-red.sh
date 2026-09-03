@@ -59,9 +59,11 @@ fi
 green="$(gh run list --workflow test.yml --branch main --event push --status success \
   --limit 1 --json headSha --jq '.[0].headSha // empty')"
 if [ -n "$green" ] && git cat-file -e "$green^{commit}" 2>/dev/null; then
-  range_label="Merges since the last green push run ($green):"
-  range="$(git log --merges --oneline "$green..HEAD" || true)"
-  [ -n "$range" ] || range="(no merge commits in range; non-merge landings: $(git log --oneline "$green..HEAD" | wc -l | tr -d ' '))"
+  # --first-parent: one line per LANDING on main, whether it was a merge commit
+  # or a squash; the commits inside a merged branch are not listed.
+  range_label="Landings since the last green push run ($green):"
+  range="$(git log --first-parent --oneline "$green..HEAD" || true)"
+  [ -n "$range" ] || range="(no commits on main since $green)"
 else
   range_label="No green push run found on main; last 20 commits:"
   range="$(git log --oneline -20)"

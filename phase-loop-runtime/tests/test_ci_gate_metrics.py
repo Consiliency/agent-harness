@@ -68,3 +68,33 @@ def test_main_exits_2_without_gh_or_without_auth(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(gm.subprocess, "run", lambda *a, **k: Failed())
     assert gm.main(["--pr", "1"]) == 2
     assert sys.version_info >= (3, 10)
+
+
+def test_plumbing_sees_both_sides_of_a_rename(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A rename OUT of the plumbing table retains the node at the gate (the scope
+    script diffs with --no-renames), so the instrument must read the source side too.
+    `gh pr view --json files` only reports the destination; the REST files endpoint
+    carries `previous_filename`."""
+    gm = _load()
+    calls: list[tuple[str, ...]] = []
+
+    def fake_gh_json(*args: str):
+        calls.append(args)
+        assert args[:2] == ("api", "repos/{owner}/{repo}/pulls/7/files")
+        assert "--paginate" in args
+        # two pages: a docs-only edit, then a plumbing file renamed out of ci/
+        return [
+            [{"filename": "docs/x.md", "status": "modified"}],
+            [{"filename": "tools/moved.sh", "previous_filename": "ci/moved.sh", "status": "renamed"}],
+        ]
+
+    monkeypatch.setattr(gm, "_gh_json", fake_gh_json)
+    assert gm._pr_paths(7) == ["docs/x.md", "tools/moved.sh", "ci/moved.sh"]
+    assert gm._plumbing_for({"number": 7}) is True
+    assert len(calls) == 2
+
+    def only_destinations(*args: str):
+        return [[{"filename": "tools/moved.sh", "status": "renamed"}]]
+
+    monkeypatch.setattr(gm, "_gh_json", only_destinations)
+    assert gm._plumbing_for({"number": 7}) is False, "destination alone is non-plumbing"

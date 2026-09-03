@@ -502,8 +502,18 @@ jobs:
       contents: read
       actions: read
       issues: write
+    # Per-head group. GitHub keeps at most ONE pending job per concurrency
+    # group and cancels the previously pending one when another arrives, even
+    # with cancel-in-progress false -- a single shared group could let a late
+    # run of an OLDER head (which then exits at the script's stale check) evict
+    # the pending reporter of the current tip and drop its report. Keyed by
+    # head, reporters of distinct heads never cancel each other; the push and
+    # the nightly of the SAME head serialise and carry identical content, so
+    # losing one of them loses nothing. The residual race -- two heads both
+    # passing the tip check in the same second and both creating an issue --
+    # yields a duplicate the next green closes, never a dropped red.
     concurrency:
-      group: main-red
+      group: main-red-${{ github.sha }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4

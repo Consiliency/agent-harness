@@ -9,7 +9,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 ### CI: pull requests defer the chronology node; a red landing push files an issue (Consiliency/agent-harness#746)
 
 - `ci/chronology-scope.sh`'s table narrows from "the runtime package or the CI plumbing" to
-  exactly the gate's selection plumbing: `ci/*`, the two workflows, and
+  the gate's selection plumbing: `ci/*` as a whole (a deliberate fail-closed
+  over-approximation -- a reporter or instrument there retains too), the two workflows, and
   `phase-loop-runtime/scripts/{chronology_witness.py,gate_a_cleanroom.sh,_gate_a_probe.py}`.
   A pull request that touches only the runtime, its tests, or the frozen corpus now DEFERS the
   ~50-minute node to the landing push -- the node proves a property of frozen history, not of
@@ -85,7 +86,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   ~88 % of a per-PR run's wall clock, executed two to three times per PR) is retained: always
   on a push to `main`, on the new nightly `schedule`, and on `workflow_dispatch` (input
   `chronology`, default on); on a `pull_request` only when the diff touches the gate's own
-  selection plumbing (the table was narrowed to exactly that set in Consiliency/agent-harness#746
+  selection plumbing (the table was narrowed to that set in Consiliency/agent-harness#746
   above; as first landed it also retained on any `phase-loop-runtime/` path). No
   verdict-invariance claim is made for other PRs: their proof is deferred to the landing merge.
   Anything the script cannot classify or diff retains the node (fail closed).

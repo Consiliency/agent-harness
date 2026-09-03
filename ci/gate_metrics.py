@@ -138,11 +138,32 @@ def _runs_for(pr: dict) -> list[dict]:
     )
 
 
+def _pr_paths(number: int) -> list[str]:
+    """Every path a PR touches, on BOTH sides of a rename.
+
+    `gh pr view --json files` reports only the destination `path`, so a PR that
+    renames a plumbing file OUT of the table would read as non-plumbing here
+    while the gate (which diffs with `--no-renames`) retains the node. The REST
+    endpoint carries `previous_filename` for renames; `--paginate` covers PRs
+    over the 30-file page.
+    """
+    entries = _gh_json(
+        "api", f"repos/{{owner}}/{{repo}}/pulls/{number}/files", "--paginate", "--slurp",
+    )
+    paths: list[str] = []
+    for page in entries or []:
+        for entry in page or []:
+            for key in ("filename", "previous_filename"):
+                value = entry.get(key)
+                if value:
+                    paths.append(value)
+    return paths
+
+
 def _plumbing_for(pr: dict) -> bool:
-    files = _gh_json("pr", "view", str(pr["number"]), "--json", "files")
-    for entry in files.get("files", []):
+    for path in _pr_paths(int(pr["number"])):
         verdict = subprocess.run(
-            ["bash", str(SCOPE_SCRIPT), "--match", entry["path"]],
+            ["bash", str(SCOPE_SCRIPT), "--match", path],
             check=True, capture_output=True, text=True,
         ).stdout.strip()
         if verdict == "match":

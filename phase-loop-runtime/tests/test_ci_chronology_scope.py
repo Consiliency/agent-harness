@@ -7,7 +7,8 @@ main, on the nightly schedule, and on a pull request only when the diff touches
 the gate's own selection plumbing (the script's table). This module pins the
 three properties that make that scoping safe:
 
-* the plumbing table is exactly the selection consumers -- the scope script,
+* the plumbing table is the selection consumers (`ci/` as a whole, an intentional
+  fail-closed over-approximation: every file there is CI plumbing) -- the scope script,
   the workflows, the offload/Dagger plumbing, the witness, Gate A's consumer
   and probe -- so it can neither drift wider (re-running the node on ordinary
   PRs) nor narrower (letting a plumbing change skip its own proof);
@@ -94,7 +95,7 @@ NOT_PLUMBING = (
 )
 
 
-def test_gate_plumbing_table_is_exactly_the_selection_consumers() -> None:
+def test_gate_plumbing_table_is_the_selection_consumers_and_nothing_wider() -> None:
     """The table retains the selection plumbing and nothing else.
 
     Positives are every file that decides, runs, or witnesses the node; a PR
@@ -386,7 +387,8 @@ def test_workflows_retain_the_node_on_main_nightly_and_release() -> None:
     assert "github.ref == 'refs/heads/main'" in condition
     assert "needs.gate.result == 'failure' || needs.gate.result == 'success'" in condition
     assert main_red["permissions"] == {"contents": "read", "actions": "read", "issues": "write"}
-    assert main_red["concurrency"] == {"group": "main-red", "cancel-in-progress": False}
+    # Per-head group: a shared group lets a late older-head run evict the tip's pending reporter.
+    assert main_red["concurrency"] == {"group": "main-red-${{ github.sha }}", "cancel-in-progress": False}
     checkout = next(s for s in main_red["steps"] if "actions/checkout" in s.get("uses", ""))
     assert checkout["with"]["fetch-depth"] == 0, "the reporter's merge range needs full history"
     report = next(s for s in main_red["steps"] if s.get("run") == "bash ci/main-red.sh")
