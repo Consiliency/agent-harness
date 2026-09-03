@@ -251,6 +251,39 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   module form cannot import and exits 1 — again the "claimed by another phase" code — so a
   module-only tool reported a phantom ownership block for every path on the supported
   install (same shape as #670/#693).
+### HARDEN: isolated review and verification contracts
+
+- Review staging rejects every symlink path that resolves outside its source tree, and
+  explicitly requested review operations refuse unbound direct provider callables.
+- Reconciliation no longer resolves persisted relative paths through the caller's CWD;
+  enforced goal coverage now rejects an empty declared-goal contract, and login-shell
+  verification parsing consumes shell option arguments before locating the command.
+- HARDEN verification evidence is metadata-only and independently verifiable as
+  `verification_evidence.v3`.
+- Pre-merge cross-vendor review of the HARDEN head (Consiliency/agent-harness#737) landed
+  five fixes as one delta: broker prompt framing rejects payload lines that could be read as
+  frame boundaries; the retained broker `provider_argv_sha256` now binds the redacted argv
+  SHAPE (recomputable from evidence) and `verify_harden_evidence.py` checks the shape against
+  an exact per-harness no-tool argv grammar; the review-isolation lease is claimed right
+  after independent revalidation — before the live availability matrix, gateway catalog,
+  research materialization, and capture staging — and closed on every later exit, and an
+  authorization that expires or is closed before activation is refused on revalidation;
+  `load_boards` runs the review
+  authorization unconditionally instead of only on the availability-probe path; and review
+  staging sweeps the STAGED copy for symlinks that escape it, closing the check-then-copy
+  window on the source-side checks. A second delta round bound the broker provider
+  `--cd`/`--cwd`/`--output-last-message` argv path slots to the attested
+  `provider_cwd_sha256` (and rejects a cwd at or under the canonical checkout), ran
+  `load_boards` seat validation behind its own fresh composition authority (the harness
+  PATH probe and key-var scan are the same probe class as composition), and released the
+  review-instruction digest ContextVar on the typed-deferral and support-status exits of
+  `invoke_board`. A third delta round rejected a POSIX `//`-prefixed path slot (whose
+  ancestors never hash to the canonical checkout) and any slot under `/proc`, `/sys`, or
+  `/dev`, and released the same ContextVar on a raise anywhere between digest binding and
+  lease activation. The verifier still cannot witness the review checkout's path
+  independently: `canonical_repo_sha256` is checked for internal consistency, not derived
+  from `--repo`, because `--repo` is the retained-objects repository and the four-seat
+  reviews run in separate fresh worktrees.
 
 ### executor policy: an operator's explicit model is never substituted (Consiliency/agent-harness#671)
 

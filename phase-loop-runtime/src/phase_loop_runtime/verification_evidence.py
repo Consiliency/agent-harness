@@ -1806,14 +1806,28 @@ def _relogin_shell_shim(argv: list[str], shim_dir: "Path | None") -> list[str]:
     is_login = False
     c_index: int | None = None
     i = 1
+    consuming_options = frozenset({"-o", "+o", "-O", "+O", "--rcfile", "--init-file"})
     while i < len(argv):
         a = argv[i]
         if a == "--login":
             is_login = True
+        elif a in consuming_options:
+            if i + 1 >= len(argv):
+                return argv
+            i += 1
+        elif any(
+            a.startswith(option) and len(a) > len(option)
+            for option in ("-o", "+o", "-O", "+O")
+        ):
+            # Joined option arguments such as ``-Ocheckwinsize`` are opaque;
+            # letters inside their value are not shell flags.
+            pass
+        elif a.startswith("--rcfile=") or a.startswith("--init-file="):
+            pass
         elif a == "-c":
             c_index = i + 1
             break
-        elif a.startswith("-") and not a.startswith("--"):
+        elif (a.startswith("-") or a.startswith("+")) and not a.startswith("--"):
             # combined short flags, e.g. -lc, -il
             if "l" in a[1:]:
                 is_login = True

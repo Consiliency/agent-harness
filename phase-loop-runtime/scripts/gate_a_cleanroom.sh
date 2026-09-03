@@ -221,6 +221,9 @@ PYEOF
     # CONFORM's final mutation/lifecycle proof needs source and Git history as
     # immutable data. A sparse private clone supplies those bytes while scripts
     # stay absent and PYTHONPATH still resolves production from the installed wheel.
+    # The one exception is HARDEN's standalone evidence verifier, which its frozen
+    # contract tests load by path (never via the runtime package), like the plan
+    # validator below.
     STANDALONE_ROOT="$WORK/standalone"
     SOURCE_REPO="$PKG_ROOT/.."
     SOURCE_HEAD="$(git -C "$SOURCE_REPO" rev-parse HEAD)"
@@ -241,6 +244,7 @@ PYEOF
       /plans/phase-plan-v10-PROOFGATE.md \
       /skills-src/codex/codex-execute-phase/ \
       /skills-src/claude/claude-plan-phase/scripts/validate_plan_doc.py \
+      /phase-loop-runtime/scripts/verify_harden_evidence.py \
       /CHANGELOG.md
     git -C "$STANDALONE_ROOT" checkout --quiet --detach "$SOURCE_HEAD"
     # PROOFGATE's known-bad agent-harness#358 corpus is pinned to an exact commit

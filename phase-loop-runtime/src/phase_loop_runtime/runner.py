@@ -208,7 +208,7 @@ from .governed_premerge import (
     run_governed_premerge_loop,
 )
 from .governed_bundle import render_governed_bundle, staged_index_diff
-from .panel_invoker import available_panel_legs
+from .panel_invoker import available_panel_legs, invoke_board as _PRODUCTION_INVOKE_BOARD
 from .reconcile import reconcile
 from .redaction import apply_diagnostics_redaction
 from .review_summary import summarize_run
@@ -6672,7 +6672,10 @@ def _execute_goal_coverage_preflight(repo: Path, roadmap: Path, plan: Path) -> d
         from .goal_coverage import extract_acceptance_contracts, check_acceptance_falsifiers
         contracts = extract_acceptance_contracts(plan)
         falsifier_res = check_acceptance_falsifiers(contracts)
-        if not falsifier_res.get("valid", True):
+        # No acceptance items is a legacy/no-goal shape, not an invalid
+        # falsifier claim.  Its non-vacuous enforcement is handled below by the
+        # goal-coverage result, while the default path remains advisory.
+        if contracts and not falsifier_res.get("valid", True):
             reason = falsifier_res.get("reason", "acceptance_falsifier_contract_invalid")
             return {
                 "human_required": False,
@@ -6733,7 +6736,20 @@ def _execute_goal_coverage_preflight(repo: Path, roadmap: Path, plan: Path) -> d
     # ERROR (stale roadmap_sha256, unresolvable phase, un-auditable plan) is also
     # applicable=False — it must NOT silently pass the gate (CR codex/Fable): an
     # un-auditable plan under enforcement fails closed, matching the CLI's exit-2.
-    if result.not_applicable() or result.is_clean():
+    if result.not_applicable():
+        if enforce_block:
+            return {
+                "human_required": False,
+                "blocker_class": "contract_bug",
+                "blocker_summary": (
+                    "Goal-coverage gate (PHASE_LOOP_ACCEPTANCE_ENFORCE=block): "
+                    "no declared EC goal IDs; add a non-vacuous acceptance contract."
+                ),
+                "required_human_inputs": (),
+                "access_attempts": (),
+            }
+        return None
+    if result.is_clean():
         return None
     gate = result.has_gaps() or result.has_setup_errors()
     print(
@@ -6778,10 +6794,18 @@ def _goal_coverage_closeout_outcome(
         try:
             from .goal_coverage import extract_acceptance_contracts, check_acceptance_falsifiers
             contracts = extract_acceptance_contracts(plan)
-            falsifier_res = check_acceptance_falsifiers(contracts)
-            if not falsifier_res.get("valid", True):
-                reason = falsifier_res.get("reason", "acceptance_falsifier_contract_invalid")
-                return None, _blocker(f"Acceptance falsifier contract failed at closeout: {reason}")
+            if not contracts:
+                if enforce_block:
+                    return None, _blocker(
+                        "Goal-coverage closeout gate (PHASE_LOOP_ACCEPTANCE_ENFORCE=block): "
+                        "no declared EC goal IDs; add a non-vacuous acceptance contract "
+                        "(legacy missing_falsifier classification superseded)."
+                    )
+            else:
+                falsifier_res = check_acceptance_falsifiers(contracts)
+                if not falsifier_res.get("valid", True):
+                    reason = falsifier_res.get("reason", "acceptance_falsifier_contract_invalid")
+                    return None, _blocker(f"Acceptance falsifier contract failed at closeout: {reason}")
         except Exception as _falsifier_exc:
             return None, _blocker(f"Acceptance falsifier contract errored at closeout: {_falsifier_exc}")
 
@@ -6795,6 +6819,11 @@ def _goal_coverage_closeout_outcome(
             return None, _blocker(f"Goal-coverage closeout audit failed under PHASE_LOOP_ACCEPTANCE_ENFORCE=block: {exc}")
         return None, None
     if coverage.not_applicable():
+        if enforce_block and is_complete:
+            return coverage.to_json(), _blocker(
+                "Goal-coverage closeout gate (PHASE_LOOP_ACCEPTANCE_ENFORCE=block): "
+                "no declared EC goal IDs; add a non-vacuous acceptance contract."
+            )
         return None, None
     evidence = coverage.to_json()
     if coverage.is_clean():
@@ -8452,17 +8481,50 @@ def _run_legible_panel(
     *,
     brief_path: Path | None = None,
 ) -> Path:
+    from .advisor_board.backing import (
+        prepare_review_isolation_authorization,
+        reset_review_instruction_digest,
+        set_review_instruction_digest,
+    )
     from .advisor_board.presets import CODE_REVIEW_BOARD
-    from .panel_invoker import invoke_board
+    from .panel_invoker import _resolve_brief, invoke_board
 
     invoke_kwargs: dict[str, object] = {
+        # This is canonical authority only.  The broker still launches providers
+        # in its private output scratch and never mounts this live tree.
         "repo_dir": repo,
         "artifact_ref": str(bundle_path),
         "stream_dir": run_dir / "implementation-panel-stream",
     }
     if brief_path is not None:
         invoke_kwargs["brief_ref"] = str(brief_path)
-    result = invoke_board(CODE_REVIEW_BOARD, "", **invoke_kwargs)
+    instruction_token: object | None = None
+    if invoke_board is _PRODUCTION_INVOKE_BOARD:
+        # The operation capability must bind the exact brief that the eventual
+        # invoker stages, and the canonical repository that owns the candidate.
+        # Provider scratch remains private to the panel implementation.
+        resolved_brief = _resolve_brief("review", str(brief_path) if brief_path else None)
+        instruction_token = set_review_instruction_digest(resolved_brief)
+        try:
+            invoke_kwargs["review_authorization"] = prepare_review_isolation_authorization(
+                CODE_REVIEW_BOARD,
+                bundle_path.read_text(encoding="utf-8"),
+                mode="review",
+                canonical_repo_authority=repo,
+            )
+            invoke_kwargs["canonical_repo_authority"] = repo
+        except Exception:
+            reset_review_instruction_digest(instruction_token)
+            raise
+    try:
+        result = invoke_board(CODE_REVIEW_BOARD, "", **invoke_kwargs)
+    finally:
+        if instruction_token is not None:
+            reset_review_instruction_digest(instruction_token)
+    # The candidate tree is a receipt field, so it is resolved only when a leg
+    # actually carries broker evidence; a run without brokered legs never needs
+    # the head to be a resolvable Git object.
+    tree: str | None = None
     legs: list[dict[str, object]] = []
     verdicts: dict[str, str] = {}
     for seat, outcome in zip(CODE_REVIEW_BOARD.seats, result.legs, strict=True):
@@ -8478,6 +8540,45 @@ def _run_legible_panel(
             "verdict": verdict,
             "text": outcome.text,
         }
+        broker_evidence = getattr(outcome, "harden_isolation_evidence", None)
+        if isinstance(broker_evidence, Mapping):
+            # This is the actual parent_unix_broker_v1 observation from the
+            # execution boundary, retained beside the run-owned seat result so
+            # a later HARDEN evidence reducer need not trust a copied summary.
+            leg_payload["harden_isolation_evidence"] = dict(broker_evidence)
+            if tree is None:
+                tree = subprocess.check_output(
+                    ["git", "-C", str(repo), "rev-parse", expected_head + "^{tree}"],
+                    text=True,
+                    stderr=subprocess.DEVNULL,
+                ).strip()
+            provider_model = broker_evidence.get("provider_model")
+            if not isinstance(provider_model, str) or not provider_model:
+                raise legible_evidence.LegibleProcessBootstrapError(
+                    "brokered implementation-panel leg lacks resolved provider model"
+                )
+            receipt_payload = {
+                "schema": "harden_broker_run_receipt.v1",
+                "head": expected_head,
+                "tree": tree,
+                "harness": outcome.leg,
+                "model": provider_model,
+                "seat_key": outcome.seat_key,
+                "status": outcome.status,
+                "report": outcome.text,
+                "report_sha256": hashlib.sha256(outcome.text.encode("utf-8")).hexdigest(),
+                "report_bytes": len(outcome.text.encode("utf-8")),
+                "broker": dict(broker_evidence),
+            }
+            receipt_path = run_dir / f"implementation-panel-{outcome.leg}.harden-broker-run.json"
+            receipt_path.write_text(
+                json.dumps(receipt_payload, sort_keys=True, separators=(",", ":")) + "\n",
+                encoding="utf-8",
+            )
+            leg_payload["harden_isolation_receipt"] = {
+                "path": receipt_path.relative_to(repo).as_posix(),
+                "sha256": hashlib.sha256(receipt_path.read_bytes()).hexdigest(),
+            }
         leg_path.write_text(json.dumps(leg_payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         legs.append(
             {

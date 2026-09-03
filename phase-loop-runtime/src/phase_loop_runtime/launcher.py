@@ -2923,6 +2923,37 @@ def _drop_arg_pair(command: list[str], flag: str) -> list[str]:
     return resolved
 
 
+def _reject_staged_symlink_escapes(staged: Path) -> None:
+    """Refuse a staged copy holding any symlink chain that leaves the copy.
+
+    The pre-copy checks inspect the SOURCE tree, so a link retargeted between the
+    check and the copy (or a chain whose members were checked one at a time) can
+    still land in the copy pointing outside it. The plan requires rejecting
+    symlink chains that resolve outside the STAGED tree, so this sweeps the copy
+    itself: every link must be relative and must resolve (following every hop
+    that exists) inside the staged root. Whether a link may dangle is decided by
+    the source-side checks above; here a link whose target is absent from the
+    copy resolves lexically and passes only if that lexical target is inside
+    the root.
+    """
+    staged_root = staged.resolve(strict=True)
+    for dirpath, dirnames, filenames in os.walk(staged, followlinks=False):
+        for name in (*dirnames, *filenames):
+            candidate = Path(dirpath) / name
+            if not candidate.is_symlink():
+                continue
+            if Path(os.readlink(candidate)).is_absolute():
+                raise ValueError(
+                    f"review staging refuses absolute symlink in staged copy: {candidate}"
+                )
+            try:
+                candidate.resolve(strict=False).relative_to(staged_root)
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise ValueError(
+                    f"review staging refuses symlink escaping staged copy: {candidate}"
+                ) from exc
+
+
 def _stage_review_tree(repo: Path, log_path: Path | None) -> Path:
     """Materialize a gitignore-aware COPY of the review tree (IF-0-SANDBOX-1).
 
@@ -2946,9 +2977,28 @@ def _stage_review_tree(repo: Path, log_path: Path | None) -> Path:
     # (or complete) tree snapshot would otherwise leak if copying raises — the caller
     # only records paths for cleanup that this function successfully RETURNS (#177 CR-F3).
     try:
+        review_root = repo.resolve(strict=True)
+        if not review_root.is_dir():
+            raise ValueError(f"review root is not a directory: {repo}")
         rel_paths = _git_review_tree_paths(repo)
         if rel_paths is None:
             # Not a git tree (or git unavailable): copy the whole tree minus VCS metadata.
+            # This fallback can copy the full tree, so inspect exactly that input
+            # set.  Git-backed stages below inspect only selected paths; ignored
+            # local caches such as .venv must never influence their availability.
+            for candidate in repo.rglob("*"):
+                if not candidate.is_symlink():
+                    continue
+                if Path(os.readlink(candidate)).is_absolute():
+                    raise ValueError(
+                        f"review staging refuses absolute symlink: {candidate}"
+                    )
+                try:
+                    candidate.resolve(strict=True).relative_to(review_root)
+                except (OSError, RuntimeError, ValueError) as exc:
+                    raise ValueError(
+                        f"review staging refuses symlink escaping source tree: {candidate}"
+                    ) from exc
             shutil.copytree(
                 repo,
                 staged,
@@ -2956,6 +3006,7 @@ def _stage_review_tree(repo: Path, log_path: Path | None) -> Path:
                 ignore=shutil.ignore_patterns(".git"),
                 symlinks=True,
             )
+            _reject_staged_symlink_escapes(staged)
             return staged
         for rel in rel_paths:
             src = repo / rel
@@ -2963,10 +3014,19 @@ def _stage_review_tree(repo: Path, log_path: Path | None) -> Path:
             # tracked file deleted-but-unstaged); skip it rather than fail the leg.
             if not src.exists() and not src.is_symlink():
                 continue
+            if src.is_symlink() and Path(os.readlink(src)).is_absolute():
+                raise ValueError(f"review staging refuses absolute symlink: {src}")
+            try:
+                src.resolve(strict=True).relative_to(review_root)
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise ValueError(
+                    f"review staging refuses path escaping source tree: {src}"
+                ) from exc
             dest = staged / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
             if src.is_symlink() or src.is_file():
                 shutil.copy2(src, dest, follow_symlinks=False)
+        _reject_staged_symlink_escapes(staged)
         return staged
     except BaseException:
         shutil.rmtree(staged, ignore_errors=True)
