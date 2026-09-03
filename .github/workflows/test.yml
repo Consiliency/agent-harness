@@ -115,7 +115,7 @@ jobs:
         run: bash ci/chronology-scope.sh >> "$GITHUB_OUTPUT"
       - name: Offload the suite to the tailnet host
         # Pinned to a full commit SHA, never a moving tag.
-        uses: Consiliency/ci-actions/dagger-offload@ea4ba36ba29f18ae4f22e65ae4b8b63e7c7468ee
+        uses: Consiliency/ci-actions/dagger-offload@c9272a525486204a9d7333aef6e78297b3054de3
         env:
           # Read by ci/offload-gate.sh; unset there means "retain" (fail closed).
           CHRONOLOGY: ${{ steps.scope.outputs.chronology }}
