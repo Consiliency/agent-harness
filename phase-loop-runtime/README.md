@@ -116,9 +116,10 @@ Apply is irreversible and refuses changed bytes, symlinks, live allocator
 state, held generation leases, or an authority owned by another bootstrap.
 
 Inventory completeness is bounded to the named worktrees, explicit and
-environment-declared legacy roots, historical-evidence roots, and hashed
-`.train-ledger/broker` roots found under each `--search-root`. The confirmation
-attests that no compatible allocator exists outside that inspected universe.
+environment-declared legacy roots, historical-evidence roots, and hashed broker
+directories directly beneath `.train-ledger` directories under each
+`--search-root`. The confirmation attests that no compatible allocator exists
+outside that inspected universe.
 Standalone historical receipts are hashed and left in place; they are not
 silently adopted as current allocator authority.
 
