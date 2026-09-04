@@ -2457,6 +2457,12 @@ def _bootstrap_seal_lock_paths(inventory: dict) -> tuple[Path, ...]:
             for row in inventory["historical_evidence_roots"]
             for filename in ("admissions.lock", "evidence.lock")
         ),
+        *(
+            authority
+            / "search-locks"
+            / f"{hashlib.sha256(row.encode('utf-8')).hexdigest()}.lock"
+            for row in inventory["search_roots"]
+        ),
     }
     return tuple(sorted(paths, key=str))
 
@@ -2839,6 +2845,7 @@ def onboard_zero_legacy_repository(
     cutover_id = _validate_cutover_id(cutover_id)
     bootstrap_inventory_sha256 = None
     bootstrap_authority_root = None
+    bootstrap_seal_locks = None
     if roots is None:
         bootstrap = _active_bootstrap_inventory(authority_root)
         if bootstrap is not None:
@@ -2853,13 +2860,17 @@ def onboard_zero_legacy_repository(
             roots = tuple(Path(row["path"]) for row in bootstrap["legacy_roots"])
             bootstrap_inventory_sha256 = bootstrap["inventory_sha256"]
             bootstrap_authority_root = Path(bootstrap["authority_root"])
+            bootstrap_seal_locks = _bootstrap_seal_lock_paths(bootstrap)
         else:
             roots = declared_legacy_roots()
     if not global_active_authority_exists(roots, authority_root=authority_root):
         raise LegacyCutoverConflict(
             "zero-source onboarding requires a persistent global ACTIVE authority"
         )
-    with _hold_all(_zero_source_seal_lock_paths(roots, authority_root)):
+    seal_locks = bootstrap_seal_locks or _zero_source_seal_lock_paths(
+        roots, authority_root
+    )
+    with _hold_all(seal_locks):
         return _onboard_zero_legacy_repository_under_seal(
             worktree,
             cutover_id=cutover_id,
@@ -3072,6 +3083,30 @@ def global_active_authority_exists(
     return _active_bootstrap_inventory(authority_root) is not None
 
 
+def _receipt_seal_lock_paths(
+    receipt: LegacyRepositoryPartitionReceipt,
+) -> tuple[Path, ...]:
+    bootstrap_claim = _receipt_bootstrap_claim(receipt) if receipt.zero_source else None
+    if bootstrap_claim is not None:
+        bootstrap = _active_bootstrap_inventory(bootstrap_claim["authority_root"])
+        if bootstrap is None:
+            return ()
+        return _bootstrap_seal_lock_paths(bootstrap)
+    roots = tuple(Path(root) for root in receipt.legacy_root_inventory)
+    return tuple(
+        sorted(
+            {
+                Path(receipt.global_journal_path).parent / "cutover.lock",
+                *(
+                    root / "fabpub-global-cutover" / "root.lock"
+                    for root in roots
+                ),
+            },
+            key=str,
+        )
+    )
+
+
 def is_git_repository(worktree: Path | str) -> bool:
     """True when ``worktree`` exists and is inside a Git working tree."""
     candidate = Path(worktree)
@@ -3087,11 +3122,14 @@ def is_git_repository(worktree: Path | str) -> bool:
 
 
 def release_barrier_leases(report: dict) -> None:
-    """Release every lease the barrier retained; safe to call twice."""
+    """Release every lease and authority lock the barrier retained; idempotent."""
     for lease in report.get("leases", ()):
         with contextlib.suppress(Exception):
             lease.release()
     report["leases"] = []
+    authority_locks = report.pop("_authority_locks", None)
+    if authority_locks is not None:
+        authority_locks.close()
 
 
 def fabpub_activation_barrier(worktrees: Iterable[Path | str] = ()) -> dict:
@@ -3129,13 +3167,38 @@ def fabpub_activation_barrier(worktrees: Iterable[Path | str] = ()) -> dict:
                 )
             snapshot = repository_snapshot(worktree)
             receipt = load_partition_receipt(snapshot.store_root)
+            snapshots.append((snapshot, receipt))
+
+        authority_lock_paths = {
+            path
+            for _snapshot, receipt in snapshots
+            if receipt is not None
+            for path in _receipt_seal_lock_paths(receipt)
+        }
+        if any(receipt is None for _snapshot, receipt in snapshots):
+            bootstrap = _active_bootstrap_inventory()
+            if bootstrap is not None:
+                authority_lock_paths.update(_bootstrap_seal_lock_paths(bootstrap))
+            else:
+                roots = declared_legacy_roots()
+                authority_lock_paths.update(
+                    root / "fabpub-global-cutover" / "root.lock" for root in roots
+                )
+        authority_locks = contextlib.ExitStack()
+        report["_authority_locks"] = authority_locks
+        for path in sorted(authority_lock_paths, key=str):
+            authority_locks.enter_context(_reentrant_flock(path))
+
+        for snapshot, prior_receipt in snapshots:
+            receipt = load_partition_receipt(snapshot.store_root)
+            if prior_receipt is not None and receipt != prior_receipt:
+                raise LegacyCutoverConflict(
+                    f"repository {snapshot.identity} receipt changed while entering the barrier"
+                )
             if receipt is not None and not _receipt_active_authority_exists(receipt):
                 raise LegacyCutoverConflict(
                     f"repository {snapshot.identity} has no matching global ACTIVE authority"
                 )
-            snapshots.append((snapshot, receipt))
-
-        for snapshot, receipt in snapshots:
             if receipt is None:
                 # Zero-source onboarding is for a repository first seen AFTER a
                 # global cutover reached ACTIVE.  Before that, a repository with

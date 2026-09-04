@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -476,7 +477,15 @@ def test_receipt_discovers_custom_bootstrap_authority_in_fresh_process(
     report = live.fabpub_activation_barrier([repo])
 
     assert report["repositories"] == [str(repo)]
+    bootstrap = live._active_bootstrap_inventory(tmp_path / "authority")
+    assert bootstrap is not None
+    lock_keys = {
+        (str(path), threading.get_ident())
+        for path in live._bootstrap_seal_lock_paths(bootstrap)
+    }
+    assert lock_keys.issubset(live._LOCK_DEPTH)
     live.release_barrier_leases(report)
+    assert lock_keys.isdisjoint(live._LOCK_DEPTH)
 
 
 def test_manifest_activation_barrier_completes_active_transition(
