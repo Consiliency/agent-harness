@@ -2849,7 +2849,7 @@ def _self_git(
 # retained request carrying any other registry-derived routes verifies alike.
 SELF_TEST_ROUTES = {
     "claude": ("claude-fable-5-1", "claude-fable-5-1"),
-    "codex": ("gpt-5.6-sol", "gpt-5.6-sol"),
+    "codex": ("gpt-6-astra", "gpt-6-astra"),
     "gemini": ("gemini-3.8-flash-high", "gemini-3.8-flash-high"),
     "grok": ("grok-4.6", "grok-4.6"),
 }

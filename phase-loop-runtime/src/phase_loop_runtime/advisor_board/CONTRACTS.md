@@ -45,7 +45,7 @@ equivalence is proven by a test (not asserted in prose).
   `seat_vendor_family(seat)`, model-first with a harness-lane fallback.
   Byte-consistent with `governed_review.author_vendor_for_model` (:60-75) and
   `_EXECUTOR_VENDOR` (:47-53). Two same-vendor seats on different harnesses
-  (`gpt-5.6-sol` on `codex` and on `opencode`) project to the same family, so the
+  (`gpt-6-astra` on `codex` and on `opencode`) project to the same family, so the
   governed reviewer≠author disjointness survives model-first. ABDHOME rewires the
   governed gates onto *this* canonical function (not a copy).
 
@@ -201,7 +201,7 @@ the real matrix at `load_boards()` time (`tests/test_advisor_board_config.py`,
   (`schema.py`), so the legal lenses/purposes need no enum extension.
 - **Catch-alls for unmodeled tasks (`general`, `solo`).** So the board library is not
   limited to the pre-modeled domains: `general` is the domain-agnostic top-tier PANEL
-  (three frontier vendors — gpt-5.6-sol/adversarial, gemini-3.8-flash/alternative,
+  (three frontier vendors — gpt-6-astra/adversarial, gemini-3.8-flash/alternative,
   claude-fable-5-1/completeness — hand it any task + brief), and `solo` is the
   single-MEMBER form (one `claude-fable-5-1` seat) for a quick top-end opinion when a
   panel is overkill. A ONE-seat board validates + resolves through `invoke_board` like

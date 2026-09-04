@@ -6,6 +6,22 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Fleet default: GPT-6 Astra becomes the codex seat and heavy tier (Consiliency/agent-harness#PRNUM)
+
+- The advisor-board codex seat and the codex heavy tier move from `gpt-5.6-sol` to
+  `gpt-6-astra` (`codex` 0.153.3 `models_cache.json` lists it with `low..max` plus a new
+  `ultra` level; the canonical `max` still renders as `model_reasoning_effort=xhigh`).
+  Touched: `_MODEL_DEFS`, `DEFAULT_LEG_MODELS`, `DEFAULT_REVIEW_SEAT_ALIASES`, every
+  preset that seats codex, `profiles.OPENAI_HEAVY_MODEL` / `OPENCODE_OPENAI_HEAVY_MODEL`,
+  the fixtures' `DEFAULT_BOARD`, the capabilities card, and the regenerated skills bundle.
+  `gpt-5.6-terra` / `gpt-5.6-luna` (implementer / worker tiers) are unchanged.
+- `gpt-5.6-sol` stays REGISTERED and accepted for explicit seats and configs, and still
+  maps to the `sol` review-seat alias. The alias itself is unchanged: `sol` is a
+  review-policy seat identity (`required_seats`, `PRESIDENT_LADDER`, the interim
+  president-ratification note), not a model id, so existing landing policies keep working.
+- `scripts/check_model_id_sources.py` now recognises the `-astra` suffix so the new id is
+  guarded like the others.
+
 ### Explicit zero-history FABPUB authority bootstrap (Consiliency/agent-harness#763)
 
 - Add a two-step `phase-loop fabpub-bootstrap` command for hosts with no

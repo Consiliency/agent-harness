@@ -104,7 +104,7 @@ class CompatibilityMatrix(Protocol):
 
     ``is_valid(model, harness)`` -> ``(ok, AuthAvailability)``: ``ok`` is whether
     the pairing is *expressible at all* (an invalid pairing such as
-    ``claude:gpt-5.6-sol`` is rejected at config time with a clear message); the
+    ``claude:gpt-6-astra`` is rejected at config time with a clear message); the
     ``AuthAvailability`` reports which lanes are actually usable so a valid-but-
     unauthed seat degrades rather than blocks. ``default_lane`` is the harness a
     bare ``model`` seat resolves onto.
@@ -248,13 +248,14 @@ class DefaultHarnessRegistry:
 # from the governed-gate mapping). ``runnable_by`` is derived from that family
 # across the six harnesses (a harness runs a model iff its lane vendor-family
 # matches). ``default_lane`` is PINNED to a built-3 leg so a bare seat resolves
-# onto the native lane — e.g. ``gpt-5.6-sol`` is runnable by both ``codex`` and
-# ``opencode`` but a bare ``gpt-5.6-sol`` seat MUST resolve to ``codex`` or the
+# onto the native lane — e.g. ``gpt-6-astra`` is runnable by both ``codex`` and
+# ``opencode`` but a bare ``gpt-6-astra`` seat MUST resolve to ``codex`` or the
 # default board's back-compat breaks. ``effort_ceiling`` defaults to the ladder
 # max; lower it only where there is concrete evidence a model caps out below max
 # (none of the built-3 do — codex's ``xhigh`` IS canonical ``max``).
 _MODEL_DEFS: tuple[tuple[str, str, str], ...] = (
-    ("gpt-5.6-sol", "codex", "max"),
+    ("gpt-6-astra", "codex", "max"),
+    ("gpt-5.6-sol", "codex", "max"),  # explicit legacy seat (fleet default before 2026-09-04)
     ("claude-sonnet-5", "claude", "max"),
     ("claude-opus-4-8", "claude", "max"),
     # design-model-tier-taxonomy.md: claude-opus-5 is the new Claude heavy model.

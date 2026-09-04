@@ -36,7 +36,7 @@ from pathlib import Path
 MODEL_ID_REGEX = re.compile(
     r"""
     \b(
-        gpt-[0-9]\.[0-9]+(?:-sol|-terra|-luna|-mini)?   # gpt-5.6-sol, gpt-5.6-mini
+        gpt-[0-9]+(?:\.[0-9]+)?(?:-sol|-terra|-luna|-mini|-astra)?   # gpt-6-astra, gpt-5.6-terra, gpt-5.6-mini
       | claude-(?:opus|sonnet|haiku)-[0-9]              # claude-opus-4-8, claude-sonnet-5
       | claude-fable-[0-9]                               # claude-fable-5
       | gemini-[0-9]                                     # gemini-3, gemini API-style ids

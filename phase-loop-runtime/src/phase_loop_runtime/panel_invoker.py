@@ -363,7 +363,10 @@ def review_policy_for_tier(tier: ReviewLandingTier | str) -> ReviewLandingPolicy
 DEFAULT_REVIEW_SEAT_ALIASES: Mapping[str, str] = {
     "claude-fable-5-1": "fable",  # model-id-source: frozen review policy default seat
     "claude-fable-5": "fable",  # model-id-source: explicit legacy review seat
-    "gpt-5.6-sol": "sol",  # model-id-source: frozen review policy default seat
+    # The codex seat alias stays "sol": alias names are review-policy seat identities
+    # (`required_seats`, PRESIDENT_LADDER, the interim-ratification note), not model ids.
+    "gpt-6-astra": "sol",  # model-id-source: frozen review policy default seat
+    "gpt-5.6-sol": "sol",  # model-id-source: explicit legacy review seat
     "gemini-3.8-flash": "gemini",  # model-id-source: frozen review policy default seat
     "gemini-3.7-flash": "gemini",  # model-id-source: explicit legacy review seat
     "gemini-3.6-flash": "gemini",  # model-id-source: explicit legacy review seat
@@ -695,7 +698,7 @@ _LEG_CLI: dict[str, str] = {
 # review-path model is decoupled from the implementer model and can never silently
 # drift back to Sonnet.
 DEFAULT_LEG_MODELS: dict[str, str] = {
-    "codex": "gpt-5.6-sol",  # model-id-source: panel per-leg default (single source of truth)
+    "codex": "gpt-6-astra",  # model-id-source: panel per-leg default (single source of truth)
     "gemini": "gemini-3.8-flash-high",  # model-id-source: panel per-leg default
     "claude": "claude-fable-5-1",  # model-id-source: panel per-leg default (single source of truth)
     "grok": "grok-4.6",  # model-id-source: panel per-leg default (single source of truth)
@@ -6347,10 +6350,10 @@ def _resolve_and_validate_board(board: Board, matrix: CompatibilityMatrix) -> Bo
       ``claude-sonnet-5`` seat runs on ``claude`` instead of skipping on lane
       ``''``), returned as ``verdict.harness``;
     * REJECTS an inexpressible seat — unknown model, cross-vendor pairing (e.g.
-      ``gpt-5.6-sol`` on ``claude``), or an over-ceiling effort — by raising
+      ``gpt-6-astra`` on ``claude``), or an over-ceiling effort — by raising
       ``SeatValidationError`` before a single subprocess is spawned (so
-      ``resolve_board(seats="gpt-5.6-sol:max:claude")`` can never launch
-      ``claude --model gpt-5.6-sol``).
+      ``resolve_board(seats="gpt-6-astra:max:claude")`` can never launch
+      ``claude --model gpt-6-astra``).
 
     Returns a board whose seats all carry a concrete harness lane. The ``default``
     board (every seat already lane-concrete and valid) is returned byte-equivalent.
