@@ -1707,10 +1707,19 @@ class TestResidualInvariants:
         from unittest.mock import patch
 
         from test_convergence_live_enable import _activated_publish_fixture
+        from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
+        from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore
         from phase_loop_runtime.convergence import contracts
         from phase_loop_runtime.convergence.broker.evidence import EvidenceRecord
         from phase_loop_runtime.convergence.broker.verbs import BrokerService
-        from phase_loop_runtime.convergence.provider_contracts import TerminalOutcomeState
+        from phase_loop_runtime.convergence.contracts import (
+            BrokerTerminalEvidence,
+            PublishCommittedBranchResult,
+        )
+        from phase_loop_runtime.convergence.provider_contracts import (
+            PROVIDER_COMPLETION_CLASSIFICATIONS,
+            TerminalOutcomeState,
+        )
 
         defect_details = []
 
@@ -1731,10 +1740,13 @@ class TestResidualInvariants:
             if main_key == release_key:
                 defect_details.append("publish identity does not separate otherwise-identical requests by base")
 
-        # Exercise the real producer and broker paths so a dead correct-looking
-        # call followed by legacy key construction cannot satisfy the AST guard.
+        # Exercise the real producer, admission, evidence, and replay decisions.
+        # The provider adapter is the only fake boundary: same-base retry must
+        # replay without a second effect, while a different base must be admitted
+        # as a distinct effect. A dead compliant helper call followed by a
+        # base-blind decision cannot satisfy these observations.
         try:
-            _, _, publish_request = _activated_publish_fixture(
+            repo, evidence_root, publish_request = _activated_publish_fixture(
                 tmp_path, label="residual-base", branch="feat/base"
             )
             envelope_main = replace(publish_request.admission, base="main")
@@ -1742,11 +1754,44 @@ class TestResidualInvariants:
             if envelope_main.idempotency_key == envelope_release.idempotency_key:
                 defect_details.append("PreAdmissionEnvelope.idempotency_key aliases different bases")
 
-            service = BrokerService(None, None, None)
             request_main = replace(publish_request, admission=envelope_main, base="main")
             request_release = replace(publish_request, admission=envelope_release, base="release")
-            if service._dedup_key(request_main) == service._dedup_key(request_release):
-                defect_details.append("BrokerService._dedup_key aliases different bases")
+
+            provider_requests = []
+
+            class _CountingSuccessAdapter:
+                def execute(self, request):
+                    provider_requests.append(request)
+                    return (
+                        PublishCommittedBranchResult(
+                            request.branch,
+                            request.head_sha,
+                            f"https://example.invalid/{request.base}",
+                        ),
+                        BrokerTerminalEvidence(
+                            "provider-boundary",
+                            TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED.value,
+                            f"https://example.invalid/{request.base}",
+                        ),
+                    )
+
+            service = BrokerService(
+                LinearizableAdmissionStore(evidence_root, lambda _request: True),
+                BrokerEvidenceStore(evidence_root),
+                _CountingSuccessAdapter(),
+                contracts=PROVIDER_COMPLETION_CLASSIFICATIONS,
+            )
+            main_result = service.execute(request_main)
+            main_retry = service.execute(request_main)
+            release_result = service.execute(request_release)
+            if not main_result.accepted or not main_retry.accepted or not release_result.accepted:
+                defect_details.append("real broker decision did not accept main, its retry, and distinct release base")
+            if main_result.evidence.idempotency_key == release_result.evidence.idempotency_key:
+                defect_details.append("real broker decision aliased main and release evidence keys")
+            if [getattr(request, "base", None) for request in provider_requests] != ["main", "release"]:
+                defect_details.append(
+                    "real broker admission/replay decision did not deduplicate only the same-base retry"
+                )
 
             captured_legacy_args = []
 
@@ -1970,15 +2015,54 @@ class TestResidualInvariants:
             target_node = ast.parse(target, mode="eval").body
             replacement_node = ast.parse(replacement, mode="eval").body
             target_shape = ast.dump(target_node, include_attributes=False)
-            matches = [
-                node
-                for node in ast.walk(method_node)
-                if ast.dump(node, include_attributes=False) == target_shape
-            ]
-            if not matches:
-                return src, f"target {target!r} missing from {class_name}.{method_name}"
-
-            selected = matches[0]
+            selected = None
+            if method_name == "_replay":
+                for comparison in (
+                    node for node in ast.walk(method_node) if isinstance(node, ast.Compare)
+                ):
+                    operands = [comparison.left, *comparison.comparators]
+                    operand_shapes = {
+                        ast.dump(node, include_attributes=False) for node in operands
+                    }
+                    if {
+                        ast.dump(ast.parse("current.base", mode="eval").body, include_attributes=False),
+                        ast.dump(ast.parse("request.base", mode="eval").body, include_attributes=False),
+                    }.issubset(operand_shapes):
+                        selected = next(
+                            (
+                                node
+                                for node in operands
+                                if ast.dump(node, include_attributes=False) == target_shape
+                            ),
+                            None,
+                        )
+                        break
+            else:
+                identity_calls = [
+                    node
+                    for node in ast.walk(method_node)
+                    if isinstance(node, ast.Call)
+                    and (
+                        isinstance(node.func, ast.Name)
+                        and node.func.id == "publish_committed_branch_idempotency_key"
+                        or isinstance(node.func, ast.Attribute)
+                        and node.func.attr == "publish_committed_branch_idempotency_key"
+                    )
+                ]
+                if len(identity_calls) == 1:
+                    call = identity_calls[0]
+                    selected = (
+                        call.args[2]
+                        if len(call.args) >= 3
+                        else next(
+                            (keyword.value for keyword in call.keywords if keyword.arg == "base"),
+                            None,
+                        )
+                    )
+                    if selected is not None and ast.dump(selected, include_attributes=False) != target_shape:
+                        selected = None
+            if selected is None:
+                return src, f"exact target {target!r} missing from {class_name}.{method_name} identity decision"
 
             class _ExactNodeMutator(ast.NodeTransformer):
                 def visit(self, node):
@@ -2213,23 +2297,64 @@ class TestResidualInvariants:
         ))
 
         captured_merge_argvs: list[list[str]] = []
-        queue_reconcile_entered = [False]
+        captured_graphql: list[str] = []
+        queue_status_reads = [0]
 
         def fake_subproc_run(cmd, *args, **kwargs):
+            if isinstance(cmd, list) and cmd[:4] == ["git", "-C", str(tmp_path / "repo-a"), "remote"]:
+                return type("CompletedProcess", (), {"returncode": 0, "stdout": "https://github.com/owner/repo-a.git\n", "stderr": ""})()
             if isinstance(cmd, list) and len(cmd) >= 3 and cmd[0] == "gh" and cmd[1] == "pr" and cmd[2] == "merge":
                 captured_merge_argvs.append(list(cmd))
                 return type("CompletedProcess", (), {"returncode": 0, "stdout": "", "stderr": ""})()
             if isinstance(cmd, list) and len(cmd) >= 3 and cmd[0] == "gh" and cmd[1] == "pr" and cmd[2] == "view":
-                res_data = json.dumps({"isDraft": False, "baseRefName": "main", "headRefOid": None})
+                requested = next((value for index, value in enumerate(cmd) if index and cmd[index - 1] == "--json"), "")
+                if requested == "state,mergeCommit,baseRefName,headRefOid":
+                    res_data = json.dumps({
+                        "state": "OPEN",
+                        "mergeCommit": None,
+                        "baseRefName": "main",
+                        "headRefOid": "sha-DRAFT-repo-a",
+                    })
+                elif requested == "number,state,autoMergeRequest":
+                    queue_status_reads[0] += 1
+                    res_data = json.dumps({"number": 1, "state": "OPEN", "autoMergeRequest": None})
+                elif requested == "id":
+                    res_data = json.dumps({"id": "PR_node_id"})
+                else:
+                    res_data = json.dumps({
+                        "isDraft": False,
+                        "baseRefName": "main",
+                        "headRefOid": None,
+                    })
+                return type("CompletedProcess", (), {"returncode": 0, "stdout": res_data, "stderr": ""})()
+            if isinstance(cmd, list) and cmd[:3] == ["gh", "api", "graphql"]:
+                query = next((value for value in cmd if isinstance(value, str) and value.startswith("query=")), "")
+                captured_graphql.append(query)
+                if "dequeuePullRequest" in query:
+                    res_data = json.dumps({"data": {"dequeuePullRequest": {"clientMutationId": None}}})
+                else:
+                    res_data = json.dumps({
+                        "data": {"repository": {"pullRequest": {"isInMergeQueue": False}}}
+                    })
                 return type("CompletedProcess", (), {"returncode": 0, "stdout": res_data, "stderr": ""})()
             return type("CompletedProcess", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
-        def _queue_wait_spy(workspace, branch, *, base, head_sha, **kwargs):
-            queue_reconcile_entered[0] = True
-            raise RuntimeError("merge-queue-timeout-dequeued")
+        clock_values = iter((0.0, 1.0))
 
-        with patch("subprocess.run", side_effect=fake_subproc_run), \
-             patch("phase_loop_runtime.train_runner._fab_queue_bound_merge_wait", side_effect=_queue_wait_spy):
+        def _bounded_real_merge(workspace, branch, base="main", head_sha=None, run_id=None):
+            return _live_merge_pr(
+                workspace,
+                branch,
+                base=base,
+                head_sha=head_sha,
+                run_id=run_id,
+                queue_poll_interval_s=0.0,
+                queue_poll_timeout_s=0.5,
+                _clock=lambda: next(clock_values, 1.0),
+                _sleep=lambda _seconds: None,
+            )
+
+        with patch("subprocess.run", side_effect=fake_subproc_run):
             result = run_train(
                 roadmap,
                 ledger,
@@ -2242,13 +2367,19 @@ class TestResidualInvariants:
                 _pr_is_open=_pr_is_open_true,
                 _live_pr_head_sha_fn=lambda ws, br: "sha-DRAFT-repo-a",
                 _merge_phase_enabled=True,
-                _merge_pr_fn=_live_merge_pr,
+                _merge_pr_fn=_bounded_real_merge,
                 _reverify_fn=lambda ws, rp, rm: True,
                 _train_review_fn=_approval_review_fn,
                 _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
             )
 
-        delete_branch_present = any("--delete-branch" in cmd for cmd in captured_merge_argvs)
+        enqueue_argvs = [cmd for cmd in captured_merge_argvs if "--disable-auto" not in cmd]
+        delete_branch_present = any("--delete-branch" in cmd for cmd in enqueue_argvs)
+        dequeue_attempted = (
+            any("dequeuePullRequest" in query for query in captured_graphql)
+            and any("--disable-auto" in cmd for cmd in captured_merge_argvs)
+            and queue_status_reads[0] >= 2
+        )
         final_record = read_ledger(ledger).get("repo-a/specs/plan-a.md")
         queue_failure_preserved = (
             result.get("status") == "merge_halted"
@@ -2258,7 +2389,7 @@ class TestResidualInvariants:
             and final_record.status == "blocked"
         )
 
-        if not captured_merge_argvs or delete_branch_present or not queue_reconcile_entered[0] or not queue_failure_preserved:
+        if not enqueue_argvs or delete_branch_present or not dequeue_attempted or not queue_failure_preserved:
             raise AssertionError(
                 "RESIDUAL-RED-ANCHOR::residual_non_fab_merge_queue_null_oid — "
                 "non-FAB merge with null OID did not enter queue reconciliation, preserve its typed failure, or omitted --delete-branch"
@@ -2439,24 +2570,24 @@ class TestResidualInvariants:
         from io import BytesIO
         from urllib import response
 
-        from phase_loop_test_utils import make_repo
+        from phase_loop_test_utils import commit_fixture_paths, make_repo, write_phase_plan
         from phase_loop_runtime.claude_channel_sidecar import (
             ChannelSidecarClient,
             ChannelSidecarClientError,
             SessionRegistryRecord,
         )
-        from phase_loop_runtime.handoff import render_tui_handoff
+        from phase_loop_runtime.events import read_events
         from phase_loop_runtime.launcher import (
             ModelSelection,
             _render_command_template,
             build_launch_request,
             build_launch_spec,
-            launch_with_spec,
         )
-        from phase_loop_runtime.models import CommandAdapterConfig, StateSnapshot, WorkUnitMetric, utc_now
-        from phase_loop_runtime.observability import summarize_work_unit_metrics
+        from phase_loop_runtime.models import CommandAdapterConfig
+        from phase_loop_runtime.observability import read_work_unit_metrics
         from phase_loop_runtime.prompts import build_prompt
         from phase_loop_runtime.render import render_status
+        from phase_loop_runtime.runner import run_loop, status_snapshot
 
         defects: list[str] = []
         model = "claude-3-5-sonnet"
@@ -2621,63 +2752,63 @@ class TestResidualInvariants:
             except (ChannelSidecarClientError, TypeError) as exc:
                 defects.append(f"matching send failed: {exc}")
 
-        for state, actual, caveat, spec in (
-            ("bound", model, None, bound_spec),
-            ("unbound", None, "session_model_unbound", unbound_spec),
+        # Drive each route through the real runner and command-adapter launcher.
+        # The resulting launch event is the sole provenance source consumed by
+        # the persisted metric, status snapshot, aggregate, and TUI handoff.
+        for state, actual, caveat, template in (
+            ("bound", model, None, bound_template),
+            ("unbound", None, "session_model_unbound", unbound_template),
         ):
             try:
-                launch_result = launch_with_spec(spec)
-                if launch_result.returncode != 0:
-                    defects.append(f"real command-adapter {state} launch failed")
-                event = launch_result.event_metadata()
-                defects.extend(validate_surface(f"launch_event_{state}", event, actual, state, caveat))
-            except (TypeError, ValueError, OSError) as exc:
-                defects.append(f"real command-adapter {state} launch failed: {exc}")
-
-        metrics = []
-        for state, actual, caveat in (("bound", model, None), ("unbound", None, "session_model_unbound")):
-            try:
-                metric = WorkUnitMetric(
-                    metric_id=f"m-{state}",
-                    schema_version="work_unit_metric.v1",
-                    timestamp=utc_now(),
-                    work_unit_id=f"wu-{state}",
-                    work_unit_kind="lane_execute",
+                runner_repo = make_repo(tmp_path / f"runner-{state}")
+                runner_roadmap = runner_repo / "specs" / "phase-plans-v1.md"
+                runner_plan = write_phase_plan(runner_repo, "CONTRACT", runner_roadmap)
+                commit_fixture_paths(runner_repo, f"add {state} plan", runner_plan)
+                runner_snapshot, runner_results = run_loop(
+                    runner_repo,
+                    runner_roadmap,
                     phase="CONTRACT",
-                    action="execute",
-                    executor="claude",
-                    provider="anthropic",
+                    executor="command",
+                    command_adapter_name=state,
+                    command_template=template,
                     model=model,
-                    intended_model=model,
-                    actual_model=actual,
-                    binding_state=state,
-                    caveat=caveat,
+                    effort="high",
+                    closeout_mode="manual",
                 )
-                metrics.append(metric.to_json())
-                defects.extend(validate_surface(f"metric_{state}", metric.to_json(), actual, state, caveat))
+                if len(runner_results) != 1 or runner_results[0].returncode != 0:
+                    defects.append(f"real runner command-adapter {state} launch failed")
+                    continue
 
-                snapshot = StateSnapshot(
-                    timestamp=utc_now(),
-                    repo=str(repo_dir),
-                    roadmap=str(roadmap_file),
-                    phases={"CONTRACT": "complete"},
-                    model=model,
-                    intended_model=model,
-                    actual_model=actual,
-                    binding_state=state,
-                    caveat=caveat,
-                )
-                defects.extend(validate_surface(f"status_{state}", json.loads(render_status(snapshot, as_json=True)), actual, state, caveat))
-                defects.extend(validate_surface(f"handoff_{state}", render_tui_handoff(repo_dir, roadmap_file, snapshot, action="execute"), actual, state, caveat))
-            except (TypeError, ValueError, json.JSONDecodeError) as exc:
-                defects.append(f"{state} metric/status/handoff surface failed: {exc}")
+                launch_result_event = runner_results[0].event_metadata()
+                defects.extend(validate_surface(f"launch_result_{state}", launch_result_event, actual, state, caveat))
+                events = read_events(runner_repo)
+                launch_event = (events[-1].get("metadata") or {}).get("launch") if events else None
+                defects.extend(validate_surface(f"runner_event_{state}", launch_event, actual, state, caveat))
 
-        if len(metrics) == 2:
-            summary = summarize_work_unit_metrics(metrics)
-            if summary.get("by_model", {}).get(model) != 1:
-                defects.append("aggregate did not count exactly the verified bound model")
-            if "session_model_unbound" not in json.dumps(summary, sort_keys=True):
-                defects.append("aggregate dropped the unbound-model caveat")
+                metrics = read_work_unit_metrics(runner_repo)
+                metric = metrics[-1] if metrics else None
+                defects.extend(validate_surface(f"metric_{state}", metric, actual, state, caveat))
+
+                persisted_snapshot = status_snapshot(runner_repo, runner_roadmap)
+                status_payload = json.loads(render_status(persisted_snapshot, as_json=True))
+                defects.extend(validate_surface(
+                    f"status_metric_{state}", status_payload.get("latest_metric"), actual, state, caveat
+                ))
+                summary = status_payload.get("metrics_summary") or {}
+                if state == "bound" and summary.get("by_model", {}).get(model) != 1:
+                    defects.append("aggregate did not count the verified bound model")
+                if state == "unbound":
+                    if summary.get("by_model", {}).get(model):
+                        defects.append("aggregate counted an unbound intended model as verified")
+                    if caveat not in json.dumps(summary, sort_keys=True):
+                        defects.append("aggregate dropped the unbound-model caveat")
+
+                handoff_text = (runner_repo / ".phase-loop" / "tui-handoff.md").read_text(encoding="utf-8")
+                defects.extend(validate_surface(f"handoff_{state}", handoff_text, actual, state, caveat))
+                if runner_snapshot.repo != str(runner_repo):
+                    defects.append(f"real runner {state} snapshot belongs to wrong repository")
+            except (TypeError, ValueError, OSError, json.JSONDecodeError) as exc:
+                defects.append(f"real runner {state} provenance flow failed: {exc}")
 
         if defects:
             raise AssertionError(
