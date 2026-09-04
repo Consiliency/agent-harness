@@ -8,7 +8,7 @@ import hashlib
 import importlib.util
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import subprocess
 import sys
 import tempfile
@@ -289,10 +289,10 @@ def _raw_fixture(
         ).encode(),
         "preproduction_control_raw": b"2 passed\n",
         "candidate_focused_raw": f"{len(final_outcomes)} passed\n".encode(),
-        "candidate_broad_raw": f"{len(final_outcomes) + 3} passed\n".encode(),
+        "candidate_broad_raw": f"{len(final_outcomes) + 1} passed\n".encode(),
         "candidate_lint_raw": b"All checks passed!\n",
         "canonical_main_focused_raw": f"{len(final_outcomes)} passed\n".encode(),
-        "canonical_main_broad_raw": f"{len(final_outcomes) + 4} passed\n".encode(),
+        "canonical_main_broad_raw": f"{len(final_outcomes) + 2} passed\n".encode(),
         "canonical_main_lint_raw": b"All checks passed!\n",
     }
     junits = {
@@ -566,6 +566,22 @@ def _completion_event(request: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _contained_ref_path(root: Path, ref: dict[str, str], label: str) -> Path:
+    assert set(ref) == {"path", "sha256"}
+    raw = ref["path"]
+    relative = PurePosixPath(raw)
+    assert not relative.is_absolute(), f"{label} path must be relative"
+    assert str(relative) == raw and all(
+        part not in {"", ".", ".."} for part in relative.parts
+    ), f"{label} path must be normalized"
+    root_resolved = root.resolve()
+    path = (root / Path(*relative.parts)).resolve()
+    assert path.is_relative_to(root_resolved), f"{label} path escaped its root"
+    assert path.is_file() and not path.is_symlink(), f"{label} is not a regular file"
+    assert _sha256(path.read_bytes()) == ref["sha256"], f"{label} digest mismatch"
+    return path
+
+
 def _reachable_artifact_digests(value: Any, root: Path) -> set[str]:
     reachable: set[str] = set()
     queued = [value]
@@ -577,9 +593,8 @@ def _reachable_artifact_digests(value: Any, root: Path) -> set[str]:
         if not isinstance(item, dict):
             continue
         if set(item) == {"path", "sha256"}:
-            path = root / item["path"]
+            path = _contained_ref_path(root, item, "reachable retained artifact")
             data = path.read_bytes()
-            assert _sha256(data) == item["sha256"]
             if item["sha256"] in reachable:
                 continue
             reachable.add(item["sha256"])
@@ -685,18 +700,15 @@ def _assert_prepared(context: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
     for item in copies:
         assert set(item) == {"source", "retained"}
         assert set(item["source"]) == {"path", "sha256"}
-        assert set(item["retained"]) == {"path", "sha256"}
         source = context["source_root"] / item["source"]["path"]
-        retained = context["evidence_root"] / item["retained"]["path"]
+        retained = _contained_ref_path(
+            context["evidence_root"], item["retained"], "copied retained artifact"
+        )
         assert source.read_bytes() == retained.read_bytes()
     assert not any(path.is_symlink() for path in context["evidence_root"].rglob("*"))
-    required_reachable_names = set(RAW_ARTIFACT_NAMES) - {
-        "plan_authority",
-        "sl0_review",
-    }
     required_reachable_refs = [
         context["manifest"]["artifacts"][name]
-        for name in sorted(required_reachable_names)
+        for name in sorted(RAW_ARTIFACT_NAMES)
     ] + [context["manifest"]["role_attestations"][name] for name in ROLE_NAMES]
     reachable = _reachable_artifact_digests(evidence, context["evidence_root"])
     assert {ref["sha256"] for ref in required_reachable_refs} <= reachable
@@ -815,11 +827,13 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
             context = _raw_fixture(Path(td) / "valid")
             mutate(context)
             _persist_manifest(context)
+            registry_before = context["registry"].read_bytes()
             completed = _prepare_command(context)
             assert completed.returncode != 0
             diagnostic = (completed.stderr + completed.stdout).lower()
             assert message.lower() in diagnostic, diagnostic
             _assert_no_prepare_output(context)
+            assert context["registry"].read_bytes() == registry_before
 
     rejected(
         "caller-receipts",
@@ -894,7 +908,7 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
         context: dict[str, Any], artifact: str, value: Any
     ) -> None:
         ref = context["manifest"]["artifacts"][artifact]
-        data = _canonical_bytes(value)
+        data = value if isinstance(value, bytes) else _canonical_bytes(value)
         (context["source_root"] / ref["path"]).write_bytes(data)
         ref["sha256"] = _sha256(data)
 
@@ -909,6 +923,15 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
             },
         ),
         "secret",
+    )
+    rejected(
+        "raw-junit-count-mismatch",
+        lambda context: replace_artifact(
+            context,
+            "candidate_broad_raw",
+            b"999 passed\n",
+        ),
+        "raw/JUnit count mismatch",
     )
 
     def copied_self_test(context: dict[str, Any]) -> None:
@@ -932,18 +955,53 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
 
     rejected("reused-evidence", reuse_id, "reused evidence_id")
 
-    def reuse_nonce(context: dict[str, Any]) -> None:
-        context["registry"].write_bytes(
-            _canonical_bytes(
-                {
-                    "schema": "harden_evidence_registry.v1",
-                    "evidence_ids": [],
-                    "operation_nonces": [context["expected"]["operation_nonces"][0]],
-                }
+    def reuse_nonce(index: int) -> Callable[[dict[str, Any]], None]:
+        def mutate(context: dict[str, Any]) -> None:
+            context["registry"].write_bytes(
+                _canonical_bytes(
+                    {
+                        "schema": "harden_evidence_registry.v1",
+                        "evidence_ids": [],
+                        "operation_nonces": [
+                            context["expected"]["operation_nonces"][index]
+                        ],
+                    }
+                )
             )
-        )
 
-    rejected("reused-nonce", reuse_nonce, "reused operation nonce")
+        return mutate
+
+    rejected("reused-review-request-nonce", reuse_nonce(0), "reused operation nonce")
+    rejected("reused-broker-receipt-nonce", reuse_nonce(2), "reused operation nonce")
+    rejected("reused-role-attestation-nonce", reuse_nonce(10), "reused operation nonce")
+
+    def duplicate_input_nonce(context: dict[str, Any]) -> None:
+        ref = context["manifest"]["artifacts"]["canonical_main_review_request"]
+        record = _strict_json(context["source_root"] / ref["path"])
+        record["operation_nonce"] = context["expected"]["operation_nonces"][0]
+        replace_artifact(context, "canonical_main_review_request", record)
+
+    rejected(
+        "duplicate-input-nonce",
+        duplicate_input_nonce,
+        "duplicate input operation nonce",
+    )
+
+    with tempfile.TemporaryDirectory(prefix="harden-duplicate-key-") as td:
+        context = _raw_fixture(Path(td) / "valid")
+        body = _canonical_bytes(context["manifest"])
+        context["manifest_path"].write_bytes(
+            b'{"schema":"harden_evidence_inputs.v1",'
+            b'"schema":"harden_evidence_inputs.v1",'
+            + body.split(b",", 1)[1]
+        )
+        registry_before = context["registry"].read_bytes()
+        completed = _prepare_command(context)
+        assert completed.returncode != 0
+        diagnostic = (completed.stderr + completed.stdout).lower()
+        assert "duplicate json key" in diagnostic, diagnostic
+        _assert_no_prepare_output(context)
+        assert context["registry"].read_bytes() == registry_before
 
     top_help = _producer_command("--help")
     assert top_help.returncode == 0, top_help.stderr
@@ -1008,11 +1066,13 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
             canonical.write_bytes(_canonical_bytes(_completion_event(request)))
             ledger_argument = mutate(context, canonical, request)
             output = context["root"] / "must-not-exist.json"
+            registry_before = context["registry"].read_bytes()
             completed = _seal_command(context, ledger_argument, output)
             assert completed.returncode != 0
             diagnostic = (completed.stderr + completed.stdout).lower()
             assert message.lower() in diagnostic, diagnostic
             assert not output.exists()
+            assert context["registry"].read_bytes() == registry_before
 
     def detached(
         context: dict[str, Any], canonical: Path, _request: dict[str, Any]
@@ -1024,6 +1084,14 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
 
     seal_rejected("regular-detached-ledger", detached, "canonical ledger path")
 
+    def zero_event(
+        _context: dict[str, Any], canonical: Path, _request: dict[str, Any]
+    ) -> Path:
+        canonical.write_bytes(b"")
+        return canonical
+
+    seal_rejected("zero-event", zero_event, "missing HARDEN completion")
+
     def duplicate(
         _context: dict[str, Any], canonical: Path, request: dict[str, Any]
     ) -> Path:
@@ -1034,6 +1102,64 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
         return canonical
 
     seal_rejected("duplicate-event", duplicate, "duplicate HARDEN completion")
+
+    def stale_precompletion(
+        context: dict[str, Any], canonical: Path, _request: dict[str, Any]
+    ) -> Path:
+        evidence = _strict_json(context["output"])
+        evidence["evidence_id"] = "f" * 64
+        context["output"].write_bytes(_canonical_bytes(evidence))
+        return canonical
+
+    seal_rejected(
+        "stale-precompletion",
+        stale_precompletion,
+        "pre-completion digest mismatch",
+    )
+
+    def mismatched_event_field(
+        field: str,
+    ) -> Callable[[dict[str, Any], Path, dict[str, Any]], Path]:
+        def mutate(
+            _context: dict[str, Any], canonical: Path, request: dict[str, Any]
+        ) -> Path:
+            event = _completion_event(request)
+            proof = event["metadata"]["harden_completion"]
+            proof[field] = "f" * len(proof[field])
+            canonical.write_bytes(_canonical_bytes(event))
+            return canonical
+
+        return mutate
+
+    seal_rejected(
+        "mismatched-event-digest",
+        mismatched_event_field("evidence_sha256"),
+        "completion event evidence digest mismatch",
+    )
+    seal_rejected(
+        "mismatched-event-commit",
+        mismatched_event_field("canonical_commit"),
+        "completion event commit mismatch",
+    )
+    seal_rejected(
+        "mismatched-event-tree",
+        mismatched_event_field("canonical_tree"),
+        "completion event tree mismatch",
+    )
+
+    def symlink_canonical_ledger(
+        context: dict[str, Any], canonical: Path, _request: dict[str, Any]
+    ) -> Path:
+        target = context["root"] / "canonical-ledger-target.jsonl"
+        canonical.replace(target)
+        canonical.symlink_to(target)
+        return canonical
+
+    seal_rejected(
+        "symlink-canonical-ledger",
+        symlink_canonical_ledger,
+        "canonical ledger symlink",
+    )
 
     seal_help = _producer_command("seal", "--help")
     assert seal_help.returncode == 0, seal_help.stderr
