@@ -32,11 +32,12 @@ test files become immutable for the implementation work.
 - [ ] IF-0-REVIEWTRUTH-1 — `PanelLegOutcome` is the closed vocabulary
   `reviewed | unavailable | errored | timed_out | refused | capped | empty` on
   `PanelLegResult`, independent of `text`. `required` and `degraded` remain orthogonal
-  fields. The result exposes the raw count of seats whose outcome is `reviewed` so
-  consumers can classify delivery without treating grounding or material completeness
-  as outcome variants. Governed ratification separately filters that count by grounding
-  and material completeness. REVIEWTRUTH consumes a synthesized `timed_out`; LEGLIFE
-  owns the enforcement that produces it.
+  fields. SL-2 adds aggregate `PanelResult.reviewed_seat_count`, owned in
+  `panel_invoker.py`, as the raw count of seats whose outcome is `reviewed` so consumers
+  can classify delivery without treating grounding or material completeness as outcome
+  variants. Governed ratification separately filters that count by grounding and
+  material completeness. REVIEWTRUTH consumes a synthesized `timed_out`; LEGLIFE owns
+  the enforcement that produces it.
 - [ ] IF-0-REVIEWTRUTH-2 — `RatificationPolicy.required_prover: bool = True` is an
   additive trailing field, and `BoardFacts` retains `reviewed_sha` in its current
   positional slot before additive `prover_usable: bool = False`. Typed per-repo
@@ -77,7 +78,8 @@ test files become immutable for the implementation work.
 - `BoardDeliveryState` is exactly `FULL` when raw reviewed seats equal target,
   `FLOOR_ONLY` when floor is at most raw reviewed seats and less than target, and
   `BELOW_FLOOR` when raw reviewed seats are less than floor. Counts above target return
-  a typed malformed result and the governed gate blocks. Grounded/material-complete
+  a typed malformed result and the governed gate blocks; `floor > target` is the same
+  typed malformed case. Grounded/material-complete
   reviewed count and prover usability are independent ratification facts and may block
   a delivery-classified board.
 - REVIEWTRUTH extends the already-frozen `verification_evidence.v3` envelope only via
@@ -93,27 +95,27 @@ test files become immutable for the implementation work.
 
 SL-0 — Durable capability decision record
 Depends on: (none)
-Blocks: SL-1
+Blocks: SL-1, SL-2, SL-6
 Parallel-safe: no
 
 SL-1 — Tests-first falsifier boundary
 Depends on: SL-0
-Blocks: SL-2, SL-3, SL-4, SL-5
+Blocks: SL-2, SL-3, SL-4, SL-5, SL-6
 Parallel-safe: no
 
 SL-2 — Typed outcomes, prompt lens, native fill, and early-prover transport
 Depends on: SL-0, SL-1
-Blocks: SL-3, SL-4, SL-5
+Blocks: SL-3, SL-4, SL-5, SL-6
 Parallel-safe: no
 
 SL-3 — Governed classification and grounding
 Depends on: SL-1, SL-2
-Blocks: SL-4, SL-5
+Blocks: SL-4, SL-5, SL-6
 Parallel-safe: no
 
 SL-4 — Ratification policy and delivery state
 Depends on: SL-1, SL-2, SL-3
-Blocks: SL-5
+Blocks: SL-5, SL-6
 Parallel-safe: no
 
 SL-5 — Production gates, repair, and durable reporting
@@ -154,8 +156,24 @@ Parallel-safe: no
     production construction path. Include closeout-evidence rejection cases for
     missing lane evidence, proxy-only smoke, altered tests, incomplete IF inventory,
     and raw secret/model output.
-  - impl: add only tests, the chronology verifier, and RED evidence; activate new expectations with `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1` until the production capability marker exists.
-  - verify: run the chronology verifier in `capability-record` mode against the landed SL-0 record and current hosting metadata, then prove the unactivated compatibility suite remains green, every activated test fails only at its named anchor, the diff contains no production path, and the tests-only boundary satisfies EC-REVIEWTRUTH-0 before SL-2.
+  - impl: add only tests, the chronology verifier, and RED evidence; activate new
+    expectations with `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1` until the production
+    capability marker exists. The runner invokes the SL-1 verifier, which uses the
+    pre-existing LEGIBLE `run_verification`, `register_extension_namespace`, and
+    keyword-only `_bind_sidecar_extension` APIs to emit sealed v3 RED records under the
+    frozen REVIEWTRUTH namespace; it accepts no executor-authored evidence. SL-5 later
+    installs the identical namespace/schema in production.
+  - verify: run the chronology verifier in `capability-record` mode against the landed
+    SL-0 record and current hosting metadata, then prove the unactivated compatibility
+    suite remains green and every activated test fails only at its named anchor. Capture
+    a sorted path/blob digest for all `phase-loop-runtime/tests/**` dependencies
+    (including `conftest.py`, helpers, fixtures, and goldens) and reject any later
+    change. Define forbidden pre-RED production paths as
+    `phase-loop-runtime/src/**`, `.github/workflows/test.yml`,
+    `phase-loop-runtime/scripts/gate_a_cleanroom.sh`, and
+    `phase-loop-runtime/scripts/verify_reviewtruth_evidence.py`; the SL-1 verifier and
+    docs are explicitly non-production. Require zero forbidden-path changes before the
+    RED seal and satisfy EC-REVIEWTRUTH-0 before SL-2.
 
 ### SL-2 — Typed outcomes, prompt lens, native fill, and early-prover transport
 
@@ -166,10 +184,16 @@ Parallel-safe: no
 - **Parallel-safe**: no; `panel_invoker.py` is single-writer.
 - **Tasks**:
   - test: make only outcome, retry, lens propagation, native-fill, attestation, isolation, confinement, reaping, and review-wave tests green.
-  - impl: add typed outcome/identity fields, lossless strict-reader reconstruction of `required` and `degraded`, prompt-lens binding, exact native request binding, strict capability preflight, serial worktree holder, external-tool closure, and digest-bound evidence receipts.
+  - impl: add typed outcome/identity fields, lossless strict-reader reconstruction of
+    `required` and `degraded`, prompt-lens binding, exact native request binding, strict
+    capability preflight, serial worktree holder, external-tool closure, and
+    digest-bound evidence receipts. Publish the final call-ready
+    `PanelResult.reviewed_seat_count` and `ReviewWaveEvidence` APIs in SL-2-owned files;
+    SL-5 integrates them without reopening `fab_gate.py` or another SL-2 path.
   - verify: run only SL-2-owned selectors: typed outcome, retry-not-count, prompt-lens
     transport, native fill, capability preflight, worktree isolation, reaping, and
-    receipt binding, plus launcher and board-golden regressions. Defer spawn-error
+    receipt binding, plus full `test_panel_invoker_spawn.py`, launcher, and board-golden
+    regressions. Defer spawn-error
     classification, grounding/material checks, policy, and production persistence or
     gate wiring to their owning lanes; make no frozen-test edits.
 
@@ -200,7 +224,10 @@ Parallel-safe: no
   - test: make the SL-1-owned positional compatibility, typed override, default floor,
     lens coverage, delivery-state, and hard-prover-block controls green; policy and
     gate-posture files outside SL-1 are run-only regressions.
-  - impl: resolve policy without hardcoded gate branches and derive `prover_usable` only from the exact grounded artifact-bound attested seat.
+  - impl: resolve policy without hardcoded gate branches and derive `prover_usable` only
+    from the exact grounded artifact-bound attested seat. Publish final call-ready
+    `classify_board_delivery()` and `evaluate_ratification()` APIs in SL-4-owned files;
+    SL-5 calls them without reopening `gate_posture.py`.
   - verify: run the EC-REVIEWTRUTH-1/`-4` delivery-state and EC-REVIEWTRUTH-16 prover
     selectors plus policy and gate-posture regressions with frozen tests unchanged.
 
@@ -209,7 +236,7 @@ Parallel-safe: no
 - **Scope**: Wire all REVIEWTRUTH contracts into the live governed planning, pre-merge, train, resume, and run-summary paths.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/runner.py`, `phase-loop-runtime/src/phase_loop_runtime/governed_premerge.py`, `phase-loop-runtime/src/phase_loop_runtime/review_summary.py`, `phase-loop-runtime/src/phase_loop_runtime/cli.py`, `phase-loop-runtime/src/phase_loop_runtime/train_runner.py`, `phase-loop-runtime/src/phase_loop_runtime/train_ledger.py`, `phase-loop-runtime/src/phase_loop_runtime/reviewtruth_capability.py`, `phase-loop-runtime/scripts/gate_a_cleanroom.sh`, `phase-loop-runtime/scripts/verify_reviewtruth_evidence.py`, `.github/workflows/test.yml`
 - **Interfaces provided**: integrated IF-0-REVIEWTRUTH-3, `REVIEWTRUTH_PRODUCTION_GATES`, `REVIEWTRUTH_APPLY_FIX`, `REVIEWTRUTH_SEAT_LEDGER`, `REVIEWTRUTH_PANEL_VERDICT_LEDGER`.
-- **Interfaces consumed**: IF-0-REVIEWTRUTH-1 through IF-0-REVIEWTRUTH-3, `BoardDeliveryState`, `GovernedBoardEvidence`, `REVIEWTRUTH_RED_SUITE`.
+- **Interfaces consumed**: IF-0-REVIEWTRUTH-1 through IF-0-REVIEWTRUTH-3, `BoardDeliveryState`, `GovernedBoardEvidence`, `ReviewGrounding`, `review_material_issue()`, `NativeAgentLegRequest`, `ReviewWaveEvidence`, `REVIEWTRUTH_RED_SUITE`.
 - **Parallel-safe**: no.
 - **Tasks**:
   - test: drive production gates for pass, degraded, block-then-pass repair,
@@ -219,9 +246,14 @@ Parallel-safe: no
     decisions, persist every seat and aggregate verdict, and surface degradation in the
     terminal summary. Install
     `phase_loop_runtime.reviewtruth_capability:REVIEWTRUTH_CAPABILITY_VERSION="reviewtruth.v1"`
-    only after all SL-2 through SL-5 production paths are complete; CI then stops
-    forcing `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1`.
-  - verify: run `automation.suite_command`, clean-room Gate A, locked Ruff/lock checks, and the full non-integration regression suite before reduction.
+    only after all SL-2 through SL-5 production paths are complete. Intermediate CI
+    remains on the unactivated compatibility suite; SL-1 RED runs force the flag only in
+    runner-owned evidence commands. In the terminal SL-5 change, CI runs the now-marker-
+    activated suite without forcing the environment flag.
+  - verify: run `automation.suite_command`, full `test_train_merge.py`, clean-room Gate
+    A, locked Ruff/lock checks, and the full non-integration regression suite before
+    reduction. `test_governed_planning_gate.py` exercises its production wrapper in
+    SL-5-owned `runner.py`; it is run-only and creates no additional source owner.
 
 ### SL-6 — Evidence and documentation reducer
 
@@ -245,6 +277,10 @@ Parallel-safe: no
 
 - The coordinator enforces CONFORM, HARDEN, and SCHED completion before SL-0 and
   prevents any external writer from overlapping a lane-owned path.
+- SL-0 completion must satisfy EC-REVIEWTRUTH-15 exactly. Before SL-1 starts, the
+  verifier requires the record to be present on current `main` and to satisfy that
+  goal's ancestry and landing-shape checks; a record present only on the implementation
+  branch is insufficient.
 - One implementation author owns SL-2 through SL-5. Reviewers do not edit the
   candidate. Every review/evidence record binds candidate head/tree and plan digest;
   any candidate or plan mismatch invalidates it, regardless of perceived materiality.
@@ -285,32 +321,34 @@ PYTHONPATH=src python3 -m pytest -q -m "not dotfiles_integration"
 bash scripts/gate_a_cleanroom.sh
 ```
 
-The live board smoke is produced during SL-6 by the runner-owned capture mode:
+The live board smoke is produced during SL-6 by the runner-mediated phase-loop command:
 
 ```bash
-PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 phase-loop-runtime/scripts/verify_reviewtruth_evidence.py --capture-live-smoke --artifact plans/phase-plan-v10-REVIEWTRUTH.md --output docs/research/reviewtruth-real-panel-smoke.md
+codex-phase-loop reviewtruth-smoke --artifact plans/phase-plan-v10-REVIEWTRUTH.md --require-head HEAD --require-plan-authority plans/manifest.json --output docs/research/reviewtruth-real-panel-smoke.md
 ```
 
-SL-6 owns the record contract and reduction, but only the runner writes the redacted
-file. No other lane or external writer may modify it. Command-construction tests are
-not a substitute. The script's ordinary `--smoke` mode validates that record and writes
-its runner-stamped result into `verification_evidence.v3` before SL-6 closes. Every
-review and validation receipt carries exact candidate head/tree, plan, bundle, and
-instruction digests plus validator result digests; these identities live in immutable
-evidence rather than self-pinning the plan to a future commit. The additional tests in
-the verification block are read-only regressions; running them does not authorize
-editing their files.
+SL-5 adds this narrow CLI entrypoint and runner implementation. The runner pins the
+clean repository head/tree, resolves the current plan authority, materializes the
+canonical review instructions, computes plan/bundle/instruction digests, launches the
+live board, and exclusively writes the redacted record; caller-supplied digest values or
+script-self-authored evidence are refused. SL-6 owns the record contract and reduction,
+but no lane or external writer may modify the runner output. Command-construction tests
+are not a substitute. `verify_reviewtruth_evidence.py --smoke` validates that record and
+requests its runner-stamped v3 binding before SL-6 closes. These identities live in
+immutable evidence rather than self-pinning the plan to a future commit. The additional
+tests in the verification block are read-only regressions; running them does not
+authorize editing their files.
 
 ## Acceptance Criteria
 
 - [ ] EC-REVIEWTRUTH-0 — proven by `python3 phase-loop-runtime/scripts/verify_reviewtruth_chronology.py --mode tests-first`; falsified by path-entered control: the verifier accepts a production change before the RED evidence or a frozen test change afterward; evidence uses `verification_evidence.v3`.
-- [ ] EC-REVIEWTRUTH-1, EC-REVIEWTRUTH-4 — proven by `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1 PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_reviewtruth_phase.py -k board_delivery_state`; falsified by path-entered control: a three-seat result is classified FULL or a below-floor result converges.
+- [ ] EC-REVIEWTRUTH-1, EC-REVIEWTRUTH-4 — proven by `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1 PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_reviewtruth_phase.py -k board_delivery_state`; falsified by path-entered control: a three-seat result with target four is classified FULL or a below-floor result converges.
 - [ ] EC-REVIEWTRUTH-2, EC-REVIEWTRUTH-3 — proven by `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1 PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_reviewtruth_phase.py -k 'typed_outcome or spawn_error'`; falsified by path-entered control: response text restores usability or an exception traceback becomes a governed BLOCK.
 - [ ] EC-REVIEWTRUTH-5 — proven by `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1 PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_reviewtruth_phase.py -k prompt_lens`; falsified by path-entered control: lens removal leaves prompt and credited coverage unchanged.
 - [ ] EC-REVIEWTRUTH-6 — proven by `PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_advisor_board_golden.py`; falsified by path-entered control: an unsanctioned serialized result or launch delta is accepted.
 - [ ] EC-REVIEWTRUTH-7 — proven by `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1 PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_reviewtruth_phase.py -k retry_not_count`; falsified by path-entered control: capped, empty, or synthesized timed-out outcomes increment the reviewed-seat count.
 - [ ] EC-REVIEWTRUTH-8 — proven by `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1 PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_reviewtruth_phase.py -k production_apply_fix`; falsified by path-entered control: the governed block-then-pass case becomes mergeable without entering the production repair closure.
-- [ ] EC-REVIEWTRUTH-9 — proven by first running the SL-6 `--capture-live-smoke` command, then `PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 phase-loop-runtime/scripts/verify_reviewtruth_evidence.py --smoke docs/research/reviewtruth-real-panel-smoke.md`; falsified by path-entered control: a verdict whose seat did not inspect a staged file is accepted as live-panel evidence.
+- [ ] EC-REVIEWTRUTH-9 — proven by first running the SL-6 runner-mediated `codex-phase-loop reviewtruth-smoke` command, then `PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 phase-loop-runtime/scripts/verify_reviewtruth_evidence.py --smoke docs/research/reviewtruth-real-panel-smoke.md`; falsified by path-entered control: a verdict whose seat did not inspect a staged file is accepted as live-panel evidence.
 - [ ] EC-REVIEWTRUTH-10 — proven by `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1 PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_reviewtruth_phase.py -k production_panel_verdict_summary`; falsified by path-entered control: a production pass, block, or degraded outcome reaches run end without a durable verdict record.
 - [ ] EC-REVIEWTRUTH-11 — proven by `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1 PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_reviewtruth_phase.py -k production_seat_lifecycle_ledger`; falsified by path-entered control: the live non-FAB path omits required, outcome, or degraded seat facts.
 - [ ] EC-REVIEWTRUTH-12 — proven by `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1 PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_reviewtruth_phase.py -k grounding_refused`; falsified by path-entered control: ungrounded or artifact-mismatched agreement contributes to ratification.
@@ -324,6 +362,9 @@ editing their files.
 
 - schema: `spec_delta_closeout.v1`
 - decision: `no_spec_delta`
+- rationale: REVIEWTRUTH changes repository-internal runtime and evidence contracts
+  already mandated by this roadmap, not an external product, protocol, or consumer
+  specification
 - target surfaces: REVIEWTRUTH-owned runtime, tests, workflow, scripts, evidence, and contract documentation
 - evidence paths: `docs/research/reviewtruth-leg-capability-ratification.md`, `docs/research/reviewtruth-red-baseline.md`, `docs/research/reviewtruth-phase-verification.md`, `docs/research/reviewtruth-real-panel-smoke.md`, `docs/research/reviewtruth-final-evidence-record.md`, `.phase-loop/runs/**/verification.json`
 - redaction posture: `metadata_only`
