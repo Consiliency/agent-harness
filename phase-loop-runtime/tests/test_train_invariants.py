@@ -1575,8 +1575,6 @@ class TestResidualInvariants:
         (chron_repo_inv / "README.md").write_text("initial", encoding="utf-8")
         subprocess.run(["git", "add", "README.md"], cwd=chron_repo_inv, check=True, capture_output=True)
         subprocess.run(["git", "commit", "-m", "C0: initial"], cwd=chron_repo_inv, check=True, capture_output=True)
-        c0_sha_inv = subprocess.run(["git", "rev-parse", "HEAD"], cwd=chron_repo_inv, check=True, capture_output=True, text=True).stdout.strip()
-
         (chron_repo_inv / "src_file.py").write_text("# impl early", encoding="utf-8")
         subprocess.run(["git", "add", "src_file.py"], cwd=chron_repo_inv, check=True, capture_output=True)
         subprocess.run(["git", "commit", "-m", "C_impl_inv"], cwd=chron_repo_inv, check=True, capture_output=True)
@@ -1584,7 +1582,8 @@ class TestResidualInvariants:
             ["git", "rev-parse", "HEAD"], cwd=chron_repo_inv, check=True, capture_output=True, text=True
         ).stdout.strip()
 
-        subprocess.run(["git", "checkout", "-b", "tests-branch", c0_sha_inv], cwd=chron_repo_inv, check=True, capture_output=True)
+        # Keep the inverted history linear: implementation is the direct
+        # ancestor of the later tests landing.
         (chron_repo_inv / "test_file.py").write_text("# test late", encoding="utf-8")
         subprocess.run(["git", "add", "test_file.py"], cwd=chron_repo_inv, check=True, capture_output=True)
         subprocess.run(["git", "commit", "-m", "C_test_inv"], cwd=chron_repo_inv, check=True, capture_output=True)
@@ -1704,10 +1703,13 @@ class TestResidualInvariants:
             return
 
         import ast
-        from dataclasses import fields
+        from dataclasses import fields, replace
+        from unittest.mock import patch
 
+        from test_convergence_live_enable import _activated_publish_fixture
         from phase_loop_runtime.convergence import contracts
         from phase_loop_runtime.convergence.broker.evidence import EvidenceRecord
+        from phase_loop_runtime.convergence.broker.verbs import BrokerService
         from phase_loop_runtime.convergence.provider_contracts import TerminalOutcomeState
 
         defect_details = []
@@ -1729,6 +1731,49 @@ class TestResidualInvariants:
             if main_key == release_key:
                 defect_details.append("publish identity does not separate otherwise-identical requests by base")
 
+        # Exercise the real producer and broker paths so a dead correct-looking
+        # call followed by legacy key construction cannot satisfy the AST guard.
+        try:
+            _, _, publish_request = _activated_publish_fixture(
+                tmp_path, label="residual-base", branch="feat/base"
+            )
+            envelope_main = replace(publish_request.admission, base="main")
+            envelope_release = replace(publish_request.admission, base="release")
+            if envelope_main.idempotency_key == envelope_release.idempotency_key:
+                defect_details.append("PreAdmissionEnvelope.idempotency_key aliases different bases")
+
+            service = BrokerService(None, None, None)
+            request_main = replace(publish_request, admission=envelope_main, base="main")
+            request_release = replace(publish_request, admission=envelope_release, base="release")
+            if service._dedup_key(request_main) == service._dedup_key(request_release):
+                defect_details.append("BrokerService._dedup_key aliases different bases")
+
+            captured_legacy_args = []
+
+            class _LegacyProbeStore:
+                @staticmethod
+                def authenticated_legacy_records():
+                    return {"never-match": {"serialized_repository": publish_request.repo}}
+
+            def _capture_legacy_key(*args):
+                captured_legacy_args.append(args)
+                return "captured-key"
+
+            legacy_service = BrokerService(None, _LegacyProbeStore(), None)
+            with patch(
+                "phase_loop_runtime.convergence.broker.verbs.publish_committed_branch_idempotency_key",
+                side_effect=_capture_legacy_key,
+            ):
+                legacy_service._legacy_terminal_replay(request_release, "new-key")
+            if captured_legacy_args != [
+                (publish_request.repo, publish_request.branch, "release", publish_request.head_sha)
+            ]:
+                defect_details.append(
+                    f"BrokerService._legacy_terminal_replay passed wrong key preimage {captured_legacy_args!r}"
+                )
+        except (TypeError, AttributeError) as exc:
+            defect_details.append(f"runtime publish base value-flow control failed: {exc}")
+
         # 1. EvidenceRecord dataclass, serialization, and real BrokerEvidenceStore lifecycle checks
         ev_fields = {f.name for f in fields(EvidenceRecord)}
         if "base" not in ev_fields:
@@ -1747,6 +1792,9 @@ class TestResidualInvariants:
                 except TypeError:
                     defect_details.append("BrokerEvidenceStore.record_intent lacks future 'base' parameter")
                 else:
+                    intent_replay = ev_store.replay()
+                    if getattr(intent_replay.get("k"), "base", None) != "main":
+                        defect_details.append("BrokerEvidenceStore.record_intent discarded exact 'base' value")
                     ev_store.record_terminal(rec)
                     reloaded_dict = ev_store.replay()
                     if not isinstance(reloaded_dict, dict) or "k" not in reloaded_dict:
@@ -1919,16 +1967,29 @@ class TestResidualInvariants:
             method_node = next((n for n in ast.walk(class_node) if isinstance(n, ast.FunctionDef) and n.name == method_name), None)
             if not method_node:
                 return src, f"method {class_name}.{method_name} missing"
-            lines = src.splitlines(keepends=True)
-            start_line = method_node.lineno - 1
-            end_line = method_node.end_lineno
-            chunk = "".join(lines[start_line:end_line])
-            count = chunk.count(target)
-            if count < 1:
+            target_node = ast.parse(target, mode="eval").body
+            replacement_node = ast.parse(replacement, mode="eval").body
+            target_shape = ast.dump(target_node, include_attributes=False)
+            matches = [
+                node
+                for node in ast.walk(method_node)
+                if ast.dump(node, include_attributes=False) == target_shape
+            ]
+            if not matches:
                 return src, f"target {target!r} missing from {class_name}.{method_name}"
-            new_chunk = chunk.replace(target, replacement, 1)
-            mutated_src = "".join(lines[:start_line]) + new_chunk + "".join(lines[end_line:])
-            if mutated_src == src:
+
+            selected = matches[0]
+
+            class _ExactNodeMutator(ast.NodeTransformer):
+                def visit(self, node):
+                    if node is selected:
+                        return ast.copy_location(replacement_node, node)
+                    return super().visit(node)
+
+            _ExactNodeMutator().visit(method_node)
+            ast.fix_missing_locations(tree)
+            mutated_src = ast.unparse(tree) + "\n"
+            if ast.dump(ast.parse(mutated_src)) == ast.dump(ast.parse(src)):
                 return src, f"mutation of {target!r} in {class_name}.{method_name} resulted in no-op"
             return mutated_src, None
 
@@ -1991,24 +2052,8 @@ class TestResidualInvariants:
         if not self._is_activated():
             return
 
-        # 1. Path-entered mutation: restore ledger-head fallback
-        def _resolve_resume_head(live_sha: Optional[str], ledger_head: str, *, fallback_to_ledger: bool = False) -> Optional[str]:
-            if fallback_to_ledger:
-                return live_sha or ledger_head
-            return live_sha
-
-        mutated_head = _resolve_resume_head(None, "sha-ledger", fallback_to_ledger=True)
-        evidence_v3_entry = {
-            "contract": "verification_evidence.v3",
-            "mutation_id": "restore_ledger_head_fallback",
-            "resolved_head": mutated_head,
-            "fallback_used": mutated_head == "sha-ledger",
-        }
-        assert evidence_v3_entry["fallback_used"], "mutation must use ledger head fallback when live head is unavailable"
-        restored_head = _resolve_resume_head(None, "sha-ledger", fallback_to_ledger=False)
-        assert restored_head is None, "restored control must not fall back to ledger head when live head fails"
-
-        # 2. Execute fresh raises/unavailable/success run_train scenarios
+        # Execute fresh raises/unavailable/success scenarios through run_train;
+        # the unavailable case itself rejects restoration of ledger-head fallback.
         sc1_dir = tmp_path / "sc1"
         sc1_dir.mkdir()
         roadmap1 = parse_train_roadmap(TRAIN_2NODE_MD)
@@ -2175,7 +2220,7 @@ class TestResidualInvariants:
                 captured_merge_argvs.append(list(cmd))
                 return type("CompletedProcess", (), {"returncode": 0, "stdout": "", "stderr": ""})()
             if isinstance(cmd, list) and len(cmd) >= 3 and cmd[0] == "gh" and cmd[1] == "pr" and cmd[2] == "view":
-                res_data = json.dumps({"isDraft": False, "baseRefName": "main", "headRefOid": "sha-DRAFT-repo-a"})
+                res_data = json.dumps({"isDraft": False, "baseRefName": "main", "headRefOid": None})
                 return type("CompletedProcess", (), {"returncode": 0, "stdout": res_data, "stderr": ""})()
             return type("CompletedProcess", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
@@ -2248,14 +2293,22 @@ class TestResidualInvariants:
         safe_plan.write_text(
             'verification_command: python -c "print(\'; literal\')"\n'
             "verification_commands:\n"
-            '  - python -c "print(\'first\')"\n'
-            '  - python -c "print(\'second\')"\n',
+            '  - python -c "print(\'&& literal\')"\n'
+            '  - python -c "print(\'|| literal\')"\n'
+            '  - python -c "print(\'| literal\')"\n'
+            '  - python -c "print(\'< literal\')"\n'
+            '  - python -c "print(\'> literal\')"\n'
+            '  - python -c "print(\'\\\\n literal\')"\n',
             encoding="utf-8",
         )
         expected_safe_commands = [
             ["python", "-c", "print('; literal')"],
-            ["python", "-c", "print('first')"],
-            ["python", "-c", "print('second')"],
+            ["python", "-c", "print('&& literal')"],
+            ["python", "-c", "print('|| literal')"],
+            ["python", "-c", "print('| literal')"],
+            ["python", "-c", "print('< literal')"],
+            ["python", "-c", "print('> literal')"],
+            ["python", "-c", "print('\\n literal')"],
         ]
         safe_parser_commands = _hotfix_verification_commands(safe_plan)
 
@@ -2394,11 +2447,11 @@ class TestResidualInvariants:
         )
         from phase_loop_runtime.handoff import render_tui_handoff
         from phase_loop_runtime.launcher import (
-            LaunchResult,
             ModelSelection,
             _render_command_template,
             build_launch_request,
             build_launch_spec,
+            launch_with_spec,
         )
         from phase_loop_runtime.models import CommandAdapterConfig, StateSnapshot, WorkUnitMetric, utc_now
         from phase_loop_runtime.observability import summarize_work_unit_metrics
@@ -2477,15 +2530,17 @@ class TestResidualInvariants:
                 command_adapter=CommandAdapterConfig(name=name, template=template),
             )
 
-        bound_template = "python -m my_adapter --model {model} --context-file {context_file}"
-        defects.extend(validate_surface("launch_spec_bound", build_launch_spec(launch_request(bound_template, "bound")), model, "bound", None))
+        bound_template = "python3 -c \"print('ok')\" --model {model} --context-file {context_file}"
+        bound_spec = build_launch_spec(launch_request(bound_template, "bound"))
+        defects.extend(validate_surface("launch_spec_bound", bound_spec, model, "bound", None))
 
-        unbound_template = "python -m my_adapter --context-file {context_file}"
+        unbound_template = "python3 -c \"print('ok')\" --context-file {context_file}"
         unbound_request = launch_request(unbound_template, "unbound")
         rendered_unbound = _render_command_template(unbound_template, unbound_request)
         if model in rendered_unbound:
             defects.append("command adapter without {model} injected the intended model")
-        defects.extend(validate_surface("launch_spec_unbound", build_launch_spec(unbound_request), None, "unbound", "session_model_unbound"))
+        unbound_spec = build_launch_spec(unbound_request)
+        defects.extend(validate_surface("launch_spec_unbound", unbound_spec, None, "unbound", "session_model_unbound"))
 
         record_fields = {field.name for field in fields(SessionRegistryRecord)}
         if not {"actual_model", "binding_state"}.issubset(record_fields):
@@ -2566,19 +2621,18 @@ class TestResidualInvariants:
             except (ChannelSidecarClientError, TypeError) as exc:
                 defects.append(f"matching send failed: {exc}")
 
-        for state, actual, caveat in (("bound", model, None), ("unbound", None, "session_model_unbound")):
+        for state, actual, caveat, spec in (
+            ("bound", model, None, bound_spec),
+            ("unbound", None, "session_model_unbound", unbound_spec),
+        ):
             try:
-                event = LaunchResult(
-                    command=["claude"],
-                    returncode=0 if state == "bound" else 1,
-                    intended_model=model,
-                    actual_model=actual,
-                    binding_state=state,
-                    caveat=caveat,
-                ).event_metadata()
+                launch_result = launch_with_spec(spec)
+                if launch_result.returncode != 0:
+                    defects.append(f"real command-adapter {state} launch failed")
+                event = launch_result.event_metadata()
                 defects.extend(validate_surface(f"launch_event_{state}", event, actual, state, caveat))
-            except TypeError as exc:
-                defects.append(f"LaunchResult lacks {state} provenance: {exc}")
+            except (TypeError, ValueError, OSError) as exc:
+                defects.append(f"real command-adapter {state} launch failed: {exc}")
 
         metrics = []
         for state, actual, caveat in (("bound", model, None), ("unbound", None, "session_model_unbound")):
@@ -2734,6 +2788,10 @@ class TestResidualInvariants:
             lineage_file.write_text(json.dumps(lease_data), encoding="utf-8")
             return repo, roadmap, term_file, lineage_file
 
+        dead_owner = subprocess.Popen(["true"])
+        dead_owner.wait(timeout=5)
+        stale_pid = dead_owner.pid
+
         # 1. Live repair lease: run_loop must select "repair" and not launch recursively
         repo_repair, roadmap_repair, _, _ = _setup_repair_repo(tmp_path / "repo-repair-live", os.getpid(), phase_status="blocked")
         repair_launch_called = [False]
@@ -2758,8 +2816,8 @@ class TestResidualInvariants:
             run_loop(repo_resume, roadmap_resume, max_phases=1)
         resume_refused_for_lineage = _lineage_refusal(repo_resume, "resume")
 
-        # 3. Stale lineage lease (pid 999999): run_loop MUST select "repair" and launch
-        repo_stale, roadmap_stale, _, _ = _setup_repair_repo(tmp_path / "repo-repair-stale", 999999, phase_status="blocked")
+        # 3. A reaped process is a guaranteed stale owner: run_loop must repair.
+        repo_stale, roadmap_stale, _, _ = _setup_repair_repo(tmp_path / "repo-repair-stale", stale_pid, phase_status="blocked")
         stale_launch_called = [False]
 
         def fake_launch_stale(spec, dry_run=False, log_path=None, stream_output=False, **kwargs):
@@ -2778,12 +2836,12 @@ class TestResidualInvariants:
         )
 
         # 4. Child-write negative control: child writes to README.md and fails
-        repo_child, roadmap_child, term_file_child, _ = _setup_repair_repo(tmp_path / "repo-child-writes", 999999, phase_status="blocked")
+        repo_child, roadmap_child, term_file_child, _ = _setup_repair_repo(tmp_path / "repo-child-writes", stale_pid, phase_status="blocked")
         term_bytes_child_before = term_file_child.read_bytes()
 
         def fake_launch_child(spec, dry_run=False, log_path=None, stream_output=False, **kwargs):
             (repo_child / "README.md").write_text("child modified content", encoding="utf-8")
-            return LaunchResult(command=spec.command, returncode=1)
+            return LaunchResult(command=spec.command, returncode=1, interrupted=True)
 
         with patch("phase_loop_runtime.runner.launch_with_spec", side_effect=fake_launch_child):
             run_loop(repo_child, roadmap_child, max_phases=1)
@@ -2793,7 +2851,7 @@ class TestResidualInvariants:
 
         # 5. No-diff interrupted repair must preserve the trusted terminal bytes.
         repo_no_diff, roadmap_no_diff, term_file_no_diff, _ = _setup_repair_repo(
-            tmp_path / "repo-child-no-diff", 999999, phase_status="blocked"
+            tmp_path / "repo-child-no-diff", stale_pid, phase_status="blocked"
         )
         term_bytes_no_diff_before = term_file_no_diff.read_bytes()
 
@@ -2869,10 +2927,12 @@ class TestResidualInvariants:
             capture_output=True,
             text=True,
         )
+        config_json_valid = True
         try:
             config_diags = json.loads(res_config.stdout or "[]")
         except json.JSONDecodeError:
             config_diags = []
+            config_json_valid = False
 
         config_f841_count = sum(1 for d in config_diags if d.get("code") == "F841")
 
@@ -2931,7 +2991,12 @@ class TestResidualInvariants:
             capture_output=True,
             text=True,
         )
-        explicit_diags = json.loads(res_explicit.stdout or "[]")
+        explicit_json_valid = True
+        try:
+            explicit_diags = json.loads(res_explicit.stdout or "[]")
+        except json.JSONDecodeError:
+            explicit_diags = []
+            explicit_json_valid = False
         observed_f841_tuples = [
             (
                 Path(diag["filename"]).resolve().relative_to(repo_root.resolve()).as_posix(),
@@ -2963,7 +3028,12 @@ class TestResidualInvariants:
             capture_output=True,
             text=True,
         )
-        config_mut_diags = json.loads(res_config_mut.stdout or "[]")
+        mutation_json_valid = True
+        try:
+            config_mut_diags = json.loads(res_config_mut.stdout or "[]")
+        except json.JSONDecodeError:
+            config_mut_diags = []
+            mutation_json_valid = False
         mutation_f841 = [
             diag
             for diag in config_mut_diags
@@ -2977,6 +3047,12 @@ class TestResidualInvariants:
         # are valid states. Any partial/drifted inventory remains a hard failure.
         if (
             f841_ignored_in_config
+            or not config_json_valid
+            or res_config.returncode not in (0, 1)
+            or not explicit_json_valid
+            or res_explicit.returncode not in (0, 1)
+            or not mutation_json_valid
+            or res_config_mut.returncode != 1
             or config_f841_count != len(observed_f841_tuples)
             or observed_f841_tuples
             or not config_driven_mutation_detected
@@ -2985,6 +3061,12 @@ class TestResidualInvariants:
             defect_details = []
             if f841_ignored_in_config:
                 defect_details.append("F841 is in ruff.toml ignore list")
+            if not config_json_valid or res_config.returncode not in (0, 1):
+                defect_details.append(f"config-driven Ruff run was invalid (exit {res_config.returncode})")
+            if not explicit_json_valid or res_explicit.returncode not in (0, 1):
+                defect_details.append(f"explicit F841 Ruff run was invalid (exit {res_explicit.returncode})")
+            if not mutation_json_valid or res_config_mut.returncode != 1:
+                defect_details.append(f"mutation Ruff run did not fail diagnostically (exit {res_config_mut.returncode})")
             if config_f841_count != len(observed_f841_tuples):
                 defect_details.append(
                     "config-driven and explicit F841 inventories disagree"
