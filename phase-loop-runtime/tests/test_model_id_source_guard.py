@@ -129,10 +129,6 @@ def test_gemini_api_style_id_is_matched() -> None:
     assert len(violations) == 1
 
 
-if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(pytest.main([__file__, "-q"]))
-
-
 def test_regex_captures_the_full_astra_id() -> None:
     """The fleet default id (``gpt-6-astra``, Consiliency/agent-harness#777) is captured whole.
 
@@ -143,3 +139,7 @@ def test_regex_captures_the_full_astra_id() -> None:
     match = guard.MODEL_ID_REGEX.search('FALLBACK = "gpt-6-astra"')
     assert match is not None
     assert match.group(1) == "gpt-6-astra"
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(pytest.main([__file__, "-q"]))
