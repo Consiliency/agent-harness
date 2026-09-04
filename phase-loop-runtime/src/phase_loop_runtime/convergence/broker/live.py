@@ -2049,6 +2049,7 @@ FABPUB_AUTHORITY_ROOT_ENV = "PHASE_LOOP_FABPUB_AUTHORITY_ROOT"
 
 ZERO_HISTORY_INVENTORY_SCHEMA = "ZeroHistoryBootstrapInventory.v1"
 ZERO_HISTORY_STATES = ("DRAINING", "INVENTORY_SEALED", "ARMED", "ACTIVE")
+ZERO_SOURCE_ONBOARDING_CUTOVER_ID = "fabpub-zero-legacy-onboarding"
 _CUTOVER_ID_CHARACTERS = frozenset(
     "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
 )
@@ -2509,6 +2510,7 @@ ONBOARDING_SEAL_BOUNDARIES = (
     "before_zero_source_proof",
     "before_receipt_write",
     "before_receipt_fsync",
+    "after_receipt_write",
 )
 ONBOARDING_INJECTIONS = (
     "legacy_source",
@@ -2671,10 +2673,30 @@ def _cutover_source_targets_repository(
     return source_owner is None or source_owner == snapshot.identity
 
 
+def _zero_source_seal_lock_paths(
+    roots: tuple[Path, ...], authority_root: Path | str | None
+) -> tuple[Path, ...]:
+    paths: set[Path] = set()
+    bootstrap_root = _canonical_input_path(
+        authority_root or default_fabpub_authority_root(), label="authority root"
+    )
+    if (bootstrap_root / "ACTIVE_BOOTSTRAP").exists():
+        paths.add(bootstrap_root / "bootstrap.lock")
+    for root in roots:
+        if root.exists():
+            paths.add(root / "fabpub-global-cutover" / "root.lock")
+        pointer = root / "fabpub-global-cutover" / "ACTIVE_CUTOVER"
+        if pointer.exists():
+            claim = _read_pointer_claim(pointer)
+            primary = Path(claim.get("primary_authority", pointer.parent))
+            paths.add(primary / "cutover.lock")
+    return tuple(sorted(paths, key=str))
+
+
 def onboard_zero_legacy_repository(
     worktree: Path | str,
     *,
-    cutover_id: str = "fabpub-zero-legacy-onboarding",
+    cutover_id: str = ZERO_SOURCE_ONBOARDING_CUTOVER_ID,
     roots: tuple[Path, ...] | None = None,
     authority_root: Path | str | None = None,
 ) -> LegacyRepositoryPartitionReceipt:
@@ -2688,11 +2710,34 @@ def onboard_zero_legacy_repository(
     cutover_id = _validate_cutover_id(cutover_id)
     if roots is None:
         bootstrap = _active_bootstrap_inventory(authority_root)
-        roots = (
-            tuple(Path(row["path"]) for row in bootstrap["legacy_roots"])
-            if bootstrap is not None
-            else declared_legacy_roots()
+        if bootstrap is not None:
+            bootstrap_id = bootstrap["cutover_id"]
+            if cutover_id == ZERO_SOURCE_ONBOARDING_CUTOVER_ID:
+                cutover_id = bootstrap_id
+            elif cutover_id != bootstrap_id:
+                raise LegacyCutoverConflict(
+                    f"active bootstrap {bootstrap_id!r} may not onboard receipt "
+                    f"{cutover_id!r}"
+                )
+            roots = tuple(Path(row["path"]) for row in bootstrap["legacy_roots"])
+        else:
+            roots = declared_legacy_roots()
+    with _hold_all(_zero_source_seal_lock_paths(roots, authority_root)):
+        return _onboard_zero_legacy_repository_under_seal(
+            worktree,
+            cutover_id=cutover_id,
+            roots=roots,
+            authority_root=authority_root,
         )
+
+
+def _onboard_zero_legacy_repository_under_seal(
+    worktree: Path | str,
+    *,
+    cutover_id: str,
+    roots: tuple[Path, ...],
+    authority_root: Path | str | None,
+) -> LegacyRepositoryPartitionReceipt:
     if not global_active_authority_exists(roots, authority_root=authority_root):
         raise LegacyCutoverConflict(
             "zero-source onboarding requires a persistent global ACTIVE authority"
@@ -2715,6 +2760,11 @@ def onboard_zero_legacy_repository(
         if (namespace / RECEIPT_FILENAME).exists():
             existing = load_partition_receipt(namespace)
         if existing is not None:
+            if existing.cutover_id != cutover_id:
+                raise LegacyCutoverConflict(
+                    f"existing zero-source receipt belongs to {existing.cutover_id!r}, "
+                    f"not {cutover_id!r}"
+                )
             _prove_zero_source(snapshot, roots, "before_zero_source_proof")
             latch.mark_armed()
             latch.activate()
@@ -2784,9 +2834,58 @@ def onboard_zero_legacy_repository(
             namespace,
             zero_source_proof=sealed["partitions"][identity].get("zero_source_proof"),
         )
+        _prove_zero_source(snapshot, roots, "after_receipt_write")
         latch.mark_armed()
         latch.activate()
         return receipt
+
+
+def _traditional_active_authority_exists(roots: tuple[Path, ...]) -> bool:
+    roots = tuple(dict.fromkeys(sorted((Path(root) for root in roots), key=str)))
+    if not roots:
+        return False
+    expected_root_set = _root_set_digest(roots)
+    cutover_id = None
+    primary_authority = None
+    for root in roots:
+        pointer = Path(root) / "fabpub-global-cutover" / "ACTIVE_CUTOVER"
+        if not pointer.exists():
+            return False
+        claim = _read_pointer_claim(pointer)
+        if claim.get("root_set_sha256") not in (None, expected_root_set):
+            return False
+        if cutover_id is None:
+            cutover_id = claim["cutover_id"]
+        elif claim["cutover_id"] != cutover_id:
+            return False
+        claim_primary = Path(claim.get("primary_authority", pointer.parent))
+        if primary_authority is None:
+            primary_authority = claim_primary
+        elif claim_primary != primary_authority:
+            return False
+    if cutover_id is None or primary_authority is None:
+        return False
+    journal = primary_authority / f"{cutover_id}.journal.jsonl"
+    return "ACTIVE" in _journal_states(journal)
+
+
+def _receipt_active_authority_exists(
+    receipt: LegacyRepositoryPartitionReceipt,
+    *,
+    authority_root: Path | str | None = None,
+) -> bool:
+    bootstrap = _active_bootstrap_inventory(authority_root)
+    if bootstrap is not None and bootstrap["cutover_id"] == receipt.cutover_id:
+        return True
+    roots = tuple(Path(root) for root in receipt.legacy_root_inventory)
+    if roots:
+        if not _traditional_active_authority_exists(roots):
+            return False
+        if receipt.zero_source:
+            return True
+        states, ids = _journal_entries(Path(receipt.global_journal_path))
+        return "ACTIVE" in states and set(ids) == {receipt.cutover_id}
+    return False
 
 
 def global_active_authority_exists(
@@ -2794,29 +2893,10 @@ def global_active_authority_exists(
     *,
     authority_root: Path | str | None = None,
 ) -> bool:
-    """True when every declared legacy root carries an ACTIVE cutover authority.
-
-    A repository may not authorize its own generation promotion: only a global
-    cutover that itself reached ACTIVE confers post-activation authority
-    (SL1-SOL-01).
-    """
+    """True when a traditional or persistent bootstrap authority is ACTIVE."""
     roots = declared_legacy_roots() if roots is None else roots
-    if roots:
-        traditional_active = True
-        for root in roots:
-            pointer = Path(root) / "fabpub-global-cutover" / "ACTIVE_CUTOVER"
-            if not pointer.exists():
-                traditional_active = False
-                break
-            claim = _read_pointer_claim(pointer)
-            journal = (
-                Path(root) / "fabpub-global-cutover" / f"{claim['cutover_id']}.journal.jsonl"
-            )
-            if "ACTIVE" not in _journal_states(journal):
-                traditional_active = False
-                break
-        if traditional_active:
-            return True
+    if _traditional_active_authority_exists(roots):
+        return True
     return _active_bootstrap_inventory(authority_root) is not None
 
 
@@ -2867,23 +2947,7 @@ def fabpub_activation_barrier(worktrees: Iterable[Path | str] = ()) -> dict:
                 "state": transaction.state,
             }
 
-        if worktrees and not global_active_authority_exists():
-            for worktree in worktrees:
-                snapshot = repository_snapshot(worktree)
-                receipt = load_partition_receipt(snapshot.store_root)
-                receipt_roots = (
-                    tuple(Path(root) for root in receipt.legacy_root_inventory)
-                    if receipt is not None
-                    else ()
-                )
-                if receipt is None:
-                    continue
-                if not receipt_roots or not global_active_authority_exists(receipt_roots):
-                    raise LegacyCutoverConflict(
-                        "the FABPUB activation barrier requires a persistent global "
-                        "ACTIVE authority"
-                    )
-
+        snapshots = []
         for worktree in worktrees:
             if not is_git_repository(worktree):
                 raise LegacyCutoverConflict(
@@ -2892,7 +2956,15 @@ def fabpub_activation_barrier(worktrees: Iterable[Path | str] = ()) -> dict:
                     "unauthenticated workspace"
                 )
             snapshot = repository_snapshot(worktree)
-            if load_partition_receipt(snapshot.store_root) is None:
+            receipt = load_partition_receipt(snapshot.store_root)
+            if receipt is not None and not _receipt_active_authority_exists(receipt):
+                raise LegacyCutoverConflict(
+                    f"repository {snapshot.identity} has no matching global ACTIVE authority"
+                )
+            snapshots.append((snapshot, receipt))
+
+        for snapshot, receipt in snapshots:
+            if receipt is None:
                 # Zero-source onboarding is for a repository first seen AFTER a
                 # global cutover reached ACTIVE.  Before that, a repository with
                 # no receipt may still have legacy sources awaiting migration, so
@@ -2905,11 +2977,16 @@ def fabpub_activation_barrier(worktrees: Iterable[Path | str] = ()) -> dict:
                     report["deferred"] = report.get("deferred", []) + [str(snapshot.worktree)]
                     continue
                 onboard_zero_legacy_repository(snapshot.worktree)
-                if load_partition_receipt(snapshot.store_root) is None:
+                receipt = load_partition_receipt(snapshot.store_root)
+                if receipt is None or not _receipt_active_authority_exists(receipt):
                     raise LegacyCutoverConflict(
                         f"repository {snapshot.identity} could not be authenticated or onboarded"
                     )
             latch = WriterGenerationLatch(snapshot.namespace_root)
+            if latch.read().generation_state != "ACTIVE":
+                raise LegacyCutoverConflict(
+                    f"repository {snapshot.identity} has no ACTIVE writer generation"
+                )
             report["leases"].append(latch.acquire(generation=latch.read().generation))
             report["repositories"].append(str(snapshot.worktree))
     except Exception:

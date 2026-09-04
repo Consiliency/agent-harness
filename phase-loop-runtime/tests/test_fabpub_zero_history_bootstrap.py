@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -133,6 +134,36 @@ def test_zero_history_bootstrap_resumes_interrupted_onboarding(
     assert live.WriterGenerationLatch.open(repo).read().generation_state == "ACTIVE"
 
 
+def test_barrier_resumes_interrupted_onboarding_under_bootstrap_id(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    inventory = _probe(tmp_path, repo)
+    with monkeypatch.context() as patcher:
+        patcher.setattr(
+            live.LegacyRepositoryPartitionReceipt,
+            "write",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("crash")),
+        )
+        with pytest.raises(RuntimeError, match="crash"):
+            live.bootstrap_zero_history_authority(
+                inventory, confirmed_zero_history=True
+            )
+    monkeypatch.setenv(
+        "PHASE_LOOP_FABPUB_AUTHORITY_ROOT", str(tmp_path / "authority")
+    )
+
+    report = live.fabpub_activation_barrier([repo])
+
+    receipt = live.load_partition_receipt(live.repository_snapshot(repo).store_root)
+    assert receipt is not None and receipt.cutover_id == inventory["cutover_id"]
+    assert len(report["leases"]) == 1
+    live.release_barrier_leases(report)
+    assert live.bootstrap_zero_history_authority(
+        inventory, confirmed_zero_history=True
+    )["state"] == "ACTIVE"
+
+
 def test_cutover_id_cannot_escape_authority_root(tmp_path: Path) -> None:
     repo = _git_repo(tmp_path / "repo")
 
@@ -145,6 +176,62 @@ def test_cutover_id_cannot_escape_authority_root(tmp_path: Path) -> None:
 
     assert not (tmp_path / "escaped.bootstrap-inventory.json").exists()
     assert not (tmp_path / "authority").exists()
+
+
+def test_multi_root_traditional_authority_uses_claimed_primary_journal(
+    tmp_path: Path,
+) -> None:
+    roots = (tmp_path / "a", tmp_path / "b")
+    cutover_id = "multi-root"
+    primary = roots[0] / "fabpub-global-cutover"
+    primary.mkdir(parents=True)
+    (primary / f"{cutover_id}.journal.jsonl").write_text(
+        json.dumps({"cutover_id": cutover_id, "state": "ACTIVE"}) + "\n",
+        encoding="utf-8",
+    )
+    root_set_sha256 = live._root_set_digest(roots)
+    for root in roots:
+        authority = root / "fabpub-global-cutover"
+        authority.mkdir(parents=True, exist_ok=True)
+        (authority / "ACTIVE_CUTOVER").write_text(
+            json.dumps(
+                {
+                    "cutover_id": cutover_id,
+                    "primary_authority": str(primary),
+                    "root_set_sha256": root_set_sha256,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    assert live.global_active_authority_exists(roots)
+
+
+def test_unrelated_bootstrap_cannot_activate_traditional_receipt(
+    tmp_path: Path,
+) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    inventory = _probe(tmp_path, repo)
+    live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
+    root = tmp_path / "traditional"
+    authority = root / "fabpub-global-cutover"
+    authority.mkdir(parents=True)
+    (authority / "ACTIVE_CUTOVER").write_text("traditional\n", encoding="utf-8")
+    (authority / "traditional.journal.jsonl").write_text(
+        json.dumps({"cutover_id": "traditional", "state": "ARMED"}) + "\n",
+        encoding="utf-8",
+    )
+    receipt = SimpleNamespace(
+        legacy_root_inventory=(str(root),),
+        zero_source=False,
+        global_journal_path=str(authority / "traditional.journal.jsonl"),
+        cutover_id="traditional",
+    )
+
+    assert not live._receipt_active_authority_exists(
+        receipt, authority_root=tmp_path / "authority"
+    )
 
 
 def test_direct_zero_source_onboarding_requires_global_active(tmp_path: Path, monkeypatch) -> None:
@@ -174,6 +261,36 @@ def test_onboarding_rejects_unattested_canonical_state_before_latch_mutation(
         )
 
     assert not (snapshot.namespace_root / "writer-generation.json").exists()
+
+
+def test_post_write_zero_source_failure_never_receives_a_barrier_lease(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    inventory = _probe(tmp_path, repo)
+    original_proof = live._prove_zero_source
+
+    def fail_after_write(snapshot, roots, boundary):
+        result = original_proof(snapshot, roots, boundary)
+        if boundary == "after_receipt_write":
+            raise live.LegacyCutoverConflict("late source after receipt write")
+        return result
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(live, "_prove_zero_source", fail_after_write)
+        with pytest.raises(live.LegacyCutoverConflict, match="late source"):
+            live.bootstrap_zero_history_authority(
+                inventory, confirmed_zero_history=True
+            )
+
+    snapshot = live.repository_snapshot(repo)
+    assert live.load_partition_receipt(snapshot.store_root) is not None
+    assert live.WriterGenerationLatch.open(repo).read().generation_state == "DRAINING"
+    monkeypatch.setenv(
+        "PHASE_LOOP_FABPUB_AUTHORITY_ROOT", str(tmp_path / "authority")
+    )
+    with pytest.raises(live.LegacyCutoverConflict, match="ACTIVE writer generation"):
+        live.fabpub_activation_barrier([repo])
 
 
 def test_existing_receipt_barrier_revalidates_global_authority(
