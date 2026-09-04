@@ -6,7 +6,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-### Fleet default: GPT-6 Astra becomes the codex seat and heavy tier (Consiliency/agent-harness#PRNUM)
+### Fleet default: GPT-6 Astra becomes the codex seat and heavy tier (Consiliency/agent-harness#777)
 
 - The advisor-board codex seat and the codex heavy tier move from `gpt-5.6-sol` to
   `gpt-6-astra` (`codex` 0.153.3 `models_cache.json` lists it with `low..max` plus a new
