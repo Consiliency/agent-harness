@@ -87,6 +87,23 @@ def test_zero_history_bootstrap_reprobes_then_activates_and_retries(tmp_path: Pa
         live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
 
 
+def test_zero_history_bootstrap_supports_existing_empty_legacy_root(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    (tmp_path / "legacy").mkdir()
+    inventory = _probe(tmp_path, repo)
+
+    first = live.bootstrap_zero_history_authority(
+        inventory, confirmed_zero_history=True
+    )
+    second = live.bootstrap_zero_history_authority(
+        inventory, confirmed_zero_history=True
+    )
+
+    assert first == second
+    assert live.load_partition_receipt(live.repository_snapshot(repo).store_root) is not None
+    assert (tmp_path / "legacy" / "fabpub-global-cutover" / "root.lock").exists()
+
+
 def test_zero_history_bootstrap_refuses_probe_apply_drift(tmp_path: Path) -> None:
     repo = _git_repo(tmp_path / "repo")
     history = tmp_path / "historical"
@@ -164,6 +181,59 @@ def test_barrier_resumes_interrupted_onboarding_under_bootstrap_id(
     )["state"] == "ACTIVE"
 
 
+def test_bootstrap_resumes_after_atomic_receipt_temp_is_stranded(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    inventory = _probe(tmp_path, repo)
+    original_replace = live.os.replace
+
+    def interrupt_receipt_replace(source, target):
+        if Path(target).name == live.RECEIPT_FILENAME:
+            raise RuntimeError("process interrupted before receipt replace")
+        return original_replace(source, target)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(live.os, "replace", interrupt_receipt_replace)
+        with pytest.raises(RuntimeError, match="interrupted"):
+            live.bootstrap_zero_history_authority(
+                inventory, confirmed_zero_history=True
+            )
+
+    snapshot = live.repository_snapshot(repo)
+    assert list(snapshot.store_root.glob(".partition-receipt.json.*.tmp"))
+    assert live.bootstrap_zero_history_authority(
+        inventory, confirmed_zero_history=True
+    )["state"] == "ACTIVE"
+    assert live.load_partition_receipt(snapshot.store_root) is not None
+
+
+def test_bootstrap_resumes_after_atomic_authority_temp_is_stranded(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    inventory = _probe(tmp_path, repo)
+    original_replace = live.os.replace
+
+    def interrupt_authority_replace(source, target):
+        if Path(target).name == "bootstrap-test.bootstrap-inventory.json":
+            raise RuntimeError("process interrupted before authority replace")
+        return original_replace(source, target)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(live.os, "replace", interrupt_authority_replace)
+        with pytest.raises(RuntimeError, match="interrupted"):
+            live.bootstrap_zero_history_authority(
+                inventory, confirmed_zero_history=True
+            )
+
+    authority = tmp_path / "authority"
+    assert list(authority.glob(".bootstrap-test.bootstrap-inventory.json.*.tmp"))
+    assert live.bootstrap_zero_history_authority(
+        inventory, confirmed_zero_history=True
+    )["state"] == "ACTIVE"
+
+
 def test_cutover_id_cannot_escape_authority_root(tmp_path: Path) -> None:
     repo = _git_repo(tmp_path / "repo")
 
@@ -217,16 +287,17 @@ def test_unrelated_bootstrap_cannot_activate_traditional_receipt(
     root = tmp_path / "traditional"
     authority = root / "fabpub-global-cutover"
     authority.mkdir(parents=True)
-    (authority / "ACTIVE_CUTOVER").write_text("traditional\n", encoding="utf-8")
-    (authority / "traditional.journal.jsonl").write_text(
-        json.dumps({"cutover_id": "traditional", "state": "ARMED"}) + "\n",
+    collision_id = inventory["cutover_id"]
+    (authority / "ACTIVE_CUTOVER").write_text(collision_id + "\n", encoding="utf-8")
+    (authority / f"{collision_id}.journal.jsonl").write_text(
+        json.dumps({"cutover_id": collision_id, "state": "ARMED"}) + "\n",
         encoding="utf-8",
     )
     receipt = SimpleNamespace(
         legacy_root_inventory=(str(root),),
         zero_source=False,
-        global_journal_path=str(authority / "traditional.journal.jsonl"),
-        cutover_id="traditional",
+        global_journal_path=str(authority / f"{collision_id}.journal.jsonl"),
+        cutover_id=collision_id,
     )
 
     assert not live._receipt_active_authority_exists(
@@ -303,7 +374,7 @@ def test_existing_receipt_barrier_revalidates_global_authority(
         "PHASE_LOOP_FABPUB_AUTHORITY_ROOT", str(tmp_path / "authority")
     )
     legacy_root = tmp_path / "legacy"
-    legacy_root.mkdir()
+    legacy_root.mkdir(exist_ok=True)
     (legacy_root / "admissions.jsonl").write_text("{}\n", encoding="utf-8")
 
     with pytest.raises(live.LegacyCutoverConflict, match="allocator state appeared"):

@@ -2115,6 +2115,41 @@ def _tree_file_inventory(root: Path) -> list[dict]:
     return files
 
 
+def _is_atomic_temp_name(name: str, target_name: str) -> bool:
+    prefix = f".{target_name}."
+    if not name.startswith(prefix) or not name.endswith(".tmp"):
+        return False
+    middle = name[len(prefix) : -len(".tmp")]
+    try:
+        pid, nonce = middle.split(".")
+    except ValueError:
+        return False
+    return pid.isdigit() and len(nonce) == 8 and all(
+        character in "0123456789abcdef" for character in nonce
+    )
+
+
+def _legacy_root_file_inventory(root: Path) -> list[dict]:
+    return [
+        item
+        for item in _tree_file_inventory(root)
+        if not (
+            item["path"].startswith("fabpub-global-cutover/")
+            and item["path"].endswith(".lock")
+        )
+    ]
+
+
+def _is_onboarding_atomic_temp(path: str, snapshot: RepositorySnapshot, cutover_id: str) -> bool:
+    candidate = Path(path)
+    if candidate.parent == Path("zero-legacy-onboarding"):
+        return _is_atomic_temp_name(candidate.name, f"{cutover_id}.inventory.json")
+    expected_parent = Path("repositories") / snapshot.identity
+    return candidate.parent == expected_parent and _is_atomic_temp_name(
+        candidate.name, RECEIPT_FILENAME
+    )
+
+
 def _discover_hashed_legacy_roots(search_roots: tuple[Path, ...]) -> tuple[Path, ...]:
     discovered: dict[str, Path] = {}
     for search_root in search_roots:
@@ -2155,7 +2190,12 @@ def _classify_repository_namespace(snapshot: RepositorySnapshot, cutover_id: str
             str((onboarding / "cutover.lock").relative_to(root)),
         }
         allowed.update(partial_paths)
-        unexpected = [item["path"] for item in files if item["path"] not in allowed]
+        unexpected = [
+            item["path"]
+            for item in files
+            if item["path"] not in allowed
+            and not _is_onboarding_atomic_temp(item["path"], snapshot, cutover_id)
+        ]
         if unexpected:
             raise LegacyCutoverConflict(
                 f"unattested canonical state for {snapshot.identity}: {unexpected}"
@@ -2273,7 +2313,7 @@ def probe_zero_history_bootstrap(
     )
     legacy_entries = []
     for root in roots:
-        files = _tree_file_inventory(root)
+        files = _legacy_root_file_inventory(root)
         if files:
             raise LegacyCutoverConflict(
                 f"zero-history bootstrap found allocator state in legacy root {root}"
@@ -2289,8 +2329,15 @@ def probe_zero_history_bootstrap(
         )
     )
     authority_files = _tree_file_inventory(authority)
+    authority_targets = (
+        f"{cutover_id}.bootstrap-inventory.json",
+        "ACTIVE_BOOTSTRAP",
+    )
     unexpected_authority = [
-        item["path"] for item in authority_files if item["path"] != "bootstrap.lock"
+        item["path"]
+        for item in authority_files
+        if item["path"] != "bootstrap.lock"
+        and not any(_is_atomic_temp_name(item["path"], target) for target in authority_targets)
     ]
     if unexpected_authority:
         raise LegacyCutoverConflict(
@@ -2365,7 +2412,7 @@ def _revalidate_bootstrap_sources(inventory: dict) -> None:
             "the complete legacy root set changed after the bootstrap inventory sealed"
         )
     for row in inventory["legacy_roots"]:
-        if _tree_file_inventory(Path(row["path"])):
+        if _legacy_root_file_inventory(Path(row["path"])):
             raise LegacyCutoverConflict(
                 f"allocator state appeared in sealed legacy root {row['path']}"
             )
@@ -2487,13 +2534,11 @@ def bootstrap_zero_history_authority(
         else:
             _atomic_write_json(pointer, claim)
 
-    roots = tuple(Path(row["path"]) for row in inventory["legacy_roots"])
     receipts = []
     for worktree in worktrees:
         receipt = onboard_zero_legacy_repository(
             worktree,
             cutover_id=cutover_id,
-            roots=roots,
             authority_root=authority,
         )
         receipts.append(receipt.canonical_repository_identity)
@@ -2683,8 +2728,7 @@ def _zero_source_seal_lock_paths(
     if (bootstrap_root / "ACTIVE_BOOTSTRAP").exists():
         paths.add(bootstrap_root / "bootstrap.lock")
     for root in roots:
-        if root.exists():
-            paths.add(root / "fabpub-global-cutover" / "root.lock")
+        paths.add(root / "fabpub-global-cutover" / "root.lock")
         pointer = root / "fabpub-global-cutover" / "ACTIVE_CUTOVER"
         if pointer.exists():
             claim = _read_pointer_claim(pointer)
@@ -2708,6 +2752,7 @@ def onboard_zero_legacy_repository(
     own fresh generation (SL1-SOL-01).
     """
     cutover_id = _validate_cutover_id(cutover_id)
+    bootstrap_inventory_sha256 = None
     if roots is None:
         bootstrap = _active_bootstrap_inventory(authority_root)
         if bootstrap is not None:
@@ -2720,6 +2765,7 @@ def onboard_zero_legacy_repository(
                     f"{cutover_id!r}"
                 )
             roots = tuple(Path(row["path"]) for row in bootstrap["legacy_roots"])
+            bootstrap_inventory_sha256 = bootstrap["inventory_sha256"]
         else:
             roots = declared_legacy_roots()
     with _hold_all(_zero_source_seal_lock_paths(roots, authority_root)):
@@ -2728,6 +2774,7 @@ def onboard_zero_legacy_repository(
             cutover_id=cutover_id,
             roots=roots,
             authority_root=authority_root,
+            bootstrap_inventory_sha256=bootstrap_inventory_sha256,
         )
 
 
@@ -2737,6 +2784,7 @@ def _onboard_zero_legacy_repository_under_seal(
     cutover_id: str,
     roots: tuple[Path, ...],
     authority_root: Path | str | None,
+    bootstrap_inventory_sha256: str | None,
 ) -> LegacyRepositoryPartitionReceipt:
     if not global_active_authority_exists(roots, authority_root=authority_root):
         raise LegacyCutoverConflict(
@@ -2805,6 +2853,8 @@ def _onboard_zero_legacy_repository_under_seal(
             "partition_map_sha256": _partition_map_digest(partitions),
             "partitions": partitions,
         }
+        if bootstrap_inventory_sha256 is not None:
+            sealed["bootstrap_inventory_sha256"] = bootstrap_inventory_sha256
         sealed["inventory_sha256"] = _inventory_digest(sealed)
         if inventory_path.exists():
             sealed = json.loads(inventory_path.read_text(encoding="utf-8"))
@@ -2827,8 +2877,9 @@ def _onboard_zero_legacy_repository_under_seal(
         receipt = _receipt_from_partition(
             cutover_id, sealed["partitions"][identity], sealed, journal_path
         )
-        # The LAST proof runs before the receipt becomes visible, so a boundary
-        # failure leaves no receipt file behind.
+        # A final post-write proof runs before generation activation. A late
+        # source may leave an immutable receipt, but it cannot make that receipt
+        # routable while the latch remains DRAINING.
         _prove_zero_source(snapshot, roots, "before_receipt_fsync")
         receipt.write(
             namespace,
@@ -2875,8 +2926,19 @@ def _receipt_active_authority_exists(
     authority_root: Path | str | None = None,
 ) -> bool:
     bootstrap = _active_bootstrap_inventory(authority_root)
-    if bootstrap is not None and bootstrap["cutover_id"] == receipt.cutover_id:
-        return True
+    if (
+        bootstrap is not None
+        and receipt.zero_source
+        and bootstrap["cutover_id"] == receipt.cutover_id
+    ):
+        journal = Path(receipt.global_journal_path)
+        sealed = json.loads(
+            (journal.parent / f"{receipt.cutover_id}.inventory.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        if sealed.get("bootstrap_inventory_sha256") == bootstrap["inventory_sha256"]:
+            return True
     roots = tuple(Path(root) for root in receipt.legacy_root_inventory)
     if roots:
         if not _traditional_active_authority_exists(roots):
