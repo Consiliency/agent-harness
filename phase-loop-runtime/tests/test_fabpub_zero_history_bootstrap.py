@@ -305,14 +305,57 @@ def test_unrelated_bootstrap_cannot_activate_traditional_receipt(
     )
 
 
-def test_direct_zero_source_onboarding_requires_global_active(tmp_path: Path, monkeypatch) -> None:
+def test_bootstrap_resume_rejects_same_id_receipt_without_inventory_binding(
+    tmp_path: Path,
+) -> None:
     repo = _git_repo(tmp_path / "repo")
+    inventory = _probe(tmp_path, repo)
+    authority = tmp_path / "authority"
+    authority.mkdir()
+    live._atomic_write_json(
+        authority / "bootstrap-test.bootstrap-inventory.json", inventory
+    )
+
+    traditional_root = tmp_path / "traditional"
+    traditional_authority = traditional_root / "fabpub-global-cutover"
+    traditional_authority.mkdir(parents=True)
+    (traditional_authority / "ACTIVE_CUTOVER").write_text(
+        "bootstrap-test\n", encoding="utf-8"
+    )
+    (traditional_authority / "bootstrap-test.journal.jsonl").write_text(
+        "".join(
+            json.dumps({"cutover_id": "bootstrap-test", "state": state}) + "\n"
+            for state in ("ARMED", "ACTIVE")
+        ),
+        encoding="utf-8",
+    )
+    receipt = live.onboard_zero_legacy_repository(
+        repo,
+        cutover_id="bootstrap-test",
+        roots=(traditional_root,),
+        authority_root=authority,
+    )
+    assert live._receipt_bootstrap_inventory_sha256(receipt) is None
+
+    with pytest.raises(live.LegacyCutoverConflict, match="not owned by bootstrap"):
+        live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
+
+    assert not (authority / "ACTIVE_BOOTSTRAP").exists()
+
+
+def test_direct_zero_source_onboarding_requires_global_active(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    legacy_root = tmp_path / "legacy"
     monkeypatch.setenv("PHASE_LOOP_FABPUB_AUTHORITY_ROOT", str(tmp_path / "authority"))
+    monkeypatch.setenv("PHASE_LOOP_FABPUB_LEGACY_ROOTS", str(legacy_root))
 
     with pytest.raises(live.LegacyCutoverConflict, match="global ACTIVE"):
         live.onboard_zero_legacy_repository(repo)
 
     assert not live.repository_namespace_root(repo).exists()
+    assert not legacy_root.exists()
 
 
 def test_onboarding_rejects_unattested_canonical_state_before_latch_mutation(

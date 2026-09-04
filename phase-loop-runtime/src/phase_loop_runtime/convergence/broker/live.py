@@ -2166,14 +2166,38 @@ def _discover_hashed_legacy_roots(search_roots: tuple[Path, ...]) -> tuple[Path,
     return tuple(discovered[key] for key in sorted(discovered))
 
 
-def _classify_repository_namespace(snapshot: RepositorySnapshot, cutover_id: str) -> dict:
+def _receipt_bootstrap_inventory_sha256(
+    receipt: LegacyRepositoryPartitionReceipt,
+) -> str | None:
+    journal = Path(receipt.global_journal_path)
+    sealed = json.loads(
+        (journal.parent / f"{receipt.cutover_id}.inventory.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    return sealed.get("bootstrap_inventory_sha256")
+
+
+def _classify_repository_namespace(
+    snapshot: RepositorySnapshot,
+    cutover_id: str,
+    *,
+    bootstrap_inventory_sha256: str | None = None,
+) -> dict:
     root = snapshot.namespace_root
     files = _tree_file_inventory(root)
     if not root.exists():
         state = "absent"
     elif (snapshot.store_root / RECEIPT_FILENAME).exists():
         receipt = load_partition_receipt(snapshot.store_root)
-        if receipt is None or not receipt.zero_source or receipt.cutover_id != cutover_id:
+        if (
+            receipt is None
+            or not receipt.zero_source
+            or receipt.cutover_id != cutover_id
+            or bootstrap_inventory_sha256 is None
+            or _receipt_bootstrap_inventory_sha256(receipt)
+            != bootstrap_inventory_sha256
+        ):
             raise LegacyCutoverConflict(
                 f"repository {snapshot.identity} has a receipt not owned by bootstrap "
                 f"{cutover_id!r}"
@@ -2423,7 +2447,9 @@ def _revalidate_bootstrap_sources(inventory: dict) -> None:
             )
     for row in inventory["worktrees"]:
         current = _classify_repository_namespace(
-            repository_snapshot(row["worktree"]), inventory["cutover_id"]
+            repository_snapshot(row["worktree"]),
+            inventory["cutover_id"],
+            bootstrap_inventory_sha256=inventory["inventory_sha256"],
         )
         if current["canonical_repository_identity"] != row["canonical_repository_identity"]:
             raise LegacyCutoverConflict(
@@ -2768,6 +2794,10 @@ def onboard_zero_legacy_repository(
             bootstrap_inventory_sha256 = bootstrap["inventory_sha256"]
         else:
             roots = declared_legacy_roots()
+    if not global_active_authority_exists(roots, authority_root=authority_root):
+        raise LegacyCutoverConflict(
+            "zero-source onboarding requires a persistent global ACTIVE authority"
+        )
     with _hold_all(_zero_source_seal_lock_paths(roots, authority_root)):
         return _onboard_zero_legacy_repository_under_seal(
             worktree,
@@ -2812,6 +2842,15 @@ def _onboard_zero_legacy_repository_under_seal(
                 raise LegacyCutoverConflict(
                     f"existing zero-source receipt belongs to {existing.cutover_id!r}, "
                     f"not {cutover_id!r}"
+                )
+            if (
+                bootstrap_inventory_sha256 is not None
+                and _receipt_bootstrap_inventory_sha256(existing)
+                != bootstrap_inventory_sha256
+            ):
+                raise LegacyCutoverConflict(
+                    "existing zero-source receipt is not bound to the active "
+                    "bootstrap inventory"
                 )
             _prove_zero_source(snapshot, roots, "before_zero_source_proof")
             latch.mark_armed()
@@ -2931,13 +2970,7 @@ def _receipt_active_authority_exists(
         and receipt.zero_source
         and bootstrap["cutover_id"] == receipt.cutover_id
     ):
-        journal = Path(receipt.global_journal_path)
-        sealed = json.loads(
-            (journal.parent / f"{receipt.cutover_id}.inventory.json").read_text(
-                encoding="utf-8"
-            )
-        )
-        if sealed.get("bootstrap_inventory_sha256") == bootstrap["inventory_sha256"]:
+        if _receipt_bootstrap_inventory_sha256(receipt) == bootstrap["inventory_sha256"]:
             return True
     roots = tuple(Path(root) for root in receipt.legacy_root_inventory)
     if roots:
