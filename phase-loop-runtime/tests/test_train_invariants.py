@@ -2438,9 +2438,16 @@ class TestResidualInvariants:
 
         enqueue_argvs = [cmd for cmd in captured_merge_argvs if "--disable-auto" not in cmd]
         delete_branch_present = any("--delete-branch" in cmd for cmd in enqueue_argvs)
+        membership_queries = [
+            query
+            for query in captured_graphql
+            if query.startswith("query=query{")
+            and "isInMergeQueue" in query
+            and "dequeuePullRequest" not in query
+        ]
         dequeue_attempted = (
             any("dequeuePullRequest" in query for query in captured_graphql)
-            and sum("isInMergeQueue" in query for query in captured_graphql) >= 2
+            and len(membership_queries) >= 2
             and any("--disable-auto" in cmd for cmd in captured_merge_argvs)
             and queue_status_reads[0] >= 2
         )
@@ -2779,17 +2786,17 @@ class TestResidualInvariants:
             if preflight_has_model:
                 try:
                     client.preflight(expected_model=model)
-                except ChannelSidecarClientError as exc:
-                    if getattr(exc, "reason", None) != reason:
-                        defects.append(f"{scenario} preflight returned wrong reason")
+                except Exception as exc:
+                    if not isinstance(exc, ChannelSidecarClientError) or getattr(exc, "reason", None) != reason:
+                        defects.append(f"{scenario} preflight returned wrong error {exc!r}")
                 else:
                     defects.append(f"{scenario} preflight admitted invalid model")
             if send_has_model:
                 try:
                     client.send_and_wait("test", expected_model=model)
-                except ChannelSidecarClientError as exc:
-                    if getattr(exc, "reason", None) != reason:
-                        defects.append(f"{scenario} send returned wrong reason")
+                except Exception as exc:
+                    if not isinstance(exc, ChannelSidecarClientError) or getattr(exc, "reason", None) != reason:
+                        defects.append(f"{scenario} send returned wrong error {exc!r}")
                 else:
                     defects.append(f"{scenario} send admitted invalid model")
             if any(method == "POST" and "/message" in url for method, url in request_log):
@@ -2806,14 +2813,14 @@ class TestResidualInvariants:
             try:
                 match_record = match_client.preflight(expected_model=model)
                 defects.extend(validate_surface("session_preflight_bound", match_record, model, "bound", None))
-            except ChannelSidecarClientError as exc:
+            except Exception as exc:
                 defects.append(f"matching preflight failed: {exc}")
         if send_has_model:
             try:
                 reply = match_client.send_and_wait("test", expected_model=model)
                 if not reply or not any(method == "POST" and "/message" in url for method, url in match_log):
                     defects.append("matching session did not deliver")
-            except (ChannelSidecarClientError, TypeError) as exc:
+            except Exception as exc:
                 defects.append(f"matching send failed: {exc}")
 
         # Drive each route through the real runner and command-adapter launcher.
@@ -2878,7 +2885,7 @@ class TestResidualInvariants:
                 defects.extend(validate_surface(f"handoff_{state}", handoff_text, actual, state, caveat))
                 if runner_snapshot.repo != str(runner_repo):
                     defects.append(f"real runner {state} snapshot belongs to wrong repository")
-            except (TypeError, ValueError, OSError, json.JSONDecodeError) as exc:
+            except Exception as exc:
                 defects.append(f"real runner {state} provenance flow failed: {exc}")
 
         if defects:
@@ -2925,6 +2932,16 @@ class TestResidualInvariants:
                 _field(event, "action") == expected_action
                 and _field(event, "status") == "blocked"
                 and ("lineage" in searchable or "nested" in searchable)
+            )
+
+        def _is_trusted_success_summary(payload) -> bool:
+            if not isinstance(payload, dict):
+                return False
+            return (
+                payload.get("verification_status") == "passed"
+                and not payload.get("dirty_paths")
+                and payload.get("terminal_status")
+                not in {"blocked", "failed", "interrupted", "invalidated"}
             )
 
         def _setup_repair_repo(repo_dir: Path, pid: int, *, phase_status: str = "blocked"):
@@ -3039,7 +3056,6 @@ class TestResidualInvariants:
 
         # 4. Child-write negative control: child writes to README.md and fails
         repo_child, roadmap_child, term_file_child, _ = _setup_repair_repo(tmp_path / "repo-child-writes", stale_pid, phase_status="blocked")
-        term_bytes_child_before = term_file_child.read_bytes()
 
         def fake_launch_child(spec, dry_run=False, log_path=None, stream_output=False, **kwargs):
             (repo_child / "README.md").write_text("child modified content", encoding="utf-8")
@@ -3048,8 +3064,20 @@ class TestResidualInvariants:
         with patch("phase_loop_runtime.runner.launch_with_spec", side_effect=fake_launch_child):
             run_loop(repo_child, roadmap_child, max_phases=1)
 
-        term_bytes_child_after = term_file_child.read_bytes() if term_file_child.exists() else None
-        child_preserved_trusted_terminal = (term_bytes_child_before == term_bytes_child_after)
+        child_terminal_payload = None
+        if term_file_child.exists():
+            try:
+                child_terminal_payload = json.loads(term_file_child.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+        child_events = read_events(repo_child)
+        child_last_event = child_events[-1] if child_events else None
+        child_event_metadata = _field(child_last_event, "metadata") or {}
+        child_event_terminal = _field(child_event_metadata, "terminal_summary")
+        child_preserved_trusted_terminal = (
+            _is_trusted_success_summary(child_terminal_payload)
+            or _is_trusted_success_summary(child_event_terminal)
+        )
 
         # 5. No-diff interrupted repair must preserve the trusted terminal bytes.
         repo_no_diff, roadmap_no_diff, term_file_no_diff, _ = _setup_repair_repo(
@@ -3086,7 +3114,9 @@ class TestResidualInvariants:
             if not resume_refused_for_lineage:
                 defect_details.append("live resume lease did not terminalize with a lineage-specific blocker")
             if child_preserved_trusted_terminal:
-                defect_details.append("old trusted terminal preserved when child wrote to repo")
+                defect_details.append(
+                    "child write left trusted success semantics in the terminal file or latest event"
+                )
             if not no_diff_preserved_trusted_terminal:
                 defect_details.append("trusted terminal changed after an interrupted no-diff repair")
             if not stale_launch_called[0]:
