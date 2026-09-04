@@ -566,9 +566,11 @@ def _normalized_precompletion_digest(evidence: dict[str, Any]) -> str:
     return _sha256(_canonical_bytes(normalized))
 
 
-def _completion_event(request: dict[str, Any]) -> dict[str, Any]:
+def _completion_event(
+    request: dict[str, Any], *, timestamp: str = "2026-09-04T00:00:00Z"
+) -> dict[str, Any]:
     return {
-        "timestamp": "2026-09-04T00:00:00Z",
+        "timestamp": timestamp,
         "phase": "HARDEN",
         "action": "phase_execute",
         "status": "complete",
@@ -582,6 +584,22 @@ def _completion_event(request: dict[str, Any]) -> dict[str, Any]:
             }
         },
     }
+
+
+def _history_event() -> dict[str, Any]:
+    return {
+        "timestamp": "2026-09-03T00:00:00Z",
+        "phase": "SCHED",
+        "action": "phase_execute",
+        "status": "complete",
+        "metadata": {"history": True},
+    }
+
+
+def _ledger_bytes(request: dict[str, Any]) -> bytes:
+    return _canonical_bytes(_history_event()) + _canonical_bytes(
+        _completion_event(request)
+    )
 
 
 def _contained_ref_path(root: Path, ref: dict[str, str], label: str) -> Path:
@@ -835,17 +853,51 @@ def test_harden_producer_derives_live_facts_without_historical_literals() -> Non
         node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
     }
     assert not forbidden & referenced
-    evasive_getattrs = {
-        node.args[1].value
+
+    def static_string(node: ast.AST) -> str | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+            left = static_string(node.left)
+            right = static_string(node.right)
+            if left is not None and right is not None:
+                return left + right
+        return None
+
+    alias_names = {
+        name
         for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "getattr"
-        and len(node.args) >= 2
-        and isinstance(node.args[1], ast.Constant)
-        and isinstance(node.args[1].value, str)
+        if isinstance(node, ast.alias)
+        for name in (node.name.rsplit(".", 1)[-1], node.asname)
+        if name is not None
     }
-    assert not {"_fixture", "self_test"} & evasive_getattrs
+    dynamic_accesses: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Subscript):
+            value = static_string(node.slice)
+            if value is not None:
+                dynamic_accesses.add(value)
+        if not isinstance(node, ast.Call):
+            continue
+        function_name = (
+            node.func.id
+            if isinstance(node.func, ast.Name)
+            else node.func.attr
+            if isinstance(node.func, ast.Attribute)
+            else ""
+        )
+        argument_index = 0 if function_name == "attrgetter" else 1
+        if function_name in {
+            "attrgetter",
+            "delattr",
+            "getattr",
+            "hasattr",
+            "setattr",
+        } and len(node.args) > argument_index:
+            value = static_string(node.args[argument_index])
+            if value is not None:
+                dynamic_accesses.add(value)
+    assert not {"_fixture", "self_test"} & (alias_names | dynamic_accesses)
     for literal in (
         "16 failed, 439 passed, 3 skipped",
         "454 passed",
@@ -1064,26 +1116,58 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
 
         rejected(f"{label}-ancestor-symlink", ancestor_symlink, "symlink")
 
-    def replace_artifact(
-        context: dict[str, Any], artifact: str, value: Any
+    def replace_input(
+        context: dict[str, Any], group: str, name: str, value: Any
     ) -> None:
-        ref = context["manifest"]["artifacts"][artifact]
+        ref = context["manifest"][group][name]
         data = value if isinstance(value, bytes) else _canonical_bytes(value)
         (context["source_root"] / ref["path"]).write_bytes(data)
         ref["sha256"] = _sha256(data)
 
-    rejected(
-        "secret",
-        lambda context: replace_artifact(
+    def replace_artifact(context: dict[str, Any], artifact: str, value: Any) -> None:
+        replace_input(context, "artifacts", artifact, value)
+
+    secret_value = "synthetic-token-0123456789abcdef"
+
+    def secret_json(
+        group: str, name: str
+    ) -> Callable[[dict[str, Any]], None]:
+        def mutate(context: dict[str, Any]) -> None:
+            ref = context["manifest"][group][name]
+            record = _strict_json(context["source_root"] / ref["path"])
+            record["secret_probe"] = secret_value
+            replace_input(context, group, name, record)
+
+        return mutate
+
+    for label, group, name in (
+        ("authority", "artifacts", "plan_authority"),
+        ("ci", "artifacts", "candidate_ci"),
+        ("review", "artifacts", "candidate_review_request"),
+        ("broker", "artifacts", "candidate_broker_receipts"),
+        ("role", "role_attestations", "coordinator"),
+    ):
+        rejected(f"secret-{label}", secret_json(group, name), "secret")
+
+    def secret_raw(context: dict[str, Any]) -> None:
+        ref = context["manifest"]["artifacts"]["candidate_focused_raw"]
+        data = (context["source_root"] / ref["path"]).read_bytes()
+        replace_artifact(
             context,
-            "candidate_ci",
-            {
-                "schema": "harden_ci_result.v1",
-                "api_key": "synthetic-token-0123456789abcdef",
-            },
-        ),
-        "secret",
-    )
+            "candidate_focused_raw",
+            data + f"api_key={secret_value}\n".encode(),
+        )
+
+    rejected("secret-raw", secret_raw, "secret")
+
+    def secret_junit(context: dict[str, Any]) -> None:
+        data = _junit_bytes(("passed", "passed")).replace(
+            b"</testsuite>",
+            f"<system-out>api_key={secret_value}</system-out></testsuite>".encode(),
+        )
+        replace_artifact(context, "candidate_focused_junit", data)
+
+    rejected("secret-junit", secret_junit, "secret")
     def lie_in_json(
         artifact: str, mutate: Callable[[dict[str, Any]], None]
     ) -> Callable[[dict[str, Any]], None]:
@@ -1112,6 +1196,49 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
             ),
         ),
         "SL-0 authority does not match live Git",
+    )
+    def ci_head_lie(context: dict[str, Any]) -> None:
+        ref = context["manifest"]["artifacts"]["candidate_ci"]
+        record = _strict_json(context["source_root"] / ref["path"])
+        record["head"] = context["expected"]["commits"]["landing"]
+        replace_artifact(context, "candidate_ci", record)
+
+    rejected("ci-head-live-git-lie", ci_head_lie, "CI head does not match live Git")
+
+    def role_session_mismatch(context: dict[str, Any]) -> None:
+        ref = context["manifest"]["role_attestations"]["coordinator"]
+        record = _strict_json(context["source_root"] / ref["path"])
+        record["session_sha256"] = context["sessions"]["reviewer"]
+        replace_input(context, "role_attestations", "coordinator", record)
+
+    rejected("role-session-mismatch", role_session_mismatch, "role session mismatch")
+
+    def broker_duplicate_nonce(context: dict[str, Any]) -> None:
+        ref = context["manifest"]["artifacts"]["candidate_broker_receipts"]
+        record = _strict_json(context["source_root"] / ref["path"])
+        record["receipts"][1]["operation_nonce"] = record["receipts"][0][
+            "operation_nonce"
+        ]
+        replace_artifact(context, "candidate_broker_receipts", record)
+
+    rejected(
+        "broker-within-class-duplicate-nonce",
+        broker_duplicate_nonce,
+        "duplicate input operation nonce",
+    )
+
+    def role_duplicate_nonce(context: dict[str, Any]) -> None:
+        coordinator_ref = context["manifest"]["role_attestations"]["coordinator"]
+        coordinator = _strict_json(context["source_root"] / coordinator_ref["path"])
+        reviewer_ref = context["manifest"]["role_attestations"]["reviewer"]
+        reviewer = _strict_json(context["source_root"] / reviewer_ref["path"])
+        reviewer["operation_nonce"] = coordinator["operation_nonce"]
+        replace_input(context, "role_attestations", "reviewer", reviewer)
+
+    rejected(
+        "role-within-class-duplicate-nonce",
+        role_duplicate_nonce,
+        "duplicate input operation nonce",
     )
 
     for raw_name, junit_name in RAW_JUNIT_PAIRS:
@@ -1259,7 +1386,7 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
         assert context["registry"].read_bytes() == registry_before_bytes
         canonical_ledger = context["repo"] / ".phase-loop/events.jsonl"
         canonical_ledger.parent.mkdir(parents=True)
-        canonical_ledger.write_bytes(_canonical_bytes(_completion_event(request)))
+        canonical_ledger.write_bytes(_ledger_bytes(request))
         sealed_path = context["root"] / "sealed-evidence.json"
         sealed_run = _seal_command(context, canonical_ledger, sealed_path)
         assert sealed_run.returncode == 0, sealed_run.stderr
@@ -1301,7 +1428,7 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
             _evidence, request = _assert_prepared(context)
             canonical = context["repo"] / ".phase-loop/events.jsonl"
             canonical.parent.mkdir(parents=True)
-            canonical.write_bytes(_canonical_bytes(_completion_event(request)))
+            canonical.write_bytes(_ledger_bytes(request))
             ledger_argument = mutate(context, canonical, request)
             output = context["root"] / "must-not-exist.json"
             registry_before = context["registry"].read_bytes()
@@ -1325,7 +1452,7 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
     def zero_event(
         _context: dict[str, Any], canonical: Path, _request: dict[str, Any]
     ) -> Path:
-        canonical.write_bytes(b"")
+        canonical.write_bytes(_canonical_bytes(_history_event()))
         return canonical
 
     seal_rejected("zero-event", zero_event, "missing HARDEN completion")
@@ -1334,12 +1461,45 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
         _context: dict[str, Any], canonical: Path, request: dict[str, Any]
     ) -> Path:
         canonical.write_bytes(
-            _canonical_bytes(_completion_event(request))
+            _canonical_bytes(_history_event())
             + _canonical_bytes(_completion_event(request))
+            + _canonical_bytes(
+                _completion_event(request, timestamp="2026-09-04T00:00:01Z")
+            )
         )
         return canonical
 
     seal_rejected("duplicate-event", duplicate, "duplicate HARDEN completion")
+
+    def registry_evidence_collision(
+        context: dict[str, Any], canonical: Path, _request: dict[str, Any]
+    ) -> Path:
+        registry = _strict_json(context["registry"])
+        registry["evidence_ids"].append(context["expected"]["evidence_id"])
+        context["registry"].write_bytes(_canonical_bytes(registry))
+        return canonical
+
+    seal_rejected(
+        "seal-registry-evidence-collision",
+        registry_evidence_collision,
+        "reused evidence_id",
+    )
+
+    def registry_nonce_collision(
+        context: dict[str, Any], canonical: Path, _request: dict[str, Any]
+    ) -> Path:
+        registry = _strict_json(context["registry"])
+        registry["operation_nonces"].append(
+            context["expected"]["operation_nonces"][0]
+        )
+        context["registry"].write_bytes(_canonical_bytes(registry))
+        return canonical
+
+    seal_rejected(
+        "seal-registry-nonce-collision",
+        registry_nonce_collision,
+        "reused operation nonce",
+    )
 
     def stale_precompletion(
         context: dict[str, Any], canonical: Path, _request: dict[str, Any]
@@ -1364,7 +1524,9 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
             event = _completion_event(request)
             proof = event["metadata"]["harden_completion"]
             proof[field] = "f" * len(proof[field])
-            canonical.write_bytes(_canonical_bytes(event))
+            canonical.write_bytes(
+                _canonical_bytes(_history_event()) + _canonical_bytes(event)
+            )
             return canonical
 
         return mutate
