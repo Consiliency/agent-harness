@@ -28,7 +28,11 @@ OPENAI_HEAVY_MODEL = "gpt-6-astra"
 # codex regular (implementer) model — hoisted here so EXECUTOR_MODEL_OVERRIDES below
 # can reference it. Equals CODEX_REGULAR_MODEL in the tier matrix (single source).
 OPENAI_IMPLEMENTER_MODEL = "gpt-5.6-terra"
-OPENCODE_OPENAI_HEAVY_MODEL = "openai/gpt-6-astra"
+# opencode heavy STAYS on sol: opencode resolves models from its own provider catalog and
+# rejects `openai/gpt-6-astra` (`ProviderModelNotFoundError: Model not found`) on 1.18.27
+# and 1.18.28 (measured 2026-09-04 with `opencode run --model …`; `openai/gpt-5.6-sol`
+# launches). Bump this to `openai/gpt-6-astra` once `opencode models openai` lists it.
+OPENCODE_OPENAI_HEAVY_MODEL = "openai/gpt-5.6-sol"
 # opencode regular (implementer) model — hoisted here so EXECUTOR_MODEL_OVERRIDES below
 # can reference it (same reason as OPENAI_IMPLEMENTER_MODEL). Provider-qualified prefix.
 OPENCODE_OPENAI_IMPLEMENTER_MODEL = "openai/gpt-5.6-terra"
@@ -395,8 +399,9 @@ def supervise_selection(vendor: str = "claude") -> TierResolution:
 #     class/action by grok's documented SINGLE-MODEL design; the per-tier matrix ids
 #     (grok-4.3/grok-build-0.1, all volatile) are the taxonomy target, not yet live.
 #   • opencode — NO LONGER a bypass: its class AND executor paths now AGREE (both use
-#     the provider-qualified `openai/gpt-6-astra` / `openai/gpt-5.6-{terra,luna}` at heavy/regular/lite;
-#     execute/repair → terra, planning/review → astra; CR round-4 fix). It is not DERIVED
+#     the provider-qualified `openai/gpt-5.6-{sol,terra,luna}` at heavy/regular/lite;
+#     execute/repair → terra, planning/review → sol; CR round-4 fix). opencode heavy is
+#     NOT gpt-6-astra yet — see the OPENCODE_OPENAI_HEAVY_MODEL note at the top. It is not DERIVED
 #     from TIER_MODELS only because opencode is not a tier-matrix vendor (its ids carry
 #     the `openai/` transport prefix); the mapping is hand-maintained but tier-consistent.
 #   • pi class path AND pi executor path — both the `auto` router alias (pi has no
