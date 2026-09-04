@@ -63,8 +63,6 @@ RAW_JUNIT_PAIRS = (
     ("canonical_main_broad_raw", "canonical_main_broad_junit"),
 )
 ROLE_NAMES = ("coordinator", "author", "reviewer")
-HEX64_A = "a" * 64
-HEX64_B = hashlib.sha256(b"01a04424-61d9-7712-94a6-e058cbe1349e").hexdigest()
 
 
 def _repo_root() -> Path:
@@ -163,6 +161,38 @@ def _junit_bytes(outcomes: tuple[str, ...]) -> bytes:
         elif outcome == "skipped":
             ElementTree.SubElement(case, "skipped", message="capability absent")
     return ElementTree.tostring(suite, encoding="utf-8", xml_declaration=True)
+
+
+def _fixture_variants(seed: Path) -> tuple[
+    tuple[str, str, tuple[str, ...], tuple[str, ...]], ...
+]:
+    suffix = _sha256(os.fsencode(str(seed.resolve())))[:12]
+    runtime_variant = f"runtime-{suffix}"
+    runtime_red = ("failed",) * (2 + int(suffix[0], 16) % 3) + (
+        "passed",
+        "skipped",
+    )
+    runtime_final = ("passed",) * (2 + int(suffix[1], 16) % 4)
+    return (
+        (
+            "alpha",
+            "codex-gpt-5.6-terra",
+            ("failed", "passed", "skipped"),
+            ("passed", "passed"),
+        ),
+        (
+            "beta",
+            "claude-fable-5",
+            ("failed", "failed", "passed", "passed"),
+            ("passed", "passed", "passed"),
+        ),
+        (
+            runtime_variant,
+            f"runtime-vendor-{suffix}",
+            runtime_red,
+            runtime_final,
+        ),
+    )
 
 
 def _producer_module(case: str) -> Any:
@@ -267,6 +297,11 @@ def _raw_fixture(
     operation_nonces = [
         _sha256(f"{variant}:operation:{index}".encode()) for index in range(13)
     ]
+    ci_seed = int(_sha256(f"{variant}:ci".encode())[:12], 16)
+    ci_run_ids = {
+        "candidate": ci_seed * 2 + 1,
+        "canonical_main": ci_seed * 2 + 2,
+    }
     routes = [
         {
             "harness": harness,
@@ -330,12 +365,13 @@ def _raw_fixture(
         ("candidate", candidate),
         ("canonical_main", canonical_main),
     ):
+        run_id = ci_run_ids[round_name]
         ci = {
             "schema": "harden_ci_result.v1",
             "provider": "github_actions",
             "repository": "Consiliency/agent-harness",
             "head": head,
-            "run_id": 100 if round_name == "candidate" else 200,
+            "run_id": run_id,
             "workflow": "test",
             "event": "pull_request" if round_name == "candidate" else "push",
             "run_attempt": 1,
@@ -380,9 +416,7 @@ def _raw_fixture(
             _canonical_bytes(receipts),
         )
     sessions = {
-        "coordinator": HEX64_A,
-        "author": HEX64_B,
-        "reviewer": _sha256(f"{variant}:reviewer-session".encode()),
+        role: _sha256(f"{variant}:{role}-session".encode()) for role in ROLE_NAMES
     }
     role_attestations = {
         role: _write_ref(
@@ -438,7 +472,7 @@ def _raw_fixture(
                 }
             ],
         }
-        for round_name, run_id in (("candidate", 100), ("canonical_main", 200))
+        for round_name, run_id in ci_run_ids.items()
     }
     ci_query = root / "fake-gh"
     ci_query.write_text(
@@ -480,7 +514,7 @@ def _raw_fixture(
             "evidence_ids": [unrelated_registry_id],
             "operation_nonces": [unrelated_registry_nonce],
         },
-        "ci_run_ids": {"candidate": 100, "canonical_main": 200},
+        "ci_run_ids": ci_run_ids,
     }
     return {
         "root": root,
@@ -596,10 +630,24 @@ def _history_event() -> dict[str, Any]:
     }
 
 
-def _ledger_bytes(request: dict[str, Any]) -> bytes:
+def _blocked_harden_event() -> dict[str, Any]:
+    return {
+        "timestamp": "2026-09-03T12:00:00Z",
+        "phase": "HARDEN",
+        "action": "phase_execute",
+        "status": "blocked",
+        "metadata": {"history": True},
+    }
+
+
+def _ledger_history_bytes() -> bytes:
     return _canonical_bytes(_history_event()) + _canonical_bytes(
-        _completion_event(request)
+        _blocked_harden_event()
     )
+
+
+def _ledger_bytes(request: dict[str, Any]) -> bytes:
+    return _ledger_history_bytes() + _canonical_bytes(_completion_event(request))
 
 
 def _contained_ref_path(root: Path, ref: dict[str, str], label: str) -> Path:
@@ -871,6 +919,11 @@ def test_harden_producer_derives_live_facts_without_historical_literals() -> Non
         for name in (node.name.rsplit(".", 1)[-1], node.asname)
         if name is not None
     }
+    reconstructed_strings = {
+        value
+        for node in ast.walk(tree)
+        if (value := static_string(node)) is not None
+    }
     dynamic_accesses: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Subscript):
@@ -897,7 +950,9 @@ def test_harden_producer_derives_live_facts_without_historical_literals() -> Non
             value = static_string(node.args[argument_index])
             if value is not None:
                 dynamic_accesses.add(value)
-    assert not {"_fixture", "self_test"} & (alias_names | dynamic_accesses)
+    assert not {"_fixture", "self_test"} & (
+        alias_names | reconstructed_strings | dynamic_accesses
+    )
     for literal in (
         "16 failed, 439 passed, 3 skipped",
         "454 passed",
@@ -910,20 +965,7 @@ def test_harden_producer_derives_live_facts_without_historical_literals() -> Non
 
     facts_seen = []
     with tempfile.TemporaryDirectory(prefix="harden-live-facts-") as td:
-        for variant, author, red, final in (
-            (
-                "alpha",
-                "codex-gpt-5.6-terra",
-                ("failed", "passed", "skipped"),
-                ("passed", "passed"),
-            ),
-            (
-                "beta",
-                "claude-fable-5",
-                ("failed", "failed", "passed", "passed"),
-                ("passed", "passed", "passed"),
-            ),
-        ):
+        for variant, author, red, final in _fixture_variants(Path(td)):
             context = _raw_fixture(
                 Path(td) / variant,
                 variant=variant,
@@ -970,27 +1012,16 @@ def test_harden_producer_derives_live_facts_without_historical_literals() -> Non
         "author_vendor",
         "routes",
     ):
-        assert facts_seen[0][key] != facts_seen[1][key]
+        assert len({_canonical_bytes(facts[key]) for facts in facts_seen}) == len(
+            facts_seen
+        )
 
 
 def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
     _producer_module("assemble")
 
     with tempfile.TemporaryDirectory(prefix="harden-prepare-success-") as td:
-        for variant, author, red, final in (
-            (
-                "alpha",
-                "codex-gpt-5.6-terra",
-                ("failed", "passed", "skipped"),
-                ("passed", "passed"),
-            ),
-            (
-                "beta",
-                "claude-fable-5",
-                ("failed", "failed", "passed", "passed"),
-                ("passed", "passed", "passed"),
-            ),
-        ):
+        for variant, author, red, final in _fixture_variants(Path(td)):
             context = _raw_fixture(
                 Path(td) / variant,
                 variant=variant,
@@ -1020,6 +1051,33 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
             assert message.lower() in diagnostic, diagnostic
             _assert_no_prepare_output(context)
             assert context["registry"].read_bytes() == registry_before
+
+    rejected(
+        "wrong-manifest-schema",
+        lambda context: context["manifest"].__setitem__("schema", "wrong.v1"),
+        "input manifest schema mismatch",
+    )
+    rejected(
+        "unknown-manifest-key",
+        lambda context: context["manifest"].__setitem__("unknown", True),
+        "unknown input manifest field",
+    )
+    for artifact in RAW_ARTIFACT_NAMES:
+        rejected(
+            f"missing-artifact-{artifact}",
+            lambda context, artifact=artifact: context["manifest"][
+                "artifacts"
+            ].pop(artifact),
+            "missing required input",
+        )
+    for role in ROLE_NAMES:
+        rejected(
+            f"missing-role-{role}",
+            lambda context, role=role: context["manifest"][
+                "role_attestations"
+            ].pop(role),
+            "missing required input",
+        )
 
     rejected(
         "caller-receipts",
@@ -1129,45 +1187,43 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
 
     secret_value = "synthetic-token-0123456789abcdef"
 
-    def secret_json(
+    def secret_input(
         group: str, name: str
     ) -> Callable[[dict[str, Any]], None]:
         def mutate(context: dict[str, Any]) -> None:
             ref = context["manifest"][group][name]
-            record = _strict_json(context["source_root"] / ref["path"])
-            record["secret_probe"] = secret_value
-            replace_input(context, group, name, record)
+            path = context["source_root"] / ref["path"]
+            if name.endswith("_raw"):
+                value: Any = path.read_bytes() + f"api_key={secret_value}\n".encode()
+            elif name.endswith("_junit"):
+                value = path.read_bytes().replace(
+                    b"</testsuite>",
+                    (
+                        f"<system-out>api_key={secret_value}</system-out>"
+                        "</testsuite>"
+                    ).encode(),
+                )
+                assert value != path.read_bytes()
+            else:
+                value = _strict_json(path)
+                value["secret_probe"] = secret_value
+            replace_input(context, group, name, value)
 
         return mutate
 
-    for label, group, name in (
-        ("authority", "artifacts", "plan_authority"),
-        ("ci", "artifacts", "candidate_ci"),
-        ("review", "artifacts", "candidate_review_request"),
-        ("broker", "artifacts", "candidate_broker_receipts"),
-        ("role", "role_attestations", "coordinator"),
-    ):
-        rejected(f"secret-{label}", secret_json(group, name), "secret")
-
-    def secret_raw(context: dict[str, Any]) -> None:
-        ref = context["manifest"]["artifacts"]["candidate_focused_raw"]
-        data = (context["source_root"] / ref["path"]).read_bytes()
-        replace_artifact(
-            context,
-            "candidate_focused_raw",
-            data + f"api_key={secret_value}\n".encode(),
+    for artifact in RAW_ARTIFACT_NAMES:
+        rejected(
+            f"secret-artifact-{artifact}",
+            secret_input("artifacts", artifact),
+            "secret",
+        )
+    for role in ROLE_NAMES:
+        rejected(
+            f"secret-role-{role}",
+            secret_input("role_attestations", role),
+            "secret",
         )
 
-    rejected("secret-raw", secret_raw, "secret")
-
-    def secret_junit(context: dict[str, Any]) -> None:
-        data = _junit_bytes(("passed", "passed")).replace(
-            b"</testsuite>",
-            f"<system-out>api_key={secret_value}</system-out></testsuite>".encode(),
-        )
-        replace_artifact(context, "candidate_focused_junit", data)
-
-    rejected("secret-junit", secret_junit, "secret")
     def lie_in_json(
         artifact: str, mutate: Callable[[dict[str, Any]], None]
     ) -> Callable[[dict[str, Any]], None]:
@@ -1316,6 +1372,18 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
             "reused operation nonce",
         )
 
+    def duplicate_review_request_nonce(context: dict[str, Any]) -> None:
+        ref = context["manifest"]["artifacts"]["canonical_main_review_request"]
+        record = _strict_json(context["source_root"] / ref["path"])
+        record["operation_nonce"] = context["expected"]["operation_nonces"][0]
+        replace_artifact(context, "canonical_main_review_request", record)
+
+    rejected(
+        "duplicate-review-request-nonce",
+        duplicate_review_request_nonce,
+        "duplicate input operation nonce",
+    )
+
     def duplicate_input_nonce(context: dict[str, Any]) -> None:
         nonce = context["expected"]["operation_nonces"][0]
         broker_ref = context["manifest"]["artifacts"]["candidate_broker_receipts"]
@@ -1452,7 +1520,7 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
     def zero_event(
         _context: dict[str, Any], canonical: Path, _request: dict[str, Any]
     ) -> Path:
-        canonical.write_bytes(_canonical_bytes(_history_event()))
+        canonical.write_bytes(_ledger_history_bytes())
         return canonical
 
     seal_rejected("zero-event", zero_event, "missing HARDEN completion")
@@ -1461,7 +1529,7 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
         _context: dict[str, Any], canonical: Path, request: dict[str, Any]
     ) -> Path:
         canonical.write_bytes(
-            _canonical_bytes(_history_event())
+            _ledger_history_bytes()
             + _canonical_bytes(_completion_event(request))
             + _canonical_bytes(
                 _completion_event(request, timestamp="2026-09-04T00:00:01Z")
@@ -1486,20 +1554,26 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
     )
 
     def registry_nonce_collision(
-        context: dict[str, Any], canonical: Path, _request: dict[str, Any]
-    ) -> Path:
-        registry = _strict_json(context["registry"])
-        registry["operation_nonces"].append(
-            context["expected"]["operation_nonces"][0]
-        )
-        context["registry"].write_bytes(_canonical_bytes(registry))
-        return canonical
+        index: int,
+    ) -> Callable[[dict[str, Any], Path, dict[str, Any]], Path]:
+        def mutate(
+            context: dict[str, Any], canonical: Path, _request: dict[str, Any]
+        ) -> Path:
+            registry = _strict_json(context["registry"])
+            registry["operation_nonces"].append(
+                context["expected"]["operation_nonces"][index]
+            )
+            context["registry"].write_bytes(_canonical_bytes(registry))
+            return canonical
 
-    seal_rejected(
-        "seal-registry-nonce-collision",
-        registry_nonce_collision,
-        "reused operation nonce",
-    )
+        return mutate
+
+    for index in range(13):
+        seal_rejected(
+            f"seal-registry-nonce-collision-{index}",
+            registry_nonce_collision(index),
+            "reused operation nonce",
+        )
 
     def stale_precompletion(
         context: dict[str, Any], canonical: Path, _request: dict[str, Any]
@@ -1525,7 +1599,11 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
             proof = event["metadata"]["harden_completion"]
             proof[field] = "f" * len(proof[field])
             canonical.write_bytes(
-                _canonical_bytes(_history_event()) + _canonical_bytes(event)
+                _ledger_history_bytes()
+                + _canonical_bytes(event)
+                + _canonical_bytes(
+                    _completion_event(request, timestamp="2026-09-04T00:00:01Z")
+                )
             )
             return canonical
 
