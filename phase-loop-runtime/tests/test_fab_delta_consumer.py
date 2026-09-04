@@ -379,8 +379,15 @@ class DeltaReadmitTransactionTest(GitRepoTestCase):
         base = self.commit("c0 base")
         self.push_main()
 
-        live.onboard_zero_legacy_repository(self.repo)
-        live.fabpub_activation_barrier([self.repo])
+        bootstrap_inventory = live.probe_zero_history_bootstrap(
+            cutover_id="fab-delta-test-bootstrap",
+            authority_root=self.repo.parent / "fabpub-authority",
+            worktrees=(self.repo,),
+            search_roots=(self.repo.parent,),
+        )
+        live.bootstrap_zero_history_authority(
+            bootstrap_inventory, confirmed_zero_history=True
+        )
         store_root = live.repository_broker_namespace(self.repo)
         identity = live.canonical_repository_identity(self.repo)
 

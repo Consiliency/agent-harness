@@ -6,6 +6,24 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Explicit zero-history FABPUB authority bootstrap (Consiliency/agent-harness#763)
+
+- Add a two-step `phase-loop fabpub-bootstrap` command for hosts with no
+  compatible legacy run-train allocator. The read-only probe seals canonical
+  repository namespaces, declared and discovered legacy roots, and classified
+  standalone historical evidence; apply revalidates that inventory under the
+  persistent authority lock and requires explicit zero-history confirmation.
+- The dedicated bootstrap journal drains every repository before activating,
+  creates no legacy archive or retirement tombstone, and is discoverable from a
+  fresh process at `$XDG_STATE_HOME/phase-loop/fabpub/authority-v1` (or the
+  documented override). Existing non-empty v2 cutover bytes remain unchanged.
+- Zero-source onboarding now requires global `ACTIVE` authority and cannot
+  promote `LEGACY_OPEN` directly to `ACTIVE`. Manifest-driven barriers complete
+  their global `ACTIVE` transition before onboarding or leasing repositories.
+- This is an unreleased runtime change only. Omnigent upstream v0.12 and the
+  separate Omniagent transport release `0.7.0` are not phase-loop package
+  versions; the governed runtime release remains owned by agent-harness#710.
+
 ### CI: pull requests defer the chronology node; a red landing push files an issue (Consiliency/agent-harness#746)
 
 - `ci/chronology-scope.sh`'s table narrows from "the runtime package or the CI plumbing" to

@@ -816,6 +816,27 @@ def build_parser() -> argparse.ArgumentParser:
                 default="json-schema",
                 help="Output format: a declared JSON-Schema (default) or the flat field-list gp consumes.",
             )
+    fabpub_bootstrap_sub = subparsers.add_parser(
+        "fabpub-bootstrap",
+        help="Probe or apply the explicit zero-history FABPUB authority bootstrap.",
+    )
+    fabpub_mode = fabpub_bootstrap_sub.add_mutually_exclusive_group(required=True)
+    fabpub_mode.add_argument("--probe", action="store_true")
+    fabpub_mode.add_argument("--apply", action="store_true")
+    fabpub_bootstrap_sub.add_argument("--inventory", required=True, metavar="PATH")
+    fabpub_bootstrap_sub.add_argument("--cutover-id", default="fabpub-zero-history-v1")
+    fabpub_bootstrap_sub.add_argument("--authority-root")
+    fabpub_bootstrap_sub.add_argument("--worktree", action="append", default=[])
+    fabpub_bootstrap_sub.add_argument("--legacy-root", action="append", default=[])
+    fabpub_bootstrap_sub.add_argument(
+        "--historical-evidence-root", action="append", default=[]
+    )
+    fabpub_bootstrap_sub.add_argument("--search-root", action="append", default=[])
+    fabpub_bootstrap_sub.add_argument("--confirm-zero-history", action="store_true")
+    fabpub_bootstrap_sub.add_argument(
+        "--json", action="store_true", default=argparse.SUPPRESS
+    )
+
     # run-train: cross-repo release-train coordinator (P3, #29).
     # Registered outside the common-args loop because it has its own argument
     # set (--train, --governed, --workspace-root, --ledger-dir) and does NOT
@@ -1323,6 +1344,8 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
             record.update(_ATTEST_PREIMPORT_BOOTSTRAP)
         print(json.dumps(record, indent=2, sort_keys=True) if args.json else json.dumps(record, sort_keys=True))
         return 0
+    if command == "fabpub-bootstrap":
+        return _fabpub_bootstrap_command(args=args)
     if command == "run-train":
         return _run_train_command(parser=parser, args=args)
     if command == "train-status":
@@ -3973,6 +3996,54 @@ def _fleet_map_command(*, args: argparse.Namespace, as_json: bool) -> int:
     # Informational extractor, not a gate: edges are the expected, useful
     # output, so only a setup problem (missing repo path) is an error.
     return 2 if result.has_setup_errors() else 0
+
+
+def _fabpub_bootstrap_command(*, args: argparse.Namespace) -> int:
+    from .convergence.broker.live import (
+        LegacyCutoverConflict,
+        bootstrap_zero_history_authority,
+        load_zero_history_inventory,
+        probe_zero_history_bootstrap,
+        write_zero_history_inventory,
+    )
+
+    try:
+        if args.probe:
+            if args.confirm_zero_history:
+                raise LegacyCutoverConflict(
+                    "--confirm-zero-history is valid only with --apply"
+                )
+            inventory = probe_zero_history_bootstrap(
+                cutover_id=args.cutover_id,
+                authority_root=args.authority_root,
+                worktrees=args.worktree,
+                legacy_roots=args.legacy_root,
+                historical_evidence_roots=args.historical_evidence_root,
+                search_roots=args.search_root,
+            )
+            target = write_zero_history_inventory(args.inventory, inventory)
+            result = {
+                "schema": "ZeroHistoryBootstrapProbeResult.v1",
+                "inventory": str(target),
+                "inventory_sha256": inventory["inventory_sha256"],
+                "repositories": [
+                    row["canonical_repository_identity"] for row in inventory["worktrees"]
+                ],
+            }
+        else:
+            if not args.confirm_zero_history:
+                raise LegacyCutoverConflict(
+                    "--apply requires --confirm-zero-history"
+                )
+            inventory = load_zero_history_inventory(args.inventory)
+            result = bootstrap_zero_history_authority(
+                inventory, confirmed_zero_history=True
+            )
+    except (LegacyCutoverConflict, OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        print(f"phase-loop fabpub-bootstrap: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(result, indent=2, sort_keys=True) if args.json else json.dumps(result, sort_keys=True))
+    return 0
 
 
 def _run_train_command(*, parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
