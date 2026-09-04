@@ -1550,22 +1550,36 @@ class TestResidualInvariants:
         assert (repo_root / test_file).exists(), "test_train_invariants.py missing from git inventory"
         assert src_dir.exists(), "phase_loop_runtime source tree missing from git inventory"
 
+        def _commit(repo: Path, message: str, timestamp: str) -> None:
+            environment = {
+                **os.environ,
+                "GIT_AUTHOR_DATE": timestamp,
+                "GIT_COMMITTER_DATE": timestamp,
+            }
+            subprocess.run(
+                ["git", "commit", "-m", message],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                env=environment,
+            )
+
         # 1. Build a real temporary git repository with valid commit graph ancestry
         chron_repo = make_repo(tmp_path / "chronology_graph_valid")
         (chron_repo / "README.md").write_text("initial", encoding="utf-8")
         subprocess.run(["git", "add", "README.md"], cwd=chron_repo, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-m", "C0: initial"], cwd=chron_repo, check=True, capture_output=True)
+        _commit(chron_repo, "C0: initial", "2029-01-01T00:00:00+0000")
 
         (chron_repo / "test_file.py").write_text("# test", encoding="utf-8")
         subprocess.run(["git", "add", "test_file.py"], cwd=chron_repo, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-m", "C_test: tests landing"], cwd=chron_repo, check=True, capture_output=True)
+        _commit(chron_repo, "C_test: tests landing", "2030-01-01T00:00:00+0000")
         c_test = subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=chron_repo, check=True, capture_output=True, text=True
         ).stdout.strip()
 
         (chron_repo / "src_file.py").write_text("# impl", encoding="utf-8")
         subprocess.run(["git", "add", "src_file.py"], cwd=chron_repo, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-m", "C_impl: implementation"], cwd=chron_repo, check=True, capture_output=True)
+        _commit(chron_repo, "C_impl: implementation", "2020-01-01T00:00:00+0000")
         c_impl = subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=chron_repo, check=True, capture_output=True, text=True
         ).stdout.strip()
@@ -1574,10 +1588,10 @@ class TestResidualInvariants:
         chron_repo_inv = make_repo(tmp_path / "chronology_graph_inverted")
         (chron_repo_inv / "README.md").write_text("initial", encoding="utf-8")
         subprocess.run(["git", "add", "README.md"], cwd=chron_repo_inv, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-m", "C0: initial"], cwd=chron_repo_inv, check=True, capture_output=True)
+        _commit(chron_repo_inv, "C0: initial", "2029-01-01T00:00:00+0000")
         (chron_repo_inv / "src_file.py").write_text("# impl early", encoding="utf-8")
         subprocess.run(["git", "add", "src_file.py"], cwd=chron_repo_inv, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-m", "C_impl_inv"], cwd=chron_repo_inv, check=True, capture_output=True)
+        _commit(chron_repo_inv, "C_impl_inv", "2030-01-01T00:00:00+0000")
         c_impl_inv = subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=chron_repo_inv, check=True, capture_output=True, text=True
         ).stdout.strip()
@@ -1586,7 +1600,7 @@ class TestResidualInvariants:
         # ancestor of the later tests landing.
         (chron_repo_inv / "test_file.py").write_text("# test late", encoding="utf-8")
         subprocess.run(["git", "add", "test_file.py"], cwd=chron_repo_inv, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-m", "C_test_inv"], cwd=chron_repo_inv, check=True, capture_output=True)
+        _commit(chron_repo_inv, "C_test_inv", "2020-01-01T00:00:00+0000")
         c_test_inv = subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=chron_repo_inv, check=True, capture_output=True, text=True
         ).stdout.strip()
@@ -1703,6 +1717,7 @@ class TestResidualInvariants:
             return
 
         import ast
+        import inspect
         from dataclasses import fields, replace
         from unittest.mock import patch
 
@@ -1793,15 +1808,15 @@ class TestResidualInvariants:
                     "real broker admission/replay decision did not deduplicate only the same-base retry"
                 )
 
-            captured_legacy_args = []
+            captured_legacy_calls = []
 
             class _LegacyProbeStore:
                 @staticmethod
                 def authenticated_legacy_records():
                     return {"never-match": {"serialized_repository": publish_request.repo}}
 
-            def _capture_legacy_key(*args):
-                captured_legacy_args.append(args)
+            def _capture_legacy_key(*args, **kwargs):
+                captured_legacy_calls.append((args, kwargs))
                 return "captured-key"
 
             legacy_service = BrokerService(None, _LegacyProbeStore(), None)
@@ -1810,13 +1825,24 @@ class TestResidualInvariants:
                 side_effect=_capture_legacy_key,
             ):
                 legacy_service._legacy_terminal_replay(request_release, "new-key")
-            if captured_legacy_args != [
-                (publish_request.repo, publish_request.branch, "release", publish_request.head_sha)
-            ]:
+            captured_legacy_binding = None
+            if len(captured_legacy_calls) == 1:
+                try:
+                    captured_legacy_binding = inspect.signature(
+                        contracts.publish_committed_branch_idempotency_key
+                    ).bind(*captured_legacy_calls[0][0], **captured_legacy_calls[0][1]).arguments
+                except TypeError:
+                    pass
+            if captured_legacy_binding != {
+                "repo": publish_request.repo,
+                "branch": publish_request.branch,
+                "base": "release",
+                "head_sha": publish_request.head_sha,
+            }:
                 defect_details.append(
-                    f"BrokerService._legacy_terminal_replay passed wrong key preimage {captured_legacy_args!r}"
+                    f"BrokerService._legacy_terminal_replay passed wrong key preimage {captured_legacy_calls!r}"
                 )
-        except (TypeError, AttributeError) as exc:
+        except Exception as exc:
             defect_details.append(f"runtime publish base value-flow control failed: {exc}")
 
         # 1. EvidenceRecord dataclass, serialization, and real BrokerEvidenceStore lifecycle checks
@@ -1825,7 +1851,12 @@ class TestResidualInvariants:
             defect_details.append("EvidenceRecord dataclass missing 'base' field")
         else:
             try:
-                rec = EvidenceRecord(idempotency_key="k", state=TerminalOutcomeState.SUCCESS, evidence_reference="ref", base="main")
+                rec = EvidenceRecord(
+                    idempotency_key="k",
+                    state=TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED,
+                    evidence_reference="ref",
+                    base="main",
+                )
                 rec_dict = rec.to_json() if hasattr(rec, "to_json") else getattr(rec, "__dict__", {})
                 if not isinstance(rec_dict, dict) or rec_dict.get("base") != "main":
                     defect_details.append("EvidenceRecord.to_json() failed to serialize exact 'base' value")
@@ -2143,6 +2174,7 @@ class TestResidualInvariants:
         roadmap1 = parse_train_roadmap(TRAIN_2NODE_MD)
         ws_map1 = {n.node_id: sc1_dir / n.repo for n in roadmap1.nodes}
         ledger1 = _setup_p3_done(sc1_dir, roadmap1, ws_map1)
+        merge_log1: List[str] = []
 
         def _head_raises(ws, br):
             raise RuntimeError("head unavailable")
@@ -2162,7 +2194,7 @@ class TestResidualInvariants:
                 _pr_is_open=_pr_is_open_true,
                 _live_pr_head_sha_fn=_head_raises,
                 _merge_phase_enabled=True,
-                _merge_pr_fn=_make_merge_pr_stub([]),
+                _merge_pr_fn=_make_merge_pr_stub(merge_log1),
                 _reverify_fn=lambda ws, rp, rm: True,
                 _train_review_fn=_approval_review_fn,
                 _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
@@ -2179,6 +2211,7 @@ class TestResidualInvariants:
         roadmap2 = parse_train_roadmap(TRAIN_2NODE_MD)
         ws_map2 = {n.node_id: sc2_dir / n.repo for n in roadmap2.nodes}
         ledger2 = _setup_p3_done(sc2_dir, roadmap2, ws_map2)
+        merge_log2: List[str] = []
 
         res2 = None
         exc2 = None
@@ -2195,7 +2228,7 @@ class TestResidualInvariants:
                 _pr_is_open=_pr_is_open_true,
                 _live_pr_head_sha_fn=lambda ws, br: None,
                 _merge_phase_enabled=True,
-                _merge_pr_fn=_make_merge_pr_stub([]),
+                _merge_pr_fn=_make_merge_pr_stub(merge_log2),
                 _reverify_fn=lambda ws, rp, rm: True,
                 _train_review_fn=_approval_review_fn,
                 _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
@@ -2212,6 +2245,7 @@ class TestResidualInvariants:
         roadmap3 = parse_train_roadmap(TRAIN_2NODE_MD)
         ws_map3 = {n.node_id: sc3_dir / n.repo for n in roadmap3.nodes}
         ledger3 = _setup_p3_done(sc3_dir, roadmap3, ws_map3)
+        merge_log3: List[str] = []
 
         res3 = None
         exc3 = None
@@ -2228,7 +2262,7 @@ class TestResidualInvariants:
                 _pr_is_open=_pr_is_open_true,
                 _live_pr_head_sha_fn=_live_head_for_p3_done,
                 _merge_phase_enabled=True,
-                _merge_pr_fn=_make_merge_pr_stub([]),
+                _merge_pr_fn=_make_merge_pr_stub(merge_log3),
                 _reverify_fn=lambda ws, rp, rm: True,
                 _train_review_fn=_approval_review_fn,
                 _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
@@ -2239,21 +2273,50 @@ class TestResidualInvariants:
         rec3 = read_ledger(ledger3)
         assert isinstance(rec3, dict), "read_ledger must return a dict"
 
+        expected_node = "repo-a/specs/plan-a.md"
+
+        def _typed_failure_ok(result, records, reason):
+            detail = result.get("detail") if isinstance(result, dict) else None
+            return (
+                result is not None
+                and result.get("status") == "blocked"
+                and result.get("node_id") == expected_node
+                and isinstance(detail, dict)
+                and detail.get("reason") == reason
+                and detail.get("blocker_class") == "live_head_unavailable"
+                and len(records) == 1
+                and records[0].node_id == expected_node
+                and records[0].branch == "feat/train-repo-a"
+            )
+
+        failure1_ok = _typed_failure_ok(res1, blocked_records1, "pr_open_live_head_read_failed")
+        failure2_ok = _typed_failure_ok(res2, blocked_records2, "pr_open_live_head_unavailable")
+        success_ok = (
+            exc3 is None
+            and res3 is not None
+            and res3.get("status") == "merged"
+            and merge_log3 == ["repo-a", "repo-b"]
+        )
+
         # Evaluate scenarios against named RED anchor
-        if exc1 is not None or not res1 or res1.get("status") != "blocked" or len(blocked_records1) != 1 or exc2 is not None or not res2 or res2.get("status") != "blocked" or len(blocked_records2) != 1 or exc3 is not None or not res3 or res3.get("status") != "merged":
+        if exc1 is not None or exc2 is not None or not failure1_ok or not failure2_ok or merge_log1 or merge_log2 or not success_ok:
             defect_details = []
             if exc1 is not None:
                 defect_details.append(f"live head callback exception raised unhandled {exc1}")
-            if not res1 or res1.get("status") != "blocked":
-                defect_details.append(f"live head exception returned status={res1.get('status') if res1 else None!r} instead of blocked")
-            if len(blocked_records1) != 1:
-                defect_details.append(f"live head exception recorded {len(blocked_records1)} blocked ledger rows instead of 1")
+            if not failure1_ok:
+                defect_details.append("live head exception lacked exact typed blocker, node identity, or durable blocked row")
+            if merge_log1:
+                defect_details.append(f"live head exception reached merge for {merge_log1!r}")
             if exc2 is not None:
                 defect_details.append(f"unavailable live head raised unhandled {exc2}")
-            if not res2 or res2.get("status") != "blocked":
-                defect_details.append(f"unavailable live head returned status={res2.get('status') if res2 else None!r} instead of blocked")
-            if len(blocked_records2) != 1:
-                defect_details.append(f"unavailable live head recorded {len(blocked_records2)} blocked ledger rows instead of 1")
+            if not failure2_ok:
+                defect_details.append("unavailable live head lacked exact typed blocker, node identity, or durable blocked row")
+            if merge_log2:
+                defect_details.append(f"unavailable live head reached merge for {merge_log2!r}")
+            if not success_ok:
+                defect_details.append(
+                    f"successful live heads returned {res3!r} with merge log {merge_log3!r} and exception {exc3!r}"
+                )
 
             raise AssertionError(
                 "RESIDUAL-RED-ANCHOR::residual_pr_open_resume_live_head_failure — "
@@ -2778,6 +2841,13 @@ class TestResidualInvariants:
                 if len(runner_results) != 1 or runner_results[0].returncode != 0:
                     defects.append(f"real runner command-adapter {state} launch failed")
                     continue
+                rendered_command = runner_results[0].command
+                if any("{model}" in argument for argument in rendered_command):
+                    defects.append(f"real runner {state} command left the model placeholder unresolved")
+                if state == "bound" and model not in rendered_command:
+                    defects.append("real runner bound command omitted the selected model argv")
+                if state == "unbound" and model in rendered_command:
+                    defects.append("real runner unbound command injected the selected model argv")
 
                 launch_result_event = runner_results[0].event_metadata()
                 defects.extend(validate_surface(f"launch_result_{state}", launch_result_event, actual, state, caveat))
