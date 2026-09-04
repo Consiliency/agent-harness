@@ -227,8 +227,9 @@ jobs:
   pytest:
     name: pytest (py${{ matrix.python-version }})
     # Legacy hosted lanes. The offload graph above owns the suite on the eligible
-    # path, so running these too would duplicate work that already ran on `ai`.
-    # Kept for the fork/no-secret path, where `hosted` is the suite of record.
+    # path, so running these too would duplicate work the `ai` offload already
+    # covers. Kept for the fork/no-secret path, where `hosted` is the suite of
+    # record.
     needs: elig
     if: needs.elig.outputs.eligible != 'true'
     runs-on: ubuntu-latest
@@ -422,8 +423,9 @@ jobs:
   cleanroom:
     name: clean-room (standalone-from-wheel, Gate A)
     # Legacy hosted lanes. The offload graph above owns the suite on the eligible
-    # path, so running these too would duplicate work that already ran on `ai`.
-    # Kept for the fork/no-secret path, where `hosted` is the suite of record.
+    # path, so running these too would duplicate work the `ai` offload already
+    # covers. Kept for the fork/no-secret path, where `hosted` is the suite of
+    # record.
     needs: elig
     if: needs.elig.outputs.eligible != 'true'
     runs-on: ubuntu-latest
