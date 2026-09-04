@@ -35,6 +35,12 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from . import panel_invoker, roadmap_assumptions, roadmap_lint
+from .advisor_board.backing import (
+    activate_review_isolation_authorization,
+    close_review_isolation_authorization,
+    prepare_review_isolation_authorization,
+)
+from .advisor_board.schema import Board, Seat
 
 LEGIBLE_CAPABILITY_VERSION = "legible.v1"
 
@@ -673,53 +679,92 @@ def _invoke_reviewtruth_fable_adapter(subject: Mapping[str, Any], *, repo: Path 
             f"unexpected reviewtruth_fable_transition subject keys: {set(subject) - allowed_keys}",
         )
 
-    # (1) Metadata-only live GitHub issue snapshot.
-    issue_state = None
-    issue_reason = None
+    board = Board(
+        name="reviewtruth-fable-transition-probe",
+        purpose="review",
+        seats=(
+            Seat(
+                model=str(subject["model"]),
+                effort="max",
+                harness="claude",
+            ),
+        ),
+    )
+    instruction_token = panel_invoker.set_review_instruction_digest(
+        panel_invoker._mode_instructions("review")
+    )
+    authorization = None
     try:
-        proc = subprocess.run(
-            ["gh", "issue", "view", str(subject["issue"]), "--repo", subject["repository"],
-             "--json", "state,stateReason"],
-            capture_output=True, text=True, timeout=20, check=False,
+        authorization = prepare_review_isolation_authorization(
+            board,
+            _REVIEWTRUTH_PROBE_ARTIFACT,
+            mode="review",
+            canonical_repo_authority=repo,
         )
-        if proc.returncode == 0:
-            payload = json.loads(proc.stdout)
-            issue_state = payload.get("state")
-            issue_reason = payload.get("stateReason")
-    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        activate_review_isolation_authorization(
+            authorization,
+            board,
+            _REVIEWTRUTH_PROBE_ARTIFACT,
+            mode="review",
+            canonical_repo_authority=repo,
+        )
+
+        # (1) Metadata-only live GitHub issue snapshot.
         issue_state = None
         issue_reason = None
+        try:
+            proc = subprocess.run(
+                ["gh", "issue", "view", str(subject["issue"]), "--repo", subject["repository"],
+                 "--json", "state,stateReason"],
+                capture_output=True, text=True, timeout=20, check=False,
+            )
+            if proc.returncode == 0:
+                payload = json.loads(proc.stdout)
+                issue_state = payload.get("state")
+                issue_reason = payload.get("stateReason")
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+            issue_state = None
+            issue_reason = None
 
-    # (2) Metadata-only first-party Claude subscription capability probe.
-    env = panel_invoker._subscription_env()
-    authed, _auth_detail = panel_invoker._claude_subscription_auth_ok(env)
+        # (2) Metadata-only first-party Claude subscription capability probe.
+        env = panel_invoker._subscription_env()
+        authed, _auth_detail = panel_invoker._claude_subscription_auth_ok(env)
 
-    # (3) Observe the issue's under-Claude-Code behavior through the same
-    # adapter with the asserted marker, then prove the external first-party
-    # route independently with one real Fable self-PTY leg. These are separate
-    # facts in the transition contract: the nested seat may remain unavailable
-    # while the subscription route itself succeeds.
-    marker_env = dict(env)
-    marker_env["CLAUDECODE"] = "1"
-    marker_status, marker_text = panel_invoker._default_spawn(
-        "claude",
-        _REVIEWTRUTH_PROBE_ARTIFACT,
-        repo_dir=repo,
-        mode="review",
-        model=subject["model"],
-        env=marker_env,
-    )
-    started = time.monotonic()
-    leg_result = panel_invoker._default_spawn(
-        "claude",
-        _REVIEWTRUTH_PROBE_ARTIFACT,
-        repo_dir=repo,
-        mode="review",
-        model=subject["model"],
-        env=env,
-    )
+        # (3) Observe the issue's under-Claude-Code behavior through the same
+        # adapter with the asserted marker, then prove the external first-party
+        # route independently with one real Fable self-PTY leg. These are separate
+        # facts in the transition contract: the nested seat may remain unavailable
+        # while the subscription route itself succeeds.
+        marker_env = dict(env)
+        marker_env["CLAUDECODE"] = "1"
+        marker_status, marker_text = panel_invoker._default_spawn(
+            "claude",
+            _REVIEWTRUTH_PROBE_ARTIFACT,
+            repo_dir=repo,
+            mode="review",
+            model=subject["model"],
+            env=marker_env,
+            review_authorization=authorization,
+            canonical_repo_authority=repo,
+        )
+        started = time.monotonic()
+        leg_result = panel_invoker._default_spawn(
+            "claude",
+            _REVIEWTRUTH_PROBE_ARTIFACT,
+            repo_dir=repo,
+            mode="review",
+            model=subject["model"],
+            env=env,
+            review_authorization=authorization,
+            canonical_repo_authority=repo,
+        )
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+    finally:
+        try:
+            close_review_isolation_authorization(authorization)
+        finally:
+            panel_invoker.reset_review_instruction_digest(instruction_token)
     external_status, leg_text = leg_result[0], leg_result[1]
-    elapsed_ms = int((time.monotonic() - started) * 1000)
     final_verdict_token = marker_text if marker_status != "OK" else None
 
     return {
