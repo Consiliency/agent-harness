@@ -195,6 +195,10 @@ def _fixture_variants(seed: Path) -> tuple[
     )
 
 
+def _runtime_variant(seed: Path) -> str:
+    return "runtime-" + _sha256(os.fsencode(str(seed.resolve())))[:16]
+
+
 def _producer_module(case: str) -> Any:
     path = _repo_root() / PRODUCER_PATH
     if not path.is_file():
@@ -910,6 +914,27 @@ def test_harden_producer_derives_live_facts_without_historical_literals() -> Non
             right = static_string(node.right)
             if left is not None and right is not None:
                 return left + right
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "join"
+            and len(node.args) == 1
+            and not node.keywords
+            and isinstance(node.args[0], (ast.List, ast.Tuple))
+        ):
+            separator = static_string(node.func.value)
+            parts = [static_string(item) for item in node.args[0].elts]
+            if separator is not None and all(part is not None for part in parts):
+                return separator.join(part for part in parts if part is not None)
+        if (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.value, (ast.List, ast.Tuple))
+            and isinstance(node.slice, ast.Constant)
+            and isinstance(node.slice.value, int)
+        ):
+            index = node.slice.value
+            if -len(node.value.elts) <= index < len(node.value.elts):
+                return static_string(node.value.elts[index])
         return None
 
     alias_names = {
@@ -1041,7 +1066,10 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
         message: str,
     ) -> None:
         with tempfile.TemporaryDirectory(prefix=f"harden-{name}-") as td:
-            context = _raw_fixture(Path(td) / "valid")
+            fixture_root = Path(td) / "fixture"
+            context = _raw_fixture(
+                fixture_root, variant=_runtime_variant(fixture_root)
+            )
             mutate(context)
             _persist_manifest(context)
             registry_before = context["registry"].read_bytes()
@@ -1078,6 +1106,82 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
             ].pop(role),
             "missing required input",
         )
+    rejected(
+        "extra-artifact-key",
+        lambda context: context["manifest"]["artifacts"].__setitem__(
+            "extra", copy.deepcopy(context["manifest"]["artifacts"]["plan_authority"])
+        ),
+        "unknown artifact input",
+    )
+    rejected(
+        "extra-role-key",
+        lambda context: context["manifest"]["role_attestations"].__setitem__(
+            "extra", copy.deepcopy(context["manifest"]["role_attestations"]["author"])
+        ),
+        "unknown role attestation",
+    )
+    rejected(
+        "artifacts-wrong-container",
+        lambda context: context["manifest"].__setitem__("artifacts", []),
+        "artifacts must be an object",
+    )
+    rejected(
+        "roles-wrong-container",
+        lambda context: context["manifest"].__setitem__("role_attestations", []),
+        "role_attestations must be an object",
+    )
+    for field in ("path", "sha256"):
+        rejected(
+            f"ref-missing-{field}",
+            lambda context, field=field: context["manifest"]["artifacts"][
+                "plan_authority"
+            ].pop(field),
+            "artifact reference fields mismatch",
+        )
+        rejected(
+            f"ref-wrong-type-{field}",
+            lambda context, field=field: context["manifest"]["artifacts"][
+                "plan_authority"
+            ].__setitem__(field, 17),
+            "artifact reference field type",
+        )
+        rejected(
+            f"role-ref-missing-{field}",
+            lambda context, field=field: context["manifest"][
+                "role_attestations"
+            ]["coordinator"].pop(field),
+            "role attestation reference fields mismatch",
+        )
+        rejected(
+            f"role-ref-wrong-type-{field}",
+            lambda context, field=field: context["manifest"][
+                "role_attestations"
+            ]["coordinator"].__setitem__(field, 17),
+            "role attestation reference field type",
+        )
+    rejected(
+        "ref-extra-field",
+        lambda context: context["manifest"]["artifacts"][
+            "plan_authority"
+        ].__setitem__("extra", True),
+        "artifact reference fields mismatch",
+    )
+    rejected(
+        "role-ref-extra-field",
+        lambda context: context["manifest"]["role_attestations"][
+            "coordinator"
+        ].__setitem__("extra", True),
+        "role attestation reference fields mismatch",
+    )
+
+    def secret_extra_ref(context: dict[str, Any]) -> None:
+        context["manifest"]["artifacts"]["extra_secret"] = _write_ref(
+            context["source_root"],
+            "raw/extra-secret.txt",
+            b"api_key=synthetic-token-0123456789abcdef\n",
+        )
+
+    rejected("secret-bearing-extra-ref", secret_extra_ref, "unknown artifact input")
 
     rejected(
         "caller-receipts",
@@ -1253,6 +1357,32 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
         ),
         "SL-0 authority does not match live Git",
     )
+    rejected(
+        "missing-broker-receipt",
+        lie_in_json(
+            "candidate_broker_receipts",
+            lambda record: record["receipts"].pop(),
+        ),
+        "missing broker receipt",
+    )
+    rejected(
+        "missing-ci-required-field",
+        lie_in_json("candidate_ci", lambda record: record.pop("run_id")),
+        "missing CI required field",
+    )
+    rejected(
+        "missing-ci-result",
+        lie_in_json("candidate_ci", lambda record: record.pop("conclusion")),
+        "missing CI result",
+    )
+    rejected(
+        "missing-review-route",
+        lie_in_json(
+            "candidate_review_request", lambda record: record["routes"].pop()
+        ),
+        "missing review route",
+    )
+
     def ci_head_lie(context: dict[str, Any]) -> None:
         ref = context["manifest"]["artifacts"]["candidate_ci"]
         record = _strict_json(context["source_root"] / ref["path"])
@@ -1404,7 +1534,8 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
     )
 
     with tempfile.TemporaryDirectory(prefix="harden-duplicate-key-") as td:
-        context = _raw_fixture(Path(td) / "valid")
+        fixture_root = Path(td) / "fixture"
+        context = _raw_fixture(fixture_root, variant=_runtime_variant(fixture_root))
         body = _canonical_bytes(context["manifest"])
         duplicate = body.replace(
             b'"schema":"harden_evidence_inputs.v1"}',
@@ -1445,7 +1576,8 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
     _producer_module("seal")
 
     with tempfile.TemporaryDirectory(prefix="harden-two-stage-") as td:
-        context = _raw_fixture(Path(td) / "valid")
+        fixture_root = Path(td) / "fixture"
+        context = _raw_fixture(fixture_root, variant=_runtime_variant(fixture_root))
         registry_before_bytes = context["registry"].read_bytes()
         registry_before = _strict_json(context["registry"])
         prepared = _prepare_command(context)
@@ -1490,7 +1622,10 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
         message: str,
     ) -> None:
         with tempfile.TemporaryDirectory(prefix=f"harden-seal-{name}-") as td:
-            context = _raw_fixture(Path(td) / "valid")
+            fixture_root = Path(td) / "fixture"
+            context = _raw_fixture(
+                fixture_root, variant=_runtime_variant(fixture_root)
+            )
             prepared = _prepare_command(context)
             assert prepared.returncode == 0, prepared.stderr
             _evidence, request = _assert_prepared(context)
@@ -1623,6 +1758,58 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
         "mismatched-event-tree",
         mismatched_event_field("canonical_tree"),
         "completion event tree mismatch",
+    )
+
+    def invalid_completion(
+        mutate: Callable[[dict[str, Any]], None],
+    ) -> Callable[[dict[str, Any], Path, dict[str, Any]], Path]:
+        def apply(
+            _context: dict[str, Any], canonical: Path, request: dict[str, Any]
+        ) -> Path:
+            event = _completion_event(request)
+            mutate(event)
+            canonical.write_bytes(
+                _ledger_history_bytes()
+                + _canonical_bytes(event)
+                + _canonical_bytes(
+                    _completion_event(request, timestamp="2026-09-04T00:00:01Z")
+                )
+            )
+            return canonical
+
+        return apply
+
+    seal_rejected(
+        "wrong-completion-schema",
+        invalid_completion(
+            lambda event: event["metadata"]["harden_completion"].__setitem__(
+                "schema", "wrong.v1"
+            )
+        ),
+        "completion schema mismatch",
+    )
+    seal_rejected(
+        "wrong-completion-visual-declaration",
+        invalid_completion(
+            lambda event: event["metadata"]["harden_completion"].__setitem__(
+                "visual_render_declared", True
+            )
+        ),
+        "completion visual_render_declared mismatch",
+    )
+    seal_rejected(
+        "missing-completion-proof",
+        invalid_completion(
+            lambda event: event["metadata"].pop("harden_completion")
+        ),
+        "missing HARDEN completion proof",
+    )
+    seal_rejected(
+        "invalid-completion-proof",
+        invalid_completion(
+            lambda event: event["metadata"].__setitem__("harden_completion", [])
+        ),
+        "invalid HARDEN completion proof",
     )
 
     def symlink_canonical_ledger(
