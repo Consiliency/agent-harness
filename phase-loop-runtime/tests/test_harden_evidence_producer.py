@@ -54,6 +54,14 @@ RAW_ARTIFACT_NAMES = (
     "canonical_main_review_request",
     "canonical_main_broker_receipts",
 )
+RAW_JUNIT_PAIRS = (
+    ("preproduction_red_raw", "preproduction_red_junit"),
+    ("preproduction_control_raw", "preproduction_control_junit"),
+    ("candidate_focused_raw", "candidate_focused_junit"),
+    ("candidate_broad_raw", "candidate_broad_junit"),
+    ("canonical_main_focused_raw", "canonical_main_focused_junit"),
+    ("canonical_main_broad_raw", "canonical_main_broad_junit"),
+)
 ROLE_NAMES = ("coordinator", "author", "reviewer")
 HEX64_A = "a" * 64
 HEX64_B = hashlib.sha256(b"01a04424-61d9-7712-94a6-e058cbe1349e").hexdigest()
@@ -400,13 +408,15 @@ def _raw_fixture(
     assert set(artifacts) == set(RAW_ARTIFACT_NAMES)
     manifest_path = root / "harden-evidence-inputs.json"
     manifest_path.write_bytes(_canonical_bytes(manifest))
+    unrelated_registry_id = _sha256(f"{variant}:unrelated-evidence".encode())
+    unrelated_registry_nonce = _sha256(f"{variant}:unrelated-nonce".encode())
     registry_path = root / "reuse-registry.json"
     registry_path.write_bytes(
         _canonical_bytes(
             {
                 "schema": "harden_evidence_registry.v1",
-                "evidence_ids": [],
-                "operation_nonces": [],
+                "evidence_ids": [unrelated_registry_id],
+                "operation_nonces": [unrelated_registry_nonce],
             }
         )
     )
@@ -450,18 +460,26 @@ def _raw_fixture(
         },
         "frozen_test_paths": sorted(frozen_paths),
         "run_counts": {
-            "preproduction_red": {
-                name: red_outcomes.count(name)
-                for name in ("passed", "failed", "skipped")
-            },
-            "candidate_focused": {
-                name: final_outcomes.count(name)
-                for name in ("passed", "failed", "skipped")
-            },
+            name: {
+                outcome: outcomes.count(outcome)
+                for outcome in ("passed", "failed", "skipped")
+            }
+            for name, outcomes in (
+                ("preproduction_red", red_outcomes),
+                ("preproduction_control", ("passed", "passed")),
+                ("candidate_focused", final_outcomes),
+                ("candidate_broad", final_outcomes + ("passed",)),
+                ("canonical_main_focused", final_outcomes),
+                ("canonical_main_broad", final_outcomes + ("passed", "passed")),
+            )
         },
         "author_vendor": author_vendor,
         "routes": routes,
         "operation_nonces": operation_nonces,
+        "registry": {
+            "evidence_ids": [unrelated_registry_id],
+            "operation_nonces": [unrelated_registry_nonce],
+        },
         "ci_run_ids": {"candidate": 100, "canonical_main": 200},
     }
     return {
@@ -574,16 +592,21 @@ def _contained_ref_path(root: Path, ref: dict[str, str], label: str) -> Path:
     assert str(relative) == raw and all(
         part not in {"", ".", ".."} for part in relative.parts
     ), f"{label} path must be normalized"
-    root_resolved = root.resolve()
-    path = (root / Path(*relative.parts)).resolve()
+    assert not root.is_symlink(), f"{label} root is a symlink"
+    unresolved = root
+    for part in relative.parts:
+        unresolved /= part
+        assert not unresolved.is_symlink(), f"{label} path contains a symlink"
+    root_resolved = root.resolve(strict=True)
+    path = unresolved.resolve(strict=True)
     assert path.is_relative_to(root_resolved), f"{label} path escaped its root"
-    assert path.is_file() and not path.is_symlink(), f"{label} is not a regular file"
+    assert path.is_file(), f"{label} is not a regular file"
     assert _sha256(path.read_bytes()) == ref["sha256"], f"{label} digest mismatch"
     return path
 
 
-def _reachable_artifact_digests(value: Any, root: Path) -> set[str]:
-    reachable: set[str] = set()
+def _reachable_artifact_refs(value: Any, root: Path) -> set[tuple[str, str]]:
+    reachable: set[tuple[str, str]] = set()
     queued = [value]
     while queued:
         item = queued.pop()
@@ -594,10 +617,10 @@ def _reachable_artifact_digests(value: Any, root: Path) -> set[str]:
             continue
         if set(item) == {"path", "sha256"}:
             path = _contained_ref_path(root, item, "reachable retained artifact")
-            data = path.read_bytes()
-            if item["sha256"] in reachable:
+            key = (item["path"], item["sha256"])
+            if key in reachable:
                 continue
-            reachable.add(item["sha256"])
+            reachable.add(key)
             if path.suffix == ".json":
                 queued.append(_strict_json(path))
             continue
@@ -664,6 +687,61 @@ def _assert_prepared(context: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
         assert evidence["ci"][round_name]["run_id"] == run_id
     assert set(evidence["reviews"]) == {"candidate", "canonical_main"}
     assert set(evidence["roles"]) == set(ROLE_NAMES)
+
+    def retained_json(ref: dict[str, str], label: str) -> dict[str, Any]:
+        path = _contained_ref_path(context["evidence_root"], ref, label)
+        value = _strict_json(path)
+        assert isinstance(value, dict)
+        return value
+
+    receipt_refs = {
+        "preproduction_red": evidence["sl0"]["activated_red"]["receipt"],
+        "preproduction_control": evidence["sl0"]["pure_control"]["receipt"],
+        "candidate_focused": evidence["verification"]["candidate"]["focused"][
+            "receipt"
+        ],
+        "candidate_broad": evidence["verification"]["candidate"]["broad"][
+            "receipt"
+        ],
+        "canonical_main_focused": evidence["verification"]["canonical_main"][
+            "focused"
+        ]["receipt"],
+        "canonical_main_broad": evidence["verification"]["canonical_main"][
+            "broad"
+        ]["receipt"],
+    }
+    for name, ref in receipt_refs.items():
+        summary = retained_json(ref, f"{name} receipt")["summary"]
+        expected_counts = context["expected"]["run_counts"][name]
+        assert {
+            outcome: summary[outcome] for outcome in ("passed", "failed", "skipped")
+        } == expected_counts
+
+    author = retained_json(evidence["roles"]["author"], "author attestation")
+    assert author["vendor"] == context["expected"]["author_vendor"]
+    expected_routes = {
+        route["harness"]: route for route in context["expected"]["routes"]
+    }
+    for round_name in ("candidate", "canonical_main"):
+        review = evidence["reviews"][round_name]
+        review_request = retained_json(
+            review["request"], f"{round_name} review request"
+        )
+        assert {
+            seat["harness"]: seat["requested_model"]
+            for seat in review_request["seats"]
+        } == {
+            harness: route["requested_model"]
+            for harness, route in expected_routes.items()
+        }
+        assert {
+            item["harness"]: retained_json(
+                item["artifact"], f"{round_name} {item['harness']} seat"
+            )["resolved_model"]
+            for item in review["seats"]
+        } == {
+            harness: route["resolved_model"] for harness, route in expected_routes.items()
+        }
     assert set(request) == {
         "schema",
         "phase",
@@ -694,13 +772,28 @@ def _assert_prepared(context: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
     }
     copies = request["copied_artifacts"]
     assert isinstance(copies, list) and copies
-    assert {
+    copied_sources = {
         item["source"]["path"]: item["source"]["sha256"] for item in copies
-    } == source_inventory
+    }
+    assert len(copies) == len(copied_sources) == len(source_inventory)
+    assert copied_sources == source_inventory
+    retained_paths = [item["retained"]["path"] for item in copies]
+    retained_refs = [
+        (item["retained"]["path"], item["retained"]["sha256"])
+        for item in copies
+    ]
+    assert len(retained_paths) == len(set(retained_paths))
+    assert len(retained_refs) == len(set(retained_refs))
+    copied_by_source = {
+        (item["source"]["path"], item["source"]["sha256"]): item["retained"]
+        for item in copies
+    }
     for item in copies:
         assert set(item) == {"source", "retained"}
         assert set(item["source"]) == {"path", "sha256"}
-        source = context["source_root"] / item["source"]["path"]
+        source = _contained_ref_path(
+            context["source_root"], item["source"], "source artifact"
+        )
         retained = _contained_ref_path(
             context["evidence_root"], item["retained"], "copied retained artifact"
         )
@@ -710,8 +803,16 @@ def _assert_prepared(context: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
         context["manifest"]["artifacts"][name]
         for name in sorted(RAW_ARTIFACT_NAMES)
     ] + [context["manifest"]["role_attestations"][name] for name in ROLE_NAMES]
-    reachable = _reachable_artifact_digests(evidence, context["evidence_root"])
-    assert {ref["sha256"] for ref in required_reachable_refs} <= reachable
+    required_retained_refs = {
+        (
+            copied_by_source[(ref["path"], ref["sha256"])]["path"],
+            copied_by_source[(ref["path"], ref["sha256"])]["sha256"],
+        )
+        for ref in required_reachable_refs
+    }
+    assert len(required_retained_refs) == len(required_reachable_refs)
+    reachable = _reachable_artifact_refs(evidence, context["evidence_root"])
+    assert required_retained_refs <= reachable
     _verify_with_shipped_verifier(context, context["output"], "prepared")
     return evidence, request
 
@@ -734,6 +835,17 @@ def test_harden_producer_derives_live_facts_without_historical_literals() -> Non
         node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
     }
     assert not forbidden & referenced
+    evasive_getattrs = {
+        node.args[1].value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "getattr"
+        and len(node.args) >= 2
+        and isinstance(node.args[1], ast.Constant)
+        and isinstance(node.args[1].value, str)
+    }
+    assert not {"_fixture", "self_test"} & evasive_getattrs
     for literal in (
         "16 failed, 439 passed, 3 skipped",
         "454 passed",
@@ -813,10 +925,32 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
     _producer_module("assemble")
 
     with tempfile.TemporaryDirectory(prefix="harden-prepare-success-") as td:
-        valid = _raw_fixture(Path(td) / "valid")
-        completed = _prepare_command(valid)
-        assert completed.returncode == 0, completed.stderr
-        _assert_prepared(valid)
+        for variant, author, red, final in (
+            (
+                "alpha",
+                "codex-gpt-5.6-terra",
+                ("failed", "passed", "skipped"),
+                ("passed", "passed"),
+            ),
+            (
+                "beta",
+                "claude-fable-5",
+                ("failed", "failed", "passed", "passed"),
+                ("passed", "passed", "passed"),
+            ),
+        ):
+            context = _raw_fixture(
+                Path(td) / variant,
+                variant=variant,
+                author_vendor=author,
+                red_outcomes=red,
+                final_outcomes=final,
+            )
+            registry_before = context["registry"].read_bytes()
+            completed = _prepare_command(context)
+            assert completed.returncode == 0, completed.stderr
+            _assert_prepared(context)
+            assert context["registry"].read_bytes() == registry_before
 
     def rejected(
         name: str,
@@ -871,38 +1005,64 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
         lambda context: context["manifest"].__setitem__("resolved_routes", []),
         "caller-authored resolved_routes",
     )
-    rejected(
-        "absolute-path",
-        lambda context: context["manifest"]["artifacts"][
-            "plan_authority"
-        ].__setitem__(
-            "path", str((context["source_root"] / "raw/plan-authority.json").resolve())
-        ),
-        "normalized relative path",
-    )
-    rejected(
-        "parent-traversal",
-        lambda context: context["manifest"]["artifacts"][
-            "plan_authority"
-        ].__setitem__("path", "raw/../plan-authority.json"),
-        "parent traversal",
-    )
-    rejected(
-        "digest-mismatch",
-        lambda context: context["manifest"]["artifacts"][
-            "plan_authority"
-        ].__setitem__("sha256", "f" * 64),
-        "digest mismatch",
-    )
+    def input_ref(
+        context: dict[str, Any], group: str, name: str
+    ) -> dict[str, str]:
+        return context["manifest"][group][name]
 
-    def symlink_input(context: dict[str, Any]) -> None:
-        original = context["source_root"] / "raw/plan-authority.json"
-        target = context["root"] / "outside.json"
-        target.write_bytes(original.read_bytes())
-        original.unlink()
-        original.symlink_to(target)
+    attack_inputs = (
+        ("authority", "artifacts", "plan_authority"),
+        ("ci", "artifacts", "candidate_ci"),
+        ("broker", "artifacts", "candidate_broker_receipts"),
+        ("role", "role_attestations", "coordinator"),
+    )
+    for label, group, artifact in attack_inputs:
 
-    rejected("symlink", symlink_input, "symlink")
+        def absolute_path(
+            context: dict[str, Any], group: str = group, artifact: str = artifact
+        ) -> None:
+            ref = input_ref(context, group, artifact)
+            ref["path"] = str((context["source_root"] / ref["path"]).resolve())
+
+        rejected(f"{label}-absolute-path", absolute_path, "normalized relative path")
+
+        def parent_traversal(
+            context: dict[str, Any], group: str = group, artifact: str = artifact
+        ) -> None:
+            ref = input_ref(context, group, artifact)
+            ref["path"] = "raw/../raw/" + Path(ref["path"]).name
+
+        rejected(f"{label}-parent-traversal", parent_traversal, "parent traversal")
+
+        def digest_mismatch(
+            context: dict[str, Any], group: str = group, artifact: str = artifact
+        ) -> None:
+            input_ref(context, group, artifact)["sha256"] = "f" * 64
+
+        rejected(f"{label}-digest-mismatch", digest_mismatch, "digest mismatch")
+
+        def direct_symlink(
+            context: dict[str, Any], group: str = group, artifact: str = artifact
+        ) -> None:
+            ref = input_ref(context, group, artifact)
+            original = context["source_root"] / ref["path"]
+            target = context["root"] / f"{artifact}-outside"
+            target.write_bytes(original.read_bytes())
+            original.unlink()
+            original.symlink_to(target)
+
+        rejected(f"{label}-direct-symlink", direct_symlink, "symlink")
+
+        def ancestor_symlink(
+            context: dict[str, Any], group: str = group, artifact: str = artifact
+        ) -> None:
+            ref = input_ref(context, group, artifact)
+            parent = (context["source_root"] / ref["path"]).parent
+            target = context["root"] / f"{artifact}-raw-directory"
+            parent.replace(target)
+            parent.symlink_to(target, target_is_directory=True)
+
+        rejected(f"{label}-ancestor-symlink", ancestor_symlink, "symlink")
 
     def replace_artifact(
         context: dict[str, Any], artifact: str, value: Any
@@ -924,15 +1084,52 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
         ),
         "secret",
     )
+    def lie_in_json(
+        artifact: str, mutate: Callable[[dict[str, Any]], None]
+    ) -> Callable[[dict[str, Any]], None]:
+        def apply(context: dict[str, Any]) -> None:
+            ref = context["manifest"]["artifacts"][artifact]
+            record = _strict_json(context["source_root"] / ref["path"])
+            mutate(record)
+            replace_artifact(context, artifact, record)
+
+        return apply
+
     rejected(
-        "raw-junit-count-mismatch",
-        lambda context: replace_artifact(
-            context,
-            "candidate_broad_raw",
-            b"999 passed\n",
+        "plan-live-git-lie",
+        lie_in_json(
+            "plan_authority",
+            lambda record: record["commits"].__setitem__("candidate", "f" * 40),
         ),
-        "raw/JUnit count mismatch",
+        "plan authority does not match live Git",
     )
+    rejected(
+        "sl0-live-git-lie",
+        lie_in_json(
+            "sl0_review",
+            lambda record: record.__setitem__(
+                "reviewed_commit", record["landing_commit"]
+            ),
+        ),
+        "SL-0 authority does not match live Git",
+    )
+
+    for raw_name, junit_name in RAW_JUNIT_PAIRS:
+        pair_name = raw_name.removesuffix("_raw")
+        rejected(
+            f"{pair_name}-raw-count-mismatch",
+            lambda context, raw_name=raw_name: replace_artifact(
+                context, raw_name, b"997 passed\n"
+            ),
+            "raw/JUnit count mismatch",
+        )
+        rejected(
+            f"{pair_name}-junit-count-mismatch",
+            lambda context, junit_name=junit_name: replace_artifact(
+                context, junit_name, _junit_bytes(("passed",) * 7)
+            ),
+            "raw/JUnit count mismatch",
+        )
 
     def copied_self_test(context: dict[str, Any]) -> None:
         ref = context["manifest"]["artifacts"]["candidate_broker_receipts"]
@@ -947,8 +1144,13 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
             _canonical_bytes(
                 {
                     "schema": "harden_evidence_registry.v1",
-                    "evidence_ids": [context["expected"]["evidence_id"]],
-                    "operation_nonces": [],
+                    "evidence_ids": [
+                        *context["expected"]["registry"]["evidence_ids"],
+                        context["expected"]["evidence_id"],
+                    ],
+                    "operation_nonces": context["expected"]["registry"][
+                        "operation_nonces"
+                    ],
                 }
             )
         )
@@ -961,8 +1163,11 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
                 _canonical_bytes(
                     {
                         "schema": "harden_evidence_registry.v1",
-                        "evidence_ids": [],
+                        "evidence_ids": context["expected"]["registry"][
+                            "evidence_ids"
+                        ],
                         "operation_nonces": [
+                            *context["expected"]["registry"]["operation_nonces"],
                             context["expected"]["operation_nonces"][index]
                         ],
                     }
@@ -971,18 +1176,34 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
 
         return mutate
 
-    rejected("reused-review-request-nonce", reuse_nonce(0), "reused operation nonce")
-    rejected("reused-broker-receipt-nonce", reuse_nonce(2), "reused operation nonce")
-    rejected("reused-role-attestation-nonce", reuse_nonce(10), "reused operation nonce")
+    for index in range(13):
+        if index < 2:
+            kind = "review-request"
+        elif index < 10:
+            kind = "broker-receipt"
+        else:
+            kind = "role-attestation"
+        rejected(
+            f"reused-{kind}-nonce-{index}",
+            reuse_nonce(index),
+            "reused operation nonce",
+        )
 
     def duplicate_input_nonce(context: dict[str, Any]) -> None:
-        ref = context["manifest"]["artifacts"]["canonical_main_review_request"]
-        record = _strict_json(context["source_root"] / ref["path"])
-        record["operation_nonce"] = context["expected"]["operation_nonces"][0]
-        replace_artifact(context, "canonical_main_review_request", record)
+        nonce = context["expected"]["operation_nonces"][0]
+        broker_ref = context["manifest"]["artifacts"]["candidate_broker_receipts"]
+        broker = _strict_json(context["source_root"] / broker_ref["path"])
+        broker["receipts"][0]["operation_nonce"] = nonce
+        replace_artifact(context, "candidate_broker_receipts", broker)
+        role_ref = context["manifest"]["role_attestations"]["coordinator"]
+        role = _strict_json(context["source_root"] / role_ref["path"])
+        role["operation_nonce"] = nonce
+        role_data = _canonical_bytes(role)
+        (context["source_root"] / role_ref["path"]).write_bytes(role_data)
+        role_ref["sha256"] = _sha256(role_data)
 
     rejected(
-        "duplicate-input-nonce",
+        "duplicate-input-nonce-across-request-broker-role",
         duplicate_input_nonce,
         "duplicate input operation nonce",
     )
@@ -990,11 +1211,14 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
     with tempfile.TemporaryDirectory(prefix="harden-duplicate-key-") as td:
         context = _raw_fixture(Path(td) / "valid")
         body = _canonical_bytes(context["manifest"])
-        context["manifest_path"].write_bytes(
-            b'{"schema":"harden_evidence_inputs.v1",'
+        duplicate = body.replace(
+            b'"schema":"harden_evidence_inputs.v1"}',
             b'"schema":"harden_evidence_inputs.v1",'
-            + body.split(b",", 1)[1]
+            b'"schema":"harden_evidence_inputs.v1"}',
         )
+        assert duplicate != body
+        assert isinstance(json.loads(duplicate), dict)
+        context["manifest_path"].write_bytes(duplicate)
         registry_before = context["registry"].read_bytes()
         completed = _prepare_command(context)
         assert completed.returncode != 0
@@ -1027,9 +1251,12 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
 
     with tempfile.TemporaryDirectory(prefix="harden-two-stage-") as td:
         context = _raw_fixture(Path(td) / "valid")
+        registry_before_bytes = context["registry"].read_bytes()
+        registry_before = _strict_json(context["registry"])
         prepared = _prepare_command(context)
         assert prepared.returncode == 0, prepared.stderr
         evidence, request = _assert_prepared(context)
+        assert context["registry"].read_bytes() == registry_before_bytes
         canonical_ledger = context["repo"] / ".phase-loop/events.jsonl"
         canonical_ledger.parent.mkdir(parents=True)
         canonical_ledger.write_bytes(_canonical_bytes(_completion_event(request)))
@@ -1042,13 +1269,24 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
         assert _normalized_precompletion_digest(evidence) == request["evidence_sha256"]
         ledger_ref = sealed["completion"]["ledger"]
         assert set(ledger_ref) == {"path", "sha256"}
-        retained_ledger = context["evidence_root"] / ledger_ref["path"]
-        assert retained_ledger.read_bytes() == canonical_ledger.read_bytes()
-        registry = _strict_json(context["registry"])
-        assert evidence["evidence_id"] in registry["evidence_ids"]
-        assert set(context["expected"]["operation_nonces"]) <= set(
-            registry["operation_nonces"]
+        retained_ledger = _contained_ref_path(
+            context["evidence_root"], ledger_ref, "sealed completion ledger"
         )
+        assert retained_ledger.read_bytes() == canonical_ledger.read_bytes()
+        assert not any(path.is_symlink() for path in context["evidence_root"].rglob("*"))
+        registry = _strict_json(context["registry"])
+        assert len(registry["evidence_ids"]) == len(registry_before["evidence_ids"]) + 1
+        assert set(registry["evidence_ids"]) == {
+            *registry_before["evidence_ids"],
+            evidence["evidence_id"],
+        }
+        assert len(registry["operation_nonces"]) == (
+            len(registry_before["operation_nonces"]) + 13
+        )
+        assert set(registry["operation_nonces"]) == {
+            *registry_before["operation_nonces"],
+            *context["expected"]["operation_nonces"],
+        }
         _verify_with_shipped_verifier(context, sealed_path, "sealed")
 
     def seal_rejected(
@@ -1158,6 +1396,21 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
     seal_rejected(
         "symlink-canonical-ledger",
         symlink_canonical_ledger,
+        "canonical ledger symlink",
+    )
+
+    def symlink_canonical_ledger_ancestor(
+        context: dict[str, Any], canonical: Path, _request: dict[str, Any]
+    ) -> Path:
+        phase_loop = canonical.parent
+        target = context["root"] / "canonical-ledger-directory"
+        phase_loop.replace(target)
+        phase_loop.symlink_to(target, target_is_directory=True)
+        return canonical
+
+    seal_rejected(
+        "symlink-canonical-ledger-ancestor",
+        symlink_canonical_ledger_ancestor,
         "canonical ledger symlink",
     )
 
