@@ -21,8 +21,9 @@ or per-repo custom seats.
 
 The three human decisions referenced by EC-REVIEWTRUTH-15 through
 EC-REVIEWTRUTH-17 already exist. SL-0 turns them into the roadmap-required durable,
-content-bound repository record and checks current protection and ancestry facts. No
-lane may substitute historical panel output, mutable issue text, or a planned identity
+content-bound repository record. SL-1 then authors and runs the durable verifier over
+that landed record and current protection and ancestry facts before any production lane.
+No lane may substitute historical panel output, mutable issue text, or a planned identity
 for current evidence. The tests-only boundary precedes every production lane, and its
 test files become immutable for the implementation work.
 
@@ -99,9 +100,9 @@ Parallel-safe: no
 - **Interfaces consumed**: roadmap directives and live repository protection/ancestry metadata (pre-existing).
 - **Parallel-safe**: no.
 - **Tasks**:
-  - test: define a content-bound verifier that rejects missing authority, altered decision text, absent pull-request protection, non-record-only content, or invalid ancestry.
+  - test: enumerate the exact record fields and rejection conditions consumed by SL-1; SL-0 does not author the verifier.
   - impl: write the metadata-only disposition record without secrets or mutable evidence blobs.
-  - verify: run the verifier against fresh repository and hosting metadata before SL-1.
+  - verify: obtain exact-head review of the record-only diff and land it before SL-1; SL-1 performs the durable executable verification before SL-2.
 
 ### SL-1 — Tests-first falsifier boundary
 
@@ -113,18 +114,18 @@ Parallel-safe: no
 - **Tasks**:
   - test: cover EC-REVIEWTRUTH-1 through `-17`, including the roadmap's exact sixteen-node early-prover set, and pair each mutation anchor with a positive control that enters the production construction path.
   - impl: add only tests, the chronology verifier, and RED evidence; activate new expectations with `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1` until the production capability marker exists.
-  - verify: prove the unactivated compatibility suite remains green, every activated test fails only at its named anchor, the diff contains no production path, and the tests-only boundary satisfies EC-REVIEWTRUTH-0.
+  - verify: run the chronology verifier in `capability-record` mode against the landed SL-0 record and current hosting metadata, then prove the unactivated compatibility suite remains green, every activated test fails only at its named anchor, the diff contains no production path, and the tests-only boundary satisfies EC-REVIEWTRUTH-0 before SL-2.
 
 ### SL-2 — Typed outcomes, prompt lens, native fill, and early-prover transport
 
-- **Scope**: Publish the seat-level contracts and the isolated early-prover/native-fill transport without changing frozen tests.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/src/phase_loop_runtime/launcher.py`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/schema.py`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/composition.py`, `phase-loop-runtime/src/phase_loop_runtime/phase_worktree_executor.py`
+- **Scope**: Publish the seat-level contracts, lossless durable-seat reconstruction, and the isolated early-prover/native-fill transport without changing frozen tests.
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/src/phase_loop_runtime/launcher.py`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/schema.py`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/composition.py`, `phase-loop-runtime/src/phase_loop_runtime/fab_gate.py`, `phase-loop-runtime/src/phase_loop_runtime/phase_worktree_executor.py`
 - **Interfaces provided**: IF-0-REVIEWTRUTH-1, IF-0-REVIEWTRUTH-3, `ExecutionCapabilityAttestation`, `NativeAgentLegRequest`, `ReviewWaveEvidence`.
 - **Interfaces consumed**: `REVIEWTRUTH_RED_SUITE`, `REVIEWTRUTH_CAPABILITY_DECISION`, SCHED worktree authority.
 - **Parallel-safe**: no; `panel_invoker.py` is single-writer.
 - **Tasks**:
   - test: make only outcome, retry, lens propagation, native-fill, attestation, isolation, confinement, reaping, and review-wave tests green.
-  - impl: add typed outcome/identity fields, prompt-lens binding, exact native request binding, strict capability preflight, serial worktree holder, external-tool closure, and digest-bound evidence receipts.
+  - impl: add typed outcome/identity fields, lossless strict-reader reconstruction of `required` and `degraded`, prompt-lens binding, exact native request binding, strict capability preflight, serial worktree holder, external-tool closure, and digest-bound evidence receipts.
   - verify: run the SL-2 selectors plus launcher, board golden, and worktree regressions with no frozen-test edits.
 
 ### SL-3 — Governed classification and grounding
@@ -215,9 +216,12 @@ bash scripts/gate_a_cleanroom.sh
 ```
 
 The live board smoke must produce the runner-owned, redacted
-`docs/research/reviewtruth-real-panel-smoke.md`; command-construction tests are not a
-substitute. `verify_reviewtruth_evidence.py` validates that record and writes its
-runner-stamped result into `verification_evidence.v3` before SL-6 closes.
+`docs/research/reviewtruth-real-panel-smoke.md` during SL-6; the runner is the sanctioned
+writer for that SL-6-owned path, and no other lane or external writer may modify it.
+Command-construction tests are not a substitute. `verify_reviewtruth_evidence.py`
+validates that record and writes its runner-stamped result into
+`verification_evidence.v3` before SL-6 closes. The additional tests in the verification
+block are read-only regressions; running them does not authorize editing their files.
 
 ## Acceptance Criteria
 
@@ -233,7 +237,7 @@ runner-stamped result into `verification_evidence.v3` before SL-6 closes.
 - [ ] EC-REVIEWTRUTH-11 — proven by `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1 PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_reviewtruth_phase.py -k production_seat_lifecycle_ledger`; falsified by path-entered control: the live non-FAB path omits required, outcome, or degraded seat facts.
 - [ ] EC-REVIEWTRUTH-12 — proven by `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1 PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_reviewtruth_phase.py -k grounding_refused`; falsified by path-entered control: ungrounded or artifact-mismatched agreement contributes to ratification.
 - [ ] EC-REVIEWTRUTH-13 — proven by `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1 PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_reviewtruth_phase.py -k material_guard`; falsified by path-entered control: the production governed gate accepts empty or elided review material.
-- [ ] EC-REVIEWTRUTH-14 — proven by `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1 PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_panel_native_fill_183.py phase-loop-runtime/tests/test_reviewtruth_phase.py -k native_fill`; falsified by path-entered control: a natively fillable Claude/Fable seat is silently dropped or sent through its local adapter.
+- [ ] EC-REVIEWTRUTH-14 — proven by `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1 PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_panel_native_fill_183.py` followed by `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1 PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_reviewtruth_phase.py -k native_fill`; falsified by path-entered control: a natively fillable Claude/Fable seat is silently dropped or sent through its local adapter.
 - [ ] EC-REVIEWTRUTH-15 — proven by `python3 phase-loop-runtime/scripts/verify_reviewtruth_chronology.py --mode capability-record`; falsified by path-entered control: posture-assuming production is admitted without the durable ratification, protection, conformance, and ancestry checks.
 - [ ] EC-REVIEWTRUTH-16 — proven by `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1 PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_reviewtruth_phase.py -k required_prover`; falsified by path-entered control: an unattested seat satisfies the prover requirement or `required_prover=false` changes an unrelated policy field.
 - [ ] EC-REVIEWTRUTH-17 — proven by `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1 PYTHONPATH=phase-loop-runtime/src python3 -m pytest -q phase-loop-runtime/tests/test_reviewtruth_phase.py phase-loop-runtime/tests/test_phase_worktree_executor.py -k 'review_wave or early_prover'`; falsified by path-entered control: ordering, role separation, external-tool closure, worktree isolation, reaping, receipt binding, fallback confinement, or contradiction re-review is bypassed; evidence uses `verification_evidence.v3`.
