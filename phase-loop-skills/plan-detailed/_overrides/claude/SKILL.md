@@ -57,7 +57,28 @@ Keep the full starting `git status --short --untracked-files=all` output in the 
 
 ### Step 2 — Parallel reconnaissance via Explore teammates
 
-**Skip this reconnaissance when the context is already in session.** If the files this change touches have already been read, the architecture was just discussed, or the caller supplied the file map, do not spawn Explore teammates to re-gather what you already have — plan directly from it. Keep reconnaissance proportional to the change: a bounded one- or two-file fix needs targeted reads, not a parallel Explore fan-out.
+**Scope reconnaissance by what you can NAME, not by how much you already know.**
+
+- **You can name the file and the symbol you need** → read it directly. Briefing a
+  teammate costs more than the read, and this is not a violation of the orchestrator
+  posture below.
+- **The search space is open** — you know the area but not the files, or you need to
+  surface what you do not yet know to look for → spawn Explore teammates.
+
+These are not alternatives. A run that holds most of its context but is missing two
+exact names should do BOTH: read the two, and send a teammate over the surrounding
+area. Partial context is the common case, and the two failure modes are asymmetric —
+an unnecessary read costs seconds, while a survey never run costs the findings you
+had no reason to request.
+
+**Do NOT judge a teammate by whether you beat it to an answer.** A direct read
+resolves questions you already knew to ask; a survey returns the ones you did not.
+If a teammate reports after you have finished, read its findings anyway and amend —
+late corrections to a written plan are cheap, and a plan that shipped with a missing
+file is not.
+
+Still skip reconnaissance entirely when the caller supplied the file map or the
+change is genuinely one file you have already read.
 
 Launch up to 3 `Agent(subagent_type: "Explore")` calls in a single message (1–2 is usual for single-concern work). Each Agent call MUST set `name:` for `SendMessage` addressability.
 
@@ -311,7 +332,7 @@ utilities, and patterns worth reusing.>
 
 ## Teamwork posture
 
-- **Main thread = orchestrator.** Brief Explore teammates, synthesize, write the plan, commit. Do not `Grep`/`Read` source files directly during Step 2 — that's the Explore teammates' job.
+- **Main thread = orchestrator.** Brief Explore teammates, synthesize, write the plan, commit. Delegate BREADTH — open-ended search across an area you cannot enumerate. Reading a file you can name by path and symbol is NOT a Step 2 violation; see Step 2 for the naming test.
 - **Parallel-by-default.** Step 2 launches all Explore teammates in a single message.
 - **Name every teammate.** Set `name:` on every `Agent` call.
 

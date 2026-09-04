@@ -6,6 +6,9 @@ from pathlib import Path
 
 import pytest
 
+from harden_tdd_guard import invoke_sanctioned_board_control
+from president_fakes import deferring_president
+from phase_loop_runtime.advisor_board.fixtures import DEFAULT_SEATS
 from phase_loop_runtime.advisor_board.schema import Board, Seat
 from phase_loop_runtime.panel_invoker import (
     PresidentPolicyError,
@@ -53,15 +56,15 @@ def _weak_board() -> Board:
 
 
 def _full_board() -> Board:
+    # One fleet-default seat per review vendor, taken from the shared canonical
+    # fixture rather than restated as literals: this test is about the LANDING
+    # POLICY reaching the real invocation path, not about which model each vendor
+    # currently ships, and every default-seat model aliases to the same policy
+    # seat name (``DEFAULT_REVIEW_SEAT_ALIASES``) a literal board would.
     return Board(
         name="full",
         purpose="premerge-review",
-        seats=(
-            Seat(model="claude-fable-5", effort="max", harness="claude"),
-            Seat(model="gpt-5.6-sol", effort="max", harness="codex"),
-            Seat(model="gemini-3.6-flash", effort="high", harness="gemini"),
-            Seat(model="grok-4.5", effort="max", harness="grok"),
-        ),
+        seats=DEFAULT_SEATS,
     )
 
 
@@ -95,14 +98,18 @@ def test_post_switch_board_requires_a_tier_and_rejects_understrength_board(tmp_p
 
 def test_post_switch_full_production_board_reaches_the_real_invocation_path(tmp_path: Path) -> None:
     _post_switch_repo(tmp_path)
-    result = invoke_board(
+    # An execution-capable review path needs an explicit sanctioned authorization
+    # control (EC-HARDEN-5); the assertion below is unchanged.
+    result = invoke_sanctioned_board_control(
         _full_board(),
         "artifact",
         repo_dir=tmp_path,
         spawn=_ok_spawn,
         landing_tier=ReviewLandingTier.PRODUCTION_CODE,
+        president_invoke=deferring_president,
     )
     assert [leg.status for leg in result.legs] == ["OK", "OK", "OK", "OK"]
+    assert result.president is not None
 
 
 def test_president_format_reask_unavailability_descends_the_ladder() -> None:

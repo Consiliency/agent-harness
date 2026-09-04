@@ -20,8 +20,8 @@ permissions:
 jobs:
   build:
     name: build + verify wheel + sdist
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 100
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
         with:
@@ -91,8 +91,15 @@ jobs:
             /tmp/phase-loop-release-wheel/bin/phase-loop "$sub" --help >/dev/null
           done
       - name: Gate A — verify the exact prebuilt wheel in a clean room
+        # A release tag and a manual dispatch run the FULL standalone suite. A
+        # pull_request run of this workflow deselects the heavy CONFORM chronology
+        # node: test.yml's landing push and nightly retain it (and a PR that
+        # touches the gate's selection plumbing retains it there too, per
+        # ci/chronology-scope.sh), so running it here again proves nothing new;
+        # the script's junit witness proves the node is absent from the evidence.
         env:
           GATE_A_JUNIT: ${{ runner.temp }}/junit-release-gate-a.xml
+          GATE_A_DESELECT_CHRONOLOGY: ${{ github.event_name == 'pull_request' && '1' || '0' }}
         run: |
           shopt -s nullglob
           wheels=(dist/*.whl)
@@ -118,7 +125,7 @@ jobs:
     name: publish to PyPI (trusted publishing)
     needs: build
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     environment: pypi
     permissions:
       id-token: write

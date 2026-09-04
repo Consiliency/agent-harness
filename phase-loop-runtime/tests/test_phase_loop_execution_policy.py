@@ -43,7 +43,7 @@ class PhaseLoopExecutionPolicyTest(unittest.TestCase):
         self.assertEqual(resolve_profile_for_executor(action="execute", executor="claude").model, "claude-sonnet-5")
         # gemini execute uses the canonical agy 3.7 Flash id (CR round-5 finding B — newest
         # GA), NOT `auto` (which the adapter collapses to Pro/heavy).
-        self.assertEqual(resolve_profile_for_executor(action="execute", executor="gemini").model, "gemini-3.7-flash")
+        self.assertEqual(resolve_profile_for_executor(action="execute", executor="gemini").model, "gemini-3.8-flash")
 
         roadmap = ExecutionPolicyRule(
             selector="execute",

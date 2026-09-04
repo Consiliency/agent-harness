@@ -3,7 +3,14 @@ import os
 import unittest.mock
 from types import SimpleNamespace
 
-from phase_loop_runtime.convergence.broker.credsep import BrokerEnvironmentBoundary, GitHubBrokerAdapter, build_non_force_branch_ref
+import pytest
+
+from phase_loop_runtime.convergence.broker.credsep import (
+    BrokerEnvironmentBoundary,
+    GitHubBrokerAdapter,
+    _parse_go_strconv_quote,
+    build_non_force_branch_ref,
+)
 from phase_loop_runtime.convergence.contracts import AdmissionRequest, BrokerRequest, BrokerVerb
 
 
@@ -28,9 +35,10 @@ class _FakeRun:
 
     def __call__(self, args, **kwargs):
         self.calls.append(list(args))
-        for tokens, stdout, rc in self.responses:
+        for response in self.responses:
+            tokens, stdout, rc, *rest = response
             if all(tok in args for tok in tokens):
-                return SimpleNamespace(stdout=stdout, stderr="", returncode=rc)
+                return SimpleNamespace(stdout=stdout, stderr=rest[0] if rest else "", returncode=rc)
         raise AssertionError(f"unexpected command: {args!r}")
 
 
@@ -54,15 +62,434 @@ def _base_responses():
     ]
 
 
+def _existing_pr_diagnostic(*, head=_BRANCH, base="main", url="https://github.com/owner/repo/pull/9"):
+    return (
+        f"a pull request for branch {json.dumps(head, ensure_ascii=False)} "
+        f"into branch {json.dumps(base, ensure_ascii=False)} already exists:\n{url}"
+    )
+
+
+def _same_repo_pr(*, url="https://github.com/owner/repo/pull/9", head=_HEAD, base="main"):
+    return {
+        "url": url,
+        "headRefOid": head,
+        "baseRefName": base,
+        "headRepositoryOwner": {"login": "owner"},
+        "isCrossRepository": False,
+    }
+
+
 def test_remote_head_match_returns_effect_observed_with_real_url(tmp_path):
     run = _FakeRun(_base_responses() + [
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
-        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "main"}]), 0),
+        (("list",), json.dumps([_same_repo_pr()]), 0),
     ])
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
     assert evidence.terminal_state == "effect_terminal_observed"
-    assert result is not None and result.pr_url == "https://gh/pr/9"
+    assert result is not None and result.pr_url == "https://github.com/owner/repo/pull/9"
     assert result.head_sha == _HEAD
+
+
+def test_existing_open_pr_create_failure_is_reconciled_by_exact_readback(tmp_path):
+    run = _FakeRun(_base_responses()[:-1] + [
+        (("create",), "", 1, _existing_pr_diagnostic()),
+        (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+        (("list",), json.dumps([_same_repo_pr()]), 0),
+    ])
+
+    result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
+
+    assert evidence.terminal_state == "effect_terminal_observed"
+    assert result is not None and result.pr_url == "https://github.com/owner/repo/pull/9"
+    listed = next(call for call in run.calls if call[:3] == ["gh", "pr", "list"])
+    assert listed[listed.index("--state") + 1] == "open"
+    assert listed[listed.index("--json") + 1] == (
+        "url,headRefOid,baseRefName,headRepositoryOwner,isCrossRepository"
+    )
+
+
+@pytest.mark.parametrize(
+    "diagnostic",
+    [
+        _existing_pr_diagnostic(head="feat/other"),
+        _existing_pr_diagnostic(base="release/other"),
+        f"warning: {_existing_pr_diagnostic()}",
+        f"{_existing_pr_diagnostic()}\nunrelated trailing output",
+        "pull request lookup failed because a branch already exists",
+        (
+            'a pull request for branch "feat/\\x78" into branch "main" already exists:\n'
+            "https://github.com/owner/repo/pull/9"
+        ),
+        (
+            'a pull request for branch "feat/\\u0078" into branch "main" already exists:\n'
+            "https://github.com/owner/repo/pull/9"
+        ),
+        (
+            'a pull request for branch "feat/\\q" into branch "main" already exists:\n'
+            "https://github.com/owner/repo/pull/9"
+        ),
+        (
+            'a pull request for branch "feat/x" into branch "ma\\x69n" already exists:\n'
+            "https://github.com/owner/repo/pull/9"
+        ),
+        (
+            'a pull request for branch "feat/\x01x" into branch "main" already exists:\n'
+            "https://github.com/owner/repo/pull/9"
+        ),
+    ],
+    ids=[
+        "wrong-head",
+        "wrong-base",
+        "leading-output",
+        "trailing-output",
+        "independent-substrings",
+        "redundant-x-escape",
+        "redundant-u-escape",
+        "unknown-escape",
+        "redundant-base-escape",
+        "raw-control",
+    ],
+)
+def test_existing_open_pr_classifier_rejects_mismatch_or_unrelated_output_without_readback(
+    tmp_path, diagnostic
+):
+    run = _FakeRun(_base_responses()[:-1] + [
+        (("create",), "", 1, diagnostic),
+    ])
+
+    result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
+
+    assert result is None
+    assert evidence.terminal_state == "outcome_ambiguous_blocked"
+    assert evidence.evidence_reference == "pr-unconfirmed"
+    assert not any(call[:3] == ["gh", "pr", "list"] for call in run.calls)
+    assert not any("ls-remote" in call for call in run.calls)
+
+
+def test_existing_open_pr_classifier_rejects_diagnostic_on_stdout_without_readback(tmp_path):
+    run = _FakeRun(_base_responses()[:-1] + [
+        (("create",), _existing_pr_diagnostic(), 1, ""),
+    ])
+
+    result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
+
+    assert result is None
+    assert evidence.terminal_state == "outcome_ambiguous_blocked"
+    assert evidence.evidence_reference == "pr-unconfirmed"
+    assert not any(call[:3] == ["gh", "pr", "list"] for call in run.calls)
+    assert not any("ls-remote" in call for call in run.calls)
+
+
+def test_existing_open_pr_classifier_reconstructs_quoted_head_and_base(tmp_path):
+    branch = 'feat/quoted"head'
+    base = 'release/quoted"base'
+    request = BrokerRequest(
+        BrokerVerb.PUBLISH_COMMITTED_BRANCH,
+        AdmissionRequest("attempt", 1, "fence", "digest", "predicate", "scope", "key"),
+        "repo",
+        branch,
+        _HEAD,
+        ("a.py",),
+        base=base,
+    )
+    completed = SimpleNamespace(
+        stdout="",
+        stderr=(
+            'a pull request for branch "feat/quoted\\"head" '
+            'into branch "release/quoted\\"base" already exists:\n'
+            "https://github.com/owner/repo/pull/9"
+        ),
+    )
+
+    assert GitHubBrokerAdapter(tmp_path)._create_reports_existing_pr(
+        completed, request, "github.com/owner/repo"
+    ) == "https://github.com/owner/repo/pull/9"
+
+
+def test_existing_open_pr_classifier_matches_go_strconv_quote_for_unicode_separators(tmp_path):
+    request = BrokerRequest(
+        BrokerVerb.PUBLISH_COMMITTED_BRANCH,
+        AdmissionRequest("attempt", 1, "fence", "digest", "predicate", "scope", "key"),
+        "repo",
+        "feat/line\u2028separator",
+        _HEAD,
+        ("a.py",),
+        base="release/paragraph\u2029separator",
+    )
+    completed = SimpleNamespace(
+        stdout="",
+        stderr=(
+            'a pull request for branch "feat/line\\u2028separator" '
+            'into branch "release/paragraph\\u2029separator" already exists:\n'
+            "https://github.com/owner/repo/pull/9"
+        ),
+    )
+
+    assert GitHubBrokerAdapter(tmp_path)._create_reports_existing_pr(
+        completed, request, "github.com/owner/repo"
+    ) == "https://github.com/owner/repo/pull/9"
+
+
+def test_existing_open_pr_classifier_accepts_escaped_c1_control(tmp_path):
+    request = BrokerRequest(
+        BrokerVerb.PUBLISH_COMMITTED_BRANCH,
+        AdmissionRequest("attempt", 1, "fence", "digest", "predicate", "scope", "key"),
+        "repo",
+        "feat/next\u0085line",
+        _HEAD,
+        ("a.py",),
+    )
+    completed = SimpleNamespace(
+        stdout="",
+        stderr=(
+            'a pull request for branch "feat/next\\u0085line" '
+            'into branch "main" already exists:\n'
+            "https://github.com/owner/repo/pull/9"
+        ),
+    )
+
+    assert GitHubBrokerAdapter(tmp_path)._create_reports_existing_pr(
+        completed, request, "github.com/owner/repo"
+    ) == "https://github.com/owner/repo/pull/9"
+
+
+def test_existing_open_pr_classifier_rejects_raw_c1_control(tmp_path):
+    request = BrokerRequest(
+        BrokerVerb.PUBLISH_COMMITTED_BRANCH,
+        AdmissionRequest("attempt", 1, "fence", "digest", "predicate", "scope", "key"),
+        "repo",
+        "feat/next\u0085line",
+        _HEAD,
+        ("a.py",),
+    )
+    completed = SimpleNamespace(
+        stdout="",
+        stderr=(
+            'a pull request for branch "feat/next\u0085line" '
+            'into branch "main" already exists:\n'
+            "https://github.com/owner/repo/pull/9"
+        ),
+    )
+
+    assert GitHubBrokerAdapter(tmp_path)._create_reports_existing_pr(
+        completed, request, "github.com/owner/repo"
+    ) is None
+
+
+def test_existing_open_pr_classifier_accepts_literal_unicode_separator_without_table_coupling(tmp_path):
+    request = BrokerRequest(
+        BrokerVerb.PUBLISH_COMMITTED_BRANCH,
+        AdmissionRequest("attempt", 1, "fence", "digest", "predicate", "scope", "key"),
+        "repo",
+        "feat/line\u2028separator",
+        _HEAD,
+        ("a.py",),
+    )
+    completed = SimpleNamespace(
+        stdout="",
+        stderr=(
+            'a pull request for branch "feat/line\u2028separator" '
+            'into branch "main" already exists:\n'
+            "https://github.com/owner/repo/pull/9"
+        ),
+    )
+
+    assert GitHubBrokerAdapter(tmp_path)._create_reports_existing_pr(
+        completed, request, "github.com/owner/repo"
+    ) == "https://github.com/owner/repo/pull/9"
+
+
+@pytest.mark.parametrize(
+    "quoted_head",
+    ['"feat/melt🫠"', '"feat/melt\\U0001fae0"'],
+    ids=["new-go-literal", "older-go-escaped"],
+)
+def test_existing_open_pr_classifier_is_independent_of_go_unicode_table(
+    tmp_path, quoted_head
+):
+    request = BrokerRequest(
+        BrokerVerb.PUBLISH_COMMITTED_BRANCH,
+        AdmissionRequest("attempt", 1, "fence", "digest", "predicate", "scope", "key"),
+        "repo",
+        "feat/melt🫠",
+        _HEAD,
+        ("a.py",),
+    )
+    completed = SimpleNamespace(
+        stdout="",
+        stderr=(
+            f"a pull request for branch {quoted_head} into branch \"main\" already exists:\n"
+            "https://github.com/owner/repo/pull/9"
+        ),
+    )
+
+    assert GitHubBrokerAdapter(tmp_path)._create_reports_existing_pr(
+        completed, request, "github.com/owner/repo"
+    ) == "https://github.com/owner/repo/pull/9"
+
+
+@pytest.mark.parametrize(
+    "quoted_head",
+    [
+        '"feat/line\\U00002028separator"',
+        '"feat/line\\u202Aseparator"',
+        '"feat/line\\ud800separator"',
+        '"feat/line\\U00110000separator"',
+        '"feat/line\\u12separator"',
+    ],
+    ids=["wrong-width", "uppercase-hex", "surrogate", "out-of-range", "truncated"],
+)
+def test_existing_open_pr_classifier_rejects_noncanonical_or_invalid_unicode_escape(
+    quoted_head,
+):
+    assert _parse_go_strconv_quote(quoted_head, 0) is None
+
+
+def test_existing_open_pr_recovery_requires_diagnostic_url_to_equal_readback(tmp_path):
+    run = _FakeRun(_base_responses()[:-1] + [
+        (("create",), "", 1, _existing_pr_diagnostic()),
+        (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+        (("list",), json.dumps([
+            _same_repo_pr(url="https://github.com/owner/repo/pull/10"),
+        ]), 0),
+    ])
+
+    result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
+
+    assert result is None
+    assert evidence.terminal_state == "outcome_ambiguous_blocked"
+    assert evidence.evidence_reference == "pr-url-readback-mismatch"
+
+
+@pytest.mark.parametrize(
+    "head_owner,is_cross_repository",
+    [
+        ({"login": "fork-owner"}, True),
+        ({"login": "owner"}, True),
+        ({"login": "fork-owner"}, False),
+        (None, False),
+    ],
+    ids=["foreign-fork", "same-owner-cross-repo", "foreign-owner-flag-false", "missing-owner"],
+)
+def test_pr_readback_rejects_unconfirmed_head_repository(
+    tmp_path, head_owner, is_cross_repository
+):
+    pr = _same_repo_pr()
+    pr["headRepositoryOwner"] = head_owner
+    pr["isCrossRepository"] = is_cross_repository
+    run = _FakeRun(_base_responses() + [
+        (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+        (("list",), json.dumps([pr]), 0),
+    ])
+
+    result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
+
+    assert result is None
+    assert evidence.terminal_state == "outcome_ambiguous_blocked"
+    assert evidence.evidence_reference == "pr-head-repository-unconfirmed"
+
+
+@pytest.mark.parametrize(
+    "malformed_url",
+    [
+        {"url": "https://github.com/owner/repo/pull/9"},
+        9,
+        "not-a-pr-url",
+        "https://github.com/other/repo/pull/9",
+        " https://github.com/owner/repo/pull/9",
+        "https://github.com/owner/repo/pull/9 ",
+        "https://github.com/own\rer/repo/pull/9",
+        "https://github.com/owner/\nrepo/pull/9",
+        "https://github.com/owner/repo/pull/\t9",
+        "https://github.com/owner/repo/pull/9?",
+        "https://github.com/owner/repo/pull/9#",
+        "https://github.com/owner/repo/pull/09",
+    ],
+    ids=[
+        "dict",
+        "integer",
+        "non-pr-string",
+        "wrong-repository",
+        "leading-whitespace",
+        "trailing-whitespace",
+        "embedded-cr",
+        "embedded-lf",
+        "embedded-tab",
+        "empty-query-delimiter",
+        "empty-fragment-delimiter",
+        "leading-zero",
+    ],
+)
+def test_existing_open_pr_recovery_rejects_noncanonical_url_bytes(tmp_path, malformed_url):
+    run = _FakeRun(_base_responses()[:-1] + [
+        (("create",), "", 1, _existing_pr_diagnostic()),
+        (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+        (("list",), json.dumps([_same_repo_pr(url=malformed_url)]), 0),
+    ])
+
+    result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
+
+    assert result is None
+    assert evidence.terminal_state == "outcome_ambiguous_blocked"
+    assert evidence.evidence_reference == "pr-url-unconfirmed"
+
+
+def test_existing_open_pr_recovery_rejects_multiple_results(tmp_path):
+    run = _FakeRun(_base_responses()[:-1] + [
+        (("create",), "", 1, _existing_pr_diagnostic()),
+        (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+        (("list",), json.dumps([
+            _same_repo_pr(),
+            _same_repo_pr(url="https://github.com/owner/repo/pull/10"),
+        ]), 0),
+    ])
+
+    result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
+
+    assert result is None
+    assert evidence.terminal_state == "outcome_ambiguous_blocked"
+    assert evidence.evidence_reference == "pr-list-ambiguous"
+
+
+def test_existing_open_pr_recovery_rejects_mismatched_base(tmp_path):
+    run = _FakeRun(_base_responses()[:-1] + [
+        (("create",), "", 1, _existing_pr_diagnostic()),
+        (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+        (("list",), json.dumps([_same_repo_pr(base="release/2.0")]), 0),
+    ])
+
+    result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
+
+    assert result is None
+    assert evidence.terminal_state == "outcome_ambiguous_blocked"
+    assert evidence.evidence_reference == "pr-base-unconfirmed"
+
+
+def test_existing_open_pr_recovery_rejects_unreadable_list(tmp_path):
+    run = _FakeRun(_base_responses()[:-1] + [
+        (("create",), "", 1, _existing_pr_diagnostic()),
+        (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+        (("list",), "", 1),
+    ])
+
+    result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
+
+    assert result is None
+    assert evidence.terminal_state == "outcome_ambiguous_blocked"
+    assert evidence.evidence_reference == "pr-read-failed"
+
+
+def test_unrelated_pr_create_failure_remains_ambiguous_without_readback(tmp_path):
+    run = _FakeRun(_base_responses()[:-1] + [
+        (("create",), "", 1, "HTTP 503: service unavailable"),
+    ])
+
+    result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
+
+    assert result is None
+    assert evidence.terminal_state == "outcome_ambiguous_blocked"
+    assert evidence.evidence_reference == "pr-unconfirmed"
+    assert not any(call[:3] == ["gh", "pr", "list"] for call in run.calls)
 
 
 def test_remote_head_mismatch_returns_ambiguous_not_success(tmp_path):
@@ -89,7 +516,7 @@ def test_remote_read_failure_returns_ambiguous_not_no_effect(tmp_path):
 def test_pr_head_unconfirmed_returns_ambiguous(tmp_path):
     run = _FakeRun(_base_responses() + [
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
-        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": "other-sha"}]), 0),
+        (("list",), json.dumps([_same_repo_pr(head="other-sha")]), 0),
     ])
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
     assert result is None
@@ -107,7 +534,7 @@ def test_pr_head_unconfirmed_returns_ambiguous(tmp_path):
 def test_pr_head_match_but_base_mismatch_fails_closed_to_ambiguous(tmp_path):
     run = _FakeRun(_base_responses() + [
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
-        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "some-other-base"}]), 0),
+        (("list",), json.dumps([_same_repo_pr(base="some-other-base")]), 0),
     ])
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
     assert result is None
@@ -119,11 +546,11 @@ def test_pr_head_and_base_both_match_returns_effect_observed(tmp_path):
     # Positive case: headRefOid AND baseRefName both equal the request's -> accepted.
     run = _FakeRun(_base_responses() + [
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
-        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "main"}]), 0),
+        (("list",), json.dumps([_same_repo_pr()]), 0),
     ])
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
     assert evidence.terminal_state == "effect_terminal_observed"
-    assert result is not None and result.pr_url == "https://gh/pr/9"
+    assert result is not None and result.pr_url == "https://github.com/owner/repo/pull/9"
 
 
 def test_pr_head_match_but_base_mismatch_on_non_default_base_fails_closed(tmp_path):
@@ -140,9 +567,7 @@ def test_pr_head_match_but_base_mismatch_on_non_default_base_fails_closed(tmp_pa
         (("push",), "", 0),
         (("create",), "", 0),
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
-        (("list",), json.dumps([
-            {"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "main"},
-        ]), 0),
+        (("list",), json.dumps([_same_repo_pr()]), 0),
     ])
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request_owning("a.py", base="release/2.0"))
     assert result is None
@@ -323,7 +748,7 @@ def test_directory_owned_entry_covers_changed_files_under_it(tmp_path):
         (("push",), "", 0),
         (("create",), "", 0),
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
-        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "main"}]), 0),
+        (("list",), json.dumps([_same_repo_pr()]), 0),
     ])
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request_owning("src"))
     assert evidence.terminal_state == "effect_terminal_observed"
@@ -342,7 +767,7 @@ def test_broker_re_diffs_against_the_request_base(tmp_path):
         (("push",), "", 0),
         (("create",), "", 0),
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
-        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "release/2.0"}]), 0),
+        (("list",), json.dumps([_same_repo_pr(base="release/2.0")]), 0),
     ])
     GitHubBrokerAdapter(tmp_path, run=run).execute(_request_owning("a.py", base="release/2.0"))
     diff = next(c for c in run.calls if "diff" in c)
@@ -355,7 +780,7 @@ def test_gh_calls_are_bound_to_origin_repo_slug(tmp_path):
     cannot open/read the PR on a different repo while the push+ls-remote match."""
     run = _FakeRun(_base_responses() + [
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
-        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "main"}]), 0),
+        (("list",), json.dumps([_same_repo_pr()]), 0),
     ])
     GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
     gh = [c for c in run.calls if c and c[0] == "gh"]
@@ -375,7 +800,7 @@ def test_pr_create_is_noninteractive_with_title_body_head(tmp_path):
     request = BrokerRequest(BrokerVerb.PUBLISH_COMMITTED_BRANCH, admission, "repo", _BRANCH, _HEAD, ("a.py",), draft=True, pr_body=body)
     run = _FakeRun(_base_responses() + [
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
-        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "main"}]), 0),
+        (("list",), json.dumps([_same_repo_pr()]), 0),
     ])
     GitHubBrokerAdapter(tmp_path, run=run).execute(request)
     create = next(c for c in run.calls if c[:3] == ["gh", "pr", "create"])
@@ -408,8 +833,6 @@ def test_broker_env_strips_repo_redirect_but_keeps_credential_and_host():
     assert broker.get("GH_HOST") == "ghe.corp"   # GH_HOST kept (host pinned by --repo; preserves GHE config)
     assert broker.get("NORMAL") == "y"
 
-
-import pytest
 @pytest.mark.parametrize("url,slug", [
     ("https://github.com/owner/repo.git", "github.com/owner/repo"),
     ("https://github.com/owner/repo", "github.com/owner/repo"),
@@ -456,7 +879,7 @@ def test_push_and_lsremote_bind_to_explicit_origin_url_not_alias(tmp_path):
     origin = "https://github.com/owner/repo.git"
     run = _FakeRun(_base_responses() + [
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
-        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "main"}]), 0),
+        (("list",), json.dumps([_same_repo_pr()]), 0),
     ])
     GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
     push = next(c for c in run.calls if "push" in c)
@@ -497,7 +920,7 @@ def test_legit_rename_within_owned_scope_is_not_false_rejected(tmp_path):
         (("push",), "", 0),
         (("create",), "", 0),
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
-        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "main"}]), 0),
+        (("list",), json.dumps([_same_repo_pr()]), 0),
     ])
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request_owning("owned"))
     assert evidence.terminal_state == "effect_terminal_observed"
@@ -510,7 +933,7 @@ def test_legit_rename_within_owned_scope_is_not_false_rejected(tmp_path):
 def test_push_targets_exact_head_sha_not_mutable_ref(tmp_path):
     run = _FakeRun(_base_responses() + [
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
-        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "main"}]), 0),
+        (("list",), json.dumps([_same_repo_pr()]), 0),
     ])
     GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
     push = next(c for c in run.calls if "push" in c)
@@ -532,7 +955,7 @@ def test_pr_create_carries_explicit_base(tmp_path):
         (("push",), "", 0),
         (("create",), "", 0),
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
-        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "release/2.0"}]), 0),
+        (("list",), json.dumps([_same_repo_pr(base="release/2.0")]), 0),
     ])
     GitHubBrokerAdapter(tmp_path, run=run).execute(_request_owning("a.py", base="release/2.0"))
     create = next(c for c in run.calls if c[:3] == ["gh", "pr", "create"])
@@ -569,7 +992,7 @@ def test_valid_base_with_slash_is_not_rejected_by_the_guard(tmp_path):
         (("push",), "", 0),
         (("create",), "", 0),
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
-        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "release/2.0"}]), 0),
+        (("list",), json.dumps([_same_repo_pr(base="release/2.0")]), 0),
     ])
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request_owning("a.py", base="release/2.0"))
     assert evidence.terminal_state == "effect_terminal_observed"
@@ -670,7 +1093,7 @@ def test_byte_identical_weird_filename_is_approved_end_to_end(tmp_path):
         (("push",), "", 0),
         (("create",), "", 0),
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
-        (("list",), json.dumps([{"url": "https://gh/pr/9", "headRefOid": _HEAD, "baseRefName": "main"}]), 0),
+        (("list",), json.dumps([_same_repo_pr()]), 0),
     ])
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request_owning(weird))
     assert evidence.terminal_state == "effect_terminal_observed"

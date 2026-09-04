@@ -86,6 +86,43 @@ Path resolution is provided by `phase_loop_runtime.skill_paths`, which keeps han
 repo-local, preserves harness-specific reflection roots, and documents the default
 install roots for Claude, Codex, Gemini, and OpenCode.
 
+## Zero-history FABPUB bootstrap
+
+When FABPUB is active on a host that has no compatible legacy run-train broker
+ledger, create its persistent authority with a read-only probe followed by an
+explicit apply:
+
+```sh
+phase-loop fabpub-bootstrap --probe \
+  --inventory /secure/operator/fabpub-probe.json \
+  --worktree /path/to/repo \
+  --legacy-root /path/to/declared/ledger/broker \
+  --search-root /path/to/workspaces \
+  --historical-evidence-root /path/to/standalone/receipt
+
+phase-loop fabpub-bootstrap --apply \
+  --inventory /secure/operator/fabpub-probe.json \
+  --confirm-zero-history
+```
+
+The default authority is
+`$XDG_STATE_HOME/phase-loop/fabpub/authority-v1`, falling back to
+`~/.local/state/phase-loop/fabpub/authority-v1`. Override it with
+`PHASE_LOOP_FABPUB_AUTHORITY_ROOT` or `--authority-root` during the probe.
+Receipts created by apply retain that custom authority location for later
+fresh-process validation; keep the environment override configured when
+onboarding repositories that were not named by the original probe.
+Apply is irreversible and refuses changed bytes, symlinks, live allocator
+state, held generation leases, or an authority owned by another bootstrap.
+
+Inventory completeness is bounded to the named worktrees, explicit and
+environment-declared legacy roots, historical-evidence roots, and hashed broker
+directories directly beneath `.train-ledger` directories under each
+`--search-root`. The confirmation attests that no compatible allocator exists
+outside that inspected universe.
+Standalone historical receipts are hashed and left in place; they are not
+silently adopted as current allocator authority.
+
 ## Closeout ownership gate & operator break-glass
 
 When a phase verifies green but the executor touched files outside the plan's declared

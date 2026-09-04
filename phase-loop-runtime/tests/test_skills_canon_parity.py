@@ -136,18 +136,18 @@ class SkillsCanonParityTest(unittest.TestCase):
                 self.assertNotIn("run_cli_panels.sh", text)
                 for literal in (
                     "Claude Fable 5",
-                    "claude-fable-5",
+                    "claude-fable-5-1",
                     "GPT-5.6 Sol",
                     "gpt-5.6-sol",
                     "Grok 4.6",
                     "grok-4.6",
-                    "Gemini 3.7 Flash",
-                    "gemini-3.7-flash",
+                    "Gemini 3.8 Flash",
+                    "gemini-3.8-flash",
                 ):
                     self.assertIn(literal, text, f"{packaged}: lost concrete model {literal}")
                 self.assertNotIn("Harness Fable", text)
-                self.assertNotIn("Harness 3.7 Flash", text)
-                self.assertNotIn("<harness>-3.7-flash", text)
+                self.assertNotIn("Harness 3.8 Flash", text)
+                self.assertNotIn("<harness>-3.8-flash", text)
 
     def test_installed_bundle_preserves_concrete_harness_literals(self):
         """CR blind-spot gate: parity (committed == build) does NOT catch a

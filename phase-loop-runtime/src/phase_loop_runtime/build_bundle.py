@@ -48,20 +48,20 @@ OVERRIDE_README = "Harness-specific overlay files for this workflow skill.\n"
 # identities remain concrete regardless of which harness supplied the base.
 PRESERVE_LITERALS: tuple[str, ...] = (
     # claude-opus-4-8 RETIRED from the skill bundle (design-model-tier-taxonomy.md):
-    # the skills now name claude-opus-5 (frontier) / claude-fable-5 (planning). The
+    # the skills now name claude-opus-5 (frontier) / claude-fable-5-1 (planning). The
     # install-output gate requires every entry here to actually appear in the bundle,
     # so a retired id must leave this tuple.
     "claude-opus-5",  # model-id-source: verbatim literal preserved through brand-collapse (heavy tier)
-    "claude-fable-5",  # model-id-source: verbatim literal preserved through brand-collapse (ultra tier)
+    "claude-fable-5-1",  # model-id-source: verbatim literal preserved through brand-collapse (ultra tier)
     "claude-sonnet-5",  # model-id-source: verbatim literal preserved through brand-collapse
     "claude-haiku-4-5-20251001",  # model-id-source: verbatim literal preserved through brand-collapse (lite tier, DATED pin)
-    "gemini-3.7-flash",  # model-id-source: cross-vendor advisor-board default, never a harness placeholder
+    "gemini-3.8-flash",  # model-id-source: cross-vendor advisor-board default, never a harness placeholder
     "claude-in-chrome",
     # Cross-vendor advisor-board display names are concrete model identities, not
     # prose about the harness currently installing the skill. Preserve them so a
     # Claude/Gemini source cannot become the nonexistent "Harness Fable/Flash".
     "Claude Fable 5",
-    "Gemini 3.7 Flash",
+    "Gemini 3.8 Flash",
     # Display-name model form as it appears in the `Co-Authored-By:` git trailer.
     # Without this the brand collapse (`Claude` -> `Harness`) rewrites the trailer
     # to `Harness Opus 4.8` — a concrete model attribution corrupted into a name

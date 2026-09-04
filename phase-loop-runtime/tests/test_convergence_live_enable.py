@@ -36,7 +36,7 @@ from phase_loop_runtime.convergence.provider_contracts import (
 
 _BRANCH = "feat/live-enable"
 _HEAD = "a" * 40
-_URL = "https://github.com/o/r/pull/7"
+_URL = "https://github.com/owner/repo/pull/7"
 _CANONICAL_REPOSITORY_IDENTITY = "canonical-repository-identity"
 _ADAPTER_WORKTREE = "o/r"
 _FABPUB_AUTHORITY_PREIMAGE = {
@@ -52,6 +52,16 @@ _FABPUB_AUTHORITY_PREIMAGE = {
     "authority_domain_scope": "repository:fabpub-live",
     "operation_identity": "publish:fabpub-live",
 }
+
+
+def _same_repo_readback(*, head: str, url: str, base: str = "main") -> dict:
+    return {
+        "headRefOid": head,
+        "url": url,
+        "baseRefName": base,
+        "headRepositoryOwner": {"login": "owner"},
+        "isCrossRepository": False,
+    }
 
 
 def _admission(key: str) -> AdmissionRequest:
@@ -232,7 +242,7 @@ def _fake_git_gh(
             if cmd[1:3] == ["pr", "create"]:
                 return CompletedProcess(cmd, 0, stdout="", stderr="")
             if cmd[1:3] == ["pr", "list"]:
-                body = json.dumps([{"headRefOid": pr_head, "url": _URL, "baseRefName": pr_base}])
+                body = json.dumps([_same_repo_readback(head=pr_head, url=_URL, base=pr_base)])
                 return CompletedProcess(cmd, 0, stdout=body, stderr="")
         raise AssertionError(f"unexpected command: {cmd}")
 
@@ -450,7 +460,14 @@ def _routing_fake(repos, seen_paths):
             if cmd[1:3] == ["pr", "create"]:
                 return CompletedProcess(cmd, 0, stdout="", stderr="")
             if cmd[1:3] == ["pr", "list"]:
-                return CompletedProcess(cmd, 0, stdout=json.dumps([{"headRefOid": meta["head"], "url": meta["url"], "baseRefName": meta.get("base", "main")}]), stderr="")
+                return CompletedProcess(
+                    cmd,
+                    0,
+                    stdout=json.dumps([_same_repo_readback(
+                        head=meta["head"], url=meta["url"], base=meta.get("base", "main")
+                    )]),
+                    stderr="",
+                )
         raise AssertionError(f"unexpected command: {cmd}")
 
     return fake_run
@@ -474,9 +491,9 @@ def _activated_routing_cases(tmp_path: Path):
         cutover_id="fabpub-live-routing",
         rows=tuple(item[1] for item in prepared),
     )
-    for label, (repo, _row, owned_file, branch, fixture_label) in zip(
+    for pr_number, (label, (repo, _row, owned_file, branch, fixture_label)) in enumerate(zip(
         ("alpha", "beta"), prepared, strict=True
-    ):
+    ), start=1):
         _repo, _root, publish = _publish_request_for_active_repo(
             tmp_path, repo, owned_file, branch, fixture_label
         )
@@ -484,7 +501,7 @@ def _activated_routing_cases(tmp_path: Path):
         repos[path] = {
             "branch": branch,
             "head": publish.head_sha,
-            "url": f"https://gh/pr/{label}",
+            "url": f"https://github.com/owner/repo/pull/{pr_number}",
         }
         requests[label] = publish
     return repos, requests
@@ -503,8 +520,8 @@ def test_routing_broker_binds_each_request_to_its_own_repo(tmp_path, request):
         repos, requests = _activated_routing_cases(tmp_path)
     else:
         repos = {
-            "/ws/alpha": {"branch": "feat/alpha", "head": "a" * 40, "url": "https://gh/pr/alpha"},
-            "/ws/beta": {"branch": "feat/beta", "head": "b" * 40, "url": "https://gh/pr/beta"},
+            "/ws/alpha": {"branch": "feat/alpha", "head": "a" * 40, "url": "https://github.com/owner/repo/pull/1"},
+            "/ws/beta": {"branch": "feat/beta", "head": "b" * 40, "url": "https://github.com/owner/repo/pull/2"},
         }
         requests = {}
     seen_paths: list = []
@@ -542,8 +559,8 @@ def test_routing_broker_dedups_within_a_repo_not_across(tmp_path, request):
         alpha_path, beta_path = tuple(repos)
     else:
         repos = {
-            "/ws/alpha": {"branch": "feat/alpha", "head": "a" * 40, "url": "https://gh/pr/alpha"},
-            "/ws/beta": {"branch": "feat/beta", "head": "b" * 40, "url": "https://gh/pr/beta"},
+            "/ws/alpha": {"branch": "feat/alpha", "head": "a" * 40, "url": "https://github.com/owner/repo/pull/1"},
+            "/ws/beta": {"branch": "feat/beta", "head": "b" * 40, "url": "https://github.com/owner/repo/pull/2"},
         }
         requests = {}
         alpha_path, beta_path = "/ws/alpha", "/ws/beta"
@@ -605,8 +622,8 @@ def test_one_repo_ambiguous_outcome_does_not_poison_other_repos(tmp_path, reques
         alpha_path, beta_path = tuple(repos)
     else:
         repos = {
-            "/ws/alpha": {"branch": "feat/alpha", "head": "a" * 40, "url": "https://gh/pr/alpha"},
-            "/ws/beta": {"branch": "feat/beta", "head": "b" * 40, "url": "https://gh/pr/beta"},
+            "/ws/alpha": {"branch": "feat/alpha", "head": "a" * 40, "url": "https://github.com/owner/repo/pull/1"},
+            "/ws/beta": {"branch": "feat/beta", "head": "b" * 40, "url": "https://github.com/owner/repo/pull/2"},
         }
         requests = {}
         alpha_path, beta_path = "/ws/alpha", "/ws/beta"
@@ -637,7 +654,14 @@ def test_one_repo_ambiguous_outcome_does_not_poison_other_repos(tmp_path, reques
             if cmd[1:3] == ["pr", "create"]:
                 return CompletedProcess(cmd, 0, stdout="", stderr="")
             if cmd[1:3] == ["pr", "list"]:
-                return CompletedProcess(cmd, 0, stdout=json.dumps([{"headRefOid": meta["head"], "url": meta["url"], "baseRefName": meta.get("base", "main")}]), stderr="")
+                return CompletedProcess(
+                    cmd,
+                    0,
+                    stdout=json.dumps([_same_repo_readback(
+                        head=meta["head"], url=meta["url"], base=meta.get("base", "main")
+                    )]),
+                    stderr="",
+                )
         raise AssertionError(f"unexpected command: {cmd}")
 
     broker = (

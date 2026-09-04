@@ -729,6 +729,24 @@
       "updated_at": "2026-07-29T00:00:00Z"
     },
     {
+      "acceptance_criteria_count": 5,
+      "created_at": "2026-09-03T06:10:04Z",
+      "file": ".consiliency/plans/detailed-split-pr-gate-chronology-746-20260903-0609.md",
+      "handoff_ref": ".dev-skills/handoffs/claude-plan-detailed/latest.md",
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [],
+      "owner_skill": "claude-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "split-pr-gate-chronology-746",
+      "status": "committed",
+      "task_summary": "Consiliency/agent-harness#746: pull_request runs never select the CONFORM chronology node unless the diff touches the gate's selection plumbing (ci/*, the two workflows, the witness and Gate A scripts); push/schedule/dispatch always do; a red main files/updates one ci-main-red issue and a green closes it; measured by ci/gate_metrics.py, not projected. r2 after a 4-seat plan review.",
+      "type": "detailed",
+      "updated_at": "2026-09-03T06:58:16Z"
+    },
+    {
       "acceptance_criteria_count": null,
       "created_at": "2026-07-11T22:48:16Z",
       "file": "plans/phase-plan-v1-task-message-sourcebroker-SOURCEBROKER.md",
@@ -2105,7 +2123,10 @@
         "SL-0",
         "SL-1",
         "SL-2",
-        "SL-3"
+        "SL-3",
+        "SL-4",
+        "SL-5",
+        "SL-6"
       ],
       "lifecycle": [
         {
@@ -2435,6 +2456,34 @@
             }
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-09-03T04:56:29Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "plan_current_authority": {
+              "plan_sha256": "4fb3206558d7df20da9338a93d785307227cca379020b20607d1ce92923ff1c1",
+              "predecessor_plan_sha256": "58097b447da799f9d8a70e2c3da67204258751dff16f77ba072628d1457480f6",
+              "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+              "schema": "plan_current_authority.v1",
+              "source": "Consiliency/agent-harness#737"
+            }
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-09-04T16:25:00Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "plan_current_authority": {
+              "plan_sha256": "5ffee1b42e1e00caf85a62a7590e38ff640b37d95d728cf151a2c242242678c2",
+              "predecessor_plan_sha256": "4fb3206558d7df20da9338a93d785307227cca379020b20607d1ce92923ff1c1",
+              "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+              "schema": "plan_current_authority.v1",
+              "source": "Consiliency/agent-harness#770"
+            }
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -2469,6 +2518,18 @@
           "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#704"
+        },
+        {
+          "plan_sha256": "4fb3206558d7df20da9338a93d785307227cca379020b20607d1ce92923ff1c1",
+          "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#737"
+        },
+        {
+          "plan_sha256": "5ffee1b42e1e00caf85a62a7590e38ff640b37d95d728cf151a2c242242678c2",
+          "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#770"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/fdaed78f/codex-v10-plan-harden/20260730T035939Z-01-harden-plan.md",
@@ -2482,7 +2543,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-27T07:51:42Z"
+      "updated_at": "2026-09-04T16:25:00Z"
     },
     {
       "acceptance_criteria_count": null,
@@ -3642,7 +3703,8 @@
         "SL-1",
         "SL-2",
         "SL-3",
-        "SL-4"
+        "SL-4",
+        "SL-5"
       ],
       "lifecycle": [
         {
@@ -3657,10 +3719,34 @@
             "run_id": "20260825T112801Z-01-residual-plan"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-09-04T15:18:32Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "author_model": "gpt-5.6-sol",
+            "author_vendor": "openai",
+            "phase_alias": "RESIDUAL",
+            "plan_sha256": "b2af0edd86cc73db56cf18e7d5eba4b3473f8e74faef25a4acf91e86bfba286d",
+            "planning_base": "503285c50e4ac8992d16cc0d4ac9bcbbd8e16a47",
+            "predecessor_plan_sha256": "658646bea8dcbfbd0fd9ac34b7bd5592cb7b78ec546162e209174a65c99f69af",
+            "review_status": "unreviewed_requires_fresh_exact_head_review",
+            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+            "run_id": "20260904T140707Z-01-residual-plan"
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
       "phase_alias": "RESIDUAL",
+      "plan_authority_history": [
+        {
+          "plan_sha256": "b2af0edd86cc73db56cf18e7d5eba4b3473f8e74faef25a4acf91e86bfba286d",
+          "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#368"
+        }
+      ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/a27a6f9a/codex-v10-residual-plan/20260825T112801Z-01-residual-plan.md",
       "roadmap_ref": {
         "file": "specs/phase-plans-v10.md",
@@ -3672,19 +3758,17 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-25T11:47:11Z"
+      "updated_at": "2026-09-04T15:18:32Z"
     },
     {
       "acceptance_criteria_count": null,
       "created_at": "2026-07-30T04:13:47Z",
       "file": "plans/phase-plan-v10-REVIEWTRUTH.md",
-      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260730T035938Z-01-reviewtruth-plan.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260904T072245Z-01-reviewtruth-plan.md",
       "if_gates_produced": [
         "IF-0-REVIEWTRUTH-1",
         "IF-0-REVIEWTRUTH-2",
-        "IF-0-REVIEWTRUTH-3",
-        "IF-0-REVIEWTRUTH-4",
-        "IF-0-REVIEWTRUTH-5"
+        "IF-0-REVIEWTRUTH-3"
       ],
       "lanes": [
         "SL-0",
@@ -4320,9 +4404,57 @@
           "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#645"
+        },
+        {
+          "plan_sha256": "c8b8eea3b413e9bdc1b368df622d715eb8ba537d24afcb1137b70ef44c812703",
+          "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#764"
+        },
+        {
+          "plan_sha256": "ceea5dbfe438df97f1d498df8de7404ad33c6080b15baea501361e5995d82291",
+          "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#764"
+        },
+        {
+          "plan_sha256": "909af95cd4d0cff646074b80a085914214ee336c0d89a1bac1fa2e04b30d1526",
+          "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#764"
+        },
+        {
+          "plan_sha256": "909af95cd4d0cff646074b80a085914214ee336c0d89a1bac1fa2e04b30d1526",
+          "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#765"
+        },
+        {
+          "plan_sha256": "0f046993d429d2d2304a47a26c358b7feeedad017b59f17639587aba3fa352b9",
+          "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#765"
+        },
+        {
+          "plan_sha256": "92e30fbb441983854414e122566ba17cb3ff329ffd3744fe3f20f9cd4f9d6610",
+          "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#765"
+        },
+        {
+          "plan_sha256": "91bdf2816e322d8a2635f1c1ead4c200101b6d20427af26183a8fb660bb33356",
+          "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#765"
+        },
+        {
+          "plan_sha256": "89d3bedd5e17f465ff51b46b532420a74ac68afbd1ca04cf54edc8f28acd4ced",
+          "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#765"
         }
       ],
-      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/9256301e/codex-v10-plan-reviewtruth/20260730T035938Z-01-reviewtruth-plan.md",
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/05b770de/codex-v10-reviewtruth-plan-repair/20260904T072245Z-01-reviewtruth-plan.md",
       "roadmap_ref": {
         "file": "specs/phase-plans-v10.md",
         "slug": "phase-plans-v10",
@@ -4333,7 +4465,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-19T19:40:18Z"
+      "updated_at": "2026-09-04T14:45:00Z"
     },
     {
       "acceptance_criteria_count": null,
@@ -5830,6 +5962,90 @@
       "task_summary": "Thread live run alias into verification.json (ah#85b)",
       "type": "detailed",
       "updated_at": "2026-07-28T22:28:34Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-08-25T21:36:12Z",
+      "file": "plans/phase-plan-v10-RELEASE.md",
+      "handoff_ref": null,
+      "if_gates_produced": [
+        "IF-0-PILOT-1",
+        "IF-0-RELEASE-1"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2",
+        "SL-3",
+        "SL-4",
+        "SL-5",
+        "SL-6",
+        "SL-7",
+        "SL-8",
+        "SL-9"
+      ],
+      "lifecycle": [
+        {
+          "at": "2026-08-25T21:36:12Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "phase_alias": "RELEASE",
+            "plan_sha256": "628a74e64160d7e9a04532f214c3534b868185fa74abdcfd523ee8d2e948e864",
+            "planning_base": "982d94fe06f8aacaf5ab8e21635b7a69a4317897",
+            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-09-04T11:35:01Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "phase_alias": "RELEASE",
+            "plan_sha256": "d20d9f1e751ae2051c4fc6be18c918e8442a7b6947f1993192961373ae106969",
+            "predecessor_plan_sha256": "628a74e64160d7e9a04532f214c3534b868185fa74abdcfd523ee8d2e948e864",
+            "repair_scope": [
+              "maintainer_authorized_post_publication_fleet_rollout",
+              "product_repository_owned_pin_and_workaround_edits",
+              "serialized_reviewed_merges_and_fix_forward_boundary",
+              "metadata_only_fleet_rollout_evidence"
+            ],
+            "review_artifact_sha256": "f6530a7b102d515553761d2116b3a2f3dc7e9638fc82cc6eccdedf4a63e47796",
+            "reviewed_candidate_commit": "a2da1156e24235de28266ef81a899a3ed6896e22",
+            "reviewed_candidate_tree": "5eeb50879b456a48966a56404e53866f844badf0",
+            "review_status": "blocking_fleet_rollout_gap_repaired_requires_fresh_exact_digest_review",
+            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0"
+          },
+          "transition": "committed"
+        }
+      ],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "RELEASE",
+      "plan_authority_history": [
+        {
+          "plan_sha256": "628a74e64160d7e9a04532f214c3534b868185fa74abdcfd523ee8d2e948e864",
+          "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#375"
+        },
+        {
+          "plan_sha256": "d20d9f1e751ae2051c4fc6be18c918e8442a7b6947f1993192961373ae106969",
+          "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#710"
+        }
+      ],
+      "reflection_ref": null,
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v10.md",
+        "slug": "phase-plans-v10",
+        "status": "imported",
+        "type": "phase"
+      },
+      "slug": "v10-RELEASE",
+      "status": "committed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-09-04T11:35:01Z"
     }
   ],
   "schema_version": 1

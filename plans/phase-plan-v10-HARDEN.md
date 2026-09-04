@@ -26,6 +26,7 @@ automation:
       phase-loop-runtime/tests/test_advisor_board_research.py
       phase-loop-runtime/tests/test_advisor_board_resolver.py
       phase-loop-runtime/tests/test_goal_coverage.py
+      phase-loop-runtime/tests/test_harden_evidence_producer.py
       phase-loop-runtime/tests/test_harden_evidence_verifier.py
       phase-loop-runtime/tests/test_panel_invoker.py
       phase-loop-runtime/tests/test_panel_leg_failure_diagnostic.py
@@ -45,10 +46,12 @@ automation:
 ## Context
 
 HARDEN closes the five security and verification gaps named by EC-HARDEN-1 through
-EC-HARDEN-5 while preserving the strict tests-first gate in EC-HARDEN-0. It starts only
+EC-HARDEN-5 while preserving the strict tests-first gate in EC-HARDEN-0. The supplemental
+SL-4 through SL-6 closeout repair resolves agent-harness#742 and agent-harness#770 without
+editing the landed SL-0 corpus or weakening its chronology. It starts only
 from dependency-complete canonical main after FABPUB and the actual reviewed SCHED SL-2
 handoff. REVIEWTRUTH remains downstream. No HARDEN lane implements SCHED, REVIEWTRUTH,
-release, publication, or roadmap behavior.
+artifact distribution, publication, or roadmap behavior.
 
 The manifest's historical HARDEN contract and authority records remain immutable
 provenance. Current authority is the last `plan_current_authority.v1` entry plus the
@@ -72,8 +75,12 @@ prescribe future commit identities, counts, or topology.
   authorizes an operation-bound, credentialless Linux isolation plus
   `parent_unix_broker_v1` intended-inference-only contract before capability, auth,
   session, provider, broker, callback, or child effects; `invoke_board()` independently
-  revalidates it. Fable 5, GPT-5.6 Sol, Gemini 3.6 Flash, and Grok 4.5 are supported
-  subscription-auth routes. Every other executable route satisfies the same invariant
+  revalidates it. A supported subscription-auth route is any seat model that resolves
+  through the advisor-board model registry to a model runnable by one of the four
+  broker lanes (claude, codex, gemini, grok), in that lane's invocation form; the
+  route table is derived from the registry and the fleet-default seats, never a
+  model-id literal (a literal pins a moving input and silently downgrades or refuses
+  fleet seats). Every other executable route satisfies the same invariant
   or refuses before effects. Pure parsing, static configuration, and explicitly
   injected hermetic controls remain auth-free and effect-free; no global/autouse shim
   or residual register satisfies this gate.
@@ -84,6 +91,17 @@ prescribe future commit identities, counts, or topology.
   brokered seats, resolved model IDs and harness provenance, and coordinator/author/
   reviewer independence. Only a fresh clean exact-head audit may append the normal
   completion ledger event.
+- [ ] IF-0-HARDEN-4 — `HARDEN_AGGREGATE_PRODUCER`: a production command consumes a
+  closed `harden_evidence_inputs.v1` manifest of retained path/digest references and
+  externally issued role attestations. It resolves full Git identities, inventories,
+  result counts, route/model facts, and normalized digests from those exact bytes;
+  caller-supplied derived claims are forbidden. `prepare` writes canonical
+  `verification_evidence.v3` in `pre_completion` mode plus the exact completion-event
+  request. After the coordinator appends that request once through canonical phase-loop
+  authority, `seal` binds the retained canonical ledger without changing the normalized
+  pre-completion digest and proves the shipped verifier accepts the result. Synthetic or
+  self-test artifacts, secrets, symlinks, escapes, stale heads, missing results, reused
+  identities/nonces, and historical count/tree/path literals fail closed.
 
 ## Lane Index & Dependencies
 
@@ -99,8 +117,20 @@ SL-2 — Reconciliation and verification fail-closed repairs
   Depends on: SL-0
   Blocks: SL-3
   Parallel-safe: yes
-SL-3 — Evidence, documentation, and whole-phase reducer
+SL-3 — Landed evidence-verifier baseline
   Depends on: SL-0, SL-1, SL-2
+  Blocks: SL-4
+  Parallel-safe: no
+SL-4 — Supplemental aggregate-producer tests-only gate
+  Depends on: SL-3
+  Blocks: SL-5
+  Parallel-safe: no
+SL-5 — Verifier derivation repair and aggregate producer
+  Depends on: SL-4
+  Blocks: SL-6
+  Parallel-safe: no
+SL-6 — Docs sweep, evidence reducer, canonical completion seal, and downstream handoff
+  Depends on: SL-0, SL-1, SL-2, SL-3, SL-4, SL-5
   Blocks: (none)
   Parallel-safe: no
 
@@ -161,32 +191,103 @@ SL-3 — Evidence, documentation, and whole-phase reducer
   - impl: Serialize source-entered falsifiers, exact heads/trees, model provenance,
     JUnit/CI/review digests, cleanup, and completion authority without raw secrets.
 
-### SL-3 — Evidence, documentation, and whole-phase reducer
+### SL-3 — Landed evidence-verifier baseline
 
-- **Scope**: Integrate producers, seal exact-head evidence, and reduce documentation without repairing producer files.
-- **Owned files**: `phase-loop-runtime/scripts/verify_harden_evidence.py`, `CHANGELOG.md`
-- **Interfaces provided**: HARDEN evidence verifier, completion ledger authority, user-facing security note.
+- **Scope**: Preserve the landed verifier baseline and user-facing security note. Future
+  verifier ownership transfers to SL-5.
+- **Owned files**: none
+- **Interfaces provided**: landed HARDEN verifier baseline, completion ledger authority, user-facing security note.
 - **Interfaces consumed**: immutable HARDEN tests, hardened staging, repo-anchored reconciliation, evidence/ledger integration.
 - **Parallel-safe**: no.
 - **Tasks**:
-  - impl: Verify `verification_evidence.v3` independently from retained Git objects,
-    canonical JSON, JUnit, CI, broker/probe, model/harness, and review artifacts. Reject
-    stale heads, reused evidence, self-report, skipped cases, direct routes, synthetic
-    votes, or non-biting mutations.
-  - impl: In fresh clean worktrees, run focused activated, separate pure-control, broad,
-    lint, CI, and four-seat candidate review; after landing repeat them on fetched
-    canonical main. Back-fill the now-known canonical-main commit/tree and CI result
-    into metadata-only evidence; never retain a placeholder. A material repair
-    invalidates prior review and restarts the reducer.
-  - impl: Append normal completion only after the final audit; keep
-    `visual_render_declared=false`. Do not version, tag, release, publish, or dispatch
-    REVIEWTRUTH.
+  - impl: Preserve the landed dependency-free verifier and its rejection of stale heads,
+    reused evidence, self-report, skipped cases, direct routes, synthetic votes, and
+    non-biting mutations as the baseline SL-4 falsifies and SL-5 repairs.
+  - impl: Preserve the requirement for fresh candidate/main tests, CI, reviews, broker
+    evidence, and independent roles as SL-6 inputs; planning artifacts and the synthetic
+    self-test remain non-authoritative.
+  - impl: Do not append completion from this historical lane. SL-6 alone may append it
+    after the production collector and repaired verifier pass the final audit.
+
+### SL-4 — Supplemental aggregate-producer tests-only gate
+
+- **Scope**: Freeze the missing production reachability and live-derivation falsifiers
+  before repairing the verifier or adding the producer.
+- **Owned files**: `phase-loop-runtime/tests/test_harden_evidence_producer.py`
+- **Interfaces provided**: supplemental HARDEN producer tests,
+  `HARDEN_AGGREGATE_PRODUCER`.
+- **Interfaces consumed**: immutable HARDEN tests (pre-existing), landed HARDEN verifier baseline.
+- **Parallel-safe**: no.
+- **Tasks**:
+  - test: In default mode remain GREEN with only the new capability cases skipped. With
+    `PHASE_LOOP_TDD_EXPECT_HARDEN_PRODUCER=1`, fail only at the unique anchors
+    `HARDEN-PRODUCER-RED::derive-live-facts`,
+    `HARDEN-PRODUCER-RED::assemble-retained-evidence`, and
+    `HARDEN-PRODUCER-RED::two-stage-seal`; record raw output and JUnit.
+  - test: Make each anchor bite by mutating the current verifier's historical count,
+    path, tree, frozen-inventory, and author-vendor literals; reject copied self-test
+    fixtures, caller-authored receipts/derived fields, detached ledgers, duplicate
+    completion events, secret-bearing input, path escapes, and reused evidence.
+  - impl: Land and review only this new test path. No existing SL-0 test or production
+    path changes in the tests-only PR; any later test correction restarts SL-4.
+
+### SL-5 — Verifier derivation repair and aggregate producer
+
+- **Scope**: Make real retained evidence constructible and acceptable without weakening
+  any named HARDEN property.
+- **Owned files**: `phase-loop-runtime/scripts/verify_harden_evidence.py`,
+  `phase-loop-runtime/scripts/build_harden_evidence.py`
+- **Interfaces provided**: live-derived HARDEN verifier rules, `HARDEN_EVIDENCE_COLLECTOR`.
+- **Interfaces consumed**: immutable HARDEN tests (pre-existing), supplemental HARDEN producer tests, `HARDEN_COMPLETION_EVIDENCE` (pre-existing),
+  `HARDEN_AGGREGATE_PRODUCER`.
+- **Parallel-safe**: no.
+- **Tasks**:
+  - impl: Resolve agent-harness#742 by deriving RED/final counts, changed paths, frozen
+    SL-0 inventory, author vendor, and legal ancestry from retained receipts, plan
+    authority, and Git objects. Preserve exact blob invariance and tests-before-production
+    checks; do not compare real evidence to synthesized fixture constants.
+  - impl: Resolve agent-harness#770 with a dependency-light command whose input manifest
+    names real retained raw/JUnit/CI/review/broker/role artifacts. Copy exact bytes into a
+    fresh contained evidence root, derive canonical receipts and the closed aggregate,
+    emit the pre-completion digest/event request, then seal only against the one matching
+    canonical ledger event. Never call or serialize the verifier's self-test fixture.
+  - test: Turn every SL-4 anchor GREEN, rerun the unchanged SL-0 verifier corpus, and
+    mutation-test each derived fact and both seal stages before exact-head review.
+
+### SL-6 — Docs sweep, evidence reducer, canonical completion seal, and downstream handoff
+
+- **Scope**: Produce and admit the first real HARDEN aggregate, then unblock SCHED; no
+  external release is dispatched, so no post-dispatch reducer is applicable.
+- **Owned files**: `CHANGELOG.md`
+- **Interfaces provided**: canonical HARDEN completion and authenticated SCHED input.
+- **Interfaces consumed**: live-derived HARDEN verifier rules, `HARDEN_EVIDENCE_COLLECTOR`,
+  real retained phase artifacts (pre-existing), canonical phase-loop ledger (pre-existing),
+  external reuse registry (pre-existing).
+- **Parallel-safe**: no.
+- **Tasks**:
+  - test: On clean candidate and fetched exact main, freshly run focused, pure-control,
+    broad, lint, CI, and separate four-seat review rounds. Preserve eight unique reviewer
+    sessions and independent coordinator/author/reviewer attestations.
+  - impl: Finalize and retain every now-known candidate/main commit and tree, CI check
+    result, role attestation, and review artifact before `prepare`. Then run `prepare`,
+    independently verify the unchanged pre-completion evidence, append exactly one normal
+    HARDEN completion event through phase-loop authority, run `seal` without changing the
+    normalized pre-completion digest, and verify post-completion evidence once before
+    claiming its identities/nonces in the external registry. Any head, byte, CI, role,
+    review, or ledger drift restarts SL-6 from fresh inputs before a new `prepare`.
+  - impl: Only after acceptance, emit SCHED's canonical HARDEN-completion input and allow
+    SCHED SL-5/SL-6 to continue. Do not dispatch REVIEWTRUTH or any later phase here.
+  - impl: Update the existing HARDEN changelog note with the production collector,
+    derived-verifier, and retained-evidence invocation; no other documentation changes.
 
 ## Execution Policy
 
 - work-unit defaults: effort=`high`, work-unit=`lane_execute`, unsupported=`block`, inherit-default=`false`, policy-source=`phase plan`
 - execute: effort=`high`, work-unit=`lane_execute`, unsupported=`block`, inherit-default=`false`, policy-source=`phase plan`
-- SL-3: effort=`high`, work-unit=`phase_reducer`, unsupported=`block`, inherit-default=`false`, policy-source=`phase plan`
+- SL-3: effort=`high`, work-unit=`lane_execute`, unsupported=`block`, inherit-default=`false`, policy-source=`phase plan`
+- SL-4: effort=`high`, work-unit=`lane_execute`, unsupported=`block`, inherit-default=`false`, policy-source=`phase plan`
+- SL-5: effort=`high`, work-unit=`lane_execute`, unsupported=`block`, inherit-default=`false`, policy-source=`phase plan`
+- SL-6: effort=`high`, work-unit=`phase_reducer`, unsupported=`block`, inherit-default=`false`, policy-source=`phase plan`
 
 ## Execution Notes
 
@@ -214,12 +315,17 @@ SL-3 — Evidence, documentation, and whole-phase reducer
 - Every material edit requires fresh exact-head review. Candidate and canonical-main
   evidence come from new processes and clean worktrees and bind Git, suite, JUnit, CI,
   model, broker, and reviewer facts. Planning state and transcripts are not authority.
+- The supplemental SL-4 test landing is a second immutable tests-first boundary only for
+  agent-harness#742 and agent-harness#770. It does not rewrite or reopen the landed SL-0
+  history. SL-5 must descend from its reviewed landing and may not edit any test path.
 
 ## Spec Closeout Plan
 
 - schema: `spec_delta_closeout.v1`
 - decision: `no_spec_delta`
-- target surfaces: the 18 SL-1/SL-2 production paths, `phase-loop-runtime/scripts/verify_harden_evidence.py`, `CHANGELOG.md`
+- target surfaces: the 18 SL-1/SL-2 production paths,
+  `phase-loop-runtime/scripts/verify_harden_evidence.py`,
+  `phase-loop-runtime/scripts/build_harden_evidence.py`, `CHANGELOG.md`
 - evidence paths: `plans/phase-plan-v10-HARDEN.md`, `plans/manifest.json`, the 26 SL-0 paths, `.phase-loop/events.jsonl`, `.phase-loop/runs/**/verification.json`, `.phase-loop/runs/**/harden-*.json`, `.phase-loop/runs/**/harden-*.xml`
 - redaction posture: `metadata_only`
 - downstream handling: none; roadmap bytes remain unchanged and REVIEWTRUTH consumes canonical HARDEN completion
@@ -269,6 +375,7 @@ PY
 - `PYTHONPATH=phase-loop-runtime/src python3 -c 'import hashlib,json; from pathlib import Path; p=Path("plans").joinpath("phase-plan-v10-HARDEN.md"); r=Path("specs").joinpath("phase-plans-v10.md"); m=json.loads(Path("plans").joinpath("manifest.json").read_text()); rows=[x for x in m["plans"] if x.get("phase_alias")=="HARDEN"]; assert len(rows)==1; x=rows[0]; assert x["plan_authority_history"][-1]["plan_sha256"]==hashlib.sha256(p.read_bytes()).hexdigest(); assert x["plan_authority_history"][-1]["roadmap_sha256"]==hashlib.sha256(r.read_bytes()).hexdigest(); assert any(e.get("metadata",{}).get("plan_current_authority",{}).get("plan_sha256")==hashlib.sha256(p.read_bytes()).hexdigest() for e in x["lifecycle"])'`
 - `PYTHONPATH=phase-loop-runtime/src python3 -c 'from pathlib import Path; from phase_loop_runtime.planner_validation import validate_plan_dispatch_hints; f=validate_plan_dispatch_hints(Path("plans").joinpath("phase-plan-v10-HARDEN.md").read_text()); assert not f, f'`
 - `env PHASE_LOOP_TDD_EXPECT_HARDEN=1 PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q phase-loop-runtime/tests/test_advisor_board_cli_legacy.py phase-loop-runtime/tests/test_advisor_board_composition.py phase-loop-runtime/tests/test_goal_coverage.py phase-loop-runtime/tests/test_reconcile_portability_85c.py phase-loop-runtime/tests/test_review_leg_sandbox.py phase-loop-runtime/tests/test_verification_interpreter_guard_221.py`
+- `env PHASE_LOOP_TDD_EXPECT_HARDEN_PRODUCER=1 PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q phase-loop-runtime/tests/test_harden_evidence_producer.py`
 - `PYTHONPATH=phase-loop-runtime/src python3 -m pytest phase-loop-runtime/tests -q -m "not dotfiles_integration"`
 - `uv run --project phase-loop-runtime ruff check phase-loop-runtime/src/phase_loop_runtime phase-loop-runtime/scripts`
 - `python3 -c 'from pathlib import Path; assert len(Path("plans").joinpath("phase-plan-v10-HARDEN.md").read_text().split()) <= 3000'`

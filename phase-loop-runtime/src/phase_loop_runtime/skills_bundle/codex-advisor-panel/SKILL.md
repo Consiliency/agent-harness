@@ -20,11 +20,11 @@ Do not call dotfiles advisor-panel scripts, copy provider-specific shell scripts
 
 ## Boards & Availability-Aware Composition
 
-Named boards live in `phase_loop_runtime.advisor_board.presets`; the default review board is `code-review`, a 4-vendor cross-vendor panel: Claude Fable 5 (`claude-fable-5`), Grok 4.6 (`grok-4.6`), GPT-5.6 Sol (`gpt-5.6-sol`), and Gemini 3.7 Flash (`gemini-3.7-flash`). Each seat uses its maximum supported thinking level and a distinct review lens (correctness / adversarial / red-team / alternative-approach).
+Named boards live in `phase_loop_runtime.advisor_board.presets`; the default review board is `code-review`, a 4-vendor cross-vendor panel: Claude Fable 5 (`claude-fable-5-1`), Grok 4.6 (`grok-4.6`), GPT-5.6 Sol (`gpt-5.6-sol`), and Gemini 3.8 Flash (`gemini-3.8-flash`). Each seat uses its maximum supported thinking level and a distinct review lens (correctness / adversarial / red-team / alternative-approach).
 
 Composition is AVAILABILITY-AWARE (`composition.compose_review_board`): it targets 4 independent reviewers (hard floor 3) and NEVER collapses to 1–2 when vendors are down. Each vendor that is both present on PATH AND authenticated gets one lens-distinct seat first; the remaining seats are BACKFILLED onto the available (up + authed) vendors with DIFFERENT lenses. So 2 vendors up still yields a full 4-seat board, and 1 vendor up yields 4 distinct-lens seats on that vendor. The `default`/premerge board uses the same four model defaults; only the explicit legacy `invoke_panel` API retains its three-leg shape.
 
-When a president is required, the availability ladder is Fable, then Sol, then Grok 4.6, then Gemini 3.7 Flash. Advance only on a typed `president_unavailable` result; disagreement or a blocking ruling never triggers fallback.
+When a president is required, the availability ladder is Fable, then Sol, then Grok 4.6, then Gemini 3.8 Flash. Advance only on a typed `president_unavailable` result; disagreement or a blocking ruling never triggers fallback.
 
 ## Three Ways To Feed Material
 
@@ -117,7 +117,12 @@ and custom-spawn research seats fail closed as
 3. Require every leg to end with `AGREE`, `PARTIALLY AGREE`, or `DISAGREE`.
 4. Treat `EMPTY`, `TIMEOUT`, `ERROR`, `DEGRADED`, and `UNAVAILABLE` as structured evidence, not successful reviews.
 5. Keep provider API keys and custom authorization headers out of the environment; the runtime strips known API-key variables and request-header overrides and uses local subscription CLIs.
-6. Every Fable or Opus seat requires the homebrew Claude Code self-PTY adapter after `claude auth status --json` proves a first-party `claude.ai` subscription. `tui_backing_required`, `subscription_auth_unproven`, and `tui_adapter_required` are unavailable seats, never invitations to substitute a gateway, API, or native Task Agent.
+6. Bound a review→fix→re-review loop before round one (`docs/agent-phase-convergence.md`, "Bound the review loop"):
+   - **Delta review.** After a fix, re-run the seats that dissented (`DISAGREE`, `PARTIALLY AGREE`, or any blocking finding) against the delta since the round they dissented on, and record that delta's base and head. A seat's standing verdict is the usable verdict from its most recent run; a run that ends `EMPTY`, `TIMEOUT`, `ERROR`, `DEGRADED`, or `UNAVAILABLE` leaves no standing verdict, and that seat is re-run until it has one — never carried. A seat is carried forward, marked `(carried)`, only when its standing verdict is `AGREE`; the loop has converged when every seat's standing verdict is `AGREE`, fresh or carried. Where a gate requires an exact-head unanimous board (the runtime's mandatory LEGIBLE implementation board), that board runs once on the final head after the loop converges; delta review governs the fix rounds before it.
+   - **No cancel-on-first-blocker.** Let every seat finish the round (a leg that reaches its bound has finished, with that status); collect all findings, then fix once.
+   - **Blocking findings cite what they break.** A finding blocks only when it names the `EC-<ALIAS>-<N>` it claims is violated; for a change with no roadmap goal, the acceptance criteria or contract the change itself declares; or an existing invariant, published guarantee, or test the change regresses. A finding that names none of these is a suggestion and cannot become the round's new goal — and a defect is never dismissed because the goal it breaks was not written as a roadmap ID.
+   - **Round cap → descope.** Write the cap into the PR body before round one (three is usual). When it trips: fix input-binding defects, carry findings that pin the change's own outputs to a follow-up, and descope the class the loop kept re-litigating — remove the scope that carries it from the change, leave its goal unclaimed and carried, and record the removal as an exception. Descope never means merging with a blocking finding waived; a blocker that survives the cap and cannot be removed with its scope halts the change for the operator. When each fix adds a new falsifiable number, cut the number and keep the rule.
+7. Every Fable or Opus seat requires the homebrew Claude Code self-PTY adapter after `claude auth status --json` proves a first-party `claude.ai` subscription. `tui_backing_required`, `subscription_auth_unproven`, and `tui_adapter_required` are unavailable seats, never invitations to substitute a gateway, API, or native Task Agent.
 
 ## Claude Subscription TUI Boundary
 

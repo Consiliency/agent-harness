@@ -42,6 +42,7 @@ Invariants:
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -54,6 +55,17 @@ from phase_loop_runtime.train_runner import _live_reverify, run_train
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
+
+TRAIN_1NODE_MD = """\
+# Release Train: invariant-test-1
+
+## Nodes
+
+### Node: repo-a / specs/plan-a.md
+
+**Depends on:** (none)
+**Channel:** (none)
+"""
 
 TRAIN_2NODE_MD = """\
 # Release Train: invariant-test
@@ -112,6 +124,10 @@ def _pr_is_open_false(workspace: Path, branch: str) -> bool:
 
 def _pr_is_open_true(workspace: Path, branch: str) -> bool:
     return True
+
+
+def _live_head_for_p3_done(workspace: Path, branch: str) -> str:
+    return _DRAFT_SHA_A if workspace.name == "repo-a" else "sha-DRAFT-repo-b"
 
 
 def _approval_review_fn(artifact: str, run_mode: str) -> LoopResult:
@@ -215,7 +231,7 @@ class TestInvariant1NoMergeBeforeApproval:
             _set_upstream_ref_fn=lambda *a, **kw: [],
             _preflight_fn=_preflight_pass,
             _pr_is_open=_pr_is_open_true,
-            _live_pr_head_sha_fn=lambda ws, br: None,
+            _live_pr_head_sha_fn=_live_head_for_p3_done,
             _merge_phase_enabled=True,
             _merge_pr_fn=_make_merge_pr_stub(merge_log),
             _train_review_fn=_rejection_review_fn,
@@ -243,7 +259,7 @@ class TestInvariant1NoMergeBeforeApproval:
             _set_upstream_ref_fn=lambda *a, **kw: [],
             _preflight_fn=_preflight_pass,
             _pr_is_open=_pr_is_open_false,
-            _live_pr_head_sha_fn=lambda ws, br: None,
+            _live_pr_head_sha_fn=_live_head_for_p3_done,
             _merge_phase_enabled=False,
             _merge_pr_fn=_make_merge_pr_stub(merge_log),
             _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
@@ -270,7 +286,7 @@ class TestInvariant1NoMergeBeforeApproval:
             _set_upstream_ref_fn=lambda *a, **kw: [],
             _preflight_fn=_preflight_pass,
             _pr_is_open=_pr_is_open_true,
-            _live_pr_head_sha_fn=lambda ws, br: None,
+            _live_pr_head_sha_fn=_live_head_for_p3_done,
             _merge_phase_enabled=True,
             _merge_pr_fn=_make_merge_pr_stub(merge_log),
             _reverify_fn=lambda ws, rp, rm: ws.name != "repo-b",
@@ -326,7 +342,7 @@ class TestInvariant2FalseGreenKiller:
             _set_upstream_ref_fn=_set_upstream_ref_capture,
             _preflight_fn=_preflight_pass,
             _pr_is_open=_pr_is_open_true,
-            _live_pr_head_sha_fn=lambda ws, br: None,
+            _live_pr_head_sha_fn=_live_head_for_p3_done,
             _merge_phase_enabled=True,
             _merge_pr_fn=_make_merge_pr_stub([], merged_sha_map={"repo-a": _MERGED_SHA_A}),
             _reverify_fn=lambda ws, rp, rm: True,
@@ -380,7 +396,7 @@ class TestInvariant2FalseGreenKiller:
             _set_upstream_ref_fn=_set_upstream_ref_logging,
             _preflight_fn=_preflight_pass,
             _pr_is_open=_pr_is_open_true,
-            _live_pr_head_sha_fn=lambda ws, br: None,
+            _live_pr_head_sha_fn=_live_head_for_p3_done,
             _merge_phase_enabled=True,
             _merge_pr_fn=_make_merge_pr_stub([], merged_sha_map={"repo-a": _MERGED_SHA_A}),
             _reverify_fn=_reverify_logging,
@@ -446,7 +462,7 @@ class TestInvariant2FalseGreenKiller:
             _set_upstream_ref_fn=_set_upstream_ref_capture,
             _preflight_fn=_preflight_pass,
             _pr_is_open=_pr_is_open_true,
-            _live_pr_head_sha_fn=lambda ws, br: None,
+            _live_pr_head_sha_fn=_live_head_for_p3_done,
             _merge_phase_enabled=True,
             _merge_pr_fn=_make_merge_pr_stub([], merged_sha_map={"repo-a": _MERGED_SHA_A}),
             _reverify_fn=lambda ws, rp, rm: True,
@@ -556,7 +572,7 @@ class TestInvariant4NoPhaseLoopState:
             _set_upstream_ref_fn=lambda *a, **kw: [],
             _preflight_fn=_preflight_pass,
             _pr_is_open=_pr_is_open_false,
-            _live_pr_head_sha_fn=lambda ws, br: None,
+            _live_pr_head_sha_fn=_live_head_for_p3_done,
             _merge_phase_enabled=True,
             _merge_pr_fn=_make_merge_pr_stub([]),
             _reverify_fn=lambda ws, rp, rm: True,
@@ -651,7 +667,7 @@ class TestInvariant5AutonomyBoundary:
             _set_upstream_ref_fn=lambda *a, **kw: [],
             _preflight_fn=_preflight_pass,
             _pr_is_open=_pr_is_open_true,
-            _live_pr_head_sha_fn=lambda ws, br: None,
+            _live_pr_head_sha_fn=_live_head_for_p3_done,
             _merge_phase_enabled=True,
             _merge_pr_fn=_make_merge_pr_stub([]),
             _train_review_fn=_rejection_review_fn,
@@ -1498,3 +1514,2032 @@ class TestIssue60FormatDefectZeroPRs:
             f"diagnostic must be coded and name the duplicated node; got: {result['errors']}"
         )
         assert not ledger.exists() or read_ledger(ledger) == {}, "no ledger records on schema failure"
+
+
+# ---------------------------------------------------------------------------
+# RESIDUAL (v10) TDD falsifiers — SL-0 immutable tests-only RED boundary
+
+class TestResidualInvariants:
+    """Guarded TDD falsifiers for RESIDUAL: Broker, Train, and Channel Residuals.
+
+    When PHASE_LOOP_TDD_EXPECT_RESIDUAL is NOT set (or != "1"), these tests
+    pass cleanly (default-GREEN). When PHASE_LOOP_TDD_EXPECT_RESIDUAL=1, these
+    tests activate and fail (RED) against pre-implementation production code at
+    their named guarantees.
+    """
+
+    def _is_activated(self) -> bool:
+        return os.environ.get("PHASE_LOOP_TDD_EXPECT_RESIDUAL") == "1"
+
+    def test_residual_tdd_chronology(self, tmp_path: Path):
+        """EC-RESIDUAL-0: residual_tdd_chronology TDD falsifier.
+
+        Guards production-facing commit-identity chronology API, git graph ancestry derivation, premerge attribution, and F841 triage state.
+        """
+        if not self._is_activated():
+            return
+
+        import inspect
+        import subprocess
+        from phase_loop_test_utils import make_repo
+        from phase_loop_runtime.legible_evidence import LegibleChronologyError, validate_chronology
+
+        repo_root = Path(__file__).resolve().parents[2]
+        test_file = Path("phase-loop-runtime/tests/test_train_invariants.py")
+        src_dir = repo_root / "phase-loop-runtime" / "src" / "phase_loop_runtime"
+        assert (repo_root / test_file).exists(), "test_train_invariants.py missing from git inventory"
+        assert src_dir.exists(), "phase_loop_runtime source tree missing from git inventory"
+
+        def _commit(repo: Path, message: str, timestamp: str) -> None:
+            environment = {
+                **os.environ,
+                "GIT_AUTHOR_DATE": timestamp,
+                "GIT_COMMITTER_DATE": timestamp,
+            }
+            subprocess.run(
+                ["git", "commit", "-m", message],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                env=environment,
+            )
+
+        # 1. Build a real temporary git repository with valid commit graph ancestry
+        chron_repo = make_repo(tmp_path / "chronology_graph_valid")
+        (chron_repo / "README.md").write_text("initial", encoding="utf-8")
+        subprocess.run(["git", "add", "README.md"], cwd=chron_repo, check=True, capture_output=True)
+        _commit(chron_repo, "C0: initial", "2029-01-01T00:00:00+0000")
+
+        (chron_repo / "test_file.py").write_text("# test", encoding="utf-8")
+        subprocess.run(["git", "add", "test_file.py"], cwd=chron_repo, check=True, capture_output=True)
+        _commit(chron_repo, "C_test: tests landing", "2030-01-01T00:00:00+0000")
+        c_test = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=chron_repo, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+        (chron_repo / "src_file.py").write_text("# impl", encoding="utf-8")
+        subprocess.run(["git", "add", "src_file.py"], cwd=chron_repo, check=True, capture_output=True)
+        _commit(chron_repo, "C_impl: implementation", "2020-01-01T00:00:00+0000")
+        c_impl = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=chron_repo, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+        # 2. Build inverted commit graph topology
+        chron_repo_inv = make_repo(tmp_path / "chronology_graph_inverted")
+        (chron_repo_inv / "README.md").write_text("initial", encoding="utf-8")
+        subprocess.run(["git", "add", "README.md"], cwd=chron_repo_inv, check=True, capture_output=True)
+        _commit(chron_repo_inv, "C0: initial", "2029-01-01T00:00:00+0000")
+        (chron_repo_inv / "src_file.py").write_text("# impl early", encoding="utf-8")
+        subprocess.run(["git", "add", "src_file.py"], cwd=chron_repo_inv, check=True, capture_output=True)
+        _commit(chron_repo_inv, "C_impl_inv", "2030-01-01T00:00:00+0000")
+        c_impl_inv = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=chron_repo_inv, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+        # Keep the inverted history linear: implementation is the direct
+        # ancestor of the later tests landing.
+        (chron_repo_inv / "test_file.py").write_text("# test late", encoding="utf-8")
+        subprocess.run(["git", "add", "test_file.py"], cwd=chron_repo_inv, check=True, capture_output=True)
+        _commit(chron_repo_inv, "C_test_inv", "2020-01-01T00:00:00+0000")
+        c_test_inv = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=chron_repo_inv, check=True, capture_output=True, text=True
+        ).stdout.strip()
+
+        # 3. Freeze production-facing API: validate_chronology must receive commit identities and own the check
+        chron_params = inspect.signature(validate_chronology).parameters
+        has_commit_ancestry_api = {
+            "tests_landing_commit",
+            "implementation_base_commit",
+        }.issubset(chron_params)
+
+        valid_graph_accepted = False
+        inverted_graph_rejected = False
+        if has_commit_ancestry_api:
+            try:
+                validate_chronology(
+                    chron_repo,
+                    tests_landing_commit=c_test,
+                    implementation_base_commit=c_impl,
+                )
+            except LegibleChronologyError:
+                pass
+            else:
+                valid_graph_accepted = True
+            try:
+                validate_chronology(
+                    chron_repo_inv,
+                    tests_landing_commit=c_test_inv,
+                    implementation_base_commit=c_impl_inv,
+                )
+            except LegibleChronologyError:
+                inverted_graph_rejected = True
+
+        # Negative control / mutation check: calling validate_chronology with tests_landing_ancestor_of_base=True on inverted graph accepts invalid topology
+        rejected_caller_bool = False
+        try:
+            validate_chronology(chron_repo_inv, tests_landing_ancestor_of_base=True)
+        except (LegibleChronologyError, TypeError):
+            rejected_caller_bool = True
+
+        caller_boolean_trusted = not rejected_caller_bool
+
+        # 4. Separately retain governed_premerge content-block then structural-hold non_convergence regression
+        from phase_loop_runtime.governed_premerge import GateResult, ReviewFinding, run_governed_premerge_loop
+
+        findings_round1 = [
+            ReviewFinding(
+                code="review_block",
+                reason="content block",
+                severity="block",
+                blocker_class="review_gate_block",
+            )
+        ]
+        gate1 = GateResult(ran=True, promoted=False, findings=tuple(findings_round1), reason="content_rejected")
+        gate2 = GateResult(ran=True, promoted=False, degraded=False, findings=(), reason="content_rejected")
+
+        invokes = [gate1, gate2]
+
+        def mock_invoke(**kwargs):
+            return invokes.pop(0) if invokes else gate2
+
+        def mock_apply_fix(round_num, artifact, findings):
+            return artifact
+
+        res_loop = run_governed_premerge_loop(
+            artifact="test_artifact",
+            author_executor="gemini",
+            author_vendors=("google",),
+            run_mode="governed",
+            max_rounds=2,
+            invoke=mock_invoke,
+            apply_fix=mock_apply_fix,
+        )
+
+        premerge_reason_ok = (res_loop.reason == "non_convergence")
+
+        # 5. Check production triage evidence file
+        triage_file = repo_root / "plans" / "evidence" / "v10-RESIDUAL-f841-triage.md"
+        triage_file_exists = triage_file.exists()
+
+        if (
+            not has_commit_ancestry_api
+            or not valid_graph_accepted
+            or not inverted_graph_rejected
+            or caller_boolean_trusted
+            or not premerge_reason_ok
+            or not triage_file_exists
+        ):
+            defect_details = []
+            if not has_commit_ancestry_api:
+                defect_details.append("validate_chronology lacks production commit-identity ancestry parameters")
+            elif not valid_graph_accepted:
+                defect_details.append("validate_chronology rejected a real valid tests-before-implementation graph")
+            elif not inverted_graph_rejected:
+                defect_details.append("validate_chronology accepted a real inverted tests/implementation graph")
+            if caller_boolean_trusted:
+                defect_details.append("validate_chronology trusts caller boolean (accepts True on inverted Git graph)")
+            if not premerge_reason_ok:
+                defect_details.append(f"governed_premerge non_convergence returned {res_loop.reason!r}")
+            if not triage_file_exists:
+                defect_details.append("plans/evidence/v10-RESIDUAL-f841-triage.md missing")
+
+            raise AssertionError(
+                "RESIDUAL-RED-ANCHOR::residual_tdd_chronology — "
+                f"chronology contract defects present: {'; '.join(defect_details)}"
+            )
+
+    def test_residual_publish_identity_includes_base(self, tmp_path: Path):
+        """EC-RESIDUAL-1: residual_publish_identity_includes_base TDD falsifier.
+
+        Guards four-argument publish identity: (repo, branch, base, head_sha) and AST value-flow binding.
+        """
+        if not self._is_activated():
+            return
+
+        import ast
+        import inspect
+        from dataclasses import fields, replace
+        from unittest.mock import patch
+
+        from test_convergence_live_enable import _activated_publish_fixture
+        from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
+        from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore
+        from phase_loop_runtime.convergence import contracts
+        from phase_loop_runtime.convergence.broker.evidence import EvidenceRecord
+        from phase_loop_runtime.convergence.broker.verbs import BrokerService
+        from phase_loop_runtime.convergence.contracts import (
+            BrokerTerminalEvidence,
+            PublishCommittedBranchResult,
+        )
+        from phase_loop_runtime.convergence.provider_contracts import (
+            PROVIDER_COMPLETION_CLASSIFICATIONS,
+            TerminalOutcomeState,
+        )
+
+        defect_details = []
+
+        # 0. Prove 3-argument call raises TypeError
+        try:
+            contracts.publish_committed_branch_idempotency_key("repo-a", "feat/x", "main")
+        except TypeError:
+            pass
+        else:
+            defect_details.append("3-argument call to publish_committed_branch_idempotency_key did not raise TypeError")
+
+        try:
+            main_key = contracts.publish_committed_branch_idempotency_key("repo-a", "feat/x", "main", "sha-head")
+            release_key = contracts.publish_committed_branch_idempotency_key("repo-a", "feat/x", "release", "sha-head")
+        except TypeError as exc:
+            defect_details.append(f"4-argument publish identity call failed: {exc}")
+        else:
+            if main_key == release_key:
+                defect_details.append("publish identity does not separate otherwise-identical requests by base")
+
+        # Exercise the real producer, admission, evidence, and replay decisions.
+        # The provider adapter is the only fake boundary: same-base retry must
+        # replay without a second effect, while a different base must be admitted
+        # as a distinct effect. A dead compliant helper call followed by a
+        # base-blind decision cannot satisfy these observations.
+        try:
+            repo, evidence_root, publish_request = _activated_publish_fixture(
+                tmp_path, label="residual-base", branch="feat/base"
+            )
+            envelope_main = replace(publish_request.admission, base="main")
+            envelope_release = replace(publish_request.admission, base="release")
+            if envelope_main.idempotency_key == envelope_release.idempotency_key:
+                defect_details.append("PreAdmissionEnvelope.idempotency_key aliases different bases")
+
+            request_main = replace(publish_request, admission=envelope_main, base="main")
+            request_release = replace(publish_request, admission=envelope_release, base="release")
+
+            provider_requests = []
+
+            class _CountingSuccessAdapter:
+                def execute(self, request):
+                    provider_requests.append(request)
+                    return (
+                        PublishCommittedBranchResult(
+                            request.branch,
+                            request.head_sha,
+                            f"https://example.invalid/{request.base}",
+                        ),
+                        BrokerTerminalEvidence(
+                            "provider-boundary",
+                            TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED.value,
+                            f"https://example.invalid/{request.base}",
+                        ),
+                    )
+
+            decision_evidence_store = BrokerEvidenceStore(evidence_root)
+            service = BrokerService(
+                LinearizableAdmissionStore(evidence_root, lambda _request: True),
+                decision_evidence_store,
+                _CountingSuccessAdapter(),
+                contracts=PROVIDER_COMPLETION_CLASSIFICATIONS,
+            )
+            main_result = service.execute(request_main)
+            main_retry = service.execute(request_main)
+            release_result = service.execute(request_release)
+            release_retry = service.execute(request_release)
+            if not all(
+                result.accepted
+                for result in (main_result, main_retry, release_result, release_retry)
+            ):
+                defect_details.append(
+                    "real broker decision did not accept main/release effects and both same-base retries"
+                )
+            if main_result.evidence.idempotency_key == release_result.evidence.idempotency_key:
+                defect_details.append("real broker decision aliased main and release evidence keys")
+            if [getattr(request, "base", None) for request in provider_requests] != ["main", "release"]:
+                defect_details.append(
+                    "real broker admission/replay decision did not deduplicate both same-base retries"
+                )
+            persisted_decisions = decision_evidence_store.replay()
+            persisted_bases = {
+                main_result.evidence.idempotency_key: "main",
+                release_result.evidence.idempotency_key: "release",
+            }
+            for effect_key, expected_base in persisted_bases.items():
+                record = persisted_decisions.get(effect_key)
+                if getattr(record, "base", None) != expected_base:
+                    defect_details.append(
+                        f"persisted {expected_base} decision evidence lost exact base value"
+                    )
+            if (
+                main_retry.evidence.idempotency_key != main_result.evidence.idempotency_key
+                or release_retry.evidence.idempotency_key
+                != release_result.evidence.idempotency_key
+            ):
+                defect_details.append("same-base retries did not replay their original evidence keys")
+
+            captured_legacy_calls = []
+
+            class _LegacyProbeStore:
+                @staticmethod
+                def authenticated_legacy_records():
+                    return {"never-match": {"serialized_repository": publish_request.repo}}
+
+            def _capture_legacy_key(*args, **kwargs):
+                captured_legacy_calls.append((args, kwargs))
+                return "captured-key"
+
+            legacy_service = BrokerService(None, _LegacyProbeStore(), None)
+            with patch(
+                "phase_loop_runtime.convergence.broker.verbs.publish_committed_branch_idempotency_key",
+                side_effect=_capture_legacy_key,
+            ):
+                legacy_service._legacy_terminal_replay(request_release, "new-key")
+            captured_legacy_binding = None
+            if len(captured_legacy_calls) == 1:
+                try:
+                    captured_legacy_binding = inspect.signature(
+                        contracts.publish_committed_branch_idempotency_key
+                    ).bind(*captured_legacy_calls[0][0], **captured_legacy_calls[0][1]).arguments
+                except TypeError:
+                    pass
+            if captured_legacy_binding != {
+                "repo": publish_request.repo,
+                "branch": publish_request.branch,
+                "base": "release",
+                "head_sha": publish_request.head_sha,
+            }:
+                defect_details.append(
+                    f"BrokerService._legacy_terminal_replay passed wrong key preimage {captured_legacy_calls!r}"
+                )
+        except Exception as exc:
+            defect_details.append(f"runtime publish base value-flow control failed: {exc}")
+
+        # 1. EvidenceRecord dataclass, serialization, and real BrokerEvidenceStore lifecycle checks
+        ev_fields = {f.name for f in fields(EvidenceRecord)}
+        if "base" not in ev_fields:
+            defect_details.append("EvidenceRecord dataclass missing 'base' field")
+        else:
+            try:
+                rec = EvidenceRecord(
+                    idempotency_key="k",
+                    state=TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED,
+                    evidence_reference="ref",
+                    base="main",
+                )
+                rec_dict = rec.to_json() if hasattr(rec, "to_json") else getattr(rec, "__dict__", {})
+                if not isinstance(rec_dict, dict) or rec_dict.get("base") != "main":
+                    defect_details.append("EvidenceRecord.to_json() failed to serialize exact 'base' value")
+
+                from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore
+                ev_store = BrokerEvidenceStore(tmp_path / "evidence")
+                try:
+                    ev_store.record_intent("k", base="main")
+                except TypeError:
+                    defect_details.append("BrokerEvidenceStore.record_intent lacks future 'base' parameter")
+                else:
+                    intent_replay = ev_store.replay()
+                    if getattr(intent_replay.get("k"), "base", None) != "main":
+                        defect_details.append("BrokerEvidenceStore.record_intent discarded exact 'base' value")
+                    ev_store.record_terminal(rec)
+                    reloaded_dict = ev_store.replay()
+                    if not isinstance(reloaded_dict, dict) or "k" not in reloaded_dict:
+                        defect_details.append("BrokerEvidenceStore.replay() did not return dict containing key 'k'")
+                    elif getattr(reloaded_dict["k"], "base", None) != "main":
+                        defect_details.append("BrokerEvidenceStore.replay()['k'] failed to preserve exact 'base' attribute")
+            except TypeError as exc:
+                defect_details.append(f"EvidenceRecord construction failed with base argument: {exc}")
+            except Exception as exc:
+                defect_details.append(f"BrokerEvidenceStore lifecycle control raised exception: {exc}")
+
+        # 2. AST Value-Flow & Definition Verifier helper over contracts.py, verbs.py, admission.py, and evidence.py
+        def verify_publish_identity_value_flow(contracts_src: str, verbs_src: str, admission_src: str, evidence_src: str) -> list[str]:
+            errors = []
+
+            # Check definition in contracts.py
+            contracts_ast = ast.parse(contracts_src)
+            def_node = next(
+                (n for n in ast.walk(contracts_ast) if isinstance(n, ast.FunctionDef) and n.name == "publish_committed_branch_idempotency_key"),
+                None
+            )
+            if def_node is None:
+                errors.append("def publish_committed_branch_idempotency_key missing in contracts.py")
+            else:
+                arg_names = [arg.arg for arg in def_node.args.args]
+                if arg_names != ["repo", "branch", "base", "head_sha"]:
+                    errors.append(f"signature mismatch: expected ['repo', 'branch', 'base', 'head_sha'], got {arg_names}")
+                base_used = any(isinstance(n, ast.Name) and n.id == "base" for n in ast.walk(def_node))
+                if not base_used:
+                    errors.append("function body does not consume 'base' parameter")
+
+            # Helper to check the single required identity-producing call in each target method.
+            def check_call_site(tree: ast.AST, class_name: str, method_name: str, expected_base_expr: str):
+                class_node = next((n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == class_name), None)
+                if class_node is None:
+                    return f"class {class_name} missing"
+                method_node = next((n for n in ast.walk(class_node) if isinstance(n, ast.FunctionDef) and n.name == method_name), None)
+                if method_node is None:
+                    return f"method {class_name}.{method_name} missing"
+
+                calls = [n for n in ast.walk(method_node) if isinstance(n, ast.Call) and (
+                    (isinstance(n.func, ast.Name) and n.func.id == "publish_committed_branch_idempotency_key") or
+                    (isinstance(n.func, ast.Attribute) and n.func.attr == "publish_committed_branch_idempotency_key")
+                )]
+                if len(calls) != 1:
+                    return f"method {class_name}.{method_name} has {len(calls)} calls to publish_committed_branch_idempotency_key (expected exactly 1)"
+
+                call = calls[0]
+                total_args = len(call.args) + len(call.keywords)
+                if total_args < 4:
+                    return f"call in {class_name}.{method_name} has fewer than 4 arguments ({total_args})"
+
+                base_val = None
+                if len(call.args) >= 3:
+                    base_val = call.args[2]
+                else:
+                    kw = next((k for k in call.keywords if k.arg == "base"), None)
+                    if kw:
+                        base_val = kw.value
+
+                if base_val is None:
+                    return f"call in {class_name}.{method_name} missing base argument"
+
+                actual_expr = ast.unparse(base_val).strip()
+                if actual_expr != expected_base_expr:
+                    return f"call in {class_name}.{method_name} base expression is {actual_expr!r}, expected {expected_base_expr!r}"
+                return None
+
+            err_producer = check_call_site(contracts_ast, "PreAdmissionEnvelope", "idempotency_key", "self.base")
+            if err_producer:
+                errors.append(err_producer)
+
+            verbs_ast = ast.parse(verbs_src)
+            err_dedup = check_call_site(verbs_ast, "BrokerService", "_dedup_key", "request.base")
+            if err_dedup:
+                errors.append(err_dedup)
+
+            err_replay = check_call_site(verbs_ast, "BrokerService", "_legacy_terminal_replay", "request.base")
+            if err_replay:
+                errors.append(err_replay)
+
+            admission_ast = ast.parse(admission_src)
+            err_admission = check_call_site(admission_ast, "LinearizableAdmissionStore", "admit_next", "auth.base")
+            if err_admission:
+                errors.append(err_admission)
+
+            # Check admission.py branch_head helper returns 4-tuple with normalized base attribute in both branches
+            store_class = next((n for n in ast.walk(admission_ast) if isinstance(n, ast.ClassDef) and n.name == "LinearizableAdmissionStore"), None)
+            if store_class:
+                admit_method = next((n for n in ast.walk(store_class) if isinstance(n, ast.FunctionDef) and n.name == "admit_next"), None)
+                if admit_method:
+                    bh_func = next((n for n in ast.walk(admit_method) if isinstance(n, ast.FunctionDef) and n.name == "branch_head"), None)
+                    if bh_func:
+                        ret_tuples = [n.value for n in ast.walk(bh_func) if isinstance(n, ast.Return) and isinstance(n.value, ast.Tuple)]
+                        if not ret_tuples:
+                            errors.append("admission.py branch_head has no return tuple statements")
+                        for t in ret_tuples:
+                            if len(t.elts) != 4:
+                                errors.append(f"admission.py branch_head returns tuple with {len(t.elts)} elements (expected exactly 4)")
+                            else:
+                                el = t.elts[2]
+                                is_base_attr = isinstance(el, ast.Attribute) and el.attr == "base"
+                                if not is_base_attr:
+                                    errors.append(f"admission.py branch_head tuple element 3 is {ast.unparse(el)!r}, expected normalized base attribute (.base)")
+
+            # Check BrokerService._replay in verbs.py contains ast.Compare between current.base and request.base
+            bs_class = next((n for n in ast.walk(verbs_ast) if isinstance(n, ast.ClassDef) and n.name == "BrokerService"), None)
+            if bs_class:
+                replay_method = next((n for n in ast.walk(bs_class) if isinstance(n, ast.FunctionDef) and n.name == "_replay"), None)
+                if replay_method:
+                    has_base_cmp = False
+                    for node in ast.walk(replay_method):
+                        if isinstance(node, ast.Compare):
+                            left_str = ast.unparse(node.left).strip()
+                            comp_strs = [ast.unparse(c).strip() for c in node.comparators]
+                            operands = [left_str] + comp_strs
+                            if "current.base" in operands and "request.base" in operands:
+                                has_base_cmp = True
+                                break
+                    if not has_base_cmp:
+                        errors.append("BrokerService._replay method AST missing exact ast.Compare between current.base and request.base")
+
+            # Check EvidenceRecord class in evidence.py
+            evidence_ast = ast.parse(evidence_src)
+            ev_class = next((n for n in ast.walk(evidence_ast) if isinstance(n, ast.ClassDef) and n.name == "EvidenceRecord"), None)
+            if ev_class is None:
+                errors.append("class EvidenceRecord missing in evidence.py")
+            else:
+                has_base_field = any(isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name) and stmt.target.id == "base" for stmt in ev_class.body)
+                if not has_base_field:
+                    errors.append("EvidenceRecord class missing 'base' field annotation")
+
+            # Check every production EvidenceRecord(...) constructor derives its
+            # base value from a base-bearing expression. Deserialization may retain
+            # its full raw mapping; the runtime round trips above prove that path.
+            for fpath, tree in (("verbs.py", verbs_ast), ("evidence.py", evidence_ast)):
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Call):
+                        func_name = node.func.id if isinstance(node.func, ast.Name) else (node.func.attr if isinstance(node.func, ast.Attribute) else None)
+                        if func_name == "EvidenceRecord":
+                            base_value = (
+                                node.args[3]
+                                if len(node.args) >= 4
+                                else next(
+                                    (keyword.value for keyword in node.keywords if keyword.arg == "base"),
+                                    None,
+                                )
+                            )
+                            raw_mapping_replay = any(
+                                keyword.arg is None
+                                and isinstance(keyword.value, ast.Name)
+                                and keyword.value.id == "raw"
+                                for keyword in node.keywords
+                            )
+                            if base_value is None:
+                                if not raw_mapping_replay:
+                                    errors.append(f"EvidenceRecord(...) call in {fpath} missing base parameter")
+                                continue
+                            base_identifiers = {
+                                child.id
+                                for child in ast.walk(base_value)
+                                if isinstance(child, ast.Name)
+                            } | {
+                                child.attr
+                                for child in ast.walk(base_value)
+                                if isinstance(child, ast.Attribute)
+                            }
+                            if "base" not in base_identifiers:
+                                errors.append(
+                                    f"EvidenceRecord(...) base expression in {fpath} does not derive from a base-bearing value"
+                                )
+
+            return errors
+
+        # 3. Read production source files and verify AST value flow
+        repo_root = Path(__file__).resolve().parents[2]
+        contracts_path = repo_root / "phase-loop-runtime/src/phase_loop_runtime/convergence/contracts.py"
+        verbs_path = repo_root / "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/verbs.py"
+        admission_path = repo_root / "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/admission.py"
+        evidence_path = repo_root / "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/evidence.py"
+
+        contracts_text = contracts_path.read_text(encoding="utf-8")
+        verbs_text = verbs_path.read_text(encoding="utf-8")
+        admission_text = admission_path.read_text(encoding="utf-8")
+        evidence_text = evidence_path.read_text(encoding="utf-8")
+
+        prod_errors = verify_publish_identity_value_flow(contracts_text, verbs_text, admission_text, evidence_text)
+        if prod_errors:
+            defect_details.extend(prod_errors)
+
+        # Mutate every explicit EvidenceRecord base expression independently.
+        # A verifier that merely checks argument presence would accept these
+        # constant-base constructions and corrupt non-main retries.
+        def _mutate_evidence_base_expression(src: str, target_index: int) -> tuple[str, bool]:
+            tree = ast.parse(src)
+            targets = []
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func_name = node.func.id if isinstance(node.func, ast.Name) else (
+                    node.func.attr if isinstance(node.func, ast.Attribute) else None
+                )
+                if func_name != "EvidenceRecord":
+                    continue
+                base_value = (
+                    node.args[3]
+                    if len(node.args) >= 4
+                    else next(
+                        (keyword.value for keyword in node.keywords if keyword.arg == "base"),
+                        None,
+                    )
+                )
+                if base_value is not None:
+                    targets.append(base_value)
+            if target_index >= len(targets):
+                return src, False
+            selected = targets[target_index]
+
+            class _EvidenceBaseMutator(ast.NodeTransformer):
+                def visit(self, node):
+                    if node is selected:
+                        return ast.copy_location(ast.Constant(value="main"), node)
+                    return super().visit(node)
+
+            _EvidenceBaseMutator().visit(tree)
+            ast.fix_missing_locations(tree)
+            return ast.unparse(tree) + "\n", True
+
+        for source_label, source_text in (
+            ("verbs.py", verbs_text),
+            ("evidence.py", evidence_text),
+        ):
+            target_count = sum(
+                1
+                for node in ast.walk(ast.parse(source_text))
+                if isinstance(node, ast.Call)
+                and (
+                    node.func.id if isinstance(node.func, ast.Name) else (
+                        node.func.attr if isinstance(node.func, ast.Attribute) else None
+                    )
+                ) == "EvidenceRecord"
+                and (
+                    len(node.args) >= 4
+                    or any(keyword.arg == "base" for keyword in node.keywords)
+                )
+            )
+            if target_count == 0:
+                defect_details.append(f"{source_label} has no explicit EvidenceRecord base expressions to mutation-test")
+            for target_index in range(target_count):
+                mutated_source, changed = _mutate_evidence_base_expression(
+                    source_text, target_index
+                )
+                if not changed:
+                    defect_details.append(
+                        f"{source_label} EvidenceRecord base mutant {target_index} was a no-op"
+                    )
+                    continue
+                mutated_errors = verify_publish_identity_value_flow(
+                    contracts_text,
+                    mutated_source if source_label == "verbs.py" else verbs_text,
+                    admission_text,
+                    mutated_source if source_label == "evidence.py" else evidence_text,
+                )
+                if not any(
+                    f"base expression in {source_label} does not derive"
+                    in error
+                    for error in mutated_errors
+                ):
+                    defect_details.append(
+                        f"AST verifier accepted {source_label} EvidenceRecord constant-base mutant {target_index}"
+                    )
+
+        # 4. Mandatory class/method-bounded source mutants for all four publish identity sites & _replay
+        def _mutate_method(src: str, class_name: str, method_name: str, target: str, replacement: str) -> tuple[str, Optional[str]]:
+            try:
+                tree = ast.parse(src)
+            except Exception as exc:
+                return src, f"ast.parse failed: {exc}"
+            class_node = next((n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == class_name), None)
+            if not class_node:
+                return src, f"class {class_name} missing"
+            method_node = next((n for n in ast.walk(class_node) if isinstance(n, ast.FunctionDef) and n.name == method_name), None)
+            if not method_node:
+                return src, f"method {class_name}.{method_name} missing"
+            target_node = ast.parse(target, mode="eval").body
+            replacement_node = ast.parse(replacement, mode="eval").body
+            target_shape = ast.dump(target_node, include_attributes=False)
+            selected = None
+            if method_name == "_replay":
+                for comparison in (
+                    node for node in ast.walk(method_node) if isinstance(node, ast.Compare)
+                ):
+                    operands = [comparison.left, *comparison.comparators]
+                    operand_shapes = {
+                        ast.dump(node, include_attributes=False) for node in operands
+                    }
+                    if {
+                        ast.dump(ast.parse("current.base", mode="eval").body, include_attributes=False),
+                        ast.dump(ast.parse("request.base", mode="eval").body, include_attributes=False),
+                    }.issubset(operand_shapes):
+                        selected = next(
+                            (
+                                node
+                                for node in operands
+                                if ast.dump(node, include_attributes=False) == target_shape
+                            ),
+                            None,
+                        )
+                        break
+            else:
+                identity_calls = [
+                    node
+                    for node in ast.walk(method_node)
+                    if isinstance(node, ast.Call)
+                    and (
+                        isinstance(node.func, ast.Name)
+                        and node.func.id == "publish_committed_branch_idempotency_key"
+                        or isinstance(node.func, ast.Attribute)
+                        and node.func.attr == "publish_committed_branch_idempotency_key"
+                    )
+                ]
+                if len(identity_calls) == 1:
+                    call = identity_calls[0]
+                    selected = (
+                        call.args[2]
+                        if len(call.args) >= 3
+                        else next(
+                            (keyword.value for keyword in call.keywords if keyword.arg == "base"),
+                            None,
+                        )
+                    )
+                    if selected is not None and ast.dump(selected, include_attributes=False) != target_shape:
+                        selected = None
+            if selected is None:
+                return src, f"exact target {target!r} missing from {class_name}.{method_name} identity decision"
+
+            class _ExactNodeMutator(ast.NodeTransformer):
+                def visit(self, node):
+                    if node is selected:
+                        return ast.copy_location(replacement_node, node)
+                    return super().visit(node)
+
+            _ExactNodeMutator().visit(method_node)
+            ast.fix_missing_locations(tree)
+            mutated_src = ast.unparse(tree) + "\n"
+            if ast.dump(ast.parse(mutated_src)) == ast.dump(ast.parse(src)):
+                return src, f"mutation of {target!r} in {class_name}.{method_name} resulted in no-op"
+            return mutated_src, None
+
+        # Site 1: PreAdmissionEnvelope.idempotency_key in contracts.py
+        mut1_contracts, err1_mut = _mutate_method(contracts_text, "PreAdmissionEnvelope", "idempotency_key", "self.base", '"main"')
+        if err1_mut:
+            defect_details.append(f"Site 1 mutant error: {err1_mut}")
+        else:
+            errs1 = verify_publish_identity_value_flow(mut1_contracts, verbs_text, admission_text, evidence_text)
+            if not errs1:
+                defect_details.append("AST verifier failed to reject Site 1 wrong-base mutant in PreAdmissionEnvelope.idempotency_key")
+
+        # Site 2: BrokerService._dedup_key in verbs.py
+        mut2_verbs, err2_mut = _mutate_method(verbs_text, "BrokerService", "_dedup_key", "request.base", "request.branch")
+        if err2_mut:
+            defect_details.append(f"Site 2 mutant error: {err2_mut}")
+        else:
+            errs2 = verify_publish_identity_value_flow(contracts_text, mut2_verbs, admission_text, evidence_text)
+            if not errs2:
+                defect_details.append("AST verifier failed to reject Site 2 wrong-base mutant in BrokerService._dedup_key")
+
+        # Site 3: BrokerService._legacy_terminal_replay in verbs.py
+        mut3_verbs, err3_mut = _mutate_method(verbs_text, "BrokerService", "_legacy_terminal_replay", "request.base", "request.branch")
+        if err3_mut:
+            defect_details.append(f"Site 3 mutant error: {err3_mut}")
+        else:
+            errs3 = verify_publish_identity_value_flow(contracts_text, mut3_verbs, admission_text, evidence_text)
+            if not errs3:
+                defect_details.append("AST verifier failed to reject Site 3 wrong-base mutant in BrokerService._legacy_terminal_replay")
+
+        # Site 4: LinearizableAdmissionStore.admit_next in admission.py
+        mut4_admission, err4_mut = _mutate_method(admission_text, "LinearizableAdmissionStore", "admit_next", "auth.base", "auth.branch")
+        if err4_mut:
+            defect_details.append(f"Site 4 mutant error: {err4_mut}")
+        else:
+            errs4 = verify_publish_identity_value_flow(contracts_text, verbs_text, mut4_admission, evidence_text)
+            if not errs4:
+                defect_details.append("AST verifier failed to reject Site 4 wrong-base mutant in LinearizableAdmissionStore.admit_next")
+
+        # Site 5: BrokerService._replay in verbs.py (target current.base)
+        mut5_replay, err5_mut = _mutate_method(verbs_text, "BrokerService", "_replay", "current.base", "current.branch")
+        if err5_mut:
+            defect_details.append(f"Site 5 mutant error: {err5_mut}")
+        else:
+            errs5 = verify_publish_identity_value_flow(contracts_text, mut5_replay, admission_text, evidence_text)
+            if not errs5:
+                defect_details.append("AST verifier failed to reject wrong-base mutant in BrokerService._replay")
+
+        if defect_details:
+            raise AssertionError(
+                "RESIDUAL-RED-ANCHOR::residual_publish_identity_includes_base — "
+                f"publish identity base binding defects present: {'; '.join(defect_details)}"
+            )
+
+    def test_residual_pr_open_resume_live_head_failure(self, tmp_path: Path):
+        """EC-RESIDUAL-2: residual_pr_open_resume_live_head_failure TDD falsifier.
+
+        Guards pr_open resume live-head read failure handling (typed blocked return & ledger row).
+        """
+        if not self._is_activated():
+            return
+
+        # Execute fresh raises/unavailable/success scenarios through run_train;
+        # the unavailable case itself rejects restoration of ledger-head fallback.
+        sc1_dir = tmp_path / "sc1"
+        sc1_dir.mkdir()
+        roadmap1 = parse_train_roadmap(TRAIN_2NODE_MD)
+        ws_map1 = {n.node_id: sc1_dir / n.repo for n in roadmap1.nodes}
+        ledger1 = _setup_p3_done(sc1_dir, roadmap1, ws_map1)
+        merge_log1: List[str] = []
+
+        def _head_raises(ws, br):
+            raise RuntimeError("head unavailable")
+
+        res1 = None
+        exc1 = None
+        try:
+            res1 = run_train(
+                roadmap1,
+                ledger1,
+                run_mode="governed",
+                resolve_workspace=lambda n: ws_map1[n.node_id],
+                _run_loop=lambda *a, **kw: (None, []),
+                _publish=_make_publish_stub(),
+                _set_upstream_ref_fn=lambda *a, **kw: [],
+                _preflight_fn=_preflight_pass,
+                _pr_is_open=_pr_is_open_true,
+                _live_pr_head_sha_fn=_head_raises,
+                _merge_phase_enabled=True,
+                _merge_pr_fn=_make_merge_pr_stub(merge_log1),
+                _reverify_fn=lambda ws, rp, rm: True,
+                _train_review_fn=_approval_review_fn,
+                _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
+            )
+        except Exception as e:
+            exc1 = e
+
+        rec1 = read_ledger(ledger1)
+        blocked_records1 = [r for r in rec1.values() if isinstance(r, LedgerRecord) and getattr(r, "status", None) == "blocked"]
+
+        # Scenario 2: live-head callback returns unavailable (None)
+        sc2_dir = tmp_path / "sc2"
+        sc2_dir.mkdir()
+        roadmap2 = parse_train_roadmap(TRAIN_2NODE_MD)
+        ws_map2 = {n.node_id: sc2_dir / n.repo for n in roadmap2.nodes}
+        ledger2 = _setup_p3_done(sc2_dir, roadmap2, ws_map2)
+        merge_log2: List[str] = []
+
+        res2 = None
+        exc2 = None
+        try:
+            res2 = run_train(
+                roadmap2,
+                ledger2,
+                run_mode="governed",
+                resolve_workspace=lambda n: ws_map2[n.node_id],
+                _run_loop=lambda *a, **kw: (None, []),
+                _publish=_make_publish_stub(),
+                _set_upstream_ref_fn=lambda *a, **kw: [],
+                _preflight_fn=_preflight_pass,
+                _pr_is_open=_pr_is_open_true,
+                _live_pr_head_sha_fn=lambda ws, br: None,
+                _merge_phase_enabled=True,
+                _merge_pr_fn=_make_merge_pr_stub(merge_log2),
+                _reverify_fn=lambda ws, rp, rm: True,
+                _train_review_fn=_approval_review_fn,
+                _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
+            )
+        except Exception as e:
+            exc2 = e
+
+        rec2 = read_ledger(ledger2)
+        blocked_records2 = [r for r in rec2.values() if isinstance(r, LedgerRecord) and getattr(r, "status", None) == "blocked"]
+
+        # Scenario 3: live-head callback succeeds
+        sc3_dir = tmp_path / "sc3"
+        sc3_dir.mkdir()
+        roadmap3 = parse_train_roadmap(TRAIN_2NODE_MD)
+        ws_map3 = {n.node_id: sc3_dir / n.repo for n in roadmap3.nodes}
+        ledger3 = _setup_p3_done(sc3_dir, roadmap3, ws_map3)
+        merge_log3: List[str] = []
+
+        res3 = None
+        exc3 = None
+        try:
+            res3 = run_train(
+                roadmap3,
+                ledger3,
+                run_mode="governed",
+                resolve_workspace=lambda n: ws_map3[n.node_id],
+                _run_loop=lambda *a, **kw: (None, []),
+                _publish=_make_publish_stub(),
+                _set_upstream_ref_fn=lambda *a, **kw: [],
+                _preflight_fn=_preflight_pass,
+                _pr_is_open=_pr_is_open_true,
+                _live_pr_head_sha_fn=_live_head_for_p3_done,
+                _merge_phase_enabled=True,
+                _merge_pr_fn=_make_merge_pr_stub(merge_log3),
+                _reverify_fn=lambda ws, rp, rm: True,
+                _train_review_fn=_approval_review_fn,
+                _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
+            )
+        except Exception as e:
+            exc3 = e
+
+        rec3 = read_ledger(ledger3)
+        assert isinstance(rec3, dict), "read_ledger must return a dict"
+
+        expected_node = "repo-a/specs/plan-a.md"
+
+        def _typed_failure_ok(result, records, reason):
+            detail = result.get("detail") if isinstance(result, dict) else None
+            return (
+                result is not None
+                and result.get("status") == "blocked"
+                and result.get("node_id") == expected_node
+                and isinstance(detail, dict)
+                and detail.get("reason") == reason
+                and detail.get("blocker_class") == "live_head_unavailable"
+                and len(records) == 1
+                and records[0].node_id == expected_node
+                and records[0].branch == "feat/train-repo-a"
+            )
+
+        failure1_ok = _typed_failure_ok(res1, blocked_records1, "pr_open_live_head_read_failed")
+        failure2_ok = _typed_failure_ok(res2, blocked_records2, "pr_open_live_head_unavailable")
+        success_ok = (
+            exc3 is None
+            and res3 is not None
+            and res3.get("status") == "merged"
+            and merge_log3 == ["repo-a", "repo-b"]
+        )
+
+        # Evaluate scenarios against named RED anchor
+        if exc1 is not None or exc2 is not None or not failure1_ok or not failure2_ok or merge_log1 or merge_log2 or not success_ok:
+            defect_details = []
+            if exc1 is not None:
+                defect_details.append(f"live head callback exception raised unhandled {exc1}")
+            if not failure1_ok:
+                defect_details.append("live head exception lacked exact typed blocker, node identity, or durable blocked row")
+            if merge_log1:
+                defect_details.append(f"live head exception reached merge for {merge_log1!r}")
+            if exc2 is not None:
+                defect_details.append(f"unavailable live head raised unhandled {exc2}")
+            if not failure2_ok:
+                defect_details.append("unavailable live head lacked exact typed blocker, node identity, or durable blocked row")
+            if merge_log2:
+                defect_details.append(f"unavailable live head reached merge for {merge_log2!r}")
+            if not success_ok:
+                defect_details.append(
+                    f"successful live heads returned {res3!r} with merge log {merge_log3!r} and exception {exc3!r}"
+                )
+
+            raise AssertionError(
+                "RESIDUAL-RED-ANCHOR::residual_pr_open_resume_live_head_failure — "
+                f"pr_open resume live head read failure defects present: {'; '.join(defect_details)}"
+            )
+
+    def test_residual_non_fab_merge_queue_null_oid(self, tmp_path: Path):
+        """EC-RESIDUAL-3: residual_non_fab_merge_queue_null_oid TDD falsifier.
+
+        Guards integrated run_train enqueue and reconcile path, requiring gh pr merge argv to exist and omit --delete-branch.
+        """
+        if not self._is_activated():
+            return
+
+        import json
+        import time
+        from unittest.mock import patch
+        from phase_loop_runtime.train_runner import _fab_queue_bound_merge_wait, _live_merge_pr
+
+        # 1. Direct _fab_queue_bound_merge_wait unit controls
+        with patch("phase_loop_runtime.train_runner._live_pr_merged_sha", return_value="sha-MERGED-123"):
+            res_merged = _fab_queue_bound_merge_wait(
+                tmp_path, "feat/x", base="main", head_sha="sha123",
+                poll_interval_s=0.01, poll_timeout_s=0.05,
+                clock=time.time, sleep=lambda s: None,
+                dequeue_fn=lambda ws, br: True,
+            )
+            assert res_merged == "sha-MERGED-123", "terminal success outcome mismatch"
+
+        # 2. Integrated run_train execution
+        roadmap = parse_train_roadmap(TRAIN_1NODE_MD)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+        append_record(ledger, LedgerRecord(
+            node_id="repo-a/specs/plan-a.md",
+            status="pr_open",
+            branch="feat/train-repo-a",
+            head_sha="sha-DRAFT-repo-a",
+            pr_url="https://gh.com/repo-a/pr/1",
+            merge_order=0,
+        ))
+
+        captured_merge_argvs: list[list[str]] = []
+        captured_graphql: list[str] = []
+        queue_status_reads = [0]
+
+        def fake_subproc_run(cmd, *args, **kwargs):
+            if isinstance(cmd, list) and cmd[:4] == ["git", "-C", str(tmp_path / "repo-a"), "remote"]:
+                return type("CompletedProcess", (), {"returncode": 0, "stdout": "https://github.com/owner/repo-a.git\n", "stderr": ""})()
+            if isinstance(cmd, list) and len(cmd) >= 3 and cmd[0] == "gh" and cmd[1] == "pr" and cmd[2] == "merge":
+                captured_merge_argvs.append(list(cmd))
+                return type("CompletedProcess", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+            if isinstance(cmd, list) and len(cmd) >= 3 and cmd[0] == "gh" and cmd[1] == "pr" and cmd[2] == "view":
+                requested = next((value for index, value in enumerate(cmd) if index and cmd[index - 1] == "--json"), "")
+                if requested == "state,mergeCommit,baseRefName,headRefOid":
+                    res_data = json.dumps({
+                        "state": "OPEN",
+                        "mergeCommit": None,
+                        "baseRefName": "main",
+                        "headRefOid": "sha-DRAFT-repo-a",
+                    })
+                elif requested == "number,state,autoMergeRequest":
+                    queue_status_reads[0] += 1
+                    res_data = json.dumps({"number": 1, "state": "OPEN", "autoMergeRequest": None})
+                elif requested == "id":
+                    res_data = json.dumps({"id": "PR_node_id"})
+                else:
+                    res_data = json.dumps({
+                        "isDraft": False,
+                        "baseRefName": "main",
+                        "headRefOid": None,
+                    })
+                return type("CompletedProcess", (), {"returncode": 0, "stdout": res_data, "stderr": ""})()
+            if isinstance(cmd, list) and cmd[:3] == ["gh", "api", "graphql"]:
+                query = next((value for value in cmd if isinstance(value, str) and value.startswith("query=")), "")
+                captured_graphql.append(query)
+                if "dequeuePullRequest" in query:
+                    res_data = json.dumps({"data": {"dequeuePullRequest": {"clientMutationId": None}}})
+                else:
+                    res_data = json.dumps({
+                        "data": {"repository": {"pullRequest": {"isInMergeQueue": False}}}
+                    })
+                return type("CompletedProcess", (), {"returncode": 0, "stdout": res_data, "stderr": ""})()
+            return type("CompletedProcess", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+        clock_values = iter((0.0, 1.0))
+
+        def _bounded_real_merge(workspace, branch, base="main", head_sha=None, run_id=None):
+            return _live_merge_pr(
+                workspace,
+                branch,
+                base=base,
+                head_sha=head_sha,
+                run_id=run_id,
+                queue_poll_interval_s=0.0,
+                queue_poll_timeout_s=0.5,
+                _clock=lambda: next(clock_values, 1.0),
+                _sleep=lambda _seconds: None,
+            )
+
+        with patch("subprocess.run", side_effect=fake_subproc_run):
+            result = run_train(
+                roadmap,
+                ledger,
+                run_mode="governed",
+                resolve_workspace=lambda n: ws_map[n.node_id],
+                _run_loop=lambda *a, **kw: (None, []),
+                _publish=_make_publish_stub(),
+                _set_upstream_ref_fn=lambda *a, **kw: [],
+                _preflight_fn=_preflight_pass,
+                _pr_is_open=_pr_is_open_true,
+                _live_pr_head_sha_fn=lambda ws, br: "sha-DRAFT-repo-a",
+                _merge_phase_enabled=True,
+                _merge_pr_fn=_bounded_real_merge,
+                _reverify_fn=lambda ws, rp, rm: True,
+                _train_review_fn=_approval_review_fn,
+                _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
+            )
+
+        enqueue_argvs = [cmd for cmd in captured_merge_argvs if "--disable-auto" not in cmd]
+        delete_branch_present = any("--delete-branch" in cmd for cmd in enqueue_argvs)
+        membership_queries = [
+            query
+            for query in captured_graphql
+            if query.startswith("query=query{")
+            and "isInMergeQueue" in query
+            and "dequeuePullRequest" not in query
+        ]
+        dequeue_attempted = (
+            any("dequeuePullRequest" in query for query in captured_graphql)
+            and len(membership_queries) >= 2
+            and any("--disable-auto" in cmd for cmd in captured_merge_argvs)
+            and queue_status_reads[0] >= 2
+        )
+        final_record = read_ledger(ledger).get("repo-a/specs/plan-a.md")
+        queue_failure_preserved = (
+            result.get("status") == "merge_halted"
+            and result.get("reason") == "merge_failed"
+            and "merge-queue-timeout-dequeued" in result.get("detail", "")
+            and final_record is not None
+            and final_record.status == "blocked"
+        )
+
+        if not enqueue_argvs or delete_branch_present or not dequeue_attempted or not queue_failure_preserved:
+            raise AssertionError(
+                "RESIDUAL-RED-ANCHOR::residual_non_fab_merge_queue_null_oid — "
+                "non-FAB merge with null OID did not enter queue reconciliation, preserve its typed failure, or omitted --delete-branch"
+            )
+
+    def test_residual_hotfix_shell_operator(self, tmp_path: Path):
+        """EC-RESIDUAL-4: residual_hotfix_shell_operator TDD falsifier.
+
+        Guards public hotfix execution path refusal of shell control operators (; && || | < > \n) before verification launch.
+        """
+        if not self._is_activated():
+            return
+
+        import argparse
+        from unittest.mock import patch
+        from phase_loop_test_utils import make_repo
+        from phase_loop_runtime.cli import _hotfix_command, _hotfix_verification_commands
+
+        # 1. Benign safe positive control driven through public _hotfix_command CLI path with valid repo/roadmap/plan preconditions
+        repo_dir = make_repo(tmp_path / "hotfix_repo")
+        specs_dir = repo_dir / "specs"
+        specs_dir.mkdir(parents=True, exist_ok=True)
+        roadmap_file = specs_dir / "phase-plans-v1.md"
+        roadmap_file.write_text(
+            "# Roadmap\n\n### Phase 0 - Contract (CONTRACT)\n",
+            encoding="utf-8",
+        )
+
+        plans_dir = repo_dir / "plans"
+        plans_dir.mkdir(parents=True, exist_ok=True)
+        safe_plan = plans_dir / "CONTRACT.md"
+        safe_plan.write_text(
+            'verification_command: python -c "print(\'; literal\')"\n'
+            "verification_commands:\n"
+            '  - python -c "print(\'&& literal\')"\n'
+            '  - python -c "print(\'|| literal\')"\n'
+            '  - python -c "print(\'| literal\')"\n'
+            '  - python -c "print(\'< literal\')"\n'
+            '  - python -c "print(\'> literal\')"\n'
+            '  - python -c "print(\'\\\\n literal\')"\n',
+            encoding="utf-8",
+        )
+        expected_safe_commands = [
+            ["python", "-c", "print('; literal')"],
+            ["python", "-c", "print('&& literal')"],
+            ["python", "-c", "print('|| literal')"],
+            ["python", "-c", "print('| literal')"],
+            ["python", "-c", "print('< literal')"],
+            ["python", "-c", "print('> literal')"],
+            ["python", "-c", "print('\\n literal')"],
+        ]
+        safe_parser_commands = _hotfix_verification_commands(safe_plan)
+
+        run_verification_calls: list[list[list[str]]] = []
+
+        def spy_run_verification(repo, run_dir, commands, suite_command, *args, **kwargs):
+            run_verification_calls.append(commands)
+
+        class _PassingValidation:
+            ok = True
+            code = "ok"
+
+            @staticmethod
+            def to_json():
+                return {"ok": True, "code": "ok", "exit_summary": {}}
+
+        args_safe = argparse.Namespace(
+            plan=str(safe_plan.relative_to(repo_dir)),
+            reason="safe hotfix test",
+            init_stub=None,
+            roadmap=None,
+        )
+
+        with patch("phase_loop_runtime.cli.run_verification", side_effect=spy_run_verification), \
+             patch("phase_loop_runtime.cli.validate_verification_artifact", return_value=_PassingValidation()):
+            exit_code_safe = _hotfix_command(repo=repo_dir, args=args_safe, as_json=True)
+
+        safe_reached_verification = (
+            safe_parser_commands == expected_safe_commands
+            and run_verification_calls == [expected_safe_commands]
+            and exit_code_safe == 0
+        )
+
+        # 2. Refuse every operator in both scalar and list-item inputs. The DSL is
+        # line-oriented, so newline chaining is represented by the literal `\n`
+        # escape an external plan author would put in a scalar value.
+        forbidden_operators = [
+            ("semicolon", ";"),
+            ("and", "&&"),
+            ("or", "||"),
+            ("pipe", "|"),
+            ("redirect-in", "<"),
+            ("redirect-out", ">"),
+            ("newline", "\\n"),
+        ]
+        unsafe_failures: list[str] = []
+
+        for operator_name, operator in forbidden_operators:
+            for shape in ("scalar", "list"):
+                unsafe_plan = plans_dir / f"CONTRACT_unsafe_{operator_name}_{shape}.md"
+                unsafe_line = f"pytest {operator} echo sentinel_reached"
+                unsafe_plan.write_text(
+                    f"verification_command: {unsafe_line}\n"
+                    if shape == "scalar"
+                    else f"verification_commands:\n  - {unsafe_line}\n",
+                    encoding="utf-8",
+                )
+
+                parser_rejected = False
+                try:
+                    _hotfix_verification_commands(unsafe_plan)
+                except ValueError as exc:
+                    parser_rejected = "control operator" in str(exc).lower()
+
+                args_unsafe = argparse.Namespace(
+                    plan=str(unsafe_plan.relative_to(repo_dir)),
+                    reason=f"unsafe hotfix test {operator_name} {shape}",
+                    init_stub=None,
+                    roadmap=None,
+                )
+
+                calls_unsafe: list[list[list[str]]] = []
+
+                def spy_run_verification_unsafe(repo, run_dir, commands, suite_command, *args, **kwargs):
+                    calls_unsafe.append(commands)
+
+                artifacts_before = set(
+                    (repo_dir / ".phase-loop" / "runs").glob("*/verification.json")
+                )
+                leaked_exception = False
+                try:
+                    with patch("phase_loop_runtime.cli.run_verification", side_effect=spy_run_verification_unsafe), \
+                         patch("phase_loop_runtime.cli.validate_verification_artifact", return_value=_PassingValidation()):
+                        exit_code = _hotfix_command(repo=repo_dir, args=args_unsafe, as_json=True)
+                except ValueError:
+                    leaked_exception = True
+                    exit_code = 1
+
+                verification_artifacts = set(
+                    (repo_dir / ".phase-loop" / "runs").glob("*/verification.json")
+                ) - artifacts_before
+                if (
+                    not parser_rejected
+                    or leaked_exception
+                    or calls_unsafe
+                    or exit_code == 0
+                    or verification_artifacts
+                ):
+                    unsafe_failures.append(f"{operator_name}/{shape}")
+
+        if not safe_reached_verification or unsafe_failures:
+            defect_details = []
+            if not safe_reached_verification:
+                defect_details.append("safe positive control failed to reach run_verification")
+            if unsafe_failures:
+                defect_details.append(
+                    "_hotfix_command failed exact parser/public-path refusal for " + ", ".join(unsafe_failures)
+                )
+
+            raise AssertionError(
+                "RESIDUAL-RED-ANCHOR::residual_hotfix_shell_operator — "
+                f"hotfix execution path defects present: {'; '.join(defect_details)}"
+            )
+
+    def test_residual_channel_session_model(self, tmp_path: Path, monkeypatch):
+        """EC-RESIDUAL-5: residual_channel_session_model TDD falsifier.
+
+        Guards launcher-to-sidecar explicit intended model provenance and preflight session model validation.
+        """
+        if not self._is_activated():
+            return
+
+        monkeypatch.setenv("PHASE_LOOP_RUNNER_REPO_ROOT", str(Path(__file__).resolve().parents[2]))
+
+        import inspect
+        import json
+        from dataclasses import fields
+        from io import BytesIO
+        from urllib import response
+
+        from phase_loop_test_utils import commit_fixture_paths, make_repo, write_phase_plan
+        from phase_loop_runtime.claude_channel_sidecar import (
+            ChannelSidecarClient,
+            ChannelSidecarClientError,
+            SessionRegistryRecord,
+        )
+        from phase_loop_runtime.events import read_events
+        from phase_loop_runtime.launcher import (
+            ModelSelection,
+            _render_command_template,
+            build_launch_request,
+            build_launch_spec,
+        )
+        from phase_loop_runtime.models import CommandAdapterConfig
+        from phase_loop_runtime.observability import read_work_unit_metrics
+        from phase_loop_runtime.prompts import build_prompt
+        from phase_loop_runtime.render import render_status
+        from phase_loop_runtime.runner import run_loop, status_snapshot
+
+        defects: list[str] = []
+        model = "claude-3-5-sonnet"
+
+        def validate_surface(name, value, actual, state, caveat):
+            if value is None:
+                return [f"{name} missing"]
+            if isinstance(value, str):
+                lowered = value.lower()
+                errors = []
+                for label in ("intended", "binding"):
+                    if label not in lowered:
+                        errors.append(f"{name} text lacks {label} model provenance")
+                if model not in value:
+                    errors.append(f"{name} text lacks intended model")
+                if actual is not None and "actual" not in lowered:
+                    errors.append(f"{name} text lacks actual model provenance")
+                if state not in lowered:
+                    errors.append(f"{name} text lacks {state} binding state")
+                if caveat and caveat not in value:
+                    errors.append(f"{name} text lacks caveat {caveat!r}")
+                return errors
+
+            def pick(*names):
+                for field_name in names:
+                    if isinstance(value, dict) and field_name in value:
+                        return value[field_name]
+                    if hasattr(value, field_name):
+                        return getattr(value, field_name)
+                return None
+
+            errors = []
+            if pick("intended_model", "expected_model", "selected_model") != model:
+                errors.append(f"{name} missing exact intended model")
+            if actual is not None and pick("actual_model", "verified_model") != actual:
+                errors.append(f"{name} missing distinct exact actual model")
+            if pick("binding_state", "model_binding_state") != state:
+                errors.append(f"{name} missing {state!r} binding state")
+            observed_caveat = pick("caveat", "model_caveat", "caveats")
+            if caveat and observed_caveat != caveat:
+                errors.append(f"{name} missing caveat {caveat!r}")
+            if not caveat and observed_caveat not in (None, "", [], ()):
+                errors.append(f"{name} has unexpected bound caveat")
+            return errors
+
+        repo_dir = make_repo(tmp_path / "channel_repo")
+        roadmap_file = repo_dir / "specs" / "phase-plans-v1.md"
+        roadmap_file.parent.mkdir(parents=True, exist_ok=True)
+        roadmap_file.write_text(
+            "---\ntitle: Channel Test Roadmap\nphases:\n  - id: CONTRACT\n    name: Contract\n---\n",
+            encoding="utf-8",
+        )
+        plan_file = repo_dir / "plans" / "CONTRACT.md"
+        plan_file.parent.mkdir(parents=True, exist_ok=True)
+        plan_file.write_text("verification_command: pytest\n", encoding="utf-8")
+        prompt_bundle = build_prompt("execute", roadmap_file, phase="CONTRACT")
+        model_sel = ModelSelection(profile="execute", model=model, effort="high")
+
+        def launch_request(template: str, name: str):
+            return build_launch_request(
+                executor="command",
+                action="execute",
+                repo=repo_dir,
+                roadmap=roadmap_file,
+                phase="CONTRACT",
+                plan=plan_file,
+                model_selection=model_sel,
+                prompt_bundle=prompt_bundle,
+                json_output=True,
+                bypass_approvals=False,
+                command_adapter=CommandAdapterConfig(name=name, template=template),
+            )
+
+        bound_template = "python3 -c \"print('ok')\" --model {model} --context-file {context_file}"
+        bound_spec = build_launch_spec(launch_request(bound_template, "bound"))
+        defects.extend(validate_surface("launch_spec_bound", bound_spec, model, "bound", None))
+
+        unbound_template = "python3 -c \"print('ok')\" --context-file {context_file}"
+        unbound_request = launch_request(unbound_template, "unbound")
+        rendered_unbound = _render_command_template(unbound_template, unbound_request)
+        if model in rendered_unbound:
+            defects.append("command adapter without {model} injected the intended model")
+        unbound_spec = build_launch_spec(unbound_request)
+        defects.extend(validate_surface("launch_spec_unbound", unbound_spec, None, "unbound", "session_model_unbound"))
+
+        record_fields = {field.name for field in fields(SessionRegistryRecord)}
+        if not {"actual_model", "binding_state"}.issubset(record_fields):
+            defects.append("SessionRegistryRecord lacks actual_model/binding_state")
+
+        responses = {
+            "match": {"session_id": "sess-1", "state": "ready", "channel_health": "ready", "actual_model": model},
+            "mismatch": {"session_id": "sess-1", "state": "ready", "channel_health": "ready", "actual_model": "claude-3-5-haiku"},
+            "absent": {"session_id": "sess-1", "state": "ready", "channel_health": "ready"},
+        }
+
+        def opener_for(scenario, request_log):
+            def opener(req, timeout=None):
+                method = req.get_method()
+                url = req.full_url
+                request_log.append((method, url))
+                if "/message" in url:
+                    body = {"event_id": "evt-123"}
+                elif "/events" in url:
+                    body = {"events": [{"event_id": "evt-123", "acknowledged": True, "replies": [{"status": "done", "final": True, "text": "OK"}]}]}
+                else:
+                    body = responses[scenario]
+                return response.addinfourl(BytesIO(json.dumps(body).encode()), headers={}, url=url, code=200)
+            return opener
+
+        preflight_has_model = "expected_model" in inspect.signature(ChannelSidecarClient.preflight).parameters
+        send_has_model = "expected_model" in inspect.signature(ChannelSidecarClient.send_and_wait).parameters
+        if not preflight_has_model:
+            defects.append("ChannelSidecarClient.preflight lacks expected_model")
+        if not send_has_model:
+            defects.append("ChannelSidecarClient.send_and_wait lacks expected_model")
+
+        for scenario, reason in (("mismatch", "session_model_mismatch"), ("absent", "session_model_unbound")):
+            request_log = []
+            client = ChannelSidecarClient(
+                base_url="http://127.0.0.1:8080",
+                session_id="sess-1",
+                sender="test",
+                opener=opener_for(scenario, request_log),
+            )
+            if preflight_has_model:
+                try:
+                    client.preflight(expected_model=model)
+                except Exception as exc:
+                    if not isinstance(exc, ChannelSidecarClientError) or getattr(exc, "reason", None) != reason:
+                        defects.append(f"{scenario} preflight returned wrong error {exc!r}")
+                else:
+                    defects.append(f"{scenario} preflight admitted invalid model")
+            if send_has_model:
+                try:
+                    client.send_and_wait("test", expected_model=model)
+                except Exception as exc:
+                    if not isinstance(exc, ChannelSidecarClientError) or getattr(exc, "reason", None) != reason:
+                        defects.append(f"{scenario} send returned wrong error {exc!r}")
+                else:
+                    defects.append(f"{scenario} send admitted invalid model")
+            if any(method == "POST" and "/message" in url for method, url in request_log):
+                defects.append(f"{scenario} session posted a message")
+
+        match_log = []
+        match_client = ChannelSidecarClient(
+            base_url="http://127.0.0.1:8080",
+            session_id="sess-1",
+            sender="test",
+            opener=opener_for("match", match_log),
+        )
+        if preflight_has_model:
+            try:
+                match_record = match_client.preflight(expected_model=model)
+                defects.extend(validate_surface("session_preflight_bound", match_record, model, "bound", None))
+            except Exception as exc:
+                defects.append(f"matching preflight failed: {exc}")
+        if send_has_model:
+            try:
+                reply = match_client.send_and_wait("test", expected_model=model)
+                if not reply or not any(method == "POST" and "/message" in url for method, url in match_log):
+                    defects.append("matching session did not deliver")
+            except Exception as exc:
+                defects.append(f"matching send failed: {exc}")
+
+        # Drive each route through the real runner and command-adapter launcher.
+        # The resulting launch event is the sole provenance source consumed by
+        # the persisted metric, status snapshot, aggregate, and TUI handoff.
+        for state, actual, caveat, template in (
+            ("bound", model, None, bound_template),
+            ("unbound", None, "session_model_unbound", unbound_template),
+        ):
+            try:
+                runner_repo = make_repo(tmp_path / f"runner-{state}")
+                runner_roadmap = runner_repo / "specs" / "phase-plans-v1.md"
+                runner_plan = write_phase_plan(runner_repo, "CONTRACT", runner_roadmap)
+                commit_fixture_paths(runner_repo, f"add {state} plan", runner_plan)
+                runner_snapshot, runner_results = run_loop(
+                    runner_repo,
+                    runner_roadmap,
+                    phase="CONTRACT",
+                    executor="command",
+                    command_adapter_name=state,
+                    command_template=template,
+                    model=model,
+                    effort="high",
+                    closeout_mode="manual",
+                )
+                if len(runner_results) != 1 or runner_results[0].returncode != 0:
+                    defects.append(f"real runner command-adapter {state} launch failed")
+                    continue
+                rendered_command = runner_results[0].command
+                if any("{model}" in argument for argument in rendered_command):
+                    defects.append(f"real runner {state} command left the model placeholder unresolved")
+                if state == "bound" and model not in rendered_command:
+                    defects.append("real runner bound command omitted the selected model argv")
+                if state == "unbound" and model in rendered_command:
+                    defects.append("real runner unbound command injected the selected model argv")
+
+                launch_result_event = runner_results[0].event_metadata()
+                defects.extend(validate_surface(f"launch_result_{state}", launch_result_event, actual, state, caveat))
+                events = read_events(runner_repo)
+                launch_event = (events[-1].get("metadata") or {}).get("launch") if events else None
+                defects.extend(validate_surface(f"runner_event_{state}", launch_event, actual, state, caveat))
+
+                metrics = read_work_unit_metrics(runner_repo)
+                metric = metrics[-1] if metrics else None
+                defects.extend(validate_surface(f"metric_{state}", metric, actual, state, caveat))
+
+                persisted_snapshot = status_snapshot(runner_repo, runner_roadmap)
+                status_payload = json.loads(render_status(persisted_snapshot, as_json=True))
+                defects.extend(validate_surface(
+                    f"status_metric_{state}", status_payload.get("latest_metric"), actual, state, caveat
+                ))
+                summary = status_payload.get("metrics_summary") or {}
+                if state == "bound" and summary.get("by_model", {}).get(model) != 1:
+                    defects.append("aggregate did not count the verified bound model")
+                if state == "unbound":
+                    if summary.get("by_model", {}).get(model):
+                        defects.append("aggregate counted an unbound intended model as verified")
+                    if caveat not in json.dumps(summary, sort_keys=True):
+                        defects.append("aggregate dropped the unbound-model caveat")
+
+                handoff_text = (runner_repo / ".phase-loop" / "tui-handoff.md").read_text(encoding="utf-8")
+                defects.extend(validate_surface(f"handoff_{state}", handoff_text, actual, state, caveat))
+                if runner_snapshot.repo != str(runner_repo):
+                    defects.append(f"real runner {state} snapshot belongs to wrong repository")
+            except Exception as exc:
+                defects.append(f"real runner {state} provenance flow failed: {exc}")
+
+        if defects:
+            raise AssertionError(
+                "RESIDUAL-RED-ANCHOR::residual_channel_session_model — "
+                f"channel session model validation defects present: {'; '.join(defects)}"
+            )
+
+    def test_residual_repair_recursion_or_interrupt(self, tmp_path: Path, monkeypatch):
+        """EC-RESIDUAL-6: residual_repair_recursion_or_interrupt TDD falsifier.
+
+        Guards top-level action selection and interruption-only terminal preservation.
+        """
+        if not self._is_activated():
+            return
+
+        monkeypatch.setenv("PHASE_LOOP_RUNNER_REPO_ROOT", str(Path(__file__).resolve().parents[2]))
+
+        import json
+        import os
+        import subprocess
+        from unittest.mock import patch
+
+        from phase_loop_test_utils import make_repo, write_phase_plan
+        from phase_loop_runtime.events import append_event, read_events
+        from phase_loop_runtime.launcher import LaunchResult
+        from phase_loop_runtime.models import LoopEvent, utc_now
+        from phase_loop_runtime.provenance import event_provenance, snapshot_provenance
+        from phase_loop_runtime.runner import run_loop
+
+        def _field(record, name):
+            if isinstance(record, dict):
+                return record.get(name)
+            return getattr(record, name, None)
+
+        def _lineage_refusal(repo: Path, expected_action: str) -> bool:
+            events = read_events(repo)
+            if not events:
+                return False
+            event = events[-1]
+            blocker = _field(event, "blocker") or {}
+            searchable = json.dumps(blocker, sort_keys=True).lower()
+            return (
+                _field(event, "action") == expected_action
+                and _field(event, "status") == "blocked"
+                and ("lineage" in searchable or "nested" in searchable)
+            )
+
+        def _is_trusted_success_summary(payload) -> bool:
+            if not isinstance(payload, dict):
+                return False
+            return (
+                payload.get("verification_status") == "passed"
+                and not payload.get("dirty_paths")
+                and payload.get("terminal_status")
+                not in {"blocked", "failed", "interrupted", "invalidated"}
+            )
+
+        def _setup_repair_repo(repo_dir: Path, pid: int, *, phase_status: str = "blocked"):
+            repo = make_repo(repo_dir)
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            plan = write_phase_plan(repo, "CONTRACT", roadmap, owned_files=("README.md",))
+            subprocess.run(["git", "add", str(plan.relative_to(repo))], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "commit", "-m", "add repair plan"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+
+            prov = snapshot_provenance(roadmap)
+            roadmap_digest = prov.get("roadmap_sha256") or prov.get("roadmap_digest")
+
+            term_file = repo / ".phase-loop" / "runs" / "x" / "terminal-summary.json"
+            term_file.parent.mkdir(parents=True, exist_ok=True)
+            term_content = {
+                "terminal_status": "awaiting_phase_closeout",
+                "verification_status": "passed",
+                "dirty_paths": [],
+                "produced_if_gates": [],
+            }
+            term_file.write_text(json.dumps(term_content), encoding="utf-8")
+
+            append_event(
+                repo,
+                LoopEvent(
+                    timestamp=utc_now(),
+                    repo=str(repo),
+                    roadmap=str(roadmap),
+                    phase="CONTRACT",
+                    action="plan" if phase_status == "blocked" else "execute",
+                    status=phase_status,
+                    model="gpt-5.6-terra",
+                    reasoning_effort="medium",
+                    source="fixture",
+                    blocker={
+                        "human_required": False,
+                        "blocker_summary": "Repair needed.",
+                    } if phase_status == "blocked" else None,
+                    metadata={
+                        "artifacts": {
+                            "log": str(repo / ".phase-loop" / "runs" / "x" / "output.log"),
+                            "terminal": str(term_file),
+                            "metadata": str(repo / ".phase-loop" / "runs" / "x" / "launch.json"),
+                        },
+                        "terminal_summary": term_content,
+                    },
+                    **event_provenance(roadmap, "CONTRACT"),
+                ),
+            )
+
+            dot_phase = repo / ".phase-loop"
+            dot_phase.mkdir(exist_ok=True)
+            lineage_file = dot_phase / "repair_lineage.json"
+            lease_data = {
+                "contract": "repair_lineage.v1",
+                "repo": str(repo),
+                "roadmap_digest": roadmap_digest,
+                "phase": "CONTRACT",
+                "root_work_unit_id": "wu-root-123",
+                "pid": pid,
+                "depth": 1,
+            }
+            lineage_file.write_text(json.dumps(lease_data), encoding="utf-8")
+            return repo, roadmap, term_file, lineage_file
+
+        dead_owner = subprocess.Popen(["true"])
+        dead_owner.wait(timeout=5)
+        stale_pid = dead_owner.pid
+
+        # 1. Live repair lease: run_loop must select "repair" and not launch recursively
+        repo_repair, roadmap_repair, _, _ = _setup_repair_repo(tmp_path / "repo-repair-live", os.getpid(), phase_status="blocked")
+        repair_launch_called = [False]
+
+        def fake_launch_repair(spec, dry_run=False, log_path=None, stream_output=False, **kwargs):
+            repair_launch_called[0] = True
+            return LaunchResult(command=spec.command, returncode=0)
+
+        with patch("phase_loop_runtime.runner.launch_with_spec", side_effect=fake_launch_repair):
+            run_loop(repo_repair, roadmap_repair, max_phases=1)
+        repair_refused_for_lineage = _lineage_refusal(repo_repair, "repair")
+
+        # 2. Live resume lease: run_loop must select "resume" and not launch recursively
+        repo_resume, roadmap_resume, _, _ = _setup_repair_repo(tmp_path / "repo-resume-live", os.getpid(), phase_status="executing")
+        resume_launch_called = [False]
+
+        def fake_launch_resume(spec, dry_run=False, log_path=None, stream_output=False, **kwargs):
+            resume_launch_called[0] = True
+            return LaunchResult(command=spec.command, returncode=0)
+
+        with patch("phase_loop_runtime.runner.launch_with_spec", side_effect=fake_launch_resume):
+            run_loop(repo_resume, roadmap_resume, max_phases=1)
+        resume_refused_for_lineage = _lineage_refusal(repo_resume, "resume")
+
+        # 3. A reaped process is a guaranteed stale owner: run_loop must repair.
+        repo_stale, roadmap_stale, _, _ = _setup_repair_repo(tmp_path / "repo-repair-stale", stale_pid, phase_status="blocked")
+        stale_launch_called = [False]
+
+        def fake_launch_stale(spec, dry_run=False, log_path=None, stream_output=False, **kwargs):
+            stale_launch_called[0] = True
+            return LaunchResult(command=spec.command, returncode=0)
+
+        with patch("phase_loop_runtime.runner.launch_with_spec", side_effect=fake_launch_stale):
+            run_loop(repo_stale, roadmap_stale, max_phases=1)
+
+        stale_events = read_events(repo_stale)
+        stale_event_last = stale_events[-1] if stale_events else None
+        stale_action_selected = (
+            stale_event_last.get("action")
+            if isinstance(stale_event_last, dict)
+            else getattr(stale_event_last, "action", None)
+        )
+
+        # 4. Child-write negative control: child writes to README.md and fails
+        repo_child, roadmap_child, term_file_child, _ = _setup_repair_repo(tmp_path / "repo-child-writes", stale_pid, phase_status="blocked")
+
+        def fake_launch_child(spec, dry_run=False, log_path=None, stream_output=False, **kwargs):
+            (repo_child / "README.md").write_text("child modified content", encoding="utf-8")
+            return LaunchResult(command=spec.command, returncode=1, interrupted=True)
+
+        with patch("phase_loop_runtime.runner.launch_with_spec", side_effect=fake_launch_child):
+            run_loop(repo_child, roadmap_child, max_phases=1)
+
+        child_terminal_payload = None
+        if term_file_child.exists():
+            try:
+                child_terminal_payload = json.loads(term_file_child.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+        child_events = read_events(repo_child)
+        child_last_event = child_events[-1] if child_events else None
+        child_event_metadata = _field(child_last_event, "metadata") or {}
+        child_event_terminal = _field(child_event_metadata, "terminal_summary")
+        child_preserved_trusted_terminal = (
+            _is_trusted_success_summary(child_terminal_payload)
+            or _is_trusted_success_summary(child_event_terminal)
+        )
+
+        # 5. No-diff interrupted repair must preserve the trusted terminal bytes.
+        repo_no_diff, roadmap_no_diff, term_file_no_diff, _ = _setup_repair_repo(
+            tmp_path / "repo-child-no-diff", stale_pid, phase_status="blocked"
+        )
+        term_bytes_no_diff_before = term_file_no_diff.read_bytes()
+
+        def fake_launch_no_diff(spec, dry_run=False, log_path=None, stream_output=False, **kwargs):
+            return LaunchResult(command=spec.command, returncode=1, interrupted=True)
+
+        with patch("phase_loop_runtime.runner.launch_with_spec", side_effect=fake_launch_no_diff):
+            run_loop(repo_no_diff, roadmap_no_diff, max_phases=1)
+
+        term_bytes_no_diff_after = term_file_no_diff.read_bytes() if term_file_no_diff.exists() else None
+        no_diff_preserved_trusted_terminal = term_bytes_no_diff_before == term_bytes_no_diff_after
+
+        if (
+            repair_launch_called[0]
+            or resume_launch_called[0]
+            or not repair_refused_for_lineage
+            or not resume_refused_for_lineage
+            or child_preserved_trusted_terminal
+            or not no_diff_preserved_trusted_terminal
+            or not stale_launch_called[0]
+            or stale_action_selected != "repair"
+        ):
+            defect_details = []
+            if repair_launch_called[0]:
+                defect_details.append("live repair lease launched nested repair")
+            if resume_launch_called[0]:
+                defect_details.append("live resume lease launched nested resume")
+            if not repair_refused_for_lineage:
+                defect_details.append("live repair lease did not terminalize with a lineage-specific blocker")
+            if not resume_refused_for_lineage:
+                defect_details.append("live resume lease did not terminalize with a lineage-specific blocker")
+            if child_preserved_trusted_terminal:
+                defect_details.append(
+                    "child write left trusted success semantics in the terminal file or latest event"
+                )
+            if not no_diff_preserved_trusted_terminal:
+                defect_details.append("trusted terminal changed after an interrupted no-diff repair")
+            if not stale_launch_called[0]:
+                defect_details.append("stale lease failed to launch")
+            if stale_action_selected != "repair":
+                defect_details.append(f"stale lease selected action {stale_action_selected!r} instead of 'repair'")
+
+            raise AssertionError(
+                "RESIDUAL-RED-ANCHOR::residual_repair_recursion_or_interrupt — "
+                f"repair recursion and lineage safety defects present: {'; '.join(defect_details)}"
+            )
+
+    def test_residual_f841_triage(self, tmp_path: Path):
+        """EC-RESIDUAL-7: residual_f841_triage TDD falsifier.
+
+        Guards exact config-driven CI-equivalent ruff check . and F841 triage state.
+        """
+        if not self._is_activated():
+            return
+
+        import json
+        import shutil
+        import subprocess
+
+        try:
+            import tomllib
+        except ImportError:
+            import tomli as tomllib
+
+        repo_root = Path(__file__).resolve().parents[2]
+
+        # 1. Verify every config suppression form structurally; comments mentioning
+        # F841 must not be mistaken for a live ignore entry.
+        ruff_toml_text = (repo_root / "ruff.toml").read_text(encoding="utf-8")
+        lint_config = tomllib.loads(ruff_toml_text).get("lint", {})
+
+        def _covers_f841(selector) -> bool:
+            normalized = str(selector).strip().upper()
+            return normalized == "ALL" or bool(normalized) and "F841".startswith(normalized)
+
+        ignore_values = [
+            *lint_config.get("ignore", []),
+            *lint_config.get("extend-ignore", []),
+        ]
+        per_file_values = [
+            selector
+            for key in ("per-file-ignores", "extend-per-file-ignores")
+            for selectors in lint_config.get(key, {}).values()
+            for selector in ([selectors] if isinstance(selectors, str) else selectors)
+        ]
+        f841_suppressed_in_config = any(
+            _covers_f841(selector) for selector in [*ignore_values, *per_file_values]
+        )
+
+        # 2. Config-driven CI check: the current baseline returns no F841 because
+        # ruff.toml suppresses it; GREEN requires that suppression to be removed.
+        res_config = subprocess.run(
+            ["ruff", "check", ".", "--output-format", "json", "--no-cache"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+        )
+        config_json_valid = True
+        try:
+            config_diags = json.loads(res_config.stdout or "[]")
+        except json.JSONDecodeError:
+            config_diags = []
+            config_json_valid = False
+
+        config_f841_count = sum(1 for d in config_diags if d.get("code") == "F841")
+
+        # 3. Exact frozen 45/31 execution-base inventory when --select F841 is explicitly passed
+        FROZEN_F841_TUPLES = [
+            ("phase-loop-runtime/scripts/_gate_a_probe.py", 107, 13),
+            ("phase-loop-runtime/src/phase_loop_runtime/governed_premerge.py", 495, 9),
+            ("phase-loop-runtime/src/phase_loop_runtime/legible_evidence.py", 836, 5),
+            ("phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py", 6080, 5),
+            ("phase-loop-runtime/src/phase_loop_runtime/runner.py", 2588, 17),
+            ("phase-loop-runtime/src/phase_loop_runtime/runner.py", 5626, 13),
+            ("phase-loop-runtime/src/phase_loop_runtime/skills_bundle/claude-plan-phase/scripts/validate_plan_doc.py", 1004, 5),
+            ("phase-loop-runtime/src/phase_loop_runtime/skills_bundle/codex-plan-phase/scripts/validate_plan_doc.py", 1004, 5),
+            ("phase-loop-runtime/src/phase_loop_runtime/skills_bundle/gemini-plan-phase/scripts/validate_plan_doc.py", 1004, 5),
+            ("phase-loop-runtime/src/phase_loop_runtime/skills_bundle/opencode-plan-phase/scripts/validate_plan_doc.py", 1004, 5),
+            ("phase-loop-runtime/src/phase_loop_runtime/train_runner.py", 593, 9),
+            ("phase-loop-runtime/tests/proofgate_bootstrap_verifier.py", 2393, 9),
+            ("phase-loop-runtime/tests/test_convergence_broker_admission.py", 196, 5),
+            ("phase-loop-runtime/tests/test_convergence_broker_verbs.py", 189, 5),
+            ("phase-loop-runtime/tests/test_fab_activation_promotion.py", 498, 9),
+            ("phase-loop-runtime/tests/test_fab_activation_promotion.py", 531, 9),
+            ("phase-loop-runtime/tests/test_fab_activation_promotion.py", 1618, 9),
+            ("phase-loop-runtime/tests/test_fab_closeout_crash_safety.py", 490, 5),
+            ("phase-loop-runtime/tests/test_fab_delta_consumer.py", 2099, 9),
+            ("phase-loop-runtime/tests/test_fabpub_shared_epoch.py", 1970, 9),
+            ("phase-loop-runtime/tests/test_fabpub_shared_epoch.py", 2173, 9),
+            ("phase-loop-runtime/tests/test_fabpub_shared_epoch.py", 2372, 5),
+            ("phase-loop-runtime/tests/test_fabpub_shared_epoch.py", 2545, 5),
+            ("phase-loop-runtime/tests/test_fabpub_shared_epoch.py", 4295, 5),
+            ("phase-loop-runtime/tests/test_fabreadmit_broker.py", 140, 5),
+            ("phase-loop-runtime/tests/test_injection_skill_failloud.py", 135, 13),
+            ("phase-loop-runtime/tests/test_legible_evidence.py", 1448, 20),
+            ("phase-loop-runtime/tests/test_phase_loop_launcher.py", 218, 13),
+            ("phase-loop-runtime/tests/test_phase_loop_runner.py", 879, 13),
+            ("phase-loop-runtime/tests/test_phase_loop_runner.py", 2911, 13),
+            ("phase-loop-runtime/tests/test_phase_worktree_executor.py", 344, 5),
+            ("phase-loop-runtime/tests/test_release_dispatch_operator_approval_145.py", 204, 9),
+            ("phase-loop-runtime/tests/test_roadmap_ownership.py", 1878, 13),
+            ("phase-loop-runtime/tests/test_roadmap_ownership.py", 2034, 13),
+            ("phase-loop-runtime/tests/test_roadmap_ownership.py", 2057, 60),
+            ("phase-loop-runtime/tests/test_roadmap_ownership.py", 2192, 13),
+            ("phase-loop-runtime/tests/test_train_merge.py", 1506, 9),
+            ("phase-loop-runtime/tests/test_train_order_only_deps_47.py", 94, 5),
+            ("phase-loop-runtime/tests/test_train_roadmap.py", 706, 9),
+            ("phase-loop-runtime/tests/test_train_runner.py", 830, 9),
+            ("phase-loop-runtime/tests/test_train_runner.py", 2954, 5),
+            ("phase-loop-runtime/tests/test_train_runner.py", 2955, 5),
+            ("phase-loop-runtime/tests/test_train_runner.py", 2956, 5),
+            ("phase-loop-skills/plan-phase/scripts/validate_plan_doc.py", 1004, 5),
+            ("skills-src/claude/claude-plan-phase/scripts/validate_plan_doc.py", 1004, 5),
+        ]
+
+        res_explicit = subprocess.run(
+            ["ruff", "check", ".", "--select", "F841", "--output-format", "json", "--no-cache"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+        )
+        explicit_json_valid = True
+        try:
+            explicit_diags = json.loads(res_explicit.stdout or "[]")
+        except json.JSONDecodeError:
+            explicit_diags = []
+            explicit_json_valid = False
+        observed_f841_tuples = [
+            (
+                Path(diag["filename"]).resolve().relative_to(repo_root.resolve()).as_posix(),
+                diag["location"]["row"],
+                diag["location"]["column"],
+            )
+            for diag in explicit_diags
+            if diag.get("code") == "F841"
+        ]
+        inventory_matches_baseline_or_closed = observed_f841_tuples in (FROZEN_F841_TUPLES, [])
+        frozen_files = sorted({path for path, _, _ in FROZEN_F841_TUPLES})
+
+        # An empty inventory is valid only when every formerly affected file is
+        # still in the configured lint scope and an isolated, ignore-free run also
+        # sees no F841. This rejects exclusions, per-file suppression, and noqa-based
+        # cleanup that would otherwise masquerade as triage.
+        res_show_files = subprocess.run(
+            ["ruff", "check", ".", "--show-files", "--no-cache"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+        )
+        linted_files = {
+            Path(line).resolve().relative_to(repo_root.resolve()).as_posix()
+            for line in res_show_files.stdout.splitlines()
+            if line.strip() and Path(line).resolve().is_relative_to(repo_root.resolve())
+        }
+        frozen_files_in_scope = set(frozen_files) <= linted_files
+
+        res_unsuppressed = subprocess.run(
+            [
+                "ruff",
+                "check",
+                *frozen_files,
+                "--isolated",
+                "--select",
+                "F841",
+                "--ignore-noqa",
+                "--output-format",
+                "json",
+                "--no-cache",
+            ],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+        )
+        unsuppressed_json_valid = True
+        try:
+            unsuppressed_diags = json.loads(res_unsuppressed.stdout or "[]")
+        except json.JSONDecodeError:
+            unsuppressed_diags = []
+            unsuppressed_json_valid = False
+        unsuppressed_f841_tuples = [
+            (
+                Path(diag["filename"]).resolve().relative_to(repo_root.resolve()).as_posix(),
+                diag["location"]["row"],
+                diag["location"]["column"],
+            )
+            for diag in unsuppressed_diags
+            if diag.get("code") == "F841"
+        ]
+        no_hidden_f841 = unsuppressed_f841_tuples == observed_f841_tuples
+
+        # 4. Config-driven mutation proof: a standalone local binding avoids
+        # attributing an existing source diagnostic to the injected mutation.
+        repo_copy = tmp_path / "repo_copy"
+        repo_copy.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(repo_root / "ruff.toml", repo_copy / "ruff.toml")
+
+        mutated_src = repo_copy / "mutation_probe.py"
+        mutated_src.write_text(
+            "def mutation_probe():\n"
+            "    unused_local_mutation = 42\n"
+            "    return None\n",
+            encoding="utf-8",
+        )
+
+        res_config_mut = subprocess.run(
+            ["ruff", "check", ".", "--output-format", "json", "--no-cache"],
+            cwd=str(repo_copy),
+            capture_output=True,
+            text=True,
+        )
+        mutation_json_valid = True
+        try:
+            config_mut_diags = json.loads(res_config_mut.stdout or "[]")
+        except json.JSONDecodeError:
+            config_mut_diags = []
+            mutation_json_valid = False
+        mutation_f841 = [
+            diag
+            for diag in config_mut_diags
+            if diag.get("code") == "F841"
+            and Path(diag["filename"]).resolve() == mutated_src.resolve()
+            and diag.get("location") == {"row": 2, "column": 5}
+        ]
+        config_driven_mutation_detected = len(mutation_f841) == 1
+
+        # 5. The initial frozen inventory and the fully closed empty inventory
+        # are valid states. Any partial/drifted inventory remains a hard failure.
+        if (
+            f841_suppressed_in_config
+            or not config_json_valid
+            or res_config.returncode not in (0, 1)
+            or not explicit_json_valid
+            or res_explicit.returncode not in (0, 1)
+            or not mutation_json_valid
+            or res_config_mut.returncode != 1
+            or config_f841_count != len(observed_f841_tuples)
+            or observed_f841_tuples
+            or not config_driven_mutation_detected
+            or not inventory_matches_baseline_or_closed
+            or res_show_files.returncode != 0
+            or not frozen_files_in_scope
+            or not unsuppressed_json_valid
+            or res_unsuppressed.returncode not in (0, 1)
+            or not no_hidden_f841
+        ):
+            defect_details = []
+            if f841_suppressed_in_config:
+                defect_details.append("F841 is suppressed by ruff.toml")
+            if not config_json_valid or res_config.returncode not in (0, 1):
+                defect_details.append(f"config-driven Ruff run was invalid (exit {res_config.returncode})")
+            if not explicit_json_valid or res_explicit.returncode not in (0, 1):
+                defect_details.append(f"explicit F841 Ruff run was invalid (exit {res_explicit.returncode})")
+            if not mutation_json_valid or res_config_mut.returncode != 1:
+                defect_details.append(f"mutation Ruff run did not fail diagnostically (exit {res_config_mut.returncode})")
+            if config_f841_count != len(observed_f841_tuples):
+                defect_details.append(
+                    "config-driven and explicit F841 inventories disagree"
+                )
+            if observed_f841_tuples:
+                defect_details.append(f"{len(observed_f841_tuples)} F841 diagnostics remain")
+            if not config_driven_mutation_detected:
+                defect_details.append("config-driven ruff check . missed the exact unused-local mutation")
+            if not inventory_matches_baseline_or_closed:
+                defect_details.append(
+                    f"execution-base F841 inventory is neither the frozen {len(FROZEN_F841_TUPLES)} rows nor empty: "
+                    f"observed {len(observed_f841_tuples)} rows"
+                )
+            if res_show_files.returncode != 0 or not frozen_files_in_scope:
+                missing_files = sorted(set(frozen_files) - linted_files)
+                defect_details.append(
+                    f"formerly affected files are outside configured Ruff scope: {missing_files!r}"
+                )
+            if not unsuppressed_json_valid or res_unsuppressed.returncode not in (0, 1):
+                defect_details.append(
+                    f"isolated unsuppressed Ruff run was invalid (exit {res_unsuppressed.returncode})"
+                )
+            elif not no_hidden_f841:
+                defect_details.append(
+                    "configured Ruff inventory hides F841 findings visible with exclusions and noqa disabled"
+                )
+
+            raise AssertionError(
+                "RESIDUAL-RED-ANCHOR::residual_f841_triage — "
+                f"F841 diagnostics remain unresolved or suppressed ({len(FROZEN_F841_TUPLES)}-diagnostic baseline across 31 files): {'; '.join(defect_details)}"
+            )

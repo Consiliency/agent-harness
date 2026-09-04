@@ -46,7 +46,7 @@ jobs:
       - name: Offload to a deliberately unreachable host
         id: offload
         continue-on-error: true
-        uses: Consiliency/ci-actions/dagger-offload@ea4ba36ba29f18ae4f22e65ae4b8b63e7c7468ee
+        uses: Consiliency/ci-actions/dagger-offload@c9272a525486204a9d7333aef6e78297b3054de3
         with:
           command: "bash ci/offload-gate.sh"
           eligible: "true"

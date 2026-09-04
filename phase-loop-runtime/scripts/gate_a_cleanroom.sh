@@ -56,6 +56,20 @@ trap 'rm -rf "$WORK"' EXIT
 GATE_A_JUNIT="${GATE_A_JUNIT:-$PKG_ROOT/gate-a-standalone.junit.xml}"
 mkdir -p "$(dirname "$GATE_A_JUNIT")"
 
+# The heavy CONFORM chronology node (~50 min; ~88% of a per-PR CI run). Gate A
+# retains it by default. GATE_A_DESELECT_CHRONOLOGY=1 deselects it for the
+# executions whose diff cannot change its verdict -- the caller decides that with
+# ci/chronology-scope.sh, never this script -- and the junit evidence must then
+# WITNESS the deselection (node absent), exactly as it witnesses the run (node
+# present) otherwise. Anything other than "1" retains the node: the default is
+# the expensive-but-correct answer.
+CHRONOLOGY_NODE="tests/test_outside_agent_conform_evidence.py::test_mutation_definitions_are_frozen_but_not_executed_preimplementation"
+if [ "${GATE_A_DESELECT_CHRONOLOGY:-0}" = "1" ]; then
+  CHRONOLOGY_EXPECT=absent
+else
+  CHRONOLOGY_EXPECT=present
+fi
+
 echo "== Gate A clean-room =="
 echo "package root : $PKG_ROOT"
 echo "dotfiles root: $DOTFILES_ROOT"
@@ -221,6 +235,9 @@ PYEOF
     # CONFORM's final mutation/lifecycle proof needs source and Git history as
     # immutable data. A sparse private clone supplies those bytes while scripts
     # stay absent and PYTHONPATH still resolves production from the installed wheel.
+    # The one exception is HARDEN's standalone evidence verifier, which its frozen
+    # contract tests load by path (never via the runtime package), like the plan
+    # validator below.
     STANDALONE_ROOT="$WORK/standalone"
     SOURCE_REPO="$PKG_ROOT/.."
     SOURCE_HEAD="$(git -C "$SOURCE_REPO" rev-parse HEAD)"
@@ -241,6 +258,7 @@ PYEOF
       /plans/phase-plan-v10-PROOFGATE.md \
       /skills-src/codex/codex-execute-phase/ \
       /skills-src/claude/claude-plan-phase/scripts/validate_plan_doc.py \
+      /phase-loop-runtime/scripts/verify_harden_evidence.py \
       /CHANGELOG.md
     git -C "$STANDALONE_ROOT" checkout --quiet --detach "$SOURCE_HEAD"
     # PROOFGATE's known-bad agent-harness#358 corpus is pinned to an exact commit
@@ -328,6 +346,15 @@ PYEOF
       "--deselect=tests/test_outside_agent_release_surface.py::test_release_handoff_records_metadata_only_package_contract_and_dispatch_boundary"
       "--deselect=tests/test_outside_agent_release_surface.py::test_public_docs_point_to_handoff_without_claiming_release_dispatch"
     )
+    # Only here, under --rootdir=$SUITE_TREE, is the node id above guaranteed to
+    # be the rootdir-relative id pytest matches --deselect against. The
+    # capability-absent posture below has no conformance module to prove and is
+    # left untouched.
+    if [ "$CHRONOLOGY_EXPECT" = absent ]; then
+      CONFORM_STANDALONE_DESELECTS+=("--deselect=$CHRONOLOGY_NODE")
+      echo "-- chronology node DESELECTED (GATE_A_DESELECT_CHRONOLOGY=1) --"
+    fi
+    CHRONOLOGY_WITNESS=1
     echo "-- full standalone suite: CONFORM repository evidence staged at $SOURCE_HEAD --"
   elif [ "$CONFORM_CAPABILITY_STATUS" -eq 10 ]; then
     SUITE_TREE="$WORK/standalone/phase-loop-runtime"
@@ -397,6 +424,15 @@ PYEOF
   then
     echo "GATE-A FAIL: standalone test suite is not green (see failures above)" >&2
     exit 1
+  fi
+  if [ "${CHRONOLOGY_WITNESS:-0}" = "1" ]; then
+    # A deselect that matched nothing (node renamed/moved) or a retain that never
+    # collected it must fail HERE, against the evidence, not stay invisible.
+    if ! "$PY" "$PKG_ROOT/scripts/chronology_witness.py" \
+        --junit "$GATE_A_JUNIT" --node "$CHRONOLOGY_NODE" --expect "$CHRONOLOGY_EXPECT"; then
+      echo "GATE-A FAIL: chronology witness did not hold (see above)" >&2
+      exit 1
+    fi
   fi
   echo "-- full standalone suite: GREEN --"
 fi

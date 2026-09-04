@@ -97,7 +97,7 @@ class EnvelopeEmitTests(unittest.TestCase):
     def test_refusal_and_fallback_observability_is_metadata_only(self) -> None:
         sink = obs.CollectingSink()
         observer = obs.BoardObserver(sink, board_name="b")
-        seat = Seat(model="claude-fable-5", effort="max", harness="claude")
+        seat = Seat(model="claude-fable-5-1", effort="max", harness="claude")
         result = pi.attach_provider_refusal_state(
             pi.PanelLegResult(
                 leg="claude", status="DEGRADED", text="PRIVATE TRANSCRIPT", detail="typed"
