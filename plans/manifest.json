@@ -3680,7 +3680,8 @@
         "SL-1",
         "SL-2",
         "SL-3",
-        "SL-4"
+        "SL-4",
+        "SL-5"
       ],
       "lifecycle": [
         {
@@ -3695,10 +3696,34 @@
             "run_id": "20260825T112801Z-01-residual-plan"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-09-04T15:18:32Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "author_model": "gpt-5.6-sol",
+            "author_vendor": "openai",
+            "phase_alias": "RESIDUAL",
+            "plan_sha256": "b2af0edd86cc73db56cf18e7d5eba4b3473f8e74faef25a4acf91e86bfba286d",
+            "planning_base": "503285c50e4ac8992d16cc0d4ac9bcbbd8e16a47",
+            "predecessor_plan_sha256": "658646bea8dcbfbd0fd9ac34b7bd5592cb7b78ec546162e209174a65c99f69af",
+            "review_status": "unreviewed_requires_fresh_exact_head_review",
+            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+            "run_id": "20260904T140707Z-01-residual-plan"
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
       "phase_alias": "RESIDUAL",
+      "plan_authority_history": [
+        {
+          "plan_sha256": "b2af0edd86cc73db56cf18e7d5eba4b3473f8e74faef25a4acf91e86bfba286d",
+          "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#368"
+        }
+      ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/a27a6f9a/codex-v10-residual-plan/20260825T112801Z-01-residual-plan.md",
       "roadmap_ref": {
         "file": "specs/phase-plans-v10.md",
@@ -3710,7 +3735,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-25T11:47:11Z"
+      "updated_at": "2026-09-04T15:18:32Z"
     },
     {
       "acceptance_criteria_count": null,
