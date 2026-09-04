@@ -344,6 +344,31 @@ def test_unrelated_bootstrap_cannot_activate_traditional_receipt(
     )
 
 
+def test_bootstrap_receipt_cannot_downgrade_to_same_id_traditional_authority(
+    tmp_path: Path,
+) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    inventory = _probe(tmp_path, repo)
+    live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
+    receipt = live.load_partition_receipt(live.repository_snapshot(repo).store_root)
+    assert receipt is not None
+
+    (tmp_path / "authority" / "ACTIVE_BOOTSTRAP").unlink()
+    traditional = tmp_path / "legacy" / "fabpub-global-cutover"
+    traditional.mkdir(parents=True, exist_ok=True)
+    (traditional / "ACTIVE_CUTOVER").write_text(
+        "bootstrap-test\n", encoding="utf-8"
+    )
+    (traditional / "bootstrap-test.journal.jsonl").write_text(
+        json.dumps({"cutover_id": "bootstrap-test", "state": "ACTIVE"}) + "\n",
+        encoding="utf-8",
+    )
+
+    assert not live._receipt_active_authority_exists(
+        receipt, authority_root=tmp_path / "authority"
+    )
+
+
 def test_bootstrap_resume_rejects_same_id_receipt_without_inventory_binding(
     tmp_path: Path,
 ) -> None:

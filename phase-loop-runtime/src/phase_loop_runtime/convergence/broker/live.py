@@ -2812,12 +2812,17 @@ def _cutover_source_targets_repository(
 def _zero_source_seal_lock_paths(
     roots: tuple[Path, ...], authority_root: Path | str | None
 ) -> tuple[Path, ...]:
-    paths: set[Path] = set()
+    paths = set(_traditional_seal_lock_paths(roots))
     bootstrap_root = _canonical_input_path(
         authority_root or default_fabpub_authority_root(), label="authority root"
     )
     if (bootstrap_root / "ACTIVE_BOOTSTRAP").exists():
         paths.add(bootstrap_root / "bootstrap.lock")
+    return tuple(sorted(paths, key=str))
+
+
+def _traditional_seal_lock_paths(roots: tuple[Path, ...]) -> tuple[Path, ...]:
+    paths: set[Path] = set()
     for root in roots:
         paths.add(root / "fabpub-global-cutover" / "root.lock")
         pointer = root / "fabpub-global-cutover" / "ACTIVE_CUTOVER"
@@ -3060,6 +3065,7 @@ def _receipt_active_authority_exists(
                 == bootstrap["inventory_sha256"]
             ):
                 return True
+        return False
     roots = tuple(Path(root) for root in receipt.legacy_root_inventory)
     if roots:
         if not _traditional_active_authority_exists(roots):
@@ -3093,18 +3099,7 @@ def _receipt_seal_lock_paths(
             return ()
         return _bootstrap_seal_lock_paths(bootstrap)
     roots = tuple(Path(root) for root in receipt.legacy_root_inventory)
-    return tuple(
-        sorted(
-            {
-                Path(receipt.global_journal_path).parent / "cutover.lock",
-                *(
-                    root / "fabpub-global-cutover" / "root.lock"
-                    for root in roots
-                ),
-            },
-            key=str,
-        )
-    )
+    return _traditional_seal_lock_paths(roots)
 
 
 def is_git_repository(worktree: Path | str) -> bool:
@@ -3181,9 +3176,7 @@ def fabpub_activation_barrier(worktrees: Iterable[Path | str] = ()) -> dict:
                 authority_lock_paths.update(_bootstrap_seal_lock_paths(bootstrap))
             else:
                 roots = declared_legacy_roots()
-                authority_lock_paths.update(
-                    root / "fabpub-global-cutover" / "root.lock" for root in roots
-                )
+                authority_lock_paths.update(_traditional_seal_lock_paths(roots))
         authority_locks = contextlib.ExitStack()
         report["_authority_locks"] = authority_locks
         for path in sorted(authority_lock_paths, key=str):
@@ -3195,6 +3188,13 @@ def fabpub_activation_barrier(worktrees: Iterable[Path | str] = ()) -> dict:
                 raise LegacyCutoverConflict(
                     f"repository {snapshot.identity} receipt changed while entering the barrier"
                 )
+            if prior_receipt is None and receipt is not None:
+                required_locks = set(_receipt_seal_lock_paths(receipt))
+                if not required_locks.issubset(authority_lock_paths):
+                    raise LegacyCutoverConflict(
+                        f"repository {snapshot.identity} appeared under a different authority "
+                        "while entering the barrier"
+                    )
             if receipt is not None and not _receipt_active_authority_exists(receipt):
                 raise LegacyCutoverConflict(
                     f"repository {snapshot.identity} has no matching global ACTIVE authority"
