@@ -5941,6 +5941,27 @@
             "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-09-04T11:35:01Z",
+          "by": "codex-plan-phase",
+          "metadata": {
+            "phase_alias": "RELEASE",
+            "plan_sha256": "d20d9f1e751ae2051c4fc6be18c918e8442a7b6947f1993192961373ae106969",
+            "predecessor_plan_sha256": "628a74e64160d7e9a04532f214c3534b868185fa74abdcfd523ee8d2e948e864",
+            "repair_scope": [
+              "maintainer_authorized_post_publication_fleet_rollout",
+              "product_repository_owned_pin_and_workaround_edits",
+              "serialized_reviewed_merges_and_fix_forward_boundary",
+              "metadata_only_fleet_rollout_evidence"
+            ],
+            "review_artifact_sha256": "f6530a7b102d515553761d2116b3a2f3dc7e9638fc82cc6eccdedf4a63e47796",
+            "reviewed_candidate_commit": "a2da1156e24235de28266ef81a899a3ed6896e22",
+            "reviewed_candidate_tree": "5eeb50879b456a48966a56404e53866f844badf0",
+            "review_status": "blocking_fleet_rollout_gap_repaired_requires_fresh_exact_digest_review",
+            "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0"
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -5951,6 +5972,12 @@
           "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#375"
+        },
+        {
+          "plan_sha256": "d20d9f1e751ae2051c4fc6be18c918e8442a7b6947f1993192961373ae106969",
+          "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#710"
         }
       ],
       "reflection_ref": null,
@@ -5964,7 +5991,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-25T21:36:12Z"
+      "updated_at": "2026-09-04T11:35:01Z"
     }
   ],
   "schema_version": 1

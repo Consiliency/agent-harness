@@ -268,14 +268,29 @@ SL-9 — Post-dispatch documentation, fleet verification, and lifecycle closeout
   - verify: Watch the exact tag workflow to terminal success and query tag, release, workflow jobs,
     retained `SHA256SUMS`, and PyPI files by the same version.
 
-### SL-9 — Post-dispatch documentation, fleet verification, and lifecycle closeout
+### SL-9 — Post-dispatch fleet rollout, documentation, and lifecycle closeout
 
-- **Scope**: Back-fill durable release evidence and close lifecycle only from observed publication.
+- **Scope**: Roll the observed publication through the governed fleet, back-fill durable release
+  evidence, and close lifecycle only from observed publication and rollout results.
 - **Owned files**: `docs/releases/outside-agent-release-handoff.md`, `plans/manifest.json`
-- **Interfaces provided**: `IF-0-RELEASE-1`
+- **Interfaces provided**: `fleet rollout result`, `IF-0-RELEASE-1`
 - **Interfaces consumed**: `release evidence validator`, `operational preflight receipt`, `SPECPKGMIN pilot evidence`, `outside-agent pilot evidence`, `IF-0-PILOT-1`, `release candidate sources`, `exact-main release authorization`, `publication result`
 - **Parallel-safe**: no
 - **Tasks**:
+  - impl: After the public package is observed, and only under the still-current SL-7 operator
+    approval bound to the exact release identity and fleet targets, discover every consumer from
+    the canonical fleet inventory at that exact head. Fail closed on a missing, duplicate,
+    ambiguous, or unauthenticated target. Run a governed cross-repo rollout in which each product
+    repository owns its own plan, branch, pin/workaround edits, tests, review, CI, and merge; this
+    coordinator owns only the metadata ledger and never writes product bytes into agent-harness.
+    Update each admitted consumer to the published version, remove its HEAD-install workaround,
+    and serialize merges. Before a target merge, rollback is no mutation; after any merge, preserve
+    that landing, halt on failure, and require an approved fix-forward rather than resetting,
+    reverting, or silently skipping the target.
+  - impl: Record the inventory digest, admitted target set, per-repository qualified PR and merge
+    identities, old/new pin values, workaround-removal observation, review/CI outcomes, installed
+    command identity, and any partial-rollout blocker as metadata-only fleet evidence. A partial or
+    unverifiable rollout cannot satisfy EC-RELEASE-5 or close RELEASE.
   - test: Verify public PyPI and GitHub Release identity, retained official hashes, non-yanked files,
     fresh no-cache install, `pip check`, declared dependency bounds, site-packages import, both console
     scripts, `phase-loop --version`, fleet pin equality, and removal of HEAD-install workarounds.
@@ -307,9 +322,11 @@ credentialed external dispatch never share a code implementation lane.
 
 This combined plan intentionally omits `phase_loop_mutation: release_dispatch`: that runner mode
 requires a clean synced dispatch-only plan, while RELEASE must first implement, pilot, and merge.
-SL-8 recreates the same guard at the sole external mutation boundary after SL-7 proves clean exact
-main and injects the fresh operator approval. No earlier lane can tag, publish, create a release, or
-roll out the fleet.
+SL-8 recreates the same guard at the sole publication mutation boundary after SL-7 proves clean
+exact main and injects the fresh operator approval. No earlier lane can tag, publish, create a
+release, or roll out the fleet. SL-9 is the sole fleet-rollout boundary, consumes that exact
+approval only after publication is observed, and delegates product bytes to governed plans in the
+owning repositories while retaining only metadata in this coordinator.
 
 Every acceptance command emits or validates `verification_evidence.v3` with its command argv,
 environment refresh, suite result, exact input artifact digests, and final-log seal; path-entered
