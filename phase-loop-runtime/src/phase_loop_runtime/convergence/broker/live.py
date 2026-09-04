@@ -2049,6 +2049,23 @@ FABPUB_AUTHORITY_ROOT_ENV = "PHASE_LOOP_FABPUB_AUTHORITY_ROOT"
 
 ZERO_HISTORY_INVENTORY_SCHEMA = "ZeroHistoryBootstrapInventory.v1"
 ZERO_HISTORY_STATES = ("DRAINING", "INVENTORY_SEALED", "ARMED", "ACTIVE")
+_CUTOVER_ID_CHARACTERS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+)
+
+
+def _validate_cutover_id(cutover_id: str) -> str:
+    if (
+        not isinstance(cutover_id, str)
+        or not 1 <= len(cutover_id) <= 128
+        or cutover_id[0] not in _CUTOVER_ID_CHARACTERS - {".", "_", "-"}
+        or any(character not in _CUTOVER_ID_CHARACTERS for character in cutover_id)
+    ):
+        raise LegacyCutoverConflict(
+            "cutover_id must be 1-128 ASCII letters, digits, dots, underscores, or "
+            "hyphens and must start with a letter or digit"
+        )
+    return cutover_id
 
 
 def default_fabpub_authority_root() -> Path:
@@ -2128,11 +2145,52 @@ def _classify_repository_namespace(snapshot: RepositorySnapshot, cutover_id: str
         state = "bootstrap_owned"
     else:
         allowed = {"writer-generation.json", "writer-generation.lock"}
+        onboarding = root / "zero-legacy-onboarding"
+        inventory_path = onboarding / f"{cutover_id}.inventory.json"
+        journal_path = onboarding / f"{cutover_id}.journal.jsonl"
+        partial_paths = {
+            str(inventory_path.relative_to(root)),
+            str(journal_path.relative_to(root)),
+            str((onboarding / "cutover.lock").relative_to(root)),
+        }
+        allowed.update(partial_paths)
         unexpected = [item["path"] for item in files if item["path"] not in allowed]
         if unexpected:
             raise LegacyCutoverConflict(
                 f"unattested canonical state for {snapshot.identity}: {unexpected}"
             )
+        if inventory_path.exists():
+            sealed = json.loads(inventory_path.read_text(encoding="utf-8"))
+            if _inventory_digest(sealed) != sealed.get("inventory_sha256"):
+                raise LegacyCutoverConflict(
+                    f"interrupted onboarding inventory drifted for {snapshot.identity}"
+                )
+            partition = sealed.get("partitions", {}).get(snapshot.identity)
+            if (
+                partition is None
+                or not partition.get("zero_source")
+                or Path(partition.get("target_namespace", "")) != snapshot.store_root
+                or Path(partition.get("worktree", "")).resolve() != snapshot.worktree
+                or _partition_map_digest(sealed.get("partitions", {}))
+                != sealed.get("partition_map_sha256")
+            ):
+                raise LegacyCutoverConflict(
+                    f"interrupted onboarding inventory is not bound to {snapshot.identity}"
+                )
+            if journal_path.exists():
+                states, ids = _journal_entries(journal_path)
+                expected = LegacyBrokerCutoverTransaction.JOURNAL_STATES[:-1]
+                if set(ids) != {cutover_id} or tuple(states) != expected[: len(states)]:
+                    raise LegacyCutoverConflict(
+                        f"interrupted onboarding journal is not a valid prefix for {cutover_id!r}"
+                    )
+            state = "bootstrap_in_progress"
+        elif journal_path.exists():
+            raise LegacyCutoverConflict(
+                f"interrupted onboarding journal has no sealed inventory for {snapshot.identity}"
+            )
+        else:
+            state = None
         latch_path = root / "writer-generation.json"
         if latch_path.exists():
             raw = json.loads(latch_path.read_text(encoding="utf-8"))
@@ -2148,8 +2206,9 @@ def _classify_repository_namespace(snapshot: RepositorySnapshot, cutover_id: str
                 raise LegacyCutoverConflict(
                     f"repository {snapshot.identity} has held generation leases"
                 )
-            state = "initialized_latch"
-        else:
+            if state is None:
+                state = "initialized_latch"
+        elif state is None:
             state = "empty"
     return {
         "worktree": str(snapshot.worktree),
@@ -2189,8 +2248,7 @@ def probe_zero_history_bootstrap(
     search_roots: Iterable[Path | str] = (),
 ) -> dict:
     """Build a read-only, byte-sealed inventory for zero-history bootstrap."""
-    if not cutover_id.strip():
-        raise LegacyCutoverConflict("a zero-history bootstrap requires a cutover_id")
+    cutover_id = _validate_cutover_id(cutover_id)
     authority = _canonical_input_path(
         authority_root or default_fabpub_authority_root(), label="authority root"
     )
@@ -2281,6 +2339,7 @@ def load_zero_history_inventory(path: Path | str) -> dict:
 
 
 def _bootstrap_paths(authority_root: Path, cutover_id: str) -> tuple[Path, Path, Path]:
+    cutover_id = _validate_cutover_id(cutover_id)
     return (
         authority_root / f"{cutover_id}.bootstrap-inventory.json",
         authority_root / f"{cutover_id}.bootstrap-journal.jsonl",
@@ -2626,6 +2685,7 @@ def onboard_zero_legacy_repository(
     authority is validated before the repository drains, arms, and promotes its
     own fresh generation (SL1-SOL-01).
     """
+    cutover_id = _validate_cutover_id(cutover_id)
     if roots is None:
         bootstrap = _active_bootstrap_inventory(authority_root)
         roots = (
@@ -2790,6 +2850,7 @@ def fabpub_activation_barrier(worktrees: Iterable[Path | str] = ()) -> dict:
     failed Git probe all fail CLOSED rather than being skipped.  SL1-SOL-06/12:
     every lease acquired here is unwound if any later step raises.
     """
+    worktrees = tuple(worktrees)
     report: dict = {"cutover": None, "leases": [], "repositories": []}
     try:
         manifest_path = os.environ.get(FABPUB_CUTOVER_MANIFEST_ENV)
@@ -2805,6 +2866,23 @@ def fabpub_activation_barrier(worktrees: Iterable[Path | str] = ()) -> dict:
                 "cutover_id": transaction.cutover_id,
                 "state": transaction.state,
             }
+
+        if worktrees and not global_active_authority_exists():
+            for worktree in worktrees:
+                snapshot = repository_snapshot(worktree)
+                receipt = load_partition_receipt(snapshot.store_root)
+                receipt_roots = (
+                    tuple(Path(root) for root in receipt.legacy_root_inventory)
+                    if receipt is not None
+                    else ()
+                )
+                if receipt is None:
+                    continue
+                if not receipt_roots or not global_active_authority_exists(receipt_roots):
+                    raise LegacyCutoverConflict(
+                        "the FABPUB activation barrier requires a persistent global "
+                        "ACTIVE authority"
+                    )
 
         for worktree in worktrees:
             if not is_git_repository(worktree):

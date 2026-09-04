@@ -101,6 +101,52 @@ def test_zero_history_bootstrap_refuses_probe_apply_drift(tmp_path: Path) -> Non
     assert live.load_partition_receipt(live.repository_snapshot(repo).store_root) is None
 
 
+def test_zero_history_bootstrap_resumes_interrupted_onboarding(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    inventory = _probe(tmp_path, repo)
+    original_write = live.LegacyRepositoryPartitionReceipt.write
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(
+            live.LegacyRepositoryPartitionReceipt,
+            "write",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("crash")),
+        )
+        with pytest.raises(RuntimeError, match="crash"):
+            live.bootstrap_zero_history_authority(
+                inventory, confirmed_zero_history=True
+            )
+
+    snapshot = live.repository_snapshot(repo)
+    assert not (snapshot.store_root / live.RECEIPT_FILENAME).exists()
+    assert (snapshot.namespace_root / "zero-legacy-onboarding").exists()
+    assert live.LegacyRepositoryPartitionReceipt.write is original_write
+
+    result = live.bootstrap_zero_history_authority(
+        inventory, confirmed_zero_history=True
+    )
+
+    assert result["state"] == "ACTIVE"
+    assert live.load_partition_receipt(snapshot.store_root) is not None
+    assert live.WriterGenerationLatch.open(repo).read().generation_state == "ACTIVE"
+
+
+def test_cutover_id_cannot_escape_authority_root(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path / "repo")
+
+    with pytest.raises(live.LegacyCutoverConflict, match="cutover_id"):
+        live.probe_zero_history_bootstrap(
+            cutover_id="../escaped",
+            authority_root=tmp_path / "authority",
+            worktrees=(repo,),
+        )
+
+    assert not (tmp_path / "escaped.bootstrap-inventory.json").exists()
+    assert not (tmp_path / "authority").exists()
+
+
 def test_direct_zero_source_onboarding_requires_global_active(tmp_path: Path, monkeypatch) -> None:
     repo = _git_repo(tmp_path / "repo")
     monkeypatch.setenv("PHASE_LOOP_FABPUB_AUTHORITY_ROOT", str(tmp_path / "authority"))
@@ -128,6 +174,25 @@ def test_onboarding_rejects_unattested_canonical_state_before_latch_mutation(
         )
 
     assert not (snapshot.namespace_root / "writer-generation.json").exists()
+
+
+def test_existing_receipt_barrier_revalidates_global_authority(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    inventory = _probe(tmp_path, repo)
+    live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
+    monkeypatch.setenv(
+        "PHASE_LOOP_FABPUB_AUTHORITY_ROOT", str(tmp_path / "authority")
+    )
+    legacy_root = tmp_path / "legacy"
+    legacy_root.mkdir()
+    (legacy_root / "admissions.jsonl").write_text("{}\n", encoding="utf-8")
+
+    with pytest.raises(live.LegacyCutoverConflict, match="allocator state appeared"):
+        live.fabpub_activation_barrier([repo])
+
+    assert live.WriterGenerationLatch.open(repo).held_leases() == ()
 
 
 def test_manifest_activation_barrier_completes_active_transition(
