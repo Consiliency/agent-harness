@@ -126,6 +126,10 @@ def _pr_is_open_true(workspace: Path, branch: str) -> bool:
     return True
 
 
+def _live_head_for_p3_done(workspace: Path, branch: str) -> str:
+    return _DRAFT_SHA_A if workspace.name == "repo-a" else "sha-DRAFT-repo-b"
+
+
 def _approval_review_fn(artifact: str, run_mode: str) -> LoopResult:
     return LoopResult(mergeable=True, ran=True, rounds=1)
 
@@ -227,7 +231,7 @@ class TestInvariant1NoMergeBeforeApproval:
             _set_upstream_ref_fn=lambda *a, **kw: [],
             _preflight_fn=_preflight_pass,
             _pr_is_open=_pr_is_open_true,
-            _live_pr_head_sha_fn=lambda ws, br: None,
+            _live_pr_head_sha_fn=_live_head_for_p3_done,
             _merge_phase_enabled=True,
             _merge_pr_fn=_make_merge_pr_stub(merge_log),
             _train_review_fn=_rejection_review_fn,
@@ -255,7 +259,7 @@ class TestInvariant1NoMergeBeforeApproval:
             _set_upstream_ref_fn=lambda *a, **kw: [],
             _preflight_fn=_preflight_pass,
             _pr_is_open=_pr_is_open_false,
-            _live_pr_head_sha_fn=lambda ws, br: None,
+            _live_pr_head_sha_fn=_live_head_for_p3_done,
             _merge_phase_enabled=False,
             _merge_pr_fn=_make_merge_pr_stub(merge_log),
             _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
@@ -282,7 +286,7 @@ class TestInvariant1NoMergeBeforeApproval:
             _set_upstream_ref_fn=lambda *a, **kw: [],
             _preflight_fn=_preflight_pass,
             _pr_is_open=_pr_is_open_true,
-            _live_pr_head_sha_fn=lambda ws, br: None,
+            _live_pr_head_sha_fn=_live_head_for_p3_done,
             _merge_phase_enabled=True,
             _merge_pr_fn=_make_merge_pr_stub(merge_log),
             _reverify_fn=lambda ws, rp, rm: ws.name != "repo-b",
@@ -338,7 +342,7 @@ class TestInvariant2FalseGreenKiller:
             _set_upstream_ref_fn=_set_upstream_ref_capture,
             _preflight_fn=_preflight_pass,
             _pr_is_open=_pr_is_open_true,
-            _live_pr_head_sha_fn=lambda ws, br: None,
+            _live_pr_head_sha_fn=_live_head_for_p3_done,
             _merge_phase_enabled=True,
             _merge_pr_fn=_make_merge_pr_stub([], merged_sha_map={"repo-a": _MERGED_SHA_A}),
             _reverify_fn=lambda ws, rp, rm: True,
@@ -392,7 +396,7 @@ class TestInvariant2FalseGreenKiller:
             _set_upstream_ref_fn=_set_upstream_ref_logging,
             _preflight_fn=_preflight_pass,
             _pr_is_open=_pr_is_open_true,
-            _live_pr_head_sha_fn=lambda ws, br: None,
+            _live_pr_head_sha_fn=_live_head_for_p3_done,
             _merge_phase_enabled=True,
             _merge_pr_fn=_make_merge_pr_stub([], merged_sha_map={"repo-a": _MERGED_SHA_A}),
             _reverify_fn=_reverify_logging,
@@ -458,7 +462,7 @@ class TestInvariant2FalseGreenKiller:
             _set_upstream_ref_fn=_set_upstream_ref_capture,
             _preflight_fn=_preflight_pass,
             _pr_is_open=_pr_is_open_true,
-            _live_pr_head_sha_fn=lambda ws, br: None,
+            _live_pr_head_sha_fn=_live_head_for_p3_done,
             _merge_phase_enabled=True,
             _merge_pr_fn=_make_merge_pr_stub([], merged_sha_map={"repo-a": _MERGED_SHA_A}),
             _reverify_fn=lambda ws, rp, rm: True,
@@ -568,7 +572,7 @@ class TestInvariant4NoPhaseLoopState:
             _set_upstream_ref_fn=lambda *a, **kw: [],
             _preflight_fn=_preflight_pass,
             _pr_is_open=_pr_is_open_false,
-            _live_pr_head_sha_fn=lambda ws, br: None,
+            _live_pr_head_sha_fn=_live_head_for_p3_done,
             _merge_phase_enabled=True,
             _merge_pr_fn=_make_merge_pr_stub([]),
             _reverify_fn=lambda ws, rp, rm: True,
@@ -663,7 +667,7 @@ class TestInvariant5AutonomyBoundary:
             _set_upstream_ref_fn=lambda *a, **kw: [],
             _preflight_fn=_preflight_pass,
             _pr_is_open=_pr_is_open_true,
-            _live_pr_head_sha_fn=lambda ws, br: None,
+            _live_pr_head_sha_fn=_live_head_for_p3_done,
             _merge_phase_enabled=True,
             _merge_pr_fn=_make_merge_pr_stub([]),
             _train_review_fn=_rejection_review_fn,
@@ -1555,10 +1559,16 @@ class TestResidualInvariants:
         (chron_repo / "test_file.py").write_text("# test", encoding="utf-8")
         subprocess.run(["git", "add", "test_file.py"], cwd=chron_repo, check=True, capture_output=True)
         subprocess.run(["git", "commit", "-m", "C_test: tests landing"], cwd=chron_repo, check=True, capture_output=True)
+        c_test = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=chron_repo, check=True, capture_output=True, text=True
+        ).stdout.strip()
 
         (chron_repo / "src_file.py").write_text("# impl", encoding="utf-8")
         subprocess.run(["git", "add", "src_file.py"], cwd=chron_repo, check=True, capture_output=True)
         subprocess.run(["git", "commit", "-m", "C_impl: implementation"], cwd=chron_repo, check=True, capture_output=True)
+        c_impl = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=chron_repo, check=True, capture_output=True, text=True
+        ).stdout.strip()
 
         # 2. Build inverted commit graph topology
         chron_repo_inv = make_repo(tmp_path / "chronology_graph_inverted")
@@ -1570,23 +1580,52 @@ class TestResidualInvariants:
         (chron_repo_inv / "src_file.py").write_text("# impl early", encoding="utf-8")
         subprocess.run(["git", "add", "src_file.py"], cwd=chron_repo_inv, check=True, capture_output=True)
         subprocess.run(["git", "commit", "-m", "C_impl_inv"], cwd=chron_repo_inv, check=True, capture_output=True)
+        c_impl_inv = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=chron_repo_inv, check=True, capture_output=True, text=True
+        ).stdout.strip()
 
         subprocess.run(["git", "checkout", "-b", "tests-branch", c0_sha_inv], cwd=chron_repo_inv, check=True, capture_output=True)
         (chron_repo_inv / "test_file.py").write_text("# test late", encoding="utf-8")
         subprocess.run(["git", "add", "test_file.py"], cwd=chron_repo_inv, check=True, capture_output=True)
         subprocess.run(["git", "commit", "-m", "C_test_inv"], cwd=chron_repo_inv, check=True, capture_output=True)
+        c_test_inv = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=chron_repo_inv, check=True, capture_output=True, text=True
+        ).stdout.strip()
 
         # 3. Freeze production-facing API: validate_chronology must receive commit identities and own the check
         chron_params = inspect.signature(validate_chronology).parameters
-        has_commit_ancestry_api = (
-            "tests_landing_commit" in chron_params or "tests_landing_sha" in chron_params
-        )
+        has_commit_ancestry_api = {
+            "tests_landing_commit",
+            "implementation_base_commit",
+        }.issubset(chron_params)
+
+        valid_graph_accepted = False
+        inverted_graph_rejected = False
+        if has_commit_ancestry_api:
+            try:
+                validate_chronology(
+                    chron_repo,
+                    tests_landing_commit=c_test,
+                    implementation_base_commit=c_impl,
+                )
+            except LegibleChronologyError:
+                pass
+            else:
+                valid_graph_accepted = True
+            try:
+                validate_chronology(
+                    chron_repo_inv,
+                    tests_landing_commit=c_test_inv,
+                    implementation_base_commit=c_impl_inv,
+                )
+            except LegibleChronologyError:
+                inverted_graph_rejected = True
 
         # Negative control / mutation check: calling validate_chronology with tests_landing_ancestor_of_base=True on inverted graph accepts invalid topology
         rejected_caller_bool = False
         try:
             validate_chronology(chron_repo_inv, tests_landing_ancestor_of_base=True)
-        except LegibleChronologyError:
+        except (LegibleChronologyError, TypeError):
             rejected_caller_bool = True
 
         caller_boolean_trusted = not rejected_caller_bool
@@ -1629,10 +1668,21 @@ class TestResidualInvariants:
         triage_file = repo_root / "plans" / "evidence" / "v10-RESIDUAL-f841-triage.md"
         triage_file_exists = triage_file.exists()
 
-        if not has_commit_ancestry_api or caller_boolean_trusted or not premerge_reason_ok or not triage_file_exists:
+        if (
+            not has_commit_ancestry_api
+            or not valid_graph_accepted
+            or not inverted_graph_rejected
+            or caller_boolean_trusted
+            or not premerge_reason_ok
+            or not triage_file_exists
+        ):
             defect_details = []
             if not has_commit_ancestry_api:
                 defect_details.append("validate_chronology lacks production commit-identity ancestry parameters")
+            elif not valid_graph_accepted:
+                defect_details.append("validate_chronology rejected a real valid tests-before-implementation graph")
+            elif not inverted_graph_rejected:
+                defect_details.append("validate_chronology accepted a real inverted tests/implementation graph")
             if caller_boolean_trusted:
                 defect_details.append("validate_chronology trusts caller boolean (accepts True on inverted Git graph)")
             if not premerge_reason_ok:
@@ -1669,6 +1719,15 @@ class TestResidualInvariants:
             pass
         else:
             defect_details.append("3-argument call to publish_committed_branch_idempotency_key did not raise TypeError")
+
+        try:
+            main_key = contracts.publish_committed_branch_idempotency_key("repo-a", "feat/x", "main", "sha-head")
+            release_key = contracts.publish_committed_branch_idempotency_key("repo-a", "feat/x", "release", "sha-head")
+        except TypeError as exc:
+            defect_details.append(f"4-argument publish identity call failed: {exc}")
+        else:
+            if main_key == release_key:
+                defect_details.append("publish identity does not separate otherwise-identical requests by base")
 
         # 1. EvidenceRecord dataclass, serialization, and real BrokerEvidenceStore lifecycle checks
         ev_fields = {f.name for f in fields(EvidenceRecord)}
@@ -1719,7 +1778,7 @@ class TestResidualInvariants:
                 if not base_used:
                     errors.append("function body does not consume 'base' parameter")
 
-            # Helper to check call sites requiring EXACT ONE call per target method
+            # Helper to check the single required identity-producing call in each target method.
             def check_call_site(tree: ast.AST, class_name: str, method_name: str, expected_base_expr: str):
                 class_node = next((n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == class_name), None)
                 if class_node is None:
@@ -1865,8 +1924,8 @@ class TestResidualInvariants:
             end_line = method_node.end_lineno
             chunk = "".join(lines[start_line:end_line])
             count = chunk.count(target)
-            if count != 1:
-                return src, f"target {target!r} occurred {count} times in {class_name}.{method_name} (expected exactly 1)"
+            if count < 1:
+                return src, f"target {target!r} missing from {class_name}.{method_name}"
             new_chunk = chunk.replace(target, replacement, 1)
             mutated_src = "".join(lines[:start_line]) + new_chunk + "".join(lines[end_line:])
             if mutated_src == src:
@@ -2038,7 +2097,7 @@ class TestResidualInvariants:
                 _set_upstream_ref_fn=lambda *a, **kw: [],
                 _preflight_fn=_preflight_pass,
                 _pr_is_open=_pr_is_open_true,
-                _live_pr_head_sha_fn=lambda ws, br: f"sha-DRAFT-{ws.name}",
+                _live_pr_head_sha_fn=_live_head_for_p3_done,
                 _merge_phase_enabled=True,
                 _merge_pr_fn=_make_merge_pr_stub([]),
                 _reverify_fn=lambda ws, rp, rm: True,
@@ -2145,11 +2204,19 @@ class TestResidualInvariants:
             )
 
         delete_branch_present = any("--delete-branch" in cmd for cmd in captured_merge_argvs)
+        final_record = read_ledger(ledger).get("repo-a/specs/plan-a.md")
+        queue_failure_preserved = (
+            result.get("status") == "merge_halted"
+            and result.get("reason") == "merge_failed"
+            and "merge-queue-timeout-dequeued" in result.get("detail", "")
+            and final_record is not None
+            and final_record.status == "blocked"
+        )
 
-        if not captured_merge_argvs or delete_branch_present or not queue_reconcile_entered[0] or result.get("status") == "merged":
+        if not captured_merge_argvs or delete_branch_present or not queue_reconcile_entered[0] or not queue_failure_preserved:
             raise AssertionError(
                 "RESIDUAL-RED-ANCHOR::residual_non_fab_merge_queue_null_oid — "
-                "non-FAB merge with null OID did not enter queue reconciliation or included --delete-branch"
+                "non-FAB merge with null OID did not enter queue reconciliation, preserve its typed failure, or omitted --delete-branch"
             )
 
     def test_residual_hotfix_shell_operator(self, tmp_path: Path):
@@ -2162,23 +2229,35 @@ class TestResidualInvariants:
 
         import argparse
         from unittest.mock import patch
-        from phase_loop_runtime.cli import _hotfix_command
+        from phase_loop_test_utils import make_repo
+        from phase_loop_runtime.cli import _hotfix_command, _hotfix_verification_commands
 
         # 1. Benign safe positive control driven through public _hotfix_command CLI path with valid repo/roadmap/plan preconditions
-        repo_dir = tmp_path / "hotfix_repo"
-        repo_dir.mkdir(parents=True, exist_ok=True)
+        repo_dir = make_repo(tmp_path / "hotfix_repo")
         specs_dir = repo_dir / "specs"
         specs_dir.mkdir(parents=True, exist_ok=True)
         roadmap_file = specs_dir / "phase-plans-v1.md"
         roadmap_file.write_text(
-            "---\ntitle: Hotfix Test Roadmap\nphases:\n  - id: CONTRACT\n    name: Contract\n---\n",
+            "# Roadmap\n\n### Phase 0 - Contract (CONTRACT)\n",
             encoding="utf-8",
         )
 
         plans_dir = repo_dir / "plans"
         plans_dir.mkdir(parents=True, exist_ok=True)
         safe_plan = plans_dir / "CONTRACT.md"
-        safe_plan.write_text('verification_command: pytest -k "test1 or test2" --tb=short\n', encoding="utf-8")
+        safe_plan.write_text(
+            'verification_command: python -c "print(\'; literal\')"\n'
+            "verification_commands:\n"
+            '  - python -c "print(\'first\')"\n'
+            '  - python -c "print(\'second\')"\n',
+            encoding="utf-8",
+        )
+        expected_safe_commands = [
+            ["python", "-c", "print('; literal')"],
+            ["python", "-c", "print('first')"],
+            ["python", "-c", "print('second')"],
+        ]
+        safe_parser_commands = _hotfix_verification_commands(safe_plan)
 
         run_verification_calls: list[list[list[str]]] = []
 
@@ -2204,41 +2283,87 @@ class TestResidualInvariants:
              patch("phase_loop_runtime.cli.validate_verification_artifact", return_value=_PassingValidation()):
             exit_code_safe = _hotfix_command(repo=repo_dir, args=args_safe, as_json=True)
 
-        safe_reached_verification = (len(run_verification_calls) == 1 and exit_code_safe == 0)
+        safe_reached_verification = (
+            safe_parser_commands == expected_safe_commands
+            and run_verification_calls == [expected_safe_commands]
+            and exit_code_safe == 0
+        )
 
-        # 2. Public hotfix execution path refusal tests for all forbidden shell operators
-        forbidden_operators = [";", "&&", "||", "|", "<", ">", "\n"]
-        unsafe_command_reached_verification = False
+        # 2. Refuse every operator in both scalar and list-item inputs. The DSL is
+        # line-oriented, so newline chaining is represented by the literal `\n`
+        # escape an external plan author would put in a scalar value.
+        forbidden_operators = [
+            ("semicolon", ";"),
+            ("and", "&&"),
+            ("or", "||"),
+            ("pipe", "|"),
+            ("redirect-in", "<"),
+            ("redirect-out", ">"),
+            ("newline", "\\n"),
+        ]
+        unsafe_failures: list[str] = []
 
-        for op in forbidden_operators:
-            unsafe_plan = plans_dir / f"CONTRACT_unsafe_{hash(op)}.md"
-            unsafe_plan.write_text(f"verification_command: pytest {op} echo sentinel_reached\n", encoding="utf-8")
+        for operator_name, operator in forbidden_operators:
+            for shape in ("scalar", "list"):
+                unsafe_plan = plans_dir / f"CONTRACT_unsafe_{operator_name}_{shape}.md"
+                unsafe_line = f"pytest {operator} echo sentinel_reached"
+                unsafe_plan.write_text(
+                    f"verification_command: {unsafe_line}\n"
+                    if shape == "scalar"
+                    else f"verification_commands:\n  - {unsafe_line}\n",
+                    encoding="utf-8",
+                )
 
-            args_unsafe = argparse.Namespace(
-                plan=str(unsafe_plan.relative_to(repo_dir)),
-                reason=f"unsafe hotfix test {op}",
-                init_stub=None,
-                roadmap=None,
-            )
+                parser_rejected = False
+                try:
+                    _hotfix_verification_commands(unsafe_plan)
+                except ValueError as exc:
+                    parser_rejected = "control operator" in str(exc).lower()
 
-            calls_unsafe: list[list[list[str]]] = []
+                args_unsafe = argparse.Namespace(
+                    plan=str(unsafe_plan.relative_to(repo_dir)),
+                    reason=f"unsafe hotfix test {operator_name} {shape}",
+                    init_stub=None,
+                    roadmap=None,
+                )
 
-            def spy_run_verification_unsafe(repo, run_dir, commands, suite_command, *args, **kwargs):
-                calls_unsafe.append(commands)
+                calls_unsafe: list[list[list[str]]] = []
 
-            with patch("phase_loop_runtime.cli.run_verification", side_effect=spy_run_verification_unsafe), \
-                 patch("phase_loop_runtime.cli.validate_verification_artifact", return_value=_PassingValidation()):
-                exit_code = _hotfix_command(repo=repo_dir, args=args_unsafe, as_json=True)
+                def spy_run_verification_unsafe(repo, run_dir, commands, suite_command, *args, **kwargs):
+                    calls_unsafe.append(commands)
 
-            if len(calls_unsafe) > 0 or exit_code == 0:
-                unsafe_command_reached_verification = True
+                artifacts_before = set(
+                    (repo_dir / ".phase-loop" / "runs").glob("*/verification.json")
+                )
+                leaked_exception = False
+                try:
+                    with patch("phase_loop_runtime.cli.run_verification", side_effect=spy_run_verification_unsafe), \
+                         patch("phase_loop_runtime.cli.validate_verification_artifact", return_value=_PassingValidation()):
+                        exit_code = _hotfix_command(repo=repo_dir, args=args_unsafe, as_json=True)
+                except ValueError:
+                    leaked_exception = True
+                    exit_code = 1
 
-        if not safe_reached_verification or unsafe_command_reached_verification:
+                verification_artifacts = set(
+                    (repo_dir / ".phase-loop" / "runs").glob("*/verification.json")
+                ) - artifacts_before
+                if (
+                    not parser_rejected
+                    or leaked_exception
+                    or calls_unsafe
+                    or exit_code == 0
+                    or verification_artifacts
+                ):
+                    unsafe_failures.append(f"{operator_name}/{shape}")
+
+        if not safe_reached_verification or unsafe_failures:
             defect_details = []
             if not safe_reached_verification:
                 defect_details.append("safe positive control failed to reach run_verification")
-            if unsafe_command_reached_verification:
-                defect_details.append("_hotfix_command failed to refuse shell control operator before verification launch")
+            if unsafe_failures:
+                defect_details.append(
+                    "_hotfix_command failed exact parser/public-path refusal for " + ", ".join(unsafe_failures)
+                )
 
             raise AssertionError(
                 "RESIDUAL-RED-ANCHOR::residual_hotfix_shell_operator — "
@@ -2262,311 +2387,248 @@ class TestResidualInvariants:
         from urllib import response
 
         from phase_loop_test_utils import make_repo
-        from phase_loop_runtime.claude_channel_sidecar import ChannelSidecarClient, ChannelSidecarClientError, SessionRegistryRecord
+        from phase_loop_runtime.claude_channel_sidecar import (
+            ChannelSidecarClient,
+            ChannelSidecarClientError,
+            SessionRegistryRecord,
+        )
         from phase_loop_runtime.handoff import render_tui_handoff
-        from phase_loop_runtime.launcher import build_launch_request, build_launch_spec, ModelSelection, _render_command_template
+        from phase_loop_runtime.launcher import (
+            LaunchResult,
+            ModelSelection,
+            _render_command_template,
+            build_launch_request,
+            build_launch_spec,
+        )
         from phase_loop_runtime.models import CommandAdapterConfig, StateSnapshot, WorkUnitMetric, utc_now
         from phase_loop_runtime.observability import summarize_work_unit_metrics
         from phase_loop_runtime.prompts import build_prompt
         from phase_loop_runtime.render import render_status
 
-        defect_details = []
+        defects: list[str] = []
+        model = "claude-3-5-sonnet"
 
-        # 1. Drive public launcher-to-sidecar flow using build_launch_request and real PromptBundle
+        def validate_surface(name, value, actual, state, caveat):
+            if value is None:
+                return [f"{name} missing"]
+            if isinstance(value, str):
+                lowered = value.lower()
+                errors = []
+                for label in ("intended", "binding"):
+                    if label not in lowered:
+                        errors.append(f"{name} text lacks {label} model provenance")
+                if model not in value:
+                    errors.append(f"{name} text lacks intended model")
+                if actual is not None and "actual" not in lowered:
+                    errors.append(f"{name} text lacks actual model provenance")
+                if state not in lowered:
+                    errors.append(f"{name} text lacks {state} binding state")
+                if caveat and caveat not in value:
+                    errors.append(f"{name} text lacks caveat {caveat!r}")
+                return errors
+
+            def pick(*names):
+                for field_name in names:
+                    if isinstance(value, dict) and field_name in value:
+                        return value[field_name]
+                    if hasattr(value, field_name):
+                        return getattr(value, field_name)
+                return None
+
+            errors = []
+            if pick("intended_model", "expected_model", "selected_model") != model:
+                errors.append(f"{name} missing exact intended model")
+            if actual is not None and pick("actual_model", "verified_model") != actual:
+                errors.append(f"{name} missing distinct exact actual model")
+            if pick("binding_state", "model_binding_state") != state:
+                errors.append(f"{name} missing {state!r} binding state")
+            observed_caveat = pick("caveat", "model_caveat", "caveats")
+            if caveat and observed_caveat != caveat:
+                errors.append(f"{name} missing caveat {caveat!r}")
+            if not caveat and observed_caveat not in (None, "", [], ()):
+                errors.append(f"{name} has unexpected bound caveat")
+            return errors
+
         repo_dir = make_repo(tmp_path / "channel_repo")
-        specs_dir = repo_dir / "specs"
-        specs_dir.mkdir(parents=True, exist_ok=True)
-        roadmap_file = specs_dir / "phase-plans-v1.md"
+        roadmap_file = repo_dir / "specs" / "phase-plans-v1.md"
+        roadmap_file.parent.mkdir(parents=True, exist_ok=True)
         roadmap_file.write_text(
             "---\ntitle: Channel Test Roadmap\nphases:\n  - id: CONTRACT\n    name: Contract\n---\n",
             encoding="utf-8",
         )
-        plans_dir = repo_dir / "plans"
-        plans_dir.mkdir(parents=True, exist_ok=True)
-        plan_file = plans_dir / "CONTRACT.md"
+        plan_file = repo_dir / "plans" / "CONTRACT.md"
+        plan_file.parent.mkdir(parents=True, exist_ok=True)
         plan_file.write_text("verification_command: pytest\n", encoding="utf-8")
-
         prompt_bundle = build_prompt("execute", roadmap_file, phase="CONTRACT")
-        model_sel = ModelSelection(profile="execute", model="claude-3-5-sonnet", effort="high")
+        model_sel = ModelSelection(profile="execute", model=model, effort="high")
 
-        pub_req = build_launch_request(
-            executor="command",
-            action="execute",
-            repo=repo_dir,
-            roadmap=roadmap_file,
-            phase="CONTRACT",
-            plan=plan_file,
-            model_selection=model_sel,
-            prompt_bundle=prompt_bundle,
-            json_output=True,
-            bypass_approvals=False,
-        )
-        spec_bound = build_launch_spec(pub_req)
+        def launch_request(template: str, name: str):
+            return build_launch_request(
+                executor="command",
+                action="execute",
+                repo=repo_dir,
+                roadmap=roadmap_file,
+                phase="CONTRACT",
+                plan=plan_file,
+                model_selection=model_sel,
+                prompt_bundle=prompt_bundle,
+                json_output=True,
+                bypass_approvals=False,
+                command_adapter=CommandAdapterConfig(name=name, template=template),
+            )
 
-        # Strict surface provenance helper validating four distinct semantic fields
-        def validate_surface_provenance(surface_name: str, surface_obj_or_dict, expected_intended: str, expected_actual: Optional[str], expected_state: str, expected_caveat: Optional[str]) -> list[str]:
-            errs = []
-            if surface_obj_or_dict is None:
-                return [f"surface {surface_name} is None"]
+        bound_template = "python -m my_adapter --model {model} --context-file {context_file}"
+        defects.extend(validate_surface("launch_spec_bound", build_launch_spec(launch_request(bound_template, "bound")), model, "bound", None))
 
-            def _get(obj, *keys):
-                if isinstance(obj, dict):
-                    for k in keys:
-                        if k in obj:
-                            return obj[k]
-                else:
-                    for k in keys:
-                        if hasattr(obj, k):
-                            return getattr(obj, k)
-                return None
+        unbound_template = "python -m my_adapter --context-file {context_file}"
+        unbound_request = launch_request(unbound_template, "unbound")
+        rendered_unbound = _render_command_template(unbound_template, unbound_request)
+        if model in rendered_unbound:
+            defects.append("command adapter without {model} injected the intended model")
+        defects.extend(validate_surface("launch_spec_unbound", build_launch_spec(unbound_request), None, "unbound", "session_model_unbound"))
 
-            intended = _get(surface_obj_or_dict, "intended_model", "expected_model", "selected_model", "model")
-            # Actual model MUST require a distinct actual_model or verified_model field — NEVER bare model!
-            actual = _get(surface_obj_or_dict, "actual_model", "verified_model") if expected_actual is not None else None
-            state = _get(surface_obj_or_dict, "binding_state", "model_binding_state", "bound")
-            caveat = _get(surface_obj_or_dict, "caveat", "caveats")
+        record_fields = {field.name for field in fields(SessionRegistryRecord)}
+        if not {"actual_model", "binding_state"}.issubset(record_fields):
+            defects.append("SessionRegistryRecord lacks actual_model/binding_state")
 
-            if intended != expected_intended:
-                errs.append(f"surface {surface_name} intended_model is {intended!r}, expected {expected_intended!r}")
-
-            if expected_actual is not None:
-                if actual is None:
-                    errs.append(f"surface {surface_name} missing distinct actual_model field (actual_model/verified_model)")
-                elif actual != expected_actual:
-                    errs.append(f"surface {surface_name} actual_model is {actual!r}, expected {expected_actual!r}")
-
-            if expected_state == "bound":
-                if state not in ("bound", True):
-                    errs.append(f"surface {surface_name} binding_state is {state!r}, expected 'bound'")
-            elif expected_state == "unbound":
-                if state not in ("unbound", False):
-                    errs.append(f"surface {surface_name} binding_state is {state!r}, expected 'unbound'")
-
-            if expected_caveat == "non-empty":
-                if not caveat:
-                    errs.append(f"surface {surface_name} caveat is empty or None, expected non-empty caveat for unbound state")
-            elif expected_caveat is None or expected_caveat == "":
-                if caveat not in (None, "", []):
-                    errs.append(f"surface {surface_name} caveat is {caveat!r}, expected null/empty for bound state")
-
-            return errs
-
-        spec_errs = validate_surface_provenance("launch_spec_bound", spec_bound, "claude-3-5-sonnet", "claude-3-5-sonnet", "bound", None)
-        if spec_errs:
-            defect_details.extend(spec_errs)
-
-        # 2. Check if ChannelSidecarClient.preflight accepts expected_model parameter
-        preflight_params = inspect.signature(ChannelSidecarClient.preflight).parameters
-        has_expected_model_param = ("expected_model" in preflight_params)
-        if not has_expected_model_param:
-            defect_details.append("ChannelSidecarClient.preflight lacks expected_model parameter")
-
-        # 3. ChannelSidecarClient delivery controls (matching positive control, mismatching control, absent control)
-        session_responses = {
-            "match": {"session_id": "sess-1", "state": "ready", "channel_health": "ready", "model": "claude-3-5-sonnet", "expected_model": "claude-3-5-sonnet"},
-            "mismatch": {"session_id": "sess-1", "state": "ready", "channel_health": "ready", "model": "claude-3-5-haiku"},
+        responses = {
+            "match": {"session_id": "sess-1", "state": "ready", "channel_health": "ready", "actual_model": model},
+            "mismatch": {"session_id": "sess-1", "state": "ready", "channel_health": "ready", "actual_model": "claude-3-5-haiku"},
             "absent": {"session_id": "sess-1", "state": "ready", "channel_health": "ready"},
         }
 
-        def _make_mock_opener(scenario: str, requests_log: list[tuple[str, str]]):
-            def _opener(req, timeout=None):
+        def opener_for(scenario, request_log):
+            def opener(req, timeout=None):
                 method = req.get_method()
                 url = req.full_url
-                requests_log.append((method, url))
-                if "/sessions/sess-1/message" in url:
-                    body = json.dumps({"event_id": "evt-123"}).encode("utf-8")
-                    return response.addinfourl(BytesIO(body), headers={}, url=url, code=200)
-                if "/events" in url:
-                    body = json.dumps({"events": [{"event_id": "evt-123", "acknowledged": True, "replies": [{"status": "done", "final": True, "text": "OK"}]}]}).encode("utf-8")
-                    return response.addinfourl(BytesIO(body), headers={}, url=url, code=200)
-                body = json.dumps(session_responses[scenario]).encode("utf-8")
-                return response.addinfourl(BytesIO(body), headers={}, url=url, code=200)
-            return _opener
+                request_log.append((method, url))
+                if "/message" in url:
+                    body = {"event_id": "evt-123"}
+                elif "/events" in url:
+                    body = {"events": [{"event_id": "evt-123", "acknowledged": True, "replies": [{"status": "done", "final": True, "text": "OK"}]}]}
+                else:
+                    body = responses[scenario]
+                return response.addinfourl(BytesIO(json.dumps(body).encode()), headers={}, url=url, code=200)
+            return opener
 
-        # Mismatch control
-        log_mismatch: list[tuple[str, str]] = []
-        c_mismatch = ChannelSidecarClient(base_url="http://127.0.0.1:8080", session_id="sess-1", sender="test", opener=_make_mock_opener("mismatch", log_mismatch))
-        if has_expected_model_param:
-            try:
-                c_mismatch.preflight(expected_model="claude-3-5-sonnet")
-                defect_details.append("mismatching preflight did not raise ChannelSidecarClientError")
-            except ChannelSidecarClientError as exc:
-                if exc.reason != "session_model_mismatch":
-                    defect_details.append(f"mismatching preflight raised reason={exc.reason!r}, expected 'session_model_mismatch'")
+        preflight_has_model = "expected_model" in inspect.signature(ChannelSidecarClient.preflight).parameters
+        send_has_model = "expected_model" in inspect.signature(ChannelSidecarClient.send_and_wait).parameters
+        if not preflight_has_model:
+            defects.append("ChannelSidecarClient.preflight lacks expected_model")
+        if not send_has_model:
+            defects.append("ChannelSidecarClient.send_and_wait lacks expected_model")
 
-        try:
-            c_mismatch.send_and_wait("test message")
-        except ChannelSidecarClientError:
-            pass
-        except TypeError:
-            pass
-        if any(method == "POST" and "/message" in url for method, url in log_mismatch):
-            defect_details.append("mismatching model session issued POST to /message")
-
-        # Absent control
-        log_absent: list[tuple[str, str]] = []
-        c_absent = ChannelSidecarClient(base_url="http://127.0.0.1:8080", session_id="sess-1", sender="test", opener=_make_mock_opener("absent", log_absent))
-        if has_expected_model_param:
-            try:
-                c_absent.preflight(expected_model="claude-3-5-sonnet")
-                defect_details.append("absent model preflight did not raise ChannelSidecarClientError")
-            except ChannelSidecarClientError as exc:
-                if exc.reason != "session_model_unbound":
-                    defect_details.append(f"absent preflight raised reason={exc.reason!r}, expected 'session_model_unbound'")
-
-        try:
-            c_absent.send_and_wait("test message")
-        except ChannelSidecarClientError:
-            pass
-        except TypeError:
-            pass
-        if any(method == "POST" and "/message" in url for method, url in log_absent):
-            defect_details.append("absent model session issued POST to /message")
-
-        # Matching positive control & sidecar event metadata surface
-        log_match: list[tuple[str, str]] = []
-        c_match = ChannelSidecarClient(base_url="http://127.0.0.1:8080", session_id="sess-1", sender="test", opener=_make_mock_opener("match", log_match))
-        if has_expected_model_param:
-            try:
-                rec_match = c_match.preflight(expected_model="claude-3-5-sonnet")
-                pf_errs = validate_surface_provenance("session_preflight_bound", rec_match, "claude-3-5-sonnet", "claude-3-5-sonnet", "bound", None)
-                if pf_errs:
-                    defect_details.extend(pf_errs)
-            except ChannelSidecarClientError as exc:
-                defect_details.append(f"matching preflight raised unexpected error: {exc}")
-
-        # Sidecar event / launch-event metadata surface
-        event_meta_bound = {"intended_model": "claude-3-5-sonnet", "actual_model": "claude-3-5-sonnet", "binding_state": "bound", "caveat": None}
-        evt_bound_errs = validate_surface_provenance("sidecar_event_bound", event_meta_bound, "claude-3-5-sonnet", "claude-3-5-sonnet", "bound", None)
-        if evt_bound_errs:
-            defect_details.extend(evt_bound_errs)
-
-        event_meta_unbound = {"intended_model": "claude-3-5-sonnet", "actual_model": None, "binding_state": "unbound", "caveat": "session_model_unbound"}
-        evt_unbound_errs = validate_surface_provenance("sidecar_event_unbound", event_meta_unbound, "claude-3-5-sonnet", None, "unbound", "non-empty")
-        if evt_unbound_errs:
-            defect_details.extend(evt_unbound_errs)
-
-        try:
-            reply_match = c_match.send_and_wait("test message")
-            if not reply_match or not any(method == "POST" and "/message" in url for method, url in log_match):
-                defect_details.append("matching positive model session failed to issue POST to /message or return reply")
-        except (ChannelSidecarClientError, TypeError) as exc:
-            defect_details.append(f"matching positive model session raised unexpected client error: {exc}")
-
-        # 4. Command-adapter template without {model} unbound launch metadata validation
-        cmd_template_no_model = "python -m my_adapter --phase {phase} --context-file {context_file}"
-        pub_req_no_model = build_launch_request(
-            executor="command",
-            action="execute",
-            repo=repo_dir,
-            roadmap=roadmap_file,
-            phase="CONTRACT",
-            plan=plan_file,
-            model_selection=model_sel,
-            prompt_bundle=prompt_bundle,
-            json_output=True,
-            bypass_approvals=False,
-            command_adapter=CommandAdapterConfig(name="residual-no-model", template=cmd_template_no_model),
-        )
-        rendered_no_model = _render_command_template(cmd_template_no_model, pub_req_no_model)
-        if any("--phase-model" in arg or "claude-3-5-sonnet" in arg for arg in rendered_no_model):
-            defect_details.append("command adapter template without {model} falsely injected launch-bound model")
-
-        # Validate launch metadata for command-adapter template without {model} through unbound validator
-        try:
-            spec_no_model = build_launch_spec(pub_req_no_model)
-            spec_unbound_errs = validate_surface_provenance("cmd_adapter_spec_unbound", spec_no_model, "claude-3-5-sonnet", None, "unbound", "non-empty")
-            if spec_unbound_errs:
-                defect_details.extend(spec_unbound_errs)
-        except Exception as exc:
-            defect_details.append(f"command adapter launch metadata unbound validation raised exception: {exc}")
-
-        # 5. Six Surface Verification via structured provenance contracts
-        rec_fields = {f.name for f in fields(SessionRegistryRecord)}
-        session_has_binding_fields = ("expected_model" in rec_fields or "intended_model" in rec_fields) and ("actual_model" in rec_fields or "verified_model" in rec_fields) and ("binding_state" in rec_fields or "model_binding_state" in rec_fields)
-        if not session_has_binding_fields:
-            defect_details.append("SessionRegistryRecord missing expected_model/actual_model/binding_state fields")
-
-        # Bound & Unbound surfaces for status JSON, TUI handoff, and WorkUnitMetric
-        snapshot_bound = StateSnapshot(timestamp=utc_now(), repo=str(repo_dir), roadmap=str(roadmap_file), phases={"CONTRACT": "complete"}, current_phase=None, model="claude-3-5-sonnet")
-        try:
-            status_bound_json = json.loads(render_status(snapshot_bound, as_json=True))
-            st_bound_errs = validate_surface_provenance("status_json_bound", status_bound_json, "claude-3-5-sonnet", "claude-3-5-sonnet", "bound", None)
-            if st_bound_errs:
-                defect_details.extend(st_bound_errs)
-        except Exception:
-            defect_details.append("render_status(as_json=True) failed to return valid parseable JSON")
-
-        handoff_bound = render_tui_handoff(repo_dir, roadmap_file, snapshot_bound, action="execute")
-        ho_bound_errs = validate_surface_provenance("tui_handoff_bound", handoff_bound, "claude-3-5-sonnet", "claude-3-5-sonnet", "bound", None)
-        if ho_bound_errs:
-            defect_details.extend(ho_bound_errs)
-
-        metric_bound = WorkUnitMetric(
-            metric_id="m_bound",
-            schema_version="work_unit_metric.v1",
-            timestamp=utc_now(),
-            work_unit_id="wu_bound",
-            work_unit_kind="lane_execute",
-            phase="CONTRACT",
-            action="execute",
-            executor="claude",
-            provider="anthropic",
-            model="claude-3-5-sonnet",
-        )
-        met_bound_errs = validate_surface_provenance("work_unit_metric_bound", metric_bound.to_json(), "claude-3-5-sonnet", "claude-3-5-sonnet", "bound", None)
-        if met_bound_errs:
-            defect_details.extend(met_bound_errs)
-
-        # Unbound surface validation for metric, status, handoff
-        try:
-            metric_unbound = WorkUnitMetric(
-                metric_id="m_unbound",
-                schema_version="work_unit_metric.v1",
-                timestamp=utc_now(),
-                work_unit_id="wu_unbound",
-                work_unit_kind="lane_execute",
-                phase="CONTRACT",
-                action="execute",
-                executor="claude",
-                provider="anthropic",
-                intended_model="claude-3-5-sonnet",
-                binding_state="unbound",
-                caveat="unbound",
+        for scenario, reason in (("mismatch", "session_model_mismatch"), ("absent", "session_model_unbound")):
+            request_log = []
+            client = ChannelSidecarClient(
+                base_url="http://127.0.0.1:8080",
+                session_id="sess-1",
+                sender="test",
+                opener=opener_for(scenario, request_log),
             )
-            met_unbound_errs = validate_surface_provenance("work_unit_metric_unbound", metric_unbound.to_json(), "claude-3-5-sonnet", None, "unbound", "non-empty")
-            if met_unbound_errs:
-                defect_details.extend(met_unbound_errs)
-        except TypeError as exc:
-            defect_details.append(f"WorkUnitMetric constructor failed for unbound shape: {exc}")
+            if preflight_has_model:
+                try:
+                    client.preflight(expected_model=model)
+                except ChannelSidecarClientError as exc:
+                    if getattr(exc, "reason", None) != reason:
+                        defects.append(f"{scenario} preflight returned wrong reason")
+                else:
+                    defects.append(f"{scenario} preflight admitted invalid model")
+            if send_has_model:
+                try:
+                    client.send_and_wait("test", expected_model=model)
+                except ChannelSidecarClientError as exc:
+                    if getattr(exc, "reason", None) != reason:
+                        defects.append(f"{scenario} send returned wrong reason")
+                else:
+                    defects.append(f"{scenario} send admitted invalid model")
+            if any(method == "POST" and "/message" in url for method, url in request_log):
+                defects.append(f"{scenario} session posted a message")
 
-        # Unbound aggregate rule validation
-        metric_intended_only = WorkUnitMetric(
-            metric_id="m1",
-            schema_version="work_unit_metric.v1",
-            timestamp=utc_now(),
-            work_unit_id="wu1",
-            work_unit_kind="lane_execute",
-            phase="CONTRACT",
-            action="execute",
-            executor="claude",
-            provider="anthropic",
-            model="claude-3-5-sonnet",
+        match_log = []
+        match_client = ChannelSidecarClient(
+            base_url="http://127.0.0.1:8080",
+            session_id="sess-1",
+            sender="test",
+            opener=opener_for("match", match_log),
         )
-        agg_raw = summarize_work_unit_metrics([metric_intended_only.to_json()])
-        if not isinstance(agg_raw, dict):
-            defect_details.append("summarize_work_unit_metrics returned non-dict aggregate")
-        else:
-            by_model = agg_raw.get("by_model")
-            if not isinstance(by_model, dict):
-                defect_details.append("summarize_work_unit_metrics missing or non-dict 'by_model' bucket")
-            elif by_model.get("claude-3-5-sonnet", 0) > 0:
-                defect_details.append("intended-only unbound model counted in verified by_model population")
+        if preflight_has_model:
+            try:
+                match_record = match_client.preflight(expected_model=model)
+                defects.extend(validate_surface("session_preflight_bound", match_record, model, "bound", None))
+            except ChannelSidecarClientError as exc:
+                defects.append(f"matching preflight failed: {exc}")
+        if send_has_model:
+            try:
+                reply = match_client.send_and_wait("test", expected_model=model)
+                if not reply or not any(method == "POST" and "/message" in url for method, url in match_log):
+                    defects.append("matching session did not deliver")
+            except (ChannelSidecarClientError, TypeError) as exc:
+                defects.append(f"matching send failed: {exc}")
 
-        if defect_details:
+        for state, actual, caveat in (("bound", model, None), ("unbound", None, "session_model_unbound")):
+            try:
+                event = LaunchResult(
+                    command=["claude"],
+                    returncode=0 if state == "bound" else 1,
+                    intended_model=model,
+                    actual_model=actual,
+                    binding_state=state,
+                    caveat=caveat,
+                ).event_metadata()
+                defects.extend(validate_surface(f"launch_event_{state}", event, actual, state, caveat))
+            except TypeError as exc:
+                defects.append(f"LaunchResult lacks {state} provenance: {exc}")
+
+        metrics = []
+        for state, actual, caveat in (("bound", model, None), ("unbound", None, "session_model_unbound")):
+            try:
+                metric = WorkUnitMetric(
+                    metric_id=f"m-{state}",
+                    schema_version="work_unit_metric.v1",
+                    timestamp=utc_now(),
+                    work_unit_id=f"wu-{state}",
+                    work_unit_kind="lane_execute",
+                    phase="CONTRACT",
+                    action="execute",
+                    executor="claude",
+                    provider="anthropic",
+                    model=model,
+                    intended_model=model,
+                    actual_model=actual,
+                    binding_state=state,
+                    caveat=caveat,
+                )
+                metrics.append(metric.to_json())
+                defects.extend(validate_surface(f"metric_{state}", metric.to_json(), actual, state, caveat))
+
+                snapshot = StateSnapshot(
+                    timestamp=utc_now(),
+                    repo=str(repo_dir),
+                    roadmap=str(roadmap_file),
+                    phases={"CONTRACT": "complete"},
+                    model=model,
+                    intended_model=model,
+                    actual_model=actual,
+                    binding_state=state,
+                    caveat=caveat,
+                )
+                defects.extend(validate_surface(f"status_{state}", json.loads(render_status(snapshot, as_json=True)), actual, state, caveat))
+                defects.extend(validate_surface(f"handoff_{state}", render_tui_handoff(repo_dir, roadmap_file, snapshot, action="execute"), actual, state, caveat))
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                defects.append(f"{state} metric/status/handoff surface failed: {exc}")
+
+        if len(metrics) == 2:
+            summary = summarize_work_unit_metrics(metrics)
+            if summary.get("by_model", {}).get(model) != 1:
+                defects.append("aggregate did not count exactly the verified bound model")
+            if "session_model_unbound" not in json.dumps(summary, sort_keys=True):
+                defects.append("aggregate dropped the unbound-model caveat")
+
+        if defects:
             raise AssertionError(
                 "RESIDUAL-RED-ANCHOR::residual_channel_session_model — "
-                f"channel session model validation defects present: {'; '.join(defect_details)}"
+                f"channel session model validation defects present: {'; '.join(defects)}"
             )
 
     def test_residual_repair_recursion_or_interrupt(self, tmp_path: Path, monkeypatch):
@@ -2590,6 +2652,24 @@ class TestResidualInvariants:
         from phase_loop_runtime.models import LoopEvent, utc_now
         from phase_loop_runtime.provenance import event_provenance, snapshot_provenance
         from phase_loop_runtime.runner import run_loop
+
+        def _field(record, name):
+            if isinstance(record, dict):
+                return record.get(name)
+            return getattr(record, name, None)
+
+        def _lineage_refusal(repo: Path, expected_action: str) -> bool:
+            events = read_events(repo)
+            if not events:
+                return False
+            event = events[-1]
+            blocker = _field(event, "blocker") or {}
+            searchable = json.dumps(blocker, sort_keys=True).lower()
+            return (
+                _field(event, "action") == expected_action
+                and _field(event, "status") == "blocked"
+                and ("lineage" in searchable or "nested" in searchable)
+            )
 
         def _setup_repair_repo(repo_dir: Path, pid: int, *, phase_status: str = "blocked"):
             repo = make_repo(repo_dir)
@@ -2664,6 +2744,7 @@ class TestResidualInvariants:
 
         with patch("phase_loop_runtime.runner.launch_with_spec", side_effect=fake_launch_repair):
             run_loop(repo_repair, roadmap_repair, max_phases=1)
+        repair_refused_for_lineage = _lineage_refusal(repo_repair, "repair")
 
         # 2. Live resume lease: run_loop must select "resume" and not launch recursively
         repo_resume, roadmap_resume, _, _ = _setup_repair_repo(tmp_path / "repo-resume-live", os.getpid(), phase_status="executing")
@@ -2675,6 +2756,7 @@ class TestResidualInvariants:
 
         with patch("phase_loop_runtime.runner.launch_with_spec", side_effect=fake_launch_resume):
             run_loop(repo_resume, roadmap_resume, max_phases=1)
+        resume_refused_for_lineage = _lineage_refusal(repo_resume, "resume")
 
         # 3. Stale lineage lease (pid 999999): run_loop MUST select "repair" and launch
         repo_stale, roadmap_stale, _, _ = _setup_repair_repo(tmp_path / "repo-repair-stale", 999999, phase_status="blocked")
@@ -2709,10 +2791,28 @@ class TestResidualInvariants:
         term_bytes_child_after = term_file_child.read_bytes() if term_file_child.exists() else None
         child_preserved_trusted_terminal = (term_bytes_child_before == term_bytes_child_after)
 
+        # 5. No-diff interrupted repair must preserve the trusted terminal bytes.
+        repo_no_diff, roadmap_no_diff, term_file_no_diff, _ = _setup_repair_repo(
+            tmp_path / "repo-child-no-diff", 999999, phase_status="blocked"
+        )
+        term_bytes_no_diff_before = term_file_no_diff.read_bytes()
+
+        def fake_launch_no_diff(spec, dry_run=False, log_path=None, stream_output=False, **kwargs):
+            return LaunchResult(command=spec.command, returncode=1, interrupted=True)
+
+        with patch("phase_loop_runtime.runner.launch_with_spec", side_effect=fake_launch_no_diff):
+            run_loop(repo_no_diff, roadmap_no_diff, max_phases=1)
+
+        term_bytes_no_diff_after = term_file_no_diff.read_bytes() if term_file_no_diff.exists() else None
+        no_diff_preserved_trusted_terminal = term_bytes_no_diff_before == term_bytes_no_diff_after
+
         if (
             repair_launch_called[0]
             or resume_launch_called[0]
+            or not repair_refused_for_lineage
+            or not resume_refused_for_lineage
             or child_preserved_trusted_terminal
+            or not no_diff_preserved_trusted_terminal
             or not stale_launch_called[0]
             or stale_action_selected != "repair"
         ):
@@ -2721,8 +2821,14 @@ class TestResidualInvariants:
                 defect_details.append("live repair lease launched nested repair")
             if resume_launch_called[0]:
                 defect_details.append("live resume lease launched nested resume")
+            if not repair_refused_for_lineage:
+                defect_details.append("live repair lease did not terminalize with a lineage-specific blocker")
+            if not resume_refused_for_lineage:
+                defect_details.append("live resume lease did not terminalize with a lineage-specific blocker")
             if child_preserved_trusted_terminal:
                 defect_details.append("old trusted terminal preserved when child wrote to repo")
+            if not no_diff_preserved_trusted_terminal:
+                defect_details.append("trusted terminal changed after an interrupted no-diff repair")
             if not stale_launch_called[0]:
                 defect_details.append("stale lease failed to launch")
             if stale_action_selected != "repair":
@@ -2741,15 +2847,20 @@ class TestResidualInvariants:
         if not self._is_activated():
             return
 
+        import ast
         import json
+        import re
         import shutil
         import subprocess
 
         repo_root = Path(__file__).resolve().parents[2]
 
-        # 1. Verify ruff.toml ignores F841 today
+        # 1. Verify the configured ignore structurally; comments mentioning F841
+        # must not be mistaken for a live ignore entry.
         ruff_toml_text = (repo_root / "ruff.toml").read_text(encoding="utf-8")
-        f841_ignored_in_config = "F841" in ruff_toml_text and "ignore" in ruff_toml_text
+        ignore_match = re.search(r"(?m)^\s*ignore\s*=\s*(\[[^\]]*\])\s*$", ruff_toml_text)
+        ignore_values = ast.literal_eval(ignore_match.group(1)) if ignore_match else []
+        f841_ignored_in_config = "F841" in ignore_values
 
         # 2. Config-driven CI check: `ruff check .` returns 0 F841 errors because it is ignored in ruff.toml
         res_config = subprocess.run(
@@ -2830,16 +2941,21 @@ class TestResidualInvariants:
             for diag in explicit_diags
             if diag.get("code") == "F841"
         ]
-        inventory_matches = observed_f841_tuples == FROZEN_F841_TUPLES
+        inventory_matches_baseline_or_closed = observed_f841_tuples in (FROZEN_F841_TUPLES, [])
 
-        # 4. Config-driven mutation proof: isolated repo copy + mutated owned source file + CI-equivalent ruff check .
+        # 4. Config-driven mutation proof: a standalone local binding avoids
+        # attributing an existing source diagnostic to the injected mutation.
         repo_copy = tmp_path / "repo_copy"
         repo_copy.mkdir(parents=True, exist_ok=True)
         shutil.copy2(repo_root / "ruff.toml", repo_copy / "ruff.toml")
 
-        sample_src = repo_root / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "governed_premerge.py"
-        mutated_src = repo_copy / "governed_premerge.py"
-        mutated_src.write_text(sample_src.read_text(encoding="utf-8") + "\n_unused_local_mutation_test = 42\n", encoding="utf-8")
+        mutated_src = repo_copy / "mutation_probe.py"
+        mutated_src.write_text(
+            "def mutation_probe():\n"
+            "    unused_local_mutation = 42\n"
+            "    return None\n",
+            encoding="utf-8",
+        )
 
         res_config_mut = subprocess.run(
             ["ruff", "check", ".", "--output-format", "json", "--no-cache"],
@@ -2848,21 +2964,39 @@ class TestResidualInvariants:
             text=True,
         )
         config_mut_diags = json.loads(res_config_mut.stdout or "[]")
-        config_driven_mutation_ignored = (len(config_mut_diags) == 0)
+        mutation_f841 = [
+            diag
+            for diag in config_mut_diags
+            if diag.get("code") == "F841"
+            and Path(diag["filename"]).resolve() == mutated_src.resolve()
+            and diag.get("location") == {"row": 2, "column": 5}
+        ]
+        config_driven_mutation_detected = len(mutation_f841) == 1
 
-        # 5. Raise named RED anchor when config-driven check ignores F841 and codebase retains F841 diags
-        if f841_ignored_in_config or config_f841_count == 0 or config_driven_mutation_ignored or not inventory_matches:
+        # 5. The initial frozen inventory and the fully closed empty inventory
+        # are valid states. Any partial/drifted inventory remains a hard failure.
+        if (
+            f841_ignored_in_config
+            or config_f841_count != len(observed_f841_tuples)
+            or observed_f841_tuples
+            or not config_driven_mutation_detected
+            or not inventory_matches_baseline_or_closed
+        ):
             defect_details = []
             if f841_ignored_in_config:
                 defect_details.append("F841 is in ruff.toml ignore list")
-            if config_f841_count == 0:
-                defect_details.append("config-driven ruff check . reported 0 F841 diags")
-            if config_driven_mutation_ignored:
-                defect_details.append("config-driven ruff check . ignored unused local mutation in owned source file")
-            if not inventory_matches:
+            if config_f841_count != len(observed_f841_tuples):
                 defect_details.append(
-                    f"execution-base F841 inventory drifted: expected {len(FROZEN_F841_TUPLES)} rows, "
-                    f"observed {len(observed_f841_tuples)}"
+                    "config-driven and explicit F841 inventories disagree"
+                )
+            if observed_f841_tuples:
+                defect_details.append(f"{len(observed_f841_tuples)} F841 diagnostics remain")
+            if not config_driven_mutation_detected:
+                defect_details.append("config-driven ruff check . missed the exact unused-local mutation")
+            if not inventory_matches_baseline_or_closed:
+                defect_details.append(
+                    f"execution-base F841 inventory is neither the frozen {len(FROZEN_F841_TUPLES)} rows nor empty: "
+                    f"observed {len(observed_f841_tuples)} rows"
                 )
 
             raise AssertionError(
