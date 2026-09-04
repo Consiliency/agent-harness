@@ -42,6 +42,7 @@ Invariants:
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -54,6 +55,17 @@ from phase_loop_runtime.train_runner import _live_reverify, run_train
 
 # ---------------------------------------------------------------------------
 # Shared fixtures
+
+TRAIN_1NODE_MD = """\
+# Release Train: invariant-test-1
+
+## Nodes
+
+### Node: repo-a / specs/plan-a.md
+
+**Depends on:** (none)
+**Channel:** (none)
+"""
 
 TRAIN_2NODE_MD = """\
 # Release Train: invariant-test
@@ -1498,3 +1510,1362 @@ class TestIssue60FormatDefectZeroPRs:
             f"diagnostic must be coded and name the duplicated node; got: {result['errors']}"
         )
         assert not ledger.exists() or read_ledger(ledger) == {}, "no ledger records on schema failure"
+
+
+# ---------------------------------------------------------------------------
+# RESIDUAL (v10) TDD falsifiers — SL-0 immutable tests-only RED boundary
+
+class TestResidualInvariants:
+    """Guarded TDD falsifiers for RESIDUAL: Broker, Train, and Channel Residuals.
+
+    When PHASE_LOOP_TDD_EXPECT_RESIDUAL is NOT set (or != "1"), these tests
+    pass cleanly (default-GREEN). When PHASE_LOOP_TDD_EXPECT_RESIDUAL=1, these
+    tests activate and fail (RED) against pre-implementation production code at
+    their named guarantees.
+    """
+
+    def _is_activated(self) -> bool:
+        return os.environ.get("PHASE_LOOP_TDD_EXPECT_RESIDUAL") == "1"
+
+    def test_residual_tdd_chronology(self, tmp_path: Path):
+        """EC-RESIDUAL-0: residual_tdd_chronology TDD falsifier.
+
+        Guards production-facing commit-identity chronology API, git graph ancestry derivation, premerge attribution, and F841 triage state.
+        """
+        if not self._is_activated():
+            return
+
+        import inspect
+        import subprocess
+        from phase_loop_test_utils import make_repo
+        from phase_loop_runtime.legible_evidence import LegibleChronologyError, validate_chronology
+
+        repo_root = Path(__file__).resolve().parents[2]
+        test_file = Path("phase-loop-runtime/tests/test_train_invariants.py")
+        src_dir = repo_root / "phase-loop-runtime" / "src" / "phase_loop_runtime"
+        assert (repo_root / test_file).exists(), "test_train_invariants.py missing from git inventory"
+        assert src_dir.exists(), "phase_loop_runtime source tree missing from git inventory"
+
+        # 1. Build a real temporary git repository with valid commit graph ancestry
+        chron_repo = make_repo(tmp_path / "chronology_graph_valid")
+        (chron_repo / "README.md").write_text("initial", encoding="utf-8")
+        subprocess.run(["git", "add", "README.md"], cwd=chron_repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "C0: initial"], cwd=chron_repo, check=True, capture_output=True)
+
+        (chron_repo / "test_file.py").write_text("# test", encoding="utf-8")
+        subprocess.run(["git", "add", "test_file.py"], cwd=chron_repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "C_test: tests landing"], cwd=chron_repo, check=True, capture_output=True)
+
+        (chron_repo / "src_file.py").write_text("# impl", encoding="utf-8")
+        subprocess.run(["git", "add", "src_file.py"], cwd=chron_repo, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "C_impl: implementation"], cwd=chron_repo, check=True, capture_output=True)
+
+        # 2. Build inverted commit graph topology
+        chron_repo_inv = make_repo(tmp_path / "chronology_graph_inverted")
+        (chron_repo_inv / "README.md").write_text("initial", encoding="utf-8")
+        subprocess.run(["git", "add", "README.md"], cwd=chron_repo_inv, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "C0: initial"], cwd=chron_repo_inv, check=True, capture_output=True)
+        c0_sha_inv = subprocess.run(["git", "rev-parse", "HEAD"], cwd=chron_repo_inv, check=True, capture_output=True, text=True).stdout.strip()
+
+        (chron_repo_inv / "src_file.py").write_text("# impl early", encoding="utf-8")
+        subprocess.run(["git", "add", "src_file.py"], cwd=chron_repo_inv, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "C_impl_inv"], cwd=chron_repo_inv, check=True, capture_output=True)
+
+        subprocess.run(["git", "checkout", "-b", "tests-branch", c0_sha_inv], cwd=chron_repo_inv, check=True, capture_output=True)
+        (chron_repo_inv / "test_file.py").write_text("# test late", encoding="utf-8")
+        subprocess.run(["git", "add", "test_file.py"], cwd=chron_repo_inv, check=True, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "C_test_inv"], cwd=chron_repo_inv, check=True, capture_output=True)
+
+        # 3. Freeze production-facing API: validate_chronology must receive commit identities and own the check
+        chron_params = inspect.signature(validate_chronology).parameters
+        has_commit_ancestry_api = (
+            "tests_landing_commit" in chron_params or "tests_landing_sha" in chron_params
+        )
+
+        # Negative control / mutation check: calling validate_chronology with tests_landing_ancestor_of_base=True on inverted graph accepts invalid topology
+        rejected_caller_bool = False
+        try:
+            validate_chronology(chron_repo_inv, tests_landing_ancestor_of_base=True)
+        except LegibleChronologyError:
+            rejected_caller_bool = True
+
+        caller_boolean_trusted = not rejected_caller_bool
+
+        # 4. Separately retain governed_premerge content-block then structural-hold non_convergence regression
+        from phase_loop_runtime.governed_premerge import GateResult, ReviewFinding, run_governed_premerge_loop
+
+        findings_round1 = [
+            ReviewFinding(
+                code="review_block",
+                reason="content block",
+                severity="block",
+                blocker_class="review_gate_block",
+            )
+        ]
+        gate1 = GateResult(ran=True, promoted=False, findings=tuple(findings_round1), reason="content_rejected")
+        gate2 = GateResult(ran=True, promoted=False, degraded=False, findings=(), reason="content_rejected")
+
+        invokes = [gate1, gate2]
+
+        def mock_invoke(**kwargs):
+            return invokes.pop(0) if invokes else gate2
+
+        def mock_apply_fix(round_num, artifact, findings):
+            return artifact
+
+        res_loop = run_governed_premerge_loop(
+            artifact="test_artifact",
+            author_executor="gemini",
+            author_vendors=("google",),
+            run_mode="governed",
+            max_rounds=2,
+            invoke=mock_invoke,
+            apply_fix=mock_apply_fix,
+        )
+
+        premerge_reason_ok = (res_loop.reason == "non_convergence")
+
+        # 5. Check production triage evidence file
+        triage_file = repo_root / "plans" / "evidence" / "v10-RESIDUAL-f841-triage.md"
+        triage_file_exists = triage_file.exists()
+
+        if not has_commit_ancestry_api or caller_boolean_trusted or not premerge_reason_ok or not triage_file_exists:
+            defect_details = []
+            if not has_commit_ancestry_api:
+                defect_details.append("validate_chronology lacks production commit-identity ancestry parameters")
+            if caller_boolean_trusted:
+                defect_details.append("validate_chronology trusts caller boolean (accepts True on inverted Git graph)")
+            if not premerge_reason_ok:
+                defect_details.append(f"governed_premerge non_convergence returned {res_loop.reason!r}")
+            if not triage_file_exists:
+                defect_details.append("plans/evidence/v10-RESIDUAL-f841-triage.md missing")
+
+            raise AssertionError(
+                "RESIDUAL-RED-ANCHOR::residual_tdd_chronology — "
+                f"chronology contract defects present: {'; '.join(defect_details)}"
+            )
+
+    def test_residual_publish_identity_includes_base(self, tmp_path: Path):
+        """EC-RESIDUAL-1: residual_publish_identity_includes_base TDD falsifier.
+
+        Guards four-argument publish identity: (repo, branch, base, head_sha) and AST value-flow binding.
+        """
+        if not self._is_activated():
+            return
+
+        import ast
+        from dataclasses import fields
+
+        from phase_loop_runtime.convergence import contracts
+        from phase_loop_runtime.convergence.broker.evidence import EvidenceRecord
+        from phase_loop_runtime.convergence.provider_contracts import TerminalOutcomeState
+
+        defect_details = []
+
+        # 0. Prove 3-argument call raises TypeError
+        try:
+            contracts.publish_committed_branch_idempotency_key("repo-a", "feat/x", "main")
+        except TypeError:
+            pass
+        else:
+            defect_details.append("3-argument call to publish_committed_branch_idempotency_key did not raise TypeError")
+
+        # 1. EvidenceRecord dataclass, serialization, and real BrokerEvidenceStore lifecycle checks
+        ev_fields = {f.name for f in fields(EvidenceRecord)}
+        if "base" not in ev_fields:
+            defect_details.append("EvidenceRecord dataclass missing 'base' field")
+        else:
+            try:
+                rec = EvidenceRecord(idempotency_key="k", state=TerminalOutcomeState.SUCCESS, evidence_reference="ref", base="main")
+                rec_dict = rec.to_json() if hasattr(rec, "to_json") else getattr(rec, "__dict__", {})
+                if not isinstance(rec_dict, dict) or rec_dict.get("base") != "main":
+                    defect_details.append("EvidenceRecord.to_json() failed to serialize exact 'base' value")
+
+                from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore
+                ev_store = BrokerEvidenceStore(tmp_path / "evidence")
+                try:
+                    ev_store.record_intent("k", base="main")
+                except TypeError:
+                    defect_details.append("BrokerEvidenceStore.record_intent lacks future 'base' parameter")
+                else:
+                    ev_store.record_terminal(rec)
+                    reloaded_dict = ev_store.replay()
+                    if not isinstance(reloaded_dict, dict) or "k" not in reloaded_dict:
+                        defect_details.append("BrokerEvidenceStore.replay() did not return dict containing key 'k'")
+                    elif getattr(reloaded_dict["k"], "base", None) != "main":
+                        defect_details.append("BrokerEvidenceStore.replay()['k'] failed to preserve exact 'base' attribute")
+            except TypeError as exc:
+                defect_details.append(f"EvidenceRecord construction failed with base argument: {exc}")
+            except Exception as exc:
+                defect_details.append(f"BrokerEvidenceStore lifecycle control raised exception: {exc}")
+
+        # 2. AST Value-Flow & Definition Verifier helper over contracts.py, verbs.py, admission.py, and evidence.py
+        def verify_publish_identity_value_flow(contracts_src: str, verbs_src: str, admission_src: str, evidence_src: str) -> list[str]:
+            errors = []
+
+            # Check definition in contracts.py
+            contracts_ast = ast.parse(contracts_src)
+            def_node = next(
+                (n for n in ast.walk(contracts_ast) if isinstance(n, ast.FunctionDef) and n.name == "publish_committed_branch_idempotency_key"),
+                None
+            )
+            if def_node is None:
+                errors.append("def publish_committed_branch_idempotency_key missing in contracts.py")
+            else:
+                arg_names = [arg.arg for arg in def_node.args.args]
+                if arg_names != ["repo", "branch", "base", "head_sha"]:
+                    errors.append(f"signature mismatch: expected ['repo', 'branch', 'base', 'head_sha'], got {arg_names}")
+                base_used = any(isinstance(n, ast.Name) and n.id == "base" for n in ast.walk(def_node))
+                if not base_used:
+                    errors.append("function body does not consume 'base' parameter")
+
+            # Helper to check call sites requiring EXACT ONE call per target method
+            def check_call_site(tree: ast.AST, class_name: str, method_name: str, expected_base_expr: str):
+                class_node = next((n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == class_name), None)
+                if class_node is None:
+                    return f"class {class_name} missing"
+                method_node = next((n for n in ast.walk(class_node) if isinstance(n, ast.FunctionDef) and n.name == method_name), None)
+                if method_node is None:
+                    return f"method {class_name}.{method_name} missing"
+
+                calls = [n for n in ast.walk(method_node) if isinstance(n, ast.Call) and (
+                    (isinstance(n.func, ast.Name) and n.func.id == "publish_committed_branch_idempotency_key") or
+                    (isinstance(n.func, ast.Attribute) and n.func.attr == "publish_committed_branch_idempotency_key")
+                )]
+                if len(calls) != 1:
+                    return f"method {class_name}.{method_name} has {len(calls)} calls to publish_committed_branch_idempotency_key (expected exactly 1)"
+
+                call = calls[0]
+                total_args = len(call.args) + len(call.keywords)
+                if total_args < 4:
+                    return f"call in {class_name}.{method_name} has fewer than 4 arguments ({total_args})"
+
+                base_val = None
+                if len(call.args) >= 3:
+                    base_val = call.args[2]
+                else:
+                    kw = next((k for k in call.keywords if k.arg == "base"), None)
+                    if kw:
+                        base_val = kw.value
+
+                if base_val is None:
+                    return f"call in {class_name}.{method_name} missing base argument"
+
+                actual_expr = ast.unparse(base_val).strip()
+                if actual_expr != expected_base_expr:
+                    return f"call in {class_name}.{method_name} base expression is {actual_expr!r}, expected {expected_base_expr!r}"
+                return None
+
+            err_producer = check_call_site(contracts_ast, "PreAdmissionEnvelope", "idempotency_key", "self.base")
+            if err_producer:
+                errors.append(err_producer)
+
+            verbs_ast = ast.parse(verbs_src)
+            err_dedup = check_call_site(verbs_ast, "BrokerService", "_dedup_key", "request.base")
+            if err_dedup:
+                errors.append(err_dedup)
+
+            err_replay = check_call_site(verbs_ast, "BrokerService", "_legacy_terminal_replay", "request.base")
+            if err_replay:
+                errors.append(err_replay)
+
+            admission_ast = ast.parse(admission_src)
+            err_admission = check_call_site(admission_ast, "LinearizableAdmissionStore", "admit_next", "auth.base")
+            if err_admission:
+                errors.append(err_admission)
+
+            # Check admission.py branch_head helper returns 4-tuple with normalized base attribute in both branches
+            store_class = next((n for n in ast.walk(admission_ast) if isinstance(n, ast.ClassDef) and n.name == "LinearizableAdmissionStore"), None)
+            if store_class:
+                admit_method = next((n for n in ast.walk(store_class) if isinstance(n, ast.FunctionDef) and n.name == "admit_next"), None)
+                if admit_method:
+                    bh_func = next((n for n in ast.walk(admit_method) if isinstance(n, ast.FunctionDef) and n.name == "branch_head"), None)
+                    if bh_func:
+                        ret_tuples = [n.value for n in ast.walk(bh_func) if isinstance(n, ast.Return) and isinstance(n.value, ast.Tuple)]
+                        if not ret_tuples:
+                            errors.append("admission.py branch_head has no return tuple statements")
+                        for t in ret_tuples:
+                            if len(t.elts) != 4:
+                                errors.append(f"admission.py branch_head returns tuple with {len(t.elts)} elements (expected exactly 4)")
+                            else:
+                                el = t.elts[2]
+                                is_base_attr = isinstance(el, ast.Attribute) and el.attr == "base"
+                                if not is_base_attr:
+                                    errors.append(f"admission.py branch_head tuple element 3 is {ast.unparse(el)!r}, expected normalized base attribute (.base)")
+
+            # Check BrokerService._replay in verbs.py contains ast.Compare between current.base and request.base
+            bs_class = next((n for n in ast.walk(verbs_ast) if isinstance(n, ast.ClassDef) and n.name == "BrokerService"), None)
+            if bs_class:
+                replay_method = next((n for n in ast.walk(bs_class) if isinstance(n, ast.FunctionDef) and n.name == "_replay"), None)
+                if replay_method:
+                    has_base_cmp = False
+                    for node in ast.walk(replay_method):
+                        if isinstance(node, ast.Compare):
+                            left_str = ast.unparse(node.left).strip()
+                            comp_strs = [ast.unparse(c).strip() for c in node.comparators]
+                            operands = [left_str] + comp_strs
+                            if "current.base" in operands and "request.base" in operands:
+                                has_base_cmp = True
+                                break
+                    if not has_base_cmp:
+                        errors.append("BrokerService._replay method AST missing exact ast.Compare between current.base and request.base")
+
+            # Check EvidenceRecord class in evidence.py
+            evidence_ast = ast.parse(evidence_src)
+            ev_class = next((n for n in ast.walk(evidence_ast) if isinstance(n, ast.ClassDef) and n.name == "EvidenceRecord"), None)
+            if ev_class is None:
+                errors.append("class EvidenceRecord missing in evidence.py")
+            else:
+                has_base_field = any(isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name) and stmt.target.id == "base" for stmt in ev_class.body)
+                if not has_base_field:
+                    errors.append("EvidenceRecord class missing 'base' field annotation")
+
+            # Check all production EvidenceRecord(...) calls bind base
+            for fpath, tree in (("verbs.py", verbs_ast), ("evidence.py", evidence_ast)):
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Call):
+                        func_name = node.func.id if isinstance(node.func, ast.Name) else (node.func.attr if isinstance(node.func, ast.Attribute) else None)
+                        if func_name == "EvidenceRecord":
+                            kw_names = {k.arg for k in node.keywords}
+                            if "base" not in kw_names and len(node.args) < 4:
+                                errors.append(f"EvidenceRecord(...) call in {fpath} missing base parameter")
+
+            return errors
+
+        # 3. Read production source files and verify AST value flow
+        repo_root = Path(__file__).resolve().parents[2]
+        contracts_path = repo_root / "phase-loop-runtime/src/phase_loop_runtime/convergence/contracts.py"
+        verbs_path = repo_root / "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/verbs.py"
+        admission_path = repo_root / "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/admission.py"
+        evidence_path = repo_root / "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/evidence.py"
+
+        contracts_text = contracts_path.read_text(encoding="utf-8")
+        verbs_text = verbs_path.read_text(encoding="utf-8")
+        admission_text = admission_path.read_text(encoding="utf-8")
+        evidence_text = evidence_path.read_text(encoding="utf-8")
+
+        prod_errors = verify_publish_identity_value_flow(contracts_text, verbs_text, admission_text, evidence_text)
+        if prod_errors:
+            defect_details.extend(prod_errors)
+
+        # 4. Mandatory class/method-bounded source mutants for all four publish identity sites & _replay
+        def _mutate_method(src: str, class_name: str, method_name: str, target: str, replacement: str) -> tuple[str, Optional[str]]:
+            try:
+                tree = ast.parse(src)
+            except Exception as exc:
+                return src, f"ast.parse failed: {exc}"
+            class_node = next((n for n in ast.walk(tree) if isinstance(n, ast.ClassDef) and n.name == class_name), None)
+            if not class_node:
+                return src, f"class {class_name} missing"
+            method_node = next((n for n in ast.walk(class_node) if isinstance(n, ast.FunctionDef) and n.name == method_name), None)
+            if not method_node:
+                return src, f"method {class_name}.{method_name} missing"
+            lines = src.splitlines(keepends=True)
+            start_line = method_node.lineno - 1
+            end_line = method_node.end_lineno
+            chunk = "".join(lines[start_line:end_line])
+            count = chunk.count(target)
+            if count != 1:
+                return src, f"target {target!r} occurred {count} times in {class_name}.{method_name} (expected exactly 1)"
+            new_chunk = chunk.replace(target, replacement, 1)
+            mutated_src = "".join(lines[:start_line]) + new_chunk + "".join(lines[end_line:])
+            if mutated_src == src:
+                return src, f"mutation of {target!r} in {class_name}.{method_name} resulted in no-op"
+            return mutated_src, None
+
+        # Site 1: PreAdmissionEnvelope.idempotency_key in contracts.py
+        mut1_contracts, err1_mut = _mutate_method(contracts_text, "PreAdmissionEnvelope", "idempotency_key", "self.base", '"main"')
+        if err1_mut:
+            defect_details.append(f"Site 1 mutant error: {err1_mut}")
+        else:
+            errs1 = verify_publish_identity_value_flow(mut1_contracts, verbs_text, admission_text, evidence_text)
+            if not errs1:
+                defect_details.append("AST verifier failed to reject Site 1 wrong-base mutant in PreAdmissionEnvelope.idempotency_key")
+
+        # Site 2: BrokerService._dedup_key in verbs.py
+        mut2_verbs, err2_mut = _mutate_method(verbs_text, "BrokerService", "_dedup_key", "request.base", "request.branch")
+        if err2_mut:
+            defect_details.append(f"Site 2 mutant error: {err2_mut}")
+        else:
+            errs2 = verify_publish_identity_value_flow(contracts_text, mut2_verbs, admission_text, evidence_text)
+            if not errs2:
+                defect_details.append("AST verifier failed to reject Site 2 wrong-base mutant in BrokerService._dedup_key")
+
+        # Site 3: BrokerService._legacy_terminal_replay in verbs.py
+        mut3_verbs, err3_mut = _mutate_method(verbs_text, "BrokerService", "_legacy_terminal_replay", "request.base", "request.branch")
+        if err3_mut:
+            defect_details.append(f"Site 3 mutant error: {err3_mut}")
+        else:
+            errs3 = verify_publish_identity_value_flow(contracts_text, mut3_verbs, admission_text, evidence_text)
+            if not errs3:
+                defect_details.append("AST verifier failed to reject Site 3 wrong-base mutant in BrokerService._legacy_terminal_replay")
+
+        # Site 4: LinearizableAdmissionStore.admit_next in admission.py
+        mut4_admission, err4_mut = _mutate_method(admission_text, "LinearizableAdmissionStore", "admit_next", "auth.base", "auth.branch")
+        if err4_mut:
+            defect_details.append(f"Site 4 mutant error: {err4_mut}")
+        else:
+            errs4 = verify_publish_identity_value_flow(contracts_text, verbs_text, mut4_admission, evidence_text)
+            if not errs4:
+                defect_details.append("AST verifier failed to reject Site 4 wrong-base mutant in LinearizableAdmissionStore.admit_next")
+
+        # Site 5: BrokerService._replay in verbs.py (target current.base)
+        mut5_replay, err5_mut = _mutate_method(verbs_text, "BrokerService", "_replay", "current.base", "current.branch")
+        if err5_mut:
+            defect_details.append(f"Site 5 mutant error: {err5_mut}")
+        else:
+            errs5 = verify_publish_identity_value_flow(contracts_text, mut5_replay, admission_text, evidence_text)
+            if not errs5:
+                defect_details.append("AST verifier failed to reject wrong-base mutant in BrokerService._replay")
+
+        if defect_details:
+            raise AssertionError(
+                "RESIDUAL-RED-ANCHOR::residual_publish_identity_includes_base — "
+                f"publish identity base binding defects present: {'; '.join(defect_details)}"
+            )
+
+    def test_residual_pr_open_resume_live_head_failure(self, tmp_path: Path):
+        """EC-RESIDUAL-2: residual_pr_open_resume_live_head_failure TDD falsifier.
+
+        Guards pr_open resume live-head read failure handling (typed blocked return & ledger row).
+        """
+        if not self._is_activated():
+            return
+
+        # 1. Path-entered mutation: restore ledger-head fallback
+        def _resolve_resume_head(live_sha: Optional[str], ledger_head: str, *, fallback_to_ledger: bool = False) -> Optional[str]:
+            if fallback_to_ledger:
+                return live_sha or ledger_head
+            return live_sha
+
+        mutated_head = _resolve_resume_head(None, "sha-ledger", fallback_to_ledger=True)
+        evidence_v3_entry = {
+            "contract": "verification_evidence.v3",
+            "mutation_id": "restore_ledger_head_fallback",
+            "resolved_head": mutated_head,
+            "fallback_used": mutated_head == "sha-ledger",
+        }
+        assert evidence_v3_entry["fallback_used"], "mutation must use ledger head fallback when live head is unavailable"
+        restored_head = _resolve_resume_head(None, "sha-ledger", fallback_to_ledger=False)
+        assert restored_head is None, "restored control must not fall back to ledger head when live head fails"
+
+        # 2. Execute fresh raises/unavailable/success run_train scenarios
+        sc1_dir = tmp_path / "sc1"
+        sc1_dir.mkdir()
+        roadmap1 = parse_train_roadmap(TRAIN_2NODE_MD)
+        ws_map1 = {n.node_id: sc1_dir / n.repo for n in roadmap1.nodes}
+        ledger1 = _setup_p3_done(sc1_dir, roadmap1, ws_map1)
+
+        def _head_raises(ws, br):
+            raise RuntimeError("head unavailable")
+
+        res1 = None
+        exc1 = None
+        try:
+            res1 = run_train(
+                roadmap1,
+                ledger1,
+                run_mode="governed",
+                resolve_workspace=lambda n: ws_map1[n.node_id],
+                _run_loop=lambda *a, **kw: (None, []),
+                _publish=_make_publish_stub(),
+                _set_upstream_ref_fn=lambda *a, **kw: [],
+                _preflight_fn=_preflight_pass,
+                _pr_is_open=_pr_is_open_true,
+                _live_pr_head_sha_fn=_head_raises,
+                _merge_phase_enabled=True,
+                _merge_pr_fn=_make_merge_pr_stub([]),
+                _reverify_fn=lambda ws, rp, rm: True,
+                _train_review_fn=_approval_review_fn,
+                _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
+            )
+        except Exception as e:
+            exc1 = e
+
+        rec1 = read_ledger(ledger1)
+        blocked_records1 = [r for r in rec1.values() if isinstance(r, LedgerRecord) and getattr(r, "status", None) == "blocked"]
+
+        # Scenario 2: live-head callback returns unavailable (None)
+        sc2_dir = tmp_path / "sc2"
+        sc2_dir.mkdir()
+        roadmap2 = parse_train_roadmap(TRAIN_2NODE_MD)
+        ws_map2 = {n.node_id: sc2_dir / n.repo for n in roadmap2.nodes}
+        ledger2 = _setup_p3_done(sc2_dir, roadmap2, ws_map2)
+
+        res2 = None
+        exc2 = None
+        try:
+            res2 = run_train(
+                roadmap2,
+                ledger2,
+                run_mode="governed",
+                resolve_workspace=lambda n: ws_map2[n.node_id],
+                _run_loop=lambda *a, **kw: (None, []),
+                _publish=_make_publish_stub(),
+                _set_upstream_ref_fn=lambda *a, **kw: [],
+                _preflight_fn=_preflight_pass,
+                _pr_is_open=_pr_is_open_true,
+                _live_pr_head_sha_fn=lambda ws, br: None,
+                _merge_phase_enabled=True,
+                _merge_pr_fn=_make_merge_pr_stub([]),
+                _reverify_fn=lambda ws, rp, rm: True,
+                _train_review_fn=_approval_review_fn,
+                _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
+            )
+        except Exception as e:
+            exc2 = e
+
+        rec2 = read_ledger(ledger2)
+        blocked_records2 = [r for r in rec2.values() if isinstance(r, LedgerRecord) and getattr(r, "status", None) == "blocked"]
+
+        # Scenario 3: live-head callback succeeds
+        sc3_dir = tmp_path / "sc3"
+        sc3_dir.mkdir()
+        roadmap3 = parse_train_roadmap(TRAIN_2NODE_MD)
+        ws_map3 = {n.node_id: sc3_dir / n.repo for n in roadmap3.nodes}
+        ledger3 = _setup_p3_done(sc3_dir, roadmap3, ws_map3)
+
+        res3 = None
+        exc3 = None
+        try:
+            res3 = run_train(
+                roadmap3,
+                ledger3,
+                run_mode="governed",
+                resolve_workspace=lambda n: ws_map3[n.node_id],
+                _run_loop=lambda *a, **kw: (None, []),
+                _publish=_make_publish_stub(),
+                _set_upstream_ref_fn=lambda *a, **kw: [],
+                _preflight_fn=_preflight_pass,
+                _pr_is_open=_pr_is_open_true,
+                _live_pr_head_sha_fn=lambda ws, br: f"sha-DRAFT-{ws.name}",
+                _merge_phase_enabled=True,
+                _merge_pr_fn=_make_merge_pr_stub([]),
+                _reverify_fn=lambda ws, rp, rm: True,
+                _train_review_fn=_approval_review_fn,
+                _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
+            )
+        except Exception as e:
+            exc3 = e
+
+        rec3 = read_ledger(ledger3)
+        assert isinstance(rec3, dict), "read_ledger must return a dict"
+
+        # Evaluate scenarios against named RED anchor
+        if exc1 is not None or not res1 or res1.get("status") != "blocked" or len(blocked_records1) != 1 or exc2 is not None or not res2 or res2.get("status") != "blocked" or len(blocked_records2) != 1 or exc3 is not None or not res3 or res3.get("status") != "merged":
+            defect_details = []
+            if exc1 is not None:
+                defect_details.append(f"live head callback exception raised unhandled {exc1}")
+            if not res1 or res1.get("status") != "blocked":
+                defect_details.append(f"live head exception returned status={res1.get('status') if res1 else None!r} instead of blocked")
+            if len(blocked_records1) != 1:
+                defect_details.append(f"live head exception recorded {len(blocked_records1)} blocked ledger rows instead of 1")
+            if exc2 is not None:
+                defect_details.append(f"unavailable live head raised unhandled {exc2}")
+            if not res2 or res2.get("status") != "blocked":
+                defect_details.append(f"unavailable live head returned status={res2.get('status') if res2 else None!r} instead of blocked")
+            if len(blocked_records2) != 1:
+                defect_details.append(f"unavailable live head recorded {len(blocked_records2)} blocked ledger rows instead of 1")
+
+            raise AssertionError(
+                "RESIDUAL-RED-ANCHOR::residual_pr_open_resume_live_head_failure — "
+                f"pr_open resume live head read failure defects present: {'; '.join(defect_details)}"
+            )
+
+    def test_residual_non_fab_merge_queue_null_oid(self, tmp_path: Path):
+        """EC-RESIDUAL-3: residual_non_fab_merge_queue_null_oid TDD falsifier.
+
+        Guards integrated run_train enqueue and reconcile path, requiring gh pr merge argv to exist and omit --delete-branch.
+        """
+        if not self._is_activated():
+            return
+
+        import json
+        import time
+        from unittest.mock import patch
+        from phase_loop_runtime.train_runner import _fab_queue_bound_merge_wait, _live_merge_pr
+
+        # 1. Direct _fab_queue_bound_merge_wait unit controls
+        with patch("phase_loop_runtime.train_runner._live_pr_merged_sha", return_value="sha-MERGED-123"):
+            res_merged = _fab_queue_bound_merge_wait(
+                tmp_path, "feat/x", base="main", head_sha="sha123",
+                poll_interval_s=0.01, poll_timeout_s=0.05,
+                clock=time.time, sleep=lambda s: None,
+                dequeue_fn=lambda ws, br: True,
+            )
+            assert res_merged == "sha-MERGED-123", "terminal success outcome mismatch"
+
+        # 2. Integrated run_train execution
+        roadmap = parse_train_roadmap(TRAIN_1NODE_MD)
+        ws_map = {n.node_id: tmp_path / n.repo for n in roadmap.nodes}
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+        append_record(ledger, LedgerRecord(
+            node_id="repo-a/specs/plan-a.md",
+            status="pr_open",
+            branch="feat/train-repo-a",
+            head_sha="sha-DRAFT-repo-a",
+            pr_url="https://gh.com/repo-a/pr/1",
+            merge_order=0,
+        ))
+
+        captured_merge_argvs: list[list[str]] = []
+        queue_reconcile_entered = [False]
+
+        def fake_subproc_run(cmd, *args, **kwargs):
+            if isinstance(cmd, list) and len(cmd) >= 3 and cmd[0] == "gh" and cmd[1] == "pr" and cmd[2] == "merge":
+                captured_merge_argvs.append(list(cmd))
+                return type("CompletedProcess", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+            if isinstance(cmd, list) and len(cmd) >= 3 and cmd[0] == "gh" and cmd[1] == "pr" and cmd[2] == "view":
+                res_data = json.dumps({"isDraft": False, "baseRefName": "main", "headRefOid": "sha-DRAFT-repo-a"})
+                return type("CompletedProcess", (), {"returncode": 0, "stdout": res_data, "stderr": ""})()
+            return type("CompletedProcess", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+        def _queue_wait_spy(workspace, branch, *, base, head_sha, **kwargs):
+            queue_reconcile_entered[0] = True
+            raise RuntimeError("merge-queue-timeout-dequeued")
+
+        with patch("subprocess.run", side_effect=fake_subproc_run), \
+             patch("phase_loop_runtime.train_runner._fab_queue_bound_merge_wait", side_effect=_queue_wait_spy):
+            result = run_train(
+                roadmap,
+                ledger,
+                run_mode="governed",
+                resolve_workspace=lambda n: ws_map[n.node_id],
+                _run_loop=lambda *a, **kw: (None, []),
+                _publish=_make_publish_stub(),
+                _set_upstream_ref_fn=lambda *a, **kw: [],
+                _preflight_fn=_preflight_pass,
+                _pr_is_open=_pr_is_open_true,
+                _live_pr_head_sha_fn=lambda ws, br: "sha-DRAFT-repo-a",
+                _merge_phase_enabled=True,
+                _merge_pr_fn=_live_merge_pr,
+                _reverify_fn=lambda ws, rp, rm: True,
+                _train_review_fn=_approval_review_fn,
+                _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
+            )
+
+        delete_branch_present = any("--delete-branch" in cmd for cmd in captured_merge_argvs)
+
+        if not captured_merge_argvs or delete_branch_present or not queue_reconcile_entered[0] or result.get("status") == "merged":
+            raise AssertionError(
+                "RESIDUAL-RED-ANCHOR::residual_non_fab_merge_queue_null_oid — "
+                "non-FAB merge with null OID did not enter queue reconciliation or included --delete-branch"
+            )
+
+    def test_residual_hotfix_shell_operator(self, tmp_path: Path):
+        """EC-RESIDUAL-4: residual_hotfix_shell_operator TDD falsifier.
+
+        Guards public hotfix execution path refusal of shell control operators (; && || | < > \n) before verification launch.
+        """
+        if not self._is_activated():
+            return
+
+        import argparse
+        from unittest.mock import patch
+        from phase_loop_runtime.cli import _hotfix_command
+
+        # 1. Benign safe positive control driven through public _hotfix_command CLI path with valid repo/roadmap/plan preconditions
+        repo_dir = tmp_path / "hotfix_repo"
+        repo_dir.mkdir(parents=True, exist_ok=True)
+        specs_dir = repo_dir / "specs"
+        specs_dir.mkdir(parents=True, exist_ok=True)
+        roadmap_file = specs_dir / "phase-plans-v1.md"
+        roadmap_file.write_text(
+            "---\ntitle: Hotfix Test Roadmap\nphases:\n  - id: CONTRACT\n    name: Contract\n---\n",
+            encoding="utf-8",
+        )
+
+        plans_dir = repo_dir / "plans"
+        plans_dir.mkdir(parents=True, exist_ok=True)
+        safe_plan = plans_dir / "CONTRACT.md"
+        safe_plan.write_text('verification_command: pytest -k "test1 or test2" --tb=short\n', encoding="utf-8")
+
+        run_verification_calls: list[list[list[str]]] = []
+
+        def spy_run_verification(repo, run_dir, commands, suite_command, *args, **kwargs):
+            run_verification_calls.append(commands)
+
+        class _PassingValidation:
+            ok = True
+            code = "ok"
+
+            @staticmethod
+            def to_json():
+                return {"ok": True, "code": "ok", "exit_summary": {}}
+
+        args_safe = argparse.Namespace(
+            plan=str(safe_plan.relative_to(repo_dir)),
+            reason="safe hotfix test",
+            init_stub=None,
+            roadmap=None,
+        )
+
+        with patch("phase_loop_runtime.cli.run_verification", side_effect=spy_run_verification), \
+             patch("phase_loop_runtime.cli.validate_verification_artifact", return_value=_PassingValidation()):
+            exit_code_safe = _hotfix_command(repo=repo_dir, args=args_safe, as_json=True)
+
+        safe_reached_verification = (len(run_verification_calls) == 1 and exit_code_safe == 0)
+
+        # 2. Public hotfix execution path refusal tests for all forbidden shell operators
+        forbidden_operators = [";", "&&", "||", "|", "<", ">", "\n"]
+        unsafe_command_reached_verification = False
+
+        for op in forbidden_operators:
+            unsafe_plan = plans_dir / f"CONTRACT_unsafe_{hash(op)}.md"
+            unsafe_plan.write_text(f"verification_command: pytest {op} echo sentinel_reached\n", encoding="utf-8")
+
+            args_unsafe = argparse.Namespace(
+                plan=str(unsafe_plan.relative_to(repo_dir)),
+                reason=f"unsafe hotfix test {op}",
+                init_stub=None,
+                roadmap=None,
+            )
+
+            calls_unsafe: list[list[list[str]]] = []
+
+            def spy_run_verification_unsafe(repo, run_dir, commands, suite_command, *args, **kwargs):
+                calls_unsafe.append(commands)
+
+            with patch("phase_loop_runtime.cli.run_verification", side_effect=spy_run_verification_unsafe), \
+                 patch("phase_loop_runtime.cli.validate_verification_artifact", return_value=_PassingValidation()):
+                exit_code = _hotfix_command(repo=repo_dir, args=args_unsafe, as_json=True)
+
+            if len(calls_unsafe) > 0 or exit_code == 0:
+                unsafe_command_reached_verification = True
+
+        if not safe_reached_verification or unsafe_command_reached_verification:
+            defect_details = []
+            if not safe_reached_verification:
+                defect_details.append("safe positive control failed to reach run_verification")
+            if unsafe_command_reached_verification:
+                defect_details.append("_hotfix_command failed to refuse shell control operator before verification launch")
+
+            raise AssertionError(
+                "RESIDUAL-RED-ANCHOR::residual_hotfix_shell_operator — "
+                f"hotfix execution path defects present: {'; '.join(defect_details)}"
+            )
+
+    def test_residual_channel_session_model(self, tmp_path: Path, monkeypatch):
+        """EC-RESIDUAL-5: residual_channel_session_model TDD falsifier.
+
+        Guards launcher-to-sidecar explicit intended model provenance and preflight session model validation.
+        """
+        if not self._is_activated():
+            return
+
+        monkeypatch.setenv("PHASE_LOOP_RUNNER_REPO_ROOT", str(Path(__file__).resolve().parents[2]))
+
+        import inspect
+        import json
+        from dataclasses import fields
+        from io import BytesIO
+        from urllib import response
+
+        from phase_loop_test_utils import make_repo
+        from phase_loop_runtime.claude_channel_sidecar import ChannelSidecarClient, ChannelSidecarClientError, SessionRegistryRecord
+        from phase_loop_runtime.handoff import render_tui_handoff
+        from phase_loop_runtime.launcher import build_launch_request, build_launch_spec, ModelSelection, _render_command_template
+        from phase_loop_runtime.models import CommandAdapterConfig, StateSnapshot, WorkUnitMetric, utc_now
+        from phase_loop_runtime.observability import summarize_work_unit_metrics
+        from phase_loop_runtime.prompts import build_prompt
+        from phase_loop_runtime.render import render_status
+
+        defect_details = []
+
+        # 1. Drive public launcher-to-sidecar flow using build_launch_request and real PromptBundle
+        repo_dir = make_repo(tmp_path / "channel_repo")
+        specs_dir = repo_dir / "specs"
+        specs_dir.mkdir(parents=True, exist_ok=True)
+        roadmap_file = specs_dir / "phase-plans-v1.md"
+        roadmap_file.write_text(
+            "---\ntitle: Channel Test Roadmap\nphases:\n  - id: CONTRACT\n    name: Contract\n---\n",
+            encoding="utf-8",
+        )
+        plans_dir = repo_dir / "plans"
+        plans_dir.mkdir(parents=True, exist_ok=True)
+        plan_file = plans_dir / "CONTRACT.md"
+        plan_file.write_text("verification_command: pytest\n", encoding="utf-8")
+
+        prompt_bundle = build_prompt("execute", roadmap_file, phase="CONTRACT")
+        model_sel = ModelSelection(profile="execute", model="claude-3-5-sonnet", effort="high")
+
+        pub_req = build_launch_request(
+            executor="command",
+            action="execute",
+            repo=repo_dir,
+            roadmap=roadmap_file,
+            phase="CONTRACT",
+            plan=plan_file,
+            model_selection=model_sel,
+            prompt_bundle=prompt_bundle,
+            json_output=True,
+            bypass_approvals=False,
+        )
+        spec_bound = build_launch_spec(pub_req)
+
+        # Strict surface provenance helper validating four distinct semantic fields
+        def validate_surface_provenance(surface_name: str, surface_obj_or_dict, expected_intended: str, expected_actual: Optional[str], expected_state: str, expected_caveat: Optional[str]) -> list[str]:
+            errs = []
+            if surface_obj_or_dict is None:
+                return [f"surface {surface_name} is None"]
+
+            def _get(obj, *keys):
+                if isinstance(obj, dict):
+                    for k in keys:
+                        if k in obj:
+                            return obj[k]
+                else:
+                    for k in keys:
+                        if hasattr(obj, k):
+                            return getattr(obj, k)
+                return None
+
+            intended = _get(surface_obj_or_dict, "intended_model", "expected_model", "selected_model", "model")
+            # Actual model MUST require a distinct actual_model or verified_model field — NEVER bare model!
+            actual = _get(surface_obj_or_dict, "actual_model", "verified_model") if expected_actual is not None else None
+            state = _get(surface_obj_or_dict, "binding_state", "model_binding_state", "bound")
+            caveat = _get(surface_obj_or_dict, "caveat", "caveats")
+
+            if intended != expected_intended:
+                errs.append(f"surface {surface_name} intended_model is {intended!r}, expected {expected_intended!r}")
+
+            if expected_actual is not None:
+                if actual is None:
+                    errs.append(f"surface {surface_name} missing distinct actual_model field (actual_model/verified_model)")
+                elif actual != expected_actual:
+                    errs.append(f"surface {surface_name} actual_model is {actual!r}, expected {expected_actual!r}")
+
+            if expected_state == "bound":
+                if state not in ("bound", True):
+                    errs.append(f"surface {surface_name} binding_state is {state!r}, expected 'bound'")
+            elif expected_state == "unbound":
+                if state not in ("unbound", False):
+                    errs.append(f"surface {surface_name} binding_state is {state!r}, expected 'unbound'")
+
+            if expected_caveat == "non-empty":
+                if not caveat:
+                    errs.append(f"surface {surface_name} caveat is empty or None, expected non-empty caveat for unbound state")
+            elif expected_caveat is None or expected_caveat == "":
+                if caveat not in (None, "", []):
+                    errs.append(f"surface {surface_name} caveat is {caveat!r}, expected null/empty for bound state")
+
+            return errs
+
+        spec_errs = validate_surface_provenance("launch_spec_bound", spec_bound, "claude-3-5-sonnet", "claude-3-5-sonnet", "bound", None)
+        if spec_errs:
+            defect_details.extend(spec_errs)
+
+        # 2. Check if ChannelSidecarClient.preflight accepts expected_model parameter
+        preflight_params = inspect.signature(ChannelSidecarClient.preflight).parameters
+        has_expected_model_param = ("expected_model" in preflight_params)
+        if not has_expected_model_param:
+            defect_details.append("ChannelSidecarClient.preflight lacks expected_model parameter")
+
+        # 3. ChannelSidecarClient delivery controls (matching positive control, mismatching control, absent control)
+        session_responses = {
+            "match": {"session_id": "sess-1", "state": "ready", "channel_health": "ready", "model": "claude-3-5-sonnet", "expected_model": "claude-3-5-sonnet"},
+            "mismatch": {"session_id": "sess-1", "state": "ready", "channel_health": "ready", "model": "claude-3-5-haiku"},
+            "absent": {"session_id": "sess-1", "state": "ready", "channel_health": "ready"},
+        }
+
+        def _make_mock_opener(scenario: str, requests_log: list[tuple[str, str]]):
+            def _opener(req, timeout=None):
+                method = req.get_method()
+                url = req.full_url
+                requests_log.append((method, url))
+                if "/sessions/sess-1/message" in url:
+                    body = json.dumps({"event_id": "evt-123"}).encode("utf-8")
+                    return response.addinfourl(BytesIO(body), headers={}, url=url, code=200)
+                if "/events" in url:
+                    body = json.dumps({"events": [{"event_id": "evt-123", "acknowledged": True, "replies": [{"status": "done", "final": True, "text": "OK"}]}]}).encode("utf-8")
+                    return response.addinfourl(BytesIO(body), headers={}, url=url, code=200)
+                body = json.dumps(session_responses[scenario]).encode("utf-8")
+                return response.addinfourl(BytesIO(body), headers={}, url=url, code=200)
+            return _opener
+
+        # Mismatch control
+        log_mismatch: list[tuple[str, str]] = []
+        c_mismatch = ChannelSidecarClient(base_url="http://127.0.0.1:8080", session_id="sess-1", sender="test", opener=_make_mock_opener("mismatch", log_mismatch))
+        if has_expected_model_param:
+            try:
+                c_mismatch.preflight(expected_model="claude-3-5-sonnet")
+                defect_details.append("mismatching preflight did not raise ChannelSidecarClientError")
+            except ChannelSidecarClientError as exc:
+                if exc.reason != "session_model_mismatch":
+                    defect_details.append(f"mismatching preflight raised reason={exc.reason!r}, expected 'session_model_mismatch'")
+
+        try:
+            c_mismatch.send_and_wait("test message")
+        except ChannelSidecarClientError:
+            pass
+        except TypeError:
+            pass
+        if any(method == "POST" and "/message" in url for method, url in log_mismatch):
+            defect_details.append("mismatching model session issued POST to /message")
+
+        # Absent control
+        log_absent: list[tuple[str, str]] = []
+        c_absent = ChannelSidecarClient(base_url="http://127.0.0.1:8080", session_id="sess-1", sender="test", opener=_make_mock_opener("absent", log_absent))
+        if has_expected_model_param:
+            try:
+                c_absent.preflight(expected_model="claude-3-5-sonnet")
+                defect_details.append("absent model preflight did not raise ChannelSidecarClientError")
+            except ChannelSidecarClientError as exc:
+                if exc.reason != "session_model_unbound":
+                    defect_details.append(f"absent preflight raised reason={exc.reason!r}, expected 'session_model_unbound'")
+
+        try:
+            c_absent.send_and_wait("test message")
+        except ChannelSidecarClientError:
+            pass
+        except TypeError:
+            pass
+        if any(method == "POST" and "/message" in url for method, url in log_absent):
+            defect_details.append("absent model session issued POST to /message")
+
+        # Matching positive control & sidecar event metadata surface
+        log_match: list[tuple[str, str]] = []
+        c_match = ChannelSidecarClient(base_url="http://127.0.0.1:8080", session_id="sess-1", sender="test", opener=_make_mock_opener("match", log_match))
+        if has_expected_model_param:
+            try:
+                rec_match = c_match.preflight(expected_model="claude-3-5-sonnet")
+                pf_errs = validate_surface_provenance("session_preflight_bound", rec_match, "claude-3-5-sonnet", "claude-3-5-sonnet", "bound", None)
+                if pf_errs:
+                    defect_details.extend(pf_errs)
+            except ChannelSidecarClientError as exc:
+                defect_details.append(f"matching preflight raised unexpected error: {exc}")
+
+        # Sidecar event / launch-event metadata surface
+        event_meta_bound = {"intended_model": "claude-3-5-sonnet", "actual_model": "claude-3-5-sonnet", "binding_state": "bound", "caveat": None}
+        evt_bound_errs = validate_surface_provenance("sidecar_event_bound", event_meta_bound, "claude-3-5-sonnet", "claude-3-5-sonnet", "bound", None)
+        if evt_bound_errs:
+            defect_details.extend(evt_bound_errs)
+
+        event_meta_unbound = {"intended_model": "claude-3-5-sonnet", "actual_model": None, "binding_state": "unbound", "caveat": "session_model_unbound"}
+        evt_unbound_errs = validate_surface_provenance("sidecar_event_unbound", event_meta_unbound, "claude-3-5-sonnet", None, "unbound", "non-empty")
+        if evt_unbound_errs:
+            defect_details.extend(evt_unbound_errs)
+
+        try:
+            reply_match = c_match.send_and_wait("test message")
+            if not reply_match or not any(method == "POST" and "/message" in url for method, url in log_match):
+                defect_details.append("matching positive model session failed to issue POST to /message or return reply")
+        except (ChannelSidecarClientError, TypeError) as exc:
+            defect_details.append(f"matching positive model session raised unexpected client error: {exc}")
+
+        # 4. Command-adapter template without {model} unbound launch metadata validation
+        cmd_template_no_model = "python -m my_adapter --phase {phase} --context-file {context_file}"
+        pub_req_no_model = build_launch_request(
+            executor="command",
+            action="execute",
+            repo=repo_dir,
+            roadmap=roadmap_file,
+            phase="CONTRACT",
+            plan=plan_file,
+            model_selection=model_sel,
+            prompt_bundle=prompt_bundle,
+            json_output=True,
+            bypass_approvals=False,
+            command_adapter=CommandAdapterConfig(name="residual-no-model", template=cmd_template_no_model),
+        )
+        rendered_no_model = _render_command_template(cmd_template_no_model, pub_req_no_model)
+        if any("--phase-model" in arg or "claude-3-5-sonnet" in arg for arg in rendered_no_model):
+            defect_details.append("command adapter template without {model} falsely injected launch-bound model")
+
+        # Validate launch metadata for command-adapter template without {model} through unbound validator
+        try:
+            spec_no_model = build_launch_spec(pub_req_no_model)
+            spec_unbound_errs = validate_surface_provenance("cmd_adapter_spec_unbound", spec_no_model, "claude-3-5-sonnet", None, "unbound", "non-empty")
+            if spec_unbound_errs:
+                defect_details.extend(spec_unbound_errs)
+        except Exception as exc:
+            defect_details.append(f"command adapter launch metadata unbound validation raised exception: {exc}")
+
+        # 5. Six Surface Verification via structured provenance contracts
+        rec_fields = {f.name for f in fields(SessionRegistryRecord)}
+        session_has_binding_fields = ("expected_model" in rec_fields or "intended_model" in rec_fields) and ("actual_model" in rec_fields or "verified_model" in rec_fields) and ("binding_state" in rec_fields or "model_binding_state" in rec_fields)
+        if not session_has_binding_fields:
+            defect_details.append("SessionRegistryRecord missing expected_model/actual_model/binding_state fields")
+
+        # Bound & Unbound surfaces for status JSON, TUI handoff, and WorkUnitMetric
+        snapshot_bound = StateSnapshot(timestamp=utc_now(), repo=str(repo_dir), roadmap=str(roadmap_file), phases={"CONTRACT": "complete"}, current_phase=None, model="claude-3-5-sonnet")
+        try:
+            status_bound_json = json.loads(render_status(snapshot_bound, as_json=True))
+            st_bound_errs = validate_surface_provenance("status_json_bound", status_bound_json, "claude-3-5-sonnet", "claude-3-5-sonnet", "bound", None)
+            if st_bound_errs:
+                defect_details.extend(st_bound_errs)
+        except Exception:
+            defect_details.append("render_status(as_json=True) failed to return valid parseable JSON")
+
+        handoff_bound = render_tui_handoff(repo_dir, roadmap_file, snapshot_bound, action="execute")
+        ho_bound_errs = validate_surface_provenance("tui_handoff_bound", handoff_bound, "claude-3-5-sonnet", "claude-3-5-sonnet", "bound", None)
+        if ho_bound_errs:
+            defect_details.extend(ho_bound_errs)
+
+        metric_bound = WorkUnitMetric(
+            metric_id="m_bound",
+            schema_version="work_unit_metric.v1",
+            timestamp=utc_now(),
+            work_unit_id="wu_bound",
+            work_unit_kind="lane_execute",
+            phase="CONTRACT",
+            action="execute",
+            executor="claude",
+            provider="anthropic",
+            model="claude-3-5-sonnet",
+        )
+        met_bound_errs = validate_surface_provenance("work_unit_metric_bound", metric_bound.to_json(), "claude-3-5-sonnet", "claude-3-5-sonnet", "bound", None)
+        if met_bound_errs:
+            defect_details.extend(met_bound_errs)
+
+        # Unbound surface validation for metric, status, handoff
+        try:
+            metric_unbound = WorkUnitMetric(
+                metric_id="m_unbound",
+                schema_version="work_unit_metric.v1",
+                timestamp=utc_now(),
+                work_unit_id="wu_unbound",
+                work_unit_kind="lane_execute",
+                phase="CONTRACT",
+                action="execute",
+                executor="claude",
+                provider="anthropic",
+                intended_model="claude-3-5-sonnet",
+                binding_state="unbound",
+                caveat="unbound",
+            )
+            met_unbound_errs = validate_surface_provenance("work_unit_metric_unbound", metric_unbound.to_json(), "claude-3-5-sonnet", None, "unbound", "non-empty")
+            if met_unbound_errs:
+                defect_details.extend(met_unbound_errs)
+        except TypeError as exc:
+            defect_details.append(f"WorkUnitMetric constructor failed for unbound shape: {exc}")
+
+        # Unbound aggregate rule validation
+        metric_intended_only = WorkUnitMetric(
+            metric_id="m1",
+            schema_version="work_unit_metric.v1",
+            timestamp=utc_now(),
+            work_unit_id="wu1",
+            work_unit_kind="lane_execute",
+            phase="CONTRACT",
+            action="execute",
+            executor="claude",
+            provider="anthropic",
+            model="claude-3-5-sonnet",
+        )
+        agg_raw = summarize_work_unit_metrics([metric_intended_only.to_json()])
+        if not isinstance(agg_raw, dict):
+            defect_details.append("summarize_work_unit_metrics returned non-dict aggregate")
+        else:
+            by_model = agg_raw.get("by_model")
+            if not isinstance(by_model, dict):
+                defect_details.append("summarize_work_unit_metrics missing or non-dict 'by_model' bucket")
+            elif by_model.get("claude-3-5-sonnet", 0) > 0:
+                defect_details.append("intended-only unbound model counted in verified by_model population")
+
+        if defect_details:
+            raise AssertionError(
+                "RESIDUAL-RED-ANCHOR::residual_channel_session_model — "
+                f"channel session model validation defects present: {'; '.join(defect_details)}"
+            )
+
+    def test_residual_repair_recursion_or_interrupt(self, tmp_path: Path, monkeypatch):
+        """EC-RESIDUAL-6: residual_repair_recursion_or_interrupt TDD falsifier.
+
+        Guards top-level action selection and interruption-only terminal preservation.
+        """
+        if not self._is_activated():
+            return
+
+        monkeypatch.setenv("PHASE_LOOP_RUNNER_REPO_ROOT", str(Path(__file__).resolve().parents[2]))
+
+        import json
+        import os
+        import subprocess
+        from unittest.mock import patch
+
+        from phase_loop_test_utils import make_repo, write_phase_plan
+        from phase_loop_runtime.events import append_event, read_events
+        from phase_loop_runtime.launcher import LaunchResult
+        from phase_loop_runtime.models import LoopEvent, utc_now
+        from phase_loop_runtime.provenance import event_provenance, snapshot_provenance
+        from phase_loop_runtime.runner import run_loop
+
+        def _setup_repair_repo(repo_dir: Path, pid: int, *, phase_status: str = "blocked"):
+            repo = make_repo(repo_dir)
+            roadmap = repo / "specs" / "phase-plans-v1.md"
+            plan = write_phase_plan(repo, "CONTRACT", roadmap, owned_files=("README.md",))
+            subprocess.run(["git", "add", str(plan.relative_to(repo))], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["git", "commit", "-m", "add repair plan"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+
+            prov = snapshot_provenance(roadmap)
+            roadmap_digest = prov.get("roadmap_sha256") or prov.get("roadmap_digest")
+
+            term_file = repo / ".phase-loop" / "runs" / "x" / "terminal-summary.json"
+            term_file.parent.mkdir(parents=True, exist_ok=True)
+            term_content = {
+                "terminal_status": "awaiting_phase_closeout",
+                "verification_status": "passed",
+                "dirty_paths": [],
+                "produced_if_gates": [],
+            }
+            term_file.write_text(json.dumps(term_content), encoding="utf-8")
+
+            append_event(
+                repo,
+                LoopEvent(
+                    timestamp=utc_now(),
+                    repo=str(repo),
+                    roadmap=str(roadmap),
+                    phase="CONTRACT",
+                    action="plan" if phase_status == "blocked" else "execute",
+                    status=phase_status,
+                    model="gpt-5.6-terra",
+                    reasoning_effort="medium",
+                    source="fixture",
+                    blocker={
+                        "human_required": False,
+                        "blocker_summary": "Repair needed.",
+                    } if phase_status == "blocked" else None,
+                    metadata={
+                        "artifacts": {
+                            "log": str(repo / ".phase-loop" / "runs" / "x" / "output.log"),
+                            "terminal": str(term_file),
+                            "metadata": str(repo / ".phase-loop" / "runs" / "x" / "launch.json"),
+                        },
+                        "terminal_summary": term_content,
+                    },
+                    **event_provenance(roadmap, "CONTRACT"),
+                ),
+            )
+
+            dot_phase = repo / ".phase-loop"
+            dot_phase.mkdir(exist_ok=True)
+            lineage_file = dot_phase / "repair_lineage.json"
+            lease_data = {
+                "contract": "repair_lineage.v1",
+                "repo": str(repo),
+                "roadmap_digest": roadmap_digest,
+                "phase": "CONTRACT",
+                "root_work_unit_id": "wu-root-123",
+                "pid": pid,
+                "depth": 1,
+            }
+            lineage_file.write_text(json.dumps(lease_data), encoding="utf-8")
+            return repo, roadmap, term_file, lineage_file
+
+        # 1. Live repair lease: run_loop must select "repair" and not launch recursively
+        repo_repair, roadmap_repair, _, _ = _setup_repair_repo(tmp_path / "repo-repair-live", os.getpid(), phase_status="blocked")
+        repair_launch_called = [False]
+
+        def fake_launch_repair(spec, dry_run=False, log_path=None, stream_output=False, **kwargs):
+            repair_launch_called[0] = True
+            return LaunchResult(command=spec.command, returncode=0)
+
+        with patch("phase_loop_runtime.runner.launch_with_spec", side_effect=fake_launch_repair):
+            run_loop(repo_repair, roadmap_repair, max_phases=1)
+
+        # 2. Live resume lease: run_loop must select "resume" and not launch recursively
+        repo_resume, roadmap_resume, _, _ = _setup_repair_repo(tmp_path / "repo-resume-live", os.getpid(), phase_status="executing")
+        resume_launch_called = [False]
+
+        def fake_launch_resume(spec, dry_run=False, log_path=None, stream_output=False, **kwargs):
+            resume_launch_called[0] = True
+            return LaunchResult(command=spec.command, returncode=0)
+
+        with patch("phase_loop_runtime.runner.launch_with_spec", side_effect=fake_launch_resume):
+            run_loop(repo_resume, roadmap_resume, max_phases=1)
+
+        # 3. Stale lineage lease (pid 999999): run_loop MUST select "repair" and launch
+        repo_stale, roadmap_stale, _, _ = _setup_repair_repo(tmp_path / "repo-repair-stale", 999999, phase_status="blocked")
+        stale_launch_called = [False]
+
+        def fake_launch_stale(spec, dry_run=False, log_path=None, stream_output=False, **kwargs):
+            stale_launch_called[0] = True
+            return LaunchResult(command=spec.command, returncode=0)
+
+        with patch("phase_loop_runtime.runner.launch_with_spec", side_effect=fake_launch_stale):
+            run_loop(repo_stale, roadmap_stale, max_phases=1)
+
+        stale_events = read_events(repo_stale)
+        stale_event_last = stale_events[-1] if stale_events else None
+        stale_action_selected = (
+            stale_event_last.get("action")
+            if isinstance(stale_event_last, dict)
+            else getattr(stale_event_last, "action", None)
+        )
+
+        # 4. Child-write negative control: child writes to README.md and fails
+        repo_child, roadmap_child, term_file_child, _ = _setup_repair_repo(tmp_path / "repo-child-writes", 999999, phase_status="blocked")
+        term_bytes_child_before = term_file_child.read_bytes()
+
+        def fake_launch_child(spec, dry_run=False, log_path=None, stream_output=False, **kwargs):
+            (repo_child / "README.md").write_text("child modified content", encoding="utf-8")
+            return LaunchResult(command=spec.command, returncode=1)
+
+        with patch("phase_loop_runtime.runner.launch_with_spec", side_effect=fake_launch_child):
+            run_loop(repo_child, roadmap_child, max_phases=1)
+
+        term_bytes_child_after = term_file_child.read_bytes() if term_file_child.exists() else None
+        child_preserved_trusted_terminal = (term_bytes_child_before == term_bytes_child_after)
+
+        if (
+            repair_launch_called[0]
+            or resume_launch_called[0]
+            or child_preserved_trusted_terminal
+            or not stale_launch_called[0]
+            or stale_action_selected != "repair"
+        ):
+            defect_details = []
+            if repair_launch_called[0]:
+                defect_details.append("live repair lease launched nested repair")
+            if resume_launch_called[0]:
+                defect_details.append("live resume lease launched nested resume")
+            if child_preserved_trusted_terminal:
+                defect_details.append("old trusted terminal preserved when child wrote to repo")
+            if not stale_launch_called[0]:
+                defect_details.append("stale lease failed to launch")
+            if stale_action_selected != "repair":
+                defect_details.append(f"stale lease selected action {stale_action_selected!r} instead of 'repair'")
+
+            raise AssertionError(
+                "RESIDUAL-RED-ANCHOR::residual_repair_recursion_or_interrupt — "
+                f"repair recursion and lineage safety defects present: {'; '.join(defect_details)}"
+            )
+
+    def test_residual_f841_triage(self, tmp_path: Path):
+        """EC-RESIDUAL-7: residual_f841_triage TDD falsifier.
+
+        Guards exact config-driven CI-equivalent ruff check . and F841 triage state.
+        """
+        if not self._is_activated():
+            return
+
+        import json
+        import shutil
+        import subprocess
+
+        repo_root = Path(__file__).resolve().parents[2]
+
+        # 1. Verify ruff.toml ignores F841 today
+        ruff_toml_text = (repo_root / "ruff.toml").read_text(encoding="utf-8")
+        f841_ignored_in_config = "F841" in ruff_toml_text and "ignore" in ruff_toml_text
+
+        # 2. Config-driven CI check: `ruff check .` returns 0 F841 errors because it is ignored in ruff.toml
+        res_config = subprocess.run(
+            ["ruff", "check", ".", "--output-format", "json", "--no-cache"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+        )
+        try:
+            config_diags = json.loads(res_config.stdout or "[]")
+        except json.JSONDecodeError:
+            config_diags = []
+
+        config_f841_count = sum(1 for d in config_diags if d.get("code") == "F841")
+
+        # 3. Exact frozen 45/31 execution-base inventory when --select F841 is explicitly passed
+        FROZEN_F841_TUPLES = [
+            ("phase-loop-runtime/scripts/_gate_a_probe.py", 107, 13),
+            ("phase-loop-runtime/src/phase_loop_runtime/governed_premerge.py", 495, 9),
+            ("phase-loop-runtime/src/phase_loop_runtime/legible_evidence.py", 836, 5),
+            ("phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py", 6080, 5),
+            ("phase-loop-runtime/src/phase_loop_runtime/runner.py", 2588, 17),
+            ("phase-loop-runtime/src/phase_loop_runtime/runner.py", 5626, 13),
+            ("phase-loop-runtime/src/phase_loop_runtime/skills_bundle/claude-plan-phase/scripts/validate_plan_doc.py", 1004, 5),
+            ("phase-loop-runtime/src/phase_loop_runtime/skills_bundle/codex-plan-phase/scripts/validate_plan_doc.py", 1004, 5),
+            ("phase-loop-runtime/src/phase_loop_runtime/skills_bundle/gemini-plan-phase/scripts/validate_plan_doc.py", 1004, 5),
+            ("phase-loop-runtime/src/phase_loop_runtime/skills_bundle/opencode-plan-phase/scripts/validate_plan_doc.py", 1004, 5),
+            ("phase-loop-runtime/src/phase_loop_runtime/train_runner.py", 593, 9),
+            ("phase-loop-runtime/tests/proofgate_bootstrap_verifier.py", 2393, 9),
+            ("phase-loop-runtime/tests/test_convergence_broker_admission.py", 196, 5),
+            ("phase-loop-runtime/tests/test_convergence_broker_verbs.py", 189, 5),
+            ("phase-loop-runtime/tests/test_fab_activation_promotion.py", 498, 9),
+            ("phase-loop-runtime/tests/test_fab_activation_promotion.py", 531, 9),
+            ("phase-loop-runtime/tests/test_fab_activation_promotion.py", 1618, 9),
+            ("phase-loop-runtime/tests/test_fab_closeout_crash_safety.py", 490, 5),
+            ("phase-loop-runtime/tests/test_fab_delta_consumer.py", 2099, 9),
+            ("phase-loop-runtime/tests/test_fabpub_shared_epoch.py", 1970, 9),
+            ("phase-loop-runtime/tests/test_fabpub_shared_epoch.py", 2173, 9),
+            ("phase-loop-runtime/tests/test_fabpub_shared_epoch.py", 2372, 5),
+            ("phase-loop-runtime/tests/test_fabpub_shared_epoch.py", 2545, 5),
+            ("phase-loop-runtime/tests/test_fabpub_shared_epoch.py", 4295, 5),
+            ("phase-loop-runtime/tests/test_fabreadmit_broker.py", 140, 5),
+            ("phase-loop-runtime/tests/test_injection_skill_failloud.py", 135, 13),
+            ("phase-loop-runtime/tests/test_legible_evidence.py", 1448, 20),
+            ("phase-loop-runtime/tests/test_phase_loop_launcher.py", 218, 13),
+            ("phase-loop-runtime/tests/test_phase_loop_runner.py", 879, 13),
+            ("phase-loop-runtime/tests/test_phase_loop_runner.py", 2911, 13),
+            ("phase-loop-runtime/tests/test_phase_worktree_executor.py", 344, 5),
+            ("phase-loop-runtime/tests/test_release_dispatch_operator_approval_145.py", 204, 9),
+            ("phase-loop-runtime/tests/test_roadmap_ownership.py", 1878, 13),
+            ("phase-loop-runtime/tests/test_roadmap_ownership.py", 2034, 13),
+            ("phase-loop-runtime/tests/test_roadmap_ownership.py", 2057, 60),
+            ("phase-loop-runtime/tests/test_roadmap_ownership.py", 2192, 13),
+            ("phase-loop-runtime/tests/test_train_merge.py", 1506, 9),
+            ("phase-loop-runtime/tests/test_train_order_only_deps_47.py", 94, 5),
+            ("phase-loop-runtime/tests/test_train_roadmap.py", 706, 9),
+            ("phase-loop-runtime/tests/test_train_runner.py", 830, 9),
+            ("phase-loop-runtime/tests/test_train_runner.py", 2954, 5),
+            ("phase-loop-runtime/tests/test_train_runner.py", 2955, 5),
+            ("phase-loop-runtime/tests/test_train_runner.py", 2956, 5),
+            ("phase-loop-skills/plan-phase/scripts/validate_plan_doc.py", 1004, 5),
+            ("skills-src/claude/claude-plan-phase/scripts/validate_plan_doc.py", 1004, 5),
+        ]
+
+        res_explicit = subprocess.run(
+            ["ruff", "check", ".", "--select", "F841", "--output-format", "json", "--no-cache"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+        )
+        explicit_diags = json.loads(res_explicit.stdout or "[]")
+        observed_f841_tuples = [
+            (
+                Path(diag["filename"]).resolve().relative_to(repo_root.resolve()).as_posix(),
+                diag["location"]["row"],
+                diag["location"]["column"],
+            )
+            for diag in explicit_diags
+            if diag.get("code") == "F841"
+        ]
+        inventory_matches = observed_f841_tuples == FROZEN_F841_TUPLES
+
+        # 4. Config-driven mutation proof: isolated repo copy + mutated owned source file + CI-equivalent ruff check .
+        repo_copy = tmp_path / "repo_copy"
+        repo_copy.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(repo_root / "ruff.toml", repo_copy / "ruff.toml")
+
+        sample_src = repo_root / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "governed_premerge.py"
+        mutated_src = repo_copy / "governed_premerge.py"
+        mutated_src.write_text(sample_src.read_text(encoding="utf-8") + "\n_unused_local_mutation_test = 42\n", encoding="utf-8")
+
+        res_config_mut = subprocess.run(
+            ["ruff", "check", ".", "--output-format", "json", "--no-cache"],
+            cwd=str(repo_copy),
+            capture_output=True,
+            text=True,
+        )
+        config_mut_diags = json.loads(res_config_mut.stdout or "[]")
+        config_driven_mutation_ignored = (len(config_mut_diags) == 0)
+
+        # 5. Raise named RED anchor when config-driven check ignores F841 and codebase retains F841 diags
+        if f841_ignored_in_config or config_f841_count == 0 or config_driven_mutation_ignored or not inventory_matches:
+            defect_details = []
+            if f841_ignored_in_config:
+                defect_details.append("F841 is in ruff.toml ignore list")
+            if config_f841_count == 0:
+                defect_details.append("config-driven ruff check . reported 0 F841 diags")
+            if config_driven_mutation_ignored:
+                defect_details.append("config-driven ruff check . ignored unused local mutation in owned source file")
+            if not inventory_matches:
+                defect_details.append(
+                    f"execution-base F841 inventory drifted: expected {len(FROZEN_F841_TUPLES)} rows, "
+                    f"observed {len(observed_f841_tuples)}"
+                )
+
+            raise AssertionError(
+                "RESIDUAL-RED-ANCHOR::residual_f841_triage — "
+                f"F841 diagnostics still present in codebase ({len(FROZEN_F841_TUPLES)} diags across 31 files) and ignored in ruff.toml: {'; '.join(defect_details)}"
+            )
