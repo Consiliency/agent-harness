@@ -3713,16 +3713,14 @@
       "updated_at": "2026-08-25T11:47:11Z"
     },
     {
-      "acceptance_criteria_count": null,
+      "acceptance_criteria_count": 18,
       "created_at": "2026-07-30T04:13:47Z",
       "file": "plans/phase-plan-v10-REVIEWTRUTH.md",
-      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260904T071759Z-8043.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20260904T072245Z-01-reviewtruth-plan.md",
       "if_gates_produced": [
         "IF-0-REVIEWTRUTH-1",
         "IF-0-REVIEWTRUTH-2",
-        "IF-0-REVIEWTRUTH-3",
-        "IF-0-REVIEWTRUTH-4",
-        "IF-0-REVIEWTRUTH-5"
+        "IF-0-REVIEWTRUTH-3"
       ],
       "lanes": [
         "SL-0",
@@ -4360,7 +4358,7 @@
           "source": "Consiliency/agent-harness#645"
         }
       ],
-      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/8a4525ba/codex-v10-resume-20260904/20260904T071759Z-8043.md",
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/05b770de/codex-v10-reviewtruth-plan-repair/20260904T072245Z-01-reviewtruth-plan.md",
       "roadmap_ref": {
         "file": "specs/phase-plans-v10.md",
         "slug": "phase-plans-v10",
@@ -4371,7 +4369,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-09-04T07:17:59Z"
+      "updated_at": "2026-09-04T07:30:28Z"
     },
     {
       "acceptance_criteria_count": null,
