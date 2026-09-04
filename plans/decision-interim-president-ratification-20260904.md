@@ -33,21 +33,36 @@ closed by construction. Four converged PRs (Consiliency/agent-harness#765, #768,
 - **Scope.** Landings whose review tier is `plan` or `production_code` under the GOVLEAN
   authority switch (in force for agent-harness).
 - **Bar.** The full four-vendor board (`fable`, `sol`, `gemini`, `grok`) must converge
-  4/4 AGREE on the exact landing head, under the advisor-board round rules (cap written
-  before round 1; delta rounds re-review only the dissenting seats). Nothing below the
-  full board is admitted; the exception removes only the president ruling, not any seat.
+  4/4 AGREE on the landing head under the advisor-board skill's review-round rules (which
+  seats re-review after a delta, the round cap, and what "exact head" means are defined
+  there, not here). Nothing below the full board is admitted; the exception removes only
+  the president ruling, not any seat.
 - **Mechanism.** The landing caller passes an explicit
   `ReviewLandingPolicy(required_seats=("fable", "sol", "gemini", "grok"),
   requires_president=False)` to `invoke_board`. `review_policy_for_tier` is NOT changed:
-  the runtime default still says the tier requires a president, so EC-GOVLEAN-5's frozen
-  controls stay green and a landing that forgets to cite this decision still fails
-  closed. The exception is visible in the caller, never in the default.
+  the tier default and the `landing_tier=` path still require a president and still fail
+  closed. The exception is reachable only by constructing that policy by hand, and the
+  runtime does not know this note exists: nothing binds the override to a citation or a
+  ledger row. Citing this note and appending the ledger row are recording obligations on
+  the operator performing the landing, enforced by review of that landing's PR body, not
+  by code. Stated plainly: for every landing in the ledger below, EC-GOVLEAN-5's "full
+  board plus president" mandate is not met; the runtime's frozen controls stay green
+  because the runtime is unchanged, not because the mandate is satisfied. This note is a
+  procedural exception — a documented, dated bypass of the president ruling with the
+  maintainer's authority behind it — until the roadmap carrier lands.
 - **Record.** Every landing performed under this exception cites this note in its PR
   body and appends itself to the ledger below (append-only; do not rewrite earlier rows).
 - **Expiry.** The exception ends the moment the president operation from
-  Consiliency/agent-harness#752 lands on `main`. From that landing onward
-  `requires_president=True` is honored again for both tiers with no further amendment;
-  this note stays as history.
+  Consiliency/agent-harness#752 lands on `main`. Because the default was never changed,
+  nothing in the runtime needs reverting — but nothing in the runtime stops a caller from
+  continuing to hand-construct `requires_president=False` either. So expiry is a closing
+  action, not a passive event: the PR that lands ah#752 MUST append a final `EXPIRED at
+  <ah#752 merge commit>` row to the ledger below and close this note; ah#752's issue body
+  carries that obligation. After that row exists, any `plan`/`production_code` landing
+  that passes `requires_president=False` is a governance violation to be raised on the
+  landing PR, and any launcher script that still hard-codes the override (the operator's
+  standalone `invoke_board` launchers) is to be deleted or switched to `landing_tier=`.
+  This note stays as history.
 
 ## What this does NOT change
 
