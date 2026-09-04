@@ -2166,16 +2166,38 @@ def _discover_hashed_legacy_roots(search_roots: tuple[Path, ...]) -> tuple[Path,
     return tuple(discovered[key] for key in sorted(discovered))
 
 
-def _receipt_bootstrap_inventory_sha256(
+def _receipt_bootstrap_claim(
     receipt: LegacyRepositoryPartitionReceipt,
-) -> str | None:
+) -> dict | None:
     journal = Path(receipt.global_journal_path)
-    sealed = json.loads(
-        (journal.parent / f"{receipt.cutover_id}.inventory.json").read_text(
-            encoding="utf-8"
-        )
+    expected_journal = (
+        Path(receipt.target_namespace).parent.parent
+        / "zero-legacy-onboarding"
+        / f"{receipt.cutover_id}.journal.jsonl"
     )
-    return sealed.get("bootstrap_inventory_sha256")
+    if journal != expected_journal:
+        return None
+    inventory_path = journal.parent / f"{receipt.cutover_id}.inventory.json"
+    try:
+        _require_no_ancestor_symlink(inventory_path)
+        sealed = json.loads(inventory_path.read_text(encoding="utf-8"))
+        authority_root = _canonical_input_path(
+            sealed["bootstrap_authority_root"], label="bootstrap authority root"
+        )
+    except (KeyError, OSError, ValueError, TypeError, json.JSONDecodeError):
+        return None
+    if (
+        sealed.get("schema") != "LegacyBrokerCutoverInventory.v2"
+        or sealed.get("cutover_id") != receipt.cutover_id
+        or _inventory_digest(sealed) != sealed.get("inventory_sha256")
+        or sealed.get("inventory_sha256") != receipt.inventory_sha256
+        or not isinstance(sealed.get("bootstrap_inventory_sha256"), str)
+    ):
+        return None
+    return {
+        "authority_root": authority_root,
+        "inventory_sha256": sealed["bootstrap_inventory_sha256"],
+    }
 
 
 def _classify_repository_namespace(
@@ -2190,13 +2212,16 @@ def _classify_repository_namespace(
         state = "absent"
     elif (snapshot.store_root / RECEIPT_FILENAME).exists():
         receipt = load_partition_receipt(snapshot.store_root)
+        bootstrap_claim = (
+            _receipt_bootstrap_claim(receipt) if receipt is not None else None
+        )
         if (
             receipt is None
             or not receipt.zero_source
             or receipt.cutover_id != cutover_id
             or bootstrap_inventory_sha256 is None
-            or _receipt_bootstrap_inventory_sha256(receipt)
-            != bootstrap_inventory_sha256
+            or bootstrap_claim is None
+            or bootstrap_claim["inventory_sha256"] != bootstrap_inventory_sha256
         ):
             raise LegacyCutoverConflict(
                 f"repository {snapshot.identity} has a receipt not owned by bootstrap "
@@ -2299,7 +2324,7 @@ def _validate_historical_evidence_root(root: Path) -> dict:
     return {
         "path": str(root),
         "classification": "standalone_historical_evidence",
-        "files": files,
+        "files": [item for item in files if not item["path"].endswith(".lock")],
     }
 
 
@@ -2419,6 +2444,23 @@ def _bootstrap_paths(authority_root: Path, cutover_id: str) -> tuple[Path, Path,
     )
 
 
+def _bootstrap_seal_lock_paths(inventory: dict) -> tuple[Path, ...]:
+    authority = Path(inventory["authority_root"])
+    paths = {
+        authority / "bootstrap.lock",
+        *(
+            Path(row["path"]) / "fabpub-global-cutover" / "root.lock"
+            for row in inventory["legacy_roots"]
+        ),
+        *(
+            Path(row["path"]) / filename
+            for row in inventory["historical_evidence_roots"]
+            for filename in ("admissions.lock", "evidence.lock")
+        ),
+    }
+    return tuple(sorted(paths, key=str))
+
+
 def _revalidate_bootstrap_sources(inventory: dict) -> None:
     legacy_paths = {row["path"] for row in inventory["legacy_roots"]}
     declared_now = {
@@ -2457,16 +2499,26 @@ def _revalidate_bootstrap_sources(inventory: dict) -> None:
             )
 
 
-def _record_bootstrap_state(journal: Path, cutover_id: str, state: str) -> None:
+def _bootstrap_journal_states(journal: Path, cutover_id: str) -> tuple[str, ...]:
     states, ids = _journal_entries(journal)
     if ids and set(ids) != {cutover_id}:
         raise LegacyCutoverConflict("bootstrap journal belongs to another cutover")
+    expected = ZERO_HISTORY_STATES[: len(states)]
+    if tuple(states) != expected:
+        raise LegacyCutoverConflict(
+            "bootstrap journal is not an exact monotonic state prefix"
+        )
+    return tuple(states)
+
+
+def _record_bootstrap_state(journal: Path, cutover_id: str, state: str) -> None:
+    states = _bootstrap_journal_states(journal, cutover_id)
     if state in states:
         return
     index = ZERO_HISTORY_STATES.index(state)
-    if index and ZERO_HISTORY_STATES[index - 1] not in states:
+    if index != len(states):
         raise LegacyCutoverConflict(
-            f"bootstrap state {state} requires {ZERO_HISTORY_STATES[index - 1]}"
+            f"bootstrap state {state} is not the next monotonic state"
         )
     body = json.dumps(
         {"cutover_id": cutover_id, "state": state}, sort_keys=True, separators=(",", ":")
@@ -2490,11 +2542,17 @@ def _active_bootstrap_inventory(authority_root: Path | str | None = None) -> dic
     inventory_path, journal, _ = _bootstrap_paths(authority, claim["cutover_id"])
     inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
     _validate_zero_history_inventory(inventory)
+    if _canonical_input_path(
+        inventory["authority_root"], label="sealed bootstrap authority root"
+    ) != authority:
+        raise LegacyCutoverConflict(
+            "the sealed bootstrap inventory belongs to a different authority root"
+        )
     _revalidate_bootstrap_sources(inventory)
     if inventory.get("inventory_sha256") != claim.get("inventory_sha256"):
         raise LegacyCutoverConflict("the active bootstrap pointer inventory digest drifted")
-    states, ids = _journal_entries(journal)
-    if "ACTIVE" not in states or set(ids) != {claim["cutover_id"]}:
+    states = _bootstrap_journal_states(journal, claim["cutover_id"])
+    if states != ZERO_HISTORY_STATES:
         raise LegacyCutoverConflict("the persistent bootstrap authority is not ACTIVE")
     return inventory
 
@@ -2545,7 +2603,8 @@ def bootstrap_zero_history_authority(
         if latch.read().generation_state == "DRAINING":
             latch.await_quiescent(worktree=worktree)
 
-    with _reentrant_flock(lock):
+    with _hold_all(_bootstrap_seal_lock_paths(inventory)):
+        _revalidate_bootstrap_sources(inventory)
         _record_bootstrap_state(journal, cutover_id, "INVENTORY_SEALED")
         _record_bootstrap_state(journal, cutover_id, "ARMED")
         _record_bootstrap_state(journal, cutover_id, "ACTIVE")
@@ -2779,6 +2838,7 @@ def onboard_zero_legacy_repository(
     """
     cutover_id = _validate_cutover_id(cutover_id)
     bootstrap_inventory_sha256 = None
+    bootstrap_authority_root = None
     if roots is None:
         bootstrap = _active_bootstrap_inventory(authority_root)
         if bootstrap is not None:
@@ -2792,6 +2852,7 @@ def onboard_zero_legacy_repository(
                 )
             roots = tuple(Path(row["path"]) for row in bootstrap["legacy_roots"])
             bootstrap_inventory_sha256 = bootstrap["inventory_sha256"]
+            bootstrap_authority_root = Path(bootstrap["authority_root"])
         else:
             roots = declared_legacy_roots()
     if not global_active_authority_exists(roots, authority_root=authority_root):
@@ -2805,6 +2866,7 @@ def onboard_zero_legacy_repository(
             roots=roots,
             authority_root=authority_root,
             bootstrap_inventory_sha256=bootstrap_inventory_sha256,
+            bootstrap_authority_root=bootstrap_authority_root,
         )
 
 
@@ -2815,6 +2877,7 @@ def _onboard_zero_legacy_repository_under_seal(
     roots: tuple[Path, ...],
     authority_root: Path | str | None,
     bootstrap_inventory_sha256: str | None,
+    bootstrap_authority_root: Path | None,
 ) -> LegacyRepositoryPartitionReceipt:
     if not global_active_authority_exists(roots, authority_root=authority_root):
         raise LegacyCutoverConflict(
@@ -2845,8 +2908,13 @@ def _onboard_zero_legacy_repository_under_seal(
                 )
             if (
                 bootstrap_inventory_sha256 is not None
-                and _receipt_bootstrap_inventory_sha256(existing)
-                != bootstrap_inventory_sha256
+                and (
+                    (bootstrap_claim := _receipt_bootstrap_claim(existing)) is None
+                    or bootstrap_claim["inventory_sha256"]
+                    != bootstrap_inventory_sha256
+                    or bootstrap_claim["authority_root"]
+                    != bootstrap_authority_root
+                )
             ):
                 raise LegacyCutoverConflict(
                     "existing zero-source receipt is not bound to the active "
@@ -2894,6 +2962,7 @@ def _onboard_zero_legacy_repository_under_seal(
         }
         if bootstrap_inventory_sha256 is not None:
             sealed["bootstrap_inventory_sha256"] = bootstrap_inventory_sha256
+            sealed["bootstrap_authority_root"] = str(bootstrap_authority_root)
         sealed["inventory_sha256"] = _inventory_digest(sealed)
         if inventory_path.exists():
             sealed = json.loads(inventory_path.read_text(encoding="utf-8"))
@@ -2964,14 +3033,22 @@ def _receipt_active_authority_exists(
     *,
     authority_root: Path | str | None = None,
 ) -> bool:
-    bootstrap = _active_bootstrap_inventory(authority_root)
-    if (
-        bootstrap is not None
-        and receipt.zero_source
-        and bootstrap["cutover_id"] == receipt.cutover_id
-    ):
-        if _receipt_bootstrap_inventory_sha256(receipt) == bootstrap["inventory_sha256"]:
-            return True
+    bootstrap_claim = _receipt_bootstrap_claim(receipt) if receipt.zero_source else None
+    if bootstrap_claim is not None:
+        requested_authority = (
+            _canonical_input_path(authority_root, label="authority root")
+            if authority_root is not None
+            else bootstrap_claim["authority_root"]
+        )
+        if requested_authority == bootstrap_claim["authority_root"]:
+            bootstrap = _active_bootstrap_inventory(requested_authority)
+            if (
+                bootstrap is not None
+                and bootstrap["cutover_id"] == receipt.cutover_id
+                and bootstrap_claim["inventory_sha256"]
+                == bootstrap["inventory_sha256"]
+            ):
+                return True
     roots = tuple(Path(root) for root in receipt.legacy_root_inventory)
     if roots:
         if not _traditional_active_authority_exists(roots):

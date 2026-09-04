@@ -109,6 +109,9 @@ The default authority is
 `$XDG_STATE_HOME/phase-loop/fabpub/authority-v1`, falling back to
 `~/.local/state/phase-loop/fabpub/authority-v1`. Override it with
 `PHASE_LOOP_FABPUB_AUTHORITY_ROOT` or `--authority-root` during the probe.
+Receipts created by apply retain that custom authority location for later
+fresh-process validation; keep the environment override configured when
+onboarding repositories that were not named by the original probe.
 Apply is irreversible and refuses changed bytes, symlinks, live allocator
 state, held generation leases, or an authority owned by another bootstrap.
 

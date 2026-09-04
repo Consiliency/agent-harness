@@ -119,6 +119,32 @@ def test_zero_history_bootstrap_refuses_probe_apply_drift(tmp_path: Path) -> Non
     assert live.load_partition_receipt(live.repository_snapshot(repo).store_root) is None
 
 
+def test_zero_history_bootstrap_revalidates_after_drain_before_active(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    inventory = _probe(tmp_path, repo)
+    original_record = live._record_bootstrap_state
+
+    def inject_allocator_after_drain(journal, cutover_id, state):
+        original_record(journal, cutover_id, state)
+        if state == "DRAINING":
+            legacy = tmp_path / "legacy"
+            legacy.mkdir(exist_ok=True)
+            (legacy / "admissions.jsonl").write_text("{}\n", encoding="utf-8")
+
+    monkeypatch.setattr(live, "_record_bootstrap_state", inject_allocator_after_drain)
+
+    with pytest.raises(live.LegacyCutoverConflict, match="allocator state appeared"):
+        live.bootstrap_zero_history_authority(
+            inventory, confirmed_zero_history=True
+        )
+
+    journal = tmp_path / "authority" / "bootstrap-test.bootstrap-journal.jsonl"
+    assert live._bootstrap_journal_states(journal, "bootstrap-test") == ("DRAINING",)
+    assert not (tmp_path / "authority" / "ACTIVE_BOOTSTRAP").exists()
+
+
 def test_zero_history_bootstrap_resumes_interrupted_onboarding(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -248,6 +274,18 @@ def test_cutover_id_cannot_escape_authority_root(tmp_path: Path) -> None:
     assert not (tmp_path / "authority").exists()
 
 
+def test_active_bootstrap_rejects_non_prefix_journal(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    inventory = _probe(tmp_path, repo)
+    live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
+    journal = tmp_path / "authority" / "bootstrap-test.bootstrap-journal.jsonl"
+    with journal.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps({"cutover_id": "bootstrap-test", "state": "ACTIVE"}) + "\n")
+
+    with pytest.raises(live.LegacyCutoverConflict, match="exact monotonic state prefix"):
+        live.global_active_authority_exists(authority_root=tmp_path / "authority")
+
+
 def test_multi_root_traditional_authority_uses_claimed_primary_journal(
     tmp_path: Path,
 ) -> None:
@@ -335,7 +373,7 @@ def test_bootstrap_resume_rejects_same_id_receipt_without_inventory_binding(
         roots=(traditional_root,),
         authority_root=authority,
     )
-    assert live._receipt_bootstrap_inventory_sha256(receipt) is None
+    assert live._receipt_bootstrap_claim(receipt) is None
 
     with pytest.raises(live.LegacyCutoverConflict, match="not owned by bootstrap"):
         live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
@@ -426,6 +464,21 @@ def test_existing_receipt_barrier_revalidates_global_authority(
     assert live.WriterGenerationLatch.open(repo).held_leases() == ()
 
 
+def test_receipt_discovers_custom_bootstrap_authority_in_fresh_process(
+    tmp_path: Path, monkeypatch
+) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    inventory = _probe(tmp_path, repo)
+    live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
+    monkeypatch.delenv("PHASE_LOOP_FABPUB_AUTHORITY_ROOT", raising=False)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "unused-default-state"))
+
+    report = live.fabpub_activation_barrier([repo])
+
+    assert report["repositories"] == [str(repo)]
+    live.release_barrier_leases(report)
+
+
 def test_manifest_activation_barrier_completes_active_transition(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -451,11 +504,15 @@ def test_manifest_activation_barrier_completes_active_transition(
     assert report["cutover"] == {"cutover_id": "legacy-cutover", "state": "ACTIVE"}
 
 
-def test_fabpub_bootstrap_cli_probe_and_apply(tmp_path: Path, monkeypatch, capsys) -> None:
+@pytest.mark.parametrize("as_json", [False, True])
+def test_fabpub_bootstrap_cli_probe_and_apply(
+    tmp_path: Path, monkeypatch, capsys, as_json: bool
+) -> None:
     repo = _git_repo(tmp_path / "repo")
     authority = tmp_path / "authority"
     inventory = tmp_path / "probe.json"
     monkeypatch.setenv("PHASE_LOOP_FABPUB_AUTHORITY_ROOT", str(authority))
+    output_args = ["--json"] if as_json else []
 
     assert main(
         [
@@ -471,7 +528,7 @@ def test_fabpub_bootstrap_cli_probe_and_apply(tmp_path: Path, monkeypatch, capsy
             str(tmp_path / "legacy"),
             "--search-root",
             str(tmp_path),
-            "--json",
+            *output_args,
         ]
     ) == 0
     probe_report = json.loads(capsys.readouterr().out)
@@ -484,7 +541,7 @@ def test_fabpub_bootstrap_cli_probe_and_apply(tmp_path: Path, monkeypatch, capsy
             "--inventory",
             str(inventory),
             "--confirm-zero-history",
-            "--json",
+            *output_args,
         ]
     ) == 0
     apply_report = json.loads(capsys.readouterr().out)
