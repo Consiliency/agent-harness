@@ -56,11 +56,14 @@ closed by construction. Four converged PRs (Consiliency/agent-harness#765, #768,
   Consiliency/agent-harness#752 lands on `main`. Because the default was never changed,
   nothing in the runtime needs reverting — but nothing in the runtime stops a caller from
   continuing to hand-construct `requires_president=False` either. So expiry is a closing
-  action, not a passive event: the PR that lands ah#752 MUST append a final `EXPIRED at
-  <ah#752 merge commit>` row to the ledger below and close this note; ah#752's issue body
-  carries that obligation. After that row exists, any `plan`/`production_code` landing
-  that passes `requires_president=False` is a governance violation to be raised on the
-  landing PR, and any launcher script that still hard-codes the override (the operator's
+  action, not a passive event: the PR that lands ah#752 MUST, in the same PR, append a
+  final `EXPIRED by Consiliency/agent-harness#<that PR's number>` row to the ledger below
+  and mark this note closed (the PR number is known before merge; the merge commit is
+  not, so the row is keyed on the PR, not the commit). Expiry takes effect when that PR
+  merges to `main` — not when the row is written, and not later. ah#752's issue body
+  carries that obligation. From that merge on, any `plan`/`production_code` landing that
+  passes `requires_president=False` is a governance violation to be raised on the landing
+  PR, and any launcher script that still hard-codes the override (the operator's
   standalone `invoke_board` launchers) is to be deleted or switched to `landing_tier=`.
   This note stays as history.
 
