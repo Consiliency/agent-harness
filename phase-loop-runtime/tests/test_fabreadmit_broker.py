@@ -166,8 +166,15 @@ def test_fabreadmit_broker_rediffs_head_range_and_rejects_scope_escape_without_a
     (repo_dir / "unowned.py").write_text("v1\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(repo_dir), "add", "a.py", "unowned.py"], check=True)
     subprocess.run(["git", "-C", str(repo_dir), "commit", "-q", "-m", "base with unowned path"], check=True)
-    live.onboard_zero_legacy_repository(repo_dir)
-    live.fabpub_activation_barrier([repo_dir])
+    bootstrap_inventory = live.probe_zero_history_bootstrap(
+        cutover_id="fabreadmit-test-bootstrap",
+        authority_root=tmp_path / "fabpub-authority",
+        worktrees=(repo_dir,),
+        search_roots=(tmp_path,),
+    )
+    live.bootstrap_zero_history_authority(
+        bootstrap_inventory, confirmed_zero_history=True
+    )
     identity = live.canonical_repository_identity(repo_dir)
     store_root = live.repository_broker_namespace(repo_dir)
     branch = "feat/x"

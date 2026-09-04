@@ -513,7 +513,7 @@ class WriterGenerationLatch:
             snapshot = self.read()
             if snapshot.generation_state == "ACTIVE":
                 return
-            if snapshot.generation_state not in ("LEGACY_OPEN", "DRAINING"):
+            if snapshot.generation_state != "DRAINING":
                 raise LegacyCutoverConflict(
                     f"illegal generation transition {snapshot.generation_state} -> ACTIVE"
                 )
@@ -2044,6 +2044,407 @@ def _drive_cutover(
 FABPUB_CUTOVER_MANIFEST_ENV = "PHASE_LOOP_FABPUB_CUTOVER_MANIFEST"
 #: Optional explicit list of legacy roots a zero-source proof must scan.
 FABPUB_LEGACY_ROOTS_ENV = "PHASE_LOOP_FABPUB_LEGACY_ROOTS"
+#: Optional override for the persistent zero-history bootstrap authority.
+FABPUB_AUTHORITY_ROOT_ENV = "PHASE_LOOP_FABPUB_AUTHORITY_ROOT"
+
+ZERO_HISTORY_INVENTORY_SCHEMA = "ZeroHistoryBootstrapInventory.v1"
+ZERO_HISTORY_STATES = ("DRAINING", "INVENTORY_SEALED", "ARMED", "ACTIVE")
+
+
+def default_fabpub_authority_root() -> Path:
+    """Return the dedicated persistent zero-history authority directory."""
+    override = os.environ.get(FABPUB_AUTHORITY_ROOT_ENV)
+    if override:
+        root = Path(override).expanduser()
+    else:
+        state_home = Path(
+            os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local" / "state"))
+        ).expanduser()
+        root = state_home / "phase-loop" / "fabpub" / "authority-v1"
+    if not root.is_absolute():
+        raise LegacyCutoverConflict("the FABPUB authority root must be absolute")
+    return root.resolve()
+
+
+def _canonical_input_path(path: Path | str, *, label: str) -> Path:
+    candidate = Path(path).expanduser()
+    if not candidate.is_absolute():
+        raise LegacyCutoverConflict(f"{label} must be an absolute path: {candidate}")
+    _require_no_ancestor_symlink(candidate)
+    return candidate.resolve()
+
+
+def _tree_file_inventory(root: Path) -> list[dict]:
+    files: list[dict] = []
+    if not root.exists():
+        return files
+    _require_no_ancestor_symlink(root)
+    for candidate in sorted(root.rglob("*"), key=str):
+        if candidate.is_symlink():
+            raise LegacyCutoverConflict(f"inventory path is a symlink: {candidate}")
+        if candidate.is_dir():
+            continue
+        if not candidate.is_file():
+            raise LegacyCutoverConflict(f"inventory path has an unsupported type: {candidate}")
+        body = candidate.read_bytes()
+        files.append(
+            {
+                "path": str(candidate.relative_to(root)),
+                "size": len(body),
+                "sha256": hashlib.sha256(body).hexdigest(),
+            }
+        )
+    return files
+
+
+def _discover_hashed_legacy_roots(search_roots: tuple[Path, ...]) -> tuple[Path, ...]:
+    discovered: dict[str, Path] = {}
+    for search_root in search_roots:
+        if not search_root.exists():
+            continue
+        _require_no_ancestor_symlink(search_root)
+        for ledger in search_root.rglob(".train-ledger"):
+            if ledger.is_symlink():
+                raise LegacyCutoverConflict(f"search discovered a symlinked ledger: {ledger}")
+            broker = ledger / "broker"
+            if broker.is_dir():
+                resolved = _canonical_input_path(broker, label="discovered legacy root")
+                discovered.setdefault(str(resolved), resolved)
+    return tuple(discovered[key] for key in sorted(discovered))
+
+
+def _classify_repository_namespace(snapshot: RepositorySnapshot, cutover_id: str) -> dict:
+    root = snapshot.namespace_root
+    files = _tree_file_inventory(root)
+    if not root.exists():
+        state = "absent"
+    elif (snapshot.store_root / RECEIPT_FILENAME).exists():
+        receipt = load_partition_receipt(snapshot.store_root)
+        if receipt is None or not receipt.zero_source or receipt.cutover_id != cutover_id:
+            raise LegacyCutoverConflict(
+                f"repository {snapshot.identity} has a receipt not owned by bootstrap "
+                f"{cutover_id!r}"
+            )
+        state = "bootstrap_owned"
+    else:
+        allowed = {"writer-generation.json", "writer-generation.lock"}
+        unexpected = [item["path"] for item in files if item["path"] not in allowed]
+        if unexpected:
+            raise LegacyCutoverConflict(
+                f"unattested canonical state for {snapshot.identity}: {unexpected}"
+            )
+        latch_path = root / "writer-generation.json"
+        if latch_path.exists():
+            raw = json.loads(latch_path.read_text(encoding="utf-8"))
+            if raw.get("schema") != "WriterGenerationLatch.v1" or raw.get(
+                "generation_state"
+            ) not in {"LEGACY_OPEN", "DRAINING"}:
+                raise LegacyCutoverConflict(
+                    f"repository {snapshot.identity} does not have a pristine bootstrap latch"
+                )
+            if (root / "generation-leases").exists() and any(
+                (root / "generation-leases").iterdir()
+            ):
+                raise LegacyCutoverConflict(
+                    f"repository {snapshot.identity} has held generation leases"
+                )
+            state = "initialized_latch"
+        else:
+            state = "empty"
+    return {
+        "worktree": str(snapshot.worktree),
+        "canonical_repository_identity": snapshot.identity,
+        "namespace_root": str(root),
+        "classification": state,
+        "files": files,
+    }
+
+
+def _validate_historical_evidence_root(root: Path) -> dict:
+    allowed = {"admissions.jsonl", "admissions.lock", "evidence.jsonl", "evidence.lock"}
+    files = _tree_file_inventory(root)
+    unexpected = [item["path"] for item in files if item["path"] not in allowed]
+    if unexpected:
+        raise LegacyCutoverConflict(
+            f"historical evidence root {root} has unclassified files: {unexpected}"
+        )
+    for filename in ("admissions.jsonl", "evidence.jsonl"):
+        path = root / filename
+        if path.exists():
+            read_strict_jsonl(path, label=f"historical {filename}")
+    return {
+        "path": str(root),
+        "classification": "standalone_historical_evidence",
+        "files": files,
+    }
+
+
+def probe_zero_history_bootstrap(
+    *,
+    cutover_id: str,
+    authority_root: Path | str | None = None,
+    worktrees: Iterable[Path | str],
+    legacy_roots: Iterable[Path | str] = (),
+    historical_evidence_roots: Iterable[Path | str] = (),
+    search_roots: Iterable[Path | str] = (),
+) -> dict:
+    """Build a read-only, byte-sealed inventory for zero-history bootstrap."""
+    if not cutover_id.strip():
+        raise LegacyCutoverConflict("a zero-history bootstrap requires a cutover_id")
+    authority = _canonical_input_path(
+        authority_root or default_fabpub_authority_root(), label="authority root"
+    )
+    snapshots = tuple(repository_snapshot(worktree) for worktree in worktrees)
+    if not snapshots:
+        raise LegacyCutoverConflict("a zero-history bootstrap requires at least one worktree")
+    if len({snapshot.identity for snapshot in snapshots}) != len(snapshots):
+        raise LegacyCutoverConflict("a zero-history bootstrap may name each repository once")
+
+    searches = tuple(
+        dict.fromkeys(
+            _canonical_input_path(path, label="search root") for path in search_roots
+        )
+    )
+    explicit_roots = list(legacy_roots) + list(declared_legacy_roots())
+    explicit_roots.extend(_discover_hashed_legacy_roots(searches))
+    roots = tuple(
+        dict.fromkeys(
+            _canonical_input_path(path, label="legacy root") for path in explicit_roots
+        )
+    )
+    legacy_entries = []
+    for root in roots:
+        files = _tree_file_inventory(root)
+        if files:
+            raise LegacyCutoverConflict(
+                f"zero-history bootstrap found allocator state in legacy root {root}"
+            )
+        legacy_entries.append(
+            {"path": str(root), "classification": "absent" if not root.exists() else "empty"}
+        )
+
+    history = tuple(
+        dict.fromkeys(
+            _canonical_input_path(path, label="historical evidence root")
+            for path in historical_evidence_roots
+        )
+    )
+    authority_files = _tree_file_inventory(authority)
+    unexpected_authority = [
+        item["path"] for item in authority_files if item["path"] != "bootstrap.lock"
+    ]
+    if unexpected_authority:
+        raise LegacyCutoverConflict(
+            f"authority root {authority} is not fresh: {unexpected_authority}"
+        )
+    payload = {
+        "schema": ZERO_HISTORY_INVENTORY_SCHEMA,
+        "cutover_id": cutover_id,
+        "authority_root": str(authority),
+        "worktrees": [
+            _classify_repository_namespace(snapshot, cutover_id) for snapshot in snapshots
+        ],
+        "legacy_roots": legacy_entries,
+        "historical_evidence_roots": [
+            _validate_historical_evidence_root(root) for root in history
+        ],
+        "search_roots": [str(root) for root in searches],
+    }
+    payload["inventory_sha256"] = _inventory_digest(payload)
+    return payload
+
+
+def _validate_zero_history_inventory(payload: dict) -> None:
+    if payload.get("schema") != ZERO_HISTORY_INVENTORY_SCHEMA:
+        raise LegacyCutoverConflict("unknown zero-history bootstrap inventory schema")
+    if _inventory_digest(payload) != payload.get("inventory_sha256"):
+        raise LegacyCutoverConflict("the zero-history bootstrap inventory digest drifted")
+
+
+def write_zero_history_inventory(path: Path | str, payload: dict) -> Path:
+    """Atomically persist one validated operator probe outside its authority root."""
+    _validate_zero_history_inventory(payload)
+    target = Path(path).expanduser().resolve()
+    authority = Path(payload["authority_root"])
+    if target == authority or authority in target.parents:
+        raise LegacyCutoverConflict(
+            "the operator probe inventory must be stored outside the authority root"
+        )
+    _atomic_write_json(target, payload)
+    return target
+
+
+def load_zero_history_inventory(path: Path | str) -> dict:
+    payload = json.loads(Path(path).expanduser().read_text(encoding="utf-8"))
+    _validate_zero_history_inventory(payload)
+    return payload
+
+
+def _bootstrap_paths(authority_root: Path, cutover_id: str) -> tuple[Path, Path, Path]:
+    return (
+        authority_root / f"{cutover_id}.bootstrap-inventory.json",
+        authority_root / f"{cutover_id}.bootstrap-journal.jsonl",
+        authority_root / "ACTIVE_BOOTSTRAP",
+    )
+
+
+def _revalidate_bootstrap_sources(inventory: dict) -> None:
+    legacy_paths = {row["path"] for row in inventory["legacy_roots"]}
+    declared_now = {
+        str(_canonical_input_path(path, label="legacy root"))
+        for path in declared_legacy_roots()
+    }
+    discovered_now = {
+        str(path)
+        for path in _discover_hashed_legacy_roots(
+            tuple(Path(path) for path in inventory["search_roots"])
+        )
+    }
+    if not declared_now.issubset(legacy_paths) or not discovered_now.issubset(legacy_paths):
+        raise LegacyCutoverConflict(
+            "the complete legacy root set changed after the bootstrap inventory sealed"
+        )
+    for row in inventory["legacy_roots"]:
+        if _tree_file_inventory(Path(row["path"])):
+            raise LegacyCutoverConflict(
+                f"allocator state appeared in sealed legacy root {row['path']}"
+            )
+    for row in inventory["historical_evidence_roots"]:
+        if _validate_historical_evidence_root(Path(row["path"])) != row:
+            raise LegacyCutoverConflict(
+                f"historical evidence bytes changed after seal at {row['path']}"
+            )
+    for row in inventory["worktrees"]:
+        current = _classify_repository_namespace(
+            repository_snapshot(row["worktree"]), inventory["cutover_id"]
+        )
+        if current["canonical_repository_identity"] != row["canonical_repository_identity"]:
+            raise LegacyCutoverConflict(
+                f"repository identity changed after seal for {row['worktree']}"
+            )
+
+
+def _record_bootstrap_state(journal: Path, cutover_id: str, state: str) -> None:
+    states, ids = _journal_entries(journal)
+    if ids and set(ids) != {cutover_id}:
+        raise LegacyCutoverConflict("bootstrap journal belongs to another cutover")
+    if state in states:
+        return
+    index = ZERO_HISTORY_STATES.index(state)
+    if index and ZERO_HISTORY_STATES[index - 1] not in states:
+        raise LegacyCutoverConflict(
+            f"bootstrap state {state} requires {ZERO_HISTORY_STATES[index - 1]}"
+        )
+    body = json.dumps(
+        {"cutover_id": cutover_id, "state": state}, sort_keys=True, separators=(",", ":")
+    ) + "\n"
+    with journal.open("a", encoding="utf-8") as stream:
+        stream.write(body)
+        stream.flush()
+        os.fsync(stream.fileno())
+    _fsync_dir(journal.parent)
+
+
+def _active_bootstrap_inventory(authority_root: Path | str | None = None) -> dict | None:
+    authority = _canonical_input_path(
+        authority_root or default_fabpub_authority_root(), label="authority root"
+    )
+    pointer = authority / "ACTIVE_BOOTSTRAP"
+    if not pointer.exists():
+        return None
+    _require_no_ancestor_symlink(pointer)
+    claim = json.loads(pointer.read_text(encoding="utf-8"))
+    inventory_path, journal, _ = _bootstrap_paths(authority, claim["cutover_id"])
+    inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+    _validate_zero_history_inventory(inventory)
+    _revalidate_bootstrap_sources(inventory)
+    if inventory.get("inventory_sha256") != claim.get("inventory_sha256"):
+        raise LegacyCutoverConflict("the active bootstrap pointer inventory digest drifted")
+    states, ids = _journal_entries(journal)
+    if "ACTIVE" not in states or set(ids) != {claim["cutover_id"]}:
+        raise LegacyCutoverConflict("the persistent bootstrap authority is not ACTIVE")
+    return inventory
+
+
+def bootstrap_zero_history_authority(
+    inventory: dict, *, confirmed_zero_history: bool = False
+) -> dict:
+    """Apply or resume one explicitly confirmed zero-history bootstrap."""
+    if not confirmed_zero_history:
+        raise LegacyCutoverConflict("zero-history bootstrap requires explicit confirmation")
+    _validate_zero_history_inventory(inventory)
+    cutover_id = str(inventory["cutover_id"])
+    authority = _canonical_input_path(inventory["authority_root"], label="authority root")
+    stored_path, journal, pointer = _bootstrap_paths(authority, cutover_id)
+    lock = authority / "bootstrap.lock"
+    with _reentrant_flock(lock):
+        if stored_path.exists():
+            stored = json.loads(stored_path.read_text(encoding="utf-8"))
+            if stored != inventory:
+                raise LegacyCutoverConflict(
+                    "bootstrap resume inventory differs from the sealed authority inventory"
+                )
+            _revalidate_bootstrap_sources(inventory)
+        else:
+            reprobe = probe_zero_history_bootstrap(
+                cutover_id=cutover_id,
+                authority_root=authority,
+                worktrees=[row["worktree"] for row in inventory["worktrees"]],
+                legacy_roots=[row["path"] for row in inventory["legacy_roots"]],
+                historical_evidence_roots=[
+                    row["path"] for row in inventory["historical_evidence_roots"]
+                ],
+                search_roots=inventory["search_roots"],
+            )
+            if reprobe != inventory:
+                raise LegacyCutoverConflict(
+                    "zero-history source inventory changed between probe and apply"
+                )
+            _atomic_write_json(stored_path, inventory)
+        _record_bootstrap_state(journal, cutover_id, "DRAINING")
+
+    worktrees = tuple(row["worktree"] for row in inventory["worktrees"])
+    latches = [WriterGenerationLatch.open(worktree) for worktree in worktrees]
+    for latch in latches:
+        if latch.read().generation_state == "LEGACY_OPEN":
+            latch.begin_draining()
+    for latch, worktree in zip(latches, worktrees):
+        if latch.read().generation_state == "DRAINING":
+            latch.await_quiescent(worktree=worktree)
+
+    with _reentrant_flock(lock):
+        _record_bootstrap_state(journal, cutover_id, "INVENTORY_SEALED")
+        _record_bootstrap_state(journal, cutover_id, "ARMED")
+        _record_bootstrap_state(journal, cutover_id, "ACTIVE")
+        claim = {
+            "schema": "ZeroHistoryBootstrapAuthority.v1",
+            "cutover_id": cutover_id,
+            "inventory_sha256": inventory["inventory_sha256"],
+        }
+        if pointer.exists():
+            if json.loads(pointer.read_text(encoding="utf-8")) != claim:
+                raise LegacyCutoverConflict("another zero-history bootstrap owns the authority")
+        else:
+            _atomic_write_json(pointer, claim)
+
+    roots = tuple(Path(row["path"]) for row in inventory["legacy_roots"])
+    receipts = []
+    for worktree in worktrees:
+        receipt = onboard_zero_legacy_repository(
+            worktree,
+            cutover_id=cutover_id,
+            roots=roots,
+            authority_root=authority,
+        )
+        receipts.append(receipt.canonical_repository_identity)
+    return {
+        "schema": "ZeroHistoryBootstrapResult.v1",
+        "cutover_id": cutover_id,
+        "authority_root": str(authority),
+        "state": "ACTIVE",
+        "inventory_sha256": inventory["inventory_sha256"],
+        "repositories": receipts,
+    }
 
 ONBOARDING_SEAL_BOUNDARIES = (
     "before_zero_source_proof",
@@ -2212,25 +2613,51 @@ def _cutover_source_targets_repository(
 
 
 def onboard_zero_legacy_repository(
-    worktree: Path | str, *, cutover_id: str = "fabpub-zero-legacy-onboarding"
+    worktree: Path | str,
+    *,
+    cutover_id: str = "fabpub-zero-legacy-onboarding",
+    roots: tuple[Path, ...] | None = None,
+    authority_root: Path | str | None = None,
 ) -> LegacyRepositoryPartitionReceipt:
     """Serialized, authenticated onboarding for a repository first seen post-ACTIVE.
 
     Not an empty-store fallback: exactly one receipt, written under the latch's
-    exclusive activation lock, carrying a REAL zero-source proof.  The latch is
-    NOT self-promoted to ACTIVE — a repository may not authorize its own
-    generation without a global ACTIVE authority (SL1-SOL-01).
+    exclusive activation lock, carrying a REAL zero-source proof. The global
+    authority is validated before the repository drains, arms, and promotes its
+    own fresh generation (SL1-SOL-01).
     """
+    if roots is None:
+        bootstrap = _active_bootstrap_inventory(authority_root)
+        roots = (
+            tuple(Path(row["path"]) for row in bootstrap["legacy_roots"])
+            if bootstrap is not None
+            else declared_legacy_roots()
+        )
+    if not global_active_authority_exists(roots, authority_root=authority_root):
+        raise LegacyCutoverConflict(
+            "zero-source onboarding requires a persistent global ACTIVE authority"
+        )
     snapshot = repository_snapshot(worktree)
-    roots = declared_legacy_roots()
+    namespace = snapshot.store_root
+    for filename in ("admissions.jsonl", "evidence.jsonl"):
+        if (namespace / filename).exists() and not (namespace / RECEIPT_FILENAME).exists():
+            raise LegacyCutoverConflict(
+                f"unattested canonical {filename} at {namespace}; zero-source onboarding "
+                "may not adopt allocator state"
+            )
     latch = WriterGenerationLatch.open(worktree)
+    if latch.read().generation_state == "LEGACY_OPEN":
+        latch.begin_draining()
+    if latch.read().generation_state == "DRAINING":
+        latch.await_quiescent(worktree=worktree)
     with latch.exclusive():
-        namespace = snapshot.store_root
         existing = None
         if (namespace / RECEIPT_FILENAME).exists():
             existing = load_partition_receipt(namespace)
         if existing is not None:
             _prove_zero_source(snapshot, roots, "before_zero_source_proof")
+            latch.mark_armed()
+            latch.activate()
             return existing
         zero_source_proof = _prove_zero_source(snapshot, roots, "before_zero_source_proof")
         identity = snapshot.identity
@@ -2298,10 +2725,15 @@ def onboard_zero_legacy_repository(
             zero_source_proof=sealed["partitions"][identity].get("zero_source_proof"),
         )
         latch.mark_armed()
+        latch.activate()
         return receipt
 
 
-def global_active_authority_exists(roots: tuple[Path, ...] | None = None) -> bool:
+def global_active_authority_exists(
+    roots: tuple[Path, ...] | None = None,
+    *,
+    authority_root: Path | str | None = None,
+) -> bool:
     """True when every declared legacy root carries an ACTIVE cutover authority.
 
     A repository may not authorize its own generation promotion: only a global
@@ -2309,19 +2741,23 @@ def global_active_authority_exists(roots: tuple[Path, ...] | None = None) -> boo
     (SL1-SOL-01).
     """
     roots = declared_legacy_roots() if roots is None else roots
-    if not roots:
-        return False
-    for root in roots:
-        pointer = Path(root) / "fabpub-global-cutover" / "ACTIVE_CUTOVER"
-        if not pointer.exists():
-            return False
-        claim = _read_pointer_claim(pointer)
-        journal = (
-            Path(root) / "fabpub-global-cutover" / f"{claim['cutover_id']}.journal.jsonl"
-        )
-        if "ACTIVE" not in _journal_states(journal):
-            return False
-    return True
+    if roots:
+        traditional_active = True
+        for root in roots:
+            pointer = Path(root) / "fabpub-global-cutover" / "ACTIVE_CUTOVER"
+            if not pointer.exists():
+                traditional_active = False
+                break
+            claim = _read_pointer_claim(pointer)
+            journal = (
+                Path(root) / "fabpub-global-cutover" / f"{claim['cutover_id']}.journal.jsonl"
+            )
+            if "ACTIVE" not in _journal_states(journal):
+                traditional_active = False
+                break
+        if traditional_active:
+            return True
+    return _active_bootstrap_inventory(authority_root) is not None
 
 
 def is_git_repository(worktree: Path | str) -> bool:
@@ -2364,6 +2800,7 @@ def fabpub_activation_barrier(worktrees: Iterable[Path | str] = ()) -> dict:
                     cutover_id=raw["cutover_id"], rows=tuple(raw["rows"])
                 )
             )
+            transaction.activate()
             report["cutover"] = {
                 "cutover_id": transaction.cutover_id,
                 "state": transaction.state,
