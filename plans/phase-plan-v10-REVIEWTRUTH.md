@@ -183,9 +183,12 @@ Parallel-safe: no
     identical to `REVIEWTRUTH_EVIDENCE_SCHEMA = "reviewtruth_evidence.v1"`, making
     same-schema registration idempotent and schema drift a blocker. Name the SL-4
     classifier control `delivery_state_classifier`, the SL-5 below-floor convergence
-    control `production_delivery_gate`, and the SL-5 material consumer control
-    `production_material_guard`; acceptance commands below must collect those exact
-    selectors.
+    control `production_delivery_gate`, the SL-5 at-floor shortfall control
+    `production_floor_only_shortfall` (a 3-of-4 board driven through the production
+    governed caller must surface the typed `FLOOR_ONLY` result to that caller and must
+    never be reported as FULL convergence — the EC-REVIEWTRUTH-1 incident arm), and the
+    SL-5 material consumer control `production_material_guard`; acceptance commands
+    below must collect those exact selectors.
   - verify: run the chronology verifier in `capability-record` mode against the landed
     SL-0 record and current hosting metadata; missing, unreachable, or unparseable
     hosting/protection metadata blocks rather than skips. Then prove the unactivated compatibility
@@ -271,7 +274,8 @@ Parallel-safe: no
 - **Parallel-safe**: no.
 - **Tasks**:
   - test: drive production gates for pass, degraded, block-then-pass repair,
-    nonconvergence (including the `production_delivery_gate` below-floor selector),
+    nonconvergence (including the `production_delivery_gate` below-floor selector and
+    the `production_floor_only_shortfall` at-floor selector),
     resume, material failure, per-seat persistence, run-summary verdict emission, and
     the SL-1 closeout-evidence rejection cases.
   - impl: pass a real repair closure, rerender after repair, apply delivery/prover
@@ -306,7 +310,8 @@ Parallel-safe: no
   - impl: record metadata-only suite/JUnit, clean-room, live-panel inspection, policy, ledger, summary, and interface evidence; document only sanctioned contract deltas. Record `no_doc_delta` for `README.md`, `CHANGELOG.md`, and release notes because this phase changes no public release surface.
   - verify: from the final clean candidate, rerun the EC-REVIEWTRUTH-0 tests-first
     chronology check, the EC-REVIEWTRUTH-15 capability/protection/conformance/ancestry
-    check, and evidence verification. Require the landed SL-0 record commit to remain
+    check, and evidence verification; record the `--mode landing` result for every
+    posture-assuming landing that has already occurred. Require the landed SL-0 record commit to remain
     an ancestor of the candidate's pre-landing base, bind the final candidate head/tree
     and plan digest, invoke and reduce the runner-generated
     `docs/research/reviewtruth-real-panel-smoke.md` without directly editing it, and
@@ -318,8 +323,16 @@ Parallel-safe: no
   prevents any external writer from overlapping a lane-owned path.
 - SL-0 completion must satisfy EC-REVIEWTRUTH-15 exactly. The record must be present on
   current `main` before SL-1 starts; during SL-1 verify, before SL-2 starts, the newly
-  authored verifier proves that goal's ancestry and landing-shape checks. A record
+  authored verifier proves that goal's record-ancestry checks. A record
   present only on the implementation branch is insufficient.
+- Landing shape is bound by EC-REVIEWTRUTH-15 and cannot be witnessed on an unlanded
+  candidate: every posture-assuming candidate lands only as a two-parent non-fast-forward
+  merge commit whose first parent is the pre-landing `main` tip and whose message cites
+  the landed SL-0 record's full SHA. After each such landing, lane D runs
+  `python3 phase-loop-runtime/scripts/verify_reviewtruth_chronology.py --mode landing --landing <merge-sha>`
+  (two parents, first parent equals the pre-landing tip, record SHA cited in the message
+  and an ancestor of that first parent) together with the roadmap's landing-time
+  operational checks, and SL-6 records the result as closeout evidence.
 - One implementation author owns SL-2 through SL-5. Reviewers do not edit the
   candidate. Every review/evidence record binds candidate head/tree and plan digest;
   any candidate or plan mismatch invalidates it, regardless of perceived materiality.
@@ -392,7 +405,7 @@ authorize editing their files.
 ## Acceptance Criteria
 
 - [ ] EC-REVIEWTRUTH-0 — proven by `python3 phase-loop-runtime/scripts/verify_reviewtruth_chronology.py --mode tests-first`; falsified by path-entered control: the verifier accepts a production change before the RED evidence or a frozen test change afterward; evidence uses `verification_evidence.v3`.
-- [ ] EC-REVIEWTRUTH-1 — proven by `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1 PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q phase-loop-runtime/tests/test_reviewtruth_phase.py -k delivery_state_classifier`; falsified by path-entered control: a three-seat result with target four is classified FULL or malformed numeric inputs return a delivery state.
+- [ ] EC-REVIEWTRUTH-1 — proven by `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1 PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q phase-loop-runtime/tests/test_reviewtruth_phase.py -k 'delivery_state_classifier or production_floor_only_shortfall'`; falsified by path-entered control: a three-seat result with target four is classified FULL, malformed numeric inputs return a delivery state, or a 3-of-4 board driven through the production governed caller converges with no typed `FLOOR_ONLY` shortfall in the caller-visible result (or is reported FULL).
 - [ ] EC-REVIEWTRUTH-4 — proven by `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1 PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q phase-loop-runtime/tests/test_reviewtruth_phase.py -k production_delivery_gate`; falsified by path-entered control: a below-floor or malformed delivery result enters convergence instead of `review_gate_block`.
 - [ ] EC-REVIEWTRUTH-2, EC-REVIEWTRUTH-3 — proven by `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1 PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q phase-loop-runtime/tests/test_reviewtruth_phase.py -k 'typed_outcome or spawn_error'`; falsified by path-entered control: response text restores usability or an exception traceback becomes a governed BLOCK.
 - [ ] EC-REVIEWTRUTH-5 — proven by `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1 PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q phase-loop-runtime/tests/test_reviewtruth_phase.py -k prompt_lens`; falsified by path-entered control: lens removal leaves prompt and credited coverage unchanged.
@@ -405,7 +418,7 @@ authorize editing their files.
 - [ ] EC-REVIEWTRUTH-12 — proven by `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1 PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q phase-loop-runtime/tests/test_reviewtruth_phase.py -k grounding_refused`; falsified by path-entered control: ungrounded or artifact-mismatched agreement contributes to ratification.
 - [ ] EC-REVIEWTRUTH-13 — proven by `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1 PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q phase-loop-runtime/tests/test_reviewtruth_phase.py -k 'material_guard or production_material_guard'`; the first selector proves the SL-3 unit guard and the second proves its SL-5 production consumer; falsified by path-entered control: the production governed gate accepts empty or elided review material.
 - [ ] EC-REVIEWTRUTH-14 — proven by `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1 PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q phase-loop-runtime/tests/test_panel_native_fill_183.py` followed by `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1 PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q phase-loop-runtime/tests/test_reviewtruth_phase.py -k native_fill`; falsified by path-entered control: a natively fillable Claude/Fable seat is silently dropped or sent through its local adapter.
-- [ ] EC-REVIEWTRUTH-15 — proven before SL-2 and again at final closeout by `python3 phase-loop-runtime/scripts/verify_reviewtruth_chronology.py --mode capability-record --candidate-head HEAD --require-record-ancestor-of-base`; falsified by path-entered control: posture-assuming production is admitted without the durable ratification, protection, conformance, and ancestry checks, or final-head revalidation accepts a stale/non-ancestor record.
+- [ ] EC-REVIEWTRUTH-15 — proven before SL-2 and again at final closeout by `python3 phase-loop-runtime/scripts/verify_reviewtruth_chronology.py --mode capability-record --candidate-head HEAD --require-record-ancestor-of-base`, and after each posture-assuming landing by `python3 phase-loop-runtime/scripts/verify_reviewtruth_chronology.py --mode landing --landing <merge-sha>`; falsified by path-entered control: posture-assuming production is admitted without the durable ratification, protection, conformance, and ancestry checks, final-head revalidation accepts a stale/non-ancestor record, or the landing verifier accepts a single-parent landing, a first parent other than the pre-landing tip, or a landing message that does not cite the record SHA.
 - [ ] EC-REVIEWTRUTH-16 — proven by `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1 PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q phase-loop-runtime/tests/test_reviewtruth_phase.py -k required_prover`; falsified by path-entered control: an unattested seat satisfies the prover requirement or `required_prover=false` changes an unrelated policy field.
 - [ ] EC-REVIEWTRUTH-17 — proven by `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1 PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests python3 -m pytest -q phase-loop-runtime/tests/test_reviewtruth_phase.py phase-loop-runtime/tests/test_phase_worktree_executor.py -k 'review_wave or early_prover'`; falsified by path-entered control: ordering, role separation, external-tool closure, worktree isolation, reaping, receipt binding, fallback confinement, or contradiction re-review is bypassed; evidence uses `verification_evidence.v3`.
 
