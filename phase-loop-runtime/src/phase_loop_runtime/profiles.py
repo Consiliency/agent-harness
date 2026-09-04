@@ -396,7 +396,7 @@ def supervise_selection(vendor: str = "claude") -> TierResolution:
 #     (grok-4.3/grok-build-0.1, all volatile) are the taxonomy target, not yet live.
 #   • opencode — NO LONGER a bypass: its class AND executor paths now AGREE (both use
 #     the provider-qualified `openai/gpt-6-astra` / `openai/gpt-5.6-{terra,luna}` at heavy/regular/lite;
-#     execute/repair → terra, planning/review → sol; CR round-4 fix). It is not DERIVED
+#     execute/repair → terra, planning/review → astra; CR round-4 fix). It is not DERIVED
 #     from TIER_MODELS only because opencode is not a tier-matrix vendor (its ids carry
 #     the `openai/` transport prefix); the mapping is hand-maintained but tier-consistent.
 #   • pi class path AND pi executor path — both the `auto` router alias (pi has no
