@@ -48,7 +48,7 @@ overwritten (content refreshed, orphan files pruned), never left drifting.
 ## Model × harness matrix
 
 A seat is valid only when its `(model, harness)` pairing is registered — a
-cross-vendor pairing (e.g. `claude:gpt-5.5`) is **rejected at config time** with an
+cross-vendor pairing (e.g. `claude:gpt-6-astra`) is **rejected at config time** with an
 actionable message, before any subprocess is spawned. Source of truth:
 `DefaultHarnessRegistry` / `DefaultModelRegistry` / `DefaultCompatibilityMatrix`.
 
@@ -74,7 +74,8 @@ actionable message, before any subprocess is spawned. Source of truth:
 
 | Model            | Vendor family | Default lane | Runnable by       | Effort ceiling |
 | ---------------- | ------------- | ------------ | ----------------- | -------------- |
-| `gpt-5.5`        | codex         | `codex`      | codex, opencode   | max            |
+| `gpt-6-astra`    | codex         | `codex`      | codex, opencode   | max            |
+| `gpt-5.6-sol`    | codex         | `codex`      | codex, opencode   | max            |
 | `claude-sonnet-5`| claude        | `claude`     | claude            | max            |
 | `claude-opus-4-8`| claude        | `claude`     | claude            | max            |
 | `claude-opus-5`  | claude        | `claude`     | claude            | max            |
@@ -126,7 +127,7 @@ the matrix at load time).
 | `default`               | premerge-review       | gpt-6-astra · max · codex · red-team ; gemini-3.8-flash · high · gemini · alternative-approach ; claude-fable-5-1 · max · claude · correctness ; grok-4.6 · max · grok · adversarial |
 | `code-review`           | code-review           | grok-4.6 · max · grok · adversarial ; claude-fable-5-1 · max · claude · correctness ; gpt-6-astra · max · codex · red-team ; gemini-3.8-flash · high · gemini · alternative-approach |
 | `brainstorm`            | brainstorm            | claude-sonnet-5 · high · claude · adversarial ; gpt-6-astra · high · codex · supportive ; gemini-3.8-flash · high · gemini · lateral |
-| `doc-edit`              | doc-edit              | claude-sonnet-5 · medium · claude · copyedit ; gpt-5.5 · medium · codex · structure |
+| `doc-edit`              | doc-edit              | claude-sonnet-5 · medium · claude · copyedit ; gpt-6-astra · medium · codex · structure |
 | `legal-review`          | legal-review          | gpt-6-astra · max · codex · opposing-counsel ; gemini-3.8-flash · high · gemini · risk-liability ; claude-fable-5-1 · max · claude · authority-verification |
 | `legal-strategy-review` | legal-strategy-review | gpt-6-astra · max · codex · red-team ; gemini-3.8-flash · high · gemini · alternatives ; claude-fable-5-1 · max · claude · downside-ethics |
 | `legal-brainstorm`      | legal-brainstorm      | claude-sonnet-5 · high · claude · aggressive ; gpt-6-astra · high · codex · conservative ; gemini-3.8-flash · high · gemini · creative |
@@ -176,7 +177,7 @@ execution operation exists, so a seated rung reports
 ```
 advisor-board <artifact>                       # bare → the `default` board
 advisor-board --board code-review <artifact>   # a named preset
-advisor-board --seats gpt-5.5:max:codex <art>  # ad-hoc seats (model:effort[:harness])
+advisor-board --seats gpt-6-astra:max:codex <art>  # ad-hoc seats (model:effort[:harness])
 ```
 
 Runtime entry point: `panel_invoker.invoke_board(board, artifact, ...)`. Legacy
@@ -273,7 +274,7 @@ purpose = "code-review"
 research_enabled = true                 # optional; default false, exact PMCP profile
 
   [[boards.seats]]
-  model = "gpt-5.5"                  # must be a registered model…
+  model = "gpt-6-astra"                  # must be a registered model…
   effort = "high"                    # …at/under its effort ceiling…
   harness = "codex"                  # …on a compatible lane (else config-time reject)
 
@@ -323,7 +324,7 @@ a two-same-vendor board is not collapsed.
 
    - **One intentional result-shape enrichment:** `invoke_board` populates
      `PanelLegResult.seat_key` with a richer per-seat label (e.g.
-     `codex:gpt-5.5:max`) instead of the bare leg (`codex`). `.leg` is preserved, so
+     `codex:gpt-6-astra:max`) instead of the bare leg (`codex`). `.leg` is preserved, so
      any caller keying on `.leg` / `.status` / `.usable` is unaffected; this only
      *adds* the ability to tell two same-vendor seats apart. This is the sole
      contract-sanctioned delta (ABDRESOLVE finding 4), asserted explicitly in the

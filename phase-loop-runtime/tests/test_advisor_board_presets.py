@@ -95,10 +95,10 @@ class PresetTests(unittest.TestCase):
                 self.assertEqual(s.model, "claude-fable-5-1", f"{name}: {s.model}")
 
     def test_brainstorm_and_doc_edit_are_byte_neutral(self) -> None:
-        # The divergent-thinking boards deliberately KEEP Sonnet; their Gemini seat
-        # follows the fleet default updated by agent-harness#715. Pin the full seat
+        # The divergent-thinking boards deliberately KEEP Sonnet; their Gemini and GPT
+        # seats follow the fleet defaults (Consiliency/agent-harness#715, #777). Pin the full seat
         # tuples (model / effort / harness / lens) so any other drift trips.
-        unchanged = {
+        pinned = {
             "brainstorm": (
                 ("claude-sonnet-5", "high", "claude", "adversarial"),
                 ("gpt-6-astra", "high", "codex", "supportive"),
@@ -109,7 +109,7 @@ class PresetTests(unittest.TestCase):
                 ("gpt-6-astra", "medium", "codex", "structure"),
             ),
         }
-        for name, expected in unchanged.items():
+        for name, expected in pinned.items():
             self.assertEqual(
                 tuple((s.model, s.effort, s.harness, s.lens) for s in PRESETS[name].seats),
                 expected,

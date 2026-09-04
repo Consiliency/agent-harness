@@ -131,3 +131,15 @@ def test_gemini_api_style_id_is_matched() -> None:
 
 if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def test_regex_captures_the_full_astra_id() -> None:
+    """The fleet default id (``gpt-6-astra``, Consiliency/agent-harness#777) is captured whole.
+
+    ``check_source`` reports the physical line, so a planted-literal test cannot tell
+    ``gpt-6-astra`` from a bare ``gpt-6`` prefix match; pin the capture group instead —
+    dropping ``-astra`` from the alternation leaves ``gpt-6`` and fails here.
+    """
+    match = guard.MODEL_ID_REGEX.search('FALLBACK = "gpt-6-astra"')
+    assert match is not None
+    assert match.group(1) == "gpt-6-astra"

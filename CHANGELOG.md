@@ -21,6 +21,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   president-ratification note), not a model id, so existing landing policies keep working.
 - `scripts/check_model_id_sources.py` now recognises the `-astra` suffix so the new id is
   guarded like the others.
+- Board-review catch (round 1): `docs/advisor-board-capabilities-card.md` still named an
+  unregistered `gpt-5.5` at six sites (Models table, `doc-edit` preset row, cross-vendor
+  and CLI/TOML examples, `seat_key` example) — drift that predates this bump. All six now
+  read `gpt-6-astra`, and the Models table gains the registered legacy `gpt-5.6-sol` row.
 
 ### Explicit zero-history FABPUB authority bootstrap (Consiliency/agent-harness#763)
 
