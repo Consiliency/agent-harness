@@ -32,14 +32,18 @@ test files become immutable for the implementation work.
 - [ ] IF-0-REVIEWTRUTH-1 — `PanelLegOutcome` is the closed vocabulary
   `reviewed | unavailable | errored | timed_out | refused | capped | empty` on
   `PanelLegResult`, independent of `text`. `required` and `degraded` remain orthogonal
-  fields. The result exposes reviewed-seat count so consumers can classify FULL,
-  FLOOR-ONLY, and BELOW-FLOOR without treating grounding or material completeness as
-  outcome variants. REVIEWTRUTH consumes a synthesized `timed_out`; LEGLIFE owns the
-  enforcement that produces it.
+  fields. The result exposes the raw count of seats whose outcome is `reviewed` so
+  consumers can classify delivery without treating grounding or material completeness
+  as outcome variants. Governed ratification separately filters that count by grounding
+  and material completeness. REVIEWTRUTH consumes a synthesized `timed_out`; LEGLIFE
+  owns the enforcement that produces it.
 - [ ] IF-0-REVIEWTRUTH-2 — `RatificationPolicy.required_prover: bool = True` is an
   additive trailing field, and `BoardFacts` retains `reviewed_sha` in its current
   positional slot before additive `prover_usable: bool = False`. Typed per-repo
   resolution accepts `required_prover=false` without changing other policy fields.
+  `RatificationPolicy` and `BoardFacts` both remain owned by
+  `phase-loop-runtime/src/phase_loop_runtime/ratification_policy.py` in SL-4;
+  `advisor_board/schema.py` does not own either type.
   The four shipped defaults require three vendors, three grounded lenses, and one
   usable prover; missing an effectively required prover escalates regardless of the
   ordinary shortfall action.
@@ -51,7 +55,36 @@ test files become immutable for the implementation work.
   input/evidence binding, and external reaping. A typed Codex preflight failure may use
   Grok only with positive OS confinement; otherwise the wave records zero launches.
   Gemini is ineligible, and only a usable grounded artifact-bound Fable result can be
-  `binding_prover`. Contradicting evidence invalidates affected prior agreements.
+  `binding_prover`. Contradicting evidence invalidates affected prior agreements. SL-2
+  owns transport and receipts, SL-3 owns grounding, SL-4 owns prover usability, and
+  SL-5 integrates those parts; only the SL-6 reducer may record this gate complete.
+
+## Cross-Lane Contract Freeze
+
+- `REVIEWTRUTH_CAPABILITY_DECISION` is `reviewtruth_capability_decision.v1` with the
+  three maintainer-comment identities and body SHA-256 values, the ratified posture,
+  the non-authorizing `agent-harness#405` reference, and branch-protection/ancestry
+  requirements. Mutable comment text is never consumed after the record is landed.
+- `ExecutionCapabilityAttestation` binds the exact seat key, vendor, model, effort,
+  lens, capability roles (`can_probe` and `binding_prover_capable`), posture, effective
+  preflight digest, executable/config inventory digests, and candidate head/tree. A
+  missing, unknown, mismatched, or failed field is unusable.
+- `ReviewWaveEvidence` binds gate, ordering, candidate head/tree, plan, input, bundle,
+  policy, preflight, launch/no-launch, output, and evidence-bundle digests; it also
+  records critic verdict digests, the grounded Fable `binding_prover` digest, and every
+  invalidated agreement digest. Required fields are never reconstructed from prose.
+- `BoardDeliveryState` is exactly `FULL` when raw reviewed seats equal target,
+  `FLOOR_ONLY` when floor is at most raw reviewed seats and less than target, and
+  `BELOW_FLOOR` when raw reviewed seats are less than floor; counts above target are
+  malformed. Grounded/material-complete reviewed count and prover usability are
+  independent ratification facts and may block a delivery-classified board.
+- REVIEWTRUTH extends the already-frozen `verification_evidence.v3` envelope only via
+  registered namespace `phase_loop_runtime.reviewtruth_evidence`. Its payload binds
+  phase, lane, criterion, mutation anchor, command/result digests, candidate head/tree,
+  plan digest, and referenced artifact digests. The runner is the sole writer of
+  `.phase-loop/runs/**/verification.json`: lanes submit append-only payloads, existing
+  sealed entries are immutable, and any head, tree, plan, bundle, instruction, or
+  evidence digest mismatch invalidates the affected review and verification records.
 
 ## Lane Index & Dependencies
 
@@ -97,7 +130,7 @@ Parallel-safe: no
 - **Scope**: Bind the already-issued capability, prover, and ordering decisions into the durable record required by EC-REVIEWTRUTH-15.
 - **Owned files**: `docs/research/reviewtruth-leg-capability-ratification.md`
 - **Interfaces provided**: `REVIEWTRUTH_CAPABILITY_DECISION`.
-- **Interfaces consumed**: roadmap directives and live repository protection/ancestry metadata (pre-existing).
+- **Interfaces consumed**: roadmap directives (pre-existing), the maintainer-comment identities and captured body bytes/digests enumerated under EC-REVIEWTRUTH-15 through EC-REVIEWTRUTH-17 (pre-existing), live repository protection/ancestry metadata (pre-existing).
 - **Parallel-safe**: no.
 - **Tasks**:
   - test: enumerate the exact record fields and rejection conditions consumed by SL-1; SL-0 does not author the verifier.
@@ -112,7 +145,12 @@ Parallel-safe: no
 - **Interfaces consumed**: `REVIEWTRUTH_CAPABILITY_DECISION`, IF-0-REVIEWTRUTH-1 through IF-0-REVIEWTRUTH-3.
 - **Parallel-safe**: no.
 - **Tasks**:
-  - test: cover EC-REVIEWTRUTH-1 through `-17`, including the roadmap's exact sixteen-node early-prover set, and pair each mutation anchor with a positive control that enters the production construction path.
+  - test: cover EC-REVIEWTRUTH-1 through `-17`, consuming the literal sixteen-node and
+    anchor lists plus their sorted-LF digests from the roadmap's EC-REVIEWTRUTH-17
+    section, and pair each mutation anchor with a positive control that enters the
+    production construction path. Include closeout-evidence rejection cases for
+    missing lane evidence, proxy-only smoke, altered tests, incomplete IF inventory,
+    and raw secret/model output.
   - impl: add only tests, the chronology verifier, and RED evidence; activate new expectations with `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1` until the production capability marker exists.
   - verify: run the chronology verifier in `capability-record` mode against the landed SL-0 record and current hosting metadata, then prove the unactivated compatibility suite remains green, every activated test fails only at its named anchor, the diff contains no production path, and the tests-only boundary satisfies EC-REVIEWTRUTH-0 before SL-2.
 
@@ -120,19 +158,21 @@ Parallel-safe: no
 
 - **Scope**: Publish the seat-level contracts, lossless durable-seat reconstruction, and the isolated early-prover/native-fill transport without changing frozen tests.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/src/phase_loop_runtime/launcher.py`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/schema.py`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/composition.py`, `phase-loop-runtime/src/phase_loop_runtime/fab_gate.py`, `phase-loop-runtime/src/phase_loop_runtime/phase_worktree_executor.py`
-- **Interfaces provided**: IF-0-REVIEWTRUTH-1, IF-0-REVIEWTRUTH-3, `ExecutionCapabilityAttestation`, `NativeAgentLegRequest`, `ReviewWaveEvidence`.
+- **Interfaces provided**: IF-0-REVIEWTRUTH-1, IF-0-REVIEWTRUTH-3 transport/receipt portion, `ExecutionCapabilityAttestation`, `NativeAgentLegRequest`, `ReviewWaveEvidence`.
 - **Interfaces consumed**: `REVIEWTRUTH_RED_SUITE`, `REVIEWTRUTH_CAPABILITY_DECISION`, SCHED worktree authority.
 - **Parallel-safe**: no; `panel_invoker.py` is single-writer.
 - **Tasks**:
   - test: make only outcome, retry, lens propagation, native-fill, attestation, isolation, confinement, reaping, and review-wave tests green.
   - impl: add typed outcome/identity fields, lossless strict-reader reconstruction of `required` and `degraded`, prompt-lens binding, exact native request binding, strict capability preflight, serial worktree holder, external-tool closure, and digest-bound evidence receipts.
-  - verify: run the SL-2 selectors plus launcher, board golden, and worktree regressions with no frozen-test edits.
+  - verify: run the exact acceptance commands for EC-REVIEWTRUTH-2, `-3`, `-5`, `-7`,
+    `-11` through `-14`, `-16`, and `-17`, plus launcher, board golden, and worktree
+    regressions with no frozen-test edits.
 
 ### SL-3 — Governed classification and grounding
 
 - **Scope**: Convert typed leg results into trustworthy findings and fail closed on ungrounded or incomplete review material.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/governed_review.py`, `phase-loop-runtime/src/phase_loop_runtime/governed_bundle.py`
-- **Interfaces provided**: `ReviewGrounding`, `GovernedBoardEvidence`, `review_material_issue()`.
+- **Interfaces provided**: `ReviewGrounding`, `GovernedBoardEvidence`, `GroundedBindingProverCandidate`, `review_material_issue()`.
 - **Interfaces consumed**: IF-0-REVIEWTRUTH-1, `ExecutionCapabilityAttestation`, `REVIEWTRUTH_RED_SUITE`.
 - **Parallel-safe**: no.
 - **Tasks**:
@@ -145,7 +185,9 @@ Parallel-safe: no
 - **Scope**: Implement the additive prover policy and the shared FULL/FLOOR-ONLY/BELOW-FLOOR decision.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/ratification_policy.py`, `phase-loop-runtime/src/phase_loop_runtime/gate_posture.py`
 - **Interfaces provided**: IF-0-REVIEWTRUTH-2, `BoardDeliveryState`, `classify_board_delivery()`.
-- **Interfaces consumed**: IF-0-REVIEWTRUTH-1, `GovernedBoardEvidence`, `ExecutionCapabilityAttestation`, `REVIEWTRUTH_RED_SUITE`.
+- **Interfaces consumed**: IF-0-REVIEWTRUTH-1, `GovernedBoardEvidence`,
+  `GroundedBindingProverCandidate`, `ExecutionCapabilityAttestation`,
+  `REVIEWTRUTH_RED_SUITE`.
 - **Parallel-safe**: no.
 - **Tasks**:
   - test: make positional compatibility, typed override, default floor, lens coverage, delivery-state, and hard-prover-block controls green.
@@ -155,24 +197,33 @@ Parallel-safe: no
 ### SL-5 — Production gates, repair, and durable reporting
 
 - **Scope**: Wire all REVIEWTRUTH contracts into the live governed planning, pre-merge, train, resume, and run-summary paths.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/runner.py`, `phase-loop-runtime/src/phase_loop_runtime/governed_premerge.py`, `phase-loop-runtime/src/phase_loop_runtime/review_summary.py`, `phase-loop-runtime/src/phase_loop_runtime/cli.py`, `phase-loop-runtime/src/phase_loop_runtime/train_runner.py`, `phase-loop-runtime/src/phase_loop_runtime/train_ledger.py`, `phase-loop-runtime/scripts/gate_a_cleanroom.sh`, `phase-loop-runtime/scripts/verify_reviewtruth_evidence.py`, `.github/workflows/test.yml`
-- **Interfaces provided**: `REVIEWTRUTH_PRODUCTION_GATES`, `REVIEWTRUTH_APPLY_FIX`, `REVIEWTRUTH_SEAT_LEDGER`, `REVIEWTRUTH_PANEL_VERDICT_LEDGER`.
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/runner.py`, `phase-loop-runtime/src/phase_loop_runtime/governed_premerge.py`, `phase-loop-runtime/src/phase_loop_runtime/review_summary.py`, `phase-loop-runtime/src/phase_loop_runtime/cli.py`, `phase-loop-runtime/src/phase_loop_runtime/train_runner.py`, `phase-loop-runtime/src/phase_loop_runtime/train_ledger.py`, `phase-loop-runtime/src/phase_loop_runtime/reviewtruth_capability.py`, `phase-loop-runtime/scripts/gate_a_cleanroom.sh`, `phase-loop-runtime/scripts/verify_reviewtruth_evidence.py`, `.github/workflows/test.yml`
+- **Interfaces provided**: integrated IF-0-REVIEWTRUTH-3, `REVIEWTRUTH_PRODUCTION_GATES`, `REVIEWTRUTH_APPLY_FIX`, `REVIEWTRUTH_SEAT_LEDGER`, `REVIEWTRUTH_PANEL_VERDICT_LEDGER`.
 - **Interfaces consumed**: IF-0-REVIEWTRUTH-1 through IF-0-REVIEWTRUTH-3, `BoardDeliveryState`, `GovernedBoardEvidence`, `REVIEWTRUTH_RED_SUITE`.
 - **Parallel-safe**: no.
 - **Tasks**:
-  - test: drive production gates for pass, degraded, block-then-pass repair, nonconvergence, resume, material failure, per-seat persistence, and run-summary verdict emission.
-  - impl: pass a real repair closure, rerender after repair, apply delivery/prover decisions, persist every seat and aggregate verdict, and surface degradation in the terminal summary.
+  - test: drive production gates for pass, degraded, block-then-pass repair,
+    nonconvergence, resume, material failure, per-seat persistence, run-summary verdict
+    emission, and the SL-1 closeout-evidence rejection cases.
+  - impl: pass a real repair closure, rerender after repair, apply delivery/prover
+    decisions, persist every seat and aggregate verdict, and surface degradation in the
+    terminal summary. Install
+    `phase_loop_runtime.reviewtruth_capability:REVIEWTRUTH_CAPABILITY_VERSION="reviewtruth.v1"`
+    only after all SL-2 through SL-5 production paths are complete; CI then stops
+    forcing `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1`.
   - verify: run `automation.suite_command`, clean-room Gate A, locked Ruff/lock checks, and the full non-integration regression suite before reduction.
 
 ### SL-6 — Evidence and documentation reducer
 
 - **Scope**: Reduce all producer results into durable verification and operator-facing contract documentation.
 - **Owned files**: `docs/research/reviewtruth-phase-verification.md`, `docs/research/reviewtruth-real-panel-smoke.md`, `docs/research/reviewtruth-final-evidence-record.md`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md`, `docs/advisor-board-capabilities-card.md`
-- **Interfaces provided**: `REVIEWTRUTH_CLOSEOUT_EVIDENCE`.
+- **Interfaces provided**: `REVIEWTRUTH_CLOSEOUT_EVIDENCE` and the sole completion
+  record for IF-0-REVIEWTRUTH-1 through IF-0-REVIEWTRUTH-3.
 - **Interfaces consumed**: `REVIEWTRUTH_CAPABILITY_DECISION`, `REVIEWTRUTH_TESTS_FIRST_EVIDENCE`, `REVIEWTRUTH_PRODUCTION_GATES`, `REVIEWTRUTH_APPLY_FIX`, `REVIEWTRUTH_SEAT_LEDGER`, `REVIEWTRUTH_PANEL_VERDICT_LEDGER`, IF-0-REVIEWTRUTH-1 through IF-0-REVIEWTRUTH-3.
 - **Parallel-safe**: no; terminal reducer.
 - **Tasks**:
-  - test: reject missing lane evidence, proxy-only live-panel evidence, altered tests, incomplete IF inventory, or raw secret/model-output inclusion.
+  - test: run the immutable SL-1 rejection cases against the SL-5 verifier; SL-6 does
+    not author or modify an executable.
   - impl: record metadata-only suite/JUnit, clean-room, live-panel inspection, policy, ledger, summary, and interface evidence; document only sanctioned contract deltas. Record `no_doc_delta` for `README.md`, `CHANGELOG.md`, and release notes because this phase changes no public release surface.
   - verify: rerun evidence verification from a clean checkout and require all three IF gates before closeout.
 
@@ -181,7 +232,12 @@ Parallel-safe: no
 - The coordinator enforces CONFORM, HARDEN, and SCHED completion before SL-0 and
   prevents any external writer from overlapping a lane-owned path.
 - One implementation author owns SL-2 through SL-5. Reviewers do not edit the
-  candidate, and a material repair invalidates prior candidate verification.
+  candidate. Every review/evidence record binds candidate head/tree and plan digest;
+  any candidate or plan mismatch invalidates it, regardless of perceived materiality.
+- `.phase-loop/runs/**/verification.json` is runner-owned generated evidence, not a
+  lane-editable source path. Each lane may supply only its typed namespaced payload;
+  the runner appends and reseals it, and no lane may overwrite or mutate an earlier
+  sealed entry.
 - SL-1 is tests-only and immutable after acceptance. SL-2 through SL-5 may not
   modify an SL-1-owned path; a required test correction creates a new tests-only
   boundary before implementation resumes.
