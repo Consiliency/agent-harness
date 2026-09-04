@@ -25,6 +25,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   unregistered `gpt-5.5` at six sites (Models table, `doc-edit` preset row, cross-vendor
   and CLI/TOML examples, `seat_key` example) — drift that predates this bump. All six now
   read `gpt-6-astra`, and the Models table gains the registered legacy `gpt-5.6-sol` row.
+- CI catch: `phase-loop-runtime/tests/data/launchspec_golden/launchspec_golden.json` freezes the
+  heavy-tier resolution (`selected_model`) and still carried `gpt-5.6-sol`; regenerated with
+  `PHASE_LOOP_REGEN_LAUNCHSPEC_GOLDEN=1`, one line changed — the same step the prior fleet
+  bumps took.
 
 ### Explicit zero-history FABPUB authority bootstrap (Consiliency/agent-harness#763)
 
