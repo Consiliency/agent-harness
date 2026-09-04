@@ -2440,6 +2440,7 @@ class TestResidualInvariants:
         delete_branch_present = any("--delete-branch" in cmd for cmd in enqueue_argvs)
         dequeue_attempted = (
             any("dequeuePullRequest" in query for query in captured_graphql)
+            and sum("isInMergeQueue" in query for query in captured_graphql) >= 2
             and any("--disable-auto" in cmd for cmd in captured_merge_argvs)
             and queue_status_reads[0] >= 2
         )
@@ -3106,22 +3107,42 @@ class TestResidualInvariants:
         if not self._is_activated():
             return
 
-        import ast
         import json
-        import re
         import shutil
         import subprocess
 
+        try:
+            import tomllib
+        except ImportError:
+            import tomli as tomllib
+
         repo_root = Path(__file__).resolve().parents[2]
 
-        # 1. Verify the configured ignore structurally; comments mentioning F841
-        # must not be mistaken for a live ignore entry.
+        # 1. Verify every config suppression form structurally; comments mentioning
+        # F841 must not be mistaken for a live ignore entry.
         ruff_toml_text = (repo_root / "ruff.toml").read_text(encoding="utf-8")
-        ignore_match = re.search(r"(?m)^\s*ignore\s*=\s*(\[[^\]]*\])\s*$", ruff_toml_text)
-        ignore_values = ast.literal_eval(ignore_match.group(1)) if ignore_match else []
-        f841_ignored_in_config = "F841" in ignore_values
+        lint_config = tomllib.loads(ruff_toml_text).get("lint", {})
 
-        # 2. Config-driven CI check: `ruff check .` returns 0 F841 errors because it is ignored in ruff.toml
+        def _covers_f841(selector) -> bool:
+            normalized = str(selector).strip().upper()
+            return normalized == "ALL" or bool(normalized) and "F841".startswith(normalized)
+
+        ignore_values = [
+            *lint_config.get("ignore", []),
+            *lint_config.get("extend-ignore", []),
+        ]
+        per_file_values = [
+            selector
+            for key in ("per-file-ignores", "extend-per-file-ignores")
+            for selectors in lint_config.get(key, {}).values()
+            for selector in ([selectors] if isinstance(selectors, str) else selectors)
+        ]
+        f841_suppressed_in_config = any(
+            _covers_f841(selector) for selector in [*ignore_values, *per_file_values]
+        )
+
+        # 2. Config-driven CI check: the current baseline returns no F841 because
+        # ruff.toml suppresses it; GREEN requires that suppression to be removed.
         res_config = subprocess.run(
             ["ruff", "check", ".", "--output-format", "json", "--no-cache"],
             cwd=str(repo_root),
@@ -3208,6 +3229,58 @@ class TestResidualInvariants:
             if diag.get("code") == "F841"
         ]
         inventory_matches_baseline_or_closed = observed_f841_tuples in (FROZEN_F841_TUPLES, [])
+        frozen_files = sorted({path for path, _, _ in FROZEN_F841_TUPLES})
+
+        # An empty inventory is valid only when every formerly affected file is
+        # still in the configured lint scope and an isolated, ignore-free run also
+        # sees no F841. This rejects exclusions, per-file suppression, and noqa-based
+        # cleanup that would otherwise masquerade as triage.
+        res_show_files = subprocess.run(
+            ["ruff", "check", ".", "--show-files", "--no-cache"],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+        )
+        linted_files = {
+            Path(line).resolve().relative_to(repo_root.resolve()).as_posix()
+            for line in res_show_files.stdout.splitlines()
+            if line.strip() and Path(line).resolve().is_relative_to(repo_root.resolve())
+        }
+        frozen_files_in_scope = set(frozen_files) <= linted_files
+
+        res_unsuppressed = subprocess.run(
+            [
+                "ruff",
+                "check",
+                *frozen_files,
+                "--isolated",
+                "--select",
+                "F841",
+                "--ignore-noqa",
+                "--output-format",
+                "json",
+                "--no-cache",
+            ],
+            cwd=str(repo_root),
+            capture_output=True,
+            text=True,
+        )
+        unsuppressed_json_valid = True
+        try:
+            unsuppressed_diags = json.loads(res_unsuppressed.stdout or "[]")
+        except json.JSONDecodeError:
+            unsuppressed_diags = []
+            unsuppressed_json_valid = False
+        unsuppressed_f841_tuples = [
+            (
+                Path(diag["filename"]).resolve().relative_to(repo_root.resolve()).as_posix(),
+                diag["location"]["row"],
+                diag["location"]["column"],
+            )
+            for diag in unsuppressed_diags
+            if diag.get("code") == "F841"
+        ]
+        no_hidden_f841 = unsuppressed_f841_tuples == observed_f841_tuples
 
         # 4. Config-driven mutation proof: a standalone local binding avoids
         # attributing an existing source diagnostic to the injected mutation.
@@ -3247,7 +3320,7 @@ class TestResidualInvariants:
         # 5. The initial frozen inventory and the fully closed empty inventory
         # are valid states. Any partial/drifted inventory remains a hard failure.
         if (
-            f841_ignored_in_config
+            f841_suppressed_in_config
             or not config_json_valid
             or res_config.returncode not in (0, 1)
             or not explicit_json_valid
@@ -3258,10 +3331,15 @@ class TestResidualInvariants:
             or observed_f841_tuples
             or not config_driven_mutation_detected
             or not inventory_matches_baseline_or_closed
+            or res_show_files.returncode != 0
+            or not frozen_files_in_scope
+            or not unsuppressed_json_valid
+            or res_unsuppressed.returncode not in (0, 1)
+            or not no_hidden_f841
         ):
             defect_details = []
-            if f841_ignored_in_config:
-                defect_details.append("F841 is in ruff.toml ignore list")
+            if f841_suppressed_in_config:
+                defect_details.append("F841 is suppressed by ruff.toml")
             if not config_json_valid or res_config.returncode not in (0, 1):
                 defect_details.append(f"config-driven Ruff run was invalid (exit {res_config.returncode})")
             if not explicit_json_valid or res_explicit.returncode not in (0, 1):
@@ -3281,8 +3359,21 @@ class TestResidualInvariants:
                     f"execution-base F841 inventory is neither the frozen {len(FROZEN_F841_TUPLES)} rows nor empty: "
                     f"observed {len(observed_f841_tuples)} rows"
                 )
+            if res_show_files.returncode != 0 or not frozen_files_in_scope:
+                missing_files = sorted(set(frozen_files) - linted_files)
+                defect_details.append(
+                    f"formerly affected files are outside configured Ruff scope: {missing_files!r}"
+                )
+            if not unsuppressed_json_valid or res_unsuppressed.returncode not in (0, 1):
+                defect_details.append(
+                    f"isolated unsuppressed Ruff run was invalid (exit {res_unsuppressed.returncode})"
+                )
+            elif not no_hidden_f841:
+                defect_details.append(
+                    "configured Ruff inventory hides F841 findings visible with exclusions and noqa disabled"
+                )
 
             raise AssertionError(
                 "RESIDUAL-RED-ANCHOR::residual_f841_triage — "
-                f"F841 diagnostics still present in codebase ({len(FROZEN_F841_TUPLES)} diags across 31 files) and ignored in ruff.toml: {'; '.join(defect_details)}"
+                f"F841 diagnostics remain unresolved or suppressed ({len(FROZEN_F841_TUPLES)}-diagnostic baseline across 31 files): {'; '.join(defect_details)}"
             )
