@@ -2,12 +2,22 @@
 phase_loop_plan_version: 1
 phase: REVIEWTRUTH
 roadmap: specs/phase-plans-v10.md
-roadmap_sha256: 040fe81fd36fd48486bb4d6d9550296a830789b5d7a94a9300d3d19ff31cfd2e
+roadmap_sha256: 9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0
 automation:
   suite_command: 'PYTHONPATH=phase-loop-runtime/src python3 -m pytest phase-loop-runtime/tests -q -m "not dotfiles_integration"'
 ---
 
 # REVIEWTRUTH: Board Reports Its Own Degradation
+
+## Plan Budget Justification
+
+This retained plan exceeds the 3,000-word budget because it freezes maintainer-ratified,
+digest-bound protocol literals, strict receipt schemas, exact immutable RED node sets, and
+multiple landing boundaries that executors must consume without paraphrase. The selected
+REVIEWTRUTH phase block is byte-identical to the block used for the last plan update; this pass
+therefore preserves those frozen execution inputs and mechanically rebinds the plan after
+roadmap-wide SCHED coordination and release-version changes outside the phase. Compressing the
+contract safely requires a separately ratified extraction into immutable referenced artifacts.
 
 ## Context
 
