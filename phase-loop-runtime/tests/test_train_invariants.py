@@ -1790,23 +1790,47 @@ class TestResidualInvariants:
                         ),
                     )
 
+            decision_evidence_store = BrokerEvidenceStore(evidence_root)
             service = BrokerService(
                 LinearizableAdmissionStore(evidence_root, lambda _request: True),
-                BrokerEvidenceStore(evidence_root),
+                decision_evidence_store,
                 _CountingSuccessAdapter(),
                 contracts=PROVIDER_COMPLETION_CLASSIFICATIONS,
             )
             main_result = service.execute(request_main)
             main_retry = service.execute(request_main)
             release_result = service.execute(request_release)
-            if not main_result.accepted or not main_retry.accepted or not release_result.accepted:
-                defect_details.append("real broker decision did not accept main, its retry, and distinct release base")
+            release_retry = service.execute(request_release)
+            if not all(
+                result.accepted
+                for result in (main_result, main_retry, release_result, release_retry)
+            ):
+                defect_details.append(
+                    "real broker decision did not accept main/release effects and both same-base retries"
+                )
             if main_result.evidence.idempotency_key == release_result.evidence.idempotency_key:
                 defect_details.append("real broker decision aliased main and release evidence keys")
             if [getattr(request, "base", None) for request in provider_requests] != ["main", "release"]:
                 defect_details.append(
-                    "real broker admission/replay decision did not deduplicate only the same-base retry"
+                    "real broker admission/replay decision did not deduplicate both same-base retries"
                 )
+            persisted_decisions = decision_evidence_store.replay()
+            persisted_bases = {
+                main_result.evidence.idempotency_key: "main",
+                release_result.evidence.idempotency_key: "release",
+            }
+            for effect_key, expected_base in persisted_bases.items():
+                record = persisted_decisions.get(effect_key)
+                if getattr(record, "base", None) != expected_base:
+                    defect_details.append(
+                        f"persisted {expected_base} decision evidence lost exact base value"
+                    )
+            if (
+                main_retry.evidence.idempotency_key != main_result.evidence.idempotency_key
+                or release_retry.evidence.idempotency_key
+                != release_result.evidence.idempotency_key
+            ):
+                defect_details.append("same-base retries did not replay their original evidence keys")
 
             captured_legacy_calls = []
 
@@ -2003,15 +2027,45 @@ class TestResidualInvariants:
                 if not has_base_field:
                     errors.append("EvidenceRecord class missing 'base' field annotation")
 
-            # Check all production EvidenceRecord(...) calls bind base
+            # Check every production EvidenceRecord(...) constructor derives its
+            # base value from a base-bearing expression. Deserialization may retain
+            # its full raw mapping; the runtime round trips above prove that path.
             for fpath, tree in (("verbs.py", verbs_ast), ("evidence.py", evidence_ast)):
                 for node in ast.walk(tree):
                     if isinstance(node, ast.Call):
                         func_name = node.func.id if isinstance(node.func, ast.Name) else (node.func.attr if isinstance(node.func, ast.Attribute) else None)
                         if func_name == "EvidenceRecord":
-                            kw_names = {k.arg for k in node.keywords}
-                            if "base" not in kw_names and len(node.args) < 4:
-                                errors.append(f"EvidenceRecord(...) call in {fpath} missing base parameter")
+                            base_value = (
+                                node.args[3]
+                                if len(node.args) >= 4
+                                else next(
+                                    (keyword.value for keyword in node.keywords if keyword.arg == "base"),
+                                    None,
+                                )
+                            )
+                            raw_mapping_replay = any(
+                                keyword.arg is None
+                                and isinstance(keyword.value, ast.Name)
+                                and keyword.value.id == "raw"
+                                for keyword in node.keywords
+                            )
+                            if base_value is None:
+                                if not raw_mapping_replay:
+                                    errors.append(f"EvidenceRecord(...) call in {fpath} missing base parameter")
+                                continue
+                            base_identifiers = {
+                                child.id
+                                for child in ast.walk(base_value)
+                                if isinstance(child, ast.Name)
+                            } | {
+                                child.attr
+                                for child in ast.walk(base_value)
+                                if isinstance(child, ast.Attribute)
+                            }
+                            if "base" not in base_identifiers:
+                                errors.append(
+                                    f"EvidenceRecord(...) base expression in {fpath} does not derive from a base-bearing value"
+                                )
 
             return errors
 
@@ -2030,6 +2084,88 @@ class TestResidualInvariants:
         prod_errors = verify_publish_identity_value_flow(contracts_text, verbs_text, admission_text, evidence_text)
         if prod_errors:
             defect_details.extend(prod_errors)
+
+        # Mutate every explicit EvidenceRecord base expression independently.
+        # A verifier that merely checks argument presence would accept these
+        # constant-base constructions and corrupt non-main retries.
+        def _mutate_evidence_base_expression(src: str, target_index: int) -> tuple[str, bool]:
+            tree = ast.parse(src)
+            targets = []
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                func_name = node.func.id if isinstance(node.func, ast.Name) else (
+                    node.func.attr if isinstance(node.func, ast.Attribute) else None
+                )
+                if func_name != "EvidenceRecord":
+                    continue
+                base_value = (
+                    node.args[3]
+                    if len(node.args) >= 4
+                    else next(
+                        (keyword.value for keyword in node.keywords if keyword.arg == "base"),
+                        None,
+                    )
+                )
+                if base_value is not None:
+                    targets.append(base_value)
+            if target_index >= len(targets):
+                return src, False
+            selected = targets[target_index]
+
+            class _EvidenceBaseMutator(ast.NodeTransformer):
+                def visit(self, node):
+                    if node is selected:
+                        return ast.copy_location(ast.Constant(value="main"), node)
+                    return super().visit(node)
+
+            _EvidenceBaseMutator().visit(tree)
+            ast.fix_missing_locations(tree)
+            return ast.unparse(tree) + "\n", True
+
+        for source_label, source_text in (
+            ("verbs.py", verbs_text),
+            ("evidence.py", evidence_text),
+        ):
+            target_count = sum(
+                1
+                for node in ast.walk(ast.parse(source_text))
+                if isinstance(node, ast.Call)
+                and (
+                    node.func.id if isinstance(node.func, ast.Name) else (
+                        node.func.attr if isinstance(node.func, ast.Attribute) else None
+                    )
+                ) == "EvidenceRecord"
+                and (
+                    len(node.args) >= 4
+                    or any(keyword.arg == "base" for keyword in node.keywords)
+                )
+            )
+            if target_count == 0:
+                defect_details.append(f"{source_label} has no explicit EvidenceRecord base expressions to mutation-test")
+            for target_index in range(target_count):
+                mutated_source, changed = _mutate_evidence_base_expression(
+                    source_text, target_index
+                )
+                if not changed:
+                    defect_details.append(
+                        f"{source_label} EvidenceRecord base mutant {target_index} was a no-op"
+                    )
+                    continue
+                mutated_errors = verify_publish_identity_value_flow(
+                    contracts_text,
+                    mutated_source if source_label == "verbs.py" else verbs_text,
+                    admission_text,
+                    mutated_source if source_label == "evidence.py" else evidence_text,
+                )
+                if not any(
+                    f"base expression in {source_label} does not derive"
+                    in error
+                    for error in mutated_errors
+                ):
+                    defect_details.append(
+                        f"AST verifier accepted {source_label} EvidenceRecord constant-base mutant {target_index}"
+                    )
 
         # 4. Mandatory class/method-bounded source mutants for all four publish identity sites & _replay
         def _mutate_method(src: str, class_name: str, method_name: str, target: str, replacement: str) -> tuple[str, Optional[str]]:
