@@ -113,6 +113,17 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _different_hex(value: str) -> str:
+    replacement = os.urandom(len(value) // 2).hex()
+    while replacement == value:
+        replacement = os.urandom(len(value) // 2).hex()
+    return replacement
+
+
+def _different_count(value: int) -> int:
+    return value + 1 + os.urandom(1)[0]
+
+
 def _git(repo: Path, *args: str) -> str:
     completed = subprocess.run(
         ["git", *args],
@@ -1078,12 +1089,14 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
 
     rejected(
         "wrong-manifest-schema",
-        lambda context: context["manifest"].__setitem__("schema", "wrong.v1"),
+        lambda context: context["manifest"].__setitem__(
+            "schema", f"{os.urandom(16).hex()}.v1"
+        ),
         "input manifest schema mismatch",
     )
     rejected(
         "unknown-manifest-key",
-        lambda context: context["manifest"].__setitem__("unknown", True),
+        lambda context: context["manifest"].__setitem__(os.urandom(16).hex(), True),
         "unknown input manifest field",
     )
     for artifact in RAW_ARTIFACT_NAMES:
@@ -1105,14 +1118,16 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
     rejected(
         "extra-artifact-key",
         lambda context: context["manifest"]["artifacts"].__setitem__(
-            "extra", copy.deepcopy(context["manifest"]["artifacts"]["plan_authority"])
+            os.urandom(16).hex(),
+            copy.deepcopy(context["manifest"]["artifacts"]["plan_authority"]),
         ),
         "unknown artifact input",
     )
     rejected(
         "extra-role-key",
         lambda context: context["manifest"]["role_attestations"].__setitem__(
-            "extra", copy.deepcopy(context["manifest"]["role_attestations"]["author"])
+            os.urandom(16).hex(),
+            copy.deepcopy(context["manifest"]["role_attestations"]["author"]),
         ),
         "unknown role attestation",
     )
@@ -1120,7 +1135,14 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
         ("artifacts", RAW_ARTIFACT_NAMES, "artifact"),
         ("role_attestations", ROLE_NAMES, "role attestation"),
     ):
-        for value in (None, [], "input", True, 17, 1.5):
+        for value in (
+            None,
+            [],
+            os.urandom(16).hex(),
+            True,
+            _different_count(0),
+            _different_count(0) + 0.5,
+        ):
             rejected(
                 f"{group}-wrong-container-{type(value).__name__}",
                 lambda context, group=group, value=value: context[
@@ -1129,7 +1151,14 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
                 f"{group} must be an object",
             )
         for name in names:
-            for value in (None, [], "reference", True, 17, 1.5):
+            for value in (
+                None,
+                [],
+                os.urandom(16).hex(),
+                True,
+                _different_count(0),
+                _different_count(0) + 0.5,
+            ):
                 rejected(
                     f"{name}-ref-wrong-container-{type(value).__name__}",
                     lambda context, group=group, name=name, value=value: context[
@@ -1152,7 +1181,14 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
                     ][group][name].pop(field),
                     f"{label} reference fields mismatch",
                 )
-                for value in (None, [], {}, True, 17, 1.5):
+                for value in (
+                    None,
+                    [],
+                    {},
+                    True,
+                    _different_count(0),
+                    _different_count(0) + 0.5,
+                ):
                     rejected(
                         f"{name}-ref-{field}-wrong-type-{type(value).__name__}",
                         lambda context, group=group, name=name, field=field, value=value: (
@@ -1164,15 +1200,15 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
                 f"{name}-ref-extra-field",
                 lambda context, group=group, name=name: context["manifest"][group][
                     name
-                ].__setitem__("extra", True),
+                ].__setitem__(os.urandom(16).hex(), True),
                 f"{label} reference fields mismatch",
             )
 
     def secret_extra_ref(context: dict[str, Any]) -> None:
-        context["manifest"]["artifacts"]["extra"] = _write_ref(
+        context["manifest"]["artifacts"][os.urandom(16).hex()] = _write_ref(
             context["source_root"],
             "raw/data.txt",
-            b"api_key=synthetic-token-0123456789abcdef\n",
+            f"api_key={os.urandom(24).hex()}\n".encode(),
         )
 
     rejected("secret-bearing-extra-ref", secret_extra_ref, "unknown artifact input")
@@ -1186,13 +1222,25 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
     )
     rejected(
         "caller-counts",
-        lambda context: context["manifest"].__setitem__("counts", {"passed": 454}),
+        lambda context: context["manifest"].__setitem__(
+            "counts",
+            {
+                "passed": _different_count(
+                    context["expected"]["run_counts"]["candidate_focused"]["passed"]
+                )
+            },
+        ),
         "caller-authored counts",
     )
     rejected(
         "caller-git",
         lambda context: context["manifest"].__setitem__(
-            "git", {"candidate_tree": "0" * 40}
+            "git",
+            {
+                "candidate_tree": _different_hex(
+                    context["expected"]["trees"]["candidate"]
+                )
+            },
         ),
         "caller-authored git",
     )
@@ -1204,7 +1252,7 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
     rejected(
         "caller-author-vendor",
         lambda context: context["manifest"].__setitem__(
-            "author_vendor", "codex-gpt-5.6-terra"
+            "author_vendor", f"runtime-vendor-{os.urandom(16).hex()}"
         ),
         "caller-authored author_vendor",
     )
@@ -1242,7 +1290,8 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
         def digest_mismatch(
             context: dict[str, Any], group: str = group, artifact: str = artifact
         ) -> None:
-            input_ref(context, group, artifact)["sha256"] = "f" * 64
+            ref = input_ref(context, group, artifact)
+            ref["sha256"] = _different_hex(ref["sha256"])
 
         rejected(f"{label}-digest-mismatch", digest_mismatch, "digest mismatch")
 
@@ -1280,10 +1329,9 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
     def replace_artifact(context: dict[str, Any], artifact: str, value: Any) -> None:
         replace_input(context, "artifacts", artifact, value)
 
-    secret_value = "synthetic-token-0123456789abcdef"
-
     def secret_input(group: str, name: str) -> Callable[[dict[str, Any]], None]:
         def mutate(context: dict[str, Any]) -> None:
+            secret_value = os.urandom(24).hex()
             ref = context["manifest"][group][name]
             path = context["source_root"] / ref["path"]
             if name.endswith("_raw"):
@@ -1298,7 +1346,7 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
                 assert value != path.read_bytes()
             else:
                 value = _strict_json(path)
-                value["secret_probe"] = secret_value
+                value[os.urandom(16).hex()] = f"api_key={secret_value}"
             replace_input(context, group, name, value)
 
         return mutate
@@ -1331,7 +1379,9 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
         "plan-live-git-lie",
         lie_in_json(
             "plan_authority",
-            lambda record: record["commits"].__setitem__("candidate", "f" * 40),
+            lambda record: record["commits"].__setitem__(
+                "candidate", _different_hex(record["commits"]["candidate"])
+            ),
         ),
         "plan authority does not match live Git",
     )
@@ -1527,15 +1577,29 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
         pair_name = raw_name.removesuffix("_raw")
         rejected(
             f"{pair_name}-raw-count-mismatch",
-            lambda context, raw_name=raw_name: replace_artifact(
-                context, raw_name, b"997 passed\n"
+            lambda context, raw_name=raw_name, pair_name=pair_name: replace_artifact(
+                context,
+                raw_name,
+                (
+                    f"{_different_count(context['expected']['run_counts'][pair_name]['passed'])}"
+                    " passed\n"
+                ).encode(),
             ),
             "raw/JUnit count mismatch",
         )
         rejected(
             f"{pair_name}-junit-count-mismatch",
-            lambda context, junit_name=junit_name: replace_artifact(
-                context, junit_name, _junit_bytes(("passed",) * 7)
+            lambda context, junit_name=junit_name, pair_name=pair_name: (
+                replace_artifact(
+                    context,
+                    junit_name,
+                    _junit_bytes(
+                        ("passed",)
+                        * _different_count(
+                            context["expected"]["run_counts"][pair_name]["passed"]
+                        )
+                    ),
+                )
             ),
             "raw/JUnit count mismatch",
         )
@@ -1800,7 +1864,7 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
         context: dict[str, Any], canonical: Path, _request: dict[str, Any]
     ) -> Path:
         evidence = _strict_json(context["output"])
-        evidence["evidence_id"] = "f" * 64
+        evidence["evidence_id"] = _different_hex(evidence["evidence_id"])
         context["output"].write_bytes(_canonical_bytes(evidence))
         return canonical
 
@@ -1818,7 +1882,7 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
         ) -> Path:
             event = _completion_event(request)
             proof = event["metadata"]["harden_completion"]
-            proof[field] = "f" * len(proof[field])
+            proof[field] = _different_hex(proof[field])
             canonical.write_bytes(
                 _ledger_history_bytes()
                 + _canonical_bytes(event)
@@ -1871,7 +1935,7 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
         "wrong-completion-schema",
         invalid_completion(
             lambda event: event["metadata"]["harden_completion"].__setitem__(
-                "schema", "wrong.v1"
+                "schema", f"{os.urandom(16).hex()}.v1"
             )
         ),
         "completion schema mismatch",
@@ -1890,7 +1954,14 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
         invalid_completion(lambda event: event["metadata"].pop("harden_completion")),
         "missing HARDEN completion proof",
     )
-    for value in (None, [], "proof", True, 17, 1.5):
+    for value in (
+        None,
+        [],
+        os.urandom(16).hex(),
+        True,
+        _different_count(0),
+        _different_count(0) + 0.5,
+    ):
         seal_rejected(
             f"invalid-completion-proof-{type(value).__name__}",
             invalid_completion(
@@ -1926,7 +1997,7 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
         invalid_types = (
             (None, [], {}, "false", "", 0, 1, 0.0, 1.0)
             if field == "visual_render_declared"
-            else (None, [], {}, False, 17, 1.5)
+            else (None, [], {}, False, _different_count(0), _different_count(0) + 0.5)
         )
         for index, value in enumerate(invalid_types):
             seal_rejected(
@@ -1942,7 +2013,7 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
         "completion-proof-extra-field",
         invalid_completion(
             lambda event: event["metadata"]["harden_completion"].__setitem__(
-                "extra", True
+                os.urandom(16).hex(), True
             )
         ),
         "completion proof fields mismatch",
