@@ -46,9 +46,9 @@ not atomic, and 128 of 203 subprocess calls with no timeout.
 | 6 | Fix `LeaseStore.acquire` TOCTOU (hold the flock across read → check → append) and the non-atomic `plan_manifest._write_manifest` | Both defeat the module's stated purpose under the parallel dispatch they exist for | S-1, S-2 |
 | 7 | Catch a small set of expected exceptions in `cli.main()` and print a one-line error + exit code | Today only two exception types avoid a traceback | C-4 |
 | 8 | Split `run_loop` along the seams already visible (dispatch / prepare / finalize / closeout / work-unit / delegation) — mechanically first, no behaviour change | 3,884-line function; every branch is untestable in isolation | A-1 |
-| 9 | Document (and test) the developer prerequisites the suite silently assumes: full-history clone, `phase-loop` on PATH, `build` installed | 12 local failures: 11 environment, 1 product bug (C-11, the 4 `VerificationEvidenceHardening243Test` reds) | T-1 |
+| 9 | Document (and test) the developer prerequisites the suite silently assumes: full-history clone, `phase-loop` on PATH, `build` installed | 12 failing tests: 8 environment, 4 from one product defect (C-11, the `VerificationEvidenceHardening243Test` reds) | T-1 |
 | 10 | Fix the `fab_delta.py` invalid escape sequences and add `-W error::DeprecationWarning` import smoke to CI | Will become a `SyntaxError` on a future Python | Q-6 |
-| 11 | Stop the *whole-field* `suite_command` replacement (`_redact_validation_payload_in_place` / `_command_field_forbidden_kind`); do **not** narrow the shared `_FORBIDDEN_METADATA_PATTERNS` entry at `redaction.py:138` | On every real Linux/macOS install the `suite_command` evidence field is replaced by `<redacted:suite_command>`; 4 tests already red | C-11 |
+| 11 | For the `absolute_private_path` kind only, replace the matching path token in `suite_command` instead of the whole field (`_redact_validation_payload_in_place` / `_command_field_forbidden_kind`); keep whole-field replacement for secret kinds; amend `verification-evidence-contract.md:40` alongside; do **not** narrow the shared `_FORBIDDEN_METADATA_PATTERNS` entry at `redaction.py:138` | On every real Linux/macOS install the `suite_command` evidence field is replaced by `<redacted:suite_command>`; 4 tests already red | C-11 |
 | 12 | Make `phase-loop install --symlink` actually symlink (or rename the mode and stop reporting `mode: symlink`) | `_apply_action` ignores `mode`; the installer script relies on links that are never created | C-9 |
 
 ---
@@ -82,7 +82,7 @@ Comment/docstring density is bimodal: `fab_delta` 2.38 narrative-lines per code 
 ## 2. Architecture
 
 **A-1. `runner.py` is eight subsystems in one module; `run_loop` is a 3,884-line function.**
-`runner.py:1247-5133`. Signature alone is 52 parameters (`runner.py:1247-1300`). Inside it,
+`runner.py:1247-5130`. Signature alone is 52 parameters (`runner.py:1247-1300`). Inside it,
 `_prepare_phase_launch` (`1652-3541`) and `_finalize_phase_launch` (`3541-4700`) are nested
 closures that thread state through `nonlocal`s. Distinct responsibilities living here:
 (a) the dispatch state machine, (b) work-unit scheduling (a *second* scheduler beside
@@ -206,8 +206,10 @@ an em-dash silently dropped a phase (owners `['RELEASE'] -> []`, preflight `1 ->
 `plan_manifest.py`, `plan_ir.py`, `roadmap_*.py` each carry their own markdown slicing.
 *Recommendation:* one tolerant, tested roadmap parser (`roadmap_parser.py`) producing a
 typed document; every consumer reads the typed document. (`roadmap_lint.py:200-207`
-already emits a lint-level `invalid phase heading` error for near-miss headings; the gap
-is the per-consumer slicing, not the lint.)
+already errors on headings that match `ANY_PHASE_HEADING_RE` (`roadmap_lint.py:75`) but
+fail the strict form — the `:`-instead-of-em-dash variant; a lower-cased `phase` or a
+U+FEFF indent still evades it, so the tolerant parser stands for those, and the gap for
+the caught variant is the per-consumer slicing, not the lint.)
 
 **C-7. `worker_pool.py`/`executor_availability.py` race on a cold cache** (`_auth_cache`
 read/write without a lock from threads). Benign today (duplicate probe), documented
@@ -400,17 +402,26 @@ idempotent by design, or add a consumed-set keyed by the RFC 8785 digest.
 **X-5 (fix for C-11). Whole-field replacement, not the pattern, is the defect.**
 `redaction.py:138` is one entry in `_FORBIDDEN_METADATA_PATTERNS` (`redaction.py:35`),
 which is shared by three consumers: the fatal `metadata_redaction_diagnostic` closeout
-gate (`redaction.py:593-611`, called from `closeout.py:711`), the diagnostics
+gate (`redaction.py:606-612`, via the shared matcher `_forbidden_metadata_kind`
+`593-603`, called from `closeout.py:711`), the diagnostics
 `raw_tail`/`argv` drop (`redaction.py:319`), and `_command_field_forbidden_kind`
 (`461-471`). Narrowing that pattern would stop redacting home-rooted stderr excerpts on
 their way into `events.jsonl`, `state --json` and prompts — the widening that
 `#243`/`#269` reverted — and even a "username-only" redaction still leaks every other
 path component (`/home/<redacted>/private-client/venv/bin/python`). Leave the pattern
-alone. Fix the *consumer*: `_redact_validation_payload_in_place` (`443-444`) must not
-replace the whole argv because one token matched; replace the matching token with a
-placeholder (or the interpreter with a stable alias such as `<python>`) and keep the
-rest of the command. Add a test with `sys.executable` under a fake `/home/x` venv that
-asserts the command survives *and* that no `/home/x` component is present.
+alone. Fix the *consumer*, narrowly: `_redact_validation_payload_in_place` (`443-444`)
+replaces the whole argv because one token matched. That whole-field shape is the
+*deliberate* design for secret kinds — `verification-evidence-contract.md:40` states
+"a command argv has no safe partial-redaction shape", and `_iter_leaf_strings`
+(`568-586`) matches synthesized `flag=value` composites and the space-joined argv, so a
+`["--token", "<secret>"]` pair has no single token to replace (the agent-harness#243
+split-argv fix). Keep whole-field replacement for every secret kind. Scope the change to
+`kind == "absolute_private_path"` only: replace each home-rooted path token (the
+interpreter with a stable alias such as `<python>`) and keep the rest of the command.
+Landing this requires a matching amendment to the frozen contract at
+`verification-evidence-contract.md:40`. Add a test with `sys.executable` under a fake
+`/home/x` venv that asserts the command survives *and* that no `/home/x` component is
+present, plus one asserting a `["--token", "<value>"]` argv is still fully replaced.
 
 **X-6 (low). Installer footguns.** `install-agent-harness.sh:129` `rm -rf "$HOME_DIR"`
 where `HOME_DIR` is `AGENT_HARNESS_HOME` (user-set; if pointed at an existing non-clone
@@ -531,16 +542,16 @@ console via Python's last-resort handler. Configure a package logger in `cli.mai
 
 ## 9. Test suite
 
-**T-1. The suite has undocumented environment prerequisites (12 local failures: 11
-environment, 1 product defect).**
+**T-1. The suite has undocumented environment prerequisites (12 failing tests: 8
+environment, 4 from one product defect).**
 - Full history: `test_validate_plan_doc_proofgate.py` (4), `test_goal_coverage.py` (1)
   read `plans/*.md` at pinned historical SHAs of *this* repo (`4e7dbf41…`, `0196f19c…`,
   `5328694a…`) — they fail on any shallow clone. This is the "pin your own history"
   pattern `AGENTS.md` warns plans against, applied to tests.
 - Product defect, not a prerequisite: `test_verification_evidence.py::VerificationEvidenceHardening243Test`
   (4) fail whenever `sys.executable` is under `/home`. That is C-11 — the runtime
-  discards the evidence field — so these four count as one product bug (fix per X-5),
-  not as a developer setup requirement.
+  discards the evidence field — so these four tests are one product bug (fix per X-5),
+  not a developer setup requirement; the remaining 8 are environment.
 - Host state (post-dates this snapshot): tests that reach `default_fabpub_authority_root()`
   or the agy canary's `inventory_customizations()` read `~/.local/state/phase-loop/…`
   and `AGY_*`/`GEMINI_*`/`XDG_*` env from the developer's host; tracked as
