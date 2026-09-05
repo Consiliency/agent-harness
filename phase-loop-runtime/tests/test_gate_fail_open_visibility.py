@@ -307,6 +307,61 @@ def test_a_builtin_that_becomes_importable_registers_on_retry(broken_builtin, mo
     assert "injected_late_validator" not in cv.unavailable_builtin_closeout_validators()
 
 
+@pytest.mark.parametrize("mode,expected", [("warn", "warn"), ("block", "block")])
+def test_a_builtin_that_breaks_on_retry_cannot_escape(broken_builtin, mode, expected) -> None:
+    """G-2: the closeout-time retry runs INSIDE the exception boundary.
+
+    Load-time: the module raises ImportError and is recorded unavailable (the
+    honest outcome). Closeout-time: the same module now raises something that
+    is NOT an ImportError. ``_import_builtin_validator`` deliberately lets that
+    through, and the retry used to be the one import in run_closeout_validators
+    outside any handler -- so the RuntimeError propagated out of the closeout a
+    review gate must never break. Found by the #787 board (fable seat, round 2).
+    """
+    broken_builtin("injected_flaky_validator", ImportError("injected: not yet"))
+    cv.load_builtin_closeout_validators()
+    assert "injected_flaky_validator" in cv.unavailable_builtin_closeout_validators()
+
+    # Same name, now broken while executing rather than missing.
+    finder = _RaisingFinder("injected_flaky_validator", RuntimeError("injected: broken on retry"))
+    sys.meta_path.insert(0, finder)
+    try:
+        findings = cv.run_closeout_validators(ctx=None, env={"PHASE_LOOP_REVIEW": mode})
+    except Exception as exc:  # pragma: no cover - the bug this pins
+        pytest.fail(f"a retried built-in escaped closeout: {type(exc).__name__}: {exc}")
+    finally:
+        sys.meta_path.remove(finder)
+        sys.modules.pop(finder.fullname, None)
+    ours = [f for f in findings if "injected_flaky_validator" in f.reason]
+    assert [f.code for f in ours] == ["gate_crashed"], [f.reason for f in findings]
+    assert ours[0].severity == expected
+    assert "RuntimeError: injected: broken on retry" in (ours[0].body or "")
+    assert "UNKNOWN, not pass" in (ours[0].body or "")
+    # Still unresolved: the next closeout retries it again rather than forgetting it.
+    assert "injected_flaky_validator" in cv.unavailable_builtin_closeout_validators()
+
+
+def test_a_validator_yielding_a_non_finding_cannot_escape() -> None:
+    """G-1: the severity rewrite is inside the boundary too.
+
+    ``replace`` on something that is not a ReviewFinding raises TypeError; that
+    rewrite ran in a loop below the handler and escaped like the lazy generator.
+    """
+    def junk(_ctx):
+        return ["not a finding"]
+
+    cv.register_closeout_validator(junk)
+    try:
+        findings = cv.run_closeout_validators(ctx=None, env={"PHASE_LOOP_REVIEW": "block"})
+    except Exception as exc:  # pragma: no cover - the bug this pins
+        pytest.fail(f"a junk-yielding validator escaped closeout: {type(exc).__name__}: {exc}")
+    finally:
+        cv._VALIDATORS.remove(junk)
+    ours = [f for f in findings if f.code == "gate_crashed" and "junk" in f.reason]
+    assert ours, "a validator yielding a non-finding produced no gate_crashed finding"
+    assert "not a finding" not in [getattr(f, "code", f) for f in findings]
+
+
 def test_a_present_but_broken_builtin_fails_load_loudly(broken_builtin) -> None:
     """G-2 narrowing pin: the guard catches ImportError ONLY.
 
@@ -359,77 +414,162 @@ def os_environ_without_the_variable() -> dict:
     return {k: v for k, v in os.environ.items() if k != "PHASE_LOOP_VERIFY_ENFORCE"}
 
 
-_ENV_READERS = {"get", "getenv", "environ"}
+def _env_aliases(tree: ast.Module) -> tuple[set[str], set[str], set[str]]:
+    """Names bound in ``tree`` to the ``os`` module, ``os.environ`` and ``os.getenv``.
+
+    Resolves ``import os [as X]``, ``from os import environ [as X]`` and
+    ``from os import getenv [as X]`` at any depth of the module. It does NOT
+    follow re-exports through other modules or names rebound by assignment
+    (``e = os.environ``) -- those spellings are not in ``src/`` today, and the
+    guard would pass silently if one were added. The recogniser tests below
+    are the list of what IS covered.
+    """
+    modules, environs, getenvs = {"os"}, {"environ"}, {"getenv"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "os":
+                    modules.add(alias.asname or "os")
+        elif isinstance(node, ast.ImportFrom) and node.module == "os":
+            for alias in node.names:
+                if alias.name == "environ":
+                    environs.add(alias.asname or "environ")
+                elif alias.name == "getenv":
+                    getenvs.add(alias.asname or "getenv")
+    return modules, environs, getenvs
 
 
-def _reads_verify_enforce(node: ast.AST) -> bool:
+def _names_the_var(expr: ast.AST) -> bool:
+    if isinstance(expr, ast.Constant):
+        return expr.value == "PHASE_LOOP_VERIFY_ENFORCE"
+    if isinstance(expr, ast.Name):
+        return expr.id == "VERIFY_ENFORCE_ENV"
+    if isinstance(expr, ast.Attribute):
+        return expr.attr == "VERIFY_ENFORCE_ENV"
+    return False
+
+
+def _is_environ(expr: ast.AST, aliases) -> bool:
+    """``os.environ`` (any os alias), a bare environ alias, or ``getattr(os, "environ")``."""
+    modules, environs, _ = aliases
+    if isinstance(expr, ast.Name):
+        return expr.id in environs
+    if isinstance(expr, ast.Attribute):
+        return expr.attr == "environ" and isinstance(expr.value, ast.Name) and expr.value.id in modules
+    if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Name) and expr.func.id == "getattr":
+        args = expr.args
+        return (
+            len(args) >= 2
+            and isinstance(args[0], ast.Name)
+            and args[0].id in modules
+            and isinstance(args[1], ast.Constant)
+            and args[1].value == "environ"
+        )
+    return False
+
+
+def _is_getenv(expr: ast.AST, aliases) -> bool:
+    modules, _, getenvs = aliases
+    if isinstance(expr, ast.Name):
+        return expr.id in getenvs
+    if isinstance(expr, ast.Attribute):
+        return expr.attr == "getenv" and isinstance(expr.value, ast.Name) and expr.value.id in modules
+    return False
+
+
+def _reads_verify_enforce(node: ast.AST, aliases=({"os"}, {"environ"}, {"getenv"})) -> bool:
     """True when ``node`` is an environment read keyed on the verify-enforce variable.
 
-    Matches ``os.environ.get(X)``, ``os.environ[X]``, ``environ.get(X)``,
-    ``os.getenv(X)`` and ``getenv(X)`` where X is the literal name or the
-    ``VERIFY_ENFORCE_ENV`` constant -- across lines, in any spelling.
+    Matches ``<environ>.get(X)``, ``<environ>[X]`` and ``<getenv>(X)`` where
+    ``<environ>``/``<getenv>`` are any spelling ``_env_aliases`` resolves and X
+    is the literal name or the ``VERIFY_ENFORCE_ENV`` constant, across lines.
     """
-    def names_the_var(expr: ast.AST) -> bool:
-        if isinstance(expr, ast.Constant):
-            return expr.value == "PHASE_LOOP_VERIFY_ENFORCE"
-        if isinstance(expr, ast.Name):
-            return expr.id == "VERIFY_ENFORCE_ENV"
-        if isinstance(expr, ast.Attribute):
-            return expr.attr == "VERIFY_ENFORCE_ENV"
+    if isinstance(node, ast.Call):
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr == "get" and _is_environ(func.value, aliases):
+            return any(_names_the_var(a) for a in node.args)
+        if _is_getenv(func, aliases):
+            return any(_names_the_var(a) for a in node.args)
         return False
-
-    def is_env_reader(func: ast.AST) -> bool:
-        chain = []
-        while isinstance(func, ast.Attribute):
-            chain.append(func.attr)
-            func = func.value
-        if isinstance(func, ast.Name):
-            chain.append(func.id)
-        return bool(_ENV_READERS & set(chain)) and ("environ" in chain or "getenv" in chain)
-
-    if isinstance(node, ast.Call) and is_env_reader(node.func):
-        return any(names_the_var(a) for a in node.args)
-    if isinstance(node, ast.Subscript) and is_env_reader(node.value):
-        return names_the_var(node.slice)
+    if isinstance(node, ast.Subscript) and _is_environ(node.value, aliases):
+        return _names_the_var(node.slice)
     return False
+
+
+def _direct_reads(source: str, *, skip_function: str | None = None) -> list[int]:
+    """Line numbers of direct reads in ``source``, skipping one named function's body."""
+    tree = ast.parse(source)
+    aliases = _env_aliases(tree)
+    skipped: set[ast.AST] = set()
+    if skip_function is not None:
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == skip_function:
+                skipped.update(ast.walk(node))
+    return [
+        node.lineno
+        for node in ast.walk(tree)
+        if node not in skipped and _reads_verify_enforce(node, aliases)
+    ]
 
 
 def test_no_module_reads_the_verify_enforce_env_var_directly() -> None:
     """G-6 guard: outside the parse point, nothing reads the variable from the environment.
 
     AST-based, so ``os.environ.get(VERIFY_ENFORCE_ENV, "hard")``, ``os.getenv``,
-    ``from os import environ`` and multi-line spellings are all caught -- the
-    literal-on-one-line grep this replaces missed every one of them.
+    ``from os import environ`` and multi-line spellings are caught -- the
+    literal-on-one-line grep this replaced missed every one of them. The parse
+    point is ONE function, ``closeout_validation.verify_enforce_mode``; the rest
+    of that module is swept like every other file. Coverage is exactly the
+    recogniser list in test_the_guard_recognises_each_direct_read_spelling;
+    see _env_aliases for what is not followed.
     """
     src = Path(SRC) / "phase_loop_runtime"
     offenders = []
     for path in src.rglob("*.py"):
-        if path.name == "closeout_validation.py":
-            continue  # THE parse point
-        tree = ast.parse(path.read_text(), filename=str(path))
-        for node in ast.walk(tree):
-            if _reads_verify_enforce(node):
-                offenders.append(f"{path.relative_to(src)}:{node.lineno}")
+        skip = "verify_enforce_mode" if path.name == "closeout_validation.py" else None
+        for lineno in _direct_reads(path.read_text(), skip_function=skip):
+            offenders.append(f"{path.relative_to(src)}:{lineno}")
     assert not offenders, f"direct environment reads of PHASE_LOOP_VERIFY_ENFORCE: {offenders}"
 
 
 @pytest.mark.parametrize(
     "snippet",
     [
-        'os.environ.get("PHASE_LOOP_VERIFY_ENFORCE", "hard")',
-        "os.environ.get(VERIFY_ENFORCE_ENV, 'hard')",
-        'os.getenv("PHASE_LOOP_VERIFY_ENFORCE")',
-        "getenv(cv.VERIFY_ENFORCE_ENV)",
-        'environ["PHASE_LOOP_VERIFY_ENFORCE"]',
-        'os.environ.get(\n    "PHASE_LOOP_VERIFY_ENFORCE",\n    "warn",\n)',
+        'import os\nos.environ.get("PHASE_LOOP_VERIFY_ENFORCE", "hard")',
+        "import os\nos.environ.get(VERIFY_ENFORCE_ENV, 'hard')",
+        'import os\nos.getenv("PHASE_LOOP_VERIFY_ENFORCE")',
+        "from os import getenv\ngetenv(cv.VERIFY_ENFORCE_ENV)",
+        'from os import environ\nenviron["PHASE_LOOP_VERIFY_ENFORCE"]',
+        'import os\nos.environ.get(\n    "PHASE_LOOP_VERIFY_ENFORCE",\n    "warn",\n)',
+        # aliases (found by the #787 board, fable seat, round 2)
+        'from os import environ as _env\n_env["PHASE_LOOP_VERIFY_ENFORCE"]',
+        'from os import environ as _env\n_env.get("PHASE_LOOP_VERIFY_ENFORCE")',
+        "from os import getenv as _ge\n_ge(VERIFY_ENFORCE_ENV)",
+        'import os as _o\n_o.environ.get("PHASE_LOOP_VERIFY_ENFORCE")',
+        'import os as _o\n_o.getenv("PHASE_LOOP_VERIFY_ENFORCE")',
+        'import os\ngetattr(os, "environ").get("PHASE_LOOP_VERIFY_ENFORCE")',
+        'import os\ngetattr(os, "environ")["PHASE_LOOP_VERIFY_ENFORCE"]',
     ],
 )
 def test_the_guard_recognises_each_direct_read_spelling(snippet) -> None:
     """The guard's own detector, checked against the spellings it must catch."""
-    tree = ast.parse(snippet)
-    assert any(_reads_verify_enforce(n) for n in ast.walk(tree)), snippet
+    assert _direct_reads(snippet), snippet
+
+
+def test_the_guard_skips_only_the_named_function() -> None:
+    """Function-level exclusion: a second read in the parse-point MODULE is still an offender."""
+    source = (
+        "import os\n"
+        "def verify_enforce_mode(env):\n"
+        '    return os.environ.get("PHASE_LOOP_VERIFY_ENFORCE")\n'
+        "def other():\n"
+        '    return os.environ.get("PHASE_LOOP_VERIFY_ENFORCE")\n'
+    )
+    assert _direct_reads(source, skip_function="verify_enforce_mode") == [5]
+    assert _direct_reads(source) == [3, 5]
 
 
 def test_the_guard_ignores_the_sanctioned_call() -> None:
-    tree = ast.parse('verify_enforce_mode(env, default="warn")')
-    assert not any(_reads_verify_enforce(n) for n in ast.walk(tree))
+    assert not _direct_reads('verify_enforce_mode(env, default="warn")')
+    # a Mapping parameter named env is not the process environment
+    assert not _direct_reads('env.get("PHASE_LOOP_VERIFY_ENFORCE")')

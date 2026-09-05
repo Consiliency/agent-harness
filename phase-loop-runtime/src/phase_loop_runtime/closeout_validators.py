@@ -158,7 +158,10 @@ def clear_closeout_validators() -> None:
 
     Both are the registry's state: a test that starts from an empty registry
     must not inherit ``gate_unavailable`` findings from the session's import
-    order.
+    order. Note that ``load_builtin_closeout_validators`` after this call does
+    NOT re-register the built-ins: their modules are already in ``sys.modules``,
+    so the import that self-registers them does not run again. A test that
+    needs the built-ins back reloads their modules explicitly.
     """
     _VALIDATORS.clear()
     _UNAVAILABLE_BUILTINS.clear()
@@ -232,7 +235,35 @@ def run_closeout_validators(
     # One that is STILL unimportable is reported as ``gate_unavailable``: an
     # unregistered gate has no verdict, and "no verdict" must not read as pass.
     for name in tuple(_UNAVAILABLE_BUILTINS):
-        error = _import_builtin_validator(name)
+        try:
+            error = _import_builtin_validator(name)
+        except Exception as exc:
+            # _import_builtin_validator catches ImportError ONLY (a present-but-
+            # broken module is a hard failure at LOAD, which is right there). At
+            # CLOSEOUT the same module must not break the closeout it is
+            # forbidden to break: the retry is the one import in this function
+            # that ran outside the handler below. Found by the #787 board (fable
+            # seat, round 2; grok residual) and pinned by
+            # test_a_builtin_that_breaks_on_retry_cannot_escape.
+            _LOG.warning(
+                "built-in closeout validator %s raised while importing on retry; gate NOT registered",
+                name,
+                exc_info=True,
+            )
+            findings.append(
+                ReviewFinding(
+                    code="gate_crashed",
+                    reason=f"built-in closeout validator {name} raised while importing; its gate never registered",
+                    severity="warn" if mode == "warn" else "block",
+                    body=(
+                        f"The built-in closeout validator {name} raised while importing on the "
+                        f"closeout-time retry ({type(exc).__name__}: {exc}), so its gate is not "
+                        "registered and did not run. The gate's verdict for this closeout is "
+                        "UNKNOWN, not pass. The traceback is in the runtime log."
+                    ),
+                )
+            )
+            continue
         if error is None:
             _LOG.info("built-in closeout validator %s registered on retry", name)
             continue
@@ -261,6 +292,13 @@ def run_closeout_validators(
             # advisor board (codex leg) and pinned by
             # test_a_lazy_generator_validator_cannot_escape.
             produced = tuple(fn(ctx) or ())
+            # The severity rewrite is inside the boundary too: a validator that
+            # yields something other than a ReviewFinding makes ``replace``
+            # raise, and that used to escape from the loop below.
+            rewritten = tuple(
+                replace(finding, severity="warn" if mode == "warn" else finding.severity)
+                for finding in produced
+            )
         except Exception:
             # The name must never be able to raise: the contract permits any
             # callable, and a callable whose __call__ AND __repr__ both raise
@@ -288,9 +326,7 @@ def run_closeout_validators(
                 )
             )
             continue
-        for finding in produced:
-            effective = "warn" if mode == "warn" else finding.severity
-            findings.append(replace(finding, severity=effective))
+        findings.extend(rewritten)
     return findings
 
 
