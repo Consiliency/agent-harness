@@ -363,7 +363,8 @@ def review_policy_for_tier(tier: ReviewLandingTier | str) -> ReviewLandingPolicy
 DEFAULT_REVIEW_SEAT_ALIASES: Mapping[str, str] = {
     "claude-fable-5-1": "fable",  # model-id-source: frozen review policy default seat
     "claude-fable-5": "fable",  # model-id-source: explicit legacy review seat
-    "gpt-5.6-sol": "sol",  # model-id-source: frozen review policy default seat
+    "gpt-6-astra": "sol",  # model-id-source: frozen review policy default seat
+    "gpt-5.6-sol": "sol",  # model-id-source: explicit legacy review seat
     "gemini-3.8-flash": "gemini",  # model-id-source: frozen review policy default seat
     "gemini-3.7-flash": "gemini",  # model-id-source: explicit legacy review seat
     "gemini-3.6-flash": "gemini",  # model-id-source: explicit legacy review seat
@@ -695,7 +696,7 @@ _LEG_CLI: dict[str, str] = {
 # review-path model is decoupled from the implementer model and can never silently
 # drift back to Sonnet.
 DEFAULT_LEG_MODELS: dict[str, str] = {
-    "codex": "gpt-5.6-sol",  # model-id-source: panel per-leg default (single source of truth)
+    "codex": "gpt-6-astra",  # model-id-source: panel per-leg default (single source of truth)
     "gemini": "gemini-3.8-flash-high",  # model-id-source: panel per-leg default
     "claude": "claude-fable-5-1",  # model-id-source: panel per-leg default (single source of truth)
     "grok": "grok-4.6",  # model-id-source: panel per-leg default (single source of truth)

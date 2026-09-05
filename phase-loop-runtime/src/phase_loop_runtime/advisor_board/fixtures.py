@@ -27,7 +27,7 @@ DEFAULT_BOARD_VENDOR_ORDER: tuple[str, ...] = ("codex", "gemini", "claude", "gro
 # The default board's four seats — model-first, effort split out of the model
 # name. These reconstruct ``DEFAULT_LEG_MODELS`` under
 # ``harness_mapping.render_seat_invocation``:
-#   codex  gpt-5.6-sol           + effort max  -> ``-c model_reasoning_effort=xhigh``
+#   codex  gpt-6-astra           + effort max  -> ``-c model_reasoning_effort=xhigh``
 #   gemini gemini-3.8-flash   + effort high -> model ``gemini-3.8-flash-high``
 #   claude claude-fable-5-1  + effort max  -> ``--effort max``
 #   grok   grok-4.6           + effort max  -> ``--reasoning-effort high``
@@ -37,7 +37,7 @@ DEFAULT_BOARD_VENDOR_ORDER: tuple[str, ...] = ("codex", "gemini", "claude", "gro
 # Fable, not on the implementer model ``claude-sonnet-5``. This is byte-pinned to
 # ``panel_invoker.DEFAULT_LEG_MODELS["claude"]`` (also Fable) by the golden proof.
 DEFAULT_SEATS: tuple[Seat, ...] = (
-    Seat(model="gpt-5.6-sol", effort="max", harness="codex", lens="red-team",
+    Seat(model="gpt-6-astra", effort="max", harness="codex", lens="red-team",
          auth=AUTH_SUBSCRIPTION, backing=BACKING_HOMEBREW),
     Seat(model="gemini-3.8-flash", effort="high", harness="gemini", lens="alternative-approach",
          auth=AUTH_SUBSCRIPTION, backing=BACKING_HOMEBREW),
@@ -57,7 +57,7 @@ DEFAULT_BOARD: Board = Board(
 # Golden literals the default seats must reproduce (cross-checked in the
 # back-compat test against the live ``panel_invoker`` constants).
 DEFAULT_SEAT_RENDERED_MODEL: dict[str, str] = {
-    "codex": "gpt-5.6-sol",
+    "codex": "gpt-6-astra",
     "gemini": "gemini-3.8-flash-high",
     "claude": "claude-fable-5-1",
     "grok": "grok-4.6",
@@ -97,7 +97,7 @@ TWO_SAME_VENDOR_BOARD: Board = Board(
     name="two-openai",
     purpose="brainstorm",
     seats=(
-        Seat(model="gpt-5.6-sol", effort="high", harness="codex"),
+        Seat(model="gpt-6-astra", effort="high", harness="codex"),
         Seat(model="gpt-5.6-sol", effort="high", harness="opencode"),
     ),
 )

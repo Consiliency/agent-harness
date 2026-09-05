@@ -254,6 +254,10 @@ class DefaultHarnessRegistry:
 # max; lower it only where there is concrete evidence a model caps out below max
 # (none of the built-3 do — codex's ``xhigh`` IS canonical ``max``).
 _MODEL_DEFS: tuple[tuple[str, str, str], ...] = (
+    # GPT-6 Astra (released 2026-09-03) is the default codex advisor leg.
+    ("gpt-6-astra", "codex", "max"),
+    # Retained so an explicit per-leg override to the previous default still
+    # validates, and for the tests that pin the openai-family projection.
     ("gpt-5.6-sol", "codex", "max"),
     ("claude-sonnet-5", "claude", "max"),
     ("claude-opus-4-8", "claude", "max"),

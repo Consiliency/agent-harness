@@ -452,7 +452,7 @@ def _operational_fixture(
     bundle_path.write_text(f"exact head: {expected_head}\n", encoding="utf-8")
     panel_models = {
         "claude": "claude-fable-5-1",
-        "codex": "gpt-5.6-sol",
+        "codex": "gpt-6-astra",
         "gemini": "gemini-3.8-flash",
         "grok": "grok-4.6",
     }
@@ -1767,7 +1767,7 @@ def test_operational_evidence_rejects_fabricated_semantics(tmp_path, mutation):
         record["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()
     elif mutation == "panel_semantics":
         path = repo / "evidence" / "implementation-panel.json"
-        path.write_text('{"head":"' + head + '","verdicts":{"gpt-5.6-sol":"DISAGREE"}}\n')
+        path.write_text('{"head":"' + head + '","verdicts":{"gpt-6-astra":"DISAGREE"}}\n')
         record = next(item for item in sections["artifacts"]["records"] if item["path"] == path.relative_to(repo).as_posix())
         record["byte_length"] = len(path.read_bytes())
         record["sha256"] = hashlib.sha256(path.read_bytes()).hexdigest()

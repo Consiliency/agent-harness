@@ -173,7 +173,7 @@ def test_review_leg_isolation_refuses_unbound_direct_invocation():
         purpose="general",
         seats=(
             Seat(
-                model="gpt-5.6-sol",
+                model="gpt-6-astra",
                 effort="high",
                 harness="opencode",
                 backing=BACKING_OMNIGENT,

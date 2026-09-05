@@ -25,7 +25,7 @@ auth preflight before the leg cmd), rather than one fragile global
 **The one contract-sanctioned delta — ``seat_key``.** ``invoke_panel`` leaves
 ``PanelLegResult.seat_key`` unset, so it defaults to the bare ``leg`` (e.g.
 ``"codex"``); ``invoke_board`` carries the seat's richer stable label (e.g.
-``"codex:gpt-5.6-sol:max"``). This is the ABDRESOLVE finding-4 leg→seat re-key
+``"codex:gpt-6-astra:max"``). This is the ABDRESOLVE finding-4 leg→seat re-key
 (``PanelLegResult`` docstring; ``advisor_board.resolver.key_results_by_seat``): a
 STRICT SUPERSET — ``.leg`` is preserved, ``.seat_key`` is enriched so two
 same-vendor seats become expressible — and it is asserted explicitly here as the
@@ -222,7 +222,7 @@ class GoldenWholeBoardBehaviorTests(unittest.TestCase):
         self.assertEqual([r.seat_key for r in panel.legs], list(pi.PANEL_LEGS))
         self.assertEqual(
             [r.seat_key for r in board.legs],
-            ["codex:gpt-5.6-sol:max:red-team",
+            ["codex:gpt-6-astra:max:red-team",
              "gemini:gemini-3.8-flash:high:alternative-approach",
              "claude:claude-fable-5-1:max:correctness",
              "grok:grok-4.6:max:adversarial"],
