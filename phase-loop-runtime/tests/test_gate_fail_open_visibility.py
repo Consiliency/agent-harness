@@ -33,24 +33,54 @@ def test_builtin_table_matches_the_pinned_set() -> None:
     assert set(cv.BUILTIN_VALIDATOR_MODULES) == BUILTIN_VALIDATOR_MODULES
 
 
-def test_all_builtin_closeout_validators_register() -> None:
-    """G-2: every built-in gate must actually reach the registry.
+def test_all_builtin_closeout_validators_register_on_the_production_path() -> None:
+    """G-2: all five gates must register on the path the CLI actually takes.
 
-    Run in a FRESH interpreter that imports only closeout_validators: registration
-    happens at module import, so a test-session import order that already pulled
-    in other modules would measure that order rather than the contract.
+    `cli` imports `closeout`, which imports this module, so the module-level
+    `load_builtin_closeout_validators()` runs while `closeout_validators` is
+    still initialising and `fab_gate` -- which imports back from it -- fails.
+    That registered 4 of 5 with `fab_gate` silently absent, on the REAL
+    entrypoint. An earlier version of this test imported `closeout_validators`
+    alone, which passes while production does not; the #787 board (codex leg)
+    caught that. Assert the production order, after a gate run.
     """
     code = (
+        "import phase_loop_runtime.closeout;"                     # what cli imports first
         "import phase_loop_runtime.closeout_validators as cv;"
+        "cv.run_closeout_validators(ctx=None, env={'PHASE_LOOP_REVIEW':'warn'});"
         "print(sorted(f.__module__.rsplit('.',1)[-1] for f in cv.registered_closeout_validators()))"
     )
     out = subprocess.run(
         [sys.executable, "-c", code], capture_output=True, text=True,
         env={"PYTHONPATH": SRC, "PATH": "/usr/bin:/bin"}, check=True,
-    ).stdout
-    registered = set(eval(out.strip()))  # noqa: S307 - our own literal list
+    ).stdout.strip().splitlines()[-1]
+    registered = set(eval(out))  # noqa: S307 - our own literal list
     missing = BUILTIN_VALIDATOR_MODULES - registered
-    assert not missing, f"built-in closeout gates missing from the registry: {sorted(missing)}"
+    assert not missing, f"built-in closeout gates missing on the production path: {sorted(missing)}"
+
+
+def test_an_unnameable_validator_cannot_escape_the_handler() -> None:
+    """G-1: building the crash report must not itself raise.
+
+    The contract permits any callable. One whose __call__ AND __repr__ raise
+    escaped from inside the very handler meant to stop it. #787 board, round 2.
+    """
+    class Unnameable:
+        def __call__(self, _ctx):
+            raise RuntimeError("call crash")
+
+        def __repr__(self):
+            raise RuntimeError("repr crash")
+
+    bad = Unnameable()
+    cv.register_closeout_validator(bad)
+    try:
+        findings = cv.run_closeout_validators(ctx=None, env={"PHASE_LOOP_REVIEW": "block"})
+    except Exception as exc:  # pragma: no cover - the bug this pins
+        pytest.fail(f"an unnameable validator escaped: {type(exc).__name__}: {exc}")
+    finally:
+        cv._VALIDATORS.remove(bad)
+    assert [f for f in findings if f.code == "gate_crashed"]
 
 
 def test_a_crashing_validator_is_reported_not_swallowed() -> None:

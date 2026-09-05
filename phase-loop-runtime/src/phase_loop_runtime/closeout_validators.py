@@ -222,6 +222,14 @@ def run_closeout_validators(
     mode = resolve_review_mode(env)
     if mode == "off":
         return []
+    # Retry the built-in registration. The module-level call runs while
+    # `closeout_validators` is still initialising, and on the REAL entrypoint
+    # (`cli` imports `closeout`, which imports this module) `fab_gate` reaches
+    # back into a half-built module and fails to import: 4 of 5 gates register.
+    # Imported later it is fine, so retry here, where every module is complete
+    # and a gate is about to actually matter. `register_closeout_validator`
+    # dedupes, so this is a no-op once the set is whole.
+    load_builtin_closeout_validators()
     findings: list[ReviewFinding] = []
     # G-2: a built-in whose import failed at load (see
     # load_builtin_closeout_validators) is retried HERE, before the registry is
@@ -262,7 +270,14 @@ def run_closeout_validators(
             # test_a_lazy_generator_validator_cannot_escape.
             produced = tuple(fn(ctx) or ())
         except Exception:
-            name = getattr(fn, "__name__", repr(fn))
+            # The name must never be able to raise: the contract permits any
+            # callable, and a callable whose __call__ AND __repr__ both raise
+            # otherwise escapes from inside the handler that exists to stop
+            # exactly that. Found by the #787 board (codex leg, round 2).
+            try:
+                name = getattr(fn, "__name__", None) or repr(fn)
+            except Exception:  # pragma: no cover - defensive
+                name = "<unnameable validator>"
             _LOG.warning("closeout validator %s raised; gate did not run", name, exc_info=True)
             findings.append(
                 ReviewFinding(
