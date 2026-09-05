@@ -3629,6 +3629,7 @@ def run_loop(
                         "process_group_id": result.process_group_id,
                         "started_at": result.started_at,
                         "finished_at": result.finished_at,
+                        "returncode": result.returncode,
                         "timed_out": result.timed_out,
                         "interrupted": result.interrupted,
                         "stalled": result.stalled,
@@ -3651,7 +3652,7 @@ def run_loop(
                             "failed_launch_closeout_override": failed_launch_closeout_override,
                         },
                     )
-            launch_contract_blocker = _launch_contract_blocker(result, artifacts, spec.executor, alias)
+            launch_contract_blocker = _launch_contract_blocker(result, artifacts, spec.executor, alias, spec=spec)
             if result.failed:
                 launch_blocker = launch_contract_blocker or _executor_launch_failure_blocker(spec.executor, alias, result.output)
                 classifications[alias] = "blocked" if launch_blocker else "unknown"
@@ -10405,6 +10406,32 @@ def _parsed_child_automation(result: LaunchResult, spec) -> dict[str, object]:
         if delegation_request is not None:
             parsed["delegation_request"] = delegation_request
     _annotate_automation_parse_error(parsed, _executor_display_name(spec.executor), spec.prompt_bundle.workflow_command)
+    if not result.dry_run and result.returncode is not None and parsed.get("automation_status") == "executing":
+        summary = (
+            f"{_executor_display_name(spec.executor)} exited without a terminal closeout "
+            f"(returncode={result.returncode}); the last message reports executing. "
+            "Inspect the retained child output before resuming; interim progress is not closeout evidence."
+        )
+        # Do not let the native-payload overlay restore the rejected progress
+        # status in terminal-summary.json.
+        parsed.pop("native_closeout_payload", None)
+        parsed.update({
+            "automation_status": "blocked",
+            "automation_verification_status": "blocked",
+            "automation_blocker_class": "contract_bug",
+            "automation_blocker_summary": summary,
+            "automation_human_required": "false",
+            "automation_required_human_inputs": [],
+            "automation_next_skill": "none",
+            "automation_next_command": "none",
+            "automation_parse_error": summary,
+            "automation_parse_error_blocker_class": "contract_bug",
+            "native_closeout_extraction_failure": {
+                "reason": "executor_exited_without_closeout",
+                "source": parsed.get("native_closeout_source", "output"),
+                "classification": "native_closeout_extraction",
+            },
+        })
     return parsed
 
 
@@ -10866,6 +10893,8 @@ def _launch_contract_blocker(
     artifacts: dict[str, Path],
     executor: str,
     phase: str,
+    *,
+    spec=None,
 ) -> dict[str, object] | None:
     if result.stalled:
         return {
@@ -10933,6 +10962,17 @@ def _launch_contract_blocker(
                 "blocker_summary": (
                     f"{_executor_display_name(executor)} live launch for {phase} produced a zero-byte durable output log and no reducible child output."
                 ),
+                "required_human_inputs": (),
+                "access_attempts": (),
+            }
+    if spec is not None:
+        parsed = _parsed_child_automation(result, spec)
+        failure = parsed.get("native_closeout_extraction_failure") or {}
+        if failure.get("reason") == "executor_exited_without_closeout":
+            return {
+                "human_required": False,
+                "blocker_class": "contract_bug",
+                "blocker_summary": parsed["automation_blocker_summary"],
                 "required_human_inputs": (),
                 "access_attempts": (),
             }

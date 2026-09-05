@@ -46,6 +46,9 @@ class PhaseLoopSchemaFlowTest(unittest.TestCase):
 
     def test_all_closeout_actions_receive_same_schema_across_five_harnesses(self):
         schema = export_function_schema("EmitPhaseCloseout")
+        # Execution final responses exclude live-only progress; the exported
+        # lifecycle schema remains backward compatible (agent-harness#785).
+        schema["properties"]["terminal_status"]["enum"].remove("executing")
         expected_hash = _schema_hash(schema)
         for action in ("execute", "repair", "review"):
             with self.subTest(action=action, executor="codex"):
