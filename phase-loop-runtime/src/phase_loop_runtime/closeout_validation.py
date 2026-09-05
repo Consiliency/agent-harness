@@ -124,9 +124,39 @@ def validate_produced_gates(plan_path: Path, closeout_payload: dict[str, Any]) -
     )
 
 
+VERIFY_ENFORCE_ENV = "PHASE_LOOP_VERIFY_ENFORCE"
+
+
+def verify_enforce_mode(env: Mapping[str, str] | None = None, *, default: str) -> str:
+    """THE parse point for ``PHASE_LOOP_VERIFY_ENFORCE``. Do not read it directly.
+
+    G-6 (2026-09-01 codebase review): this variable was parsed in three places
+    with two OPPOSITE unset-defaults -- ``hard`` here, ``warn`` in
+    ``runner._verification_enforcement_mode`` and
+    ``train_runner._train_reverify_enforcement_mode``. Nothing in the fleet or CI
+    sets the variable, so the default IS the behaviour: the closeout evidence
+    gate enforced while the execute preflight did not, in the same run, and which
+    one you got depended only on which module happened to ask.
+
+    The parse is single-sourced here. ``default`` is now DECLARED by each caller
+    rather than implied by which copy of the parser it reached, and it is pinned
+    by test_verify_enforce_mode_defaults_are_declared. Collapsing the two
+    defaults into one is a live behaviour change on every host (see the PR
+    description) and is deliberately NOT done here.
+    """
+    if env is None:
+        import os as _os
+
+        env = _os.environ
+    value = str(env.get(VERIFY_ENFORCE_ENV) or "").strip().lower()
+    if value in {"hard", "warn"}:
+        return value
+    return default
+
+
 def verification_enforcement_mode(env: Mapping[str, str] | None = None) -> str:
-    value = str((env or {}).get("PHASE_LOOP_VERIFY_ENFORCE") or "").strip().lower()
-    return "warn" if value == "warn" else "hard"
+    """Closeout evidence-validation posture. Unset -> ``hard`` (unchanged)."""
+    return verify_enforce_mode(env if env is not None else {}, default="hard")
 
 
 def _normalize_gates(value: Any) -> tuple[str, ...]:

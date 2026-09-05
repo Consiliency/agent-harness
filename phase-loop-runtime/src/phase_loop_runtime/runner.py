@@ -6550,8 +6550,10 @@ def _launch_event_metadata(
 
 
 def _verification_enforcement_mode() -> str:
-    value = os.environ.get("PHASE_LOOP_VERIFY_ENFORCE", "warn").strip().lower()
-    return "hard" if value == "hard" else "warn"
+    """Execute-preflight posture. Unset -> ``warn`` (unchanged; see G-6)."""
+    from .closeout_validation import verify_enforce_mode
+
+    return verify_enforce_mode(default="warn")
 
 
 def _runner_verification_fails_closed(runner_verification: dict[str, object] | None) -> bool:
