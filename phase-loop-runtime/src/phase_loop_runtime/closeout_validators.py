@@ -222,14 +222,6 @@ def run_closeout_validators(
     mode = resolve_review_mode(env)
     if mode == "off":
         return []
-    # Retry the built-in registration. The module-level call runs while
-    # `closeout_validators` is still initialising, and on the REAL entrypoint
-    # (`cli` imports `closeout`, which imports this module) `fab_gate` reaches
-    # back into a half-built module and fails to import: 4 of 5 gates register.
-    # Imported later it is fine, so retry here, where every module is complete
-    # and a gate is about to actually matter. `register_closeout_validator`
-    # dedupes, so this is a no-op once the set is whole.
-    load_builtin_closeout_validators()
     findings: list[ReviewFinding] = []
     # G-2: a built-in whose import failed at load (see
     # load_builtin_closeout_validators) is retried HERE, before the registry is
