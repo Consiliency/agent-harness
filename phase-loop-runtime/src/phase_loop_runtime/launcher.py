@@ -887,7 +887,17 @@ def _closeout_schema_for_request(request: LaunchRequest) -> dict[str, Any] | Non
         return None
     from .models import CLOSEOUT_SCHEMA
 
-    return CLOSEOUT_SCHEMA
+    # The lifecycle schema also describes live progress. A finished executor
+    # cannot still be executing (agent-harness#785).
+    properties = CLOSEOUT_SCHEMA["properties"]
+    terminal = properties["terminal_status"]
+    return {
+        **CLOSEOUT_SCHEMA,
+        "properties": {
+            **properties,
+            "terminal_status": {**terminal, "enum": [s for s in terminal["enum"] if s != "executing"]},
+        },
+    }
 
 
 def _prompt_bundle_with_closeout_schema(
