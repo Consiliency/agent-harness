@@ -1,8 +1,10 @@
 """Exited children must not turn interim progress into another execute dispatch."""
 
+import hashlib
 import json
 import sys
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -48,6 +50,22 @@ def test_final_response_schema_excludes_interim_without_changing_lifecycle(tmp_p
     spec = _spec(tmp_path, tmp_path / "roadmap.md", action)
     assert "executing" not in spec.codex_output_schema["properties"]["terminal_status"]["enum"]
     assert "executing" in CLOSEOUT_SCHEMA["properties"]["terminal_status"]["enum"]
+
+
+def test_golden_delta_is_only_final_schema_exclusion():
+    golden = json.loads((Path(__file__).parent / "data/launchspec_golden/launchspec_golden.json").read_text())
+    command = golden["claude_print_solo"]["command"]
+    index = command.index("--json-schema") + 1
+    schema = json.loads(command[index])
+    statuses = schema["properties"]["terminal_status"]["enum"]
+    assert "executing" not in statuses
+    statuses.insert(2, "executing")
+    command[index] = json.dumps(schema, sort_keys=True, separators=(",", ":"))
+    # Historical INPUT, not regenerated candidate output: the normalized golden
+    # at e7350e534e9a369be45baf34dc812eadd873e1f5. Undoing the sole permitted
+    # enum exclusion must recover it, including every prompt/hash/model/argv.
+    canonical = json.dumps(golden, sort_keys=True, separators=(",", ":")).encode()
+    assert hashlib.sha256(canonical).hexdigest() == "4026eb47167dcb4b495ae273f82f77f0ba20085508abf702aa89d5dbd3483ecc"
 
 
 @pytest.mark.parametrize("stream", [False, True])

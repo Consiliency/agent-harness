@@ -74,7 +74,7 @@ function EmitPhaseCloseout(
 ) -> PhaseLoopCloseoutV1 {
   client PhaseLoopCloseoutClient
   prompt #"
-Emit the phase-loop closeout for phase {{ phase_alias }} as one JSON object in the FINAL response only, after tools and verification finish. Interim commentary is progress, never a closeout. Do not end the turn after a progress report.
+Emit the phase-loop closeout for phase {{ phase_alias }} as one JSON object.
 
 Required contract:
 - Field-anchored enum list for terminal_status: {{ allowed_terminal_statuses | join(', ') }}.
@@ -96,7 +96,7 @@ Terminal-status decision tree:
 - Use executed when implementation ran but final acceptance, artifact tracking, or verification remains unresolved.
 - Use awaiting_phase_closeout when verified phase-owned dirty output still needs the runner closeout mode to commit, isolate, or preserve it.
 - Use planned or unplanned only for planning-state closeouts where execution did not run.
-- executing is a live lifecycle state, never a final response from an exiting executor. Use executed for an unfinished handoff or blocked for an impediment. Use unknown only when the executor cannot determine the phase state.
+- Use executing only for an in-progress closeout and unknown only when the executor cannot determine the phase state.
 
 Field-pair invariants:
 - terminal_status=complete requires verification_status=passed.
