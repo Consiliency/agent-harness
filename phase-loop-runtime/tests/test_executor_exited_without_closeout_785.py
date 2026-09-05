@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from phase_loop_runtime.launcher import (
-    AuthPreflightResult, LaunchResult, build_launch_request, build_launch_spec, launch,
+    AuthPreflightResult, LaunchResult, build_launch_request, build_launch_spec, launch_with_spec,
 )
 from phase_loop_runtime.models import CLOSEOUT_SCHEMA
 from phase_loop_runtime.profiles import resolve_profile
@@ -115,19 +115,97 @@ def test_dry_run_is_not_misreported_as_exited_child(tmp_path):
     assert not _parsed_child_automation(result, spec)
 
 
+@pytest.mark.parametrize("status", ["executed", "complete", "planned", "awaiting_phase_closeout"])
+@pytest.mark.parametrize("final_kind", ["missing", "empty", "malformed", "valid"])
+def test_codex_closeout_requires_fresh_final_file(tmp_path, monkeypatch, status, final_kind):
+    spec = _spec(tmp_path, tmp_path / "roadmap.md")
+    interim = json.dumps(_payload(status))
+    final = json.dumps(_payload("complete"))
+    seen = []
+
+    def child(command, **kwargs):
+        seen.append((command, kwargs))
+        if "--output-last-message" in command:
+            path = Path(command[command.index("--output-last-message") + 1])
+            assert not path.exists()
+            if final_kind != "missing":
+                path.write_text({"empty": "", "malformed": "not a closeout", "valid": final}[final_kind])
+        log = kwargs.get("log_path")
+        if log:
+            log.write_text(interim + "\ntokens used\n123\n")
+        return LaunchResult(command=command, returncode=0, output=interim, log_path=str(log) if log else None)
+
+    monkeypatch.setattr("phase_loop_runtime.launcher.launch", child)
+    log = tmp_path / "output.log"
+    result = launch_with_spec(spec, log_path=log)
+    parsed = _parsed_child_automation(result, spec)
+    if final_kind != "valid":
+        assert parsed["automation_status"] == "blocked"
+        assert parsed["automation_blocker_class"] == "contract_bug"
+        assert parsed["native_closeout_extraction_failure"]["reason"] == "executor_exited_without_closeout"
+        assert "native_closeout_payload" not in parsed
+    else:
+        assert parsed["automation_status"] == "complete"
+        assert parsed["native_closeout_source"] == "codex_final_message"
+    command, kwargs = seen[0]
+    assert kwargs["env"]["AGENT_DETACHED_WORK"] == "1"
+    assert kwargs["stdin_text"] == spec.delivery_payload()
+    assert spec.delivery_payload() not in command
+    first = command[command.index("--output-last-message") + 1]
+    launch_with_spec(spec, log_path=log)
+    second = seen[1][0][seen[1][0].index("--output-last-message") + 1]
+    assert first != second
+
+
+@pytest.mark.parametrize("observed", [False, True])
+@pytest.mark.parametrize("completed", [False, True])
+def test_real_codex_shaped_child_requires_completion(tmp_path, observed, completed):
+    spec = _spec(tmp_path, tmp_path / "roadmap.md")
+    script = tmp_path / "fake_codex.py"
+    final = json.dumps(_payload("executed"))
+    script.write_text(
+        "import os, sys, signal\nfrom pathlib import Path\n"
+        "assert os.environ['AGENT_DETACHED_WORK'] == '1'\n"
+        "assert sys.stdin.read()\n"
+        "assert 'claude_channel' not in ' '.join(sys.argv)\n"
+        f"print({final!r}, flush=True)\n"
+        f"completed = {completed!r}\n"
+        "if completed:\n"
+        f"    Path(sys.argv[sys.argv.index('--output-last-message')+1]).write_text({final!r})\n"
+        "else:\n"
+        "    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))\n"
+        "    os.kill(os.getpid(), signal.SIGTERM)\n"
+    )
+    spec = replace(spec, command=[sys.executable, str(script), *spec.command[2:]])
+    result = launch_with_spec(spec, log_path=tmp_path / "output.log" if observed else None)
+    assert result.returncode == 0
+    assert result.codex_turn_completion["completed"] is completed
+    assert result.event_metadata()["codex_turn_completion"]["completed"] is completed
+    assert "codex_final_message" not in result.event_metadata()
+    parsed = _parsed_child_automation(result, spec)
+    assert parsed["automation_status"] == ("executed" if completed else "blocked")
+    if not completed:
+        assert parsed["automation_blocker_class"] == "contract_bug"
+    if observed and completed:
+        assert Path(result.codex_turn_completion["path"]).read_text() == final
+
+
 @pytest.mark.parametrize("exit_code", [0, 7])
-def test_exited_child_blocks_once_and_persists_actual_returncode(tmp_path, monkeypatch, exit_code):
+@pytest.mark.parametrize("status", ["executing", "executed", "empty"])
+def test_exited_child_blocks_once_and_persists_actual_returncode(tmp_path, monkeypatch, exit_code, status):
     repo = make_repo(tmp_path)
     roadmap = repo / "specs" / "phase-plans-v1.md"
     plan = write_phase_plan(repo, "CONTRACT", roadmap)
     commit_fixture_paths(repo, "fixture plan", plan)
     calls = []
+    script = tmp_path / "executor.py"
+    output = json.dumps(_payload(status)) if status != "empty" else ""
+    script.write_text(f"import sys; sys.stdin.read(); sys.stdout.write({output!r}); sys.exit({exit_code})")
 
     def exited_child(spec, **kwargs):
         calls.append(spec)
-        output = json.dumps(_payload())
-        result = launch(
-            [sys.executable, "-c", f"import sys; print({output!r}); sys.exit({exit_code})"],
+        result = launch_with_spec(
+            replace(spec, command=[sys.executable, str(script), *spec.command[2:]]),
             log_path=kwargs.get("log_path"),
         )
         assert result.returncode == exit_code
@@ -142,6 +220,7 @@ def test_exited_child_blocks_once_and_persists_actual_returncode(tmp_path, monke
     assert len(launches) == 1
     metadata = json.loads(launches[0].read_text())
     assert metadata["returncode"] == exit_code
+    assert metadata["codex_turn_completion"]["completed"] is False
     if exit_code == 0:
         assert snapshot.blocker_class == "contract_bug"
         assert "exited without a terminal closeout" in snapshot.blocker_summary

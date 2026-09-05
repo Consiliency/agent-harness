@@ -3630,6 +3630,7 @@ def run_loop(
                         "started_at": result.started_at,
                         "finished_at": result.finished_at,
                         "returncode": result.returncode,
+                        "codex_turn_completion": result.codex_turn_completion,
                         "timed_out": result.timed_out,
                         "interrupted": result.interrupted,
                         "stalled": result.stalled,
@@ -10406,10 +10407,16 @@ def _parsed_child_automation(result: LaunchResult, spec) -> dict[str, object]:
         if delegation_request is not None:
             parsed["delegation_request"] = delegation_request
     _annotate_automation_parse_error(parsed, _executor_display_name(spec.executor), spec.prompt_bundle.workflow_command)
-    if not result.dry_run and result.returncode is not None and parsed.get("automation_status") == "executing":
+    missing_completed_closeout = (
+        spec.executor == "codex" and result.codex_turn_completion is not None
+        and (not result.codex_turn_completion.get("completed") or not parsed)
+    )
+    if not result.dry_run and result.returncode is not None and (
+        missing_completed_closeout or parsed.get("automation_status") == "executing"
+    ):
         summary = (
             f"{_executor_display_name(spec.executor)} exited without a terminal closeout "
-            f"(returncode={result.returncode}); the last message reports executing. "
+            f"(returncode={result.returncode}); no completed-turn closeout was accepted. "
             "Inspect the retained child output before resuming; interim progress is not closeout evidence."
         )
         # Do not let the native-payload overlay restore the rejected progress
@@ -10536,6 +10543,8 @@ def _find_json_closeout_payload(text: str) -> dict[str, object] | None:
 
 
 def _native_closeout_text_candidates(result: LaunchResult, spec, output_text: str) -> tuple[tuple[str, str], ...]:
+    if spec.executor == "codex" and result.codex_turn_completion is not None:
+        return (("codex_final_message", output_text),)
     candidates: list[tuple[str, str]] = [("output", output_text)]
     log_path = Path(result.log_path) if result.log_path else None
     if log_path is not None:
@@ -10938,6 +10947,17 @@ def _launch_contract_blocker(
             "required_human_inputs": (),
             "access_attempts": (),
         }
+    if spec is not None:
+        parsed = _parsed_child_automation(result, spec)
+        failure = parsed.get("native_closeout_extraction_failure") or {}
+        if failure.get("reason") == "executor_exited_without_closeout":
+            return {
+                "human_required": False,
+                "blocker_class": "contract_bug",
+                "blocker_summary": parsed["automation_blocker_summary"],
+                "required_human_inputs": (),
+                "access_attempts": (),
+            }
     if result.log_path and not result.dry_run and (
         result.process_pid is not None
         or result.started_at is not None
@@ -10962,17 +10982,6 @@ def _launch_contract_blocker(
                 "blocker_summary": (
                     f"{_executor_display_name(executor)} live launch for {phase} produced a zero-byte durable output log and no reducible child output."
                 ),
-                "required_human_inputs": (),
-                "access_attempts": (),
-            }
-    if spec is not None:
-        parsed = _parsed_child_automation(result, spec)
-        failure = parsed.get("native_closeout_extraction_failure") or {}
-        if failure.get("reason") == "executor_exited_without_closeout":
-            return {
-                "human_required": False,
-                "blocker_class": "contract_bug",
-                "blocker_summary": parsed["automation_blocker_summary"],
                 "required_human_inputs": (),
                 "access_attempts": (),
             }
