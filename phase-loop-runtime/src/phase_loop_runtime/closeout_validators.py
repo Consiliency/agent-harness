@@ -23,9 +23,12 @@ runner returns no findings and closeout behavior is byte-for-byte unchanged.
 """
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Iterable, Mapping
+
+_LOG = logging.getLogger(__name__)
 
 ReviewSeverity = str  # "warn" | "block"
 REVIEW_SEVERITIES: tuple[str, ...] = ("warn", "block")
@@ -182,7 +185,11 @@ def run_closeout_validators(
 ) -> list[ReviewFinding]:
     """Run every registered validator and return findings at their effective severity.
 
-    A validator that raises is skipped — a review gate must never break closeout.
+    A validator that raises still cannot break closeout, but it is no longer
+    SILENT: it is logged with a traceback and reported as a ``gate_crashed``
+    finding, so a gate that stopped running is visible instead of looking like a
+    gate that passed. Under ``PHASE_LOOP_REVIEW=block`` that finding blocks;
+    under ``warn`` it is rewritten to ``warn`` with every other finding.
     """
     mode = resolve_review_mode(env)
     if mode == "off":
@@ -192,6 +199,24 @@ def run_closeout_validators(
         try:
             produced = fn(ctx) or ()
         except Exception:
+            name = getattr(fn, "__name__", repr(fn))
+            _LOG.warning("closeout validator %s raised; gate did not run", name, exc_info=True)
+            findings.append(
+                ReviewFinding(
+                    code="gate_crashed",
+                    reason=f"closeout validator {name} raised; its gate did not run",
+                    # This finding is appended AFTER the `continue`-skipped rewrite
+                    # loop below, so it must apply the mode itself. Getting this
+                    # wrong would block every closeout under the DEFAULT `warn`
+                    # posture, not just under an opted-in `block`.
+                    severity="warn" if mode == "warn" else "block",
+                    body=(
+                        f"The closeout validator {name} raised an exception, so its gate did "
+                        "not run. The gate's verdict for this closeout is UNKNOWN, not pass. "
+                        "The traceback is in the runtime log."
+                    ),
+                )
+            )
             continue
         for finding in produced:
             effective = "warn" if mode == "warn" else finding.severity
@@ -311,27 +336,36 @@ def load_builtin_closeout_validators() -> None:
     (e.g. ``doc_delta_validator``) and one guarded import line here. Imports are
     guarded so an incremental checkout missing a module never breaks closeout.
     P1 ships no built-in validators — the registry is empty by default.
+
+    The guard catches ``ImportError`` ONLY. "An incremental checkout missing a
+    module" is an ImportError; a bare ``except Exception`` also swallowed every
+    AttributeError/TypeError raised while a present module was executing its own
+    imports, which silently removed that gate from the registry with no log line
+    and no failure. ``fab_gate`` alone pulls a long import list from four
+    modules. A module that is present but broken is now a hard failure at load,
+    which is the honest outcome: the alternative is a closeout that reports pass
+    for a gate that was never registered.
     """
     try:
         from . import doc_delta_validator  # noqa: F401  (P2)
-    except Exception:
-        pass
+    except ImportError:
+        _LOG.warning("built-in closeout validator %s is not importable; gate NOT registered", "doc_delta_validator")
     try:
         from . import verification_evidence_validator  # noqa: F401  (P5)
-    except Exception:
-        pass
+    except ImportError:
+        _LOG.warning("built-in closeout validator %s is not importable; gate NOT registered", "verification_evidence_validator")
     try:
         from . import visual_evidence_validator  # noqa: F401  (P6)
-    except Exception:
-        pass
+    except ImportError:
+        _LOG.warning("built-in closeout validator %s is not importable; gate NOT registered", "visual_evidence_validator")
     try:
         from . import visual_avatar_evidence_validator  # noqa: F401  (FAV, issue #91)
-    except Exception:
-        pass
+    except ImportError:
+        _LOG.warning("built-in closeout validator %s is not importable; gate NOT registered", "visual_avatar_evidence_validator")
     try:
         from . import fab_gate  # noqa: F401  (FAB, Consiliency/agent-harness#191 Lane D)
-    except Exception:
-        pass
+    except ImportError:
+        _LOG.warning("built-in closeout validator %s is not importable; gate NOT registered", "fab_gate")
     return None
 
 
