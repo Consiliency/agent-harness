@@ -1540,6 +1540,27 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
             ci_head_lie,
             "CI head does not match live Git",
         )
+        for field, fact in (("head", "commits"), ("tree", "trees")):
+
+            def review_identity_lie(
+                context: dict[str, Any],
+                round_name: str = round_name,
+                field: str = field,
+                fact: str = fact,
+            ) -> None:
+                artifact = f"{round_name}_review_request"
+                ref = context["manifest"]["artifacts"][artifact]
+                record = _strict_json(context["source_root"] / ref["path"])
+                stale = context["expected"][fact]["landing"]
+                assert stale != record[field]
+                record[field] = stale
+                replace_artifact(context, artifact, record)
+
+            rejected(
+                f"{round_name}-review-stale-{field}",
+                review_identity_lie,
+                f"review {field} does not match live Git",
+            )
         rejected(
             f"{round_name}-broker-within-class-duplicate-nonce",
             lie_in_json(
@@ -1801,6 +1822,38 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
         return path
 
     seal_rejected("regular-detached-ledger", detached, "canonical ledger path")
+
+    for group, names in (
+        ("artifacts", RAW_ARTIFACT_NAMES),
+        ("role_attestations", ROLE_NAMES),
+    ):
+        for name in names:
+
+            def retained_byte_drift(
+                context: dict[str, Any],
+                canonical: Path,
+                request: dict[str, Any],
+                group: str = group,
+                name: str = name,
+            ) -> Path:
+                source = context["manifest"][group][name]
+                retained = next(
+                    item["retained"]
+                    for item in request["copied_artifacts"]
+                    if item["source"] == source
+                )
+                path = _contained_ref_path(
+                    context["evidence_root"], retained, "retained drift target"
+                )
+                path.write_bytes(path.read_bytes() + b"\n")
+                assert _sha256(path.read_bytes()) != retained["sha256"]
+                return canonical
+
+            seal_rejected(
+                f"retained-byte-drift-{group}-{name}",
+                retained_byte_drift,
+                "digest mismatch",
+            )
 
     def zero_event(
         _context: dict[str, Any], canonical: Path, _request: dict[str, Any]
