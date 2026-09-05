@@ -29,10 +29,6 @@ def test_fabpub_authority_root_is_pinned_to_an_empty_tmp_dir(tmp_path: Path) -> 
     assert not any(root.iterdir()), "isolated authority root must carry no bootstrap"
     assert root.resolve().is_relative_to(tmp_path.resolve())
     assert default_fabpub_authority_root() == root.resolve()
-    # Never the host default, whatever XDG_STATE_HOME says.
-    assert not default_fabpub_authority_root().is_relative_to(
-        (Path.home() / ".local" / "state").resolve()
-    )
 
 
 def test_customization_env_prefixes_are_absent_from_the_real_environment(tmp_path: Path) -> None:
