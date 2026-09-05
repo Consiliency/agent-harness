@@ -23,6 +23,7 @@ runner returns no findings and closeout behavior is byte-for-byte unchanged.
 """
 from __future__ import annotations
 
+import importlib
 import logging
 import os
 from dataclasses import dataclass, field, replace
@@ -128,6 +129,22 @@ CloseoutValidator = Callable[[CloseoutContext], Iterable[ReviewFinding]]
 
 _VALIDATORS: list[CloseoutValidator] = []
 
+# Built-in validator modules, in registration order. Each downstream rigor
+# phase adds its module name here (see load_builtin_closeout_validators).
+BUILTIN_VALIDATOR_MODULES: tuple[str, ...] = (
+    "doc_delta_validator",  # P2
+    "verification_evidence_validator",  # P5
+    "visual_evidence_validator",  # P6
+    "visual_avatar_evidence_validator",  # FAV, issue #91
+    "fab_gate",  # FAB, Consiliency/agent-harness#191 Lane D
+)
+
+# module name -> ImportError text for every built-in whose import failed at
+# load. Consumed (and retried) by run_closeout_validators: a gate that never
+# registered must reach the closeout artifact as ``gate_unavailable``, not only
+# the log. Emptied entry-by-entry as retries succeed.
+_UNAVAILABLE_BUILTINS: dict[str, str] = {}
+
 
 def register_closeout_validator(fn: CloseoutValidator) -> CloseoutValidator:
     """Register a closeout validator. Returns ``fn`` so it can be used as a decorator."""
@@ -137,12 +154,23 @@ def register_closeout_validator(fn: CloseoutValidator) -> CloseoutValidator:
 
 
 def clear_closeout_validators() -> None:
-    """Drop all registered validators (test hook)."""
+    """Drop all registered validators AND the unavailable-builtin record (test hook).
+
+    Both are the registry's state: a test that starts from an empty registry
+    must not inherit ``gate_unavailable`` findings from the session's import
+    order.
+    """
     _VALIDATORS.clear()
+    _UNAVAILABLE_BUILTINS.clear()
 
 
 def registered_closeout_validators() -> tuple[CloseoutValidator, ...]:
     return tuple(_VALIDATORS)
+
+
+def unavailable_builtin_closeout_validators() -> dict[str, str]:
+    """Built-in validator modules whose import failed: ``{module: error}``."""
+    return dict(_UNAVAILABLE_BUILTINS)
 
 
 def resolve_review_mode(env: Mapping[str, str] | None = None) -> str:
@@ -195,6 +223,33 @@ def run_closeout_validators(
     if mode == "off":
         return []
     findings: list[ReviewFinding] = []
+    # G-2: a built-in whose import failed at load (see
+    # load_builtin_closeout_validators) is retried HERE, before the registry is
+    # snapshotted, because the load-time failure can be an import-order
+    # circularity (runner -> ... -> closeout_validators -> fab_gate -> ... ->
+    # a partially initialised module) that is resolved by closeout time. A
+    # successful retry self-registers the gate and it runs below like any other.
+    # One that is STILL unimportable is reported as ``gate_unavailable``: an
+    # unregistered gate has no verdict, and "no verdict" must not read as pass.
+    for name in tuple(_UNAVAILABLE_BUILTINS):
+        error = _import_builtin_validator(name)
+        if error is None:
+            _LOG.info("built-in closeout validator %s registered on retry", name)
+            continue
+        findings.append(
+            ReviewFinding(
+                code="gate_unavailable",
+                reason=f"built-in closeout validator {name} is not importable; its gate never registered",
+                # Appended outside the rewrite loop below: apply the mode here,
+                # exactly like gate_crashed.
+                severity="warn" if mode == "warn" else "block",
+                body=(
+                    f"The built-in closeout validator {name} could not be imported ({error}), "
+                    "so its gate is not registered and did not run. The gate's verdict for "
+                    "this closeout is UNKNOWN, not pass."
+                ),
+            )
+        )
     for fn in tuple(_VALIDATORS):
         try:
             # MATERIALIZE inside the boundary. CloseoutValidator permits any
@@ -337,43 +392,52 @@ def ratification_findings(decision) -> tuple[ReviewFinding, ...]:
     return ()
 
 
-def load_builtin_closeout_validators() -> None:
-    """Import the built-in validator modules so they self-register.
-
-    Extension point: each downstream rigor phase adds its validator module
-    (e.g. ``doc_delta_validator``) and one guarded import line here. Imports are
-    guarded so an incremental checkout missing a module never breaks closeout.
-    P1 ships no built-in validators — the registry is empty by default.
+def _import_builtin_validator(name: str) -> str | None:
+    """Import one built-in validator module; return the ImportError text, or None.
 
     The guard catches ``ImportError`` ONLY. "An incremental checkout missing a
     module" is an ImportError; a bare ``except Exception`` also swallowed every
     AttributeError/TypeError raised while a present module was executing its own
     imports, which silently removed that gate from the registry with no log line
     and no failure. ``fab_gate`` alone pulls a long import list from four
-    modules. A module that is present but broken is now a hard failure at load,
+    modules. A module that is present but broken is a hard failure at load,
     which is the honest outcome: the alternative is a closeout that reports pass
     for a gate that was never registered.
+
+    Success is recorded by popping ``_UNAVAILABLE_BUILTINS``; failure by setting
+    it, so the closeout-time retry in run_closeout_validators sees exactly the
+    set that still needs reporting.
     """
     try:
-        from . import doc_delta_validator  # noqa: F401  (P2)
-    except ImportError:
-        _LOG.warning("built-in closeout validator %s is not importable; gate NOT registered", "doc_delta_validator")
-    try:
-        from . import verification_evidence_validator  # noqa: F401  (P5)
-    except ImportError:
-        _LOG.warning("built-in closeout validator %s is not importable; gate NOT registered", "verification_evidence_validator")
-    try:
-        from . import visual_evidence_validator  # noqa: F401  (P6)
-    except ImportError:
-        _LOG.warning("built-in closeout validator %s is not importable; gate NOT registered", "visual_evidence_validator")
-    try:
-        from . import visual_avatar_evidence_validator  # noqa: F401  (FAV, issue #91)
-    except ImportError:
-        _LOG.warning("built-in closeout validator %s is not importable; gate NOT registered", "visual_avatar_evidence_validator")
-    try:
-        from . import fab_gate  # noqa: F401  (FAB, Consiliency/agent-harness#191 Lane D)
-    except ImportError:
-        _LOG.warning("built-in closeout validator %s is not importable; gate NOT registered", "fab_gate")
+        importlib.import_module(f"{__package__}.{name}")
+    except ImportError as exc:
+        _UNAVAILABLE_BUILTINS[name] = f"{type(exc).__name__}: {exc}"
+        return _UNAVAILABLE_BUILTINS[name]
+    _UNAVAILABLE_BUILTINS.pop(name, None)
+    return None
+
+
+def load_builtin_closeout_validators() -> None:
+    """Import the built-in validator modules so they self-register.
+
+    Extension point: each downstream rigor phase adds its validator module
+    (e.g. ``doc_delta_validator``) to BUILTIN_VALIDATOR_MODULES. Imports are
+    guarded so an incremental checkout missing a module never breaks closeout;
+    see _import_builtin_validator for what the guard does and does not catch.
+    P1 ships no built-in validators — the registry is empty by default.
+
+    A module that fails to import is logged here AND recorded in
+    ``_UNAVAILABLE_BUILTINS`` so run_closeout_validators can retry it and,
+    failing that, surface it as a ``gate_unavailable`` finding (G-2).
+    """
+    for name in BUILTIN_VALIDATOR_MODULES:
+        error = _import_builtin_validator(name)
+        if error is not None:
+            _LOG.warning(
+                "built-in closeout validator %s is not importable; gate NOT registered (%s)",
+                name,
+                error,
+            )
     return None
 
 
