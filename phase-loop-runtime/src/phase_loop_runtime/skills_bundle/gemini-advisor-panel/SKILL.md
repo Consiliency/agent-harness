@@ -20,11 +20,11 @@ Do not call dotfiles advisor-panel scripts, copy provider-specific shell scripts
 
 ## Boards & Availability-Aware Composition
 
-Named boards live in `phase_loop_runtime.advisor_board.presets`; the default review board is `code-review`, a 4-vendor cross-vendor panel: Claude Fable 5 (`claude-fable-5-1`), Grok 4.6 (`grok-4.6`), GPT-5.6 Sol (`gpt-5.6-sol`), and Gemini 3.8 Flash (`gemini-3.8-flash`). Each seat uses its maximum supported thinking level and a distinct review lens (correctness / adversarial / red-team / alternative-approach).
+Named boards live in `phase_loop_runtime.advisor_board.presets`; the default review board is `code-review`, a 4-vendor cross-vendor panel: Claude Fable 5 (`claude-fable-5-1`), Grok 4.6 (`grok-4.6`), GPT-6 Astra (`gpt-6-astra`), and Gemini 3.8 Flash (`gemini-3.8-flash`). Each seat uses its maximum supported thinking level and a distinct review lens (correctness / adversarial / red-team / alternative-approach).
 
 Composition is AVAILABILITY-AWARE (`composition.compose_review_board`): it targets 4 independent reviewers (hard floor 3) and NEVER collapses to 1–2 when vendors are down. Each vendor that is both present on PATH AND authenticated gets one lens-distinct seat first; the remaining seats are BACKFILLED onto the available (up + authed) vendors with DIFFERENT lenses. So 2 vendors up still yields a full 4-seat board, and 1 vendor up yields 4 distinct-lens seats on that vendor. The `default`/premerge board uses the same four model defaults; only the explicit legacy `invoke_panel` API retains its three-leg shape.
 
-When a president is required, the availability ladder is Fable, then Sol, then Grok 4.6, then Gemini 3.8 Flash. Advance only on a typed `president_unavailable` result; disagreement or a blocking ruling never triggers fallback.
+When a president is required, the availability ladder is Fable, then Sol (the GPT seat alias — `gpt-6-astra` by default; `gpt-5.6-sol` stays accepted as an explicit legacy id), then Grok 4.6, then Gemini 3.8 Flash. Advance only on a typed `president_unavailable` result; disagreement or a blocking ruling never triggers fallback.
 
 ## Three Ways To Feed Material
 

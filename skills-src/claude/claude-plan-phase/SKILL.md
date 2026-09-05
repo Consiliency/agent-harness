@@ -67,7 +67,7 @@ is recorded.
 
 ## Model & Effort Tiering (right-size per lane, don't default to the ceiling)
 
-The runtime resolves one planning model per executor (`codex` → `gpt-5.6-sol`,
+The runtime resolves one planning model per executor (`codex` → `gpt-6-astra`,
 `claude` → `claude-fable-5-1`), so **reasoning effort is the primary cost dial.**
 The normalized effort ladder, cheapest first, is:
 

@@ -28,8 +28,8 @@ class TierMatrixTest(unittest.TestCase):
             ("heavy", "claude"): ("claude-opus-5", "xhigh", False),
             ("regular", "claude"): ("claude-sonnet-5", "medium", False),
             ("lite", "claude"): ("claude-haiku-4-5-20251001", "low", False),
-            ("ultra", "codex"): ("gpt-5.6-sol", "max", False),
-            ("heavy", "codex"): ("gpt-5.6-sol", "xhigh", False),
+            ("ultra", "codex"): ("gpt-6-astra", "max", False),
+            ("heavy", "codex"): ("gpt-6-astra", "xhigh", False),
             ("regular", "codex"): ("gpt-5.6-terra", "medium", False),
             ("lite", "codex"): ("gpt-5.6-luna", "low", False),
             ("ultra", "gemini"): ("gemini-3.1-pro-preview", "max", True),
@@ -305,7 +305,7 @@ class SupervisorProvenanceTest(unittest.TestCase):
         self.assertEqual(sel.tier, "heavy")
         self.assertEqual(sel.model_id, "claude-opus-5")
         # Non-claude supervise = that vendor's heavy model.
-        self.assertEqual(supervise_selection("codex").model_id, "gpt-5.6-sol")
+        self.assertEqual(supervise_selection("codex").model_id, "gpt-6-astra")
 
     def test_coordinator_review_bundle_records_supervise_provenance(self):
         # ADVISORY PROVENANCE (not a launch binding): the train coordinator's authored

@@ -1,7 +1,7 @@
 """#66 — per-leg model override for the advisor panel.
 
 The panel hardcoded each leg's model (claude via `CLAUDE_IMPLEMENTER_MODEL`, codex
-`gpt-5.6-sol`, gemini `Gemini 3.1 Pro (High)`), so running e.g. the Claude leg on
+`gpt-6-astra`, gemini `Gemini 3.1 Pro (High)`), so running e.g. the Claude leg on
 `claude-fable-5` required an in-process monkeypatch. `invoke_panel(..., models={...})`
 now overrides any subset per leg; unset legs use `DEFAULT_LEG_MODELS`.
 """
@@ -19,7 +19,7 @@ def test_default_leg_models_exposed():
     # (claude-sonnet-5): pre-merge review runs on Fable, the implementer stays Sonnet.
     assert pi.DEFAULT_LEG_MODELS["claude"] == "claude-fable-5-1"
     assert pi.DEFAULT_LEG_MODELS["claude"] != pi.CLAUDE_IMPLEMENTER_MODEL
-    assert pi.DEFAULT_LEG_MODELS["codex"] == "gpt-5.6-sol"
+    assert pi.DEFAULT_LEG_MODELS["codex"] == "gpt-6-astra"
     assert pi.DEFAULT_LEG_MODELS["gemini"] == "gemini-3.8-flash-high"
     assert pi.DEFAULT_LEG_MODELS["grok"] == "grok-4.6"
 

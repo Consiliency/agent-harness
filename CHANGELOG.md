@@ -6,6 +6,35 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Fleet default: GPT-6 Astra becomes the codex seat and heavy tier (Consiliency/agent-harness#777)
+
+- The advisor-board codex seat and the codex heavy tier move from `gpt-5.6-sol` to
+  `gpt-6-astra` (`codex` 0.153.3 `models_cache.json` lists it with `low..max` plus a new
+  `ultra` level; the canonical `max` still renders as `model_reasoning_effort=xhigh`).
+  Touched: `_MODEL_DEFS`, `DEFAULT_LEG_MODELS`, `DEFAULT_REVIEW_SEAT_ALIASES`, every
+  preset that seats codex, `profiles.OPENAI_HEAVY_MODEL`,
+  the fixtures' `DEFAULT_BOARD`, the capabilities card, and the regenerated skills bundle.
+  `gpt-5.6-terra` / `gpt-5.6-luna` (implementer / worker tiers) are unchanged.
+- `gpt-5.6-sol` stays REGISTERED and accepted for explicit seats and configs, and still
+  maps to the `sol` review-seat alias. The alias itself is unchanged: `sol` is a
+  review-policy seat identity (`required_seats`, `PRESIDENT_LADDER`, the interim
+  president-ratification note), not a model id, so existing landing policies keep working.
+- `profiles.OPENCODE_OPENAI_HEAVY_MODEL` stays `openai/gpt-5.6-sol` (board round-3 catch,
+  fable TUI leg): opencode resolves ids from its own provider catalog and `opencode run
+  --model openai/gpt-6-astra` fails with `ProviderModelNotFoundError` on 1.18.27 and
+  1.18.28 (measured 2026-09-04; `openai/gpt-5.6-sol` launches). The constant carries the
+  bump condition; the opencode executor's plan/review/roadmap lane keeps launching.
+- `scripts/check_model_id_sources.py` now recognises the `-astra` suffix so the new id is
+  guarded like the others.
+- Board-review catch (round 1): `docs/advisor-board-capabilities-card.md` still named an
+  unregistered `gpt-5.5` at six sites (Models table, `doc-edit` preset row, cross-vendor
+  and CLI/TOML examples, `seat_key` example) — drift that predates this bump. All six now
+  read `gpt-6-astra`, and the Models table gains the registered legacy `gpt-5.6-sol` row.
+- CI catch: `phase-loop-runtime/tests/data/launchspec_golden/launchspec_golden.json` freezes the
+  heavy-tier resolution (`selected_model`) and still carried `gpt-5.6-sol`; regenerated with
+  `PHASE_LOOP_REGEN_LAUNCHSPEC_GOLDEN=1`, one line changed — the same step the prior fleet
+  bumps took.
+
 ### Explicit zero-history FABPUB authority bootstrap (Consiliency/agent-harness#763)
 
 - Add a two-step `phase-loop fabpub-bootstrap` command for hosts with no

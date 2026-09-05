@@ -24,10 +24,14 @@ if TYPE_CHECKING:
     from .governed_premerge import EscalationDecision
 
 
-OPENAI_HEAVY_MODEL = "gpt-5.6-sol"
+OPENAI_HEAVY_MODEL = "gpt-6-astra"
 # codex regular (implementer) model — hoisted here so EXECUTOR_MODEL_OVERRIDES below
 # can reference it. Equals CODEX_REGULAR_MODEL in the tier matrix (single source).
 OPENAI_IMPLEMENTER_MODEL = "gpt-5.6-terra"
+# opencode heavy STAYS on sol: opencode resolves models from its own provider catalog and
+# rejects `openai/gpt-6-astra` (`ProviderModelNotFoundError: Model not found`) on 1.18.27
+# and 1.18.28 (measured 2026-09-04 with `opencode run --model …`; `openai/gpt-5.6-sol`
+# launches). Bump this to `openai/gpt-6-astra` once `opencode models openai` lists it.
 OPENCODE_OPENAI_HEAVY_MODEL = "openai/gpt-5.6-sol"
 # opencode regular (implementer) model — hoisted here so EXECUTOR_MODEL_OVERRIDES below
 # can reference it (same reason as OPENAI_IMPLEMENTER_MODEL). Provider-qualified prefix.
@@ -81,7 +85,7 @@ EXECUTOR_MODEL_OVERRIDES = {
     },
     # codex is the fleet's DEFAULT execute executor. Give it an explicit executor-
     # default map mirroring claude's (CR round 3): planning/review → heavy (ultra-
-    # else-heavy == gpt-5.6-sol), implementation → the regular model (gpt-5.6-terra).
+    # else-heavy == gpt-6-astra), implementation → the regular model (gpt-5.6-terra).
     # These constants ARE the tier matrix's codex source (CODEX_HEAVY/REGULAR), so this
     # AGREES with resolve() — previously codex fell through to DEFAULT_PROFILES (heavy)
     # and the DELEGATED-CHILD / HARNESS-LANE seams launched implementation on sol.
@@ -396,7 +400,8 @@ def supervise_selection(vendor: str = "claude") -> TierResolution:
 #     (grok-4.3/grok-build-0.1, all volatile) are the taxonomy target, not yet live.
 #   • opencode — NO LONGER a bypass: its class AND executor paths now AGREE (both use
 #     the provider-qualified `openai/gpt-5.6-{sol,terra,luna}` at heavy/regular/lite;
-#     execute/repair → terra, planning/review → sol; CR round-4 fix). It is not DERIVED
+#     execute/repair → terra, planning/review → sol; CR round-4 fix). opencode heavy is
+#     NOT gpt-6-astra yet — see the OPENCODE_OPENAI_HEAVY_MODEL note at the top. It is not DERIVED
 #     from TIER_MODELS only because opencode is not a tier-matrix vendor (its ids carry
 #     the `openai/` transport prefix); the mapping is hand-maintained but tier-consistent.
 #   • pi class path AND pi executor path — both the `auto` router alias (pi has no
@@ -412,12 +417,12 @@ def supervise_selection(vendor: str = "claude") -> TierResolution:
 #     production default; stamping it is tracked as agent-harness#307.
 #   • MAINTENANCE seam (CR round-5 finding 1) — `maintain-skills` runs via
 #     maintenance.py:run_maintenance, which calls resolve_profile("skill-maintenance")
-#     → DEFAULT_PROFILES = (gpt-5.6-sol, high) → build_codex_command, bypassing BOTH the
+#     → DEFAULT_PROFILES = (gpt-6-astra, high) → build_codex_command, bypassing BOTH the
 #     class path and the executor path (no resolve_profile_for_executor, no policy layer).
 #     It hardwires codex on the HEAVY model. ACCEPTED: maintain-skills is not execute/repair,
 #     ROLE_TIERS defines no tier for it, and it is seam-consistent (fixed codex). Latent
 #     note: resolve_profile_for_executor("maintain-skills", executor≠codex) would return
-#     gpt-5.6-sol via DEFAULT_PROFILES — unreachable today (maintain-skills is codex-fixed)
+#     gpt-6-astra via DEFAULT_PROFILES — unreachable today (maintain-skills is codex-fixed)
 #     but live code.
 #   • claude CHANNEL route (CR round-5 finding 3) — the PRODUCTION-DEFAULT interactive route
 #     (`claude-channel send`) binds NO `--model` (the print/agent_view routes DO). A send into
@@ -449,7 +454,7 @@ def supervise_selection(vendor: str = "claude") -> TierResolution:
 # implementation on grok-4.6 (its HEAVY cell) — NAMED above; the taxonomy's grok-4.3 regular
 # target is not yet live. There are TWO named model disagreements (grok single-model; gemini
 # LITE aspirational — agy exposes no flash-lite), not one. Panel/advisor legs
-# (panel_invoker.DEFAULT_LEG_MODELS = fable-5-1 / sol / 3.8-flash-high / grok-4.6) are a SEPARATE
+# (panel_invoker.DEFAULT_LEG_MODELS = fable-5-1 / gpt-6-astra / 3.8-flash-high / grok-4.6) are a SEPARATE
 # model-bearing surface (review-only), NOT a phase-executor resolution seam — their defaults
 # are the ultra-else-heavy reviewer set, tier-correct and not a routing bypass.
 # Effort is bound by shipped action policy and recorded at requested, policy,
