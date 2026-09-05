@@ -25,7 +25,7 @@ locally) and the culture of narrating *why* in comments is real.
 
 The same culture has produced the codebase's main liability: **accretion without
 consolidation**. The core engine is one 13,015-line module whose main function is 3,884
-lines with 56 parameters and nesting depth 11; ~2,100 lines of it exist to shepherd one
+lines with 52 parameters and nesting depth 11; ~2,100 lines of it exist to shepherd one
 historical PR (`Consiliency/agent-harness#347`) and push to `main`; an 8,443-line opt-in
 canary subsystem sits beside it; and cross-cutting behaviours (git topology capture,
 event-ledger parsing, subprocess timeouts, exception policy, env-var defaults) are
@@ -46,9 +46,9 @@ not atomic, and 128 of 203 subprocess calls with no timeout.
 | 6 | Fix `LeaseStore.acquire` TOCTOU (hold the flock across read → check → append) and the non-atomic `plan_manifest._write_manifest` | Both defeat the module's stated purpose under the parallel dispatch they exist for | S-1, S-2 |
 | 7 | Catch a small set of expected exceptions in `cli.main()` and print a one-line error + exit code | Today only two exception types avoid a traceback | C-4 |
 | 8 | Split `run_loop` along the seams already visible (dispatch / prepare / finalize / closeout / work-unit / delegation) — mechanically first, no behaviour change | 3,884-line function; every branch is untestable in isolation | A-1 |
-| 9 | Document (and test) the developer prerequisites the suite silently assumes: full-history clone, `phase-loop` on PATH, `build` installed, interpreter *not* under `/home` | 12 local failures, none a product bug | T-1 |
+| 9 | Document (and test) the developer prerequisites the suite silently assumes: full-history clone, `phase-loop` on PATH, `build` installed | 12 local failures: 11 environment, 1 product bug (C-11, the 4 `VerificationEvidenceHardening243Test` reds) | T-1 |
 | 10 | Fix the `fab_delta.py` invalid escape sequences and add `-W error::DeprecationWarning` import smoke to CI | Will become a `SyntaxError` on a future Python | Q-6 |
-| 11 | Narrow `redaction.py:138` so `/home/...` and `/Users/...` are not wholesale "private" | On every real Linux/macOS install the `suite_command` evidence field is replaced by `<redacted:suite_command>`; 4 tests already red | C-11 |
+| 11 | Stop the *whole-field* `suite_command` replacement (`_redact_validation_payload_in_place` / `_command_field_forbidden_kind`); do **not** narrow the shared `_FORBIDDEN_METADATA_PATTERNS` entry at `redaction.py:138` | On every real Linux/macOS install the `suite_command` evidence field is replaced by `<redacted:suite_command>`; 4 tests already red | C-11 |
 | 12 | Make `phase-loop install --symlink` actually symlink (or rename the mode and stop reporting `mode: symlink`) | `_apply_action` ignores `mode`; the installer script relies on links that are never created | C-9 |
 
 ---
@@ -82,7 +82,7 @@ Comment/docstring density is bimodal: `fab_delta` 2.38 narrative-lines per code 
 ## 2. Architecture
 
 **A-1. `runner.py` is eight subsystems in one module; `run_loop` is a 3,884-line function.**
-`runner.py:1247-5133`. Signature alone is 56 parameters (`runner.py:1247-1300`). Inside it,
+`runner.py:1247-5133`. Signature alone is 52 parameters (`runner.py:1247-1300`). Inside it,
 `_prepare_phase_launch` (`1652-3541`) and `_finalize_phase_launch` (`3541-4700`) are nested
 closures that thread state through `nonlocal`s. Distinct responsibilities living here:
 (a) the dispatch state machine, (b) work-unit scheduling (a *second* scheduler beside
@@ -95,7 +95,7 @@ kwargs each — a `blocked_snapshot(...)`/`emit(...)` helper pair would remove s
 hundred lines outright.
 *Recommendation:* split mechanically first (no behaviour change), in this order of
 risk: (g) → (c)+(h) → (e) → (b) → (a). Introduce a `RunContext` dataclass to replace the
-56-parameter signature. Target: no function over 200 lines in the engine.
+52-parameter signature. Target: no function over 200 lines in the engine.
 
 **A-2. ~2,100 lines of one-PR bootstrap code are baked into the engine and shipped in the wheel.**
 `runner.py:7101-9216` (`_legible_*`, `_run_legible_*`, `_seal_legible_*`,
@@ -205,8 +205,9 @@ an em-dash silently dropped a phase (owners `['RELEASE'] -> []`, preflight `1 ->
 `_ACCEPTANCE_SECTION_RE` rejects `## Acceptance Criteria (Phase 3)`. `discovery.py`,
 `plan_manifest.py`, `plan_ir.py`, `roadmap_*.py` each carry their own markdown slicing.
 *Recommendation:* one tolerant, tested roadmap parser (`roadmap_parser.py`) producing a
-typed document; every consumer reads the typed document. Add a *lint-level* error (not a
-silent drop) for any heading that looks like a phase but fails the strict form.
+typed document; every consumer reads the typed document. (`roadmap_lint.py:200-207`
+already emits a lint-level `invalid phase heading` error for near-miss headings; the gap
+is the per-consumer slicing, not the lint.)
 
 **C-7. `worker_pool.py`/`executor_availability.py` race on a cold cache** (`_auth_cache`
 read/write without a lock from threads). Benign today (duplicate probe), documented
@@ -396,11 +397,20 @@ consumption tracking beyond `max_source_age_seconds` (900 s); a resolved approva
 re-resolved by a second caller inside that window. Confirm callers treat it as
 idempotent by design, or add a consumed-set keyed by the RFC 8785 digest.
 
-**X-5 (fix for C-11). Redaction over-matches `/home`.** `redaction.py:138` treats every
-`/home/...` and `/users/...` path as private. Redact the *user segment* only
-(`/home/<user>` → `/home/<redacted>`), keep the rest of the path, and never replace a
-whole argv field because one token matched; reserve whole-field redaction for the
-`op://`/token patterns. Add a test with `sys.executable` under a fake `/home/x` venv.
+**X-5 (fix for C-11). Whole-field replacement, not the pattern, is the defect.**
+`redaction.py:138` is one entry in `_FORBIDDEN_METADATA_PATTERNS` (`redaction.py:35`),
+which is shared by three consumers: the fatal `metadata_redaction_diagnostic` closeout
+gate (`redaction.py:593-611`, called from `closeout.py:711`), the diagnostics
+`raw_tail`/`argv` drop (`redaction.py:319`), and `_command_field_forbidden_kind`
+(`461-471`). Narrowing that pattern would stop redacting home-rooted stderr excerpts on
+their way into `events.jsonl`, `state --json` and prompts — the widening that
+`#243`/`#269` reverted — and even a "username-only" redaction still leaks every other
+path component (`/home/<redacted>/private-client/venv/bin/python`). Leave the pattern
+alone. Fix the *consumer*: `_redact_validation_payload_in_place` (`443-444`) must not
+replace the whole argv because one token matched; replace the matching token with a
+placeholder (or the interpreter with a stable alias such as `<python>`) and keep the
+rest of the command. Add a test with `sys.executable` under a fake `/home/x` venv that
+asserts the command survives *and* that no `/home/x` component is present.
 
 **X-6 (low). Installer footguns.** `install-agent-harness.sh:129` `rm -rf "$HOME_DIR"`
 where `HOME_DIR` is `AGENT_HARNESS_HOME` (user-set; if pointed at an existing non-clone
@@ -492,8 +502,7 @@ bind explicitly. No `mypy`/`pyright` runs anywhere although `py.typed` is shippe
 
 **Q-6. Invalid escape sequences in non-raw docstrings.** `fab_delta.py:125` and `:657`
 (``^\.(?:/.*)?$``) — `python -W error::DeprecationWarning -c "import phase_loop_runtime.fab_delta"`
-raises `SyntaxError` today; `fab_delta.py:76,421` also contain `\.` in non-raw strings.
-Future CPython turns this into a hard error. Add `-W error` import smoke to CI.
+raises `SyntaxError` today. Future CPython turns this into a hard error. Add `-W error` import smoke to CI.
 
 **Q-7. Dead or test-only modules** (zero importers in `src/`): `roadmap_reseal.py`
 (reached only via `importlib.import_module` in one test), `fleet_metrics_export.py`,
@@ -522,14 +531,20 @@ console via Python's last-resort handler. Configure a package logger in `cli.mai
 
 ## 9. Test suite
 
-**T-1. The suite has undocumented environment prerequisites (12 local failures, 0
-product bugs).**
+**T-1. The suite has undocumented environment prerequisites (12 local failures: 11
+environment, 1 product defect).**
 - Full history: `test_validate_plan_doc_proofgate.py` (4), `test_goal_coverage.py` (1)
   read `plans/*.md` at pinned historical SHAs of *this* repo (`4e7dbf41…`, `0196f19c…`,
   `5328694a…`) — they fail on any shallow clone. This is the "pin your own history"
   pattern `AGENTS.md` warns plans against, applied to tests.
-- Interpreter path: `test_verification_evidence.py::VerificationEvidenceHardening243Test`
-  (4) fail whenever `sys.executable` is under `/home` because of X-5.
+- Product defect, not a prerequisite: `test_verification_evidence.py::VerificationEvidenceHardening243Test`
+  (4) fail whenever `sys.executable` is under `/home`. That is C-11 — the runtime
+  discards the evidence field — so these four count as one product bug (fix per X-5),
+  not as a developer setup requirement.
+- Host state (post-dates this snapshot): tests that reach `default_fabpub_authority_root()`
+  or the agy canary's `inventory_customizations()` read `~/.local/state/phase-loop/…`
+  and `AGY_*`/`GEMINI_*`/`XDG_*` env from the developer's host; tracked as
+  Consiliency/agent-harness#779.
 - PATH: `test_fabpub_shared_epoch.py:2962-2963` requires `shutil.which("phase-loop")`.
 - Tooling: `test_outside_agent_contract_drift.py` requires `build` + `setuptools`.
 - `test_acceptance_falsifier_contract.py` mutation baselines (2 of 9) fail for the same
@@ -649,6 +664,12 @@ prerequisites from T-1 and the exception/timeout policy from C-1/C-2 as one-line
 
 ## 12. Prioritised plan
 
+Ownership caveat: `runner.py`, `panel_invoker.py`, `legible_evidence.py` and the other
+engine files named below are roadmap-owned by in-flight v10 phases — check
+`specs/phase-plans-v10.md` `## Phases` → `Key files` (LEGIBLE, SCHED, HARDEN, RUNTIME,
+GOVLEAN, among others) before opening a PR against them; A-1/A-2/Q-3 in particular wait for those
+phases to close.
+
 **Now (days; no behaviour change or strictly safer):**
 G-1, G-2, G-6, C-3 (fix + re-enable `F841`), C-1 for network calls only, X-2 body cap,
 Q-6 escapes, T-1 skip-with-reason, P-1 shim pin, Q-5 enable `B`/`PLW1510`/`RUF100`.
@@ -681,7 +702,7 @@ on Python 3.11.15, shallow clone, venv under `/home`:
 | Failure | Cause class |
 |---------|-------------|
 | `test_validate_plan_doc_proofgate.py` ×4, `test_goal_coverage.py` ×1 | pinned historical SHAs; shallow clone |
-| `test_verification_evidence.py::VerificationEvidenceHardening243Test` ×4 | `sys.executable` under `/home` → `absolute_private_path` redaction |
+| `test_verification_evidence.py::VerificationEvidenceHardening243Test` ×4 | product defect C-11: `sys.executable` under `/home` → whole-field `suite_command` redaction |
 | `test_fabpub_shared_epoch.py::…legacy_writer_quiescence…` | `phase-loop` not on PATH |
 | `test_outside_agent_contract_drift.py::…sdist_and_wheel…` | `build`/`setuptools` absent |
 | `test_acceptance_falsifier_contract.py::…command_coverage` | 2 mutation baselines `baseline_failed` (same env causes) |
