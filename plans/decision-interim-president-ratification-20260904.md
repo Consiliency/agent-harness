@@ -88,3 +88,4 @@ closed by construction. Four converged PRs (Consiliency/agent-harness#765, #768,
 | Consiliency/agent-harness#771 | tests_only (not under this exception; listed because it is the stack leaf) | `b50f0b99` | fresh four-vendor 4/4 AGREE (recorded in PR body), exceeding the tier's single-grounded-reviewer bar |
 | Consiliency/agent-harness#777 | production_code | exact head recorded in the PR body | four-vendor board, `requires_president=False` (record in PR body) |
 | Consiliency/agent-harness#786 | production_code | exact head recorded in the PR body | four-vendor board, `requires_president=False`; landing conditional on 4/4 exact-head AGREE and required CI (record in PR body) |
+| Consiliency/agent-harness#788 | production_code | exact head recorded in the PR body | four-vendor board, `requires_president=False`; landing conditional on 4/4 exact-head AGREE and required CI (record in PR body) |

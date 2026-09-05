@@ -334,6 +334,8 @@ class LaunchResult:
     cleanup_evidence: dict[str, Any] | None = None
     supervisor_receipt: dict[str, Any] | None = None
     changed_paths: tuple[str, ...] | None = None
+    codex_turn_completion: dict[str, Any] | None = None
+    codex_final_message: str | None = None
 
 
     @property
@@ -401,6 +403,8 @@ class LaunchResult:
             data["supervisor_receipt"] = self.supervisor_receipt
         if self.changed_paths is not None:
             data["changed_paths"] = list(self.changed_paths)
+        if self.codex_turn_completion is not None:
+            data["codex_turn_completion"] = self.codex_turn_completion
         return {key: value for key, value in data.items() if value not in (None, [])}
 
 
@@ -2120,12 +2124,27 @@ def launch_with_spec(
         raise RuntimeError(
             f"no-hidden-print violation: {spec.claude_route} resolved to a real claude print command"
         )
+    final_dir = None
+    final_path = None
+    stdin_text = spec.delivery_payload() if spec.delivery_mode == "stdin" else None
     try:
+        if spec.executor == "codex" and not dry_run:
+            # A unique, initially absent file witnesses the CLI's completed turn.
+            # Never infer completion from progress text or a zero exit status.
+            if log_path is not None:
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+            final_dir = tempfile.mkdtemp(prefix="codex-turn-", dir=log_path.parent if log_path else None)
+            final_path = Path(final_dir) / "last-message.txt"
+            if command[-1] == spec.delivery_payload():
+                stdin_text = command[-1]
+                command = [*command[:-1], "-"]
+            command = [*command[:2], "--output-last-message", str(final_path), *command[2:]]
         result = launch(
             command,
             dry_run=dry_run,
             log_path=log_path,
-            stdin_text=spec.delivery_payload() if spec.delivery_mode == "stdin" else None,
+            stdin_text=stdin_text,
+            env={**os.environ, "AGENT_DETACHED_WORK": "1"},
             stream_output=stream_output,
             heartbeat_path=heartbeat_path,
             heartbeat_interval_seconds=heartbeat_interval_seconds,
@@ -2139,6 +2158,19 @@ def launch_with_spec(
             # quiet-child / stall detection so it can't hang the parent silently.
             ephemeral_monitor=log_path is None,
         )
+        if final_path is not None:
+            final_message = ""
+            try:
+                if not final_path.is_symlink():
+                    final_message = final_path.read_text(encoding="utf-8")
+            except (OSError, UnicodeError):
+                pass
+            result = replace(result, codex_final_message=final_message, codex_turn_completion={
+                "source": "codex_output_last_message",
+                "completed": bool(final_message.strip()),
+                "path": str(final_path) if log_path else None,
+                "sha256": hashlib.sha256(final_message.encode()).hexdigest() if final_message else None,
+            })
     finally:
         # Clean from the RESOLVED command so the launch-time materialized codex
         # schema path (run-scoped or fallback) is removed here (#63), alongside any
@@ -2150,6 +2182,7 @@ def launch_with_spec(
                 *spec.cleanup_paths,
                 *_schema_cleanup_paths(command),
                 *staged_review_paths,
+                *((final_dir,) if final_dir and log_path is None else ()),
             )))
         )
     if cleanup_evidence:
@@ -2314,6 +2347,8 @@ def _cleanup_paths(paths: tuple[str, ...]) -> dict[str, Any] | None:
 
 def extract_executor_output_text(result: LaunchResult, spec: LaunchSpec) -> str:
     if spec.executor == "codex":
+        if result.codex_turn_completion is not None:
+            return result.codex_final_message or ""
         text = _extract_codex_stream_json_text(result.output)
         return text if text else result.output
     if spec.executor == "claude":
@@ -3602,6 +3637,8 @@ def _result_with_spec(result: LaunchResult, spec: LaunchSpec) -> LaunchResult:
         cleanup_evidence=result.cleanup_evidence,
         supervisor_receipt=result.supervisor_receipt,
         changed_paths=result.changed_paths,
+        codex_turn_completion=result.codex_turn_completion,
+        codex_final_message=result.codex_final_message,
     )
 
 
