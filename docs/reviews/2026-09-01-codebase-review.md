@@ -48,7 +48,7 @@ not atomic, and 128 of 203 subprocess calls with no timeout.
 | 8 | Split `run_loop` along the seams already visible (dispatch / prepare / finalize / closeout / work-unit / delegation) — mechanically first, no behaviour change | 3,884-line function; every branch is untestable in isolation | A-1 |
 | 9 | Document (and test) the developer prerequisites the suite silently assumes: full-history clone, `phase-loop` on PATH, `build` installed | 12 failing tests: 8 environment, 4 from one product defect (C-11, the `VerificationEvidenceHardening243Test` reds) | T-1 |
 | 10 | Fix the `fab_delta.py` invalid escape sequences and add `-W error::DeprecationWarning` import smoke to CI | Will become a `SyntaxError` on a future Python | Q-6 |
-| 11 | For the `absolute_private_path` kind only, replace the matching path token in `suite_command` instead of the whole field (`_redact_validation_payload_in_place` / `_command_field_forbidden_kind`); keep whole-field replacement for secret kinds; amend `verification-evidence-contract.md:40` alongside; do **not** narrow the shared `_FORBIDDEN_METADATA_PATTERNS` entry at `redaction.py:138` | On every real Linux/macOS install the `suite_command` evidence field is replaced by `<redacted:suite_command>`; 4 tests already red | C-11 |
+| 11 | In `_redact_validation_payload_in_place`, replace each home-rooted path token in `suite_command` and keep the rewritten argv only if `_command_field_forbidden_kind(rewritten) is None`; otherwise fall back to today's whole-field replacement (so any secret hit, strict or agent-harness#269 flag-aware, still wins); amend `verification-evidence-contract.md:40` alongside; do **not** narrow the shared `_FORBIDDEN_METADATA_PATTERNS` entry at `redaction.py:138` | On every real Linux/macOS install the `suite_command` evidence field is replaced by `<redacted:suite_command>`; 4 tests already red | C-11 |
 | 12 | Make `phase-loop install --symlink` actually symlink (or rename the mode and stop reporting `mode: symlink`) | `_apply_action` ignores `mode`; the installer script relies on links that are never created | C-9 |
 
 ---
@@ -83,7 +83,7 @@ Comment/docstring density is bimodal: `fab_delta` 2.38 narrative-lines per code 
 
 **A-1. `runner.py` is eight subsystems in one module; `run_loop` is a 3,884-line function.**
 `runner.py:1247-5130`. Signature alone is 52 parameters (`runner.py:1247-1300`). Inside it,
-`_prepare_phase_launch` (`1652-3541`) and `_finalize_phase_launch` (`3541-4700`) are nested
+`_prepare_phase_launch` (`1652-3539`) and `_finalize_phase_launch` (`3541-4698`) are nested
 closures that thread state through `nonlocal`s. Distinct responsibilities living here:
 (a) the dispatch state machine, (b) work-unit scheduling (a *second* scheduler beside
 phase dispatch), (c) closeout/commit mechanics incl. dirty classification and FAB
@@ -413,15 +413,27 @@ alone. Fix the *consumer*, narrowly: `_redact_validation_payload_in_place` (`443
 replaces the whole argv because one token matched. That whole-field shape is the
 *deliberate* design for secret kinds — `verification-evidence-contract.md:40` states
 "a command argv has no safe partial-redaction shape", and `_iter_leaf_strings`
-(`568-586`) matches synthesized `flag=value` composites and the space-joined argv, so a
+(`493-590`; list branch `568-586`) matches synthesized `flag=value` composites and the space-joined argv, so a
 `["--token", "<secret>"]` pair has no single token to replace (the agent-harness#243
-split-argv fix). Keep whole-field replacement for every secret kind. Scope the change to
-`kind == "absolute_private_path"` only: replace each home-rooted path token (the
-interpreter with a stable alias such as `<python>`) and keep the rest of the command.
-Landing this requires a matching amendment to the frozen contract at
-`verification-evidence-contract.md:40`. Add a test with `sys.executable` under a fake
-`/home/x` venv that asserts the command survives *and* that no `/home/x` component is
-present, plus one asserting a `["--token", "<value>"]` argv is still fully replaced.
+split-argv fix). Keep whole-field replacement for every secret kind, and do not branch
+on the kind `_command_field_forbidden_kind` (`461-471`) returns: it is a first-match union
+— `_forbidden_metadata_kind` walks `_FORBIDDEN_METADATA_PATTERNS` in tuple order, where
+`absolute_private_path` (`:138`) precedes `provider_payload`, `credential_payload` and
+`local_env_value` (`:139-142`), and a strict hit short-circuits the flag-aware
+`_command_context_flag_kind` (`447-458`, agent-harness#269). So on every machine C-11 is
+about, `["/home/x/venv/bin/python", "-t", "<12+ chars>"]`,
+`[..., "-c", "-----BEGIN RSA PRIVATE KEY-----"]` and `[..., "-c", "process.env[FOO] = bar"]`
+all report `absolute_private_path` (verified at `d96f85a`); a naive
+`kind == "absolute_private_path"` branch would emit those secrets. Instead: replace each
+home-rooted path token (the interpreter with a stable alias such as `<python>`), then keep
+the rewritten argv only if `_command_field_forbidden_kind(rewritten) is None`; otherwise
+fall back to whole-field replacement. That predicate is ordering-independent and includes
+the flag scan. Landing this requires a matching amendment to the frozen contract at
+`verification-evidence-contract.md:40`. Tests: `sys.executable` under a fake `/home/x`
+venv → command survives with no `/home/x` component; `["--token", "<value>"]` → still
+fully replaced; and each of the three mixed argvs above → still fully replaced (the
+`--token=` form alone already resolves to `secret_like_value` and proves nothing about the
+ordering).
 
 **X-6 (low). Installer footguns.** `install-agent-harness.sh:129` `rm -rf "$HOME_DIR"`
 where `HOME_DIR` is `AGENT_HARNESS_HOME` (user-set; if pointed at an existing non-clone
