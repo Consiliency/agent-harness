@@ -47,6 +47,47 @@ os.environ.setdefault(
 
 
 @pytest.fixture(autouse=True)
+def _isolate_host_state(monkeypatch, tmp_path):
+    """Keep the suite off the developer's host state (Consiliency/agent-harness#779).
+
+    Two production resolvers deliberately read the REAL account/environment, and a
+    test that reaches them without an explicit override otherwise inherits whatever
+    the host carries:
+
+    * ``convergence.broker.live.default_fabpub_authority_root`` falls back to
+      ``$XDG_STATE_HOME/phase-loop/fabpub/authority-v1`` -- on a host that has run
+      ``phase-loop fabpub-bootstrap`` that is a live ACTIVE bootstrap whose sealed
+      inventory names worktrees that may since have been pruned, so the cutover path
+      raises ``LegacyCutoverConflict`` in tests that never asked for it
+      (``test_train_runner.py::TestCLIRegistration``, ``test_fabpub_shared_epoch.py``).
+    * ``agy_canary_evidence.inventory_customizations`` reads ``os.environ`` (via
+      ``prepare``'s ``dict(os.environ)`` default and the pre-launch revalidation) and
+      fails closed on ANY name under ``_CUSTOMIZATION_ENV_PREFIXES``; one stray
+      ``GEMINI_*``/``AGY_*``/``XDG_CONFIG_*`` export in the developer shell turns ~45
+      canary nodes red with "active agy customization source detected".
+
+    Neither is a product defect -- both guards are meant to fire on real hosts -- so
+    the isolation lives here, per test, and never in the resolvers. Tests that
+    exercise the fallback or the guard deliberately still win: they monkeypatch after
+    this fixture has run (``delenv`` / ``setenv`` on the same ``monkeypatch``), and
+    ``freeze_customization_inventory`` takes ``env=`` explicitly. CI's bare container
+    carries no such state, which is why only local runs ever saw these reds.
+    """
+    from phase_loop_runtime.agy_canary_evidence import (
+        _CUSTOMIZATION_ENV_EXEMPT,
+        _CUSTOMIZATION_ENV_PREFIXES,
+    )
+    from phase_loop_runtime.convergence.broker.live import FABPUB_AUTHORITY_ROOT_ENV
+
+    authority_root = tmp_path / "fabpub-authority-isolated"
+    authority_root.mkdir()
+    monkeypatch.setenv(FABPUB_AUTHORITY_ROOT_ENV, str(authority_root))
+    for name in list(os.environ):
+        if name.startswith(_CUSTOMIZATION_ENV_PREFIXES) and name not in _CUSTOMIZATION_ENV_EXEMPT:
+            monkeypatch.delenv(name)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_implicit_review_authority(monkeypatch):
     from phase_loop_runtime import panel_invoker
 

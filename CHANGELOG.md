@@ -6,6 +6,30 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Test suite no longer reads host state (Consiliency/agent-harness#779)
+
+- A new autouse fixture in `phase-loop-runtime/tests/conftest.py` (`_isolate_host_state`)
+  pins `PHASE_LOOP_FABPUB_AUTHORITY_ROOT` to an empty per-test `tmp_path` directory and
+  drops every `os.environ` name under `agy_canary_evidence._CUSTOMIZATION_ENV_PREFIXES`
+  (minus `_CUSTOMIZATION_ENV_EXEMPT`) for the duration of each test. Before this, a local
+  run inherited the developer's ACTIVE fabpub bootstrap under
+  `~/.local/state/phase-loop/fabpub/authority-v1` (`LegacyCutoverConflict` in
+  `test_train_runner.py::TestCLIRegistration` and `test_fabpub_shared_epoch.py`) and any
+  stray `GEMINI_*`/`AGY_*`/`XDG_CONFIG_*` export turned 46 canary nodes red with
+  "active agy customization source detected". Measured on one host: 49 failed → 0 with
+  `PHASE_LOOP_FABPUB_AUTHORITY_ROOT` unset plus `GEMINI_POISON=1`; deleting the fixture
+  reds all 49 again plus the two new self-tests.
+- The resolvers themselves are unchanged: `default_fabpub_authority_root` and
+  `inventory_customizations` are meant to read the real host, and tests that exercise the
+  fallback or the guard deliberately (`test_fabpub_zero_history_bootstrap.py`'s
+  `delenv` + `XDG_STATE_HOME` case, explicit `env=` poisons) still win because they
+  monkeypatch after the fixture. `phase-loop-runtime/tests/test_conftest_isolation.py` asserts the fixture's
+  effect so a silent deletion cannot pass.
+- The operator opt-in that points `test_agy_canary_evidence.py`'s exact-checkout test at a
+  dotfiles clone is renamed `AGY_CANARY_DOTFILES_REPO` → `PHASE_LOOP_TEST_DOTFILES_REPO`:
+  the old name sat under the `AGY_` customization prefix, so exporting it already failed the
+  production guard on those 46 nodes, and the isolation fixture would now silently drop it.
+
 ### Fleet default: GPT-6 Astra becomes the codex seat and heavy tier (Consiliency/agent-harness#777)
 
 - The advisor-board codex seat and the codex heavy tier move from `gpt-5.6-sol` to

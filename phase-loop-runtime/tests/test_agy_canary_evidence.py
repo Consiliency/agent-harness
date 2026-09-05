@@ -5694,7 +5694,10 @@ def test_exact_dotfiles_head_snapshot_boundary_when_checkout_is_available():
     plan_path = "plans/detailed-replan-176-agy-review-boundary-20260803-0715.md"
     candidates = [
         Path(value) for value in (
-            os.environ.get("AGY_CANARY_DOTFILES_REPO", ""),
+            # Deliberately NOT an AGY_-prefixed name: any such export trips the
+            # production customization guard and is dropped by the suite-wide
+            # isolation fixture in conftest.py (Consiliency/agent-harness#779).
+            os.environ.get("PHASE_LOOP_TEST_DOTFILES_REPO", ""),
             "/home/viperjuice/code/dotfiles",
             "/mnt/HC_Volume_105438154/code/dotfiles",
         ) if value
