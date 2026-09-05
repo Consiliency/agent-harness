@@ -1967,10 +1967,10 @@ def _live_post_merge_prune(workspace: Path, node_id: str) -> None:
 
 
 def _train_reverify_enforcement_mode() -> str:
-    import os
+    """Train re-verify posture. Unset -> ``warn`` (unchanged; see G-6)."""
+    from .closeout_validation import verify_enforce_mode
 
-    value = os.environ.get("PHASE_LOOP_VERIFY_ENFORCE", "warn").strip().lower()
-    return "hard" if value == "hard" else "warn"
+    return verify_enforce_mode(default="warn")
 
 
 def _live_reverify(workspace: Path, roadmap_path: Path, run_mode: str) -> bool:

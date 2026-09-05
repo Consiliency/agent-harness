@@ -5,6 +5,7 @@ continue), block only on opt-in, and never set `human_required`. Back-compat
 (zero validators → unchanged) is covered by the existing closeout suites; here
 we exercise the hook with registered validators.
 """
+import json
 import os
 import tempfile
 import unittest
@@ -110,9 +111,36 @@ class CloseoutValidatorHookTest(unittest.TestCase):
         self.assertFalse(c["automation"].get("human_required", True))
 
     def test_raising_validator_does_not_break_closeout(self):
+        """A raising validator must not break closeout -- and must not be SILENT.
+
+        G-1 (2026-09-01 codebase review). This test previously asserted
+        ``terminal_status == "complete"`` under ``PHASE_LOOP_REVIEW=block``, which
+        pinned the fail-open: the crash was swallowed by a bare
+        ``except Exception: continue`` with no log line and no finding, so a gate
+        that never ran was indistinguishable from a gate that passed.
+
+        The guarantee this test exists for is unchanged: the exception does not
+        propagate, closeout runs to completion and produces a payload. What
+        changes is the VERDICT under an explicitly requested blocking posture --
+        a crashed gate's result is UNKNOWN, and unknown must not read as pass.
+        Under the default ``warn`` posture the finding is rewritten to ``warn``
+        and closeout still completes (asserted in the next test), so this is
+        scoped to runs that opted in. Nothing in the fleet or CI sets
+        ``PHASE_LOOP_REVIEW=block``.
+        """
         register_closeout_validator(_boom)
         with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "block"}):
-            self.assertEqual(_passing_closeout(self.plan)["terminal_status"], "complete")
+            closeout = _passing_closeout(self.plan)
+        self.assertEqual(closeout["terminal_status"], "blocked")
+        self.assertIn("gate_crashed", json.dumps(closeout))
+
+    def test_raising_validator_only_warns_under_the_default_posture(self):
+        """G-1: the default posture records the crash without blocking."""
+        register_closeout_validator(_boom)
+        with patch.dict(os.environ, {"PHASE_LOOP_REVIEW": "warn"}):
+            closeout = _passing_closeout(self.plan)
+        self.assertEqual(closeout["terminal_status"], "complete")
+        self.assertIn("gate_crashed", json.dumps(closeout))
 
     def test_resolve_review_mode_defaults_to_warn(self):
         self.assertEqual(resolve_review_mode({}), "warn")
