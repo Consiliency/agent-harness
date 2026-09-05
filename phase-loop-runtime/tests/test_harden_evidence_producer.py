@@ -1218,10 +1218,8 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
         return context["manifest"][group][name]
 
     attack_inputs = (
-        ("authority", "artifacts", "plan_authority"),
-        ("ci", "artifacts", "candidate_ci"),
-        ("broker", "artifacts", "candidate_broker_receipts"),
-        ("role", "role_attestations", "coordinator"),
+        *((f"artifact-{name}", "artifacts", name) for name in RAW_ARTIFACT_NAMES),
+        *((f"role-{name}", "role_attestations", name) for name in ROLE_NAMES),
     )
     for label, group, artifact in attack_inputs:
 
