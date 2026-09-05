@@ -64,6 +64,35 @@ def test_a_crashing_validator_is_reported_not_swallowed() -> None:
     assert "UNKNOWN, not pass" in (crashed[0].body or "")
 
 
+def test_a_lazy_generator_validator_cannot_escape() -> None:
+    """G-1: a validator that raises during ITERATION, not on call.
+
+    `CloseoutValidator` permits any iterable. A generator does not execute its
+    body until iterated, so wrapping only `fn(ctx)` left the raise outside the
+    handler: it propagated out of run_closeout_validators and broke the closeout
+    a review gate must never break.
+    """
+    def lazy_boom(_ctx):
+        def gen():
+            yield cv.ReviewFinding(code="ok", reason="emitted before the raise")
+            raise RuntimeError("raised during iteration")
+
+        return gen()
+
+    cv.register_closeout_validator(lazy_boom)
+    try:
+        findings = cv.run_closeout_validators(ctx=None, env={"PHASE_LOOP_REVIEW": "block"})
+    except Exception as exc:  # pragma: no cover - the bug this pins
+        pytest.fail(f"a lazy validator escaped closeout: {type(exc).__name__}: {exc}")
+    finally:
+        cv._VALIDATORS.remove(lazy_boom)
+    ours = [f for f in findings if f.code == "gate_crashed" and "lazy_boom" in f.reason]
+    assert ours, "a generator that raised during iteration produced no gate_crashed finding"
+    # The partial yield before the raise is discarded: the gate did not complete,
+    # so its partial output is not a verdict.
+    assert not [f for f in findings if f.code == "ok"]
+
+
 @pytest.mark.parametrize("mode,expected", [("warn", "warn"), ("block", "block")])
 def test_gate_crashed_honours_the_review_mode(mode, expected) -> None:
     """G-1: the crash finding is appended past the severity-rewrite loop.

@@ -197,7 +197,15 @@ def run_closeout_validators(
     findings: list[ReviewFinding] = []
     for fn in tuple(_VALIDATORS):
         try:
-            produced = fn(ctx) or ()
+            # MATERIALIZE inside the boundary. CloseoutValidator permits any
+            # iterable, and a generator validator does not run its body until it
+            # is iterated -- which used to happen in the loop BELOW, outside this
+            # handler. Such a validator propagated its exception straight out of
+            # run_closeout_validators, breaking the closeout it is forbidden to
+            # break, and produced no gate_crashed finding. Found by the #787
+            # advisor board (codex leg) and pinned by
+            # test_a_lazy_generator_validator_cannot_escape.
+            produced = tuple(fn(ctx) or ())
         except Exception:
             name = getattr(fn, "__name__", repr(fn))
             _LOG.warning("closeout validator %s raised; gate did not run", name, exc_info=True)
