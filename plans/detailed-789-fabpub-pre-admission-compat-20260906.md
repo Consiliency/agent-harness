@@ -226,7 +226,7 @@ kept below only so the board's rejection stays on the record.
     instead is the maintainer's call; this plan records the carry and claims nothing for it.
 - **C-change.** Amend the frozen contract so an unsealed owner with NO evidence record for its `effect_key` is
   retired `NO_EFFECT_TERMINAL_PROVEN` (reference `pre-admission-owner-no-intent`) by `_block_unsealed_owner`, derived
-  ONLY from local durable chronology (`record_intent` `:498` precedes adapter entry `:526`; owners are written only at
+  ONLY from local durable chronology (`record_intent` `:500` precedes adapter entry `:526`; owners are written only at
   `:474/:488`). Requires: (a) editing the frozen test's `before_provider_effect` branch — an `sl0_repairs` append on
   `plans/manifest.json` (`v10-FABPUB`, precedent Consiliency/agent-harness#614) and a re-derivation of any digest
   the guard pins over that test body (`test_fabpub_guard_vector_digests_match_inline_vectors`, `:843`); (b) a
