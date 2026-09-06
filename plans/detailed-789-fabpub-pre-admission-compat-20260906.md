@@ -27,7 +27,7 @@ positive control + true unknown-effect negative controls.
 - Publish ordering in `BrokerService._fresh_publish` (`verbs.py:450-509`): `_validated_envelope` → read owner
   (`:452`) → `_block_unsealed_owner` (`:457`) → `epoch_blocked` (`:459`) → **durable
   `append_adapter_start_owner` (`:474`)** → `admission_store.admit_next` (`:490`, first read of `admissions.jsonl`)
-  → `record_intent` (`:498`) → `_crash_at("after_broker_intent_before_adapter_started")` (`:504`) →
+  → `record_intent` (`:500`) → `_crash_at("after_broker_intent_before_adapter_started")` (`:504`) →
   `validate_adapter_start_owner` (`:505`) → `ADAPTER_STARTED` → `adapter.execute` (`:526`). The store is first READ
   only after the owner is durable — that ordering is the defect for acceptance item (2).
 - `_block_unsealed_owner` (`verbs.py:363-411`): an unsealed owner whose `effect_key` has no evidence record gets
@@ -92,15 +92,30 @@ untouched; a node id must not collide with any frozen inventory (see [[test-name
   incompatible reader fails at the first line, before `_block_unsealed_owner` and before the durable owner write at
   `:474`. `AdmissionStoreIncompatible` propagates unchanged (it is a `PermissionError`, the publish surface's
   existing refusal type).
-- Check/use race (round-1 finding F1): the probe releases `admissions.lock`; `append_adapter_start_owner`
-  (`:95-121`) re-acquires it; `admit_next` (`:490`) acquires it again. A newer-runtime writer landing an
-  incompatible record between the probe and `:474` reproduces the incident (owner durable, then `TypeError`).
-  Close it the way the repo already closes this class (`live.py:3288-3291`, `admission.py:140` "in-lock ...
-  closes the check/use race"): `append_adapter_start_owner` gains `precondition: Callable[[], None] | None`,
-  invoked INSIDE the lock after the in-lock owner re-read (`:113`) and before `_owner_atomic_write` (`:118`).
-  `_fresh_publish` passes `precondition=self.admission_store._records` at both call sites (`:474`, `:488`);
-  `_records` is lock-free (`admission.py:149`), so it is safe with the lock held, and it raises the same typed
-  refusal. The probe stays for the actionable early message; the precondition is what makes the guarantee.
+- Check/use race (round-1 F1, sharpened by round-2 sol #1): the probe releases `admissions.lock`;
+  `append_adapter_start_owner` (`:95-121`) re-acquires it; `admit_next` (`:494`) acquires it a third time. The
+  unsealed owner is NOT an exclusion for every admission writer — `readmit_advanced_head` (`:226`,
+  `admit_next(auth)`, the delta-readmit path that writes `binding`-bearing records) and the non-publish `admit`
+  (`:582`) never consult the owner — so a newer-runtime readmit can land an incompatible record between our owner
+  write and our `admit_next`, and the incident chronology (owner durable, then `TypeError`) recurs. A precondition
+  inside the owner write alone does not close this. Close it with ONE critical section, the idiom the store already
+  uses (`seal_adapter_start_owner(..., lock_held=True)` `:154/:171`, `live.py:3288-3291`):
+  - `append_adapter_start_owner` and `admit_next` (`admission.py:177`) each gain `lock_held: bool = False`
+    (skip their own `open`+`flock` when held; `admissions.lock` is the SAME file for both stores,
+    `admission.py:117`, `evidence.py:58`, so a nested acquisition through a second descriptor would deadlock —
+    that is why the flag, not a re-entrant lock).
+  - `_fresh_publish` acquires `admissions.lock` once around today's `:474-:496` and, in order: (1)
+    `self.admission_store._records()` — compatibility validation in-lock (`_records` is lock-free,
+    `admission.py:149`; nothing it calls takes the lock); (2) in-lock owner re-read; if an UNSEALED foreign owner is
+    present, release the lock and take today's `_block_unsealed_owner` refusal path unchanged (`:363-411` takes the
+    same lock itself, so it must run outside the section; it never leads to an admission); (3)
+    `append_adapter_start_owner(..., lock_held=True)`; (4) `admit_next(..., lock_held=True)` with today's
+    `precondition` (transaction state). Release. Owner and admission are now allocated under one acquisition, so no
+    writer of any version can interleave a record between them.
+  - `_block_unsealed_owner`, `record_intent` (`:500`) and the adapter ordering are byte-identical.
+  - Deterministic regression (see tests): the readmit interleaving is reproduced by monkeypatching
+    `admission_store._records` to append the incompatible line the FIRST time it is called (i.e. after the early
+    probe passed, before the section's own validation) — the section must refuse with the owner file absent.
 - Keep `record_intent`/adapter ordering byte-identical (Workstream C depends on nothing here).
 
 `phase-loop-runtime/tests/test_fabpub_admission_compat_789.py` (create) — tests_only lane, RED-first
@@ -113,14 +128,30 @@ untouched; a node id must not collide with any frozen inventory (see [[test-name
 - `test_legacy_reader_shape_reproduces_incident` — the acceptance item (1) reproduction: monkeypatch
   `admission_module.AdmissionRecord` with a frozen copy lacking `binding` (a dataclass with fields
   `sequence, epoch, request`), seed one `binding`-bearing record, and assert the same typed refusal + chronology.
-  Falsifier for A (RUN it, record the anchor): revert the `_fresh_publish` probe ordering → this test must fail on
-  the owner-file-absent assertion (owner written, then `TypeError`), which is the incident replayed.
+  Falsifier for A (RUN it, record the anchor; round-2 sol #2 — the early probe alone is NOT discriminating once
+  the in-section validation exists): disable BOTH defenses — revert the early probe AND remove step (1) — → this
+  test must fail on the owner-file-absent assertion (owner written, then `TypeError`), which is the incident
+  replayed. With only the probe reverted the test stays green, and that is the point of step (1).
+- `test_incompatible_reader_performs_no_mutation_before_owner_path` — the early probe's OWN property (issue item
+  2: "prevent unsupported installed runtimes from entering ownership/provider MUTATION"): seed an unsealed foreign
+  owner with no evidence record plus one incompatible admission line; `service.execute` must raise
+  `AdmissionStoreIncompatible` with `evidence.jsonl` byte-identical — without the probe the reader reaches
+  `_block_unsealed_owner` (`:457`) and appends `PROVIDER_CALL_IN_FLIGHT`/`OUTCOME_AMBIGUOUS_BLOCKED` records
+  (`:395-408`) before ever touching the admission log. Falsifier (RUN it): revert the early probe → `evidence.jsonl`
+  grows, test RED. This is why the probe is kept even though the critical section carries the owner guarantee.
 - `test_probe_readable_creates_nothing` — probe against a never-created store root leaves the root absent.
 - `test_incompatible_record_landing_after_probe_still_refused_before_owner_write` — the concurrent-writer
   regression (F1), deterministic: monkeypatch `admission_store.probe_readable` to append the `future_field` line to
-  `admissions.jsonl` AFTER returning success (the store mutates between probe and owner write), run
-  `service.execute`, assert `AdmissionStoreIncompatible` and `adapter-start-owner.json` absent. Falsifier (RUN it):
-  drop the `precondition=` argument at `:474` → owner file present, test RED.
+  `admissions.jsonl` AFTER returning success (the store mutates after the early probe), run `service.execute`,
+  assert `AdmissionStoreIncompatible`, `adapter-start-owner.json` absent, no admission appended. Falsifier (RUN
+  it): remove step (1) (the in-section `_records()` validation) → owner file present, test RED.
+- `test_readmit_writer_cannot_interleave_between_owner_and_admission` — the round-2 interleaving: two
+  `BrokerService`s over one store; wrap the first's `admission_store._records` so that its in-section call blocks
+  on a `threading.Event` while a second thread runs `readmit_advanced_head` with a `binding`-bearing authority;
+  the readmit must BLOCK on `admissions.lock` (assert it has not returned after the event fires and the first
+  service's `admit_next` completed), and the first publish allocates its admission with exactly one record between
+  its owner write and its admission. Falsifier (RUN it): restore the two separate lock acquisitions (`lock_held`
+  False at both sites) → the readmit returns first and the publish fails after its owner is durable.
 - Positive control: a compatible store still publishes exactly once (reuse the existing publish-through-`admit_next`
   path from `test_fabpub_broker_envelope_publish_allocates_through_admit_next`, `:1763`).
 
@@ -253,7 +284,11 @@ correctly refused to improvise. Out of scope here; if the maintainer wants it, i
 ## Acceptance criteria
 - [ ] An admission record with an unknown field makes `_fresh_publish` raise `AdmissionStoreIncompatible` naming the
       field and the runtime location, with `adapter-start-owner.json` absent and `admissions.jsonl`/`evidence.jsonl`
-      byte-identical afterwards (falsified by reverting the probe ordering — owner file present).
+      byte-identical afterwards (falsified by removing BOTH the early probe and the in-section validation — owner
+      file present; falsified for the probe alone by `evidence.jsonl` growing).
+- [ ] Owner write and admission allocation in `_fresh_publish` happen under one `admissions.lock` acquisition:
+      the readmit-interleaving test blocks the competing writer until the publish's admission is durable
+      (falsified by restoring the separate acquisitions).
 - [ ] The incident chronology (legacy reader without `binding`, store with `binding`) is reproduced by a test that
       fails at base `463b90c3` (owner written) and passes after PR-A.
 - [ ] A sealed inventory whose `worktree` path was pruned revalidates and resumes with identity equality intact
