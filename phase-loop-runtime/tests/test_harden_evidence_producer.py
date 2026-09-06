@@ -162,17 +162,28 @@ def _write_ref(root: Path, relative: str, data: bytes) -> dict[str, str]:
     return {"path": relative, "sha256": _sha256(data)}
 
 
-def _junit_bytes(outcomes: tuple[str, ...], *, named_anchors: bool = False) -> bytes:
+def _junit_bytes(
+    outcomes: tuple[str, ...],
+    *,
+    named_anchors: bool = False,
+    nodeids: tuple[str, ...] | None = None,
+    run_tag: str = "",
+) -> bytes:
     suite = ElementTree.Element(
         "testsuite",
         tests=str(len(outcomes)),
         failures=str(outcomes.count("failed")),
         errors="0",
         skipped=str(outcomes.count("skipped")),
+        name=run_tag,
     )
     for index, outcome in enumerate(outcomes):
         classname, name = "retained", f"case_{index}"
         anchor = None
+        if nodeids is not None:
+            classname, name = _load_shipped_verifier().pytest_junit_identity(
+                nodeids[index], "fixture node"
+            )
         if named_anchors and index < len(HARDEN_CASES):
             case_id, contract = list(HARDEN_CASES.items())[index]
             module, name = contract.nodeid.split("::")
@@ -242,11 +253,22 @@ def _producer_command(*args: str) -> subprocess.CompletedProcess[str]:
     # environment switch. Only the canonical provider query is replaced; the
     # producer, verifier and all of their validation execute unchanged.
     bootstrap = """
-import pathlib, runpy, subprocess, sys
+import os, pathlib, runpy, subprocess, sys
 producer, *arguments = sys.argv[1:]
 if '--evidence-root' in arguments:
     root = pathlib.Path(arguments[arguments.index('--evidence-root') + 1]).parent
     fake_gh = root / 'fake-gh'
+    assert fake_gh.is_file()
+    original_lstat = pathlib.Path.lstat
+    original_access = os.access
+    def fixture_lstat(path, *positional, **keywords):
+        return original_lstat(fake_gh if str(path) == '/usr/bin/gh' else path, *positional, **keywords)
+    def fixture_access(path, *positional, **keywords):
+        return original_access(fake_gh if str(path) == '/usr/bin/gh' else path, *positional, **keywords)
+    pathlib.Path.lstat = fixture_lstat
+    os.access = fixture_access
+    os.environ.pop('GITHUB_TOKEN', None)
+    os.environ['GH_TOKEN'] = 'hermetic-test-only-not-a-credential'
     original = subprocess.Popen
     class HermeticCIProcess(original):
         def __init__(self, command, *positional, **keywords):
@@ -463,8 +485,19 @@ def _raw_fixture(
     red_outcomes: tuple[str, ...] = ("passed", "skipped"),
     final_outcomes: tuple[str, ...] = ("passed", "passed"),
 ) -> dict[str, Any]:
-    red_outcomes = ("failed",) * len(HARDEN_CASES) + red_outcomes
-    final_outcomes = ("passed",) * len(HARDEN_CASES) + final_outcomes
+    verifier = _load_shipped_verifier()
+    named_nodes = tuple(verifier.ACTIVATED_RED_NODEIDS)
+    red_extras, final_extras = red_outcomes, final_outcomes
+    native_path = "phase-loop-runtime/tests/test_panel_native_fill_183.py"
+    control_node = native_path + "::test_pure_control"
+    extra_path = f"phase-loop-runtime/tests/test_{variant}_one.py"
+    extra_nodes = lambda outcomes: tuple(
+        f"{extra_path}::test_extra_{index}" for index in range(len(outcomes))
+    )
+    red_nodes = named_nodes + (control_node,) + extra_nodes(red_extras)
+    final_nodes = named_nodes + (control_node,) + extra_nodes(final_extras)
+    red_outcomes = ("failed",) * len(named_nodes) + ("passed",) + red_extras
+    final_outcomes = ("passed",) * (len(named_nodes) + 1) + final_extras
     repo = root / "repo"
     source_root = root / "retained-source"
     repo.mkdir(parents=True)
@@ -475,14 +508,32 @@ def _raw_fixture(
     frozen_paths = tuple(
         sorted(
             {
-                f"phase-loop-runtime/tests/test_{variant}_one.py",
-                f"phase-loop-runtime/tests/test_{variant}_two.py",
-                *(case.nodeid.split("::")[0] for case in HARDEN_CASES.values()),
+                extra_path,
+                native_path,
+                *(node.split("::")[0] for node in named_nodes),
             }
         )
     )
     production_path = f"phase-loop-runtime/src/phase_loop_runtime/{variant}.py"
     marker_path = "phase-loop-runtime/src/phase_loop_runtime/capability_registry.py"
+    run_specs = {
+        key: {
+            field: list(value) if isinstance(value, tuple) else value
+            for field, value in verifier.FINAL_RUN_SPECS[key].items()
+            if field in {"argv", "cwd", "env_keys"}
+        }
+        for key in ("focused", "pure_control", "broad")
+    }
+    # Bind selection to the Git-owned miniature plan, not a producer-supplied
+    # command. Preserve the real command grammar while varying its frozen input.
+    run_specs["focused"]["argv"] = list(
+        verifier.FINAL_RUN_SPECS["focused"]["argv"][:7]
+    ) + list(frozen_paths)
+    broad_path = "phase-loop-runtime/tests/test_broad_control.py"
+    broad_node = broad_path + "::test_broad_control"
+    pure_nodes = (control_node,) + tuple(
+        node for node in named_nodes if "/test_advisor_board_composition.py::" in node
+    )
     base = _commit(
         repo,
         "base",
@@ -492,16 +543,27 @@ def _raw_fixture(
                 for case in HARDEN_CASES.values()
             },
             "README.md": "base\n",
+            "phase-loop-runtime/pytest.ini": "[pytest]\n",
             "plans/phase-plan-v10-HARDEN.md": (
                 "# HARDEN retained-input test contract\n\n"
                 "### SL-0 — tests-first\n\n- **Owned files**: "
                 + ", ".join(f"`{path}`" for path in frozen_paths)
                 + "\n\n### SL-1 — production\n\n- **Owned files**: "
                 + f"`{production_path}`, `{marker_path}`\n"
+                + "\n### Verification commands\n\n```json\n"
+                + _canonical_bytes(
+                    {
+                        "schema": "harden_suite_contract.v1",
+                        "runs": run_specs,
+                        "activated_nodeids": list(named_nodes),
+                    }
+                ).decode()
+                + "```\n"
             ),
             "plans/manifest.json": '{"plans":[]}\n',
             marker_path: "# Capability marker is absent before production.\n",
-            ".gitignore": ".phase-loop/\n",
+            ".gitignore": ".phase-loop/\n__pycache__/\n.pytest_cache/\n",
+            broad_path: "def test_broad_control(): pass\n",
             ".github/workflows/test.yml": (
                 "name: test\n\n"
                 "on:\n"
@@ -516,20 +578,49 @@ def _raw_fixture(
             ),
         },
     )
-    frozen_tests = {
-        path: f"def test_{index}(): pass\n" for index, path in enumerate(frozen_paths)
-    }
-    for case in HARDEN_CASES.values():
-        test_path, test_name = case.nodeid.split("::")
-        relative_source = case.production_path.removeprefix("phase-loop-runtime/")
-        frozen_tests[test_path] = (
-            "from pathlib import Path\n\n"
-            f"def {test_name}():\n"
-            "    namespace = {}\n"
-            f"    source = Path(__file__).resolve().parents[1] / {relative_source!r}\n"
-            "    exec(compile(source.read_bytes(), str(source), 'exec'), namespace)\n"
-            f"    assert namespace[{case.symbol!r}]()\n"
+    prelude = (
+        "from pathlib import Path\nimport os\nimport pytest\nimport unittest\n"
+        "ROOT = Path(__file__).resolve().parents[2]\n"
+        f"CAPABLE = 'HARDEN_CAPABILITY_VERSION = 1' in (ROOT / {marker_path!r}).read_text()\n"
+    )
+    frozen_tests = {path: prelude for path in frozen_paths}
+    classes: dict[str, dict[str, str]] = {}
+    contracts = {case.nodeid: (case_id, case) for case_id, case in HARDEN_CASES.items()}
+    for node in named_nodes:
+        test_path, *identity = node.split("::")
+        case_id, contract = contracts.get(node, ("review-leg-isolation", None))
+        body = (
+            "    if os.environ.get('PHASE_LOOP_TDD_EXPECT_HARDEN') == '1' and not CAPABLE:\n"
+            f"        pytest.fail('HARDEN-RED-ANCHOR::{case_id}', pytrace=False)\n"
         )
+        if contract is not None:
+            body += (
+                "    namespace = {}\n"
+                f"    source = ROOT / {contract.production_path!r}\n"
+                "    exec(compile(source.read_bytes(), str(source), 'exec'), namespace)\n"
+                f"    assert namespace[{contract.symbol!r}]()\n"
+            )
+        function = (
+            f"def {identity[-1]}({'self' if len(identity) == 2 else ''}):\n" + body
+        )
+        if len(identity) == 1:
+            frozen_tests[test_path] += "\n" + function
+        else:
+            classes.setdefault(test_path, {}).setdefault(identity[0], "")
+            classes[test_path][identity[0]] += (
+                "\n" + "\n".join("    " + line for line in function.splitlines()) + "\n"
+            )
+    for test_path, definitions in classes.items():
+        for name, body in definitions.items():
+            frozen_tests[test_path] += f"\nclass {name}(unittest.TestCase):\n" + body
+    frozen_tests[native_path] += "\ndef test_pure_control(): pass\n"
+    for condition, outcomes in (("not CAPABLE", red_extras), ("CAPABLE", final_extras)):
+        frozen_tests[extra_path] += f"\nif {condition}:\n"
+        for index, outcome in enumerate(outcomes):
+            action = (
+                "pytest.skip('capability absent')" if outcome == "skipped" else "pass"
+            )
+            frozen_tests[extra_path] += f"    def test_extra_{index}(): {action}\n"
     _git(repo, "checkout", "-qb", "reviewed-sl0")
     reviewed = _commit(
         repo,
@@ -547,8 +638,11 @@ def _raw_fixture(
             marker_path: "HARDEN_CAPABILITY_VERSION = 1\n",
         },
     )
-    sibling_path = f"sibling/{variant}.txt"
-    canonical_main = _commit(repo, "sibling landing", {sibling_path: "sibling\n"})
+    sibling_path = f"phase-loop-runtime/tests/test_sibling_{variant}.py"
+    sibling_node = sibling_path + "::test_sibling_control"
+    canonical_main = _commit(
+        repo, "sibling landing", {sibling_path: "def test_sibling_control(): pass\n"}
+    )
     _git(repo, "update-ref", "refs/remotes/origin/main", canonical_main)
     commits = {
         "sl0_base": base,
@@ -601,41 +695,43 @@ def _raw_fixture(
         "landing_commit": landing,
         "frozen_test_paths": list(frozen_paths),
     }
-    raw_outputs = {
-        "preproduction_red_raw": (
-            f"{red_outcomes.count('failed')} failed, "
-            f"{red_outcomes.count('passed')} passed, "
-            f"{red_outcomes.count('skipped')} skipped\n"
-            + "\n".join(f"HARDEN-RED-ANCHOR::{case_id}" for case_id in HARDEN_CASES)
-            + "\n"
-        ).encode(),
-        "preproduction_control_raw": b"2 passed\n",
-        "candidate_focused_raw": f"{len(final_outcomes)} passed\n".encode(),
-        "candidate_pure_control_raw": b"2 passed\n",
-        "candidate_broad_raw": f"{len(final_outcomes) + 1} passed\n".encode(),
-        "candidate_lint_raw": b"All checks passed!\n",
-        "canonical_main_focused_raw": f"{len(final_outcomes)} passed\n".encode(),
-        "canonical_main_pure_control_raw": b"2 passed\n",
-        "canonical_main_broad_raw": f"{len(final_outcomes) + 2} passed\n".encode(),
-        "canonical_main_lint_raw": b"All checks passed!\n",
-    }
-    junits = {
-        "preproduction_red_junit": _junit_bytes(red_outcomes, named_anchors=True),
-        "preproduction_control_junit": _junit_bytes(("passed", "passed")),
-        "candidate_focused_junit": _junit_bytes(final_outcomes, named_anchors=True),
-        "candidate_pure_control_junit": _junit_bytes(("passed", "passed")),
-        "candidate_broad_junit": _junit_bytes(
-            final_outcomes + ("passed",), named_anchors=True
-        ),
-        "canonical_main_focused_junit": _junit_bytes(
-            final_outcomes, named_anchors=True
-        ),
-        "canonical_main_pure_control_junit": _junit_bytes(("passed", "passed")),
-        "canonical_main_broad_junit": _junit_bytes(
+    run_cases = {
+        "preproduction_red": (red_nodes, red_outcomes),
+        "preproduction_control": (pure_nodes, ("passed",) * len(pure_nodes)),
+        "candidate_focused": (final_nodes, final_outcomes),
+        "candidate_pure_control": (pure_nodes, ("passed",) * len(pure_nodes)),
+        "candidate_broad": (final_nodes + (broad_node,), final_outcomes + ("passed",)),
+        "canonical_main_focused": (final_nodes, final_outcomes),
+        "canonical_main_pure_control": (pure_nodes, ("passed",) * len(pure_nodes)),
+        "canonical_main_broad": (
+            final_nodes + (broad_node, sibling_node),
             final_outcomes + ("passed", "passed"),
-            named_anchors=True,
         ),
     }
+    raw_outputs, junits = {}, {}
+    for name, (nodes, outcomes) in run_cases.items():
+        tag = f"{variant}:{name}:fresh-process"
+        summary = ", ".join(
+            f"{outcomes.count(status)} {status}"
+            for status in ("failed", "passed", "skipped")
+            if status in outcomes
+        )
+        markers = ""
+        if name == "preproduction_red":
+            markers = (
+                "\n".join(
+                    "HARDEN-RED-ANCHOR::"
+                    + contracts.get(node, ("review-leg-isolation", None))[0]
+                    for node in named_nodes
+                )
+                + "\n"
+            )
+        raw_outputs[name + "_raw"] = f"{summary}\nrun={tag}\n{markers}".encode()
+        junits[name + "_junit"] = _junit_bytes(outcomes, nodeids=nodes, run_tag=tag)
+    for round_name in ("candidate", "canonical_main"):
+        raw_outputs[f"{round_name}_lint_raw"] = (
+            f"All checks passed!\nrun={variant}:{round_name}:lint\n".encode()
+        )
     artifacts: dict[str, dict[str, str]] = {
         "plan_authority": _write_ref(
             source_root, "raw/plan-authority.json", _canonical_bytes(plan_authority)
@@ -747,6 +843,20 @@ def _raw_fixture(
             else "canonical_main"
         )
         is_red = name == "preproduction_red"
+        spec_key = (
+            "focused"
+            if is_red or "focused" in name
+            else "broad"
+            if "broad" in name
+            else "pure_control"
+        )
+        kind = (
+            "activated_red"
+            if is_red
+            else "focused_activated"
+            if spec_key == "focused"
+            else spec_key
+        )
         nonce = _sha256(f"{variant}:{name}:fresh-process".encode())
         operation_nonces.append(nonce)
         record = {
@@ -756,15 +866,15 @@ def _raw_fixture(
             "tree": trees[revision],
             "process_nonce": nonce,
             "exit_code": int(is_red),
-            "argv": ["python3", "-m", "pytest", "-q", "tests"],
-            "cwd": "phase-loop-runtime",
-            "env_keys": ["PHASE_LOOP_TDD_EXPECT_HARDEN"]
-            if is_red or "focused" in name
-            else [],
+            "argv_class": "pytest_harden_activated_v1"
+            if is_red
+            else f"pytest_harden_{kind}_v1",
+            **copy.deepcopy(run_specs[spec_key]),
             "source_tree": trees[revision],
             "raw": artifacts[raw_name],
             "junit": artifacts[junit_name],
             "baseline": {
+                "schema": "harden_broad_baseline.v1",
                 "commit": base if revision == "reviewed_sl0" else landing,
                 "tree": trees["sl0_base"]
                 if revision == "reviewed_sl0"
@@ -1029,16 +1139,7 @@ def _raw_fixture(
                 outcome: outcomes.count(outcome)
                 for outcome in ("passed", "failed", "skipped")
             }
-            for name, outcomes in (
-                ("preproduction_red", red_outcomes),
-                ("preproduction_control", ("passed", "passed")),
-                ("candidate_focused", final_outcomes),
-                ("candidate_pure_control", ("passed", "passed")),
-                ("candidate_broad", final_outcomes + ("passed",)),
-                ("canonical_main_focused", final_outcomes),
-                ("canonical_main_pure_control", ("passed", "passed")),
-                ("canonical_main_broad", final_outcomes + ("passed", "passed")),
-            )
+            for name, (_nodes, outcomes) in run_cases.items()
         },
         "author_vendor": author_vendor,
         "routes": routes,
@@ -1334,12 +1435,38 @@ def _assert_prepared(context: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
             "tree",
             "process_nonce",
             "exit_code",
+            "argv_class",
             "argv",
             "cwd",
             "env_keys",
             "source_tree",
+            "baseline",
         ):
             assert receipt_record[field] == observed[field], field
+        result = (
+            evidence["sl0"][
+                "activated_red" if name == "preproduction_red" else "pure_control"
+            ]
+            if name.startswith("preproduction_")
+            else evidence["verification"][
+                "canonical_main" if name.startswith("canonical_main_") else "candidate"
+            ][name.removeprefix("canonical_main_").removeprefix("candidate_")]
+        )
+        for field in ("raw", "junit"):
+            assert result[field]["sha256"] == observed[field]["sha256"]
+            assert receipt_record[field + "_sha256"] == observed[field]["sha256"]
+    for round_name in ("candidate", "canonical_main"):
+        group = evidence["verification"][round_name]
+        supplied_group = observation_index["groups"][round_name]
+        assert group["run_nonce"] == supplied_group["run_nonce"]
+        assert group["commit"] == supplied_group["head"]
+        assert group["tree"] == supplied_group["tree"]
+        supplied_lint = _strict_json(
+            context["source_root"]
+            / observation_index["runs"][round_name + "_lint"]["path"]
+        )
+        assert retained_json(group["lint"]["receipt"], "lint receipt") == supplied_lint
+        assert group["lint"]["raw"]["sha256"] == supplied_lint["raw_sha256"]
 
     source_mutations = _strict_json(
         context["source_root"]
@@ -1477,6 +1604,14 @@ def _assert_prepared(context: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
 def _assert_fixture_proof_sources(context: dict[str, Any]) -> None:
     repo = context["repo"]
     verifier = _load_shipped_verifier()
+    digests: dict[str, set[str]] = {}
+    for path, digest in _reachable_artifact_refs(
+        context["manifest"], context["source_root"]
+    ):
+        digests.setdefault(digest, set()).add(path)
+    assert all(len(paths) == 1 for paths in digests.values()), (
+        "distinct proof artifacts reused bytes"
+    )
     verifier.verify_clean_canonical_main_context(
         repo, context["expected"]["commits"]["canonical_main"]
     )
@@ -1588,10 +1723,57 @@ def _assert_fixture_proof_sources(context: dict[str, Any]) -> None:
         "\0".join(sorted(sessions)).encode()
     )
     assert not sessions & set(context["sessions"].values())
+    index = _strict_json(
+        context["source_root"]
+        / context["manifest"]["artifacts"]["execution_runs"]["path"]
+    )
+    environment = dict(os.environ)
+    for key in ("PHASE_LOOP_TDD_EXPECT_HARDEN", "PYTEST_ADDOPTS"):
+        environment.pop(key, None)
+    environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    audit_root = context["root"] / "source-execution-audit"
+    audit_root.mkdir()
+    try:
+        for name, ref in index["runs"].items():
+            if name.endswith("_lint"):
+                continue
+            observed = _strict_json(context["source_root"] / ref["path"])
+            assert (repo / ref["path"]).read_bytes() == (
+                context["source_root"] / ref["path"]
+            ).read_bytes()
+            _git(repo, "checkout", "-q", observed["head"])
+            junit = audit_root / f"{name}.xml"
+            # The audit adds only the report destination to the retained command;
+            # selection, activation and working directory are unchanged.
+            completed = subprocess.run(
+                [*observed["argv"], "--junitxml", str(junit)],
+                cwd=repo / observed["cwd"],
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+            assert completed.returncode == observed["exit_code"], (
+                completed.stdout + completed.stderr
+            )
+            measured = verifier.parse_junit(junit.read_bytes(), name)
+            supplied = verifier.parse_junit(
+                (context["source_root"] / observed["junit"]["path"]).read_bytes(), name
+            )
+            assert sorted(
+                (case["node"], case["status"]) for case in measured
+            ) == sorted((case["node"], case["status"]) for case in supplied), name
+    finally:
+        _git(repo, "checkout", "-q", "main")
+    verifier.verify_clean_canonical_main_context(
+        repo, context["expected"]["commits"]["canonical_main"]
+    )
 
 
 def test_harden_producer_fixture_preserves_supplied_proof_sources(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Exercise every input variant while the production capability is absent."""
     for index, (author, red, final) in enumerate(_fixture_variants()):
@@ -1604,6 +1786,35 @@ def test_harden_producer_fixture_preserves_supplied_proof_sources(
             final_outcomes=final,
         )
         _assert_fixture_proof_sources(context)
+    verifier_path = (
+        _repo_root() / "phase-loop-runtime/scripts/verify_harden_evidence.py"
+    )
+    # Exercise the exact subprocess boundary even before the real producer exists.
+    # This probe imports the unchanged validator, not a permissive replacement.
+    cli_root = tmp_path / "cli-probe"
+    probe = cli_root / PRODUCER_PATH
+    probe.parent.mkdir(parents=True)
+    probe.write_text(
+        "import importlib.util, json, pathlib, subprocess\n"
+        f"spec = importlib.util.spec_from_file_location('verifier', {str(verifier_path)!r})\n"
+        "verifier = importlib.util.module_from_spec(spec)\nspec.loader.exec_module(verifier)\n"
+        f"root = pathlib.Path({str(context['root'])!r})\n"
+        "assert verifier.CANONICAL_GH.lstat().st_ino == (root / 'fake-gh').lstat().st_ino\n"
+        "assert verifier._ci_query_mode(verifier.ArtifactStore(root), verifier.CANONICAL_GH)\n"
+        "environment = verifier.github_cli_environment(root, canonical=True)\n"
+        f"command = verifier.ci_command({context['expected']['ci_run_ids']['candidate']!r})\n"
+        "response = json.loads(subprocess.check_output(command, env=environment))\n"
+        "assert verifier.normalize_ci_jobs(response['jobs'], canonical=True)\n"
+        f"assert response['headSha'] == {context['expected']['commits']['candidate']!r}\n"
+        "print('hermetic canonical CI boundary passed')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+    monkeypatch.setitem(globals(), "_repo_root", lambda: cli_root)
+    completed = _producer_command("--evidence-root", str(context["evidence_root"]))
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stdout.strip() == "hermetic canonical CI boundary passed"
 
 
 def test_harden_producer_derives_live_facts_without_historical_literals() -> None:
@@ -2049,6 +2260,61 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
     def replace_artifact(context: dict[str, Any], artifact: str, value: Any) -> None:
         replace_input(context, "artifacts", artifact, value)
 
+    nested_targets = (
+        [
+            ("source_mutations", ("mutations", 0, field))
+            for field in ("mutated_source", "restored_source")
+        ]
+        + [
+            ("source_mutations", ("mutations", 0, stage, field))
+            for stage in ("mutation", "restored")
+            for field in ("raw", "junit", "receipt")
+        ]
+        + [
+            ("execution_runs", ("runs", "candidate_focused")),
+            ("execution_runs", ("runs", "candidate_lint")),
+            ("candidate_review_request", ("bundle",)),
+            ("candidate_review_request", ("instructions",)),
+            ("candidate_broker_receipts", ("receipts", 0, "runtime_receipt")),
+        ]
+    )
+    for artifact, keys in nested_targets:
+        for attack, message in (
+            ("absolute", "normalized relative path"),
+            ("parent", "parent traversal"),
+            ("symlink", "symlink"),
+            ("digest", "digest mismatch"),
+        ):
+
+            def corrupt_nested(
+                context: dict[str, Any],
+                artifact: str = artifact,
+                keys: tuple = keys,
+                attack: str = attack,
+            ) -> None:
+                record = _strict_json(
+                    context["source_root"]
+                    / context["manifest"]["artifacts"][artifact]["path"]
+                )
+                ref = record
+                for key in keys:
+                    ref = ref[key]
+                original = context["source_root"] / ref["path"]
+                if attack == "absolute":
+                    ref["path"] = str(original.resolve())
+                elif attack == "parent":
+                    ref["path"] = "raw/../" + ref["path"]
+                elif attack == "digest":
+                    ref["sha256"] = _different_hex(ref["sha256"])
+                else:
+                    target = context["root"] / "nested-outside"
+                    target.write_bytes(original.read_bytes())
+                    original.unlink()
+                    original.symlink_to(target)
+                replace_artifact(context, artifact, record)
+
+            rejected(f"nested-{artifact}-{keys}-{attack}", corrupt_nested, message)
+
     def secret_input(group: str, name: str) -> Callable[[dict[str, Any]], None]:
         def mutate(context: dict[str, Any]) -> None:
             secret_value = os.urandom(24).hex()
@@ -2122,6 +2388,177 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
         "mutation coverage",
     )
 
+    def corrupt_mutation(context: dict[str, Any], attack: str) -> None:
+        index = _strict_json(
+            context["source_root"]
+            / context["manifest"]["artifacts"]["source_mutations"]["path"]
+        )
+        entry = index["mutations"][0]
+        if attack in {"comment-only", "wrong-restoration"}:
+            field = "mutated_source" if attack == "comment-only" else "restored_source"
+            source = (
+                context["source_root"] / entry["restored_source"]["path"]
+            ).read_bytes()
+            replacement = (
+                source + b"# no executable change\n"
+                if attack == "comment-only"
+                else source.replace(b"return True", b"return 2")
+            )
+            entry[field] = _write_ref(
+                context["source_root"], entry[field]["path"], replacement
+            )
+            stage = "mutation" if field == "mutated_source" else "restored"
+            ref = entry[stage]["receipt"]
+            receipt = _strict_json(context["source_root"] / ref["path"])
+            receipt["source_sha256"] = entry[field]["sha256"]
+            entry[stage]["receipt"] = _write_ref(
+                context["source_root"], ref["path"], _canonical_bytes(receipt)
+            )
+        elif attack == "wrong-source-binding":
+            entry["source_path"] = index["mutations"][1]["source_path"]
+        else:
+            run = entry["mutation"]
+            suite = ElementTree.fromstring(
+                (context["source_root"] / run["junit"]["path"]).read_bytes()
+            )
+            case = suite.find("testcase")
+            assert case is not None
+            if attack == "extra-junit-case":
+                suite.append(copy.deepcopy(case))
+                suite.set("tests", "2")
+                suite.set("failures", "2")
+            elif attack == "wrong-nodeid":
+                case.set("name", "test_wrong_named_property")
+            elif attack == "not-biting":
+                failure = case.find("failure")
+                assert failure is not None
+                case.remove(failure)
+                suite.set("failures", "0")
+            else:
+                raise AssertionError(attack)
+            run["junit"] = _write_ref(
+                context["source_root"],
+                run["junit"]["path"],
+                ElementTree.tostring(suite),
+            )
+            receipt = _strict_json(context["source_root"] / run["receipt"]["path"])
+            receipt["junit_sha256"] = run["junit"]["sha256"]
+            run["receipt"] = _write_ref(
+                context["source_root"],
+                run["receipt"]["path"],
+                _canonical_bytes(receipt),
+            )
+        replace_artifact(context, "source_mutations", index)
+
+    for attack in (
+        "comment-only",
+        "wrong-restoration",
+        "wrong-source-binding",
+        "extra-junit-case",
+        "wrong-nodeid",
+        "not-biting",
+    ):
+        rejected(
+            f"mutation-{attack}",
+            lambda context, attack=attack: corrupt_mutation(context, attack),
+            "mutation",
+        )
+
+    def alter_observed_run(
+        context: dict[str, Any],
+        name: str,
+        mutate: Callable[[dict[str, Any]], None],
+        *,
+        sync: bool = True,
+    ) -> None:
+        index = _strict_json(
+            context["source_root"]
+            / context["manifest"]["artifacts"]["execution_runs"]["path"]
+        )
+        ref = index["runs"][name]
+        record = _strict_json(context["source_root"] / ref["path"])
+        mutate(record)
+        data = _canonical_bytes(record)
+        if sync:
+            _write_ref(context["repo"], ref["path"], data)
+        index["runs"][name] = _write_ref(context["source_root"], ref["path"], data)
+        replace_artifact(context, "execution_runs", index)
+
+    for raw_name, _junit_name in RAW_JUNIT_PAIRS:
+        name = raw_name.removesuffix("_raw")
+        rejected(
+            f"missing-execution-{name}",
+            lie_in_json(
+                "execution_runs", lambda record, name=name: record["runs"].pop(name)
+            ),
+            "missing run observation",
+        )
+    for round_name in ("candidate", "canonical_main"):
+        rejected(
+            f"missing-lint-{round_name}",
+            lie_in_json(
+                "execution_runs",
+                lambda record, name=round_name: record["runs"].pop(name + "_lint"),
+            ),
+            "missing run observation",
+        )
+        rejected(
+            f"missing-parent-{round_name}",
+            lie_in_json(
+                "execution_runs",
+                lambda record, name=round_name: record["groups"].pop(name),
+            ),
+            "missing run group",
+        )
+    for field, value, message in (
+        ("argv", ["python3", "-m", "pytest", "-q", "tests"], "command"),
+        ("argv_class", "pytest_harden_pure_control_v1", "command"),
+        ("env_keys", ["PYTHONPATH"], "command"),
+        ("cwd", "phase-loop-runtime", "command"),
+        ("source_tree", "1" * 40, "source tree"),
+    ):
+        rejected(
+            f"substituted-run-{field}",
+            lambda context, field=field, value=value: alter_observed_run(
+                context,
+                "candidate_focused",
+                lambda record: record.__setitem__(field, value),
+            ),
+            message,
+        )
+    rejected(
+        "missing-focused-activation",
+        lambda context: alter_observed_run(
+            context,
+            "candidate_focused",
+            lambda record: record["argv"].remove("PHASE_LOOP_TDD_EXPECT_HARDEN=1"),
+        ),
+        "command",
+    )
+    rejected(
+        "wrong-run-baseline",
+        lambda context: alter_observed_run(
+            context,
+            "candidate_focused",
+            lambda record: record["baseline"].__setitem__(
+                "commit", context["expected"]["commits"]["candidate"]
+            ),
+        ),
+        "baseline",
+    )
+    rejected(
+        "run-custody-divergence",
+        lambda context: alter_observed_run(
+            context,
+            "candidate_focused",
+            lambda record: record.__setitem__(
+                "process_nonce", _different_hex(record["process_nonce"])
+            ),
+            sync=False,
+        ),
+        "canonical run",
+    )
+
     def missing_observed_run_field(context: dict[str, Any], field: str) -> None:
         index = _strict_json(
             context["source_root"]
@@ -2138,6 +2575,7 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
 
     for field in (
         "process_nonce",
+        "argv_class",
         "argv",
         "cwd",
         "env_keys",
@@ -2170,6 +2608,27 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
 
     rejected("missing-named-red-anchor", missing_red_anchor, "RED anchor")
 
+    def wrong_red_node(context: dict[str, Any]) -> None:
+        ref = context["manifest"]["artifacts"]["preproduction_red_junit"]
+        suite = ElementTree.fromstring(
+            (context["source_root"] / ref["path"]).read_bytes()
+        )
+        case = suite.find("testcase")
+        assert case is not None
+        case.set("name", "test_unrelated_failure")
+        replace_artifact(
+            context, "preproduction_red_junit", ElementTree.tostring(suite)
+        )
+        alter_observed_run(
+            context,
+            "preproduction_red",
+            lambda record: record.__setitem__(
+                "junit", context["manifest"]["artifacts"]["preproduction_red_junit"]
+            ),
+        )
+
+    rejected("wrong-named-red-junit", wrong_red_node, "RED")
+
     def reused_reviewer_session(context: dict[str, Any]) -> None:
         candidate = _strict_json(
             context["source_root"]
@@ -2185,6 +2644,84 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
         replace_artifact(context, "canonical_main_broker_receipts", main)
 
     rejected("reused-reviewer-across-rounds", reused_reviewer_session, "reused review")
+    rejected(
+        "reused-reviewer-within-round",
+        lie_in_json(
+            "candidate_broker_receipts",
+            lambda record: record["receipts"][1].__setitem__(
+                "session_sha256", record["receipts"][0]["session_sha256"]
+            ),
+        ),
+        "reused review",
+    )
+
+    def forged_git_review(context: dict[str, Any]) -> None:
+        verifier = _load_shipped_verifier()
+        request = _strict_json(
+            context["source_root"]
+            / context["manifest"]["artifacts"]["candidate_review_request"]["path"]
+        )
+        bundle_ref = request["bundle"]
+        bundle = _strict_json(context["source_root"] / bundle_ref["path"])
+        original = bundle["content"]
+        patch, start, end = verifier.framed_payload(
+            original, "fixture bundle", "COMPLETE-GIT-PATCH"
+        )
+        forged = patch.replace("+CAPABILITY = 1", "+CAPABILITY = 9")
+        assert forged != patch and len(forged) == len(patch)
+        begin_frame, end_frame = verifier.digest_bound_delimiters(
+            "COMPLETE-GIT-PATCH", forged.encode()
+        )
+        prefix = original[:start].replace(
+            _sha256(patch.encode()), _sha256(forged.encode())
+        )
+        bundle["content"] = (
+            prefix
+            + begin_frame
+            + "\n"
+            + forged
+            + "\n"
+            + end_frame
+            + "\n"
+            + original[end:]
+        )
+        verifier.validate_review_input_envelope(bundle["content"], "bundle")
+        request["bundle"] = _write_ref(
+            context["source_root"], bundle_ref["path"], _canonical_bytes(bundle)
+        )
+        replace_artifact(context, "candidate_review_request", request)
+        inputs = {
+            kind: _strict_json(context["source_root"] / request[kind]["path"])[
+                "content"
+            ]
+            for kind in ("bundle", "instructions")
+        }
+        brokers = _strict_json(
+            context["source_root"]
+            / context["manifest"]["artifacts"]["candidate_broker_receipts"]["path"]
+        )
+        for seat in brokers["receipts"]:
+            # Rebind every observation to the forged, self-consistent frame so
+            # only comparison with the actual Git patch can reject the claim.
+            seat["broker"] = _broker_observation(
+                verifier,
+                seat["harness"],
+                seat["resolved_model"],
+                "forged:" + seat["seat_id"],
+                inputs,
+                seat["report"],
+            )
+            runtime_ref = seat["runtime_receipt"]
+            runtime = _strict_json(context["source_root"] / runtime_ref["path"])
+            runtime["broker"] = seat["broker"]
+            data = _canonical_bytes(runtime)
+            _write_ref(context["repo"], runtime_ref["path"], data)
+            seat["runtime_receipt"] = _write_ref(
+                context["source_root"], runtime_ref["path"], data
+            )
+        replace_artifact(context, "candidate_broker_receipts", brokers)
+
+    rejected("self-consistent-forged-git-review", forged_git_review, "Git-bound review")
 
     rejected(
         "plan-live-git-lie",
@@ -2673,7 +3210,7 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
         evidence, request = _assert_prepared(context)
         assert context["registry"].read_bytes() == registry_before_bytes
         canonical_ledger = context["repo"] / ".phase-loop/events.jsonl"
-        canonical_ledger.parent.mkdir(parents=True)
+        canonical_ledger.parent.mkdir(parents=True, exist_ok=True)
         canonical_ledger.write_bytes(_ledger_bytes(request))
         sealed_path = context["root"] / "sealed-evidence.json"
         sealed_run = _seal_command(context, canonical_ledger, sealed_path)
@@ -2719,7 +3256,7 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
             assert prepared.returncode == 0, prepared.stderr
             _evidence, request = _assert_prepared(context)
             canonical = context["repo"] / ".phase-loop/events.jsonl"
-            canonical.parent.mkdir(parents=True)
+            canonical.parent.mkdir(parents=True, exist_ok=True)
             canonical.write_bytes(_ledger_bytes(request))
             ledger_argument = mutate(context, canonical, request)
             output = context["root"] / "sealed-evidence.json"
@@ -2824,7 +3361,7 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
 
         return mutate
 
-    for index in range(13):
+    for index in range(len(context["expected"]["operation_nonces"])):
         seal_rejected(
             f"seal-registry-nonce-collision-{index}",
             registry_nonce_collision(index),
