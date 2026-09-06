@@ -487,6 +487,7 @@ def _raw_fixture(
     author_vendor: str = "codex-gpt-5.6-terra",
     red_outcomes: tuple[str, ...] = ("passed", "skipped"),
     final_outcomes: tuple[str, ...] = ("passed", "passed"),
+    non_biting_mutation: bool = False,
 ) -> dict[str, Any]:
     verifier = _load_shipped_verifier()
     named_nodes = tuple(verifier.ACTIVATED_RED_NODEIDS)
@@ -672,6 +673,185 @@ def _raw_fixture(
     _git(repo, "checkout", "-q", "main")
     _git(repo, "merge", "--no-ff", "-qm", "land reviewed tests", "reviewed-sl0")
     landing = _git(repo, "rev-parse", "HEAD")
+    operation_nonces = [
+        _sha256(f"{variant}:operation:{index}".encode()) for index in range(13)
+    ]
+    reviewed_tree = _git(repo, "rev-parse", f"{reviewed}^{{tree}}")
+    mutation_entries = []
+    mutation_env = dict(os.environ)
+    mutation_env.pop("PHASE_LOOP_TDD_EXPECT_HARDEN", None)
+    mutation_env.pop("PYTEST_ADDOPTS", None)
+    mutation_env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    _git(repo, "checkout", "-q", reviewed)
+    for case_id, case in HARDEN_CASES.items():
+        restored_bytes = subprocess.check_output(
+            ["git", "show", f"{reviewed}:{case.production_path}"], cwd=repo
+        )
+        non_biting = non_biting_mutation and not mutation_entries
+        mutated_bytes = restored_bytes.replace(
+            b"return True", b"return 2" if non_biting else b"return False", 1
+        )
+        assert mutated_bytes != restored_bytes
+        entry: dict[str, Any] = {
+            "case_id": case_id,
+            "source_path": case.production_path,
+            "nodeid": case.nodeid,
+            "restored_source": _write_ref(
+                source_root, f"raw/mutations/{case_id}/restored.py", restored_bytes
+            ),
+            "mutated_source": _write_ref(
+                source_root, f"raw/mutations/{case_id}/mutated.py", mutated_bytes
+            ),
+        }
+        for stage, exit_code, kind, marker, source_ref in (
+            (
+                "mutation",
+                0 if non_biting else 1,
+                "source_mutation",
+                "HARDEN-MUTATION-BITE",
+                entry["mutated_source"],
+            ),
+            (
+                "restored",
+                0,
+                "restored_control",
+                "HARDEN-RESTORED-CONTROL",
+                entry["restored_source"],
+            ),
+        ):
+            run_nonce = _sha256(f"{variant}:{case_id}:{stage}:process".encode())
+            operation_nonces.append(run_nonce)
+            junit_relative = f"raw/mutations/{case_id}/{stage}.xml"
+            junit_path = source_root / junit_relative
+            installed_source = repo / case.production_path
+            installed_source.write_bytes(
+                (source_root / source_ref["path"]).read_bytes()
+            )
+            started = time.monotonic_ns()
+            try:
+                completed = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "pytest",
+                        "-q",
+                        case.nodeid,
+                        "--junitxml",
+                        str(junit_path),
+                    ],
+                    cwd=repo,
+                    env=mutation_env,
+                    capture_output=True,
+                    check=False,
+                    timeout=30,
+                )
+                assert completed.returncode == exit_code, completed.stdout.decode(
+                    errors="replace"
+                )
+            finally:
+                installed_source.write_bytes(restored_bytes)
+            raw = _write_ref(
+                source_root,
+                f"raw/mutations/{case_id}/{stage}.txt",
+                f"{marker}::{case_id}\n".encode() + completed.stdout,
+            )
+            junit = _write_ref(
+                source_root,
+                junit_relative,
+                junit_path.read_bytes(),
+            )
+            record = {
+                "schema": "harden_pytest_receipt.v1",
+                "kind": kind,
+                "head": reviewed,
+                "tree": reviewed_tree,
+                "clock_id": variant,
+                "started_monotonic_ns": started,
+                "finished_monotonic_ns": time.monotonic_ns(),
+                "process_nonce": run_nonce,
+                "exit_code": exit_code,
+                "argv_class": f"pytest_harden_{kind}_v1",
+                "raw_sha256": raw["sha256"],
+                "junit_sha256": junit["sha256"],
+                "source_path": case.production_path,
+                "source_sha256": source_ref["sha256"],
+            }
+            receipt_path = (
+                f".phase-loop/runs/{variant}-{case_id}-{stage}/pytest-receipt.json"
+            )
+            receipt_bytes = _canonical_bytes(record)
+            _write_ref(repo, receipt_path, receipt_bytes)
+            receipt = _write_ref(source_root, receipt_path, receipt_bytes)
+            entry[stage] = {"raw": raw, "junit": junit, "receipt": receipt}
+        mutation_entries.append(entry)
+    _git(repo, "checkout", "-q", "main")
+    mutation_index_path = f".phase-loop/runs/{variant}-mutations/index.json"
+    mutation_index_bytes = _canonical_bytes(
+        {"schema": "harden_source_mutations.v1", "mutations": mutation_entries}
+    )
+    _write_ref(repo, mutation_index_path, mutation_index_bytes)
+    mutation_index_ref = _write_ref(
+        source_root, mutation_index_path, mutation_index_bytes
+    )
+    preproduction_runs = {}
+    _git(repo, "checkout", "-q", reviewed)
+    try:
+        for name, spec_key, is_red in (
+            ("preproduction_red", "focused", True),
+            ("preproduction_control", "pure_control", False),
+        ):
+            spec = copy.deepcopy(run_specs[spec_key])
+            junit_path = source_root / f"raw/{name}_junit.xml"
+            started = time.monotonic_ns()
+            completed = subprocess.run(
+                [*spec["argv"], "--junitxml", str(junit_path)],
+                cwd=repo / spec["cwd"],
+                env=mutation_env,
+                capture_output=True,
+                check=False,
+                timeout=30,
+            )
+            assert completed.returncode == int(is_red), completed.stdout.decode(
+                errors="replace"
+            )
+            raw_ref = _write_ref(source_root, f"raw/{name}_raw.txt", completed.stdout)
+            junit_ref = _write_ref(
+                source_root, f"raw/{name}_junit.xml", junit_path.read_bytes()
+            )
+            nonce = _sha256(f"{variant}:{name}:fresh-process".encode())
+            operation_nonces.append(nonce)
+            record = {
+                "schema": "harden_run_observation.v1",
+                "kind": name,
+                "head": reviewed,
+                "tree": reviewed_tree,
+                "clock_id": variant,
+                "started_monotonic_ns": started,
+                "finished_monotonic_ns": time.monotonic_ns(),
+                "process_nonce": nonce,
+                "exit_code": int(is_red),
+                "argv_class": "pytest_harden_activated_v1"
+                if is_red
+                else "pytest_harden_pure_control_v1",
+                **spec,
+                "source_tree": reviewed_tree,
+                "raw": raw_ref,
+                "junit": junit_ref,
+                "baseline": {
+                    "schema": "harden_broad_baseline.v1",
+                    "commit": base,
+                    "tree": _git(repo, "rev-parse", f"{base}^{{tree}}"),
+                    "inherited_failures": [],
+                    "inherited_skips": [],
+                    "inherited_deselected": [],
+                },
+            }
+            relative = f".phase-loop/runs/{variant}-{name}/observation.json"
+            data = _canonical_bytes(record)
+            _write_ref(repo, relative, data)
+            preproduction_runs[name] = _write_ref(source_root, relative, data)
+    finally:
+        _git(repo, "checkout", "-q", "main")
     production_nonce = _sha256(f"{variant}:production:start".encode())
     production_start = {
         "schema": "harden_production_start.v1",
@@ -681,6 +861,8 @@ def _raw_fixture(
         "observed_monotonic_ns": time.monotonic_ns(),
         "operation_nonce": production_nonce,
         "sl0_approval": approval_ref,
+        "preproduction_runs": preproduction_runs,
+        "source_mutations": mutation_index_ref,
     }
     production_relative = f".phase-loop/runs/{variant}-production/start.json"
     _write_ref(repo, production_relative, _canonical_bytes(production_start))
@@ -713,9 +895,6 @@ def _raw_fixture(
         for name, commit in commits.items()
     }
     evidence_id = _sha256(f"evidence:{variant}".encode())
-    operation_nonces = [
-        _sha256(f"{variant}:operation:{index}".encode()) for index in range(13)
-    ]
     operation_nonces.extend([approval_nonce, production_nonce, *historical_sessions])
     ci_seed = int(_sha256(f"{variant}:ci".encode())[:12], 16)
     ci_run_ids = {
@@ -769,6 +948,15 @@ def _raw_fixture(
     }
     raw_outputs, junits = {}, {}
     for name, (nodes, outcomes) in run_cases.items():
+        if name in preproduction_runs:
+            observed = _strict_json(source_root / preproduction_runs[name]["path"])
+            raw_outputs[name + "_raw"] = (
+                source_root / observed["raw"]["path"]
+            ).read_bytes()
+            junits[name + "_junit"] = (
+                source_root / observed["junit"]["path"]
+            ).read_bytes()
+            continue
         tag = f"{variant}:{name}:fresh-process"
         summary = ", ".join(
             f"{outcomes.count(status)} {status}"
@@ -799,120 +987,16 @@ def _raw_fixture(
             source_root, "raw/sl0-review.json", _canonical_bytes(sl0_review)
         ),
     }
-    mutation_entries = []
-    mutation_env = dict(os.environ)
-    mutation_env.pop("PHASE_LOOP_TDD_EXPECT_HARDEN", None)
-    mutation_env.pop("PYTEST_ADDOPTS", None)
-    mutation_env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
-    _git(repo, "checkout", "-q", reviewed)
-    for case_id, case in HARDEN_CASES.items():
-        restored_bytes = subprocess.check_output(
-            ["git", "show", f"{reviewed}:{case.production_path}"], cwd=repo
-        )
-        mutated_bytes = restored_bytes.replace(b"return True", b"return False", 1)
-        assert mutated_bytes != restored_bytes
-        entry: dict[str, Any] = {
-            "case_id": case_id,
-            "source_path": case.production_path,
-            "nodeid": case.nodeid,
-            "restored_source": _write_ref(
-                source_root, f"raw/mutations/{case_id}/restored.py", restored_bytes
-            ),
-            "mutated_source": _write_ref(
-                source_root, f"raw/mutations/{case_id}/mutated.py", mutated_bytes
-            ),
-        }
-        for stage, exit_code, kind, marker, source_ref in (
-            (
-                "mutation",
-                1,
-                "source_mutation",
-                "HARDEN-MUTATION-BITE",
-                entry["mutated_source"],
-            ),
-            (
-                "restored",
-                0,
-                "restored_control",
-                "HARDEN-RESTORED-CONTROL",
-                entry["restored_source"],
-            ),
-        ):
-            run_nonce = _sha256(f"{variant}:{case_id}:{stage}:process".encode())
-            operation_nonces.append(run_nonce)
-            junit_relative = f"raw/mutations/{case_id}/{stage}.xml"
-            junit_path = source_root / junit_relative
-            installed_source = repo / case.production_path
-            installed_source.write_bytes(
-                (source_root / source_ref["path"]).read_bytes()
-            )
-            try:
-                completed = subprocess.run(
-                    [
-                        sys.executable,
-                        "-m",
-                        "pytest",
-                        "-q",
-                        case.nodeid,
-                        "--junitxml",
-                        str(junit_path),
-                    ],
-                    cwd=repo,
-                    env=mutation_env,
-                    capture_output=True,
-                    check=False,
-                    timeout=30,
-                )
-                assert completed.returncode == exit_code, completed.stdout.decode(
-                    errors="replace"
-                )
-            finally:
-                installed_source.write_bytes(restored_bytes)
-            raw = _write_ref(
-                source_root,
-                f"raw/mutations/{case_id}/{stage}.txt",
-                f"{marker}::{case_id}\n".encode() + completed.stdout,
-            )
-            junit = _write_ref(
-                source_root,
-                junit_relative,
-                junit_path.read_bytes(),
-            )
-            record = {
-                "schema": "harden_pytest_receipt.v1",
-                "kind": kind,
-                "head": reviewed,
-                "tree": trees["reviewed_sl0"],
-                "process_nonce": run_nonce,
-                "exit_code": exit_code,
-                "argv_class": f"pytest_harden_{kind}_v1",
-                "raw_sha256": raw["sha256"],
-                "junit_sha256": junit["sha256"],
-                "source_path": case.production_path,
-                "source_sha256": source_ref["sha256"],
-            }
-            receipt_path = (
-                f".phase-loop/runs/{variant}-{case_id}-{stage}/pytest-receipt.json"
-            )
-            receipt_bytes = _canonical_bytes(record)
-            _write_ref(repo, receipt_path, receipt_bytes)
-            receipt = _write_ref(source_root, receipt_path, receipt_bytes)
-            entry[stage] = {"raw": raw, "junit": junit, "receipt": receipt}
-        mutation_entries.append(entry)
-    _git(repo, "checkout", "-q", "main")
-    artifacts["source_mutations"] = _write_ref(
-        source_root,
-        "raw/source-mutations.json",
-        _canonical_bytes(
-            {"schema": "harden_source_mutations.v1", "mutations": mutation_entries}
-        ),
-    )
+    artifacts["source_mutations"] = mutation_index_ref
     for name, data in {**raw_outputs, **junits}.items():
         extension = "xml" if name.endswith("junit") else "txt"
         artifacts[name] = _write_ref(source_root, f"raw/{name}.{extension}", data)
     run_observations = {}
     for raw_name, junit_name in RAW_JUNIT_PAIRS:
         name = raw_name.removesuffix("_raw")
+        if name in preproduction_runs:
+            run_observations[name] = preproduction_runs[name]
+            continue
         revision = (
             "reviewed_sl0"
             if name.startswith("preproduction_")
@@ -1201,12 +1285,20 @@ def _raw_fixture(
         }
         for round_name, run_id in ci_run_ids.items()
     }
+    (root / "ci-responses.json").write_bytes(_canonical_bytes(ci_responses))
     ci_query = root / "fake-gh"
     ci_query.write_text(
         "#!/usr/bin/env python3\n"
-        "import json, sys\n"
-        f"RESPONSES = {ci_responses!r}\n"
-        "print(json.dumps(RESPONSES[sys.argv[3]]))\n",
+        "import json, pathlib, sys\n"
+        "root = pathlib.Path(__file__).resolve().parent\n"
+        "responses = json.loads((root / 'ci-responses.json').read_bytes())\n"
+        "assert len(sys.argv) == 8 and sys.argv[3] in responses, 'unexpected CI query'\n"
+        "assert sys.argv[1:] == ['run', 'view', sys.argv[3], '--repo', "
+        "'github.com/Consiliency/agent-harness', '--json', "
+        "'databaseId,headSha,status,conclusion,event,workflowName,attempt,jobs'], 'unexpected CI query'\n"
+        "with (root / 'ci-queries.jsonl').open('a') as log:\n"
+        "    log.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        "print(json.dumps(responses[sys.argv[3]]))\n",
         encoding="utf-8",
     )
     ci_query.chmod(0o700)
@@ -1251,6 +1343,22 @@ def _raw_fixture(
         "request": root / "completion-request.json",
         "ci_query": ci_query,
     }
+
+
+def _ci_provider_attack(context: dict[str, Any], round_name: str, attack: str) -> None:
+    path = context["root"] / "ci-responses.json"
+    responses = _strict_json(path)
+    response = responses[str(context["expected"]["ci_run_ids"][round_name])]
+    if attack == "stale-head":
+        response["headSha"] = context["expected"]["commits"]["landing"]
+    elif attack == "failed":
+        response["conclusion"] = "failure"
+        response["jobs"][0]["conclusion"] = "failure"
+    elif attack == "missing-gate":
+        response["jobs"][0]["name"] = "not the suite gate"
+    else:
+        raise AssertionError(attack)
+    path.write_bytes(_canonical_bytes(responses))
 
 
 def _persist_manifest(context: dict[str, Any]) -> None:
@@ -1688,6 +1796,13 @@ def _assert_prepared(context: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
     assert len(required_retained_refs) == len(required_reachable_refs)
     reachable = _reachable_artifact_refs(evidence, context["evidence_root"])
     assert required_retained_refs <= reachable
+    queries = [
+        json.loads(line)
+        for line in (context["root"] / "ci-queries.jsonl").read_text().splitlines()
+    ]
+    assert {query[2] for query in queries} == {
+        str(run_id) for run_id in context["expected"]["ci_run_ids"].values()
+    }
     _verify_with_shipped_verifier(context, context["output"], "prepared")
     return evidence, request
 
@@ -1742,6 +1857,27 @@ def _assert_fixture_proof_sources(context: dict[str, Any]) -> None:
     assert approval["observed_monotonic_ns"] < production_start["observed_monotonic_ns"]
     assert production_start["head"] == context["expected"]["commits"]["landing"]
     assert production_start["sl0_approval"] == historical["approval"]
+    assert production_start["tree"] == context["expected"]["trees"]["landing"]
+    assert (
+        production_start["source_mutations"]
+        == context["manifest"]["artifacts"]["source_mutations"]
+    )
+    execution_index = store.json(
+        context["manifest"]["artifacts"]["execution_runs"], "execution index"
+    )
+    for name in ("preproduction_red", "preproduction_control"):
+        ref = production_start["preproduction_runs"][name]
+        assert ref == execution_index["runs"][name]
+        observed = verifier.run_owned_receipt(
+            store, repo, ref, "preproduction observation"
+        )
+        assert observed["clock_id"] == production_start["clock_id"]
+        assert approval["observed_monotonic_ns"] < observed["started_monotonic_ns"]
+        assert (
+            observed["started_monotonic_ns"]
+            <= observed["finished_monotonic_ns"]
+            < production_start["observed_monotonic_ns"]
+        )
     assert {seat["harness"] for seat in approval["seats"]} == {
         "claude",
         "codex",
@@ -1779,11 +1915,18 @@ def _assert_fixture_proof_sources(context: dict[str, Any]) -> None:
             )
             assert namespace[contract.symbol]() is expected_result
             run = entry[stage]
-            verifier.run_owned_receipt(
+            observed = verifier.run_owned_receipt(
                 verifier.ArtifactStore(context["source_root"]),
                 repo,
                 run["receipt"],
                 "source mutation process receipt",
+            )
+            assert observed["clock_id"] == production_start["clock_id"]
+            assert approval["observed_monotonic_ns"] < observed["started_monotonic_ns"]
+            assert (
+                observed["started_monotonic_ns"]
+                <= observed["finished_monotonic_ns"]
+                < production_start["observed_monotonic_ns"]
             )
             verifier.exact_case(
                 verifier.parse_junit(
@@ -1793,19 +1936,22 @@ def _assert_fixture_proof_sources(context: dict[str, Any]) -> None:
                 outcome,
                 "proof JUnit",
             )
-            verifier.receipt(
-                store,
-                run["receipt"],
-                "proof receipt",
-                head=context["expected"]["commits"]["reviewed_sl0"],
-                tree=context["expected"]["trees"]["reviewed_sl0"],
-                kind=kind,
-                argv_class=f"pytest_harden_{kind}_v1",
-                exit_code=int(not expected_result),
-                raw=run["raw"],
-                junit=run["junit"],
-                source_binding=(contract.production_path, source["sha256"]),
-            )
+            assert observed == {
+                "schema": "harden_pytest_receipt.v1",
+                "kind": kind,
+                "head": context["expected"]["commits"]["reviewed_sl0"],
+                "tree": context["expected"]["trees"]["reviewed_sl0"],
+                "process_nonce": observed["process_nonce"],
+                "clock_id": production_start["clock_id"],
+                "started_monotonic_ns": observed["started_monotonic_ns"],
+                "finished_monotonic_ns": observed["finished_monotonic_ns"],
+                "argv_class": f"pytest_harden_{kind}_v1",
+                "exit_code": int(not expected_result),
+                "raw_sha256": run["raw"]["sha256"],
+                "junit_sha256": run["junit"]["sha256"],
+                "source_path": contract.production_path,
+                "source_sha256": source["sha256"],
+            }
     sessions = set()
     for round_name in ("candidate", "canonical_main"):
         records = store.json(
@@ -1939,10 +2085,12 @@ def test_harden_producer_fixture_preserves_supplied_proof_sources(
         "assert verifier.CANONICAL_GH.lstat().st_ino == (root / 'fake-gh').lstat().st_ino\n"
         "assert verifier._ci_query_mode(verifier.ArtifactStore(root), verifier.CANONICAL_GH)\n"
         "environment = verifier.github_cli_environment(root, canonical=True)\n"
-        f"command = verifier.ci_command({context['expected']['ci_run_ids']['candidate']!r})\n"
-        "response = json.loads(subprocess.check_output(command, env=environment))\n"
-        "assert verifier.normalize_ci_jobs(response['jobs'], canonical=True)\n"
-        f"assert response['headSha'] == {context['expected']['commits']['candidate']!r}\n"
+        f"runs = {context['expected']['ci_run_ids']!r}\n"
+        f"heads = {context['expected']['commits']!r}\n"
+        "for name, run_id in runs.items():\n"
+        "    response = json.loads(subprocess.check_output(verifier.ci_command(run_id), env=environment))\n"
+        "    assert verifier.normalize_ci_jobs(response['jobs'], canonical=True)\n"
+        "    assert response['headSha'] == heads[name] and response['conclusion'] == 'success'\n"
         "print('hermetic canonical CI boundary passed')\n",
         encoding="utf-8",
     )
@@ -1952,6 +2100,50 @@ def test_harden_producer_fixture_preserves_supplied_proof_sources(
     completed = _producer_command("--evidence-root", str(context["evidence_root"]))
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.strip() == "hermetic canonical CI boundary passed"
+    responses_path = context["root"] / "ci-responses.json"
+    original_responses = responses_path.read_bytes()
+    retained_claims = {
+        name: (
+            context["source_root"]
+            / context["manifest"]["artifacts"][name + "_ci"]["path"]
+        ).read_bytes()
+        for name in ("candidate", "canonical_main")
+    }
+    try:
+        for name in ("candidate", "canonical_main"):
+            for attack in ("stale-head", "failed", "missing-gate"):
+                responses_path.write_bytes(original_responses)
+                _ci_provider_attack(context, name, attack)
+                completed = _producer_command(
+                    "--evidence-root", str(context["evidence_root"])
+                )
+                assert completed.returncode != 0, (name, attack)
+                assert (
+                    context["source_root"]
+                    / context["manifest"]["artifacts"][name + "_ci"]["path"]
+                ).read_bytes() == retained_claims[name]
+    finally:
+        responses_path.write_bytes(original_responses)
+    command = [
+        str(context["ci_query"]),
+        "run",
+        "view",
+        str(context["expected"]["ci_run_ids"]["candidate"]),
+        "--repo",
+        "github.com/Consiliency/agent-harness",
+        "--json",
+        "databaseId,headSha,status,conclusion,event,workflowName,attempt,jobs",
+    ]
+    for index in range(1, len(command)):
+        invalid = list(command)
+        invalid[index] = "invalid-query-argument"
+        rejected_query = subprocess.run(
+            invalid, capture_output=True, text=True, timeout=10, check=False
+        )
+        assert (
+            rejected_query.returncode != 0
+            and "unexpected CI query" in rejected_query.stderr
+        )
 
 
 def test_harden_producer_derives_live_facts_without_historical_literals() -> None:
@@ -2141,10 +2333,16 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
         name: str,
         mutate: Callable[[dict[str, Any]], None],
         message: str,
+        *,
+        non_biting_mutation: bool = False,
     ) -> None:
         with tempfile.TemporaryDirectory(prefix="pl-") as td:
             fixture_root = Path(td) / "fixture"
-            context = _raw_fixture(fixture_root, variant=_runtime_variant(fixture_root))
+            context = _raw_fixture(
+                fixture_root,
+                variant=_runtime_variant(fixture_root),
+                non_biting_mutation=non_biting_mutation,
+            )
             mutate(context)
             _persist_manifest(context)
             registry_before = context["registry"].read_bytes()
@@ -2396,18 +2594,50 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
 
     def replace_artifact(context: dict[str, Any], artifact: str, value: Any) -> None:
         replace_input(context, "artifacts", artifact, value)
+        if artifact not in {"source_mutations", "execution_runs"}:
+            return
+        # Keep the production-boundary references synchronized for semantic attacks.
+        # Dedicated custody attacks change the canonical receipt itself separately.
+        artifacts = context["manifest"]["artifacts"]
+        historical = _strict_json(
+            context["source_root"] / artifacts["sl0_review"]["path"]
+        )
+        start_ref = historical["production_start"]
+        start = _strict_json(context["source_root"] / start_ref["path"])
+        if artifact == "source_mutations":
+            ref = artifacts[artifact]
+            _write_ref(
+                context["repo"],
+                ref["path"],
+                (context["source_root"] / ref["path"]).read_bytes(),
+            )
+            start["source_mutations"] = ref
+        else:
+            start["preproduction_runs"] = {
+                name: ref
+                for name, ref in value["runs"].items()
+                if name.startswith("preproduction_")
+            }
+        data = _canonical_bytes(start)
+        _write_ref(context["repo"], start_ref["path"], data)
+        historical["production_start"] = _write_ref(
+            context["source_root"], start_ref["path"], data
+        )
+        replace_input(context, "artifacts", "sl0_review", historical)
 
     def historical_approval_attack(context: dict[str, Any], attack: str) -> None:
         historical = _strict_json(
             context["source_root"]
             / context["manifest"]["artifacts"]["sl0_review"]["path"]
         )
-        if attack == "missing":
-            historical.pop("approval")
+        if attack in {"missing", "start-missing"}:
+            historical.pop("approval" if attack == "missing" else "production_start")
         else:
-            approval_ref = historical["approval"]
+            approval_ref, start_ref = (
+                historical["approval"],
+                historical["production_start"],
+            )
             approval = _strict_json(context["source_root"] / approval_ref["path"])
-            start_ref = historical["production_start"]
             start = _strict_json(context["source_root"] / start_ref["path"])
             if attack == "stale":
                 approval["head"] = context["expected"]["commits"]["sl0_base"]
@@ -2416,6 +2646,42 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
                 approval["seats"][0]["status"] = "DEGRADED"
             elif attack == "late":
                 approval["observed_monotonic_ns"] = start["observed_monotonic_ns"] + 1
+            elif attack == "start-clock":
+                start["clock_id"] += ":different-clock"
+            elif attack == "start-identity":
+                start["head"] = approval["head"]
+                start["tree"] = approval["tree"]
+            elif attack == "start-link":
+                other = copy.deepcopy(approval)
+                other["operation_nonce"] = _sha256(b"other retained approval")
+                relative = str(
+                    Path(approval_ref["path"]).with_name("other-approval.json")
+                )
+                data = _canonical_bytes(other)
+                _write_ref(context["repo"], relative, data)
+                start["sl0_approval"] = _write_ref(
+                    context["source_root"], relative, data
+                )
+            elif attack == "duplicate-start-approval":
+                start["operation_nonce"] = approval["operation_nonce"]
+            elif attack == "duplicate-historical-sessions":
+                approval["seats"][1]["session_sha256"] = approval["seats"][0][
+                    "session_sha256"
+                ]
+            elif attack == "duplicate-approval-request":
+                approval["operation_nonce"] = context["expected"]["operation_nonces"][0]
+            elif attack == "duplicate-historical-final-session":
+                approval["seats"][0]["session_sha256"] = context["expected"][
+                    "reviewer_sessions"
+                ]["candidate", "claude"]
+            elif attack == "duplicate-start-mutation":
+                mutations = _strict_json(
+                    context["source_root"] / start["source_mutations"]["path"]
+                )
+                receipt = mutations["mutations"][0]["mutation"]["receipt"]
+                start["operation_nonce"] = _strict_json(
+                    context["source_root"] / receipt["path"]
+                )["process_nonce"]
             else:
                 raise AssertionError(attack)
             data = _canonical_bytes(approval)
@@ -2423,7 +2689,8 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
             historical["approval"] = _write_ref(
                 context["source_root"], approval_ref["path"], data
             )
-            start["sl0_approval"] = historical["approval"]
+            if attack != "start-link":
+                start["sl0_approval"] = historical["approval"]
             data = _canonical_bytes(start)
             _write_ref(context["repo"], start_ref["path"], data)
             historical["production_start"] = _write_ref(
@@ -2431,11 +2698,29 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
             )
         replace_artifact(context, "sl0_review", historical)
 
-    for attack in ("missing", "stale", "unusable", "late"):
+    for attack in (
+        "missing",
+        "stale",
+        "unusable",
+        "late",
+        "start-missing",
+        "start-clock",
+        "start-identity",
+        "start-link",
+        "duplicate-start-approval",
+        "duplicate-historical-sessions",
+        "duplicate-approval-request",
+        "duplicate-historical-final-session",
+        "duplicate-start-mutation",
+    ):
         rejected(
-            f"historical-sl0-approval-{attack}",
+            f"historical-sl0-{attack}",
             lambda context, attack=attack: historical_approval_attack(context, attack),
-            "SL-0 approval",
+            "duplicate input operation nonce"
+            if attack.startswith("duplicate-")
+            else "production start"
+            if attack.startswith("start-")
+            else "SL-0 approval",
         )
 
     def rebind_reviewer_role(context: dict[str, Any]) -> None:
@@ -2701,11 +2986,24 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
                 run["receipt"]["path"],
                 _canonical_bytes(receipt),
             )
+        # Semantic corruption must survive canonical-copy custody checks.
+        for stage in ("mutation", "restored"):
+            ref = entry[stage]["receipt"]
+            _write_ref(
+                context["repo"],
+                ref["path"],
+                (context["source_root"] / ref["path"]).read_bytes(),
+            )
         replace_artifact(context, "source_mutations", index)
 
+    rejected(
+        "executed-truthy-non-biting-mutation",
+        lambda context: None,
+        "mutation did not fail",
+        non_biting_mutation=True,
+    )
     for attack in (
         "comment-only",
-        "truthy-non-biting",
         "wrong-restoration",
         "wrong-source-binding",
         "extra-junit-case",
@@ -2737,6 +3035,43 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
             _write_ref(context["repo"], ref["path"], data)
         index["runs"][name] = _write_ref(context["source_root"], ref["path"], data)
         replace_artifact(context, "execution_runs", index)
+
+    def late_preproduction(context: dict[str, Any], name: str) -> None:
+        historical = _strict_json(
+            context["source_root"]
+            / context["manifest"]["artifacts"]["sl0_review"]["path"]
+        )
+        start = _strict_json(
+            context["source_root"] / historical["production_start"]["path"]
+        )
+
+        def late(record: dict[str, Any]) -> None:
+            record["started_monotonic_ns"] = start["observed_monotonic_ns"] + 1
+            record["finished_monotonic_ns"] = start["observed_monotonic_ns"] + 2
+
+        if name.startswith("preproduction_"):
+            alter_observed_run(context, name, late)
+        else:
+            mutations = _strict_json(
+                context["source_root"]
+                / context["manifest"]["artifacts"]["source_mutations"]["path"]
+            )
+            ref = mutations["mutations"][0][name]["receipt"]
+            record = _strict_json(context["source_root"] / ref["path"])
+            late(record)
+            data = _canonical_bytes(record)
+            _write_ref(context["repo"], ref["path"], data)
+            mutations["mutations"][0][name]["receipt"] = _write_ref(
+                context["source_root"], ref["path"], data
+            )
+            replace_artifact(context, "source_mutations", mutations)
+
+    for name in ("preproduction_red", "preproduction_control", "mutation", "restored"):
+        rejected(
+            f"late-preproduction-{name}",
+            lambda context, name=name: late_preproduction(context, name),
+            "preproduction chronology",
+        )
 
     for raw_name, _junit_name in RAW_JUNIT_PAIRS:
         name = raw_name.removesuffix("_raw")
@@ -2867,7 +3202,7 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
         suite = ElementTree.fromstring(
             (context["source_root"] / ref["path"]).read_bytes()
         )
-        case = suite.find("testcase")
+        case = next(suite.iter("testcase"))
         assert case is not None
         case.set("name", "test_unrelated_failure")
         replace_artifact(
@@ -3191,6 +3526,15 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
                     message,
                 )
 
+        for attack in ("stale-head", "failed", "missing-gate"):
+            rejected(
+                f"{round_name}-authoritative-ci-{attack}",
+                lambda context, round_name=round_name, attack=attack: (
+                    _ci_provider_attack(context, round_name, attack)
+                ),
+                "authoritative",
+            )
+
         def ci_head_lie(context: dict[str, Any], round_name: str = round_name) -> None:
             artifact = f"{round_name}_ci"
             ref = context["manifest"]["artifacts"][artifact]
@@ -3318,7 +3662,7 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
             )
         else:
             suite = ElementTree.fromstring(data)
-            case = next(case for case in suite.findall("testcase") if not list(case))
+            case = next(case for case in suite.iter("testcase") if not list(case))
             ElementTree.SubElement(case, "skipped", message="inconsistent count")
             suite.set("skipped", str(int(suite.get("skipped", "0")) + 1))
             data = ElementTree.tostring(suite)
@@ -3538,6 +3882,25 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
             assert message.lower() in diagnostic, f"{name}: {diagnostic}"
             assert not output.exists()
             assert context["registry"].read_bytes() == registry_before
+
+    for round_name in ("candidate", "canonical_main"):
+        for attack in ("stale-head", "failed", "missing-gate"):
+
+            def ci_disagreement(
+                context: dict[str, Any],
+                canonical: Path,
+                _request: dict[str, Any],
+                round_name: str = round_name,
+                attack: str = attack,
+            ) -> Path:
+                _ci_provider_attack(context, round_name, attack)
+                return canonical
+
+            seal_rejected(
+                f"{round_name}-authoritative-ci-{attack}",
+                ci_disagreement,
+                "authoritative",
+            )
 
     def detached(
         context: dict[str, Any], canonical: Path, _request: dict[str, Any]
