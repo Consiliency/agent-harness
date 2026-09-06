@@ -7,6 +7,7 @@ from __future__ import annotations
 import ast
 import importlib.abc
 import importlib.machinery
+import logging
 import subprocess
 import sys
 from pathlib import Path
@@ -382,6 +383,32 @@ def test_a_builtin_whose_exception_cannot_be_formatted_cannot_escape(
     assert "injected_flaky_validator" in cv.unavailable_builtin_closeout_validators()
 
 
+class _UnformattableImportError(ImportError):
+    """An ImportError whose ``__str__`` raises -- the load-time guard formats it."""
+
+    def __str__(self) -> str:
+        raise ValueError("injected: ImportError __str__ raised")
+
+
+def test_a_builtin_whose_import_error_cannot_be_formatted_still_loads(broken_builtin) -> None:
+    """The load-time guard describes its ImportError under the same guard.
+
+    ``_import_builtin_validator`` catches ImportError and records
+    ``f"{type(exc).__name__}: {exc}"`` -- the same unguarded formatting the
+    retry handler had. An ImportError whose ``__str__`` raises escaped load,
+    so no gate after it registered either. Carried by the #794 board (fable
+    seat, round 3).
+    """
+    broken_builtin("injected_missing_validator", _UnformattableImportError("hidden"))
+    try:
+        cv.load_builtin_closeout_validators()
+    except Exception as exc:  # pragma: no cover - the bug this pins
+        pytest.fail(f"an unformattable ImportError escaped load: {type(exc).__name__}")
+    record = cv.unavailable_builtin_closeout_validators()["injected_missing_validator"]
+    assert record.startswith("_UnformattableImportError: ")
+    assert "<exception message unformattable>" in record
+
+
 _BROKEN_NAME_ARMED = [False]
 
 
@@ -540,6 +567,62 @@ def test_a_validator_whose_name_cannot_be_formatted_cannot_escape(factory, expec
     assert len(ours) == 1, [f.reason for f in findings]
     assert ours[0].severity == "block"
 
+
+class _RaisingEmitHandler(logging.Handler):
+    """A host-installed log handler whose ``emit`` raises.
+
+    The stdlib handlers guard their own ``emit``; ``logging.Handler.handle``
+    does not, so a handler that does not guard propagates straight through
+    ``_LOG.warning`` -- which both crash handlers call from INSIDE their
+    ``except`` branch. Found by the #794 board (codex seat, round 3).
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        raise OSError("injected: emit raised")
+
+
+@pytest.mark.parametrize("path", ["retry", "validator"])
+def test_a_raising_log_handler_cannot_escape_a_crash_handler(broken_builtin, path: str) -> None:
+    """Logging the crash is an operand of the crash handler too.
+
+    Both ``except`` branches in run_closeout_validators log before they append
+    the ``gate_crashed`` finding. With a raising handler installed on the
+    module logger, the OSError escaped closeout on 2bc144a5 from both branches
+    and the finding was never appended. The handler is installed AFTER setup:
+    load-time logging is outside the crash handlers and outside this claim.
+    """
+
+    def raising_validator(ctx):  # noqa: ANN001 - the contract permits any callable
+        raise RuntimeError("injected: validator raised")
+
+    finder = None
+    registered = None
+    if path == "retry":
+        broken_builtin("injected_flaky_validator", ImportError("injected: not yet"))
+        cv.load_builtin_closeout_validators()
+        finder = _RaisingFinder("injected_flaky_validator", RuntimeError("injected: broken on retry"))
+        sys.meta_path.insert(0, finder)
+        marker = "injected_flaky_validator"
+    else:
+        registered = raising_validator
+        cv.register_closeout_validator(registered)
+        marker = "raising_validator"
+    handler = _RaisingEmitHandler()
+    cv._LOG.addHandler(handler)
+    try:
+        findings = cv.run_closeout_validators(ctx=None, env={"PHASE_LOOP_REVIEW": "block"})
+    except Exception as exc:  # pragma: no cover - the bug this pins
+        pytest.fail(f"a raising log handler escaped the {path} crash handler: {type(exc).__name__}")
+    finally:
+        cv._LOG.removeHandler(handler)
+        if finder is not None:
+            sys.meta_path.remove(finder)
+            sys.modules.pop(finder.fullname, None)
+        if registered is not None:
+            cv._VALIDATORS.remove(registered)
+    ours = [f for f in findings if f.code == "gate_crashed" and marker in f.reason]
+    assert len(ours) == 1, [f.reason for f in findings]
+    assert ours[0].severity == "block"
 
 def test_a_validator_yielding_a_non_finding_cannot_escape() -> None:
     """G-1: the severity rewrite is inside the boundary too.

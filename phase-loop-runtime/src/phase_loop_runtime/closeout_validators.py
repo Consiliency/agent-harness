@@ -48,6 +48,21 @@ def _plain_str(read: Callable[[], object], fallback: str) -> str:
         return fallback
 
 
+def _warn_quietly(msg: str, *args: object) -> None:
+    """``_LOG.warning(msg, *args, exc_info=True)`` that cannot raise.
+
+    ``logging.Handler.handle`` does not guard ``emit``: the stdlib handlers
+    guard their own, but a host-installed handler need not, and a raising
+    ``emit`` (or filter) propagates out of the crash handler that called it
+    (#794 board, codex seat, round 3). Logging is best effort here; the
+    finding the caller appends next is the record.
+    """
+    try:
+        _LOG.warning(msg, *args, exc_info=True)
+    except Exception:
+        pass
+
+
 def _describe_exception(exc: BaseException) -> str:
     """A plain ``str`` naming *exc* that cannot itself raise.
 
@@ -285,15 +300,16 @@ def run_closeout_validators(
             # that ran outside the handler below. Found by the #787 board (fable
             # seat, round 2; grok residual) and pinned by
             # test_a_builtin_that_breaks_on_retry_cannot_escape.
-            _LOG.warning(
+            _warn_quietly(
                 "built-in closeout validator %s raised while importing on retry; gate NOT registered",
                 name,
-                exc_info=True,
             )
             # Describing the crash must not be able to raise either; see
             # _describe_exception. Pinned by
             # test_a_builtin_whose_exception_cannot_be_formatted_cannot_escape
             # and test_a_builtin_whose_exception_type_cannot_be_named_cannot_escape.
+            # Nor may LOGGING it; see _warn_quietly, pinned by
+            # test_a_raising_log_handler_cannot_escape_a_crash_handler.
             detail = _describe_exception(exc)
             findings.append(
                 ReviewFinding(
@@ -353,7 +369,7 @@ def run_closeout_validators(
             # test_an_unnameable_validator_cannot_escape_the_handler and
             # test_a_validator_whose_name_cannot_be_formatted_cannot_escape.
             name = _describe_validator(fn)
-            _LOG.warning("closeout validator %s raised; gate did not run", name, exc_info=True)
+            _warn_quietly("closeout validator %s raised; gate did not run", name)
             findings.append(
                 ReviewFinding(
                     code="gate_crashed",
@@ -499,7 +515,7 @@ def _import_builtin_validator(name: str) -> str | None:
     try:
         importlib.import_module(f"{__package__}.{name}")
     except ImportError as exc:
-        _UNAVAILABLE_BUILTINS[name] = f"{type(exc).__name__}: {exc}"
+        _UNAVAILABLE_BUILTINS[name] = _describe_exception(exc)
         return _UNAVAILABLE_BUILTINS[name]
     _UNAVAILABLE_BUILTINS.pop(name, None)
     return None
