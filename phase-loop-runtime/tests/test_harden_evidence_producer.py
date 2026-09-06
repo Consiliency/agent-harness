@@ -1,4 +1,8 @@
-"""HARDEN SL-4 tests-only contract for the retained-evidence producer."""
+"""HARDEN SL-4 tests-only contract for the retained-evidence producer.
+
+Raw JSON input annotations are non-authoritative free text, exercised in positive
+fixtures so secret-only substitutions cannot be masked by unknown-field rejection.
+"""
 
 from __future__ import annotations
 
@@ -787,7 +791,11 @@ def _raw_fixture(
     _git(repo, "checkout", "-q", "main")
     mutation_index_path = f".phase-loop/runs/{variant}-mutations/index.json"
     mutation_index_bytes = _canonical_bytes(
-        {"schema": "harden_source_mutations.v1", "mutations": mutation_entries}
+        {
+            "schema": "harden_source_mutations.v1",
+            "annotation": f"retained input {variant}",
+            "mutations": mutation_entries,
+        }
     )
     _write_ref(repo, mutation_index_path, mutation_index_bytes)
     mutation_index_ref = _write_ref(
@@ -916,6 +924,7 @@ def _raw_fixture(
     }
     plan_authority = {
         "schema": "harden_plan_authority.v1",
+        "annotation": f"retained input {variant}",
         "evidence_id": evidence_id,
         "repository": "Consiliency/agent-harness",
         "commits": commits,
@@ -923,6 +932,7 @@ def _raw_fixture(
     }
     sl0_review = {
         "schema": "harden_sl0_review.v1",
+        "annotation": f"retained input {variant}",
         "base_commit": base,
         "reviewed_commit": reviewed,
         "landing_commit": landing,
@@ -1081,6 +1091,7 @@ def _raw_fixture(
         _canonical_bytes(
             {
                 "schema": "harden_execution_runs.v1",
+                "annotation": f"retained input {variant}",
                 "runs": run_observations,
                 "groups": groups,
             }
@@ -1093,6 +1104,7 @@ def _raw_fixture(
         run_id = ci_run_ids[round_name]
         ci = {
             "schema": "harden_ci_result.v1",
+            "annotation": f"retained input {variant}",
             "provider": "github_actions",
             "repository": "Consiliency/agent-harness",
             "head": head,
@@ -1109,6 +1121,7 @@ def _raw_fixture(
         )
         request = {
             "schema": "harden_review_request.v1",
+            "annotation": f"retained input {variant}",
             "round": round_name,
             "head": head,
             "tree": trees[round_name],
@@ -1142,6 +1155,7 @@ def _raw_fixture(
         )
         receipts = {
             "schema": "harden_broker_receipts.v1",
+            "annotation": f"retained input {variant}",
             "round": round_name,
             "receipts": [
                 {
@@ -1222,6 +1236,7 @@ def _raw_fixture(
             _canonical_bytes(
                 {
                     "schema": "harden_role_attestation.v1",
+                    "annotation": f"retained input {variant}",
                     "role": role,
                     "identity": (
                         "reviewer-" + session[:32]
@@ -2381,6 +2396,14 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
             registry_before = context["registry"].read_bytes()
             completed = _prepare_command(context)
             assert completed.returncode != 0, name
+            for secret in context.get("must_not_echo", ()):
+                if (
+                    secret.casefold()
+                    in (completed.stderr + completed.stdout).casefold()
+                ):
+                    pytest.fail(
+                        f"{name}: diagnostic exposed planted credential", pytrace=False
+                    )
             diagnostic = (completed.stderr + completed.stdout).lower()
             assert message.lower() in diagnostic, f"{name}: {diagnostic}"
             _assert_no_prepare_output(context)
@@ -2504,10 +2527,12 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
             )
 
     def secret_extra_ref(context: dict[str, Any]) -> None:
+        secret = os.urandom(24).hex()
+        context.setdefault("must_not_echo", []).append(secret)
         context["manifest"]["artifacts"][os.urandom(16).hex()] = _write_ref(
             context["source_root"],
             "raw/data.txt",
-            f"api_key={os.urandom(24).hex()}\n".encode(),
+            f"api_key={secret}\n".encode(),
         )
 
     rejected("secret-bearing-extra-ref", secret_extra_ref, "unknown artifact input")
@@ -2709,6 +2734,10 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
                 approval["seats"][0]["session_sha256"] = context["expected"][
                     "reviewer_sessions"
                 ]["candidate", "claude"]
+            elif attack in {"reviewer-is-coordinator", "reviewer-is-author"}:
+                approval["seats"][0]["session_sha256"] = context["sessions"][
+                    attack.removeprefix("reviewer-is-")
+                ]
             elif attack == "duplicate-start-mutation":
                 mutations = _strict_json(
                     context["source_root"] / start["source_mutations"]["path"]
@@ -2747,12 +2776,16 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
         "duplicate-approval-request",
         "duplicate-historical-final-session",
         "duplicate-start-mutation",
+        "reviewer-is-coordinator",
+        "reviewer-is-author",
     ):
         rejected(
             f"historical-sl0-{attack}",
             lambda context, attack=attack: historical_approval_attack(context, attack),
             "duplicate input operation nonce"
             if attack.startswith("duplicate-")
+            else "historical reviewer role independence"
+            if attack.startswith("reviewer-is-")
             else "production start"
             if attack.startswith("start-")
             else "SL-0 approval",
@@ -2901,9 +2934,30 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
 
             rejected(f"nested-{artifact}-{keys}-{attack}", corrupt_nested, message)
 
+    def alter_observed_run(
+        context: dict[str, Any],
+        name: str,
+        mutate: Callable[[dict[str, Any]], None],
+        *,
+        sync: bool = True,
+    ) -> None:
+        index = _strict_json(
+            context["source_root"]
+            / context["manifest"]["artifacts"]["execution_runs"]["path"]
+        )
+        ref = index["runs"][name]
+        record = _strict_json(context["source_root"] / ref["path"])
+        mutate(record)
+        data = _canonical_bytes(record)
+        if sync:
+            _write_ref(context["repo"], ref["path"], data)
+        index["runs"][name] = _write_ref(context["source_root"], ref["path"], data)
+        replace_artifact(context, "execution_runs", index)
+
     def secret_input(group: str, name: str) -> Callable[[dict[str, Any]], None]:
         def mutate(context: dict[str, Any]) -> None:
             secret_value = os.urandom(24).hex()
+            context.setdefault("must_not_echo", []).append(secret_value)
             ref = context["manifest"][group][name]
             path = context["source_root"] / ref["path"]
             if name.endswith("_raw"):
@@ -2918,9 +2972,23 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
                 assert value != path.read_bytes()
             else:
                 value = _strict_json(path)
-                value[os.urandom(16).hex()] = f"api_key={secret_value}"
+                assert isinstance(value["annotation"], str)
+                value["annotation"] = f"api_key={secret_value}"
             if group == "artifacts":
                 replace_artifact(context, name, value)
+                if name.endswith(("_raw", "_junit")):
+                    run_name = name.removesuffix("_raw").removesuffix("_junit")
+                    field = "junit" if name.endswith("_junit") else "raw"
+                    alter_observed_run(
+                        context,
+                        run_name,
+                        lambda record: record.__setitem__(
+                            "raw_sha256" if run_name.endswith("_lint") else field,
+                            context["manifest"][group][name]["sha256"]
+                            if run_name.endswith("_lint")
+                            else context["manifest"][group][name],
+                        ),
+                    )
             else:
                 replace_input(context, group, name, value)
 
@@ -3007,6 +3075,13 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
             )
         elif attack == "wrong-source-binding":
             entry["source_path"] = index["mutations"][1]["source_path"]
+            for stage in ("mutation", "restored"):
+                ref = entry[stage]["receipt"]
+                receipt = _strict_json(context["source_root"] / ref["path"])
+                receipt["source_path"] = entry["source_path"]
+                entry[stage]["receipt"] = _write_ref(
+                    context["source_root"], ref["path"], _canonical_bytes(receipt)
+                )
         else:
             run = entry["mutation"]
             suite = ElementTree.fromstring(
@@ -3087,26 +3162,6 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
             message,
         )
 
-    def alter_observed_run(
-        context: dict[str, Any],
-        name: str,
-        mutate: Callable[[dict[str, Any]], None],
-        *,
-        sync: bool = True,
-    ) -> None:
-        index = _strict_json(
-            context["source_root"]
-            / context["manifest"]["artifacts"]["execution_runs"]["path"]
-        )
-        ref = index["runs"][name]
-        record = _strict_json(context["source_root"] / ref["path"])
-        mutate(record)
-        data = _canonical_bytes(record)
-        if sync:
-            _write_ref(context["repo"], ref["path"], data)
-        index["runs"][name] = _write_ref(context["source_root"], ref["path"], data)
-        replace_artifact(context, "execution_runs", index)
-
     def late_preproduction(
         context: dict[str, Any],
         name: str,
@@ -3134,6 +3189,10 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
                 )
             elif ordering == "reversed-interval":
                 record["finished_monotonic_ns"] = record["started_monotonic_ns"] - 1
+            elif ordering in {"finish-at-production", "finish-after-production"}:
+                record["finished_monotonic_ns"] = start["observed_monotonic_ns"] + (
+                    ordering == "finish-after-production"
+                )
             elif ordering == "after-production":
                 record["started_monotonic_ns"] = start["observed_monotonic_ns"] + 1
                 record["finished_monotonic_ns"] = start["observed_monotonic_ns"] + 2
@@ -3170,7 +3229,13 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
             lambda context, name=name: late_preproduction(context, name),
             "preproduction chronology",
         )
-        for ordering in ("at-approval", "before-approval", "reversed-interval"):
+        for ordering in (
+            "at-approval",
+            "before-approval",
+            "reversed-interval",
+            "finish-at-production",
+            "finish-after-production",
+        ):
             rejected(
                 f"{ordering}-preproduction-{name}",
                 lambda context, name=name, ordering=ordering: late_preproduction(
@@ -3178,6 +3243,8 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
                 ),
                 "preproduction interval chronology"
                 if ordering == "reversed-interval"
+                else "preproduction finish chronology"
+                if ordering.startswith("finish-")
                 else "preproduction approval chronology",
             )
 
@@ -3337,9 +3404,9 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
         records = _strict_json(
             context["source_root"] / context["manifest"]["artifacts"][name]["path"]
         )
-        records["receipts"][1]["session_sha256"] = records["receipts"][0][
-            "session_sha256"
-        ]
+        records["receipts"][1]["session_sha256"] = _different_hex(
+            records["receipts"][1]["session_sha256"]
+        )
         replace_artifact(context, name, records)
         rebind_reviewer_role(context)
 
@@ -4179,6 +4246,16 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
 
         return apply
 
+    seal_rejected(
+        "missing-completion-action",
+        invalid_completion(lambda event: event.pop("action")),
+        "completion event action mismatch",
+    )
+    seal_rejected(
+        "wrong-completion-action",
+        invalid_completion(lambda event: event.__setitem__("action", "phase_plan")),
+        "completion event action mismatch",
+    )
     seal_rejected(
         "wrong-completion-schema",
         invalid_completion(
