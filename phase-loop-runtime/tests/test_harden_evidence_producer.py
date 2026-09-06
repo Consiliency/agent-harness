@@ -877,11 +877,8 @@ def _raw_fixture(
             marker_path: "HARDEN_CAPABILITY_VERSION = 1\n",
         },
     )
-    sibling_path = f"phase-loop-runtime/tests/test_sibling_{variant}.py"
-    sibling_node = sibling_path + "::test_sibling_control"
-    canonical_main = _commit(
-        repo, "sibling landing", {sibling_path: "def test_sibling_control(): pass\n"}
-    )
+    _git(repo, "commit", "--allow-empty", "-qm", "canonical landing")
+    canonical_main = _git(repo, "rev-parse", "HEAD")
     _git(repo, "update-ref", "refs/remotes/origin/main", canonical_main)
     commits = {
         "sl0_base": base,
@@ -942,8 +939,8 @@ def _raw_fixture(
         "canonical_main_focused": (final_nodes, final_outcomes),
         "canonical_main_pure_control": (pure_nodes, ("passed",) * len(pure_nodes)),
         "canonical_main_broad": (
-            final_nodes + (broad_node, sibling_node),
-            final_outcomes + ("passed", "passed"),
+            final_nodes + (broad_node,),
+            final_outcomes + ("passed",),
         ),
     }
     raw_outputs, junits = {}, {}
@@ -1309,7 +1306,7 @@ def _raw_fixture(
         "changed_paths": {
             "reviewed_sl0": sorted(frozen_paths),
             "candidate": sorted([production_path, marker_path]),
-            "canonical_main": [sibling_path],
+            "canonical_main": [],
         },
         "frozen_test_paths": sorted(frozen_paths),
         "run_counts": {
@@ -1842,6 +1839,17 @@ def _assert_fixture_proof_sources(context: dict[str, Any]) -> None:
     )
     verifier.verify_clean_canonical_main_context(
         repo, context["expected"]["commits"]["canonical_main"]
+    )
+    assert (
+        context["expected"]["trees"]["candidate"]
+        == context["expected"]["trees"]["canonical_main"]
+    )
+    assert not _git(
+        repo,
+        "diff",
+        "--name-only",
+        context["expected"]["commits"]["candidate"],
+        context["expected"]["commits"]["canonical_main"],
     )
     for label, required in (
         ("reviewed_sl0", False),
@@ -2751,7 +2759,7 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
         )
 
     def rebind_reviewer_role(context: dict[str, Any]) -> None:
-        sessions = [
+        sessions = {
             seat["session_sha256"]
             for round_name in ("candidate", "canonical_main")
             for seat in _strict_json(
@@ -2760,7 +2768,7 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
                     "path"
                 ]
             )["receipts"]
-        ]
+        }
         ref = context["manifest"]["role_attestations"]["reviewer"]
         role = _strict_json(context["source_root"] / ref["path"])
         role["session_sha256"] = _sha256("\0".join(sorted(sessions)).encode())
@@ -3065,18 +3073,18 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
         "mutation did not fail",
         non_biting_mutation=True,
     )
-    for attack in (
-        "comment-only",
-        "wrong-restoration",
-        "wrong-source-binding",
-        "extra-junit-case",
-        "wrong-nodeid",
-        "not-biting",
+    for attack, message in (
+        ("comment-only", "mutation comment-only"),
+        ("wrong-restoration", "restoration digest mismatch"),
+        ("wrong-source-binding", "mutation source binding"),
+        ("extra-junit-case", "mutation JUnit case count"),
+        ("wrong-nodeid", "mutation node id"),
+        ("not-biting", "mutation did not fail"),
     ):
         rejected(
             f"mutation-{attack}",
             lambda context, attack=attack: corrupt_mutation(context, attack),
-            "mutation",
+            message,
         )
 
     def alter_observed_run(
@@ -3100,7 +3108,11 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
         replace_artifact(context, "execution_runs", index)
 
     def late_preproduction(
-        context: dict[str, Any], name: str, *, wrong_clock: bool = False
+        context: dict[str, Any],
+        name: str,
+        *,
+        wrong_clock: bool = False,
+        ordering: str = "after-production",
     ) -> None:
         historical = _strict_json(
             context["source_root"]
@@ -3113,9 +3125,20 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
         def late(record: dict[str, Any]) -> None:
             if wrong_clock:
                 record["clock_id"] += ":different-clock"
-            else:
+            elif ordering in {"at-approval", "before-approval"}:
+                approval = _strict_json(
+                    context["source_root"] / historical["approval"]["path"]
+                )
+                record["started_monotonic_ns"] = approval["observed_monotonic_ns"] - (
+                    ordering == "before-approval"
+                )
+            elif ordering == "reversed-interval":
+                record["finished_monotonic_ns"] = record["started_monotonic_ns"] - 1
+            elif ordering == "after-production":
                 record["started_monotonic_ns"] = start["observed_monotonic_ns"] + 1
                 record["finished_monotonic_ns"] = start["observed_monotonic_ns"] + 2
+            else:
+                raise AssertionError(ordering)
 
         if name.startswith("preproduction_"):
             alter_observed_run(context, name, late)
@@ -3147,6 +3170,16 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
             lambda context, name=name: late_preproduction(context, name),
             "preproduction chronology",
         )
+        for ordering in ("at-approval", "before-approval", "reversed-interval"):
+            rejected(
+                f"{ordering}-preproduction-{name}",
+                lambda context, name=name, ordering=ordering: late_preproduction(
+                    context, name, ordering=ordering
+                ),
+                "preproduction interval chronology"
+                if ordering == "reversed-interval"
+                else "preproduction approval chronology",
+            )
 
     for raw_name, _junit_name in RAW_JUNIT_PAIRS:
         name = raw_name.removesuffix("_raw")
@@ -3175,10 +3208,10 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
             "missing run group",
         )
     for field, value, message in (
-        ("argv", ["python3", "-m", "pytest", "-q", "tests"], "command"),
-        ("argv_class", "pytest_harden_pure_control_v1", "command"),
-        ("env_keys", ["PYTHONPATH"], "command"),
-        ("cwd", "phase-loop-runtime", "command"),
+        ("argv", ["python3", "-m", "pytest", "-q", "tests"], "run argv mismatch"),
+        ("argv_class", "pytest_harden_pure_control_v1", "run argv class mismatch"),
+        ("env_keys", ["PYTHONPATH"], "run environment mismatch"),
+        ("cwd", "phase-loop-runtime", "run cwd mismatch"),
         ("source_tree", "1" * 40, "source tree"),
     ):
         rejected(
@@ -3197,7 +3230,7 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
             "candidate_focused",
             lambda record: record["argv"].remove("PHASE_LOOP_TDD_EXPECT_HARDEN=1"),
         ),
-        "command",
+        "focused activation missing",
     )
     rejected(
         "wrong-run-baseline",
@@ -3253,25 +3286,23 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
         )
 
     def missing_red_anchor(context: dict[str, Any]) -> None:
-        name = "preproduction_red_raw"
-        ref = context["manifest"]["artifacts"][name]
-        raw = (context["source_root"] / ref["path"]).read_bytes()
-        assert b"HARDEN-RED-ANCHOR::" in raw
-        replace_artifact(
-            context, name, raw.replace(b"HARDEN-RED-ANCHOR::", b"MISSING-RED-ANCHOR::")
-        )
-        index = _strict_json(
-            context["source_root"]
-            / context["manifest"]["artifacts"]["execution_runs"]["path"]
-        )
-        observation_ref = index["runs"]["preproduction_red"]
-        observation = _strict_json(context["source_root"] / observation_ref["path"])
-        observation["raw"] = context["manifest"]["artifacts"][name]
-        data = _canonical_bytes(observation)
-        _write_ref(context["repo"], observation_ref["path"], data)
-        _write_ref(context["source_root"], observation_ref["path"], data)
-        observation_ref["sha256"] = _sha256(data)
-        replace_artifact(context, "execution_runs", index)
+        for field in ("raw", "junit"):
+            name = "preproduction_red_" + field
+            ref = context["manifest"]["artifacts"][name]
+            raw = (context["source_root"] / ref["path"]).read_bytes()
+            assert b"HARDEN-RED-ANCHOR::" in raw
+            replace_artifact(
+                context,
+                name,
+                raw.replace(b"HARDEN-RED-ANCHOR::", b"MISSING-RED-ANCHOR::"),
+            )
+            alter_observed_run(
+                context,
+                "preproduction_red",
+                lambda record, field=field, name=name: record.__setitem__(
+                    field, context["manifest"]["artifacts"][name]
+                ),
+            )
 
     rejected("missing-named-red-anchor", missing_red_anchor, "RED anchor")
 
@@ -3294,7 +3325,7 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
             ),
         )
 
-    rejected("wrong-named-red-junit", wrong_red_node, "RED")
+    rejected("wrong-named-red-junit", wrong_red_node, "named RED test")
 
     def reused_reviewer_session(context: dict[str, Any]) -> None:
         observed_identity_attack(context, "coherent-replay")
@@ -3901,9 +3932,13 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
         canonical_ledger = context["repo"] / ".phase-loop/events.jsonl"
         canonical_ledger.parent.mkdir(parents=True, exist_ok=True)
         canonical_ledger.write_bytes(_ledger_bytes(request))
+        ledger_before = _path_snapshot(canonical_ledger)
         sealed_path = context["root"] / "sealed-evidence.json"
         sealed_run = _seal_command(context, canonical_ledger, sealed_path)
         assert sealed_run.returncode == 0, sealed_run.stderr
+        assert _path_snapshot(canonical_ledger) == ledger_before, (
+            "seal modified canonical ledger"
+        )
         sealed = _strict_json(sealed_path)
         assert sealed["completion"]["mode"] == "post_completion"
         assert _normalized_precompletion_digest(sealed) == request["evidence_sha256"]
