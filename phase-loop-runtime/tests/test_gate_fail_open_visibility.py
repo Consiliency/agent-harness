@@ -573,56 +573,106 @@ class _RaisingEmitHandler(logging.Handler):
 
     The stdlib handlers guard their own ``emit``; ``logging.Handler.handle``
     does not, so a handler that does not guard propagates straight through
-    ``_LOG.warning`` -- which both crash handlers call from INSIDE their
-    ``except`` branch. Found by the #794 board (codex seat, round 3).
+    every ``_LOG`` call in run_closeout_validators. Found by the #794 board
+    (codex seat, round 3; the success-path site by codex + fable, round 4).
     """
 
     def emit(self, record: logging.LogRecord) -> None:
         raise OSError("injected: emit raised")
 
 
-@pytest.mark.parametrize("path", ["retry", "validator"])
-def test_a_raising_log_handler_cannot_escape_a_crash_handler(broken_builtin, path: str) -> None:
-    """Logging the crash is an operand of the crash handler too.
+def _registering_finder(name: str, validator) -> importlib.abc.MetaPathFinder:  # noqa: ANN001
+    """A finder whose module registers *validator* on import (the late-import case)."""
+    import types
 
-    Both ``except`` branches in run_closeout_validators log before they append
-    the ``gate_crashed`` finding. With a raising handler installed on the
-    module logger, the OSError escaped closeout on 2bc144a5 from both branches
-    and the finding was never appended. The handler is installed AFTER setup:
-    load-time logging is outside the crash handlers and outside this claim.
+    fullname = f"phase_loop_runtime.{name}"
+    module = types.ModuleType(fullname)
+
+    class _RegisteringLoader(importlib.abc.Loader):
+        def create_module(self, spec):
+            return module
+
+        def exec_module(self, mod):
+            cv.register_closeout_validator(validator)
+
+    class _Finder(importlib.abc.MetaPathFinder):
+        def find_spec(self, fullname_, path=None, target=None):
+            if fullname_ != fullname:
+                return None
+            return importlib.machinery.ModuleSpec(fullname_, _RegisteringLoader())
+
+    return _Finder()
+
+
+@pytest.mark.parametrize("path", ["retry", "validator", "success"])
+def test_a_raising_log_handler_cannot_escape_closeout(broken_builtin, path: str) -> None:
+    """Every ``_LOG`` call inside run_closeout_validators is an operand of closeout.
+
+    ``retry`` and ``validator`` are the two crash handlers: they logged BEFORE
+    appending the ``gate_crashed`` finding, and with a raising handler on the
+    module logger the OSError escaped closeout on 2bc144a5 from both branches.
+    ``success`` is the retry-SUCCESS branch: it logged at INFO, so with INFO
+    enabled the same handler escaped on 55923fc4 and discarded every finding
+    already collected -- one site short of the class. The handler is installed
+    AFTER setup: load-time logging is outside closeout and outside this claim.
     """
 
     def raising_validator(ctx):  # noqa: ANN001 - the contract permits any callable
         raise RuntimeError("injected: validator raised")
 
+    ran: list[object] = []
+
+    def late_validator(ctx):  # noqa: ANN001
+        ran.append(ctx)
+        return ()
+
     finder = None
     registered = None
+    fullname = None
     if path == "retry":
         broken_builtin("injected_flaky_validator", ImportError("injected: not yet"))
         cv.load_builtin_closeout_validators()
         finder = _RaisingFinder("injected_flaky_validator", RuntimeError("injected: broken on retry"))
-        sys.meta_path.insert(0, finder)
+        fullname = finder.fullname
         marker = "injected_flaky_validator"
+    elif path == "success":
+        broken_builtin("injected_late_validator", ImportError("injected: not yet"))
+        cv.load_builtin_closeout_validators()
+        finder = _registering_finder("injected_late_validator", late_validator)
+        fullname = "phase_loop_runtime.injected_late_validator"
+        marker = None
     else:
         registered = raising_validator
         cv.register_closeout_validator(registered)
         marker = "raising_validator"
+    if finder is not None:
+        sys.meta_path.insert(0, finder)
     handler = _RaisingEmitHandler()
     cv._LOG.addHandler(handler)
+    level = cv._LOG.level
+    cv._LOG.setLevel(logging.INFO)  # a host that ran basicConfig(level=INFO)
     try:
-        findings = cv.run_closeout_validators(ctx=None, env={"PHASE_LOOP_REVIEW": "block"})
+        findings = cv.run_closeout_validators(ctx="ctx-token", env={"PHASE_LOOP_REVIEW": "block"})
     except Exception as exc:  # pragma: no cover - the bug this pins
-        pytest.fail(f"a raising log handler escaped the {path} crash handler: {type(exc).__name__}")
+        pytest.fail(f"a raising log handler escaped closeout on the {path} path: {type(exc).__name__}")
     finally:
+        cv._LOG.setLevel(level)
         cv._LOG.removeHandler(handler)
         if finder is not None:
             sys.meta_path.remove(finder)
-            sys.modules.pop(finder.fullname, None)
+            sys.modules.pop(fullname, None)
         if registered is not None:
             cv._VALIDATORS.remove(registered)
+        if late_validator in cv._VALIDATORS:
+            cv._VALIDATORS.remove(late_validator)
+    if marker is None:
+        assert ran == ["ctx-token"], "the late-registered gate did not run"
+        assert not [f for f in findings if f.code in {"gate_crashed", "gate_unavailable"}], findings
+        return
     ours = [f for f in findings if f.code == "gate_crashed" and marker in f.reason]
     assert len(ours) == 1, [f.reason for f in findings]
     assert ours[0].severity == "block"
+
 
 def test_a_validator_yielding_a_non_finding_cannot_escape() -> None:
     """G-1: the severity rewrite is inside the boundary too.

@@ -48,17 +48,18 @@ def _plain_str(read: Callable[[], object], fallback: str) -> str:
         return fallback
 
 
-def _warn_quietly(msg: str, *args: object) -> None:
-    """``_LOG.warning(msg, *args, exc_info=True)`` that cannot raise.
+def _log_quietly(level: int, msg: str, *args: object, exc_info: bool = False) -> None:
+    """``_LOG.log(level, msg, *args, exc_info=exc_info)`` that cannot raise.
 
     ``logging.Handler.handle`` does not guard ``emit``: the stdlib handlers
     guard their own, but a host-installed handler need not, and a raising
-    ``emit`` (or filter) propagates out of the crash handler that called it
-    (#794 board, codex seat, round 3). Logging is best effort here; the
-    finding the caller appends next is the record.
+    ``emit`` (or filter) propagates out of whatever called it -- the crash
+    handlers (#794 board, codex seat, round 3) and the retry-success branch
+    (#794 board, codex + fable seats, round 4) alike. Logging inside
+    run_closeout_validators is best effort; the findings are the record.
     """
     try:
-        _LOG.warning(msg, *args, exc_info=True)
+        _LOG.log(level, msg, *args, exc_info=exc_info)
     except Exception:
         pass
 
@@ -300,16 +301,18 @@ def run_closeout_validators(
             # that ran outside the handler below. Found by the #787 board (fable
             # seat, round 2; grok residual) and pinned by
             # test_a_builtin_that_breaks_on_retry_cannot_escape.
-            _warn_quietly(
+            _log_quietly(
+                logging.WARNING,
                 "built-in closeout validator %s raised while importing on retry; gate NOT registered",
                 name,
+                exc_info=True,
             )
             # Describing the crash must not be able to raise either; see
             # _describe_exception. Pinned by
             # test_a_builtin_whose_exception_cannot_be_formatted_cannot_escape
             # and test_a_builtin_whose_exception_type_cannot_be_named_cannot_escape.
-            # Nor may LOGGING it; see _warn_quietly, pinned by
-            # test_a_raising_log_handler_cannot_escape_a_crash_handler.
+            # Nor may LOGGING it; see _log_quietly, pinned by
+            # test_a_raising_log_handler_cannot_escape_closeout.
             detail = _describe_exception(exc)
             findings.append(
                 ReviewFinding(
@@ -326,7 +329,7 @@ def run_closeout_validators(
             )
             continue
         if error is None:
-            _LOG.info("built-in closeout validator %s registered on retry", name)
+            _log_quietly(logging.INFO, "built-in closeout validator %s registered on retry", name)
             continue
         findings.append(
             ReviewFinding(
@@ -369,7 +372,7 @@ def run_closeout_validators(
             # test_an_unnameable_validator_cannot_escape_the_handler and
             # test_a_validator_whose_name_cannot_be_formatted_cannot_escape.
             name = _describe_validator(fn)
-            _warn_quietly("closeout validator %s raised; gate did not run", name)
+            _log_quietly(logging.WARNING, "closeout validator %s raised; gate did not run", name, exc_info=True)
             findings.append(
                 ReviewFinding(
                     code="gate_crashed",
