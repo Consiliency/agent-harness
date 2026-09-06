@@ -1379,7 +1379,19 @@ def _persist_manifest(context: dict[str, Any]) -> None:
 
 def _prepare_command(context: dict[str, Any]) -> subprocess.CompletedProcess[str]:
     ledger = context["repo"] / ".phase-loop/events.jsonl"
-    ledger_before = _path_snapshot(ledger)
+    protected = (
+        context["manifest_path"],
+        context["source_root"],
+        context["repo"] / ".phase-loop/runs",
+        ledger,
+    )
+    before = [_path_snapshot(path) for path in protected]
+    context["prepare_manifest_sha256"] = _sha256(context["manifest_path"].read_bytes())
+    context["prepare_source_inventory"] = {
+        name: _sha256(record[1])
+        for name, record in before[1].items()
+        if record[0] == "file"
+    }
     completed = _producer_command(
         "prepare",
         "--inputs",
@@ -1401,7 +1413,9 @@ def _prepare_command(context: dict[str, Any]) -> subprocess.CompletedProcess[str
         "--expected-author-session-sha256",
         context["sessions"]["author"],
     )
-    assert _path_snapshot(ledger) == ledger_before, "prepare modified canonical ledger"
+    assert [_path_snapshot(path) for path in protected] == before, (
+        "prepare modified retained input or canonical evidence"
+    )
     return completed
 
 
@@ -1776,19 +1790,13 @@ def _assert_prepared(context: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
     assert request["schema"] == "harden_completion_request.v1"
     assert request["phase"] == "HARDEN"
     assert request["evidence_sha256"] == _normalized_precompletion_digest(evidence)
-    assert request["input_manifest_sha256"] == _sha256(
-        context["manifest_path"].read_bytes()
-    )
+    assert request["input_manifest_sha256"] == context["prepare_manifest_sha256"]
     assert (
         request["canonical_commit"] == context["expected"]["commits"]["canonical_main"]
     )
     assert request["canonical_tree"] == context["expected"]["trees"]["canonical_main"]
     assert request["visual_render_declared"] is False
-    source_inventory = {
-        path.relative_to(context["source_root"]).as_posix(): _sha256(path.read_bytes())
-        for path in context["source_root"].rglob("*")
-        if path.is_file() and not path.is_symlink()
-    }
+    source_inventory = context["prepare_source_inventory"]
     copies = request["copied_artifacts"]
     assert isinstance(copies, list) and copies
     copied_sources = {
@@ -2206,7 +2214,6 @@ def test_harden_producer_derives_live_facts_without_historical_literals() -> Non
     referenced = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)} | {
         node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
     }
-    assert not forbidden & referenced
 
     def static_string(node: ast.AST) -> str | None:
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
@@ -2251,9 +2258,15 @@ def test_harden_producer_derives_live_facts_without_historical_literals() -> Non
         name
         for node in ast.walk(tree)
         if isinstance(node, ast.alias)
-        for name in (node.name.rsplit(".", 1)[-1], node.asname)
+        for name in (*node.name.split("."), node.asname)
         if name is not None
     }
+    alias_names.update(
+        segment
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module is not None
+        for segment in node.module.split(".")
+    )
     reconstructed_strings = {
         value for node in ast.walk(tree) if (value := static_string(node)) is not None
     }
@@ -2287,9 +2300,11 @@ def test_harden_producer_derives_live_facts_without_historical_literals() -> Non
             value = static_string(node.args[argument_index])
             if value is not None:
                 dynamic_accesses.add(value)
-    assert not {"_fixture", "self_test"} & (
-        alias_names | reconstructed_strings | dynamic_accesses
-    )
+    assert not forbidden & {
+        segment
+        for name in referenced | alias_names | reconstructed_strings | dynamic_accesses
+        for segment in name.split(".")
+    }
     for literal in (
         "16 failed, 439 passed, 3 skipped",
         "454 passed",
@@ -3352,26 +3367,30 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
             "missing run observation field",
         )
 
-    def missing_red_anchor(context: dict[str, Any]) -> None:
-        for field in ("raw", "junit"):
-            name = "preproduction_red_" + field
-            ref = context["manifest"]["artifacts"][name]
-            raw = (context["source_root"] / ref["path"]).read_bytes()
-            assert b"HARDEN-RED-ANCHOR::" in raw
-            replace_artifact(
-                context,
-                name,
-                raw.replace(b"HARDEN-RED-ANCHOR::", b"MISSING-RED-ANCHOR::"),
-            )
-            alter_observed_run(
-                context,
-                "preproduction_red",
-                lambda record, field=field, name=name: record.__setitem__(
-                    field, context["manifest"]["artifacts"][name]
-                ),
-            )
+    def missing_red_anchor(context: dict[str, Any], field: str) -> None:
+        name = "preproduction_red_" + field
+        ref = context["manifest"]["artifacts"][name]
+        raw = (context["source_root"] / ref["path"]).read_bytes()
+        assert b"HARDEN-RED-ANCHOR::" in raw
+        replace_artifact(
+            context,
+            name,
+            raw.replace(b"HARDEN-RED-ANCHOR::", b"MISSING-RED-ANCHOR::"),
+        )
+        alter_observed_run(
+            context,
+            "preproduction_red",
+            lambda record: record.__setitem__(
+                field, context["manifest"]["artifacts"][name]
+            ),
+        )
 
-    rejected("missing-named-red-anchor", missing_red_anchor, "RED anchor")
+    for field in ("raw", "junit"):
+        rejected(
+            f"missing-red-anchor-{field}",
+            lambda context, field=field: missing_red_anchor(context, field),
+            "RED anchor",
+        )
 
     def wrong_red_node(context: dict[str, Any]) -> None:
         ref = context["manifest"]["artifacts"]["preproduction_red_junit"]
@@ -3926,24 +3945,29 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
         "duplicate input operation nonce",
     )
 
-    def duplicate_input_nonce(context: dict[str, Any]) -> None:
-        nonce = context["expected"]["operation_nonces"][0]
+    def duplicate_input_nonce(context: dict[str, Any], pair: str) -> None:
         broker_ref = context["manifest"]["artifacts"]["candidate_broker_receipts"]
         broker = _strict_json(context["source_root"] / broker_ref["path"])
-        broker["receipts"][0]["operation_nonce"] = nonce
-        replace_artifact(context, "candidate_broker_receipts", broker)
-        role_ref = context["manifest"]["role_attestations"]["coordinator"]
-        role = _strict_json(context["source_root"] / role_ref["path"])
-        role["operation_nonce"] = nonce
-        role_data = _canonical_bytes(role)
-        (context["source_root"] / role_ref["path"]).write_bytes(role_data)
-        role_ref["sha256"] = _sha256(role_data)
+        nonce = (
+            broker["receipts"][0]["operation_nonce"]
+            if pair == "receipt-role"
+            else context["expected"]["operation_nonces"][0]
+        )
+        if pair == "request-receipt":
+            broker["receipts"][0]["operation_nonce"] = nonce
+            replace_artifact(context, "candidate_broker_receipts", broker)
+        else:
+            role_ref = context["manifest"]["role_attestations"]["coordinator"]
+            role = _strict_json(context["source_root"] / role_ref["path"])
+            role["operation_nonce"] = nonce
+            replace_input(context, "role_attestations", "coordinator", role)
 
-    rejected(
-        "duplicate-input-nonce-across-request-broker-role",
-        duplicate_input_nonce,
-        "duplicate input operation nonce",
-    )
+    for pair in ("request-receipt", "request-role", "receipt-role"):
+        rejected(
+            f"duplicate-input-nonce-{pair}",
+            lambda context, pair=pair: duplicate_input_nonce(context, pair),
+            "duplicate input operation nonce",
+        )
 
     with tempfile.TemporaryDirectory(prefix="pl-") as td:
         fixture_root = Path(td) / "fixture"
@@ -4055,7 +4079,9 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
             protected = (
                 context["evidence_root"],
                 canonical,
+                canonical.resolve(),
                 ledger_argument,
+                ledger_argument.resolve(),
                 context["output"],
                 context["request"],
             )
