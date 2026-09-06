@@ -1,6 +1,6 @@
 # Detailed plan: FABPUB pre-admission runtime-compatibility guard, sealed-inventory worktree lifecycle, and the pre-admission owner recovery decision
 
-status: draft-awaiting-maintainer-approval (no runtime edits made)
+status: approved-by-maintainer 2026-09-06 — C decision = C-keep (permanent ambiguity preserved; recorded operator override is the recovery path); D deferred to its own plan; no runtime edits made
 owner: claude-plan-detailed (Claude Code session `session_01Rv2aKsUWdEKoWfB5PTpD1B`)
 issue: Consiliency/agent-harness#789 (impact already cleared by the recorded operator override → Consiliency/omniagent-plus#28)
 base: `463b90c34860d002a4670fe5b7f429322d72ab1e` (origin/main, 2026-09-06)
