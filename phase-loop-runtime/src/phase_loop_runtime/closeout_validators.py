@@ -31,6 +31,62 @@ from typing import Any, Callable, Iterable, Mapping
 
 _LOG = logging.getLogger(__name__)
 
+
+def _plain_str(read: Callable[[], object], fallback: str) -> str:
+    """``read()`` as an exact ``str``, or ``fallback``. Cannot raise.
+
+    A crash handler's every operand is a way out of the handler. ``read()``
+    may raise; ``str()`` of its result runs a ``__str__`` that may raise, or
+    return a ``str`` SUBCLASS whose ``__format__`` raises later, inside the
+    f-string that interpolates it. ``str.__str__`` copies a subclass to an
+    exact ``str`` without consulting overrides, so what this returns can be
+    formatted by anything.
+    """
+    try:
+        return str.__str__(str(read()))
+    except Exception:
+        return fallback
+
+
+def _log_quietly(level: int, msg: str, *args: object, exc_info: bool = False) -> None:
+    """``_LOG.log(level, msg, *args, exc_info=exc_info)`` that cannot raise.
+
+    ``logging.Handler.handle`` does not guard ``emit``: the stdlib handlers
+    guard their own, but a host-installed handler need not, and a raising
+    ``emit`` (or filter) propagates out of whatever called it -- the crash
+    handlers (#794 board, codex seat, round 3) and the retry-success branch
+    (#794 board, codex + fable seats, round 4) alike. Logging inside
+    run_closeout_validators is best effort; the findings are the record.
+    """
+    try:
+        _LOG.log(level, msg, *args, exc_info=exc_info)
+    except Exception:
+        pass
+
+
+def _describe_exception(exc: BaseException) -> str:
+    """A plain ``str`` naming *exc* that cannot itself raise.
+
+    An exception whose ``__str__`` raises (#794 board, codex leg, round 1) and
+    an exception class whose ``__name__`` lookup raises through its metaclass
+    (#794 board, codex + fable seats, round 2) each escaped a handler that
+    formatted them. Each operand is coerced under its own guard.
+    """
+    type_name = _plain_str(lambda: type(exc).__name__, "<unnameable exception type>")
+    message = _plain_str(lambda: exc, "<exception message unformattable>")
+    return f"{type_name}: {message}"
+
+
+def _describe_validator(fn: object) -> str:
+    """A plain ``str`` naming a validator callable that cannot itself raise.
+
+    The contract permits any callable: one whose ``__repr__`` raises (#787
+    board, codex leg, round 2), or whose ``__name__`` is not a ``str`` and
+    raises when formatted (#794 board, fable seat, round 2), must not escape
+    the crash handler that names it.
+    """
+    return _plain_str(lambda: getattr(fn, "__name__", None) or repr(fn), "<unnameable validator>")
+
 ReviewSeverity = str  # "warn" | "block"
 REVIEW_SEVERITIES: tuple[str, ...] = ("warn", "block")
 REVIEW_MODES: tuple[str, ...] = ("off", "warn", "block")
@@ -158,7 +214,10 @@ def clear_closeout_validators() -> None:
 
     Both are the registry's state: a test that starts from an empty registry
     must not inherit ``gate_unavailable`` findings from the session's import
-    order.
+    order. Note that ``load_builtin_closeout_validators`` after this call does
+    NOT re-register the built-ins: their modules are already in ``sys.modules``,
+    so the import that self-registers them does not run again. A test that
+    needs the built-ins back reloads their modules explicitly.
     """
     _VALIDATORS.clear()
     _UNAVAILABLE_BUILTINS.clear()
@@ -232,9 +291,45 @@ def run_closeout_validators(
     # One that is STILL unimportable is reported as ``gate_unavailable``: an
     # unregistered gate has no verdict, and "no verdict" must not read as pass.
     for name in tuple(_UNAVAILABLE_BUILTINS):
-        error = _import_builtin_validator(name)
+        try:
+            error = _import_builtin_validator(name)
+        except Exception as exc:
+            # _import_builtin_validator catches ImportError ONLY (a present-but-
+            # broken module is a hard failure at LOAD, which is right there). At
+            # CLOSEOUT the same module must not break the closeout it is
+            # forbidden to break: the retry is the one import in this function
+            # that ran outside the handler below. Found by the #787 board (fable
+            # seat, round 2; grok residual) and pinned by
+            # test_a_builtin_that_breaks_on_retry_cannot_escape.
+            _log_quietly(
+                logging.WARNING,
+                "built-in closeout validator %s raised while importing on retry; gate NOT registered",
+                name,
+                exc_info=True,
+            )
+            # Describing the crash must not be able to raise either; see
+            # _describe_exception. Pinned by
+            # test_a_builtin_whose_exception_cannot_be_formatted_cannot_escape
+            # and test_a_builtin_whose_exception_type_cannot_be_named_cannot_escape.
+            # Nor may LOGGING it; see _log_quietly, pinned by
+            # test_a_raising_log_handler_cannot_escape_closeout.
+            detail = _describe_exception(exc)
+            findings.append(
+                ReviewFinding(
+                    code="gate_crashed",
+                    reason=f"built-in closeout validator {name} raised while importing; its gate never registered",
+                    severity="warn" if mode == "warn" else "block",
+                    body=(
+                        f"The built-in closeout validator {name} raised while importing on the "
+                        f"closeout-time retry ({detail}), so its gate is not "
+                        "registered and did not run. The gate's verdict for this closeout is "
+                        "UNKNOWN, not pass. The traceback is in the runtime log."
+                    ),
+                )
+            )
+            continue
         if error is None:
-            _LOG.info("built-in closeout validator %s registered on retry", name)
+            _log_quietly(logging.INFO, "built-in closeout validator %s registered on retry", name)
             continue
         findings.append(
             ReviewFinding(
@@ -261,16 +356,23 @@ def run_closeout_validators(
             # advisor board (codex leg) and pinned by
             # test_a_lazy_generator_validator_cannot_escape.
             produced = tuple(fn(ctx) or ())
+            # The severity rewrite is inside the boundary too: a validator that
+            # yields something other than a ReviewFinding makes ``replace``
+            # raise, and that used to escape from the loop below.
+            rewritten = tuple(
+                replace(finding, severity="warn" if mode == "warn" else finding.severity)
+                for finding in produced
+            )
         except Exception:
             # The name must never be able to raise: the contract permits any
             # callable, and a callable whose __call__ AND __repr__ both raise
             # otherwise escapes from inside the handler that exists to stop
-            # exactly that. Found by the #787 board (codex leg, round 2).
-            try:
-                name = getattr(fn, "__name__", None) or repr(fn)
-            except Exception:  # pragma: no cover - defensive
-                name = "<unnameable validator>"
-            _LOG.warning("closeout validator %s raised; gate did not run", name, exc_info=True)
+            # exactly that (#787 board, codex leg, round 2). See
+            # _describe_validator; pinned by
+            # test_an_unnameable_validator_cannot_escape_the_handler and
+            # test_a_validator_whose_name_cannot_be_formatted_cannot_escape.
+            name = _describe_validator(fn)
+            _log_quietly(logging.WARNING, "closeout validator %s raised; gate did not run", name, exc_info=True)
             findings.append(
                 ReviewFinding(
                     code="gate_crashed",
@@ -288,9 +390,7 @@ def run_closeout_validators(
                 )
             )
             continue
-        for finding in produced:
-            effective = "warn" if mode == "warn" else finding.severity
-            findings.append(replace(finding, severity=effective))
+        findings.extend(rewritten)
     return findings
 
 
@@ -418,7 +518,7 @@ def _import_builtin_validator(name: str) -> str | None:
     try:
         importlib.import_module(f"{__package__}.{name}")
     except ImportError as exc:
-        _UNAVAILABLE_BUILTINS[name] = f"{type(exc).__name__}: {exc}"
+        _UNAVAILABLE_BUILTINS[name] = _describe_exception(exc)
         return _UNAVAILABLE_BUILTINS[name]
     _UNAVAILABLE_BUILTINS.pop(name, None)
     return None

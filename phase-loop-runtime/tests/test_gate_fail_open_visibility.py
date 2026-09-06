@@ -7,6 +7,7 @@ from __future__ import annotations
 import ast
 import importlib.abc
 import importlib.machinery
+import logging
 import subprocess
 import sys
 from pathlib import Path
@@ -307,6 +308,393 @@ def test_a_builtin_that_becomes_importable_registers_on_retry(broken_builtin, mo
     assert "injected_late_validator" not in cv.unavailable_builtin_closeout_validators()
 
 
+@pytest.mark.parametrize("mode,expected", [("warn", "warn"), ("block", "block")])
+def test_a_builtin_that_breaks_on_retry_cannot_escape(broken_builtin, mode, expected) -> None:
+    """G-2: the closeout-time retry runs INSIDE the exception boundary.
+
+    Load-time: the module raises ImportError and is recorded unavailable (the
+    honest outcome). Closeout-time: the same module now raises something that
+    is NOT an ImportError. ``_import_builtin_validator`` deliberately lets that
+    through, and the retry used to be the one import in run_closeout_validators
+    outside any handler -- so the RuntimeError propagated out of the closeout a
+    review gate must never break. Found by the #787 board (fable seat, round 2).
+    """
+    broken_builtin("injected_flaky_validator", ImportError("injected: not yet"))
+    cv.load_builtin_closeout_validators()
+    assert "injected_flaky_validator" in cv.unavailable_builtin_closeout_validators()
+
+    # Same name, now broken while executing rather than missing.
+    finder = _RaisingFinder("injected_flaky_validator", RuntimeError("injected: broken on retry"))
+    sys.meta_path.insert(0, finder)
+    try:
+        findings = cv.run_closeout_validators(ctx=None, env={"PHASE_LOOP_REVIEW": mode})
+    except Exception as exc:  # pragma: no cover - the bug this pins
+        pytest.fail(f"a retried built-in escaped closeout: {type(exc).__name__}: {exc}")
+    finally:
+        sys.meta_path.remove(finder)
+        sys.modules.pop(finder.fullname, None)
+    ours = [f for f in findings if "injected_flaky_validator" in f.reason]
+    assert [f.code for f in ours] == ["gate_crashed"], [f.reason for f in findings]
+    assert ours[0].severity == expected
+    assert "RuntimeError: injected: broken on retry" in (ours[0].body or "")
+    assert "UNKNOWN, not pass" in (ours[0].body or "")
+    # Still unresolved: the next closeout retries it again rather than forgetting it.
+    assert "injected_flaky_validator" in cv.unavailable_builtin_closeout_validators()
+
+
+class _UnformattableError(RuntimeError):
+    """An exception whose ``__str__`` raises -- formatting it is itself a crash."""
+
+    def __str__(self) -> str:
+        raise ValueError("injected: __str__ raised")
+
+
+@pytest.mark.parametrize("mode,expected", [("warn", "warn"), ("block", "block")])
+def test_a_builtin_whose_exception_cannot_be_formatted_cannot_escape(
+    broken_builtin, mode, expected
+) -> None:
+    """G-2: describing the retry crash must not be able to raise.
+
+    The validator-crash handler already guards the validator NAME against a
+    raising ``__repr__`` (#787 board, codex leg). The retry handler formatted
+    the exception itself into the finding body, and an exception whose
+    ``__str__`` raises escaped from inside the handler that exists to contain
+    it. Found by the #794 board (codex leg, round 1).
+    """
+    broken_builtin("injected_flaky_validator", ImportError("injected: not yet"))
+    cv.load_builtin_closeout_validators()
+    assert "injected_flaky_validator" in cv.unavailable_builtin_closeout_validators()
+
+    finder = _RaisingFinder("injected_flaky_validator", _UnformattableError("hidden"))
+    sys.meta_path.insert(0, finder)
+    try:
+        findings = cv.run_closeout_validators(ctx=None, env={"PHASE_LOOP_REVIEW": mode})
+    except Exception as exc:  # pragma: no cover - the bug this pins
+        pytest.fail(f"a retried built-in escaped closeout: {type(exc).__name__}")
+    finally:
+        sys.meta_path.remove(finder)
+        sys.modules.pop(finder.fullname, None)
+    ours = [f for f in findings if "injected_flaky_validator" in f.reason]
+    assert [f.code for f in ours] == ["gate_crashed"], [f.reason for f in findings]
+    assert ours[0].severity == expected
+    # The type still names the crash; the unformattable message is replaced, not propagated.
+    assert "_UnformattableError" in (ours[0].body or "")
+    assert "UNKNOWN, not pass" in (ours[0].body or "")
+    assert "injected_flaky_validator" in cv.unavailable_builtin_closeout_validators()
+
+
+class _UnformattableImportError(ImportError):
+    """An ImportError whose ``__str__`` raises -- the load-time guard formats it."""
+
+    def __str__(self) -> str:
+        raise ValueError("injected: ImportError __str__ raised")
+
+
+def test_a_builtin_whose_import_error_cannot_be_formatted_still_loads(broken_builtin) -> None:
+    """The load-time guard describes its ImportError under the same guard.
+
+    ``_import_builtin_validator`` catches ImportError and records
+    ``f"{type(exc).__name__}: {exc}"`` -- the same unguarded formatting the
+    retry handler had. An ImportError whose ``__str__`` raises escaped load,
+    so no gate after it registered either. Carried by the #794 board (fable
+    seat, round 3).
+    """
+    broken_builtin("injected_missing_validator", _UnformattableImportError("hidden"))
+    try:
+        cv.load_builtin_closeout_validators()
+    except Exception as exc:  # pragma: no cover - the bug this pins
+        pytest.fail(f"an unformattable ImportError escaped load: {type(exc).__name__}")
+    record = cv.unavailable_builtin_closeout_validators()["injected_missing_validator"]
+    assert record.startswith("_UnformattableImportError: ")
+    assert "<exception message unformattable>" in record
+
+
+_BROKEN_NAME_ARMED = [False]
+
+
+class _BrokenNameMeta(type):
+    """A metaclass whose ``__name__`` lookup raises -- ``type(exc).__name__`` is a crash.
+
+    Armed only around the call under test: pytest's own failure reporter reads
+    ``cls.__name__`` too, and an always-raising metaclass turns a clean RED into
+    an INTERNALERROR.
+    """
+
+    def __getattribute__(cls, attr):
+        if attr == "__name__" and _BROKEN_NAME_ARMED[0]:
+            raise RuntimeError("injected: __name__ raised")
+        return super().__getattribute__(attr)
+
+
+class _UnnameableTypeError(RuntimeError, metaclass=_BrokenNameMeta):
+    """An exception whose class cannot be named."""
+
+
+class _UnnameableAndUnformattableError(RuntimeError, metaclass=_BrokenNameMeta):
+    """Neither the class name nor the message can be read."""
+
+    def __str__(self) -> str:
+        raise ValueError("injected: __str__ raised")
+
+
+class _FormatRaisingStr(str):
+    """A ``str`` subclass that survives ``str()`` but raises inside an f-string."""
+
+    def __format__(self, spec):
+        raise ValueError("injected: __format__ raised")
+
+
+class _StrIsFormatRaisingSubclassError(RuntimeError):
+    """``str(exc)`` succeeds -- and hands back something an f-string cannot format."""
+
+    def __str__(self):
+        return _FormatRaisingStr("hidden")
+
+
+@pytest.mark.parametrize("mode,expected", [("warn", "warn"), ("block", "block")])
+@pytest.mark.parametrize(
+    "exc,expected_detail",
+    [
+        (_UnnameableTypeError("hidden"), "<unnameable exception type>: hidden"),
+        (
+            _UnnameableAndUnformattableError("hidden"),
+            "<unnameable exception type>: <exception message unformattable>",
+        ),
+        # str(exc) SUCCEEDS but returns a str subclass whose __format__ raises:
+        # the f-string that interpolates it is the crash, not the coercion
+        (_StrIsFormatRaisingSubclassError("hidden"), "_StrIsFormatRaisingSubclassError: hidden"),
+    ],
+    ids=["name-raises", "name-and-str-raise", "str-returns-format-raising-subclass"],
+)
+def test_a_builtin_whose_exception_type_cannot_be_named_cannot_escape(
+    broken_builtin, mode, expected, exc, expected_detail
+) -> None:
+    """G-2, terminal: NO operand of the crash description may raise.
+
+    Round 1 guarded the message and left ``type(exc).__name__`` in the
+    fallback, so a class whose ``__name__`` lookup raises through its
+    metaclass escaped from the fallback of the guard that exists to contain it.
+    Found by the #794 board (codex + fable seats, round 2). Every operand is now
+    coerced to a plain ``str`` under its own guard (``_describe_exception``).
+    """
+    broken_builtin("injected_flaky_validator", ImportError("injected: not yet"))
+    cv.load_builtin_closeout_validators()
+    assert "injected_flaky_validator" in cv.unavailable_builtin_closeout_validators()
+
+    finder = _RaisingFinder("injected_flaky_validator", exc)
+    sys.meta_path.insert(0, finder)
+    _BROKEN_NAME_ARMED[0] = True
+    try:
+        findings = cv.run_closeout_validators(ctx=None, env={"PHASE_LOOP_REVIEW": mode})
+    except Exception:  # pragma: no cover - the bug this pins
+        pytest.fail("a retried built-in whose type cannot be named escaped closeout")
+    finally:
+        _BROKEN_NAME_ARMED[0] = False
+        sys.meta_path.remove(finder)
+        sys.modules.pop(finder.fullname, None)
+    ours = [f for f in findings if "injected_flaky_validator" in f.reason]
+    assert [f.code for f in ours] == ["gate_crashed"], [f.reason for f in findings]
+    assert ours[0].severity == expected
+    assert expected_detail in (ours[0].body or "")
+    assert "UNKNOWN, not pass" in (ours[0].body or "")
+    assert "injected_flaky_validator" in cv.unavailable_builtin_closeout_validators()
+
+
+class _UnformattableName:
+    """A ``__name__`` value that is not a ``str`` and raises when made one."""
+
+    def __str__(self) -> str:
+        raise ValueError("injected: name __str__ raised")
+
+
+class _NameIsFormatRaisingStr:
+    __name__ = _FormatRaisingStr("sneaky")
+
+    def __call__(self, _ctx):
+        raise RuntimeError("call crash")
+
+
+class _NameIsUnformattable:
+    __name__ = _UnformattableName()
+
+    def __call__(self, _ctx):
+        raise RuntimeError("call crash")
+
+
+class _NameLookupRaises:
+    @property
+    def __name__(self):
+        raise RuntimeError("injected: __name__ property raised")
+
+    def __call__(self, _ctx):
+        raise RuntimeError("call crash")
+
+    def __repr__(self):
+        raise RuntimeError("repr crash")
+
+
+@pytest.mark.parametrize(
+    "factory,expected_name",
+    [
+        (_NameIsUnformattable, "<unnameable validator>"),
+        (_NameLookupRaises, "<unnameable validator>"),
+        (_NameIsFormatRaisingStr, "sneaky"),
+    ],
+    ids=["name-str-raises", "name-lookup-raises", "name-is-format-raising-str-subclass"],
+)
+def test_a_validator_whose_name_cannot_be_formatted_cannot_escape(factory, expected_name) -> None:
+    """G-1, terminal: the validator NAME is coerced to ``str`` under the guard.
+
+    The #787 fix guarded the lookup (a ``__name__`` whose lookup raises was
+    already contained -- the ``name-lookup-raises`` case is a regression pin)
+    but interpolated whatever ``__name__`` RETURNED, so a non-``str`` name that
+    raises when formatted still escaped (``name-str-raises`` is RED on
+    b8c1cfeb). Found by the #794 board (fable seat, round 2). A ``str``
+    SUBCLASS name whose ``__format__`` raises survives ``str()`` and crashes
+    the f-string instead; the handler must hand the f-string an exact ``str``.
+    """
+    bad = factory()
+    cv.register_closeout_validator(bad)
+    try:
+        findings = cv.run_closeout_validators(ctx=None, env={"PHASE_LOOP_REVIEW": "block"})
+    except Exception as exc:  # pragma: no cover - the bug this pins
+        pytest.fail(f"a validator with an unformattable name escaped: {exc!r}")
+    finally:
+        cv._VALIDATORS.remove(bad)
+    # Other registered validators also crash on ctx=None; select OURS by the
+    # name the handler was expected to produce, proving it reached the finding.
+    ours = [f for f in findings if f.code == "gate_crashed" and expected_name in f.reason]
+    assert len(ours) == 1, [f.reason for f in findings]
+    assert ours[0].severity == "block"
+
+
+class _RaisingEmitHandler(logging.Handler):
+    """A host-installed log handler whose ``emit`` raises.
+
+    The stdlib handlers guard their own ``emit``; ``logging.Handler.handle``
+    does not, so a handler that does not guard propagates straight through
+    every ``_LOG`` call in run_closeout_validators. Found by the #794 board
+    (codex seat, round 3; the success-path site by codex + fable, round 4).
+    """
+
+    def emit(self, record: logging.LogRecord) -> None:
+        raise OSError("injected: emit raised")
+
+
+def _registering_finder(name: str, validator) -> importlib.abc.MetaPathFinder:  # noqa: ANN001
+    """A finder whose module registers *validator* on import (the late-import case)."""
+    import types
+
+    fullname = f"phase_loop_runtime.{name}"
+    module = types.ModuleType(fullname)
+
+    class _RegisteringLoader(importlib.abc.Loader):
+        def create_module(self, spec):
+            return module
+
+        def exec_module(self, mod):
+            cv.register_closeout_validator(validator)
+
+    class _Finder(importlib.abc.MetaPathFinder):
+        def find_spec(self, fullname_, path=None, target=None):
+            if fullname_ != fullname:
+                return None
+            return importlib.machinery.ModuleSpec(fullname_, _RegisteringLoader())
+
+    return _Finder()
+
+
+@pytest.mark.parametrize("path", ["retry", "validator", "success"])
+def test_a_raising_log_handler_cannot_escape_closeout(broken_builtin, path: str) -> None:
+    """Every ``_LOG`` call inside run_closeout_validators is an operand of closeout.
+
+    ``retry`` and ``validator`` are the two crash handlers: they logged BEFORE
+    appending the ``gate_crashed`` finding, and with a raising handler on the
+    module logger the OSError escaped closeout on 2bc144a5 from both branches.
+    ``success`` is the retry-SUCCESS branch: it logged at INFO, so with INFO
+    enabled the same handler escaped on 55923fc4 and discarded every finding
+    already collected -- one site short of the class. The handler is installed
+    AFTER setup: load-time logging is outside closeout and outside this claim.
+    """
+
+    def raising_validator(ctx):  # noqa: ANN001 - the contract permits any callable
+        raise RuntimeError("injected: validator raised")
+
+    ran: list[object] = []
+
+    def late_validator(ctx):  # noqa: ANN001
+        ran.append(ctx)
+        return ()
+
+    finder = None
+    registered = None
+    fullname = None
+    if path == "retry":
+        broken_builtin("injected_flaky_validator", ImportError("injected: not yet"))
+        cv.load_builtin_closeout_validators()
+        finder = _RaisingFinder("injected_flaky_validator", RuntimeError("injected: broken on retry"))
+        fullname = finder.fullname
+        marker = "injected_flaky_validator"
+    elif path == "success":
+        broken_builtin("injected_late_validator", ImportError("injected: not yet"))
+        cv.load_builtin_closeout_validators()
+        finder = _registering_finder("injected_late_validator", late_validator)
+        fullname = "phase_loop_runtime.injected_late_validator"
+        marker = None
+    else:
+        registered = raising_validator
+        cv.register_closeout_validator(registered)
+        marker = "raising_validator"
+    if finder is not None:
+        sys.meta_path.insert(0, finder)
+    handler = _RaisingEmitHandler()
+    cv._LOG.addHandler(handler)
+    level = cv._LOG.level
+    cv._LOG.setLevel(logging.INFO)  # a host that ran basicConfig(level=INFO)
+    try:
+        findings = cv.run_closeout_validators(ctx="ctx-token", env={"PHASE_LOOP_REVIEW": "block"})
+    except Exception as exc:  # pragma: no cover - the bug this pins
+        pytest.fail(f"a raising log handler escaped closeout on the {path} path: {type(exc).__name__}")
+    finally:
+        cv._LOG.setLevel(level)
+        cv._LOG.removeHandler(handler)
+        if finder is not None:
+            sys.meta_path.remove(finder)
+            sys.modules.pop(fullname, None)
+        if registered is not None:
+            cv._VALIDATORS.remove(registered)
+        if late_validator in cv._VALIDATORS:
+            cv._VALIDATORS.remove(late_validator)
+    if marker is None:
+        assert ran == ["ctx-token"], "the late-registered gate did not run"
+        assert not [f for f in findings if f.code in {"gate_crashed", "gate_unavailable"}], findings
+        return
+    ours = [f for f in findings if f.code == "gate_crashed" and marker in f.reason]
+    assert len(ours) == 1, [f.reason for f in findings]
+    assert ours[0].severity == "block"
+
+
+def test_a_validator_yielding_a_non_finding_cannot_escape() -> None:
+    """G-1: the severity rewrite is inside the boundary too.
+
+    ``replace`` on something that is not a ReviewFinding raises TypeError; that
+    rewrite ran in a loop below the handler and escaped like the lazy generator.
+    """
+    def junk(_ctx):
+        return ["not a finding"]
+
+    cv.register_closeout_validator(junk)
+    try:
+        findings = cv.run_closeout_validators(ctx=None, env={"PHASE_LOOP_REVIEW": "block"})
+    except Exception as exc:  # pragma: no cover - the bug this pins
+        pytest.fail(f"a junk-yielding validator escaped closeout: {type(exc).__name__}: {exc}")
+    finally:
+        cv._VALIDATORS.remove(junk)
+    ours = [f for f in findings if f.code == "gate_crashed" and "junk" in f.reason]
+    assert ours, "a validator yielding a non-finding produced no gate_crashed finding"
+    assert "not a finding" not in [getattr(f, "code", f) for f in findings]
+
+
 def test_a_present_but_broken_builtin_fails_load_loudly(broken_builtin) -> None:
     """G-2 narrowing pin: the guard catches ImportError ONLY.
 
@@ -359,77 +747,291 @@ def os_environ_without_the_variable() -> dict:
     return {k: v for k, v in os.environ.items() if k != "PHASE_LOOP_VERIFY_ENFORCE"}
 
 
-_ENV_READERS = {"get", "getenv", "environ"}
+def _env_aliases(tree: ast.Module) -> tuple[set[str], set[str], set[str]]:
+    """Names bound in ``tree`` to the ``os`` module, ``os.environ`` and ``os.getenv``.
+
+    Resolves ``import os [as X]``, ``from os import environ [as X]`` and
+    ``from os import getenv [as X]`` at any depth of the module, and single-name
+    assignment rebinding of any resolved spelling (``env = _os.environ``,
+    ``ge = os.getenv``, ``o = os``) to a fixed point. The parse point itself is
+    written that way (``closeout_validation.verify_enforce_mode``: ``import os
+    as _os`` / ``env = _os.environ`` / ``env.get(VERIFY_ENFORCE_ENV)``), so a
+    guard that did not follow it swept the sanctioned function's idiom as
+    nothing at all and its skip was inert -- found by the #794 board (fable
+    seat, round 1) and pinned by test_the_sweep_skip_is_load_bearing. Binding is
+    name-level, not flow-sensitive: once a name is bound to environ anywhere in
+    the module it is treated as environ everywhere in it (over-approximation,
+    the right direction for a guard). Snapshots (``dict(environ)``,
+    ``environ.copy()``, ``{**environ}``) bind an environ alias too (see
+    ``_is_environ``). NOT followed: re-exports through other modules,
+    attribute/tuple targets, and other containers. The recogniser tests below
+    are the list of what IS covered.
+    """
+    modules, environs, getenvs = {"os"}, {"environ"}, {"getenv"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "os":
+                    modules.add(alias.asname or "os")
+        elif isinstance(node, ast.ImportFrom) and node.module == "os":
+            for alias in node.names:
+                if alias.name == "environ":
+                    environs.add(alias.asname or "environ")
+                elif alias.name == "getenv":
+                    getenvs.add(alias.asname or "getenv")
+    # Assignment rebinding, iterated to a fixed point because ast.walk order is
+    # breadth-first, not source order, and a chain (a = os; b = a.environ) may
+    # be visited value-before-definition.
+    assigns = [
+        (node.targets[0].id, node.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+    ]
+    changed = True
+    while changed:
+        changed = False
+        aliases = (modules, environs, getenvs)
+        for target, value in assigns:
+            if isinstance(value, ast.Name) and value.id in modules and target not in modules:
+                modules.add(target)
+                changed = True
+            elif _is_environ(value, aliases) and target not in environs:
+                environs.add(target)
+                changed = True
+            elif _is_getenv(value, aliases) and target not in getenvs:
+                getenvs.add(target)
+                changed = True
+    return modules, environs, getenvs
 
 
-def _reads_verify_enforce(node: ast.AST) -> bool:
+def _names_the_var(expr: ast.AST) -> bool:
+    if isinstance(expr, ast.Constant):
+        return expr.value == "PHASE_LOOP_VERIFY_ENFORCE"
+    if isinstance(expr, ast.Name):
+        return expr.id == "VERIFY_ENFORCE_ENV"
+    if isinstance(expr, ast.Attribute):
+        return expr.attr == "VERIFY_ENFORCE_ENV"
+    return False
+
+
+def _is_environ(expr: ast.AST, aliases) -> bool:
+    """``os.environ`` (any os alias), a bare environ alias, ``getattr(os, "environ")``,
+    or a snapshot of any of those: ``dict(<environ>)``, ``<environ>.copy()``,
+    ``{**<environ>}``. A snapshot reads the same variable one step later, so a
+    name bound to one is an environ alias too (#794 board, fable seat, round 2).
+    """
+    modules, environs, _ = aliases
+    if isinstance(expr, ast.Name):
+        return expr.id in environs
+    if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Name) and expr.func.id == "dict":
+        return len(expr.args) == 1 and _is_environ(expr.args[0], aliases)
+    if (
+        isinstance(expr, ast.Call)
+        and isinstance(expr.func, ast.Attribute)
+        and expr.func.attr == "copy"
+        and not expr.args
+    ):
+        return _is_environ(expr.func.value, aliases)
+    if isinstance(expr, ast.Dict):
+        return any(k is None and _is_environ(v, aliases) for k, v in zip(expr.keys, expr.values))
+    if isinstance(expr, ast.Attribute):
+        return expr.attr == "environ" and isinstance(expr.value, ast.Name) and expr.value.id in modules
+    if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Name) and expr.func.id == "getattr":
+        args = expr.args
+        return (
+            len(args) >= 2
+            and isinstance(args[0], ast.Name)
+            and args[0].id in modules
+            and isinstance(args[1], ast.Constant)
+            and args[1].value == "environ"
+        )
+    return False
+
+
+def _is_getenv(expr: ast.AST, aliases) -> bool:
+    modules, _, getenvs = aliases
+    if isinstance(expr, ast.Name):
+        return expr.id in getenvs
+    if isinstance(expr, ast.Attribute):
+        return expr.attr == "getenv" and isinstance(expr.value, ast.Name) and expr.value.id in modules
+    return False
+
+
+def _reads_verify_enforce(node: ast.AST, aliases=({"os"}, {"environ"}, {"getenv"})) -> bool:
     """True when ``node`` is an environment read keyed on the verify-enforce variable.
 
-    Matches ``os.environ.get(X)``, ``os.environ[X]``, ``environ.get(X)``,
-    ``os.getenv(X)`` and ``getenv(X)`` where X is the literal name or the
-    ``VERIFY_ENFORCE_ENV`` constant -- across lines, in any spelling.
+    Matches ``<environ>.get(X)``, ``<environ>[X]`` and ``<getenv>(X)`` where
+    ``<environ>``/``<getenv>`` are any spelling ``_env_aliases`` resolves and X
+    is the literal name or the ``VERIFY_ENFORCE_ENV`` constant, across lines.
     """
-    def names_the_var(expr: ast.AST) -> bool:
-        if isinstance(expr, ast.Constant):
-            return expr.value == "PHASE_LOOP_VERIFY_ENFORCE"
-        if isinstance(expr, ast.Name):
-            return expr.id == "VERIFY_ENFORCE_ENV"
-        if isinstance(expr, ast.Attribute):
-            return expr.attr == "VERIFY_ENFORCE_ENV"
+    if isinstance(node, ast.Call):
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr == "get" and _is_environ(func.value, aliases):
+            return any(_names_the_var(a) for a in node.args)
+        if _is_getenv(func, aliases):
+            return any(_names_the_var(a) for a in node.args)
         return False
-
-    def is_env_reader(func: ast.AST) -> bool:
-        chain = []
-        while isinstance(func, ast.Attribute):
-            chain.append(func.attr)
-            func = func.value
-        if isinstance(func, ast.Name):
-            chain.append(func.id)
-        return bool(_ENV_READERS & set(chain)) and ("environ" in chain or "getenv" in chain)
-
-    if isinstance(node, ast.Call) and is_env_reader(node.func):
-        return any(names_the_var(a) for a in node.args)
-    if isinstance(node, ast.Subscript) and is_env_reader(node.value):
-        return names_the_var(node.slice)
+    if isinstance(node, ast.Subscript) and _is_environ(node.value, aliases):
+        return _names_the_var(node.slice)
     return False
+
+
+def _direct_reads(source: str, *, skip_function: str | None = None) -> list[int]:
+    """Line numbers of direct reads in ``source``, skipping one named function.
+
+    The skip covers the whole ``FunctionDef`` / ``AsyncFunctionDef`` node as
+    ``ast.walk`` reaches it: body, decorators, and default-argument expressions
+    alike.
+    """
+    tree = ast.parse(source)
+    aliases = _env_aliases(tree)
+    skipped: set[ast.AST] = set()
+    if skip_function is not None:
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == skip_function:
+                skipped.update(ast.walk(node))
+    return [
+        node.lineno
+        for node in ast.walk(tree)
+        if node not in skipped and _reads_verify_enforce(node, aliases)
+    ]
+
+
+def test_the_sweep_skip_is_load_bearing() -> None:
+    """The sweep's ``skip_function`` must remove something real.
+
+    Without the skip, the parse point's own read is an offender; with it, the
+    module is clean. A guard whose skip removes nothing has not seen the parse
+    point, and would not see a copy of it elsewhere either. Found inert by the
+    #794 board (fable seat, round 1).
+    """
+    source = (Path(SRC) / "phase_loop_runtime" / "closeout_validation.py").read_text()
+    unskipped = _direct_reads(source)
+    assert unskipped, "the guard does not recognise the parse point's own read"
+    for lineno in unskipped:
+        assert "VERIFY_ENFORCE_ENV" in source.splitlines()[lineno - 1]
+    assert _direct_reads(source, skip_function="verify_enforce_mode") == []
 
 
 def test_no_module_reads_the_verify_enforce_env_var_directly() -> None:
     """G-6 guard: outside the parse point, nothing reads the variable from the environment.
 
     AST-based, so ``os.environ.get(VERIFY_ENFORCE_ENV, "hard")``, ``os.getenv``,
-    ``from os import environ`` and multi-line spellings are all caught -- the
-    literal-on-one-line grep this replaces missed every one of them.
+    ``from os import environ`` and multi-line spellings are caught -- the
+    literal-on-one-line grep this replaced missed every one of them. The parse
+    point is ONE function, ``closeout_validation.verify_enforce_mode``; the rest
+    of that module is swept like every other file. Coverage is exactly the
+    recogniser list in test_the_guard_recognises_each_direct_read_spelling;
+    see _env_aliases for what is not followed.
     """
-    src = Path(SRC) / "phase_loop_runtime"
-    offenders = []
-    for path in src.rglob("*.py"):
-        if path.name == "closeout_validation.py":
-            continue  # THE parse point
-        tree = ast.parse(path.read_text(), filename=str(path))
-        for node in ast.walk(tree):
-            if _reads_verify_enforce(node):
-                offenders.append(f"{path.relative_to(src)}:{node.lineno}")
+    offenders = _sweep_direct_reads(Path(SRC) / "phase_loop_runtime")
     assert not offenders, f"direct environment reads of PHASE_LOOP_VERIFY_ENFORCE: {offenders}"
+
+
+def _sweep_direct_reads(root: Path) -> list[str]:
+    """Every direct read under ``root`` except the ONE sanctioned function."""
+    offenders = []
+    for path in sorted(root.rglob("*.py")):
+        skip = "verify_enforce_mode" if path.name == "closeout_validation.py" else None
+        for lineno in _direct_reads(path.read_text(), skip_function=skip):
+            offenders.append(f"{path.relative_to(root)}:{lineno}")
+    return offenders
+
+
+def test_the_sweep_skips_the_function_not_the_module(tmp_path) -> None:
+    """The sweep's exemption is ONE function, not the parse point's whole file.
+
+    A copy of closeout_validation.py with a read added outside
+    verify_enforce_mode must be reported; the real file must not. Reverting the
+    sweep site to skipping the whole module passes the real tree unchanged (it
+    has no such read today) -- this is the pin for that site. Found unpinned by
+    the #794 board (fable seat, round 1).
+    """
+    real = (Path(SRC) / "phase_loop_runtime" / "closeout_validation.py").read_text()
+    fake_root = tmp_path / "pkg"
+    fake_root.mkdir()
+    (fake_root / "closeout_validation.py").write_text(
+        real + '\n\ndef _leak():\n    import os\n    return os.environ.get("PHASE_LOOP_VERIFY_ENFORCE")\n'
+    )
+    leak_line = real.count("\n") + 5
+    assert _sweep_direct_reads(fake_root) == [f"closeout_validation.py:{leak_line}"]
+    (fake_root / "closeout_validation.py").write_text(real)
+    assert _sweep_direct_reads(fake_root) == []
 
 
 @pytest.mark.parametrize(
     "snippet",
     [
-        'os.environ.get("PHASE_LOOP_VERIFY_ENFORCE", "hard")',
-        "os.environ.get(VERIFY_ENFORCE_ENV, 'hard')",
-        'os.getenv("PHASE_LOOP_VERIFY_ENFORCE")',
-        "getenv(cv.VERIFY_ENFORCE_ENV)",
-        'environ["PHASE_LOOP_VERIFY_ENFORCE"]',
-        'os.environ.get(\n    "PHASE_LOOP_VERIFY_ENFORCE",\n    "warn",\n)',
+        'import os\nos.environ.get("PHASE_LOOP_VERIFY_ENFORCE", "hard")',
+        "import os\nos.environ.get(VERIFY_ENFORCE_ENV, 'hard')",
+        'import os\nos.getenv("PHASE_LOOP_VERIFY_ENFORCE")',
+        "from os import getenv\ngetenv(cv.VERIFY_ENFORCE_ENV)",
+        'from os import environ\nenviron["PHASE_LOOP_VERIFY_ENFORCE"]',
+        'import os\nos.environ.get(\n    "PHASE_LOOP_VERIFY_ENFORCE",\n    "warn",\n)',
+        # aliases (found by the #787 board, fable seat, round 2)
+        'from os import environ as _env\n_env["PHASE_LOOP_VERIFY_ENFORCE"]',
+        'from os import environ as _env\n_env.get("PHASE_LOOP_VERIFY_ENFORCE")',
+        "from os import getenv as _ge\n_ge(VERIFY_ENFORCE_ENV)",
+        'import os as _o\n_o.environ.get("PHASE_LOOP_VERIFY_ENFORCE")',
+        'import os as _o\n_o.getenv("PHASE_LOOP_VERIFY_ENFORCE")',
+        'import os\ngetattr(os, "environ").get("PHASE_LOOP_VERIFY_ENFORCE")',
+        'import os\ngetattr(os, "environ")["PHASE_LOOP_VERIFY_ENFORCE"]',
+        # assignment rebinding, incl. the parse point's own idiom (found by the
+        # #794 board, fable seat, round 1)
+        'import os as _os\nenv = _os.environ\nenv.get(VERIFY_ENFORCE_ENV)',
+        'import os\ne = os.environ\ne["PHASE_LOOP_VERIFY_ENFORCE"]',
+        'import os\nge = os.getenv\nge("PHASE_LOOP_VERIFY_ENFORCE")',
+        'import os\no = os\no.environ.get("PHASE_LOOP_VERIFY_ENFORCE")',
+        # a chain whose inner link is nested DEEPER than its outer one: ast.walk
+        # is breadth-first, so ``b = a.environ`` is seen before ``a = os`` and
+        # only the fixed-point pass resolves ``b``
+        'import os\ndef f():\n    a = os\nb = a.environ\nb.get(VERIFY_ENFORCE_ENV)',
+        # snapshots of environ read the same variable one step later (found by
+        # the #794 board, fable seat, round 2)
+        'import os\nsnap = dict(os.environ)\nsnap.get("PHASE_LOOP_VERIFY_ENFORCE")',
+        'import os\nsnap = os.environ.copy()\nsnap["PHASE_LOOP_VERIFY_ENFORCE"]',
+        'import os\nsnap = {**os.environ}\nsnap.get(VERIFY_ENFORCE_ENV)',
+        'from os import environ\nsnap = dict(environ)\nsnap.get(VERIFY_ENFORCE_ENV)',
+        'import os\nsnap = {"X": "1", **os.environ, "Y": "2"}\nsnap.get(VERIFY_ENFORCE_ENV)',
+        'import os\nsnap = dict(os.environ.copy())\nsnap.get(VERIFY_ENFORCE_ENV)',
+        # the skip must not apply to a non-skipped ASYNC function either
+        'import os\nasync def other():\n    return os.environ.get("PHASE_LOOP_VERIFY_ENFORCE")',
     ],
 )
 def test_the_guard_recognises_each_direct_read_spelling(snippet) -> None:
     """The guard's own detector, checked against the spellings it must catch."""
-    tree = ast.parse(snippet)
-    assert any(_reads_verify_enforce(n) for n in ast.walk(tree)), snippet
+    assert _direct_reads(snippet), snippet
+
+
+def test_the_guard_skips_an_async_parse_point_too() -> None:
+    """The skip keys on the NAME, whichever def form carries it (#794 board, fable seat, round 2)."""
+    source = (
+        "import os\n"
+        "async def verify_enforce_mode(env):\n"
+        '    return os.environ.get("PHASE_LOOP_VERIFY_ENFORCE")\n'
+        "async def other():\n"
+        '    return os.environ.get("PHASE_LOOP_VERIFY_ENFORCE")\n'
+    )
+    assert _direct_reads(source, skip_function="verify_enforce_mode") == [5]
+    assert _direct_reads(source) == [3, 5]
+
+
+def test_the_guard_skips_only_the_named_function() -> None:
+    """Function-level exclusion: a second read in the parse-point MODULE is still an offender."""
+    source = (
+        "import os\n"
+        "def verify_enforce_mode(env):\n"
+        '    return os.environ.get("PHASE_LOOP_VERIFY_ENFORCE")\n'
+        "def other():\n"
+        '    return os.environ.get("PHASE_LOOP_VERIFY_ENFORCE")\n'
+    )
+    assert _direct_reads(source, skip_function="verify_enforce_mode") == [5]
+    assert _direct_reads(source) == [3, 5]
 
 
 def test_the_guard_ignores_the_sanctioned_call() -> None:
-    tree = ast.parse('verify_enforce_mode(env, default="warn")')
-    assert not any(_reads_verify_enforce(n) for n in ast.walk(tree))
+    assert not _direct_reads('verify_enforce_mode(env, default="warn")')
+    # a Mapping parameter named env is not the process environment
+    assert not _direct_reads('env.get("PHASE_LOOP_VERIFY_ENFORCE")')
