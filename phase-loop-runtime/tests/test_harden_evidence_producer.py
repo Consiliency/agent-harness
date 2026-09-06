@@ -12,6 +12,7 @@ from pathlib import Path, PurePosixPath
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Any, Callable
 from xml.etree import ElementTree
 
@@ -306,6 +307,8 @@ def _broker_observation(
     identity: str,
     inputs: dict[str, str],
     report: str,
+    repo: Path,
+    session_sha256: str,
 ) -> dict[str, Any]:
     """Independent hermetic observation data, never a production inference result."""
     prompt = verifier.broker_sealed_prompt(inputs["bundle"], inputs["instructions"])
@@ -326,6 +329,7 @@ def _broker_observation(
     transport = stream["transport"] if stream else prompt
     data: dict[str, Any] = {
         "schema": "parent_unix_broker_v1",
+        "canonical_repo_sha256": _sha256(os.fsencode(str(repo.resolve()))),
         "stage_bundle_sha256": _sha256(inputs["bundle"].encode()),
         "stage_instructions_sha256": _sha256(inputs["instructions"].encode()),
         "leg_authorization_instructions_sha256": _sha256(
@@ -372,7 +376,6 @@ def _broker_observation(
         "provider_response_bytes": len(report.encode()),
     }
     for field in (
-        "canonical_repo_sha256",
         "canonical_repo_probe_file_sha256",
         "argv_sha256",
         "client_probe_program_sha256",
@@ -414,7 +417,7 @@ def _broker_observation(
     if harness == "claude":
         data.update(
             {
-                "claude_session_id_sha256": _sha256(f"{identity}:session".encode()),
+                "claude_session_id_sha256": session_sha256,
                 "claude_session_resume_forbidden": True,
                 "claude_transcript_exact_path_sha256": _sha256(
                     f"{identity}:transcript-path".encode()
@@ -627,9 +630,63 @@ def _raw_fixture(
         "tests only",
         frozen_tests,
     )
+    historical_sessions = [
+        _sha256(f"{variant}:sl0:{harness}:session".encode())
+        for harness in ("claude", "codex", "gemini", "grok")
+    ]
+    approval_nonce = _sha256(f"{variant}:sl0:approval".encode())
+    approval = {
+        "schema": "harden_sl0_approval.v1",
+        "base_commit": base,
+        "head": reviewed,
+        "tree": _git(repo, "rev-parse", f"{reviewed}^{{tree}}"),
+        "patch_sha256": _sha256(
+            subprocess.check_output(
+                ["git", "diff", "--no-ext-diff", base, reviewed], cwd=repo
+            )
+        ),
+        "clock_id": variant,
+        "observed_monotonic_ns": time.monotonic_ns(),
+        "operation_nonce": approval_nonce,
+        "seats": [],
+    }
+    for harness, session in zip(
+        ("claude", "codex", "gemini", "grok"), historical_sessions, strict=True
+    ):
+        report = f"Reviewed tests-only head {reviewed}, tree {approval['tree']}, as {harness}.\nAGREE\n"
+        approval["seats"].append(
+            {
+                "harness": harness,
+                "session_sha256": session,
+                "status": "usable",
+                "report": report,
+                "report_sha256": _sha256(report.encode()),
+                "report_bytes": len(report.encode()),
+            }
+        )
+    approval_relative = f".phase-loop/runs/{variant}-sl0-review/approval.json"
+    _write_ref(repo, approval_relative, _canonical_bytes(approval))
+    approval_ref = _write_ref(
+        source_root, approval_relative, _canonical_bytes(approval)
+    )
     _git(repo, "checkout", "-q", "main")
     _git(repo, "merge", "--no-ff", "-qm", "land reviewed tests", "reviewed-sl0")
     landing = _git(repo, "rev-parse", "HEAD")
+    production_nonce = _sha256(f"{variant}:production:start".encode())
+    production_start = {
+        "schema": "harden_production_start.v1",
+        "head": landing,
+        "tree": _git(repo, "rev-parse", "HEAD^{tree}"),
+        "clock_id": variant,
+        "observed_monotonic_ns": time.monotonic_ns(),
+        "operation_nonce": production_nonce,
+        "sl0_approval": approval_ref,
+    }
+    production_relative = f".phase-loop/runs/{variant}-production/start.json"
+    _write_ref(repo, production_relative, _canonical_bytes(production_start))
+    production_ref = _write_ref(
+        source_root, production_relative, _canonical_bytes(production_start)
+    )
     candidate = _commit(
         repo,
         "production",
@@ -659,6 +716,7 @@ def _raw_fixture(
     operation_nonces = [
         _sha256(f"{variant}:operation:{index}".encode()) for index in range(13)
     ]
+    operation_nonces.extend([approval_nonce, production_nonce, *historical_sessions])
     ci_seed = int(_sha256(f"{variant}:ci".encode())[:12], 16)
     ci_run_ids = {
         "candidate": ci_seed * 2 + 1,
@@ -680,7 +738,6 @@ def _raw_fixture(
         for round_name in ("candidate", "canonical_main")
         for route in routes
     }
-    operation_nonces.extend(reviewer_sessions.values())
     plan_authority = {
         "schema": "harden_plan_authority.v1",
         "evidence_id": evidence_id,
@@ -694,6 +751,8 @@ def _raw_fixture(
         "reviewed_commit": reviewed,
         "landing_commit": landing,
         "frozen_test_paths": list(frozen_paths),
+        "approval": approval_ref,
+        "production_start": production_ref,
     }
     run_cases = {
         "preproduction_red": (red_nodes, red_outcomes),
@@ -741,6 +800,11 @@ def _raw_fixture(
         ),
     }
     mutation_entries = []
+    mutation_env = dict(os.environ)
+    mutation_env.pop("PHASE_LOOP_TDD_EXPECT_HARDEN", None)
+    mutation_env.pop("PYTEST_ADDOPTS", None)
+    mutation_env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    _git(repo, "checkout", "-q", reviewed)
     for case_id, case in HARDEN_CASES.items():
         restored_bytes = subprocess.check_output(
             ["git", "show", f"{reviewed}:{case.production_path}"], cwd=repo
@@ -758,12 +822,6 @@ def _raw_fixture(
                 source_root, f"raw/mutations/{case_id}/mutated.py", mutated_bytes
             ),
         }
-        module, function = case.nodeid.split("::")
-        classname = (
-            module.removeprefix("phase-loop-runtime/")
-            .removesuffix(".py")
-            .replace("/", ".")
-        )
         for stage, exit_code, kind, marker, source_ref in (
             (
                 "mutation",
@@ -782,25 +840,43 @@ def _raw_fixture(
         ):
             run_nonce = _sha256(f"{variant}:{case_id}:{stage}:process".encode())
             operation_nonces.append(run_nonce)
+            junit_relative = f"raw/mutations/{case_id}/{stage}.xml"
+            junit_path = source_root / junit_relative
+            installed_source = repo / case.production_path
+            installed_source.write_bytes(
+                (source_root / source_ref["path"]).read_bytes()
+            )
+            try:
+                completed = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "pytest",
+                        "-q",
+                        case.nodeid,
+                        "--junitxml",
+                        str(junit_path),
+                    ],
+                    cwd=repo,
+                    env=mutation_env,
+                    capture_output=True,
+                    check=False,
+                    timeout=30,
+                )
+                assert completed.returncode == exit_code, completed.stdout.decode(
+                    errors="replace"
+                )
+            finally:
+                installed_source.write_bytes(restored_bytes)
             raw = _write_ref(
                 source_root,
                 f"raw/mutations/{case_id}/{stage}.txt",
-                f"{marker}::{case_id}\n1 {'failed' if exit_code else 'passed'}\n".encode(),
+                f"{marker}::{case_id}\n".encode() + completed.stdout,
             )
-            suite = ElementTree.Element(
-                "testsuite", tests="1", failures=str(exit_code), errors="0", skipped="0"
-            )
-            testcase = ElementTree.SubElement(
-                suite, "testcase", classname=classname, name=function
-            )
-            if exit_code:
-                ElementTree.SubElement(
-                    testcase, "failure"
-                ).text = f"{marker}::{case_id}"
             junit = _write_ref(
                 source_root,
-                f"raw/mutations/{case_id}/{stage}.xml",
-                ElementTree.tostring(suite, encoding="utf-8", xml_declaration=True),
+                junit_relative,
+                junit_path.read_bytes(),
             )
             record = {
                 "schema": "harden_pytest_receipt.v1",
@@ -815,13 +891,15 @@ def _raw_fixture(
                 "source_path": case.production_path,
                 "source_sha256": source_ref["sha256"],
             }
-            receipt = _write_ref(
-                source_root,
-                f"raw/mutations/{case_id}/{stage}-receipt.json",
-                _canonical_bytes(record),
+            receipt_path = (
+                f".phase-loop/runs/{variant}-{case_id}-{stage}/pytest-receipt.json"
             )
+            receipt_bytes = _canonical_bytes(record)
+            _write_ref(repo, receipt_path, receipt_bytes)
+            receipt = _write_ref(source_root, receipt_path, receipt_bytes)
             entry[stage] = {"raw": raw, "junit": junit, "receipt": receipt}
         mutation_entries.append(entry)
+    _git(repo, "checkout", "-q", "main")
     artifacts["source_mutations"] = _write_ref(
         source_root,
         "raw/source-mutations.json",
@@ -1016,6 +1094,8 @@ def _raw_fixture(
                 f"{variant}:{round_name}:{item['harness']}",
                 inputs,
                 item["report"],
+                repo,
+                item["session_sha256"],
             )
             runtime_record = {
                 "schema": "harden_broker_run_receipt.v1",
@@ -1035,6 +1115,11 @@ def _raw_fixture(
                 f"implementation-panel-{item['harness']}.harden-broker-run.json"
             )
             runtime_bytes = _canonical_bytes(runtime_record)
+            if item["harness"] != "claude":
+                # Stateless non-Claude seats bind identity to the complete
+                # canonical one-shot observation, not a caller's fresh label.
+                item["session_sha256"] = _sha256(runtime_bytes)
+                reviewer_sessions[round_name, item["harness"]] = item["session_sha256"]
             _write_ref(repo, relative, runtime_bytes)
             item["runtime_receipt"] = _write_ref(source_root, relative, runtime_bytes)
         artifacts[f"{round_name}_broker_receipts"] = _write_ref(
@@ -1042,6 +1127,7 @@ def _raw_fixture(
             f"raw/{round_name}-broker-receipts.json",
             _canonical_bytes(receipts),
         )
+    operation_nonces.extend(reviewer_sessions.values())
     sessions = {
         role: _sha256(f"{variant}:{role}-session".encode()) for role in ROLE_NAMES
     }
@@ -1390,6 +1476,11 @@ def _assert_prepared(context: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
         assert evidence["ci"][round_name]["run_id"] == run_id
     assert set(evidence["reviews"]) == {"candidate", "canonical_main"}
     assert set(evidence["roles"]) == set(ROLE_NAMES)
+    historical = _strict_json(
+        context["source_root"] / context["manifest"]["artifacts"]["sl0_review"]["path"]
+    )
+    for field in ("approval", "production_start"):
+        assert evidence["sl0"][field]["sha256"] == historical[field]["sha256"]
 
     def retained_json(ref: dict[str, str], label: str) -> dict[str, Any]:
         path = _contained_ref_path(context["evidence_root"], ref, label)
@@ -1636,6 +1727,36 @@ def _assert_fixture_proof_sources(context: dict[str, Any]) -> None:
         context["expected"]["commits"]["reviewed_sl0"],
     ]
     store = verifier.ArtifactStore(context["source_root"])
+    historical = store.json(
+        context["manifest"]["artifacts"]["sl0_review"], "historical SL0 review"
+    )
+    approval = verifier.run_owned_receipt(
+        store, repo, historical["approval"], "historical SL0 approval"
+    )
+    production_start = verifier.run_owned_receipt(
+        store, repo, historical["production_start"], "production start"
+    )
+    assert approval["head"] == context["expected"]["commits"]["reviewed_sl0"]
+    assert approval["tree"] == context["expected"]["trees"]["reviewed_sl0"]
+    assert approval["clock_id"] == production_start["clock_id"]
+    assert approval["observed_monotonic_ns"] < production_start["observed_monotonic_ns"]
+    assert production_start["head"] == context["expected"]["commits"]["landing"]
+    assert production_start["sl0_approval"] == historical["approval"]
+    assert {seat["harness"] for seat in approval["seats"]} == {
+        "claude",
+        "codex",
+        "gemini",
+        "grok",
+    }
+    assert len({seat["session_sha256"] for seat in approval["seats"]}) == 4
+    for seat in approval["seats"]:
+        assert (
+            seat["status"] == "usable"
+            and seat["report"].rstrip().splitlines()[-1] == "AGREE"
+        )
+        assert seat["report_sha256"] == _sha256(seat["report"].encode())
+        assert seat["report_bytes"] == len(seat["report"].encode())
+        assert seat["session_sha256"] not in context["sessions"].values()
     mutations = store.json(
         context["manifest"]["artifacts"]["source_mutations"], "source mutations"
     )["mutations"]
@@ -1658,6 +1779,12 @@ def _assert_fixture_proof_sources(context: dict[str, Any]) -> None:
             )
             assert namespace[contract.symbol]() is expected_result
             run = entry[stage]
+            verifier.run_owned_receipt(
+                verifier.ArtifactStore(context["source_root"]),
+                repo,
+                run["receipt"],
+                "source mutation process receipt",
+            )
             verifier.exact_case(
                 verifier.parse_junit(
                     store.read(run["junit"], "proof JUnit"), "proof JUnit"
@@ -1718,7 +1845,17 @@ def _assert_fixture_proof_sources(context: dict[str, Any]) -> None:
             )
             assert runtime["broker"] == record["broker"]
             assert runtime["report"] == record["report"]
+            assert record["broker"]["canonical_repo_sha256"] == _sha256(
+                os.fsencode(str(repo.resolve()))
+            )
+            observed_session = (
+                runtime["broker"]["claude_session_id_sha256"]
+                if record["harness"] == "claude"
+                else _sha256(_canonical_bytes(runtime))
+            )
+            assert record["session_sha256"] == observed_session
     assert len(sessions) == 8
+    assert not sessions & {seat["session_sha256"] for seat in approval["seats"]}
     assert context["sessions"]["reviewer"] == _sha256(
         "\0".join(sorted(sessions)).encode()
     )
@@ -2260,6 +2397,116 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
     def replace_artifact(context: dict[str, Any], artifact: str, value: Any) -> None:
         replace_input(context, "artifacts", artifact, value)
 
+    def historical_approval_attack(context: dict[str, Any], attack: str) -> None:
+        historical = _strict_json(
+            context["source_root"]
+            / context["manifest"]["artifacts"]["sl0_review"]["path"]
+        )
+        if attack == "missing":
+            historical.pop("approval")
+        else:
+            approval_ref = historical["approval"]
+            approval = _strict_json(context["source_root"] / approval_ref["path"])
+            start_ref = historical["production_start"]
+            start = _strict_json(context["source_root"] / start_ref["path"])
+            if attack == "stale":
+                approval["head"] = context["expected"]["commits"]["sl0_base"]
+                approval["tree"] = context["expected"]["trees"]["sl0_base"]
+            elif attack == "unusable":
+                approval["seats"][0]["status"] = "DEGRADED"
+            elif attack == "late":
+                approval["observed_monotonic_ns"] = start["observed_monotonic_ns"] + 1
+            else:
+                raise AssertionError(attack)
+            data = _canonical_bytes(approval)
+            _write_ref(context["repo"], approval_ref["path"], data)
+            historical["approval"] = _write_ref(
+                context["source_root"], approval_ref["path"], data
+            )
+            start["sl0_approval"] = historical["approval"]
+            data = _canonical_bytes(start)
+            _write_ref(context["repo"], start_ref["path"], data)
+            historical["production_start"] = _write_ref(
+                context["source_root"], start_ref["path"], data
+            )
+        replace_artifact(context, "sl0_review", historical)
+
+    for attack in ("missing", "stale", "unusable", "late"):
+        rejected(
+            f"historical-sl0-approval-{attack}",
+            lambda context, attack=attack: historical_approval_attack(context, attack),
+            "SL-0 approval",
+        )
+
+    def rebind_reviewer_role(context: dict[str, Any]) -> None:
+        sessions = [
+            seat["session_sha256"]
+            for round_name in ("candidate", "canonical_main")
+            for seat in _strict_json(
+                context["source_root"]
+                / context["manifest"]["artifacts"][round_name + "_broker_receipts"][
+                    "path"
+                ]
+            )["receipts"]
+        ]
+        ref = context["manifest"]["role_attestations"]["reviewer"]
+        role = _strict_json(context["source_root"] / ref["path"])
+        role["session_sha256"] = _sha256("\0".join(sorted(sessions)).encode())
+        role["identity"] = "reviewer-" + role["session_sha256"][:32]
+        replace_input(context, "role_attestations", "reviewer", role)
+
+    def observed_identity_attack(context: dict[str, Any], attack: str) -> None:
+        name = "canonical_main_broker_receipts"
+        records = _strict_json(
+            context["source_root"] / context["manifest"]["artifacts"][name]["path"]
+        )
+        seat = next(
+            item
+            for item in records["receipts"]
+            if item["harness"] == ("codex" if attack == "live-cwd" else "claude")
+        )
+        broker = seat["broker"]
+        if attack == "live-cwd":
+            cwd = str(context["repo"].resolve() / "provider-scratch")
+            argv = broker["provider_argv_shape"]
+            argv[argv.index("--cd") + 1] = cwd
+            argv[argv.index("--output-last-message") + 1] = cwd + "/last-message.txt"
+            broker["provider_argv_sha256"] = _sha256("\0".join(argv).encode())
+            broker["provider_cwd_sha256"] = _sha256(cwd.encode())
+        else:
+            candidate = _strict_json(
+                context["source_root"]
+                / context["manifest"]["artifacts"]["candidate_broker_receipts"]["path"]
+            )
+            prior = next(
+                item for item in candidate["receipts"] if item["harness"] == "claude"
+            )
+            broker["claude_session_id_sha256"] = prior["broker"][
+                "claude_session_id_sha256"
+            ]
+            assert seat["session_sha256"] != broker["claude_session_id_sha256"]
+        ref = seat["runtime_receipt"]
+        runtime = _strict_json(context["source_root"] / ref["path"])
+        runtime["broker"] = broker
+        data = _canonical_bytes(runtime)
+        _write_ref(context["repo"], ref["path"], data)
+        seat["runtime_receipt"] = _write_ref(context["source_root"], ref["path"], data)
+        if attack == "live-cwd":
+            seat["session_sha256"] = _sha256(data)
+        replace_artifact(context, name, records)
+        rebind_reviewer_role(context)
+
+    rejected(
+        "self-consistent-provider-cwd-in-live-repo",
+        lambda context: observed_identity_attack(context, "live-cwd"),
+        "canonical repository",
+    )
+    rejected(
+        "observed-claude-session-replay-with-fresh-label",
+        lambda context: observed_identity_attack(context, "session-replay"),
+        "reviewer session",
+    )
+
     nested_targets = (
         [
             ("source_mutations", ("mutations", 0, field))
@@ -2271,6 +2518,8 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
             for field in ("raw", "junit", "receipt")
         ]
         + [
+            ("sl0_review", ("approval",)),
+            ("sl0_review", ("production_start",)),
             ("execution_runs", ("runs", "candidate_focused")),
             ("execution_runs", ("runs", "candidate_lint")),
             ("candidate_review_request", ("bundle",)),
@@ -2394,8 +2643,10 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
             / context["manifest"]["artifacts"]["source_mutations"]["path"]
         )
         entry = index["mutations"][0]
-        if attack in {"comment-only", "wrong-restoration"}:
-            field = "mutated_source" if attack == "comment-only" else "restored_source"
+        if attack in {"comment-only", "wrong-restoration", "truthy-non-biting"}:
+            field = (
+                "restored_source" if attack == "wrong-restoration" else "mutated_source"
+            )
             source = (
                 context["source_root"] / entry["restored_source"]["path"]
             ).read_bytes()
@@ -2421,6 +2672,8 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
             suite = ElementTree.fromstring(
                 (context["source_root"] / run["junit"]["path"]).read_bytes()
             )
+            suite = suite.find("testsuite") if suite.tag == "testsuites" else suite
+            assert suite is not None
             case = suite.find("testcase")
             assert case is not None
             if attack == "extra-junit-case":
@@ -2452,6 +2705,7 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
 
     for attack in (
         "comment-only",
+        "truthy-non-biting",
         "wrong-restoration",
         "wrong-source-binding",
         "extra-junit-case",
@@ -2710,6 +2964,8 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
                 "forged:" + seat["seat_id"],
                 inputs,
                 seat["report"],
+                context["repo"],
+                seat["session_sha256"],
             )
             runtime_ref = seat["runtime_receipt"]
             runtime = _strict_json(context["source_root"] / runtime_ref["path"])
@@ -2719,7 +2975,10 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
             seat["runtime_receipt"] = _write_ref(
                 context["source_root"], runtime_ref["path"], data
             )
+            if seat["harness"] != "claude":
+                seat["session_sha256"] = _sha256(data)
         replace_artifact(context, "candidate_broker_receipts", brokers)
+        rebind_reviewer_role(context)
 
     rejected("self-consistent-forged-git-review", forged_git_review, "Git-bound review")
 
@@ -3046,33 +3305,45 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
         "duplicate input operation nonce",
     )
 
+    def inconsistent_count(context: dict[str, Any], name: str, field: str) -> None:
+        artifact = name + "_" + field
+        ref = context["manifest"]["artifacts"][artifact]
+        data = (context["source_root"] / ref["path"]).read_bytes()
+        if field == "raw":
+            count = context["expected"]["run_counts"][name]["passed"]
+            data = data.replace(
+                f"{count} passed".encode(),
+                f"{_different_count(count)} passed".encode(),
+                1,
+            )
+        else:
+            suite = ElementTree.fromstring(data)
+            case = next(case for case in suite.findall("testcase") if not list(case))
+            ElementTree.SubElement(case, "skipped", message="inconsistent count")
+            suite.set("skipped", str(int(suite.get("skipped", "0")) + 1))
+            data = ElementTree.tostring(suite)
+        replace_artifact(context, artifact, data)
+        alter_observed_run(
+            context,
+            name,
+            lambda record: record.__setitem__(
+                field, context["manifest"]["artifacts"][artifact]
+            ),
+        )
+
     for raw_name, junit_name in RAW_JUNIT_PAIRS:
         pair_name = raw_name.removesuffix("_raw")
         rejected(
             f"{pair_name}-raw-count-mismatch",
-            lambda context, raw_name=raw_name, pair_name=pair_name: replace_artifact(
-                context,
-                raw_name,
-                (
-                    f"{_different_count(context['expected']['run_counts'][pair_name]['passed'])}"
-                    " passed\n"
-                ).encode(),
+            lambda context, pair_name=pair_name: inconsistent_count(
+                context, pair_name, "raw"
             ),
             "raw/JUnit count mismatch",
         )
         rejected(
             f"{pair_name}-junit-count-mismatch",
-            lambda context, junit_name=junit_name, pair_name=pair_name: (
-                replace_artifact(
-                    context,
-                    junit_name,
-                    _junit_bytes(
-                        ("passed",)
-                        * _different_count(
-                            context["expected"]["run_counts"][pair_name]["passed"]
-                        )
-                    ),
-                )
+            lambda context, pair_name=pair_name: inconsistent_count(
+                context, pair_name, "junit"
             ),
             "raw/JUnit count mismatch",
         )
