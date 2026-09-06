@@ -382,6 +382,165 @@ def test_a_builtin_whose_exception_cannot_be_formatted_cannot_escape(
     assert "injected_flaky_validator" in cv.unavailable_builtin_closeout_validators()
 
 
+_BROKEN_NAME_ARMED = [False]
+
+
+class _BrokenNameMeta(type):
+    """A metaclass whose ``__name__`` lookup raises -- ``type(exc).__name__`` is a crash.
+
+    Armed only around the call under test: pytest's own failure reporter reads
+    ``cls.__name__`` too, and an always-raising metaclass turns a clean RED into
+    an INTERNALERROR.
+    """
+
+    def __getattribute__(cls, attr):
+        if attr == "__name__" and _BROKEN_NAME_ARMED[0]:
+            raise RuntimeError("injected: __name__ raised")
+        return super().__getattribute__(attr)
+
+
+class _UnnameableTypeError(RuntimeError, metaclass=_BrokenNameMeta):
+    """An exception whose class cannot be named."""
+
+
+class _UnnameableAndUnformattableError(RuntimeError, metaclass=_BrokenNameMeta):
+    """Neither the class name nor the message can be read."""
+
+    def __str__(self) -> str:
+        raise ValueError("injected: __str__ raised")
+
+
+class _FormatRaisingStr(str):
+    """A ``str`` subclass that survives ``str()`` but raises inside an f-string."""
+
+    def __format__(self, spec):
+        raise ValueError("injected: __format__ raised")
+
+
+class _StrIsFormatRaisingSubclassError(RuntimeError):
+    """``str(exc)`` succeeds -- and hands back something an f-string cannot format."""
+
+    def __str__(self):
+        return _FormatRaisingStr("hidden")
+
+
+@pytest.mark.parametrize("mode,expected", [("warn", "warn"), ("block", "block")])
+@pytest.mark.parametrize(
+    "exc,expected_detail",
+    [
+        (_UnnameableTypeError("hidden"), "<unnameable exception type>: hidden"),
+        (
+            _UnnameableAndUnformattableError("hidden"),
+            "<unnameable exception type>: <exception message unformattable>",
+        ),
+        # str(exc) SUCCEEDS but returns a str subclass whose __format__ raises:
+        # the f-string that interpolates it is the crash, not the coercion
+        (_StrIsFormatRaisingSubclassError("hidden"), "_StrIsFormatRaisingSubclassError: hidden"),
+    ],
+    ids=["name-raises", "name-and-str-raise", "str-returns-format-raising-subclass"],
+)
+def test_a_builtin_whose_exception_type_cannot_be_named_cannot_escape(
+    broken_builtin, mode, expected, exc, expected_detail
+) -> None:
+    """G-2, terminal: NO operand of the crash description may raise.
+
+    Round 1 guarded the message and left ``type(exc).__name__`` in the
+    fallback, so a class whose ``__name__`` lookup raises through its
+    metaclass escaped from the fallback of the guard that exists to contain it.
+    Found by the #794 board (codex + fable seats, round 2). Every operand is now
+    coerced to a plain ``str`` under its own guard (``_describe_exception``).
+    """
+    broken_builtin("injected_flaky_validator", ImportError("injected: not yet"))
+    cv.load_builtin_closeout_validators()
+    assert "injected_flaky_validator" in cv.unavailable_builtin_closeout_validators()
+
+    finder = _RaisingFinder("injected_flaky_validator", exc)
+    sys.meta_path.insert(0, finder)
+    _BROKEN_NAME_ARMED[0] = True
+    try:
+        findings = cv.run_closeout_validators(ctx=None, env={"PHASE_LOOP_REVIEW": mode})
+    except Exception:  # pragma: no cover - the bug this pins
+        pytest.fail("a retried built-in whose type cannot be named escaped closeout")
+    finally:
+        _BROKEN_NAME_ARMED[0] = False
+        sys.meta_path.remove(finder)
+        sys.modules.pop(finder.fullname, None)
+    ours = [f for f in findings if "injected_flaky_validator" in f.reason]
+    assert [f.code for f in ours] == ["gate_crashed"], [f.reason for f in findings]
+    assert ours[0].severity == expected
+    assert expected_detail in (ours[0].body or "")
+    assert "UNKNOWN, not pass" in (ours[0].body or "")
+    assert "injected_flaky_validator" in cv.unavailable_builtin_closeout_validators()
+
+
+class _UnformattableName:
+    """A ``__name__`` value that is not a ``str`` and raises when made one."""
+
+    def __str__(self) -> str:
+        raise ValueError("injected: name __str__ raised")
+
+
+class _NameIsFormatRaisingStr:
+    __name__ = _FormatRaisingStr("sneaky")
+
+    def __call__(self, _ctx):
+        raise RuntimeError("call crash")
+
+
+class _NameIsUnformattable:
+    __name__ = _UnformattableName()
+
+    def __call__(self, _ctx):
+        raise RuntimeError("call crash")
+
+
+class _NameLookupRaises:
+    @property
+    def __name__(self):
+        raise RuntimeError("injected: __name__ property raised")
+
+    def __call__(self, _ctx):
+        raise RuntimeError("call crash")
+
+    def __repr__(self):
+        raise RuntimeError("repr crash")
+
+
+@pytest.mark.parametrize(
+    "factory,expected_name",
+    [
+        (_NameIsUnformattable, "<unnameable validator>"),
+        (_NameLookupRaises, "<unnameable validator>"),
+        (_NameIsFormatRaisingStr, "sneaky"),
+    ],
+    ids=["name-str-raises", "name-lookup-raises", "name-is-format-raising-str-subclass"],
+)
+def test_a_validator_whose_name_cannot_be_formatted_cannot_escape(factory, expected_name) -> None:
+    """G-1, terminal: the validator NAME is coerced to ``str`` under the guard.
+
+    The #787 fix guarded the lookup (a ``__name__`` whose lookup raises was
+    already contained -- the ``name-lookup-raises`` case is a regression pin)
+    but interpolated whatever ``__name__`` RETURNED, so a non-``str`` name that
+    raises when formatted still escaped (``name-str-raises`` is RED on
+    b8c1cfeb). Found by the #794 board (fable seat, round 2). A ``str``
+    SUBCLASS name whose ``__format__`` raises survives ``str()`` and crashes
+    the f-string instead; the handler must hand the f-string an exact ``str``.
+    """
+    bad = factory()
+    cv.register_closeout_validator(bad)
+    try:
+        findings = cv.run_closeout_validators(ctx=None, env={"PHASE_LOOP_REVIEW": "block"})
+    except Exception as exc:  # pragma: no cover - the bug this pins
+        pytest.fail(f"a validator with an unformattable name escaped: {exc!r}")
+    finally:
+        cv._VALIDATORS.remove(bad)
+    # Other registered validators also crash on ctx=None; select OURS by the
+    # name the handler was expected to produce, proving it reached the finding.
+    ours = [f for f in findings if f.code == "gate_crashed" and expected_name in f.reason]
+    assert len(ours) == 1, [f.reason for f in findings]
+    assert ours[0].severity == "block"
+
+
 def test_a_validator_yielding_a_non_finding_cannot_escape() -> None:
     """G-1: the severity rewrite is inside the boundary too.
 
@@ -469,8 +628,10 @@ def _env_aliases(tree: ast.Module) -> tuple[set[str], set[str], set[str]]:
     seat, round 1) and pinned by test_the_sweep_skip_is_load_bearing. Binding is
     name-level, not flow-sensitive: once a name is bound to environ anywhere in
     the module it is treated as environ everywhere in it (over-approximation,
-    the right direction for a guard). NOT followed: re-exports through other
-    modules, attribute/tuple targets, and containers. The recogniser tests below
+    the right direction for a guard). Snapshots (``dict(environ)``,
+    ``environ.copy()``, ``{**environ}``) bind an environ alias too (see
+    ``_is_environ``). NOT followed: re-exports through other modules,
+    attribute/tuple targets, and other containers. The recogniser tests below
     are the list of what IS covered.
     """
     modules, environs, getenvs = {"os"}, {"environ"}, {"getenv"}
@@ -523,10 +684,25 @@ def _names_the_var(expr: ast.AST) -> bool:
 
 
 def _is_environ(expr: ast.AST, aliases) -> bool:
-    """``os.environ`` (any os alias), a bare environ alias, or ``getattr(os, "environ")``."""
+    """``os.environ`` (any os alias), a bare environ alias, ``getattr(os, "environ")``,
+    or a snapshot of any of those: ``dict(<environ>)``, ``<environ>.copy()``,
+    ``{**<environ>}``. A snapshot reads the same variable one step later, so a
+    name bound to one is an environ alias too (#794 board, fable seat, round 2).
+    """
     modules, environs, _ = aliases
     if isinstance(expr, ast.Name):
         return expr.id in environs
+    if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Name) and expr.func.id == "dict":
+        return len(expr.args) == 1 and _is_environ(expr.args[0], aliases)
+    if (
+        isinstance(expr, ast.Call)
+        and isinstance(expr.func, ast.Attribute)
+        and expr.func.attr == "copy"
+        and not expr.args
+    ):
+        return _is_environ(expr.func.value, aliases)
+    if isinstance(expr, ast.Dict):
+        return any(k is None and _is_environ(v, aliases) for k, v in zip(expr.keys, expr.values))
     if isinstance(expr, ast.Attribute):
         return expr.attr == "environ" and isinstance(expr.value, ast.Name) and expr.value.id in modules
     if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Name) and expr.func.id == "getattr":
@@ -572,15 +748,16 @@ def _reads_verify_enforce(node: ast.AST, aliases=({"os"}, {"environ"}, {"getenv"
 def _direct_reads(source: str, *, skip_function: str | None = None) -> list[int]:
     """Line numbers of direct reads in ``source``, skipping one named function.
 
-    The skip covers the whole ``FunctionDef`` node as ``ast.walk`` reaches it:
-    body, decorators, and default-argument expressions alike.
+    The skip covers the whole ``FunctionDef`` / ``AsyncFunctionDef`` node as
+    ``ast.walk`` reaches it: body, decorators, and default-argument expressions
+    alike.
     """
     tree = ast.parse(source)
     aliases = _env_aliases(tree)
     skipped: set[ast.AST] = set()
     if skip_function is not None:
         for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef) and node.name == skip_function:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == skip_function:
                 skipped.update(ast.walk(node))
     return [
         node.lineno
@@ -678,11 +855,34 @@ def test_the_sweep_skips_the_function_not_the_module(tmp_path) -> None:
         # is breadth-first, so ``b = a.environ`` is seen before ``a = os`` and
         # only the fixed-point pass resolves ``b``
         'import os\ndef f():\n    a = os\nb = a.environ\nb.get(VERIFY_ENFORCE_ENV)',
+        # snapshots of environ read the same variable one step later (found by
+        # the #794 board, fable seat, round 2)
+        'import os\nsnap = dict(os.environ)\nsnap.get("PHASE_LOOP_VERIFY_ENFORCE")',
+        'import os\nsnap = os.environ.copy()\nsnap["PHASE_LOOP_VERIFY_ENFORCE"]',
+        'import os\nsnap = {**os.environ}\nsnap.get(VERIFY_ENFORCE_ENV)',
+        'from os import environ\nsnap = dict(environ)\nsnap.get(VERIFY_ENFORCE_ENV)',
+        'import os\nsnap = {"X": "1", **os.environ, "Y": "2"}\nsnap.get(VERIFY_ENFORCE_ENV)',
+        'import os\nsnap = dict(os.environ.copy())\nsnap.get(VERIFY_ENFORCE_ENV)',
+        # the skip must not apply to a non-skipped ASYNC function either
+        'import os\nasync def other():\n    return os.environ.get("PHASE_LOOP_VERIFY_ENFORCE")',
     ],
 )
 def test_the_guard_recognises_each_direct_read_spelling(snippet) -> None:
     """The guard's own detector, checked against the spellings it must catch."""
     assert _direct_reads(snippet), snippet
+
+
+def test_the_guard_skips_an_async_parse_point_too() -> None:
+    """The skip keys on the NAME, whichever def form carries it (#794 board, fable seat, round 2)."""
+    source = (
+        "import os\n"
+        "async def verify_enforce_mode(env):\n"
+        '    return os.environ.get("PHASE_LOOP_VERIFY_ENFORCE")\n'
+        "async def other():\n"
+        '    return os.environ.get("PHASE_LOOP_VERIFY_ENFORCE")\n'
+    )
+    assert _direct_reads(source, skip_function="verify_enforce_mode") == [5]
+    assert _direct_reads(source) == [3, 5]
 
 
 def test_the_guard_skips_only_the_named_function() -> None:

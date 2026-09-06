@@ -31,6 +31,46 @@ from typing import Any, Callable, Iterable, Mapping
 
 _LOG = logging.getLogger(__name__)
 
+
+def _plain_str(read: Callable[[], object], fallback: str) -> str:
+    """``read()`` as an exact ``str``, or ``fallback``. Cannot raise.
+
+    A crash handler's every operand is a way out of the handler. ``read()``
+    may raise; ``str()`` of its result runs a ``__str__`` that may raise, or
+    return a ``str`` SUBCLASS whose ``__format__`` raises later, inside the
+    f-string that interpolates it. ``str.__str__`` copies a subclass to an
+    exact ``str`` without consulting overrides, so what this returns can be
+    formatted by anything.
+    """
+    try:
+        return str.__str__(str(read()))
+    except Exception:
+        return fallback
+
+
+def _describe_exception(exc: BaseException) -> str:
+    """A plain ``str`` naming *exc* that cannot itself raise.
+
+    An exception whose ``__str__`` raises (#794 board, codex leg, round 1) and
+    an exception class whose ``__name__`` lookup raises through its metaclass
+    (#794 board, codex + fable seats, round 2) each escaped a handler that
+    formatted them. Each operand is coerced under its own guard.
+    """
+    type_name = _plain_str(lambda: type(exc).__name__, "<unnameable exception type>")
+    message = _plain_str(lambda: exc, "<exception message unformattable>")
+    return f"{type_name}: {message}"
+
+
+def _describe_validator(fn: object) -> str:
+    """A plain ``str`` naming a validator callable that cannot itself raise.
+
+    The contract permits any callable: one whose ``__repr__`` raises (#787
+    board, codex leg, round 2), or whose ``__name__`` is not a ``str`` and
+    raises when formatted (#794 board, fable seat, round 2), must not escape
+    the crash handler that names it.
+    """
+    return _plain_str(lambda: getattr(fn, "__name__", None) or repr(fn), "<unnameable validator>")
+
 ReviewSeverity = str  # "warn" | "block"
 REVIEW_SEVERITIES: tuple[str, ...] = ("warn", "block")
 REVIEW_MODES: tuple[str, ...] = ("off", "warn", "block")
@@ -250,16 +290,11 @@ def run_closeout_validators(
                 name,
                 exc_info=True,
             )
-            # Describing the crash must not be able to raise either: the
-            # validator-crash handler below already guards the NAME against a
-            # raising __repr__, and an exception whose __str__ raises escaped
-            # this handler the same way. Found by the #794 board (codex leg,
-            # round 1) and pinned by
-            # test_a_builtin_whose_exception_cannot_be_formatted_cannot_escape.
-            try:
-                detail = f"{type(exc).__name__}: {exc}"
-            except Exception:
-                detail = f"{type(exc).__name__}: <exception message unformattable>"
+            # Describing the crash must not be able to raise either; see
+            # _describe_exception. Pinned by
+            # test_a_builtin_whose_exception_cannot_be_formatted_cannot_escape
+            # and test_a_builtin_whose_exception_type_cannot_be_named_cannot_escape.
+            detail = _describe_exception(exc)
             findings.append(
                 ReviewFinding(
                     code="gate_crashed",
@@ -313,11 +348,11 @@ def run_closeout_validators(
             # The name must never be able to raise: the contract permits any
             # callable, and a callable whose __call__ AND __repr__ both raise
             # otherwise escapes from inside the handler that exists to stop
-            # exactly that. Found by the #787 board (codex leg, round 2).
-            try:
-                name = getattr(fn, "__name__", None) or repr(fn)
-            except Exception:  # pragma: no cover - defensive
-                name = "<unnameable validator>"
+            # exactly that (#787 board, codex leg, round 2). See
+            # _describe_validator; pinned by
+            # test_an_unnameable_validator_cannot_escape_the_handler and
+            # test_a_validator_whose_name_cannot_be_formatted_cannot_escape.
+            name = _describe_validator(fn)
             _LOG.warning("closeout validator %s raised; gate did not run", name, exc_info=True)
             findings.append(
                 ReviewFinding(
