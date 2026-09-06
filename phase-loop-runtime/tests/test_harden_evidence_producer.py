@@ -1366,7 +1366,9 @@ def _persist_manifest(context: dict[str, Any]) -> None:
 
 
 def _prepare_command(context: dict[str, Any]) -> subprocess.CompletedProcess[str]:
-    return _producer_command(
+    ledger = context["repo"] / ".phase-loop/events.jsonl"
+    ledger_before = _path_snapshot(ledger)
+    completed = _producer_command(
         "prepare",
         "--inputs",
         str(context["manifest_path"]),
@@ -1387,6 +1389,26 @@ def _prepare_command(context: dict[str, Any]) -> subprocess.CompletedProcess[str
         "--expected-author-session-sha256",
         context["sessions"]["author"],
     )
+    assert _path_snapshot(ledger) == ledger_before, "prepare modified canonical ledger"
+    return completed
+
+
+def _path_snapshot(root: Path) -> dict[str, tuple[Any, ...]]:
+    paths = (
+        [root, *root.rglob("*")] if root.is_dir() and not root.is_symlink() else [root]
+    )
+    snapshot = {}
+    for path in paths:
+        name = str(path.relative_to(root))
+        if path.is_symlink():
+            snapshot[name] = ("symlink", os.readlink(path))
+        elif path.is_file():
+            snapshot[name] = ("file", path.read_bytes())
+        elif path.is_dir():
+            snapshot[name] = ("directory",)
+        else:
+            snapshot[name] = ("absent",)
+    return snapshot
 
 
 def _seal_command(
@@ -2313,7 +2335,7 @@ def test_harden_producer_derives_live_facts_without_historical_literals() -> Non
 def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
     _producer_module("assemble")
 
-    for author, red, final in _fixture_variants():
+    for index, (author, red, final) in enumerate(_fixture_variants()):
         with tempfile.TemporaryDirectory(prefix="pl-") as td:
             fixture_root = Path(td) / "fixture"
             context = _raw_fixture(
@@ -2323,6 +2345,9 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
                 red_outcomes=red,
                 final_outcomes=final,
             )
+            if index:
+                ledger = context["repo"] / ".phase-loop/events.jsonl"
+                ledger.write_bytes(_ledger_history_bytes())
             registry_before = context["registry"].read_bytes()
             completed = _prepare_command(context)
             assert completed.returncode == 0, completed.stderr
@@ -2613,11 +2638,13 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
             )
             start["source_mutations"] = ref
         else:
-            start["preproduction_runs"] = {
-                name: ref
-                for name, ref in value["runs"].items()
-                if name.startswith("preproduction_")
-            }
+            start["preproduction_runs"].update(
+                {
+                    name: ref
+                    for name, ref in value["runs"].items()
+                    if name.startswith("preproduction_")
+                }
+            )
         data = _canonical_bytes(start)
         _write_ref(context["repo"], start_ref["path"], data)
         historical["production_start"] = _write_ref(
@@ -2748,7 +2775,10 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
         seat = next(
             item
             for item in records["receipts"]
-            if item["harness"] == ("codex" if attack == "live-cwd" else "claude")
+            if item["harness"]
+            == (
+                "codex" if attack in {"live-cwd", "fresh-stateless-label"} else "claude"
+            )
         )
         broker = seat["broker"]
         if attack == "live-cwd":
@@ -2758,7 +2788,7 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
             argv[argv.index("--output-last-message") + 1] = cwd + "/last-message.txt"
             broker["provider_argv_sha256"] = _sha256("\0".join(argv).encode())
             broker["provider_cwd_sha256"] = _sha256(cwd.encode())
-        else:
+        elif attack != "fresh-stateless-label":
             candidate = _strict_json(
                 context["source_root"]
                 / context["manifest"]["artifacts"]["candidate_broker_receipts"]["path"]
@@ -2770,6 +2800,8 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
                 "claude_session_id_sha256"
             ]
             assert seat["session_sha256"] != broker["claude_session_id_sha256"]
+            if attack == "coherent-replay":
+                seat["session_sha256"] = broker["claude_session_id_sha256"]
         ref = seat["runtime_receipt"]
         runtime = _strict_json(context["source_root"] / ref["path"])
         runtime["broker"] = broker
@@ -2778,6 +2810,8 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
         seat["runtime_receipt"] = _write_ref(context["source_root"], ref["path"], data)
         if attack == "live-cwd":
             seat["session_sha256"] = _sha256(data)
+        elif attack == "fresh-stateless-label":
+            seat["session_sha256"] = _different_hex(_sha256(data))
         replace_artifact(context, name, records)
         rebind_reviewer_role(context)
 
@@ -2789,6 +2823,16 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
     rejected(
         "observed-claude-session-replay-with-fresh-label",
         lambda context: observed_identity_attack(context, "session-replay"),
+        "reviewer session",
+    )
+    rejected(
+        "coherent-observed-and-claimed-claude-session-replay",
+        lambda context: observed_identity_attack(context, "coherent-replay"),
+        "reused review",
+    )
+    rejected(
+        "fresh-stateless-session-label-with-rebound-aggregation",
+        lambda context: observed_identity_attack(context, "fresh-stateless-label"),
         "reviewer session",
     )
 
@@ -2867,7 +2911,10 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
             else:
                 value = _strict_json(path)
                 value[os.urandom(16).hex()] = f"api_key={secret_value}"
-            replace_input(context, group, name, value)
+            if group == "artifacts":
+                replace_artifact(context, name, value)
+            else:
+                replace_input(context, group, name, value)
 
         return mutate
 
@@ -2965,6 +3012,13 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
                 suite.append(copy.deepcopy(case))
                 suite.set("tests", "2")
                 suite.set("failures", "2")
+                raw = (context["source_root"] / run["raw"]["path"]).read_bytes()
+                assert b"1 failed" in raw
+                run["raw"] = _write_ref(
+                    context["source_root"],
+                    run["raw"]["path"],
+                    raw.replace(b"1 failed", b"2 failed"),
+                )
             elif attack == "wrong-nodeid":
                 case.set("name", "test_wrong_named_property")
             elif attack == "not-biting":
@@ -2972,6 +3026,12 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
                 assert failure is not None
                 case.remove(failure)
                 suite.set("failures", "0")
+                raw = (context["source_root"] / run["raw"]["path"]).read_bytes()
+                run["raw"] = _write_ref(
+                    context["source_root"],
+                    run["raw"]["path"],
+                    raw.replace(b"1 failed", b"1 passed"),
+                )
             else:
                 raise AssertionError(attack)
             run["junit"] = _write_ref(
@@ -2980,7 +3040,10 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
                 ElementTree.tostring(suite),
             )
             receipt = _strict_json(context["source_root"] / run["receipt"]["path"])
+            receipt["raw_sha256"] = run["raw"]["sha256"]
             receipt["junit_sha256"] = run["junit"]["sha256"]
+            if attack == "not-biting":
+                receipt["exit_code"] = 0
             run["receipt"] = _write_ref(
                 context["source_root"],
                 run["receipt"]["path"],
@@ -3036,7 +3099,9 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
         index["runs"][name] = _write_ref(context["source_root"], ref["path"], data)
         replace_artifact(context, "execution_runs", index)
 
-    def late_preproduction(context: dict[str, Any], name: str) -> None:
+    def late_preproduction(
+        context: dict[str, Any], name: str, *, wrong_clock: bool = False
+    ) -> None:
         historical = _strict_json(
             context["source_root"]
             / context["manifest"]["artifacts"]["sl0_review"]["path"]
@@ -3046,8 +3111,11 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
         )
 
         def late(record: dict[str, Any]) -> None:
-            record["started_monotonic_ns"] = start["observed_monotonic_ns"] + 1
-            record["finished_monotonic_ns"] = start["observed_monotonic_ns"] + 2
+            if wrong_clock:
+                record["clock_id"] += ":different-clock"
+            else:
+                record["started_monotonic_ns"] = start["observed_monotonic_ns"] + 1
+                record["finished_monotonic_ns"] = start["observed_monotonic_ns"] + 2
 
         if name.startswith("preproduction_"):
             alter_observed_run(context, name, late)
@@ -3067,6 +3135,13 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
             replace_artifact(context, "source_mutations", mutations)
 
     for name in ("preproduction_red", "preproduction_control", "mutation", "restored"):
+        rejected(
+            f"different-clock-preproduction-{name}",
+            lambda context, name=name: late_preproduction(
+                context, name, wrong_clock=True
+            ),
+            "preproduction clock",
+        )
         rejected(
             f"late-preproduction-{name}",
             lambda context, name=name: late_preproduction(context, name),
@@ -3180,8 +3255,11 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
     def missing_red_anchor(context: dict[str, Any]) -> None:
         name = "preproduction_red_raw"
         ref = context["manifest"]["artifacts"][name]
-        lines = (context["source_root"] / ref["path"]).read_text().splitlines()
-        replace_artifact(context, name, (lines[0] + "\n").encode())
+        raw = (context["source_root"] / ref["path"]).read_bytes()
+        assert b"HARDEN-RED-ANCHOR::" in raw
+        replace_artifact(
+            context, name, raw.replace(b"HARDEN-RED-ANCHOR::", b"MISSING-RED-ANCHOR::")
+        )
         index = _strict_json(
             context["source_root"]
             / context["manifest"]["artifacts"]["execution_runs"]["path"]
@@ -3219,29 +3297,25 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
     rejected("wrong-named-red-junit", wrong_red_node, "RED")
 
     def reused_reviewer_session(context: dict[str, Any]) -> None:
-        candidate = _strict_json(
-            context["source_root"]
-            / context["manifest"]["artifacts"]["candidate_broker_receipts"]["path"]
-        )
-        main = _strict_json(
-            context["source_root"]
-            / context["manifest"]["artifacts"]["canonical_main_broker_receipts"]["path"]
-        )
-        main["receipts"][0]["session_sha256"] = candidate["receipts"][0][
-            "session_sha256"
-        ]
-        replace_artifact(context, "canonical_main_broker_receipts", main)
+        observed_identity_attack(context, "coherent-replay")
 
     rejected("reused-reviewer-across-rounds", reused_reviewer_session, "reused review")
+
+    def claimed_within_round(context: dict[str, Any]) -> None:
+        name = "candidate_broker_receipts"
+        records = _strict_json(
+            context["source_root"] / context["manifest"]["artifacts"][name]["path"]
+        )
+        records["receipts"][1]["session_sha256"] = records["receipts"][0][
+            "session_sha256"
+        ]
+        replace_artifact(context, name, records)
+        rebind_reviewer_role(context)
+
     rejected(
-        "reused-reviewer-within-round",
-        lie_in_json(
-            "candidate_broker_receipts",
-            lambda record: record["receipts"][1].__setitem__(
-                "session_sha256", record["receipts"][0]["session_sha256"]
-            ),
-        ),
-        "reused review",
+        "claimed-reviewer-session-mismatch-within-round",
+        claimed_within_round,
+        "reviewer session",
     )
 
     def forged_git_review(context: dict[str, Any]) -> None:
@@ -3876,12 +3950,21 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
             ledger_argument = mutate(context, canonical, request)
             output = context["root"] / "sealed-evidence.json"
             registry_before = context["registry"].read_bytes()
+            protected = (
+                context["evidence_root"],
+                canonical,
+                ledger_argument,
+                context["output"],
+                context["request"],
+            )
+            before = [_path_snapshot(path) for path in protected]
             completed = _seal_command(context, ledger_argument, output)
             assert completed.returncode != 0, name
             diagnostic = (completed.stderr + completed.stdout).lower()
             assert message.lower() in diagnostic, f"{name}: {diagnostic}"
             assert not output.exists()
             assert context["registry"].read_bytes() == registry_before
+            assert [_path_snapshot(path) for path in protected] == before, name
 
     for round_name in ("candidate", "canonical_main"):
         for attack in ("stale-head", "failed", "missing-gate"):
@@ -4025,13 +4108,7 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
             event = _completion_event(request)
             proof = event["metadata"]["harden_completion"]
             proof[field] = _different_hex(proof[field])
-            canonical.write_bytes(
-                _ledger_history_bytes()
-                + _canonical_bytes(event)
-                + _canonical_bytes(
-                    _completion_event(request, timestamp="2026-09-04T00:00:01Z")
-                )
-            )
+            canonical.write_bytes(_ledger_history_bytes() + _canonical_bytes(event))
             return canonical
 
         return mutate
@@ -4062,13 +4139,7 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
         ) -> Path:
             event = _completion_event(request)
             mutate(event)
-            canonical.write_bytes(
-                _ledger_history_bytes()
-                + encode(event)
-                + _canonical_bytes(
-                    _completion_event(request, timestamp="2026-09-04T00:00:01Z")
-                )
-            )
+            canonical.write_bytes(_ledger_history_bytes() + encode(event))
             return canonical
 
         return apply
