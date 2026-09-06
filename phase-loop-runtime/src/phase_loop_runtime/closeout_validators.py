@@ -250,6 +250,16 @@ def run_closeout_validators(
                 name,
                 exc_info=True,
             )
+            # Describing the crash must not be able to raise either: the
+            # validator-crash handler below already guards the NAME against a
+            # raising __repr__, and an exception whose __str__ raises escaped
+            # this handler the same way. Found by the #794 board (codex leg,
+            # round 1) and pinned by
+            # test_a_builtin_whose_exception_cannot_be_formatted_cannot_escape.
+            try:
+                detail = f"{type(exc).__name__}: {exc}"
+            except Exception:
+                detail = f"{type(exc).__name__}: <exception message unformattable>"
             findings.append(
                 ReviewFinding(
                     code="gate_crashed",
@@ -257,7 +267,7 @@ def run_closeout_validators(
                     severity="warn" if mode == "warn" else "block",
                     body=(
                         f"The built-in closeout validator {name} raised while importing on the "
-                        f"closeout-time retry ({type(exc).__name__}: {exc}), so its gate is not "
+                        f"closeout-time retry ({detail}), so its gate is not "
                         "registered and did not run. The gate's verdict for this closeout is "
                         "UNKNOWN, not pass. The traceback is in the runtime log."
                     ),

@@ -341,6 +341,47 @@ def test_a_builtin_that_breaks_on_retry_cannot_escape(broken_builtin, mode, expe
     assert "injected_flaky_validator" in cv.unavailable_builtin_closeout_validators()
 
 
+class _UnformattableError(RuntimeError):
+    """An exception whose ``__str__`` raises -- formatting it is itself a crash."""
+
+    def __str__(self) -> str:
+        raise ValueError("injected: __str__ raised")
+
+
+@pytest.mark.parametrize("mode,expected", [("warn", "warn"), ("block", "block")])
+def test_a_builtin_whose_exception_cannot_be_formatted_cannot_escape(
+    broken_builtin, mode, expected
+) -> None:
+    """G-2: describing the retry crash must not be able to raise.
+
+    The validator-crash handler already guards the validator NAME against a
+    raising ``__repr__`` (#787 board, codex leg). The retry handler formatted
+    the exception itself into the finding body, and an exception whose
+    ``__str__`` raises escaped from inside the handler that exists to contain
+    it. Found by the #794 board (codex leg, round 1).
+    """
+    broken_builtin("injected_flaky_validator", ImportError("injected: not yet"))
+    cv.load_builtin_closeout_validators()
+    assert "injected_flaky_validator" in cv.unavailable_builtin_closeout_validators()
+
+    finder = _RaisingFinder("injected_flaky_validator", _UnformattableError("hidden"))
+    sys.meta_path.insert(0, finder)
+    try:
+        findings = cv.run_closeout_validators(ctx=None, env={"PHASE_LOOP_REVIEW": mode})
+    except Exception as exc:  # pragma: no cover - the bug this pins
+        pytest.fail(f"a retried built-in escaped closeout: {type(exc).__name__}")
+    finally:
+        sys.meta_path.remove(finder)
+        sys.modules.pop(finder.fullname, None)
+    ours = [f for f in findings if "injected_flaky_validator" in f.reason]
+    assert [f.code for f in ours] == ["gate_crashed"], [f.reason for f in findings]
+    assert ours[0].severity == expected
+    # The type still names the crash; the unformattable message is replaced, not propagated.
+    assert "_UnformattableError" in (ours[0].body or "")
+    assert "UNKNOWN, not pass" in (ours[0].body or "")
+    assert "injected_flaky_validator" in cv.unavailable_builtin_closeout_validators()
+
+
 def test_a_validator_yielding_a_non_finding_cannot_escape() -> None:
     """G-1: the severity rewrite is inside the boundary too.
 
@@ -418,10 +459,18 @@ def _env_aliases(tree: ast.Module) -> tuple[set[str], set[str], set[str]]:
     """Names bound in ``tree`` to the ``os`` module, ``os.environ`` and ``os.getenv``.
 
     Resolves ``import os [as X]``, ``from os import environ [as X]`` and
-    ``from os import getenv [as X]`` at any depth of the module. It does NOT
-    follow re-exports through other modules or names rebound by assignment
-    (``e = os.environ``) -- those spellings are not in ``src/`` today, and the
-    guard would pass silently if one were added. The recogniser tests below
+    ``from os import getenv [as X]`` at any depth of the module, and single-name
+    assignment rebinding of any resolved spelling (``env = _os.environ``,
+    ``ge = os.getenv``, ``o = os``) to a fixed point. The parse point itself is
+    written that way (``closeout_validation.verify_enforce_mode``: ``import os
+    as _os`` / ``env = _os.environ`` / ``env.get(VERIFY_ENFORCE_ENV)``), so a
+    guard that did not follow it swept the sanctioned function's idiom as
+    nothing at all and its skip was inert -- found by the #794 board (fable
+    seat, round 1) and pinned by test_the_sweep_skip_is_load_bearing. Binding is
+    name-level, not flow-sensitive: once a name is bound to environ anywhere in
+    the module it is treated as environ everywhere in it (over-approximation,
+    the right direction for a guard). NOT followed: re-exports through other
+    modules, attribute/tuple targets, and containers. The recogniser tests below
     are the list of what IS covered.
     """
     modules, environs, getenvs = {"os"}, {"environ"}, {"getenv"}
@@ -436,6 +485,30 @@ def _env_aliases(tree: ast.Module) -> tuple[set[str], set[str], set[str]]:
                     environs.add(alias.asname or "environ")
                 elif alias.name == "getenv":
                     getenvs.add(alias.asname or "getenv")
+    # Assignment rebinding, iterated to a fixed point because ast.walk order is
+    # breadth-first, not source order, and a chain (a = os; b = a.environ) may
+    # be visited value-before-definition.
+    assigns = [
+        (node.targets[0].id, node.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+    ]
+    changed = True
+    while changed:
+        changed = False
+        aliases = (modules, environs, getenvs)
+        for target, value in assigns:
+            if isinstance(value, ast.Name) and value.id in modules and target not in modules:
+                modules.add(target)
+                changed = True
+            elif _is_environ(value, aliases) and target not in environs:
+                environs.add(target)
+                changed = True
+            elif _is_getenv(value, aliases) and target not in getenvs:
+                getenvs.add(target)
+                changed = True
     return modules, environs, getenvs
 
 
@@ -497,7 +570,11 @@ def _reads_verify_enforce(node: ast.AST, aliases=({"os"}, {"environ"}, {"getenv"
 
 
 def _direct_reads(source: str, *, skip_function: str | None = None) -> list[int]:
-    """Line numbers of direct reads in ``source``, skipping one named function's body."""
+    """Line numbers of direct reads in ``source``, skipping one named function.
+
+    The skip covers the whole ``FunctionDef`` node as ``ast.walk`` reaches it:
+    body, decorators, and default-argument expressions alike.
+    """
     tree = ast.parse(source)
     aliases = _env_aliases(tree)
     skipped: set[ast.AST] = set()
@@ -512,6 +589,22 @@ def _direct_reads(source: str, *, skip_function: str | None = None) -> list[int]
     ]
 
 
+def test_the_sweep_skip_is_load_bearing() -> None:
+    """The sweep's ``skip_function`` must remove something real.
+
+    Without the skip, the parse point's own read is an offender; with it, the
+    module is clean. A guard whose skip removes nothing has not seen the parse
+    point, and would not see a copy of it elsewhere either. Found inert by the
+    #794 board (fable seat, round 1).
+    """
+    source = (Path(SRC) / "phase_loop_runtime" / "closeout_validation.py").read_text()
+    unskipped = _direct_reads(source)
+    assert unskipped, "the guard does not recognise the parse point's own read"
+    for lineno in unskipped:
+        assert "VERIFY_ENFORCE_ENV" in source.splitlines()[lineno - 1]
+    assert _direct_reads(source, skip_function="verify_enforce_mode") == []
+
+
 def test_no_module_reads_the_verify_enforce_env_var_directly() -> None:
     """G-6 guard: outside the parse point, nothing reads the variable from the environment.
 
@@ -523,13 +616,39 @@ def test_no_module_reads_the_verify_enforce_env_var_directly() -> None:
     recogniser list in test_the_guard_recognises_each_direct_read_spelling;
     see _env_aliases for what is not followed.
     """
-    src = Path(SRC) / "phase_loop_runtime"
+    offenders = _sweep_direct_reads(Path(SRC) / "phase_loop_runtime")
+    assert not offenders, f"direct environment reads of PHASE_LOOP_VERIFY_ENFORCE: {offenders}"
+
+
+def _sweep_direct_reads(root: Path) -> list[str]:
+    """Every direct read under ``root`` except the ONE sanctioned function."""
     offenders = []
-    for path in src.rglob("*.py"):
+    for path in sorted(root.rglob("*.py")):
         skip = "verify_enforce_mode" if path.name == "closeout_validation.py" else None
         for lineno in _direct_reads(path.read_text(), skip_function=skip):
-            offenders.append(f"{path.relative_to(src)}:{lineno}")
-    assert not offenders, f"direct environment reads of PHASE_LOOP_VERIFY_ENFORCE: {offenders}"
+            offenders.append(f"{path.relative_to(root)}:{lineno}")
+    return offenders
+
+
+def test_the_sweep_skips_the_function_not_the_module(tmp_path) -> None:
+    """The sweep's exemption is ONE function, not the parse point's whole file.
+
+    A copy of closeout_validation.py with a read added outside
+    verify_enforce_mode must be reported; the real file must not. Reverting the
+    sweep site to skipping the whole module passes the real tree unchanged (it
+    has no such read today) -- this is the pin for that site. Found unpinned by
+    the #794 board (fable seat, round 1).
+    """
+    real = (Path(SRC) / "phase_loop_runtime" / "closeout_validation.py").read_text()
+    fake_root = tmp_path / "pkg"
+    fake_root.mkdir()
+    (fake_root / "closeout_validation.py").write_text(
+        real + '\n\ndef _leak():\n    import os\n    return os.environ.get("PHASE_LOOP_VERIFY_ENFORCE")\n'
+    )
+    leak_line = real.count("\n") + 5
+    assert _sweep_direct_reads(fake_root) == [f"closeout_validation.py:{leak_line}"]
+    (fake_root / "closeout_validation.py").write_text(real)
+    assert _sweep_direct_reads(fake_root) == []
 
 
 @pytest.mark.parametrize(
@@ -549,6 +668,16 @@ def test_no_module_reads_the_verify_enforce_env_var_directly() -> None:
         'import os as _o\n_o.getenv("PHASE_LOOP_VERIFY_ENFORCE")',
         'import os\ngetattr(os, "environ").get("PHASE_LOOP_VERIFY_ENFORCE")',
         'import os\ngetattr(os, "environ")["PHASE_LOOP_VERIFY_ENFORCE"]',
+        # assignment rebinding, incl. the parse point's own idiom (found by the
+        # #794 board, fable seat, round 1)
+        'import os as _os\nenv = _os.environ\nenv.get(VERIFY_ENFORCE_ENV)',
+        'import os\ne = os.environ\ne["PHASE_LOOP_VERIFY_ENFORCE"]',
+        'import os\nge = os.getenv\nge("PHASE_LOOP_VERIFY_ENFORCE")',
+        'import os\no = os\no.environ.get("PHASE_LOOP_VERIFY_ENFORCE")',
+        # a chain whose inner link is nested DEEPER than its outer one: ast.walk
+        # is breadth-first, so ``b = a.environ`` is seen before ``a = os`` and
+        # only the fixed-point pass resolves ``b``
+        'import os\ndef f():\n    a = os\nb = a.environ\nb.get(VERIFY_ENFORCE_ENV)',
     ],
 )
 def test_the_guard_recognises_each_direct_read_spelling(snippet) -> None:
