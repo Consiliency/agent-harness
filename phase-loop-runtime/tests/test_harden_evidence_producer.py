@@ -1413,9 +1413,10 @@ def _prepare_command(context: dict[str, Any]) -> subprocess.CompletedProcess[str
         "--expected-author-session-sha256",
         context["sessions"]["author"],
     )
-    assert [_path_snapshot(path) for path in protected] == before, (
-        "prepare modified retained input or canonical evidence"
-    )
+    if [_path_snapshot(path) for path in protected] != before:
+        pytest.fail(
+            "prepare modified retained input or canonical evidence", pytrace=False
+        )
     return completed
 
 
