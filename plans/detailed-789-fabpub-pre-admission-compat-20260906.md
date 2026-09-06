@@ -79,7 +79,12 @@ untouched; a node id must not collide with any frozen inventory (see [[test-name
   strict, as today, just typed.
 - `probe_readable()` — add — read-only: takes the store lock (`admissions.lock`, shared with the owner file,
   `verbs.py:106`), calls `_records()`, releases; returns the record count. Creates nothing (must not call
-  `_authorize()`'s `mkdir`; guard on `self.path.exists()` first).
+  `_authorize()`'s `mkdir`; guard on `self.path.exists()` first). This is the EARLY, actionable refusal only — it
+  does not close the race on its own (next bullet + the `verbs.py` precondition).
+- Unknown-key extraction is per constructor, not top-level only: `AdmissionRecord`, `ReadmitAdmissionBinding`
+  (`:155`), and the three request dataclasses (`DeltaReadmitAuthority` `:163`, `AdmissionRequest` `:165`,
+  `PreAdmissionEnvelope` `:167`) each get `set(raw_dict) - {f.name for f in dataclasses.fields(cls)}` at their
+  own construction site, so the message names the nested field that broke.
 
 `phase-loop-runtime/src/phase_loop_runtime/convergence/broker/verbs.py` (modify)
 - `_fresh_publish` (`:450`) — modify — call `self.admission_store.probe_readable()` and
@@ -87,6 +92,15 @@ untouched; a node id must not collide with any frozen inventory (see [[test-name
   incompatible reader fails at the first line, before `_block_unsealed_owner` and before the durable owner write at
   `:474`. `AdmissionStoreIncompatible` propagates unchanged (it is a `PermissionError`, the publish surface's
   existing refusal type).
+- Check/use race (round-1 finding F1): the probe releases `admissions.lock`; `append_adapter_start_owner`
+  (`:95-121`) re-acquires it; `admit_next` (`:490`) acquires it again. A newer-runtime writer landing an
+  incompatible record between the probe and `:474` reproduces the incident (owner durable, then `TypeError`).
+  Close it the way the repo already closes this class (`live.py:3288-3291`, `admission.py:140` "in-lock ...
+  closes the check/use race"): `append_adapter_start_owner` gains `precondition: Callable[[], None] | None`,
+  invoked INSIDE the lock after the in-lock owner re-read (`:113`) and before `_owner_atomic_write` (`:118`).
+  `_fresh_publish` passes `precondition=self.admission_store._records` at both call sites (`:474`, `:488`);
+  `_records` is lock-free (`admission.py:149`), so it is safe with the lock held, and it raises the same typed
+  refusal. The probe stays for the actionable early message; the precondition is what makes the guarantee.
 - Keep `record_intent`/adapter ordering byte-identical (Workstream C depends on nothing here).
 
 `phase-loop-runtime/tests/test_fabpub_admission_compat_789.py` (create) — tests_only lane, RED-first
@@ -102,6 +116,11 @@ untouched; a node id must not collide with any frozen inventory (see [[test-name
   Falsifier for A (RUN it, record the anchor): revert the `_fresh_publish` probe ordering → this test must fail on
   the owner-file-absent assertion (owner written, then `TypeError`), which is the incident replayed.
 - `test_probe_readable_creates_nothing` — probe against a never-created store root leaves the root absent.
+- `test_incompatible_record_landing_after_probe_still_refused_before_owner_write` — the concurrent-writer
+  regression (F1), deterministic: monkeypatch `admission_store.probe_readable` to append the `future_field` line to
+  `admissions.jsonl` AFTER returning success (the store mutates between probe and owner write), run
+  `service.execute`, assert `AdmissionStoreIncompatible` and `adapter-start-owner.json` absent. Falsifier (RUN it):
+  drop the `precondition=` argument at `:474` → owner file present, test RED.
 - Positive control: a compatible store still publishes exactly once (reuse the existing publish-through-`admit_next`
   path from `test_fabpub_broker_envelope_publish_allocates_through_admit_next`, `:1763`).
 
@@ -134,15 +153,23 @@ contract clarification, not a weakening: identity was never path-derived (`live.
   `git worktree remove` it, then run the resume/revalidation path: must succeed, identity equal, warning emitted.
 - Negative: delete the main repository (common dir) too → `LegacyCutoverConflict` with the actionable message; no
   journal transition written.
-- Negative: swap the common dir for a DIFFERENT repository at the same path → "repository identity changed after
-  seal" still fires (proves the helper did not loosen identity).
+- Negative: make the helper's fallback resolve to a DIFFERENT repository — point `namespace_root` at a path whose
+  `rev-parse --git-common-dir` differs from the sealed row's common dir → "repository identity changed after seal"
+  fires (proves the helper did not loosen identity; equality at `:2501` is the property).
+- Stated limit (round-1 finding F2, carried not claimed): a different repository re-created at the SAME common-dir
+  path with the same object format has the SAME `CanonicalRepositoryIdentity.v1` (`live.py:301-318` hashes only
+  `git_common_dir` + `git_object_format`), so it is undetectable TODAY at base and B neither fixes nor worsens it.
+  Do not write a test that promises that refusal.
+- Helper self-check uses `git -C <common> rev-parse --path-format=absolute --git-common-dir` (or `.resolve()` on
+  the output): from inside the common dir plain `rev-parse --git-common-dir` prints `.`.
 - Falsifier (RUN it): revert the helper to `row["worktree"]` → first test fails in `_git_out` with the incident's
   "No such file" text.
 
-### Workstream C — pre-admission owner recovery policy (acceptance items 3, 5) — DECISION REQUIRED
+### Workstream C — pre-admission owner recovery policy (acceptance items 3, 5) — DECIDED: C-keep (see `status:`)
 
 This is a frozen-contract question (see research, collision with `test_fabpub_shared_adapter_start_fence_…`
-`:1981-1989`). Two admissible positions; the plan implements NEITHER until the maintainer picks one.
+`:1981-1989`). Two admissible positions were put to the maintainer; **C-keep was chosen 2026-09-06**. C-change is
+kept below only so the board's rejection stays on the record.
 
 - **C-keep (recommended).** Keep "owner durable ⇒ possible provider effect ⇒ permanent ambiguity". Rationale: the
   chronology proof ("no intent record ⇒ adapter never entered") is only as strong as the WEAKEST runtime version that
@@ -151,7 +178,21 @@ This is a frozen-contract question (see research, collision with `test_fabpub_sh
   recurrence (the reader now fails before the owner write), so the class of pre-admission ambiguities this incident
   created should not recur from THIS cause. The supported operator recovery is then what ah#789 recorded: a
   documented, recorded, one-time operator override outside the governed path, plus the partition consequence below.
-  Deliverable under C-keep: `docs/` operator note + the ah#789 ambiguity record left permanent; no code.
+  Deliverables under C-keep: `docs/` operator note + the ah#789 ambiguity record left permanent + the controls
+  below (tests_only lane, `phase-loop-runtime/tests/test_fabpub_recovery_controls_789.py`, create):
+  - negative (unknown effect stays unknown): a partition holding an `OUTCOME_AMBIGUOUS_BLOCKED` record refuses a
+    fresh publish for the exact intended branch with `git ls-remote`/the adapter's remote probe monkeypatched to
+    raise — proves the refusal never consults the remote (issue item 3: "never infer no-effect from remote absence
+    or timeout"); the blocked record is byte-identical afterwards (`evidence.py:230` has no transition out).
+  - positive, "without weakening fencing for unrelated operations": two repository partitions in one authority
+    root; block the first, publish through the second → exactly one admission + one adapter call, first still
+    blocked (`epoch_blocked` scope, `evidence.py:85-95`). Reuse the multi-repository fixture shape of
+    `test_fabpub_global_legacy_cutover_partitions_multiple_repositories_…` (`test_fabpub_shared_epoch.py:2700`).
+  - **Carried, not discharged (round-1 finding F3):** item (5)'s FIRST half — "a completed recovery can publish
+    the exact intended branch once" — has no governed path under C-keep; the only governed recovery is partition
+    rotation (Workstream D), which is deferred. That positive control is carried to the D plan, and
+    Consiliency/agent-harness#789 stays OPEN after A, B and the C-keep deliverables land. Whether to amend item (5)
+    instead is the maintainer's call; this plan records the carry and claims nothing for it.
 - **C-change.** Amend the frozen contract so an unsealed owner with NO evidence record for its `effect_key` is
   retired `NO_EFFECT_TERMINAL_PROVEN` (reference `pre-admission-owner-no-intent`) by `_block_unsealed_owner`, derived
   ONLY from local durable chronology (`record_intent` `:498` precedes adapter entry `:526`; owners are written only at
@@ -199,7 +240,7 @@ correctly refused to improvise. Out of scope here; if the maintainer wants it, i
 ## Verification
 - Suite (CI-faithful recipe, installed venv): `cd phase-loop-runtime && PYTHONPATH=$PWD/tests
   /mnt/workspace/venvs/ah-779-ci/bin/python -m pytest tests/test_fabpub_admission_compat_789.py
-  tests/test_fabpub_inventory_worktree_lifecycle_789.py tests/test_fabpub_shared_epoch.py
+  tests/test_fabpub_inventory_worktree_lifecycle_789.py tests/test_fabpub_recovery_controls_789.py tests/test_fabpub_shared_epoch.py
   tests/test_fabpub_zero_history_bootstrap.py -p no:cacheprovider -o addopts="" -q` — frozen corpus counts
   unchanged (`test_fabpub_guard_nodeid_inventories_are_disjoint_and_counted` green).
 - Each falsifier above RUN and its anchor recorded in the PR body (never "should fail").
@@ -220,6 +261,8 @@ correctly refused to improvise. Out of scope here; if the maintainer wants it, i
 - [ ] Frozen FABPUB corpus node ids and counts are unchanged by PR-A and PR-B; `_fabpub_tdd_guard.py` untouched.
 - [ ] The maintainer's C decision is recorded in this plan's `status:` line before any C work starts; transaction
       `b72b68ff…`'s `outcome_ambiguous_blocked` record is byte-identical before and after every PR here.
+- [ ] Issue item (5): the recovery-controls tests above pass; the "publish the exact intended branch once"
+      positive control is recorded as carried to the Workstream D plan (ah#789 left open), not claimed here.
 
 ## Execution Policy
 - execute: effort=high, reason=shared-store concurrency and a frozen fail-closed contract; A and B are small
