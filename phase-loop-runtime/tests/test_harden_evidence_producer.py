@@ -17,6 +17,8 @@ from xml.etree import ElementTree
 
 import pytest
 
+from harden_tdd_guard import HARDEN_CASES
+
 
 ACTIVATION_ENV = "PHASE_LOOP_TDD_EXPECT_HARDEN_PRODUCER"
 INPUT_SCHEMA = "harden_evidence_inputs.v1"
@@ -33,12 +35,16 @@ ANCHORS = {
 RAW_ARTIFACT_NAMES = (
     "plan_authority",
     "sl0_review",
+    "source_mutations",
+    "execution_runs",
     "preproduction_red_raw",
     "preproduction_red_junit",
     "preproduction_control_raw",
     "preproduction_control_junit",
     "candidate_focused_raw",
     "candidate_focused_junit",
+    "candidate_pure_control_raw",
+    "candidate_pure_control_junit",
     "candidate_broad_raw",
     "candidate_broad_junit",
     "candidate_lint_raw",
@@ -47,6 +53,8 @@ RAW_ARTIFACT_NAMES = (
     "candidate_broker_receipts",
     "canonical_main_focused_raw",
     "canonical_main_focused_junit",
+    "canonical_main_pure_control_raw",
+    "canonical_main_pure_control_junit",
     "canonical_main_broad_raw",
     "canonical_main_broad_junit",
     "canonical_main_lint_raw",
@@ -58,8 +66,10 @@ RAW_JUNIT_PAIRS = (
     ("preproduction_red_raw", "preproduction_red_junit"),
     ("preproduction_control_raw", "preproduction_control_junit"),
     ("candidate_focused_raw", "candidate_focused_junit"),
+    ("candidate_pure_control_raw", "candidate_pure_control_junit"),
     ("candidate_broad_raw", "candidate_broad_junit"),
     ("canonical_main_focused_raw", "canonical_main_focused_junit"),
+    ("canonical_main_pure_control_raw", "canonical_main_pure_control_junit"),
     ("canonical_main_broad_raw", "canonical_main_broad_junit"),
 )
 ROLE_NAMES = ("coordinator", "author", "reviewer")
@@ -152,7 +162,7 @@ def _write_ref(root: Path, relative: str, data: bytes) -> dict[str, str]:
     return {"path": relative, "sha256": _sha256(data)}
 
 
-def _junit_bytes(outcomes: tuple[str, ...]) -> bytes:
+def _junit_bytes(outcomes: tuple[str, ...], *, named_anchors: bool = False) -> bytes:
     suite = ElementTree.Element(
         "testsuite",
         tests=str(len(outcomes)),
@@ -161,14 +171,27 @@ def _junit_bytes(outcomes: tuple[str, ...]) -> bytes:
         skipped=str(outcomes.count("skipped")),
     )
     for index, outcome in enumerate(outcomes):
+        classname, name = "retained", f"case_{index}"
+        anchor = None
+        if named_anchors and index < len(HARDEN_CASES):
+            case_id, contract = list(HARDEN_CASES.items())[index]
+            module, name = contract.nodeid.split("::")
+            classname = (
+                module.removeprefix("phase-loop-runtime/")
+                .removesuffix(".py")
+                .replace("/", ".")
+            )
+            anchor = f"HARDEN-RED-ANCHOR::{case_id}"
         case = ElementTree.SubElement(
             suite,
             "testcase",
-            classname="retained",
-            name=f"case_{index}",
+            classname=classname,
+            name=name,
         )
         if outcome == "failed":
-            ElementTree.SubElement(case, "failure", message="falsifier bit")
+            ElementTree.SubElement(
+                case, "failure", message="falsifier bit"
+            ).text = anchor
         elif outcome == "skipped":
             ElementTree.SubElement(case, "skipped", message="capability absent")
     return ElementTree.tostring(suite, encoding="utf-8", xml_declaration=True)
@@ -176,20 +199,17 @@ def _junit_bytes(outcomes: tuple[str, ...]) -> bytes:
 
 def _fixture_variants() -> tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...]:
     suffix = _sha256(os.urandom(16))[:12]
-    runtime_red = ("failed",) * (2 + int(suffix[0], 16) % 3) + (
-        "passed",
-        "skipped",
-    )
-    runtime_final = ("passed",) * (2 + int(suffix[1], 16) % 4)
+    runtime_red = ("passed",) * (3 + int(suffix[0], 16) % 3) + ("skipped",)
+    runtime_final = ("passed",) * (4 + int(suffix[1], 16) % 4)
     return (
         (
             "codex-gpt-5.6-terra",
-            ("failed", "passed", "skipped"),
+            ("passed", "skipped"),
             ("passed", "passed"),
         ),
         (
             "claude-fable-5",
-            ("failed", "failed", "passed", "passed"),
+            ("passed", "passed"),
             ("passed", "passed", "passed"),
         ),
         (
@@ -218,8 +238,28 @@ def _producer_module(case: str) -> Any:
 
 
 def _producer_command(*args: str) -> subprocess.CompletedProcess[str]:
+    # Keep CI substitution in the test process, not in a production CLI flag or
+    # environment switch. Only the canonical provider query is replaced; the
+    # producer, verifier and all of their validation execute unchanged.
+    bootstrap = """
+import pathlib, runpy, subprocess, sys
+producer, *arguments = sys.argv[1:]
+if '--evidence-root' in arguments:
+    root = pathlib.Path(arguments[arguments.index('--evidence-root') + 1]).parent
+    fake_gh = root / 'fake-gh'
+    original = subprocess.Popen
+    class HermeticCIProcess(original):
+        def __init__(self, command, *positional, **keywords):
+            if isinstance(command, (list, tuple)) and command and str(command[0]) == '/usr/bin/gh':
+                assert list(command[1:3]) == ['run', 'view'], 'unexpected CI query'
+                command = [str(fake_gh), *command[1:]]
+            super().__init__(command, *positional, **keywords)
+    subprocess.Popen = HermeticCIProcess
+sys.argv = [producer, *arguments]
+runpy.run_path(producer, run_name='__main__')
+"""
     return subprocess.run(
-        [sys.executable, str(_repo_root() / PRODUCER_PATH), *args],
+        [sys.executable, "-c", bootstrap, str(_repo_root() / PRODUCER_PATH), *args],
         cwd=_repo_root(),
         capture_output=True,
         text=True,
@@ -237,28 +277,230 @@ def _load_shipped_verifier() -> Any:
     return module
 
 
+def _broker_observation(
+    verifier: Any,
+    harness: str,
+    model: str,
+    identity: str,
+    inputs: dict[str, str],
+    report: str,
+) -> dict[str, Any]:
+    """Independent hermetic observation data, never a production inference result."""
+    prompt = verifier.broker_sealed_prompt(inputs["bundle"], inputs["instructions"])
+    prompt_bytes = len(prompt.encode())
+    scratch = "/tmp/harden-producer-observation"
+    argv = []
+    for token in verifier.broker_argv_grammar(harness, model):
+        if isinstance(token, str):
+            argv.append(token)
+        elif argv[-1:] == ["--output-last-message"]:
+            argv.append(scratch + "/last-message.txt")
+        else:
+            candidates = (scratch, "model_reasoning_effort=xhigh", "max", "high", "30s")
+            argv.append(next(value for value in candidates if token.fullmatch(value)))
+    stream = (
+        verifier.broker_gemini_stream_protocol(prompt) if harness == "gemini" else None
+    )
+    transport = stream["transport"] if stream else prompt
+    data: dict[str, Any] = {
+        "schema": "parent_unix_broker_v1",
+        "stage_bundle_sha256": _sha256(inputs["bundle"].encode()),
+        "stage_instructions_sha256": _sha256(inputs["instructions"].encode()),
+        "leg_authorization_instructions_sha256": _sha256(
+            inputs["instructions"].encode()
+        ),
+        "leg_authorization_issued_monotonic_ns": 1,
+        "leg_authorization_expires_monotonic_ns": 30_000_000_001,
+        "peer_pid": 101,
+        "peer_uid": 1000,
+        "peer_gid": 1000,
+        "outer_bwrap_pid": 100,
+        "outer_bwrap_start": 12345,
+        "bwrap": "/usr/bin/bwrap",
+        "socket": "/run/phase-loop-broker/intended-inference.sock",
+        "stage": "/run/phase-loop-review",
+        "stage_bundle_mode": 0o400,
+        "stage_instructions_mode": 0o400,
+        "child_returncode": 0,
+        "operation_deadline_s": 30.0,
+        "client_probe_assertions": [
+            "credentialless_env",
+            "readonly_stage",
+            "no_live_bundle",
+            "no_live_instructions",
+            "no_host_secret",
+            "no_live_tree",
+            "no_inherited_fd",
+            "fixed_socket_only",
+            "no_af_inet",
+        ],
+        "provider_harness": harness,
+        "provider_model": model,
+        "provider_argv_shape": argv,
+        "provider_argv_sha256": _sha256("\0".join(argv).encode()),
+        "provider_cwd_class": "owned_empty_scratch",
+        "provider_cwd_sha256": _sha256(scratch.encode()),
+        "provider_no_tool_controls": list(verifier.NO_TOOL_CONTROLS[harness]),
+        "provider_env_keys": ["HOME", "LANG", "PATH", "XDG_CONFIG_HOME"]
+        if stream
+        else ["LANG", "PATH"],
+        "provider_prompt_transport": verifier.PROMPT_TRANSPORT[harness],
+        "provider_response_status": "OK",
+        "provider_response_sha256": _sha256(report.encode()),
+        "provider_response_bytes": len(report.encode()),
+    }
+    for field in (
+        "canonical_repo_sha256",
+        "canonical_repo_probe_file_sha256",
+        "argv_sha256",
+        "client_probe_program_sha256",
+        "child_stderr_sha256",
+    ):
+        data[field] = _sha256(f"{identity}:{field}".encode())
+    for field in (
+        "cleanup_root_removed",
+        "host_secret_probe_removed",
+        "child_quiescent",
+        "peer_ancestry_verified",
+        "network_unshared",
+        "close_fds_requested",
+        "socket_present_before_launch",
+        "canonical_repo_file_denied",
+        "canonical_repo_directory_denied",
+        "host_stage_path_denied",
+        "no_inherited_fd_observed",
+        "broker_thread_quiescent",
+        "provider_adapter_quiescent",
+        "provider_input_inline",
+        "provider_env_api_keys_scrubbed",
+        "provider_env_direct_routes_scrubbed",
+    ):
+        data[field] = True
+    for field in (
+        "child_timeout",
+        "provider_live_tree_cwd",
+        "provider_cancel_requested",
+    ):
+        data[field] = False
+    for prefix, content in (
+        ("input", prompt),
+        ("prompt", prompt),
+        ("transport", transport),
+    ):
+        data[f"provider_{prefix}_sha256"] = _sha256(content.encode())
+        data[f"provider_{prefix}_bytes"] = len(content.encode())
+    if harness == "claude":
+        data.update(
+            {
+                "claude_session_id_sha256": _sha256(f"{identity}:session".encode()),
+                "claude_session_resume_forbidden": True,
+                "claude_transcript_exact_path_sha256": _sha256(
+                    f"{identity}:transcript-path".encode()
+                ),
+                "claude_transcript_preexisting": False,
+                "claude_transcript_existed": True,
+                "claude_transcript_sha256": _sha256(f"{identity}:transcript".encode()),
+                "claude_transcript_bytes": 64,
+                "claude_transcript_cleanup_verified": True,
+                "provider_liveness_profile": "broker_prompt_scaled_v1",
+                "provider_liveness_prompt_bytes": prompt_bytes,
+                "provider_liveness_stall_threshold_s": float(
+                    max(
+                        1,
+                        min(
+                            verifier.BROKER_CLAUDE_STALL_BASE_S
+                            + (
+                                prompt_bytes
+                                + verifier.BROKER_CLAUDE_STALL_BYTES_PER_S
+                                - 1
+                            )
+                            // verifier.BROKER_CLAUDE_STALL_BYTES_PER_S,
+                            max(
+                                1, 30 - verifier.BROKER_CLAUDE_STALL_TRANSPORT_RESERVE_S
+                            ),
+                        ),
+                    )
+                ),
+            }
+        )
+    if stream:
+        settings = {
+            "permissions": {"deny": list(verifier.AGY_DENY_ACTIONS)},
+            "toolPermission": "request-review",
+            "allowNonWorkspaceAccess": False,
+        }
+        data.update(
+            {
+                "provider_isolation_profile": "agy_temp_home_deny_all_v1",
+                "provider_agy_deny_actions": list(verifier.AGY_DENY_ACTIONS),
+                "provider_agy_settings_sha256": _sha256(_canonical_bytes(settings)),
+                "provider_agy_subscription_reference": "private_symlink",
+                "provider_agy_home_cleanup_verified": True,
+                "provider_stream_protocol": verifier.GEMINI_STREAM_PROTOCOL,
+                "provider_stream_chunk_count": len(stream["chunk_sha256"]),
+                "provider_stream_chunk_sha256": stream["chunk_sha256"],
+                "provider_stream_chunk_bytes": stream["chunk_bytes"],
+                "provider_stream_final_event_sha256": stream["final_event_sha256"],
+                "provider_stream_acknowledgements": stream["acknowledgements"],
+                "provider_stream_result_count": len(stream["acknowledgements"]) + 1,
+                "provider_stream_output_sha256": _sha256(
+                    f"{identity}:stream-output".encode()
+                ),
+                "provider_stream_output_bytes": len(stream["acknowledgements"]) + 1,
+                "provider_stream_outcome": "accepted",
+                "provider_stream_acknowledgements_verified": True,
+                "provider_stream_final_no_truncation": True,
+            }
+        )
+    return data
+
+
 def _raw_fixture(
     root: Path,
     *,
     variant: str = "valid",
     author_vendor: str = "codex-gpt-5.6-terra",
-    red_outcomes: tuple[str, ...] = ("failed", "passed", "skipped"),
+    red_outcomes: tuple[str, ...] = ("passed", "skipped"),
     final_outcomes: tuple[str, ...] = ("passed", "passed"),
 ) -> dict[str, Any]:
+    red_outcomes = ("failed",) * len(HARDEN_CASES) + red_outcomes
+    final_outcomes = ("passed",) * len(HARDEN_CASES) + final_outcomes
     repo = root / "repo"
     source_root = root / "retained-source"
     repo.mkdir(parents=True)
     source_root.mkdir()
-    _git(repo, "init", "-q")
+    _git(repo, "init", "-q", "--initial-branch=main")
     _git(repo, "config", "user.email", "producer-test@example.invalid")
     _git(repo, "config", "user.name", "HARDEN producer test")
+    frozen_paths = tuple(
+        sorted(
+            {
+                f"phase-loop-runtime/tests/test_{variant}_one.py",
+                f"phase-loop-runtime/tests/test_{variant}_two.py",
+                *(case.nodeid.split("::")[0] for case in HARDEN_CASES.values()),
+            }
+        )
+    )
+    production_path = f"phase-loop-runtime/src/phase_loop_runtime/{variant}.py"
+    marker_path = "phase-loop-runtime/src/phase_loop_runtime/capability_registry.py"
     base = _commit(
         repo,
         "base",
         {
+            **{
+                case.production_path: f"def {case.symbol}():\n    return True\n"
+                for case in HARDEN_CASES.values()
+            },
             "README.md": "base\n",
-            "plans/phase-plan-v10-HARDEN.md": "# HARDEN raw-input fixture\n",
+            "plans/phase-plan-v10-HARDEN.md": (
+                "# HARDEN retained-input test contract\n\n"
+                "### SL-0 — tests-first\n\n- **Owned files**: "
+                + ", ".join(f"`{path}`" for path in frozen_paths)
+                + "\n\n### SL-1 — production\n\n- **Owned files**: "
+                + f"`{production_path}`, `{marker_path}`\n"
+            ),
             "plans/manifest.json": '{"plans":[]}\n',
+            marker_path: "# Capability marker is absent before production.\n",
             ".gitignore": ".phase-loop/\n",
             ".github/workflows/test.yml": (
                 "name: test\n\n"
@@ -274,23 +516,40 @@ def _raw_fixture(
             ),
         },
     )
-    frozen_paths = (
-        f"phase-loop-runtime/tests/test_{variant}_one.py",
-        f"phase-loop-runtime/tests/test_{variant}_two.py",
-    )
+    frozen_tests = {
+        path: f"def test_{index}(): pass\n" for index, path in enumerate(frozen_paths)
+    }
+    for case in HARDEN_CASES.values():
+        test_path, test_name = case.nodeid.split("::")
+        relative_source = case.production_path.removeprefix("phase-loop-runtime/")
+        frozen_tests[test_path] = (
+            "from pathlib import Path\n\n"
+            f"def {test_name}():\n"
+            "    namespace = {}\n"
+            f"    source = Path(__file__).resolve().parents[1] / {relative_source!r}\n"
+            "    exec(compile(source.read_bytes(), str(source), 'exec'), namespace)\n"
+            f"    assert namespace[{case.symbol!r}]()\n"
+        )
+    _git(repo, "checkout", "-qb", "reviewed-sl0")
     reviewed = _commit(
         repo,
         "tests only",
+        frozen_tests,
+    )
+    _git(repo, "checkout", "-q", "main")
+    _git(repo, "merge", "--no-ff", "-qm", "land reviewed tests", "reviewed-sl0")
+    landing = _git(repo, "rev-parse", "HEAD")
+    candidate = _commit(
+        repo,
+        "production",
         {
-            path: f"def test_{index}(): pass\n"
-            for index, path in enumerate(frozen_paths)
+            production_path: "CAPABILITY = 1\n",
+            marker_path: "HARDEN_CAPABILITY_VERSION = 1\n",
         },
     )
-    landing = _commit(repo, "land tests", {"CHANGELOG.md": "tests landed\n"})
-    production_path = f"phase-loop-runtime/src/phase_loop_runtime/{variant}.py"
-    candidate = _commit(repo, "production", {production_path: "CAPABILITY = 1\n"})
     sibling_path = f"sibling/{variant}.txt"
     canonical_main = _commit(repo, "sibling landing", {sibling_path: "sibling\n"})
+    _git(repo, "update-ref", "refs/remotes/origin/main", canonical_main)
     commits = {
         "sl0_base": base,
         "reviewed_sl0": reviewed,
@@ -319,6 +578,15 @@ def _raw_fixture(
         }
         for harness in ("claude", "codex", "gemini", "grok")
     ]
+    verifier = _load_shipped_verifier()
+    reviewer_sessions = {
+        (round_name, route["harness"]): _sha256(
+            f"{variant}:{round_name}:{route['harness']}:reviewer-session".encode()
+        )
+        for round_name in ("candidate", "canonical_main")
+        for route in routes
+    }
+    operation_nonces.extend(reviewer_sessions.values())
     plan_authority = {
         "schema": "harden_plan_authority.v1",
         "evidence_id": evidence_id,
@@ -338,23 +606,34 @@ def _raw_fixture(
             f"{red_outcomes.count('failed')} failed, "
             f"{red_outcomes.count('passed')} passed, "
             f"{red_outcomes.count('skipped')} skipped\n"
+            + "\n".join(f"HARDEN-RED-ANCHOR::{case_id}" for case_id in HARDEN_CASES)
+            + "\n"
         ).encode(),
         "preproduction_control_raw": b"2 passed\n",
         "candidate_focused_raw": f"{len(final_outcomes)} passed\n".encode(),
+        "candidate_pure_control_raw": b"2 passed\n",
         "candidate_broad_raw": f"{len(final_outcomes) + 1} passed\n".encode(),
         "candidate_lint_raw": b"All checks passed!\n",
         "canonical_main_focused_raw": f"{len(final_outcomes)} passed\n".encode(),
+        "canonical_main_pure_control_raw": b"2 passed\n",
         "canonical_main_broad_raw": f"{len(final_outcomes) + 2} passed\n".encode(),
         "canonical_main_lint_raw": b"All checks passed!\n",
     }
     junits = {
-        "preproduction_red_junit": _junit_bytes(red_outcomes),
+        "preproduction_red_junit": _junit_bytes(red_outcomes, named_anchors=True),
         "preproduction_control_junit": _junit_bytes(("passed", "passed")),
-        "candidate_focused_junit": _junit_bytes(final_outcomes),
-        "candidate_broad_junit": _junit_bytes(final_outcomes + ("passed",)),
-        "canonical_main_focused_junit": _junit_bytes(final_outcomes),
+        "candidate_focused_junit": _junit_bytes(final_outcomes, named_anchors=True),
+        "candidate_pure_control_junit": _junit_bytes(("passed", "passed")),
+        "candidate_broad_junit": _junit_bytes(
+            final_outcomes + ("passed",), named_anchors=True
+        ),
+        "canonical_main_focused_junit": _junit_bytes(
+            final_outcomes, named_anchors=True
+        ),
+        "canonical_main_pure_control_junit": _junit_bytes(("passed", "passed")),
         "canonical_main_broad_junit": _junit_bytes(
-            final_outcomes + ("passed", "passed")
+            final_outcomes + ("passed", "passed"),
+            named_anchors=True,
         ),
     }
     artifacts: dict[str, dict[str, str]] = {
@@ -365,9 +644,179 @@ def _raw_fixture(
             source_root, "raw/sl0-review.json", _canonical_bytes(sl0_review)
         ),
     }
+    mutation_entries = []
+    for case_id, case in HARDEN_CASES.items():
+        restored_bytes = subprocess.check_output(
+            ["git", "show", f"{reviewed}:{case.production_path}"], cwd=repo
+        )
+        mutated_bytes = restored_bytes.replace(b"return True", b"return False", 1)
+        assert mutated_bytes != restored_bytes
+        entry: dict[str, Any] = {
+            "case_id": case_id,
+            "source_path": case.production_path,
+            "nodeid": case.nodeid,
+            "restored_source": _write_ref(
+                source_root, f"raw/mutations/{case_id}/restored.py", restored_bytes
+            ),
+            "mutated_source": _write_ref(
+                source_root, f"raw/mutations/{case_id}/mutated.py", mutated_bytes
+            ),
+        }
+        module, function = case.nodeid.split("::")
+        classname = (
+            module.removeprefix("phase-loop-runtime/")
+            .removesuffix(".py")
+            .replace("/", ".")
+        )
+        for stage, exit_code, kind, marker, source_ref in (
+            (
+                "mutation",
+                1,
+                "source_mutation",
+                "HARDEN-MUTATION-BITE",
+                entry["mutated_source"],
+            ),
+            (
+                "restored",
+                0,
+                "restored_control",
+                "HARDEN-RESTORED-CONTROL",
+                entry["restored_source"],
+            ),
+        ):
+            run_nonce = _sha256(f"{variant}:{case_id}:{stage}:process".encode())
+            operation_nonces.append(run_nonce)
+            raw = _write_ref(
+                source_root,
+                f"raw/mutations/{case_id}/{stage}.txt",
+                f"{marker}::{case_id}\n1 {'failed' if exit_code else 'passed'}\n".encode(),
+            )
+            suite = ElementTree.Element(
+                "testsuite", tests="1", failures=str(exit_code), errors="0", skipped="0"
+            )
+            testcase = ElementTree.SubElement(
+                suite, "testcase", classname=classname, name=function
+            )
+            if exit_code:
+                ElementTree.SubElement(
+                    testcase, "failure"
+                ).text = f"{marker}::{case_id}"
+            junit = _write_ref(
+                source_root,
+                f"raw/mutations/{case_id}/{stage}.xml",
+                ElementTree.tostring(suite, encoding="utf-8", xml_declaration=True),
+            )
+            record = {
+                "schema": "harden_pytest_receipt.v1",
+                "kind": kind,
+                "head": reviewed,
+                "tree": trees["reviewed_sl0"],
+                "process_nonce": run_nonce,
+                "exit_code": exit_code,
+                "argv_class": f"pytest_harden_{kind}_v1",
+                "raw_sha256": raw["sha256"],
+                "junit_sha256": junit["sha256"],
+                "source_path": case.production_path,
+                "source_sha256": source_ref["sha256"],
+            }
+            receipt = _write_ref(
+                source_root,
+                f"raw/mutations/{case_id}/{stage}-receipt.json",
+                _canonical_bytes(record),
+            )
+            entry[stage] = {"raw": raw, "junit": junit, "receipt": receipt}
+        mutation_entries.append(entry)
+    artifacts["source_mutations"] = _write_ref(
+        source_root,
+        "raw/source-mutations.json",
+        _canonical_bytes(
+            {"schema": "harden_source_mutations.v1", "mutations": mutation_entries}
+        ),
+    )
     for name, data in {**raw_outputs, **junits}.items():
         extension = "xml" if name.endswith("junit") else "txt"
         artifacts[name] = _write_ref(source_root, f"raw/{name}.{extension}", data)
+    run_observations = {}
+    for raw_name, junit_name in RAW_JUNIT_PAIRS:
+        name = raw_name.removesuffix("_raw")
+        revision = (
+            "reviewed_sl0"
+            if name.startswith("preproduction_")
+            else "candidate"
+            if name.startswith("candidate_")
+            else "canonical_main"
+        )
+        is_red = name == "preproduction_red"
+        nonce = _sha256(f"{variant}:{name}:fresh-process".encode())
+        operation_nonces.append(nonce)
+        record = {
+            "schema": "harden_run_observation.v1",
+            "kind": name,
+            "head": commits[revision],
+            "tree": trees[revision],
+            "process_nonce": nonce,
+            "exit_code": int(is_red),
+            "argv": ["python3", "-m", "pytest", "-q", "tests"],
+            "cwd": "phase-loop-runtime",
+            "env_keys": ["PHASE_LOOP_TDD_EXPECT_HARDEN"]
+            if is_red or "focused" in name
+            else [],
+            "source_tree": trees[revision],
+            "raw": artifacts[raw_name],
+            "junit": artifacts[junit_name],
+            "baseline": {
+                "commit": base if revision == "reviewed_sl0" else landing,
+                "tree": trees["sl0_base"]
+                if revision == "reviewed_sl0"
+                else trees["landing"],
+                "inherited_failures": [],
+                "inherited_skips": [],
+                "inherited_deselected": [],
+            },
+        }
+        relative = f".phase-loop/runs/{variant}-{name}/observation.json"
+        raw_record = _canonical_bytes(record)
+        _write_ref(repo, relative, raw_record)
+        run_observations[name] = _write_ref(source_root, relative, raw_record)
+    for round_name in ("candidate", "canonical_main"):
+        name = f"{round_name}_lint"
+        nonce = _sha256(f"{variant}:{name}:fresh-process".encode())
+        operation_nonces.append(nonce)
+        record = {
+            "schema": "harden_static_receipt.v1",
+            "head": commits[round_name],
+            "tree": trees[round_name],
+            "process_nonce": nonce,
+            "exit_code": 0,
+            "tool_identity": "harden_static_gate.v1",
+            "argv_class": "harden_static_metadata_only_v1",
+            "checks": ["py_compile", "ruff", "git_diff_check"],
+            "raw_sha256": artifacts[f"{name}_raw"]["sha256"],
+        }
+        relative = f".phase-loop/runs/{variant}-{name}/lint-receipt.json"
+        raw_record = _canonical_bytes(record)
+        _write_ref(repo, relative, raw_record)
+        run_observations[name] = _write_ref(source_root, relative, raw_record)
+    groups = {}
+    for round_name in ("candidate", "canonical_main"):
+        run_nonce = _sha256(f"{variant}:{round_name}:parent-process".encode())
+        operation_nonces.append(run_nonce)
+        groups[round_name] = {
+            "run_nonce": run_nonce,
+            "head": commits[round_name],
+            "tree": trees[round_name],
+        }
+    artifacts["execution_runs"] = _write_ref(
+        source_root,
+        "raw/execution-runs.json",
+        _canonical_bytes(
+            {
+                "schema": "harden_execution_runs.v1",
+                "runs": run_observations,
+                "groups": groups,
+            }
+        ),
+    )
     for round_name, head in (
         ("candidate", candidate),
         ("canonical_main", canonical_main),
@@ -397,6 +846,26 @@ def _raw_fixture(
             "routes": routes,
             "operation_nonce": operation_nonces[0 if round_name == "candidate" else 1],
         }
+        inputs = {
+            kind: verifier.git_bound_review_input(
+                repo, landing, trees["landing"], head, trees[round_name], kind
+            )
+            for kind in ("bundle", "instructions")
+        }
+        for kind, content in inputs.items():
+            request[kind] = _write_ref(
+                source_root,
+                f"raw/{round_name}-{kind}.json",
+                _canonical_bytes(
+                    {
+                        "schema": "harden_review_input.v1",
+                        "kind": kind,
+                        "head": head,
+                        "tree": trees[round_name],
+                        "content": content,
+                    }
+                ),
+            )
         artifacts[f"{round_name}_review_request"] = _write_ref(
             source_root,
             f"raw/{round_name}-review-request.json",
@@ -410,6 +879,15 @@ def _raw_fixture(
                     **route,
                     "result_kind": "live",
                     "terminal_verdict": "AGREE",
+                    "head": head,
+                    "tree": trees[round_name],
+                    "seat_id": f"{variant}-{round_name}-{route['harness']}",
+                    "session_sha256": reviewer_sessions[round_name, route["harness"]],
+                    "harness_provenance": "brokered_subscription_cli",
+                    "report": (
+                        f"Reviewed {head} / {trees[round_name]} as "
+                        f"{route['harness']} in {round_name}.\nAGREE\n"
+                    ),
                     "operation_nonce": operation_nonces[
                         (2 if round_name == "candidate" else 6) + index
                     ],
@@ -417,6 +895,38 @@ def _raw_fixture(
                 for index, route in enumerate(routes)
             ],
         }
+        for item in receipts["receipts"]:
+            report_bytes = item["report"].encode("utf-8")
+            item["report_sha256"] = _sha256(report_bytes)
+            item["report_bytes"] = len(report_bytes)
+            item["broker"] = _broker_observation(
+                verifier,
+                item["harness"],
+                item["resolved_model"],
+                f"{variant}:{round_name}:{item['harness']}",
+                inputs,
+                item["report"],
+            )
+            runtime_record = {
+                "schema": "harden_broker_run_receipt.v1",
+                "head": head,
+                "tree": trees[round_name],
+                "harness": item["harness"],
+                "model": item["resolved_model"],
+                "seat_key": item["seat_id"],
+                "status": "OK",
+                "report": item["report"],
+                "report_sha256": item["report_sha256"],
+                "report_bytes": item["report_bytes"],
+                "broker": item["broker"],
+            }
+            relative = (
+                f".phase-loop/runs/{variant}-{round_name}/"
+                f"implementation-panel-{item['harness']}.harden-broker-run.json"
+            )
+            runtime_bytes = _canonical_bytes(runtime_record)
+            _write_ref(repo, relative, runtime_bytes)
+            item["runtime_receipt"] = _write_ref(source_root, relative, runtime_bytes)
         artifacts[f"{round_name}_broker_receipts"] = _write_ref(
             source_root,
             f"raw/{round_name}-broker-receipts.json",
@@ -425,6 +935,9 @@ def _raw_fixture(
     sessions = {
         role: _sha256(f"{variant}:{role}-session".encode()) for role in ROLE_NAMES
     }
+    sessions["reviewer"] = _sha256(
+        "\0".join(sorted(reviewer_sessions.values())).encode()
+    )
     role_attestations = {
         role: _write_ref(
             source_root,
@@ -433,8 +946,15 @@ def _raw_fixture(
                 {
                     "schema": "harden_role_attestation.v1",
                     "role": role,
+                    "identity": (
+                        "reviewer-" + session[:32]
+                        if role == "reviewer"
+                        else f"{variant}-{role}"
+                    ),
+                    "vendor": author_vendor if role == "author" else role,
                     "session_sha256": session,
                     "evidence_id": evidence_id,
+                    "issued_at": "2026-09-05T00:00:00Z",
                     "operation_nonce": operation_nonces[10 + index],
                 }
             ),
@@ -476,6 +996,10 @@ def _raw_fixture(
                     "name": "suite gate",
                     "status": "completed",
                     "conclusion": "success",
+                    "startedAt": "2026-09-05T00:00:00Z",
+                    "completedAt": "2026-09-05T00:00:01Z",
+                    "url": f"https://example.invalid/job/{run_id}",
+                    "steps": [],
                 }
             ],
         }
@@ -496,7 +1020,7 @@ def _raw_fixture(
         "trees": trees,
         "changed_paths": {
             "reviewed_sl0": sorted(frozen_paths),
-            "candidate": [production_path],
+            "candidate": sorted([production_path, marker_path]),
             "canonical_main": [sibling_path],
         },
         "frozen_test_paths": sorted(frozen_paths),
@@ -509,13 +1033,16 @@ def _raw_fixture(
                 ("preproduction_red", red_outcomes),
                 ("preproduction_control", ("passed", "passed")),
                 ("candidate_focused", final_outcomes),
+                ("candidate_pure_control", ("passed", "passed")),
                 ("candidate_broad", final_outcomes + ("passed",)),
                 ("canonical_main_focused", final_outcomes),
+                ("canonical_main_pure_control", ("passed", "passed")),
                 ("canonical_main_broad", final_outcomes + ("passed", "passed")),
             )
         },
         "author_vendor": author_vendor,
         "routes": routes,
+        "reviewer_sessions": reviewer_sessions,
         "operation_nonces": operation_nonces,
         "registry": {
             "evidence_ids": [unrelated_registry_id],
@@ -776,19 +1303,61 @@ def _assert_prepared(context: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
             "receipt"
         ],
         "candidate_broad": evidence["verification"]["candidate"]["broad"]["receipt"],
+        "candidate_pure_control": evidence["verification"]["candidate"]["pure_control"][
+            "receipt"
+        ],
         "canonical_main_focused": evidence["verification"]["canonical_main"]["focused"][
             "receipt"
         ],
         "canonical_main_broad": evidence["verification"]["canonical_main"]["broad"][
             "receipt"
         ],
+        "canonical_main_pure_control": evidence["verification"]["canonical_main"][
+            "pure_control"
+        ]["receipt"],
     }
     for name, ref in receipt_refs.items():
-        summary = retained_json(ref, f"{name} receipt")["summary"]
+        receipt_record = retained_json(ref, f"{name} receipt")
+        summary = receipt_record["summary"]
         expected_counts = context["expected"]["run_counts"][name]
         assert {
             outcome: summary[outcome] for outcome in ("passed", "failed", "skipped")
         } == expected_counts
+        observation_index = _strict_json(
+            context["source_root"]
+            / context["manifest"]["artifacts"]["execution_runs"]["path"]
+        )
+        observation_ref = observation_index["runs"][name]
+        observed = _strict_json(context["source_root"] / observation_ref["path"])
+        for field in (
+            "head",
+            "tree",
+            "process_nonce",
+            "exit_code",
+            "argv",
+            "cwd",
+            "env_keys",
+            "source_tree",
+        ):
+            assert receipt_record[field] == observed[field], field
+
+    source_mutations = _strict_json(
+        context["source_root"]
+        / context["manifest"]["artifacts"]["source_mutations"]["path"]
+    )["mutations"]
+    assert {entry["case_id"] for entry in evidence["sl0"]["mutations"]} == set(
+        HARDEN_CASES
+    )
+    by_case = {entry["case_id"]: entry for entry in source_mutations}
+    for entry in evidence["sl0"]["mutations"]:
+        supplied = by_case[entry["case_id"]]
+        for field in ("source_path", "nodeid"):
+            assert entry[field] == supplied[field]
+        for field in ("mutated_source", "restored_source"):
+            assert entry[field]["sha256"] == supplied[field]["sha256"]
+        for stage in ("mutation", "restored"):
+            for field in ("raw", "junit", "receipt"):
+                assert entry[stage][field]["sha256"] == supplied[stage][field]["sha256"]
 
     author = retained_json(evidence["roles"]["author"], "author attestation")
     assert author["vendor"] == context["expected"]["author_vendor"]
@@ -806,6 +1375,25 @@ def _assert_prepared(context: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
             harness: route["requested_model"]
             for harness, route in expected_routes.items()
         }
+        retained_brokers = _strict_json(
+            context["source_root"]
+            / context["manifest"]["artifacts"][f"{round_name}_broker_receipts"]["path"]
+        )
+        by_harness = {item["harness"]: item for item in retained_brokers["receipts"]}
+        for item in review["seats"]:
+            seat = retained_json(item["artifact"], "prepared review seat")
+            source = by_harness[item["harness"]]
+            for field in (
+                "seat_id",
+                "session_sha256",
+                "harness_provenance",
+                "report",
+                "report_sha256",
+                "report_bytes",
+                "broker",
+                "runtime_receipt",
+            ):
+                assert seat[field] == source[field], field
         assert {
             item["harness"]: retained_json(
                 item["artifact"], f"{round_name} {item['harness']} seat"
@@ -884,6 +1472,138 @@ def _assert_prepared(context: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
     assert required_retained_refs <= reachable
     _verify_with_shipped_verifier(context, context["output"], "prepared")
     return evidence, request
+
+
+def _assert_fixture_proof_sources(context: dict[str, Any]) -> None:
+    repo = context["repo"]
+    verifier = _load_shipped_verifier()
+    verifier.verify_clean_canonical_main_context(
+        repo, context["expected"]["commits"]["canonical_main"]
+    )
+    for label, required in (
+        ("reviewed_sl0", False),
+        ("landing", False),
+        ("candidate", True),
+        ("canonical_main", True),
+    ):
+        verifier._marker_state(
+            repo, context["expected"]["commits"][label], required=required
+        )
+    assert _git(
+        repo,
+        "rev-list",
+        "--parents",
+        "-n",
+        "1",
+        context["expected"]["commits"]["landing"],
+    ).split()[1:] == [
+        context["expected"]["commits"]["sl0_base"],
+        context["expected"]["commits"]["reviewed_sl0"],
+    ]
+    store = verifier.ArtifactStore(context["source_root"])
+    mutations = store.json(
+        context["manifest"]["artifacts"]["source_mutations"], "source mutations"
+    )["mutations"]
+    assert {entry["case_id"] for entry in mutations} == set(HARDEN_CASES)
+    for entry in mutations:
+        contract = HARDEN_CASES[entry["case_id"]]
+        assert entry["source_path"] == contract.production_path
+        assert entry["nodeid"] == contract.nodeid
+        for stage, kind, outcome, expected_result in (
+            ("mutation", "source_mutation", "failure", False),
+            ("restored", "restored_control", "passed", True),
+        ):
+            source = entry[
+                "mutated_source" if stage == "mutation" else "restored_source"
+            ]
+            namespace: dict[str, Any] = {}
+            exec(
+                compile(store.read(source, "source proof"), source["path"], "exec"),
+                namespace,
+            )
+            assert namespace[contract.symbol]() is expected_result
+            run = entry[stage]
+            verifier.exact_case(
+                verifier.parse_junit(
+                    store.read(run["junit"], "proof JUnit"), "proof JUnit"
+                ),
+                contract.nodeid,
+                outcome,
+                "proof JUnit",
+            )
+            verifier.receipt(
+                store,
+                run["receipt"],
+                "proof receipt",
+                head=context["expected"]["commits"]["reviewed_sl0"],
+                tree=context["expected"]["trees"]["reviewed_sl0"],
+                kind=kind,
+                argv_class=f"pytest_harden_{kind}_v1",
+                exit_code=int(not expected_result),
+                raw=run["raw"],
+                junit=run["junit"],
+                source_binding=(contract.production_path, source["sha256"]),
+            )
+    sessions = set()
+    for round_name in ("candidate", "canonical_main"):
+        records = store.json(
+            context["manifest"]["artifacts"][f"{round_name}_broker_receipts"],
+            "review observations",
+        )["receipts"]
+        assert len(records) == 4
+        request = store.json(
+            context["manifest"]["artifacts"][f"{round_name}_review_request"],
+            "review request",
+        )
+        inputs = {
+            kind: store.json(request[kind], kind)["content"]
+            for kind in ("bundle", "instructions")
+        }
+        for record in records:
+            assert record["head"] == context["expected"]["commits"][round_name]
+            assert record["tree"] == context["expected"]["trees"][round_name]
+            assert record["session_sha256"] not in sessions
+            sessions.add(record["session_sha256"])
+            report = record["report"].encode()
+            assert _sha256(report) == record["report_sha256"]
+            assert len(report) == record["report_bytes"]
+            assert record["report"].rstrip().splitlines()[-1] == "AGREE"
+            verifier.verify_broker(
+                record["broker"],
+                record["harness"],
+                record["requested_model"],
+                record["resolved_model"],
+                _sha256(inputs["bundle"].encode()),
+                _sha256(inputs["instructions"].encode()),
+                verifier.broker_sealed_prompt(inputs["bundle"], inputs["instructions"]),
+                record["report"],
+            )
+            runtime = verifier.run_owned_receipt(
+                store, repo, record["runtime_receipt"], "runtime receipt"
+            )
+            assert runtime["broker"] == record["broker"]
+            assert runtime["report"] == record["report"]
+    assert len(sessions) == 8
+    assert context["sessions"]["reviewer"] == _sha256(
+        "\0".join(sorted(sessions)).encode()
+    )
+    assert not sessions & set(context["sessions"].values())
+
+
+def test_harden_producer_fixture_preserves_supplied_proof_sources(
+    tmp_path: Path,
+) -> None:
+    """Exercise every input variant while the production capability is absent."""
+    for index, (author, red, final) in enumerate(_fixture_variants()):
+        root = tmp_path / str(index)
+        context = _raw_fixture(
+            root,
+            variant=_runtime_variant(root),
+            author_vendor=author,
+            red_outcomes=red,
+            final_outcomes=final,
+        )
+        _assert_fixture_proof_sources(context)
 
 
 def test_harden_producer_derives_live_facts_without_historical_literals() -> None:
@@ -1375,6 +2095,97 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
 
         return apply
 
+    for field in ("mutated_source", "restored_source", "mutation", "restored"):
+        rejected(
+            f"missing-source-proof-{field}",
+            lie_in_json(
+                "source_mutations",
+                lambda record, field=field: record["mutations"][0].pop(field),
+            ),
+            "missing mutation proof",
+        )
+    for stage in ("mutation", "restored"):
+        for field in ("raw", "junit", "receipt"):
+            rejected(
+                f"missing-{stage}-{field}",
+                lie_in_json(
+                    "source_mutations",
+                    lambda record, stage=stage, field=field: record["mutations"][0][
+                        stage
+                    ].pop(field),
+                ),
+                "missing mutation proof",
+            )
+    rejected(
+        "missing-named-mutation-case",
+        lie_in_json("source_mutations", lambda record: record["mutations"].pop()),
+        "mutation coverage",
+    )
+
+    def missing_observed_run_field(context: dict[str, Any], field: str) -> None:
+        index = _strict_json(
+            context["source_root"]
+            / context["manifest"]["artifacts"]["execution_runs"]["path"]
+        )
+        ref = index["runs"]["candidate_focused"]
+        record = _strict_json(context["source_root"] / ref["path"])
+        record.pop(field)
+        data = _canonical_bytes(record)
+        _write_ref(context["repo"], ref["path"], data)
+        _write_ref(context["source_root"], ref["path"], data)
+        ref["sha256"] = _sha256(data)
+        replace_artifact(context, "execution_runs", index)
+
+    for field in (
+        "process_nonce",
+        "argv",
+        "cwd",
+        "env_keys",
+        "source_tree",
+        "baseline",
+    ):
+        rejected(
+            f"missing-fresh-process-proof-{field}",
+            lambda context, field=field: missing_observed_run_field(context, field),
+            "missing run observation field",
+        )
+
+    def missing_red_anchor(context: dict[str, Any]) -> None:
+        name = "preproduction_red_raw"
+        ref = context["manifest"]["artifacts"][name]
+        lines = (context["source_root"] / ref["path"]).read_text().splitlines()
+        replace_artifact(context, name, (lines[0] + "\n").encode())
+        index = _strict_json(
+            context["source_root"]
+            / context["manifest"]["artifacts"]["execution_runs"]["path"]
+        )
+        observation_ref = index["runs"]["preproduction_red"]
+        observation = _strict_json(context["source_root"] / observation_ref["path"])
+        observation["raw"] = context["manifest"]["artifacts"][name]
+        data = _canonical_bytes(observation)
+        _write_ref(context["repo"], observation_ref["path"], data)
+        _write_ref(context["source_root"], observation_ref["path"], data)
+        observation_ref["sha256"] = _sha256(data)
+        replace_artifact(context, "execution_runs", index)
+
+    rejected("missing-named-red-anchor", missing_red_anchor, "RED anchor")
+
+    def reused_reviewer_session(context: dict[str, Any]) -> None:
+        candidate = _strict_json(
+            context["source_root"]
+            / context["manifest"]["artifacts"]["candidate_broker_receipts"]["path"]
+        )
+        main = _strict_json(
+            context["source_root"]
+            / context["manifest"]["artifacts"]["canonical_main_broker_receipts"]["path"]
+        )
+        main["receipts"][0]["session_sha256"] = candidate["receipts"][0][
+            "session_sha256"
+        ]
+        replace_artifact(context, "canonical_main_broker_receipts", main)
+
+    rejected("reused-reviewer-across-rounds", reused_reviewer_session, "reused review")
+
     rejected(
         "plan-live-git-lie",
         lie_in_json(
@@ -1396,6 +2207,44 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
         "SL-0 authority does not match live Git",
     )
     for round_name in ("candidate", "canonical_main"):
+
+        def detached_runtime_receipt(
+            context: dict[str, Any], round_name: str = round_name
+        ) -> None:
+            record = _strict_json(
+                context["source_root"]
+                / context["manifest"]["artifacts"][f"{round_name}_broker_receipts"][
+                    "path"
+                ]
+            )
+            relative = record["receipts"][0]["runtime_receipt"]["path"]
+            (context["repo"] / relative).unlink()
+
+        rejected(
+            f"{round_name}-detached-runtime-receipt",
+            detached_runtime_receipt,
+            "canonical run receipt",
+        )
+
+        def failed_isolation(
+            context: dict[str, Any], round_name: str = round_name
+        ) -> None:
+            name = f"{round_name}_broker_receipts"
+            record = _strict_json(
+                context["source_root"] / context["manifest"]["artifacts"][name]["path"]
+            )
+            seat = record["receipts"][0]
+            seat["broker"]["network_unshared"] = False
+            ref = seat["runtime_receipt"]
+            runtime = _strict_json(context["source_root"] / ref["path"])
+            runtime["broker"] = seat["broker"]
+            data = _canonical_bytes(runtime)
+            _write_ref(context["repo"], ref["path"], data)
+            _write_ref(context["source_root"], ref["path"], data)
+            ref["sha256"] = _sha256(data)
+            replace_artifact(context, name, record)
+
+        rejected(f"{round_name}-failed-isolation", failed_isolation, "failed isolation")
         for suffix, collection, label, fields in (
             (
                 "broker_receipts",
@@ -1408,6 +2257,16 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
                     "result_kind",
                     "terminal_verdict",
                     "operation_nonce",
+                    "head",
+                    "tree",
+                    "seat_id",
+                    "session_sha256",
+                    "harness_provenance",
+                    "report",
+                    "report_sha256",
+                    "report_bytes",
+                    "broker",
+                    "runtime_receipt",
                 ),
             ),
             (
@@ -1492,7 +2351,15 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
                 if field in {"status", "conclusion"}
                 else "missing CI required field",
             )
-        for field in ("schema", "round", "head", "tree", "operation_nonce"):
+        for field in (
+            "schema",
+            "round",
+            "head",
+            "tree",
+            "operation_nonce",
+            "bundle",
+            "instructions",
+        ):
             rejected(
                 f"{round_name}-review-missing-{field}",
                 lie_in_json(
@@ -1580,6 +2447,54 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
 
     rejected("role-session-mismatch", role_session_mismatch, "role session mismatch")
 
+    for role in ROLE_NAMES:
+        for field in ("identity", "vendor", "issued_at"):
+
+            def missing_role_proof(
+                context: dict[str, Any], role: str = role, field: str = field
+            ) -> None:
+                ref = context["manifest"]["role_attestations"][role]
+                record = _strict_json(context["source_root"] / ref["path"])
+                record.pop(field)
+                replace_input(context, "role_attestations", role, record)
+
+            rejected(
+                f"missing-{role}-{field}",
+                missing_role_proof,
+                "missing role attestation field",
+            )
+
+    for round_name in ("candidate", "canonical_main"):
+        for field, value, diagnostic in (
+            ("report", "", "missing reviewer report"),
+            ("report_sha256", "0" * 64, "reviewer report digest mismatch"),
+            ("session_sha256", "0" * 64, "placeholder reviewer session"),
+            ("harness_provenance", "direct_provider", "non-brokered review seat"),
+        ):
+            rejected(
+                f"{round_name}-invalid-proof-{field}",
+                lie_in_json(
+                    f"{round_name}_broker_receipts",
+                    lambda record, field=field, value=value: record["receipts"][
+                        0
+                    ].__setitem__(field, value),
+                ),
+                diagnostic,
+            )
+
+    rejected(
+        "unfetched-canonical-main",
+        lambda context: _git(
+            context["repo"], "update-ref", "-d", "refs/remotes/origin/main"
+        ),
+        "canonical-main",
+    )
+    rejected(
+        "detached-canonical-main",
+        lambda context: _git(context["repo"], "checkout", "--detach", "-q"),
+        "canonical main branch",
+    )
+
     def role_duplicate_nonce(context: dict[str, Any]) -> None:
         coordinator_ref = context["manifest"]["role_attestations"]["coordinator"]
         coordinator = _strict_json(context["source_root"] / coordinator_ref["path"])
@@ -1660,13 +2575,15 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
 
         return mutate
 
-    for index in range(13):
+    for index in range(len(context["expected"]["operation_nonces"])):
         if index < 2:
             kind = "review-request"
         elif index < 10:
             kind = "broker-receipt"
-        else:
+        elif index < 13:
             kind = "role-attestation"
+        else:
+            kind = "retained-proof"
         rejected(
             f"reused-{kind}-nonce-{index}",
             reuse_nonce(index),
@@ -1781,7 +2698,8 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
             evidence["evidence_id"],
         }
         assert len(registry["operation_nonces"]) == (
-            len(registry_before["operation_nonces"]) + 13
+            len(registry_before["operation_nonces"])
+            + len(context["expected"]["operation_nonces"])
         )
         assert set(registry["operation_nonces"]) == {
             *registry_before["operation_nonces"],
