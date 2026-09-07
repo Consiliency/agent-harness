@@ -156,17 +156,22 @@ untouched; a node id must not collide with any frozen inventory (see [[test-name
   the first test) so the publisher's reader cannot decode it. Hold point: wrap the publisher's
   `admission_store.admit_next` so that, with the outer acquisition still held, it (a) asserts
   `adapter-start-owner.json` EXISTS (the owner is already durable — step (3) has returned), (b) sets a
-  `threading.Event` and waits on a second one, then (c) proceeds. While the publisher is parked at (a)-(b), a
-  second thread runs the competitor's readmit. Assert: the readmit thread has NOT returned while the publisher is
-  parked (join with a short timeout, then `is_alive()` is true), release the hold, `service.execute` returns success, then
-  join the readmit thread with a timeout (a wrong implementation must FAIL, never hang) and assert the publisher's
+  `threading.Event` and waits on a second one, then (c) proceeds. Threading: the publisher's `service.execute`
+  runs in a worker thread; the test's main thread waits on the first event, then starts a second worker running
+  the competitor's readmit. Assert: the readmit thread has NOT returned while the publisher is parked (join it
+  with a short timeout, then `is_alive()` is true), release the hold, join the publisher (success), then join the
+  readmit thread with a timeout (a wrong implementation must FAIL, never hang) and assert the publisher's
   admission record precedes the competitor's in `admissions.jsonl` — i.e. exactly zero records landed between the
-  owner write and the publisher's admission. Falsifier (RUN it): drop ONLY the outer acquisition (leave
-  `lock_held=True` at both call sites so each child re-opens `admissions.lock` itself — the two child locks reopen
-  the owner→admission gap) → the readmit lands between owner and admission, the publisher's `admit_next` fails
-  `AdmissionStoreIncompatible` with the owner already durable, test RED deterministically. (`lock_held=False` at
-  both sites with the outer lock still held is NOT a falsifier: flock is per open file description, so the nested
-  acquisition deadlocks — the timeout join turns that into a failure, but it proves nothing about the gap.)
+  owner write and the publisher's admission. Falsifier (RUN it): reopen the gap — remove the outer acquisition
+  entirely AND pass `lock_held=False` at both call sites, so each child takes its own flock exactly as base does
+  today (`verbs.py:121` releases, `admission.py:191` re-acquires). The publisher parks at the hold with
+  no lock held, the competitor's readmit acquires `admissions.lock` and lands its record, the publisher's
+  `admit_next` then fails `AdmissionStoreIncompatible` with `adapter-start-owner.json` already durable — test RED
+  deterministically (the hold guarantees the ordering; no scheduling luck). The round-3 codex mutant — steps
+  (1)-(3) under one acquisition, released before step (4), `admit_next(lock_held=False)` — reopens the same gap and
+  must go RED the same way; run it too. NOT a falsifier: `lock_held=False` at either site with the outer lock
+  still held — flock is per open file description, so the nested acquisition through a second descriptor
+  deadlocks; the timeout join turns that into a failure, but it proves nothing about the gap.
 - Positive control: a compatible store still publishes exactly once (reuse the existing publish-through-`admit_next`
   path from `test_fabpub_broker_envelope_publish_allocates_through_admit_next`, `:1763`).
 
@@ -305,8 +310,9 @@ correctly refused to improvise. Out of scope here; if the maintainer wants it, i
 - [ ] Owner write and admission allocation in `_fresh_publish` happen under one `admissions.lock` acquisition:
       the readmit-interleaving test parks the publisher AFTER `adapter-start-owner.json` is durable and BEFORE
       `admit_next`, and the competing incompatible writer has not returned until the publish's admission is
-      durable; zero records land between the owner write and that admission (falsified by dropping only the
-      outer acquisition).
+      durable; zero records land between the owner write and that admission (falsified by reopening the gap:
+      no outer acquisition with `lock_held=False` at both sites — base topology — and by the
+      release-before-admission mutant).
 - [ ] The incident chronology (legacy reader without `binding`, store with `binding`) is reproduced by a test that
       fails at base `463b90c3` (owner written) and passes after PR-A.
 - [ ] A sealed inventory whose `worktree` path was pruned revalidates and resumes with identity equality intact
