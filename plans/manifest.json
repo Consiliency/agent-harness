@@ -6071,6 +6071,31 @@
       "task_summary": "Thread live run alias into verification.json (ah#85b)",
       "type": "detailed",
       "updated_at": "2026-07-28T22:28:34Z"
+    },
+    {
+      "acceptance_criteria_count": 20,
+      "created_at": "2026-09-08T18:05:00Z",
+      "file": "plans/detailed-789d-fabpub-partition-rotation-20260908.md",
+      "handoff_ref": ".dev-skills/handoffs/claude-plan-detailed/latest.md",
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-09-08T18:05:00Z",
+          "by": "claude-plan-detailed",
+          "metadata": {},
+          "transition": "committed"
+        }
+      ],
+      "owner_skill": "claude-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "789d-fabpub-partition-rotation",
+      "status": "committed",
+      "task_summary": "Consiliency/agent-harness#789 Workstream D: governed recovery for a permanently blocked FABPUB repository partition via a journaled partition rotation \u2014 LegacyRepositoryPartitionReceipt.v3 with a rotation proof and key-granular adjudicated_effect_dispositions (observed_landed / attested_not_landed), a human attestation the runtime never derives from the remote, typed pre-v3 skew refusal, and the retired store preserved byte-identical. Discharges acceptance item (5) first half as a capability.",
+      "type": "detailed",
+      "updated_at": "2026-09-08T22:22:36Z"
     }
   ],
   "schema_version": 1
