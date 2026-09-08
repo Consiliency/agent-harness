@@ -1,6 +1,6 @@
 # Detailed plan: FABPUB partition rotation — the governed recovery for a permanently blocked repository partition (ah#789 Workstream D)
 
-status: draft 2026-09-08 — round-14 clean rewrite from the settled contract (supersedes the round 1–13 text in full); awaiting maintainer approval; no runtime edits made
+status: draft 2026-09-08 — round-14 clean rewrite from the settled contract (supersedes the round 1–13 text in full), round-15 amendments folded in; awaiting maintainer approval; no runtime edits made
 owner: Claude Code session `session_01Rv2aKsUWdEKoWfB5PTpD1B`
 issue: Consiliency/agent-harness#789 (Workstream D; acceptance item (5) first half)
 base: `ef6a9b18a0eb47981ebf07f56e6fc3d6bbe742d8` (origin/main, 2026-09-08 — carries ah#803/#804/#805; every anchor below was re-read at this base, and the broker files are unchanged between it and this branch)
@@ -101,7 +101,11 @@ directory no bootstrap validator enumerates (A18d proves the bootstrap's own res
 presence). Crash-idempotence is proven at every state boundary in the style of
 `test_fabpub_global_legacy_cutover_partitions_multiple_repositories_crash_idempotently_before_activation`
 (`test_fabpub_shared_epoch.py:2700`). A journal that is torn, out of order, or carries a foreign
-`cutover_id` at resume is a typed refusal — the ceremony never restarts over it.
+`cutover_id` at resume is a typed refusal — the ceremony never restarts over it. The seal locks serialise
+*concurrent* ceremonies only; so a **new** ceremony for an identity refuses, typed, while any journal under
+`partition-rotations/<identity>/` is not `ACTIVE` (an abandoned ceremony is resumed under its own id or
+removed by an operator, never started over), and refuses if the `generations/<n>/` it would build already
+exists and is not named by the journal it is resuming (A11, A13, m29).
 
 **D2 — The successor receipt is `LegacyRepositoryPartitionReceipt.v3`.** It keeps every v2 field
 (`live.py:673-700`) and adds:
@@ -200,11 +204,17 @@ never re-checked. The ceremony makes no `git ls-remote` or network call — "no 
    resolves to the container (`live.py:301-303`), finds generation 0's receipt, and refuses on the
    permanent block. It never observes a receipt-less identity, so laundering through the zero-source
    onboarding route (`:3342-3354`, `:3041-3046`) is impossible by construction (A15). What a surviving
-   pre-v3 **process** holding a fresh namespace lease could still do is `promote_legacy_terminal` into
-   generation 0 for a key the generation-0 v2 receipt lists as legacy-completed — none, for the measured
-   partition. The Lane D5 runbook's running-process gate is therefore a **mutation fence** for the
-   ceremony's duration, not a laundering fence; re-pinning every installed runtime is a **liveness**
-   requirement (a pre-v3 install cannot publish through a rotated partition), never a safety one.
+   pre-v3 **process** holding a fresh namespace lease could still do is append into generation 0 by two
+   routes: `promote_legacy_terminal` for a key the generation-0 v2 receipt lists as legacy-completed
+   (none, for the measured partition), and `record_terminal` for a non-`publish_committed_branch` verb
+   through the path D3 cites (`verbs.py:672-680` / `refresh.py:63`), which never consults `epoch_blocked`.
+   Neither launders: a post-flip generation-0 append drifts generation 0 from the digests the successor
+   receipt pins, and the next carried-key replay refuses fail-closed on the byte-exact chain (A4 asserts
+   the refusal, never silence). It is Dependencies 3(a)/(b) — not this enumeration — that keep
+   generation 0 byte-identical. The Lane D5 runbook's running-process gate is therefore a **mutation
+   fence** for the ceremony's duration, not a laundering fence; re-pinning every installed runtime is a
+   **liveness** requirement (a pre-v3 install cannot publish through a rotated partition), never a
+   safety one.
 
 **D6 — Fencing, with its enforcement sites named.** The ceremony runs under the bootstrap seal locks, the
 container's `admissions.lock` (the one lock a pre-v3 writer shares with it), and the namespace
@@ -218,10 +228,22 @@ writer-generation latch. For v3-aware writers two mechanisms fence the retired g
   while DRAINING. Anchor A17: a lease acquired before the flip is refused with `WriterGenerationBlocked` on
   a generation-0 append after it; `promote_legacy_terminal` under a fresh post-flip lease writes only into
   the successor and generation 0's bytes are unchanged.
+- **The active-generation predicate, at authorize time, under the store lock.** The latch validates the
+  namespace lease, not store selection: a v3-aware writer whose snapshot resolved generation 0 before the
+  flip (and memoised it, D7 item 3), then acquired a **fresh** post-flip lease — or one holding an
+  UNDECLARED lease — passes `require_current_generation` and would append into the retired generation. So
+  the layout-aware canonical-store predicate (D7 item 5) in `EvidenceStore._authorize` (`evidence.py:65-83`)
+  and `admission.py:204-219` also requires, for any store under a `generations/` layout, that the store
+  **is** the generation `generations/ACTIVE` names **now** — re-read from the pointer at authorize time,
+  inside the store's own `admissions.lock`, with D7 item 3's refusal set (a torn or absent pointer refuses,
+  never admits). A store with no `generations/` keeps the exact v2 check. This runs for every lease kind,
+  UNDECLARED included. Anchors A17b/c; mutant m26.
 
 An UNDECLARED lease bypasses latch validation by design (`admission.py:222-229`); on that path the
-layout-aware canonical-store predicates (D7 item 5) are the only receipt gate. That is the pre-existing
-SL-0 compatibility shape and this plan neither widens nor closes it.
+layout-aware canonical-store predicates (D7 item 5) — the active-generation predicate above included — are
+the only receipt gate. The latch bypass is the pre-existing SL-0 compatibility shape and this plan neither
+widens nor closes it; the active-generation predicate is a store-layout check, not a latch check, and
+applies on that path.
 
 **D7 — The predecessor is never moved: rotation adds a generation.** Rounds 6–11 established that
 retiring the predecessor by moving it produces a receipt-less window that every added guard merely
@@ -236,19 +258,30 @@ relocates. The maintainer's decision (2026-09-08) removes the hazard by construc
    generation number; `0` means the container. `generations/` is prepared at
    `repositories/<identity>/generations.tmp.<cutover_id>/` **already containing `ACTIVE` = `0`** and
    renamed into place, so "`generations/` present, `ACTIVE` absent" is unreachable. The flip is a second
-   atomic rename of `ACTIVE` alone. Debris left at the temp path by a crash is enumerated in A11: resume
-   under the journal's own `cutover_id` may reuse or remove it; a temp directory under any other id is a
-   typed refusal.
-3. **Resolution once, at snapshot time, with a closed refusal set.** `RepositorySnapshot.store_root`
-   (`live.py:301-303`) becomes: no `generations/` → the container (every never-rotated partition, the
+   atomic rename of `ACTIVE` alone. The successor number `n` is `ACTIVE + 1`, read under the seal locks
+   when the ceremony starts and recorded in the sealed rotation inventory; a resume uses the recorded `n`
+   and never re-derives it. Debris left by a crash is enumerated in A11 and A13: at the temp path
+   (first rotation) or as a receipt-less, non-`ACTIVE` `generations/<n>/` (later rotations — safe for
+   routing under item 4), resume under the journal's own `cutover_id` may reuse or remove it; debris a
+   ceremony does not own — a temp directory or a `generations/<n>/` under any other id — is a typed
+   refusal (D1).
+3. **Resolution lazily, memoised per snapshot, with a closed refusal set.** `RepositorySnapshot.store_root`
+   is today a pure-path `@property` on a frozen dataclass (`live.py:301-303`), re-evaluated on every access
+   with no I/O. It becomes a lazily evaluated, memoised read: the first access on a snapshot resolves the
+   pointer, later accesses on that snapshot return the same result, and `repository_snapshot()`
+   (`:284-295`) performs no pointer I/O — so classification and inventory (D9-A) never reach the resolver,
+   and a refusal-state pointer refuses only the process that routes through *that* repository, never the
+   barrier for the clean partitions (A18a's refusal-state leg, m23). The memoised value is a routing
+   decision; the authorize-time predicate (D6) re-reads the pointer under the store lock. Resolution is:
+   no `generations/` → the container (every never-rotated partition, the
    whole compatibility story, A16); `generations/ACTIVE` naming a complete, authenticated generation →
    that generation (`0` → the container). Everything else is a typed refusal, never a fall-back and never
    "no store": `ACTIVE` missing, torn, unreadable or non-integer; `ACTIVE` naming a generation directory
    that does not exist; `ACTIVE` naming a generation without an authenticated receipt; `generations`
    present as a non-directory; `ACTIVE` or any ancestor a symlink (`_require_no_ancestor_symlink`,
-   `live.py:206`). The snapshot is a frozen consistent read (`live.py:284-295`), so resolution happens
-   once per snapshot. `repository_broker_namespace` (`:331-339`) and `credsep.py:240-242` read
-   `snapshot.store_root` and inherit the resolution.
+   `live.py:207`). `repository_broker_namespace` (`:331-339`), `_stores_for` (`:3608-3620`, the consumer
+   that makes the resolved store the writable one), the barrier reads (`:3326`, `:3355`) and
+   `credsep.py:229-242` read `snapshot.store_root` and inherit the resolution.
 4. **The invariant.** At every instant — during the build, during either rename, after any crash, during a
    resume — the resolver names exactly one complete, authenticated store: generation 0 before the flip,
    the successor after. No reader ever observes a receipt-less identity.
@@ -258,7 +291,8 @@ relocates. The maintainer's decision (2026-09-08) removes the hazard by construc
    (`live.py:808-812`) — under `generations/<n>/` the identity is the containing repository directory's
    name; and the twin canonical-store predicates in `evidence.py:69-83` and `admission.py:211-214`
    (`root.parent.name == "repositories"`) — a numbered generation must still be recognised as canonical on
-   **both** stores, or a receipt-less generation store is fail-open (A14b, m21). The `WriterGenerationLatch`
+   **both** stores, or a receipt-less generation store is fail-open (A14b, m21) — and the same predicate
+   carries the active-generation requirement (D6, m26). The `WriterGenerationLatch`
    derivation (`:434-436`) is the fourth: it takes the namespace root from the resolver (or an explicit
    argument), never `parent.parent` of the store (A17, m22).
 6. **The predecessor is evidence, in place, byte-identical.** Nothing is archived, copied or re-placed;
@@ -292,13 +326,25 @@ is not `epoch_blocked`; without that precondition the ceremony is a store-reset 
   v3 branch, not gated on `zero_source`: `_active_bootstrap_inventory(authority_root)` must exist with
   `cutover_id == bootstrap_cutover_id` and matching `inventory_sha256`, **and** the rotation journal must be
   `ACTIVE` for exactly the rotation `cutover_id`. `_receipt_seal_lock_paths` (`:3232-3242`) returns the
-  bootstrap seal-lock paths for that authority. `_receipt_bootstrap_claim` (`:2179-2200`) stays
-  zero-source-gated and is inert for v3 by construction. Anchor A18b/c: the successor enters the barrier
-  and publishes; drop either half of the binding (m24) → refused at `live.py:3338`.
+  bootstrap seal-lock paths for that authority. `_receipt_bootstrap_claim` (`:2179-2200`) is gated at its
+  two authority-helper callers (`:3192`, `:3235`) and stays so; it is inert for v3 by construction.
+  Anchor A18b/c: the successor enters the barrier and publishes; drop either half of the binding (m24) →
+  refused at `live.py:3338`.
+  **Predecessor authority chain.** `bootstrap_claim` is mandatory, so the rotation refuses, typed, a
+  predecessor whose authority is not a zero-history bootstrap: a traditional-authority v2 receipt
+  (`zero_source=False`, authenticated through `legacy_root_inventory`, `live.py:3209-3216`) or a v3 receipt
+  whose chain does not terminate in a bootstrap claim. No partition of that shape exists on any scanned
+  host; inheriting traditional authority is out of scope and named as such — it gets its own decision if
+  a blocked partition of that shape ever appears. Anchor A25; mutant m27.
 - **C. Lock placement.** The ceremony's seal-lock set is the bootstrap seal locks (`_bootstrap_seal_lock_paths`,
   `live.py:2459-2475`), the container's `admissions.lock` (`_target_store_lock_paths`, `:1295-1301`,
-  applied to `target_namespace` = the container), and the namespace latch activation lock. The successor
-  generation's own `admissions.lock` is created with the generation and is not part of the ceremony set.
+  applied to `target_namespace` = the container), **the predecessor generation's own `admissions.lock`**
+  when the predecessor is not generation 0 (`EvidenceStore.lock_path` is per store, `evidence.py:58`; a
+  generation-`k` writer never takes the container's lock, so without this a writer could authorize inside
+  its lock, pause, and append after the ceremony captured the predecessor digests), and the namespace
+  latch activation lock — all held across final predecessor validation, digest capture, sealing and the
+  flip. The successor generation's own `admissions.lock` is created with the generation and is not part of
+  the ceremony set. Anchor A26; mutant m28.
 
 **Lane note (D2):** `authenticated_partition_floor`'s refusal text hardcodes
 "LegacyRepositoryPartitionReceipt.v2" (`live.py:845-853`); the lane that touches the loader updates it.
@@ -317,15 +363,28 @@ the frozen node-id inventory the same way the ah#789 lanes were.
 and the list is proven complete by a test, not by prose: an AST/grep sweep of
 `convergence/broker/*.py` for `store_root`, `.parent.parent`, the `"repositories"` literal, and
 `target_namespace` must report exactly the allow-listed sites, each tagged with how it is layout-aware
-(resolver, container-bound, or inert). Seed list, all read at this base: `RepositorySnapshot.store_root`
-(`live.py:301-303`); `repository_broker_namespace` (`:331-339`); `load_partition_receipt` (`:808-812`);
+(resolver, container-bound, or inert). **The sweep's output is authoritative, not this list, and the
+count is the test's — prose counts of this list have been wrong three times in review.** Partial seed,
+each site read at this base: `RepositorySnapshot.store_root` (`live.py:301-303`, the resolver);
+`repository_broker_namespace` (`:331-339`); `_stores_for` (`:3608-3620`, resolver — the consumer that
+makes the resolved store writable); the barrier reads `:3326` / `:3355` (resolver; `:3360-3365` must see
+the bumped latch, D6); `load_partition_receipt` (`:808-812`);
 `evidence.py:69-83`; `admission.py:211-214`; `WriterGenerationLatch.for_store_root` (`:434-436`);
 `_classify_repository_namespace` / `_revalidate_bootstrap_sources` / `_active_bootstrap_inventory`
 (`:2213-2245`, `:2593-2629`, `:2662-2686`, container-bound per D9-A); `_receipt_active_authority_exists` /
 `_receipt_seal_lock_paths` (`:3187-3217`, `:3232-3242`); `_receipt_bootstrap_claim` (`:2179-2200`, inert for
 v3); `_inventory_row_namespace_root` (`:2482-2490`, container-bound via `target_namespace`);
-`_target_store_lock_paths` (`:1295-1301`); `credsep.py:240-242` (reads the snapshot). A new derivation that
-is not on the list fails the sweep. This has been mis-counted twice in review; the test is the count.
+`_target_store_lock_paths` (`:1295-1301`); `authenticated_partition_floor` / `partition_is_ambiguity_blocked`
+/ `_CutoverPromotionCapability.mint` (`:845-853`, `:856-865`, `:936-968`, take a `store_root`; D8 relies
+on the first two, D2 rewrites the third); the onboarding reads `:2850` and `:3040` (resolver-reaching —
+must resolve to the container and refuse on receipt-present, A15) and the onboarding inventory row
+`:3092` (writes the resolved root as `target_namespace`; container-bound only because onboarding is
+unreachable post-rotation); `_is_onboarding_atomic_temp` (`:2153`, container-bound);
+`_drive_cutover` (`:2029-2033`, mkdir + receipt write at `target_namespace`; container-bound after D2)
+and the legacy-cutover partition map `:1511` with its readers (`:1583`, `:1773`, `:1786-1787`) and
+`:2916` (`cutover_dir.parent.parent`) — all inert on this host (legacy cutover is not the bootstrap
+route) and tagged so, not assumed; `credsep.py:229` and `:240-242` (read the snapshot). A new derivation
+that is not on the list fails the sweep.
 
 Anchors:
 
@@ -335,7 +394,9 @@ Anchors:
 - **A3** an undisposed ambiguous key → refused before anything durable is written.
 - **A4** predecessor generation byte-identical, every file (`admissions.jsonl`, `evidence.jsonl`,
   `partition-receipt.json`, `adapter-start-owner.json`), asserted **after a carried-key replay**; the owner
-  digest appears in the successor receipt.
+  digest appears in the successor receipt; and a post-flip generation-0 append by a foreign writer (a
+  pre-v3 process, D5 part 3) makes the next carried-key replay refuse with the typed byte-exact-chain
+  error — fail-closed, never silent.
 - **A5** the successor has no `adapter-start-owner.json`; an `observed_landed` key is answered pre-dispatch
   with no owner read or write; `_block_unsealed_owner` still blocks a crashed `attested_not_landed` first
   attempt.
@@ -355,13 +416,17 @@ Anchors:
   point generation 0 is the routable store, an ordinary publish refuses on the permanent block, and
   `onboard_zero_legacy_repository` at that identity refuses because a receipt is present; then resume
   succeeds and the successor authenticates and carries terminals and dispositions. Temp-path debris under
-  the journal's id is consumed by resume; debris under a foreign id is a typed refusal.
+  the journal's id is consumed by resume; debris under a foreign id is a typed refusal; a resume rebuilds
+  the recorded `n`; a new ceremony started while the crashed one's journal is not `ACTIVE` is a typed
+  refusal.
 - **A12** pointer states are total: `generations/` arrives already containing `ACTIVE=0` by rename; the
   flip replaces `ACTIVE` by rename so a crash leaves exactly one complete generation named; every member of
   D7 item 3's refusal set is a typed refusal, never a fall-back to the container or to onboarding.
-- **A13** second rotation: re-block the successor, rotate again, repeat A11 against generation 2;
-  generations 0 and 1 untouched; carried terminals and dispositions still answer through the mint path;
-  the epoch floor still rises (`max(...)`, m12).
+- **A13** second rotation: re-block the successor, rotate again, repeat A11 against generation 2 —
+  including a crash that leaves a receipt-less, non-`ACTIVE` `generations/2/`: routing still names
+  generation 1, resume under the same id completes it, and a ceremony under a different id refuses the
+  existing `generations/2/`; generations 0 and 1 untouched; carried terminals and dispositions still
+  answer through the mint path; the epoch floor still rises (`max(...)`, m12).
 - **A14** layout-aware authentication: (a) a receipt under `generations/<n>/` naming a different identity
   is refused; (b) a numbered generation with no receipt is refused by the canonical-store predicate on
   **both** the evidence and the admission store under an UNDECLARED lease; (c) an otherwise valid
@@ -372,11 +437,16 @@ Anchors:
   adapter call; after the flip it still cannot use the successor (D5 part 3).
 - **A16** the two live v2 partitions are byte-for-byte unaffected: a store with no `generations/` resolves
   to exactly today's path and publishes through the governed path unchanged.
-- **A17** latch fencing: a lease acquired before the flip is refused with `WriterGenerationBlocked` on a
-  generation-0 append after the flip; `promote_legacy_terminal` under a fresh post-flip lease writes only
-  into the successor.
+- **A17** write fencing: (a) a lease acquired before the flip is refused with `WriterGenerationBlocked`
+  on a generation-0 append after the flip; (b) a writer whose snapshot resolved generation 0 **before** the
+  flip and acquires a **fresh** post-flip lease is refused at authorize time by the active-generation
+  predicate on both the evidence and the admission store, generation 0 unchanged; (c) the same writer
+  under an UNDECLARED lease is refused the same way; (d) `promote_legacy_terminal` under a fresh post-flip
+  lease and a post-flip snapshot writes only into the successor.
 - **A18** authority binding: (a) after one rotation, both clean v2 partitions pass
-  `fabpub_activation_barrier` and publish; (b) the successor passes the barrier and publishes; (c) a
+  `fabpub_activation_barrier` and publish — and still do with the rotated partition's pointer placed in
+  **each** D7 item 3 refusal state in turn, the refusal surfacing only when the rotated repository itself
+  is snapshotted for routing; (b) the successor passes the barrier and publishes; (c) a
   successor missing either half of D9-B's binding is refused at `live.py:3338`; (d) the presence of the
   D1 rotation directory under the authority root changes no bootstrap validation result.
 - **A19** crash injection at every journal boundary is resumable; a torn or foreign-id journal at resume
@@ -385,13 +455,25 @@ Anchors:
   location, not `partition_is_ambiguity_blocked`'s message.
 - **A21** an untouched v2 receipt authenticates byte-exactly; a clean v2 partition publishes unchanged.
 - **A22** laundering falsifier: a fresh authority root pointed at a namespace holding a populated
-  partition must refuse to bootstrap, asserting **where** it refuses (most likely
-  `LegacyRepositoryPartitionReceipt.write`, `live.py:734-750`, byte-divergent overwrite). If it does not
-  refuse, closing the hole joins this plan's scope and the PR body records it.
+  partition must refuse to bootstrap, asserting **where** it refuses — expected at
+  `_classify_repository_namespace` (`live.py:2228-2239`: a receipt is present whose `cutover_id` and
+  bootstrap claim are not the fresh authority's), which fires before any write; if the run shows a later
+  site (`LegacyRepositoryPartitionReceipt.write`, `:734-750`) the PR body records that instead. If it does
+  not refuse, closing the hole joins this plan's scope and the PR body records it.
 - **A23** successor floor = `max(predecessor receipt floor, predecessor max allocated epoch)`, including
   through an intermediate successor that allocated none.
 - **A24** no network or `git ls-remote` call anywhere in the ceremony (recording sentinel idiom from
   `test_fabpub_recovery_controls_789.py`).
+- **A25** a predecessor whose authority is not a zero-history bootstrap — a traditional-authority v2
+  receipt (`zero_source=False`, `legacy_root_inventory` populated) or a v3 receipt with no bootstrap claim
+  in its chain — is refused by `rotate_blocked_partition` with the typed out-of-scope error before any
+  durable write (D9-B).
+- **A26** predecessor-generation lock: during a generation 1 → 2 rotation a generation-1 writer that has
+  authorized inside `generations/1/admissions.lock` and paused cannot append after the ceremony captured
+  the predecessor digests — the ceremony holds that lock across validation, digest capture, sealing and
+  the flip, so the writer's append lands before the digests are taken or is refused after the flip by the
+  active-generation predicate; the successor receipt's predecessor digests match generation 1's final
+  bytes.
 
 ### Lane D2 — receipt schema, resolver, and the rotation ceremony (production)
 
@@ -446,8 +528,9 @@ Separate maintainer authorisation; nothing here executes it.
 
 ## Verification
 
-- CI-faithful suite (source mode):
-  `cd phase-loop-runtime && PYTHONPATH=$PWD/src:$PWD/tests /mnt/workspace/venvs/ah-779-ci/bin/python -m pytest
+- CI-faithful suite (source mode, with the CI-faithful interpreter — an installed-venv build of
+  `phase-loop-runtime`, never a working checkout's `python`):
+  `cd phase-loop-runtime && PYTHONPATH=$PWD/src:$PWD/tests <ci-venv>/bin/python -m pytest
   -p no:cacheprovider -o addopts="" -q tests/test_fabpub_partition_rotation_789d.py
   tests/test_fabpub_shared_epoch.py tests/test_fabpub_zero_history_bootstrap.py
   tests/test_fabpub_recovery_controls_789.py` — green; frozen corpus counts unchanged
@@ -465,7 +548,9 @@ Separate maintainer authorisation; nothing here executes it.
   attestation on key alone → A7's reuse is accepted; (m15) flip `ACTIVE` before the successor receipt
   authenticates → A11 finds an incomplete generation routable; (m16) write `ACTIVE` in place, or create
   `generations/` before seeding `ACTIVE=0` → A12 observes an absent or torn pointer; (m17) treat a missing,
-  torn or unreadable `ACTIVE` as "no generation" → A12's fail-closed legs admit an unauthenticated store;
+  torn or unreadable `ACTIVE`, an `ACTIVE` naming a generation directory that does not exist, or
+  `generations` present as a non-directory as "no generation" → A12's fail-closed legs admit an
+  unauthenticated store;
   (m18) resolve to the container when `generations/` exists → A11's resume fails, successor never
   routable; (m19) resolve through `generations/` for a store that has none → A16 regresses; (m20) rewrite
   the predecessor generation during the ceremony → A4; (m21) keep either canonical-store predicate
@@ -474,7 +559,11 @@ Separate maintainer authorisation; nothing here executes it.
   `WriterGenerationBlocked`, A17 and A18b fail; (m23) classify the bootstrap row via the resolved root →
   A18a refuses every repository on the host; (m24) drop either half of the v3 authority binding → A18c
   is not refused / A18b is refused at `live.py:3338`; (m25) bind the receipt to no physical generation →
-  A14c accepts the misplaced receipt.
+  A14c accepts the misplaced receipt; (m26) drop the authorize-time `ACTIVE` re-read from either
+  canonical-store predicate → A17b/c append into generation 0; (m27) accept a traditional-authority
+  predecessor → A25 rotates it; (m28) omit the predecessor generation's `admissions.lock` from the
+  ceremony set → A26's paused writer appends after digest capture; (m29) skip the existing-`generations/<n>`
+  or non-`ACTIVE`-journal check → A11/A13's foreign-id ceremony overwrites debris.
 - Read-only host re-inspection after D5: generation 0's files are byte-identical to their pre-rotation
   state and digest-match the successor receipt.
 
@@ -511,7 +600,9 @@ Separate maintainer authorisation; nothing here executes it.
       the machinery to every verb is out of scope and named as such.
 - [ ] At every instant of the ceremony and of any crash, the resolver names exactly one complete,
       authenticated store — generation 0 before the flip, the successor after; every member of the pointer
-      refusal set is a typed refusal, never a fall-back (m15, m16, m17, m18, m21).
+      refusal set is a typed refusal, never a fall-back (m15, m16, m17, m18, m21); the successor number is
+      read once under the seal locks and recorded, and a ceremony never starts over an abandoned one or
+      over a `generations/<n>/` it does not own (m29).
 - [ ] Every store-path derivation in `convergence/broker/*.py` is on the A0 allow-list and tagged
       layout-aware; the sweep test fails on an unlisted derivation, and the latch derives the namespace root
       through the resolver (m22).
@@ -519,8 +610,15 @@ Separate maintainer authorisation; nothing here executes it.
       authority, every clean v2 partition on the host still passes `fabpub_activation_barrier` and publishes
       (m23); the successor passes the barrier through its v3 authority binding and is refused at
       `live.py:3338` without it (m24).
-- [ ] A lease acquired before the flip is refused on a generation-0 append after it, and a post-flip
-      `promote_legacy_terminal` writes only into the successor (m22, and A17 under m18).
+- [ ] A lease acquired before the flip is refused on a generation-0 append after it; a writer that resolved
+      generation 0 before the flip is refused at authorize time under a fresh post-flip lease and under an
+      UNDECLARED lease; and a post-flip `promote_legacy_terminal` writes only into the successor (m22, m26,
+      and A17 under m18).
+- [ ] A predecessor whose authority is not a zero-history bootstrap is refused before any durable write
+      (m27); inheriting traditional authority is out of scope and named as such.
+- [ ] The ceremony holds the predecessor generation's own `admissions.lock` across validation, digest
+      capture, sealing and the flip, so a paused in-lock writer cannot append after the digests are taken
+      (m28).
 - [ ] The runtime performs no network or `git ls-remote` call anywhere in the ceremony, proven by the
       recording sentinel idiom.
 - [ ] The laundering question is answered in the PR body with a RUN result: whether a fresh authority root
