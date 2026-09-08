@@ -22,6 +22,7 @@ import os
 import subprocess
 import sys
 import threading
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
@@ -75,6 +76,10 @@ class WriterGenerationBlocked(PermissionError):
 
 class FabpubConfigurationError(RuntimeError):
     """The capability marker exists but could not be read."""
+
+
+class SealedWorktreeFallbackWarning(RuntimeWarning):
+    """A sealed inventory row's worktree was pruned; its recorded common dir stood in."""
 
 
 def fabpub_capability_active() -> bool:
@@ -1798,7 +1803,9 @@ class LegacyBrokerCutoverTransaction:
                 )
                 _verify_archive_bytes(target, source)
                 _require_root_tombstone(Path(source["legacy_root"]), self.cutover_id)
-            latch = WriterGenerationLatch(repository_namespace_root(partition["worktree"]))
+            latch = WriterGenerationLatch(
+                repository_namespace_root(_inventory_row_repository(partition))
+            )
             if not latch.armed_marker.exists():
                 raise LegacyCutoverConflict(
                     f"repository {identity} lost its ARMED latch marker"
@@ -1817,7 +1824,9 @@ class LegacyBrokerCutoverTransaction:
             self._record("ACTIVE")
             for identity in sorted(self.partitions):
                 WriterGenerationLatch(
-                    repository_namespace_root(self.partitions[identity]["worktree"])
+                    repository_namespace_root(
+                        _inventory_row_repository(self.partitions[identity])
+                    )
                 ).activate()
         return self
 
@@ -1966,7 +1975,8 @@ def _drive_cutover(
     """Advance the journal to ``ARMED``, resuming idempotently from any kill."""
     ordered_identities = sorted(partitions)
     latches = [
-        WriterGenerationLatch.open(Path(partitions[i]["worktree"])) for i in ordered_identities
+        WriterGenerationLatch.open(_inventory_row_repository(partitions[i]))
+        for i in ordered_identities
     ]
     with _hold_all([latch.lock_path for latch in latches]):
         for latch in latches:
@@ -1974,7 +1984,7 @@ def _drive_cutover(
                 latch.begin_draining()
     for identity, latch in zip(ordered_identities, latches):
         if latch.read().generation_state == "DRAINING":
-            latch.await_quiescent(worktree=Path(partitions[identity]["worktree"]))
+            latch.await_quiescent(worktree=_inventory_row_repository(partitions[identity]))
 
     with _hold_all(_target_store_lock_paths(partitions)):
         transaction._record("DRAINING")
@@ -2260,12 +2270,14 @@ def _classify_repository_namespace(
                 partition is None
                 or not partition.get("zero_source")
                 or Path(partition.get("target_namespace", "")) != snapshot.store_root
-                or Path(partition.get("worktree", "")).resolve() != snapshot.worktree
+                or not _recorded_worktree_binds(partition.get("worktree", ""), snapshot)
                 or _partition_map_digest(sealed.get("partitions", {}))
                 != sealed.get("partition_map_sha256")
             ):
                 raise LegacyCutoverConflict(
-                    f"interrupted onboarding inventory is not bound to {snapshot.identity}"
+                    f"interrupted onboarding inventory is not bound to {snapshot.identity} "
+                    f"(recorded worktree {(partition or {}).get('worktree', '')!r}, "
+                    f"observed worktree {str(snapshot.worktree)!r})"
                 )
             if journal_path.exists():
                 states, ids = _journal_entries(journal_path)
@@ -2467,6 +2479,117 @@ def _bootstrap_seal_lock_paths(inventory: dict) -> tuple[Path, ...]:
     return tuple(sorted(paths, key=str))
 
 
+def _inventory_row_namespace_root(row: dict) -> Path:
+    """The FABPUB namespace root a sealed row recorded.
+
+    Bootstrap inventory rows carry it directly; legacy cutover partition rows
+    carry the store root, exactly ``<namespace_root>/repositories/<identity>``.
+    """
+    if "namespace_root" in row:
+        return Path(row["namespace_root"])
+    return Path(row["target_namespace"]).parent.parent
+
+
+def _recorded_worktree_binds(recorded: str, snapshot: RepositorySnapshot) -> bool:
+    """Whether a sealed ``worktree`` string still names ``snapshot``'s repository.
+
+    ``RepositorySnapshot.worktree`` is not identity-bearing: it is the
+    recorded path while that is still a working tree, any working tree of the
+    same common dir once the snapshot was taken elsewhere (the pruned-worktree
+    fallback snapshots the common dir itself), or an already pruned path whose
+    binding the identity-bearing ``target_namespace`` check carries alone.  A
+    path that still exists but is neither is a foreign directory and does not
+    bind.
+    """
+    if not recorded:
+        return False
+    path = Path(recorded)
+    if path.resolve() == snapshot.worktree:
+        return True
+    if is_git_repository(path):
+        return git_common_dir(path) == snapshot.common_dir
+    return not path.exists()
+
+
+def _discovered_common_dir(path: Path) -> Path | None:
+    """The resolved Git common dir Git discovers from ``path``, or ``None`` when
+    ``path`` is not a directory or Git discovers no repository from it.
+
+    This is the same discovery ``repository_snapshot`` seals a row from: it
+    succeeds inside a working tree, in a bare repository, in ``<repo>/.git``,
+    and in Git's administrative subdirectories such as ``<repo>/.git/objects``.
+    """
+    if not path.is_dir():
+        return None
+    completed = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if completed.returncode != 0:
+        return None
+    return Path(completed.stdout.strip()).resolve()
+
+
+def _path_discovers_repository(path: Path) -> bool:
+    """True when Git still discovers a repository from ``path``: the health
+    check for a recorded row path.  A sealed row was produced by
+    ``repository_snapshot(path)``, so any path that still discovers a
+    repository is exactly as healthy as it was at the seal; identity equality
+    at the caller decides whether it is still the SAME repository.  False for
+    a pruned worktree, a plain directory, and anything Git does not recognise.
+    """
+    return _discovered_common_dir(path) is not None
+
+
+def _path_is_own_common_dir(path: Path) -> bool:
+    """True when ``path`` is a Git directory that resolves to itself as the
+    repository common dir: a bare repository or a ``<repo>/.git`` directory.
+    Stricter than ``_path_discovers_repository``; it is the check for a
+    FALLBACK candidate (the row's recorded common dir), which must be the
+    common dir itself and not merely discover one.  False for a working tree,
+    a linked worktree's ``.git`` file, ``<repo>/.git/objects``, and anything
+    Git does not recognise."""
+    common = _discovered_common_dir(path)
+    return common is not None and common == path.resolve()
+
+
+def _inventory_row_repository(row: dict) -> Path:
+    """The Git directory a sealed inventory row still names.
+
+    ``CanonicalRepositoryIdentity.v1`` never hashed the worktree path, only the
+    Git common dir, so a row's ``worktree`` is a convenience and not the
+    identity: while Git still discovers a repository from it (the same
+    discovery the probe sealed it with) it is used as recorded; once it was
+    pruned the row's recorded common dir stands in for it, with one warning;
+    only a missing common dir fails closed.  Identity equality at the
+    caller is unchanged, so a common dir that now belongs to a different
+    repository still refuses there.
+    """
+    worktree = Path(row["worktree"])
+    if _path_discovers_repository(worktree):
+        # Any path the probe could seal (a working tree, a bare repository,
+        # ``<repo>/.git``, ``<repo>/.git/objects``) still discovers a
+        # repository: nothing was pruned.
+        return worktree
+    common = _inventory_row_namespace_root(row).parent
+    identity = row["canonical_repository_identity"]
+    if _path_is_own_common_dir(common):
+        warnings.warn(
+            f"sealed inventory row for {identity} names pruned worktree {worktree}; "
+            f"using its recorded repository common dir {common} instead",
+            SealedWorktreeFallbackWarning,
+            stacklevel=2,
+        )
+        return common
+    raise LegacyCutoverConflict(
+        f"sealed inventory row for {identity} names pruned worktree {worktree} and its "
+        f"repository common dir {common} is gone or is no longer a Git repository; "
+        "restore the repository or rotate the authority"
+    )
+
+
 def _revalidate_bootstrap_sources(inventory: dict) -> None:
     legacy_paths = {row["path"] for row in inventory["legacy_roots"]}
     declared_now = {
@@ -2495,7 +2618,7 @@ def _revalidate_bootstrap_sources(inventory: dict) -> None:
             )
     for row in inventory["worktrees"]:
         current = _classify_repository_namespace(
-            repository_snapshot(row["worktree"]),
+            repository_snapshot(_inventory_row_repository(row)),
             inventory["cutover_id"],
             bootstrap_inventory_sha256=inventory["inventory_sha256"],
         )
@@ -2583,6 +2706,16 @@ def bootstrap_zero_history_authority(
                 )
             _revalidate_bootstrap_sources(inventory)
         else:
+            # Nothing durable exists before the first apply's re-probe, so a
+            # pruned row is re-probed rather than resolved through the fallback.
+            for row in inventory["worktrees"]:
+                recorded = Path(row["worktree"])
+                if not _path_discovers_repository(recorded):
+                    raise LegacyCutoverConflict(
+                        f"sealed inventory row for {row['canonical_repository_identity']} "
+                        f"names pruned worktree {row['worktree']} before its first apply; "
+                        "re-run the zero-history probe"
+                    )
             reprobe = probe_zero_history_bootstrap(
                 cutover_id=cutover_id,
                 authority_root=authority,
@@ -2600,7 +2733,7 @@ def bootstrap_zero_history_authority(
             _atomic_write_json(stored_path, inventory)
         _record_bootstrap_state(journal, cutover_id, "DRAINING")
 
-    worktrees = tuple(row["worktree"] for row in inventory["worktrees"])
+    worktrees = tuple(_inventory_row_repository(row) for row in inventory["worktrees"])
     latches = [WriterGenerationLatch.open(worktree) for worktree in worktrees]
     for latch in latches:
         if latch.read().generation_state == "LEGACY_OPEN":
@@ -2626,11 +2759,12 @@ def bootstrap_zero_history_authority(
             _atomic_write_json(pointer, claim)
 
     receipts = []
-    for worktree in worktrees:
+    for worktree, row in zip(worktrees, inventory["worktrees"]):
         receipt = onboard_zero_legacy_repository(
             worktree,
             cutover_id=cutover_id,
             authority_root=authority,
+            recorded_worktree=row["worktree"],
         )
         receipts.append(receipt.canonical_repository_identity)
     return {
@@ -2839,6 +2973,7 @@ def onboard_zero_legacy_repository(
     cutover_id: str = ZERO_SOURCE_ONBOARDING_CUTOVER_ID,
     roots: tuple[Path, ...] | None = None,
     authority_root: Path | str | None = None,
+    recorded_worktree: str | None = None,
 ) -> LegacyRepositoryPartitionReceipt:
     """Serialized, authenticated onboarding for a repository first seen post-ACTIVE.
 
@@ -2883,6 +3018,7 @@ def onboard_zero_legacy_repository(
             authority_root=authority_root,
             bootstrap_inventory_sha256=bootstrap_inventory_sha256,
             bootstrap_authority_root=bootstrap_authority_root,
+            recorded_worktree=recorded_worktree,
         )
 
 
@@ -2894,6 +3030,7 @@ def _onboard_zero_legacy_repository_under_seal(
     authority_root: Path | str | None,
     bootstrap_inventory_sha256: str | None,
     bootstrap_authority_root: Path | None,
+    recorded_worktree: str | None = None,
 ) -> LegacyRepositoryPartitionReceipt:
     if not global_active_authority_exists(roots, authority_root=authority_root):
         raise LegacyCutoverConflict(
@@ -2948,7 +3085,10 @@ def _onboard_zero_legacy_repository_under_seal(
         inventory_path = authority / f"{cutover_id}.inventory.json"
         partition = {
             "canonical_repository_identity": identity,
-            "worktree": str(snapshot.worktree),
+            # The sealed bootstrap row's worktree, not the path this resume
+            # happened to snapshot: under the pruned-worktree fallback that is
+            # the common dir, which a restored worktree could never bind.
+            "worktree": recorded_worktree or str(snapshot.worktree),
             "target_namespace": str(namespace),
             "legacy_epoch_high_water": 0,
             "ambiguous": False,
