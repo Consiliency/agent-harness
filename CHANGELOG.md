@@ -6,6 +6,56 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Typed pre-admission runtime-compatibility refusal (Consiliency/agent-harness#803)
+
+- Workstream A of Consiliency/agent-harness#789. An installed `phase-loop-runtime` whose
+  `AdmissionRecord` cannot read a newer `admissions.jsonl` now raises a typed
+  `AdmissionStoreIncompatible` (a `PermissionError`, so every fail-closed path stays
+  closed) naming the unreadable field and the store path, **before** any durable
+  adapter-start owner is acquired. Before this, `BrokerService._fresh_publish` made the
+  owner durable and only then died inside `admit_next` with
+  `TypeError: AdmissionRecord.__init__() got an unexpected keyword argument 'binding'`,
+  leaving an unsealed owner with no admission — a pre-admission ambiguity that
+  permanently blocks the repository partition.
+- The adapter-start owner append and the admission allocation now happen under one
+  `admissions.lock` acquisition, so no writer of any version can interleave between them.
+
+### Sealed-inventory worktree paths are no longer load-bearing (Consiliency/agent-harness#804)
+
+- Workstream B of Consiliency/agent-harness#789. A sealed zero-history bootstrap
+  inventory row whose recorded worktree has since been pruned now resumes through the
+  recorded repository common dir instead of failing the activation barrier inside
+  `_git_out` with the incident's `No such file` text. A recorded path is healthy
+  whenever Git still discovers a repository from it — the same discovery the probe
+  sealed it with — so bare repositories, `<repo>/.git`, and directories inside it are
+  accepted on first apply without a spurious fallback; the fallback candidate itself must
+  be the recorded common dir. One structured `SealedWorktreeFallbackWarning` is emitted
+  when the fallback is taken, so the drift stays visible without being fatal.
+- `CanonicalRepositoryIdentity.v1` is unchanged: it never hashed a worktree path, only
+  the Git common dir and object format, so the identity equality that revalidation
+  asserts is exactly as strict as before. A row whose worktree **and** common dir are
+  both gone still fails closed with an actionable `LegacyCutoverConflict`.
+
+### Pre-admission ambiguity: operator note and recovery controls (Consiliency/agent-harness#789)
+
+- Workstream C-keep of Consiliency/agent-harness#789. `docs/fabpub-pre-admission-ambiguity.md`
+  records what a pre-admission ambiguity is, why `outcome_ambiguous_blocked` stays
+  permanent (the local chronology proof is only as strong as the weakest runtime version
+  that can write owners, and ah#789 was a version-skew incident), what the incident
+  actually recorded (publication blocked, no override taken), the prospective one-time
+  manual-override policy outside the governed path, and the deferred partition-rotation
+  route.
+- `phase-loop-runtime/tests/test_fabpub_recovery_controls_789.py` adds two controls over
+  existing behaviour: a blocked partition refuses a fresh publish of the exact intended
+  branch with every `git ls-remote` route replaced by a raising sentinel, writing no owner
+  and no admission and leaving `evidence.jsonl` byte-identical; and blocking one
+  repository partition leaves an unrelated partition in the same authority root
+  publishable exactly once (one admission, one adapter call) while the first stays
+  blocked. No production behaviour changes here.
+- Carried, not discharged: ah#789 acceptance item (5)'s first half — "a completed recovery
+  can publish the exact intended branch once" — has no governed path under C-keep, so
+  Consiliency/agent-harness#789 stays open after A, B and these deliverables land.
+
 ### Test suite no longer reads host state (Consiliency/agent-harness#779)
 
 - A new autouse fixture in `phase-loop-runtime/tests/conftest.py` (`_isolate_host_state`)
