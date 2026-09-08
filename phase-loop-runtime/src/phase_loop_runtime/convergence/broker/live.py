@@ -2511,6 +2511,25 @@ def _recorded_worktree_binds(recorded: str, snapshot: RepositorySnapshot) -> boo
     return not path.exists()
 
 
+def _path_is_own_common_dir(path: Path) -> bool:
+    """True when ``path`` is a Git directory that resolves to itself as the
+    repository common dir: a bare repository or a ``<repo>/.git`` directory.
+    False for a working tree, a linked worktree's ``.git`` file, and anything
+    Git does not recognise."""
+    if not path.is_dir():
+        return False
+    completed = subprocess.run(
+        ["git", "-C", str(path), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    return (
+        completed.returncode == 0
+        and Path(completed.stdout.strip()).resolve() == path.resolve()
+    )
+
+
 def _inventory_row_repository(row: dict) -> Path:
     """The Git directory a sealed inventory row still names.
 
@@ -2523,28 +2542,20 @@ def _inventory_row_repository(row: dict) -> Path:
     repository still refuses there.
     """
     worktree = Path(row["worktree"])
-    if is_git_repository(worktree):
+    if is_git_repository(worktree) or _path_is_own_common_dir(worktree):
+        # A bare repository or a ``<repo>/.git`` path is not inside a working
+        # tree, but it is its own common dir: nothing was pruned.
         return worktree
     common = _inventory_row_namespace_root(row).parent
     identity = row["canonical_repository_identity"]
-    if common.is_dir():
-        completed = subprocess.run(
-            ["git", "-C", str(common), "rev-parse", "--path-format=absolute", "--git-common-dir"],
-            capture_output=True,
-            text=True,
-            timeout=60,
+    if _path_is_own_common_dir(common):
+        warnings.warn(
+            f"sealed inventory row for {identity} names pruned worktree {worktree}; "
+            f"using its recorded repository common dir {common} instead",
+            SealedWorktreeFallbackWarning,
+            stacklevel=2,
         )
-        if (
-            completed.returncode == 0
-            and Path(completed.stdout.strip()).resolve() == common.resolve()
-        ):
-            warnings.warn(
-                f"sealed inventory row for {identity} names pruned worktree {worktree}; "
-                f"using its recorded repository common dir {common} instead",
-                SealedWorktreeFallbackWarning,
-                stacklevel=2,
-            )
-            return common
+        return common
     raise LegacyCutoverConflict(
         f"sealed inventory row for {identity} names pruned worktree {worktree} and its "
         f"repository common dir {common} is gone or is no longer a Git repository; "
@@ -2671,7 +2682,8 @@ def bootstrap_zero_history_authority(
             # Nothing durable exists before the first apply's re-probe, so a
             # pruned row is re-probed rather than resolved through the fallback.
             for row in inventory["worktrees"]:
-                if not is_git_repository(Path(row["worktree"])):
+                recorded = Path(row["worktree"])
+                if not (is_git_repository(recorded) or _path_is_own_common_dir(recorded)):
                     raise LegacyCutoverConflict(
                         f"sealed inventory row for {row['canonical_repository_identity']} "
                         f"names pruned worktree {row['worktree']} before its first apply; "

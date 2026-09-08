@@ -618,3 +618,125 @@ def test_recorded_worktree_replaced_by_plain_dir_refuses(
             )
     assert "is not bound to" in message and str(linked) in message, message
     assert live.load_partition_receipt(live.repository_snapshot(main).store_root) is None
+
+
+# ---------------------------------------------------------------------------
+# round 3 (ah#804, fable r2 #1/#2): a recorded worktree that IS its own Git
+# common dir -- a bare repository or a ``<repo>/.git`` path -- is not pruned.
+# ``is_git_repository`` is False for both (``--is-inside-work-tree`` answers
+# "false" from inside a Git dir), so the first-apply guard must also accept a
+# path that ``rev-parse --git-common-dir`` resolves to itself, and the resume
+# fallback must not warn when the fallback IS the recorded path.
+# ---------------------------------------------------------------------------
+
+
+def _bare_repo(path: Path) -> Path:
+    subprocess.run(["git", "init", "-q", "--bare", str(path)], check=True, timeout=60)
+    return path.resolve()
+
+
+def _own_common_dir_paths(tmp_path: Path, kind: str) -> Path:
+    if kind == "bare":
+        return _bare_repo(tmp_path / "bare.git")
+    main = _git_repo(tmp_path / "main")
+    return (main / ".git").resolve()
+
+
+@_production_dependent
+@pytest.mark.parametrize("kind", ["bare", "dotgit"])
+def test_first_apply_accepts_row_recording_its_own_common_dir(
+    tmp_path: Path, kind: str
+) -> None:
+    """A probe sealed against a bare repository or a ``<repo>/.git`` path
+    applied at base; the first-apply pruned-row guard must not refuse it, and
+    no ``SealedWorktreeFallbackWarning`` may fire for a path that is its own
+    common dir (nothing was pruned)."""
+    recorded = _own_common_dir_paths(tmp_path, kind)
+    assert not live.is_git_repository(recorded), "fixture is not an own-common-dir path"
+    inventory = _probe(tmp_path, recorded)
+    row = _sealed_row(inventory)
+    assert Path(row["worktree"]).resolve() == recorded
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        try:
+            result = live.bootstrap_zero_history_authority(
+                inventory, confirmed_zero_history=True
+            )
+        except live.LegacyCutoverConflict as exc:
+            raise AssertionError(
+                "789-RED-ANCHOR::first-apply-own-common-dir-refused — a sealed row whose "
+                f"recorded worktree {recorded} ({kind}) is its own Git common dir was "
+                f"not pruned; the first apply must reach ACTIVE, got: {exc}"
+            ) from exc
+    assert result["state"] == "ACTIVE"
+    assert result["repositories"] == [row["canonical_repository_identity"]]
+    fallback_warnings = [
+        str(item.message)
+        for item in caught
+        if issubclass(item.category, live.SealedWorktreeFallbackWarning)
+    ]
+    assert not fallback_warnings, (
+        "789-RED-ANCHOR::own-common-dir-spurious-fallback-warning — the recorded path "
+        f"{recorded} ({kind}) IS the repository common dir, nothing was pruned, yet the "
+        f"apply warned: {fallback_warnings}"
+    )
+    assert live.WriterGenerationLatch.open(recorded).read().generation_state == "ACTIVE"
+
+
+@_production_dependent
+@pytest.mark.parametrize("kind", ["bare", "dotgit"])
+def test_resume_reader_does_not_warn_for_row_recording_its_own_common_dir(
+    tmp_path: Path, kind: str
+) -> None:
+    """``_inventory_row_repository`` on a row whose worktree is its own common
+    dir returns the recorded path with no fallback warning."""
+    recorded = _own_common_dir_paths(tmp_path, kind)
+    inventory = _probe(tmp_path, recorded)
+    row = _sealed_row(inventory)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        resolved = live._inventory_row_repository(row)
+    assert resolved.resolve() == recorded
+    fallback_warnings = [
+        str(item.message)
+        for item in caught
+        if issubclass(item.category, live.SealedWorktreeFallbackWarning)
+    ]
+    assert not fallback_warnings, (
+        "789-RED-ANCHOR::own-common-dir-reader-warns — the resume reader warned about a "
+        f"fallback for {recorded} ({kind}), which is the recorded path itself: "
+        f"{fallback_warnings}"
+    )
+
+
+@_production_dependent
+def test_first_apply_refuses_row_replaced_by_plain_dir(tmp_path: Path) -> None:
+    """The own-common-dir exemption must not widen to "the path exists": a
+    pruned worktree replaced by a plain directory before the first apply is
+    still pruned and must refuse with the re-probe remedy."""
+    main = _git_repo(tmp_path / "main")
+    linked = _linked_worktree(main, tmp_path / "linked", "linked")
+    inventory = _probe(tmp_path, linked)
+    row = _sealed_row(inventory)
+    _remove_linked_worktree(main, linked)
+    linked.mkdir()
+    assert not live.is_git_repository(linked)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", live.SealedWorktreeFallbackWarning)
+        try:
+            live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
+        except live.LegacyCutoverConflict as exc:
+            message = str(exc)
+        else:
+            raise AssertionError(
+                "789-RED-ANCHOR::first-apply-plain-dir-accepted — a first apply whose "
+                f"sealed worktree {linked} was pruned and replaced by a plain directory "
+                "must refuse; a directory that exists is not a repository"
+            )
+    assert "before its first apply" in message and "re-run the zero-history probe" in message, (
+        f"789-RED-ANCHOR::first-apply-plain-dir-not-actionable — got: {message}"
+    )
+    assert row["canonical_repository_identity"] in message
+    assert not (tmp_path / "authority" / "ACTIVE_BOOTSTRAP").exists()
