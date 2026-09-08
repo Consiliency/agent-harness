@@ -35,6 +35,7 @@ identity at base and after B; no test here promises that refusal.
 from __future__ import annotations
 
 import copy
+import json
 import logging
 import os
 import shutil
@@ -378,3 +379,201 @@ def test_fallback_path_that_is_not_the_common_dir_refuses_actionably(
             f"{inside}, which is inside the sealed repository but is not its common "
             f"dir {Path(row['namespace_root']).parent}"
         )
+
+
+# ---------------------------------------------------------------------------
+# binding by repository, not path (ah#804 round 1, fable F1/F2/F3 + codex
+# DRAINING coverage): ``RepositorySnapshot.worktree`` is not identity-bearing,
+# so no reader may compare a sealed ``worktree`` string against it once the
+# fallback has taken the snapshot from the common dir.
+# ---------------------------------------------------------------------------
+
+
+def _crash_at_proof_phase(monkeypatch, phase: str, marker: str):
+    real = live._prove_zero_source
+
+    def boom(snapshot, roots, current_phase):
+        if current_phase == phase:
+            raise RuntimeError(marker)
+        return real(snapshot, roots, current_phase)
+
+    monkeypatch.setattr(live, "_prove_zero_source", boom)
+
+
+def _onboarding_inventory_path(row: dict) -> Path:
+    return (
+        Path(row["namespace_root"]) / "zero-legacy-onboarding" / "bootstrap-test.inventory.json"
+    )
+
+
+@_production_dependent
+def test_interrupted_onboarding_resumes_after_worktree_prune(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """fable F2: the onboarding inventory (``bootstrap_in_progress``) was sealed
+    against the linked worktree; after the prune the resume classifies the
+    repository from its common dir and must still bind by repository."""
+    main = _git_repo(tmp_path / "main")
+    linked = _linked_worktree(main, tmp_path / "linked", "linked")
+    inventory = _probe(tmp_path, linked)
+    row = _sealed_row(inventory)
+
+    with monkeypatch.context() as patcher:
+        _crash_at_proof_phase(patcher, "before_receipt_write", "crash-after-onboarding-seal")
+        with pytest.raises(RuntimeError, match="crash-after-onboarding-seal"):
+            live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
+    assert _onboarding_inventory_path(row).exists(), "did not reach bootstrap_in_progress"
+    assert live.load_partition_receipt(live.repository_snapshot(main).store_root) is None
+
+    _remove_linked_worktree(main, linked)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", live.SealedWorktreeFallbackWarning)
+        try:
+            result = live.bootstrap_zero_history_authority(
+                inventory, confirmed_zero_history=True
+            )
+        except live.LegacyCutoverConflict as exc:
+            raise AssertionError(
+                "789-RED-ANCHOR::interrupted-onboarding-prune-resume — an onboarding "
+                f"interrupted after its inventory seal must resume after `git worktree "
+                f"remove {linked}`; the sealed partition names the worktree but the "
+                f"identity is the common dir; got: {exc}"
+            ) from exc
+    assert result["state"] == "ACTIVE"
+    assert result["repositories"] == [row["canonical_repository_identity"]]
+    receipt = live.load_partition_receipt(live.repository_snapshot(main).store_root)
+    assert receipt is not None and receipt.zero_source
+    assert live.WriterGenerationLatch.open(main).read().generation_state == "ACTIVE"
+
+
+@_production_dependent
+def test_restore_after_fallback_resume_succeeds(tmp_path: Path, monkeypatch) -> None:
+    """fable F1: a resume that onboarded through the common-dir fallback must
+    seal the ROW's recorded worktree, not the ``.git`` dir it happened to
+    snapshot, so restoring the worktree at the recorded path resumes cleanly."""
+    main = _git_repo(tmp_path / "main")
+    linked = _linked_worktree(main, tmp_path / "linked", "linked")
+    inventory = _probe(tmp_path, linked)
+    row = _sealed_row(inventory)
+
+    # First apply crashes BEFORE onboarding: the authority is sealed, nothing
+    # under the repository namespace yet beyond the latch.
+    with monkeypatch.context() as patcher:
+        patcher.setattr(
+            live,
+            "onboard_zero_legacy_repository",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("crash-1")),
+        )
+        with pytest.raises(RuntimeError, match="crash-1"):
+            live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
+    assert not _onboarding_inventory_path(row).exists()
+
+    _remove_linked_worktree(main, linked)
+    # Resume through the fallback, crashing after the onboarding inventory seal.
+    with monkeypatch.context() as patcher, warnings.catch_warnings():
+        warnings.simplefilter("ignore", live.SealedWorktreeFallbackWarning)
+        _crash_at_proof_phase(patcher, "before_receipt_write", "crash-2")
+        with pytest.raises(RuntimeError, match="crash-2"):
+            live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
+    sealed = json.loads(_onboarding_inventory_path(row).read_text(encoding="utf-8"))
+    (partition,) = sealed["partitions"].values()
+    assert partition["worktree"] == row["worktree"], (
+        "789-RED-ANCHOR::fallback-onboarding-seals-common-dir — the onboarding "
+        f"partition sealed worktree {partition['worktree']!r} instead of the sealed "
+        f"row's recorded worktree {row['worktree']!r}"
+    )
+
+    restored = _linked_worktree(main, Path(row["worktree"]), "restored")
+    assert restored == linked and live.is_git_repository(restored)
+    try:
+        result = live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
+    except live.LegacyCutoverConflict as exc:
+        raise AssertionError(
+            "789-RED-ANCHOR::restore-after-fallback-refused — after the worktree was "
+            f"restored at its recorded path {linked} the resume must succeed; got: {exc}"
+        ) from exc
+    assert result["state"] == "ACTIVE"
+    assert result["repositories"] == [row["canonical_repository_identity"]]
+    assert live.WriterGenerationLatch.open(restored).read().generation_state == "ACTIVE"
+
+
+@_production_dependent
+def test_fresh_apply_after_prune_refuses_actionably(tmp_path: Path) -> None:
+    """fable F3: nothing durable exists before the first apply's re-probe, so a
+    pruned row must refuse with a message that names the remedy (re-probe),
+    never the misleading "inventory changed between probe and apply"."""
+    main = _git_repo(tmp_path / "main")
+    linked = _linked_worktree(main, tmp_path / "linked", "linked")
+    inventory = _probe(tmp_path, linked)
+    row = _sealed_row(inventory)
+    authority = tmp_path / "authority"
+    _remove_linked_worktree(main, linked)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", live.SealedWorktreeFallbackWarning)
+        with pytest.raises(live.LegacyCutoverConflict) as raised:
+            live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
+    message = str(raised.value)
+    actionable = (
+        "before its first apply" in message
+        and "re-run the zero-history probe" in message
+        and str(linked) in message
+        and row["canonical_repository_identity"] in message
+    )
+    assert actionable, (
+        "789-RED-ANCHOR::fresh-apply-after-prune-not-actionable — a first apply whose "
+        f"sealed worktree {linked} was pruned must refuse naming the pruned path, the "
+        f"identity and the re-probe remedy; got: {message}"
+    )
+    assert not (authority / "bootstrap-test.bootstrap-inventory.json").exists()
+    assert not (authority / "bootstrap-test.bootstrap-journal.jsonl").exists()
+    assert not (authority / "ACTIVE_BOOTSTRAP").exists()
+
+
+@_production_dependent
+def test_draining_resume_after_prune_awaits_quiescence(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """codex r1 residual: a resume whose latch is still DRAINING must run
+    ``await_quiescent(worktree=<common dir>)`` through the fallback path."""
+    main = _git_repo(tmp_path / "main")
+    linked = _linked_worktree(main, tmp_path / "linked", "linked")
+    inventory = _probe(tmp_path, linked)
+    row = _sealed_row(inventory)
+    authority = tmp_path / "authority"
+    journal = authority / "bootstrap-test.bootstrap-journal.jsonl"
+
+    real_record = live._record_bootstrap_state
+
+    def crash_before_seal(path: Path, cutover_id: str, state: str) -> None:
+        if state == "INVENTORY_SEALED":
+            raise RuntimeError("crash-before-inventory-sealed")
+        real_record(path, cutover_id, state)
+
+    with monkeypatch.context() as patcher:
+        patcher.setattr(live, "_record_bootstrap_state", crash_before_seal)
+        with pytest.raises(RuntimeError, match="crash-before-inventory-sealed"):
+            live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
+    assert live._bootstrap_journal_states(journal, "bootstrap-test") == ("DRAINING",)
+    assert live.WriterGenerationLatch.open(main).read().generation_state == "DRAINING"
+
+    _remove_linked_worktree(main, linked)
+    common = Path(row["namespace_root"]).parent
+    awaited: list[Path] = []
+    real_await = live.WriterGenerationLatch.await_quiescent
+
+    def spy(self, *, worktree, timeout=60.0):
+        awaited.append(Path(worktree))
+        return real_await(self, worktree=worktree, timeout=timeout)
+
+    with monkeypatch.context() as patcher, warnings.catch_warnings():
+        warnings.simplefilter("ignore", live.SealedWorktreeFallbackWarning)
+        patcher.setattr(live.WriterGenerationLatch, "await_quiescent", spy)
+        result = live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
+    assert result["state"] == "ACTIVE"
+    assert common in awaited, (
+        "789-RED-ANCHOR::draining-resume-quiescence — a DRAINING resume after the "
+        f"prune must await quiescence through the common dir {common}; awaited: {awaited!r}"
+    )
+    assert live.WriterGenerationLatch.open(main).read().generation_state == "ACTIVE"
+    assert live._bootstrap_journal_states(journal, "bootstrap-test") == live.ZERO_HISTORY_STATES
