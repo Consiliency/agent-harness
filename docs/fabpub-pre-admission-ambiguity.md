@@ -70,19 +70,30 @@ pruned no longer fails the activation barrier.
 There is **no governed recovery** for a partition that is already blocked. What
 the runtime offers is a refusal, not a repair.
 
-**What happened in ah#789:** nothing was published. The incident record (step 5)
-states that no further publish was attempted and that no direct push, evidence
-rewrite, flag disablement, or replacement authority root was used; the responder
-correctly refused to improvise a recovery. The intended branch for transaction
-`b72b68ff…` is still unpublished by the governed path, and the partition stays
-blocked.
+**What happened in ah#789, in order.** The governed publish refused and the
+partition stayed blocked; the responder did not improvise a repair. The incident
+record's step 5 — "no further publish was attempted … no direct push, evidence
+rewrite, flag disablement, or replacement authority root was used" — describes
+the state at that moment, **not** the final state.
 
-**What C-keep sanctions going forward (prospective policy, not yet exercised):**
-a documented, recorded, **one-time** operator override outside the governed
-path — the operator publishes the intended branch by hand and records what was
-done, against which transaction, on the issue. No command sequence is
-prescribed here, because none has been executed or reviewed. Anything beyond a
-recorded manual publication is a contract change and needs review.
+On 2026-09-06 the maintainer authorised and recorded a **one-time manual
+publication outside the governed path** (the "Operator override recorded"
+comment on Consiliency/agent-harness#789): the exact durable candidate
+`076f1e5d87acba21b87c188e3a70a0f319b79e60` was pushed as branch
+`codex/audit-remediation-roadmap` and opened as draft Consiliency/omniagent-plus#28.
+Not touched: the `outcome_ambiguous_blocked` record for transaction
+`b72b68ff…`, the authority inventory and journal, the locked bootstrap
+worktrees, the checkpoint root. No retry, no root rotation, no evidence rewrite.
+
+So the intended branch **is** published, and it is published out of band. It is
+still unpublished *by the governed path*, and the partition is still blocked.
+
+**What C-keep sanctions** is exactly that shape: a documented, recorded,
+**one-time** operator override outside the governed path — publish the intended
+branch by hand, record what was done and against which transaction on the issue.
+This note prescribes no command sequence; the ah#789 override comment is the
+record of the one that was performed. Anything beyond a recorded manual
+publication is a contract change and needs review.
 
 Two consequences to plan around:
 

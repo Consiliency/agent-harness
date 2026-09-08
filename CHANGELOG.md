@@ -42,9 +42,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   records what a pre-admission ambiguity is, why `outcome_ambiguous_blocked` stays
   permanent (the local chronology proof is only as strong as the weakest runtime version
   that can write owners, and ah#789 was a version-skew incident), what the incident
-  actually recorded (publication blocked, no override taken), the prospective one-time
-  manual-override policy outside the governed path, and the deferred partition-rotation
-  route.
+  actually recorded (the governed publish refused; on 2026-09-06 a recorded one-time
+  operator override published the candidate out of band as
+  Consiliency/omniagent-plus#28 without clearing the block), the one-time
+  manual-override policy that override instantiates, and the deferred
+  partition-rotation route.
 - `phase-loop-runtime/tests/test_fabpub_recovery_controls_789.py` adds two controls over
   existing behaviour: a blocked partition refuses a fresh publish of the exact intended
   branch with every `git ls-remote` route replaced by a raising sentinel, writing no owner
