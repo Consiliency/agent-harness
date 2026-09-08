@@ -306,8 +306,18 @@ The rotation therefore uses a three-place layout, stated here so no implementer 
    process, which is the crash this guard exists for.
 
    The guard is therefore **durable state, and it is the rotation journal**: onboarding and the
-   routability path refuse, with a typed error, any identity whose rotation journal is `ARMED` but not
-   `ACTIVE`. That edit to shipped onboarding machinery is in Lane D2's scope, stated here so it is not
+   routability path refuse, with a typed error, any identity that has a rotation journal in **any**
+   non-`ACTIVE` state. The predicate is deliberately state-agnostic rather than keyed on `ARMED`: a guard
+   that fires only in `ARMED` would leave the window open under a completion-journalled implementation
+   that performs the move and *then* records the state, and the ceremony this one mirrors sequences
+   exactly that way — `_drive_cutover` writes its partition receipts (`live.py:2033`) **before** recording
+   `ARMED` (`:2048`), which is safe there and would be unguarded here. Making the predicate
+   sequencing-independent removes the coupling instead of documenting it. The ceremony additionally
+   journals its first state **before** it touches anything, so the journal exists from the first instant
+   the identity could be observed receipt-less; and `ACTIVE` is recorded only after the successor receipt
+   authenticates. The journal lives under the **authority root, keyed by canonical repository identity** —
+   never under the partition path or inside the archive — because onboarding receives only a worktree and
+   must be able to find it when the partition path is empty. That edit to shipped onboarding machinery is in Lane D2's scope, stated here so it is not
    discovered mid-lane. The alternative — a layout that never leaves the path observably empty (a staged
    successor plus an exchange) — is rejected because POSIX offers no portable atomic directory swap, so it
    would trade a guarded window for an unguarded one. Anchor **5a** and mutant **m15** cover it.
@@ -381,8 +391,9 @@ Anchors:
    prefixed, or 4e refuses the second rotation before transitivity can be exercised. The realistic
    re-block routes — a crashed `attested_not_landed` first attempt, an adapter exception in
    `_fresh_publish` — are publish-scoped, so a fixture built on them is correct by construction.)
-5a. **The move/write crash window is guarded.** Crash the ceremony between the predecessor move and the
-   successor write; drive `fabpub_activation_barrier` / `onboard_zero_legacy_repository` at that identity;
+5a. **The move/write crash window is guarded.** Crash the ceremony at the **first receipt-less instant**
+   — immediately after the move completes, which is the point that falsifies a completion-journalled
+   implementation — and again at each later boundary in the window; drive `fabpub_activation_barrier` / `onboard_zero_legacy_repository` at that identity;
    assert the typed refusal naming the `ARMED`-not-`ACTIVE` rotation journal (a receipt-count assertion is
    NOT sufficient — the laundered outcome leaves exactly one routable receipt); then resume the rotation
    and assert the successor receipt authenticates and carries the terminals and dispositions.
@@ -414,8 +425,8 @@ Anchors:
 `convergence/broker/live.py`: `LegacyRepositoryPartitionReceipt` → v3 with the rotation proof and
 `adjudicated_effect_dispositions`; a `rotate_blocked_partition(...)` entry point in the shape of
 `onboard_zero_legacy_repository`; the rotation inventory/journal/seal-lock helpers; the typed pre-v3
-refusal (D5); **and the `ARMED`-not-`ACTIVE` rotation-journal guard in `onboard_zero_legacy_repository`
-and on the routability path** (D7 point 3) — an edit to shipped onboarding machinery, named here rather
+refusal (D5); **and the non-`ACTIVE` rotation-journal guard in `onboard_zero_legacy_repository` and on the
+routability path** (D7 point 3) — an edit to shipped onboarding machinery, named here rather
 than discovered mid-lane.
 
 ### Lane D3 — dispositions honoured on the publish path (production)
@@ -493,8 +504,11 @@ Requires a separate maintainer authorisation; nothing here executes it.
   mint-path assertion fails, catching the shortcut that would drop archive re-authentication;
   (m14) match an attestation on effect key alone, ignoring the bound predecessor digests and attempt
   identity → anchor 4f's second rotation is accepted and the unadjudicated attempt is retried;
-  (m15) drop the `ARMED`-not-`ACTIVE` onboarding guard → anchor 5a's onboarding inserts a zero-source
-  receipt into the crash window and the block is laundered;
+  (m15) drop the non-`ACTIVE` rotation-journal onboarding guard → anchor 5a's onboarding inserts a
+  zero-source receipt into the crash window and the block is laundered;
+  (m16) narrow the guard's predicate to `ARMED` only, or hoist the predecessor move ahead of the
+  journal's first recorded state → anchor 5a's typed refusal does not fire at the first receipt-less
+  instant, which is the slice a completion-journalled implementation leaves open;
   (m5) route an unknown schema through the ambiguity path instead of the typed refusal → anchor 6 gets the
   misleading permanent-block message; (m6) tighten the reader to accept only v3 → anchor 7's clean v2
   partition stops authenticating.
@@ -542,8 +556,9 @@ Requires a separate maintainer authorisation; nothing here executes it.
 - [ ] Crash injection at every rotation journal boundary is idempotent and never leaves two routable
       receipts for one canonical identity; and a crash between the predecessor move and the successor
       write cannot be onboarded as a zero-source repository, because onboarding and routability refuse a
-      typed error for an identity whose rotation journal is `ARMED` but not `ACTIVE` (falsified by m15 —
-      note a receipt-count assertion alone would pass, since the laundered outcome leaves exactly one).
+      typed error for an identity whose rotation journal is in any non-`ACTIVE` state, with that journal
+      written before the first mutation (falsified by m15 and m16 — note a receipt-count assertion alone
+      would pass either mutant, since the laundered outcome leaves exactly one routable receipt).
 - [ ] The runtime performs no network or `git ls-remote` call anywhere in the ceremony, proven by the
       recording sentinel idiom from `test_fabpub_recovery_controls_789.py`.
 - [ ] The laundering question is answered in the PR body with a RUN result: whether a fresh authority root
