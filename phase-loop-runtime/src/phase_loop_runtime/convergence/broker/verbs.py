@@ -386,6 +386,11 @@ class BrokerService:
             fcntl.flock(lock, fcntl.LOCK_EX)
             try:
                 self.evidence_store._authorize()
+                # ah#789 (ah#803 round-2, codex): the early probe ran OUTSIDE this
+                # lock.  A newer writer can land an incompatible admission line in
+                # the gap, so the store is re-validated under the lock before any
+                # evidence append — the refusal stays typed and mutation-free.
+                self.admission_store._records()
                 current_owner = evidence_module.read_adapter_start_owner(
                     self.evidence_store.root,
                     repository_identity=owner.repository_identity,
@@ -557,7 +562,9 @@ class BrokerService:
             if self._block_unsealed_owner(foreign_owner):
                 raise PermissionError("unsealed adapter-start owner blocks fresh provider effect")
         else:
-            raise PermissionError("unsealed adapter-start owner blocks fresh provider effect")
+            # A retired owner was replaced by another live publisher between the
+            # two entries: a retryable contention loss, not permanent ambiguity.
+            raise PermissionError("unsealed adapter-start owner contended twice in one publish; retry")
         _advance_transaction(transaction, "ADMISSION_DURABLE")
         self.evidence_store.record_intent(key)
         _advance_transaction(transaction, "BROKER_INTENT_DURABLE")

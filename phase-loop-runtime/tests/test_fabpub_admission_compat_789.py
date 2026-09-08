@@ -76,6 +76,9 @@ RED_ANCHORS = {
         "test_probe_readable_creates_nothing",
         "test_incompatible_record_landing_after_probe_still_refused_before_owner_write",
         "test_owner_and_admission_share_one_lock_acquisition",
+        "test_incompatible_record_after_probe_refused_inside_block_unsealed_owner",
+        "test_lock_held_without_lock_fails_loud",
+        "test_second_entry_contention_message_is_distinct",
     )
 }
 
@@ -585,6 +588,167 @@ def test_owner_and_admission_share_one_lock_acquisition(tmp_path, request, monke
     assert [record["sequence"] for record in persisted] == [1, 2]
     assert persisted[1]["binding"]["proposed_head_sha"] == delta_sha
     assert fx.adapter.calls[-1].admission.lease_epoch == 1 and len(fx.adapter.calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# ah#803 round-2 falsifiers (codex blocking; fable #1 / #4).
+# ---------------------------------------------------------------------------
+
+
+def _seed_unsealed_foreign_owner(fx: SimpleNamespace):
+    """Persist an unsealed owner of another publisher with NO evidence record."""
+    owner_cls = fabpub_symbol(VERBS_MODULE, "AdapterStartOwnership")
+    assert owner_cls is not None
+    foreign = owner_cls(
+        fx.identity,
+        "foreign-key",
+        "foreign-transaction",
+        "foreign-attempt",
+        "f" * 40,
+        "publish_committed_branch",
+        "foreign-nonce-0000000000000000",
+        "foreign-key",
+        False,
+    )
+    fx.root.mkdir(parents=True, exist_ok=True)
+    fx.owner.write_text(
+        json.dumps(foreign.__dict__, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    return foreign
+
+
+@_requires_789
+def test_incompatible_record_after_probe_refused_inside_block_unsealed_owner(
+    tmp_path, request, monkeypatch
+):
+    """Codex r1 (blocking): the probe→``_block_unsealed_owner`` gap is closed under the lock.
+
+    The early probe succeeds against a compatible store; an incompatible line
+    then lands BEFORE ``_block_unsealed_owner`` takes ``admissions.lock`` for an
+    unsealed foreign owner.  The refusal must still be typed and must precede
+    the PROVIDER_CALL_IN_FLIGHT / OUTCOME_AMBIGUOUS_BLOCKED appends.
+    """
+    _require(
+        request,
+        _incompatible_cls() is not None
+        and fabpub_symbol(ADMISSION_MODULE, "LinearizableAdmissionStore.probe_readable") is not None,
+        "AdmissionStoreIncompatible / probe_readable are absent; the in-lock re-validation "
+        "of _block_unsealed_owner cannot be expressed",
+    )
+    incompatible = _incompatible_cls()
+    fx = _routed(tmp_path, name="compat-after-probe-owner")
+    _seed_unsealed_foreign_owner(fx)
+    original_probe = fx.store.probe_readable
+    probe_calls: list[int] = []
+
+    def probe_then_mutate():
+        count = original_probe()
+        probe_calls.append(count)
+        seeded = _compatible_record(fx.identity)
+        seeded[FUTURE_KEY] = 1
+        _append_raw(fx.admissions, seeded)
+        return count
+
+    monkeypatch.setattr(fx.store, "probe_readable", probe_then_mutate)
+    before = _snapshot(fx)
+    assert before["evidence"] is None or b"foreign-key" not in before["evidence"], (
+        "fixture precondition: the foreign owner has NO evidence record yet"
+    )
+
+    with pytest.raises(incompatible) as info:
+        fx.service.execute(fx.request)
+
+    assert probe_calls == [0], "the early probe ran once against a compatible (empty) store"
+    assert FUTURE_KEY in str(info.value)
+    assert _read_or_none(fx.evidence) == before["evidence"], (
+        "evidence.jsonl must be byte-identical: _block_unsealed_owner re-validates the "
+        "admission store under the lock BEFORE appending PROVIDER_CALL_IN_FLIGHT / "
+        "OUTCOME_AMBIGUOUS_BLOCKED"
+    )
+    assert fx.owner.read_bytes() == before["owner"], "the foreign owner must be untouched"
+    assert _durable_state(fx.transaction) == before["state"] == "COMMITTED_HEAD_RESOLVED"
+    assert fx.adapter.calls == []
+    assert fx.store.admit_next_calls == 0
+
+
+@_requires_789
+def test_lock_held_without_lock_fails_loud(tmp_path, request):
+    """Fable r1 #1: ``lock_held=True`` with a free ``admissions.lock`` refuses loudly.
+
+    Positive control: with the lock genuinely held on another descriptor, the
+    same call proceeds through the critical section and allocates epoch 1.
+    """
+    _require(
+        request,
+        _has_lock_held("LinearizableAdmissionStore.admit_next", ADMISSION_MODULE),
+        "admit_next carries no lock_held parameter",
+    )
+    fx = _routed(tmp_path, name="compat-lock-held-guard")
+    envelope, _transaction = fx.service._validated_envelope(fx.request)
+
+    def make_request(epoch: int, attempt_id: str):
+        return fx.service._final_admission(envelope, fx.request, epoch, attempt_id)
+
+    before = _snapshot(fx)
+    with pytest.raises(RuntimeError, match="without admissions.lock held"):
+        fx.store.admit_next(
+            make_request,
+            attempt_id="guard-attempt",
+            precondition=lambda: True,
+            lock_held=True,
+        )
+    assert _read_or_none(fx.admissions) == before["admissions"], "nothing was allocated"
+    # The guard's own probe acquisition was released: the lock is free again.
+    with fx.lock.open("a+", encoding="utf-8") as held:
+        fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            record = fx.store.admit_next(
+                make_request,
+                attempt_id="guard-attempt",
+                precondition=lambda: True,
+                lock_held=True,
+            )
+        finally:
+            fcntl.flock(held, fcntl.LOCK_UN)
+    assert record.epoch == 1
+    persisted = _jsonl(fx.admissions)
+    assert len(persisted) == 1 and persisted[0]["request"]["attempt_id"] == "guard-attempt"
+
+
+@_requires_789
+def test_second_entry_contention_message_is_distinct(tmp_path, request, monkeypatch):
+    """Fable r1 #4: losing the section twice is reported as retryable contention."""
+    _require(
+        request,
+        _has_lock_held("append_adapter_start_owner", VERBS_MODULE),
+        "the two-entry critical section is absent",
+    )
+    fx = _routed(tmp_path, name="compat-contended-twice")
+    foreign = _seed_unsealed_foreign_owner(fx)
+    section_calls: list[str] = []
+    block_calls: list[str] = []
+
+    def contended_section(request_, owner, make_request, attempt_id):
+        section_calls.append(attempt_id)
+        return foreign, None, None
+
+    def retired(owner):
+        block_calls.append(owner.effect_key)
+        return False
+
+    monkeypatch.setattr(fx.service, "_owner_and_admission_under_one_lock", contended_section)
+    monkeypatch.setattr(fx.service, "_block_unsealed_owner", retired)
+
+    with pytest.raises(PermissionError) as info:
+        fx.service.execute(fx.request)
+
+    assert "contended twice" in str(info.value) and "retry" in str(info.value)
+    assert "blocks fresh provider effect" not in str(info.value)
+    # One resolution on the pre-existing pre-section path (the seeded owner is
+    # observed before the section) plus one per section entry.
+    assert len(section_calls) == 2 and len(block_calls) == 3
+    assert fx.adapter.calls == []
 
 
 # ---------------------------------------------------------------------------

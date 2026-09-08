@@ -159,6 +159,26 @@ def _fabpub_active() -> bool:
 _UNDECLARED = object()
 
 
+def _require_lock_held(lock) -> None:
+    """Fail loud when ``lock_held=True`` is declared but ``admissions.lock`` is free.
+
+    ``lock`` is a freshly opened descriptor on the lock file.  Because ``flock``
+    locks belong to the open file description, a non-blocking ``LOCK_EX`` on it
+    is refused (``EWOULDBLOCK``) exactly when some other descriptor — the
+    caller's — holds the lock.  If it is GRANTED, nobody held the lock and the
+    caller's declaration was false: release it and refuse rather than write
+    outside any critical section (ah#803 round-2, fable #1).
+    """
+    import fcntl
+
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return
+    fcntl.flock(lock, fcntl.LOCK_UN)
+    raise RuntimeError("admit_next(lock_held=True) called without admissions.lock held")
+
+
 class LinearizableAdmissionStore:
     """Append-only admission log guarded by an OS advisory lock."""
     def __init__(
@@ -299,6 +319,8 @@ class LinearizableAdmissionStore:
             with self.lock_path.open("a+", encoding="utf-8") as lock:
                 if not lock_held:
                     fcntl.flock(lock, fcntl.LOCK_EX)
+                else:
+                    _require_lock_held(lock)
                 try:
                     self._require_generation()
                     if self.epoch_blocked() or self.policy is None:
@@ -486,6 +508,8 @@ class LinearizableAdmissionStore:
         with self.lock_path.open("a+", encoding="utf-8") as lock:
             if not lock_held:
                 fcntl.flock(lock, fcntl.LOCK_EX)
+            else:
+                _require_lock_held(lock)
             try:
                 self._require_generation()
                 if self.epoch_blocked() or self.policy is None:
