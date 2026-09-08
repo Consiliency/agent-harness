@@ -277,36 +277,55 @@ close the last one is unimplementable as specified: the sentinel occupies the sa
 evidence it must preserve. The maintainer's decision (2026-09-08) is to remove the hazard by
 construction rather than continue guarding it.
 
-**The layout.** `repositories/<identity>/` becomes a container of generations. The predecessor store stays
-**exactly where it is**, byte-identical, untouched — it simply stops being the routable one. The successor
-is built at a new generation path that nothing routes to until it is complete, and becomes routable by a
-single atomic pointer flip.
+**The layout.** `repositories/<identity>/` remains the store it is today and becomes, additionally, the
+container for later generations. The predecessor stays **exactly where it is** — at the container root,
+byte-identical, untouched — and simply stops being the routable one. The successor is built at a new
+generation path that nothing routes to until it is complete, and becomes routable by a single atomic
+pointer flip.
 
-1. **Generations.** A rotated identity holds `repositories/<identity>/generations/<n>/`, each a complete
-   store (`admissions.jsonl`, `evidence.jsonl`, their locks, `partition-receipt.json`, and any
-   `adapter-start-owner.json`). The predecessor becomes generation *n*; the successor is built at *n+1*.
-2. **The pointer.** `repositories/<identity>/generations/ACTIVE` names the routable generation. It is
-   written by an atomic rename, so at every instant it names exactly one complete, authenticated
-   generation — the predecessor before the flip, the successor after. There is no instant at which the
-   identity has no receipt, so `onboard_zero_legacy_repository`'s zero-source route is never entitled to
-   fire, and the guard artifacts of rounds 6-11 are all deleted: **no rotation-pending marker, no
-   allocator sentinel, no onboarding edit, no exclusive-occupancy requirement.** A crash before the flip
-   leaves the predecessor routable and the partial successor unreferenced; a crash after it leaves the
-   successor routable. Both are resumable and neither is laundered.
-3. **Resolution, and the one shipped-code change.** `RepositorySnapshot.store_root` (`live.py:301-303`)
-   currently returns `namespace_root/"repositories"/identity` directly. It becomes: if that directory
-   holds `generations/`, resolve through `generations/ACTIVE`; otherwise return the directory itself. The
-   second branch is the **entire** compatibility story for the two live v2 partitions — `agent-harness`
-   `50fea8e4…` and `EZBidPro` `1a3e011c…` have no `generations/` directory and resolve exactly as today,
-   byte for byte. That equivalence is anchored, not assumed (anchor 7).
-4. **The predecessor is evidence, in place.** Nothing is archived, copied, or re-placed. `mint`'s archive
-   re-verification (`live.py:936-968`) therefore resolves against a path that never changes, which also
-   retires the `<cutover_id>`-component problem the move-based design had: Lane D2 extends `mint` to
-   resolve the byte source from the sealed provenance rather than reconstructing it from the loading
-   receipt's `cutover_id`. That extension is now the cheap branch, because this lane already touches this
-   family. `evidence.py:229-230` stays untouched; the `outcome_ambiguous_blocked` record for `b72b68ff…`
-   is preserved where it was written.
-5. **`_block_unsealed_owner` MUST NOT be moved, reordered, or bypassed.** It is the ah#789 property
+1. **Generations, with the legacy one at the container root.** Generation **0 is the container root
+   itself** — `repositories/<identity>/`, exactly the shape every partition has today. Later generations
+   are `repositories/<identity>/generations/<n>/` for `n ≥ 1`, each a complete store
+   (`admissions.jsonl`, `evidence.jsonl`, their locks, `partition-receipt.json`, and any
+   `adapter-start-owner.json`). Nothing is ever moved into or out of generation 0. This is what keeps a
+   pre-v3 reader safe: it resolves to the container, finds the predecessor's own receipt there, and
+   refuses on the permanent block — it never observes a receipt-less identity.
+2. **The pointer, and its initialisation.** `repositories/<identity>/generations/ACTIVE` holds a single
+   generation number; `0` means the container root. `generations/` is created **already containing
+   `ACTIVE` with the value `0`**, by preparing it at a temporary path and renaming it into place, so the
+   state "`generations/` exists, `ACTIVE` does not" is unreachable by construction. The flip to the
+   successor is a second atomic rename of `ACTIVE` alone. `ACTIVE` is a small regular file, never a
+   symlink — `_require_no_ancestor_symlink` (`live.py`) rejects symlinked ancestry on the receipt path.
+3. **Resolution, and the resolver's states.** `RepositorySnapshot.store_root` (`live.py:301-303`) today
+   returns `namespace_root/"repositories"/identity`. It becomes: no `generations/` → that directory
+   (every partition that has never rotated, including the two live v2 ones — this is the whole
+   compatibility story, anchored by 5d rather than assumed); `generations/ACTIVE` readable and naming a
+   complete generation → that generation, where `0` resolves back to the container; `ACTIVE` missing,
+   torn, unreadable, or naming an incomplete generation → **typed refusal, fail closed**, never a silent
+   fall-back and never treated as "no store". Because the snapshot is a frozen consistent read
+   (`live.py:284-295`), the resolution is performed **once, at snapshot time**, not re-derived per access.
+4. **The invariant, stated precisely.** At every instant — during the build, during either rename, after
+   any crash, and during a resume — **the resolver names exactly one complete, authenticated store**.
+   Before the first flip that is the predecessor at generation 0; after it, the successor. That is the
+   property anchors 5a and 5b assert, and it is stronger than anything the move-based design could offer,
+   because there is no instant at which the identity lacks a receipt.
+5. **Layout-aware authentication is part of this change, not a consequence of it.** Two shipped checks
+   assume the store *is* the identity directory and must be made layout-aware in the same lane, or every
+   successor is rejected: `load_partition_receipt` compares `canonical_repository_identity` to
+   `store_root.name` (`live.py:808-812`) — under `generations/<n>/` that name is a number, so the
+   comparison must be against the identity derived from the containing repository directory; and
+   `evidence.py`'s `_authorize` recognises a canonical store by its parent chain
+   (`root.parent.name == "repositories"`, `evidence.py:69-83`) — a numbered generation no longer matches,
+   which would turn a fail-closed check into a fail-open one. Both are named in Lane D2's contract, both
+   get anchors (wrong-identity receipt under a generation; receipt-less generation store), and both keep
+   their v2 behaviour byte-for-byte.
+6. **The predecessor is evidence, in place, and stays byte-identical.** Nothing is archived, copied or
+   re-placed, so `mint`'s byte source never moves. Note what this does *not* by itself prove: a legacy
+   replay promotes through `promote_legacy_terminal`, which **writes** evidence
+   (`evidence.py:119-134`) — into the *successor* store, which is correct, but "zero adapter calls" alone
+   does not establish that the predecessor was untouched. Anchor 4 therefore asserts predecessor bytes
+   before and after a carried-key replay, not only the absence of an adapter call.
+7. **`_block_unsealed_owner` MUST NOT be moved, reordered, or bypassed.** It is the ah#789 property
    itself: a crashed `attested_not_landed` first publish leaves an unsealed owner with an unknown effect,
    and that must block exactly as it does today. No reordering is needed — `execute()` consults
    `_legacy_terminal_replay` (`verbs.py:625`) **before** dispatching to `_fresh_publish` (`:636`), so an
@@ -325,11 +344,6 @@ rather than a recovery.
 
 **Lane note (D2):** `authenticated_partition_floor`'s refusal text hardcodes
 "LegacyRepositoryPartitionReceipt.v2" (`live.py:845-853`); the lane that touches the loader updates it.
-
-**D8 — Rotation applies only to a blocked partition.** `rotate_blocked_partition` refuses a partition
-that is not `epoch_blocked`. Without that precondition the ceremony is a general store-reset primitive
-available against clean partitions — which, combined with the carries in D2, is a history-laundering tool
-rather than a recovery.
 
 ## Lanes
 
@@ -355,7 +369,10 @@ Anchors:
 4. The predecessor generation is byte-identical before and after, **every file included** —
    `admissions.jsonl`, `evidence.jsonl`, `partition-receipt.json` and `adapter-start-owner.json` — and the
    owner file's digest appears in the successor receipt (mutant: rewrite the predecessor generation, or
-   drop the owner digest from the receipt).
+   drop the owner digest from the receipt). The assertion is made **after a carried-key legacy replay**,
+   not only after the ceremony: `promote_legacy_terminal` writes evidence (`evidence.py:119-134`), and
+   "zero adapter calls" alone would not establish that those writes landed in the successor rather than
+   the predecessor.
 4a. The successor store contains **no** `adapter-start-owner.json`, and an `observed_landed` key is
    answered in the pre-dispatch slot (`execute` → `_legacy_terminal_replay`, `verbs.py:625`) without ever
    reaching `_fresh_publish` — asserted by the absence of any owner read or owner write for that request.
@@ -376,18 +393,32 @@ Anchors:
    prefixed, or 4e refuses the second rotation before transitivity can be exercised. The realistic
    re-block routes — a crashed `attested_not_landed` first attempt, an adapter exception in
    `_fresh_publish` — are publish-scoped, so a fixture built on them is correct by construction.)
-5a. **The pointer never names an incomplete generation.** Crash the ceremony at every step of building
-   the successor generation — before the first file, between files, after its receipt is written but
-   before the flip — and at each point assert three things: the predecessor generation is still the
+5a. **The resolver never names an incomplete store.** Crash the ceremony at every step — before
+   `generations/` is renamed into place, between that and the first successor file, between successor
+   files, after the successor receipt is written but before the flip — and at each point assert three
+   things: the predecessor generation is still the
    routable one; an ordinary publish still refuses with the permanent block rather than starting fresh;
    and `onboard_zero_legacy_repository` driven at that identity refuses because a receipt is present.
    Then resume and assert the successor authenticates and carries its terminals and dispositions. This
    single anchor covers every hazard rounds 6-11 chased, and needs no marker, sentinel, onboarding edit
    or occupancy gate to do it.
-5b. **The flip is atomic and total.** Assert that `generations/ACTIVE` is replaced by rename; that a crash
-   during the flip leaves it naming exactly one complete generation — predecessor or successor, never a
-   partial, empty or absent value; and that a torn or unreadable pointer is refused with a typed error
-   rather than treated as absent (fail closed, never open).
+5b. **The pointer's states are total.** Assert that `generations/` is created already containing
+   `ACTIVE=0` by a rename of a prepared temporary directory, so "`generations/` present, `ACTIVE` absent"
+   is unreachable; that the flip replaces `ACTIVE` by rename, so a crash during it leaves exactly one
+   complete generation named (predecessor or successor, never a partial, empty or absent value); that
+   `ACTIVE` is a regular file and a symlinked `ACTIVE` or ancestor is refused; and that **missing, torn,
+   unreadable, or naming-an-incomplete-generation** are each refused with a typed error rather than
+   falling back to the container or being treated as "no store" (fail closed, never open).
+5e. **A second rotation.** Re-block the successor with a new `publish_committed_branch` key, rotate again,
+   and repeat 5a's crash sweep against generation 2 — asserting that generation 0's and generation 1's
+   bytes are untouched, that the carried terminals and unreplayed `observed_landed` dispositions still
+   answer as duplicates through the mint path, and that the epoch floor still rises. A design that only
+   works for the first rotation is not a recovery mechanism.
+5f. **Layout-aware authentication.** A receipt under `generations/<n>/` whose
+   `canonical_repository_identity` names a different repository is refused; a generation directory with no
+   receipt is refused by the ordinary store-authorisation path (`evidence.py:69-83`) rather than being
+   silently treated as non-canonical; and both checks keep their exact v2 behaviour for a store with no
+   `generations/`.
 5c. **A pre-v3 reader has nothing to launder.** Keep a pre-v3 FABPUB-capable reader alive across the
    installation replacement and drive it at every crash point of 5a. Stated oracle, verified against this
    head's code — which *is* the pre-v3 baseline, since this diff is plan-only: a pre-v3 reader resolves
@@ -430,8 +461,10 @@ Anchors:
 `convergence/broker/live.py`: `LegacyRepositoryPartitionReceipt` → v3 with the rotation proof and
 `adjudicated_effect_dispositions`; a `rotate_blocked_partition(...)` entry point in the shape of
 `onboard_zero_legacy_repository`; the rotation inventory/journal/seal-lock helpers; the typed pre-v3
-refusal (D5); **and the generational `store_root` resolution in `RepositorySnapshot` (`live.py:301-303`)
-plus the atomic `generations/ACTIVE` pointer** (D7) — an edit to shipped onboarding machinery, named here rather
+refusal (D5); **the generational `store_root` resolution in `RepositorySnapshot` (`live.py:301-303`), the
+atomic `generations/ACTIVE` pointer, and the layout-aware identity and canonical-store checks in
+`load_partition_receipt` (`live.py:808-812`) and `evidence.py:69-83`** (D7 items 3 and 5) — three shipped
+sites, named here rather than discovered mid-lane — an edit to shipped onboarding machinery, named here rather
 than discovered mid-lane.
 
 ### Lane D3 — dispositions honoured on the publish path (production)
@@ -525,10 +558,14 @@ Requires a separate maintainer authorisation; nothing here executes it.
   identity → anchor 4f's second rotation is accepted and the unadjudicated attempt is retried;
   (m15) flip `generations/ACTIVE` to the successor before its receipt authenticates → anchor 5a finds an
   incomplete generation routable at a crash point;
-  (m16) write `generations/ACTIVE` in place rather than by atomic rename → anchor 5b observes a torn or
-  absent pointer at a crash during the flip;
-  (m17) treat a torn or unreadable `generations/ACTIVE` as "no generation" and fall through to
-  onboarding → anchor 5b's fail-closed leg admits a zero-source receipt;
+  (m16) write `generations/ACTIVE` in place rather than by atomic rename, or create `generations/` before
+  seeding `ACTIVE=0` → anchor 5b observes an absent or torn pointer at a crash;
+  (m17) treat a missing, torn or unreadable `generations/ACTIVE` as "no generation" and fall back to the
+  container or to onboarding → anchor 5b's fail-closed legs admit a store the ceremony has not
+  authenticated;
+  (m21) compare the receipt's identity to `store_root.name` under a generation path, or keep
+  `evidence.py`'s canonical-store predicate parent-shaped → anchor 5f rejects every successor, or turns
+  the fail-closed canonical-store check fail-open;
   (m18) resolve `store_root` to the container rather than through `generations/ACTIVE` when the directory
   exists → the successor is never routable and anchor 5a's resume assertion fails;
   (m19) resolve through `generations/` for a store that has none → anchor 5d's live v2 partitions stop
@@ -585,9 +622,11 @@ Requires a separate maintainer authorisation; nothing here executes it.
       typed error for an identity whose rotation journal is in any non-`ACTIVE` state — proven per state
       by direct construction, not only along one crash trajectory — with that journal written before the
       first mutation. The stronger property the generational layout gives: at **every** instant of the
-      ceremony and of any crash, `generations/ACTIVE` names exactly one complete, authenticated
-      generation, so no reader — v3-aware or pre-v3 — ever observes a receipt-less identity, and the
-      zero-source onboarding route is never entitled to fire (falsified by m15, m16, m17 and m18).
+      ceremony and of any crash, the resolver names exactly one complete, authenticated store —
+      generation 0 (the container, where a pre-v3 reader also looks) before the flip, the successor after
+      — so no reader ever observes a receipt-less identity and the zero-source onboarding route is never
+      entitled to fire; missing, torn and incomplete pointer states are typed refusals, not fall-backs
+      (falsified by m15, m16, m17, m18 and m21).
 - [ ] The runtime performs no network or `git ls-remote` call anywhere in the ceremony, proven by the
       recording sentinel idiom from `test_fabpub_recovery_controls_789.py`.
 - [ ] The laundering question is answered in the PR body with a RUN result: whether a fresh authority root
