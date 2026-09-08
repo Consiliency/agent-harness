@@ -103,19 +103,39 @@ partition through `partition_is_ambiguity_blocked` and defeat the entire ceremon
 
 Two carries are not optional and are the ones a naive rotation drops:
 
-- **Completed-effect idempotency.** Duplicate suppression for an already-published effect comes from two
-  places only: the store-local `evidence_store.replay()` and the receipt-carried history through
-  `authenticated_legacy_records()` / `legacy_completed_effect_keys` (`verbs.py:273-291`). A successor
-  starts with an empty store, so every predecessor `effect_terminal_observed` key MUST be carried on the
-  receipt, with the provenance `_legacy_terminal_replay` requires — including
-  `serialized_repository`, absent which it raises "legacy terminal has no preserved repository preimage"
-  (`verbs.py:277-279`). The measured predecessor holds two such keys (`…58033572`, `…0a68fc6a`) while its
-  own `legacy_completed_effect_keys` is empty, so a rotation that copies the receipt and adds adjudications
+- **Completed-effect idempotency, specified as the mechanism and not as a field.** Duplicate suppression
+  for an already-published effect comes from two places only: the store-local `evidence_store.replay()`
+  and the receipt-carried history through `_legacy_terminal_replay` (`verbs.py:273-291`). A successor
+  starts with an empty store, so every predecessor `effect_terminal_observed` key MUST be answerable
+  through that second route — and naming it on `receipt.legacy_completed_effect_keys` is **not
+  sufficient**, because nothing on the publish path reads that field directly. The whole chain must line
+  up, and the plan requires each link:
+
+  1. `authenticated_legacy_records()` → `sealed_partition_effects(receipt)` reads per-key provenance from
+     the **sealed rotation inventory**'s `legacy_completed_effects` for this identity, and raises unless
+     that key set equals `receipt.legacy_completed_effect_keys` (`live.py:868-887`). So the rotation
+     inventory MUST carry cutover-shaped provenance for every carried key, mirroring the receipt list.
+  2. The provenance MUST include `serialized_repository`, absent which `_legacy_terminal_replay` raises
+     "legacy terminal has no preserved repository preimage" (`verbs.py:277-279`).
+  3. `promote_legacy_terminal` → `_mint_cutover_promotion_capability` re-verifies **current archive
+     bytes** at `provenance["legacy_root"]/legacy-archive/<cutover_id>/<source_id>` against
+     `admissions_digest` / `evidence_digest` on *every* replay (`live.py:936-968`). So the D7 archive is
+     not merely preserved evidence: it is the byte source each carried-key replay re-authenticates, its
+     path is pinned inside the sealed provenance, and archive drift or deletion produces a typed
+     `PermissionError` at replay rather than a silent duplicate. Either the archive lives exactly where
+     `mint` resolves, or Lane D2 extends `mint` — and states which.
+
+  The measured predecessor holds two completed keys (`…58033572`, `…0a68fc6a`) while its own
+  `legacy_completed_effect_keys` is empty, so a rotation that copies the receipt and adds adjudications
   would let an already-completed publish call the adapter a second time. Rotation MUST NOT be weaker than
-  the cutover it is modelled on, and this carry MUST survive a second rotation (it is transitive).
-- **Epoch monotonicity.** `authenticated_partition_floor` (`live.py:845-853`) reads
-  `legacy_epoch_high_water` from the receipt. The successor's value MUST be the predecessor's maximum
-  allocated epoch (2 for the measured partition), so successor admissions never reuse an allocated epoch.
+  the cutover it is modelled on. The carry is **transitive**: a later rotation carries every terminal AND
+  every prior `observed_landed` disposition forward, including ones never replayed. (Note the owner-file
+  digest pinned in D7 is an audit artifact only — `mint` re-verifies the two JSONLs, not the owner file.)
+- **Epoch monotonicity, stated transitively.** `authenticated_partition_floor` (`live.py:845-853`) reads
+  `legacy_epoch_high_water` from the receipt. The successor's value MUST be
+  `max(predecessor receipt floor, predecessor maximum allocated epoch)` — 2 for the measured partition.
+  The `max` is load-bearing: a second rotation of an intermediate successor that allocated no epochs would
+  otherwise write a floor of 0 and let the third store reuse epochs the original already allocated.
 
 **D3 — Every predecessor key is classified; the ambiguous ones are adjudicated.** A rotation is refused
 unless **every** key the predecessor could replay has a stated classification:
@@ -135,6 +155,19 @@ canonical blocked record, in which case a completeness check written only over c
 vacuously and rotates an unresolved effect away. The inventory MUST walk the authenticated predecessor
 lineage — canonical records, the receipt's `ambiguous` flag and its archived history, and any unsealed
 owner — or refuse a partition whose lineage it cannot enumerate.
+
+**Verb scope, fail-closed.** Every enforcement point cited above is `publish_committed_branch`-scoped:
+`_legacy_terminal_replay` returns `None` for any other verb (`verbs.py:275-276`), and disposition
+honouring lives on that same path. Non-publish verbs nevertheless write terminals and
+`outcome_ambiguous_blocked` rows into the same receipt-governed store in production —
+`convergence/refresh.py:63` executes `BrokerVerb.PUBLISH` through `broker.execute`, and the non-PCB path
+records `EFFECT_TERMINAL_OBSERVED` or an "adapter-exception" block (`verbs.py:670-679`). A plan that
+promises the carry and the adjudication for *every* key while every mechanism is publish-scoped is
+promising something it cannot discharge. Therefore: **rotation refuses a predecessor whose enumerable
+lineage contains any key whose verb prefix is not `publish_committed_branch`.** Extending the carry and
+the dispositions to every verb is the heavier alternative and is deliberately NOT in this plan's scope;
+the refusal keeps the gap fail-closed and visible. The measured partition is unaffected — all three of its
+keys carry the `publish_committed_branch` prefix.
 
 The successor receipt carries `adjudicated_effect_dispositions`: effect key →
 `{disposition, observed_head, attestation_digest}`, in the shape of the existing
@@ -215,11 +248,21 @@ Point 3 is load-bearing beyond tidiness: `_fresh_publish` consults `_block_unsea
 (`verbs.py:530-532`) **before** it consults `epoch_blocked` (`:533-534`), so a successor that inherited
 the unsealed `adapter-start-owner.json` would be blocked by the owner check before any disposition could
 be honoured, and would append a fresh `outcome_ambiguous_blocked` row — re-blocking the identity the
-rotation just recovered. Disposition handling MUST therefore resolve before the owner check on the
-successor's first publish.
+rotation just recovered. An empty successor removes that hazard at the source.
+
+**`_block_unsealed_owner` MUST NOT be moved, reordered, or bypassed.** It is the ah#789 property itself:
+a crashed `attested_not_landed` first publish leaves an unsealed owner with an unknown effect, and that
+must block exactly as it does today. No reordering is needed, because the slot already exists —
+`execute()` consults `_legacy_terminal_replay` (`verbs.py:625`) **before** it dispatches to
+`_fresh_publish` (`:636`). An `observed_landed` disposition resolves in that pre-dispatch slot and never
+enters `_fresh_publish` at all; requests that do enter it — an `attested_not_landed` first attempt, or any
+fresh key — keep `verbs.py:530-532` exactly as it is.
 
 `evidence.py:229-230` stays untouched throughout; nothing transitions out of
 `outcome_ambiguous_blocked`, and the record for `b72b68ff…` is preserved as evidence.
+
+**Lane note (D2):** `authenticated_partition_floor`'s refusal text hardcodes
+"LegacyRepositoryPartitionReceipt.v2" (`live.py:845-853`); the lane that touches the loader updates it.
 
 **D8 — Rotation applies only to a blocked partition.** `rotate_blocked_partition` refuses a partition
 that is not `epoch_blocked`. Without that precondition the ceremony is a general store-reset primitive
@@ -250,11 +293,22 @@ Anchors:
 4. The retired store is byte-identical before and after, **every file included** — `admissions.jsonl`,
    `evidence.jsonl` and `adapter-start-owner.json` — and the owner file's digest appears in the successor
    receipt (mutant: drop the owner from the archive or its digest from the receipt).
-4a. The successor store contains **no** `adapter-start-owner.json`, and its first publish for an
-   `observed_landed` key resolves the disposition **before** `_block_unsealed_owner`
-   (`verbs.py:530-532`) — proven by a fixture whose successor would otherwise be re-blocked.
+4a. The successor store contains **no** `adapter-start-owner.json`, and an `observed_landed` key is
+   answered in the pre-dispatch slot (`execute` → `_legacy_terminal_replay`, `verbs.py:625`) without ever
+   reaching `_fresh_publish` — asserted by the absence of any owner read or owner write for that request.
+   `_block_unsealed_owner` (`verbs.py:530-532`) is unchanged and still blocks a crashed
+   `attested_not_landed` first attempt; an anchor pins that too, so the fix cannot be implemented by
+   weakening the ah#789 property.
 4b. A predecessor `effect_terminal_observed` key replayed against the successor is answered as a duplicate
-   with zero adapter calls, and still is after a **second** rotation (the carry is transitive).
+   with zero adapter calls, **through the authenticated route** — the capability is minted from sealed
+   inventory provenance and re-verified archive bytes (`live.py:936-968`), not by a special case that
+   merely suppresses the adapter. The anchor asserts the mint path ran. Transitivity is proven with the
+   fixture D8 requires: the successor is **re-blocked by a new key** before a second rotation, and the
+   second successor still answers the first predecessor's terminals — and its unreplayed
+   `observed_landed` dispositions — as duplicates. Corollary anchor: archive drift or deletion makes that
+   replay fail with a typed `PermissionError`, never a silent second adapter call.
+4e. A predecessor whose enumerable lineage contains any key whose verb prefix is not
+   `publish_committed_branch` is refused by `rotate_blocked_partition` (the fail-closed verb scope).
 4c. A rotation whose predecessor is blocked **only** through a receipt-carried ambiguity (`ambiguous: true`
    with empty canonical evidence, or an archived orphaned `provider_call_in_flight`) is refused unless
    that obligation is adjudicated — the vacuous-completeness negative control.
@@ -314,11 +368,13 @@ Requires a separate maintainer authorisation; nothing here executes it.
    produced no output for three consecutive ah#805 rounds on 2026-09-08 (a default-model sub-agent ran the
    same smoke test in seconds); Consiliency/agent-harness#806 tracks the missing policy. This plan lands
    either on four seats or on a recorded deviation of the ah#805 shape — never silently on three.
-3. Lane order D1 → D2 → D3 → D4, as stated under Lanes; no lane runs in parallel with another.
+3. Lane order is as stated under Lanes; it is not repeated here.
 4. D5 after all lanes land, with its own authorisation, and **only after every installed
    `phase-loop-runtime` on a host that can write FABPUB state is re-pinned to a v3-aware build**
    (`uv tool install --force "git+https://github.com/Consiliency/agent-harness@<main sha>#subdirectory=phase-loop-runtime"`,
-   never from a working checkout) — see D5 part 3.
+   never from a working checkout) — see D5 part 3. The Lane D5 runbook includes a **version probe** that
+   verifies each installed runtime recognises `LegacyRepositoryPartitionReceipt.v3` before the ceremony
+   starts, so a stale reader is found before it meets a v3 receipt, not after.
 5. Unchecked precondition: the Windows host has not been scanned for blocked partitions. Before D5,
    scan every host that can write FABPUB state, so a rotation is not performed while a second blocked
    partition is unknown.
@@ -344,6 +400,11 @@ Requires a separate maintainer authorisation; nothing here executes it.
   (m9) allow rotation of a partition that is not blocked → anchor 4d's refusal does not fire;
   (m10) inventory ambiguity from canonical rows only → anchor 4c rotates the receipt-carried obligation
   away;
+  (m11) skip the verb-scope refusal → anchor 4e's refusal does not fire;
+  (m12) write the successor floor as the predecessor's allocated maximum without the `max(...)` against
+  the predecessor receipt floor → the second-rotation floor anchor reads 0 and epochs become reusable;
+  (m13) answer a carried key by suppressing the adapter without minting the capability → anchor 4b's
+  mint-path assertion fails, catching the shortcut that would drop archive re-authentication;
   (m5) route an unknown schema through the ambiguity path instead of the typed refusal → anchor 6 gets the
   misleading permanent-block message; (m6) tighten the reader to accept only v3 → anchor 7's clean v2
   partition stops authenticating.
@@ -378,8 +439,12 @@ Requires a separate maintainer authorisation; nothing here executes it.
 - [ ] A predecessor blocked only through a receipt-carried ambiguity or an archived orphaned
       `provider_call_in_flight` is refused unless that obligation is adjudicated (falsified by m10).
 - [ ] `rotate_blocked_partition` refuses a partition that is not `epoch_blocked` (falsified by m9).
-- [ ] The successor's `legacy_epoch_high_water` equals the predecessor's maximum allocated epoch, so no
-      successor admission reuses an allocated epoch.
+- [ ] The successor's `legacy_epoch_high_water` equals `max(predecessor receipt floor, predecessor
+      maximum allocated epoch)`, so no successor admission reuses an allocated epoch — including after a
+      second rotation through an intermediate successor that allocated none (falsified by m12).
+- [ ] A predecessor whose lineage contains a non-`publish_committed_branch` key is refused, because the
+      carry and disposition machinery is publish-scoped (falsified by m11). Extending it to every verb is
+      out of scope for this plan and named as such.
 - [ ] Crash injection at every rotation journal boundary is idempotent and never leaves two routable
       receipts for one canonical identity.
 - [ ] The runtime performs no network or `git ls-remote` call anywhere in the ceremony, proven by the
