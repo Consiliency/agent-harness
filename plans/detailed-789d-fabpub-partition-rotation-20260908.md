@@ -1,9 +1,9 @@
 # Detailed plan: FABPUB partition rotation — the governed recovery for a permanently blocked repository partition (ah#789 Workstream D)
 
-status: draft 2026-09-08 — awaiting maintainer approval; no runtime edits made
+status: draft 2026-09-08 — round-14 clean rewrite from the settled contract (supersedes the round 1–13 text in full); awaiting maintainer approval; no runtime edits made
 owner: Claude Code session `session_01Rv2aKsUWdEKoWfB5PTpD1B`
 issue: Consiliency/agent-harness#789 (Workstream D; acceptance item (5) first half)
-base: `ef6a9b18a0eb47981ebf07f56e6fc3d6bbe742d8` (origin/main, 2026-09-08 — carries ah#803/#804/#805)
+base: `ef6a9b18a0eb47981ebf07f56e6fc3d6bbe742d8` (origin/main, 2026-09-08 — carries ah#803/#804/#805; every anchor below was re-read at this base, and the broker files are unchanged between it and this branch)
 landing tier: `plan` — cross-vendor board under `plans/decision-interim-president-ratification-20260904.md` (Consiliency/agent-harness#773); ledger row on landing
 predecessor: `plans/detailed-789-fabpub-pre-admission-compat-20260906.md` (Workstreams A/B/C; D deferred there to this document)
 
@@ -17,7 +17,7 @@ and give the one partition that is blocked today an executable route back.
 
 ## Measured starting state (read-only inspection, 2026-09-08, host `claw`)
 
-Recorded here because the plan's shape depends on it; every value was read, none inferred.
+Every value was read, none inferred.
 
 - Authority root `~/.local/state/phase-loop/fabpub/authority-v1`, bootstrap `fabpub-host-bootstrap-20260904`,
   journal `DRAINING → INVENTORY_SEALED → ARMED → ACTIVE`, pointer `ACTIVE_BOOTSTRAP` (schema
@@ -26,471 +26,405 @@ Recorded here because the plan's shape depends on it; every value was read, none
   = `omniagent-plus`. Its `evidence.jsonl` holds two completed effects (`…58033572`, `…0a68fc6a`, both
   `effect_terminal_observed` → omniagent-plus#17) and one blocked effect `…54771bd3`
   (`provider_call_in_flight` → `outcome_ambiguous_blocked`, reference `unsealed-adapter-start-owner`).
-  `admissions.jsonl` has rows for epochs 1 and 2 only — **none** for `…54771bd3`, confirming the
-  failure was pre-admission. `adapter-start-owner.json` is present with `sealed: false`,
-  `transaction_id b72b68ff…`, `committed_head 076f1e5d…`.
+  `admissions.jsonl` has rows for epochs 1 and 2 only — none for `…54771bd3`: the failure was
+  pre-admission. `adapter-start-owner.json` is present with `sealed: false`, `transaction_id b72b68ff…`,
+  `committed_head 076f1e5d…`.
 - The partition receipt is `LegacyRepositoryPartitionReceipt.v2`, `ambiguous: false`, `zero_source: true`,
-  `legacy_epoch_high_water: 0`, `legacy_completed_effect_keys: []`. **The block therefore comes from the
-  canonical evidence row** (`evidence.py:86-95`), not from a legacy-carried receipt
-  (`live.py:856-865`).
+  `legacy_epoch_high_water: 0`, `legacy_completed_effect_keys: []`. The block comes from the canonical
+  evidence row (`evidence.py:86-95`), not from a legacy-carried receipt (`live.py:856-865`).
 - The other two partitions on this host are clean: `agent-harness` `50fea8e4…` and `EZBidPro`
-  `1a3e011c…`, receipts `ambiguous: false`, no blocked records, no `"ambiguous": true` receipt anywhere.
-  Host `ai` carries no FABPUB broker state. The Windows host was **not** checked (its scan errored) —
-  see Dependencies.
+  `1a3e011c…`, receipts `ambiguous: false`, no blocked records. Host `ai` carries no FABPUB broker state.
+  The Windows host was **not** checked (its scan errored) — see Dependencies.
 - `publish_committed_branch_idempotency_key` is `sha256(repo \0 branch \0 head_sha)`
-  (`convergence/contracts.py:20-22`), where `repo` on this path is the **serialized canonical repository
-  identity** — `request.repo` as `_dedup_key` passes it (`verbs.py:255-262`), i.e. the literal string
-  `1da3e3433e00173dec7aaa5ca564038a1df5ccd64498be0506aab80b579e7681`. Recomputing it from that identity, branch
-  `codex/audit-remediation-roadmap` and head `076f1e5d87acba21b87c188e3a70a0f319b79e60` reproduces
-  `54771bd3…` exactly — so the blocked effect is the publish that the recorded 2026-09-06 operator
-  override performed out of band as Consiliency/omniagent-plus#28.
+  (`convergence/contracts.py:20-22`), where `repo` is the serialized canonical identity as `_dedup_key`
+  passes it (`verbs.py:255-262`). Recomputing it from `1da3e343…`, branch `codex/audit-remediation-roadmap`
+  and head `076f1e5d87acba21b87c188e3a70a0f319b79e60` reproduces `54771bd3…` exactly — the blocked effect
+  is the publish that the recorded 2026-09-06 operator override performed out of band as
+  Consiliency/omniagent-plus#28.
 
 ## Research summary (all anchors read at base `ef6a9b18`)
 
 - **Where a block is consulted.** `verbs.py:533-534` (`_fresh_publish`) plus three sites in
   `admission.py` (`:326`, `:515`, `:576`), wired through `epoch_blocked=lambda: evidence_store.epoch_blocked`
-  at `live.py:3435`, `:3504`, `:3633`. A rotation that produces a *new, unblocked store* satisfies all
-  four without touching any of them.
-- **Why the block cannot be lifted in place.** `evidence.py:229-230` refuses any append that transitions
-  out of `outcome_ambiguous_blocked`, on every caller path. This plan does not propose relaxing it.
+  at `live.py:3435`, `:3504`, `:3633`. A rotation that produces a new, unblocked store satisfies all four
+  without touching any of them.
+- **The block cannot be lifted in place.** `evidence.py:229-230` refuses any append that transitions out
+  of `outcome_ambiguous_blocked`, on every caller path. This plan does not relax it.
 - **Receipt authentication is byte-exact.** `load_partition_receipt` (`live.py:792-841`) authenticates a
   chain — identity, ARMED journal, sealed inventory digest, partition-map digest — and finally requires
-  `path.read_bytes() == expected.file_bytes(...)`. A successor receipt therefore cannot simply be
-  written; it must be *produced* by a sealed inventory and an ARMED journal. Rotation needs its own
-  ceremony, not a file edit.
-- **Unknown schema fails closed, but with the wrong story.** `load_partition_receipt:806-807` raises
-  `LegacyCutoverConflict` on an unrecognised `schema`, and `partition_is_ambiguity_blocked:861-865`
-  turns any such failure into `True`. So an old runtime meeting a newer receipt refuses — but reports
-  "inherited permanent archived ambiguity", which is false and unactionable. ah#803 set the precedent
-  for what this should be instead: a typed, named compatibility refusal.
-- **`historical_evidence_roots` is a bootstrap-inventory concept**
-  (`_validate_historical_evidence_root`, `live.py:2324-2340`: only `admissions.jsonl`,
-  `admissions.lock`, `evidence.jsonl`, `evidence.lock` may be present; each JSONL is strict-parsed).
-  The live inventory already carries two such rows. It is **sealed and digest-pinned**
-  (`_validate_zero_history_inventory`, `live.py:2424-2429`) and pointed at by `ACTIVE_BOOTSTRAP`, so the
-  operator note's phrase "retire the blocked partition into `historical_evidence_roots`" is a
-  description of intent, not an available operation: the existing inventory cannot be appended to. Under
-  D7's generational layout it is not needed either — the predecessor is retired **in place**, as a
-  non-routable generation, so no historical root is created and the validator's allowlist never applies.
-- **A second bootstrap over the same authority root is already refused.**
-  `probe_zero_history_bootstrap` (`live.py:2394-2409`) rejects any authority root that is not fresh —
-  anything other than `bootstrap.lock` and atomic temps of the two targets is "not fresh". The live root
-  holds a sealed inventory, a journal, `ACTIVE_BOOTSTRAP` and `search-locks/`, so re-bootstrapping in
-  place cannot be used to launder a block. What is **not** yet established is the same attempt against a
-  *fresh* authority root pointed at a namespace that already holds a populated partition; that is a
-  falsifier this plan requires (Lane D1), not an assumption.
-- **Onboarding shape to copy, not call.** `onboard_zero_legacy_repository` (`live.py:2970-3022`) is the
-  existing "repository first seen post-ACTIVE" route: serialized under the latch's activation lock,
-  exactly one receipt, a real zero-source proof, generation drained/armed/promoted. Rotation is the same
-  shape with a different proof: a successor partition is **not** zero-source — a retired predecessor
-  store demonstrably exists.
+  `path.read_bytes() == expected.file_bytes(...)`. A successor receipt cannot be written; it must be
+  produced by a sealed inventory and an ARMED journal. Rotation is a ceremony, not a file edit.
+- **Unknown schema fails closed with the wrong story.** `load_partition_receipt:806-807` raises
+  `LegacyCutoverConflict` on an unrecognised schema and `partition_is_ambiguity_blocked:861-865` turns that
+  into `True` — a stale runtime reports "inherited permanent archived ambiguity", which is false and
+  unactionable. ah#803's typed `AdmissionStoreIncompatible` is the precedent for what it should be.
+- **The sealed bootstrap inventory cannot be appended to** (`_validate_zero_history_inventory`,
+  `live.py:2424`, digest-pinned and pointed at by `ACTIVE_BOOTSTRAP`), so "retire the partition into
+  `historical_evidence_roots`" is a description of intent, not an operation. Under D7 it is not needed:
+  the predecessor is retired in place as a non-routable generation.
+- **A second bootstrap over the same authority root is refused** (`probe_zero_history_bootstrap`,
+  `live.py:2394-2409`, non-fresh root). The same attempt against a *fresh* authority root pointed at a
+  populated namespace is not yet established — a falsifier this plan requires (anchor A22), not an
+  assumption.
+- **Onboarding is the shape to copy, not call.** `onboard_zero_legacy_repository` (`live.py:2970-3022`):
+  serialized under the latch's activation lock, exactly one receipt, a real proof, generation
+  drained/armed/promoted. Rotation is that shape with a different proof — a successor is not zero-source,
+  because a retired predecessor demonstrably exists.
+- **The activation barrier is the consumer the successor must satisfy.** `fabpub_activation_barrier`
+  (`live.py:3324-3365`) loads the receipt, checks the seal-lock subset (`:3330-3336`), requires
+  `_receipt_active_authority_exists` (`:3338-3341`), and only a receipt-less identity reaches the
+  zero-source onboarding route (`:3342-3354`). Both authority helpers (`:3187-3217`, `:3232-3242`)
+  consult the bootstrap claim **only when `receipt.zero_source`**, and otherwise fall to
+  `legacy_root_inventory`, which is empty for every partition on this host — so a successor with
+  `zero_source: false` is refused at `:3338` unless v3 carries its own authority binding (D9).
+- **Bootstrap-row revalidation walks every partition.** `_active_bootstrap_inventory` (`live.py:2662-2686`)
+  calls `_revalidate_bootstrap_sources` (`:2593-2629`), which classifies each sealed worktree row through
+  `_classify_repository_namespace` (`:2213-2245`); that reads the receipt at `snapshot.store_root` and
+  raises unless it is a zero-source receipt owned by the bootstrap. Nothing catches that exception, and it
+  runs for **every** repository's barrier — so a resolver that points `store_root` at a v3 successor would
+  take down the two clean partitions with it (D9-A).
+- **The latch is the fence.** `require_current_generation` (`live.py:645-666`) validates every in-lock
+  append against the namespace latch; `validate_lease` refuses a DRAINING latch, a strict `None` lease, and
+  any lease whose nonce/generation is not the current one. An UNDECLARED lease (`admission.py:222-229`,
+  `strict=False`) passes latch validation, so on that path the canonical-store predicate is the only
+  receipt gate (D6, D7 item 5). `WriterGenerationLatch.for_store_root` (`:434-436`) is
+  `Path(store_root).parent.parent` — correct for the container, wrong under `generations/<n>/` (resolves to
+  the identity directory, not the namespace root), and named in the derivation sweep (A0).
 
 ## Design contract
 
 **D1 — Rotation is a ceremony, journaled and crash-idempotent.** Its own `cutover_id`, its own sealed
 inventory and journal, states `DRAINING → INVENTORY_SEALED → ARMED → ACTIVE`, mirroring
-`run_legacy_broker_cutover` (`live.py:1834-1967`) and the bootstrap journal. Crash-idempotence is proven
-at every state boundary, in the style of
+`run_legacy_broker_cutover` (`live.py:1834`) and the bootstrap journal. Both files live under the authority
+root at `<authority_root>/partition-rotations/<identity>/<cutover_id>.{inventory.json,journal.jsonl}` — a
+directory no bootstrap validator enumerates (A18d proves the bootstrap's own results are unchanged by its
+presence). Crash-idempotence is proven at every state boundary in the style of
 `test_fabpub_global_legacy_cutover_partitions_multiple_repositories_crash_idempotently_before_activation`
-(`test_fabpub_shared_epoch.py:2700`).
+(`test_fabpub_shared_epoch.py:2700`). A journal that is torn, out of order, or carries a foreign
+`cutover_id` at resume is a typed refusal — the ceremony never restarts over it.
 
-**D2 — The successor receipt is a new schema version with a new proof type.**
-`LegacyRepositoryPartitionReceipt.v3` adds the rotation proof: the digest of **every** file in the retired
-store (`admissions.jsonl`, `evidence.jsonl`, and `adapter-start-owner.json` when present — the owner file
-is the primary artifact of the unknown effect and its digest must be pinned, not dropped), the predecessor
-receipt digest, and the attestation digest (D4). `zero_source` MUST be false for a rotated partition —
-claiming zero-source with a retired predecessor on disk would be a false proof. The successor's
-`ambiguous` MUST be false: carrying the block forward via `receipt.ambiguous=True` would re-block the new
-partition through `partition_is_ambiguity_blocked` and defeat the entire ceremony.
+**D2 — The successor receipt is `LegacyRepositoryPartitionReceipt.v3`.** It keeps every v2 field
+(`live.py:673-700`) and adds:
 
-Two carries are not optional and are the ones a naive rotation drops:
+- `generation` (integer ≥ 1) and `target_namespace` = the **container** path
+  `repositories/<identity>` — never the generation path — so every shipped `parent.parent` derivation
+  from `target_namespace` (`_inventory_row_namespace_root`, `live.py:2482-2490`; `_receipt_bootstrap_claim`,
+  `:2179-2200`) keeps resolving the namespace root. The loader binds the receipt's `generation` to the
+  physical path it was read from: an otherwise valid generation-1 receipt found under `generations/2/`
+  is refused (A14c).
+- the rotation proof: digest of **every** predecessor file (`admissions.jsonl`, `evidence.jsonl`,
+  `partition-receipt.json`, and `adapter-start-owner.json` when present — the owner file is the primary
+  artifact of the unknown effect), `predecessor_generation`, and the attestation digest (D4).
+- `adjudicated_effect_dispositions` (D3), and the authority binding (D9-B).
+- `zero_source: false` and `ambiguous: false`, both mandatory: zero-source with a predecessor on disk is a
+  false proof; `ambiguous: true` would re-block the successor through `partition_is_ambiguity_blocked`.
 
-- **Completed-effect idempotency, specified as the mechanism and not as a field.** Duplicate suppression
-  for an already-published effect comes from two places only: the store-local `evidence_store.replay()`
-  and the receipt-carried history through `_legacy_terminal_replay` (`verbs.py:273-291`). A successor
-  starts with an empty store, so every predecessor `effect_terminal_observed` key MUST be answerable
-  through that second route — and naming it on `receipt.legacy_completed_effect_keys` is **not
-  sufficient**, because nothing on the publish path reads that field directly. The whole chain must line
-  up, and the plan requires each link:
+Two carries are the ones a naive rotation drops:
 
-  1. `authenticated_legacy_records()` → `sealed_partition_effects(receipt)` reads per-key provenance from
-     the **sealed rotation inventory**'s `legacy_completed_effects` for this identity, and raises unless
-     that key set equals `receipt.legacy_completed_effect_keys` (`live.py:868-887`). So the rotation
-     inventory MUST carry cutover-shaped provenance for every carried key, mirroring the receipt list.
-  2. The provenance MUST include `serialized_repository`, absent which `_legacy_terminal_replay` raises
-     "legacy terminal has no preserved repository preimage" (`verbs.py:277-279`).
-  3. `promote_legacy_terminal` → `_mint_cutover_promotion_capability` re-verifies **current bytes** at
-     the path it resolves from the provenance, against `admissions_digest` / `evidence_digest`, on the
-     replay that mints the capability (`live.py:936-968`). That is once per successor per key: the first
-     legacy replay materialises intent + terminal rows into the successor store (`verbs.py:285-290`), and
-     every later request for that key answers from `execute()`'s store replay (`:622-624`) without
-     re-minting — so byte loss *after* materialisation cannot produce a second adapter call (the store
-     answers as a duplicate), and the drift corollary must be fixtured against a **fresh** successor.
-     Under D7's generational layout the byte source is the **predecessor generation, in place**: nothing
-     is archived, copied or re-placed, so the path never changes across rotations. `mint` today
-     reconstructs it as `provenance["legacy_root"]/legacy-archive/<cutover_id>/<source_id>` with
-     `<cutover_id>` taken from the *loading* receipt (`live.py:947-951`), which would resolve under each
-     new ceremony's id and find nothing. **Lane D2 extends `mint` to resolve the byte source from the
-     sealed provenance** rather than reconstructing it from the loading receipt — the cheap branch now,
-     because this lane already changes store-root resolution in the same file family, and it removes
-     per-rotation re-placement entirely. Drift or deletion of the predecessor generation then produces a
-     typed `PermissionError` at replay rather than a silent duplicate. The attestation documents of
-     carried entries stay reachable the same way: they are sealed into each rotation's inventory and the
-     predecessor generation's inventory is never moved.
+- **Completed-effect idempotency, as the mechanism.** A successor starts with an empty store, so every
+  predecessor `effect_terminal_observed` key must be answerable through `_legacy_terminal_replay`
+  (`verbs.py:273-291`), and naming it on `legacy_completed_effect_keys` is not sufficient because nothing
+  on the publish path reads that field directly. Each link is required: (1)
+  `sealed_partition_effects` (`live.py:868-887`) reads per-key provenance from the sealed rotation
+  inventory's `legacy_completed_effects` and requires that key set to equal the receipt list; (2) the
+  provenance carries `serialized_repository`, without which `_legacy_terminal_replay` raises
+  (`verbs.py:277-279`); (3) `_mint_cutover_promotion_capability` (`live.py:936-968`) re-verifies current
+  bytes at the path it resolves from the provenance. Today it reconstructs that path as
+  `legacy_root/legacy-archive/<loading receipt's cutover_id>/<source_id>` (`:947-951`), which would find
+  nothing under a rotation; **Lane D2 extends `mint` to resolve the byte source from the sealed
+  provenance** — under D7 that is the predecessor generation, in place, so the path never changes across
+  rotations. Minting happens once per successor per key (`verbs.py:285-290`); later requests answer from
+  the store replay (`:622-624`). Drift or deletion of the predecessor generation is a typed
+  `PermissionError` at replay, never a silent second adapter call. The measured predecessor holds two
+  completed keys while its own `legacy_completed_effect_keys` is empty, so a rotation that copied the
+  receipt would let a completed publish call the adapter again. The carry is **transitive**: a later
+  rotation carries every terminal and every prior `observed_landed` disposition forward, replayed or not.
+- **Epoch monotonicity, transitively.** `legacy_epoch_high_water` (read by `authenticated_partition_floor`,
+  `live.py:845-853`) is `max(predecessor receipt floor, predecessor maximum allocated epoch)` — 2 for the
+  measured partition. The `max` matters when an intermediate successor allocated nothing.
 
-  The measured predecessor holds two completed keys (`…58033572`, `…0a68fc6a`) while its own
-  `legacy_completed_effect_keys` is empty, so a rotation that copies the receipt and adds adjudications
-  would let an already-completed publish call the adapter a second time. Rotation MUST NOT be weaker than
-  the cutover it is modelled on. The carry is **transitive**: a later rotation carries every terminal AND
-  every prior `observed_landed` disposition forward, including ones never replayed. (Note the owner-file
-  digest pinned in D7 is an audit artifact only — `mint` re-verifies the two JSONLs, not the owner file.)
-- **Epoch monotonicity, stated transitively.** `authenticated_partition_floor` (`live.py:845-853`) reads
-  `legacy_epoch_high_water` from the receipt. The successor's value MUST be
-  `max(predecessor receipt floor, predecessor maximum allocated epoch)` — 2 for the measured partition.
-  The `max` is load-bearing: a second rotation of an intermediate successor that allocated no epochs would
-  otherwise write a floor of 0 and let the third store reuse epochs the original already allocated.
-
-**D3 — Every predecessor key is classified; the ambiguous ones are adjudicated.** A rotation is refused
-unless **every** key the predecessor could replay has a stated classification:
+**D3 — Every predecessor key is classified; the ambiguous ones are adjudicated.**
 
 | predecessor state | successor treatment |
 | --- | --- |
 | `effect_terminal_observed` | carried as a completed terminal (D2), zero adapter calls |
 | `outcome_ambiguous_blocked` | adjudicated — one of the two dispositions below |
-| anything else non-terminal (a dangling `provider_call_in_flight`, an unsealed `adapter-start-owner.json` with no terminal) | **refuse** — an unknown effect with no adjudication is exactly what must not be rotated away |
+| anything else non-terminal (dangling `provider_call_in_flight`, unsealed `adapter-start-owner.json` with no terminal) | **refuse** |
 
-The ambiguity inventory MUST cover every source `epoch_blocked` recognises, not only canonical rows.
-`evidence.py:86-95` blocks on a canonical `outcome_ambiguous_blocked` record **or** on
-`_legacy_partition_blocked()`, and the comment there names the second class explicitly: an archived legacy
-store whose history held a blocked record, **or an orphaned `provider_call_in_flight` whose effect is
-unknown**, carried by a receipt with `ambiguous: true`. A predecessor can therefore be blocked with **no**
-canonical blocked record, in which case a completeness check written only over canonical rows passes
-vacuously and rotates an unresolved effect away. The inventory MUST walk the authenticated predecessor
-lineage — canonical records, the receipt's `ambiguous` flag and its archived history, and any unsealed
-owner — or refuse a partition whose lineage it cannot enumerate.
+The inventory covers every source `epoch_blocked` recognises (`evidence.py:86-95`): canonical rows, the
+receipt's `ambiguous` flag and archived history, and any unsealed owner — or refuses a partition whose
+lineage it cannot enumerate. A completeness check over canonical rows only passes vacuously (A8).
 
-**Verb scope, fail-closed.** Every enforcement point cited above is `publish_committed_branch`-scoped:
-`_legacy_terminal_replay` returns `None` for any other verb (`verbs.py:275-276`), and disposition
-honouring lives on that same path. Non-publish verbs nevertheless write terminals and
-`outcome_ambiguous_blocked` rows into the same receipt-governed store in production —
-`convergence/refresh.py:63` executes `BrokerVerb.PUBLISH` through `broker.execute`, and the non-PCB path
-records `EFFECT_TERMINAL_OBSERVED` or an "adapter-exception" block (`verbs.py:670-679`). A plan that
-promises the carry and the adjudication for *every* key while every mechanism is publish-scoped is
-promising something it cannot discharge. Therefore: **rotation refuses a predecessor whose enumerable
-lineage contains any key whose verb prefix is not `publish_committed_branch`.** Extending the carry and
-the dispositions to every verb is the heavier alternative and is deliberately NOT in this plan's scope;
-the refusal keeps the gap fail-closed and visible. The measured partition is unaffected — all three of its
-keys carry the `publish_committed_branch` prefix.
+**Verb scope, fail-closed.** `_legacy_terminal_replay` returns `None` for any verb other than
+`publish_committed_branch` (`verbs.py:275-276`), yet non-publish verbs write terminals and blocks into the
+same store (`convergence/refresh.py:63` → `BrokerVerb.PUBLISH`; `verbs.py:670-679`). Rotation therefore
+**refuses a predecessor whose enumerable lineage contains any key whose verb prefix is not
+`publish_committed_branch`**. Extending the carry to every verb is out of scope; the refusal keeps the gap
+visible. The measured partition's three keys are all publish-prefixed.
 
-The successor receipt carries `adjudicated_effect_dispositions`: effect key →
-`{disposition, observed_head, attestation_digest}`, in the shape of the existing
-`legacy_completed_effect_keys`. Exactly two dispositions:
+Exactly two dispositions, carried as `adjudicated_effect_dispositions`: effect key →
+`{disposition, observed_head, attestation_digest}`:
 
-- `observed_landed` — the successor treats the key as a completed terminal: a publish request for it is
-  answered as a duplicate, with **no** adapter call and no new provider effect.
-- `attested_not_landed` — the successor permits **exactly one** governed publish for that key, after
-  which normal idempotency applies.
+- `observed_landed` — answered as a duplicate, **no** adapter call, no provider effect.
+- `attested_not_landed` — **exactly one** governed publish for that key; then ordinary idempotency.
 
-Every ambiguous key MUST appear with one of the two dispositions; a rotation that leaves one undisposed is
-refused. This is what discharges item (5): the `attested_not_landed` branch is the "publish the exact
-intended branch once" capability, and `observed_landed` is the branch omniagent-plus needs.
+A rotation that leaves any ambiguous key undisposed is refused. "Cannot adjudicate" (branch deleted,
+force-pushed, observation destroyed) resolves to refusal — the default, stated. A force-push or re-use at
+a different head is a different effect key, hence a separate adjudication. After a successful
+`attested_not_landed` publish the key is an `effect_terminal_observed` row in the successor and the next
+rotation carries it as history — it is never re-armed from a disposition.
 
-**After a successful `attested_not_landed` publish, the key is a terminal, not a re-armed disposition.**
-The publish it authorised leaves an `effect_terminal_observed` record in the successor store, so the next
-rotation classifies that key through the completed-terminal row of the table above and carries it as
-history — it is never re-armed from the receipt's disposition map. Successful publishes therefore carry forward as terminal history without another attestation; publishes
-that become ambiguous require a new attempt-bound attestation before the next rotation can succeed
-(anchor 4f).
+**D4 — The attestation is human-authored, sealed, re-verified; the runtime never reads the remote.** Per
+ambiguous key it names the observed head sha (or an explicit "branch absent at the observed time"), the
+evidence a human looked at (PR/branch URL), who attested, and when. The document is sealed into the
+rotation inventory and its digest pinned in the receipt; the ceremony re-verifies the bytes on every
+load. **An attestation adjudicates one attempt and is spent by it**: every entry binds to the predecessor
+receipt digest, the predecessor store digests, and the attempt identity — the ambiguous record and, when
+present, the owner file's `owner_nonce` and `transaction_id` (`AdapterStartOwnership`, `verbs.py:51-62`).
+`owner_nonce` is the discriminator; `attempt_id` (`verbs.py:535-538`) is a function of the effect key and
+is identical across attempts, so binding to it alone reproduces a key-only matcher. The refusal is scoped
+to adjudication: a prior `observed_landed` disposition carried as history by D2 is never re-presented and
+never re-checked. The ceremony makes no `git ls-remote` or network call — "no branch on origin" and
+"`ls-remote` timed out" are the same observation to this runtime (ah#789 item 3); the distinction is
+*who* observes.
 
-**The third case is refusal, and it is the default.** An operator who cannot determine what happened — the
-branch was deleted, force-pushed, or the observation is otherwise destroyed — declines to attest; the key
-stays undisposed; the rotation is refused; the partition stays blocked. The two dispositions are
-exhaustive only because "cannot adjudicate" resolves to fail-closed, and that must be stated rather than
-implied. Note also that a force-push or a branch re-use at a different head is a **different effect key**
-(the key binds repo, branch and head), so it is a separate adjudication, not a third disposition.
+**D5 — Version skew, three obligations.**
 
-**D4 — The attestation is human-authored, durably stored, and re-verified; the runtime never reads the
-remote.** A rotation requires an attestation document naming, per ambiguous key: the **observed head sha**
-(or an explicit "branch absent at the observed time" — a bare "landed" is not falsifiable later), the
-evidence a human looked at (PR/branch URL), who attested, and when. The document is **sealed into the
-rotation inventory** alongside the partition map, so it is covered by the inventory digest the ceremony
-already authenticates, and the ceremony re-verifies the document bytes against the digest pinned in the
-receipt on every load — a hash with no stored document preserves accountability in name only.
+1. *Forward.* The v3-aware reader refuses an unknown or future receipt schema with a typed, named
+   compatibility error carrying the runtime location, which **must not subclass `LegacyCutoverConflict`**
+   — `partition_is_ambiguity_blocked` (`live.py:861-865`) catches that type and converts it to `True`.
+2. *Backward (load-bearing).* The v3 reader authenticates **v2** receipts byte-exactly; `agent-harness`
+   and `EZBidPro` are live v2 partitions (A16, A21, m6).
+3. *Retroactive (impossible; mitigated operationally).* A runtime installed before v3 cannot report the
+   typed error, cannot be fenced by code it does not run, and cannot *use* a rotated partition — it
+   resolves to the container (`live.py:301-303`), finds generation 0's receipt, and refuses on the
+   permanent block. It never observes a receipt-less identity, so laundering through the zero-source
+   onboarding route (`:3342-3354`, `:3041-3046`) is impossible by construction (A15). What a surviving
+   pre-v3 **process** holding a fresh namespace lease could still do is `promote_legacy_terminal` into
+   generation 0 for a key the generation-0 v2 receipt lists as legacy-completed — none, for the measured
+   partition. The Lane D5 runbook's running-process gate is therefore a **mutation fence** for the
+   ceremony's duration, not a laundering fence; re-pinning every installed runtime is a **liveness**
+   requirement (a pre-v3 install cannot publish through a rotated partition), never a safety one.
 
-**An attestation adjudicates one attempt, and is spent when it is used.** Naming only the effect key and a
-time is not enough: an `attested_not_landed` attestation for key K would then still "fit" K after a later
-attempt on K goes ambiguous, and a second rotation could reuse it to authorise another adapter call for an
-attempt nobody has adjudicated. Every attestation entry MUST therefore bind to the exact state it
-adjudicates — the predecessor receipt digest, the predecessor store digests, and the identity of the
-unresolved attempt itself (the ambiguous record and, when present, the `adapter-start-owner.json`
-`owner_nonce` and `transaction_id`, fields of `AdapterStartOwnership`, `verbs.py:51-62`). **`owner_nonce`
-is the field that discriminates one attempt from another**: `attempt_id` is derived from
-`sha256(b"FABPUB-PUBLISH-ATTEMPT-v1\0" + repo \0 branch \0 head_sha)` (`verbs.py:535-538`), so it is a
-function of the effect key and is identical across every attempt on that key — binding to it alone would
-reproduce exactly the key-only matcher this clause exists to forbid. A rotation MUST refuse an attestation **presented to adjudicate an ambiguous key
-in this ceremony** whose bound predecessor digests or attempt identity are not the ones being rotated.
-That refusal is scoped to adjudication and does **not** touch dispositions carried forward as history:
-a prior `observed_landed` disposition on an earlier receipt is carried by D2's transitive clause and is
-never re-presented for adjudication, so it is never subject to this check. Reading the refusal as applying
-to carried history would make D2's transitivity and anchor 4b unsatisfiable — the two clauses are about
-different things, and only adjudication is gated. An `attested_not_landed`
-disposition grants **exactly one** governed publish and is consumed by it; if that publish itself ends
-ambiguous, the resulting record is a **new** unresolved attempt that the old attestation cannot
-adjudicate, and the next rotation needs a new one naming it.
-The ceremony MUST NOT call `git ls-remote` or any network probe — "no branch on origin" and "`ls-remote`
-timed out" remain the same observation to this runtime (ah#789 acceptance item 3). The distinction this
-plan relies on is *who* observes: an accountable operator, recorded, not an inference by the runtime.
+**D6 — Fencing, with its enforcement sites named.** The ceremony runs under the bootstrap seal locks, the
+container's `admissions.lock` (the one lock a pre-v3 writer shares with it), and the namespace
+writer-generation latch. For v3-aware writers two mechanisms fence the retired generation:
 
-**D5 — Version skew, split into what can and cannot be fixed.** Three distinct obligations, because
-conflating them produces an untestable requirement:
+- **The resolver.** After the flip no v3-aware derivation names generation 0 as the writable store (D7
+  item 3; A0 proves every derivation goes through it).
+- **The latch generation bump.** Rotation drains, arms and promotes a **fresh** namespace latch generation,
+  exactly as onboarding does, so `require_current_generation` (`live.py:645-666`) → `validate_lease`
+  refuses every pre-flip lease on every in-lock append (generation/nonce mismatch), and refuses everything
+  while DRAINING. Anchor A17: a lease acquired before the flip is refused with `WriterGenerationBlocked` on
+  a generation-0 append after it; `promote_legacy_terminal` under a fresh post-flip lease writes only into
+  the successor and generation 0's bytes are unchanged.
 
-1. *Forward (implementable).* The v3-aware reader refuses an **unknown or future** receipt schema with a
-   typed, named compatibility error carrying the runtime location — the ah#803
-   `AdmissionStoreIncompatible` precedent — instead of routing it through
-   `partition_is_ambiguity_blocked` and reporting "inherited permanent archived ambiguity". The new error
-   MUST NOT subclass `LegacyCutoverConflict`: `partition_is_ambiguity_blocked` (`live.py:861-865`) catches
-   that type and converts it to `True`, which would swallow the typed refusal and reproduce the very
-   message this obligation exists to remove.
-2. *Backward compatibility (load-bearing; anchored by Lane D1 anchor 7 and mutant m6).* The v3 reader MUST keep authenticating
-   **v2** receipts byte-exactly. `agent-harness` `50fea8e4…` and `EZBidPro` `1a3e011c…` are live v2
-   partitions on this host; a rotation feature that breaks a clean partition is a worse outcome than the
-   block it is fixing.
-3. *Retroactive (impossible, mitigated operationally).* A runtime installed **before** v3 cannot be made
-   to report the typed error: its `load_partition_receipt` raises `LegacyCutoverConflict` on the unknown
-   schema (`live.py:806-807`) and `partition_is_ambiguity_blocked` (`:861-865`) converts that to `True`,
-   so the operator sees the misleading permanent-block message. That behaviour is frozen in shipped code
-   and this plan does not pretend otherwise. Mitigation is operational: re-pin every installed
-   `phase-loop-runtime` to a v3-aware build before Lane D5 — the same re-pin the predecessor plan carried,
-   and a stale `uv tool` install from a worktree was ah#789's root cause.
+An UNDECLARED lease bypasses latch validation by design (`admission.py:222-229`); on that path the
+layout-aware canonical-store predicates (D7 item 5) are the only receipt gate. That is the pre-existing
+SL-0 compatibility shape and this plan neither widens nor closes it.
 
-**D6 — Fencing.** The ceremony runs under the bootstrap seal locks and the writer-generation latch: the
-predecessor drains, the successor arms and promotes a fresh generation. After ACTIVE, a writer still
-holding the retired store path fails closed.
+**D7 — The predecessor is never moved: rotation adds a generation.** Rounds 6–11 established that
+retiring the predecessor by moving it produces a receipt-less window that every added guard merely
+relocates. The maintainer's decision (2026-09-08) removes the hazard by construction.
 
-**D7 — The predecessor is never moved: rotation adds a generation.**
+1. **Generations; generation 0 is the container root.** `repositories/<identity>/` is generation 0,
+   exactly the shape every partition has today. Later generations are
+   `repositories/<identity>/generations/<n>/` for `n ≥ 1`, each a complete store (`admissions.jsonl`,
+   `evidence.jsonl`, their locks, `partition-receipt.json`, any `adapter-start-owner.json`). Nothing is
+   ever moved into or out of generation 0.
+2. **The pointer and its initialisation.** `generations/ACTIVE` is a small regular file holding one
+   generation number; `0` means the container. `generations/` is prepared at
+   `repositories/<identity>/generations.tmp.<cutover_id>/` **already containing `ACTIVE` = `0`** and
+   renamed into place, so "`generations/` present, `ACTIVE` absent" is unreachable. The flip is a second
+   atomic rename of `ACTIVE` alone. Debris left at the temp path by a crash is enumerated in A11: resume
+   under the journal's own `cutover_id` may reuse or remove it; a temp directory under any other id is a
+   typed refusal.
+3. **Resolution once, at snapshot time, with a closed refusal set.** `RepositorySnapshot.store_root`
+   (`live.py:301-303`) becomes: no `generations/` → the container (every never-rotated partition, the
+   whole compatibility story, A16); `generations/ACTIVE` naming a complete, authenticated generation →
+   that generation (`0` → the container). Everything else is a typed refusal, never a fall-back and never
+   "no store": `ACTIVE` missing, torn, unreadable or non-integer; `ACTIVE` naming a generation directory
+   that does not exist; `ACTIVE` naming a generation without an authenticated receipt; `generations`
+   present as a non-directory; `ACTIVE` or any ancestor a symlink (`_require_no_ancestor_symlink`,
+   `live.py:206`). The snapshot is a frozen consistent read (`live.py:284-295`), so resolution happens
+   once per snapshot. `repository_broker_namespace` (`:331-339`) and `credsep.py:240-242` read
+   `snapshot.store_root` and inherit the resolution.
+4. **The invariant.** At every instant — during the build, during either rename, after any crash, during a
+   resume — the resolver names exactly one complete, authenticated store: generation 0 before the flip,
+   the successor after. No reader ever observes a receipt-less identity.
+5. **Layout-aware authentication is part of this change.** Three shipped checks assume the store *is*
+   the identity directory and are made layout-aware in Lane D2, keeping their v2 behaviour byte-for-byte:
+   `load_partition_receipt` compares `canonical_repository_identity` to `store_root.name`
+   (`live.py:808-812`) — under `generations/<n>/` the identity is the containing repository directory's
+   name; and the twin canonical-store predicates in `evidence.py:69-83` and `admission.py:211-214`
+   (`root.parent.name == "repositories"`) — a numbered generation must still be recognised as canonical on
+   **both** stores, or a receipt-less generation store is fail-open (A14b, m21). The `WriterGenerationLatch`
+   derivation (`:434-436`) is the fourth: it takes the namespace root from the resolver (or an explicit
+   argument), never `parent.parent` of the store (A17, m22).
+6. **The predecessor is evidence, in place, byte-identical.** Nothing is archived, copied or re-placed;
+   `mint`'s byte source never moves. A carried-key replay writes through `promote_legacy_terminal`
+   (`evidence.py:119-134`) — into the successor — so A4 asserts predecessor bytes after a replay, not only
+   after the ceremony.
+7. **`_block_unsealed_owner` is immobile.** It is the ah#789 property. `execute()` consults
+   `_legacy_terminal_replay` (`verbs.py:625`) before `_fresh_publish` (`:636`), so an `observed_landed`
+   disposition resolves pre-dispatch; requests that enter `_fresh_publish` keep `verbs.py:530-548` exactly.
+   The successor starts with no owner file.
+8. **The journal is for resume only.** It is no longer a safety guard for any reader — the pointer makes
+   the unsafe state unreachable.
 
-Rounds 6-11 of this plan's review established, one intermediate state at a time, that retiring the
-predecessor by moving it out of the routable identity path is the wrong primitive. Every guard added to
-cover the resulting receipt-less window — an authority-root journal, an identity-path marker, a
-pre-v3-visible sentinel — produced a new window to guard, and the file-wise move that was supposed to
-close the last one is unimplementable as specified: the sentinel occupies the same pathname as the
-evidence it must preserve. The maintainer's decision (2026-09-08) is to remove the hazard by
-construction rather than continue guarding it.
+**D8 — Rotation applies only to a blocked partition.** `rotate_blocked_partition` refuses a partition that
+is not `epoch_blocked`; without that precondition the ceremony is a store-reset primitive.
 
-**The layout.** `repositories/<identity>/` remains the store it is today and becomes, additionally, the
-container for later generations. The predecessor stays **exactly where it is** — at the container root,
-byte-identical, untouched — and simply stops being the routable one. The successor is built at a new
-generation path that nothing routes to until it is complete, and becomes routable by a single atomic
-pointer flip.
+**D9 — Authority binding (two contract decisions, settled here rather than in the lane).**
 
-1. **Generations, with the legacy one at the container root.** Generation **0 is the container root
-   itself** — `repositories/<identity>/`, exactly the shape every partition has today. Later generations
-   are `repositories/<identity>/generations/<n>/` for `n ≥ 1`, each a complete store
-   (`admissions.jsonl`, `evidence.jsonl`, their locks, `partition-receipt.json`, and any
-   `adapter-start-owner.json`). Nothing is ever moved into or out of generation 0. This is what keeps a
-   pre-v3 reader safe: it resolves to the container, finds the predecessor's own receipt there, and
-   refuses on the permanent block — it never observes a receipt-less identity.
-2. **The pointer, and its initialisation.** `repositories/<identity>/generations/ACTIVE` holds a single
-   generation number; `0` means the container root. `generations/` is created **already containing
-   `ACTIVE` with the value `0`**, by preparing it at a temporary path and renaming it into place, so the
-   state "`generations/` exists, `ACTIVE` does not" is unreachable by construction. The flip to the
-   successor is a second atomic rename of `ACTIVE` alone. `ACTIVE` is a small regular file, never a
-   symlink — `_require_no_ancestor_symlink` (`live.py`) rejects symlinked ancestry on the receipt path.
-3. **Resolution, and the resolver's states.** `RepositorySnapshot.store_root` (`live.py:301-303`) today
-   returns `namespace_root/"repositories"/identity`. It becomes: no `generations/` → that directory
-   (every partition that has never rotated, including the two live v2 ones — this is the whole
-   compatibility story, anchored by 5d rather than assumed); `generations/ACTIVE` readable and naming a
-   complete generation → that generation, where `0` resolves back to the container; `ACTIVE` missing,
-   torn, unreadable, or naming an incomplete generation → **typed refusal, fail closed**, never a silent
-   fall-back and never treated as "no store". Because the snapshot is a frozen consistent read
-   (`live.py:284-295`), the resolution is performed **once, at snapshot time**, not re-derived per access.
-4. **The invariant, stated precisely.** At every instant — during the build, during either rename, after
-   any crash, and during a resume — **the resolver names exactly one complete, authenticated store**.
-   Before the first flip that is the predecessor at generation 0; after it, the successor. That is the
-   property anchors 5a and 5b assert, and it is stronger than anything the move-based design could offer,
-   because there is no instant at which the identity lacks a receipt.
-5. **Layout-aware authentication is part of this change, not a consequence of it.** Two shipped checks
-   assume the store *is* the identity directory and must be made layout-aware in the same lane, or every
-   successor is rejected: `load_partition_receipt` compares `canonical_repository_identity` to
-   `store_root.name` (`live.py:808-812`) — under `generations/<n>/` that name is a number, so the
-   comparison must be against the identity derived from the containing repository directory; and
-   `evidence.py`'s `_authorize` recognises a canonical store by its parent chain
-   (`root.parent.name == "repositories"`, `evidence.py:69-83`) — a numbered generation no longer matches,
-   which would turn a fail-closed check into a fail-open one. Both are named in Lane D2's contract, both
-   get anchors (wrong-identity receipt under a generation; receipt-less generation store), and both keep
-   their v2 behaviour byte-for-byte.
-6. **The predecessor is evidence, in place, and stays byte-identical.** Nothing is archived, copied or
-   re-placed, so `mint`'s byte source never moves. Note what this does *not* by itself prove: a legacy
-   replay promotes through `promote_legacy_terminal`, which **writes** evidence
-   (`evidence.py:119-134`) — into the *successor* store, which is correct, but "zero adapter calls" alone
-   does not establish that the predecessor was untouched. Anchor 4 therefore asserts predecessor bytes
-   before and after a carried-key replay, not only the absence of an adapter call.
-7. **`_block_unsealed_owner` MUST NOT be moved, reordered, or bypassed.** It is the ah#789 property
-   itself: a crashed `attested_not_landed` first publish leaves an unsealed owner with an unknown effect,
-   and that must block exactly as it does today. No reordering is needed — `execute()` consults
-   `_legacy_terminal_replay` (`verbs.py:625`) **before** dispatching to `_fresh_publish` (`:636`), so an
-   `observed_landed` disposition resolves in that pre-dispatch slot and never enters `_fresh_publish`;
-   requests that do enter it keep `verbs.py:530-532` exactly as it is. The successor generation starts
-   with no owner file, so nothing is inherited.
-6. **The journal remains, for resume only.** The rotation ceremony still journals
-   `DRAINING → INVENTORY_SEALED → ARMED → ACTIVE` under the authority root, keyed by canonical identity,
-   so an interrupted ceremony resumes rather than restarts. It is no longer a safety guard for any reader,
-   because the pointer makes the unsafe state unreachable — which is the point of the redesign.
-
-**D8 — Rotation applies only to a blocked partition.** `rotate_blocked_partition` refuses a partition
-that is not `epoch_blocked`. Without that precondition the ceremony is a general store-reset primitive
-available against clean partitions — which, combined with the carries in D2, is a history-laundering tool
-rather than a recovery.
+- **A. Bootstrap-row revalidation binds to generation 0.** `_classify_repository_namespace` (called from
+  `_revalidate_bootstrap_sources` for every sealed worktree row, on every barrier) classifies **the store
+  the sealed row recorded** — the container, `namespace_root/"repositories"/identity` — and never the
+  resolved active generation. Generation 0 keeps its zero-source bootstrap receipt byte-identical forever,
+  so the row stays `bootstrap_owned` after any number of rotations. Anchor A18a: with one partition rotated
+  under the same sealed bootstrap authority, both clean v2 partitions still pass
+  `fabpub_activation_barrier` and publish; mutant m23 (classify via the resolved root) fails it for every
+  repository on the host.
+- **B. The v3 receipt carries its own authority binding.** Fields: `bootstrap_claim` =
+  `{authority_root, bootstrap_cutover_id, inventory_sha256}` chained from the predecessor (its bootstrap
+  claim if zero-source, its own `bootstrap_claim` if v3), plus the rotation's `cutover_id` and
+  `global_journal_path` (the D1 journal). `_receipt_active_authority_exists` (`live.py:3187-3217`) gains a
+  v3 branch, not gated on `zero_source`: `_active_bootstrap_inventory(authority_root)` must exist with
+  `cutover_id == bootstrap_cutover_id` and matching `inventory_sha256`, **and** the rotation journal must be
+  `ACTIVE` for exactly the rotation `cutover_id`. `_receipt_seal_lock_paths` (`:3232-3242`) returns the
+  bootstrap seal-lock paths for that authority. `_receipt_bootstrap_claim` (`:2179-2200`) stays
+  zero-source-gated and is inert for v3 by construction. Anchor A18b/c: the successor enters the barrier
+  and publishes; drop either half of the binding (m24) → refused at `live.py:3338`.
+- **C. Lock placement.** The ceremony's seal-lock set is the bootstrap seal locks (`_bootstrap_seal_lock_paths`,
+  `live.py:2459-2475`), the container's `admissions.lock` (`_target_store_lock_paths`, `:1295-1301`,
+  applied to `target_namespace` = the container), and the namespace latch activation lock. The successor
+  generation's own `admissions.lock` is created with the generation and is not part of the ceremony set.
 
 **Lane note (D2):** `authenticated_partition_floor`'s refusal text hardcodes
 "LegacyRepositoryPartitionReceipt.v2" (`live.py:845-853`); the lane that touches the loader updates it.
 
 ## Lanes
 
-Lane order is stated once, here, and repeated nowhere else: D1 → D2 → D3 → D4. D2 precedes D3 because D3
-consumes the receipt field D2 adds, and D4 documents what D2/D3 landed. Nothing in this plan runs in
-parallel.
+Lane order: D1 → D2 → D3 → D4, serial. D2 precedes D3 because D3 consumes the receipt field D2 adds.
 
 ### Lane D1 — falsifiers first (tests_only)
 
-`phase-loop-runtime/tests/test_fabpub_partition_rotation_789d.py` (new). RED at this base, per the repo's
-RED-first idiom (`_fabpub_tdd_guard.py` gating, `fabpub_capability_active()`, `FABPUB_SKIP_REASON`), and
-registered in the frozen node-id inventory the same way the ah#789 lanes were.
+`phase-loop-runtime/tests/test_fabpub_partition_rotation_789d.py` (new). RED at this base per the repo's
+RED-first idiom (`_fabpub_tdd_guard.py`, `fabpub_capability_active()`, `FABPUB_SKIP_REASON`), registered in
+the frozen node-id inventory the same way the ah#789 lanes were.
+
+**First obligation — A0, the derivation sweep.** Every store-path derivation goes through one resolver,
+and the list is proven complete by a test, not by prose: an AST/grep sweep of
+`convergence/broker/*.py` for `store_root`, `.parent.parent`, the `"repositories"` literal, and
+`target_namespace` must report exactly the allow-listed sites, each tagged with how it is layout-aware
+(resolver, container-bound, or inert). Seed list, all read at this base: `RepositorySnapshot.store_root`
+(`live.py:301-303`); `repository_broker_namespace` (`:331-339`); `load_partition_receipt` (`:808-812`);
+`evidence.py:69-83`; `admission.py:211-214`; `WriterGenerationLatch.for_store_root` (`:434-436`);
+`_classify_repository_namespace` / `_revalidate_bootstrap_sources` / `_active_bootstrap_inventory`
+(`:2213-2245`, `:2593-2629`, `:2662-2686`, container-bound per D9-A); `_receipt_active_authority_exists` /
+`_receipt_seal_lock_paths` (`:3187-3217`, `:3232-3242`); `_receipt_bootstrap_claim` (`:2179-2200`, inert for
+v3); `_inventory_row_namespace_root` (`:2482-2490`, container-bound via `target_namespace`);
+`_target_store_lock_paths` (`:1295-1301`); `credsep.py:240-242` (reads the snapshot). A new derivation that
+is not on the list fails the sweep. This has been mis-counted twice in review; the test is the count.
 
 Anchors:
-1. A blocked partition, rotated with `observed_landed` for its ambiguous key, makes **no adapter call and
-   no provider effect** for that key and answers the request as a duplicate. The property is the absent
-   adapter call, not an absent evidence row: `_legacy_terminal_replay` (`verbs.py:273-291`) answers a
-   receipt-carried duplicate by materialising intent + terminal rows into the store, and a disposition
-   that follows that established idiom is correct. The anchor asserts the adapter counter is 0.
-2. The same rotation with `attested_not_landed` permits exactly one adapter call for that key, and a
-   second attempt is refused by ordinary idempotency.
-3. A rotation that leaves an ambiguous key undisposed is refused before anything durable is written.
-4. The predecessor generation is byte-identical before and after, **every file included** —
-   `admissions.jsonl`, `evidence.jsonl`, `partition-receipt.json` and `adapter-start-owner.json` — and the
-   owner file's digest appears in the successor receipt (mutant: rewrite the predecessor generation, or
-   drop the owner digest from the receipt). The assertion is made **after a carried-key legacy replay**,
-   not only after the ceremony: `promote_legacy_terminal` writes evidence (`evidence.py:119-134`), and
-   "zero adapter calls" alone would not establish that those writes landed in the successor rather than
-   the predecessor.
-4a. The successor store contains **no** `adapter-start-owner.json`, and an `observed_landed` key is
-   answered in the pre-dispatch slot (`execute` → `_legacy_terminal_replay`, `verbs.py:625`) without ever
-   reaching `_fresh_publish` — asserted by the absence of any owner read or owner write for that request.
-   `_block_unsealed_owner` (`verbs.py:530-532`) is unchanged and still blocks a crashed
-   `attested_not_landed` first attempt; an anchor pins that too, so the fix cannot be implemented by
-   weakening the ah#789 property.
-4b. A predecessor `effect_terminal_observed` key replayed against the successor is answered as a duplicate
-   with zero adapter calls, **through the authenticated route** — the capability is minted from sealed
-   inventory provenance and re-verified archive bytes (`live.py:936-968`), not by a special case that
-   merely suppresses the adapter. The anchor asserts the mint path ran. Transitivity is proven with the
-   fixture D8 requires: the successor is **re-blocked by a new key** before a second rotation, and the
-   second successor still answers the first predecessor's terminals — and its unreplayed
-   `observed_landed` dispositions — as duplicates. Corollary anchor: archive drift or deletion makes that
-   replay fail with a typed `PermissionError`, never a silent second adapter call.
-4e. A predecessor whose enumerable lineage contains any key whose verb prefix is not
-   `publish_committed_branch` is refused by `rotate_blocked_partition` (the fail-closed verb scope).
-   (Fixture note for 4b: the key that re-blocks the successor must itself be `publish_committed_branch`-
-   prefixed, or 4e refuses the second rotation before transitivity can be exercised. The realistic
-   re-block routes — a crashed `attested_not_landed` first attempt, an adapter exception in
-   `_fresh_publish` — are publish-scoped, so a fixture built on them is correct by construction.)
-5a. **The resolver never names an incomplete store.** Crash the ceremony at every step — before
-   `generations/` is renamed into place, between that and the first successor file, between successor
-   files, after the successor receipt is written but before the flip — and at each point assert three
-   things: the predecessor generation is still the
-   routable one; an ordinary publish still refuses with the permanent block rather than starting fresh;
-   and `onboard_zero_legacy_repository` driven at that identity refuses because a receipt is present.
-   Then resume and assert the successor authenticates and carries its terminals and dispositions. This
-   single anchor covers every hazard rounds 6-11 chased, and needs no marker, sentinel, onboarding edit
-   or occupancy gate to do it.
-5b. **The pointer's states are total.** Assert that `generations/` is created already containing
-   `ACTIVE=0` by a rename of a prepared temporary directory, so "`generations/` present, `ACTIVE` absent"
-   is unreachable; that the flip replaces `ACTIVE` by rename, so a crash during it leaves exactly one
-   complete generation named (predecessor or successor, never a partial, empty or absent value); that
-   `ACTIVE` is a regular file and a symlinked `ACTIVE` or ancestor is refused; and that **missing, torn,
-   unreadable, or naming-an-incomplete-generation** are each refused with a typed error rather than
-   falling back to the container or being treated as "no store" (fail closed, never open).
-5e. **A second rotation.** Re-block the successor with a new `publish_committed_branch` key, rotate again,
-   and repeat 5a's crash sweep against generation 2 — asserting that generation 0's and generation 1's
-   bytes are untouched, that the carried terminals and unreplayed `observed_landed` dispositions still
-   answer as duplicates through the mint path, and that the epoch floor still rises. A design that only
-   works for the first rotation is not a recovery mechanism.
-5f. **Layout-aware authentication.** A receipt under `generations/<n>/` whose
-   `canonical_repository_identity` names a different repository is refused; a generation directory with no
-   receipt is refused by the ordinary store-authorisation path (`evidence.py:69-83`) rather than being
-   silently treated as non-canonical; and both checks keep their exact v2 behaviour for a store with no
-   `generations/`.
-5c. **A pre-v3 reader has nothing to launder.** Keep a pre-v3 FABPUB-capable reader alive across the
-   installation replacement and drive it at every crash point of 5a. Stated oracle, verified against this
-   head's code — which *is* the pre-v3 baseline, since this diff is plan-only: a pre-v3 reader resolves
-   `store_root` to `repositories/<identity>/` directly (`live.py:301-303`), finds the predecessor's
-   receipt there, and refuses on the permanent block; it never observes an empty identity, so
-   `live.py:3041-3046`'s adoption route is never reached and `fabpub_activation_barrier`'s zero-source
-   onboarding (`live.py:3342-3354`) never fires. Assert no successor receipt is created and no adapter
-   call is made. (A pre-v3 reader also cannot *use* a rotated partition — it resolves to the container
-   rather than the active generation — which is the D5 skew story, handled by the re-pin, not a safety
-   hole.)
-5d. **The two live v2 partitions are byte-for-byte unaffected.** For a store with no `generations/`
-   directory the resolver returns exactly today's path; assert that `agent-harness` `50fea8e4…` and
-   `EZBidPro` `1a3e011c…` authenticate and publish through the governed path unchanged. This is the whole
-   compatibility surface of the resolver change, and it is the regression that would matter most.
-4f. **Attestation reuse is refused.** Rotate key K with an `attested_not_landed` attestation A; publish K
-   once on the successor; drive that publish to a fresh ambiguity for K; attempt a second rotation
-   presenting A again. It is refused, because A binds to the predecessor digests and the attempt identity
-   it adjudicated, and the new ambiguity is a different unresolved attempt. The same fixture with a new
-   attestation naming the new attempt succeeds.
-4c. A rotation whose predecessor is blocked **only** through a receipt-carried ambiguity (`ambiguous: true`
-   with empty canonical evidence, or an archived orphaned `provider_call_in_flight`) is refused unless
-   that obligation is adjudicated — the vacuous-completeness negative control.
-4d. A partition that is not `epoch_blocked` is refused by `rotate_blocked_partition`.
-5. Crash injection at each journal boundary leaves the ceremony resumable and never leaves two routable
-   receipts for one identity.
-6. A v3-aware reader meeting an **unknown/future** receipt schema raises the typed compatibility refusal
-   naming the schema and the runtime location, not `partition_is_ambiguity_blocked`'s ambiguity message.
-7. A v3-aware reader still authenticates an untouched **v2** receipt byte-exactly, and a clean v2
-   partition publishes through the governed path unchanged (regression anchor for `agent-harness` and
-   `EZBidPro`).
-8. **The laundering falsifier:** a fresh authority root pointed at a namespace that already holds a
-   populated partition must refuse to bootstrap, and the anchor asserts **where** it refuses, not merely
-   that it does — the most likely site is `LegacyRepositoryPartitionReceipt.write` (`live.py:734-750`),
-   which rejects a byte-divergent overwrite of an existing receipt, so a later refactor of `write` cannot
-   silently reopen the route. If it does not refuse, closing the hole joins this plan's scope and the
-   finding is recorded in the PR body.
 
-### Lane D2 — receipt schema and the rotation ceremony (production)
+- **A1** `observed_landed` → the key is answered as a duplicate, adapter counter 0, no provider effect
+  (rows materialised per the `_legacy_terminal_replay` idiom are correct).
+- **A2** `attested_not_landed` → exactly one adapter call; the second attempt is refused by idempotency.
+- **A3** an undisposed ambiguous key → refused before anything durable is written.
+- **A4** predecessor generation byte-identical, every file (`admissions.jsonl`, `evidence.jsonl`,
+  `partition-receipt.json`, `adapter-start-owner.json`), asserted **after a carried-key replay**; the owner
+  digest appears in the successor receipt.
+- **A5** the successor has no `adapter-start-owner.json`; an `observed_landed` key is answered pre-dispatch
+  with no owner read or write; `_block_unsealed_owner` still blocks a crashed `attested_not_landed` first
+  attempt.
+- **A6** a predecessor terminal replayed against the successor is a duplicate through the mint path
+  (`live.py:936-968`), asserted by the mint having run; after a second rotation (fixture re-blocked by a
+  publish-prefixed key) the second successor still answers the first predecessor's terminals and its
+  unreplayed `observed_landed` dispositions; predecessor-generation drift or deletion → typed
+  `PermissionError`, never a second adapter call.
+- **A7** attestation reuse: rotate K with attestation A, publish K once, drive it to a fresh ambiguity,
+  present A again → refused; a new attestation naming the new attempt succeeds.
+- **A8** a predecessor blocked only through a receipt-carried ambiguity (`ambiguous: true` with empty
+  canonical evidence, or an archived orphaned `provider_call_in_flight`) is refused unless adjudicated.
+- **A9** a partition that is not `epoch_blocked` is refused by `rotate_blocked_partition`.
+- **A10** a lineage containing a non-`publish_committed_branch` key is refused.
+- **A11** crash sweep: before `generations.tmp.<id>` is renamed into place, between that and the first
+  successor file, between successor files, after the successor receipt but before the flip — at each
+  point generation 0 is the routable store, an ordinary publish refuses on the permanent block, and
+  `onboard_zero_legacy_repository` at that identity refuses because a receipt is present; then resume
+  succeeds and the successor authenticates and carries terminals and dispositions. Temp-path debris under
+  the journal's id is consumed by resume; debris under a foreign id is a typed refusal.
+- **A12** pointer states are total: `generations/` arrives already containing `ACTIVE=0` by rename; the
+  flip replaces `ACTIVE` by rename so a crash leaves exactly one complete generation named; every member of
+  D7 item 3's refusal set is a typed refusal, never a fall-back to the container or to onboarding.
+- **A13** second rotation: re-block the successor, rotate again, repeat A11 against generation 2;
+  generations 0 and 1 untouched; carried terminals and dispositions still answer through the mint path;
+  the epoch floor still rises (`max(...)`, m12).
+- **A14** layout-aware authentication: (a) a receipt under `generations/<n>/` naming a different identity
+  is refused; (b) a numbered generation with no receipt is refused by the canonical-store predicate on
+  **both** the evidence and the admission store under an UNDECLARED lease; (c) an otherwise valid
+  generation-1 receipt placed under `generations/2/` is refused; (d) all three keep exact v2 behaviour for
+  a store with no `generations/`.
+- **A15** pre-v3 reader (this head's code): driven at every A11 crash point it resolves to the container,
+  finds generation 0's receipt, refuses on the permanent block; creates no successor receipt, makes no
+  adapter call; after the flip it still cannot use the successor (D5 part 3).
+- **A16** the two live v2 partitions are byte-for-byte unaffected: a store with no `generations/` resolves
+  to exactly today's path and publishes through the governed path unchanged.
+- **A17** latch fencing: a lease acquired before the flip is refused with `WriterGenerationBlocked` on a
+  generation-0 append after the flip; `promote_legacy_terminal` under a fresh post-flip lease writes only
+  into the successor.
+- **A18** authority binding: (a) after one rotation, both clean v2 partitions pass
+  `fabpub_activation_barrier` and publish; (b) the successor passes the barrier and publishes; (c) a
+  successor missing either half of D9-B's binding is refused at `live.py:3338`; (d) the presence of the
+  D1 rotation directory under the authority root changes no bootstrap validation result.
+- **A19** crash injection at every journal boundary is resumable; a torn or foreign-id journal at resume
+  is a typed refusal, never a restart.
+- **A20** an unknown/future receipt schema → the typed compatibility refusal naming schema and runtime
+  location, not `partition_is_ambiguity_blocked`'s message.
+- **A21** an untouched v2 receipt authenticates byte-exactly; a clean v2 partition publishes unchanged.
+- **A22** laundering falsifier: a fresh authority root pointed at a namespace holding a populated
+  partition must refuse to bootstrap, asserting **where** it refuses (most likely
+  `LegacyRepositoryPartitionReceipt.write`, `live.py:734-750`, byte-divergent overwrite). If it does not
+  refuse, closing the hole joins this plan's scope and the PR body records it.
+- **A23** successor floor = `max(predecessor receipt floor, predecessor max allocated epoch)`, including
+  through an intermediate successor that allocated none.
+- **A24** no network or `git ls-remote` call anywhere in the ceremony (recording sentinel idiom from
+  `test_fabpub_recovery_controls_789.py`).
 
-`convergence/broker/live.py`: `LegacyRepositoryPartitionReceipt` → v3 with the rotation proof and
-`adjudicated_effect_dispositions`; a `rotate_blocked_partition(...)` entry point in the shape of
-`onboard_zero_legacy_repository`; the rotation inventory/journal/seal-lock helpers; the typed pre-v3
-refusal (D5); **the generational `store_root` resolution in `RepositorySnapshot` (`live.py:301-303`), the
-atomic `generations/ACTIVE` pointer, and the layout-aware identity and canonical-store checks in
-`load_partition_receipt` (`live.py:808-812`) and `evidence.py:69-83`** (D7 items 3 and 5) — three shipped
-sites, named here rather than discovered mid-lane — an edit to shipped onboarding machinery, named here rather
-than discovered mid-lane.
+### Lane D2 — receipt schema, resolver, and the rotation ceremony (production)
+
+`convergence/broker/live.py`: `LegacyRepositoryPartitionReceipt` → v3 (D2, D9-B);
+`rotate_blocked_partition(...)` in the shape of `onboard_zero_legacy_repository`; the rotation
+inventory/journal/seal-lock helpers (D1, D9-C); the typed pre-v3 refusal (D5); the generational resolver
+and `generations/ACTIVE` pointer (D7 items 2–3); the latch-derivation and layout-aware checks (D7 item 5,
+across `live.py`, `evidence.py`, `admission.py`); `mint`'s provenance-resolved byte source (D2); the
+container-bound classification (D9-A); the v3 branches of the two authority helpers (D9-B). The A0 sweep
+is re-run green at the end of the lane.
 
 ### Lane D3 — dispositions honoured on the publish path (production)
 
-`convergence/broker/verbs.py`, on the **pre-dispatch replay path** (`execute` → `_legacy_terminal_replay`,
-`:625`) — not inside `_fresh_publish`: an `observed_landed` key resolves as a completed terminal there and
-never enters `_fresh_publish`, so no owner is read or written for it; an `attested_not_landed` key falls
-through and proceeds exactly once. No change to the four `epoch_blocked` consult sites, none to
-`_block_unsealed_owner`, and none to `evidence.py:229-230`.
+`convergence/broker/verbs.py`, on the pre-dispatch replay path (`execute` → `_legacy_terminal_replay`,
+`:625`) — not inside `_fresh_publish`: `observed_landed` resolves as a completed terminal there;
+`attested_not_landed` falls through and proceeds exactly once. No change to the four `epoch_blocked`
+consult sites, to `_block_unsealed_owner`, or to `evidence.py:229-230`.
 
 ### Lane D4 — operator surface and docs
 
-A `phase-loop fabpub rotate-partition` command that takes the attestation document and drives the
-ceremony; `docs/fabpub-pre-admission-ambiguity.md` gains the rotation section (replacing "deferred");
-CHANGELOG entry.
+`phase-loop fabpub rotate-partition` taking the attestation document and driving the ceremony;
+`docs/fabpub-pre-admission-ambiguity.md` gains the rotation section (replacing "deferred"); CHANGELOG.
 
 ### Lane D5 — execute the omniagent-plus rotation (operational, not a PR)
 
 After D1–D4 land: attest `…54771bd3` as `observed_landed` citing Consiliency/omniagent-plus#28 and the
-2026-09-06 override comment, rotate `1da3e343…`, and demonstrate one governed publish for omniagent-plus.
-Requires a separate maintainer authorisation; nothing here executes it.
+2026-09-06 override comment, rotate `1da3e343…`, demonstrate one governed publish for omniagent-plus.
+Separate maintainer authorisation; nothing here executes it.
 
 ## Documentation impact
 
 - `docs/fabpub-pre-admission-ambiguity.md` — modify — replace "Partition rotation (deferred)" with the
-  landed ceremony, and update the carried-item paragraph once item (5) is discharged.
+  landed ceremony; update the carried-item paragraph once item (5) is discharged.
 - `CHANGELOG.md` `## [Unreleased]` — add — one entry per landed lane.
 - `plans/manifest.json` — add — `type=detailed` entry for this plan.
 - `specs/phase-plans-v10.md` — none (LEGIBLE-owned; no roadmap goal changes).
@@ -498,137 +432,97 @@ Requires a separate maintainer authorisation; nothing here executes it.
 
 ## Dependencies & order
 
-1. Maintainer approval of this document → plan-tier board → land (ledger row).
-2. **Fable-seat availability is a landing risk, named up front.** The native fable sub-agent override
-   produced no output for three consecutive ah#805 rounds on 2026-09-08 (a default-model sub-agent ran the
-   same smoke test in seconds); Consiliency/agent-harness#806 tracks the missing policy. This plan lands
-   either on four seats or on a recorded deviation of the ah#805 shape — never silently on three.
-3. Lane order is as stated under Lanes; it is not repeated here.
-4. D5 after all lanes land, with its own authorisation, and **only after every installed
-   `phase-loop-runtime` on a host that can write FABPUB state is re-pinned to a v3-aware build**
-   (`uv tool install --force "git+https://github.com/Consiliency/agent-harness@<main sha>#subdirectory=phase-loop-runtime"`,
-   never from a working checkout) — see D5 part 3. The Lane D5 runbook includes a **version probe** that
-   verifies each installed runtime recognises `LegacyRepositoryPartitionReceipt.v3` before the ceremony
-   starts, so a stale reader is found before it meets a v3 receipt, not after. **Replacing an
-   installation does not upgrade code already loaded by a running process**, and that gap is not
-   theoretical during a rotation: a surviving pre-v3 process needs no writer lease to enter the automatic
-   onboarding route (`live.py:3342-3354`), its allocator-file guard passes on the empty path
-   (`live.py:3041-3046`), and its shipped code cannot consult a rotation journal it has never heard of —
-   so it can create exactly the zero-source successor D7 forbids, in the window D7's guard closes for
-   v3-aware readers. Unknown-schema refusal offers nothing here, because in that window there is no
-   receipt to read. The runbook therefore gates **running processes**, not just installations: every
-   generational layout removes the need for an occupancy gate entirely: because `generations/ACTIVE`
-   always names a complete authenticated generation, a concurrent reader — v3-aware or pre-v3 — finds a
-   receipt and refuses on the permanent block instead of onboarding a zero-source successor (anchor 5c).
-   Re-pinning still matters for a different reason: a pre-v3 reader cannot *use* a rotated partition,
-   because it resolves to the container rather than the active generation. Re-pin from a probe-verified
-   **installed** runtime, never from a working checkout or an unpinned venv — the stale-source class that
-   caused ah#789 and which an installed-runtime probe cannot see.
-5. Unchecked precondition: the Windows host has not been scanned for blocked partitions. Before D5,
-   scan every host that can write FABPUB state, so a rotation is not performed while a second blocked
-   partition is unknown.
+1. Maintainer approval → plan-tier board → land (ledger row). Four seats or a recorded deviation of the
+   ah#805 shape — never silently on three.
+2. Lanes serial as stated under Lanes.
+3. D5 after all lanes land, with its own authorisation, after: (a) every installed `phase-loop-runtime` on a
+   host that can write FABPUB state is re-pinned to a v3-aware build (`uv tool install --force
+   "git+https://github.com/Consiliency/agent-harness@<main sha>#subdirectory=phase-loop-runtime"`, never from
+   a working checkout — ah#789's root cause), verified by a version probe that checks the installed
+   runtime recognises `LegacyRepositoryPartitionReceipt.v3`; (b) no pre-v3 **process** with a namespace
+   lease on the target repository is running for the ceremony's duration (the D5 part 3 mutation fence);
+   (c) every host that can write FABPUB state has been scanned — the Windows host has not — so a rotation
+   is not performed while a second blocked partition is unknown.
 
 ## Verification
 
-- CI-faithful suite (source mode, `PYTHONPATH=$PWD/src:$PWD/tests`):
+- CI-faithful suite (source mode):
   `cd phase-loop-runtime && PYTHONPATH=$PWD/src:$PWD/tests /mnt/workspace/venvs/ah-779-ci/bin/python -m pytest
   -p no:cacheprovider -o addopts="" -q tests/test_fabpub_partition_rotation_789d.py
   tests/test_fabpub_shared_epoch.py tests/test_fabpub_zero_history_bootstrap.py
-  tests/test_fabpub_recovery_controls_789.py` — all green; frozen corpus counts unchanged
+  tests/test_fabpub_recovery_controls_789.py` — green; frozen corpus counts unchanged
   (`test_fabpub_guard_nodeid_inventories_are_disjoint_and_counted`).
-- Every falsifier in Lane D1 RUN and its observed failure text recorded in the PR body — never "should
-  fail".
-- Named mutants, each RUN, in the ah#805 style, every one phrased as the **detection** it produces:
-  (m1) drop the undisposed-key check → the rotation anchor 3 expects to be refused is accepted, so anchor
-  3 FAILS and kills the mutant;
-  (m2) carry the block as `receipt.ambiguous=True` → the successor is blocked, anchors 1–2 fail;
-  (m3) let `observed_landed` reach the adapter → anchor 1's adapter counter is 1;
-  (m4) let `attested_not_landed` publish twice → anchor 2's second attempt succeeds;
-  (m7) drop the completed-terminal carry from the successor receipt → anchor 4b's replay reaches the
-  adapter; (m8) omit the owner file's digest from the successor receipt → anchor 4 fails;
-  (m9) allow rotation of a partition that is not blocked → anchor 4d's refusal does not fire;
-  (m10) inventory ambiguity from canonical rows only → anchor 4c rotates the receipt-carried obligation
-  away;
-  (m11) skip the verb-scope refusal → anchor 4e's refusal does not fire;
-  (m12) write the successor floor as the predecessor's allocated maximum without the `max(...)` against
-  the predecessor receipt floor → the second-rotation floor anchor reads 0 and epochs become reusable;
-  (m13) answer a carried key by suppressing the adapter without minting the capability → anchor 4b's
-  mint-path assertion fails, catching the shortcut that would drop archive re-authentication;
-  (m14) match an attestation on effect key alone, ignoring the bound predecessor digests and attempt
-  identity → anchor 4f's second rotation is accepted and the unadjudicated attempt is retried;
-  (m15) flip `generations/ACTIVE` to the successor before its receipt authenticates → anchor 5a finds an
-  incomplete generation routable at a crash point;
-  (m16) write `generations/ACTIVE` in place rather than by atomic rename, or create `generations/` before
-  seeding `ACTIVE=0` → anchor 5b observes an absent or torn pointer at a crash;
-  (m17) treat a missing, torn or unreadable `generations/ACTIVE` as "no generation" and fall back to the
-  container or to onboarding → anchor 5b's fail-closed legs admit a store the ceremony has not
-  authenticated;
-  (m21) compare the receipt's identity to `store_root.name` under a generation path, or keep
-  `evidence.py`'s canonical-store predicate parent-shaped → anchor 5f rejects every successor, or turns
-  the fail-closed canonical-store check fail-open;
-  (m18) resolve `store_root` to the container rather than through `generations/ACTIVE` when the directory
-  exists → the successor is never routable and anchor 5a's resume assertion fails;
-  (m19) resolve through `generations/` for a store that has none → anchor 5d's live v2 partitions stop
-  resolving, which is the compatibility regression this branch exists to prevent;
-  (m20) delete or rewrite the predecessor generation as part of the ceremony → anchor 4's byte-identity
-  assertion fails (the predecessor is evidence and is never touched);
-  (m5) route an unknown schema through the ambiguity path instead of the typed refusal → anchor 6 gets the
-  misleading permanent-block message; (m6) tighten the reader to accept only v3 → anchor 7's clean v2
-  partition stops authenticating.
-- Read-only host re-inspection after D5: the predecessor generation's files are byte-identical to their
-  pre-rotation state and digest-match the values pinned in the successor receipt.
+- Every Lane D1 falsifier RUN with its observed failure text in the PR body — never "should fail".
+- Named mutants, each RUN, phrased as the detection it produces:
+  (m1) drop the undisposed-key check → A3 accepts; (m2) carry the block as `ambiguous=True` → A1/A2
+  blocked; (m3) let `observed_landed` reach the adapter → A1 counter is 1; (m4) let `attested_not_landed`
+  publish twice → A2's second attempt succeeds; (m5) route an unknown schema through the ambiguity path →
+  A20 gets the permanent-block message; (m6) accept only v3 → A21's v2 partition stops authenticating;
+  (m7) drop the terminal carry → A6 reaches the adapter; (m8) omit the owner digest → A4; (m9) allow
+  rotation of an unblocked partition → A9; (m10) inventory ambiguity from canonical rows only → A8 rotates
+  the obligation away; (m11) skip the verb-scope refusal → A10; (m12) drop the `max(...)` → A23/A13 floor
+  reads 0; (m13) suppress the adapter without minting → A6's mint assertion fails; (m14) match an
+  attestation on key alone → A7's reuse is accepted; (m15) flip `ACTIVE` before the successor receipt
+  authenticates → A11 finds an incomplete generation routable; (m16) write `ACTIVE` in place, or create
+  `generations/` before seeding `ACTIVE=0` → A12 observes an absent or torn pointer; (m17) treat a missing,
+  torn or unreadable `ACTIVE` as "no generation" → A12's fail-closed legs admit an unauthenticated store;
+  (m18) resolve to the container when `generations/` exists → A11's resume fails, successor never
+  routable; (m19) resolve through `generations/` for a store that has none → A16 regresses; (m20) rewrite
+  the predecessor generation during the ceremony → A4; (m21) keep either canonical-store predicate
+  parent-shaped, or compare identity to `store_root.name` under a generation → A14a/b; (m22) keep
+  `WriterGenerationLatch.for_store_root` as `parent.parent` → every successor append is
+  `WriterGenerationBlocked`, A17 and A18b fail; (m23) classify the bootstrap row via the resolved root →
+  A18a refuses every repository on the host; (m24) drop either half of the v3 authority binding → A18c
+  is not refused / A18b is refused at `live.py:3338`; (m25) bind the receipt to no physical generation →
+  A14c accepts the misplaced receipt.
+- Read-only host re-inspection after D5: generation 0's files are byte-identical to their pre-rotation
+  state and digest-match the successor receipt.
 
 ## Acceptance criteria
 
-- [ ] A rotation of a blocked partition whose ambiguous key is attested `observed_landed` yields a
-      successor partition that publishes a fresh, unrelated branch through the governed path, and answers
-      the attested key as a duplicate with zero adapter calls (falsified by m3).
+- [ ] A rotation of a blocked partition whose ambiguous key is attested `observed_landed` yields a successor
+      that publishes a fresh, unrelated branch through the governed path and answers the attested key as a
+      duplicate with zero adapter calls (m3).
 - [ ] The same rotation attested `attested_not_landed` permits exactly one governed publish of the exact
-      intended branch and refuses the second by ordinary idempotency (falsified by m4). This is ah#789
-      acceptance item (5)'s first half, discharged as a capability rather than restated.
+      intended branch and refuses the second by ordinary idempotency (m4) — ah#789 item (5)'s first half,
+      discharged as a capability.
 - [ ] A rotation leaving any predecessor `outcome_ambiguous_blocked` key undisposed is refused before any
-      durable write (falsified by m1).
+      durable write (m1).
 - [ ] The successor receipt authenticates through `load_partition_receipt` byte-exactly, carries
-      `zero_source: false` and `ambiguous: false`, and pins the predecessor digests plus the attestation
-      digest (falsified by m2).
-- [ ] A v3-aware reader raises a typed compatibility refusal naming the schema and the runtime location
-      for an unknown/future receipt schema (falsified by m5), and still authenticates an untouched v2
-      receipt byte-exactly so a clean v2 partition publishes unchanged (falsified by m6). The pre-v3
-      install's misleading message is documented as unfixable retroactively, with the re-pin as its
-      mitigation — not claimed as fixed.
-- [ ] Every predecessor `effect_terminal_observed` key is carried onto the successor receipt with the
-      provenance `_legacy_terminal_replay` requires, so replaying it against the successor is a duplicate
-      with zero adapter calls — and still is after a second rotation (falsified by m7).
-- [ ] The predecessor store is byte-identical after rotation, **every file included** (JSONLs, receipt,
-      and `adapter-start-owner.json`), the owner digest is pinned in the successor receipt, and the
-      successor carries no owner file — so its first publish is not re-blocked by
-      `_block_unsealed_owner` before the disposition resolves (falsified by m8).
+      `zero_source: false`, `ambiguous: false`, an explicit `generation` bound to its physical path, and
+      pins the predecessor digests plus the attestation digest (m2, m25).
+- [ ] A v3-aware reader raises the typed compatibility refusal for an unknown/future schema (m5) and still
+      authenticates an untouched v2 receipt byte-exactly so a clean v2 partition publishes unchanged (m6);
+      the pre-v3 install's misleading message is documented as unfixable, with the re-pin as its liveness
+      mitigation.
+- [ ] Every predecessor `effect_terminal_observed` key is carried with the provenance
+      `_legacy_terminal_replay` requires and answered through the mint path, still after a second rotation
+      (m7, m13).
+- [ ] The predecessor store is byte-identical after rotation and after a carried-key replay, every file
+      included; the owner digest is pinned; the successor carries no owner file (m8, m20).
 - [ ] A predecessor blocked only through a receipt-carried ambiguity or an archived orphaned
-      `provider_call_in_flight` is refused unless that obligation is adjudicated (falsified by m10).
-- [ ] `rotate_blocked_partition` refuses a partition that is not `epoch_blocked` (falsified by m9).
-- [ ] The successor's `legacy_epoch_high_water` equals `max(predecessor receipt floor, predecessor
-      maximum allocated epoch)`, so no successor admission reuses an allocated epoch — including after a
-      second rotation through an intermediate successor that allocated none (falsified by m12).
-- [ ] An `attested_not_landed` attestation is bound to the predecessor digests and the attempt identity it
-      adjudicates, is spent by the one publish it authorises, and cannot adjudicate a later ambiguity of
-      the same key — a second rotation presenting the original attestation is refused, and succeeds only
-      with a new one naming the new attempt (falsified by m14).
-- [ ] A predecessor whose lineage contains a non-`publish_committed_branch` key is refused, because the
-      carry and disposition machinery is publish-scoped (falsified by m11). Extending it to every verb is
-      out of scope for this plan and named as such.
-- [ ] Crash injection at every rotation journal boundary is idempotent and never leaves two routable
-      receipts for one canonical identity; and a crash between the predecessor move and the successor
-      write cannot be onboarded as a zero-source repository, because onboarding and routability refuse a
-      typed error for an identity whose rotation journal is in any non-`ACTIVE` state — proven per state
-      by direct construction, not only along one crash trajectory — with that journal written before the
-      first mutation. The stronger property the generational layout gives: at **every** instant of the
-      ceremony and of any crash, the resolver names exactly one complete, authenticated store —
-      generation 0 (the container, where a pre-v3 reader also looks) before the flip, the successor after
-      — so no reader ever observes a receipt-less identity and the zero-source onboarding route is never
-      entitled to fire; missing, torn and incomplete pointer states are typed refusals, not fall-backs
-      (falsified by m15, m16, m17, m18 and m21).
+      `provider_call_in_flight` is refused unless adjudicated (m10).
+- [ ] `rotate_blocked_partition` refuses a partition that is not `epoch_blocked` (m9).
+- [ ] The successor's `legacy_epoch_high_water` equals `max(predecessor receipt floor, predecessor maximum
+      allocated epoch)`, including after a second rotation through a successor that allocated none (m12).
+- [ ] An `attested_not_landed` attestation is bound to the predecessor digests and the attempt identity, is
+      spent by the one publish it authorises, and cannot adjudicate a later ambiguity of the same key (m14).
+- [ ] A predecessor whose lineage contains a non-`publish_committed_branch` key is refused (m11); extending
+      the machinery to every verb is out of scope and named as such.
+- [ ] At every instant of the ceremony and of any crash, the resolver names exactly one complete,
+      authenticated store — generation 0 before the flip, the successor after; every member of the pointer
+      refusal set is a typed refusal, never a fall-back (m15, m16, m17, m18, m21).
+- [ ] Every store-path derivation in `convergence/broker/*.py` is on the A0 allow-list and tagged
+      layout-aware; the sweep test fails on an unlisted derivation, and the latch derives the namespace root
+      through the resolver (m22).
+- [ ] Bootstrap-row revalidation binds to generation 0: after one rotation under the sealed bootstrap
+      authority, every clean v2 partition on the host still passes `fabpub_activation_barrier` and publishes
+      (m23); the successor passes the barrier through its v3 authority binding and is refused at
+      `live.py:3338` without it (m24).
+- [ ] A lease acquired before the flip is refused on a generation-0 append after it, and a post-flip
+      `promote_legacy_terminal` writes only into the successor (m22, and A17 under m18).
 - [ ] The runtime performs no network or `git ls-remote` call anywhere in the ceremony, proven by the
-      recording sentinel idiom from `test_fabpub_recovery_controls_789.py`.
+      recording sentinel idiom.
 - [ ] The laundering question is answered in the PR body with a RUN result: whether a fresh authority root
       can bootstrap over a populated namespace, and — if it can — the guard that closes it.
 
