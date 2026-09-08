@@ -54,7 +54,6 @@ SKIP_REASON = (
     "(tests_only lane): set PHASE_LOOP_TDD_EXPECT_789=1 to run this falsifier "
     "against production"
 )
-INCIDENT_TEXT = "No such file"
 
 
 def _activated() -> bool:
@@ -155,15 +154,25 @@ def test_sealed_linked_worktree_removed_then_resume_succeeds_with_warning(
                 f"got the incident failure instead: {exc}"
             ) from exc
 
-    assert second == first, "resume after prune must report the same ACTIVE result"
+    # Compare the stable activation fields, not the whole report: the plan lets
+    # production carry the fallback warning on the returned report, and a
+    # ``warnings`` key there is diagnostics, not a different ACTIVE result.
+    assert second["state"] == first["state"] == "ACTIVE"
+    assert second["repositories"] == first["repositories"]
     assert second["repositories"] == [row["canonical_repository_identity"]]
     receipt = live.load_partition_receipt(live.repository_snapshot(main).store_root)
     assert receipt is not None
     assert receipt.canonical_repository_identity == row["canonical_repository_identity"]
     assert live.WriterGenerationLatch.open(main).read().generation_state == "ACTIVE"
-    assert _journal_bytes(tmp_path) == journal_before, "a resume writes no new journal state"
+    # The journal is the other carrier the plan allows.  A resume may append a
+    # warning record but must not move the bootstrap state; the byte-exact
+    # "nothing written" pin belongs to the refusal test below.
+    journal_after = _journal_bytes(tmp_path)
+    assert journal_after.startswith(journal_before), "a resume never rewrites journal history"
+    appended_journal = journal_after[len(journal_before):].decode("utf-8", "replace")
 
     signals = _fallback_signals(caught, caplog, second)
+    signals += [line for line in appended_journal.splitlines() if line.strip()]
     fallback = [m for m in signals if str(linked) in m and str(common) in m]
     assert fallback, (
         "789-RED-ANCHOR::pruned-worktree-warning — falling back from the pruned "
