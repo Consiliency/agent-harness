@@ -128,6 +128,10 @@ Two carries are not optional and are the ones a naive rotation drops:
      merely preserved evidence: it is the byte source each carried-key replay re-authenticates, and
      archive drift or deletion produces a typed `PermissionError` rather than a silent duplicate. Either
      the archive lives exactly where `mint` resolves, or Lane D2 extends `mint` — and states which.
+     The same reasoning applies to the **attestation documents** of carried entries: they were sealed
+     into the *prior* rotation's inventory, so a successor that only pins their digests leaves the
+     documents reachable solely by walking the predecessor-receipt chain. Copy them forward alongside the
+     archives, digest-verified, so every carried disposition's evidence is one hop away.
      One precision that decides that choice: the path's `<cutover_id>` component comes from the
      **loading receipt**, not from the provenance dict (`live.py:947-951`; `sealed_partition_effects`
      only `setdefault`s a provenance `cutover_id` that `mint` never reads). On a second rotation,
@@ -202,8 +206,9 @@ intended branch once" capability, and `observed_landed` is the branch omniagent-
 **After a successful `attested_not_landed` publish, the key is a terminal, not a re-armed disposition.**
 The publish it authorised leaves an `effect_terminal_observed` record in the successor store, so the next
 rotation classifies that key through the completed-terminal row of the table above and carries it as
-history — it is never re-armed from the receipt's disposition map. The ambiguous-then-rotate case is
-anchor 4f; this is the success-then-rotate case, and both resolve without the operator re-attesting.
+history — it is never re-armed from the receipt's disposition map. Successful publishes therefore carry forward as terminal history without another attestation; publishes
+that become ambiguous require a new attempt-bound attestation before the next rotation can succeed
+(anchor 4f).
 
 **The third case is refusal, and it is the default.** An operator who cannot determine what happened — the
 branch was deleted, force-pushed, or the observation is otherwise destroyed — declines to attest; the key
@@ -226,8 +231,11 @@ attempt on K goes ambiguous, and a second rotation could reuse it to authorise a
 attempt nobody has adjudicated. Every attestation entry MUST therefore bind to the exact state it
 adjudicates — the predecessor receipt digest, the predecessor store digests, and the identity of the
 unresolved attempt itself (the ambiguous record and, when present, the `adapter-start-owner.json`
-`attempt_id` / `owner_nonce` / `transaction_id`, all fields of `AdapterStartOwnership`,
-`verbs.py:51-62`) — and a rotation MUST refuse an attestation **presented to adjudicate an ambiguous key
+`owner_nonce` and `transaction_id`, fields of `AdapterStartOwnership`, `verbs.py:51-62`). **`owner_nonce`
+is the field that discriminates one attempt from another**: `attempt_id` is derived from
+`sha256(b"FABPUB-PUBLISH-ATTEMPT-v1\0" + repo \0 branch \0 head_sha)` (`verbs.py:535-538`), so it is a
+function of the effect key and is identical across every attempt on that key — binding to it alone would
+reproduce exactly the key-only matcher this clause exists to forbid) — and a rotation MUST refuse an attestation **presented to adjudicate an ambiguous key
 in this ceremony** whose bound predecessor digests or attempt identity are not the ones being rotated.
 That refusal is scoped to adjudication and does **not** touch dispositions carried forward as history:
 a prior `observed_landed` disposition on an earlier receipt is carried by D2's transitive clause and is
@@ -283,7 +291,13 @@ The rotation therefore uses a three-place layout, stated here so no implementer 
    classification itself to admit receipts and owner files would be a **contract change** and is
    explicitly out of scope for this plan.
 3. The successor is written as an **empty** store at the single routable identity path — no owner file, no
-   inherited evidence rows.
+   inherited evidence rows. The identity path MUST NOT be observably empty between the move and the
+   successor write: a crash in that window would leave a path with no receipt, which
+   `onboard_zero_legacy_repository` (`live.py:2970-3022`) would be entitled to treat as a repository first
+   seen post-ACTIVE and onboard with a **zero-source** receipt — laundering the block through the
+   ceremony's own crash window. The move and the successor write happen under the ceremony's seal locks
+   with the journal already `ARMED`, and a resumed rotation completes the write rather than re-onboarding;
+   a Lane D1 crash-injection anchor covers exactly this window.
 
 Point 3 is load-bearing beyond tidiness: `_fresh_publish` consults `_block_unsealed_owner`
 (`verbs.py:530-532`) **before** it consults `epoch_blocked` (`:533-534`), so a successor that inherited
