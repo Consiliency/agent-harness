@@ -228,7 +228,7 @@ def _assert_refused_before_owner(fx: SimpleNamespace, before: dict) -> None:
     assert _durable_state(fx.transaction) == "COMMITTED_HEAD_RESOLVED"
     assert before["state"] == "COMMITTED_HEAD_RESOLVED"
     assert fx.adapter.calls == []
-    assert fx.store.admit_calls == 0
+    assert fx.store.admit_next_calls == 0
 
 
 # ---------------------------------------------------------------------------
@@ -262,6 +262,9 @@ def test_incompatible_admission_record_refused_before_owner_acquisition(tmp_path
     message = str(info.value)
     assert FUTURE_KEY in message, f"the refusal must name the unknown key; got: {message}"
     assert str(fx.store.path) in message, f"the refusal must name the store path; got: {message}"
+    runtime = __import__("phase_loop_runtime")
+    assert runtime.__version__ in message, f"the refusal must name the refusing runtime version; got: {message}"
+    assert str(Path(runtime.__file__)) in message, f"the refusal must name the refusing runtime file; got: {message}"
     _assert_refused_before_owner(fx, before)
     assert fx.store.admit_next_calls == 0, "the refusal precedes admission entirely"
 
@@ -545,23 +548,38 @@ def test_owner_and_admission_share_one_lock_acquisition(tmp_path, request, monke
     delta_sha = subprocess.check_output(
         ["git", "-C", str(fx.worktree), "rev-parse", "HEAD"], text=True, timeout=60
     ).strip()
-    receipt = fx.service.readmit_advanced_head(
-        delta_cls(
-            repository=fx.identity,
-            adapter_worktree=str(fx.worktree),
-            checkpoint_root=str(checkpoint),
-            branch="feat/x",
-            base="main",
-            prior_head_sha=fx.transaction.committed_head_sha,
-            proposed_head_sha=delta_sha,
-            train_id=envelope.train_id,
-            node_id=envelope.node_id,
-            fab_run_id="run-789",
-            roadmap_digest=envelope.roadmap_digest,
-            provenance_digest="p" * 64,
-            owned_scope=("a.py",),
-        )
+    delta_auth = delta_cls(
+        repository=fx.identity,
+        adapter_worktree=str(fx.worktree),
+        checkpoint_root=str(checkpoint),
+        branch="feat/x",
+        base="main",
+        prior_head_sha=fx.transaction.committed_head_sha,
+        proposed_head_sha=delta_sha,
+        train_id=envelope.train_id,
+        node_id=envelope.node_id,
+        fab_run_id="run-789",
+        roadmap_digest=envelope.roadmap_digest,
+        provenance_digest="p" * 64,
+        owned_scope=("a.py",),
     )
+    readmit: dict = {}
+
+    def run_readmit():
+        # Bounded: a lock the publisher failed to release would otherwise hang here.
+        try:
+            readmit["receipt"] = fx.service.readmit_advanced_head(delta_auth)
+        except BaseException as error:  # re-raised in the test thread
+            readmit["error"] = error
+
+    readmit_thread = threading.Thread(target=run_readmit, name="789-readmit", daemon=True)
+    readmit_thread.start()
+    readmit_thread.join(timeout=WAIT_SECONDS)
+    if readmit_thread.is_alive():
+        pytest.fail(f"readmit_advanced_head did not return within {WAIT_SECONDS}s: admissions.lock still held?")
+    if "error" in readmit:
+        raise readmit["error"]
+    receipt = readmit["receipt"]
     assert receipt is not None and receipt.allocated_epoch == 2
     persisted = _jsonl(fx.admissions)
     assert [record["sequence"] for record in persisted] == [1, 2]

@@ -1,6 +1,7 @@
 """Durable, metadata-only broker admission ordering."""
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 from dataclasses import asdict, dataclass
@@ -23,6 +24,67 @@ class AdmissionRecord:
     epoch: int
     request: AdmissionRequest | DeltaReadmitAuthority | PreAdmissionEnvelope
     binding: ReadmitAdmissionBinding | None = None
+
+
+class AdmissionStoreIncompatible(PermissionError):
+    """This runtime cannot read one ``admissions.jsonl`` record (ah#789).
+
+    Raised BEFORE any durable write when a persisted record carries keys this
+    runtime's record constructors do not accept (a newer writer) or lacks keys
+    they require (an older writer).  It is a ``PermissionError`` so every
+    fail-closed path stays closed; the message names the store path, the record
+    sequence, the offending key names, and the runtime that refused.
+    """
+
+    def __init__(
+        self,
+        store_path: Path,
+        *,
+        line: int,
+        sequence: int | None,
+        constructor: type,
+        unknown_keys: tuple[str, ...],
+        missing_keys: tuple[str, ...],
+        cause: TypeError,
+    ) -> None:
+        import phase_loop_runtime
+
+        self.store_path = Path(store_path)
+        self.line = line
+        self.sequence = sequence
+        self.constructor = constructor
+        self.unknown_keys = tuple(unknown_keys)
+        self.missing_keys = tuple(missing_keys)
+        where = f"record sequence {sequence}" if sequence is not None else f"record at line {line}"
+        problems = []
+        if self.unknown_keys:
+            problems.append(f"unknown keys {list(self.unknown_keys)}")
+        if self.missing_keys:
+            problems.append(f"missing keys {list(self.missing_keys)}")
+        if not problems:
+            problems.append(f"constructor rejected the record: {cause}")
+        super().__init__(
+            f"admission store {self.store_path} is not readable by this runtime "
+            f"(phase_loop_runtime {phase_loop_runtime.__version__} at "
+            f"{Path(phase_loop_runtime.__file__)}): {where} does not fit "
+            f"{constructor.__qualname__}: {'; '.join(problems)}"
+        )
+
+
+def _constructor_key_mismatch(constructor: type, payload: dict) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """``(unknown, missing)`` key names of ``payload`` against a dataclass constructor."""
+    if not dataclasses.is_dataclass(constructor):
+        return (), ()
+    declared = [field for field in dataclasses.fields(constructor) if field.init]
+    names = {field.name for field in declared}
+    unknown = tuple(sorted(set(payload) - names))
+    required = {
+        field.name
+        for field in declared
+        if field.default is dataclasses.MISSING and field.default_factory is dataclasses.MISSING
+    }
+    missing = tuple(sorted(required - set(payload)))
+    return unknown, missing
 
 
 BrokerAdmissionPolicy = Callable[[Any], bool]
@@ -146,29 +208,67 @@ class LinearizableAdmissionStore:
         else:
             require_current_generation(self.root, lease, strict=True)
 
+    def _construct(self, constructor: type, payload: dict, *, line: int, sequence: int | None):
+        """Build one persisted component strictly; a key mismatch is a typed refusal."""
+        try:
+            return constructor(**payload)
+        except TypeError as error:
+            unknown, missing = _constructor_key_mismatch(constructor, payload)
+            raise AdmissionStoreIncompatible(
+                self.path,
+                line=line,
+                sequence=sequence,
+                constructor=constructor,
+                unknown_keys=unknown,
+                missing_keys=missing,
+                cause=error,
+            ) from error
+
     def _records(self) -> list[AdmissionRecord]:
         if not self.path.exists(): return []
         records = []
-        for line in self.path.read_text(encoding="utf-8").splitlines():
+        for number, line in enumerate(self.path.read_text(encoding="utf-8").splitlines(), start=1):
             if not line.strip(): continue
             raw = json.loads(line)
+            sequence = raw.get("sequence") if isinstance(raw.get("sequence"), int) else None
             if "binding" in raw and raw["binding"] is not None:
                 b = raw["binding"]
                 if isinstance(b.get("owned_scope"), list):
                     b["owned_scope"] = tuple(b["owned_scope"])
-                raw["binding"] = ReadmitAdmissionBinding(**b)
+                raw["binding"] = self._construct(ReadmitAdmissionBinding, b, line=number, sequence=sequence)
             if "request" in raw and isinstance(raw["request"], dict):
                 req_dict = raw["request"]
                 if "proposed_head_sha" in req_dict:
                     if isinstance(req_dict.get("owned_scope"), list):
                         req_dict["owned_scope"] = tuple(req_dict["owned_scope"])
-                    raw["request"] = DeltaReadmitAuthority(**req_dict)
+                    raw["request"] = self._construct(DeltaReadmitAuthority, req_dict, line=number, sequence=sequence)
                 elif "idempotency_key" in req_dict:
-                    raw["request"] = AdmissionRequest(**req_dict)
+                    raw["request"] = self._construct(AdmissionRequest, req_dict, line=number, sequence=sequence)
                 elif "canonical_repository_identity" in req_dict:
-                    raw["request"] = PreAdmissionEnvelope(**req_dict)
-            records.append(AdmissionRecord(**raw))
+                    raw["request"] = self._construct(PreAdmissionEnvelope, req_dict, line=number, sequence=sequence)
+            # The module-level name is resolved at call time on purpose: the record
+            # shape this runtime can read is whatever ``AdmissionRecord`` is NOW.
+            records.append(self._construct(AdmissionRecord, raw, line=number, sequence=sequence))
         return records
+
+    def probe_readable(self) -> int:
+        """Read-only pre-admission compatibility probe (ah#789); returns the record count.
+
+        Parses every persisted record under ``admissions.lock`` and raises
+        ``AdmissionStoreIncompatible`` when this runtime cannot read one.  It
+        creates nothing: an absent store file is trivially readable and the lock
+        is not even opened, and ``_authorize()``'s ``mkdir`` is never reached.
+        """
+        import fcntl
+
+        if not self.path.exists():
+            return 0
+        with self.lock_path.open("a+", encoding="utf-8") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                return len(self._records())
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
 
     def _canonical_high_water(self, records: list[AdmissionRecord]) -> int:
         """The canonical floor: ``max(record.epoch)``, or 0 when none exists."""
@@ -180,7 +280,15 @@ class LinearizableAdmissionStore:
         *,
         attempt_id: str | None = None,
         precondition: Callable[[], bool] | None = None,
+        lock_held: bool = False,
     ) -> AdmissionRecord | DeltaReadmitReceipt:
+        """Allocate the next admission under ``admissions.lock``.
+
+        ``lock_held=True`` declares that the caller already holds the exclusive
+        ``admissions.lock`` (one critical section spanning owner and admission,
+        ah#789); the store then skips its own ``flock`` instead of deadlocking on
+        a second descriptor.  Authentication and every in-lock check still run.
+        """
         import fcntl
         from .live import authenticated_partition_floor
 
@@ -189,7 +297,8 @@ class LinearizableAdmissionStore:
             auth = make_request_or_auth
             self._authorize()
             with self.lock_path.open("a+", encoding="utf-8") as lock:
-                fcntl.flock(lock, fcntl.LOCK_EX)
+                if not lock_held:
+                    fcntl.flock(lock, fcntl.LOCK_EX)
                 try:
                     self._require_generation()
                     if self.epoch_blocked() or self.policy is None:
@@ -365,7 +474,8 @@ class LinearizableAdmissionStore:
 
 
                 finally:
-                    fcntl.flock(lock, fcntl.LOCK_UN)
+                    if not lock_held:
+                        fcntl.flock(lock, fcntl.LOCK_UN)
 
         # Standard callable branch for make_request
         make_request = make_request_or_auth
@@ -374,7 +484,8 @@ class LinearizableAdmissionStore:
 
         self._authorize()
         with self.lock_path.open("a+", encoding="utf-8") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+            if not lock_held:
+                fcntl.flock(lock, fcntl.LOCK_EX)
             try:
                 self._require_generation()
                 if self.epoch_blocked() or self.policy is None:
@@ -428,7 +539,8 @@ class LinearizableAdmissionStore:
                     os.fsync(stream.fileno())
                 return record
             finally:
-                fcntl.flock(lock, fcntl.LOCK_UN)
+                if not lock_held:
+                    fcntl.flock(lock, fcntl.LOCK_UN)
 
     def admit(self, request: AdmissionRequest) -> AdmissionRecord:
         import fcntl
