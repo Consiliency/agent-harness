@@ -6095,7 +6095,7 @@
       "status": "committed",
       "task_summary": "Consiliency/agent-harness#789 Workstream D: governed recovery for a permanently blocked FABPUB repository partition via a journaled partition rotation \u2014 LegacyRepositoryPartitionReceipt.v3 with a rotation proof and key-granular adjudicated_effect_dispositions (observed_landed / attested_not_landed), a human attestation the runtime never derives from the remote, typed pre-v3 skew refusal, and the retired store preserved byte-identical. Discharges acceptance item (5) first half as a capability.",
       "type": "detailed",
-      "updated_at": "2026-09-08T22:08:38Z"
+      "updated_at": "2026-09-08T22:22:36Z"
     }
   ],
   "schema_version": 1
