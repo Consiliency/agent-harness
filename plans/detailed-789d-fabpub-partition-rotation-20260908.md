@@ -283,9 +283,13 @@ partition directory holds `admissions.jsonl`, `admissions.lock`, `evidence.jsonl
 "matches the allowlist" and "preserved byte-identical" cannot both hold for the directory as it stands.
 The rotation therefore uses a three-place layout, stated here so no implementer has to guess:
 
-1. The predecessor directory moves **in full** — receipt and owner file included — to a named,
+1. The predecessor's files move **in full** — receipt and owner file included — to a named,
    **non-routable** archive path that is never passed to `_validate_historical_evidence_root`. Byte
-   identity is required there, and the owner file's digest is pinned in the successor receipt (D2).
+   identity is required there, and the owner file's digest is pinned in the successor receipt (D2). The
+   move is **file-wise, not a directory rename**: the identity directory itself stays in place, holding
+   the zero-byte `evidence.jsonl` sentinel (point 3 and the guard paragraph below), so the routable path
+   is never absent and never carries its own guard into the archive. The sentinel is not part of the
+   archived set, so it does not disturb byte identity.
 2. If the rotation inventory needs a `historical_evidence_roots`-shaped row, it is derived as an
    allowlist-only snapshot whose JSONL digests equal the archive's. Extending the historical
    classification itself to admit receipts and owner files would be a **contract change** and is
@@ -305,32 +309,42 @@ The rotation therefore uses a three-place layout, stated here so no implementer 
    again. Seal locks cannot close this: they are `fcntl.flock` (`live.py:136-160`) and die with the
    process, which is the crash this guard exists for.
 
-   The guard is therefore **durable state that lives at the identity itself**: before the move, the
-   ceremony writes a `rotation-pending` marker **at the partition identity path**, naming the authority
-   root, the rotation `cutover_id` and the predecessor digests. Onboarding and the routability path
-   refuse, with a typed error, any identity carrying that marker — and refuse equally when it is present
-   but unreadable or malformed (fail closed, never open). The marker is cleared only as part of writing
-   the authenticated successor.
+   The guard is therefore **three durable artifacts, each covering a reader the others cannot**, all
+   written before the first mutation and cleared only as part of writing the authenticated successor:
 
-   It must live at the identity path, not only in an authority-root journal, because **journal discovery
-   would otherwise be authority-relative while the namespace is not**: `onboard_zero_legacy_repository`
-   takes an explicit `authority_root` but derives the namespace independently through
-   `repository_snapshot(worktree)` (`live.py:2970-3003`, `:3035-3046`), so an onboarder entering under a
-   *different* already-ACTIVE authority B would see the same empty namespace, find no journal under B,
-   and the guard would be silent. A marker at the identity path is found whatever authority the caller
-   selected; it also makes "never observably empty" literal rather than temporal, and it is the third
-   condition to add beside onboarding's existing adoption guard (`live.py:3041-3046`) — the one a pre-v3
-   reader can also be taught to honour, since it cannot consult a journal format it has never heard of.
+   - **A `rotation-pending` marker beside the identity directory** — `<namespace_root>/rotations-pending/
+     <canonical identity>.json`, naming the authority root, the rotation `cutover_id` and the predecessor
+     digests. It is a **sibling** of `repositories/<identity>/`, deliberately *not* inside it, because D7
+     moves that directory: a marker written into the identity directory would be carried into the archive
+     by the move and leave the routable path unguarded at exactly the first receipt-less instant. It is
+     also outside the archived file set, so anchor 4's byte-identity of the retired store is unaffected.
+     Being namespace-keyed rather than authority-keyed is what makes it authority-independent:
+     `onboard_zero_legacy_repository` takes an explicit `authority_root` but derives the namespace through
+     `repository_snapshot(worktree)` (`live.py:2970-3003`, `:3035-3046`), so an onboarder entering under a
+     *different* already-ACTIVE authority B sees this marker while it would never see a journal under A.
+   - **A pre-v3-visible sentinel at the identity path** — the move is file-wise: the predecessor's files
+     go to the archive and the identity directory is left holding a zero-byte `evidence.jsonl` and no
+     receipt. That is precisely the state onboarding's **shipped** adoption guard already refuses —
+     "unattested canonical `evidence.jsonl` … may not adopt allocator state" (`live.py:3041-3046`) — so a
+     **pre-v3 process, whose code cannot be taught anything, refuses on its own machinery**. This is the
+     only mechanism in the design that reaches already-loaded old code, and it is why the marker alone is
+     not sufficient: a novel filename is invisible to every shipped reader.
+   - **The authority-root rotation journal**, keyed by canonical repository identity, as the ceremony's
+     resume state; the routability path refuses its non-`ACTIVE` states too.
 
-   The authority-root rotation journal remains, keyed by canonical repository identity, as the ceremony's
-   own resume state, and the routability path refuses its non-`ACTIVE` states too. Neither predicate is
-   keyed on `ARMED`: a guard that fires only in `ARMED` would leave the window open under a
+   Each guard is refused fail-closed when present but unreadable or malformed. Because they overlap, each
+   MUST be instrumented with the others disabled (see anchors 5b, 5b′ and 5c) — otherwise a mutant that
+   removes one is masked by another and the plan's own falsifiers stop falsifying.
+
+   No predicate is keyed on `ARMED`: a guard that fires only in `ARMED` would leave the window open under a
    completion-journalled implementation that moves and *then* records the state, and the ceremony this one
    mirrors sequences exactly that way — `_drive_cutover` writes its partition receipts (`live.py:2033`)
    **before** recording `ARMED` (`:2048`), which is safe there and would be unguarded here. The ceremony
-   writes the marker and journals its first state **before** it touches anything, so both exist from the
-   first instant the identity could be observed receipt-less; `ACTIVE` is recorded, and the marker
-   cleared, only after the successor receipt authenticates. That edit to shipped onboarding machinery is in Lane D2's scope, stated here so it is not
+   writes the marker and the sentinel and journals its first state **before** it touches anything, so all
+   three exist from the first instant the identity could be observed receipt-less. The terminal ordering
+   is equally pinned: the successor receipt is written and authenticated **first**, then the sentinel
+   becomes the successor's own empty allocator file and the marker is removed, and only then is `ACTIVE`
+   recorded — so a crash in any terminal slice leaves the identity still guarded, never briefly open. That edit to shipped onboarding machinery is in Lane D2's scope, stated here so it is not
    discovered mid-lane. The alternative — a layout that never leaves the path observably empty (a staged
    successor plus an exchange) — is rejected because POSIX offers no portable atomic directory swap, so it
    would trade a guarded window for an unguarded one. Anchors **5a** and **5b** and mutants **m15**, **m16** and **m17** cover it.
@@ -414,21 +428,30 @@ Anchors:
    ordering the mirrored `_drive_cutover` uses, the first receipt-less instant is pre-`ARMED`, and an
    `ARMED`-naming assertion would fail on a correct implementation and push a fixture author back to
    post-`ARMED` injection — reopening the very slice this anchor exists to close.
-5b. **The guard is state-agnostic by construction, not by trajectory.** For **each** non-`ACTIVE` journal
-   state, build an identity directly — partition path holding only the `rotation-pending` marker, rotation
-   journal at that state, not merely reached by crashing — drive `fabpub_activation_barrier` /
-   `onboard_zero_legacy_repository`, and assert the typed refusal naming that state. Two further legs:
-   a marker present but **unreadable or malformed** is refused the same way (fail closed); and the refusal
-   fires when the onboarder enters under a **different already-ACTIVE authority** than the one running the
-   rotation — activate authority B for another repository, crash A's rotation immediately after the move,
-   attempt onboarding through B, and assert the refusal lands before any successor receipt is created.
-   Anchor 8 does not cover this: it exercises a *populated* namespace, where the existing receipt is what
-   prevents replacement.
-5c. **A pre-v3 reader cannot launder the window either.** Keep a pre-v3 FABPUB-capable reader alive across
-   the installation replacement, drive it at the first receipt-less instant, and assert no successor
-   receipt is created. Stated oracle: pre-v3 code cannot consult a rotation journal whose format it has
-   never heard of, so the only thing that can stop it is the marker at the identity path — which makes
-   this anchor also the test that the marker, not the journal, is the load-bearing guard. Crash injection can only reach the states one trajectory passes
+5b. **The marker guard, isolated.** With the journal guard disabled and the sentinel absent, build an
+   identity directly — the real post-move filesystem shape, not a constructed directory: identity path as
+   the move leaves it, `rotation-pending` marker present as its sibling — drive
+   `fabpub_activation_barrier` / `onboard_zero_legacy_repository`, and assert the typed refusal. Two
+   further legs: a marker present but **unreadable or malformed** is refused the same way (fail closed);
+   and the refusal fires when the onboarder enters under a **different already-ACTIVE authority** than the
+   one running the rotation — activate authority B for another repository, crash A's rotation immediately
+   after the move, onboard through B, and assert the refusal lands before any successor receipt is
+   created. Anchor 8 does not cover this: it exercises a *populated* namespace, where the existing receipt
+   is what prevents replacement.
+5b′. **The journal guard, isolated.** With the marker absent and the sentinel absent, construct an
+   identity for **each** non-`ACTIVE` journal state directly — not merely reached by crashing, since crash
+   injection can only reach the states one trajectory passes through — and assert the typed refusal naming
+   that state. This is the anchor that kills a predicate narrowed to `ARMED` under any sequencing.
+5c. **The pre-v3 reader refuses on its own shipped machinery.** Keep a pre-v3 FABPUB-capable reader alive
+   across the installation replacement and drive it at the first receipt-less instant. Stated oracle,
+   verified against this head's code — which *is* the pre-v3 baseline, since this diff is plan-only: the
+   marker is invisible to it (a novel filename), the rotation journal is invisible to it (a format it has
+   never heard of), and neither can be added to already-loaded code. What stops it is the zero-byte
+   `evidence.jsonl` sentinel the file-wise move leaves at the identity path with no receipt, which trips
+   the refusal pre-v3 **already ships**: "unattested canonical `evidence.jsonl` … may not adopt allocator
+   state" (`live.py:3041-3046`). Assert that refusal by name and that no successor receipt is created.
+5d. **Routability, not only onboarding.** A marked identity is non-routable for an ordinary broker entry:
+   drive a normal publish against it and assert the typed refusal, with each guard isolated as above. Crash injection can only reach the states one trajectory passes
    through, so it cannot test the contract the guard actually has; this anchor can, and it is what kills
    the narrowed-predicate mutant under any sequencing.
 4f. **Attestation reuse is refused.** Rotate key K with an `attested_not_landed` attestation A; publish K
@@ -513,13 +536,16 @@ Requires a separate maintainer authorisation; nothing here executes it.
    so it can create exactly the zero-source successor D7 forbids, in the window D7's guard closes for
    v3-aware readers. Unknown-schema refusal offers nothing here, because in that window there is no
    receipt to read. The runbook therefore gates **running processes**, not just installations: every
-   ceremony holds **exclusive occupancy**: for its whole duration, crash-to-resume gaps included, no
-   FABPUB-capable process other than the ceremony's own runs **or starts** against this authority. A
+   ceremony holds **exclusive occupancy of the partition namespace** — not merely of one authority, since
+   an onboarder may enter under any already-ACTIVE authority while deriving the same namespace from the
+   worktree: for the ceremony's whole duration, crash-to-resume gaps included, no FABPUB-capable process
+   other than the ceremony's own runs **or starts** against that namespace. A
    restart satisfies the gate only when the process relaunches from a re-pinned, probe-verified
    **installed** runtime — never from a working checkout or an unpinned venv, which is exactly the
-   stale-source class that caused ah#789 and which an installed-runtime probe cannot see. The matching
-   falsifier is Lane D1 **anchor 5c**, not a runbook promise, so the crash-safety criterion is
-   substantiated by a test rather than by an operational intention.
+   stale-source class that caused ah#789 and which an installed-runtime probe cannot see. Occupancy is
+   **defense in depth, not the sole pre-v3 gate**: anchor 5c shows a surviving pre-v3 reader refusing on
+   its own shipped adoption guard because of the sentinel, so the crash-safety criterion rests on a test
+   rather than on an operational intention.
 5. Unchecked precondition: the Windows host has not been scanned for blocked partitions. Before D5,
    scan every host that can write FABPUB state, so a rotation is not performed while a second blocked
    partition is unknown.
@@ -552,17 +578,22 @@ Requires a separate maintainer authorisation; nothing here executes it.
   mint-path assertion fails, catching the shortcut that would drop archive re-authentication;
   (m14) match an attestation on effect key alone, ignoring the bound predecessor digests and attempt
   identity → anchor 4f's second rotation is accepted and the unadjudicated attempt is retried;
-  (m15) drop the non-`ACTIVE` rotation-journal onboarding guard → anchor 5a's onboarding inserts a
-  zero-source receipt into the crash window and the block is laundered;
+  (m15) drop the non-`ACTIVE` rotation-journal onboarding guard → anchor **5b′** (journal isolated)
+  admits onboarding; note 5a alone cannot kill this once the marker exists, which is why each guard has
+  an isolated anchor;
   (m16) narrow the guard's predicate to `ARMED` only → anchor **5b**'s refusal does not fire for the
   pre-`ARMED` states (5a alone cannot kill this: under an intent-journalled ordering every receipt-less
   instant it can reach is already `ARMED`, so the narrowed guard still refuses there and the mutant
   survives — which is why the state-construction anchor exists);
   (m17) hoist the predecessor move ahead of the marker write and the journal's first recorded state → at
   5a's first receipt-less instant there is neither, the guard is silent, and 5a's refusal assertion fails;
-  (m18) key the guard on the authority-root journal alone, dropping the identity-path marker → 5b's
-  cross-authority leg and 5c's pre-v3 leg both stop refusing;
+  (m18) drop the `rotation-pending` marker, keeping the journal guard → 5b (marker isolated) admits
+  onboarding, and its cross-authority leg launders;
   (m19) treat an unreadable or malformed marker as absent → 5b's fail-closed leg admits onboarding;
+  (m20) write the marker but omit the zero-byte `evidence.jsonl` sentinel → 5c's pre-v3 reader creates the
+  zero-source successor, which is the whole pre-v3 exposure;
+  (m21) move the predecessor directory wholesale instead of file-wise, carrying the guard artifacts out of
+  the routable path → 5b and 5c both stop refusing at the first receipt-less instant;
   (m5) route an unknown schema through the ambiguity path instead of the typed refusal → anchor 6 gets the
   misleading permanent-block message; (m6) tighten the reader to accept only v3 → anchor 7's clean v2
   partition stops authenticating.
@@ -612,12 +643,13 @@ Requires a separate maintainer authorisation; nothing here executes it.
       write cannot be onboarded as a zero-source repository, because onboarding and routability refuse a
       typed error for an identity whose rotation journal is in any non-`ACTIVE` state — proven per state
       by direct construction, not only along one crash trajectory — with that journal written before the
-      first mutation, and the identity path carries a `rotation-pending` marker that makes the refusal
-      authority-independent and reachable by a pre-v3 reader (falsified by m15, m16, m17, m18 and m19;
-      note a receipt-count assertion alone would pass every one of them, since the laundered outcome
-      leaves exactly one routable receipt). Both legs of the guard are instrumented: 5b drives
-      onboarding, and a routability leg asserts that a marked identity is non-routable for an ordinary
-      broker entry.
+      first mutation; a `rotation-pending` marker sits **beside** the identity directory, where the move
+      cannot carry it away, making the refusal authority-independent; and the file-wise move leaves a
+      zero-byte `evidence.jsonl` sentinel that a pre-v3 reader refuses on its own shipped adoption guard
+      (`live.py:3041-3046`). Each guard is instrumented with the others disabled — 5b marker, 5b′ journal,
+      5c sentinel, 5d routability — so no mutant is masked by a sibling guard (falsified by m15, m16, m17,
+      m18, m19, m20 and m21; a receipt-count assertion alone would pass every one, since the laundered
+      outcome leaves exactly one routable receipt).
 - [ ] The runtime performs no network or `git ls-remote` call anywhere in the ceremony, proven by the
       recording sentinel idiom from `test_fabpub_recovery_controls_789.py`.
 - [ ] The laundering question is answered in the PR body with a RUN result: whether a fresh authority root
