@@ -284,10 +284,17 @@ def test_execute_refuses_publish_when_revocation_becomes_durable_before_admit(tm
     def _admit_after_a_revocation_lands(request, *args, **kwargs):
         # Models the OS scheduling execute() out after its epoch_blocked pre-check: a
         # revocation (a durable outcome_ambiguous_blocked record) lands, THEN admit runs.
+        # ah#789: the fresh-publish admit_next is entered with `admissions.lock` already
+        # held by the service's single owner+admission critical section, so the racing
+        # write is modelled at the storage layer (`_append_locked`, the in-lock append
+        # primitive) rather than through the lock-taking `record_*` verbs, which would
+        # deadlock on a second descriptor of the lock this thread holds.
         if not state["fired"]:
             state["fired"] = True
-            svc.evidence_store.record_intent("racing-key")
-            svc.evidence_store.record_terminal(
+            svc.evidence_store._append_locked(
+                EvidenceRecord("racing-key", TerminalOutcomeState.PROVIDER_CALL_IN_FLIGHT)
+            )
+            svc.evidence_store._append_locked(
                 EvidenceRecord("racing-key", TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED, "revocation")
             )
         return real_admit(request, *args, **kwargs)

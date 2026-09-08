@@ -1,6 +1,7 @@
 import json
 import os
 import unittest.mock
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -647,9 +648,12 @@ def test_scope_reject_is_a_valid_terminal_through_the_broker_service(tmp_path, r
     class _AdmitAll:
         """A service fake that RECORDS which admission method the broker used."""
 
-        def __init__(self):
+        def __init__(self, root):
             self.admit_calls = 0
             self.admit_next_calls = 0
+            # ah#789: the fresh-publish critical section takes the store's lock path
+            # and probes readability first; a service fake exposes that surface too.
+            self.lock_path = Path(root) / "admissions.lock"
 
         def admit(self, admission):
             self.admit_calls += 1
@@ -657,9 +661,15 @@ def test_scope_reject_is_a_valid_terminal_through_the_broker_service(tmp_path, r
 
         # FABPUB: a fresh publish allocates through the broker, so a service fake must
         # expose the allocator surface rather than keep fresh publish on admit().
-        def admit_next(self, make_request, *, attempt_id, precondition=None):
+        def admit_next(self, make_request, *, attempt_id, precondition=None, lock_held=False):
             self.admit_next_calls += 1
             return make_request(1, attempt_id)
+
+        def probe_readable(self):
+            return 0
+
+        def _records(self):
+            return []
 
         def replay(self):
             return ()
@@ -680,7 +690,7 @@ def test_scope_reject_is_a_valid_terminal_through_the_broker_service(tmp_path, r
         (("rev-parse",), head, 0),
         (("diff", "--name-only", "-z", "--no-renames"), b"a.py\0b.py\0", 0),  # b.py outside owned ("a.py",)
     ])
-    admission_fake = _AdmitAll()
+    admission_fake = _AdmitAll(root)
     service = BrokerService(
         admission_fake,
         BrokerEvidenceStore(root),

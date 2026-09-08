@@ -97,11 +97,29 @@ def append_adapter_start_owner(
     owner: AdapterStartOwnership,
     *,
     authorize=None,
+    lock_held: bool = False,
 ) -> AdapterStartOwnership:
-    """Fsync the owner before admission.  An unsealed owner is never replaced."""
+    """Fsync the owner before admission.  An unsealed owner is never replaced.
+
+    ``lock_held=True`` declares that the caller already holds the exclusive
+    ``admissions.lock`` (ah#789: one critical section spanning owner and
+    admission); the write then happens under the caller's acquisition.
+    """
     import fcntl
 
     root = Path(root)
+
+    def append() -> AdapterStartOwnership:
+        if authorize is not None:
+            authorize()
+        current = read_adapter_start_owner(root, repository_identity=owner.repository_identity)
+        if current is not None and not current.sealed:
+            return current
+        _owner_atomic_write(_owner_path(root), owner)
+        return owner
+
+    if lock_held:
+        return append()
     if authorize is not None:
         authorize()
     else:
@@ -110,13 +128,7 @@ def append_adapter_start_owner(
     with lock_path.open("a+", encoding="utf-8") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         try:
-            if authorize is not None:
-                authorize()
-            current = read_adapter_start_owner(root, repository_identity=owner.repository_identity)
-            if current is not None and not current.sealed:
-                return current
-            _owner_atomic_write(_owner_path(root), owner)
-            return owner
+            return append()
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
 
@@ -374,6 +386,11 @@ class BrokerService:
             fcntl.flock(lock, fcntl.LOCK_EX)
             try:
                 self.evidence_store._authorize()
+                # ah#789 (ah#803 round-2, codex): the early probe ran OUTSIDE this
+                # lock.  A newer writer can land an incompatible admission line in
+                # the gap, so the store is re-validated under the lock before any
+                # evidence append — the refusal stays typed and mutation-free.
+                self.admission_store._records()
                 current_owner = evidence_module.read_adapter_start_owner(
                     self.evidence_store.root,
                     repository_identity=owner.repository_identity,
@@ -447,8 +464,65 @@ class BrokerService:
             finally:
                 fcntl.flock(lock, fcntl.LOCK_UN)
 
+    def _owner_and_admission_under_one_lock(
+        self,
+        request: BrokerRequest,
+        owner: AdapterStartOwnership,
+        make_request,
+        attempt_id: str,
+    ) -> tuple[AdapterStartOwnership | None, AdapterStartOwnership | None, object]:
+        """ah#789: durable owner and admission under ONE ``admissions.lock`` acquisition.
+
+        Inside the section, in order: (1) the admission store must be readable
+        by THIS runtime (typed refusal before any write); (2) the owner is
+        re-read under the lock — an unsealed foreign owner is returned to the
+        caller, who resolves it OUTSIDE the section through
+        ``_block_unsealed_owner`` (which takes the same lock itself); (3) the
+        owner is written; (4) the admission is allocated.  No writer of any
+        runtime version can interleave between (3) and (4).
+
+        Returns ``(foreign_owner, recorded_owner, admission_record)``; exactly
+        one of ``foreign_owner`` / ``recorded_owner`` is set.
+        """
+        import fcntl
+
+        self.evidence_store._authorize()
+        with self.admission_store.lock_path.open("a+", encoding="utf-8") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                self.admission_store._records()
+                current_owner = evidence_module.read_adapter_start_owner(
+                    self.evidence_store.root,
+                    repository_identity=request.repo,
+                )
+                if current_owner is not None and not current_owner.sealed:
+                    return current_owner, None, None
+                # Indirection through evidence_module keeps the durable write a crash seam.
+                # A sealed owner is a completed prior effect, not a lock on a new head.
+                recorded_owner = evidence_module.append_adapter_start_owner(
+                    self.evidence_store.root,
+                    owner,
+                    authorize=self.evidence_store._authorize,
+                    lock_held=True,
+                )
+                admission_record = self.admission_store.admit_next(
+                    make_request,
+                    attempt_id=attempt_id,
+                    precondition=lambda: self._validated_envelope(request)[1].state == "COMMITTED_HEAD_RESOLVED",
+                    lock_held=True,
+                )
+                return None, recorded_owner, admission_record
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+
     def _fresh_publish(self, request: BrokerRequest, key: str) -> BrokerExecutionResult:
         envelope, transaction = self._validated_envelope(request)
+        # ah#789 early probe: a runtime that cannot read the admission store or
+        # the evidence journal refuses HERE, typed, before any owner path runs
+        # (``_block_unsealed_owner`` appends evidence; it must never be reached
+        # by an incompatible reader).  Both reads create nothing.
+        self.admission_store.probe_readable()
+        self.evidence_store.replay()
         existing_owner = evidence_module.read_adapter_start_owner(
             self.evidence_store.root,
             repository_identity=request.repo,
@@ -472,30 +546,25 @@ class BrokerService:
             hashlib.sha256(os.urandom(32)).hexdigest()[:32],
             key,
         )
-        # Indirection through evidence_module keeps the durable write a crash seam.
-        recorded_owner = evidence_module.append_adapter_start_owner(
-            self.evidence_store.root,
-            owner,
-            authorize=self.evidence_store._authorize,
-        )
-        if recorded_owner.owner_nonce != owner.owner_nonce:
-            if not recorded_owner.sealed:
-                if self._block_unsealed_owner(recorded_owner):
-                    raise PermissionError("unsealed adapter-start owner blocks fresh provider effect")
-            # A sealed owner is a completed prior effect, not a lock on a new head.
-            recorded_owner = evidence_module.append_adapter_start_owner(
-                self.evidence_store.root,
-                owner,
-                authorize=self.evidence_store._authorize,
-            )
         def make_request(epoch: int, supplied_attempt_id: str) -> AdmissionRequest:
             return self._final_admission(envelope, request, epoch, supplied_attempt_id)
 
-        admission_record = self.admission_store.admit_next(
-            make_request,
-            attempt_id=attempt_id,
-            precondition=lambda: self._validated_envelope(request)[1].state == "COMMITTED_HEAD_RESOLVED",
-        )
+        # One critical section for owner + admission.  An unsealed foreign owner
+        # observed INSIDE the section is resolved outside it exactly as before
+        # (``_block_unsealed_owner``), then the section is entered once more; a
+        # second foreign owner is a live contender and refuses fail-closed.
+        for _entry in (1, 2):
+            foreign_owner, recorded_owner, admission_record = (
+                self._owner_and_admission_under_one_lock(request, owner, make_request, attempt_id)
+            )
+            if foreign_owner is None:
+                break
+            if self._block_unsealed_owner(foreign_owner):
+                raise PermissionError("unsealed adapter-start owner blocks fresh provider effect")
+        else:
+            # A retired owner was replaced by another live publisher between the
+            # two entries: a retryable contention loss, not permanent ambiguity.
+            raise PermissionError("unsealed adapter-start owner contended twice in one publish; retry")
         _advance_transaction(transaction, "ADMISSION_DURABLE")
         self.evidence_store.record_intent(key)
         _advance_transaction(transaction, "BROKER_INTENT_DURABLE")
