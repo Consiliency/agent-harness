@@ -41,8 +41,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Workstream C-keep of Consiliency/agent-harness#789. `docs/fabpub-pre-admission-ambiguity.md`
   records what a pre-admission ambiguity is, why `outcome_ambiguous_blocked` stays
   permanent (the local chronology proof is only as strong as the weakest runtime version
-  that can write owners, and ah#789 was a version-skew incident), the recorded one-time
-  operator recovery outside the governed path, and the deferred partition-rotation route.
+  that can write owners, and ah#789 was a version-skew incident), what the incident
+  actually recorded (publication blocked, no override taken), the prospective one-time
+  manual-override policy outside the governed path, and the deferred partition-rotation
+  route.
 - `phase-loop-runtime/tests/test_fabpub_recovery_controls_789.py` adds two controls over
   existing behaviour: a blocked partition refuses a fresh publish of the exact intended
   branch with every `git ls-remote` route replaced by a raising sentinel, writing no owner

@@ -105,13 +105,22 @@ def _no_remote_probe(monkeypatch):
     the ``import subprocess`` / ``subprocess.run(...)`` form every production
     caller in this package uses (``live._git_out``, ``credsep``,
     ``train_runner``).
+
+    Yields the list of attempts.  Every attempt is RECORDED before the sentinel
+    raises, so a production path that swallowed the raise (``except
+    Exception``) and then produced the expected typed refusal is still caught
+    by the caller's ``assert attempts == []`` (codex r1 blocker 1): the
+    no-probe property is established by the record, not by which exception
+    escaped.
     """
     real = {name: getattr(subprocess, name) for name in ("run", "check_output", "Popen")}
+    attempts: list[tuple[str, list[str]]] = []
 
     def _guarded(name):
         def _call(args, *rest, **kwargs):
             argv = list(args) if isinstance(args, (list, tuple)) else [args]
             if any("ls-remote" == str(token) for token in argv):
+                attempts.append((name, [str(token) for token in argv]))
                 raise _RemoteProbeAttempted(
                     "the refusal consulted the remote: "
                     f"subprocess.{name}({argv!r}) — Consiliency/agent-harness#789 item 3 "
@@ -124,7 +133,7 @@ def _no_remote_probe(monkeypatch):
     with monkeypatch.context() as patch:
         for name in real:
             patch.setattr(subprocess, name, _guarded(name))
-        yield
+        yield attempts
 
 
 def _block_partition(service) -> None:
@@ -182,10 +191,12 @@ def _partition(tmp_path: Path, repo: Path, identity: str, root: Path, *, label: 
 def _two_partitions(tmp_path: Path) -> tuple[SimpleNamespace, SimpleNamespace]:
     """Two repository partitions activated by ONE global zero-history cutover.
 
-    The multi-repository fixture shape of
+    Built on ``_activate_repository_authorities``
+    (``test_fabpub_shared_epoch.py:2218``, the clean zero-history activation):
+    one manifest, several rows, one ``ACTIVE`` transaction, a disjoint receipt
+    per repository — the same multi-repository shape
     ``test_fabpub_global_legacy_cutover_partitions_multiple_repositories_crash_idempotently_before_activation``
-    (``test_fabpub_shared_epoch.py:2700-2717``): one manifest, several rows, one
-    ``ACTIVE`` transaction, a disjoint receipt per repository.  The conftest's
+    (``:2700``) drives through the legacy-ambiguous route.  The conftest's
     autouse ``_isolate_host_state`` pins ``PHASE_LOOP_FABPUB_AUTHORITY_ROOT`` into
     ``tmp_path``, so both partitions are governed by one authority root here.
     """
@@ -211,9 +222,13 @@ def test_blocked_partition_refuses_fresh_publish_without_consulting_the_remote(t
     """A permanently blocked partition refuses locally: no remote read, nothing moves.
 
     The typed ``PermissionError`` is the pass condition WHILE the ls-remote
-    sentinel is armed; a refusal that probed the remote would raise
-    ``_RemoteProbeAttempted`` (an ``AssertionError``, not a ``PermissionError``)
-    and fail the ``pytest.raises`` block instead.
+    sentinel is armed, AND the sentinel's attempt record must be empty
+    afterwards.  The two are independent: a refusal that probed the remote and
+    let the sentinel escape raises ``_RemoteProbeAttempted`` (an
+    ``AssertionError``, not a ``PermissionError``) and fails the
+    ``pytest.raises`` block; a refusal that probed, swallowed the sentinel and
+    then raised the expected ``PermissionError`` passes the block but fails
+    ``attempts == []`` (codex r1 blocker 1; mutant M5 in the PR body).
     """
     fx = _routed(tmp_path, name="recovery-blocked")
     _block_partition(fx.service)
@@ -225,10 +240,11 @@ def test_blocked_partition_refuses_fresh_publish_without_consulting_the_remote(t
     before = _snapshot(fx)
     assert before["evidence"] is not None, "the blocked record must be durable before the attempt"
 
-    with _no_remote_probe(monkeypatch):
+    with _no_remote_probe(monkeypatch) as attempts:
         with pytest.raises(PermissionError) as info:
             fx.service.execute(fx.request)
 
+    assert attempts == [], f"the refusal consulted the remote (sentinel swallowed): {attempts!r}"
     assert REFUSAL_MESSAGE in str(info.value), (
         f"the refusal must stay the typed permanent-block refusal; got: {info.value!r}"
     )
@@ -248,9 +264,10 @@ def test_blocked_partition_refuses_fresh_publish_without_consulting_the_remote(t
     assert fx.evidence.read_bytes() == before["evidence"], "evidence.jsonl must be byte-identical"
 
     # A second attempt behaves identically: the block is permanent, not one-shot.
-    with _no_remote_probe(monkeypatch):
+    with _no_remote_probe(monkeypatch) as attempts:
         with pytest.raises(PermissionError) as again:
             fx.service.execute(fx.request)
+    assert attempts == [], f"the second refusal consulted the remote: {attempts!r}"
     assert REFUSAL_MESSAGE in str(again.value)
     _assert_refused_before_owner(fx, before)
 
@@ -284,9 +301,10 @@ def test_blocked_partition_does_not_fence_an_unrelated_repository_partition(tmp_
     assert alpha.service.evidence_store.epoch_blocked is True
     assert _jsonl(alpha.admissions) == []
     assert not alpha.owner.exists()
-    with _no_remote_probe(monkeypatch):
+    with _no_remote_probe(monkeypatch) as attempts:
         with pytest.raises(PermissionError) as info:
             alpha.service.execute(alpha.request)
+    assert attempts == [], f"alpha's refusal consulted the remote: {attempts!r}"
     assert REFUSAL_MESSAGE in str(info.value)
     assert alpha.adapter.calls == []
     assert _jsonl(alpha.admissions) == []

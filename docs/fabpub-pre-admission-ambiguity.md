@@ -69,14 +69,19 @@ pruned no longer fails the activation barrier.
 There is **no governed recovery** for a partition that is already blocked. What
 the runtime offers is a refusal, not a repair.
 
-The recorded operator recovery for ah#789 is a documented, recorded, **one-time**
-action taken outside the governed path: the operator publishes the intended
-branch by hand and records what was done, against which transaction, on the
-issue. No command sequence is prescribed here, because none was executed or
-reviewed in ah#789 — the incident record (step 5) states that no direct push,
-evidence rewrite, flag disablement, or replacement authority root was used, and
-the responder correctly refused to improvise one. Anything beyond a recorded
-manual publication is a contract change and needs review.
+**What happened in ah#789:** nothing was published. The incident record (step 5)
+states that no further publish was attempted and that no direct push, evidence
+rewrite, flag disablement, or replacement authority root was used; the responder
+correctly refused to improvise a recovery. The intended branch for transaction
+`b72b68ff…` is still unpublished by the governed path, and the partition stays
+blocked.
+
+**What C-keep sanctions going forward (prospective policy, not yet exercised):**
+a documented, recorded, **one-time** operator override outside the governed
+path — the operator publishes the intended branch by hand and records what was
+done, against which transaction, on the issue. No command sequence is
+prescribed here, because none has been executed or reviewed. Anything beyond a
+recorded manual publication is a contract change and needs review.
 
 Two consequences to plan around:
 
