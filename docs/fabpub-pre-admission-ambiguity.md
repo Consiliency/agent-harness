@@ -80,7 +80,7 @@ On 2026-09-06 the maintainer authorised and recorded a **one-time manual
 publication outside the governed path** (the "Operator override recorded"
 comment on Consiliency/agent-harness#789): the exact durable candidate
 `076f1e5d87acba21b87c188e3a70a0f319b79e60` was pushed as branch
-`codex/audit-remediation-roadmap` and opened as Consiliency/omniagent-plus#28.
+`codex/audit-remediation-roadmap` and opened as draft Consiliency/omniagent-plus#28.
 Not touched: the `outcome_ambiguous_blocked` record for transaction
 `b72b68ff…`, the authority inventory and journal, the locked bootstrap
 worktrees, the checkpoint root. No retry, no root rotation, no evidence rewrite.
