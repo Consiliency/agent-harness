@@ -22,6 +22,7 @@ import os
 import subprocess
 import sys
 import threading
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
@@ -75,6 +76,10 @@ class WriterGenerationBlocked(PermissionError):
 
 class FabpubConfigurationError(RuntimeError):
     """The capability marker exists but could not be read."""
+
+
+class SealedWorktreeFallbackWarning(RuntimeWarning):
+    """A sealed inventory row's worktree was pruned; its recorded common dir stood in."""
 
 
 def fabpub_capability_active() -> bool:
@@ -1798,7 +1803,9 @@ class LegacyBrokerCutoverTransaction:
                 )
                 _verify_archive_bytes(target, source)
                 _require_root_tombstone(Path(source["legacy_root"]), self.cutover_id)
-            latch = WriterGenerationLatch(repository_namespace_root(partition["worktree"]))
+            latch = WriterGenerationLatch(
+                repository_namespace_root(_inventory_row_repository(partition))
+            )
             if not latch.armed_marker.exists():
                 raise LegacyCutoverConflict(
                     f"repository {identity} lost its ARMED latch marker"
@@ -1817,7 +1824,9 @@ class LegacyBrokerCutoverTransaction:
             self._record("ACTIVE")
             for identity in sorted(self.partitions):
                 WriterGenerationLatch(
-                    repository_namespace_root(self.partitions[identity]["worktree"])
+                    repository_namespace_root(
+                        _inventory_row_repository(self.partitions[identity])
+                    )
                 ).activate()
         return self
 
@@ -1966,7 +1975,8 @@ def _drive_cutover(
     """Advance the journal to ``ARMED``, resuming idempotently from any kill."""
     ordered_identities = sorted(partitions)
     latches = [
-        WriterGenerationLatch.open(Path(partitions[i]["worktree"])) for i in ordered_identities
+        WriterGenerationLatch.open(_inventory_row_repository(partitions[i]))
+        for i in ordered_identities
     ]
     with _hold_all([latch.lock_path for latch in latches]):
         for latch in latches:
@@ -1974,7 +1984,7 @@ def _drive_cutover(
                 latch.begin_draining()
     for identity, latch in zip(ordered_identities, latches):
         if latch.read().generation_state == "DRAINING":
-            latch.await_quiescent(worktree=Path(partitions[identity]["worktree"]))
+            latch.await_quiescent(worktree=_inventory_row_repository(partitions[identity]))
 
     with _hold_all(_target_store_lock_paths(partitions)):
         transaction._record("DRAINING")
@@ -2467,6 +2477,58 @@ def _bootstrap_seal_lock_paths(inventory: dict) -> tuple[Path, ...]:
     return tuple(sorted(paths, key=str))
 
 
+def _inventory_row_namespace_root(row: dict) -> Path:
+    """The FABPUB namespace root a sealed row recorded.
+
+    Bootstrap inventory rows carry it directly; legacy cutover partition rows
+    carry the store root, exactly ``<namespace_root>/repositories/<identity>``.
+    """
+    if "namespace_root" in row:
+        return Path(row["namespace_root"])
+    return Path(row["target_namespace"]).parent.parent
+
+
+def _inventory_row_repository(row: dict) -> Path:
+    """The Git directory a sealed inventory row still names.
+
+    ``CanonicalRepositoryIdentity.v1`` never hashed the worktree path, only the
+    Git common dir, so a row's ``worktree`` is a convenience and not the
+    identity: while it is still a Git working tree it is used as recorded; once
+    it was pruned the row's recorded common dir stands in for it, with one
+    warning; only a missing common dir fails closed.  Identity equality at the
+    caller is unchanged, so a common dir that now belongs to a different
+    repository still refuses there.
+    """
+    worktree = Path(row["worktree"])
+    if is_git_repository(worktree):
+        return worktree
+    common = _inventory_row_namespace_root(row).parent
+    identity = row["canonical_repository_identity"]
+    if common.is_dir():
+        completed = subprocess.run(
+            ["git", "-C", str(common), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if (
+            completed.returncode == 0
+            and Path(completed.stdout.strip()).resolve() == common.resolve()
+        ):
+            warnings.warn(
+                f"sealed inventory row for {identity} names pruned worktree {worktree}; "
+                f"using its recorded repository common dir {common} instead",
+                SealedWorktreeFallbackWarning,
+                stacklevel=2,
+            )
+            return common
+    raise LegacyCutoverConflict(
+        f"sealed inventory row for {identity} names pruned worktree {worktree} and its "
+        f"repository common dir {common} is gone or is no longer a Git repository; "
+        "restore the repository or rotate the authority"
+    )
+
+
 def _revalidate_bootstrap_sources(inventory: dict) -> None:
     legacy_paths = {row["path"] for row in inventory["legacy_roots"]}
     declared_now = {
@@ -2495,7 +2557,7 @@ def _revalidate_bootstrap_sources(inventory: dict) -> None:
             )
     for row in inventory["worktrees"]:
         current = _classify_repository_namespace(
-            repository_snapshot(row["worktree"]),
+            repository_snapshot(_inventory_row_repository(row)),
             inventory["cutover_id"],
             bootstrap_inventory_sha256=inventory["inventory_sha256"],
         )
@@ -2586,7 +2648,7 @@ def bootstrap_zero_history_authority(
             reprobe = probe_zero_history_bootstrap(
                 cutover_id=cutover_id,
                 authority_root=authority,
-                worktrees=[row["worktree"] for row in inventory["worktrees"]],
+                worktrees=[_inventory_row_repository(row) for row in inventory["worktrees"]],
                 legacy_roots=[row["path"] for row in inventory["legacy_roots"]],
                 historical_evidence_roots=[
                     row["path"] for row in inventory["historical_evidence_roots"]
@@ -2600,7 +2662,7 @@ def bootstrap_zero_history_authority(
             _atomic_write_json(stored_path, inventory)
         _record_bootstrap_state(journal, cutover_id, "DRAINING")
 
-    worktrees = tuple(row["worktree"] for row in inventory["worktrees"])
+    worktrees = tuple(_inventory_row_repository(row) for row in inventory["worktrees"])
     latches = [WriterGenerationLatch.open(worktree) for worktree in worktrees]
     for latch in latches:
         if latch.read().generation_state == "LEGACY_OPEN":

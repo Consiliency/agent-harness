@@ -323,3 +323,58 @@ def test_fallback_common_dir_of_different_repository_refuses_identity_change(
             f"sealed {row['canonical_repository_identity']}"
         )
     assert live.load_partition_receipt(live.repository_snapshot(other).store_root) is None
+
+
+# ---------------------------------------------------------------------------
+# negative 3 (added with production, ah#789 Workstream B): the fallback stands
+# in ONLY for the recorded common dir itself -- a directory that merely sits
+# inside the same repository is refused actionably, never adopted
+# ---------------------------------------------------------------------------
+
+
+@_production_dependent
+def test_fallback_path_that_is_not_the_common_dir_refuses_actionably(
+    tmp_path: Path,
+) -> None:
+    """The plan's helper self-check (``rev-parse --git-common-dir`` of the
+    fallback must resolve to the fallback itself).  Without it a
+    ``namespace_root`` re-pointed at any directory inside the SAME repository
+    would be adopted silently: the identity equality still holds there, so only
+    the self-check separates "the recorded common dir" from "some path"."""
+    main = _git_repo(tmp_path / "main")
+    linked = _linked_worktree(main, tmp_path / "linked", "linked")
+    inventory = _probe(tmp_path, linked)
+    row = _sealed_row(inventory)
+    assert live.bootstrap_zero_history_authority(
+        inventory, confirmed_zero_history=True
+    )["state"] == "ACTIVE"
+    _remove_linked_worktree(main, linked)
+
+    inside = main / "not-the-common-dir"
+    inside.mkdir()
+    assert live.git_common_dir(inside) == Path(row["namespace_root"]).parent
+    tampered = copy.deepcopy(inventory)
+    _sealed_row(tampered)["namespace_root"] = str(inside / live.REPOSITORY_NAMESPACE_DIR)
+
+    try:
+        live._revalidate_bootstrap_sources(tampered)
+    except live.LegacyCutoverConflict as exc:
+        message = str(exc)
+        actionable = (
+            "names pruned worktree" in message
+            and "restore the repository or rotate the authority" in message
+            and str(linked) in message
+            and str(inside) in message
+        )
+        assert actionable, (
+            "789-RED-ANCHOR::fallback-non-common-dir-not-actionable — with worktree "
+            f"{linked} pruned and namespace_root re-pointed inside the repository at "
+            f"{inside}, revalidation must refuse with the actionable message naming "
+            f"both; got: {message}"
+        )
+    else:
+        raise AssertionError(
+            "789-RED-ANCHOR::fallback-non-common-dir-adopted — revalidation adopted "
+            f"{inside}, which is inside the sealed repository but is not its common "
+            f"dir {Path(row['namespace_root']).parent}"
+        )
