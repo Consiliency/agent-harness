@@ -2511,23 +2511,48 @@ def _recorded_worktree_binds(recorded: str, snapshot: RepositorySnapshot) -> boo
     return not path.exists()
 
 
-def _path_is_own_common_dir(path: Path) -> bool:
-    """True when ``path`` is a Git directory that resolves to itself as the
-    repository common dir: a bare repository or a ``<repo>/.git`` directory.
-    False for a working tree, a linked worktree's ``.git`` file, and anything
-    Git does not recognise."""
+def _discovered_common_dir(path: Path) -> Path | None:
+    """The resolved Git common dir Git discovers from ``path``, or ``None`` when
+    ``path`` is not a directory or Git discovers no repository from it.
+
+    This is the same discovery ``repository_snapshot`` seals a row from: it
+    succeeds inside a working tree, in a bare repository, in ``<repo>/.git``,
+    and in Git's administrative subdirectories such as ``<repo>/.git/objects``.
+    """
     if not path.is_dir():
-        return False
+        return None
     completed = subprocess.run(
         ["git", "-C", str(path), "rev-parse", "--path-format=absolute", "--git-common-dir"],
         capture_output=True,
         text=True,
         timeout=60,
     )
-    return (
-        completed.returncode == 0
-        and Path(completed.stdout.strip()).resolve() == path.resolve()
-    )
+    if completed.returncode != 0:
+        return None
+    return Path(completed.stdout.strip()).resolve()
+
+
+def _path_discovers_repository(path: Path) -> bool:
+    """True when Git still discovers a repository from ``path``: the health
+    check for a recorded row path.  A sealed row was produced by
+    ``repository_snapshot(path)``, so any path that still discovers a
+    repository is exactly as healthy as it was at the seal; identity equality
+    at the caller decides whether it is still the SAME repository.  False for
+    a pruned worktree, a plain directory, and anything Git does not recognise.
+    """
+    return _discovered_common_dir(path) is not None
+
+
+def _path_is_own_common_dir(path: Path) -> bool:
+    """True when ``path`` is a Git directory that resolves to itself as the
+    repository common dir: a bare repository or a ``<repo>/.git`` directory.
+    Stricter than ``_path_discovers_repository``; it is the check for a
+    FALLBACK candidate (the row's recorded common dir), which must be the
+    common dir itself and not merely discover one.  False for a working tree,
+    a linked worktree's ``.git`` file, ``<repo>/.git/objects``, and anything
+    Git does not recognise."""
+    common = _discovered_common_dir(path)
+    return common is not None and common == path.resolve()
 
 
 def _inventory_row_repository(row: dict) -> Path:
@@ -2535,16 +2560,18 @@ def _inventory_row_repository(row: dict) -> Path:
 
     ``CanonicalRepositoryIdentity.v1`` never hashed the worktree path, only the
     Git common dir, so a row's ``worktree`` is a convenience and not the
-    identity: while it is still a Git working tree it is used as recorded; once
-    it was pruned the row's recorded common dir stands in for it, with one
-    warning; only a missing common dir fails closed.  Identity equality at the
+    identity: while Git still discovers a repository from it (the same
+    discovery the probe sealed it with) it is used as recorded; once it was
+    pruned the row's recorded common dir stands in for it, with one warning;
+    only a missing common dir fails closed.  Identity equality at the
     caller is unchanged, so a common dir that now belongs to a different
     repository still refuses there.
     """
     worktree = Path(row["worktree"])
-    if is_git_repository(worktree) or _path_is_own_common_dir(worktree):
-        # A bare repository or a ``<repo>/.git`` path is not inside a working
-        # tree, but it is its own common dir: nothing was pruned.
+    if _path_discovers_repository(worktree):
+        # Any path the probe could seal (a working tree, a bare repository,
+        # ``<repo>/.git``, ``<repo>/.git/objects``) still discovers a
+        # repository: nothing was pruned.
         return worktree
     common = _inventory_row_namespace_root(row).parent
     identity = row["canonical_repository_identity"]
@@ -2683,7 +2710,7 @@ def bootstrap_zero_history_authority(
             # pruned row is re-probed rather than resolved through the fallback.
             for row in inventory["worktrees"]:
                 recorded = Path(row["worktree"])
-                if not (is_git_repository(recorded) or _path_is_own_common_dir(recorded)):
+                if not _path_discovers_repository(recorded):
                     raise LegacyCutoverConflict(
                         f"sealed inventory row for {row['canonical_repository_identity']} "
                         f"names pruned worktree {row['worktree']} before its first apply; "
