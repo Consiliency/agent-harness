@@ -133,8 +133,14 @@ Two carries are not optional and are the ones a naive rotation drops:
      only `setdefault`s a provenance `cutover_id` that `mint` never reads). On a second rotation,
      provenance carried verbatim from the first therefore resolves under the *new* ceremony's
      `cutover_id` and finds nothing — so re-placing prior archives under each rotation's `cutover_id`
-     (copied or linked, digest verified) or extending `mint` is **not optional for transitivity**.
-     Anchor 4b forces the choice into the open, and every failure mode is the typed refusal.
+     (copied, digest verified) or extending `mint` is **not optional for transitivity**. Lane D2 takes the
+     **copy** branch unless it records a reason not to: the provenance digests pin bytes, not paths
+     (`mint` hashes whatever sits at the resolved path, `live.py:953-967`), so a byte-identical copy under
+     the new ceremony's `cutover_id` authenticates identically, while extending `mint` edits shipped
+     machinery that the live v2 partitions also depend on and puts anchor 7's regression surface in play.
+     Copies, not links: `mint` does a plain `read_bytes`, and a future symlink-hardening pass in this
+     loader family would break links. Anchor 4b arbitrates either way, and every failure mode is the typed
+     refusal.
 
   The measured predecessor holds two completed keys (`…58033572`, `…0a68fc6a`) while its own
   `legacy_completed_effect_keys` is empty, so a rotation that copies the receipt and adds adjudications
@@ -193,6 +199,12 @@ Every ambiguous key MUST appear with one of the two dispositions; a rotation tha
 refused. This is what discharges item (5): the `attested_not_landed` branch is the "publish the exact
 intended branch once" capability, and `observed_landed` is the branch omniagent-plus needs.
 
+**After a successful `attested_not_landed` publish, the key is a terminal, not a re-armed disposition.**
+The publish it authorised leaves an `effect_terminal_observed` record in the successor store, so the next
+rotation classifies that key through the completed-terminal row of the table above and carries it as
+history — it is never re-armed from the receipt's disposition map. The ambiguous-then-rotate case is
+anchor 4f; this is the success-then-rotate case, and both resolve without the operator re-attesting.
+
 **The third case is refusal, and it is the default.** An operator who cannot determine what happened — the
 branch was deleted, force-pushed, or the observation is otherwise destroyed — declines to attest; the key
 stays undisposed; the rotation is refused; the partition stays blocked. The two dispositions are
@@ -214,8 +226,14 @@ attempt on K goes ambiguous, and a second rotation could reuse it to authorise a
 attempt nobody has adjudicated. Every attestation entry MUST therefore bind to the exact state it
 adjudicates — the predecessor receipt digest, the predecessor store digests, and the identity of the
 unresolved attempt itself (the ambiguous record and, when present, the `adapter-start-owner.json`
-`attempt_id` / `owner_nonce` / `transaction_id`) — and a rotation MUST refuse an attestation whose bound
-predecessor digests or attempt identity are not the ones being rotated. An `attested_not_landed`
+`attempt_id` / `owner_nonce` / `transaction_id`, all fields of `AdapterStartOwnership`,
+`verbs.py:51-62`) — and a rotation MUST refuse an attestation **presented to adjudicate an ambiguous key
+in this ceremony** whose bound predecessor digests or attempt identity are not the ones being rotated.
+That refusal is scoped to adjudication and does **not** touch dispositions carried forward as history:
+a prior `observed_landed` disposition on an earlier receipt is carried by D2's transitive clause and is
+never re-presented for adjudication, so it is never subject to this check. Reading the refusal as applying
+to carried history would make D2's transitivity and anchor 4b unsatisfiable — the two clauses are about
+different things, and only adjudication is gated. An `attested_not_landed`
 disposition grants **exactly one** governed publish and is consumed by it; if that publish itself ends
 ambiguous, the resulting record is a **new** unresolved attempt that the old attestation cannot
 adjudicate, and the next rotation needs a new one naming it.
