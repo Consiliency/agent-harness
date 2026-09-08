@@ -25,8 +25,9 @@ repository partitions activated through ONE global zero-history cutover: block
 the first, publish through the second.  The second admits exactly once and
 reaches the adapter exactly once; the first stays blocked and still refuses.
 ``BrokerEvidenceStore.epoch_blocked`` is repository-scoped by construction
-(``evidence.py:86-95`` scans one store root; ``live.py:3324-3325`` — "each repo
-gets its OWN admission + evidence store ... the stores are NOT shared").
+(``evidence.py:86-95`` scans one store root; the ``_RoutingBrokerService``
+class docstring in ``live.py`` — "each repo gets its OWN admission + evidence
+store ... the stores are NOT shared").
 
 **Carried, not discharged** (plan round-1 finding F3): item (5)'s FIRST half —
 "a completed recovery can publish the exact intended branch once" — has no
@@ -97,14 +98,16 @@ class _RemoteProbeAttempted(AssertionError):
 
 @contextlib.contextmanager
 def _no_remote_probe(monkeypatch):
-    """Replace every ``subprocess`` entry point with a remote-probe sentinel.
+    """Replace the ``subprocess`` dispatch entry points with a remote-probe sentinel.
 
     Non-remote git calls (the envelope revalidation reads the worktree) pass
     straight through to the real implementation; only an argv carrying
     ``ls-remote`` trips.  Patching the ``subprocess`` module attributes covers
     the ``import subprocess`` / ``subprocess.run(...)`` form every production
     caller in this package uses (``live._git_out``, ``credsep``,
-    ``train_runner``).
+    ``train_runner``).  ``run``, ``check_output``, ``check_call`` and ``Popen``
+    are wrapped; a ``shell=True`` string command line is a disclosed non-goal
+    (no caller in this package uses one).
 
     Yields the list of attempts.  Every attempt is RECORDED before the sentinel
     raises, so a production path that swallowed the raise (``except
@@ -113,7 +116,10 @@ def _no_remote_probe(monkeypatch):
     no-probe property is established by the record, not by which exception
     escaped.
     """
-    real = {name: getattr(subprocess, name) for name in ("run", "check_output", "Popen")}
+    real = {
+        name: getattr(subprocess, name)
+        for name in ("run", "check_output", "check_call", "Popen")
+    }
     attempts: list[tuple[str, list[str]]] = []
 
     def _guarded(name):

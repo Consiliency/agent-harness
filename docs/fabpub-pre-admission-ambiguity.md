@@ -23,7 +23,8 @@ That record blocks the whole repository partition:
 scans one store root, and `_fresh_publish` refuses on it with
 `PermissionError("epoch permanently blocked")` (`verbs.py:533-534`). The scope is
 one repository, by construction — "each repo gets its OWN admission + evidence
-store … the stores are NOT shared" (`convergence/broker/live.py:3324-3325`).
+store … the stores are NOT shared" (the `_RoutingBrokerService` class docstring in
+`convergence/broker/live.py`).
 
 The block is permanent at the storage layer, not just by convention: no append
 may transition out of an `outcome_ambiguous_blocked` record, whatever the caller
