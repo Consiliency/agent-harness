@@ -235,7 +235,7 @@ unresolved attempt itself (the ambiguous record and, when present, the `adapter-
 is the field that discriminates one attempt from another**: `attempt_id` is derived from
 `sha256(b"FABPUB-PUBLISH-ATTEMPT-v1\0" + repo \0 branch \0 head_sha)` (`verbs.py:535-538`), so it is a
 function of the effect key and is identical across every attempt on that key — binding to it alone would
-reproduce exactly the key-only matcher this clause exists to forbid) — and a rotation MUST refuse an attestation **presented to adjudicate an ambiguous key
+reproduce exactly the key-only matcher this clause exists to forbid. A rotation MUST refuse an attestation **presented to adjudicate an ambiguous key
 in this ceremony** whose bound predecessor digests or attempt identity are not the ones being rotated.
 That refusal is scoped to adjudication and does **not** touch dispositions carried forward as history:
 a prior `observed_landed` disposition on an earlier receipt is carried by D2's transitive clause and is
@@ -291,13 +291,26 @@ The rotation therefore uses a three-place layout, stated here so no implementer 
    classification itself to admit receipts and owner files would be a **contract change** and is
    explicitly out of scope for this plan.
 3. The successor is written as an **empty** store at the single routable identity path — no owner file, no
-   inherited evidence rows. The identity path MUST NOT be observably empty between the move and the
-   successor write: a crash in that window would leave a path with no receipt, which
-   `onboard_zero_legacy_repository` (`live.py:2970-3022`) would be entitled to treat as a repository first
-   seen post-ACTIVE and onboard with a **zero-source** receipt — laundering the block through the
-   ceremony's own crash window. The move and the successor write happen under the ceremony's seal locks
-   with the journal already `ARMED`, and a resumed rotation completes the write rather than re-onboarding;
-   a Lane D1 crash-injection anchor covers exactly this window.
+   inherited evidence rows.
+
+   **The crash window between the move and the successor write is guarded durably, not by a lock.** In
+   that window the identity path has no receipt and no allocator files, which is exactly the state
+   `onboard_zero_legacy_repository` (`live.py:2970-3022`) is entitled to onboard with a **zero-source**
+   receipt — and the route is automatic, not operator error: `fabpub_activation_barrier` calls it
+   unconditionally for a receipt-less repository once a global ACTIVE authority exists
+   (`live.py:3342-3354`), and onboarding's only adoption guard — refuse when `admissions.jsonl` or
+   `evidence.jsonl` exist without a receipt (`live.py:3041-3046`) — passes **vacuously** on a fully empty
+   path. The result would be an unblocked zero-source successor carrying no terminals and no
+   adjudications: the block laundered, and the predecessor's completed publishes free to call the adapter
+   again. Seal locks cannot close this: they are `fcntl.flock` (`live.py:136-160`) and die with the
+   process, which is the crash this guard exists for.
+
+   The guard is therefore **durable state, and it is the rotation journal**: onboarding and the
+   routability path refuse, with a typed error, any identity whose rotation journal is `ARMED` but not
+   `ACTIVE`. That edit to shipped onboarding machinery is in Lane D2's scope, stated here so it is not
+   discovered mid-lane. The alternative — a layout that never leaves the path observably empty (a staged
+   successor plus an exchange) — is rejected because POSIX offers no portable atomic directory swap, so it
+   would trade a guarded window for an unguarded one. Anchor **5a** and mutant **m15** cover it.
 
 Point 3 is load-bearing beyond tidiness: `_fresh_publish` consults `_block_unsealed_owner`
 (`verbs.py:530-532`) **before** it consults `epoch_blocked` (`:533-534`), so a successor that inherited
@@ -368,6 +381,11 @@ Anchors:
    prefixed, or 4e refuses the second rotation before transitivity can be exercised. The realistic
    re-block routes — a crashed `attested_not_landed` first attempt, an adapter exception in
    `_fresh_publish` — are publish-scoped, so a fixture built on them is correct by construction.)
+5a. **The move/write crash window is guarded.** Crash the ceremony between the predecessor move and the
+   successor write; drive `fabpub_activation_barrier` / `onboard_zero_legacy_repository` at that identity;
+   assert the typed refusal naming the `ARMED`-not-`ACTIVE` rotation journal (a receipt-count assertion is
+   NOT sufficient — the laundered outcome leaves exactly one routable receipt); then resume the rotation
+   and assert the successor receipt authenticates and carries the terminals and dispositions.
 4f. **Attestation reuse is refused.** Rotate key K with an `attested_not_landed` attestation A; publish K
    once on the successor; drive that publish to a fresh ambiguity for K; attempt a second rotation
    presenting A again. It is refused, because A binds to the predecessor digests and the attempt identity
@@ -396,7 +414,9 @@ Anchors:
 `convergence/broker/live.py`: `LegacyRepositoryPartitionReceipt` → v3 with the rotation proof and
 `adjudicated_effect_dispositions`; a `rotate_blocked_partition(...)` entry point in the shape of
 `onboard_zero_legacy_repository`; the rotation inventory/journal/seal-lock helpers; the typed pre-v3
-refusal (D5).
+refusal (D5); **and the `ARMED`-not-`ACTIVE` rotation-journal guard in `onboard_zero_legacy_repository`
+and on the routability path** (D7 point 3) — an edit to shipped onboarding machinery, named here rather
+than discovered mid-lane.
 
 ### Lane D3 — dispositions honoured on the publish path (production)
 
@@ -473,6 +493,8 @@ Requires a separate maintainer authorisation; nothing here executes it.
   mint-path assertion fails, catching the shortcut that would drop archive re-authentication;
   (m14) match an attestation on effect key alone, ignoring the bound predecessor digests and attempt
   identity → anchor 4f's second rotation is accepted and the unadjudicated attempt is retried;
+  (m15) drop the `ARMED`-not-`ACTIVE` onboarding guard → anchor 5a's onboarding inserts a zero-source
+  receipt into the crash window and the block is laundered;
   (m5) route an unknown schema through the ambiguity path instead of the typed refusal → anchor 6 gets the
   misleading permanent-block message; (m6) tighten the reader to accept only v3 → anchor 7's clean v2
   partition stops authenticating.
@@ -518,7 +540,10 @@ Requires a separate maintainer authorisation; nothing here executes it.
       carry and disposition machinery is publish-scoped (falsified by m11). Extending it to every verb is
       out of scope for this plan and named as such.
 - [ ] Crash injection at every rotation journal boundary is idempotent and never leaves two routable
-      receipts for one canonical identity.
+      receipts for one canonical identity; and a crash between the predecessor move and the successor
+      write cannot be onboarded as a zero-source repository, because onboarding and routability refuse a
+      typed error for an identity whose rotation journal is `ARMED` but not `ACTIVE` (falsified by m15 —
+      note a receipt-count assertion alone would pass, since the laundered outcome leaves exactly one).
 - [ ] The runtime performs no network or `git ls-remote` call anywhere in the ceremony, proven by the
       recording sentinel idiom from `test_fabpub_recovery_controls_789.py`.
 - [ ] The laundering question is answered in the PR body with a RUN result: whether a fresh authority root
