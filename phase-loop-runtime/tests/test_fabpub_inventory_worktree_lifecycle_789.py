@@ -577,3 +577,44 @@ def test_draining_resume_after_prune_awaits_quiescence(
     )
     assert live.WriterGenerationLatch.open(main).read().generation_state == "ACTIVE"
     assert live._bootstrap_journal_states(journal, "bootstrap-test") == live.ZERO_HISTORY_STATES
+
+
+@_production_dependent
+def test_recorded_worktree_replaced_by_plain_dir_refuses(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The foreign-directory branch of ``_recorded_worktree_binds``: the sealed
+    partition's ``worktree`` path still exists after the prune but is a plain
+    directory, not a working tree of the recorded repository.  The identity
+    still matches through the common-dir fallback, so only the worktree clause
+    separates "pruned" from "reused by something else"; a helper that always
+    binds would resume onto the foreign path silently."""
+    main = _git_repo(tmp_path / "main")
+    linked = _linked_worktree(main, tmp_path / "linked", "linked")
+    inventory = _probe(tmp_path, linked)
+    row = _sealed_row(inventory)
+
+    with monkeypatch.context() as patcher:
+        _crash_at_proof_phase(patcher, "before_receipt_write", "crash-after-onboarding-seal")
+        with pytest.raises(RuntimeError, match="crash-after-onboarding-seal"):
+            live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
+    assert _onboarding_inventory_path(row).exists(), "did not reach bootstrap_in_progress"
+
+    _remove_linked_worktree(main, linked)
+    linked.mkdir()
+    assert not live.is_git_repository(linked)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", live.SealedWorktreeFallbackWarning)
+        try:
+            live.bootstrap_zero_history_authority(inventory, confirmed_zero_history=True)
+        except live.LegacyCutoverConflict as exc:
+            message = str(exc)
+        else:
+            raise AssertionError(
+                "789-RED-ANCHOR::recorded-worktree-reused-by-plain-dir — with the sealed "
+                f"worktree {linked} pruned and replaced by a plain directory, the resume "
+                "must refuse instead of binding the onboarding inventory to a foreign path"
+            )
+    assert "is not bound to" in message and str(linked) in message, message
+    assert live.load_partition_receipt(live.repository_snapshot(main).store_root) is None
