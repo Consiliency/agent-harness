@@ -119,11 +119,22 @@ Two carries are not optional and are the ones a naive rotation drops:
      "legacy terminal has no preserved repository preimage" (`verbs.py:277-279`).
   3. `promote_legacy_terminal` → `_mint_cutover_promotion_capability` re-verifies **current archive
      bytes** at `provenance["legacy_root"]/legacy-archive/<cutover_id>/<source_id>` against
-     `admissions_digest` / `evidence_digest` on *every* replay (`live.py:936-968`). So the D7 archive is
-     not merely preserved evidence: it is the byte source each carried-key replay re-authenticates, its
-     path is pinned inside the sealed provenance, and archive drift or deletion produces a typed
-     `PermissionError` at replay rather than a silent duplicate. Either the archive lives exactly where
-     `mint` resolves, or Lane D2 extends `mint` — and states which.
+     `admissions_digest` / `evidence_digest` on the replay that mints the capability
+     (`live.py:936-968`). That is once per successor per key: the first legacy replay materialises intent
+     + terminal rows into the successor store (`verbs.py:285-290`), and every later request for that key
+     answers from `execute()`'s store replay (`:622-624`) without re-minting — so archive loss *after*
+     materialisation cannot produce a second adapter call (the store answers as a duplicate), and the
+     drift corollary must be fixtured against a **fresh** successor. The D7 archive is therefore not
+     merely preserved evidence: it is the byte source each carried-key replay re-authenticates, and
+     archive drift or deletion produces a typed `PermissionError` rather than a silent duplicate. Either
+     the archive lives exactly where `mint` resolves, or Lane D2 extends `mint` — and states which.
+     One precision that decides that choice: the path's `<cutover_id>` component comes from the
+     **loading receipt**, not from the provenance dict (`live.py:947-951`; `sealed_partition_effects`
+     only `setdefault`s a provenance `cutover_id` that `mint` never reads). On a second rotation,
+     provenance carried verbatim from the first therefore resolves under the *new* ceremony's
+     `cutover_id` and finds nothing — so re-placing prior archives under each rotation's `cutover_id`
+     (copied or linked, digest verified) or extending `mint` is **not optional for transitivity**.
+     Anchor 4b forces the choice into the open, and every failure mode is the typed refusal.
 
   The measured predecessor holds two completed keys (`…58033572`, `…0a68fc6a`) while its own
   `legacy_completed_effect_keys` is empty, so a rotation that copies the receipt and adds adjudications
@@ -196,6 +207,18 @@ evidence a human looked at (PR/branch URL), who attested, and when. The document
 rotation inventory** alongside the partition map, so it is covered by the inventory digest the ceremony
 already authenticates, and the ceremony re-verifies the document bytes against the digest pinned in the
 receipt on every load — a hash with no stored document preserves accountability in name only.
+
+**An attestation adjudicates one attempt, and is spent when it is used.** Naming only the effect key and a
+time is not enough: an `attested_not_landed` attestation for key K would then still "fit" K after a later
+attempt on K goes ambiguous, and a second rotation could reuse it to authorise another adapter call for an
+attempt nobody has adjudicated. Every attestation entry MUST therefore bind to the exact state it
+adjudicates — the predecessor receipt digest, the predecessor store digests, and the identity of the
+unresolved attempt itself (the ambiguous record and, when present, the `adapter-start-owner.json`
+`attempt_id` / `owner_nonce` / `transaction_id`) — and a rotation MUST refuse an attestation whose bound
+predecessor digests or attempt identity are not the ones being rotated. An `attested_not_landed`
+disposition grants **exactly one** governed publish and is consumed by it; if that publish itself ends
+ambiguous, the resulting record is a **new** unresolved attempt that the old attestation cannot
+adjudicate, and the next rotation needs a new one naming it.
 The ceremony MUST NOT call `git ls-remote` or any network probe — "no branch on origin" and "`ls-remote`
 timed out" remain the same observation to this runtime (ah#789 acceptance item 3). The distinction this
 plan relies on is *who* observes: an accountable operator, recorded, not an inference by the runtime.
@@ -210,7 +233,7 @@ conflating them produces an untestable requirement:
    MUST NOT subclass `LegacyCutoverConflict`: `partition_is_ambiguity_blocked` (`live.py:861-865`) catches
    that type and converts it to `True`, which would swallow the typed refusal and reproduce the very
    message this obligation exists to remove.
-2. *Backward compatibility (load-bearing, currently unanchored).* The v3 reader MUST keep authenticating
+2. *Backward compatibility (load-bearing; anchored by Lane D1 anchor 7 and mutant m6).* The v3 reader MUST keep authenticating
    **v2** receipts byte-exactly. `agent-harness` `50fea8e4…` and `EZBidPro` `1a3e011c…` are live v2
    partitions on this host; a rotation feature that breaks a clean partition is a worse outcome than the
    block it is fixing.
@@ -309,6 +332,15 @@ Anchors:
    replay fail with a typed `PermissionError`, never a silent second adapter call.
 4e. A predecessor whose enumerable lineage contains any key whose verb prefix is not
    `publish_committed_branch` is refused by `rotate_blocked_partition` (the fail-closed verb scope).
+   (Fixture note for 4b: the key that re-blocks the successor must itself be `publish_committed_branch`-
+   prefixed, or 4e refuses the second rotation before transitivity can be exercised. The realistic
+   re-block routes — a crashed `attested_not_landed` first attempt, an adapter exception in
+   `_fresh_publish` — are publish-scoped, so a fixture built on them is correct by construction.)
+4f. **Attestation reuse is refused.** Rotate key K with an `attested_not_landed` attestation A; publish K
+   once on the successor; drive that publish to a fresh ambiguity for K; attempt a second rotation
+   presenting A again. It is refused, because A binds to the predecessor digests and the attempt identity
+   it adjudicated, and the new ambiguity is a different unresolved attempt. The same fixture with a new
+   attestation naming the new attempt succeeds.
 4c. A rotation whose predecessor is blocked **only** through a receipt-carried ambiguity (`ambiguous: true`
    with empty canonical evidence, or an archived orphaned `provider_call_in_flight`) is refused unless
    that obligation is adjudicated — the vacuous-completeness negative control.
@@ -336,9 +368,11 @@ refusal (D5).
 
 ### Lane D3 — dispositions honoured on the publish path (production)
 
-`convergence/broker/verbs.py` `_fresh_publish` and its replay path: an `observed_landed` key resolves as a
-completed terminal before any owner is written; an `attested_not_landed` key proceeds exactly once. No
-change to the four `epoch_blocked` consult sites and none to `evidence.py:229-230`.
+`convergence/broker/verbs.py`, on the **pre-dispatch replay path** (`execute` → `_legacy_terminal_replay`,
+`:625`) — not inside `_fresh_publish`: an `observed_landed` key resolves as a completed terminal there and
+never enters `_fresh_publish`, so no owner is read or written for it; an `attested_not_landed` key falls
+through and proceeds exactly once. No change to the four `epoch_blocked` consult sites, none to
+`_block_unsealed_owner`, and none to `evidence.py:229-230`.
 
 ### Lane D4 — operator surface and docs
 
@@ -405,6 +439,8 @@ Requires a separate maintainer authorisation; nothing here executes it.
   the predecessor receipt floor → the second-rotation floor anchor reads 0 and epochs become reusable;
   (m13) answer a carried key by suppressing the adapter without minting the capability → anchor 4b's
   mint-path assertion fails, catching the shortcut that would drop archive re-authentication;
+  (m14) match an attestation on effect key alone, ignoring the bound predecessor digests and attempt
+  identity → anchor 4f's second rotation is accepted and the unadjudicated attempt is retried;
   (m5) route an unknown schema through the ambiguity path instead of the typed refusal → anchor 6 gets the
   misleading permanent-block message; (m6) tighten the reader to accept only v3 → anchor 7's clean v2
   partition stops authenticating.
@@ -442,6 +478,10 @@ Requires a separate maintainer authorisation; nothing here executes it.
 - [ ] The successor's `legacy_epoch_high_water` equals `max(predecessor receipt floor, predecessor
       maximum allocated epoch)`, so no successor admission reuses an allocated epoch — including after a
       second rotation through an intermediate successor that allocated none (falsified by m12).
+- [ ] An `attested_not_landed` attestation is bound to the predecessor digests and the attempt identity it
+      adjudicates, is spent by the one publish it authorises, and cannot adjudicate a later ambiguity of
+      the same key — a second rotation presenting the original attestation is refused, and succeeds only
+      with a new one naming the new attempt (falsified by m14).
 - [ ] A predecessor whose lineage contains a non-`publish_committed_branch` key is refused, because the
       carry and disposition machinery is publish-scoped (falsified by m11). Extending it to every verb is
       out of scope for this plan and named as such.
