@@ -320,7 +320,7 @@ The rotation therefore uses a three-place layout, stated here so no implementer 
    must be able to find it when the partition path is empty. That edit to shipped onboarding machinery is in Lane D2's scope, stated here so it is not
    discovered mid-lane. The alternative — a layout that never leaves the path observably empty (a staged
    successor plus an exchange) — is rejected because POSIX offers no portable atomic directory swap, so it
-   would trade a guarded window for an unguarded one. Anchor **5a** and mutant **m15** cover it.
+   would trade a guarded window for an unguarded one. Anchors **5a** and **5b** and mutants **m15**, **m16** and **m17** cover it.
 
 Point 3 is load-bearing beyond tidiness: `_fresh_publish` consults `_block_unsealed_owner`
 (`verbs.py:530-532`) **before** it consults `epoch_blocked` (`:533-534`), so a successor that inherited
@@ -394,9 +394,19 @@ Anchors:
 5a. **The move/write crash window is guarded.** Crash the ceremony at the **first receipt-less instant**
    — immediately after the move completes, which is the point that falsifies a completion-journalled
    implementation — and again at each later boundary in the window; drive `fabpub_activation_barrier` / `onboard_zero_legacy_repository` at that identity;
-   assert the typed refusal naming the `ARMED`-not-`ACTIVE` rotation journal (a receipt-count assertion is
-   NOT sufficient — the laundered outcome leaves exactly one routable receipt); then resume the rotation
-   and assert the successor receipt authenticates and carries the terminals and dispositions.
+   assert the typed refusal naming the journal's **recorded non-`ACTIVE` state, whatever it is** (a
+   receipt-count assertion is NOT sufficient — the laundered outcome leaves exactly one routable
+   receipt); then resume the rotation and assert the successor receipt authenticates and carries the
+   terminals and dispositions. The oracle must not name `ARMED` specifically: under the mutate-then-arm
+   ordering the mirrored `_drive_cutover` uses, the first receipt-less instant is pre-`ARMED`, and an
+   `ARMED`-naming assertion would fail on a correct implementation and push a fixture author back to
+   post-`ARMED` injection — reopening the very slice this anchor exists to close.
+5b. **The guard is state-agnostic by construction, not by trajectory.** For **each** non-`ACTIVE` journal
+   state, build an identity directly — partition path empty, rotation journal at that state, not merely
+   reached by crashing — drive `fabpub_activation_barrier` / `onboard_zero_legacy_repository`, and assert
+   the typed refusal naming that state. Crash injection can only reach the states one trajectory passes
+   through, so it cannot test the contract the guard actually has; this anchor can, and it is what kills
+   the narrowed-predicate mutant under any sequencing.
 4f. **Attestation reuse is refused.** Rotate key K with an `attested_not_landed` attestation A; publish K
    once on the successor; drive that publish to a fresh ambiguity for K; attempt a second rotation
    presenting A again. It is refused, because A binds to the predecessor digests and the attempt identity
@@ -471,7 +481,19 @@ Requires a separate maintainer authorisation; nothing here executes it.
    (`uv tool install --force "git+https://github.com/Consiliency/agent-harness@<main sha>#subdirectory=phase-loop-runtime"`,
    never from a working checkout) — see D5 part 3. The Lane D5 runbook includes a **version probe** that
    verifies each installed runtime recognises `LegacyRepositoryPartitionReceipt.v3` before the ceremony
-   starts, so a stale reader is found before it meets a v3 receipt, not after.
+   starts, so a stale reader is found before it meets a v3 receipt, not after. **Replacing an
+   installation does not upgrade code already loaded by a running process**, and that gap is not
+   theoretical during a rotation: a surviving pre-v3 process needs no writer lease to enter the automatic
+   onboarding route (`live.py:3342-3354`), its allocator-file guard passes on the empty path
+   (`live.py:3041-3046`), and its shipped code cannot consult a rotation journal it has never heard of —
+   so it can create exactly the zero-source successor D7 forbids, in the window D7's guard closes for
+   v3-aware readers. Unknown-schema refusal offers nothing here, because in that window there is no
+   receipt to read. The runbook therefore gates **running processes**, not just installations: every
+   FABPUB-capable process on a host that can write this authority is stopped or restarted before the
+   ceremony and kept out for its duration, resumes included. Lane D1 carries the matching falsifier — a
+   mixed-version fixture that keeps a pre-v3 reader alive across the installation replacement and drives
+   it at the first receipt-less instant — so the crash-safety criterion is substantiated for the fleet
+   state the ceremony actually runs in.
 5. Unchecked precondition: the Windows host has not been scanned for blocked partitions. Before D5,
    scan every host that can write FABPUB state, so a rotation is not performed while a second blocked
    partition is unknown.
@@ -506,9 +528,12 @@ Requires a separate maintainer authorisation; nothing here executes it.
   identity → anchor 4f's second rotation is accepted and the unadjudicated attempt is retried;
   (m15) drop the non-`ACTIVE` rotation-journal onboarding guard → anchor 5a's onboarding inserts a
   zero-source receipt into the crash window and the block is laundered;
-  (m16) narrow the guard's predicate to `ARMED` only, or hoist the predecessor move ahead of the
-  journal's first recorded state → anchor 5a's typed refusal does not fire at the first receipt-less
-  instant, which is the slice a completion-journalled implementation leaves open;
+  (m16) narrow the guard's predicate to `ARMED` only → anchor **5b**'s refusal does not fire for the
+  pre-`ARMED` states (5a alone cannot kill this: under an intent-journalled ordering every receipt-less
+  instant it can reach is already `ARMED`, so the narrowed guard still refuses there and the mutant
+  survives — which is why the state-construction anchor exists);
+  (m17) hoist the predecessor move ahead of the journal's first recorded state → at 5a's first
+  receipt-less instant there is no journal at all, the guard is silent, and 5a's refusal assertion fails;
   (m5) route an unknown schema through the ambiguity path instead of the typed refusal → anchor 6 gets the
   misleading permanent-block message; (m6) tighten the reader to accept only v3 → anchor 7's clean v2
   partition stops authenticating.
@@ -556,9 +581,10 @@ Requires a separate maintainer authorisation; nothing here executes it.
 - [ ] Crash injection at every rotation journal boundary is idempotent and never leaves two routable
       receipts for one canonical identity; and a crash between the predecessor move and the successor
       write cannot be onboarded as a zero-source repository, because onboarding and routability refuse a
-      typed error for an identity whose rotation journal is in any non-`ACTIVE` state, with that journal
-      written before the first mutation (falsified by m15 and m16 — note a receipt-count assertion alone
-      would pass either mutant, since the laundered outcome leaves exactly one routable receipt).
+      typed error for an identity whose rotation journal is in any non-`ACTIVE` state — proven per state
+      by direct construction, not only along one crash trajectory — with that journal written before the
+      first mutation (falsified by m15, m16 and m17; note a receipt-count assertion alone would pass all
+      three, since the laundered outcome leaves exactly one routable receipt).
 - [ ] The runtime performs no network or `git ls-remote` call anywhere in the ceremony, proven by the
       recording sentinel idiom from `test_fabpub_recovery_controls_789.py`.
 - [ ] The laundering question is answered in the PR body with a RUN result: whether a fresh authority root
