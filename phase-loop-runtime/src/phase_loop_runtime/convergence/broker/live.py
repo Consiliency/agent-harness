@@ -1057,6 +1057,43 @@ def _rotation_receipt_from_partition(
         ) from exc
 
 
+def _require_rotation_receipt_binds(
+    expected: RotatedPartitionReceipt, container: Path, generation: int, path: Path
+) -> Path:
+    """The bindings a rotated receipt must carry to govern ``generation`` of ``container``.
+
+    ONE definition, called by the loader on the receipt it read and by the
+    ceremony on the receipt its sealed inventory would produce on resume
+    (codex r6 P1): identity, container, chain, and the predecessor's bytes.
+    The digests seal an inventory's CONSISTENCY, not its truth — a partition
+    re-sealed under both digests is internally consistent and still binds
+    nothing.  Returns the predecessor store.
+    """
+    if expected.canonical_repository_identity != container.name:
+        raise LegacyCutoverConflict(
+            "partition receipt is bound to a different canonical repository identity"
+        )
+    if Path(expected.target_namespace) != container:
+        raise LegacyCutoverConflict(
+            "rotated partition receipt is bound to a different repository container"
+        )
+    if expected.generation != generation or expected.predecessor_generation != generation - 1:
+        raise LegacyCutoverConflict(
+            f"rotated partition receipt at {path} does not chain to generation {generation - 1}"
+        )
+    predecessor = (
+        container if generation == 1 else container / GENERATIONS_DIR / str(generation - 1)
+    )
+    for name in ROTATION_DIGESTED_FILES:
+        if _sha256_file(predecessor / name) != expected.predecessor_digests.get(name):
+            raise PartitionRoutingRefused(
+                f"predecessor generation {generation - 1} of {container} drifted since "
+                f"rotation {expected.cutover_id!r} sealed it ({name}); generation {generation} is "
+                "not routable"
+            )
+    return predecessor
+
+
 def _load_rotated_partition_receipt(
     store_root: Path, path: Path, raw: dict
 ) -> RotatedPartitionReceipt:
@@ -1134,20 +1171,7 @@ def _load_rotated_partition_receipt(
             f"rotated partition receipt bytes at {path} do not equal the bytes its sealed "
             "rotation partition produces"
         )
-    if expected.generation != generation or expected.predecessor_generation != generation - 1:
-        raise LegacyCutoverConflict(
-            f"rotated partition receipt at {path} does not chain to generation {generation - 1}"
-        )
-    predecessor = (
-        container if generation == 1 else container / GENERATIONS_DIR / str(generation - 1)
-    )
-    for name in ROTATION_DIGESTED_FILES:
-        if _sha256_file(predecessor / name) != expected.predecessor_digests.get(name):
-            raise PartitionRoutingRefused(
-                f"predecessor generation {generation - 1} of {container} drifted since "
-                f"rotation {cutover_id!r} sealed it ({name}); generation {generation} is "
-                "not routable"
-            )
+    predecessor = _require_rotation_receipt_binds(expected, container, generation, path)
     if load_partition_receipt(predecessor) is None:
         raise LegacyCutoverConflict(
             f"predecessor generation {generation - 1} of {container} has no receipt"
@@ -4126,6 +4150,26 @@ def rotate_blocked_partition(
                 f"predecessor {recorded.get('predecessor_generation')!r}, but the active generation "
                 f"is {generation}; the sealed ceremony does not resume against this pointer"
             )
+        # The digests seal the inventory's consistency, not its truth: bind the
+        # sealed partition to the store this resume governs exactly the way
+        # ``load_partition_receipt`` will bind the receipt it produces — identity,
+        # container, chain, predecessor bytes — BEFORE anything is written.  A
+        # partition re-sealed under both digests with a foreign identity,
+        # container or predecessor digest otherwise ACTIVEs a successor whose
+        # receipt then fails to load (codex r6 P1).
+        try:
+            recorded_receipt = _rotation_receipt_from_partition(cutover_id, recorded, sealed, journal)
+            _require_rotation_receipt_binds(
+                recorded_receipt, container, successor_generation, successor / RECEIPT_FILENAME
+            )
+            # ...and the sealed effect set must agree with the keys the receipt
+            # will carry, the way every carried-key replay will require of it.
+            sealed_partition_effects(recorded_receipt)
+        except (LegacyCutoverConflict, PartitionRoutingRefused) as exc:
+            raise PartitionRotationRefused(
+                f"sealed rotation inventory for {cutover_id!r} does not bind the partition it "
+                f"resumes: {exc}"
+            ) from exc
     elif successor.exists():
         raise PartitionRotationRefused(
             f"successor generation {successor} exists but rotation {cutover_id!r} never sealed it"
@@ -4282,6 +4326,27 @@ def rotate_blocked_partition(
                     states.append("ARMED")
                 latch.mark_armed()
                 _maybe_rotation_crash("after_journal_armed")
+                # Backstop that closes the class by construction: before the
+                # pointer names it, the successor must authenticate through the
+                # EXACT loader every route will use, and load back as the
+                # receipt just written.  Whatever the zero-write bindings above
+                # miss — a check the loader gains later, an inventory swapped on
+                # disk after it was read — refuses HERE, at the state an
+                # ``after_journal_armed`` crash already resumes from, instead of
+                # ACTIVE-ing an unroutable generation (fable r6 F1).
+                try:
+                    loaded = load_partition_receipt(successor)
+                except (LegacyCutoverConflict, PermissionError) as exc:
+                    raise PartitionRotationRefused(
+                        f"successor generation {successor_generation} of {identity} does not "
+                        f"authenticate before the flip; the pointer stays at {generation}: {exc}"
+                    ) from exc
+                if loaded != receipt:
+                    raise PartitionRotationRefused(
+                        f"successor generation {successor_generation} of {identity} loads as a "
+                        f"different receipt than rotation {cutover_id!r} wrote; the pointer stays "
+                        f"at {generation}"
+                    )
                 _write_active_pointer(generations, successor_generation)
                 _maybe_rotation_crash("after_pointer_flip")
             finally:
