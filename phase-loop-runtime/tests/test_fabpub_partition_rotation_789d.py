@@ -805,8 +805,8 @@ A0_ALLOW_LIST = (
     ("live.py", "partition_is_ambiguity_blocked", "store_root"),
     ("live.py", "repository_broker_namespace", "store_root"),
     ("live.py", "require_current_generation", "store_root"),
+    ("live.py", "_derive_rotation_inventory", "target_namespace"),
     ("live.py", "rotate_blocked_partition", "store_root"),
-    ("live.py", "rotate_blocked_partition", "target_namespace"),
     ("live.py", "run_legacy_broker_cutover", "parent.parent"),
 )
 
@@ -839,6 +839,7 @@ A0_CLASSIFICATION = {
         "RotatedPartitionReceipt",
         "RotatedPartitionReceipt.payload",
         "_classify_repository_namespace",
+        "_derive_rotation_inventory",
         "_drive_cutover",
         "_inventory_row_namespace_root",
         "_is_onboarding_atomic_temp",
@@ -4057,6 +4058,138 @@ def test_partition_rotation_a11l_resume_refuses_a_resealed_partition_that_does_n
     outcome = _rotate(request, p)
     _require(request, outcome.state == "ACTIVE" and outcome.generation == 1, f"resume with the sealed bytes restored: {outcome!r}")
     _require(request, _journal_states(p) == ["DRAINING", "INVENTORY_SEALED", "ARMED", "ACTIVE"], f"journal after the restored resume: {_journal_states(p)!r}")
+    _require(request, live.load_partition_receipt(p.container / GENERATIONS_DIR / "1") is not None, "the successor does not authenticate after the restored resume")
+
+
+def _forge_floor_rollback(p, inv, key):
+    partition = inv["partitions"][p.identity]
+    partition["legacy_epoch_high_water"] = int(partition["legacy_epoch_high_water"]) - 1
+
+
+def _forge_drop_landed_key(p, inv, key):
+    partition = inv["partitions"][p.identity]
+    assert key in partition["legacy_completed_effects"] and key in partition["legacy_completed_effect_keys"]
+    partition["legacy_completed_effects"].pop(key)
+    partition["legacy_completed_effect_keys"] = [k for k in partition["legacy_completed_effect_keys"] if k != key]
+
+
+def _forge_disposition(p, inv, key):
+    entry = inv["partitions"][p.identity]["adjudicated_effect_dispositions"][key]
+    assert entry["disposition"] == OBSERVED_LANDED
+    entry["disposition"] = ATTESTED_NOT_LANDED
+    entry["observed_head"] = None
+
+
+def _forge_root_inventory(p, inv, key):
+    inv["legacy_root_inventory"] = list(inv["legacy_root_inventory"]) + ["ah789d-phantom-root-entry"]
+
+
+@_requires_fabpub
+@_requires_789d
+@pytest.mark.parametrize(
+    "forge",
+    [_forge_floor_rollback, _forge_drop_landed_key, _forge_disposition, _forge_root_inventory],
+    ids=["floor-rollback", "drop-landed-key", "disposition", "root-inventory"],
+)
+def test_partition_rotation_a11n_resume_rederives_the_inventory_it_resumes(tmp_path, monkeypatch, request, forge):
+    """A11n (codex r7 P1): a sealed inventory is a pure function of the
+    predecessor bytes and the attestation the resume has just validated, so a
+    resume RE-DERIVES it and requires the sealed bytes to digest to that body.
+    This binds every authority-bearing field at once — the epoch floor, the
+    carried landed effects, the adjudicated dispositions, the root inventory —
+    instead of the per-field bindings A11l pins.
+
+    Each leg re-seals a self-consistent forgery (both digests recomputed, the
+    attestation digest, D7-2 generations and every A11l binding intact) that
+    would have changed what the successor AUTHORISES: a rolled-back floor
+    re-admits epochs the predecessor already retired; a landed key deleted from
+    both carried collections loses the A1 duplicate answer; a re-adjudicated
+    disposition contradicts the operator's attestation; a phantom root entry
+    widens the inventory.  Before this pin every leg ACTIVEd a successor whose
+    loader accepted the forged authority.  The resume must refuse typed,
+    naming the binding, before it writes anything; restoring the sealed bytes
+    lets the same resume finish with the honest floor and carried effects.
+    """
+    live = _live()
+    refused = _production(request, "PartitionRotationRefused")
+    fx = _bootstrap(tmp_path, monkeypatch)
+    p = fx.alpha
+    carried_key = p.service._dedup_key(p.request)
+    _block_key(p, carried_key)
+    gen0 = _store_bytes(p.container)
+    attestation = _attestation(p, dispositions={carried_key: OBSERVED_LANDED}, observed_head=p.request.head_sha)
+    _crash_rotation(request, p, "after_journal_inventory_sealed", attestation=attestation)
+    _require(request, _journal_states(p) == ["DRAINING", "INVENTORY_SEALED"], f"journal after the crash: {_journal_states(p)!r}")
+    inventory = _ceremony_dir(p) / f"{ROTATION_ID}.inventory.json"
+    original = inventory.read_bytes()
+    honest = json.loads(original)["partitions"][p.identity]
+    honest_floor = int(honest["legacy_epoch_high_water"])
+    _require(request, carried_key in honest["legacy_completed_effects"], "the honest inventory does not carry the landed key")
+    forged = json.loads(original)
+    forge(p, forged, carried_key)
+    forged["partition_map_sha256"] = live._partition_map_digest(forged["partitions"])
+    forged["inventory_sha256"] = live._inventory_digest(forged)
+    _require(request, live.canonical_bytes(forged) != live.canonical_bytes(json.loads(original)), "the forgery changed nothing")
+    inventory.write_bytes(live.canonical_bytes(forged) + b"\n")
+    journal_before = _journal_path(p).read_bytes()
+    pointer_before = _read_or_none(_pointer(p))
+    successor = p.container / GENERATIONS_DIR / "1"
+    try:
+        with pytest.raises(refused) as excinfo:
+            _rotate(request, p, attestation=attestation)
+        _require(request, "does not bind" in str(excinfo.value), f"refusal does not name the binding: {excinfo.value}")
+        _require(request, _journal_path(p).read_bytes() == journal_before, f"the refused resume appended to the journal: {_journal_states(p)!r}")
+        _require(request, not (successor / "partition-receipt.json").exists(), "the refused resume wrote a successor receipt")
+        _require(request, _read_or_none(_pointer(p)) == pointer_before, "the refused resume moved the pointer")
+        _require(request, _store_bytes(p.container) == gen0, "generation 0 changed under a refused resume")
+    finally:
+        inventory.write_bytes(original)
+    outcome = _rotate(request, p, attestation=attestation)
+    _require(request, outcome.state == "ACTIVE" and outcome.generation == 1, f"resume with the sealed bytes restored: {outcome!r}")
+    _require(request, _journal_states(p) == ["DRAINING", "INVENTORY_SEALED", "ARMED", "ACTIVE"], f"journal after the restored resume: {_journal_states(p)!r}")
+    loaded = live.load_partition_receipt(successor)
+    _require(request, loaded is not None, "the successor does not authenticate after the restored resume")
+    _require(request, live.authenticated_partition_floor(successor) == honest_floor, f"floor {live.authenticated_partition_floor(successor)} != honest {honest_floor}")
+    _require(request, carried_key in live.sealed_partition_effects(loaded), "the landed key is not carried after the restored resume")
+    recorded = loaded.adjudicated_effect_dispositions.get(carried_key)
+    _require(request, recorded is not None and recorded["disposition"] == OBSERVED_LANDED, f"disposition after the restored resume: {recorded!r}")
+    result, calls = _publish_on_successor(request, outcome, p, p.request)
+    _require(request, not isinstance(result, Exception) and result.accepted is True, f"the landed duplicate was refused after the restored resume: {result!r}")
+    _require(request, calls == [], f"the landed key reached the provider after the restored resume: {calls}")
+
+
+@_requires_fabpub
+@_requires_789d
+def test_partition_rotation_a11o_foreign_successor_receipt_refuses_typed(tmp_path, monkeypatch, request):
+    """A11o (fable r7 F2): a successor receipt already on disk that is not the
+    sealed one refuses as ``PartitionRotationRefused`` — the same typed
+    refusal every other resume hazard raises — not a bare
+    ``LegacyCutoverConflict`` out of ``receipt.write``; the pointer stays at
+    generation 0 and restoring the sealed bytes lets the same resume finish.
+    """
+    live = _live()
+    refused = _production(request, "PartitionRotationRefused")
+    fx = _blocked_fixture(tmp_path, monkeypatch)
+    p = fx.alpha
+    _crash_rotation(request, p, "after_successor_receipt_before_flip")
+    receipt_path = p.container / GENERATIONS_DIR / "1" / "partition-receipt.json"
+    original = receipt_path.read_bytes()
+    forged = json.loads(original)
+    forged["legacy_epoch_high_water"] = int(forged["legacy_epoch_high_water"]) + 7
+    receipt_path.write_bytes(live.canonical_bytes(forged) + b"\n")
+    journal_before = _journal_path(p).read_bytes()
+    pointer_before = _read_or_none(_pointer(p))
+    try:
+        with pytest.raises(refused) as excinfo:
+            _rotate(request, p)
+        _require(request, "pointer stays at 0" in str(excinfo.value), f"refusal does not say the pointer stays: {excinfo.value}")
+        _require(request, _read_or_none(_pointer(p)) == pointer_before, "the refused resume moved the pointer")
+        _require(request, _journal_path(p).read_bytes() == journal_before, f"the refused resume appended to the journal: {_journal_states(p)!r}")
+        _require(request, _store_bytes(p.container) == fx.gen0, "generation 0 changed under a refused resume")
+    finally:
+        receipt_path.write_bytes(original)
+    outcome = _rotate(request, p)
+    _require(request, outcome.state == "ACTIVE" and outcome.generation == 1, f"resume with the receipt restored: {outcome!r}")
     _require(request, live.load_partition_receipt(p.container / GENERATIONS_DIR / "1") is not None, "the successor does not authenticate after the restored resume")
 
 

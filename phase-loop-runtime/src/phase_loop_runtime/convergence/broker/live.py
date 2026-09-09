@@ -3950,6 +3950,85 @@ def _load_rotation_inventory(inventory_path: Path, cutover_id: str, identity: st
     return sealed
 
 
+def _derive_rotation_inventory(
+    *,
+    cutover_id: str,
+    identity: str,
+    container: Path,
+    base,
+    successor_generation: int,
+    generation: int,
+    predecessor_digests: dict,
+    attestation: dict,
+    digest: str,
+    effects: dict,
+    high_water: int,
+    carried: dict,
+) -> dict:
+    """The inventory a rotation seals over a validated predecessor and attestation.
+
+    ONE definition.  A fresh ceremony writes exactly this; a resume re-derives
+    it from the predecessor bytes and attestation it has just validated and
+    requires the sealed inventory to digest to the same body.  Every
+    authority-bearing field a sealed inventory carries — the epoch floor, the
+    adjudicated dispositions, the carried landed effects, the root inventory —
+    is therefore bound to the predecessor and the operator's attestation, not
+    merely to the inventory's own digests (codex r7 P1).
+    """
+    partition = {
+        "canonical_repository_identity": identity,
+        "target_namespace": str(container),
+        "generation": successor_generation,
+        "predecessor_generation": generation,
+        "predecessor_digests": dict(predecessor_digests),
+        "predecessor_receipt_sha256": predecessor_digests[RECEIPT_FILENAME],
+        "adjudicated_effect_dispositions": {
+            key: {
+                "disposition": entry["disposition"],
+                "observed_head": entry.get("observed_head"),
+                "evidence_url": entry["evidence_url"],
+                "attestation_digest": digest,
+            }
+            for key, entry in effects.items()
+        },
+        "legacy_epoch_high_water": high_water,
+        "legacy_completed_effect_keys": sorted(carried),
+        "legacy_completed_effects": carried,
+        "ambiguous": False,
+        "zero_source": False,
+    }
+    sealed = {
+        "schema": ROTATION_INVENTORY_SCHEMA,
+        "cutover_id": cutover_id,
+        "attestation_sha256": digest,
+        "attestation": attestation,
+        "manifest_sha256": hashlib.sha256(
+            canonical_bytes({"rotation": cutover_id, "repository": identity})
+        ).hexdigest(),
+        "legacy_root_inventory": list(base.legacy_root_inventory),
+        "partitions": {identity: partition},
+    }
+    sealed["partition_map_sha256"] = _partition_map_digest(sealed["partitions"])
+    sealed["inventory_sha256"] = _inventory_digest(sealed)
+    return sealed
+
+
+def _inventory_divergence(sealed: dict, derived: dict, prefix: str = "") -> list[str]:
+    """Dotted paths at which ``sealed`` differs from ``derived`` (for the refusal)."""
+    sealed = json.loads(canonical_bytes(sealed))
+    derived = json.loads(canonical_bytes(derived))
+    out: list[str] = []
+    for key in sorted(set(sealed) | set(derived)):
+        a, b = sealed.get(key), derived.get(key)
+        if a == b:
+            continue
+        if isinstance(a, dict) and isinstance(b, dict):
+            out.extend(_inventory_divergence(a, b, f"{prefix}{key}."))
+        else:
+            out.append(f"{prefix}{key}")
+    return out
+
+
 def _write_active_pointer(generations: Path, generation: int) -> None:
     """Atomically publish ``generations/ACTIVE``; the temp name never matches ``ACTIVE*``."""
     target = generations / ACTIVE_POINTER
@@ -4131,6 +4210,9 @@ def rotate_blocked_partition(
                     f"attestation {field} for {key!r} does not match the adapter-start owner record"
                 )
 
+    carried = _rotation_carried_effects(active_receipt, ledger, effects, identity, generation, digest)
+    high_water = max(int(active_receipt.legacy_epoch_high_water), _rotation_admissions_high_water(active))
+
     sealed: dict | None = None
     if "INVENTORY_SEALED" in states:
         sealed = _load_rotation_inventory(inventory_path, cutover_id, identity)
@@ -4150,36 +4232,39 @@ def rotate_blocked_partition(
                 f"predecessor {recorded.get('predecessor_generation')!r}, but the active generation "
                 f"is {generation}; the sealed ceremony does not resume against this pointer"
             )
-        # The digests seal the inventory's consistency, not its truth: bind the
-        # sealed partition to the store this resume governs exactly the way
-        # ``load_partition_receipt`` will bind the receipt it produces — identity,
-        # container, chain, predecessor bytes — BEFORE anything is written.  A
-        # partition re-sealed under both digests with a foreign identity,
-        # container or predecessor digest otherwise ACTIVEs a successor whose
-        # receipt then fails to load (codex r6 P1).
-        try:
-            recorded_receipt = _rotation_receipt_from_partition(cutover_id, recorded, sealed, journal)
-            _require_rotation_receipt_binds(
-                recorded_receipt, container, successor_generation, successor / RECEIPT_FILENAME
-            )
-            # ...and the sealed effect set must agree with the keys the receipt
-            # will carry, the way every carried-key replay will require of it.
-            sealed_partition_effects(recorded_receipt)
-        except (LegacyCutoverConflict, PartitionRoutingRefused) as exc:
+        # The digests seal the inventory's CONSISTENCY, not its truth.  The
+        # inventory is a pure function of the predecessor bytes and the
+        # attestation this resume has just validated, so re-derive it and
+        # require the sealed bytes to digest to exactly that body BEFORE
+        # anything is written.  This binds every field at once — identity,
+        # container, chain, predecessor digests (codex r6 P1), and the
+        # authority-bearing epoch floor, adjudicated dispositions, carried
+        # landed effects and root inventory (codex r7 P1) — instead of one
+        # field per finding.
+        derived = _derive_rotation_inventory(
+            cutover_id=cutover_id,
+            identity=identity,
+            container=container,
+            base=base,
+            successor_generation=successor_generation,
+            generation=generation,
+            predecessor_digests=expected_digests,
+            attestation=attestation,
+            digest=digest,
+            effects=effects,
+            high_water=high_water,
+            carried=carried,
+        )
+        if _inventory_digest(derived) != sealed["inventory_sha256"]:
             raise PartitionRotationRefused(
                 f"sealed rotation inventory for {cutover_id!r} does not bind the partition it "
-                f"resumes: {exc}"
-            ) from exc
+                "resumes: it is not the inventory this predecessor and attestation seal "
+                f"(differs at {_inventory_divergence(sealed, derived)!r})"
+            )
     elif successor.exists():
         raise PartitionRotationRefused(
             f"successor generation {successor} exists but rotation {cutover_id!r} never sealed it"
         )
-    carried = (
-        {}
-        if sealed is not None
-        else _rotation_carried_effects(active_receipt, ledger, effects, identity, generation, digest)
-    )
-    high_water = max(int(active_receipt.legacy_epoch_high_water), _rotation_admissions_high_water(active))
 
     # -- the ceremony: one critical section under the predecessor's lock -------
     latch = WriterGenerationLatch(snapshot.namespace_root)
@@ -4257,41 +4342,20 @@ def rotate_blocked_partition(
                         "the current bytes"
                     )
                 if sealed is None:
-                    partition = {
-                        "canonical_repository_identity": identity,
-                        "target_namespace": str(container),
-                        "generation": successor_generation,
-                        "predecessor_generation": generation,
-                        "predecessor_digests": dict(expected_digests),
-                        "predecessor_receipt_sha256": expected_digests[RECEIPT_FILENAME],
-                        "adjudicated_effect_dispositions": {
-                            key: {
-                                "disposition": entry["disposition"],
-                                "observed_head": entry.get("observed_head"),
-                                "evidence_url": entry["evidence_url"],
-                                "attestation_digest": digest,
-                            }
-                            for key, entry in effects.items()
-                        },
-                        "legacy_epoch_high_water": high_water,
-                        "legacy_completed_effect_keys": sorted(carried),
-                        "legacy_completed_effects": carried,
-                        "ambiguous": False,
-                        "zero_source": False,
-                    }
-                    sealed = {
-                        "schema": ROTATION_INVENTORY_SCHEMA,
-                        "cutover_id": cutover_id,
-                        "attestation_sha256": digest,
-                        "attestation": attestation,
-                        "manifest_sha256": hashlib.sha256(
-                            canonical_bytes({"rotation": cutover_id, "repository": identity})
-                        ).hexdigest(),
-                        "legacy_root_inventory": list(base.legacy_root_inventory),
-                        "partitions": {identity: partition},
-                    }
-                    sealed["partition_map_sha256"] = _partition_map_digest(sealed["partitions"])
-                    sealed["inventory_sha256"] = _inventory_digest(sealed)
+                    sealed = _derive_rotation_inventory(
+                        cutover_id=cutover_id,
+                        identity=identity,
+                        container=container,
+                        base=base,
+                        successor_generation=successor_generation,
+                        generation=generation,
+                        predecessor_digests=expected_digests,
+                        attestation=attestation,
+                        digest=digest,
+                        effects=effects,
+                        high_water=high_water,
+                        carried=carried,
+                    )
                     _atomic_write_json(inventory_path, sealed)
                 if "INVENTORY_SEALED" not in states:
                     _rotation_journal_append(journal, cutover_id, "INVENTORY_SEALED")
@@ -4319,7 +4383,17 @@ def rotate_blocked_partition(
                 receipt = _rotation_receipt_from_partition(
                     cutover_id, sealed["partitions"][identity], sealed, journal
                 )
-                receipt.write(successor)
+                try:
+                    receipt.write(successor)
+                except LegacyCutoverConflict as exc:
+                    # A receipt already on disk that is not the sealed one is a
+                    # resume refusal like every other, not a bare conflict
+                    # (fable r7 F2): the pointer stays where it is.
+                    raise PartitionRotationRefused(
+                        f"successor generation {successor_generation} of {identity} already "
+                        f"carries a receipt that is not the one rotation {cutover_id!r} sealed; "
+                        f"the pointer stays at {generation}: {exc}"
+                    ) from exc
                 _maybe_rotation_crash("after_successor_receipt_before_flip")
                 if "ARMED" not in states:
                     _rotation_journal_append(journal, cutover_id, "ARMED")
