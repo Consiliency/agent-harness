@@ -1082,7 +1082,21 @@ def _load_rotated_partition_receipt(
             "rotated partition receipt is bound to a different repository container"
         )
     journal = Path(raw.get("global_journal_path", ""))
-    if not journal.exists():
+    base = load_partition_receipt(container)
+    if base is None or isinstance(base, RotatedPartitionReceipt):
+        raise LegacyCutoverConflict(f"rotated partition {identity} has no container receipt")
+    expected_journal = _expected_rotation_journal(base, identity, cutover_id)
+    if expected_journal is None:
+        raise LegacyCutoverConflict(
+            f"rotated partition {identity} is not governed by a zero-history bootstrap container "
+            "receipt; only bootstrap-governed partitions rotate"
+        )
+    if journal != expected_journal:
+        raise LegacyCutoverConflict(
+            f"the receipt's rotation journal {journal} is not the governing authority's "
+            f"partition-rotations journal for {cutover_id!r}"
+        )
+    if journal.is_symlink() or not journal.is_file():
         raise LegacyCutoverConflict("the receipt's rotation journal is missing")
     states, ids = _journal_entries(journal)
     if not _rotation_states_well_formed(states) or "ARMED" not in states:
@@ -1129,6 +1143,27 @@ def _load_rotated_partition_receipt(
             f"predecessor generation {generation - 1} of {container} has no receipt"
         )
     return expected
+
+
+def _expected_rotation_journal(
+    base: LegacyRepositoryPartitionReceipt, identity: str, cutover_id: str
+) -> Path | None:
+    """Where D1 places a rotation's journal: under the GOVERNING authority root.
+
+    The authority root is taken from the container receipt's bootstrap claim,
+    never from the rotated receipt itself, so a receipt cannot name a journal
+    and inventory outside the authority that governs it (codex r1 finding 3).
+    ``None`` when the container is not bootstrap-governed.
+    """
+    claim = _receipt_bootstrap_claim(base) if base.zero_source else None
+    if claim is None:
+        return None
+    return (
+        Path(claim["authority_root"])
+        / ROTATION_CEREMONY_DIR
+        / identity
+        / f"{cutover_id}{_ROTATION_JOURNAL_SUFFIX}"
+    )
 
 
 def _rotation_base_receipt(receipt):
@@ -1604,6 +1639,14 @@ ROTATION_CRASH_STEPS = (
     "after_journal_inventory_sealed",
     "after_journal_armed",
 )
+#: Crash points AFTER the pointer flip.  Generation 0 is no longer the routable
+#: store at these points (the successor is), so they are swept separately from
+#: ``ROTATION_CRASH_STEPS``: the invariant is "the successor routes, the barrier
+#: refuses until the ceremony is ACTIVE, and a resume finishes it".
+ROTATION_POST_FLIP_CRASH_STEPS = (
+    "after_pointer_flip",
+    "after_journal_active",
+)
 _ROTATION_CRASH_STEP: str | None = None
 
 
@@ -1614,7 +1657,7 @@ class _RotationCrash(RuntimeError):
 @contextlib.contextmanager
 def crash_at_rotation_step(step: str):
     global _ROTATION_CRASH_STEP
-    if step not in ROTATION_CRASH_STEPS:
+    if step not in ROTATION_CRASH_STEPS + ROTATION_POST_FLIP_CRASH_STEPS:
         raise ValueError(f"unknown rotation crash step {step!r}")
     previous, _ROTATION_CRASH_STEP = _ROTATION_CRASH_STEP, step
     try:
@@ -3941,32 +3984,17 @@ def rotate_blocked_partition(
     for candidate in sorted(container.glob(f"{GENERATIONS_DIR}.tmp.*")):
         if candidate.name != f"{GENERATIONS_DIR}.tmp.{cutover_id}":
             raise PartitionRotationRefused(f"foreign rotation staging debris at {candidate}")
-    if ceremony.exists():
-        for other in sorted(ceremony.glob(f"*{_ROTATION_JOURNAL_SUFFIX}")):
-            if other == journal:
-                continue
-            other_id = other.name[: -len(_ROTATION_JOURNAL_SUFFIX)]
-            try:
-                other_states, other_ids = _journal_entries(other)
-            except LegacyCutoverConflict as error:
-                raise PartitionRotationRefused(
-                    f"rotation journal {other_id!r} for {identity} is unreadable: {error}"
-                ) from error
-            if (
-                not _rotation_states_well_formed(other_states)
-                or other_states[-1] != "ACTIVE"
-                or set(other_ids) != {other_id}
-            ):
-                raise PartitionRotationRefused(
-                    f"rotation {other_id!r} for {identity} is still in progress; resume it "
-                    f"under its own cutover_id before starting {cutover_id!r}"
-                )
+    _refuse_other_rotations_in_progress(ceremony, journal, identity, cutover_id)
     states = _rotation_own_journal(journal, cutover_id)
+    if isinstance(active_receipt, RotatedPartitionReceipt) and active_receipt.cutover_id == cutover_id:
+        # The pointer already names THIS ceremony's successor: everything up to
+        # the flip is durable, so only the ACTIVE row and the latch activation
+        # can be outstanding (a crash after the flip, or a completed ceremony
+        # re-run).  Both are idempotent; finish them under the predecessor lock.
+        return _finish_rotation_after_flip(
+            snapshot, container, active, generation, journal, cutover_id, active_receipt
+        )
     if states and states[-1] == "ACTIVE":
-        if isinstance(active_receipt, RotatedPartitionReceipt) and active_receipt.cutover_id == cutover_id:
-            return PartitionRotationOutcome(
-                cutover_id, "ACTIVE", active, _rotation_predecessor_root(container, generation), generation, active_receipt
-            )
         raise PartitionRotationRefused(
             f"rotation {cutover_id!r} already completed but does not govern the active generation"
         )
@@ -4029,6 +4057,18 @@ def rotate_blocked_partition(
             raise PartitionRotationRefused(
                 f"rotation {cutover_id!r} sealed a different attestation; resume with the sealed one"
             )
+        # D7-2: a resume uses the successor number the ceremony RECORDED when it
+        # sealed, never one re-derived from the pointer it finds today.
+        recorded = sealed["partitions"][identity]
+        if (
+            recorded.get("generation") != successor_generation
+            or recorded.get("predecessor_generation") != generation
+        ):
+            raise PartitionRotationRefused(
+                f"rotation {cutover_id!r} sealed generation {recorded.get('generation')!r} over "
+                f"predecessor {recorded.get('predecessor_generation')!r}, but the active generation "
+                f"is {generation}; the sealed ceremony does not resume against this pointer"
+            )
     elif successor.exists():
         raise PartitionRotationRefused(
             f"successor generation {successor} exists but rotation {cutover_id!r} never sealed it"
@@ -4047,6 +4087,40 @@ def rotate_blocked_partition(
     with lock_path.open("a+", encoding="utf-8") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         try:
+            # Everything above was read WITHOUT the lock.  A ceremony that
+            # completed while this one waited (the same or another cutover_id)
+            # has moved the pointer, advanced a journal, or created the
+            # successor; re-read all three here, before the latch is touched,
+            # so a stale rotator refuses (or, for its own completed ceremony,
+            # finishes idempotently) instead of journalling a second DRAINING
+            # onto an ACTIVE ceremony or adopting another ceremony's successor.
+            current_generation = _read_active_generation(container)
+            if current_generation != generation:
+                fresh = _rotation_own_journal(journal, cutover_id)
+                if current_generation == successor_generation and fresh and fresh[-1] == "ACTIVE":
+                    completed = load_partition_receipt(successor)
+                    if isinstance(completed, RotatedPartitionReceipt) and completed.cutover_id == cutover_id:
+                        latch.mark_armed()
+                        latch.activate()
+                        return PartitionRotationOutcome(
+                            cutover_id, "ACTIVE", successor, active, successor_generation, completed
+                        )
+                raise PartitionRotationRefused(
+                    f"the active generation of {identity} moved from {generation} to "
+                    f"{current_generation} while {cutover_id!r} waited for the predecessor lock; "
+                    "re-run the ceremony against the active generation"
+                )
+            if _rotation_own_journal(journal, cutover_id) != states:
+                raise PartitionRotationRefused(
+                    f"rotation {cutover_id!r} advanced while it waited for the predecessor lock; "
+                    "re-run to resume it"
+                )
+            _refuse_other_rotations_in_progress(ceremony, journal, identity, cutover_id)
+            if "INVENTORY_SEALED" not in states and successor.exists():
+                raise PartitionRotationRefused(
+                    f"successor generation {successor} appeared while {cutover_id!r} waited for "
+                    "the predecessor lock; another ceremony owns it"
+                )
             if not latch.exists():
                 raise PartitionRotationRefused(f"{identity} has no writer generation latch")
             latch_state = latch.read().generation_state
@@ -4143,14 +4217,91 @@ def rotate_blocked_partition(
             latch.mark_armed()
             _maybe_rotation_crash("after_journal_armed")
             _write_active_pointer(generations, successor_generation)
+            _maybe_rotation_crash("after_pointer_flip")
             if "ACTIVE" not in states:
                 _rotation_journal_append(journal, cutover_id, "ACTIVE")
                 states.append("ACTIVE")
+            _maybe_rotation_crash("after_journal_active")
             latch.activate()
         finally:
             fcntl.flock(lock, fcntl.LOCK_UN)
     assert receipt is not None
     return PartitionRotationOutcome(cutover_id, "ACTIVE", successor, active, successor_generation, receipt)
+
+
+def _refuse_other_rotations_in_progress(
+    ceremony: Path, journal: Path, identity: str, cutover_id: str
+) -> None:
+    """A ceremony under another cutover_id that has not reached ACTIVE refuses this one."""
+    if not ceremony.exists():
+        return
+    for other in sorted(ceremony.glob(f"*{_ROTATION_JOURNAL_SUFFIX}")):
+        if other == journal:
+            continue
+        other_id = other.name[: -len(_ROTATION_JOURNAL_SUFFIX)]
+        try:
+            other_states, other_ids = _journal_entries(other)
+        except LegacyCutoverConflict as error:
+            raise PartitionRotationRefused(
+                f"rotation journal {other_id!r} for {identity} is unreadable: {error}"
+            ) from error
+        if (
+            not _rotation_states_well_formed(other_states)
+            or other_states[-1] != "ACTIVE"
+            or set(other_ids) != {other_id}
+        ):
+            raise PartitionRotationRefused(
+                f"rotation {other_id!r} for {identity} is still in progress; resume it "
+                f"under its own cutover_id before starting {cutover_id!r}"
+            )
+
+
+def _finish_rotation_after_flip(
+    snapshot: RepositorySnapshot,
+    container: Path,
+    active: Path,
+    generation: int,
+    journal: Path,
+    cutover_id: str,
+    receipt: RotatedPartitionReceipt,
+) -> PartitionRotationOutcome:
+    """Complete a ceremony whose pointer already names its successor.
+
+    The successor receipt authenticated (so the journal is at least ARMED and
+    the sealed inventory produced these bytes); what may be missing is the
+    ACTIVE row and the latch activation — a crash at either post-flip step.
+    Both are idempotent and run under the predecessor's ``admissions.lock``,
+    the same lock the ceremony held across the flip.
+    """
+    import fcntl
+
+    predecessor = _rotation_predecessor_root(container, generation)
+    latch = WriterGenerationLatch(snapshot.namespace_root)
+    lock_path = predecessor / "admissions.lock"
+    with lock_path.open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            if _read_active_generation(container) != generation:
+                raise PartitionRotationRefused(
+                    f"the active generation of {snapshot.identity} moved while {cutover_id!r} "
+                    "waited for the predecessor lock; re-run the ceremony"
+                )
+            states = _rotation_own_journal(journal, cutover_id)
+            if "ARMED" not in states:
+                raise PartitionRotationRefused(
+                    f"generation {generation} of {snapshot.identity} is routed but rotation "
+                    f"{cutover_id!r} never reached ARMED: {states}"
+                )
+            if "ACTIVE" not in states:
+                _rotation_journal_append(journal, cutover_id, "ACTIVE")
+            _maybe_rotation_crash("after_journal_active")
+            if not latch.exists():
+                raise PartitionRotationRefused(f"{snapshot.identity} has no writer generation latch")
+            latch.mark_armed()
+            latch.activate()
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+    return PartitionRotationOutcome(cutover_id, "ACTIVE", active, predecessor, generation, receipt)
 
 
 def _rotation_predecessor_root(container: Path, generation: int) -> Path:
@@ -4194,14 +4345,20 @@ def _receipt_active_authority_exists(
     authority_root: Path | str | None = None,
 ) -> bool:
     if isinstance(receipt, RotatedPartitionReceipt):
-        states, ids = _journal_entries(Path(receipt.global_journal_path))
+        base = _rotation_base_receipt(receipt)
+        journal = Path(receipt.global_journal_path)
+        if journal != _expected_rotation_journal(
+            base, receipt.canonical_repository_identity, receipt.cutover_id
+        ):
+            return False
+        states, ids = _journal_entries(journal)
         if (
             not _rotation_states_well_formed(states)
             or states[-1] != "ACTIVE"
             or set(ids) != {receipt.cutover_id}
         ):
             return False
-        receipt = _rotation_base_receipt(receipt)
+        receipt = base
     bootstrap_claim = _receipt_bootstrap_claim(receipt) if receipt.zero_source else None
     if bootstrap_claim is not None:
         requested_authority = (
