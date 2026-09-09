@@ -4750,12 +4750,12 @@ def test_partition_rotation_a11t_adjudication_reads_nothing_under_the_predecesso
     under_predecessor = [entry for entry in reads if entry.split(":", 1)[1].startswith(os.fspath(predecessor))]
     _require(request, under_predecessor == [], f"the adjudication read the predecessor outside its snapshot: {under_predecessor!r}")
     # ``Path.read_bytes`` opens through ``Path.open``: one physical read of the
-    # inventory records both sites; any OTHER path, or a second read, fails.
+    # inventory records exactly those two sites.  The pin is the exact multiset
+    # (fable r12 O1): any OTHER path, any other site, or a second read fails.
     _require(
         request,
-        {entry.split(":", 1)[1] for entry in reads} == {os.fspath(inventory)}
-        and reads.count(f"Path.read_bytes:{inventory}") == 1,
-        f"the adjudication read something other than the predecessor's sealed inventory, once: {reads!r}",
+        sorted(reads) == sorted([f"Path.read_bytes:{inventory}", f"Path.open:{inventory}"]),
+        f"the adjudication's reads are not exactly one read of the predecessor's sealed inventory: {reads!r}",
     )
     _require(request, adjudicated.predecessor_digests == snapshot.digests, "the adjudication did not bind the snapshot digests")
     _require(

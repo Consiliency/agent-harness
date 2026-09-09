@@ -669,3 +669,59 @@ Separate maintainer authorisation; nothing here executes it.
 
 - execute: effort=high, reason=a new authority-ceremony and a receipt schema version on the fencing path;
   every anchor is a fail-closed guarantee and the failure mode is silent unblocking.
+
+## Amendments
+
+### A1 — Lane D3 disposition (2026-09-09, recorded from Consiliency/agent-harness#789 comment 5605551240)
+
+Lane D3 predicted an edit to `convergence/broker/verbs.py` on the pre-dispatch replay path. The
+property it named is delivered on `main` by Lane D2 (Consiliency/agent-harness#816, merge `55e9ba89`)
+without touching `verbs.py`: `_rotation_carried_effects` seals every `observed_landed` disposition into the
+successor's `legacy_completed_effects` and pops `attested_not_landed` from the carry, so the unchanged
+`execute` → `_legacy_terminal_replay` answers an `observed_landed` key as a duplicate pre-dispatch and an
+`attested_not_landed` key proceeds into `_fresh_publish` exactly once. RUN on a detached `55e9ba89`
+checkout: D1 anchors A1, A2, A5, A11b, A13b pass; plan mutants m3 and m4 red A1/A5 and A2/A5 respectively.
+Lane D3 is closed with no PR — the plan pinned its own output (the edit location), which `AGENTS.md`
+names as the stalling class; this amendment records the delivered mechanism in place of the prediction.
+`_block_unsealed_owner`, the four `epoch_blocked` consult sites, and `evidence.py:229-230` are untouched.
+
+### A2 — Lane D4 verb spelling and scope (2026-09-09, Consiliency/agent-harness#818)
+
+- The verb is spelled `phase-loop fabpub-rotate-partition` (one flat argparse subcommand, mirroring the
+  existing `fabpub-bootstrap`), not the plan's `phase-loop fabpub rotate-partition`. Same surface; the
+  spelling follows the CLI's existing shape rather than introducing a nested `fabpub` group.
+- The verb refuses an attestation path at or under `<authority-root>/partition-rotations/` before reading
+  it (fable r9 O3: the resume is never sourced from the copy a sealed inventory embeds).
+- Its output (`PartitionRotationResult.v1`) carries `restart_required` with the reason: a broker process
+  that resolved the repository before the flip holds a retired generation lease (`_stores_for` caches
+  stores per router instance), so its next write is a typed refusal until it restarts.
+
+### A3 — Items carried out of the D2 boards (Consiliency/agent-harness#789 comment 5605496788), dispositions in D4
+
+Closed in Consiliency/agent-harness#818:
+
+- **fable r10 O2** — closed at the loader as a class: `load_partition_receipt` raises
+  `LegacyCutoverConflict` for receipt bytes that are not JSON or not an object (every fail-closed
+  `except LegacyCutoverConflict` site is covered at once), and both ceremony re-read sites name a successor
+  that "carries no receipt" instead of falling into the `!= receipt` comparison.
+- **fable r12 O2** — `sealed_partition_effects` raises `LegacyCutoverConflict("… is missing …")` when the
+  inventory is absent behind a receipt that names completed keys; a receipt naming no keys keeps `{}`.
+- **fable r12 O1 / gemini r12 nit** — A11t pins the exact read multiset `[Path.open, Path.read_bytes]` of
+  the sealed inventory.
+- **Publish-path inventory TOCTOU** (closed by D2 r12) — the refusal is named in the operator note.
+
+Carried, not D4 work (plan spellings or no-action notes, verbatim in the comment): D9-C container-lock
+alternative; fable r1 F4; fable r2 O1 (ancestor symlink parity); fable r5 O3 (unreachable-false receipt
+check, keep as defense in depth); fable r8 O3 (A11n fixture floor); fable r10 O3 (a finish refused with the
+honest inventory lost is repaired by re-running the verb with the operator-supplied attestation — the D5
+runbook step); fable r11 O5; fable r6 O4 (a `no_effect_terminal_proven` key is NOT carried; the successor
+publishes afresh — D4 keeps the D2 anchor, A8 leg (v)). Filed: Consiliency/agent-harness#817 (v2 container
+loader trusts `global_journal_path`), Consiliency/agent-harness#811 (order-dependent
+`test_fabpub_shared_epoch` import).
+
+### A4 — Lane D5 preconditions restated (no change)
+
+D5 stays operational and unauthorised here. Its preconditions are the three in "Dependencies & order" item
+3 plus: every writer of the omniagent-plus partition stopped for the ceremony's duration (the verb's
+`restart_required` is the same fact from the other side), and the attestation written outside the
+authority's `partition-rotations/` directory.

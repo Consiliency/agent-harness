@@ -6,6 +6,65 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Partition rotation: ceremony and generational stores (Consiliency/agent-harness#816)
+
+- Workstream D, Lane D2 of Consiliency/agent-harness#789. A permanently blocked FABPUB
+  repository partition can now be rotated: `rotate_blocked_partition(worktree, cutover_id=…,
+  attestation=…)` in `phase_loop_runtime.convergence.broker.live` retires the blocked
+  generation read-only, digests its store files under the predecessor's own
+  `admissions.lock`, seals the reviewed `PartitionRotationAttestation.v1` and the digested
+  bytes into a rotation inventory, mints a `LegacyRepositoryPartitionReceipt.v3` for the
+  successor under `generations/<n>/`, and flips the `generations/ACTIVE` pointer as the
+  cutover's commit point: the ceremony journal, the sealed inventory, and the staged
+  successor are durable before the flip, and the flip is the one write that changes what
+  the resolver names. Every refusal (an undisposed blocked key, digests that do not match
+  the predecessor, a predecessor that is not `epoch_blocked`, an authority that is not a
+  zero-history bootstrap, a pre-v3 runtime reading a rotated partition) is typed; the
+  validation refusals happen before the ceremony's first journal row, and a refusal after
+  durable progress keeps that cutover id's journal for the resume the #818 entry below
+  describes. A crash at any instant of the ceremony leaves exactly one complete,
+  authenticated store for the resolver to name.
+- The v3 receipt binds the sealed inventory by digest; `sealed_partition_effects` refuses
+  inventory bytes the receipt does not digest (`LegacyCutoverConflict: … is not the
+  inventory the partition receipt digests`), on the ceremony path and on the publish path.
+- Lane D3 (dispositions honoured on the publish path) is delivered by the same landing
+  without a `verbs.py` edit: `observed_landed` keys are sealed into the successor's
+  completed effects, so the unchanged pre-dispatch replay answers them as duplicates with no
+  owner read and no adapter call; `attested_not_landed` keys are not carried and publish
+  afresh exactly once (D1 anchors A1/A2/A5, plan mutants m3/m4 RUN red).
+  Consiliency/agent-harness#813 and Consiliency/agent-harness#814 are absorbed.
+
+### `phase-loop fabpub-rotate-partition` operator verb (Consiliency/agent-harness#818)
+
+- Workstream D, Lane D4 of Consiliency/agent-harness#789. The new CLI verb takes
+  `--worktree`, `--attestation <path>` and `--cutover-id`, drives the ceremony, and prints one
+  `PartitionRotationResult.v1` document (successor generation and store root, predecessor
+  store root, `attestation_sha256`, adjudicated keys, and the restart requirement for any
+  broker process that resolved the repository before the flip). Refusals are exit 1 with the
+  ceremony's reason. A validation refusal (before the ceremony's first journal row) leaves no
+  durable rotation state; a refusal after durable progress — predecessor writers that do not
+  drain behind the `DRAINING` row, or a failure inside the post-flip finish — keeps that
+  cutover id's journal, refuses a different cutover id as still in progress, and is resumed by
+  re-running the same command with the same `--cutover-id` (a re-run never repairs its inputs: a
+  link of the successor's authentication chain, or the writer latch, damaged after the flip is
+  refused by every re-run rather than repaired, until its bytes are restored from outside);
+  generation 0's bytes are never rewritten in either case
+  (`docs/fabpub-pre-admission-ambiguity.md`, "The verb"). Re-running
+  after a completed rotation is the idempotent resume. The attestation is operator-supplied: a
+  document inside the authority's `partition-rotations/` ceremony directory is refused before
+  it is read, so a resume can never be sourced from the copy a sealed inventory embeds; the
+  verb canonicalises `--authority-root` once (`~` expanded, absolute, resolved) and hands that
+  path to both the guard and the ceremony.
+- Carried loader refusals closed as a class: `load_partition_receipt` raises
+  `LegacyCutoverConflict` (not a bare `ValueError`) for receipt bytes that are not JSON or not
+  an object, so every fail-closed `except LegacyCutoverConflict` around it stays closed; the
+  ceremony names a successor that "carries no receipt" at both receipt re-read sites; and
+  `sealed_partition_effects` names a sealed inventory that has gone missing behind a receipt
+  with completed keys instead of surfacing it as a key-set disagreement.
+- `docs/fabpub-pre-admission-ambiguity.md` replaces "Partition rotation (deferred)" with the
+  landed ceremony, the attestation shape, and the restart requirement. The omniagent-plus
+  rotation itself (Lane D5) is operational and not performed here; ah#789 stays open.
+
 ### Typed pre-admission runtime-compatibility refusal (Consiliency/agent-harness#803)
 
 - Workstream A of Consiliency/agent-harness#789. An installed `phase-loop-runtime` whose
