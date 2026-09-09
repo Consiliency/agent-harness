@@ -3859,7 +3859,7 @@ def _validate_rotation_attestation(attestation: object, generation: int) -> dict
     if attestation.get("predecessor_generation") != generation:
         raise PartitionRotationRefused(
             f"attestation adjudicates generation {attestation.get('predecessor_generation')!r}; "
-            f"the active generation is {generation}"
+            f"this ceremony adjudicates generation {generation}"
         )
     if not isinstance(attestation.get("predecessor_store_digests"), dict):
         raise PartitionRotationRefused("attestation carries no predecessor store digests")
@@ -4307,7 +4307,7 @@ def rotate_blocked_partition(
         adjudicated = _adjudicate_rotation_predecessor(
             attestation, predecessor, generation - 1, predecessor_receipt, identity
         )
-        _require_sealed_inventory_derives(
+        sealed = _require_sealed_inventory_derives(
             inventory_path,
             cutover_id,
             identity,
@@ -4329,8 +4329,16 @@ def rotate_blocked_partition(
             successor_generation=generation,
             generation=generation - 1,
         )
+        # The finish activates the receipt the ADJUDICATED inventory produces,
+        # never the one it happened to read from disk (codex r9 P1).
         return _finish_rotation_after_flip(
-            snapshot, container, active, generation, journal, cutover_id, active_receipt
+            snapshot,
+            container,
+            active,
+            generation,
+            journal,
+            cutover_id,
+            _rotation_receipt_from_partition(cutover_id, sealed["partitions"][identity], sealed, journal),
         )
     if states and states[-1] == "ACTIVE":
         raise PartitionRotationRefused(
@@ -4402,7 +4410,7 @@ def rotate_blocked_partition(
                             # THIS ceremony completed (or is completing) under
                             # another instance -- over the inventory THIS
                             # instance derives, or not at all (codex r8 P1).
-                            _require_sealed_inventory_derives(
+                            elsewhere = _require_sealed_inventory_derives(
                                 inventory_path,
                                 cutover_id,
                                 identity,
@@ -4415,8 +4423,14 @@ def rotate_blocked_partition(
                             # this lock is generation ``generation``'s, and a
                             # ceremony out of the successor drains the latch
                             # under the SUCCESSOR's lock (codex r2 finding 1).
-                            # Finish under that lock, after this one.
-                            raise _RotationCompletedElsewhere(completed)
+                            # Finish under that lock, after this one, on the
+                            # receipt the adjudicated inventory produces
+                            # (codex r9 P1).
+                            raise _RotationCompletedElsewhere(
+                                _rotation_receipt_from_partition(
+                                    cutover_id, elsewhere["partitions"][identity], elsewhere, journal
+                                )
+                            )
                     raise PartitionRotationRefused(
                         f"the active generation of {identity} moved from {generation} to "
                         f"{current_generation} while {cutover_id!r} waited for the predecessor lock; "
@@ -4595,6 +4609,15 @@ def _finish_rotation_after_flip(
     row single (codex r3 finding 1).  Under the lock the pointer and the
     other journals are re-read; a ceremony in progress under another
     ``cutover_id`` owns the latch and this finish refuses, typed.
+
+    ``receipt`` is the receipt the ADJUDICATED inventory produces -- every
+    arm builds it from the derivation it just validated, never from bytes it
+    read.  The pre-flip backstop proved the successor loaded as that receipt
+    under the PREDECESSOR's lock; between that lock's release and this one
+    the successor store and the sealed inventory are unguarded, so the same
+    proof is repeated HERE, under the lock that guards the ACTIVE row and the
+    latch activation, and a forgery re-sealed in the window refuses typed
+    instead of becoming the successor's authority (codex r9 P1).
     """
     import fcntl
 
@@ -4615,6 +4638,20 @@ def _finish_rotation_after_flip(
                 raise PartitionRotationRefused(
                     f"generation {generation} of {snapshot.identity} is routed but rotation "
                     f"{cutover_id!r} never reached ARMED: {states}"
+                )
+            try:
+                loaded = load_partition_receipt(active)
+            except (LegacyCutoverConflict, PermissionError) as exc:
+                raise PartitionRotationRefused(
+                    f"successor generation {generation} of {snapshot.identity} does not "
+                    f"authenticate under its own lock; rotation {cutover_id!r} withholds the "
+                    f"ACTIVE row and the latch activation: {exc}"
+                ) from exc
+            if loaded != receipt:
+                raise PartitionRotationRefused(
+                    f"successor generation {generation} of {snapshot.identity} loads as a "
+                    f"different receipt than the inventory rotation {cutover_id!r} adjudicated "
+                    "produces; the ACTIVE row and the latch activation are withheld"
                 )
             if "ACTIVE" not in states:
                 _rotation_journal_append(journal, cutover_id, "ACTIVE")
