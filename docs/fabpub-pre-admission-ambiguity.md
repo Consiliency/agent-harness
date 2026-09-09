@@ -148,24 +148,37 @@ verb does not paper over the difference:
   same holds when the predecessor bytes changed between attestation and drain
   (`re-attest over the current bytes`): the inventory is not yet sealed, so
   the resume takes the re-written attestation. Once the rotation has reached
-  the pointer flip, a refusal inside the finish step leaves the successor
-  routed; the `ACTIVE` journal row is **withheld** (the journal stays at
-  `ARMED`) and the latch activation is still owed. In every case generation
-  0's bytes are never rewritten.
-- **Recovery** is the same command with the **same** `--cutover-id` and
-  attestation: the ceremony resumes from the journal's last durable state (a
-  drain refusal re-waits for the writers; a post-flip refusal re-runs the
-  finish). One post-flip state is **not** resumable: the ceremony
-  authenticates the successor through the real loader immediately before the
-  flip, so a finish-step refusal that says the successor `does not
-  authenticate`, `carries no receipt`, or `loads as a different receipt` means
-  `generations/<n>/partition-receipt.json` was damaged *after* the flip by
-  something other than the ceremony (which never rewrites or deletes it). A
-  re-run refuses that partition rather than repairing it — the resolver's
-  own routing refusal (`generation <n> carries no partition receipt`, or the
-  authentication failure) fires before the ceremony's resume branch is
-  reached; there is no repair verb, the receipt bytes must be restored from outside
-  the ceremony (Consiliency/agent-harness#789 carries the gap). A
+  the pointer flip the successor stays routed, and the finish step can stop in
+  one of two states: a refusal that names the successor's authentication
+  (`does not authenticate`, `carries no receipt`, `loads as a different
+  receipt`) **withholds** the `ACTIVE` journal row (the journal stays at
+  `ARMED`) and the latch activation; a crash or refusal *after* the row — the
+  writer latch is missing, or its activation fails — leaves the `ACTIVE` row
+  durable with only the latch activation owed. In every case generation 0's
+  bytes are never rewritten.
+- **Recovery** is the same command with the same `--cutover-id`, over the
+  same attestation except after a `re-attest` refusal: the ceremony resumes
+  from the journal's last durable state (a drain refusal re-waits for the
+  writers; a post-flip stop re-runs the finish, which appends the `ACTIVE` row
+  only when it is absent and then activates the latch). One post-flip state is
+  **not** resumable. The ceremony authenticates the successor through the real
+  loader immediately before the flip, and that authentication is a chain —
+  `generations/<n>/partition-receipt.json`, the ceremony journal
+  `partition-rotations/<identity>/<id>.journal.jsonl`, the sealed inventory
+  `<id>.inventory.json` beside it, and the container receipt — so a re-run
+  that refuses the successor's authentication means one link of that chain
+  was damaged *after* the flip by something other than the ceremony (which
+  never rewrites or deletes any of them). The re-run refuses that partition
+  rather than repairing it, and the refusal names the link: a missing receipt
+  is the resolver's own routing refusal (`generation <n> carries no partition
+  receipt`), any other damaged link is `active generation <n> … does not
+  authenticate: <link>` (for example `the sealed rotation inventory digest
+  drifted`), both raised before the ceremony's resume branch; a sealed
+  inventory that still authenticates but is no longer what re-adjudicating the
+  attestation derives is refused by the resume's derivation check. There is no
+  repair verb: the damaged link's bytes must be restored from outside the
+  ceremony — restoring a different link changes nothing — and the same command
+  then finishes (Consiliency/agent-harness#789 carries the gap). A
   **different** cutover id is refused while a journal for this
   identity is not yet `ACTIVE` — `rotation '<id>' for <identity> is still in
   progress; resume it under its own cutover_id before starting '<other>'` — so

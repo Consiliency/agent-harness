@@ -19,7 +19,11 @@ through ``cli.main`` over the D1 fixtures (imported, never copied) and pin:
   not JSON are a typed ``LegacyCutoverConflict`` from ``load_partition_receipt``
   (fable r10 O2), and a sealed inventory missing behind a receipt that names
   completed keys is named as missing by ``sealed_partition_effects``
-  (fable r12 O2).
+  (fable r12 O2);
+* the docs' post-flip "Recovery" states (codex r2 F2, r3 F1/F2): a damaged
+  successor receipt or sealed inventory is refused on every re-run naming the
+  damaged link, never regenerated; a crash after the ``ACTIVE`` row owes only
+  the latch activation and the same command finishes it.
 """
 
 from __future__ import annotations
@@ -485,3 +489,90 @@ def test_rotate_partition_cli_changed_bytes_refusal_resumes_the_latch_and_takes_
     assert _generation_of(p.container) == 1
     assert latch.read().generation_state == "ACTIVE"
     assert _store_bytes(p.container) == moved
+
+
+def test_rotate_partition_cli_post_flip_damaged_sealed_inventory_refusal_names_the_damaged_link(tmp_path, monkeypatch, capsys):
+    """Docs "Recovery" (codex r3 F1): a post-flip ``does not authenticate`` is
+    NOT a statement about the receipt file.  The successor authenticates through
+    a chain — its receipt, the ceremony journal, the sealed inventory, the
+    container receipt — so damage to the sealed inventory after the flip refuses
+    the same way while ``generations/1/partition-receipt.json`` is byte-for-byte
+    intact.  The refusal names the damaged link; restoring the receipt cannot
+    repair it, restoring the sealed bytes lets the same command finish.
+    """
+    fx, p, attestation = _blocked(tmp_path, monkeypatch)
+    gen0 = _store_bytes(p.container)
+    path = _write(tmp_path / "operator" / "attestation.json", attestation)
+    live = _live()
+    with live.crash_at_rotation_step("after_pointer_flip"):
+        with pytest.raises(live._RotationCrash):
+            _run(p, path)
+    capsys.readouterr()
+    assert _journal_states(p) == ["DRAINING", "INVENTORY_SEALED", "ARMED"]
+    successor_receipt = p.container / GENERATIONS_DIR / "1" / live.RECEIPT_FILENAME
+    receipt_bytes = successor_receipt.read_bytes()
+    inventory = _ceremony_dir(p) / f"{ROTATION_ID}.inventory.json"
+    sealed_bytes = inventory.read_bytes()
+    journal_bytes = _journal_path(p).read_bytes()
+    latch = live.WriterGenerationLatch.for_store_root(p.container)
+    before = latch.read()
+    assert before.generation_state != "ACTIVE"
+
+    damaged = json.loads(sealed_bytes)
+    damaged["inventory_sha256"] = "0" * 64
+    inventory.write_text(json.dumps(damaged), encoding="utf-8")
+    assert _run(p, path) == 1
+    err = capsys.readouterr().err
+    assert err.startswith(PREFIX)
+    assert "active generation 1" in err and "does not authenticate" in err
+    assert "the sealed rotation inventory digest drifted" in err, err
+    assert successor_receipt.read_bytes() == receipt_bytes, "the receipt was never the damaged link"
+    assert inventory.read_text(encoding="utf-8") == json.dumps(damaged), "the verb rewrote the sealed inventory"
+    assert _journal_path(p).read_bytes() == journal_bytes
+    assert _generation_of(p.container) == 1
+    after = latch.read()
+    assert after.generation_state == before.generation_state and after.generation == before.generation
+    assert _store_bytes(p.container) == gen0
+
+    # Re-writing the (intact) receipt changes nothing: the receipt is not the link.
+    successor_receipt.write_bytes(receipt_bytes)
+    assert _run(p, path) == 1
+    assert "the sealed rotation inventory digest drifted" in capsys.readouterr().err
+
+    inventory.write_bytes(sealed_bytes)
+    assert _run(p, path) == 0
+    capsys.readouterr()
+    assert _journal_states(p) == ["DRAINING", "INVENTORY_SEALED", "ARMED", "ACTIVE"]
+    assert latch.read().generation_state == "ACTIVE"
+    assert _store_bytes(p.container) == gen0
+
+
+def test_rotate_partition_cli_crash_after_the_active_row_owes_only_the_latch_activation(tmp_path, monkeypatch, capsys):
+    """Docs "Recovery" (codex r3 F2): the finish step appends the ``ACTIVE``
+    journal row BEFORE it activates the writer latch, so a crash or refusal
+    after the row leaves the journal complete with the latch activation still
+    owed — distinct from the authentication refusals that withhold the row.
+    The same command resumes it: no second ``ACTIVE`` row, the latch becomes
+    ACTIVE, generation 0's bytes untouched.
+    """
+    fx, p, attestation = _blocked(tmp_path, monkeypatch)
+    gen0 = _store_bytes(p.container)
+    path = _write(tmp_path / "operator" / "attestation.json", attestation)
+    live = _live()
+    with live.crash_at_rotation_step("after_journal_active"):
+        with pytest.raises(live._RotationCrash):
+            _run(p, path)
+    capsys.readouterr()
+    assert _journal_states(p) == ["DRAINING", "INVENTORY_SEALED", "ARMED", "ACTIVE"]
+    assert _generation_of(p.container) == 1
+    latch = live.WriterGenerationLatch.for_store_root(p.container)
+    assert latch.read().generation_state != "ACTIVE", "the crash landed after the activation"
+    journal_bytes = _journal_path(p).read_bytes()
+
+    assert _run(p, path, as_json=True) == 0
+    out = capsys.readouterr().out
+    result = json.loads(out)
+    assert result["state"] == "ACTIVE" and result["generation"] == 1
+    assert _journal_path(p).read_bytes() == journal_bytes, "the resume appended a second ACTIVE row"
+    assert latch.read().generation_state == "ACTIVE"
+    assert _store_bytes(p.container) == gen0
