@@ -41,15 +41,19 @@ runtime that is v3-aware — §2):
 - `fabpub_rotation_attestation.py` — builds the attestation from the live
   container (read-only; the only write is `--out`).
 - `fabpub_rotation_preflight.py` — runs the verb's zero-write validation checks
-  and the drain facts, and prints the verdict the verb would reach.
+  (including its two resume paths) and the drain facts, and prints the verdict
+  the verb would reach.
 
 ## 1. Preconditions (plan Lane D5, Dependencies item 3)
 
 - (a) The runtime that will run the verb, and every runtime that will *read* the
-  partition afterwards, is v3-aware. A pre-v3 runtime refuses a rotated
-  partition (`LegacyCutoverConflict`) rather than misreading it, so an unpinned
-  host is a hard stop for that host, not a silent corruption — but it is still a
-  stop.
+  partition afterwards, is v3-aware. A pre-v3 runtime does not follow
+  `generations/ACTIVE`: it resolves to the container and refuses on generation
+  0's own ambiguity block rather than misreading the successor. That is a hard
+  stop for that host, not a silent corruption — but a pre-v3 process holding a
+  fresh lease can still append a non-publish terminal into the retired
+  generation, which the next replay refuses fail-closed. Pin, do not rely on
+  the refusal.
 - (b) The attestation names every blocked key with a reviewed disposition and
   the evidence that established it.
 - (c) No writer of the predecessor generation is alive when the ceremony
@@ -108,18 +112,36 @@ python3 phase-loop-runtime/scripts/fabpub_rotation_attestation.py \
   --override-record https://github.com/Consiliency/agent-harness/issues/789#issuecomment-5560313217
 ```
 
-Rules the builder enforces, and the reviewer must re-check:
+What the builder **enforces** (exit 2, nothing written):
 
-- `--out` must be **outside** the authority's `partition-rotations/` directory —
-  the verb refuses an attestation sourced from there before reading it.
-- `observed_head` must equal the owner record's `committed_head` (the builder
-  prints both); the disposition is `observed_landed` only because the branch is
-  observed on the remote at that head *and* the publication was reviewed
-  (omniagent-plus#28).
+- `--container` carries a `LegacyRepositoryPartitionReceipt.v2` — the
+  generation-0 container shape. Pointed at a rotated store it refuses rather
+  than digest the wrong generation's bytes.
+- `--out` is an operator path: not under a `phase-loop-fabpub-broker-v1/`
+  namespace, a `generations/` store, or an authority's `partition-rotations/`
+  ceremony directory. (The verb independently refuses to *read* an attestation
+  from the ceremony directory — `cli.py::_load_rotation_attestation`; this
+  refuses to *write* one there, so a mistyped `--out` cannot land on a sealed
+  inventory.)
+- an `outcome_ambiguous_blocked` row exists for the key.
+
+What the builder **derives**, and the reviewer must re-check:
+
 - `ambiguity_digest` is the sha256 of the **latest** `outcome_ambiguous_blocked`
   row for the key, raw line text, no trailing newline.
-- `owner_nonce` / `transaction_id` are copied verbatim from
-  `adapter-start-owner.json`.
+- `owner_nonce` / `transaction_id` are emitted **only** when
+  `adapter-start-owner.json` names this effect key (either spelling —
+  `effect_key` or `idempotency_key`), copied verbatim, and **omitted** when it
+  does not: the adjudicator refuses both a missing value when the owner names
+  the key and a present one when it does not (`live.py:4321-4326`). The builder
+  prints which half it emitted.
+- a digested file that is absent digests as `sha256(b"")`, matching
+  `_snapshot_predecessor`.
+- `observed_head` is **not** checked against the owner record's
+  `committed_head` by the builder or the ceremony — the builder only prints
+  `==`/`!=`. Equality is the *reviewer's* criterion: the disposition is
+  `observed_landed` only because the branch is observed on the remote at that
+  head *and* the publication was reviewed (omniagent-plus#28).
 
 Draft produced 2026-09-09 (marked "DRAFT … pending operator go" in
 `attested_by`; the operator re-runs the builder with their own `--attested-by`,
@@ -144,21 +166,31 @@ cd phase-loop-runtime && PYTHONPATH=$PWD/src python3 scripts/fabpub_rotation_pre
 
 The script runs, in the verb's own order, every check the verb performs before
 its first journal row (cutover-id grammar, repository snapshot, attestation
-location, container receipt shape and non-ambiguity, bootstrap claim binding to
-this authority, active bootstrap, no foreign staging debris, no other rotation
-in progress, own-journal state, predecessor adjudication, inventory derivation)
-by calling the same functions, then reports the drain facts the verb will meet
-*after* its first row: the writer latch, the armed marker, held lease files,
-and live pre-FABPUB writers. Verdicts:
+location and readability, container receipt shape and non-ambiguity, bootstrap
+claim binding to this authority, active bootstrap, no foreign staging debris,
+no other rotation in progress, own-journal state, predecessor adjudication,
+inventory derivation, the sealed inventory on a pre-flip resume, and the
+writer-generation latch) by calling the same functions, then reports the drain
+facts the verb will meet *after* its first row: the armed marker, held lease
+files, and live pre-FABPUB writers. Verdicts:
 
 - `ready` — every validation check passes and no lease file is held.
 - `ready_but_drain_will_block` — validation passes but lease files are held;
   the verb would write `DRAINING` and then refuse (§5, run 1). Fix the leases
   (§6) before executing.
+- `already_completed` — the active generation is already this cutover id's
+  successor. The verb's post-flip completion path would finish idempotently;
+  the preflight mirrors that path, so it adjudicates the **predecessor**
+  generation and requires the sealed inventory to derive from *this*
+  attestation (see §7).
 - `would_refuse` — a validation check refuses; the report names it. Nothing
   durable would have been written.
 
-2026-09-09 result for omniagent-plus: all 12 validation checks pass;
+Exit status is 0 for `ready` and `already_completed` (the verb would succeed)
+and 1 otherwise. **The first-execution go-gate is the string `ready`**, not
+merely exit 0.
+
+2026-09-09 result for omniagent-plus: all 15 validation checks pass;
 `ready_but_drain_will_block` on the 4 orphaned leases; 0 live writers.
 
 ## 5. Rehearsal over byte copies (read-only against live state)
@@ -179,10 +211,20 @@ unshare -Urm --propagation private bash -c "
   mount --bind '$OUT/ns' '$NS' && mount --bind '$OUT/auth' '$AUTH' &&
   cd phase-loop-runtime && PYTHONPATH=\$PWD/src python3 -m phase_loop_runtime.cli \
     fabpub-rotate-partition --worktree <worktree> --attestation <attestation> \
-    --cutover-id <cutover-id> --json"
+    --authority-root '$AUTH' --cutover-id <cutover-id> --json"
 find "$NS" "$AUTH" -type f | sort | xargs sha256sum > "$OUT/live-after.sha"
 diff "$OUT/live-before.sha" "$OUT/live-after.sha" && echo LIVE UNTOUCHED
 ```
+
+`--authority-root` is passed **explicitly**, and `$AUTH` must be the root the
+verb would resolve on its own: `default_fabpub_authority_root()` honours
+`PHASE_LOOP_FABPUB_AUTHORITY_ROOT` and then `XDG_STATE_HOME`, so a value set in
+the operator's shell would send every ceremony write to a live root the
+`find "$NS" "$AUTH"` sweep does not cover. Resolve it first
+(`python3 -c 'from phase_loop_runtime.convergence.broker.live import
+default_fabpub_authority_root as d; print(d())'`), copy *that*, and mount and
+pass *that*. Neither variable was set on claw on 2026-09-09, so the run below
+used the documented default.
 
 2026-09-09 rehearsal of the omniagent-plus rotation, two runs:
 
@@ -209,20 +251,44 @@ without closing leaves the file behind, and the lease carries no pid or
 liveness token (Consiliency/agent-harness#820). The ceremony counts files, so an
 orphan blocks the drain exactly like a live writer.
 
-Before removing any lease, prove nobody holds it:
+**No check can prove a lease is orphaned.** `acquire` writes a JSON file and
+returns; it takes no `flock` and records no pid, so absence of a holder is
+unobservable (that is exactly Consiliency/agent-harness#820). The procedure
+below therefore does not *detect* orphans — it **removes the possibility of a
+holder** by stopping every candidate process, and only then treats the
+remaining files as debris.
 
-1. `fabpub_rotation_preflight.py` reports an empty `live_pre_fabpub_writers` list.
-2. `ps -eo pid,lstart,args | grep -E 'phase[-_]loop|run-train'` shows no broker
-   or train process on this host older than the newest lease.
-3. Each lease's mtime predates every currently running process that could
-   have opened the broker (the four omniagent-plus leases are dated 2026-09-04
-   10:47/11:08 and 2026-09-05 20:55/21:01; the 2026-09-05 incident's runner is
-   gone).
+1. **Stop the candidates and their descendants, and suppress new starts.**
+   Quiesce whatever would start a broker on this host (the phase-loop driver
+   session, any scheduled run-train, any agent loop that publishes) for the
+   duration of the ceremony. Then, for each candidate pid, stop the whole
+   process group (`kill -TERM -<pgid>`, never `pkill -f`), and confirm the
+   descendants are gone (`ps --ppid <pid>`) — a forked child can hold the
+   broker after its parent exits.
+2. **Enumerate candidates three ways**, because no single scan is complete:
+   - `fabpub_rotation_preflight.py` — an empty `live_pre_fabpub_writers` list.
+     This matches only an exact `run-train` argv element behind a `phase*`
+     launcher (`_iter_live_run_train_processes`), so it is necessary, not
+     sufficient.
+   - `ps -eo pid,pgid,lstart,args | grep -E 'phase[-_]loop|run-train'` — catches
+     differently-launched runtimes, but not a broker embedded in a process
+     started as `python3 <script>.py`.
+   - the kernel's own view, which needs no argv guess:
+     `ls -l /proc/[0-9]*/cwd 2>/dev/null | grep <worktree>` and
+     `ls -l /proc/[0-9]*/fd 2>/dev/null | grep phase-loop-fabpub-broker-v1`.
+3. **Re-run the enumeration after the stop** and require all three empty.
+   Only then is the lease-mtime argument admissible as corroboration: each
+   lease predates every process still running (the four omniagent-plus leases
+   are dated 2026-09-04 10:47/11:08 and 2026-09-05 20:55/21:01; the
+   2026-09-05 incident's runner is gone).
 
-Then, with the go recorded on the issue, remove the lease files (and only
-those): `rm <namespace>/generation-leases/<nonce>.json`. Do not touch
+Then, with the go recorded on the issue and new starts still suppressed,
+remove the lease files (and only those):
+`rm <namespace>/generation-leases/<nonce>.json`. Do not touch
 `writer-generation.json`, `writer-generation.lock`, or `cutover-armed`. Re-run
-the preflight; expect `ready`.
+the preflight; expect the string `ready`. Keep new starts suppressed through
+§7 — a broker that starts between the removal and the flip takes a fresh
+lease and the drain blocks again.
 
 ## 7. Execute — STATE CHANGE, needs go
 
@@ -241,10 +307,21 @@ issue.
 If it refuses after durable progress (a writer reappeared, a failure in the
 post-flip finish): the journal for this cutover id is kept, a *different*
 cutover id is refused as "in progress", and the fix is to remove the cause and
-re-run the **same** command with the **same** `--cutover-id` — the verb resumes;
-re-running after completion is the idempotent no-op. A re-run never repairs its
-inputs (a damaged authentication-chain link or writer latch after the flip is
-refused by every re-run until the bytes are restored from outside).
+re-run the **same** command with the **same** `--cutover-id` **and the same
+attestation file** — the verb resumes; re-running after completion is the
+idempotent no-op.
+
+The attestation identity matters from `INVENTORY_SEALED` onward: the resume
+requires the sealed inventory to derive from the attestation the re-run
+supplies, and *any* change to the document — a different `--attested-by`, a
+fresh `attested_at` from re-running the builder — changes its canonical digest
+and is refused with `rotation … sealed a different attestation; resume with
+the sealed one`. Keep the exact file; do not rebuild it. The preflight mirrors
+this check on both resume paths, so run it before every resume.
+
+A re-run never repairs its inputs (a damaged authentication-chain link or
+writer latch after the flip is refused by every re-run until the bytes are
+restored from outside).
 
 ## 8. After the flip
 

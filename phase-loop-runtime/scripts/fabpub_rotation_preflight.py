@@ -1,18 +1,34 @@
 #!/usr/bin/env python3
 """Read-only preflight for ``phase-loop fabpub-rotate-partition``.
 
-Runs the SAME zero-write checks ``rotate_blocked_partition`` runs before it
-takes the predecessor's ``admissions.lock`` -- by calling the real functions
-in the real order -- and then reports the two drain facts the ceremony's
-DRAINING step will measure (held generation leases, live pre-FABPUB writers).
-It never opens the latch lock, never writes the journal, never mkdirs.
+Runs the SAME zero-write checks ``rotate_blocked_partition`` runs before its
+first journal row -- by calling the real functions in the real order -- and
+then reports the two drain facts the ceremony's DRAINING step will measure
+(held generation leases, live pre-FABPUB writers).  It never opens the latch
+lock, never calls ``begin_draining``, never writes the journal, never mkdirs.
 
-A ``ready`` verdict means: the attestation adjudicates the predecessor exactly
-as the verb will, the derived inventory builds, and no ceremony is in flight.
-It does NOT mean the drain will succeed -- ``held_leases`` counts lease FILES,
-and an orphaned lease blocks DRAINING regardless of whether its holder lives.
+Verdicts:
 
-Exit: 0 ready / 1 the verb would refuse (reason printed) / 2 usage.
+``ready``
+    the attestation adjudicates the predecessor exactly as the verb will, the
+    derived inventory builds, the writer latch admits a rotation, and no
+    ceremony is in flight.  It does NOT mean the drain will succeed --
+    ``held_leases`` counts lease FILES, and an orphaned lease blocks DRAINING
+    regardless of whether its holder lives.
+``ready_but_drain_will_block``
+    every pre-journal check passes but a lease file or a live pre-FABPUB
+    writer is present, so the ceremony will refuse at DRAINING.
+``already_completed``
+    the active generation is already this ceremony's successor: the verb would
+    resume idempotently through its post-flip completion path (which this
+    script mirrors, adjudicating the PREDECESSOR generation and requiring the
+    sealed inventory to derive from THIS attestation).
+``would_refuse``
+    the verb would refuse; the refusal text is printed.
+
+Exit: 0 the verb would succeed (``ready`` / ``already_completed``) / 1 the verb
+would refuse or the drain will block / 2 usage.  The first-execution go-gate in
+the runbook is the string ``ready``, not merely exit 0.
 """
 
 from __future__ import annotations
@@ -24,15 +40,21 @@ from pathlib import Path
 
 from phase_loop_runtime.convergence.broker import live as L
 
+# Every refusal class ``phase-loop fabpub-rotate-partition`` catches and turns
+# into a non-zero exit (cli.py's ``except`` list for the verb).
+REFUSALS = (
+    L.PartitionRotationRefused,
+    L.PartitionRoutingRefused,
+    L.PartitionReceiptIncompatible,
+    L.LegacyCutoverConflict,
+    L.WriterGenerationBlocked,
+)
+
 
 def _check(name: str, fn, report: dict):
     try:
         value = fn()
-    except (
-        L.PartitionRotationRefused,
-        L.LegacyCutoverConflict,
-        L.WriterGenerationBlocked,
-    ) as error:
+    except REFUSALS as error:
         report["checks"].append(
             {"check": name, "ok": False, "refusal": f"{type(error).__name__}: {error}"}
         )
@@ -62,7 +84,6 @@ def main() -> int:
         cutover_id = _check(
             "cutover_id", lambda: L._validate_cutover_id(a.cutover_id), report
         )
-        attestation = json.loads(a.attestation.read_text(encoding="utf-8"))
         snapshot = _check(
             "repository_snapshot", lambda: L.repository_snapshot(a.worktree), report
         )
@@ -78,6 +99,7 @@ def main() -> int:
         )
         ceremony = authority / L.ROTATION_CEREMONY_DIR / identity
         journal = ceremony / f"{cutover_id}{L._ROTATION_JOURNAL_SUFFIX}"
+        inventory_path = ceremony / f"{cutover_id}.inventory.json"
         report.update(
             {
                 "identity": identity,
@@ -89,12 +111,26 @@ def main() -> int:
                 "journal": str(journal),
             }
         )
-        if a.attestation.resolve().is_relative_to(
-            (authority / L.ROTATION_CEREMONY_DIR).resolve()
-        ):
-            raise L.PartitionRotationRefused(
-                "attestation path lies under the authority's partition-rotations/"
-            )
+
+        # The CLI guards the attestation's location BEFORE reading it
+        # (``_load_rotation_attestation``); mirror that order, and turn an
+        # unreadable or malformed document into a verdict rather than a
+        # traceback -- the CLI's ``except`` list catches OSError/ValueError too.
+        def _attestation():
+            if a.attestation.resolve().is_relative_to(
+                (authority / L.ROTATION_CEREMONY_DIR).resolve()
+            ):
+                raise L.PartitionRotationRefused(
+                    "attestation path lies under the authority's partition-rotations/"
+                )
+            try:
+                return json.loads(a.attestation.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as error:
+                raise L.PartitionRotationRefused(
+                    f"attestation {a.attestation} is not readable JSON: {error}"
+                ) from error
+
+        attestation = _check("attestation_readable", _attestation, report)
 
         def _base():
             base = L.load_partition_receipt(container)
@@ -168,59 +204,170 @@ def main() -> int:
             "own_journal", lambda: L._rotation_own_journal(journal, cutover_id), report
         )
         report["own_journal_states"] = list(states)
-        if states and states[-1] == "ACTIVE":
-            raise L.PartitionRotationRefused(
-                f"rotation {cutover_id!r} already completed"
-            )
 
-        adjudicated = _check(
-            "adjudicate_predecessor",
-            lambda: L._adjudicate_rotation_predecessor(
-                attestation,
-                L._snapshot_predecessor(active),
-                generation,
-                active_receipt,
-                identity,
-            ),
-            report,
-        )
-        report["adjudication"] = {
-            "attestation_digest": adjudicated.digest,
-            "predecessor_digests": dict(adjudicated.predecessor_digests),
-            "effects": {
-                k: dict(v) if isinstance(v, dict) else v
-                for k, v in dict(adjudicated.effects).items()
-            },
-            "high_water": adjudicated.high_water,
-            "carried": dict(adjudicated.carried),
-        }
-        derived = _check(
-            "derive_inventory",
-            lambda: L._derive_rotation_inventory(
-                cutover_id=cutover_id,
-                identity=identity,
-                container=container,
-                predecessor_receipt=active_receipt,
-                successor_generation=generation + 1,
-                generation=generation,
-                predecessor_digests=adjudicated.predecessor_digests,
-                attestation=attestation,
-                digest=adjudicated.digest,
-                effects=adjudicated.effects,
-                high_water=adjudicated.high_water,
-                carried=adjudicated.carried,
-            ),
-            report,
-        )
-        report["derived_inventory_schema"] = derived.get("schema")
-        successor = container / L.GENERATIONS_DIR / str(generation + 1)
-        if "INVENTORY_SEALED" not in states and successor.exists():
-            raise L.PartitionRotationRefused(
-                f"successor {successor} exists but was never sealed"
+        # -- post-flip completion (live.py's matching-successor branch) --------
+        # The pointer already names THIS ceremony's successor: the verb finishes
+        # idempotently, but only after adjudicating the PREDECESSOR generation
+        # and requiring the sealed inventory to derive from THIS attestation.
+        # Mirror the whole zero-write prefix of that branch, in its order.
+        if (
+            isinstance(active_receipt, L.RotatedPartitionReceipt)
+            and active_receipt.cutover_id == cutover_id
+        ):
+            report["resume"] = "post_flip_completion"
+
+            def _predecessor_receipt():
+                predecessor = L._rotation_predecessor_root(container, generation)
+                if predecessor == container:
+                    return predecessor, base
+                receipt = L.load_partition_receipt(predecessor)
+                if receipt is None:
+                    raise L.PartitionRotationRefused(
+                        f"predecessor generation {generation - 1} of {identity} carries no receipt"
+                    )
+                return predecessor, receipt
+
+            predecessor, predecessor_receipt = _check(
+                "completion_predecessor_receipt", _predecessor_receipt, report
             )
+            adjudicated = _check(
+                "completion_adjudicate_predecessor",
+                lambda: L._adjudicate_rotation_predecessor(
+                    attestation,
+                    L._snapshot_predecessor(predecessor),
+                    generation - 1,
+                    predecessor_receipt,
+                    identity,
+                ),
+                report,
+            )
+            _check(
+                "completion_sealed_inventory_derives",
+                lambda: L._require_sealed_inventory_derives(
+                    inventory_path,
+                    cutover_id,
+                    identity,
+                    adjudicated.digest,
+                    L._derive_rotation_inventory(
+                        cutover_id=cutover_id,
+                        identity=identity,
+                        container=container,
+                        predecessor_receipt=predecessor_receipt,
+                        successor_generation=generation,
+                        generation=generation - 1,
+                        predecessor_digests=adjudicated.predecessor_digests,
+                        attestation=attestation,
+                        digest=adjudicated.digest,
+                        effects=adjudicated.effects,
+                        high_water=adjudicated.high_water,
+                        carried=adjudicated.carried,
+                    ),
+                    successor_generation=generation,
+                    generation=generation - 1,
+                ),
+                report,
+            )
+            report["verdict"] = "already_completed"
+            report["note"] = (
+                f"generation {generation} is already {cutover_id!r}'s successor; the verb would "
+                "finish the ACTIVE row and the latch activation idempotently under the successor's "
+                "lock.  Resume with the attestation the ceremony SEALED -- a rebuilt one changes "
+                "the digest and the sealed inventory will not derive from it."
+            )
+        else:
+            if states and states[-1] == "ACTIVE":
+                raise L.PartitionRotationRefused(
+                    f"rotation {cutover_id!r} already completed but does not govern the "
+                    "active generation"
+                )
+
+            adjudicated = _check(
+                "adjudicate_predecessor",
+                lambda: L._adjudicate_rotation_predecessor(
+                    attestation,
+                    L._snapshot_predecessor(active),
+                    generation,
+                    active_receipt,
+                    identity,
+                ),
+                report,
+            )
+            report["adjudication"] = {
+                "attestation_digest": adjudicated.digest,
+                "predecessor_digests": dict(adjudicated.predecessor_digests),
+                "effects": {
+                    k: dict(v) if isinstance(v, dict) else v
+                    for k, v in dict(adjudicated.effects).items()
+                },
+                "high_water": adjudicated.high_water,
+                "carried": dict(adjudicated.carried),
+            }
+            derived = _check(
+                "derive_inventory",
+                lambda: L._derive_rotation_inventory(
+                    cutover_id=cutover_id,
+                    identity=identity,
+                    container=container,
+                    predecessor_receipt=active_receipt,
+                    successor_generation=generation + 1,
+                    generation=generation,
+                    predecessor_digests=adjudicated.predecessor_digests,
+                    attestation=attestation,
+                    digest=adjudicated.digest,
+                    effects=adjudicated.effects,
+                    high_water=adjudicated.high_water,
+                    carried=adjudicated.carried,
+                ),
+                report,
+            )
+            report["derived_inventory_schema"] = derived.get("schema")
+            successor = container / L.GENERATIONS_DIR / str(generation + 1)
+
+            # Pre-flip resume: the ceremony already sealed an inventory, and the
+            # verb requires that sealed document to be the one THIS attestation
+            # derives (live.py's ``_require_sealed_inventory_derives``).  A
+            # rebuilt attestation changes the digest and refuses here.
+            def _sealed():
+                if "INVENTORY_SEALED" in states:
+                    return L._require_sealed_inventory_derives(
+                        inventory_path,
+                        cutover_id,
+                        identity,
+                        adjudicated.digest,
+                        derived,
+                        successor_generation=generation + 1,
+                        generation=generation,
+                    )
+                if successor.exists():
+                    raise L.PartitionRotationRefused(
+                        f"successor {successor} exists but was never sealed"
+                    )
+                return None
+
+            _check("sealed_inventory_derives", _sealed, report)
+
+        # -- the writer latch (the verb's last pre-journal gate) ---------------
+        latch = L.WriterGenerationLatch(snapshot.namespace_root)
+
+        def _latch_admits():
+            if report.get("verdict") == "already_completed":
+                # The post-flip finish drains under the SUCCESSOR's lock and
+                # does not re-gate on the predecessor's latch state.
+                return
+            if not latch.exists():
+                raise L.PartitionRotationRefused(
+                    f"{identity} has no writer generation latch"
+                )
+            latch_state = latch.read().generation_state
+            if latch_state not in ("ACTIVE", "DRAINING"):
+                raise L.PartitionRotationRefused(
+                    f"writer generation latch of {identity} is {latch_state}; "
+                    "rotation requires ACTIVE"
+                )
+
+        _check("writer_latch_admits_rotation", _latch_admits, report)
 
         # -- drain facts (what DRAINING will measure; read-only, no latch lock) --
-        latch = L.WriterGenerationLatch(snapshot.namespace_root)
         held = latch.held_leases()
         live = L.LegacyWriterQuiescence.inventory(a.worktree).live_writers()
         report["drain"] = {
@@ -237,19 +384,16 @@ def main() -> int:
             "held_leases": [str(p) for p in held],
             "live_pre_fabpub_writers": [w.get("process_identity") for w in live],
         }
-        report["verdict"] = (
-            "ready" if not held and not live else "ready_but_drain_will_block"
-        )
+        if report["verdict"] is None:
+            report["verdict"] = (
+                "ready" if not held and not live else "ready_but_drain_will_block"
+            )
         if held:
             report["drain"]["note"] = (
                 f"{len(held)} lease file(s) present; await_quiescent counts FILES, so the ceremony "
                 "will refuse at DRAINING (and leave a DRAINING journal row) until they are released"
             )
-    except (
-        L.PartitionRotationRefused,
-        L.LegacyCutoverConflict,
-        L.WriterGenerationBlocked,
-    ) as error:
+    except REFUSALS as error:
         report["verdict"] = "would_refuse"
         report["refusal"] = f"{type(error).__name__}: {error}"
 
@@ -265,6 +409,8 @@ def main() -> int:
         print("verdict:", report["verdict"])
         if report.get("refusal"):
             print("refusal:", report["refusal"])
+        if report.get("note"):
+            print("note:", report["note"])
         d = report.get("drain") or {}
         if d:
             print(f"latch: {d.get('latch')} armed={d.get('armed_marker')}")
@@ -275,7 +421,7 @@ def main() -> int:
                 print("  lease", p)
             if d.get("note"):
                 print("note:", d["note"])
-    return 0 if report["verdict"] in ("ready",) else 1
+    return 0 if report["verdict"] in ("ready", "already_completed") else 1
 
 
 if __name__ == "__main__":

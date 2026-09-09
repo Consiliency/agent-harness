@@ -48,9 +48,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   (builds a `PartitionRotationAttestation.v1` from the live container, read-only), and
   `fabpub_rotation_preflight.py` (runs the verb's zero-write validation checks by calling the
   ceremony's own functions, reports the drain facts, and prints the verdict the verb would
-  reach). The attestation field table in `docs/fabpub-pre-admission-ambiguity.md` now lists
-  `predecessor_receipt_digest`, `owner_nonce`, and `transaction_id`, which the adjudicator
-  requires and the table omitted.
+  reach, including its two resume paths: a pre-flip resume re-checks that the ceremony's
+  sealed inventory derives from the attestation supplied, a post-flip re-run is reported as
+  `already_completed` rather than a refusal, and the writer-generation latch — the verb's
+  last gate before its first journal row — is checked, so an absent or `LEGACY_OPEN` latch
+  no longer reads as `ready`). The attestation builder refuses a `--out` inside a broker
+  namespace, a generational store, or an authority's ceremony directory, refuses a
+  `--container` that is not the generation-0 receipt shape, digests an absent store file as
+  `sha256(b"")` the way the ceremony does, and emits `owner_nonce`/`transaction_id` only
+  when the adapter-start owner record names the effect key. The attestation field table in
+  `docs/fabpub-pre-admission-ambiguity.md` now lists `predecessor_receipt_digest`, and
+  states that `owner_nonce`/`transaction_id` bind in both directions — required when the
+  owner names the key, refused when it does not — which the table omitted.
 - Filed from the preparation: Consiliency/agent-harness#819 (`fab_gate` circular import on
   installs at or after `b09b1a47`) and Consiliency/agent-harness#820 (writer-generation
   leases carry no liveness token, so a crashed broker's lease blocks the rotation drain

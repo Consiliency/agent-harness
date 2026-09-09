@@ -216,9 +216,12 @@ Each `effects` entry carries a `disposition`, an `evidence_url` (the
 out-of-band publication or the review that established the judgement; a
 non-empty string), and the `ambiguity_digest` binding it to the predecessor's
 recorded ambiguity — the sha256 of the blocked row's raw JSONL line text, no
-trailing newline. When the predecessor's `adapter-start-owner.json` names that
-key, the entry must also carry the owner's `owner_nonce` and `transaction_id`
-verbatim; the ceremony refuses an entry that disagrees with the owner record.
+trailing newline. The owner fields bind in **both** directions: when the
+predecessor's `adapter-start-owner.json` names that key (as `effect_key` or
+`idempotency_key`), the entry must carry the owner's `owner_nonce` and
+`transaction_id` verbatim, and when it does not name the key the entry must
+carry neither — the ceremony refuses an entry that disagrees with the owner
+record in either direction.
 Extra fields (an `attested_at`, an `override_record` URL) are tolerated — the
 attestation digest binds the whole document — so record provenance there rather
 than in `attested_by`. The dispositions:
