@@ -4085,7 +4085,7 @@ def _load_rotation_attestation(path: str, *, authority_root: Path) -> dict:
         ROTATION_CEREMONY_DIR,
     )
 
-    attestation_path = Path(path).resolve()
+    attestation_path = Path(path).expanduser().resolve()
     ceremony_root = (authority_root / ROTATION_CEREMONY_DIR).resolve()
     if attestation_path == ceremony_root or ceremony_root in attestation_path.parents:
         raise LegacyCutoverConflict(
@@ -4111,12 +4111,23 @@ def _fabpub_rotate_partition_command(*, args: argparse.Namespace) -> int:
         PartitionReceiptIncompatible,
         PartitionRotationRefused,
         PartitionRoutingRefused,
+        _canonical_input_path,
         default_fabpub_authority_root,
         rotate_blocked_partition,
     )
 
     try:
-        authority_root = Path(args.authority_root or default_fabpub_authority_root())
+        # ONE authority root, derived exactly as the ceremony derives it
+        # (``expanduser`` + absolute + resolved), and handed to the ceremony
+        # verbatim: the ceremony-directory guard below and the ceremony must
+        # never disagree about which directory is the ceremony directory
+        # (fable r1 F1: a literal ``~`` in ``--authority-root`` resolved to a
+        # cwd-relative guard root while the ceremony expanded it).
+        authority_root = (
+            _canonical_input_path(args.authority_root, label="authority root")
+            if args.authority_root
+            else default_fabpub_authority_root()
+        )
         attestation = _load_rotation_attestation(
             args.attestation, authority_root=authority_root
         )
@@ -4124,7 +4135,7 @@ def _fabpub_rotate_partition_command(*, args: argparse.Namespace) -> int:
             args.worktree,
             cutover_id=args.cutover_id,
             attestation=attestation,
-            authority_root=args.authority_root,
+            authority_root=authority_root,
         )
     except (
         PartitionRotationRefused,
@@ -4159,8 +4170,8 @@ def _fabpub_rotate_partition_command(*, args: argparse.Namespace) -> int:
         "restart_required": True,
         "restart_reason": (
             "a phase-loop-runtime broker process that resolved this repository before the "
-            "flip holds a retired generation lease; its next write is refused until it "
-            "restarts and resolves the successor generation"
+            "flip keeps stores bound to the retired generation; its next write is refused "
+            "until it restarts and resolves the successor generation"
         ),
     }
     print(json.dumps(result, indent=2, sort_keys=True) if args.json else json.dumps(result, sort_keys=True))

@@ -127,16 +127,47 @@ The verb loads the attestation document and drives
 On success it prints one `PartitionRotationResult.v1` JSON document naming the
 successor generation, its store root, the predecessor store root, the receipt's
 `attestation_sha256`, and the adjudicated effect keys; every refusal is exit 1
-with `phase-loop fabpub-rotate-partition: <reason>` on stderr and **no durable
-rotation state** — generation 0 stays ACTIVE and byte-identical. Re-running the
+with `phase-loop fabpub-rotate-partition: <reason>` on stderr. Re-running the
 same command after a completed rotation is the idempotent resume: it answers
 with the same document and creates no second generation.
+
+What a refusal leaves behind depends on where the ceremony stopped, and the
+verb does not paper over the difference:
+
+- **Validation refusals** — an unreadable, wrong-schema, or ceremony-directory
+  attestation, an undisposed blocked key, an unknown disposition, digests that
+  do not match, a predecessor that is not `epoch_blocked`, or another cutover
+  id already in progress — happen before the ceremony's first journal row.
+  They leave **no durable rotation state**: no journal, no inventory, no
+  successor directory; the writer latch is untouched.
+- **Refusals after durable progress** keep the journal for that
+  `--cutover-id`. The first durable step is the `DRAINING` row, written before
+  the ceremony waits for predecessor writers; if they do not drain, the verb
+  refuses with `predecessor writers did not drain: …`, resumes the writer
+  latch to ACTIVE with its nonce preserved, and the `DRAINING` row stays. The
+  same holds when the predecessor bytes changed between attestation and drain
+  (`re-attest over the current bytes`): the inventory is not yet sealed, so
+  the resume takes the re-written attestation. Once the rotation has reached
+  the pointer flip, a refusal inside the finish step leaves the successor
+  routed with the `ACTIVE` journal row and the latch activation still owed.
+  In every case generation 0's bytes are never rewritten.
+- **Recovery** is always the same command with the **same** `--cutover-id`
+  and attestation: the ceremony resumes from the journal's last durable state
+  (a drain refusal re-waits for the writers; a post-flip refusal re-runs the
+  finish). A **different** cutover id is refused while a journal for this
+  identity is not yet `ACTIVE` — `rotation '<id>' for <identity> is still in
+  progress; resume it under its own cutover_id before starting '<other>'` — so
+  an operator cannot fork a second rotation over an unfinished one.
 
 The attestation is **operator-supplied**. The verb refuses a document that lies
 inside the authority root's `partition-rotations/` ceremony directory before
 reading it: a sealed rotation inventory embeds a copy of the attestation it was
 sealed from, and resuming from that copy would be circular. Write the
-attestation somewhere else and hand the verb that path.
+attestation somewhere else and hand the verb that path. The authority root the
+guard checks against is derived once — `~` expanded, absolute, symlinks
+resolved, exactly as the ceremony derives it — and the ceremony receives that
+same path, so no spelling of `--authority-root` can make the guard and the
+ceremony disagree about where the ceremony directory is.
 
 ### The attestation
 

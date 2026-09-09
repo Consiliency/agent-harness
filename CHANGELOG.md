@@ -37,10 +37,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `PartitionRotationResult.v1` document (successor generation and store root, predecessor
   store root, `attestation_sha256`, adjudicated keys, and the restart requirement for any
   broker process that resolved the repository before the flip). Refusals are exit 1 with the
-  ceremony's reason and no durable rotation state; re-running after a completed rotation is
-  the idempotent resume. The attestation is operator-supplied: a document inside the
-  authority's `partition-rotations/` ceremony directory is refused before it is read, so a
-  resume can never be sourced from the copy a sealed inventory embeds.
+  ceremony's reason. A validation refusal (before the ceremony's first journal row) leaves no
+  durable rotation state; a refusal after durable progress — predecessor writers that do not
+  drain behind the `DRAINING` row, or a failure inside the post-flip finish — keeps that
+  cutover id's journal, refuses a different cutover id as still in progress, and is resumed by
+  re-running the same command with the same `--cutover-id`; generation 0's bytes are never
+  rewritten in either case (`docs/fabpub-pre-admission-ambiguity.md`, "The verb"). Re-running
+  after a completed rotation is the idempotent resume. The attestation is operator-supplied: a
+  document inside the authority's `partition-rotations/` ceremony directory is refused before
+  it is read, so a resume can never be sourced from the copy a sealed inventory embeds; the
+  verb canonicalises `--authority-root` once (`~` expanded, absolute, resolved) and hands that
+  path to both the guard and the ceremony.
 - Carried loader refusals closed as a class: `load_partition_receipt` raises
   `LegacyCutoverConflict` (not a bare `ValueError`) for receipt bytes that are not JSON or not
   an object, so every fail-closed `except LegacyCutoverConflict` around it stays closed; the

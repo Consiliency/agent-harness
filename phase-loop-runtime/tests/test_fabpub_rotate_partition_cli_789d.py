@@ -6,10 +6,15 @@ through ``cli.main`` over the D1 fixtures (imported, never copied) and pin:
 
 * the verb's success contract (``PartitionRotationResult.v1``, pointer flip,
   idempotent re-run, generation-0 bytes untouched);
-* every refusal is exit 1 with the verb's stderr prefix and leaves NO durable
-  rotation state — a missing / non-JSON / non-object attestation, a document
-  taken from inside the authority's ceremony directory (fable r9 O3), and a
-  ceremony refusal (an undisposed blocked key);
+* every refusal is exit 1 with the verb's stderr prefix; a refusal BEFORE the
+  ceremony's first journal row leaves NO durable rotation state — a missing /
+  non-JSON / non-object attestation, a document taken from inside the
+  authority's ceremony directory (fable r9 O3), and a ceremony refusal (an
+  undisposed blocked key);
+* a refusal AFTER durable progress (codex r1 F1: predecessor writers that do
+  not drain, refused behind the DRAINING journal row) keeps that cutover id's
+  journal, refuses a different cutover id as "still in progress", and resumes
+  to ACTIVE under the same id — generation-0 bytes untouched throughout;
 * the two carried loader/provenance refusals D4 lands: receipt bytes that are
   not JSON are a typed ``LegacyCutoverConflict`` from ``load_partition_receipt``
   (fable r10 O2), and a sealed inventory missing behind a receipt that names
@@ -19,6 +24,7 @@ through ``cli.main`` over the D1 fixtures (imported, never copied) and pin:
 
 from __future__ import annotations
 
+import builtins
 import json
 from pathlib import Path
 
@@ -39,6 +45,7 @@ from test_fabpub_partition_rotation_789d import (
     _complete_key,
     _generation_of,
     _journal_path,
+    _journal_states,
     _live,
     _release_all,
     _requires_fabpub,
@@ -154,30 +161,67 @@ def test_rotate_partition_cli_refuses_an_unreadable_attestation(tmp_path, monkey
     _assert_no_durable_rotation(p)
 
 
-def test_rotate_partition_cli_refuses_an_attestation_from_the_ceremony_directory(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("authority_spelling", ["default", "absolute", "tilde"])
+def test_rotate_partition_cli_refuses_an_attestation_from_the_ceremony_directory(
+    tmp_path, monkeypatch, capsys, authority_spelling
+):
     """fable r9 O3: the resume's attestation is operator-supplied, never the copy
     a sealed rotation inventory embeds.  A document under the authority's
-    ceremony directory is refused BEFORE it is read — even a valid one."""
+    ceremony directory is refused BEFORE it is read — even a valid one — under
+    every spelling of the authority root: the environment default, an explicit
+    absolute ``--authority-root``, and a literal ``~`` the shell did not expand
+    (fable r1 F1: the guard once resolved that spelling cwd-relative while the
+    ceremony expanded it, so the document inside was read and rotated from)."""
     fx, p, attestation = _blocked(tmp_path, monkeypatch)
+    extra: tuple = ()
+    if authority_spelling == "absolute":
+        extra = ("--authority-root", str(p.authority))
+    elif authority_spelling == "tilde":
+        monkeypatch.setenv("HOME", str(p.authority.parent))
+        extra = ("--authority-root", f"~/{p.authority.name}")
+        assert Path(f"~/{p.authority.name}").expanduser() == p.authority
     inside = _write(
         p.authority / ROTATION_CEREMONY_DIR / p.identity / f"{ROTATION_ID}.attestation.json",
         attestation,
     )
     live = _live()
     reads: list = []
-    real = Path.read_text
+    real_text, real_bytes, real_open, real_builtin_open = (
+        Path.read_text, Path.read_bytes, Path.open, builtins.open
+    )
 
-    def _spy(self, *args, **kwargs):
+    def _spy_text(self, *args, **kwargs):
         reads.append(Path(self))
-        return real(self, *args, **kwargs)
+        return real_text(self, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "read_text", _spy)
-    assert _run(p, inside) == 1
+    def _spy_bytes(self, *args, **kwargs):
+        reads.append(Path(self))
+        return real_bytes(self, *args, **kwargs)
+
+    def _spy_open(self, *args, **kwargs):
+        reads.append(Path(self))
+        return real_open(self, *args, **kwargs)
+
+    def _spy_builtin_open(file, *args, **kwargs):
+        if isinstance(file, (str, Path)):
+            reads.append(Path(file))
+        return real_builtin_open(file, *args, **kwargs)
+
+    # Every read seam the loader could take (grok r1: a `read_text`-only spy
+    # stays green if the loader switches to `read_bytes` / `open`).
+    monkeypatch.setattr(Path, "read_text", _spy_text)
+    monkeypatch.setattr(Path, "read_bytes", _spy_bytes)
+    monkeypatch.setattr(Path, "open", _spy_open)
+    monkeypatch.setattr(builtins, "open", _spy_builtin_open)
+    assert _run(p, inside, extra=extra) == 1
+    monkeypatch.setattr(builtins, "open", real_builtin_open)
+    monkeypatch.setattr(Path, "open", real_open)
+    monkeypatch.setattr(Path, "read_bytes", real_bytes)
+    monkeypatch.setattr(Path, "read_text", real_text)
     captured = capsys.readouterr()
     assert captured.err.startswith(PREFIX) and "operator-supplied" in captured.err, captured.err
     assert "rotation ceremony directory" in captured.err
     assert inside.resolve() not in [r.resolve() for r in reads], "the ceremony-directory document was read"
-    monkeypatch.setattr(Path, "read_text", real)
     assert not _journal_path(p).exists() and _generation_of(p.container) == 0
     assert live.load_partition_receipt(p.container) is not None
 
@@ -195,6 +239,62 @@ def test_rotate_partition_cli_ceremony_refusal_is_exit_one_without_writes(tmp_pa
     captured = capsys.readouterr()
     assert captured.out == "" and captured.err.startswith(PREFIX), captured.err
     _assert_no_durable_rotation(p)
+
+
+def test_rotate_partition_cli_post_journal_refusal_keeps_a_resumable_journal(tmp_path, monkeypatch, capsys):
+    """codex r1 F1: a refusal AFTER the ceremony's first durable step is NOT
+    "no durable rotation state".  Predecessor writers that never drain are
+    refused behind the DRAINING journal row: that row persists for the cutover
+    id, a DIFFERENT cutover id is refused as still in progress, and the SAME id
+    resumes to ACTIVE once the writers are gone.  Generation-0 bytes and the
+    writer latch (back to ACTIVE, nonce preserved) are untouched by the refusal.
+    The drain seam is ``WriterGenerationLatch.await_quiescent`` (the D1 idiom)."""
+    fx, p, attestation = _blocked(tmp_path, monkeypatch)
+    gen0 = _store_bytes(p.container)
+    path = _write(tmp_path / "operator" / "attestation.json", attestation)
+    live = _live()
+    latch = live.WriterGenerationLatch.for_store_root(p.container)
+    nonce_before = latch.read().generation
+    real_await = live.WriterGenerationLatch.await_quiescent
+
+    def _never_drains(self, *, worktree, timeout=60.0):
+        raise live.WriterGenerationBlocked(
+            "DRAINING did not reach zero before INVENTORY_SEALED: 1 held generation lease(s)"
+        )
+
+    monkeypatch.setattr(live.WriterGenerationLatch, "await_quiescent", _never_drains)
+    assert _run(p, path) == 1
+    captured = capsys.readouterr()
+    assert captured.out == "" and captured.err.startswith(PREFIX), captured.err
+    assert "predecessor writers did not drain" in captured.err, captured.err
+    # Durable progress: the DRAINING row is the ceremony's first journal write
+    # and it survives the refusal — this is what the docs must not deny.
+    assert _journal_states(p) == ["DRAINING"]
+    assert not (_ceremony_dir(p) / f"{ROTATION_ID}.inventory.json").exists()
+    assert not (p.container / GENERATIONS_DIR).exists()
+    assert _generation_of(p.container) == 0
+    assert _store_bytes(p.container) == gen0, "the refusal changed generation 0"
+    after = latch.read()
+    assert after.generation_state == "ACTIVE" and after.generation == nonce_before, (
+        "the refusal did not resume the writer latch with its nonce preserved"
+    )
+
+    # A different cutover id must not start over the in-progress journal.
+    other = f"{ROTATION_ID}-other"
+    assert _run(p, path, cutover_id=other) == 1
+    captured = capsys.readouterr()
+    assert "is still in progress" in captured.err and ROTATION_ID in captured.err, captured.err
+    assert not _journal_path(p, other).exists()
+    assert _journal_states(p) == ["DRAINING"]
+
+    # Once the predecessor writers are gone, the SAME id resumes to ACTIVE.
+    monkeypatch.setattr(live.WriterGenerationLatch, "await_quiescent", real_await)
+    assert _run(p, path) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["state"] == "ACTIVE" and result["generation"] == 1
+    assert _journal_states(p) == ["DRAINING", "INVENTORY_SEALED", "ARMED", "ACTIVE"]
+    assert _generation_of(p.container) == 1
+    assert _store_bytes(p.container) == gen0
 
 
 def test_rotate_partition_cli_wrong_schema_document_is_a_ceremony_refusal(tmp_path, monkeypatch, capsys):
