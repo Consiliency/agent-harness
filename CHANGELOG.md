@@ -14,12 +14,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   generation read-only, digests its store files under the predecessor's own
   `admissions.lock`, seals the reviewed `PartitionRotationAttestation.v1` and the digested
   bytes into a rotation inventory, mints a `LegacyRepositoryPartitionReceipt.v3` for the
-  successor under `generations/<n>/`, and flips the `generations/ACTIVE` pointer as the only
-  durable write of the cutover. Every refusal (an undisposed blocked key, digests that do not
-  match the predecessor, a predecessor that is not `epoch_blocked`, an authority that is not
-  a zero-history bootstrap, a pre-v3 runtime reading a rotated partition) is typed and
-  happens before any durable write; a crash at any instant of the ceremony leaves exactly
-  one complete, authenticated store for the resolver to name.
+  successor under `generations/<n>/`, and flips the `generations/ACTIVE` pointer as the
+  cutover's commit point: the ceremony journal, the sealed inventory, and the staged
+  successor are durable before the flip, and the flip is the one write that changes what
+  the resolver names. Every refusal (an undisposed blocked key, digests that do not match
+  the predecessor, a predecessor that is not `epoch_blocked`, an authority that is not a
+  zero-history bootstrap, a pre-v3 runtime reading a rotated partition) is typed; the
+  validation refusals happen before the ceremony's first journal row, and a refusal after
+  durable progress keeps that cutover id's journal for the resume the #818 entry below
+  describes. A crash at any instant of the ceremony leaves exactly one complete,
+  authenticated store for the resolver to name.
 - The v3 receipt binds the sealed inventory by digest; `sealed_partition_effects` refuses
   inventory bytes the receipt does not digest (`LegacyCutoverConflict: … is not the
   inventory the partition receipt digests`), on the ceremony path and on the publish path.
@@ -41,8 +45,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   durable rotation state; a refusal after durable progress — predecessor writers that do not
   drain behind the `DRAINING` row, or a failure inside the post-flip finish — keeps that
   cutover id's journal, refuses a different cutover id as still in progress, and is resumed by
-  re-running the same command with the same `--cutover-id`; generation 0's bytes are never
-  rewritten in either case (`docs/fabpub-pre-admission-ambiguity.md`, "The verb"). Re-running
+  re-running the same command with the same `--cutover-id` (the one exception is a successor
+  receipt damaged after the flip, which every re-run refuses rather than repairs); generation
+  0's bytes are never rewritten in either case (`docs/fabpub-pre-admission-ambiguity.md`,
+  "The verb"). Re-running
   after a completed rotation is the idempotent resume. The attestation is operator-supplied: a
   document inside the authority's `partition-rotations/` ceremony directory is refused before
   it is read, so a resume can never be sourced from the copy a sealed inventory embeds; the

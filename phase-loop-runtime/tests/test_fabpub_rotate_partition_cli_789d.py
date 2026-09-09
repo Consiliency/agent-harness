@@ -381,3 +381,107 @@ def test_sealed_partition_effects_names_a_missing_inventory(tmp_path, monkeypatc
         assert live.sealed_partition_effects(bare_receipt) == {}
     finally:
         bare_inventory.write_bytes(saved)
+
+
+def test_rotate_partition_cli_post_flip_damaged_successor_receipt_is_refused_not_repaired(tmp_path, monkeypatch, capsys):
+    """Docs "Recovery" (codex r2 F2): the ONE post-flip state a re-run does not
+    resume.  The ceremony authenticates the successor through the real loader
+    immediately before the flip, so a successor that later "carries no receipt"
+    is damage done AFTER the flip by something other than the ceremony.  The verb
+    refuses that partition on every re-run — the resolver's own ``generation 1
+    carries no partition receipt`` fires before the ceremony's resume branch —
+    leaving the journal at ARMED and the latch un-activated, and only
+    restoring the receipt bytes from outside the ceremony lets the same command
+    finish.  It never regenerates the receipt.
+    """
+    fx, p, attestation = _blocked(tmp_path, monkeypatch)
+    gen0 = _store_bytes(p.container)
+    path = _write(tmp_path / "operator" / "attestation.json", attestation)
+    live = _live()
+    with live.crash_at_rotation_step("after_pointer_flip"):
+        with pytest.raises(live._RotationCrash):
+            _run(p, path)
+    capsys.readouterr()
+    assert _journal_states(p) == ["DRAINING", "INVENTORY_SEALED", "ARMED"]
+    assert _generation_of(p.container) == 1
+    successor_receipt = p.container / GENERATIONS_DIR / "1" / live.RECEIPT_FILENAME
+    saved = successor_receipt.read_bytes()
+    latch = live.WriterGenerationLatch.for_store_root(p.container)
+    before = latch.read()
+    assert before.generation_state != "ACTIVE"
+
+    successor_receipt.unlink()
+    assert _run(p, path) == 1
+    err = capsys.readouterr().err
+    assert err.startswith(PREFIX)
+    assert "generation 1 carries no partition receipt" in err
+    assert not successor_receipt.exists(), "the verb regenerated a successor receipt it never authenticated"
+    assert _journal_states(p) == ["DRAINING", "INVENTORY_SEALED", "ARMED"]
+    assert _generation_of(p.container) == 1
+    after = latch.read()
+    assert after.generation_state == before.generation_state and after.generation == before.generation
+    assert _store_bytes(p.container) == gen0
+
+    successor_receipt.write_bytes(saved)
+    assert _run(p, path) == 0
+    capsys.readouterr()
+    assert _journal_states(p) == ["DRAINING", "INVENTORY_SEALED", "ARMED", "ACTIVE"]
+    assert latch.read().generation_state == "ACTIVE"
+    assert _store_bytes(p.container) == gen0
+
+
+def test_rotate_partition_cli_changed_bytes_refusal_resumes_the_latch_and_takes_a_reattestation(tmp_path, monkeypatch, capsys):
+    """Docs "Refusals after durable progress", the changed-bytes arm (fable r2
+    O1: unpinned before this test — ``resume_active`` at the changed-bytes site
+    could be deleted with every rotation test green).  A predecessor whose
+    digested bytes moved between attestation and drain is refused behind the
+    ``DRAINING`` row with the latch resumed to ACTIVE (nonce preserved); the
+    stale attestation is refused zero-write on the re-run; a re-written
+    attestation over the current bytes resumes the same cutover id to ACTIVE.
+    """
+    fx, p, attestation = _blocked(tmp_path, monkeypatch)
+    path = _write(tmp_path / "operator" / "attestation.json", attestation)
+    live = _live()
+    latch = live.WriterGenerationLatch.for_store_root(p.container)
+    nonce_before = latch.read().generation
+    evidence = p.container / "evidence.jsonl"
+    real_await = live.WriterGenerationLatch.await_quiescent
+
+    def _last_writer_lands(self, *, worktree, timeout=60.0):
+        # A writer that landed under the predecessor lock's shadow: the drain
+        # completes, but the digested bytes are no longer the attested bytes.
+        # The row re-states the last evidence row (same key, same state), so
+        # adjudication is unchanged and only the digest moves.
+        last = evidence.read_text(encoding="utf-8").splitlines()[-1]
+        with evidence.open("a", encoding="utf-8") as handle:
+            handle.write(last + "\n")
+        return real_await(self, worktree=worktree, timeout=timeout)
+
+    monkeypatch.setattr(live.WriterGenerationLatch, "await_quiescent", _last_writer_lands)
+    assert _run(p, path) == 1
+    err = capsys.readouterr().err
+    assert err.startswith(PREFIX)
+    assert "changed between attestation and drain; re-attest over the current bytes" in err
+    monkeypatch.setattr(live.WriterGenerationLatch, "await_quiescent", real_await)
+    assert _journal_states(p) == ["DRAINING"]
+    assert not (_ceremony_dir(p) / f"{ROTATION_ID}.inventory.json").exists()
+    assert _generation_of(p.container) == 0
+    moved = _store_bytes(p.container)
+    after = latch.read()
+    assert after.generation_state == "ACTIVE" and after.generation == nonce_before
+
+    # The stale attestation is a validation refusal on the re-run: zero-write.
+    assert _run(p, path) == 1
+    err = capsys.readouterr().err
+    assert "predecessor_store_digests do not match" in err
+    assert _journal_states(p) == ["DRAINING"]
+    assert latch.read().generation_state == "ACTIVE"
+
+    # Re-attest over the current bytes: the same cutover id resumes to ACTIVE.
+    reattested = _write(tmp_path / "operator" / "attestation-2.json", _attestation(p))
+    assert _run(p, reattested) == 0
+    capsys.readouterr()
+    assert _journal_states(p) == ["DRAINING", "INVENTORY_SEALED", "ARMED", "ACTIVE"]
+    assert _generation_of(p.container) == 1
+    assert latch.read().generation_state == "ACTIVE"
+    assert _store_bytes(p.container) == moved
