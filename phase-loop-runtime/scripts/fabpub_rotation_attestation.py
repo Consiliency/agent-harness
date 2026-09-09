@@ -39,9 +39,10 @@ DIGESTED = (
 )
 PREFIX = "publish_committed_branch\0"
 # Path names that mean "live broker or ceremony state, never an operator file".
-FORBIDDEN_PARTS = frozenset(
-    {"phase-loop-fabpub-broker-v1", "partition-rotations", "generations"}
-)
+# ``generations`` is deliberately NOT here: a generational store only exists
+# inside a ``phase-loop-fabpub-broker-v1`` namespace, which this already catches,
+# and listing it would refuse an operator directory that merely uses the word.
+FORBIDDEN_PARTS = frozenset({"phase-loop-fabpub-broker-v1", "partition-rotations"})
 # ``LegacyRepositoryPartitionReceipt``'s schema -- the generation-0 container
 # receipt.  A rotated generation carries ``...v3`` (``RotatedPartitionReceipt``);
 # refuse anything that is not the container shape rather than digest the wrong

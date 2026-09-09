@@ -50,9 +50,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   ceremony's own functions, reports the drain facts, and prints the verdict the verb would
   reach, including its two resume paths: a pre-flip resume re-checks that the ceremony's
   sealed inventory derives from the attestation supplied, a post-flip re-run is reported as
-  `already_completed` rather than a refusal, and the writer-generation latch — the verb's
-  last gate before its first journal row — is checked, so an absent or `LEGACY_OPEN` latch
-  no longer reads as `ready`). The attestation builder refuses a `--out` inside a broker
+  `already_completed` rather than a refusal, and the writer-generation latch is checked on
+  both paths — the pre-journal gate on a first execution, and the post-flip finish's own
+  predicate (latch present, state `DRAINING` or `ACTIVE`, `ARMED` marker deliberately not
+  required because the finish recreates it) on a completion — so an absent or
+  `LEGACY_OPEN` latch no longer reads as a go on either path). The attestation builder refuses a `--out` inside a broker
   namespace, a generational store, or an authority's ceremony directory, refuses a
   `--container` that is not the generation-0 receipt shape, digests an absent store file as
   `sha256(b"")` the way the ceremony does, and emits `owner_nonce`/`transaction_id` only

@@ -117,18 +117,29 @@ def main() -> int:
         # unreadable or malformed document into a verdict rather than a
         # traceback -- the CLI's ``except`` list catches OSError/ValueError too.
         def _attestation():
-            if a.attestation.resolve().is_relative_to(
-                (authority / L.ROTATION_CEREMONY_DIR).resolve()
+            if (
+                a.attestation.expanduser()
+                .resolve()
+                .is_relative_to((authority / L.ROTATION_CEREMONY_DIR).resolve())
             ):
                 raise L.PartitionRotationRefused(
                     "attestation path lies under the authority's partition-rotations/"
                 )
             try:
-                return json.loads(a.attestation.read_text(encoding="utf-8"))
+                document = json.loads(
+                    a.attestation.expanduser().read_text(encoding="utf-8")
+                )
             except (OSError, ValueError) as error:
                 raise L.PartitionRotationRefused(
                     f"attestation {a.attestation} is not readable JSON: {error}"
                 ) from error
+            if not isinstance(document, dict):
+                # the CLI's own text (``_load_rotation_attestation``), so the
+                # operator reads the same refusal from either tool.
+                raise L.PartitionRotationRefused(
+                    f"the attestation at {a.attestation} is not a JSON object"
+                )
+            return document
 
         attestation = _check("attestation_readable", _attestation, report)
 
@@ -267,6 +278,15 @@ def main() -> int:
                 ),
                 report,
             )
+
+            def _armed():
+                if "ARMED" not in states:
+                    raise L.PartitionRotationRefused(
+                        f"generation {generation} of {identity} is routed but rotation "
+                        f"{cutover_id!r} never reached ARMED: {states}"
+                    )
+
+            _check("completion_journal_armed", _armed, report)
             report["verdict"] = "already_completed"
             report["note"] = (
                 f"generation {generation} is already {cutover_id!r}'s successor; the verb would "
@@ -346,26 +366,51 @@ def main() -> int:
 
             _check("sealed_inventory_derives", _sealed, report)
 
-        # -- the writer latch (the verb's last pre-journal gate) ---------------
+        # -- the writer latch ---------------------------------------------
+        # Both paths gate on the SAME repository-common latch, and neither row
+        # below is ever recorded without evaluating its body: a check that
+        # returns early would report `ok` for a gate that never ran.
         latch = L.WriterGenerationLatch(snapshot.namespace_root)
 
-        def _latch_admits():
-            if report.get("verdict") == "already_completed":
-                # The post-flip finish drains under the SUCCESSOR's lock and
-                # does not re-gate on the predecessor's latch state.
-                return
+        def _latch_state():
             if not latch.exists():
                 raise L.PartitionRotationRefused(
                     f"{identity} has no writer generation latch"
                 )
-            latch_state = latch.read().generation_state
-            if latch_state not in ("ACTIVE", "DRAINING"):
-                raise L.PartitionRotationRefused(
-                    f"writer generation latch of {identity} is {latch_state}; "
-                    "rotation requires ACTIVE"
-                )
+            return latch.read().generation_state
 
-        _check("writer_latch_admits_rotation", _latch_admits, report)
+        if report.get("verdict") == "already_completed":
+            # ``_finish_rotation_after_flip`` runs under the SUCCESSOR's lock and
+            # applies its own latch gates: existence (live.py:4845) and then
+            # ``activate()``, which returns for ACTIVE and refuses anything but
+            # DRAINING (live.py:4658-4663).  Both sit AFTER the ACTIVE journal
+            # append, so a refusal there has a durable write behind it and must
+            # never read as a go.
+            #
+            # It does NOT gate on the ARMED marker: ``mark_armed()`` runs first
+            # (live.py:4847) and creates it, so requiring it here would be a
+            # false refusal.  Witnessed: with the marker deleted and the latch
+            # DRAINING, the verb completes and recreates it.
+            def _completion_latch():
+                state = _latch_state()
+                if state not in ("DRAINING", "ACTIVE"):
+                    raise L.PartitionRotationRefused(
+                        f"the post-flip finish would refuse: illegal generation transition "
+                        f"{state} -> ACTIVE"
+                    )
+
+            _check("completion_writer_latch", _completion_latch, report)
+        else:
+
+            def _latch_admits():
+                state = _latch_state()
+                if state not in ("ACTIVE", "DRAINING"):
+                    raise L.PartitionRotationRefused(
+                        f"writer generation latch of {identity} is {state}; "
+                        "rotation requires ACTIVE"
+                    )
+
+            _check("writer_latch_admits_rotation", _latch_admits, report)
 
         # -- drain facts (what DRAINING will measure; read-only, no latch lock) --
         held = latch.held_leases()

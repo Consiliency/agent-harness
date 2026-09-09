@@ -118,8 +118,8 @@ What the builder **enforces** (exit 2, nothing written):
   generation-0 container shape. Pointed at a rotated store it refuses rather
   than digest the wrong generation's bytes.
 - `--out` is an operator path: not under a `phase-loop-fabpub-broker-v1/`
-  namespace, a `generations/` store, or an authority's `partition-rotations/`
-  ceremony directory. (The verb independently refuses to *read* an attestation
+  namespace (which is where every generational store lives) and not under an
+  authority's `partition-rotations/` ceremony directory. (The verb independently refuses to *read* an attestation
   from the ceremony directory — `cli.py::_load_rotation_attestation`; this
   refuses to *write* one there, so a mistyped `--out` cannot land on a sealed
   inventory.)
@@ -174,15 +174,23 @@ writer-generation latch) by calling the same functions, then reports the drain
 facts the verb will meet *after* its first row: the armed marker, held lease
 files, and live pre-FABPUB writers. Verdicts:
 
-- `ready` — every validation check passes and no lease file is held.
-- `ready_but_drain_will_block` — validation passes but lease files are held;
-  the verb would write `DRAINING` and then refuse (§5, run 1). Fix the leases
-  (§6) before executing.
+- `ready` — every validation check passes, no lease file is held, and no live
+  pre-FABPUB writer is present.
+- `ready_but_drain_will_block` — validation passes but a lease file is held or
+  a live pre-FABPUB writer is present; the verb would write `DRAINING` and then
+  refuse (§5, run 1). Clear the cause (§6) before executing.
 - `already_completed` — the active generation is already this cutover id's
   successor. The verb's post-flip completion path would finish idempotently;
   the preflight mirrors that path, so it adjudicates the **predecessor**
-  generation and requires the sealed inventory to derive from *this*
-  attestation (see §7).
+  generation, requires the sealed inventory to derive from *this* attestation
+  (see §7), requires the journal to have reached `ARMED`, and applies the
+  completion path's **own** latch predicate: the latch must exist and its state
+  must be `DRAINING` or `ACTIVE`. Both of those gates sit *after* the
+  completion path appends its `ACTIVE` journal row, so a refusal there has a
+  durable write behind it and must never read as a go. The `ARMED` marker is
+  deliberately **not** required: the finish calls `mark_armed()` before
+  `activate()` and so recreates it, and requiring it would refuse a rotation
+  the verb completes.
 - `would_refuse` — a validation check refuses; the report names it. Nothing
   durable would have been written.
 
@@ -251,44 +259,62 @@ without closing leaves the file behind, and the lease carries no pid or
 liveness token (Consiliency/agent-harness#820). The ceremony counts files, so an
 orphan blocks the drain exactly like a live writer.
 
-**No check can prove a lease is orphaned.** `acquire` writes a JSON file and
-returns; it takes no `flock` and records no pid, so absence of a holder is
-unobservable (that is exactly Consiliency/agent-harness#820). The procedure
-below therefore does not *detect* orphans — it **removes the possibility of a
-holder** by stopping every candidate process, and only then treats the
-remaining files as debris.
+**No check can prove a lease is orphaned, and the scans below are not
+jointly complete either.** `acquire` writes a JSON file and returns: it takes no
+`flock`, records no pid, and need not keep a descriptor open. A broker embedded
+in a process whose argv names neither `phase-loop` nor `run-train`, whose cwd is
+outside the worktree, and which holds no open descriptor under the namespace,
+escapes **all three** scans at once; a detached child reparents to init and
+disappears from `ps --ppid <parent>`. That is Consiliency/agent-harness#820.
 
-1. **Stop the candidates and their descendants, and suppress new starts.**
-   Quiesce whatever would start a broker on this host (the phase-loop driver
-   session, any scheduled run-train, any agent loop that publishes) for the
-   duration of the ceremony. Then, for each candidate pid, stop the whole
-   process group (`kill -TERM -<pgid>`, never `pkill -f`), and confirm the
-   descendants are gone (`ps --ppid <pid>`) — a forked child can hold the
-   broker after its parent exits.
-2. **Enumerate candidates three ways**, because no single scan is complete:
-   - `fabpub_rotation_preflight.py` — an empty `live_pre_fabpub_writers` list.
-     This matches only an exact `run-train` argv element behind a `phase*`
-     launcher (`_iter_live_run_train_processes`), so it is necessary, not
-     sufficient.
-   - `ps -eo pid,pgid,lstart,args | grep -E 'phase[-_]loop|run-train'` — catches
-     differently-launched runtimes, but not a broker embedded in a process
-     started as `python3 <script>.py`.
-   - the kernel's own view, which needs no argv guess:
-     `ls -l /proc/[0-9]*/cwd 2>/dev/null | grep <worktree>` and
-     `ls -l /proc/[0-9]*/fd 2>/dev/null | grep phase-loop-fabpub-broker-v1`.
-3. **Re-run the enumeration after the stop** and require all three empty.
-   Only then is the lease-mtime argument admissible as corroboration: each
-   lease predates every process still running (the four omniagent-plus leases
-   are dated 2026-09-04 10:47/11:08 and 2026-09-05 20:55/21:01; the
-   2026-09-05 incident's runner is gone).
+So the scans are **corroboration, never authorisation**. What authorises the
+deletion is a **shutdown boundary**: an instant after which no process that
+could hold a lease is running, established by process *start time* rather than
+by argv. Two boundaries are admissible:
 
-Then, with the go recorded on the issue and new starts still suppressed,
-remove the lease files (and only those):
+- **(a) A maintenance reboot** of the host with every phase-loop / agent
+  launcher disabled *before* it comes back, so nothing can take a lease between
+  the boundary and the ceremony. This is the default; take it unless (b) is
+  demonstrably cheaper.
+- **(b) A verified full stop**: every launcher disabled, then every process on
+  the host that started before the newest lease file is accounted for and
+  stopped — by process group (`kill -TERM -<pgid>`, never `pkill -f`) — and the
+  survivors are enumerated by start time (`ps -eo pid,pgid,lstart,args
+  --sort=lstart`) rather than by name, because a reparented child is invisible
+  to `ps --ppid`.
+
+With the boundary established and new starts still suppressed, corroborate:
+
+1. `fabpub_rotation_preflight.py` reports an empty `live_pre_fabpub_writers`
+   list. It matches only an exact `run-train` argv element behind a `phase*`
+   launcher (`_iter_live_run_train_processes`) — necessary, not sufficient.
+2. `ps -eo pid,pgid,lstart,args | grep -E 'phase[-_]loop|run-train'` — catches
+   differently-launched runtimes, not an embedded broker.
+3. The kernel's own view, which needs no argv guess:
+   `ls -l /proc/[0-9]*/cwd 2>/dev/null | grep <worktree>` and
+   `ls -l /proc/[0-9]*/fd 2>/dev/null | grep phase-loop-fabpub-broker-v1`.
+
+Require all three empty, and require every lease file to predate the boundary
+(the four omniagent-plus leases are dated 2026-09-04 10:47/11:08 and 2026-09-05
+20:55/21:01; the 2026-09-05 incident's runner is gone).
+
+Then, with the go recorded on the issue and new starts still suppressed, remove
+the lease files (and only those):
 `rm <namespace>/generation-leases/<nonce>.json`. Do not touch
 `writer-generation.json`, `writer-generation.lock`, or `cutover-armed`. Re-run
-the preflight; expect the string `ready`. Keep new starts suppressed through
-§7 — a broker that starts between the removal and the flip takes a fresh
-lease and the drain blocks again.
+the preflight; expect the string `ready`. Keep new starts suppressed through §7
+— a broker that starts between the removal and the flip takes a fresh lease and
+the drain blocks again.
+
+**What the residual buys, if a holder survived anyway.** Deleting its lease
+destroys the drain's evidence, which is why the boundary and not the scans is
+the authorisation. It does not, however, let that holder corrupt the retired
+generation silently: its writes through the broker API are fenced by the
+`DRAINING` latch and by the successor's generation nonce after the flip, and any
+change to the predecessor's digested bytes between the attestation and the drain
+refuses the ceremony fail-closed (`the predecessor store changed between
+attestation and drain; re-attest over the current bytes`). The failure mode is a
+refused ceremony or a fenced writer, not a silent divergence.
 
 ## 7. Execute — STATE CHANGE, needs go
 
