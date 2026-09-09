@@ -20,10 +20,13 @@ through ``cli.main`` over the D1 fixtures (imported, never copied) and pin:
   (fable r10 O2), and a sealed inventory missing behind a receipt that names
   completed keys is named as missing by ``sealed_partition_effects``
   (fable r12 O2);
-* the docs' post-flip "Recovery" states (codex r2 F2, r3 F1/F2): a damaged
-  successor receipt or sealed inventory is refused on every re-run naming the
-  damaged link, never regenerated; a crash after the ``ACTIVE`` row owes only
-  the latch activation and the same command finishes it.
+* the docs' post-flip "Recovery" rule (codex r2 F2, r3 F1/F2, r4 F1; fable r4
+  F1/F2): a re-run never recreates or rewrites a file the ceremony did not
+  write at the step it resumes — a damaged successor receipt, sealed
+  inventory, or generation-0 digested store file, and a missing writer latch
+  after the ``ACTIVE`` row, are each refused on every re-run until restored
+  from outside, and the same command then finishes; a crash after the
+  ``ACTIVE`` row owes only the latch activation.
 """
 
 from __future__ import annotations
@@ -574,5 +577,90 @@ def test_rotate_partition_cli_crash_after_the_active_row_owes_only_the_latch_act
     result = json.loads(out)
     assert result["state"] == "ACTIVE" and result["generation"] == 1
     assert _journal_path(p).read_bytes() == journal_bytes, "the resume appended a second ACTIVE row"
+    assert latch.read().generation_state == "ACTIVE"
+    assert _store_bytes(p.container) == gen0
+
+
+def test_rotate_partition_cli_post_flip_predecessor_drift_is_refused_until_restored(tmp_path, monkeypatch, capsys):
+    """Generation 0's digested store files are a link of the successor's chain.
+
+    Docs "Recovery": a byte added to generation 0's ``evidence.jsonl`` after the
+    flip is refused on every re-run through the loader's predecessor-digest
+    check (before the resume branch), the journal and latch are untouched, and
+    restoring the bytes lets the same command finish (fable r4 F1).
+    """
+    fx, p, attestation = _blocked(tmp_path, monkeypatch)
+    gen0 = _store_bytes(p.container)
+    path = _write(tmp_path / "operator" / "attestation.json", attestation)
+    live = _live()
+    with live.crash_at_rotation_step("after_pointer_flip"):
+        with pytest.raises(live._RotationCrash):
+            _run(p, path)
+    capsys.readouterr()
+    assert _journal_states(p) == ["DRAINING", "INVENTORY_SEALED", "ARMED"]
+    journal_bytes = _journal_path(p).read_bytes()
+    latch = live.WriterGenerationLatch.for_store_root(p.container)
+    before = latch.read()
+
+    evidence = p.container / "evidence.jsonl"
+    evidence_bytes = evidence.read_bytes()
+    evidence.write_bytes(evidence_bytes + b"\n")
+
+    for _ in range(2):
+        assert _run(p, path) == 1
+        err = capsys.readouterr().err
+        assert err.startswith(PREFIX)
+        assert "predecessor generation 0" in err and "drifted since rotation" in err, err
+        assert "evidence.jsonl" in err, err
+    assert evidence.read_bytes() == evidence_bytes + b"\n", "the re-run rewrote generation 0"
+    assert _journal_path(p).read_bytes() == journal_bytes
+    assert latch.read() == before
+    assert _generation_of(p.container) == 1
+
+    evidence.write_bytes(evidence_bytes)
+    assert _run(p, path) == 0
+    capsys.readouterr()
+    assert _journal_states(p) == ["DRAINING", "INVENTORY_SEALED", "ARMED", "ACTIVE"]
+    assert latch.read().generation_state == "ACTIVE"
+    assert _store_bytes(p.container) == gen0
+
+
+def test_rotate_partition_cli_missing_latch_after_the_active_row_is_refused_until_restored(tmp_path, monkeypatch, capsys):
+    """A missing writer latch after the ``ACTIVE`` row is never recreated.
+
+    Docs "Recovery" (codex r4 F1, fable r4 F2): the finish refuses ``has no
+    writer generation latch`` on every re-run, the journal keeps its single
+    ``ACTIVE`` row byte-for-byte, and restoring the latch file lets the same
+    command activate it.
+    """
+    fx, p, attestation = _blocked(tmp_path, monkeypatch)
+    gen0 = _store_bytes(p.container)
+    path = _write(tmp_path / "operator" / "attestation.json", attestation)
+    live = _live()
+    with live.crash_at_rotation_step("after_journal_active"):
+        with pytest.raises(live._RotationCrash):
+            _run(p, path)
+    capsys.readouterr()
+    assert _journal_states(p) == ["DRAINING", "INVENTORY_SEALED", "ARMED", "ACTIVE"]
+    journal_bytes = _journal_path(p).read_bytes()
+    latch = live.WriterGenerationLatch.for_store_root(p.container)
+    assert latch.read().generation_state == "DRAINING"
+    latch_bytes = latch.path.read_bytes()
+    latch.path.unlink()
+
+    for _ in range(2):
+        assert _run(p, path) == 1
+        err = capsys.readouterr().err
+        assert err.startswith(PREFIX)
+        assert "has no writer generation latch" in err, err
+        assert not latch.path.exists(), "the re-run recreated the writer latch"
+    assert _journal_path(p).read_bytes() == journal_bytes
+    assert _generation_of(p.container) == 1
+
+    latch.path.write_bytes(latch_bytes)
+    assert _run(p, path, as_json=True) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["state"] == "ACTIVE" and result["generation"] == 1
+    assert _journal_path(p).read_bytes() == journal_bytes
     assert latch.read().generation_state == "ACTIVE"
     assert _store_bytes(p.container) == gen0

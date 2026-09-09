@@ -45,9 +45,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   durable rotation state; a refusal after durable progress — predecessor writers that do not
   drain behind the `DRAINING` row, or a failure inside the post-flip finish — keeps that
   cutover id's journal, refuses a different cutover id as still in progress, and is resumed by
-  re-running the same command with the same `--cutover-id` (the one exception is a link of the
-  successor's authentication chain — its receipt, the ceremony journal, the sealed inventory —
-  damaged after the flip, which every re-run refuses naming the link rather than repairs);
+  re-running the same command with the same `--cutover-id` (a file the ceremony did not write at
+  that step — a link of the successor's authentication chain, or the writer latch — damaged after
+  the flip is refused by every re-run rather than repaired, until its bytes are restored from
+  outside);
   generation 0's bytes are never rewritten in either case
   (`docs/fabpub-pre-admission-ambiguity.md`, "The verb"). Re-running
   after a completed rotation is the idempotent resume. The attestation is operator-supplied: a

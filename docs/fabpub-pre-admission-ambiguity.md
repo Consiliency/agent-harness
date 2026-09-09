@@ -160,25 +160,26 @@ verb does not paper over the difference:
   same attestation except after a `re-attest` refusal: the ceremony resumes
   from the journal's last durable state (a drain refusal re-waits for the
   writers; a post-flip stop re-runs the finish, which appends the `ACTIVE` row
-  only when it is absent and then activates the latch). One post-flip state is
-  **not** resumable. The ceremony authenticates the successor through the real
-  loader immediately before the flip, and that authentication is a chain —
-  `generations/<n>/partition-receipt.json`, the ceremony journal
-  `partition-rotations/<identity>/<id>.journal.jsonl`, the sealed inventory
-  `<id>.inventory.json` beside it, and the container receipt — so a re-run
-  that refuses the successor's authentication means one link of that chain
-  was damaged *after* the flip by something other than the ceremony (which
-  never rewrites or deletes any of them). The re-run refuses that partition
-  rather than repairing it, and the refusal names the link: a missing receipt
-  is the resolver's own routing refusal (`generation <n> carries no partition
-  receipt`), any other damaged link is `active generation <n> … does not
-  authenticate: <link>` (for example `the sealed rotation inventory digest
-  drifted`), both raised before the ceremony's resume branch; a sealed
-  inventory that still authenticates but is no longer what re-adjudicating the
-  attestation derives is refused by the resume's derivation check. There is no
-  repair verb: the damaged link's bytes must be restored from outside the
-  ceremony — restoring a different link changes nothing — and the same command
-  then finishes (Consiliency/agent-harness#789 carries the gap). A
+  only when it is absent and then activates the latch). A re-run never
+  recreates or rewrites a file the ceremony did not write at the step it
+  resumes. After the flip the successor is authenticated through the real
+  loader before the ceremony's resume branch, and that authentication is a
+  chain — `generations/<n>/partition-receipt.json`, the container receipt, the
+  ceremony journal `partition-rotations/<identity>/<id>.journal.jsonl`, the
+  sealed inventory `<id>.inventory.json` beside it, and generation 0's
+  digested store files (`admissions.jsonl`, `evidence.jsonl`,
+  `partition-receipt.json`, `adapter-start-owner.json`) — and the finish then
+  requires the writer latch to exist and still be `DRAINING`. Any of these
+  damaged *after* the flip by something other than the ceremony is refused on
+  every re-run and never repaired; the refusal identifies the failing check
+  (for example `the sealed rotation inventory digest drifted`, or `has no
+  writer generation latch`), not necessarily the damaged file — when it
+  reports that the receipt bytes and the sealed partition disagree, either
+  side may have drifted, so compare both against pre-flip copies. A sealed
+  inventory that still authenticates but is no longer what re-adjudicating
+  the attestation derives is refused by the resume's derivation check. There
+  is no repair verb: restore the damaged bytes from outside the ceremony and
+  the same command finishes (Consiliency/agent-harness#789 carries the gap). A
   **different** cutover id is refused while a journal for this
   identity is not yet `ACTIVE` — `rotation '<id>' for <identity> is still in
   progress; resume it under its own cutover_id before starting '<other>'` — so
