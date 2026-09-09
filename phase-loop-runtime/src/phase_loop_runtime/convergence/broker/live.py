@@ -4012,7 +4012,9 @@ def rotate_blocked_partition(
         # The pointer already names THIS ceremony's successor: everything up to
         # the flip is durable, so only the ACTIVE row and the latch activation
         # can be outstanding (a crash after the flip, or a completed ceremony
-        # re-run).  Both are idempotent; finish them under the predecessor lock.
+        # re-run).  Both are idempotent; finish them under the SUCCESSOR's lock,
+        # the one post-flip completion path every instance of this ceremony
+        # shares (codex r3 finding 1).
         return _finish_rotation_after_flip(
             snapshot, container, active, generation, journal, cutover_id, active_receipt
         )
@@ -4242,21 +4244,20 @@ def rotate_blocked_partition(
                 _maybe_rotation_crash("after_journal_armed")
                 _write_active_pointer(generations, successor_generation)
                 _maybe_rotation_crash("after_pointer_flip")
-                if "ACTIVE" not in states:
-                    _rotation_journal_append(journal, cutover_id, "ACTIVE")
-                    states.append("ACTIVE")
-                _maybe_rotation_crash("after_journal_active")
-                latch.activate()
             finally:
                 fcntl.flock(lock, fcntl.LOCK_UN)
     except _RotationCompletedElsewhere as done:
-        # Generation ``generation``'s lock is released; the finish takes the
-        # successor's.
-        return _finish_rotation_after_flip(
-            snapshot, container, successor, successor_generation, journal, cutover_id, done.receipt
-        )
+        receipt = done.receipt
     assert receipt is not None
-    return PartitionRotationOutcome(cutover_id, "ACTIVE", successor, active, successor_generation, receipt)
+    # The pointer names the successor and generation ``generation``'s lock is
+    # released.  The ACTIVE row and the latch activation are ONE completion
+    # path shared by every instance of this ceremony — the live original, a
+    # crash-resume, a same-id retry that found the pointer already flipped —
+    # and it runs under the SUCCESSOR's lock with the journal re-read there,
+    # so two instances can never both append ACTIVE (codex r3 finding 1).
+    return _finish_rotation_after_flip(
+        snapshot, container, successor, successor_generation, journal, cutover_id, receipt
+    )
 
 
 def _refuse_other_rotations_in_progress(
@@ -4304,9 +4305,13 @@ def _finish_rotation_after_flip(
     ``admissions.lock``: the latch is repository-common, and the next ceremony
     out of this generation drains it under exactly that lock, so a stale
     retry of THIS ceremony serialises behind it instead of activating the
-    latch out from under its drain (codex r2 finding 1).  Under the lock the
-    pointer and the other journals are re-read; a ceremony in progress under
-    another ``cutover_id`` owns the latch and this finish refuses, typed.
+    latch out from under its drain (codex r2 finding 1).  This is the ONLY
+    post-flip completion path: the live original releases the predecessor's
+    lock after the flip and comes here too, so a same-id retry racing it
+    serialises on this lock and the journal re-read under it keeps the ACTIVE
+    row single (codex r3 finding 1).  Under the lock the pointer and the
+    other journals are re-read; a ceremony in progress under another
+    ``cutover_id`` owns the latch and this finish refuses, typed.
     """
     import fcntl
 
