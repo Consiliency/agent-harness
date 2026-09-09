@@ -181,6 +181,12 @@ DERIVATION_REFUSAL = "not the inventory this predecessor and attestation derive"
 #: unprefixed ``BLOCKED_KEY`` of the sibling module is used ONLY where a
 #: non-publish lineage must be REFUSED (A10).
 ROTATED_KEY = "publish_committed_branch\x00ah789d-prior-ambiguous-publish"
+#: A COMPLETED (terminal-observed) publish lineage the honest predecessor
+#: ledger carries; a swapped ledger drops it (A11s/A11t, codex r10 P1).
+TERMINAL_KEY = "publish_committed_branch\x00ah789d-terminal-observed-publish"
+#: One honest admission at epoch 3 (a bootstrapped container has no admissions
+#: log; the swap of A11s appends epoch 99 to THIS).
+HONEST_ADMISSIONS = b'{"epoch": 3}\n'
 EXPECTED_CRASH_STEPS = (
     "before_generations_rename",
     "after_generations_rename",
@@ -791,15 +797,13 @@ A0_ALLOW_LIST = (
     ("live.py", "_onboard_zero_legacy_repository_under_seal", "target_namespace"),
     ("live.py", "_partition_layout", "parent.parent"),
     ("live.py", "_plan_partitions", "target_namespace"),
-    ("live.py", "_read_predecessor_ledger", "store_root"),
     ("live.py", "_receipt_bootstrap_claim", "parent.parent"),
     ("live.py", "_receipt_bootstrap_claim", "target_namespace"),
     ("live.py", "_receipt_from_partition", "target_namespace"),
     ("live.py", "_require_rotation_receipt_binds", "target_namespace"),
-    ("live.py", "_rotation_admissions_high_water", "store_root"),
     ("live.py", "_rotation_base_receipt", "target_namespace"),
-    ("live.py", "_rotation_owner", "store_root"),
     ("live.py", "_rotation_receipt_from_partition", "target_namespace"),
+    ("live.py", "_snapshot_predecessor", "store_root"),
     ("live.py", "_target_store_lock_paths", "target_namespace"),
     ("live.py", "authenticated_partition_floor", "store_root"),
     ("live.py", "bootstrap_zero_history_authority", '"repositories"'),
@@ -859,11 +863,9 @@ A0_CLASSIFICATION = {
         "PartitionRotationOutcome",
         "_archive_targets_repository",
         "_plan_partitions",
-        "_read_predecessor_ledger",
         "_receipt_bootstrap_claim",
-        "_rotation_admissions_high_water",
         "_rotation_base_receipt",
-        "_rotation_owner",
+        "_snapshot_predecessor",
         "run_legacy_broker_cutover",
     },
 }
@@ -1539,6 +1541,47 @@ def test_partition_rotation_a7_attestation_binds_attempt_identity_and_is_single_
         second.receipt.adjudicated_effect_dispositions[key]["attestation_digest"] != digest,
         "generation 2 pinned the spent attestation digest",
     )
+
+
+def _predecessor_read_spy(monkeypatch, root: Path) -> list[str]:
+    """Record EVERY filesystem touch of a path under ``root`` (A11t).
+
+    Wraps the ``pathlib`` reads/stats, ``builtins.open`` and the ``os`` reads
+    and stats; each wrapper notes ``<site>:<path>`` when the first argument is a
+    path at or under ``root`` and then delegates.  Nothing under ``root`` may be
+    touched by an adjudication that already holds its snapshot.
+    """
+    import builtins
+
+    reads: list[str] = []
+    prefix = os.fspath(Path(root))
+
+    def _note(target, site: str) -> None:
+        if not isinstance(target, (str, bytes, os.PathLike)):
+            return
+        text = os.fspath(target)
+        if isinstance(text, bytes):
+            text = text.decode("utf-8", errors="replace")
+        if text == prefix or text.startswith(prefix + os.sep):
+            reads.append(f"{site}:{text}")
+
+    def _spy(owner, name: str, site: str) -> None:
+        real = getattr(owner, name)
+
+        def wrapper(*args, **kwargs):
+            if args:
+                _note(args[0], site)
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(owner, name, wrapper)
+
+    for name in ("open", "read_bytes", "read_text", "stat", "lstat", "exists", "is_file", "is_dir", "iterdir", "glob"):
+        _spy(pathlib.Path, name, f"Path.{name}")
+    _spy(builtins, "open", "open")
+    for name in ("open", "stat", "lstat", "listdir", "scandir"):
+        _spy(os, name, f"os.{name}")
+    _spy(os.path, "exists", "os.path.exists")
+    return reads
 
 
 def _mark_receipt_ambiguous(live, p) -> None:
@@ -4455,12 +4498,24 @@ def test_partition_rotation_a11r_post_flip_resume_completes_at_generation_two(tm
     with B's own attestation completes B, a resume with an attestation built
     against the flipped pointer refuses (it adjudicates generation 2), and a
     repeated resume appends nothing.
+
+    Sharpened (fable r10 O1): rotation A carries the real dedup key of
+    ``p.request`` as ``observed_landed`` (the A1 fixture), so B's completed
+    successor must still carry it and answer the duplicate publish accepted
+    with ZERO provider calls -- a resume that adjudicated against the WRONG
+    predecessor object (the sealed base receipt instead of generation 1's
+    loaded receipt) would derive a different inventory and refuse at
+    ``DERIVATION_REFUSAL`` or carry nothing.
     """
     live = _live()
     refused = _production(request, "PartitionRotationRefused")
-    fx = _blocked_fixture(tmp_path, monkeypatch)
+    fx = _bootstrap(tmp_path, monkeypatch)
     p = fx.alpha
-    attestation_a = _attestation(p)
+    carried_key = p.service._dedup_key(p.request)
+    _block_key(p, carried_key)
+    attestation_a = _attestation(
+        p, dispositions={carried_key: OBSERVED_LANDED}, observed_head=p.request.head_sha
+    )
     first = _rotate(request, p, attestation=attestation_a)
     _require(request, first.state == "ACTIVE" and first.generation == 1, f"rotation A outcome {first!r}")
     gen1 = first.store_root
@@ -4494,6 +4549,221 @@ def test_partition_rotation_a11r_post_flip_resume_completes_at_generation_two(tm
     again = _rotate(request, p, cutover_id=ROTATION_ID_2, attestation=attestation_b)
     _require(request, again.state == "ACTIVE" and again.generation == 2, f"repeated resume of B: {again!r}")
     _require(request, _journal_states(p, ROTATION_ID_2).count("ACTIVE") == 1, "a repeated resume duplicated B's ACTIVE row")
+    carried = live.sealed_partition_effects(live.load_partition_receipt(outcome.store_root))
+    _require(
+        request,
+        carried.get(carried_key, {}).get("disposition") == OBSERVED_LANDED,
+        f"generation 2 does not carry rotation A's observed_landed key: {sorted(carried)!r}",
+    )
+    result, calls = _publish_on_successor(request, outcome, p, p.request)
+    _require(request, not isinstance(result, Exception), f"the duplicate on generation 2 was refused: {result!r}")
+    _require(request, result.accepted is True, f"the duplicate on generation 2 was not accepted: {result.reason}")
+    _require(request, calls == [], "an observed_landed key carried across two rotations reached the provider")
+
+
+@_requires_fabpub
+@_requires_789d
+def test_partition_rotation_a11s_adjudication_derives_from_the_bytes_it_digested(tmp_path, monkeypatch, request):
+    """A11s (codex r10 P1): the adjudication derives from the ONE snapshot it
+    digested, never from the store again.
+
+    The head before this hashed the predecessor files and then parsed the
+    evidence log, the owner record, the admissions log and the receipt by
+    SEPARATE reads.  A writer that swapped the ledger between the hash and the
+    parse and restored it before the in-lock digest re-check had a successor
+    ACTIVATE whose carried effects omitted a terminal-observed key the honest
+    ledger carried; every downstream check (sealed == derived, the loader, the
+    finish) accepted the wrong derivation because each bound the HONEST digests.
+
+    Regression: the instant the ceremony takes its snapshot, every predecessor
+    file it derives from is swapped on disk (the terminal key's rows dropped from
+    the evidence log; an epoch-99 row appended to the admissions log) and the
+    honest bytes return only when the drain -- the step before the in-lock
+    digest re-check -- begins, so any predecessor byte read after the snapshot
+    IS the swap.  The successor must ACTIVATE carrying the terminal key at the
+    honest epoch floor, the same carry and floor an unswapped control derives;
+    the swapped bytes are proven live (a snapshot of them lacks the terminal and
+    reads epoch 99).
+    """
+    live = _live()
+
+    def _fixture(base: Path):
+        fx = _bootstrap(base, monkeypatch)
+        p = fx.alpha
+        _complete_key(p, TERMINAL_KEY)
+        _block_key(p, ROTATED_KEY)
+        (p.container / "admissions.jsonl").write_bytes(HONEST_ADMISSIONS)
+        attestation = _attestation(
+            p, dispositions={ROTATED_KEY: OBSERVED_LANDED}, observed_head=p.request.head_sha
+        )
+        return p, attestation
+
+    p, attestation = _fixture(tmp_path / "swapped")
+    evidence = p.container / "evidence.jsonl"
+    admissions = p.container / "admissions.jsonl"
+    honest = {evidence: evidence.read_bytes(), admissions: admissions.read_bytes()}
+    swapped = {
+        evidence: b"".join(
+            line
+            for line in honest[evidence].splitlines(keepends=True)
+            if json.loads(line).get("idempotency_key") != TERMINAL_KEY
+        ),
+        admissions: honest[admissions] + b'{"epoch": 99}\n',
+    }
+    _require(request, swapped[evidence] != honest[evidence], "the terminal key has no evidence rows to drop")
+    real_snapshot = live._snapshot_predecessor
+    real_drain = live.WriterGenerationLatch.await_quiescent
+    events: list[str] = []
+    swapped_view: dict = {}
+
+    def snapshot_then_swap(store_root):
+        snapshot = real_snapshot(store_root)
+        events.append("snapshot")
+        if Path(store_root) == p.container and "swapped" not in events:
+            for path, data in swapped.items():
+                path.write_bytes(data)
+            events.append("swapped")
+            probe = real_snapshot(store_root)
+            swapped_view["terminals"] = dict(live._read_predecessor_ledger(probe).terminals)
+            swapped_view["high_water"] = live._rotation_admissions_high_water(probe)
+        return snapshot
+
+    def restore_then_drain(self, *args, **kwargs):
+        if "swapped" in events and "restored" not in events:
+            for path, data in honest.items():
+                path.write_bytes(data)
+            events.append("restored")
+        return real_drain(self, *args, **kwargs)
+
+    monkeypatch.setattr(live, "_snapshot_predecessor", snapshot_then_swap)
+    monkeypatch.setattr(live.WriterGenerationLatch, "await_quiescent", restore_then_drain)
+    try:
+        outcome = _rotate(request, p, attestation=attestation)
+    finally:
+        monkeypatch.setattr(live, "_snapshot_predecessor", real_snapshot)
+        monkeypatch.setattr(live.WriterGenerationLatch, "await_quiescent", real_drain)
+    _require(request, events == ["snapshot", "swapped", "restored"], f"swap window events {events!r}")
+    _require(
+        request,
+        TERMINAL_KEY not in swapped_view["terminals"] and swapped_view["high_water"] == 99,
+        f"the swapped bytes still derive the honest ledger: {swapped_view!r}",
+    )
+    _require(request, outcome.state == "ACTIVE" and outcome.generation == 1, f"swapped-window rotation outcome {outcome!r}")
+    _require(request, {path: path.read_bytes() for path in honest} == honest, "the predecessor did not end on its honest bytes")
+    loaded = live.load_partition_receipt(outcome.store_root)
+    carried = live.sealed_partition_effects(loaded)
+    _require(
+        request,
+        carried.get(TERMINAL_KEY, {}).get("disposition") == "effect_terminal_observed",
+        f"the successor lost the terminal-observed carry: {carried.get(TERMINAL_KEY)!r} (keys {sorted(carried)!r})",
+    )
+    _require(request, carried.get(ROTATED_KEY, {}).get("disposition") == OBSERVED_LANDED, f"the successor lost the attested carry: {carried.get(ROTATED_KEY)!r}")
+    q, control_attestation = _fixture(tmp_path / "control")
+    control = _rotate(request, q, attestation=control_attestation)
+    _require(request, control.state == "ACTIVE" and control.generation == 1, f"control rotation outcome {control!r}")
+    control_carried = live.sealed_partition_effects(live.load_partition_receipt(control.store_root))
+    _require(
+        request,
+        {k: v["disposition"] for k, v in carried.items()} == {k: v["disposition"] for k, v in control_carried.items()},
+        f"swapped-window carry {sorted(carried)!r} != control carry {sorted(control_carried)!r}",
+    )
+    control_floor = live.load_partition_receipt(control.store_root).legacy_epoch_high_water
+    _require(
+        request,
+        loaded.legacy_epoch_high_water == control_floor and 3 <= control_floor < 99,
+        f"swapped-window floor {loaded.legacy_epoch_high_water!r} vs control floor {control_floor!r}",
+    )
+
+
+@_requires_fabpub
+@_requires_789d
+def test_partition_rotation_a11t_adjudication_reads_nothing_under_the_predecessor(tmp_path, monkeypatch, request):
+    """A11t (codex r10 P1, completeness): holding its snapshot, the adjudication
+    touches NOTHING under the predecessor root.  A11s witnesses the evidence and
+    admissions legs; this pins the CLASS -- every ``pathlib``/``os``/``open``
+    read or stat of a path under the predecessor during
+    ``_adjudicate_rotation_predecessor`` is recorded, and there must be none.
+    The spy is proven live by a direct read before the adjudication.
+    """
+    live = _live()
+    fx = _bootstrap(tmp_path, monkeypatch)
+    p = fx.alpha
+    _complete_key(p, TERMINAL_KEY)
+    _block_key(p, ROTATED_KEY)
+    _seed_owner(p.container, p, ROTATED_KEY, sealed=True)
+    (p.container / "admissions.jsonl").write_bytes(HONEST_ADMISSIONS)
+    attestation = _attestation(
+        p, dispositions={ROTATED_KEY: OBSERVED_LANDED}, observed_head=p.request.head_sha
+    )
+    receipt = live.load_partition_receipt(p.container)
+    _require(request, receipt is not None, "the predecessor receipt does not authenticate")
+    snapshot = live._snapshot_predecessor(p.container)
+    _require(
+        request,
+        set(snapshot.files) == set(live.ROTATION_DIGESTED_FILES)
+        and all(snapshot.files[name] is not None for name in live.ROTATION_DIGESTED_FILES),
+        f"the snapshot did not read every digested predecessor file: {sorted(n for n, v in snapshot.files.items() if v is None)!r}",
+    )
+    _require(request, snapshot.digests == attestation["predecessor_store_digests"], "the snapshot digests are not the attested digests")
+    reads = _predecessor_read_spy(monkeypatch, p.container)
+    (p.container / "evidence.jsonl").read_bytes()
+    _require(request, reads, "the read spy records nothing")
+    reads.clear()
+    adjudicated = live._adjudicate_rotation_predecessor(attestation, snapshot, 0, receipt, p.identity)
+    _require(request, reads == [], f"the adjudication read the predecessor outside its snapshot: {reads!r}")
+    _require(request, adjudicated.predecessor_digests == snapshot.digests, "the adjudication did not bind the snapshot digests")
+    _require(
+        request,
+        adjudicated.carried.get(TERMINAL_KEY, {}).get("disposition") == "effect_terminal_observed"
+        and adjudicated.carried.get(ROTATED_KEY, {}).get("disposition") == OBSERVED_LANDED,
+        f"the adjudication over the snapshot carried {sorted(adjudicated.carried)!r}",
+    )
+
+
+@_requires_fabpub
+@_requires_789d
+def test_partition_rotation_a11u_receipt_object_must_be_the_snapshot_receipt_bytes(tmp_path, monkeypatch, request):
+    """A11u (codex r10 P1, receipt leg): the receipt object the ceremony
+    authenticated must BE the receipt bytes its snapshot digested.  The
+    attestation binds the digested bytes; the derivation reads the object; a
+    receipt file rewritten between the object's load and the snapshot (the
+    attestation built over the rewritten bytes) passes every digest check yet
+    derives from an object the bytes no longer are.  The adjudication refuses;
+    the honest snapshot with the honest attestation adjudicates.
+    """
+    live = _live()
+    refused = _production(request, "PartitionRotationRefused")
+    fx = _bootstrap(tmp_path, monkeypatch)
+    p = fx.alpha
+    _block_key(p, ROTATED_KEY)
+    (p.container / "admissions.jsonl").write_bytes(HONEST_ADMISSIONS)
+    receipt_path = p.container / "partition-receipt.json"
+    honest_bytes = receipt_path.read_bytes()
+    receipt = live.load_partition_receipt(p.container)
+    _require(request, receipt is not None, "the predecessor receipt does not authenticate")
+    body = json.loads(honest_bytes)
+    body["legacy_epoch_high_water"] = int(body.get("legacy_epoch_high_water", 0)) + 7
+    rewritten = (json.dumps(body, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    receipt_path.write_bytes(rewritten)
+    try:
+        forged_attestation = _attestation(
+            p, dispositions={ROTATED_KEY: OBSERVED_LANDED}, observed_head=p.request.head_sha
+        )
+        forged_snapshot = live._snapshot_predecessor(p.container)
+    finally:
+        receipt_path.write_bytes(honest_bytes)
+    _require(request, forged_snapshot.files["partition-receipt.json"] == rewritten, "the forged snapshot did not capture the rewritten receipt")
+    _require(request, forged_snapshot.digests == forged_attestation["predecessor_store_digests"], "the forged attestation does not bind the forged snapshot")
+    with pytest.raises(refused, match="not the receipt that authenticated"):
+        live._adjudicate_rotation_predecessor(forged_attestation, forged_snapshot, 0, receipt, p.identity)
+    honest_attestation = _attestation(
+        p, dispositions={ROTATED_KEY: OBSERVED_LANDED}, observed_head=p.request.head_sha
+    )
+    adjudicated = live._adjudicate_rotation_predecessor(
+        honest_attestation, live._snapshot_predecessor(p.container), 0, receipt, p.identity
+    )
+    _require(request, adjudicated.high_water == max(receipt.legacy_epoch_high_water, 3), f"honest adjudication floor {adjudicated.high_water!r} (receipt {receipt.legacy_epoch_high_water!r}, admissions 3)")
+    _require(request, adjudicated.carried.get(ROTATED_KEY, {}).get("disposition") == OBSERVED_LANDED, f"honest adjudication carried {sorted(adjudicated.carried)!r}")
 
 
 @_requires_fabpub

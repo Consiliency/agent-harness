@@ -277,7 +277,19 @@ def read_strict_jsonl(path: Path, *, label: str) -> list[tuple[str, dict]]:
     """
     if not path.exists():
         return []
-    body = path.read_text(encoding="utf-8")
+    return _parse_strict_jsonl(path.read_text(encoding="utf-8"), label=label, path=path)
+
+
+def _parse_strict_jsonl(body: str | None, *, label: str, path: Path) -> list[tuple[str, dict]]:
+    """The parse half of :func:`read_strict_jsonl` over text already read.
+
+    ``None`` is a missing log.  A rotation adjudicates a predecessor from the
+    ONE snapshot it digested (:class:`_PredecessorSnapshot`), so the parse
+    cannot be allowed to read the file again; ``path`` names the log in the
+    refusal only.
+    """
+    if body is None:
+        return []
     if body and not body.endswith("\n"):
         raise LegacyCutoverConflict(
             f"{label} log is not newline-terminated (torn append): {path}"
@@ -3764,10 +3776,64 @@ _SETTLED_EVIDENCE_STATES = frozenset(
 )
 
 
-def _read_predecessor_ledger(store_root: Path) -> _PredecessorLedger:
-    """Strict-parse the predecessor evidence log into what a rotation adjudicates."""
+@dataclass(frozen=True)
+class _PredecessorSnapshot:
+    """Every digested predecessor file read ONCE, and the digests of THOSE bytes.
+
+    The adjudication used to hash the predecessor store and then parse it with
+    separate reads; a writer that swapped a file between the hash and the
+    parse and restored it before the in-lock re-check had the attestation
+    bind bytes the derivation never saw, and the successor ACTIVATED without
+    a terminal the honest ledger carried (codex r10 P1).  The snapshot is the
+    only reader of a predecessor store inside an adjudication: the
+    attestation's digests, the evidence ledger, the owner record, the
+    admissions high water and the receipt binding are all functions of
+    ``files``, and nothing under ``root`` is read again until the in-lock
+    re-check compares the live bytes to ``digests``.
+    """
+
+    root: Path
+    files: dict
+    digests: dict
+
+    def text(self, name: str) -> str | None:
+        """The snapshot's bytes of ``name`` as text; ``None`` when the file was absent."""
+        raw = self.files[name]
+        if raw is None:
+            return None
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise LegacyCutoverConflict(f"{name} under {self.root} is not UTF-8: {error}") from error
+
+
+def _snapshot_predecessor(store_root: Path) -> _PredecessorSnapshot:
+    """Read every digested file of a predecessor store exactly once.
+
+    A missing file digests as empty bytes, exactly as :func:`_sha256_file`
+    digests it for the in-lock re-check.
+    """
+    root = Path(store_root)
+    files: dict = {}
+    for name in ROTATION_DIGESTED_FILES:
+        try:
+            files[name] = (root / name).read_bytes()
+        except FileNotFoundError:
+            files[name] = None
+    digests = {
+        name: hashlib.sha256(raw if raw is not None else b"").hexdigest() for name, raw in files.items()
+    }
+    return _PredecessorSnapshot(root, files, digests)
+
+
+def _read_predecessor_ledger(snapshot: _PredecessorSnapshot) -> _PredecessorLedger:
+    """Strict-parse the snapshot's predecessor evidence log into what a rotation adjudicates."""
     try:
-        rows = read_strict_jsonl(store_root / "evidence.jsonl", label="predecessor evidence")
+        rows = _parse_strict_jsonl(
+            snapshot.text("evidence.jsonl"),
+            label="predecessor evidence",
+            path=snapshot.root / "evidence.jsonl",
+        )
     except LegacyCutoverConflict as error:
         raise PartitionRotationRefused(f"predecessor evidence is unreadable: {error}") from error
     order: list[str] = []
@@ -3813,13 +3879,13 @@ def _read_predecessor_ledger(store_root: Path) -> _PredecessorLedger:
     return _PredecessorLedger(tuple(order), blocked, terminals, dangling)
 
 
-def _rotation_owner(store_root: Path, identity: str) -> dict | None:
-    path = store_root / "adapter-start-owner.json"
-    if not path.exists():
-        return None
+def _rotation_owner(snapshot: _PredecessorSnapshot, identity: str) -> dict | None:
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as error:
+        body = snapshot.text("adapter-start-owner.json")
+        if body is None:
+            return None
+        raw = json.loads(body)
+    except (LegacyCutoverConflict, ValueError) as error:
         raise PartitionRotationRefused(f"adapter-start owner record is unreadable: {error}") from error
     if not isinstance(raw, dict):
         raise PartitionRotationRefused("adapter-start owner record is not an object")
@@ -3836,9 +3902,13 @@ def _rotation_owner_identity(owner: dict | None, key: str) -> dict:
     return {}
 
 
-def _rotation_admissions_high_water(store_root: Path) -> int:
+def _rotation_admissions_high_water(snapshot: _PredecessorSnapshot) -> int:
     try:
-        rows = read_strict_jsonl(store_root / "admissions.jsonl", label="predecessor admissions")
+        rows = _parse_strict_jsonl(
+            snapshot.text("admissions.jsonl"),
+            label="predecessor admissions",
+            path=snapshot.root / "admissions.jsonl",
+        )
     except LegacyCutoverConflict as error:
         raise PartitionRotationRefused(f"predecessor admissions are unreadable: {error}") from error
     high = 0
@@ -4086,9 +4156,53 @@ class _RotationAdjudication:
     high_water: int
 
 
+def _require_receipt_is_snapshot(
+    predecessor_receipt, snapshot: _PredecessorSnapshot, predecessor_generation: int
+) -> None:
+    """Bind the AUTHENTICATED predecessor receipt object to the snapshot's receipt bytes.
+
+    ``load_partition_receipt`` authenticated the receipt through its own read
+    and the attestation binds ``snapshot.digests[RECEIPT_FILENAME]``; the
+    carried effects and the epoch floor derive from the OBJECT.  The object
+    must therefore be exactly what the snapshot's bytes are, or a receipt
+    swapped between the load and the snapshot would let the attestation bind
+    bytes the derivation never used (codex r10 P1, receipt leg).  A legacy
+    receipt's on-disk bytes carry the zero-source proof the object holds only
+    by digest, so the proof is taken from the snapshot and required to digest
+    to the object's ``zero_source_proof_sha256`` before the bytes compare.
+    """
+    raw = snapshot.files[RECEIPT_FILENAME]
+    if raw is None:
+        raise PartitionRotationRefused(
+            f"predecessor generation {predecessor_generation} carries no receipt at {snapshot.root}"
+        )
+    if isinstance(predecessor_receipt, RotatedPartitionReceipt):
+        expected = predecessor_receipt.file_bytes()
+    else:
+        try:
+            on_disk = json.loads(raw)
+        except ValueError as error:
+            raise PartitionRotationRefused(
+                f"predecessor generation {predecessor_generation} receipt at {snapshot.root} is not JSON: {error}"
+            ) from error
+        proof = on_disk.get("zero_source_proof") if isinstance(on_disk, dict) else None
+        proof_digest = hashlib.sha256(canonical_bytes(proof)).hexdigest() if proof is not None else ""
+        if proof_digest != predecessor_receipt.zero_source_proof_sha256:
+            raise PartitionRotationRefused(
+                f"predecessor generation {predecessor_generation} receipt bytes carry a zero-source proof "
+                "the authenticated receipt does not digest"
+            )
+        expected = predecessor_receipt.file_bytes(proof)
+    if raw != expected:
+        raise PartitionRotationRefused(
+            f"predecessor generation {predecessor_generation} receipt bytes are not the receipt that "
+            "authenticated; the predecessor store changed under the ceremony"
+        )
+
+
 def _adjudicate_rotation_predecessor(
     attestation: dict,
-    predecessor: Path,
+    snapshot: _PredecessorSnapshot,
     predecessor_generation: int,
     predecessor_receipt,
     identity: str,
@@ -4100,7 +4214,10 @@ def _adjudicate_rotation_predecessor(
     sealed state that an adjudication of the same predecessor bytes and the
     same attestation would not derive.  Before this the post-flip arm reached
     ``_finish_rotation_after_flip`` on the successor receipt alone, without
-    validating the attestation at all (codex r8 P1).
+    validating the attestation at all (codex r8 P1).  Every predecessor byte
+    it derives from is the ONE ``snapshot`` the caller took: the attestation
+    binds the snapshot's digests and the ledger, owner, high water and receipt
+    binding parse the snapshot's bytes, never the store again (codex r10 P1).
     """
     effects = _validate_rotation_attestation(attestation, predecessor_generation)
     digest = hashlib.sha256(canonical_bytes(attestation)).hexdigest()
@@ -4109,12 +4226,13 @@ def _adjudicate_rotation_predecessor(
             f"attestation {digest[:12]} already adjudicated generation {predecessor_generation}; a rotation "
             "requires a fresh attestation over the predecessor generation"
         )
-    expected_digests = {name: _sha256_file(predecessor / name) for name in ROTATION_DIGESTED_FILES}
+    expected_digests = dict(snapshot.digests)
     if attestation.get("predecessor_receipt_digest") != expected_digests[RECEIPT_FILENAME]:
         raise PartitionRotationRefused("attestation predecessor_receipt_digest does not match the predecessor receipt")
     if attestation["predecessor_store_digests"] != expected_digests:
         raise PartitionRotationRefused("attestation predecessor_store_digests do not match the predecessor store")
-    ledger = _read_predecessor_ledger(predecessor)
+    _require_receipt_is_snapshot(predecessor_receipt, snapshot, predecessor_generation)
+    ledger = _read_predecessor_ledger(snapshot)
     foreign = [key for key in ledger.keys if not key.startswith(_ROTATION_EFFECT_PREFIX)]
     if foreign:
         raise PartitionRotationRefused(
@@ -4125,7 +4243,7 @@ def _adjudicate_rotation_predecessor(
         raise PartitionRotationRefused(
             f"predecessor evidence has intents without a terminal {list(ledger.dangling)!r}"
         )
-    owner = _rotation_owner(predecessor, identity)
+    owner = _rotation_owner(snapshot, identity)
     if owner is not None and not bool(owner.get("sealed", False)):
         owner_key = owner.get("effect_key") or owner.get("idempotency_key")
         if owner_key not in ledger.blocked and owner_key not in ledger.terminals:
@@ -4153,7 +4271,7 @@ def _adjudicate_rotation_predecessor(
                 )
 
     carried = _rotation_carried_effects(predecessor_receipt, ledger, effects, identity, predecessor_generation, digest)
-    high_water = max(int(predecessor_receipt.legacy_epoch_high_water), _rotation_admissions_high_water(predecessor))
+    high_water = max(int(predecessor_receipt.legacy_epoch_high_water), _rotation_admissions_high_water(snapshot))
     return _RotationAdjudication(effects, digest, expected_digests, carried, high_water)
 
 
@@ -4305,7 +4423,7 @@ def rotate_blocked_partition(
                     f"predecessor generation {generation - 1} of {identity} carries no receipt"
                 )
         adjudicated = _adjudicate_rotation_predecessor(
-            attestation, predecessor, generation - 1, predecessor_receipt, identity
+            attestation, _snapshot_predecessor(predecessor), generation - 1, predecessor_receipt, identity
         )
         sealed = _require_sealed_inventory_derives(
             inventory_path,
@@ -4346,7 +4464,9 @@ def rotate_blocked_partition(
         )
 
     # -- the attestation (zero-write) -----------------------------------------
-    adjudicated = _adjudicate_rotation_predecessor(attestation, active, generation, active_receipt, identity)
+    adjudicated = _adjudicate_rotation_predecessor(
+        attestation, _snapshot_predecessor(active), generation, active_receipt, identity
+    )
     digest = adjudicated.digest
     expected_digests = adjudicated.predecessor_digests
     derived = _derive_rotation_inventory(
