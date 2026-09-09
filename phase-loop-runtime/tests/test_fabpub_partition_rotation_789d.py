@@ -95,6 +95,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import dataclasses
 import hashlib
 import json
 import os
@@ -1543,18 +1544,21 @@ def test_partition_rotation_a7_attestation_binds_attempt_identity_and_is_single_
     )
 
 
-def _predecessor_read_spy(monkeypatch, root: Path) -> list[str]:
-    """Record EVERY filesystem touch of a path under ``root`` (A11t).
+def _predecessor_read_spy(monkeypatch, *roots: Path) -> list[str]:
+    """Record EVERY filesystem touch of a path under any of ``roots`` (A11t).
 
     Wraps the ``pathlib`` reads/stats, ``builtins.open`` and the ``os`` reads
     and stats; each wrapper notes ``<site>:<path>`` when the first argument is a
-    path at or under ``root`` and then delegates.  Nothing under ``root`` may be
-    touched by an adjudication that already holds its snapshot.
+    path at or under one of ``roots`` and then delegates.  A11t hands it the
+    whole fixture root, so an adjudication that already holds its snapshot is
+    seen reading the predecessor store, the ceremony directory and the
+    authority alike (fable r11 P1: the class is every unbound read, not the
+    predecessor root).
     """
     import builtins
 
     reads: list[str] = []
-    prefix = os.fspath(Path(root))
+    prefixes = tuple(os.fspath(Path(root)) for root in roots)
 
     def _note(target, site: str) -> None:
         if not isinstance(target, (str, bytes, os.PathLike)):
@@ -1562,7 +1566,7 @@ def _predecessor_read_spy(monkeypatch, root: Path) -> list[str]:
         text = os.fspath(target)
         if isinstance(text, bytes):
             text = text.decode("utf-8", errors="replace")
-        if text == prefix or text.startswith(prefix + os.sep):
+        if any(text == prefix or text.startswith(prefix + os.sep) for prefix in prefixes):
             reads.append(f"{site}:{text}")
 
     def _spy(owner, name: str, site: str) -> None:
@@ -4677,27 +4681,60 @@ def test_partition_rotation_a11s_adjudication_derives_from_the_bytes_it_digested
 
 @_requires_fabpub
 @_requires_789d
-def test_partition_rotation_a11t_adjudication_reads_nothing_under_the_predecessor(tmp_path, monkeypatch, request):
-    """A11t (codex r10 P1, completeness): holding its snapshot, the adjudication
-    touches NOTHING under the predecessor root.  A11s witnesses the evidence and
-    admissions legs; this pins the CLASS -- every ``pathlib``/``os``/``open``
-    read or stat of a path under the predecessor during
-    ``_adjudicate_rotation_predecessor`` is recorded, and there must be none.
-    The spy is proven live by a direct read before the adjudication.
+@pytest.mark.parametrize("predecessor_generation", [0, 1], ids=["gen0", "gen1"])
+def test_partition_rotation_a11t_adjudication_reads_nothing_under_the_predecessor(
+    tmp_path, monkeypatch, request, predecessor_generation
+):
+    """A11t (codex r10 P1 / fable r11 P1, completeness): holding its snapshot,
+    the adjudication reads exactly ONE file anywhere under the fixture root --
+    the predecessor's sealed inventory, whose bytes A11v proves must digest to
+    the snapshot-bound receipt's ``inventory_sha256`` -- and nothing under the
+    predecessor store.  A11s witnesses the evidence and admissions legs; this
+    pins the CLASS: every ``pathlib``/``os``/``open`` read or stat of a path
+    under the authority, the ceremony directory, the container or any
+    generation during ``_adjudicate_rotation_predecessor`` is recorded, and the
+    set must be that one digest-bound read.  Round 11 scoped the spy to the
+    predecessor root and ran it at 0->1 only, where the carried map is read from
+    the container's cutover inventory; at 1->2 the carried map is read from
+    generation 1's rotation inventory in the ceremony directory, outside the
+    old scope.  The spy is proven live by a direct read before the adjudication.
     """
     live = _live()
     fx = _bootstrap(tmp_path, monkeypatch)
     p = fx.alpha
     _complete_key(p, TERMINAL_KEY)
-    _block_key(p, ROTATED_KEY)
-    _seed_owner(p.container, p, ROTATED_KEY, sealed=True)
-    (p.container / "admissions.jsonl").write_bytes(HONEST_ADMISSIONS)
-    attestation = _attestation(
-        p, dispositions={ROTATED_KEY: OBSERVED_LANDED}, observed_head=p.request.head_sha
-    )
-    receipt = live.load_partition_receipt(p.container)
+    if predecessor_generation == 0:
+        predecessor = p.container
+        _block_key(p, ROTATED_KEY)
+        _seed_owner(p.container, p, ROTATED_KEY, sealed=True)
+        (p.container / "admissions.jsonl").write_bytes(HONEST_ADMISSIONS)
+        attestation = _attestation(
+            p, dispositions={ROTATED_KEY: OBSERVED_LANDED}, observed_head=p.request.head_sha
+        )
+    else:
+        _block_key(p, ROTATED_KEY)
+        first = _rotate(
+            request,
+            p,
+            attestation=_attestation(p, dispositions={ROTATED_KEY: OBSERVED_LANDED}, observed_head=p.request.head_sha),
+        )
+        _require(request, first.state == "ACTIVE" and first.generation == 1, f"rotation A outcome {first!r}")
+        predecessor = first.store_root
+        gen1_key = "publish_committed_branch\x00ah789d-a11t-gen1-blocked"
+        routed = _successor_service(request, first, p)
+        try:
+            _block_key(SimpleNamespace(service=routed.service), gen1_key)
+        finally:
+            _release_router(routed)
+        _seed_owner(predecessor, p, gen1_key, sealed=True)
+        (predecessor / "admissions.jsonl").write_bytes(HONEST_ADMISSIONS)
+        attestation = _attestation(p)
+        _require(request, attestation["predecessor_generation"] == 1, f"attestation adjudicates {attestation['predecessor_generation']!r}")
+    receipt = live.load_partition_receipt(predecessor)
     _require(request, receipt is not None, "the predecessor receipt does not authenticate")
-    snapshot = live._snapshot_predecessor(p.container)
+    inventory = Path(receipt.global_journal_path).parent / f"{receipt.cutover_id}.inventory.json"
+    _require(request, inventory.is_file(), f"the predecessor's sealed inventory is not at {inventory}")
+    snapshot = live._snapshot_predecessor(predecessor)
     _require(
         request,
         set(snapshot.files) == set(live.ROTATION_DIGESTED_FILES)
@@ -4705,12 +4742,21 @@ def test_partition_rotation_a11t_adjudication_reads_nothing_under_the_predecesso
         f"the snapshot did not read every digested predecessor file: {sorted(n for n, v in snapshot.files.items() if v is None)!r}",
     )
     _require(request, snapshot.digests == attestation["predecessor_store_digests"], "the snapshot digests are not the attested digests")
-    reads = _predecessor_read_spy(monkeypatch, p.container)
-    (p.container / "evidence.jsonl").read_bytes()
+    reads = _predecessor_read_spy(monkeypatch, tmp_path)
+    (predecessor / "evidence.jsonl").read_bytes()
     _require(request, reads, "the read spy records nothing")
     reads.clear()
-    adjudicated = live._adjudicate_rotation_predecessor(attestation, snapshot, 0, receipt, p.identity)
-    _require(request, reads == [], f"the adjudication read the predecessor outside its snapshot: {reads!r}")
+    adjudicated = live._adjudicate_rotation_predecessor(attestation, snapshot, predecessor_generation, receipt, p.identity)
+    under_predecessor = [entry for entry in reads if entry.split(":", 1)[1].startswith(os.fspath(predecessor))]
+    _require(request, under_predecessor == [], f"the adjudication read the predecessor outside its snapshot: {under_predecessor!r}")
+    # ``Path.read_bytes`` opens through ``Path.open``: one physical read of the
+    # inventory records both sites; any OTHER path, or a second read, fails.
+    _require(
+        request,
+        {entry.split(":", 1)[1] for entry in reads} == {os.fspath(inventory)}
+        and reads.count(f"Path.read_bytes:{inventory}") == 1,
+        f"the adjudication read something other than the predecessor's sealed inventory, once: {reads!r}",
+    )
     _require(request, adjudicated.predecessor_digests == snapshot.digests, "the adjudication did not bind the snapshot digests")
     _require(
         request,
@@ -4764,6 +4810,170 @@ def test_partition_rotation_a11u_receipt_object_must_be_the_snapshot_receipt_byt
     )
     _require(request, adjudicated.high_water == max(receipt.legacy_epoch_high_water, 3), f"honest adjudication floor {adjudicated.high_water!r} (receipt {receipt.legacy_epoch_high_water!r}, admissions 3)")
     _require(request, adjudicated.carried.get(ROTATED_KEY, {}).get("disposition") == OBSERVED_LANDED, f"honest adjudication carried {sorted(adjudicated.carried)!r}")
+
+
+@_requires_fabpub
+@_requires_789d
+def test_partition_rotation_a11v_carried_provenance_is_bound_to_the_snapshot_receipt(tmp_path, monkeypatch, request):
+    """A11v (fable r11 P1): the carried-provenance map the adjudication seals is
+    a function of bytes the snapshot-bound receipt DIGESTS, not of whatever the
+    predecessor's sealed inventory holds when it is read.  Rotation A (0->1)
+    carries the real dedup key of ``p.request`` as ``observed_landed``; a key
+    is blocked on generation 1; generation 1's own sealed inventory in the
+    ceremony directory is rewritten (the carried entry's
+    ``serialized_repository`` forged) between the snapshot and the drain, and
+    restored before the drain so every later loader sees the honest bytes.
+    Round 11 sealed the forged provenance into generation 2 -- every generation
+    authenticating, the duplicate publish reaching the provider.  The ceremony
+    refuses naming ``inventory_sha256`` and writes nothing; the honest ceremony
+    activates, carries the key and answers the duplicate with ZERO provider
+    calls.
+    """
+    live = _live()
+    refused = _production(request, "PartitionRotationRefused")
+    fx = _bootstrap(tmp_path, monkeypatch)
+    p = fx.alpha
+    carried_key = p.service._dedup_key(p.request)
+    _block_key(p, carried_key)
+    attestation_a = _attestation(p, dispositions={carried_key: OBSERVED_LANDED}, observed_head=p.request.head_sha)
+    first = _rotate(request, p, attestation=attestation_a)
+    _require(request, first.state == "ACTIVE" and first.generation == 1, f"rotation A outcome {first!r}")
+    gen1 = first.store_root
+    routed = _successor_service(request, first, p)
+    try:
+        _block_key(SimpleNamespace(service=routed.service), "publish_committed_branch\x00ah789d-a11v-gen1-blocked")
+    finally:
+        _release_router(routed)
+    attestation_b = _attestation(p)
+    _require(request, attestation_b["predecessor_generation"] == 1, f"attestation B adjudicates {attestation_b['predecessor_generation']!r}")
+    inventory_a = _ceremony_dir(p) / f"{ROTATION_ID}.inventory.json"
+    honest = inventory_a.read_bytes()
+    body = json.loads(honest)
+    entry = body["partitions"][p.identity]["legacy_completed_effects"][carried_key]
+    _require(request, entry.get("disposition") == OBSERVED_LANDED, f"generation 1 does not carry the key as observed_landed: {entry!r}")
+    honest_repository = entry["serialized_repository"]
+    entry["serialized_repository"] = "forged-repository"
+    forged = (json.dumps(body, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+    events: list[str] = []
+    real_snapshot = live._snapshot_predecessor
+    real_drain = live.WriterGenerationLatch.await_quiescent
+
+    def snapshot_then_swap(store_root):
+        snapshot = real_snapshot(store_root)
+        events.append("snapshot")
+        if Path(store_root) == gen1 and "swapped" not in events:
+            inventory_a.write_bytes(forged)
+            events.append("swapped")
+        return snapshot
+
+    def restore_then_drain(self, *args, **kwargs):
+        if "swapped" in events and "restored" not in events:
+            inventory_a.write_bytes(honest)
+            events.append("restored")
+        return real_drain(self, *args, **kwargs)
+
+    gen1_bytes = _store_bytes(gen1)
+    monkeypatch.setattr(live, "_snapshot_predecessor", snapshot_then_swap)
+    monkeypatch.setattr(live.WriterGenerationLatch, "await_quiescent", restore_then_drain)
+    try:
+        with pytest.raises(refused, match="inventory_sha256"):
+            _rotate(request, p, cutover_id=ROTATION_ID_2, attestation=attestation_b)
+    finally:
+        monkeypatch.setattr(live, "_snapshot_predecessor", real_snapshot)
+        monkeypatch.setattr(live.WriterGenerationLatch, "await_quiescent", real_drain)
+        inventory_a.write_bytes(honest)
+    _require(request, events == ["snapshot", "swapped"], f"the swap was not exercised as designed: {events!r}")
+    _require(request, _journal_states(p, ROTATION_ID_2) == [], f"the refused ceremony journaled {_journal_states(p, ROTATION_ID_2)!r}")
+    _require(request, _read_or_none(_pointer(p)) == b"1\n", f"the refused ceremony moved the pointer: {_read_or_none(_pointer(p))!r}")
+    _require(request, _store_bytes(gen1) == gen1_bytes, "the refused ceremony changed generation 1's bytes")
+    _require(request, live.load_partition_receipt(gen1) is not None, "generation 1 no longer authenticates")
+    outcome = _rotate(request, p, cutover_id=ROTATION_ID_2, attestation=attestation_b)
+    _require(request, outcome.state == "ACTIVE" and outcome.generation == 2, f"honest rotation B: {outcome!r}")
+    carried = live.sealed_partition_effects(live.load_partition_receipt(outcome.store_root))
+    _require(
+        request,
+        carried.get(carried_key, {}).get("serialized_repository") == honest_repository,
+        f"generation 2 carries a provenance the honest inventory did not seal: {carried.get(carried_key)!r}",
+    )
+    result, calls = _publish_on_successor(request, outcome, p, p.request)
+    _require(request, not isinstance(result, Exception) and result.accepted is True, f"the duplicate on generation 2 was refused: {result!r}")
+    _require(request, calls == [], "an observed_landed key carried across two rotations reached the provider")
+
+
+@_requires_fabpub
+@_requires_789d
+def test_partition_rotation_a11w_inherited_root_inventory_derives_from_the_bound_predecessor(tmp_path, monkeypatch, request):
+    """A11w (codex r11 P1): the ``legacy_root_inventory`` a successor inherits
+    derives from the SNAPSHOT-BOUND predecessor receipt, never from the
+    container receipt the ceremony loaded separately.  At 1->2 the container
+    receipt is bound to nothing the attestation digests: round 11 copied its
+    ``legacy_root_inventory`` into generation 2's sealed inventory, so a
+    container receipt presented differently between that load and generation
+    1's load (which re-verifies the container's live digests, so the swap is
+    invisible to it) sealed an inherited inventory the predecessor's chain
+    never carried.  The swap is modelled at the seam: ``load_partition_receipt``
+    answers the CONTAINER load with an otherwise-identical receipt whose
+    ``legacy_root_inventory`` is forged; every other load is live and honest.
+    Generation 2 seals generation 1's inventory (the honest container's), not
+    the forged one, and authenticates.
+    """
+    live = _live()
+    fx = _bootstrap(tmp_path, monkeypatch)
+    p = fx.alpha
+    _block_key(p, ROTATED_KEY)
+    first = _rotate(
+        request,
+        p,
+        attestation=_attestation(p, dispositions={ROTATED_KEY: OBSERVED_LANDED}, observed_head=p.request.head_sha),
+    )
+    _require(request, first.state == "ACTIVE" and first.generation == 1, f"rotation A outcome {first!r}")
+    gen1 = first.store_root
+    honest_base = live.load_partition_receipt(p.container)
+    gen1_receipt = live.load_partition_receipt(gen1)
+    _require(request, honest_base is not None and gen1_receipt is not None, "the chain does not authenticate")
+    _require(
+        request,
+        tuple(gen1_receipt.legacy_root_inventory) == tuple(honest_base.legacy_root_inventory),
+        f"generation 1 did not inherit the container's root inventory: {gen1_receipt.legacy_root_inventory!r}",
+    )
+    routed = _successor_service(request, first, p)
+    try:
+        _block_key(SimpleNamespace(service=routed.service), "publish_committed_branch\x00ah789d-a11w-gen1-blocked")
+    finally:
+        _release_router(routed)
+    attestation_b = _attestation(p)
+    forged_root = ("forged-root-inventory",)
+    _require(request, tuple(honest_base.legacy_root_inventory) != forged_root, "the forged inventory equals the honest one")
+    real_load = live.load_partition_receipt
+    container_loads: list[Path] = []
+
+    def load_forging_the_container(store_root):
+        receipt = real_load(store_root)
+        if Path(store_root) == p.container and receipt is not None:
+            container_loads.append(Path(store_root))
+            return dataclasses.replace(receipt, legacy_root_inventory=forged_root)
+        return receipt
+
+    monkeypatch.setattr(live, "load_partition_receipt", load_forging_the_container)
+    try:
+        outcome = _rotate(request, p, cutover_id=ROTATION_ID_2, attestation=attestation_b)
+    finally:
+        monkeypatch.setattr(live, "load_partition_receipt", real_load)
+    _require(request, container_loads, "the ceremony never loaded the container receipt through the seam")
+    _require(request, outcome.state == "ACTIVE" and outcome.generation == 2, f"rotation B: {outcome!r}")
+    sealed = json.loads((_ceremony_dir(p) / f"{ROTATION_ID_2}.inventory.json").read_bytes())
+    _require(
+        request,
+        tuple(sealed.get("legacy_root_inventory", ())) == tuple(gen1_receipt.legacy_root_inventory),
+        f"generation 2 sealed a root inventory its predecessor never carried: {sealed.get('legacy_root_inventory')!r}",
+    )
+    gen2_receipt = live.load_partition_receipt(outcome.store_root)
+    _require(request, gen2_receipt is not None, "generation 2 does not authenticate")
+    _require(
+        request,
+        tuple(gen2_receipt.legacy_root_inventory) == tuple(honest_base.legacy_root_inventory),
+        f"generation 2's receipt carries {gen2_receipt.legacy_root_inventory!r}",
+    )
 
 
 @_requires_fabpub

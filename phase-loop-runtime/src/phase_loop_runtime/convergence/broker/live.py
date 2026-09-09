@@ -286,7 +286,10 @@ def _parse_strict_jsonl(body: str | None, *, label: str, path: Path) -> list[tup
     ``None`` is a missing log.  A rotation adjudicates a predecessor from the
     ONE snapshot it digested (:class:`_PredecessorSnapshot`), so the parse
     cannot be allowed to read the file again; ``path`` names the log in the
-    refusal only.
+    refusal only.  The snapshot decodes raw bytes, so a ``\r``-terminated line
+    the live reader's universal newlines would fold is a torn-append refusal
+    here; no writer in the package emits ``\r`` and the divergence is
+    fail-closed (fable r11 O2).
     """
     if body is None:
         return []
@@ -1347,14 +1350,42 @@ def partition_is_ambiguity_blocked(store_root: Path) -> bool:
 
 
 def sealed_partition_effects(receipt: LegacyRepositoryPartitionReceipt) -> dict[str, dict]:
-    """The authenticated legacy completed effects for a receipt's partition."""
+    """The authenticated legacy completed effects for a receipt's partition.
+
+    The sealed inventory is read ONCE and the bytes read must digest to the
+    ``inventory_sha256`` (and ``partition_map_sha256``) the receipt carries.
+    The receipt object is bound to its bytes by ``load_partition_receipt`` and,
+    inside a rotation, by ``_require_receipt_is_snapshot``; this equality
+    carries that binding through to the provenance the receipt points at, so
+    the carried map is a function of bytes the receipt digests, never of
+    whatever the inventory file holds at read time (fable r11 P1).
+    """
     journal = Path(receipt.global_journal_path)
     inventory_path = journal.parent / f"{receipt.cutover_id}.inventory.json"
-    if not inventory_path.exists():
-        return {}
-    sealed = json.loads(inventory_path.read_text(encoding="utf-8"))
-    partition = sealed.get("partitions", {}).get(receipt.canonical_repository_identity, {})
-    effects = dict(partition.get("legacy_completed_effects", {}))
+    try:
+        raw = inventory_path.read_bytes()
+    except FileNotFoundError:
+        raw = None
+    if raw is None:
+        effects: dict = {}
+    else:
+        try:
+            sealed = json.loads(raw)
+        except ValueError as error:
+            raise LegacyCutoverConflict(
+                f"the sealed inventory at {inventory_path} is not JSON: {error}"
+            ) from error
+        if (
+            not isinstance(sealed, dict)
+            or _inventory_digest(sealed) != receipt.inventory_sha256
+            or _partition_map_digest(sealed.get("partitions", {})) != receipt.partition_map_sha256
+        ):
+            raise LegacyCutoverConflict(
+                f"the sealed inventory at {inventory_path} is not the inventory the partition receipt "
+                "digests (inventory_sha256 / partition_map_sha256)"
+            )
+        partition = sealed.get("partitions", {}).get(receipt.canonical_repository_identity, {})
+        effects = dict(partition.get("legacy_completed_effects", {}))
     for provenance in effects.values():
         provenance.setdefault("cutover_id", receipt.cutover_id)
         provenance.setdefault("partition", receipt.canonical_repository_identity)
@@ -4025,7 +4056,7 @@ def _derive_rotation_inventory(
     cutover_id: str,
     identity: str,
     container: Path,
-    base,
+    predecessor_receipt,
     successor_generation: int,
     generation: int,
     predecessor_digests: dict,
@@ -4075,7 +4106,11 @@ def _derive_rotation_inventory(
         "manifest_sha256": hashlib.sha256(
             canonical_bytes({"rotation": cutover_id, "repository": identity})
         ).hexdigest(),
-        "legacy_root_inventory": list(base.legacy_root_inventory),
+        # Inherited from the SNAPSHOT-BOUND predecessor receipt (the container
+        # receipt at 0->1, generation n-1's rotated receipt after), never from
+        # the container receipt the ceremony loaded separately: at n >= 1 that
+        # object is bound to nothing the attestation digests (codex r11 P1).
+        "legacy_root_inventory": list(predecessor_receipt.legacy_root_inventory),
         "partitions": {identity: partition},
     }
     sealed["partition_map_sha256"] = _partition_map_digest(sealed["partitions"])
@@ -4221,17 +4256,17 @@ def _adjudicate_rotation_predecessor(
     """
     effects = _validate_rotation_attestation(attestation, predecessor_generation)
     digest = hashlib.sha256(canonical_bytes(attestation)).hexdigest()
-    if isinstance(predecessor_receipt, RotatedPartitionReceipt) and predecessor_receipt.attestation_sha256 == digest:
-        raise PartitionRotationRefused(
-            f"attestation {digest[:12]} already adjudicated generation {predecessor_generation}; a rotation "
-            "requires a fresh attestation over the predecessor generation"
-        )
     expected_digests = dict(snapshot.digests)
     if attestation.get("predecessor_receipt_digest") != expected_digests[RECEIPT_FILENAME]:
         raise PartitionRotationRefused("attestation predecessor_receipt_digest does not match the predecessor receipt")
     if attestation["predecessor_store_digests"] != expected_digests:
         raise PartitionRotationRefused("attestation predecessor_store_digests do not match the predecessor store")
     _require_receipt_is_snapshot(predecessor_receipt, snapshot, predecessor_generation)
+    if isinstance(predecessor_receipt, RotatedPartitionReceipt) and predecessor_receipt.attestation_sha256 == digest:
+        raise PartitionRotationRefused(
+            f"attestation {digest[:12]} already adjudicated generation {predecessor_generation}; a rotation "
+            "requires a fresh attestation over the predecessor generation"
+        )
     ledger = _read_predecessor_ledger(snapshot)
     foreign = [key for key in ledger.keys if not key.startswith(_ROTATION_EFFECT_PREFIX)]
     if foreign:
@@ -4386,7 +4421,7 @@ def rotate_blocked_partition(
                 f"active generation {generation} of {identity} does not authenticate: {error}"
             ) from error
         if active_receipt is None:
-            raise PartitionRotationRefused(f"active generation {generation} of {identity} has no receipt")
+            raise PartitionRotationRefused(f"active generation {generation} of {identity} carries no receipt")
     if bool(getattr(active_receipt, "ambiguous", False)):
         raise PartitionRotationRefused(f"active generation {generation} of {identity} is ambiguity-blocked")
 
@@ -4434,7 +4469,7 @@ def rotate_blocked_partition(
                 cutover_id=cutover_id,
                 identity=identity,
                 container=container,
-                base=base,
+                predecessor_receipt=predecessor_receipt,
                 successor_generation=generation,
                 generation=generation - 1,
                 predecessor_digests=adjudicated.predecessor_digests,
@@ -4473,7 +4508,7 @@ def rotate_blocked_partition(
         cutover_id=cutover_id,
         identity=identity,
         container=container,
-        base=base,
+        predecessor_receipt=active_receipt,
         successor_generation=successor_generation,
         generation=generation,
         predecessor_digests=expected_digests,
