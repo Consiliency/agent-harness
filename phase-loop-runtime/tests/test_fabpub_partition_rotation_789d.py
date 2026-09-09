@@ -93,6 +93,7 @@ import hashlib
 import json
 import os
 import pathlib
+import sys
 import threading
 import time
 import traceback
@@ -1813,6 +1814,73 @@ def test_partition_rotation_a11_crash_sweep_leaves_generation_zero_routable_and_
         _require(request, _store_bytes(p.container) == fx.gen0, f"[{step}] generation-0 bytes changed on resume")
 
 
+def _assert_disposition_honoured_on_successor(request, outcome, p, req, key, disposition, *, label: str) -> None:
+    """After a resume, the successor must carry ``key``'s adjudicated disposition:
+    ``observed_landed`` answers ``req`` with ZERO provider calls; ``attested_not_landed``
+    performs exactly ONE and then answers the replay from its own evidence."""
+    recorded = outcome.receipt.adjudicated_effect_dispositions.get(key)
+    _require(
+        request,
+        recorded is not None and recorded["disposition"] == disposition,
+        f"[{label}] the resumed successor receipt dropped the adjudicated disposition: {recorded!r}",
+    )
+    expected_calls = 0 if disposition == OBSERVED_LANDED else 1
+    routed = _successor_service(request, outcome, p)
+    try:
+        first = routed.service.execute(req)
+        _require(request, first.accepted is True, f"[{label}] the carried key was refused: {first.reason}")
+        _require(
+            request,
+            len(routed.adapter.calls) == expected_calls,
+            f"[{label}] {disposition} made {len(routed.adapter.calls)} provider calls, expected {expected_calls}",
+        )
+        second = routed.service.execute(req)
+        _require(request, second.accepted is True, f"[{label}] the replay was refused: {second.reason}")
+        _require(
+            request,
+            len(routed.adapter.calls) == expected_calls,
+            f"[{label}] the replay reached the provider ({len(routed.adapter.calls)} calls)",
+        )
+    finally:
+        _release_router(routed)
+
+
+@_requires_fabpub
+@_requires_789d
+def test_partition_rotation_a11b_crash_sweep_carries_real_key_dispositions(tmp_path, monkeypatch, request):
+    """A11 (Consiliency/agent-harness#813): dispositions survive EVERY crash-resume.
+
+    A11's block is under an unrelated key, so a resume that rebuilds the
+    inventory and receipt while dropping ``adjudicated_effect_dispositions``
+    still passes it.  Here the block is under the REAL dedup key of
+    ``p.request`` in both dispositions; after every crash step the resumed
+    successor must answer that request per its disposition (zero provider
+    calls for ``observed_landed``, exactly one then idempotent for
+    ``attested_not_landed``).
+    """
+    steps = _crash_steps(request)
+    for disposition in (OBSERVED_LANDED, ATTESTED_NOT_LANDED):
+        for step in steps:
+            label = f"{disposition}/{step}"
+            fx = _bootstrap(tmp_path / disposition / step, monkeypatch)
+            p = fx.alpha
+            carried_key = p.service._dedup_key(p.request)
+            _block_key(p, carried_key)
+            gen0 = _store_bytes(p.container)
+            attestation = _attestation(
+                p, dispositions={carried_key: disposition}, observed_head=p.request.head_sha
+            )
+            _crash_rotation(request, p, step, attestation=attestation)
+            _assert_generation_zero_routable_and_blocked(request, p, gen0, step=label)
+            outcome = _rotate(request, p, attestation=attestation)
+            _require(request, outcome.state == "ACTIVE" and outcome.generation == 1, f"[{label}] resume failed")
+            _assert_disposition_honoured_on_successor(
+                request, outcome, p, p.request, carried_key, disposition, label=label
+            )
+            _require(request, p.adapter.calls == [], f"[{label}] the generation-0 adapter was reached")
+            _require(request, _store_bytes(p.container) == gen0, f"[{label}] generation-0 bytes changed on resume")
+
+
 @_requires_fabpub
 @_requires_789d
 def test_partition_rotation_a12_pointer_refusal_states_are_typed_and_final(tmp_path, monkeypatch, request):
@@ -1964,6 +2032,63 @@ def test_partition_rotation_a13_second_rotation_chains_generations(tmp_path, mon
         _rotate(request, p, cutover_id="rotation-789d-unowned")
     _require(request, _generation_of(p.container) == 1, "a refused ceremony moved the pointer")
     _require(request, sorted(x.name for x in stray.iterdir()) == ["admissions.lock"], "the refused ceremony wrote into the unowned directory")
+
+
+@_requires_fabpub
+@_requires_789d
+def test_partition_rotation_a13b_second_rotation_crash_sweep_carries_real_key_dispositions(tmp_path, monkeypatch, request):
+    """A13 (Consiliency/agent-harness#813): dispositions survive every 1→2 crash-resume too.
+
+    Generation 1 is reached by a clean rotation carrying ``p.request``'s real
+    key (its disposition is honoured there, which turns the key into a
+    generation-1 COMPLETED terminal).  A NEW transaction is then blocked on
+    generation 1 under its real key in both dispositions, the 1→2 rotation
+    is crashed at every step and resumed, and generation 2 must answer the
+    new key per its disposition AND still answer the carried generation-0 key
+    with zero provider calls.
+    """
+    live = _live()
+    steps = _crash_steps(request)
+    for disposition in (OBSERVED_LANDED, ATTESTED_NOT_LANDED):
+        for step in steps:
+            label = f"{disposition}/{step}"
+            fx = _bootstrap(tmp_path / disposition / step, monkeypatch)
+            p = fx.alpha
+            carried_key = p.service._dedup_key(p.request)
+            _block_key(p, carried_key)
+            gen0 = _store_bytes(p.container)
+            first = _rotate(
+                request,
+                p,
+                attestation=_attestation(p, dispositions={carried_key: disposition}, observed_head=p.request.head_sha),
+            )
+            _assert_disposition_honoured_on_successor(
+                request, first, p, p.request, carried_key, disposition, label=f"{label}/gen1"
+            )
+            fresh = _fresh_request(p, f"a13b-{step}")
+            routed = _successor_service(request, first, p)
+            try:
+                fresh_key = routed.service._dedup_key(fresh)
+                _block_key(SimpleNamespace(service=routed.service), fresh_key)
+            finally:
+                _release_router(routed)
+            gen1_bytes = _store_bytes(first.store_root)
+            attestation = _attestation(p, dispositions={fresh_key: disposition}, observed_head=fresh.head_sha)
+            _crash_rotation(request, p, step, cutover_id=ROTATION_ID_2, attestation=attestation)
+            _require(request, _generation_of(p.container) == 1, f"[{label}] crash moved the pointer off 1")
+            _require(request, live.repository_snapshot(p.repo).store_root == first.store_root, f"[{label}] post-crash routing is not generation 1")
+            _require(request, _store_bytes(first.store_root) == gen1_bytes, f"[{label}] generation-1 bytes changed across the crash")
+            second = _rotate(request, p, cutover_id=ROTATION_ID_2, attestation=attestation)
+            _require(request, second.generation == 2 and second.predecessor_store_root == first.store_root, f"[{label}] resume of the 1→2 rotation failed")
+            _assert_disposition_honoured_on_successor(
+                request, second, p, fresh, fresh_key, disposition, label=f"{label}/gen2"
+            )
+            result, calls = _publish_on_successor(request, second, p, p.request)
+            _require(request, not isinstance(result, Exception) and result.accepted is True, f"[{label}] generation 2 refused the carried generation-0 key: {result!r}")
+            _require(request, calls == [], f"[{label}] the carried generation-0 key re-ran on generation 2: {calls}")
+            _require(request, p.adapter.calls == [], f"[{label}] the generation-0 adapter was reached")
+            _require(request, _store_bytes(first.store_root) == gen1_bytes, f"[{label}] generation-1 bytes changed on resume")
+            _require(request, _store_bytes(p.container) == gen0, f"[{label}] generation-0 bytes changed")
 
 
 @_requires_fabpub
@@ -2290,20 +2415,30 @@ def test_partition_rotation_a17e_authorized_before_flip_is_refused_in_lock(tmp_p
     # nothing else: not the ceremony's own flock on the main thread, not any
     # other lock a pre-lock check may take) so each pauses exactly at the
     # check/use boundary the plan names, having already passed everything
-    # before it.
+    # before it.  The pause is keyed on the CALLER being the write method
+    # itself (``_append`` / ``admit`` / ``promote_legacy_terminal``): a
+    # production that takes ``admissions.lock`` inside ``_authorize`` or any
+    # other pre-lock helper is not parked there, so the writer still reaches
+    # its own lock having passed every check before it (ah#789 D2 obligation
+    # A17e a0 precision).
     lock_path = p.container / "admissions.lock"
     _require(request, lock_path.exists(), "generation 0 has no admissions.lock to block on")
     lock_ino = lock_path.stat().st_ino
     real_flock = fcntl.flock
     gates = {name: threading.Event() for name in ("append", "admit", "promotion")}
+    write_methods = {"append": "_append", "admit": "admit", "promotion": "promote_legacy_terminal"}
     proceed = threading.Event()
     results: dict[str, object] = {}
+    parked_in: dict[str, str] = {}
 
     def gated_flock(lock, op):
-        gate = gates.get(threading.current_thread().name)
+        name = threading.current_thread().name
+        gate = gates.get(name)
         if gate is not None and op == fcntl.LOCK_EX and not gate.is_set():
             fd = lock.fileno() if hasattr(lock, "fileno") else lock
-            if os.fstat(fd).st_ino == lock_ino:
+            caller = sys._getframe(1).f_code.co_name
+            if os.fstat(fd).st_ino == lock_ino and caller == write_methods[name]:
+                parked_in[name] = caller
                 gate.set()
                 proceed.wait(120)
         return real_flock(lock, op)
@@ -2342,6 +2477,11 @@ def test_partition_rotation_a17e_authorized_before_flip_is_refused_in_lock(tmp_p
         for name, gate in gates.items():
             _require(request, gate.wait(60), f"the {name} writer never reached generation 0's lock")
             _require(request, name not in results, f"the {name} writer finished before taking the lock: {results.get(name)!r}")
+            _require(
+                request,
+                parked_in.get(name) == write_methods[name],
+                f"the {name} writer parked in {parked_in.get(name)!r}, not at its own lock in {write_methods[name]}",
+            )
         _require(request, _store_bytes(p.container) == fx.gen0, "a writer changed generation 0 before taking the lock")
         outcome = _rotate(request, p)
     finally:
@@ -2581,6 +2721,50 @@ def test_partition_rotation_a18c_successor_without_global_authority_or_journal_r
         with pytest.raises(live.LegacyCutoverConflict):
             report = _barrier(live, [p.repo])
             live.release_barrier_leases(report)
+    # Present-but-mismatched bindings (Consiliency/agent-harness#814, plan D9-B /
+    # mutant m24): an otherwise-valid ACTIVE bootstrap that differs from the
+    # receipt's binding in exactly ONE half — a different ``cutover_id`` with
+    # the same inventory digest, then the same ``cutover_id`` with a different
+    # inventory digest — is not this receipt's authority.  Each half must
+    # refuse on its own, and the barrier must leave the rotated partition
+    # routable-and-refused: no re-onboarding, no new generation, no byte
+    # change under either generation.
+    real_inventory = live._active_bootstrap_inventory(p.authority)
+    _require(request, isinstance(real_inventory, dict), "the clean bootstrap inventory did not load")
+    _require(
+        request,
+        real_inventory["cutover_id"] == successor.cutover_id
+        or real_inventory["cutover_id"] == live._rotation_base_receipt(successor).cutover_id,
+        "the clean bootstrap does not name the receipt's bootstrap cutover id",
+    )
+    container_receipt_bytes = (p.container / "partition-receipt.json").read_bytes()
+    successor_bytes = _store_bytes(outcome.store_root)
+    gen0_bytes = _store_bytes(p.container)
+    for half, mismatched in (
+        ("cutover_id", {**real_inventory, "cutover_id": real_inventory["cutover_id"] + "-other"}),
+        ("inventory_sha256", {**real_inventory, "inventory_sha256": _sha256_bytes(b"ah789d-other-inventory")}),
+    ):
+        with monkeypatch.context() as patch:
+            patch.setattr(live, "_active_bootstrap_inventory", lambda *a, _m=mismatched, **k: dict(_m))
+            _require(
+                request,
+                not live._receipt_active_authority_exists(successor, authority_root=p.authority),
+                f"successor authority accepted a bootstrap whose {half} does not match the receipt's binding",
+            )
+            with pytest.raises(live.LegacyCutoverConflict):
+                report = _barrier(live, [p.repo])
+                live.release_barrier_leases(report)
+        _require(request, live.repository_snapshot(p.repo).store_root == outcome.store_root, f"[{half}] the rotated partition is no longer routed to its successor")
+        _require(request, _generation_of(p.container) == 1, f"[{half}] the pointer moved")
+        _require(request, not (p.container / GENERATIONS_DIR / "2").exists(), f"[{half}] a refused barrier created a new generation")
+        _require(request, (p.container / "partition-receipt.json").read_bytes() == container_receipt_bytes, f"[{half}] the container receipt changed (re-onboarded?)")
+        _require(request, _store_bytes(outcome.store_root) == successor_bytes, f"[{half}] successor bytes changed")
+        _require(request, _store_bytes(p.container) == gen0_bytes, f"[{half}] generation-0 bytes changed")
+    report = _barrier(live, [p.repo])
+    try:
+        _require(request, _barrier_admitted(report, [p.repo]), f"barrier did not admit the successor with the real bootstrap restored: {report}")
+    finally:
+        live.release_barrier_leases(report)
     journal = _journal_path(p)
     original = journal.read_bytes()
     # A well-formed journal that stops at ARMED (the ACTIVE row never landed):
