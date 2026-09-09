@@ -64,13 +64,10 @@ class BrokerEvidenceStore:
         return result
     def _authorize(self) -> None:
         """Authenticate BEFORE any directory creation, then create the tree."""
-        from .live import REPOSITORY_NAMESPACE_DIR, load_partition_receipt
+        from .live import is_canonical_store_root, load_partition_receipt
 
         _require_generation(self.root, self.generation_lease)
-        canonical_store = (
-            self.root.parent.name == "repositories"
-            and self.root.parent.parent.name == REPOSITORY_NAMESPACE_DIR
-        )
+        canonical_store = is_canonical_store_root(self.root)
         if (
             _fabpub_active()
             and (self.generation_lease is not _UNDECLARED or canonical_store)
@@ -131,6 +128,9 @@ class BrokerEvidenceStore:
         with self.lock_path.open("a+", encoding="utf-8") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             try:
+                # In-lock re-check: a partition rotation may have retired this
+                # generation between _authorize() and the flock (ah#789 D2).
+                _require_generation(self.root, self.generation_lease)
                 capability = self._mint_legacy_promotion(key)
                 provenance = capability.provenance
                 reference = provenance["evidence_reference"]

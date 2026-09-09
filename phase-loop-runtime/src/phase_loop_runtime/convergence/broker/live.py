@@ -19,6 +19,7 @@ import hashlib
 import importlib
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -55,9 +56,20 @@ FABPUB_MARKER_VERSION = 1
 REPOSITORY_DOMAIN = b"FABPUB-CANONICAL-REPOSITORY-IDENTITY-v1\0"
 REPOSITORY_NAMESPACE_DIR = "phase-loop-fabpub-broker-v1"
 RECEIPT_FILENAME = "partition-receipt.json"
+#: Partition generations (ah#789 Workstream D): generation 0 is the container
+#: ``repositories/<identity>/`` itself; generation ``n >= 1`` lives at
+#: ``<container>/generations/<n>/`` and ``<container>/generations/ACTIVE`` is a
+#: regular file naming the routable generation.  A rotation never moves bytes.
+GENERATIONS_DIR = "generations"
+ACTIVE_POINTER = "ACTIVE"
+#: Per-authority rotation ceremony files: ``<authority>/partition-rotations/<identity>/``.
+ROTATION_CEREMONY_DIR = "partition-rotations"
 
 GENERATION_BLOCKER = "legacy_writer_after_fabpub_activation"
 CUTOVER_BLOCKER = "legacy_cutover_conflict"
+ROTATION_BLOCKER = "partition_rotation_refused"
+ROUTING_BLOCKER = "partition_routing_refused"
+RECEIPT_INCOMPATIBLE_BLOCKER = "partition_receipt_incompatible"
 
 
 class LegacyCutoverConflict(RuntimeError):
@@ -76,6 +88,36 @@ class WriterGenerationBlocked(PermissionError):
 
 class FabpubConfigurationError(RuntimeError):
     """The capability marker exists but could not be read."""
+
+
+class PartitionRotationRefused(PermissionError):
+    """A blocked-partition rotation ceremony refused before/without a durable step.
+
+    Never a ``LegacyCutoverConflict``: a rotation refusal is a typed operator
+    outcome, not an integrity failure of the existing authority.
+    """
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(f"{ROTATION_BLOCKER}: {detail}")
+
+
+class PartitionRoutingRefused(PermissionError):
+    """The generation pointer cannot name a routable store; nothing falls back."""
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(f"{ROUTING_BLOCKER}: {detail}")
+
+
+class PartitionReceiptIncompatible(PermissionError):
+    """A partition receipt carries a schema this reader does not speak."""
+
+    def __init__(self, schema: object, path: Path) -> None:
+        self.schema = schema
+        self.path = Path(path)
+        super().__init__(
+            f"{RECEIPT_INCOMPATIBLE_BLOCKER}: unknown partition receipt schema "
+            f"{schema!r} at {path}"
+        )
 
 
 class SealedWorktreeFallbackWarning(RuntimeWarning):
@@ -299,8 +341,89 @@ class RepositorySnapshot:
         return self.common_dir / REPOSITORY_NAMESPACE_DIR
 
     @property
-    def store_root(self) -> Path:
+    def container(self) -> Path:
+        """Generation 0: ``<namespace-root>/repositories/<identity>`` (never moves)."""
         return self.namespace_root / "repositories" / self.identity
+
+    @property
+    def store_root(self) -> Path:
+        """The ACTIVE generation's store, resolved through the generation pointer.
+
+        Raises ``PartitionRoutingRefused`` when the pointer cannot name a
+        routable generation; there is no fallback to generation 0.
+        """
+        return active_store_root(self.container)
+
+
+def _partition_layout(root: Path) -> tuple[Path, int]:
+    """``(container, generation)`` for a generation-0 container or a ``generations/<n>`` store."""
+    root = Path(root)
+    if root.parent.name == GENERATIONS_DIR and root.name.isdigit():
+        return root.parent.parent, int(root.name)
+    return root, 0
+
+
+def _is_canonical_container(container: Path) -> bool:
+    return (
+        container.parent.name == "repositories"
+        and container.parent.parent.name == REPOSITORY_NAMESPACE_DIR
+    )
+
+
+def is_canonical_store_root(root: Path) -> bool:
+    """Whether ``root`` is a canonical FABPUB store (generation 0 or a generation store)."""
+    container, _generation = _partition_layout(root)
+    return _is_canonical_container(container)
+
+
+_ACTIVE_POINTER_BODY = re.compile(rb"[0-9]+\n")
+
+
+def _read_active_generation(container: Path) -> int:
+    """Read ``<container>/generations/ACTIVE``; every malformed state is a typed refusal."""
+    container = Path(container)
+    generations = container / GENERATIONS_DIR
+    if not os.path.lexists(generations):
+        return 0
+    if generations.is_symlink() or not generations.is_dir():
+        raise PartitionRoutingRefused(f"{generations} is not a generations directory")
+    pointer = generations / ACTIVE_POINTER
+    if pointer.is_symlink():
+        raise PartitionRoutingRefused(f"generation pointer is a symlink: {pointer}")
+    if not os.path.lexists(pointer):
+        raise PartitionRoutingRefused(f"generation pointer is missing: {pointer}")
+    if not pointer.is_file():
+        raise PartitionRoutingRefused(f"generation pointer is not a regular file: {pointer}")
+    try:
+        with pointer.open("rb") as stream:
+            body = stream.read()
+    except OSError as error:
+        raise PartitionRoutingRefused(f"generation pointer unreadable: {pointer}: {error}")
+    if not _ACTIVE_POINTER_BODY.fullmatch(body):
+        raise PartitionRoutingRefused(f"generation pointer is torn or non-integer: {pointer}")
+    generation = int(body)
+    if generation == 0:
+        return 0
+    store = generations / str(generation)
+    if store.is_symlink() or not store.is_dir():
+        raise PartitionRoutingRefused(
+            f"generation pointer names a nonexistent generation {generation}: {pointer}"
+        )
+    receipt = store / RECEIPT_FILENAME
+    if receipt.is_symlink() or not receipt.is_file():
+        raise PartitionRoutingRefused(
+            f"generation {generation} carries no partition receipt: {store}"
+        )
+    return generation
+
+
+def active_store_root(container: Path) -> Path:
+    """The ACTIVE generation's store root for ``container`` (generation 0 = the container)."""
+    container = Path(container)
+    generation = _read_active_generation(container)
+    if generation == 0:
+        return container
+    return container / GENERATIONS_DIR / str(generation)
 
 
 def repository_snapshot(worktree: Path | str) -> RepositorySnapshot:
@@ -432,8 +555,9 @@ class WriterGenerationLatch:
 
     @classmethod
     def for_store_root(cls, store_root: Path) -> "WriterGenerationLatch":
-        """Derive the latch from ``.../<namespace-root>/repositories/<identity>``."""
-        return cls(Path(store_root).parent.parent)
+        """Derive the latch from a container OR a ``generations/<n>`` store under it."""
+        container, _generation = _partition_layout(Path(store_root))
+        return cls(container.parent.parent)
 
     # -- the exclusive activation authority --------------------------------
     @property
@@ -523,6 +647,20 @@ class WriterGenerationLatch:
                     f"illegal generation transition {snapshot.generation_state} -> ACTIVE"
                 )
             self._write(WriterGenerationSnapshot(_fresh_nonce(), "ACTIVE"))
+
+    def resume_active(self) -> None:
+        """``DRAINING -> ACTIVE`` preserving the nonce: undo a drain that changed nothing.
+
+        Used ONLY by a rotation ceremony that refused after draining (its
+        in-lock digest check failed).  No authority changed hands, so the
+        generation nonce every live lease binds is kept; a fresh nonce here
+        would revoke leases the ceremony never fenced.
+        """
+        with self.exclusive():
+            snapshot = self.read()
+            if snapshot.generation_state != "DRAINING":
+                return
+            self._write(WriterGenerationSnapshot(snapshot.generation, "ACTIVE"))
 
     def rollback(self) -> None:
         with self.exclusive():
@@ -663,6 +801,26 @@ def require_current_generation(
             )
         return
     latch.validate_lease(lease, strict=strict)
+    _require_active_generation_root(store_root)
+
+
+def _require_active_generation_root(root: Path) -> None:
+    """A canonical store may only be written while it IS the ACTIVE generation.
+
+    Generation 0 after a rotation, or a superseded ``generations/<n>``, keeps
+    its bytes forever but accepts no append; a pointer that cannot resolve is
+    the same refusal (``PartitionRoutingRefused`` is a ``PermissionError``).
+    """
+    root = Path(root)
+    container, _generation = _partition_layout(root)
+    if not _is_canonical_container(container):
+        return
+    active = active_store_root(container)
+    if active != root:
+        raise WriterGenerationBlocked(
+            f"{root} is not the ACTIVE partition generation (active store is {active}); "
+            "refusing to append to a superseded generation"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -755,6 +913,236 @@ class LegacyRepositoryPartitionReceipt:
         return path
 
 
+ROTATION_STATES = ("DRAINING", "INVENTORY_SEALED", "ARMED", "ACTIVE")
+ROTATION_JOURNAL_SCHEMA = "PartitionRotationJournal.v1"
+ROTATION_INVENTORY_SCHEMA = "PartitionRotationInventory.v1"
+ROTATION_ATTESTATION_SCHEMA = "PartitionRotationAttestation.v1"
+DISPOSITION_OBSERVED_LANDED = "observed_landed"
+DISPOSITION_ATTESTED_NOT_LANDED = "attested_not_landed"
+ROTATION_DIGESTED_FILES = (
+    "admissions.jsonl",
+    "evidence.jsonl",
+    RECEIPT_FILENAME,
+    "adapter-start-owner.json",
+)
+ROTATION_STORE_FILES = ROTATION_DIGESTED_FILES + (
+    "admissions.lock",
+    "legacy-promotions.jsonl",
+)
+
+
+def _sha256_file(path: Path) -> str:
+    """sha256 of the file's bytes; a missing file digests as empty bytes."""
+    path = Path(path)
+    return hashlib.sha256(path.read_bytes() if path.exists() else b"").hexdigest()
+
+
+def _rotation_states_well_formed(states: list[str]) -> bool:
+    return bool(states) and tuple(states) == ROTATION_STATES[: len(states)]
+
+
+@dataclass(frozen=True)
+class RotatedPartitionReceipt:
+    """The receipt governing a rotated generation store (``generations/<n>``).
+
+    A rotated generation is authenticated by a CHAIN: its own sealed rotation
+    inventory + ARMED rotation journal reproduce these exact bytes, AND the
+    predecessor generation's digested files still equal the digests sealed at
+    rotation time, AND the predecessor itself still authenticates. Any drift
+    anywhere in the chain refuses routing; nothing falls back.
+    """
+
+    cutover_id: str
+    canonical_repository_identity: str
+    target_namespace: str
+    generation: int
+    predecessor_generation: int
+    predecessor_digests: dict
+    adjudicated_effect_dispositions: dict
+    attestation_sha256: str
+    legacy_epoch_high_water: int
+    legacy_completed_effect_keys: tuple
+    global_journal_path: str
+    inventory_sha256: str = ""
+    partition_map_sha256: str = ""
+    manifest_sha256: str = ""
+    legacy_root_inventory: tuple = ()
+    ambiguous: bool = False
+    zero_source: bool = False
+
+    SCHEMA = "LegacyRepositoryPartitionReceipt.v3"
+
+    @property
+    def rotation_cutover_id(self) -> str:
+        return self.cutover_id
+
+    def payload(self) -> dict:
+        return {
+            "schema": self.SCHEMA,
+            "cutover_id": self.cutover_id,
+            "rotation_cutover_id": self.cutover_id,
+            "canonical_repository_identity": self.canonical_repository_identity,
+            "target_namespace": self.target_namespace,
+            "generation": self.generation,
+            "predecessor_generation": self.predecessor_generation,
+            "predecessor_digests": dict(self.predecessor_digests),
+            "adjudicated_effect_dispositions": {
+                key: dict(value) for key, value in self.adjudicated_effect_dispositions.items()
+            },
+            "attestation_sha256": self.attestation_sha256,
+            "legacy_epoch_high_water": self.legacy_epoch_high_water,
+            "legacy_completed_effect_keys": list(self.legacy_completed_effect_keys),
+            "global_journal_path": self.global_journal_path,
+            "inventory_sha256": self.inventory_sha256,
+            "partition_map_sha256": self.partition_map_sha256,
+            "manifest_sha256": self.manifest_sha256,
+            "legacy_root_inventory": list(self.legacy_root_inventory),
+            "ambiguous": self.ambiguous,
+            "zero_source": self.zero_source,
+        }
+
+    def digest(self) -> str:
+        return hashlib.sha256(canonical_bytes(self.payload())).hexdigest()
+
+    def file_bytes(self) -> bytes:
+        return canonical_bytes(self.payload()) + b"\n"
+
+    def write(self, root: Path) -> Path:
+        """Write byte-exactly; an existing receipt must already be these bytes."""
+        root = Path(root)
+        path = root / RECEIPT_FILENAME
+        expected = self.file_bytes()
+        if path.exists():
+            _require_no_ancestor_symlink(path)
+            if path.read_bytes() != expected:
+                raise LegacyCutoverConflict(
+                    f"rotated partition receipt at {path} differs from the sealed rotation"
+                )
+            return path
+        _atomic_write_json(path, json.loads(expected))
+        return path
+
+
+def _rotation_receipt_from_partition(
+    cutover_id: str, partition: dict, sealed: dict, journal: Path
+) -> RotatedPartitionReceipt:
+    try:
+        return RotatedPartitionReceipt(
+            cutover_id=cutover_id,
+            canonical_repository_identity=str(partition["canonical_repository_identity"]),
+            target_namespace=str(Path(partition["target_namespace"])),
+            generation=int(partition["generation"]),
+            predecessor_generation=int(partition["predecessor_generation"]),
+            predecessor_digests={
+                str(name): str(digest) for name, digest in partition["predecessor_digests"].items()
+            },
+            adjudicated_effect_dispositions={
+                str(key): dict(value)
+                for key, value in partition["adjudicated_effect_dispositions"].items()
+            },
+            attestation_sha256=str(sealed.get("attestation_sha256", "")),
+            legacy_epoch_high_water=int(partition["legacy_epoch_high_water"]),
+            legacy_completed_effect_keys=tuple(partition["legacy_completed_effect_keys"]),
+            global_journal_path=str(journal),
+            inventory_sha256=str(sealed.get("inventory_sha256", "")),
+            partition_map_sha256=str(sealed.get("partition_map_sha256", "")),
+            manifest_sha256=str(sealed.get("manifest_sha256", "")),
+            legacy_root_inventory=tuple(sealed.get("legacy_root_inventory", ())),
+            ambiguous=bool(partition.get("ambiguous", False)),
+            zero_source=False,
+        )
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        raise LegacyCutoverConflict(
+            f"the sealed rotation partition for {cutover_id!r} is malformed: {exc}"
+        ) from exc
+
+
+def _load_rotated_partition_receipt(
+    store_root: Path, path: Path, raw: dict
+) -> RotatedPartitionReceipt:
+    """Authenticate a v3 receipt: own seal, exact bytes, then the predecessor chain."""
+    container, generation = _partition_layout(store_root)
+    if generation < 1:
+        raise LegacyCutoverConflict(
+            f"a rotated partition receipt may not govern the container store {store_root}"
+        )
+    cutover_id = raw.get("cutover_id", "")
+    identity = raw.get("canonical_repository_identity", "")
+    if identity != container.name:
+        raise LegacyCutoverConflict(
+            "partition receipt is bound to a different canonical repository identity"
+        )
+    if raw.get("generation") != generation:
+        raise LegacyCutoverConflict(
+            f"rotated partition receipt at {path} names generation {raw.get('generation')!r} "
+            f"but governs generation {generation}"
+        )
+    if Path(str(raw.get("target_namespace", ""))) != container:
+        raise LegacyCutoverConflict(
+            "rotated partition receipt is bound to a different repository container"
+        )
+    journal = Path(raw.get("global_journal_path", ""))
+    if not journal.exists():
+        raise LegacyCutoverConflict("the receipt's rotation journal is missing")
+    states, ids = _journal_entries(journal)
+    if not _rotation_states_well_formed(states) or "ARMED" not in states:
+        raise LegacyCutoverConflict("the receipt's rotation ceremony is not ARMED")
+    if set(ids) != {cutover_id}:
+        raise LegacyCutoverConflict("the receipt's cutover_id does not match its rotation journal")
+    inventory_path = journal.parent / f"{cutover_id}.inventory.json"
+    if not inventory_path.exists():
+        raise LegacyCutoverConflict("the receipt's sealed rotation inventory is missing")
+    sealed = json.loads(inventory_path.read_text(encoding="utf-8"))
+    if sealed.get("schema") != ROTATION_INVENTORY_SCHEMA:
+        raise LegacyCutoverConflict("the sealed rotation inventory carries an unknown schema")
+    if _inventory_digest(sealed) != sealed.get("inventory_sha256"):
+        raise LegacyCutoverConflict("the sealed rotation inventory digest drifted")
+    partition = sealed.get("partitions", {}).get(identity)
+    if partition is None:
+        raise LegacyCutoverConflict(
+            "the receipt's repository is absent from its own sealed rotation partition map"
+        )
+    if _partition_map_digest(sealed.get("partitions", {})) != sealed.get("partition_map_sha256"):
+        raise LegacyCutoverConflict("the sealed rotation partition map digest drifted")
+    expected = _rotation_receipt_from_partition(cutover_id, partition, sealed, journal)
+    if path.read_bytes() != expected.file_bytes():
+        raise LegacyCutoverConflict(
+            f"rotated partition receipt bytes at {path} do not equal the bytes its sealed "
+            "rotation partition produces"
+        )
+    if expected.generation != generation or expected.predecessor_generation != generation - 1:
+        raise LegacyCutoverConflict(
+            f"rotated partition receipt at {path} does not chain to generation {generation - 1}"
+        )
+    predecessor = (
+        container if generation == 1 else container / GENERATIONS_DIR / str(generation - 1)
+    )
+    for name in ROTATION_DIGESTED_FILES:
+        if _sha256_file(predecessor / name) != expected.predecessor_digests.get(name):
+            raise PartitionRoutingRefused(
+                f"predecessor generation {generation - 1} of {container} drifted since "
+                f"rotation {cutover_id!r} sealed it ({name}); generation {generation} is "
+                "not routable"
+            )
+    if load_partition_receipt(predecessor) is None:
+        raise LegacyCutoverConflict(
+            f"predecessor generation {generation - 1} of {container} has no receipt"
+        )
+    return expected
+
+
+def _rotation_base_receipt(receipt):
+    """The container's v2 receipt behind a v3 receipt (v2 receipts pass through)."""
+    if not isinstance(receipt, RotatedPartitionReceipt):
+        return receipt
+    base = load_partition_receipt(Path(receipt.target_namespace))
+    if base is None:
+        raise LegacyCutoverConflict(
+            f"rotated partition {receipt.canonical_repository_identity} has no container receipt"
+        )
+    return base
+
+
 def _receipt_from_partition(
     cutover_id: str, partition: dict, sealed: dict, journal: Path
 ) -> LegacyRepositoryPartitionReceipt:
@@ -789,7 +1177,9 @@ def _partition_map_digest(partitions: dict) -> str:
     return hashlib.sha256(canonical_bytes({"partitions": partitions})).hexdigest()
 
 
-def load_partition_receipt(store_root: Path) -> LegacyRepositoryPartitionReceipt | None:
+def load_partition_receipt(
+    store_root: Path,
+) -> LegacyRepositoryPartitionReceipt | RotatedPartitionReceipt | None:
     """Load and fully authenticate the receipt that governs ``store_root``.
 
     Authentication is a CHAIN ending in EXACT ON-DISK BYTES: the receipt must
@@ -803,8 +1193,15 @@ def load_partition_receipt(store_root: Path) -> LegacyRepositoryPartitionReceipt
         return None
     _require_no_ancestor_symlink(path)
     raw = json.loads(path.read_text(encoding="utf-8"))
-    if raw.get("schema") != LegacyRepositoryPartitionReceipt.SCHEMA:
-        raise LegacyCutoverConflict(f"unknown partition receipt schema at {path}")
+    schema = raw.get("schema")
+    if schema == RotatedPartitionReceipt.SCHEMA:
+        return _load_rotated_partition_receipt(store_root, path, raw)
+    if schema != LegacyRepositoryPartitionReceipt.SCHEMA:
+        raise PartitionReceiptIncompatible(schema, path)
+    if _partition_layout(store_root)[1] != 0:
+        raise PartitionRoutingRefused(
+            f"a container partition receipt may not govern the generation store {store_root}"
+        )
     cutover_id = raw.get("cutover_id", "")
     identity = raw.get("canonical_repository_identity", "")
     if identity != store_root.name:
@@ -860,7 +1257,7 @@ def partition_is_ambiguity_blocked(store_root: Path) -> bool:
     """
     try:
         receipt = load_partition_receipt(Path(store_root))
-    except LegacyCutoverConflict:
+    except (LegacyCutoverConflict, PermissionError):
         return True
     return bool(receipt is not None and receipt.ambiguous)
 
@@ -947,14 +1344,17 @@ def _make_promotion_capability_factory():
         archive = (
             Path(provenance["legacy_root"])
             / "legacy-archive"
-            / receipt.cutover_id
+            / str(provenance.get("archive_cutover_id", receipt.cutover_id))
             / provenance["source_id"]
+            if provenance.get("legacy_root") is not None
+            and provenance.get("source_id") is not None
+            else None
         )
         for filename, expected in (
             ("admissions.jsonl", provenance.get("admissions_digest")),
             ("evidence.jsonl", provenance.get("evidence_digest")),
         ):
-            if expected is None:
+            if expected is None or archive is None:
                 continue
             candidate = archive / filename
             actual = hashlib.sha256(
@@ -1192,6 +1592,40 @@ def crash_at_cutover_step(step: str):
 def _maybe_crash(step: str) -> None:
     if _CRASH_STEP == step:
         raise _CutoverCrash(step)
+
+
+# --- ah#789 Workstream D: partition-rotation crash scaffolding --------------
+ROTATION_CRASH_STEPS = (
+    "before_generations_rename",
+    "after_generations_rename",
+    "between_successor_files",
+    "after_successor_receipt_before_flip",
+    "after_journal_draining",
+    "after_journal_inventory_sealed",
+    "after_journal_armed",
+)
+_ROTATION_CRASH_STEP: str | None = None
+
+
+class _RotationCrash(RuntimeError):
+    """Test-only simulated process death inside a partition rotation."""
+
+
+@contextlib.contextmanager
+def crash_at_rotation_step(step: str):
+    global _ROTATION_CRASH_STEP
+    if step not in ROTATION_CRASH_STEPS:
+        raise ValueError(f"unknown rotation crash step {step!r}")
+    previous, _ROTATION_CRASH_STEP = _ROTATION_CRASH_STEP, step
+    try:
+        yield
+    finally:
+        _ROTATION_CRASH_STEP = previous
+
+
+def _maybe_rotation_crash(step: str) -> None:
+    if _ROTATION_CRASH_STEP == step:
+        raise _RotationCrash(step)
 
 
 @dataclass(frozen=True)
@@ -2218,10 +2652,14 @@ def _classify_repository_namespace(
 ) -> dict:
     root = snapshot.namespace_root
     files = _tree_file_inventory(root)
+    # Bootstrap ownership is a property of the CONTAINER receipt; the generation
+    # pointer is deliberately not resolved here so one repository's unroutable
+    # pointer never turns its siblings' re-validation into a host-wide refusal.
+    container = snapshot.container
     if not root.exists():
         state = "absent"
-    elif (snapshot.store_root / RECEIPT_FILENAME).exists():
-        receipt = load_partition_receipt(snapshot.store_root)
+    elif (container / RECEIPT_FILENAME).exists():
+        receipt = load_partition_receipt(container)
         bootstrap_claim = (
             _receipt_bootstrap_claim(receipt) if receipt is not None else None
         )
@@ -2269,7 +2707,7 @@ def _classify_repository_namespace(
             if (
                 partition is None
                 or not partition.get("zero_source")
-                or Path(partition.get("target_namespace", "")) != snapshot.store_root
+                or Path(partition.get("target_namespace", "")) != container
                 or not _recorded_worktree_binds(partition.get("worktree", ""), snapshot)
                 or _partition_map_digest(sealed.get("partitions", {}))
                 != sealed.get("partition_map_sha256")
@@ -2847,7 +3285,7 @@ def _prove_zero_source(
             f"late {_ONBOARDING_INJECTION[1]} evidence appeared at {boundary}; a "
             "zero-source onboarding may not seal over legacy evidence"
         )
-    namespace = snapshot.store_root
+    namespace = snapshot.container
     existing = None
     if (namespace / RECEIPT_FILENAME).exists():
         existing = load_partition_receipt(namespace)
@@ -3022,6 +3460,34 @@ def onboard_zero_legacy_repository(
         )
 
 
+def _rotation_ceremony_dir(identity: str, authority_root: Path | str | None) -> Path:
+    authority = _canonical_input_path(
+        authority_root or default_fabpub_authority_root(), label="authority root"
+    )
+    return authority / ROTATION_CEREMONY_DIR / identity
+
+
+def _require_no_rotation_in_progress(
+    snapshot: RepositorySnapshot, authority_root: Path | str | None
+) -> None:
+    """Refuse while any rotation ceremony for this repository is not ACTIVE."""
+    ceremony = _rotation_ceremony_dir(snapshot.identity, authority_root)
+    if not ceremony.exists():
+        return
+    for journal in sorted(ceremony.glob("*.journal.jsonl")):
+        rotation_id = journal.name[: -len(".journal.jsonl")]
+        states, ids = _journal_entries(journal)
+        if (
+            not _rotation_states_well_formed(states)
+            or states[-1] != "ACTIVE"
+            or set(ids) != {rotation_id}
+        ):
+            raise LegacyCutoverConflict(
+                f"partition rotation {rotation_id!r} for {snapshot.identity} is in "
+                "progress; zero-source onboarding may not end a rotation drain"
+            )
+
+
 def _onboard_zero_legacy_repository_under_seal(
     worktree: Path | str,
     *,
@@ -3037,7 +3503,12 @@ def _onboard_zero_legacy_repository_under_seal(
             "zero-source onboarding requires a persistent global ACTIVE authority"
         )
     snapshot = repository_snapshot(worktree)
-    namespace = snapshot.store_root
+    namespace = snapshot.container
+    # A partition rotation owns this namespace from its first journal row until
+    # ACTIVE: onboarding must never end a drain it did not start, and a
+    # rotated repository is not a zero-source one.
+    _require_no_rotation_in_progress(snapshot, authority_root)
+    active = snapshot.store_root
     for filename in ("admissions.jsonl", "evidence.jsonl"):
         if (namespace / filename).exists() and not (namespace / RECEIPT_FILENAME).exists():
             raise LegacyCutoverConflict(
@@ -3077,6 +3548,11 @@ def _onboard_zero_legacy_repository_under_seal(
             latch.mark_armed()
             latch.activate()
             return existing
+        if active != namespace:
+            raise LegacyCutoverConflict(
+                f"repository {snapshot.identity} has rotated to {active}; zero-source "
+                "onboarding may not re-onboard a rotated repository"
+            )
         zero_source_proof = _prove_zero_source(snapshot, roots, "before_zero_source_proof")
         identity = snapshot.identity
         authority = latch.root / "zero-legacy-onboarding"
@@ -3155,6 +3631,534 @@ def _onboard_zero_legacy_repository_under_seal(
         return receipt
 
 
+# ---------------------------------------------------------------------------
+# ah#789 Workstream D — blocked-partition rotation ceremony
+#
+# A repository whose active generation carries a permanently ambiguity-blocked
+# publish never becomes writable again by clearing the block: the ceremony
+# below opens a SUCCESSOR generation under the same container, seals an
+# operator attestation that adjudicates every blocked effect, and flips the
+# ``generations/ACTIVE`` pointer only after the successor receipt is durable.
+# Nothing in the predecessor generation is moved, rewritten, or deleted.
+# ---------------------------------------------------------------------------
+_ROTATION_EFFECT_PREFIX = "publish_committed_branch\0"
+_ROTATION_JOURNAL_SUFFIX = ".journal.jsonl"
+
+
+@dataclass(frozen=True)
+class PartitionRotationOutcome:
+    """The durable result of :func:`rotate_blocked_partition`."""
+
+    cutover_id: str
+    state: str
+    store_root: Path
+    predecessor_store_root: Path
+    generation: int
+    receipt: RotatedPartitionReceipt
+
+
+@dataclass(frozen=True)
+class _PredecessorLedger:
+    keys: tuple[str, ...]
+    blocked: dict[str, str]
+    terminals: dict[str, str]
+    dangling: tuple[str, ...]
+
+
+def _read_predecessor_ledger(store_root: Path) -> _PredecessorLedger:
+    """Strict-parse the predecessor evidence log into what a rotation adjudicates."""
+    try:
+        rows = read_strict_jsonl(store_root / "evidence.jsonl", label="predecessor evidence")
+    except LegacyCutoverConflict as error:
+        raise PartitionRotationRefused(f"predecessor evidence is unreadable: {error}") from error
+    order: list[str] = []
+    blocked: dict[str, str] = {}
+    terminals: dict[str, str] = {}
+    settled: set[str] = set()
+    for line, raw in rows:
+        key = raw.get("idempotency_key")
+        state = raw.get("state")
+        if not isinstance(key, str) or not isinstance(state, str):
+            raise PartitionRotationRefused("predecessor evidence row lacks a key or state")
+        if key not in settled and key not in order:
+            order.append(key)
+        if state == "outcome_ambiguous_blocked":
+            blocked[key] = hashlib.sha256(line.encode("utf-8")).hexdigest()
+            settled.add(key)
+        elif state == "effect_terminal_observed":
+            terminals[key] = str(raw.get("evidence_reference", ""))
+            settled.add(key)
+        elif state in ("rejected_before_start", "no_effect_terminal_proven"):
+            settled.add(key)
+    for key in blocked:
+        if key in terminals:
+            raise PartitionRotationRefused(
+                f"predecessor evidence for {key!r} is both terminal-observed and blocked"
+            )
+    dangling = tuple(key for key in order if key not in settled)
+    return _PredecessorLedger(tuple(order), blocked, terminals, dangling)
+
+
+def _rotation_owner(store_root: Path, identity: str) -> dict | None:
+    path = store_root / "adapter-start-owner.json"
+    if not path.exists():
+        return None
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise PartitionRotationRefused(f"adapter-start owner record is unreadable: {error}") from error
+    if not isinstance(raw, dict):
+        raise PartitionRotationRefused("adapter-start owner record is not an object")
+    if raw.get("repository_identity") != identity:
+        raise PartitionRotationRefused("adapter-start ownership belongs to another repository")
+    return raw
+
+
+def _rotation_owner_identity(owner: dict | None, key: str) -> dict:
+    if owner is None:
+        return {}
+    if owner.get("effect_key") == key or owner.get("idempotency_key") == key:
+        return {"owner_nonce": owner.get("owner_nonce"), "transaction_id": owner.get("transaction_id")}
+    return {}
+
+
+def _rotation_admissions_high_water(store_root: Path) -> int:
+    try:
+        rows = read_strict_jsonl(store_root / "admissions.jsonl", label="predecessor admissions")
+    except LegacyCutoverConflict as error:
+        raise PartitionRotationRefused(f"predecessor admissions are unreadable: {error}") from error
+    high = 0
+    for _line, raw in rows:
+        try:
+            high = max(high, int(raw.get("epoch", 0)))
+        except (TypeError, ValueError) as error:
+            raise PartitionRotationRefused(f"predecessor admission row has a non-integer epoch: {error}") from error
+    return high
+
+
+def _validate_rotation_attestation(attestation: object, generation: int) -> dict:
+    if not isinstance(attestation, dict) or attestation.get("schema") != ROTATION_ATTESTATION_SCHEMA:
+        raise PartitionRotationRefused(f"attestation must carry schema {ROTATION_ATTESTATION_SCHEMA!r}")
+    attested_by = attestation.get("attested_by")
+    if not isinstance(attested_by, str) or not attested_by:
+        raise PartitionRotationRefused("attestation names no attesting operator")
+    if attestation.get("predecessor_generation") != generation:
+        raise PartitionRotationRefused(
+            f"attestation adjudicates generation {attestation.get('predecessor_generation')!r}; "
+            f"the active generation is {generation}"
+        )
+    if not isinstance(attestation.get("predecessor_store_digests"), dict):
+        raise PartitionRotationRefused("attestation carries no predecessor store digests")
+    effects = attestation.get("effects")
+    if not isinstance(effects, dict):
+        raise PartitionRotationRefused("attestation carries no effects map")
+    for key, entry in effects.items():
+        if not isinstance(key, str) or not isinstance(entry, dict):
+            raise PartitionRotationRefused("attestation effect entries must be keyed objects")
+        disposition = entry.get("disposition")
+        if disposition not in (DISPOSITION_OBSERVED_LANDED, DISPOSITION_ATTESTED_NOT_LANDED):
+            raise PartitionRotationRefused(f"attestation disposition {disposition!r} for {key!r} is unknown")
+        head = entry.get("observed_head")
+        if disposition == DISPOSITION_OBSERVED_LANDED and not (isinstance(head, str) and head):
+            raise PartitionRotationRefused(f"observed_landed effect {key!r} names no observed head")
+        if disposition == DISPOSITION_ATTESTED_NOT_LANDED and head is not None:
+            raise PartitionRotationRefused(f"attested_not_landed effect {key!r} may not name an observed head")
+        url = entry.get("evidence_url")
+        if not isinstance(url, str) or not url:
+            raise PartitionRotationRefused(f"attestation effect {key!r} cites no evidence")
+        if "ambiguity_digest" not in entry:
+            raise PartitionRotationRefused(f"attestation effect {key!r} binds no ambiguity digest")
+    return effects
+
+
+def _rotation_own_journal(journal: Path, cutover_id: str) -> list[str]:
+    """States of THIS rotation's journal; any malformation refuses, never rewrites."""
+    if not journal.exists():
+        return []
+    try:
+        states, ids = _journal_entries(journal)
+    except LegacyCutoverConflict as error:
+        raise PartitionRotationRefused(f"rotation journal for {cutover_id!r} is unreadable: {error}") from error
+    if not _rotation_states_well_formed(states):
+        raise PartitionRotationRefused(
+            f"rotation journal for {cutover_id!r} is not a well-formed state prefix: {states}"
+        )
+    if set(ids) != {cutover_id}:
+        raise PartitionRotationRefused(
+            f"rotation journal for {cutover_id!r} carries foreign cutover ids "
+            f"{sorted(set(ids) - {cutover_id})}"
+        )
+    return states
+
+
+def _rotation_journal_append(journal: Path, cutover_id: str, state: str) -> None:
+    import time
+
+    journal.parent.mkdir(parents=True, exist_ok=True)
+    row = {
+        "schema": ROTATION_JOURNAL_SCHEMA,
+        "cutover_id": cutover_id,
+        "state": state,
+        "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    with journal.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    _fsync_dir(journal.parent)
+
+
+def _load_rotation_inventory(inventory_path: Path, cutover_id: str, identity: str) -> dict:
+    if not inventory_path.exists():
+        raise PartitionRotationRefused(
+            f"rotation {cutover_id!r} journaled INVENTORY_SEALED but its inventory is missing"
+        )
+    try:
+        sealed = json.loads(inventory_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise PartitionRotationRefused(f"sealed rotation inventory is unreadable: {error}") from error
+    if (
+        not isinstance(sealed, dict)
+        or sealed.get("schema") != ROTATION_INVENTORY_SCHEMA
+        or sealed.get("cutover_id") != cutover_id
+        or _inventory_digest(sealed) != sealed.get("inventory_sha256")
+        or identity not in sealed.get("partitions", {})
+    ):
+        raise PartitionRotationRefused(f"sealed rotation inventory for {cutover_id!r} does not authenticate")
+    return sealed
+
+
+def _write_active_pointer(generations: Path, generation: int) -> None:
+    """Atomically publish ``generations/ACTIVE``; the temp name never matches ``ACTIVE*``."""
+    target = generations / ACTIVE_POINTER
+    temp = generations / f".{ACTIVE_POINTER}.{os.getpid()}.{_fresh_nonce()[:8]}.tmp"
+    with temp.open("w", encoding="ascii") as stream:
+        stream.write(f"{generation}\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temp, target)
+    _fsync_dir(generations)
+
+
+def _rotation_carried_effects(
+    active_receipt, ledger: _PredecessorLedger, effects: dict, identity: str, generation: int, digest: str
+) -> dict:
+    try:
+        carried = {key: dict(value) for key, value in sealed_partition_effects(active_receipt).items()}
+    except LegacyCutoverConflict as error:
+        raise PartitionRotationRefused(f"predecessor sealed effects do not authenticate: {error}") from error
+    for key, reference in ledger.terminals.items():
+        carried[key] = {
+            "serialized_repository": identity,
+            "evidence_reference": reference,
+            "generation": generation,
+            "disposition": "effect_terminal_observed",
+        }
+    for key, entry in effects.items():
+        if entry["disposition"] == DISPOSITION_OBSERVED_LANDED:
+            carried[key] = {
+                "serialized_repository": identity,
+                "evidence_reference": entry["evidence_url"],
+                "observed_head": entry["observed_head"],
+                "generation": generation,
+                "disposition": DISPOSITION_OBSERVED_LANDED,
+                "attestation_digest": digest,
+            }
+        else:
+            carried.pop(key, None)
+    return carried
+
+
+def rotate_blocked_partition(
+    worktree: Path | str,
+    *,
+    cutover_id: str,
+    attestation: dict,
+    authority_root: Path | str | None = None,
+) -> PartitionRotationOutcome:
+    """Open the successor generation of an ambiguity-blocked repository partition.
+
+    Every check that can refuse without writing runs before the ceremony takes
+    the predecessor's ``admissions.lock``; once inside, the journal under the
+    authority's ``partition-rotations/<identity>/`` drives an idempotent,
+    crash-resumable sequence that ends with the atomic pointer flip.
+    """
+    import fcntl
+
+    cutover_id = _validate_cutover_id(cutover_id)
+    snapshot = repository_snapshot(worktree)
+    container = snapshot.container
+    identity = snapshot.identity
+    active = snapshot.store_root
+    _root, generation = _partition_layout(active)
+    successor_generation = generation + 1
+    generations = container / GENERATIONS_DIR
+    successor = generations / str(successor_generation)
+    authority = _canonical_input_path(
+        authority_root or default_fabpub_authority_root(), label="authority root"
+    )
+    ceremony = authority / ROTATION_CEREMONY_DIR / identity
+    journal = ceremony / f"{cutover_id}{_ROTATION_JOURNAL_SUFFIX}"
+    inventory_path = ceremony / f"{cutover_id}.inventory.json"
+
+    # -- the governing receipts (zero-write) ---------------------------------
+    try:
+        base = load_partition_receipt(container)
+    except LegacyCutoverConflict as error:
+        raise PartitionRotationRefused(
+            f"container receipt for {identity} does not authenticate: {error}"
+        ) from error
+    if base is None or isinstance(base, RotatedPartitionReceipt):
+        raise PartitionRotationRefused(f"no container partition receipt governs {container}")
+    claim = _receipt_bootstrap_claim(base) if base.zero_source else None
+    if claim is None or claim["authority_root"] != authority:
+        raise PartitionRotationRefused(
+            f"{identity} is not a zero-history bootstrap partition under {authority}; "
+            "only bootstrap-governed partitions rotate"
+        )
+    if not _receipt_active_authority_exists(base, authority_root=authority):
+        raise PartitionRotationRefused(f"the bootstrap authority governing {identity} is not ACTIVE")
+    if base.ambiguous:
+        raise PartitionRotationRefused(
+            f"the container receipt of {identity} is ambiguity-blocked; rotation cannot lift an "
+            "archived ambiguity"
+        )
+    if active == container:
+        active_receipt = base
+    else:
+        try:
+            active_receipt = load_partition_receipt(active)
+        except LegacyCutoverConflict as error:
+            raise PartitionRotationRefused(
+                f"active generation {generation} of {identity} does not authenticate: {error}"
+            ) from error
+        if active_receipt is None:
+            raise PartitionRotationRefused(f"active generation {generation} of {identity} has no receipt")
+    if bool(getattr(active_receipt, "ambiguous", False)):
+        raise PartitionRotationRefused(f"active generation {generation} of {identity} is ambiguity-blocked")
+
+    # -- ceremony state on disk (zero-write) ----------------------------------
+    for candidate in sorted(container.glob(f"{GENERATIONS_DIR}.tmp.*")):
+        if candidate.name != f"{GENERATIONS_DIR}.tmp.{cutover_id}":
+            raise PartitionRotationRefused(f"foreign rotation staging debris at {candidate}")
+    if ceremony.exists():
+        for other in sorted(ceremony.glob(f"*{_ROTATION_JOURNAL_SUFFIX}")):
+            if other == journal:
+                continue
+            other_id = other.name[: -len(_ROTATION_JOURNAL_SUFFIX)]
+            try:
+                other_states, other_ids = _journal_entries(other)
+            except LegacyCutoverConflict as error:
+                raise PartitionRotationRefused(
+                    f"rotation journal {other_id!r} for {identity} is unreadable: {error}"
+                ) from error
+            if (
+                not _rotation_states_well_formed(other_states)
+                or other_states[-1] != "ACTIVE"
+                or set(other_ids) != {other_id}
+            ):
+                raise PartitionRotationRefused(
+                    f"rotation {other_id!r} for {identity} is still in progress; resume it "
+                    f"under its own cutover_id before starting {cutover_id!r}"
+                )
+    states = _rotation_own_journal(journal, cutover_id)
+    if states and states[-1] == "ACTIVE":
+        if isinstance(active_receipt, RotatedPartitionReceipt) and active_receipt.cutover_id == cutover_id:
+            return PartitionRotationOutcome(
+                cutover_id, "ACTIVE", active, _rotation_predecessor_root(container, generation), generation, active_receipt
+            )
+        raise PartitionRotationRefused(
+            f"rotation {cutover_id!r} already completed but does not govern the active generation"
+        )
+
+    # -- the attestation (zero-write) -----------------------------------------
+    effects = _validate_rotation_attestation(attestation, generation)
+    digest = hashlib.sha256(canonical_bytes(attestation)).hexdigest()
+    if isinstance(active_receipt, RotatedPartitionReceipt) and active_receipt.attestation_sha256 == digest:
+        raise PartitionRotationRefused(
+            f"attestation {digest[:12]} already adjudicated generation {generation}; a rotation "
+            "requires a fresh attestation over the active generation"
+        )
+    expected_digests = {name: _sha256_file(active / name) for name in ROTATION_DIGESTED_FILES}
+    if attestation.get("predecessor_receipt_digest") != expected_digests[RECEIPT_FILENAME]:
+        raise PartitionRotationRefused("attestation predecessor_receipt_digest does not match the active receipt")
+    if attestation["predecessor_store_digests"] != expected_digests:
+        raise PartitionRotationRefused("attestation predecessor_store_digests do not match the active store")
+    ledger = _read_predecessor_ledger(active)
+    foreign = [key for key in ledger.keys if not key.startswith(_ROTATION_EFFECT_PREFIX)]
+    if foreign:
+        raise PartitionRotationRefused(
+            f"predecessor evidence carries non-publish effect keys {foreign!r}; rotation adjudicates "
+            "publish_committed_branch effects only"
+        )
+    if ledger.dangling:
+        raise PartitionRotationRefused(
+            f"predecessor evidence has intents without a terminal {list(ledger.dangling)!r}"
+        )
+    owner = _rotation_owner(active, identity)
+    if owner is not None and not bool(owner.get("sealed", False)):
+        owner_key = owner.get("effect_key") or owner.get("idempotency_key")
+        if owner_key not in ledger.blocked and owner_key not in ledger.terminals:
+            raise PartitionRotationRefused(
+                "predecessor carries an unsealed adapter-start owner whose effect has no terminal"
+            )
+    if not ledger.blocked:
+        raise PartitionRotationRefused(
+            f"{identity} generation {generation} has no ambiguity-blocked effect; nothing to rotate"
+        )
+    if set(effects) != set(ledger.blocked):
+        raise PartitionRotationRefused(
+            "attestation must adjudicate exactly the blocked effects: "
+            f"missing {sorted(set(ledger.blocked) - set(effects))!r}, "
+            f"extra {sorted(set(effects) - set(ledger.blocked))!r}"
+        )
+    for key, entry in effects.items():
+        if entry.get("ambiguity_digest") != ledger.blocked[key]:
+            raise PartitionRotationRefused(f"attestation ambiguity_digest for {key!r} does not bind the blocked row")
+        expected_owner = _rotation_owner_identity(owner, key)
+        for field in ("owner_nonce", "transaction_id"):
+            if entry.get(field) != expected_owner.get(field):
+                raise PartitionRotationRefused(
+                    f"attestation {field} for {key!r} does not match the adapter-start owner record"
+                )
+
+    sealed: dict | None = None
+    if "INVENTORY_SEALED" in states:
+        sealed = _load_rotation_inventory(inventory_path, cutover_id, identity)
+        if sealed.get("attestation_sha256") != digest:
+            raise PartitionRotationRefused(
+                f"rotation {cutover_id!r} sealed a different attestation; resume with the sealed one"
+            )
+    elif successor.exists():
+        raise PartitionRotationRefused(
+            f"successor generation {successor} exists but rotation {cutover_id!r} never sealed it"
+        )
+    carried = (
+        {}
+        if sealed is not None
+        else _rotation_carried_effects(active_receipt, ledger, effects, identity, generation, digest)
+    )
+    high_water = max(int(active_receipt.legacy_epoch_high_water), _rotation_admissions_high_water(active))
+
+    # -- the ceremony: one critical section under the predecessor's lock -------
+    latch = WriterGenerationLatch(snapshot.namespace_root)
+    receipt: RotatedPartitionReceipt | None = None
+    lock_path = active / "admissions.lock"
+    with lock_path.open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            if not latch.exists():
+                raise PartitionRotationRefused(f"{identity} has no writer generation latch")
+            latch_state = latch.read().generation_state
+            if latch_state == "ACTIVE":
+                latch.begin_draining()
+            elif latch_state != "DRAINING":
+                raise PartitionRotationRefused(
+                    f"writer generation latch of {identity} is {latch_state}; rotation requires ACTIVE"
+                )
+            if "DRAINING" not in states:
+                _rotation_journal_append(journal, cutover_id, "DRAINING")
+                states.append("DRAINING")
+            _maybe_rotation_crash("after_journal_draining")
+            try:
+                latch.await_quiescent(worktree=worktree)
+            except WriterGenerationBlocked as error:
+                latch.resume_active()
+                raise PartitionRotationRefused(f"predecessor writers did not drain: {error}") from error
+            current = {name: _sha256_file(active / name) for name in ROTATION_DIGESTED_FILES}
+            if current != expected_digests:
+                latch.resume_active()
+                raise PartitionRotationRefused(
+                    "the predecessor store changed between attestation and drain; re-attest over "
+                    "the current bytes"
+                )
+            if sealed is None:
+                partition = {
+                    "canonical_repository_identity": identity,
+                    "target_namespace": str(container),
+                    "generation": successor_generation,
+                    "predecessor_generation": generation,
+                    "predecessor_digests": dict(expected_digests),
+                    "predecessor_receipt_sha256": expected_digests[RECEIPT_FILENAME],
+                    "adjudicated_effect_dispositions": {
+                        key: {
+                            "disposition": entry["disposition"],
+                            "observed_head": entry.get("observed_head"),
+                            "evidence_url": entry["evidence_url"],
+                            "attestation_digest": digest,
+                        }
+                        for key, entry in effects.items()
+                    },
+                    "legacy_epoch_high_water": high_water,
+                    "legacy_completed_effect_keys": sorted(carried),
+                    "legacy_completed_effects": carried,
+                    "ambiguous": False,
+                    "zero_source": False,
+                }
+                sealed = {
+                    "schema": ROTATION_INVENTORY_SCHEMA,
+                    "cutover_id": cutover_id,
+                    "attestation_sha256": digest,
+                    "attestation": attestation,
+                    "manifest_sha256": hashlib.sha256(
+                        canonical_bytes({"rotation": cutover_id, "repository": identity})
+                    ).hexdigest(),
+                    "legacy_root_inventory": list(base.legacy_root_inventory),
+                    "partitions": {identity: partition},
+                }
+                sealed["partition_map_sha256"] = _partition_map_digest(sealed["partitions"])
+                sealed["inventory_sha256"] = _inventory_digest(sealed)
+                _atomic_write_json(inventory_path, sealed)
+            if "INVENTORY_SEALED" not in states:
+                _rotation_journal_append(journal, cutover_id, "INVENTORY_SEALED")
+                states.append("INVENTORY_SEALED")
+            _maybe_rotation_crash("after_journal_inventory_sealed")
+            if not os.path.lexists(generations):
+                staging = container / f"{GENERATIONS_DIR}.tmp.{cutover_id}"
+                staging.mkdir(exist_ok=True)
+                _write_active_pointer(staging, generation)
+                _maybe_rotation_crash("before_generations_rename")
+                os.rename(staging, generations)
+                _fsync_dir(container)
+            else:
+                _maybe_rotation_crash("before_generations_rename")
+            _maybe_rotation_crash("after_generations_rename")
+            successor.mkdir(parents=True, exist_ok=True)
+            successor_lock = successor / "admissions.lock"
+            if not successor_lock.exists():
+                successor_lock.touch()
+            _maybe_rotation_crash("between_successor_files")
+            successor_evidence = successor / "evidence.jsonl"
+            if not successor_evidence.exists():
+                successor_evidence.touch()
+            _fsync_dir(successor)
+            receipt = _rotation_receipt_from_partition(
+                cutover_id, sealed["partitions"][identity], sealed, journal
+            )
+            receipt.write(successor)
+            _maybe_rotation_crash("after_successor_receipt_before_flip")
+            if "ARMED" not in states:
+                _rotation_journal_append(journal, cutover_id, "ARMED")
+                states.append("ARMED")
+            latch.mark_armed()
+            _maybe_rotation_crash("after_journal_armed")
+            _write_active_pointer(generations, successor_generation)
+            if "ACTIVE" not in states:
+                _rotation_journal_append(journal, cutover_id, "ACTIVE")
+                states.append("ACTIVE")
+            latch.activate()
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
+    assert receipt is not None
+    return PartitionRotationOutcome(cutover_id, "ACTIVE", successor, active, successor_generation, receipt)
+
+
+def _rotation_predecessor_root(container: Path, generation: int) -> Path:
+    if generation <= 1:
+        return container
+    return container / GENERATIONS_DIR / str(generation - 1)
+
+
 def _traditional_active_authority_exists(roots: tuple[Path, ...]) -> bool:
     roots = tuple(dict.fromkeys(sorted((Path(root) for root in roots), key=str)))
     if not roots:
@@ -3185,10 +4189,19 @@ def _traditional_active_authority_exists(roots: tuple[Path, ...]) -> bool:
 
 
 def _receipt_active_authority_exists(
-    receipt: LegacyRepositoryPartitionReceipt,
+    receipt: LegacyRepositoryPartitionReceipt | RotatedPartitionReceipt,
     *,
     authority_root: Path | str | None = None,
 ) -> bool:
+    if isinstance(receipt, RotatedPartitionReceipt):
+        states, ids = _journal_entries(Path(receipt.global_journal_path))
+        if (
+            not _rotation_states_well_formed(states)
+            or states[-1] != "ACTIVE"
+            or set(ids) != {receipt.cutover_id}
+        ):
+            return False
+        receipt = _rotation_base_receipt(receipt)
     bootstrap_claim = _receipt_bootstrap_claim(receipt) if receipt.zero_source else None
     if bootstrap_claim is not None:
         requested_authority = (
@@ -3230,8 +4243,9 @@ def global_active_authority_exists(
 
 
 def _receipt_seal_lock_paths(
-    receipt: LegacyRepositoryPartitionReceipt,
+    receipt: LegacyRepositoryPartitionReceipt | RotatedPartitionReceipt,
 ) -> tuple[Path, ...]:
+    receipt = _rotation_base_receipt(receipt)
     bootstrap_claim = _receipt_bootstrap_claim(receipt) if receipt.zero_source else None
     if bootstrap_claim is not None:
         bootstrap = _active_bootstrap_inventory(bootstrap_claim["authority_root"])
@@ -3301,7 +4315,16 @@ def fabpub_activation_barrier(worktrees: Iterable[Path | str] = ()) -> dict:
                     "unauthenticated workspace"
                 )
             snapshot = repository_snapshot(worktree)
-            receipt = load_partition_receipt(snapshot.store_root)
+            try:
+                store_root = snapshot.store_root
+            except PartitionRoutingRefused:
+                # A torn generation pointer refuses THIS repository only; a
+                # host-wide fault (a symlink or an unreadable file under the
+                # sealed search roots) must still surface from the bootstrap
+                # inventory walk exactly as it did before rotation existed.
+                _active_bootstrap_inventory()
+                raise
+            receipt = load_partition_receipt(store_root)
             snapshots.append((snapshot, receipt))
 
         authority_lock_paths = {
