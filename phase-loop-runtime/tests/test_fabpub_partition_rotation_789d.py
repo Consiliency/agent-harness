@@ -2228,34 +2228,125 @@ def test_partition_rotation_a17_flip_fences_pre_flip_lease_and_fresh_writers(tmp
 @_requires_fabpub
 @_requires_789d
 def test_partition_rotation_a17e_authorized_before_flip_is_refused_in_lock(tmp_path, monkeypatch, request):
-    """A17e: a store that passed ``_authorize`` BEFORE the flip is still refused in-lock after it.
+    """A17e: a writer that passed every PRE-LOCK check before the flip is still refused IN-LOCK after it.
 
-    ``_authorize`` is run once pre-flip and then neutralised, and the promotion
-    mint is stubbed permissive, so the only remaining check is the in-lock
-    generation predicate at the append / admit / provenance sites
-    (``evidence.py`` ``_append``, ``_append_provenance_locked``; ``admission.py``
-    ``admit``).
+    Two legs, both plan D6 (the predicate's enforcement point is the in-lock
+    re-check; a pre-lock placement "alone satisfies nothing"):
+
+    (a0) three writers — ``_append``, ``admit``, ``promote_legacy_terminal`` —
+         with their REAL pre-lock checks intact run pre-flip up to, and not
+         past, the ``LOCK_EX`` on generation 0's ``admissions.lock``; the
+         ceremony completes underneath them (they hold nothing a drain waits
+         on); when they resume the lock is theirs and every check that ran
+         BEFORE it already passed against generation 0, so only a re-check
+         AFTER ``fcntl.flock`` can refuse them.  A predicate sited anywhere
+         pre-lock — inside ``_authorize`` or between it and the lock — lets all
+         three land in the retired generation (codex r6 finding 2).
+    (a1) stores whose ``_authorize`` ran once pre-flip and was then neutralised
+         are refused at the same three sites post-flip (mutant m26 as the plan
+         enumerates it: predicate kept in ``_authorize`` only).
+
+    The promotion mint is stubbed permissive throughout so a promotion reaches
+    the lock and the in-lock fence rather than refusing at the mint.
     """
     live = _live()
     from phase_loop_runtime.convergence.broker.admission import LinearizableAdmissionStore
     from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore
+    from phase_loop_runtime.convergence.contracts import AdmissionRequest
+
+    import fcntl
 
     fx = _blocked_fixture(tmp_path, monkeypatch)
     p = fx.alpha
     _release_all(p)
+    _stub_promotion_capability(monkeypatch, live)
+    # (a1)'s stores: the real pre-lock check runs once, pre-flip, then is gone.
     evidence = BrokerEvidenceStore(p.container)
     admission = LinearizableAdmissionStore(p.container, lambda _r: True)
     evidence._authorize()
     admission._authorize()
     monkeypatch.setattr(evidence, "_authorize", lambda: None)
     monkeypatch.setattr(admission, "_authorize", lambda: None)
-    outcome = _rotate(request, p)
+
+    # (a0) Gate the writers' LOCK_EX on generation 0's ``admissions.lock`` (and
+    # nothing else: not the ceremony's own flock on the main thread, not any
+    # other lock a pre-lock check may take) so each pauses exactly at the
+    # check/use boundary the plan names, having already passed everything
+    # before it.
+    lock_path = p.container / "admissions.lock"
+    _require(request, lock_path.exists(), "generation 0 has no admissions.lock to block on")
+    lock_ino = lock_path.stat().st_ino
+    real_flock = fcntl.flock
+    gates = {name: threading.Event() for name in ("append", "admit", "promotion")}
+    proceed = threading.Event()
+    results: dict[str, object] = {}
+
+    def gated_flock(lock, op):
+        gate = gates.get(threading.current_thread().name)
+        if gate is not None and op == fcntl.LOCK_EX and not gate.is_set():
+            fd = lock.fileno() if hasattr(lock, "fileno") else lock
+            if os.fstat(fd).st_ino == lock_ino:
+                gate.set()
+                proceed.wait(120)
+        return real_flock(lock, op)
+
+    def run(name, op):
+        try:
+            op()
+            results[name] = "landed"
+        except PermissionError as exc:
+            results[name] = exc
+        except Exception as exc:  # pragma: no cover - surfaced by the assertion below
+            results[name] = ("error", repr(exc))
+        finally:
+            gates[name].set()
+
+    # A well-formed admission at generation 0's current epoch high-water: with
+    # the policy permissive nothing in ``admit`` refuses it except a generation
+    # re-check, so "landed" (today's production) vs "refused in-lock" (D2) is the
+    # only distinction the leg draws.
+    gen0_epoch = max((record.epoch for record in LinearizableAdmissionStore(p.container, lambda _r: True).replay()), default=0)
+    blocked_admission = AdmissionRequest(
+        "a17e-blocked-at-lock", gen0_epoch, "fence", "digest", "predicate", "scope", "publish_committed_branch\x00blocked-at-lock-admit"
+    )
+    ops = {
+        "append": lambda: BrokerEvidenceStore(p.container)._append(_record("publish_committed_branch\x00blocked-at-lock")),
+        "admit": lambda: LinearizableAdmissionStore(p.container, lambda _r: True).admit(blocked_admission),
+        "promotion": lambda: BrokerEvidenceStore(p.container).promote_legacy_terminal(
+            "publish_committed_branch\x00blocked-at-lock-promotion"
+        ),
+    }
+    threads = [threading.Thread(target=run, args=(name, ops[name]), name=name, daemon=True) for name in gates]
+    monkeypatch.setattr(fcntl, "flock", gated_flock)
+    try:
+        for t in threads:
+            t.start()
+        for name, gate in gates.items():
+            _require(request, gate.wait(60), f"the {name} writer never reached generation 0's lock")
+            _require(request, name not in results, f"the {name} writer finished before taking the lock: {results.get(name)!r}")
+        _require(request, _store_bytes(p.container) == fx.gen0, "a writer changed generation 0 before taking the lock")
+        outcome = _rotate(request, p)
+    finally:
+        proceed.set()
+        for t in threads:
+            t.join(120)
+    monkeypatch.setattr(fcntl, "flock", real_flock)
     _require(request, outcome.generation == 1, "rotation failed")
+    _require(request, not any(t.is_alive() for t in threads), "a lock-blocked writer did not finish")
+    for name in gates:
+        _require(
+            request,
+            isinstance(results.get(name), PermissionError),
+            f"the {name} writer passed every pre-lock check before the flip and was not refused IN-LOCK after it "
+            f"({results.get(name)!r}): the active-generation predicate is not re-run after fcntl.flock",
+        )
+    _require(request, _store_bytes(p.container) == fx.gen0, "a lock-blocked writer changed generation 0 after the flip")
+
+    # (a1)
     with pytest.raises(PermissionError):
         evidence._append(_record("publish_committed_branch\x00pre-authorized"))
     with pytest.raises(PermissionError):
         admission.admit(p.request.admission)
-    _stub_promotion_capability(monkeypatch, live)
     with pytest.raises(PermissionError):
         evidence.promote_legacy_terminal("publish_committed_branch\x00pre-authorized-promotion")
     _require(request, _store_bytes(p.container) == fx.gen0, "a pre-authorized writer changed generation 0")
