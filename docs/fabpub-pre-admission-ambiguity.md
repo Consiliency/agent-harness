@@ -161,16 +161,19 @@ verb does not paper over the difference:
   from the journal's last durable state (a drain refusal re-waits for the
   writers; a post-flip stop re-runs the finish, which appends the `ACTIVE` row
   only when it is absent and then activates the latch). A re-run never
-  recreates or rewrites a file the ceremony did not write at the step it
-  resumes. After the flip the successor is authenticated through the real
-  loader before the ceremony's resume branch, and that authentication is a
-  chain — `generations/<n>/partition-receipt.json`, the container receipt, the
+  repairs its inputs: the resumed step re-performs only its own writes, and
+  everything it reads must still be what the ceremony left (the
+  re-attestation above is the one input the verb itself asks for). After the
+  flip the successor is authenticated through the real loader before the
+  ceremony's resume branch, and that authentication is a chain —
+  `generations/<n>/partition-receipt.json`, the container receipt, the
   ceremony journal `partition-rotations/<identity>/<id>.journal.jsonl`, the
   sealed inventory `<id>.inventory.json` beside it, and generation 0's
   digested store files (`admissions.jsonl`, `evidence.jsonl`,
   `partition-receipt.json`, `adapter-start-owner.json`) — and the finish then
-  requires the writer latch to exist and still be `DRAINING`. Any of these
-  damaged *after* the flip by something other than the ceremony is refused on
+  requires the writer latch to exist and to read `DRAINING` (or already
+  `ACTIVE`, the idempotent re-run). Any of these damaged *after* the flip by
+  something other than the ceremony is refused on
   every re-run and never repaired; the refusal identifies the failing check
   (for example `the sealed rotation inventory digest drifted`, or `has no
   writer generation latch`), not necessarily the damaged file — when it

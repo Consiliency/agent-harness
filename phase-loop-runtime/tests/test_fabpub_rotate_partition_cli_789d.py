@@ -21,8 +21,7 @@ through ``cli.main`` over the D1 fixtures (imported, never copied) and pin:
   completed keys is named as missing by ``sealed_partition_effects``
   (fable r12 O2);
 * the docs' post-flip "Recovery" rule (codex r2 F2, r3 F1/F2, r4 F1; fable r4
-  F1/F2): a re-run never recreates or rewrites a file the ceremony did not
-  write at the step it resumes — a damaged successor receipt, sealed
+  F1/F2): a re-run never repairs its inputs — a damaged successor receipt, sealed
   inventory, or generation-0 digested store file, and a missing writer latch
   after the ``ACTIVE`` row, are each refused on every re-run until restored
   from outside, and the same command then finishes; a crash after the
