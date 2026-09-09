@@ -836,6 +836,25 @@ def build_parser() -> argparse.ArgumentParser:
     fabpub_bootstrap_sub.add_argument(
         "--json", action="store_true", default=argparse.SUPPRESS
     )
+    # fabpub-rotate-partition: Lane D4 of Consiliency/agent-harness#789 — the
+    # operator surface over ``rotate_blocked_partition``.  The attestation is an
+    # OPERATOR-SUPPLIED document; this verb never sources it from a sealed
+    # rotation inventory (fable r9 O3), and a path inside the authority's
+    # ceremony directory is refused before anything is read.
+    fabpub_rotate_sub = subparsers.add_parser(
+        "fabpub-rotate-partition",
+        help=(
+            "Rotate an ambiguity-blocked FABPUB repository partition into its successor "
+            "generation, driven by an operator attestation document."
+        ),
+    )
+    fabpub_rotate_sub.add_argument("--worktree", required=True, metavar="PATH")
+    fabpub_rotate_sub.add_argument("--attestation", required=True, metavar="PATH")
+    fabpub_rotate_sub.add_argument("--cutover-id", required=True)
+    fabpub_rotate_sub.add_argument("--authority-root")
+    fabpub_rotate_sub.add_argument(
+        "--json", action="store_true", default=argparse.SUPPRESS
+    )
 
     # run-train: cross-repo release-train coordinator (P3, #29).
     # Registered outside the common-args loop because it has its own argument
@@ -1346,6 +1365,8 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
         return 0
     if command == "fabpub-bootstrap":
         return _fabpub_bootstrap_command(args=args)
+    if command == "fabpub-rotate-partition":
+        return _fabpub_rotate_partition_command(args=args)
     if command == "run-train":
         return _run_train_command(parser=parser, args=args)
     if command == "train-status":
@@ -4042,6 +4063,106 @@ def _fabpub_bootstrap_command(*, args: argparse.Namespace) -> int:
     except (LegacyCutoverConflict, OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
         print(f"phase-loop fabpub-bootstrap: {exc}", file=sys.stderr)
         return 1
+    print(json.dumps(result, indent=2, sort_keys=True) if args.json else json.dumps(result, sort_keys=True))
+    return 0
+
+
+ROTATION_RESULT_SCHEMA = "PartitionRotationResult.v1"
+
+
+def _load_rotation_attestation(path: str, *, authority_root: Path) -> dict:
+    """Read the operator's attestation document for ``fabpub-rotate-partition``.
+
+    The document must be a JSON object read from a path OUTSIDE the authority's
+    rotation ceremony directory: the sealed inventory a ceremony writes there
+    embeds the attestation it adjudicated, and re-presenting that copy would
+    make the resume adjudicate against its own output (fable r9 O3).  Every
+    other property of the document — schema, attester, generation, digests,
+    dispositions — is the ceremony's to refuse.
+    """
+    from .convergence.broker.live import (
+        LegacyCutoverConflict,
+        ROTATION_CEREMONY_DIR,
+    )
+
+    attestation_path = Path(path).resolve()
+    ceremony_root = (authority_root / ROTATION_CEREMONY_DIR).resolve()
+    if attestation_path == ceremony_root or ceremony_root in attestation_path.parents:
+        raise LegacyCutoverConflict(
+            f"the attestation must be operator-supplied; {attestation_path} lies inside the "
+            f"rotation ceremony directory {ceremony_root}"
+        )
+    try:
+        document = json.loads(attestation_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise LegacyCutoverConflict(f"attestation {attestation_path} does not exist") from None
+    except ValueError as error:
+        raise LegacyCutoverConflict(
+            f"attestation {attestation_path} is not JSON: {error}"
+        ) from error
+    if not isinstance(document, dict):
+        raise LegacyCutoverConflict(f"attestation {attestation_path} is not a JSON object")
+    return document
+
+
+def _fabpub_rotate_partition_command(*, args: argparse.Namespace) -> int:
+    from .convergence.broker.live import (
+        LegacyCutoverConflict,
+        PartitionReceiptIncompatible,
+        PartitionRotationRefused,
+        PartitionRoutingRefused,
+        default_fabpub_authority_root,
+        rotate_blocked_partition,
+    )
+
+    try:
+        authority_root = Path(args.authority_root or default_fabpub_authority_root())
+        attestation = _load_rotation_attestation(
+            args.attestation, authority_root=authority_root
+        )
+        outcome = rotate_blocked_partition(
+            args.worktree,
+            cutover_id=args.cutover_id,
+            attestation=attestation,
+            authority_root=args.authority_root,
+        )
+    except (
+        PartitionRotationRefused,
+        PartitionRoutingRefused,
+        PartitionReceiptIncompatible,
+        LegacyCutoverConflict,
+        PermissionError,
+        OSError,
+        ValueError,
+        KeyError,
+    ) as exc:
+        print(f"phase-loop fabpub-rotate-partition: {exc}", file=sys.stderr)
+        return 1
+    receipt = outcome.receipt
+    result = {
+        "schema": ROTATION_RESULT_SCHEMA,
+        "cutover_id": outcome.cutover_id,
+        "state": outcome.state,
+        "canonical_repository_identity": receipt.canonical_repository_identity,
+        "generation": outcome.generation,
+        "predecessor_generation": receipt.predecessor_generation,
+        "store_root": str(outcome.store_root),
+        "predecessor_store_root": str(outcome.predecessor_store_root),
+        "receipt_schema": receipt.SCHEMA,
+        "attestation_sha256": receipt.attestation_sha256,
+        "adjudicated_effect_keys": sorted(receipt.adjudicated_effect_dispositions),
+        "legacy_epoch_high_water": receipt.legacy_epoch_high_water,
+        # A broker process resolves a repository's generation store once and
+        # writes under the generation lease it acquired then; the flip retires
+        # that lease, so its next append is a typed refusal until it restarts
+        # and resolves the successor (``_stores_for``; plan anchors A17/A26).
+        "restart_required": True,
+        "restart_reason": (
+            "a phase-loop-runtime broker process that resolved this repository before the "
+            "flip holds a retired generation lease; its next write is refused until it "
+            "restarts and resolves the successor generation"
+        ),
+    }
     print(json.dumps(result, indent=2, sort_keys=True) if args.json else json.dumps(result, sort_keys=True))
     return 0
 

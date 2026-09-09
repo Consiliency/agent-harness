@@ -1279,7 +1279,18 @@ def load_partition_receipt(
     if not path.exists():
         return None
     _require_no_ancestor_symlink(path)
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError as error:
+        # A receipt whose bytes are not JSON is a refusal of THIS partition like
+        # every other authentication failure, never a bare ``ValueError`` that
+        # escapes the fail-closed ``except LegacyCutoverConflict`` sites the
+        # ceremony and the resolver share (fable r10 O2, closed at the loader).
+        raise LegacyCutoverConflict(
+            f"partition receipt bytes at {path} are not JSON: {error}"
+        ) from error
+    if not isinstance(raw, dict):
+        raise LegacyCutoverConflict(f"partition receipt at {path} is not a JSON object")
     schema = raw.get("schema")
     if schema == RotatedPartitionReceipt.SCHEMA:
         return _load_rotated_partition_receipt(store_root, path, raw)
@@ -1367,6 +1378,15 @@ def sealed_partition_effects(receipt: LegacyRepositoryPartitionReceipt) -> dict[
     except FileNotFoundError:
         raw = None
     if raw is None:
+        if receipt.legacy_completed_effect_keys:
+            # The loader refused a missing inventory when it authenticated this
+            # receipt; one missing NOW is post-load drift.  Name it, instead of
+            # the key-set disagreement an empty map would produce (fable r12 O2).
+            raise LegacyCutoverConflict(
+                f"the sealed inventory at {inventory_path} is missing; the partition receipt "
+                f"names {len(receipt.legacy_completed_effect_keys)} completed effect key(s) it "
+                "must carry"
+            )
         effects: dict = {}
     else:
         try:
@@ -4688,6 +4708,11 @@ def rotate_blocked_partition(
                         f"successor generation {successor_generation} of {identity} does not "
                         f"authenticate before the flip; the pointer stays at {generation}: {exc}"
                     ) from exc
+                if loaded is None:
+                    raise PartitionRotationRefused(
+                        f"successor generation {successor_generation} of {identity} carries no "
+                        f"receipt before the flip; the pointer stays at {generation}"
+                    )
                 if loaded != receipt:
                     raise PartitionRotationRefused(
                         f"successor generation {successor_generation} of {identity} loads as a "
@@ -4802,6 +4827,12 @@ def _finish_rotation_after_flip(
                     f"authenticate under its own lock; rotation {cutover_id!r} withholds the "
                     f"ACTIVE row and the latch activation: {exc}"
                 ) from exc
+            if loaded is None:
+                raise PartitionRotationRefused(
+                    f"successor generation {generation} of {snapshot.identity} carries no receipt "
+                    f"under its own lock; rotation {cutover_id!r} withholds the ACTIVE row and the "
+                    "latch activation"
+                )
             if loaded != receipt:
                 raise PartitionRotationRefused(
                     f"successor generation {generation} of {snapshot.identity} loads as a "

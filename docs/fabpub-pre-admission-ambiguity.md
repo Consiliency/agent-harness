@@ -103,19 +103,103 @@ Two consequences to plan around:
    "`ls-remote` timed out" are the same observation to this runtime, and neither
    is evidence of no effect.
 
-## Partition rotation (deferred)
+## Partition rotation
 
 The supported way to restore governed publication for a permanently blocked
-repository is a reviewed **partition rotation**: retire the blocked partition
-into `historical_evidence_roots` and onboard a fresh receipt for the same
-canonical repository identity. That is Workstream D of the ah#789 plan and is
-deferred to its own detailed plan; it is not implemented.
+repository is a reviewed **partition rotation**: the blocked partition is
+retired as a read-only predecessor generation and a fresh, authenticated
+generation is onboarded for the same canonical repository identity. Workstream D
+of the ah#789 plan (`plans/detailed-789d-fabpub-partition-rotation-20260908.md`)
+landed it in Consiliency/agent-harness#816 (the ceremony, the v3 receipt, and the
+generational resolver) and Consiliency/agent-harness#818 (the operator verb below).
 
-Carried item, stated so it is not mistaken for done: ah#789 acceptance item (5)'s
-first half — "a completed recovery can publish the exact intended branch once" —
-has **no** governed path under C-keep, because partition rotation is the only
-governed recovery and it is deferred. Consiliency/agent-harness#789 stays open
-after Workstreams A, B and the C-keep deliverables land.
+### The verb
+
+```
+phase-loop fabpub-rotate-partition \
+    --worktree <repo> \
+    --attestation <operator-written attestation.json> \
+    --cutover-id <rotation id> [--authority-root <dir>] [--json]
+```
+
+The verb loads the attestation document and drives
+`rotate_blocked_partition(...)` (`phase_loop_runtime.convergence.broker.live`).
+On success it prints one `PartitionRotationResult.v1` JSON document naming the
+successor generation, its store root, the predecessor store root, the receipt's
+`attestation_sha256`, and the adjudicated effect keys; every refusal is exit 1
+with `phase-loop fabpub-rotate-partition: <reason>` on stderr and **no durable
+rotation state** — generation 0 stays ACTIVE and byte-identical. Re-running the
+same command after a completed rotation is the idempotent resume: it answers
+with the same document and creates no second generation.
+
+The attestation is **operator-supplied**. The verb refuses a document that lies
+inside the authority root's `partition-rotations/` ceremony directory before
+reading it: a sealed rotation inventory embeds a copy of the attestation it was
+sealed from, and resuming from that copy would be circular. Write the
+attestation somewhere else and hand the verb that path.
+
+### The attestation
+
+`PartitionRotationAttestation.v1` is the reviewed human judgement the ceremony
+binds into the successor receipt. Its required fields:
+
+| field | meaning |
+|---|---|
+| `schema` | `PartitionRotationAttestation.v1` |
+| `attested_by` | the operator making the attestation |
+| `predecessor_generation` | the generation being retired (0 for a never-rotated partition) |
+| `predecessor_store_digests` | the sha256 of every digested predecessor store file, as the ceremony re-captures them under the predecessor's own `admissions.lock` |
+| `effects` | one entry per blocked effect key, keyed by the FABPUB dedup key |
+
+Each `effects` entry carries a `disposition`, an `evidence_url` (the
+out-of-band publication or the review that established the judgement), and the
+`ambiguity_digest` binding it to the predecessor's recorded ambiguity:
+
+- `observed_landed` — the effect did land out of band; `observed_head` names the
+  landed head. The ceremony seals the key into the successor's completed
+  effects, so the pre-dispatch replay answers a later governed publish of that
+  key as a duplicate: no owner is read, the adapter is never called.
+- `attested_not_landed` — the effect did not land; `observed_head` must be
+  absent. The key is **not** carried, so the successor publishes it afresh
+  exactly once, after which ordinary idempotency holds.
+
+A blocked key the attestation leaves undisposed, a disposition it does not know,
+digests that do not match the predecessor's bytes, or a predecessor that is not
+`epoch_blocked` are all typed `PartitionRotationRefused` refusals before any
+durable write. A key whose latest predecessor row is `no_effect_terminal_proven`
+is not carried either (the successor publishes it afresh).
+
+### What the ceremony guarantees
+
+- The predecessor generation is never rewritten. Its bytes are digested under
+  its own lock, sealed into the rotation inventory, and left in place as
+  historical evidence; the successor lives under `generations/<n>/` and the
+  `generations/ACTIVE` pointer is the only thing the flip writes.
+- The sealed inventory is digest-bound to the successor receipt. A later
+  publish (or the ceremony's own finish) that finds inventory bytes the receipt
+  does not digest refuses with `LegacyCutoverConflict: … is not the inventory
+  the partition receipt digests`; a receipt that names completed keys whose
+  inventory has gone missing refuses with `… is missing`; receipt bytes that are
+  not JSON refuse with the same typed conflict instead of a bare `ValueError`.
+- No network or `git ls-remote` call happens anywhere in the ceremony. The
+  attestation is the only source of "landed"/"not landed".
+- **Restart requirement.** A `phase-loop-runtime` broker process that resolved
+  the repository before the flip holds a lease on the retired generation; its
+  next write is a typed refusal until it restarts and resolves the successor.
+  The verb's result says so (`restart_required`). Before rotating, stop every
+  writer of that partition, and re-pin every installed runtime that can write
+  FABPUB state to a build that recognises
+  `LegacyRepositoryPartitionReceipt.v3` — a pre-v3 runtime cannot read the
+  successor and is refused, never silently unblocked.
+
+Carried items, stated so they are not mistaken for done: the omniagent-plus
+partition blocked in the incident has **not** been rotated — that is Lane D5 of
+the plan, an operational step under its own maintainer authorisation after the
+runtime re-pin above. Until it runs, ah#789 acceptance item (5)'s first half —
+"a completed recovery can publish the exact intended branch once" — is a
+capability (`test_fabpub_partition_rotation_789d.py` A2) rather than an
+observed outcome for that repository, and Consiliency/agent-harness#789 stays
+open.
 
 ## Controls
 
