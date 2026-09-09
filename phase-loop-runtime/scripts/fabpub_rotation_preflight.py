@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Read-only preflight for ``phase-loop fabpub-rotate-partition``.
 
-Runs the SAME zero-write checks ``rotate_blocked_partition`` runs before its
-first journal row -- by calling the real functions in the real order -- and
+Runs the SAME zero-write checks ``rotate_blocked_partition`` runs before it
+can succeed -- by calling the real functions in the real order -- and
 then reports the two drain facts the ceremony's DRAINING step will measure
 (held generation leases, live pre-FABPUB writers).  It never opens the latch
 lock, never calls ``begin_draining``, never writes the journal, never mkdirs.
@@ -279,6 +279,11 @@ def main() -> int:
                 report,
             )
 
+            # Defence in depth, not coverage: ``active_receipt`` above already
+            # authenticates the successor receipt, and that authentication reads
+            # the journal's own ARMED row -- so a journal without it refuses
+            # there and this row can never be the one that fails.  It mirrors a
+            # real verb gate (live.py:4817) and is kept for that reason.
             def _armed():
                 if "ARMED" not in states:
                     raise L.PartitionRotationRefused(
@@ -377,13 +382,23 @@ def main() -> int:
                 raise L.PartitionRotationRefused(
                     f"{identity} has no writer generation latch"
                 )
-            return latch.read().generation_state
+            try:
+                return latch.read().generation_state
+            except (ValueError, KeyError, TypeError) as error:
+                # The verb raises the same exception from the same ``read()``,
+                # so this is not a divergence in outcome -- but the docstring
+                # promises a verdict rather than a traceback, and an operator
+                # reading a malformed latch deserves one.
+                raise L.PartitionRotationRefused(
+                    f"the writer generation latch of {identity} is unreadable: "
+                    f"{type(error).__name__}: {error}"
+                ) from error
 
         if report.get("verdict") == "already_completed":
             # ``_finish_rotation_after_flip`` runs under the SUCCESSOR's lock and
             # applies its own latch gates: existence (live.py:4845) and then
             # ``activate()``, which returns for ACTIVE and refuses anything but
-            # DRAINING (live.py:4658-4663).  Both sit AFTER the ACTIVE journal
+            # DRAINING (live.py:658-663).  Both sit AFTER the ACTIVE journal
             # append, so a refusal there has a durable write behind it and must
             # never read as a go.
             #
@@ -441,6 +456,9 @@ def main() -> int:
     except REFUSALS as error:
         report["verdict"] = "would_refuse"
         report["refusal"] = f"{type(error).__name__}: {error}"
+        # a note written on the way to a verdict this refusal overwrote would
+        # otherwise describe an outcome the report no longer reaches.
+        report.pop("note", None)
 
     if a.json:
         print(json.dumps(report, indent=2, sort_keys=True, default=str))

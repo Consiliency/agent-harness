@@ -165,7 +165,7 @@ cd phase-loop-runtime && PYTHONPATH=$PWD/src python3 scripts/fabpub_rotation_pre
 ```
 
 The script runs, in the verb's own order, every check the verb performs before
-its first journal row (cutover-id grammar, repository snapshot, attestation
+it can succeed (cutover-id grammar, repository snapshot, attestation
 location and readability, container receipt shape and non-ambiguity, bootstrap
 claim binding to this authority, active bootstrap, no foreign staging debris,
 no other rotation in progress, own-journal state, predecessor adjudication,
@@ -191,8 +191,11 @@ files, and live pre-FABPUB writers. Verdicts:
   deliberately **not** required: the finish calls `mark_armed()` before
   `activate()` and so recreates it, and requiring it would refuse a rotation
   the verb completes.
-- `would_refuse` — a validation check refuses; the report names it. Nothing
-  durable would have been written.
+- `would_refuse` — a validation check refuses; the report names it. On a first
+  execution nothing durable would have been written. On the completion path
+  the verb's own latch gates sit after its `ACTIVE` journal append, so a
+  refusal there is one the verb reaches *with* that row already written —
+  which is precisely why it must not read as a go.
 
 Exit status is 0 for `ready` and `already_completed` (the verb would succeed)
 and 1 otherwise. **The first-execution go-gate is the string `ready`**, not
@@ -269,21 +272,27 @@ disappears from `ps --ppid <parent>`. That is Consiliency/agent-harness#820.
 
 So the scans are **corroboration, never authorisation**. What authorises the
 deletion is a **shutdown boundary**: an instant after which no process that
-could hold a lease is running, established by process *start time* rather than
-by argv. Two boundaries are admissible:
+could hold a lease is running.
 
-- **(a) A maintenance reboot** of the host with every phase-loop / agent
-  launcher disabled *before* it comes back, so nothing can take a lease between
-  the boundary and the ceremony. This is the default; take it unless (b) is
-  demonstrably cheaper.
-- **(b) A verified full stop**: every launcher disabled, then every process on
-  the host that started before the newest lease file is accounted for and
-  stopped — by process group (`kill -TERM -<pgid>`, never `pkill -f`) — and the
-  survivors are enumerated by start time (`ps -eo pid,pgid,lstart,args
-  --sort=lstart`) rather than by name, because a reparented child is invisible
-  to `ps --ppid`.
+**The boundary is a maintenance reboot of the host, with every phase-loop /
+agent launcher disabled before it comes back** so nothing can take a lease
+between the boundary and the ceremony. There is no cheaper sound alternative,
+and in particular a "stop everything older than the newest lease" rule is not
+one: a broker can take a lease and then fork a detached child that outlives it,
+and that child *starts after the lease it inherits the use of*, so a start-time
+cutoff never selects it, it survives termination of its parent's process group,
+and it is invisible to `ps --ppid`. Selecting by argv fails for the same reason
+the scans below do.
 
-With the boundary established and new starts still suppressed, corroborate:
+If the maintainer chooses to proceed at go-time without a reboot, that is a
+**deviation, not an option this runbook offers**: it must be recorded on
+Consiliency/agent-harness#789 as an explicit acceptance that a surviving
+lease-holder cannot be ruled out, together with the reasoning for accepting it.
+The paragraph at the end of this section bounds what that residual can and
+cannot do.
+
+With the boundary established and new starts still suppressed, corroborate —
+these confirm the boundary held, they do not establish it:
 
 1. `fabpub_rotation_preflight.py` reports an empty `live_pre_fabpub_writers`
    list. It matches only an exact `run-train` argv element behind a `phase*`

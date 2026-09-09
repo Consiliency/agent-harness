@@ -43,7 +43,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   distinguish a v3-aware install), the attestation build, the read-only preflight, a
   rehearsal technique that runs the real verb over byte copies bind-mounted at the real
   paths in an unprivileged mount namespace, and the state-changing steps each gated on
-  the maintainer's go. Three helper scripts under `phase-loop-runtime/scripts/`:
+  the maintainer's go. Clearing a stale writer-generation lease is authorised by a
+  maintenance reboot with the launchers disabled and by nothing weaker: a lease takes no
+  lock and records no pid, and a broker can fork a detached child that outlives it, so
+  neither a process scan nor a start-time cutoff can establish that no holder remains. Three helper scripts under `phase-loop-runtime/scripts/`:
   `fabpub_v3_probe.py` (is this interpreter's runtime v3-aware), `fabpub_rotation_attestation.py`
   (builds a `PartitionRotationAttestation.v1` from the live container, read-only), and
   `fabpub_rotation_preflight.py` (runs the verb's zero-write validation checks by calling the
