@@ -4022,6 +4022,10 @@ def _inventory_divergence(sealed: dict, derived: dict, prefix: str = "") -> list
         a, b = sealed.get(key), derived.get(key)
         if a == b:
             continue
+        # The two seals differ whenever anything under them does; naming them
+        # would hide the substantive path (fable r8 O1).
+        if not prefix and key in ("inventory_sha256", "partition_map_sha256"):
+            continue
         if isinstance(a, dict) and isinstance(b, dict):
             out.extend(_inventory_divergence(a, b, f"{prefix}{key}."))
         else:
@@ -4068,6 +4072,136 @@ def _rotation_carried_effects(
         else:
             carried.pop(key, None)
     return carried
+
+
+@dataclass(frozen=True)
+class _RotationAdjudication:
+    """What ONE adjudication of a predecessor against an attestation yields:
+    every input of the sealed inventory besides the layout."""
+
+    effects: dict
+    digest: str
+    predecessor_digests: dict
+    carried: dict
+    high_water: int
+
+
+def _adjudicate_rotation_predecessor(
+    attestation: dict,
+    predecessor: Path,
+    predecessor_generation: int,
+    predecessor_receipt,
+    identity: str,
+) -> _RotationAdjudication:
+    """Adjudicate ``attestation`` over the predecessor generation, zero-write.
+
+    ONE adjudication for every arm of the ceremony -- the fresh path, the
+    pre-flip resume and the post-flip completion -- so no arm can accept
+    sealed state that an adjudication of the same predecessor bytes and the
+    same attestation would not derive.  Before this the post-flip arm reached
+    ``_finish_rotation_after_flip`` on the successor receipt alone, without
+    validating the attestation at all (codex r8 P1).
+    """
+    effects = _validate_rotation_attestation(attestation, predecessor_generation)
+    digest = hashlib.sha256(canonical_bytes(attestation)).hexdigest()
+    if isinstance(predecessor_receipt, RotatedPartitionReceipt) and predecessor_receipt.attestation_sha256 == digest:
+        raise PartitionRotationRefused(
+            f"attestation {digest[:12]} already adjudicated generation {predecessor_generation}; a rotation "
+            "requires a fresh attestation over the predecessor generation"
+        )
+    expected_digests = {name: _sha256_file(predecessor / name) for name in ROTATION_DIGESTED_FILES}
+    if attestation.get("predecessor_receipt_digest") != expected_digests[RECEIPT_FILENAME]:
+        raise PartitionRotationRefused("attestation predecessor_receipt_digest does not match the predecessor receipt")
+    if attestation["predecessor_store_digests"] != expected_digests:
+        raise PartitionRotationRefused("attestation predecessor_store_digests do not match the predecessor store")
+    ledger = _read_predecessor_ledger(predecessor)
+    foreign = [key for key in ledger.keys if not key.startswith(_ROTATION_EFFECT_PREFIX)]
+    if foreign:
+        raise PartitionRotationRefused(
+            f"predecessor evidence carries non-publish effect keys {foreign!r}; rotation adjudicates "
+            "publish_committed_branch effects only"
+        )
+    if ledger.dangling:
+        raise PartitionRotationRefused(
+            f"predecessor evidence has intents without a terminal {list(ledger.dangling)!r}"
+        )
+    owner = _rotation_owner(predecessor, identity)
+    if owner is not None and not bool(owner.get("sealed", False)):
+        owner_key = owner.get("effect_key") or owner.get("idempotency_key")
+        if owner_key not in ledger.blocked and owner_key not in ledger.terminals:
+            raise PartitionRotationRefused(
+                "predecessor carries an unsealed adapter-start owner whose effect has no terminal"
+            )
+    if not ledger.blocked:
+        raise PartitionRotationRefused(
+            f"{identity} generation {predecessor_generation} has no ambiguity-blocked effect; nothing to rotate"
+        )
+    if set(effects) != set(ledger.blocked):
+        raise PartitionRotationRefused(
+            "attestation must adjudicate exactly the blocked effects: "
+            f"missing {sorted(set(ledger.blocked) - set(effects))!r}, "
+            f"extra {sorted(set(effects) - set(ledger.blocked))!r}"
+        )
+    for key, entry in effects.items():
+        if entry.get("ambiguity_digest") != ledger.blocked[key]:
+            raise PartitionRotationRefused(f"attestation ambiguity_digest for {key!r} does not bind the blocked row")
+        expected_owner = _rotation_owner_identity(owner, key)
+        for field in ("owner_nonce", "transaction_id"):
+            if entry.get(field) != expected_owner.get(field):
+                raise PartitionRotationRefused(
+                    f"attestation {field} for {key!r} does not match the adapter-start owner record"
+                )
+
+    carried = _rotation_carried_effects(predecessor_receipt, ledger, effects, identity, predecessor_generation, digest)
+    high_water = max(int(predecessor_receipt.legacy_epoch_high_water), _rotation_admissions_high_water(predecessor))
+    return _RotationAdjudication(effects, digest, expected_digests, carried, high_water)
+
+
+def _require_sealed_inventory_derives(
+    inventory_path: Path,
+    cutover_id: str,
+    identity: str,
+    digest: str,
+    derived: dict,
+    *,
+    successor_generation: int,
+    generation: int,
+) -> dict:
+    """Load the sealed inventory and require it to BE ``derived``, typed.
+
+    The seals prove the inventory's CONSISTENCY, not its truth.  The inventory
+    is a pure function of the validated predecessor bytes and the attestation
+    the caller has just adjudicated, so the caller re-derived it; the sealed
+    bytes must digest to exactly that body before anything is written.  This
+    binds every field at once -- identity, container, chain, predecessor
+    digests (codex r6 P1), and the authority-bearing epoch floor, adjudicated
+    dispositions, carried landed effects and root inventory (codex r7 P1) --
+    on EVERY arm that resumes or completes a sealed ceremony (codex r8 P1).
+    """
+    sealed = _load_rotation_inventory(inventory_path, cutover_id, identity)
+    if sealed.get("attestation_sha256") != digest:
+        raise PartitionRotationRefused(
+            f"rotation {cutover_id!r} sealed a different attestation; resume with the sealed one"
+        )
+    # D7-2: a resume uses the successor number the ceremony RECORDED when it
+    # sealed, never one re-derived from the pointer it finds today.
+    recorded = sealed["partitions"][identity]
+    if (
+        recorded.get("generation") != successor_generation
+        or recorded.get("predecessor_generation") != generation
+    ):
+        raise PartitionRotationRefused(
+            f"rotation {cutover_id!r} sealed generation {recorded.get('generation')!r} over "
+            f"predecessor {recorded.get('predecessor_generation')!r}, but the active generation "
+            f"is {generation}; the sealed ceremony does not resume against this pointer"
+        )
+    if _inventory_digest(derived) != sealed["inventory_sha256"]:
+        raise PartitionRotationRefused(
+            f"sealed rotation inventory for {cutover_id!r} does not bind the partition it "
+            "resumes: it is not the inventory this predecessor and attestation derive "
+            f"(differs at {_inventory_divergence(sealed, derived)!r})"
+        )
+    return sealed
 
 
 def rotate_blocked_partition(
@@ -4150,7 +4284,51 @@ def rotate_blocked_partition(
         # can be outstanding (a crash after the flip, or a completed ceremony
         # re-run).  Both are idempotent; finish them under the SUCCESSOR's lock,
         # the one post-flip completion path every instance of this ceremony
-        # shares (codex r3 finding 1).
+        # shares (codex r3 finding 1).  The successor receipt authenticated,
+        # but that proves the sealed inventory's CONSISTENCY only: adjudicate
+        # the PREDECESSOR against the attestation this call supplies and require
+        # the sealed inventory to be the one that adjudication derives -- exactly
+        # what the pre-flip resume requires -- before the ACTIVE row and the
+        # latch activation make the successor's authority final (codex r8 P1).
+        predecessor = _rotation_predecessor_root(container, generation)
+        if predecessor == container:
+            predecessor_receipt = base
+        else:
+            try:
+                predecessor_receipt = load_partition_receipt(predecessor)
+            except LegacyCutoverConflict as error:
+                raise PartitionRotationRefused(
+                    f"predecessor generation {generation - 1} of {identity} does not authenticate: {error}"
+                ) from error
+            if predecessor_receipt is None:
+                raise PartitionRotationRefused(
+                    f"predecessor generation {generation - 1} of {identity} carries no receipt"
+                )
+        adjudicated = _adjudicate_rotation_predecessor(
+            attestation, predecessor, generation - 1, predecessor_receipt, identity
+        )
+        _require_sealed_inventory_derives(
+            inventory_path,
+            cutover_id,
+            identity,
+            adjudicated.digest,
+            _derive_rotation_inventory(
+                cutover_id=cutover_id,
+                identity=identity,
+                container=container,
+                base=base,
+                successor_generation=generation,
+                generation=generation - 1,
+                predecessor_digests=adjudicated.predecessor_digests,
+                attestation=attestation,
+                digest=adjudicated.digest,
+                effects=adjudicated.effects,
+                high_water=adjudicated.high_water,
+                carried=adjudicated.carried,
+            ),
+            successor_generation=generation,
+            generation=generation - 1,
+        )
         return _finish_rotation_after_flip(
             snapshot, container, active, generation, journal, cutover_id, active_receipt
         )
@@ -4160,107 +4338,35 @@ def rotate_blocked_partition(
         )
 
     # -- the attestation (zero-write) -----------------------------------------
-    effects = _validate_rotation_attestation(attestation, generation)
-    digest = hashlib.sha256(canonical_bytes(attestation)).hexdigest()
-    if isinstance(active_receipt, RotatedPartitionReceipt) and active_receipt.attestation_sha256 == digest:
-        raise PartitionRotationRefused(
-            f"attestation {digest[:12]} already adjudicated generation {generation}; a rotation "
-            "requires a fresh attestation over the active generation"
-        )
-    expected_digests = {name: _sha256_file(active / name) for name in ROTATION_DIGESTED_FILES}
-    if attestation.get("predecessor_receipt_digest") != expected_digests[RECEIPT_FILENAME]:
-        raise PartitionRotationRefused("attestation predecessor_receipt_digest does not match the active receipt")
-    if attestation["predecessor_store_digests"] != expected_digests:
-        raise PartitionRotationRefused("attestation predecessor_store_digests do not match the active store")
-    ledger = _read_predecessor_ledger(active)
-    foreign = [key for key in ledger.keys if not key.startswith(_ROTATION_EFFECT_PREFIX)]
-    if foreign:
-        raise PartitionRotationRefused(
-            f"predecessor evidence carries non-publish effect keys {foreign!r}; rotation adjudicates "
-            "publish_committed_branch effects only"
-        )
-    if ledger.dangling:
-        raise PartitionRotationRefused(
-            f"predecessor evidence has intents without a terminal {list(ledger.dangling)!r}"
-        )
-    owner = _rotation_owner(active, identity)
-    if owner is not None and not bool(owner.get("sealed", False)):
-        owner_key = owner.get("effect_key") or owner.get("idempotency_key")
-        if owner_key not in ledger.blocked and owner_key not in ledger.terminals:
-            raise PartitionRotationRefused(
-                "predecessor carries an unsealed adapter-start owner whose effect has no terminal"
-            )
-    if not ledger.blocked:
-        raise PartitionRotationRefused(
-            f"{identity} generation {generation} has no ambiguity-blocked effect; nothing to rotate"
-        )
-    if set(effects) != set(ledger.blocked):
-        raise PartitionRotationRefused(
-            "attestation must adjudicate exactly the blocked effects: "
-            f"missing {sorted(set(ledger.blocked) - set(effects))!r}, "
-            f"extra {sorted(set(effects) - set(ledger.blocked))!r}"
-        )
-    for key, entry in effects.items():
-        if entry.get("ambiguity_digest") != ledger.blocked[key]:
-            raise PartitionRotationRefused(f"attestation ambiguity_digest for {key!r} does not bind the blocked row")
-        expected_owner = _rotation_owner_identity(owner, key)
-        for field in ("owner_nonce", "transaction_id"):
-            if entry.get(field) != expected_owner.get(field):
-                raise PartitionRotationRefused(
-                    f"attestation {field} for {key!r} does not match the adapter-start owner record"
-                )
-
-    carried = _rotation_carried_effects(active_receipt, ledger, effects, identity, generation, digest)
-    high_water = max(int(active_receipt.legacy_epoch_high_water), _rotation_admissions_high_water(active))
+    adjudicated = _adjudicate_rotation_predecessor(attestation, active, generation, active_receipt, identity)
+    digest = adjudicated.digest
+    expected_digests = adjudicated.predecessor_digests
+    derived = _derive_rotation_inventory(
+        cutover_id=cutover_id,
+        identity=identity,
+        container=container,
+        base=base,
+        successor_generation=successor_generation,
+        generation=generation,
+        predecessor_digests=expected_digests,
+        attestation=attestation,
+        digest=digest,
+        effects=adjudicated.effects,
+        high_water=adjudicated.high_water,
+        carried=adjudicated.carried,
+    )
 
     sealed: dict | None = None
     if "INVENTORY_SEALED" in states:
-        sealed = _load_rotation_inventory(inventory_path, cutover_id, identity)
-        if sealed.get("attestation_sha256") != digest:
-            raise PartitionRotationRefused(
-                f"rotation {cutover_id!r} sealed a different attestation; resume with the sealed one"
-            )
-        # D7-2: a resume uses the successor number the ceremony RECORDED when it
-        # sealed, never one re-derived from the pointer it finds today.
-        recorded = sealed["partitions"][identity]
-        if (
-            recorded.get("generation") != successor_generation
-            or recorded.get("predecessor_generation") != generation
-        ):
-            raise PartitionRotationRefused(
-                f"rotation {cutover_id!r} sealed generation {recorded.get('generation')!r} over "
-                f"predecessor {recorded.get('predecessor_generation')!r}, but the active generation "
-                f"is {generation}; the sealed ceremony does not resume against this pointer"
-            )
-        # The digests seal the inventory's CONSISTENCY, not its truth.  The
-        # inventory is a pure function of the predecessor bytes and the
-        # attestation this resume has just validated, so re-derive it and
-        # require the sealed bytes to digest to exactly that body BEFORE
-        # anything is written.  This binds every field at once — identity,
-        # container, chain, predecessor digests (codex r6 P1), and the
-        # authority-bearing epoch floor, adjudicated dispositions, carried
-        # landed effects and root inventory (codex r7 P1) — instead of one
-        # field per finding.
-        derived = _derive_rotation_inventory(
-            cutover_id=cutover_id,
-            identity=identity,
-            container=container,
-            base=base,
+        sealed = _require_sealed_inventory_derives(
+            inventory_path,
+            cutover_id,
+            identity,
+            digest,
+            derived,
             successor_generation=successor_generation,
             generation=generation,
-            predecessor_digests=expected_digests,
-            attestation=attestation,
-            digest=digest,
-            effects=effects,
-            high_water=high_water,
-            carried=carried,
         )
-        if _inventory_digest(derived) != sealed["inventory_sha256"]:
-            raise PartitionRotationRefused(
-                f"sealed rotation inventory for {cutover_id!r} does not bind the partition it "
-                "resumes: it is not the inventory this predecessor and attestation seal "
-                f"(differs at {_inventory_divergence(sealed, derived)!r})"
-            )
     elif successor.exists():
         raise PartitionRotationRefused(
             f"successor generation {successor} exists but rotation {cutover_id!r} never sealed it"
@@ -4294,7 +4400,18 @@ def rotate_blocked_partition(
                         completed = load_partition_receipt(successor)
                         if isinstance(completed, RotatedPartitionReceipt) and completed.cutover_id == cutover_id:
                             # THIS ceremony completed (or is completing) under
-                            # another instance.  The latch is not touched here:
+                            # another instance -- over the inventory THIS
+                            # instance derives, or not at all (codex r8 P1).
+                            _require_sealed_inventory_derives(
+                                inventory_path,
+                                cutover_id,
+                                identity,
+                                digest,
+                                derived,
+                                successor_generation=successor_generation,
+                                generation=generation,
+                            )
+                            # The latch is not touched here:
                             # this lock is generation ``generation``'s, and a
                             # ceremony out of the successor drains the latch
                             # under the SUCCESSOR's lock (codex r2 finding 1).
@@ -4342,20 +4459,7 @@ def rotate_blocked_partition(
                         "the current bytes"
                     )
                 if sealed is None:
-                    sealed = _derive_rotation_inventory(
-                        cutover_id=cutover_id,
-                        identity=identity,
-                        container=container,
-                        base=base,
-                        successor_generation=successor_generation,
-                        generation=generation,
-                        predecessor_digests=expected_digests,
-                        attestation=attestation,
-                        digest=digest,
-                        effects=effects,
-                        high_water=high_water,
-                        carried=carried,
-                    )
+                    sealed = derived
                     _atomic_write_json(inventory_path, sealed)
                 if "INVENTORY_SEALED" not in states:
                     _rotation_journal_append(journal, cutover_id, "INVENTORY_SEALED")
@@ -4390,9 +4494,9 @@ def rotate_blocked_partition(
                     # resume refusal like every other, not a bare conflict
                     # (fable r7 F2): the pointer stays where it is.
                     raise PartitionRotationRefused(
-                        f"successor generation {successor_generation} of {identity} already "
-                        f"carries a receipt that is not the one rotation {cutover_id!r} sealed; "
-                        f"the pointer stays at {generation}: {exc}"
+                        f"cannot write the receipt rotation {cutover_id!r} sealed for successor "
+                        f"generation {successor_generation} of {identity}; the pointer stays at "
+                        f"{generation}: {exc}"
                     ) from exc
                 _maybe_rotation_crash("after_successor_receipt_before_flip")
                 if "ARMED" not in states:
