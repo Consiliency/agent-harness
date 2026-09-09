@@ -205,13 +205,10 @@ class LinearizableAdmissionStore:
 
     def _authorize(self) -> None:
         """Authenticate BEFORE any directory creation, then create the tree."""
-        from .live import REPOSITORY_NAMESPACE_DIR, authenticated_partition_floor
+        from .live import authenticated_partition_floor, is_canonical_store_root
 
         self._require_generation()
-        canonical_store = (
-            self.root.parent.name == "repositories"
-            and self.root.parent.parent.name == REPOSITORY_NAMESPACE_DIR
-        )
+        canonical_store = is_canonical_store_root(self.root)
         if _fabpub_active() and (
             self.generation_lease is not _UNDECLARED or canonical_store
         ):
