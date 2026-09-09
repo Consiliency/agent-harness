@@ -16,7 +16,7 @@ Two guard layers, stacked per test (``pytestmark`` is deliberately empty):
 
 Runnable-now controls (only ``_requires_fabpub``): A0 (derivation sweep), A16
 and A21 (v2 baselines), A22 (fresh-authority-root laundering), the v2 halves of
-A12/A14/A18/A24.  Everything else asserts the production symbol FIRST
+A8 (archived-orphan shape)/A12/A14/A18/A24.  Everything else asserts the production symbol FIRST
 (``_production``) so a missing D2 fails at a named ``789D-RED-ANCHOR::<name>``
 line, never at an ``AttributeError`` deep in a helper.
 
@@ -351,6 +351,18 @@ def _block_key(p, key: str) -> None:
     assert store.epoch_blocked is True
 
 
+def _complete_key(p, key: str) -> None:
+    """A COMPLETED terminal under ``key`` (intent, then ``effect_terminal_observed``)."""
+    from phase_loop_runtime.convergence.broker.evidence import EvidenceRecord
+    from phase_loop_runtime.convergence.provider_contracts import TerminalOutcomeState
+
+    store = p.service.evidence_store
+    store.record_intent(key)
+    store.record_terminal(
+        EvidenceRecord(key, TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED, "ah789d-completed")
+    )
+
+
 def _blocked_keys(evidence_path: Path) -> list[str]:
     keys = []
     for line in _jsonl(evidence_path):
@@ -505,11 +517,27 @@ def _assert_no_durable_rotation(request, p, *, cutover_id=ROTATION_ID) -> None:
     )
 
 
+def _latch_bytes(p) -> bytes | None:
+    """The repository-common writer latch file (``writer-generation.json``)."""
+    return _read_or_none(_live().WriterGenerationLatch.for_store_root(p.container).path)
+
+
+def _refusal_snapshot(p) -> dict:
+    """Everything a REFUSED rotation must leave untouched: generation 0's bytes
+    and the writer latch — a refusal may neither leave the latch DRAINING nor
+    bump its generation (codex r3 finding 7).  Take it AFTER ``_release_all``."""
+    return {"store": _store_bytes(p.container), "latch": _latch_bytes(p)}
+
+
 def _assert_refused_without_writes(request, p, *, cutover_id=ROTATION_ID, before=None) -> None:
-    """A refused rotation: no generation debris, no ceremony files, no store change."""
+    """A refused rotation: no generation debris, no ceremony files, no store
+    change, and the writer latch as it was (``before`` is a ``_refusal_snapshot``)."""
     _assert_no_durable_rotation(request, p, cutover_id=cutover_id)
+    latch = _live().WriterGenerationLatch.for_store_root(p.container)
+    _require(request, latch.read().generation_state != "DRAINING", "a refused rotation left the writer latch DRAINING")
     if before is not None:
-        _require(request, _store_bytes(p.container) == before, "the refusal changed generation 0")
+        _require(request, _store_bytes(p.container) == before["store"], "the refusal changed generation 0")
+        _require(request, _latch_bytes(p) == before["latch"], "the refusal changed the writer latch")
 
 
 def _routed_service(p, adapter=None):
@@ -1157,7 +1185,8 @@ def test_partition_rotation_a3_attestation_must_cover_every_blocked_key(tmp_path
     p = fx.alpha
     second = "publish_committed_branch\x00ah789d-second-ambiguous-publish"
     _block_key(p, second)
-    before = _store_bytes(p.container)
+    _release_all(p)
+    before = _refusal_snapshot(p)
     keys = _blocked_keys(p.evidence)
     _require(request, set(keys) == {ROTATED_KEY, second}, f"blocks {keys}")
     with pytest.raises(refused):
@@ -1362,8 +1391,10 @@ def test_partition_rotation_a7_attestation_binds_attempt_identity_and_is_single_
     recorded.  Re-presenting A (verbatim, or with only the generation bumped)
     refuses; a fresh attestation that names the key but carries generation 0's
     SPENT identity refuses too — an implementation that matched on the key alone
-    would accept it (fable r2 finding 4); only a fresh attestation naming the
-    new attempt produces generation 2.
+    would accept it (fable r2 finding 4); so does a fresh attestation with any
+    ONE other bound field corrupted (owner nonce, transaction id, predecessor
+    receipt digest, one predecessor store digest, ambiguity digest); only a
+    fresh attestation naming the new attempt produces generation 2.
     """
     refused = _production(request, "PartitionRotationRefused")
     publishing = __import__(PUBLISHING_MODULE, fromlist=["crash_after", "PublishCrashInjected"])
@@ -1426,6 +1457,21 @@ def test_partition_rotation_a7_attestation_binds_attempt_identity_and_is_single_
     )
     spent["effects"][key].update(seeded)
     _refuses("spent-identity", spent)
+
+    # Every OTHER bound field, corrupted alone in an otherwise fresh and valid
+    # attestation, refuses too (codex r3 finding 3): the attestation binds each
+    # field it carries, not only the attempt identity.
+    def _fresh_with(mutate) -> dict:
+        candidate = json.loads(json.dumps(_attestation(p)))
+        mutate(candidate)
+        return candidate
+
+    forged = "0" * 64
+    _refuses("owner-nonce", _fresh_with(lambda a: a["effects"][key].update(owner_nonce="nonce-789d-forged")))
+    _refuses("transaction-id", _fresh_with(lambda a: a["effects"][key].update(transaction_id="txn-789d-forged")))
+    _refuses("receipt-digest", _fresh_with(lambda a: a.update(predecessor_receipt_digest=forged)))
+    _refuses("store-digest", _fresh_with(lambda a: a["predecessor_store_digests"].update({"evidence.jsonl": forged})))
+    _refuses("ambiguity-digest", _fresh_with(lambda a: a["effects"][key].update(ambiguity_digest=forged)))
     second = _rotate(request, p, cutover_id=ROTATION_ID_2, attestation=_attestation(p))
     _require(request, second.generation == 2, f"fresh attestation produced generation {second.generation}")
     _require(
@@ -1503,37 +1549,54 @@ def _traditional_partition_with_archived_orphan(tmp_path: Path) -> SimpleNamespa
 def test_partition_rotation_a8_non_terminal_history_refuses_even_when_attested(tmp_path, monkeypatch, request):
     """A8: rotation needs a fully terminal predecessor — (i) an ambiguous RECEIPT
     on disk, (ii) a dangling ``provider_call_in_flight`` intent, (iii) an
-    unsealed owner without a terminal, (iv) an ARCHIVED orphaned in-flight — each
-    refuses with no durable write, even when the attestation names the key.
+    unsealed owner without a terminal — each refuses with no durable write,
+    even when the attestation names every canonical key.
 
-    (i) is an on-disk ambiguity (the sealed inventory and receipt bytes are
-    regenerated with the production digest helpers, so the receipt still
-    authenticates and still carries its bootstrap claim) rather than a
-    monkeypatched loader (fable r2 finding 5): a rotation that reads the receipt
-    through any seam sees the same ``ambiguous: true``.  (iv) is only
-    constructible on a TRADITIONAL partition (a zero-source bootstrap archives
-    nothing), which A25 refuses on its own; the leg witnesses that the archived
-    shape exists on disk and is refused without a write.
+    (i-a) is the plan's literal shape (``ambiguous: true`` with EMPTY canonical
+    evidence, attestation with no effects): the only block is the receipt's,
+    and it cannot be attested away.  (i-b) adds a canonical block under
+    ``ROTATED_KEY`` to the same receipt shape and attests THAT key: a D2 that
+    read ambiguity from canonical rows only (m10) would find the one block
+    attested and rotate — so (i-b) is the m10 discriminator, (i-a) the plan
+    text.  Both receipts are regenerated on disk with the production digest
+    helpers, so the receipt still authenticates and still carries its
+    bootstrap claim (fable r2 finding 5): a rotation that reads it through any
+    seam sees the same ``ambiguous: true``.  The ARCHIVED orphaned in-flight
+    shape is only constructible on a TRADITIONAL partition, which A25 refuses
+    on the authority axis before any inventory runs; it is witnessed on disk by
+    the ungated ``test_partition_rotation_a8_v2_archived_orphan_is_receipt_ambiguity_today``
+    and is NOT counted as m10 coverage (grok r3 / fable r3 finding 2).
     """
     live = _live()
     refused = _production(request, "PartitionRotationRefused")
-    fx = _blocked_fixture(tmp_path, monkeypatch)
+    # (i-a) plan-literal: receipt ambiguity, empty canonical evidence, no effects to attest.
+    fx = _bootstrap(tmp_path / "receipt", monkeypatch)
     p = fx.alpha
-    # (i) the receipt itself says ambiguous on disk → nothing can attest it away.
     _release_all(p)
     _mark_receipt_ambiguous(live, p)
     _require(request, live.partition_is_ambiguity_blocked(p.container) is True, "receipt ambiguity not seen by production")
-    gen0 = _store_bytes(p.container)
+    _require(request, _blocked_keys(p.evidence) == [], f"canonical evidence is not empty: {_blocked_keys(p.evidence)}")
+    before = _refusal_snapshot(p)
     with pytest.raises(refused):
-        _rotate(request, p)
-    _assert_refused_without_writes(request, p, before=gen0)
+        _rotate(request, p, attestation=_attestation(p, keys=[]))
+    _assert_refused_without_writes(request, p, before=before)
+    # (i-b) the same receipt shape with one canonical block, attested: still refused.
+    fx = _blocked_fixture(tmp_path / "receipt-and-key", monkeypatch)
+    p = fx.alpha
+    _release_all(p)
+    _mark_receipt_ambiguous(live, p)
+    _require(request, _blocked_keys(p.evidence) == [ROTATED_KEY], f"blocks {_blocked_keys(p.evidence)}")
+    before = _refusal_snapshot(p)
+    with pytest.raises(refused):
+        _rotate(request, p, attestation=_attestation(p, keys=[ROTATED_KEY]))
+    _assert_refused_without_writes(request, p, before=before)
     # (ii) a dangling intent: attesting it does not make it terminal.
     fx = _blocked_fixture(tmp_path / "intent", monkeypatch)
     p = fx.alpha
     orphan = "publish_committed_branch\x00ah789d-orphan-intent"
     p.service.evidence_store.record_intent(orphan)
     _release_all(p)
-    before = _store_bytes(p.container)
+    before = _refusal_snapshot(p)
     attestation = _attestation(p, keys=[ROTATED_KEY])
     attestation["effects"][orphan] = {
         "disposition": ATTESTED_NOT_LANDED,
@@ -1550,57 +1613,92 @@ def test_partition_rotation_a8_non_terminal_history_refuses_even_when_attested(t
     q = fx2.alpha
     _release_all(q)
     _seed_owner(q.container, q, "publish_committed_branch\x00ah789d-unsealed-owner", sealed=False)
-    before = _store_bytes(q.container)
+    before = _refusal_snapshot(q)
     with pytest.raises(refused):
         _rotate(request, q, attestation=_attestation(q))
     _assert_refused_without_writes(request, q, before=before)
-    # (iv) an ARCHIVED orphaned in-flight: the traditional receipt says ambiguous.
-    r = _traditional_partition_with_archived_orphan(tmp_path / "archived")
+
+
+@_requires_fabpub
+def test_partition_rotation_a8_v2_archived_orphan_is_receipt_ambiguity_today(tmp_path, request):
+    """Ungated control for A8's archived shape: on v2 today a TRADITIONAL
+    partition whose legacy root archived a lone ``provider_call_in_flight``
+    carries ``ambiguous: true`` in its receipt with EMPTY canonical evidence —
+    the ambiguity lives only in the receipt (and the archived history), never
+    in a canonical row.  Under the generational design this partition is
+    refused by A25 (authority axis) before any inventory runs, so it is a
+    witness of the shape, not an m10 discriminator (grok r3 / fable r3
+    finding 2).
+    """
+    live = _live()
+    r = _traditional_partition_with_archived_orphan(tmp_path)
     receipt = live.load_partition_receipt(r.container)
-    _require(request, receipt is not None and receipt.ambiguous is True and receipt.zero_source is False, f"archived-orphan receipt {receipt!r}")
-    before = _store_bytes(r.container)
-    with pytest.raises(refused):
-        _rotate(request, r, attestation=_attestation(r, store_root=r.container))
-    _assert_refused_without_writes(request, r, before=before)
+    _require(request, receipt is not None and receipt.ambiguous is True, f"archived-orphan receipt {receipt!r}")
+    _require(request, receipt.zero_source is False, "the archived-orphan partition is not traditional")
+    _require(request, live.partition_is_ambiguity_blocked(r.container) is True, "receipt ambiguity not seen by production")
+    _require(request, _blocked_keys(r.container / "evidence.jsonl") == [], "the archived orphan reached a canonical row")
 
 
 @_requires_fabpub
 @_requires_789d
 def test_partition_rotation_a9_unblocked_partition_refuses_rotation(tmp_path, monkeypatch, request):
-    """A9: rotation is for permanently blocked partitions only — typed refusal, no writes."""
+    """A9: rotation is for permanently blocked partitions only — typed refusal, no
+    writes, and the partition keeps publishing afterwards."""
     fx = _bootstrap(tmp_path, monkeypatch)
     live = _live()
     refused = _production(request, "PartitionRotationRefused")
     p = fx.beta
     _release_all(*fx.partitions.values())
-    before = _store_bytes(p.container)
+    before = _refusal_snapshot(p)
     with pytest.raises(refused) as info:
         _rotate(request, p, attestation=_attestation(p, keys=[]))
     _require(request, not isinstance(info.value, live.LegacyCutoverConflict), "must not be a LegacyCutoverConflict")
     _assert_refused_without_writes(request, p, before=before)
+    # The refused partition is still a live generation 0: it publishes through
+    # the production route (the latch was not left DRAINING — codex r3 finding 7).
+    routed = _routed_service(p)
+    try:
+        result = routed.service.execute(p.request)
+        _require(request, result.accepted is True, f"publish refused after a refused rotation: {result.reason}")
+        _require(request, len(routed.adapter.calls) == 1, "one adapter call expected")
+    finally:
+        _release_router(routed)
 
 
 @_requires_fabpub
 @_requires_789d
 def test_partition_rotation_a10_non_publish_lineage_refuses_rotation(tmp_path, monkeypatch, request):
     """A10: any predecessor key WITHOUT the ``publish_committed_branch`` prefix refuses
-    the rotation (plan D3) — even when the attestation covers it — with no
-    durable write; the sibling module's unprefixed block and a ``refresh_pull_request``
-    key are both such lineages.
+    the rotation (plan D3) — even when the attestation covers it, and even when
+    the key is a COMPLETED terminal that needs no attestation — with no durable
+    write; the sibling module's unprefixed block and a ``refresh_pull_request``
+    key (blocked, or completed) are all such lineages.
     """
     refused = _production(request, "PartitionRotationRefused")
-    for label, key in (("unprefixed", BLOCKED_KEY), ("other-verb", "refresh_pull_request\x00abc")):
+    for label, key, completed in (
+        ("unprefixed", BLOCKED_KEY, False),
+        ("other-verb", "refresh_pull_request\x00abc", False),
+        ("completed-other-verb", "refresh_pull_request\x00done", True),
+    ):
         fx = _bootstrap(tmp_path / label, monkeypatch)
         p = fx.alpha
+        if completed:
+            # A COMPLETED non-publish terminal: not blocked, so the attestation
+            # over the blocked keys is complete — the lineage still refuses
+            # (codex r3 finding 5: a blocked-keys-only verb scan misses it).
+            _complete_key(p, key)
         _block_key(p, ROTATED_KEY)
-        if key == BLOCKED_KEY:
+        if completed:
+            pass
+        elif key == BLOCKED_KEY:
             _block_partition(p.service)
         else:
             _block_key(p, key)
         _release_all(p)
         keys = _blocked_keys(p.evidence)
-        _require(request, set(keys) == {ROTATED_KEY, key}, f"[{label}] blocks {keys}")
-        before = _store_bytes(p.container)
+        expected = {ROTATED_KEY} if completed else {ROTATED_KEY, key}
+        _require(request, set(keys) == expected, f"[{label}] blocks {keys}")
+        before = _refusal_snapshot(p)
         with pytest.raises(refused):
             _rotate(request, p, attestation=_attestation(p, keys=keys))
         _assert_refused_without_writes(request, p, before=before)
@@ -2126,6 +2224,29 @@ def test_partition_rotation_a17e_authorized_before_flip_is_refused_in_lock(tmp_p
     with pytest.raises(PermissionError):
         evidence.promote_legacy_terminal("publish_committed_branch\x00pre-authorized-promotion")
     _require(request, _store_bytes(p.container) == fx.gen0, "a pre-authorized writer changed generation 0")
+    # A writer that DECLARES a lease taken fresh AFTER the flip (so the store
+    # goes through the declared-lease branch of ``_require_generation``, not the
+    # undeclared one) is fenced the same way at every site: the lease's
+    # generation is the latch's current one, but the store's root is a
+    # non-ACTIVE generation (codex r3 finding 6).  A pre-flip declared lease
+    # would have made ``await_quiescent`` wait on it, so post-flip is the case
+    # that isolates the predicate.
+    latch = live.WriterGenerationLatch.for_store_root(p.container)
+    fresh = latch.acquire(generation=latch.read().generation)
+    try:
+        declared = BrokerEvidenceStore(p.container, generation_lease=fresh)
+        declared_admission = LinearizableAdmissionStore(p.container, lambda _r: True, generation_lease=fresh)
+        monkeypatch.setattr(declared, "_authorize", lambda: None)
+        monkeypatch.setattr(declared_admission, "_authorize", lambda: None)
+        with pytest.raises(PermissionError):
+            declared._append(_record("publish_committed_branch\x00declared-lease"))
+        with pytest.raises(PermissionError):
+            declared_admission.admit(p.request.admission)
+        with pytest.raises(PermissionError):
+            declared.promote_legacy_terminal("publish_committed_branch\x00declared-lease-promotion")
+    finally:
+        fresh.release()
+    _require(request, _store_bytes(p.container) == fx.gen0, "a declared-lease writer changed generation 0")
 
 
 # ---------------------------------------------------------------------------
@@ -2291,7 +2412,7 @@ def test_partition_rotation_a18c_successor_without_global_authority_or_journal_r
     Without the global bootstrap inventory the successor has no active
     authority (``_receipt_active_authority_exists`` False) and the barrier
     refuses at its no-matching-authority site; with the rotation journal
-    truncated or deleted the barrier refuses too.
+    stopped at ARMED, torn, or deleted the barrier refuses too.
     """
     live = _live()
     fx = _blocked_fixture(tmp_path, monkeypatch)
@@ -2318,6 +2439,22 @@ def test_partition_rotation_a18c_successor_without_global_authority_or_journal_r
             live.release_barrier_leases(report)
     journal = _journal_path(p)
     original = journal.read_bytes()
+    # A well-formed journal that stops at ARMED (the ACTIVE row never landed):
+    # not a torn line, not a missing file — the ceremony is simply not ACTIVE,
+    # and the successor has no active authority (codex r3 finding 4).
+    lines = original.decode("utf-8").splitlines(keepends=True)
+    states = [json.loads(line).get("state") for line in lines if line.strip()]
+    _require(request, "ARMED" in states and states[-1] == "ACTIVE", f"journal states after a clean rotation: {states}")
+    armed_prefix = "".join(lines[: max(i for i, s in enumerate(states) if s == "ARMED") + 1]).encode("utf-8")
+    journal.write_bytes(armed_prefix)
+    _require(
+        request,
+        not live._receipt_active_authority_exists(successor, authority_root=p.authority),
+        "successor authority survives a journal that never reached ACTIVE",
+    )
+    with pytest.raises((live.LegacyCutoverConflict, PermissionError)):
+        report = _barrier(live, [p.repo])
+        live.release_barrier_leases(report)
     journal.write_bytes(original[:-5])
     with pytest.raises((live.LegacyCutoverConflict, PermissionError)):
         report = _barrier(live, [p.repo])
@@ -2345,7 +2482,8 @@ def test_partition_rotation_a18c_successor_without_global_authority_or_journal_r
 def test_partition_rotation_a19_foreign_and_torn_ceremony_artifacts_refuse(tmp_path, monkeypatch, request):
     """A19: foreign-id temp debris, a non-ACTIVE journal, a torn journal, a journal whose
     ``cutover_id`` field names another ceremony, and a journal with an invalid
-    state order each refuse with the typed refusal and leave the artifacts as found."""
+    state order each refuse with the typed refusal and leave the artifacts —
+    journal AND whatever the ceremony staged under ``generations/1`` — as found."""
     live = _live()
     refused = _production(request, "PartitionRotationRefused")
     # (a) foreign-id generations temp debris.
@@ -2365,6 +2503,11 @@ def test_partition_rotation_a19_foreign_and_torn_ceremony_artifacts_refuse(tmp_p
     states = _journal_states(p)
     _require(request, states and states[-1] != "ACTIVE", f"journal after ARMED crash: {states}")
     armed = _journal_path(p).read_bytes()
+    # Whatever the ceremony staged under generations/1 before ARMED (the plan
+    # writes the successor receipt BEFORE the ARMED row) is an artifact of the
+    # SAME ceremony; every refused resume below must leave it byte-identical.
+    successor_dir = p.container / GENERATIONS_DIR / "1"
+    staged = _store_bytes(successor_dir) if successor_dir.exists() else None
     with pytest.raises(refused):
         _rotate(request, p, cutover_id="rotation-789d-new")
     _require(request, _journal_states(p, "rotation-789d-new") == [], "a refused new id wrote a journal")
@@ -2377,6 +2520,7 @@ def test_partition_rotation_a19_foreign_and_torn_ceremony_artifacts_refuse(tmp_p
         _rotate(request, p)
     _require(request, _generation_of(p.container) == 0, "a torn journal flipped the pointer")
     _require(request, journal.read_bytes() == torn, "resume rewrote the torn journal")
+    _require(request, (_store_bytes(successor_dir) if successor_dir.exists() else None) == staged, "a torn-journal refusal touched the staged successor")
     # (d) a well-formed journal whose cutover_id field names ANOTHER ceremony.
     lines = [json.loads(line) for line in armed.decode("utf-8").splitlines() if line.strip()]
     foreign = [dict(line, cutover_id="rotation-789d-elsewhere") for line in lines]
@@ -2386,6 +2530,7 @@ def test_partition_rotation_a19_foreign_and_torn_ceremony_artifacts_refuse(tmp_p
         _rotate(request, p)
     _require(request, _generation_of(p.container) == 0, "a foreign-id journal flipped the pointer")
     _require(request, journal.read_bytes() == body, "resume rewrote the foreign-id journal")
+    _require(request, (_store_bytes(successor_dir) if successor_dir.exists() else None) == staged, "a foreign-id refusal touched the staged successor")
     # (e) an invalid state order (ACTIVE recorded before ARMED).
     reordered = list(reversed(lines)) if len(lines) > 1 else [dict(lines[0], state="ACTIVE"), dict(lines[0])]
     body = "".join(json.dumps(line, sort_keys=True) + "\n" for line in reordered).encode("utf-8")
@@ -2394,7 +2539,7 @@ def test_partition_rotation_a19_foreign_and_torn_ceremony_artifacts_refuse(tmp_p
         _rotate(request, p)
     _require(request, _generation_of(p.container) == 0, "an out-of-order journal flipped the pointer")
     _require(request, journal.read_bytes() == body, "resume rewrote the out-of-order journal")
-    _require(request, not (p.container / GENERATIONS_DIR / "1" / "partition-receipt.json").exists(), "a refused resume sealed a successor receipt")
+    _require(request, (_store_bytes(successor_dir) if successor_dir.exists() else None) == staged, "an out-of-order refusal touched the staged successor")
 
 
 @_requires_fabpub
@@ -2535,7 +2680,9 @@ def test_partition_rotation_a26_concurrent_writer_lands_before_digest_or_is_fenc
     so the writer reaches the lock).  Its bytes are therefore final before
     the rotator starts, so the attestation the rotator builds binds
     generation 1's FINAL bytes and the only admissible outcome is the plan's
-    "lands before the digests are taken" arm (the in-lock fence arm is A17's).
+    "lands before the digests are taken" arm (the in-lock fence arm is A17's;
+    the writer paused BEFORE its terminal append — where the digest could be
+    taken over stale bytes — is A26b's).
     While the writer holds the lock the rotation MUST NOT complete (m28: a
     digest taken without the predecessor lock would still equal the final
     bytes here, so the liveness check is what kills it); once released, the
@@ -2628,3 +2775,133 @@ def test_partition_rotation_a26_concurrent_writer_lands_before_digest_or_is_fenc
             f"predecessor {name} digest does not bind generation 1's FINAL bytes",
         )
     _require(request, outcome.generation == 2 and _generation_of(p.container) == 2, "the rotation did not reach generation 2")
+
+
+@_requires_fabpub
+@_requires_789d
+def test_partition_rotation_a26b_writer_paused_before_terminal_append_is_never_digested_stale(tmp_path, monkeypatch, request):
+    """A26b: a writer inside generation 1's lock paused BEFORE its terminal append
+    — its ``provider_call_in_flight`` row is durable, its
+    ``effect_terminal_observed`` row is not yet — across a 1→2 rotation whose
+    attestation was built over the PRE-pause bytes.  Plan D9-C admits exactly
+    two outcomes: (a) the rotation is REFUSED (typed) and leaves generation 1
+    ACTIVE with no generation-2 debris, or (b) the rotation succeeds and its
+    predecessor digest binds generation 1's FINAL bytes, i.e. INCLUDING the
+    terminal row that landed after the attestation was built.  A successor
+    that digests the stale (pre-pause) bytes — the attestation's own digest —
+    is the D9-C violation both arms exclude (fable r3 finding 1; A26 only
+    witnessed lock membership).  While the writer holds the lock the rotation
+    must not complete (m28).
+    """
+    from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore
+    from phase_loop_runtime.convergence.provider_contracts import TerminalOutcomeState
+
+    live = _live()
+    refused = _production(request, "PartitionRotationRefused")
+    fx = _blocked_fixture(tmp_path, monkeypatch)
+    p = fx.alpha
+    first = _rotate(request, p)
+    routed = _successor_service(request, first, p)
+    try:
+        _block_key(SimpleNamespace(service=routed.service), "publish_committed_branch\x00ah789d-gen1-ambiguous")
+    finally:
+        _release_router(routed)
+    gen1 = first.store_root
+    writer_key = "publish_committed_branch\x00ah789d-paused-writer"
+    _stub_promotion_capability(monkeypatch, live)
+    holding = threading.Event()
+    proceed = threading.Event()
+    result: dict = {}
+
+    def writer():
+        store = BrokerEvidenceStore(gen1)
+        real = store._append_locked
+
+        def paused(record):
+            if record.state is TerminalOutcomeState.PROVIDER_CALL_IN_FLIGHT:
+                # The in-flight row is durable; the terminal row is NOT yet
+                # written and the lock is still held.
+                appended = real(record)
+                holding.set()
+                proceed.wait(120)
+                return appended
+            return real(record)
+
+        store._append_locked = paused
+        try:
+            result["promoted"] = store.promote_legacy_terminal(writer_key)
+            result["landed"] = True
+        except PermissionError as exc:
+            result["fenced"] = str(exc)
+        except Exception as exc:  # pragma: no cover - surfaced by the assertion below
+            result["error"] = repr(exc)
+        finally:
+            holding.set()
+
+    def rotator(attestation):
+        try:
+            result["outcome"] = _rotate(request, p, cutover_id=ROTATION_ID_2, attestation=attestation)
+        except refused as exc:
+            result["refused"] = exc
+        except Exception as exc:
+            result["rotation_error"] = exc
+
+    t_writer = threading.Thread(target=writer, daemon=True)
+    t_rotate = None
+    try:
+        t_writer.start()
+        _require(request, holding.wait(60), "writer never reached the in-lock in-flight append")
+        _require(request, "error" not in result and "fenced" not in result and "landed" not in result, f"writer did not pause inside the lock: {result}")
+        stale = _store_bytes(gen1)
+        rows = [line.get("state") for line in _jsonl(gen1 / "evidence.jsonl") if line.get("idempotency_key") == writer_key]
+        _require(request, rows == ["provider_call_in_flight"], f"writer rows at the pause point: {rows}")
+        # The attestation is built over the STALE bytes, without touching the
+        # lock (an explicit ``store_root`` keeps the builder off the resolver).
+        attestation = _attestation(p, store_root=gen1)
+        _require(
+            request,
+            attestation["predecessor_store_digests"]["evidence.jsonl"] == _sha256_bytes(stale["evidence.jsonl"]),
+            "the attestation does not bind the pre-pause bytes",
+        )
+        t_rotate = threading.Thread(target=rotator, args=(attestation,), daemon=True)
+        t_rotate.start()
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and t_rotate.is_alive():
+            time.sleep(0.05)
+        _require(request, t_rotate.is_alive(), f"the rotation completed while a writer held generation 1's lock: {result}")
+        _require(request, _generation_of(p.container) == 1 and not (p.container / GENERATIONS_DIR / "2" / "partition-receipt.json").exists(), "the rotation sealed generation 2 while a writer held generation 1's lock")
+    finally:
+        proceed.set()
+        t_writer.join(120)
+        if t_rotate is not None:
+            t_rotate.join(120)
+    _require(request, "rotation_error" not in result, f"rotation failed outside the typed refusal: {result.get('rotation_error')!r}")
+    _require(request, "error" not in result, f"writer errored: {result.get('error')}")
+    _require(request, result.get("landed") is True, f"the writer did not land: {result}")
+    final = _store_bytes(gen1)
+    _require(request, final["evidence.jsonl"] != stale["evidence.jsonl"], "the writer's terminal row never landed")
+    if "refused" in result:
+        # Arm (a): typed refusal, generation 1 still ACTIVE, no generation-2 debris.
+        _require(request, _generation_of(p.container) == 1, "a refused rotation moved the pointer")
+        _require(request, not (p.container / GENERATIONS_DIR / "2").exists(), "a refused rotation left generation-2 debris")
+        _require(request, _journal_states(p, ROTATION_ID_2) == [], "a refused rotation left a journal")
+        second = _rotate(request, p, cutover_id=ROTATION_ID_2, attestation=_attestation(p, store_root=gen1))
+    else:
+        # Arm (b): success — the digest must bind the FINAL bytes.
+        second = result["outcome"]
+    _require(request, second.generation == 2 and _generation_of(p.container) == 2, "the rotation did not reach generation 2")
+    _require(request, _store_bytes(gen1) == final, "generation 1's bytes changed after the writer's last append")
+    digests = second.receipt.predecessor_digests
+    _require(
+        request,
+        digests.get("evidence.jsonl") != _sha256_bytes(stale["evidence.jsonl"]),
+        "the successor digested generation 1's STALE (pre-terminal) evidence bytes",
+    )
+    for name in ("evidence.jsonl", "admissions.jsonl"):
+        if final.get(name) is None:
+            continue
+        _require(
+            request,
+            digests.get(name) == _sha256_bytes(final[name]),
+            f"predecessor {name} digest does not bind generation 1's FINAL bytes",
+        )
