@@ -34,6 +34,28 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   afresh exactly once (D1 anchors A1/A2/A5, plan mutants m3/m4 RUN red).
   Consiliency/agent-harness#813 and Consiliency/agent-harness#814 are absorbed.
 
+### Partition rotation operator runbook and read-only preflight (Lane D5 preparation)
+
+- Workstream D, Lane D5 of Consiliency/agent-harness#789, preparation only — the
+  omniagent-plus partition is **not** rotated by this landing. New
+  `docs/fabpub-partition-rotation-runbook.md`: the fleet host gate, the runtime re-pin
+  by commit (no release tag carries the ceremony yet, and the version string cannot
+  distinguish a v3-aware install), the attestation build, the read-only preflight, a
+  rehearsal technique that runs the real verb over byte copies bind-mounted at the real
+  paths in an unprivileged mount namespace, and the state-changing steps each gated on
+  the maintainer's go. Three helper scripts under `phase-loop-runtime/scripts/`:
+  `fabpub_v3_probe.py` (is this interpreter's runtime v3-aware), `fabpub_rotation_attestation.py`
+  (builds a `PartitionRotationAttestation.v1` from the live container, read-only), and
+  `fabpub_rotation_preflight.py` (runs the verb's zero-write validation checks by calling the
+  ceremony's own functions, reports the drain facts, and prints the verdict the verb would
+  reach). The attestation field table in `docs/fabpub-pre-admission-ambiguity.md` now lists
+  `predecessor_receipt_digest`, `owner_nonce`, and `transaction_id`, which the adjudicator
+  requires and the table omitted.
+- Filed from the preparation: Consiliency/agent-harness#819 (`fab_gate` circular import on
+  installs at or after `b09b1a47`) and Consiliency/agent-harness#820 (writer-generation
+  leases carry no liveness token, so a crashed broker's lease blocks the rotation drain
+  until removed by hand).
+
 ### `phase-loop fabpub-rotate-partition` operator verb (Consiliency/agent-harness#818)
 
 - Workstream D, Lane D4 of Consiliency/agent-harness#789. The new CLI verb takes

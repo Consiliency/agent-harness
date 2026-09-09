@@ -206,14 +206,22 @@ binds into the successor receipt. Its required fields:
 | field | meaning |
 |---|---|
 | `schema` | `PartitionRotationAttestation.v1` |
-| `attested_by` | the operator making the attestation |
+| `attested_by` | the operator making the attestation (non-empty string) |
 | `predecessor_generation` | the generation being retired (0 for a never-rotated partition) |
-| `predecessor_store_digests` | the sha256 of every digested predecessor store file, as the ceremony re-captures them under the predecessor's own `admissions.lock` |
-| `effects` | one entry per blocked effect key, keyed by the FABPUB dedup key |
+| `predecessor_receipt_digest` | sha256 of the predecessor's `partition-receipt.json` bytes — the receipt the attestation was written against |
+| `predecessor_store_digests` | the sha256 of every digested predecessor store file (`admissions.jsonl`, `evidence.jsonl`, `partition-receipt.json`, `adapter-start-owner.json`; a missing file digests as empty bytes), as the ceremony re-captures them under the predecessor's own `admissions.lock` |
+| `effects` | one entry per blocked effect key, keyed by the exact FABPUB dedup key (`publish_committed_branch\0<hex>`) |
 
 Each `effects` entry carries a `disposition`, an `evidence_url` (the
-out-of-band publication or the review that established the judgement), and the
-`ambiguity_digest` binding it to the predecessor's recorded ambiguity:
+out-of-band publication or the review that established the judgement; a
+non-empty string), and the `ambiguity_digest` binding it to the predecessor's
+recorded ambiguity — the sha256 of the blocked row's raw JSONL line text, no
+trailing newline. When the predecessor's `adapter-start-owner.json` names that
+key, the entry must also carry the owner's `owner_nonce` and `transaction_id`
+verbatim; the ceremony refuses an entry that disagrees with the owner record.
+Extra fields (an `attested_at`, an `override_record` URL) are tolerated — the
+attestation digest binds the whole document — so record provenance there rather
+than in `attested_by`. The dispositions:
 
 - `observed_landed` — the effect did land out of band; `observed_head` names the
   landed head. The ceremony seals the key into the successor's completed
@@ -255,7 +263,9 @@ is not carried either (the successor publishes it afresh).
 Carried items, stated so they are not mistaken for done: the omniagent-plus
 partition blocked in the incident has **not** been rotated — that is Lane D5 of
 the plan, an operational step under its own maintainer authorisation after the
-runtime re-pin above. Until it runs, ah#789 acceptance item (5)'s first half —
+runtime re-pin above. The step-by-step operator procedure, the read-only
+preflight, and the rehearsal technique are in
+`docs/fabpub-partition-rotation-runbook.md`. Until it runs, ah#789 acceptance item (5)'s first half —
 "a completed recovery can publish the exact intended branch once" — is a
 capability (`test_fabpub_partition_rotation_789d.py` A2) rather than an
 observed outcome for that repository, and Consiliency/agent-harness#789 stays
