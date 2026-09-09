@@ -1702,6 +1702,40 @@ def test_partition_rotation_a8_non_terminal_history_refuses_even_when_attested(t
         f"the re-attempt was not refused as a dangling intent: {refusal.value}",
     )
     _assert_refused_without_writes(request, r, before=before)
+    # (v) the mirror image (fable r5 finding 1): a key whose history is
+    # ``effect_terminal_observed -> provider_call_in_flight -> no_effect_terminal_proven``
+    # is PROVEN ABSENT by its latest row.  A parser that accumulated terminals
+    # from every row would carry it as landed and the successor would answer a
+    # duplicate without ever reaching the provider.  The same fixture settles a
+    # second key as ``rejected_before_start`` through the API: a settled set
+    # missing that member would refuse this rotation as dangling (fable r5 O1).
+    fx4 = _blocked_fixture(tmp_path / "proven-after-observed", monkeypatch)
+    s = fx4.alpha
+    proven_key = s.service._dedup_key(s.request)
+    s.service.evidence_store.record_intent(proven_key)
+    s.service.evidence_store.record_terminal(
+        EvidenceRecord(proven_key, TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED, "ah789d-landed-once")
+    )
+    rejected_key = "publish_committed_branch\x00ah789d-rejected-before-start"
+    s.service.evidence_store.record_intent(rejected_key)
+    s.service.evidence_store.rejected_before_start(rejected_key, "ah789d-rejected")
+    _release_all(s)
+    with (s.container / "evidence.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"idempotency_key": proven_key, "state": "provider_call_in_flight", "evidence_reference": "re-attempt"}) + "\n")
+        handle.write(json.dumps({"idempotency_key": proven_key, "state": "no_effect_terminal_proven", "evidence_reference": "ah789d-proven-absent-after-all"}) + "\n")
+    replayed = s.service.evidence_store.replay()
+    _require(request, replayed[proven_key].state is TerminalOutcomeState.NO_EFFECT_TERMINAL_PROVEN, "the store's own replay does not see the key as proven absent")
+    _require(request, replayed[rejected_key].state is TerminalOutcomeState.REJECTED_BEFORE_START, "the rejected key did not settle")
+    gen0 = _store_bytes(s.container)
+    outcome = _rotate(request, s, attestation=_attestation(s, keys=[ROTATED_KEY]))
+    _require(request, outcome.state == "ACTIVE" and outcome.generation == 1, f"a fully settled predecessor did not rotate: {outcome!r}")
+    carried = live.sealed_partition_effects(outcome.receipt)
+    _require(request, carried.get(proven_key, {}).get("disposition") != "effect_terminal_observed", f"a proven-absent key was carried as landed: {carried.get(proven_key)!r}")
+    _require(request, rejected_key not in carried, f"a rejected key was carried: {carried.get(rejected_key)!r}")
+    result, calls = _publish_on_successor(request, outcome, s, s.request)
+    _require(request, not isinstance(result, Exception) and result.accepted is True, f"the successor refused the re-publish: {result!r}")
+    _require(request, len(calls) == 1, f"the proven-absent key made {len(calls)} provider calls on the successor (expected exactly one)")
+    _require(request, _store_bytes(s.container) == gen0, "generation-0 bytes changed after rotation")
 
 
 @_requires_fabpub
@@ -3859,6 +3893,9 @@ def test_partition_rotation_a11e_resume_uses_the_sealed_successor_number(tmp_pat
         forged = json.loads(original)
         forged["partitions"][p.identity]["generation"] = generation
         forged["partitions"][p.identity]["predecessor_generation"] = predecessor
+        # Re-seal BOTH digests so the leg tests D7-2, not the partition-map
+        # authentication A11k pins.
+        forged["partition_map_sha256"] = live._partition_map_digest(forged["partitions"])
         forged.pop("inventory_sha256", None)
         forged["inventory_sha256"] = live._inventory_digest(forged)
         inventory.write_bytes(live.canonical_bytes(forged) + b"\n")
@@ -3881,6 +3918,53 @@ def test_partition_rotation_a11e_resume_uses_the_sealed_successor_number(tmp_pat
     _require(request, _journal_states(p) == ["DRAINING", "INVENTORY_SEALED", "ARMED", "ACTIVE"], f"journal after the restored resume: {_journal_states(p)!r}")
     _require(request, live.load_partition_receipt(p.container / GENERATIONS_DIR / "1") is not None, "the successor does not authenticate after the restored resume")
 
+
+
+@_requires_fabpub
+@_requires_789d
+def test_partition_rotation_a11k_resume_refuses_a_partition_map_digest_that_drifted(tmp_path, monkeypatch, request):
+    """A11k (codex r5 P1): a resume authenticates the sealed inventory the way the
+    receipt loader will — BOTH digests, not just ``inventory_sha256``.
+
+    The ceremony crashes right after INVENTORY_SEALED.  A partition field is
+    then changed and only ``inventory_sha256`` is recomputed, leaving
+    ``partition_map_sha256`` stale.  Before this pin the resume accepted the
+    inventory, wrote the receipt, flipped the pointer and returned ACTIVE, and
+    ``load_partition_receipt`` then rejected the successor at the stale
+    partition-map digest — an ACTIVE pointer at an unroutable generation.  The
+    resume must refuse typed, naming the partition map, BEFORE it writes
+    anything; restoring the sealed bytes lets the same resume finish.
+    """
+    live = _live()
+    refused = _production(request, "PartitionRotationRefused")
+    fx = _blocked_fixture(tmp_path, monkeypatch)
+    p = fx.alpha
+    _crash_rotation(request, p, "after_journal_inventory_sealed")
+    _require(request, _journal_states(p) == ["DRAINING", "INVENTORY_SEALED"], f"journal after the crash: {_journal_states(p)!r}")
+    inventory = _ceremony_dir(p) / f"{ROTATION_ID}.inventory.json"
+    original = inventory.read_bytes()
+    forged = json.loads(original)
+    forged["partitions"][p.identity]["legacy_epoch_high_water"] = int(forged["partitions"][p.identity]["legacy_epoch_high_water"]) + 7
+    forged["inventory_sha256"] = live._inventory_digest(forged)
+    _require(request, live._partition_map_digest(forged["partitions"]) != forged["partition_map_sha256"], "the forgery did not leave the partition-map digest stale; the leg would not test the loader gap")
+    inventory.write_bytes(live.canonical_bytes(forged) + b"\n")
+    journal_before = _journal_path(p).read_bytes()
+    pointer_before = _read_or_none(_pointer(p))
+    successor_receipt = p.container / GENERATIONS_DIR / "1" / "partition-receipt.json"
+    try:
+        with pytest.raises(refused) as excinfo:
+            _rotate(request, p)
+        _require(request, "partition map" in str(excinfo.value), f"refusal does not name the partition-map digest: {excinfo.value}")
+        _require(request, _journal_path(p).read_bytes() == journal_before, f"the refused resume appended to the journal: {_journal_states(p)!r}")
+        _require(request, not successor_receipt.exists(), "the refused resume wrote a successor receipt")
+        _require(request, _read_or_none(_pointer(p)) == pointer_before, "the refused resume moved the pointer")
+        _require(request, _store_bytes(p.container) == fx.gen0, "generation 0 changed under a refused resume")
+    finally:
+        inventory.write_bytes(original)
+    outcome = _rotate(request, p)
+    _require(request, outcome.state == "ACTIVE" and outcome.generation == 1, f"resume with the sealed bytes restored: {outcome!r}")
+    _require(request, _journal_states(p) == ["DRAINING", "INVENTORY_SEALED", "ARMED", "ACTIVE"], f"journal after the restored resume: {_journal_states(p)!r}")
+    _require(request, live.load_partition_receipt(p.container / GENERATIONS_DIR / "1") is not None, "the successor does not authenticate after the restored resume")
 
 # ---------------------------------------------------------------------------
 # A19, A20, A23, A24, A25, A26 — ceremony artifacts, forward-compat, floor,

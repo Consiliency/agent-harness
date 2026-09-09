@@ -3747,13 +3747,17 @@ def _read_predecessor_ledger(store_root: Path) -> _PredecessorLedger:
     except LegacyCutoverConflict as error:
         raise PartitionRotationRefused(f"predecessor evidence is unreadable: {error}") from error
     order: list[str] = []
-    blocked: dict[str, str] = {}
-    terminals: dict[str, str] = {}
-    # A key's classification is its LATEST row in log order, the same view the
-    # store's own ``replay()`` (last row wins) hands every other reader: a
-    # ``provider_call_in_flight`` row appended after a terminal is a fresh
-    # attempt that never settled, not a settled key (codex r4 finding 1).
-    latest: dict[str, str] = {}
+    # EVERY classification — blocked, terminal, dangling — is the key's LATEST
+    # row in log order, the same view the store's own ``replay()`` (last row
+    # wins) hands every other reader.  A ``provider_call_in_flight`` row after
+    # a terminal is a fresh attempt that never settled (codex r4 finding 1); a
+    # terminal after that re-attempt is the key's current word, not the
+    # earlier one (fable r5 finding 1).  Only the contradiction check looks at
+    # every row: a key that was EVER both blocked and terminal-observed refuses
+    # regardless of order.
+    latest: dict[str, tuple[str, str, dict]] = {}
+    ever_blocked: set[str] = set()
+    ever_terminal: set[str] = set()
     for line, raw in rows:
         key = raw.get("idempotency_key")
         state = raw.get("state")
@@ -3761,17 +3765,27 @@ def _read_predecessor_ledger(store_root: Path) -> _PredecessorLedger:
             raise PartitionRotationRefused("predecessor evidence row lacks a key or state")
         if key not in order:
             order.append(key)
-        latest[key] = state
+        latest[key] = (line, state, raw)
         if state == "outcome_ambiguous_blocked":
-            blocked[key] = hashlib.sha256(line.encode("utf-8")).hexdigest()
+            ever_blocked.add(key)
         elif state == "effect_terminal_observed":
-            terminals[key] = str(raw.get("evidence_reference", ""))
-    for key in blocked:
-        if key in terminals:
+            ever_terminal.add(key)
+    for key in order:
+        if key in ever_blocked and key in ever_terminal:
             raise PartitionRotationRefused(
                 f"predecessor evidence for {key!r} is both terminal-observed and blocked"
             )
-    dangling = tuple(key for key in order if latest[key] not in _SETTLED_EVIDENCE_STATES)
+    blocked = {
+        key: hashlib.sha256(latest[key][0].encode("utf-8")).hexdigest()
+        for key in order
+        if latest[key][1] == "outcome_ambiguous_blocked"
+    }
+    terminals = {
+        key: str(latest[key][2].get("evidence_reference", ""))
+        for key in order
+        if latest[key][1] == "effect_terminal_observed"
+    }
+    dangling = tuple(key for key in order if latest[key][1] not in _SETTLED_EVIDENCE_STATES)
     return _PredecessorLedger(tuple(order), blocked, terminals, dangling)
 
 
@@ -3901,6 +3915,14 @@ def _load_rotation_inventory(inventory_path: Path, cutover_id: str, identity: st
         or identity not in sealed.get("partitions", {})
     ):
         raise PartitionRotationRefused(f"sealed rotation inventory for {cutover_id!r} does not authenticate")
+    # Authenticate the inventory the way ``load_partition_receipt`` will: BOTH
+    # digests.  ``inventory_sha256`` alone admits a partition map re-sealed
+    # under a stale ``partition_map_sha256``; a resume that accepted it would
+    # ACTIVE a successor whose receipt then fails to load (codex r5 P1).
+    if _partition_map_digest(sealed.get("partitions", {})) != sealed.get("partition_map_sha256"):
+        raise PartitionRotationRefused(
+            f"sealed rotation inventory for {cutover_id!r} carries a partition map digest that drifted"
+        )
     return sealed
 
 
