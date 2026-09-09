@@ -2128,7 +2128,11 @@ def test_partition_rotation_a17_flip_fences_pre_flip_lease_and_fresh_writers(tmp
 
     (a) a writer that acquires a generation-0 lease immediately AFTER the real
     drain returns (the pre-flip gap) is refused with ``WriterGenerationBlocked``
-    on a generation-0 append after the flip;
+    on a generation-0 append after the flip, AND on the successor store — the
+    flip promoted a fresh namespace latch generation, so the pre-flip lease is
+    refused everywhere, not only where the store is retired (plan D6 "fresh
+    namespace latch generation ... every pre-flip lease on every in-lock
+    append"; codex r5 finding 3);
     (b) a fresh post-flip lease on the container is GRANTED by the latch (the
     latch is generation-exact) but every write through it is refused in-lock
     on both stores; (c) an UNDECLARED store on the container is refused at
@@ -2171,6 +2175,15 @@ def test_partition_rotation_a17_flip_fences_pre_flip_lease_and_fresh_writers(tmp
     late_admission = LinearizableAdmissionStore(p.container, lambda _r: True, generation_lease=gap["lease"])
     with pytest.raises(live.WriterGenerationBlocked):
         late_admission.admit(p.request.admission)
+    # (a') the namespace latch generation moved past the gap lease's, and the
+    # gap lease is refused on the SUCCESSOR store too (a retired-store check
+    # alone would pass a D2 that never bumped the latch).
+    post_flip = live.WriterGenerationLatch.for_store_root(outcome.store_root).read()
+    _require(request, post_flip.generation != gap["generation"], f"the flip did not promote a fresh namespace latch generation: {gap['generation']!r} -> {post_flip.generation!r}")
+    with pytest.raises(live.WriterGenerationBlocked):
+        BrokerEvidenceStore(outcome.store_root, generation_lease=gap["lease"]).record_intent("publish_committed_branch\x00late-gap-writer-successor")
+    with pytest.raises(live.WriterGenerationBlocked):
+        LinearizableAdmissionStore(outcome.store_root, lambda _r: True, generation_lease=gap["lease"]).admit(p.request.admission)
     with contextlib.suppress(Exception):
         gap["lease"].release()
     # (b) fresh post-flip lease on the container: granted, then fenced in-lock on BOTH stores.
@@ -2599,12 +2612,16 @@ def test_partition_rotation_a20_unknown_receipt_schema_is_a_typed_forward_compat
 @_requires_789d
 def test_partition_rotation_a23_successor_floor_carries_the_predecessor_epoch(tmp_path, monkeypatch, request):
     """A23: the successor's authenticated floor equals the predecessor's high-water,
-    through an idle generation.
+    through an idle generation AND through an allocating one.
 
     Generation 0 first LANDS a publish so its high-water is strictly positive
     (an all-zero floor would make ``>=`` vacuous); the floor is then asserted
     EQUAL on generation 1 and, after an allocation-free generation 1 is blocked
-    and rotated, on generation 2.
+    and rotated, on generation 2.  A second fixture then has generation 1
+    ALLOCATE above its inherited floor before it is blocked and rotated:
+    generation 2's floor must equal that higher allocation, not the receipt
+    floor generation 1 inherited — the plan's ``max(predecessor receipt floor,
+    predecessor max allocated epoch)`` (D2; m12; codex r5 finding 2).
     """
     live = _live()
     fx = _bootstrap(tmp_path, monkeypatch)
@@ -2629,6 +2646,34 @@ def test_partition_rotation_a23_successor_floor_carries_the_predecessor_epoch(tm
         request,
         live.authenticated_partition_floor(second.store_root) == expected,
         "generation-2 floor != predecessor high-water through an idle generation",
+    )
+    # Allocating leg: generation 1 publishes ABOVE its inherited floor.
+    fx2 = _bootstrap(tmp_path / "allocating", monkeypatch)
+    q = fx2.alpha
+    _require(request, q.service.execute(q.request).accepted is True, "generation-0 publish did not land (allocating leg)")
+    _block_key(q, ROTATED_KEY)
+    q_receipt = live.load_partition_receipt(q.container)
+    q_epochs = [line.get("epoch", 0) for line in _jsonl(q.admissions)] if q.admissions.exists() else []
+    inherited = max([q_receipt.legacy_epoch_high_water, *q_epochs])
+    _require(request, inherited > 0, f"generation-0 high-water is {inherited} (allocating leg)")
+    q_first = _rotate(request, q)
+    _require(request, live.authenticated_partition_floor(q_first.store_root) == inherited, "generation-1 floor != predecessor high-water (allocating leg)")
+    result, _calls = _publish_on_successor(request, q_first, q, _fresh_request(q, "a23-gen1"))
+    _require(request, getattr(result, "accepted", None) is True, f"generation-1 publish did not land: {result!r}")
+    gen1_admissions = q_first.store_root / "admissions.jsonl"
+    gen1_epochs = [line.get("epoch", 0) for line in _jsonl(gen1_admissions)] if gen1_admissions.exists() else []
+    allocated = max([inherited, *gen1_epochs])
+    _require(request, allocated > inherited, f"generation 1 allocated nothing above its inherited floor {inherited}: {gen1_epochs}")
+    routed = _successor_service(request, q_first, q)
+    try:
+        _block_key(SimpleNamespace(service=routed.service), "publish_committed_branch\x00ah789d-gen1-allocated-ambiguous")
+    finally:
+        _release_router(routed)
+    q_second = _rotate(request, q, cutover_id=ROTATION_ID_2)
+    _require(
+        request,
+        live.authenticated_partition_floor(q_second.store_root) == allocated,
+        f"generation-2 floor != generation 1's max allocated epoch {allocated} (a copied receipt floor would be {inherited})",
     )
 
 
@@ -2801,26 +2846,28 @@ def test_partition_rotation_a26_concurrent_writer_lands_before_digest_or_is_fenc
 
 @_requires_fabpub
 @_requires_789d
-def test_partition_rotation_a26b_writer_paused_before_terminal_append_is_never_digested_stale(tmp_path, monkeypatch, request):
-    """A26b: a writer inside generation 1's lock paused BEFORE its terminal append
-    — its ``provider_call_in_flight`` row is durable, its
-    ``effect_terminal_observed`` row is not yet — across a 1→2 rotation whose
-    attestation was built over the PRE-pause bytes.  The attestation binds the
-    predecessor store digests and the ceremony re-verifies it under the
-    predecessor lock (plan D4; D9-C "final predecessor validation ... held
-    across"), so the ONLY admissible outcome is a typed refusal: no
-    generation-2 receipt, pointer still 1, generation 1 still what the
-    resolver names.  A success receipt here means the digests were captured
-    over stale bytes or the attestation was never re-verified in-lock (fable
-    r3 finding 1; codex r4 finding 1).  While the writer holds the lock the
-    ceremony may block on it or refuse early from a pre-lock check (the
-    dangling in-flight row is a non-terminal history, A8; codex r4 finding 2)
-    — it must not COMPLETE (m28).  Whatever journal the refused ceremony
-    leaves is A19 debris and is left as found; no recovery rotation is chained
-    over it (plan D1: a non-ACTIVE journal refuses a new ceremony; grok r4).
+def test_partition_rotation_a26b_writer_paused_before_first_write_is_never_digested_stale(tmp_path, monkeypatch, request):
+    """A26b: a writer inside generation 1's lock paused BEFORE its first store
+    write — the lock is held, the store is still clean and fully terminal —
+    across a 1→2 rotation whose attestation was built over those CLEAN bytes.
+    The attestation binds the predecessor store digests and the ceremony
+    re-verifies it under the predecessor lock (plan D4; D9-C "final
+    predecessor validation ... held across"), so the ONLY admissible outcome
+    is a typed refusal: no generation-2 receipt, pointer still 1, generation 1
+    still what the resolver names.  A success receipt here means the digests
+    were captured over stale bytes or the attestation was never re-verified
+    in-lock (fable r3 finding 1; codex r4 finding 1).  The pause point matters
+    (fable r5 finding 1; codex r5 finding 1): with NO dangling row on disk a
+    pre-lock lineage scan has nothing to refuse on, so a D2 that verifies the
+    digests only pre-lock blocks on the lock, then completes over bytes the
+    writer changed — the D9-C violation this anchor pins.  While the writer
+    holds the lock the ceremony may block on it or refuse early from a
+    pre-lock check (a try-lock "busy" refusal, fable r4 F2) — it must not
+    COMPLETE (m28).  Whatever journal the refused ceremony leaves is A19
+    debris and is left as found; no recovery rotation is chained over it
+    (plan D1: a non-ACTIVE journal refuses a new ceremony; grok r4).
     """
     from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore
-    from phase_loop_runtime.convergence.provider_contracts import TerminalOutcomeState
 
     live = _live()
     refused = _production(request, "PartitionRotationRefused")
@@ -2841,19 +2888,18 @@ def test_partition_rotation_a26b_writer_paused_before_terminal_append_is_never_d
 
     def writer():
         store = BrokerEvidenceStore(gen1)
-        real = store._append_locked
+        real = store._append_provenance_locked
 
-        def paused(record):
-            if record.state is TerminalOutcomeState.PROVIDER_CALL_IN_FLIGHT:
-                # The in-flight row is durable; the terminal row is NOT yet
-                # written and the lock is still held.
-                appended = real(record)
-                holding.set()
-                proceed.wait(120)
-                return appended
-            return real(record)
+        def paused(key, provenance):
+            # Provenance is the FIRST write under the lock (evidence.py
+            # ``promote_legacy_terminal``: authorize → flock → mint → provenance
+            # → in-flight → terminal); pausing before it leaves generation 1
+            # clean and fully terminal while the lock is held.
+            holding.set()
+            proceed.wait(120)
+            return real(key, provenance)
 
-        store._append_locked = paused
+        store._append_provenance_locked = paused
         try:
             result["promoted"] = store.promote_legacy_terminal(writer_key)
             result["landed"] = True
@@ -2872,17 +2918,20 @@ def test_partition_rotation_a26b_writer_paused_before_terminal_append_is_never_d
         except Exception as exc:
             result["rotation_error"] = exc
 
+    clean = _store_bytes(gen1)
     t_writer = threading.Thread(target=writer, daemon=True)
     t_rotate = None
     try:
         t_writer.start()
-        _require(request, holding.wait(60), "writer never reached the in-lock in-flight append")
+        _require(request, holding.wait(60), "writer never reached the in-lock provenance append")
         _require(request, "error" not in result and "fenced" not in result and "landed" not in result, f"writer did not pause inside the lock: {result}")
         stale = _store_bytes(gen1)
+        _require(request, stale == clean, "the writer wrote before the pause point; the store is not clean")
         rows = [line.get("state") for line in _jsonl(gen1 / "evidence.jsonl") if line.get("idempotency_key") == writer_key]
-        _require(request, rows == ["provider_call_in_flight"], f"writer rows at the pause point: {rows}")
-        # The attestation is built over the STALE bytes, without touching the
-        # lock (an explicit ``store_root`` keeps the builder off the resolver).
+        _require(request, rows == [], f"writer rows at the pause point: {rows}")
+        # The attestation is built over the CLEAN bytes (about to go stale),
+        # without touching the lock (an explicit ``store_root`` keeps the
+        # builder off the resolver).
         attestation = _attestation(p, store_root=gen1)
         _require(
             request,
