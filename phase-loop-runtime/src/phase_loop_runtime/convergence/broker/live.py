@@ -3730,6 +3730,16 @@ class _PredecessorLedger:
     dangling: tuple[str, ...]
 
 
+_SETTLED_EVIDENCE_STATES = frozenset(
+    {
+        "outcome_ambiguous_blocked",
+        "effect_terminal_observed",
+        "rejected_before_start",
+        "no_effect_terminal_proven",
+    }
+)
+
+
 def _read_predecessor_ledger(store_root: Path) -> _PredecessorLedger:
     """Strict-parse the predecessor evidence log into what a rotation adjudicates."""
     try:
@@ -3739,28 +3749,29 @@ def _read_predecessor_ledger(store_root: Path) -> _PredecessorLedger:
     order: list[str] = []
     blocked: dict[str, str] = {}
     terminals: dict[str, str] = {}
-    settled: set[str] = set()
+    # A key's classification is its LATEST row in log order, the same view the
+    # store's own ``replay()`` (last row wins) hands every other reader: a
+    # ``provider_call_in_flight`` row appended after a terminal is a fresh
+    # attempt that never settled, not a settled key (codex r4 finding 1).
+    latest: dict[str, str] = {}
     for line, raw in rows:
         key = raw.get("idempotency_key")
         state = raw.get("state")
         if not isinstance(key, str) or not isinstance(state, str):
             raise PartitionRotationRefused("predecessor evidence row lacks a key or state")
-        if key not in settled and key not in order:
+        if key not in order:
             order.append(key)
+        latest[key] = state
         if state == "outcome_ambiguous_blocked":
             blocked[key] = hashlib.sha256(line.encode("utf-8")).hexdigest()
-            settled.add(key)
         elif state == "effect_terminal_observed":
             terminals[key] = str(raw.get("evidence_reference", ""))
-            settled.add(key)
-        elif state in ("rejected_before_start", "no_effect_terminal_proven"):
-            settled.add(key)
     for key in blocked:
         if key in terminals:
             raise PartitionRotationRefused(
                 f"predecessor evidence for {key!r} is both terminal-observed and blocked"
             )
-    dangling = tuple(key for key in order if key not in settled)
+    dangling = tuple(key for key in order if latest[key] not in _SETTLED_EVIDENCE_STATES)
     return _PredecessorLedger(tuple(order), blocked, terminals, dangling)
 
 
@@ -4122,14 +4133,21 @@ def rotate_blocked_partition(
                 current_generation = _read_active_generation(container)
                 if current_generation != generation:
                     fresh = _rotation_own_journal(journal, cutover_id)
-                    if current_generation == successor_generation and fresh and fresh[-1] == "ACTIVE":
+                    # ARMED, not ACTIVE: another instance of THIS ceremony has
+                    # flipped the pointer to our successor and may still be
+                    # between releasing this lock and taking the successor's
+                    # (fable r4 finding 1).  The finish below requires ARMED,
+                    # appends ACTIVE only if absent and activates idempotently,
+                    # so the same ceremony arriving late still returns ACTIVE.
+                    if current_generation == successor_generation and "ARMED" in fresh:
                         completed = load_partition_receipt(successor)
                         if isinstance(completed, RotatedPartitionReceipt) and completed.cutover_id == cutover_id:
-                            # THIS ceremony completed under another instance.  The
-                            # latch is not touched here: this lock is generation
-                            # ``generation``'s, and a ceremony out of the successor
-                            # drains the latch under the SUCCESSOR's lock (codex r2
-                            # finding 1).  Finish under that lock, after this one.
+                            # THIS ceremony completed (or is completing) under
+                            # another instance.  The latch is not touched here:
+                            # this lock is generation ``generation``'s, and a
+                            # ceremony out of the successor drains the latch
+                            # under the SUCCESSOR's lock (codex r2 finding 1).
+                            # Finish under that lock, after this one.
                             raise _RotationCompletedElsewhere(completed)
                     raise PartitionRotationRefused(
                         f"the active generation of {identity} moved from {generation} to "

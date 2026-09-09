@@ -1670,6 +1670,38 @@ def test_partition_rotation_a8_non_terminal_history_refuses_even_when_attested(t
     with pytest.raises(refused):
         _rotate(request, q, attestation=_attestation(q))
     _assert_refused_without_writes(request, q, before=before)
+    # (iv) a re-attempt AFTER a terminal (codex r4 finding 1): the key's latest
+    # row is ``provider_call_in_flight`` again — the state ``replay()`` (last row
+    # wins) hands every other reader, and the drift A4 already refuses to carry.
+    # A parser that never un-settles a key would count it terminal and rotate.
+    from phase_loop_runtime.convergence.broker.evidence import EvidenceRecord
+    from phase_loop_runtime.convergence.provider_contracts import TerminalOutcomeState
+
+    fx3 = _blocked_fixture(tmp_path / "reattempt", monkeypatch)
+    r = fx3.alpha
+    reattempt = "publish_committed_branch\x00ah789d-reattempt-after-terminal"
+    r.service.evidence_store.record_intent(reattempt)
+    r.service.evidence_store.record_terminal(
+        EvidenceRecord(reattempt, TerminalOutcomeState.NO_EFFECT_TERMINAL_PROVEN, "ah789d-proven-absent")
+    )
+    _release_all(r)
+    with (r.container / "evidence.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"idempotency_key": reattempt, "state": "provider_call_in_flight", "evidence_reference": "re-attempt"}) + "\n")
+    _require(
+        request,
+        r.service.evidence_store.replay()[reattempt].state is TerminalOutcomeState.PROVIDER_CALL_IN_FLIGHT,
+        "the store's own replay does not see the re-attempt as in flight",
+    )
+    before = _refusal_snapshot(r)
+    attestation = _attestation(r, keys=[ROTATED_KEY])
+    with pytest.raises(refused) as refusal:
+        _rotate(request, r, attestation=attestation)
+    _require(
+        request,
+        "without a terminal" in str(refusal.value) and repr(reattempt) in str(refusal.value),
+        f"the re-attempt was not refused as a dangling intent: {refusal.value}",
+    )
+    _assert_refused_without_writes(request, r, before=before)
 
 
 @_requires_fabpub
@@ -3483,8 +3515,9 @@ def test_partition_rotation_a11h_live_original_and_same_id_retry_append_one_acti
     Rotation A flips the pointer and pauses (still live, still inside its
     critical section) before its ACTIVE row.  A retry of A arrives now: the
     pointer names A's successor, so the retry takes the idempotent finish.
-    Whatever lock discipline serialises the two, the ceremony must end with
-    EXACTLY one ACTIVE row — a second row makes the journal malformed, after
+    The retry completes underneath the paused original (it takes the
+    successor's lock, which the original never holds), and the ceremony must
+    still end with EXACTLY one ACTIVE row — a second row makes the journal malformed, after
     which the successor receipt no longer authenticates and every later
     ceremony refuses, while both calls reported success (codex r3 finding 1).
     Pinned: one ACTIVE row, both calls ACTIVE on generation 1, the successor
@@ -3519,9 +3552,12 @@ def test_partition_rotation_a11h_live_original_and_same_id_retry_append_one_acti
             observed["pointer_at_pause"] = _generation_of(p.container)
             observed["journal_at_pause"] = _journal_states(p)
             retry.start()
-            # Give the retry a real chance to run to completion underneath the
-            # paused original; whether it finishes now or serialises behind
-            # the original is the design's choice and is NOT pinned.
+            # The retry must run to completion UNDERNEATH the paused original:
+            # the original still holds generation 0's lock, the finish takes
+            # generation 1's, so nothing serialises the retry behind the
+            # pause.  Pinning this keeps the anchor a deterministic
+            # reproduction of the r3 double-append rather than a timing
+            # accident (grok r4).
             observed["retry_finished_during_pause"] = retry_done.wait(15.0)
             observed["journal_after_pause"] = _journal_states(p)
 
@@ -3532,11 +3568,12 @@ def test_partition_rotation_a11h_live_original_and_same_id_retry_append_one_acti
     _require(request, observed["pointer_at_pause"] == 1, f"pointer {observed['pointer_at_pause']!r} at the pause")
     _require(request, observed["journal_at_pause"] == ["DRAINING", "INVENTORY_SEALED", "ARMED"], f"journal {observed['journal_at_pause']!r} at the pause")
     _require(request, retry_done.wait(60), "the same-id retry never returned")
+    _require(request, observed["retry_finished_during_pause"] is True, f"the same-id retry did not complete underneath the paused original (journal after the pause: {observed['journal_after_pause']!r}; error={observed.get('retry_error')!r})")
     _require(request, first.state == "ACTIVE" and first.generation == 1, f"the original's outcome {first!r}")
     retry_outcome = observed.get("retry_outcome")
     _require(request, retry_outcome is not None and retry_outcome.state == "ACTIVE" and retry_outcome.generation == 1, f"the same-id retry did not finish idempotently: outcome={retry_outcome!r} error={observed.get('retry_error')!r}")
     states = _journal_states(p)
-    _require(request, states == ["DRAINING", "INVENTORY_SEALED", "ARMED", "ACTIVE"], f"the live original and its retry left A's journal {states!r} (retry finished during the pause: {observed['retry_finished_during_pause']!r}; journal after the pause: {observed['journal_after_pause']!r})")
+    _require(request, states == ["DRAINING", "INVENTORY_SEALED", "ARMED", "ACTIVE"], f"the live original and its retry left A's journal {states!r} (journal after the pause: {observed['journal_after_pause']!r})")
     _require(request, live._rotation_states_well_formed(states), f"A's journal is malformed: {states!r}")
     latch = live.WriterGenerationLatch.for_store_root(p.container)
     _require(request, latch.read().generation_state == "ACTIVE", f"latch {latch.read().generation_state!r} after both completions")
@@ -3661,6 +3698,132 @@ def test_partition_rotation_a11i_stale_retry_refuses_when_the_next_ceremony_cras
     _require(request, _journal_states(p, ROTATION_ID_2) == ["DRAINING", "INVENTORY_SEALED", "ARMED", "ACTIVE"], f"B's journal after resume {_journal_states(p, ROTATION_ID_2)!r}")
     _require(request, latch.read().generation_state == "ACTIVE", f"latch after B's resume: {latch.read().generation_state}")
     _require(request, live.load_partition_receipt(resumed.store_root) is not None, "generation 2 does not authenticate")
+
+
+def _a11j_leg(tmp_path, monkeypatch, request, *, retry_parked_on_predecessor: bool) -> None:
+    """One A11j interleaving.  The ORIGINAL is parked at its ``LOCK_EX`` on
+    generation 1's ``admissions.lock`` from ``_finish_rotation_after_flip`` —
+    the inter-lock window: pointer 1, journal ``[D, I, ARMED]``, latch
+    DRAINING, no generation lock held.  A same-id retry is driven to
+    completion inside that window, either (a) started there (it takes the
+    pre-lock finish) or (b) launched at ``after_journal_draining`` and held
+    at ``LOCK_EX`` on generation 0's lock from ``rotate_blocked_partition``
+    until the window opens (it takes the in-lock same-id branch).  Either
+    way the retry must return ACTIVE on 1 and the original's finish — which
+    re-reads the journal UNDER the lock — must append nothing.
+    """
+    import fcntl
+
+    live = _live()
+    fx = _blocked_fixture(tmp_path, monkeypatch)
+    p = fx.alpha
+    attestation = _attestation(p)
+    latch = live.WriterGenerationLatch.for_store_root(p.container)
+    gen0_lock_inode = (p.container / "admissions.lock").stat().st_ino
+    observed: dict[str, object] = {}
+    retry_done = threading.Event()
+    retry_at_gen0_lock = threading.Event()
+    window_open = threading.Event()
+    real_flock = fcntl.flock
+    real_crash = live._maybe_rotation_crash
+
+    def retry_a():
+        try:
+            observed["retry_outcome"] = live.rotate_blocked_partition(
+                p.repo, cutover_id=ROTATION_ID, attestation=attestation, authority_root=p.authority
+            )
+        except Exception as exc:  # noqa: BLE001 - classified below
+            observed["retry_error"] = exc
+        finally:
+            retry_done.set()
+
+    retry = threading.Thread(target=retry_a, daemon=True)
+
+    def hooked_crash(step):
+        real_crash(step)
+        if retry_parked_on_predecessor and step == "after_journal_draining" and "launched" not in observed:
+            observed["launched"] = True
+            retry.start()
+            observed["retry_parked"] = retry_at_gen0_lock.wait(10.0)
+
+    def hooked_flock(lock, op):
+        if op == fcntl.LOCK_EX:
+            fd = lock.fileno() if hasattr(lock, "fileno") else lock
+            caller = sys._getframe(1).f_code.co_name
+            thread = threading.current_thread()
+            if thread is retry and caller == "rotate_blocked_partition" and os.fstat(fd).st_ino == gen0_lock_inode:
+                # (b) hold the retry at generation 0's lock until the window.
+                retry_at_gen0_lock.set()
+                window_open.wait(30.0)
+            elif thread is threading.main_thread() and caller == "_finish_rotation_after_flip" and "window" not in observed:
+                observed["window"] = True
+                observed["pointer_in_window"] = _generation_of(p.container)
+                observed["journal_in_window"] = _journal_states(p)
+                observed["latch_in_window"] = latch.read().generation_state
+                if not retry_parked_on_predecessor:
+                    retry.start()
+                window_open.set()
+                observed["retry_finished_in_window"] = retry_done.wait(15.0)
+                observed["journal_after_retry"] = _journal_states(p)
+                observed["latch_after_retry"] = latch.read().generation_state
+        return real_flock(lock, op)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(fcntl, "flock", hooked_flock)
+        patch.setattr(live, "_maybe_rotation_crash", hooked_crash)
+        first = _rotate(request, p, attestation=attestation)
+    leg = "b" if retry_parked_on_predecessor else "a"
+    _require(request, observed.get("window") is True, f"[{leg}] the original never reached LOCK_EX on generation 1's lock from the finish")
+    if retry_parked_on_predecessor:
+        _require(request, observed.get("retry_parked") is True, "[b] the retry never reached LOCK_EX on generation 0's lock from rotate_blocked_partition")
+    _require(request, observed["pointer_in_window"] == 1, f"[{leg}] pointer in the window: {observed['pointer_in_window']!r}")
+    _require(request, observed["journal_in_window"] == ["DRAINING", "INVENTORY_SEALED", "ARMED"], f"[{leg}] journal in the window: {observed['journal_in_window']!r}")
+    _require(request, observed["latch_in_window"] == "DRAINING", f"[{leg}] latch in the window: {observed['latch_in_window']!r}")
+    _require(request, observed["retry_finished_in_window"] is True, f"[{leg}] the retry did not finish inside the window (error={observed.get('retry_error')!r})")
+    retry_outcome = observed.get("retry_outcome")
+    _require(
+        request,
+        retry_outcome is not None and retry_outcome.state == "ACTIVE" and retry_outcome.generation == 1,
+        f"[{leg}] the same ceremony arriving in the window did not finish idempotently: outcome={retry_outcome!r} error={observed.get('retry_error')!r}",
+    )
+    _require(request, observed["journal_after_retry"] == ["DRAINING", "INVENTORY_SEALED", "ARMED", "ACTIVE"], f"[{leg}] journal after the retry: {observed['journal_after_retry']!r}")
+    _require(request, observed["latch_after_retry"] == "ACTIVE", f"[{leg}] latch after the retry: {observed['latch_after_retry']!r}")
+    _require(request, first.state == "ACTIVE" and first.generation == 1, f"[{leg}] the original's outcome {first!r}")
+    states = _journal_states(p)
+    _require(request, states == ["DRAINING", "INVENTORY_SEALED", "ARMED", "ACTIVE"], f"[{leg}] the original's finish, entered after the retry completed, left A's journal {states!r}: the journal must be re-read UNDER generation 1's lock")
+    _require(request, live._rotation_states_well_formed(states), f"[{leg}] A's journal is malformed: {states!r}")
+    _require(request, latch.read().generation_state == "ACTIVE", f"[{leg}] latch {latch.read().generation_state!r} after both completions")
+    receipt = live.load_partition_receipt(first.store_root)
+    _require(request, isinstance(receipt, live.RotatedPartitionReceipt) and receipt.cutover_id == ROTATION_ID, f"[{leg}] generation 1 does not authenticate after both completions: {receipt!r}")
+    _require(request, _store_bytes(p.container) == fx.gen0, f"[{leg}] generation-0 bytes changed")
+    journal_bytes = _journal_path(p).read_bytes()
+    again = _rotate(request, p, attestation=attestation, release=False)
+    _require(request, again.state == "ACTIVE" and again.generation == 1, f"[{leg}] re-run outcome {again!r}")
+    _require(request, _journal_path(p).read_bytes() == journal_bytes, f"[{leg}] a re-run of the completed ceremony appended to its journal")
+
+
+@_requires_fabpub
+@_requires_789d
+def test_partition_rotation_a11j_same_id_retry_completes_inside_the_inter_lock_window(tmp_path, monkeypatch, request):
+    """A11j: the inter-lock window between releasing generation 0's lock and
+    taking generation 1's (round 4) is idempotent for the SAME ceremony, and the
+    finish's journal re-read UNDER generation 1's lock is load-bearing.
+
+    Leg (a) — the retry STARTS in the window and takes the pre-lock finish
+    (fable r4 finding 2's interleaving): with the finish's journal read hoisted
+    above its ``LOCK_EX`` (a textbook TOCTOU) the original appends a second
+    ACTIVE row after the retry's, and the head anchors stayed green.
+    Leg (b) — the retry was parked on generation 0's lock from
+    ``rotate_blocked_partition`` and wakes in the window (fable r4 finding 1's
+    interleaving): it finds the pointer on 1 and its journal at ARMED, not
+    ACTIVE; on ``e0203d74`` it refused ("moved from 0 to 1 … re-run") instead
+    of finishing the ceremony it belongs to (the A11d(a) idempotence claim).
+    Both legs pin: retry ACTIVE on 1 inside the window, exactly one ACTIVE row
+    after the original's finish, latch ACTIVE, receipt authenticates, gen-0
+    bytes unchanged, a fresh re-run appends nothing.
+    """
+    _a11j_leg(tmp_path / "a", monkeypatch, request, retry_parked_on_predecessor=False)
+    _a11j_leg(tmp_path / "b", monkeypatch, request, retry_parked_on_predecessor=True)
 
 
 @_requires_fabpub
