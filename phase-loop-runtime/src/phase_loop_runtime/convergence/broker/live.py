@@ -1067,6 +1067,16 @@ def _load_rotated_partition_receipt(
             f"a rotated partition receipt may not govern the container store {store_root}"
         )
     cutover_id = raw.get("cutover_id", "")
+    # The receipt's cutover_id names the journal and inventory paths below; a
+    # receipt-controlled id that is absolute or traverses (``/x``, ``../x``)
+    # would carry the lookup outside the governing authority (codex r2
+    # finding 2).  The same grammar the ceremony enforces at entry applies.
+    try:
+        _validate_cutover_id(cutover_id)
+    except LegacyCutoverConflict as exc:
+        raise LegacyCutoverConflict(
+            f"rotated partition receipt at {path} carries an invalid cutover_id: {exc}"
+        ) from exc
     identity = raw.get("canonical_repository_identity", "")
     if identity != container.name:
         raise LegacyCutoverConflict(
@@ -1155,6 +1165,9 @@ def _expected_rotation_journal(
     and inventory outside the authority that governs it (codex r1 finding 3).
     ``None`` when the container is not bootstrap-governed.
     """
+    # ``Path / cutover_id`` would replace the authority root with an absolute
+    # id and walk out of it with ``..``; the id grammar admits neither.
+    _validate_cutover_id(cutover_id)
     claim = _receipt_bootstrap_claim(base) if base.zero_source else None
     if claim is None:
         return None
@@ -1664,6 +1677,15 @@ def crash_at_rotation_step(step: str):
         yield
     finally:
         _ROTATION_CRASH_STEP = previous
+
+
+class _RotationCompletedElsewhere(Exception):
+    """Raised INSIDE the predecessor lock when the pointer already names this
+    ceremony's successor: the caller finishes under the successor's lock."""
+
+    def __init__(self, receipt: "RotatedPartitionReceipt") -> None:
+        super().__init__(receipt.cutover_id)
+        self.receipt = receipt
 
 
 def _maybe_rotation_crash(step: str) -> None:
@@ -4084,147 +4106,155 @@ def rotate_blocked_partition(
     latch = WriterGenerationLatch(snapshot.namespace_root)
     receipt: RotatedPartitionReceipt | None = None
     lock_path = active / "admissions.lock"
-    with lock_path.open("a+", encoding="utf-8") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        try:
-            # Everything above was read WITHOUT the lock.  A ceremony that
-            # completed while this one waited (the same or another cutover_id)
-            # has moved the pointer, advanced a journal, or created the
-            # successor; re-read all three here, before the latch is touched,
-            # so a stale rotator refuses (or, for its own completed ceremony,
-            # finishes idempotently) instead of journalling a second DRAINING
-            # onto an ACTIVE ceremony or adopting another ceremony's successor.
-            current_generation = _read_active_generation(container)
-            if current_generation != generation:
-                fresh = _rotation_own_journal(journal, cutover_id)
-                if current_generation == successor_generation and fresh and fresh[-1] == "ACTIVE":
-                    completed = load_partition_receipt(successor)
-                    if isinstance(completed, RotatedPartitionReceipt) and completed.cutover_id == cutover_id:
-                        latch.mark_armed()
-                        latch.activate()
-                        return PartitionRotationOutcome(
-                            cutover_id, "ACTIVE", successor, active, successor_generation, completed
-                        )
-                raise PartitionRotationRefused(
-                    f"the active generation of {identity} moved from {generation} to "
-                    f"{current_generation} while {cutover_id!r} waited for the predecessor lock; "
-                    "re-run the ceremony against the active generation"
-                )
-            if _rotation_own_journal(journal, cutover_id) != states:
-                raise PartitionRotationRefused(
-                    f"rotation {cutover_id!r} advanced while it waited for the predecessor lock; "
-                    "re-run to resume it"
-                )
-            _refuse_other_rotations_in_progress(ceremony, journal, identity, cutover_id)
-            if "INVENTORY_SEALED" not in states and successor.exists():
-                raise PartitionRotationRefused(
-                    f"successor generation {successor} appeared while {cutover_id!r} waited for "
-                    "the predecessor lock; another ceremony owns it"
-                )
-            if not latch.exists():
-                raise PartitionRotationRefused(f"{identity} has no writer generation latch")
-            latch_state = latch.read().generation_state
-            if latch_state == "ACTIVE":
-                latch.begin_draining()
-            elif latch_state != "DRAINING":
-                raise PartitionRotationRefused(
-                    f"writer generation latch of {identity} is {latch_state}; rotation requires ACTIVE"
-                )
-            if "DRAINING" not in states:
-                _rotation_journal_append(journal, cutover_id, "DRAINING")
-                states.append("DRAINING")
-            _maybe_rotation_crash("after_journal_draining")
+    try:
+        with lock_path.open("a+", encoding="utf-8") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
             try:
-                latch.await_quiescent(worktree=worktree)
-            except WriterGenerationBlocked as error:
-                latch.resume_active()
-                raise PartitionRotationRefused(f"predecessor writers did not drain: {error}") from error
-            current = {name: _sha256_file(active / name) for name in ROTATION_DIGESTED_FILES}
-            if current != expected_digests:
-                latch.resume_active()
-                raise PartitionRotationRefused(
-                    "the predecessor store changed between attestation and drain; re-attest over "
-                    "the current bytes"
+                # Everything above was read WITHOUT the lock.  A ceremony that
+                # completed while this one waited (the same or another cutover_id)
+                # has moved the pointer, advanced a journal, or created the
+                # successor; re-read all three here, before the latch is touched,
+                # so a stale rotator refuses (or, for its own completed ceremony,
+                # finishes idempotently) instead of journalling a second DRAINING
+                # onto an ACTIVE ceremony or adopting another ceremony's successor.
+                current_generation = _read_active_generation(container)
+                if current_generation != generation:
+                    fresh = _rotation_own_journal(journal, cutover_id)
+                    if current_generation == successor_generation and fresh and fresh[-1] == "ACTIVE":
+                        completed = load_partition_receipt(successor)
+                        if isinstance(completed, RotatedPartitionReceipt) and completed.cutover_id == cutover_id:
+                            # THIS ceremony completed under another instance.  The
+                            # latch is not touched here: this lock is generation
+                            # ``generation``'s, and a ceremony out of the successor
+                            # drains the latch under the SUCCESSOR's lock (codex r2
+                            # finding 1).  Finish under that lock, after this one.
+                            raise _RotationCompletedElsewhere(completed)
+                    raise PartitionRotationRefused(
+                        f"the active generation of {identity} moved from {generation} to "
+                        f"{current_generation} while {cutover_id!r} waited for the predecessor lock; "
+                        "re-run the ceremony against the active generation"
+                    )
+                if _rotation_own_journal(journal, cutover_id) != states:
+                    raise PartitionRotationRefused(
+                        f"rotation {cutover_id!r} advanced while it waited for the predecessor lock; "
+                        "re-run to resume it"
+                    )
+                _refuse_other_rotations_in_progress(ceremony, journal, identity, cutover_id)
+                if "INVENTORY_SEALED" not in states and successor.exists():
+                    raise PartitionRotationRefused(
+                        f"successor generation {successor} appeared while {cutover_id!r} waited for "
+                        "the predecessor lock; another ceremony owns it"
+                    )
+                if not latch.exists():
+                    raise PartitionRotationRefused(f"{identity} has no writer generation latch")
+                latch_state = latch.read().generation_state
+                if latch_state == "ACTIVE":
+                    latch.begin_draining()
+                elif latch_state != "DRAINING":
+                    raise PartitionRotationRefused(
+                        f"writer generation latch of {identity} is {latch_state}; rotation requires ACTIVE"
+                    )
+                if "DRAINING" not in states:
+                    _rotation_journal_append(journal, cutover_id, "DRAINING")
+                    states.append("DRAINING")
+                _maybe_rotation_crash("after_journal_draining")
+                try:
+                    latch.await_quiescent(worktree=worktree)
+                except WriterGenerationBlocked as error:
+                    latch.resume_active()
+                    raise PartitionRotationRefused(f"predecessor writers did not drain: {error}") from error
+                current = {name: _sha256_file(active / name) for name in ROTATION_DIGESTED_FILES}
+                if current != expected_digests:
+                    latch.resume_active()
+                    raise PartitionRotationRefused(
+                        "the predecessor store changed between attestation and drain; re-attest over "
+                        "the current bytes"
+                    )
+                if sealed is None:
+                    partition = {
+                        "canonical_repository_identity": identity,
+                        "target_namespace": str(container),
+                        "generation": successor_generation,
+                        "predecessor_generation": generation,
+                        "predecessor_digests": dict(expected_digests),
+                        "predecessor_receipt_sha256": expected_digests[RECEIPT_FILENAME],
+                        "adjudicated_effect_dispositions": {
+                            key: {
+                                "disposition": entry["disposition"],
+                                "observed_head": entry.get("observed_head"),
+                                "evidence_url": entry["evidence_url"],
+                                "attestation_digest": digest,
+                            }
+                            for key, entry in effects.items()
+                        },
+                        "legacy_epoch_high_water": high_water,
+                        "legacy_completed_effect_keys": sorted(carried),
+                        "legacy_completed_effects": carried,
+                        "ambiguous": False,
+                        "zero_source": False,
+                    }
+                    sealed = {
+                        "schema": ROTATION_INVENTORY_SCHEMA,
+                        "cutover_id": cutover_id,
+                        "attestation_sha256": digest,
+                        "attestation": attestation,
+                        "manifest_sha256": hashlib.sha256(
+                            canonical_bytes({"rotation": cutover_id, "repository": identity})
+                        ).hexdigest(),
+                        "legacy_root_inventory": list(base.legacy_root_inventory),
+                        "partitions": {identity: partition},
+                    }
+                    sealed["partition_map_sha256"] = _partition_map_digest(sealed["partitions"])
+                    sealed["inventory_sha256"] = _inventory_digest(sealed)
+                    _atomic_write_json(inventory_path, sealed)
+                if "INVENTORY_SEALED" not in states:
+                    _rotation_journal_append(journal, cutover_id, "INVENTORY_SEALED")
+                    states.append("INVENTORY_SEALED")
+                _maybe_rotation_crash("after_journal_inventory_sealed")
+                if not os.path.lexists(generations):
+                    staging = container / f"{GENERATIONS_DIR}.tmp.{cutover_id}"
+                    staging.mkdir(exist_ok=True)
+                    _write_active_pointer(staging, generation)
+                    _maybe_rotation_crash("before_generations_rename")
+                    os.rename(staging, generations)
+                    _fsync_dir(container)
+                else:
+                    _maybe_rotation_crash("before_generations_rename")
+                _maybe_rotation_crash("after_generations_rename")
+                successor.mkdir(parents=True, exist_ok=True)
+                successor_lock = successor / "admissions.lock"
+                if not successor_lock.exists():
+                    successor_lock.touch()
+                _maybe_rotation_crash("between_successor_files")
+                successor_evidence = successor / "evidence.jsonl"
+                if not successor_evidence.exists():
+                    successor_evidence.touch()
+                _fsync_dir(successor)
+                receipt = _rotation_receipt_from_partition(
+                    cutover_id, sealed["partitions"][identity], sealed, journal
                 )
-            if sealed is None:
-                partition = {
-                    "canonical_repository_identity": identity,
-                    "target_namespace": str(container),
-                    "generation": successor_generation,
-                    "predecessor_generation": generation,
-                    "predecessor_digests": dict(expected_digests),
-                    "predecessor_receipt_sha256": expected_digests[RECEIPT_FILENAME],
-                    "adjudicated_effect_dispositions": {
-                        key: {
-                            "disposition": entry["disposition"],
-                            "observed_head": entry.get("observed_head"),
-                            "evidence_url": entry["evidence_url"],
-                            "attestation_digest": digest,
-                        }
-                        for key, entry in effects.items()
-                    },
-                    "legacy_epoch_high_water": high_water,
-                    "legacy_completed_effect_keys": sorted(carried),
-                    "legacy_completed_effects": carried,
-                    "ambiguous": False,
-                    "zero_source": False,
-                }
-                sealed = {
-                    "schema": ROTATION_INVENTORY_SCHEMA,
-                    "cutover_id": cutover_id,
-                    "attestation_sha256": digest,
-                    "attestation": attestation,
-                    "manifest_sha256": hashlib.sha256(
-                        canonical_bytes({"rotation": cutover_id, "repository": identity})
-                    ).hexdigest(),
-                    "legacy_root_inventory": list(base.legacy_root_inventory),
-                    "partitions": {identity: partition},
-                }
-                sealed["partition_map_sha256"] = _partition_map_digest(sealed["partitions"])
-                sealed["inventory_sha256"] = _inventory_digest(sealed)
-                _atomic_write_json(inventory_path, sealed)
-            if "INVENTORY_SEALED" not in states:
-                _rotation_journal_append(journal, cutover_id, "INVENTORY_SEALED")
-                states.append("INVENTORY_SEALED")
-            _maybe_rotation_crash("after_journal_inventory_sealed")
-            if not os.path.lexists(generations):
-                staging = container / f"{GENERATIONS_DIR}.tmp.{cutover_id}"
-                staging.mkdir(exist_ok=True)
-                _write_active_pointer(staging, generation)
-                _maybe_rotation_crash("before_generations_rename")
-                os.rename(staging, generations)
-                _fsync_dir(container)
-            else:
-                _maybe_rotation_crash("before_generations_rename")
-            _maybe_rotation_crash("after_generations_rename")
-            successor.mkdir(parents=True, exist_ok=True)
-            successor_lock = successor / "admissions.lock"
-            if not successor_lock.exists():
-                successor_lock.touch()
-            _maybe_rotation_crash("between_successor_files")
-            successor_evidence = successor / "evidence.jsonl"
-            if not successor_evidence.exists():
-                successor_evidence.touch()
-            _fsync_dir(successor)
-            receipt = _rotation_receipt_from_partition(
-                cutover_id, sealed["partitions"][identity], sealed, journal
-            )
-            receipt.write(successor)
-            _maybe_rotation_crash("after_successor_receipt_before_flip")
-            if "ARMED" not in states:
-                _rotation_journal_append(journal, cutover_id, "ARMED")
-                states.append("ARMED")
-            latch.mark_armed()
-            _maybe_rotation_crash("after_journal_armed")
-            _write_active_pointer(generations, successor_generation)
-            _maybe_rotation_crash("after_pointer_flip")
-            if "ACTIVE" not in states:
-                _rotation_journal_append(journal, cutover_id, "ACTIVE")
-                states.append("ACTIVE")
-            _maybe_rotation_crash("after_journal_active")
-            latch.activate()
-        finally:
-            fcntl.flock(lock, fcntl.LOCK_UN)
+                receipt.write(successor)
+                _maybe_rotation_crash("after_successor_receipt_before_flip")
+                if "ARMED" not in states:
+                    _rotation_journal_append(journal, cutover_id, "ARMED")
+                    states.append("ARMED")
+                latch.mark_armed()
+                _maybe_rotation_crash("after_journal_armed")
+                _write_active_pointer(generations, successor_generation)
+                _maybe_rotation_crash("after_pointer_flip")
+                if "ACTIVE" not in states:
+                    _rotation_journal_append(journal, cutover_id, "ACTIVE")
+                    states.append("ACTIVE")
+                _maybe_rotation_crash("after_journal_active")
+                latch.activate()
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+    except _RotationCompletedElsewhere as done:
+        # Generation ``generation``'s lock is released; the finish takes the
+        # successor's.
+        return _finish_rotation_after_flip(
+            snapshot, container, successor, successor_generation, journal, cutover_id, done.receipt
+        )
     assert receipt is not None
     return PartitionRotationOutcome(cutover_id, "ACTIVE", successor, active, successor_generation, receipt)
 
@@ -4270,22 +4300,28 @@ def _finish_rotation_after_flip(
     The successor receipt authenticated (so the journal is at least ARMED and
     the sealed inventory produced these bytes); what may be missing is the
     ACTIVE row and the latch activation — a crash at either post-flip step.
-    Both are idempotent and run under the predecessor's ``admissions.lock``,
-    the same lock the ceremony held across the flip.
+    Both are idempotent and run under the ACTIVE generation's
+    ``admissions.lock``: the latch is repository-common, and the next ceremony
+    out of this generation drains it under exactly that lock, so a stale
+    retry of THIS ceremony serialises behind it instead of activating the
+    latch out from under its drain (codex r2 finding 1).  Under the lock the
+    pointer and the other journals are re-read; a ceremony in progress under
+    another ``cutover_id`` owns the latch and this finish refuses, typed.
     """
     import fcntl
 
     predecessor = _rotation_predecessor_root(container, generation)
     latch = WriterGenerationLatch(snapshot.namespace_root)
-    lock_path = predecessor / "admissions.lock"
+    lock_path = active / "admissions.lock"
     with lock_path.open("a+", encoding="utf-8") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         try:
             if _read_active_generation(container) != generation:
                 raise PartitionRotationRefused(
                     f"the active generation of {snapshot.identity} moved while {cutover_id!r} "
-                    "waited for the predecessor lock; re-run the ceremony"
+                    "waited for the active generation's lock; re-run the ceremony"
                 )
+            _refuse_other_rotations_in_progress(journal.parent, journal, snapshot.identity, cutover_id)
             states = _rotation_own_journal(journal, cutover_id)
             if "ARMED" not in states:
                 raise PartitionRotationRefused(
@@ -4347,9 +4383,13 @@ def _receipt_active_authority_exists(
     if isinstance(receipt, RotatedPartitionReceipt):
         base = _rotation_base_receipt(receipt)
         journal = Path(receipt.global_journal_path)
-        if journal != _expected_rotation_journal(
-            base, receipt.canonical_repository_identity, receipt.cutover_id
-        ):
+        try:
+            expected_journal = _expected_rotation_journal(
+                base, receipt.canonical_repository_identity, receipt.cutover_id
+            )
+        except LegacyCutoverConflict:
+            return False
+        if journal != expected_journal:
             return False
         states, ids = _journal_entries(journal)
         if (

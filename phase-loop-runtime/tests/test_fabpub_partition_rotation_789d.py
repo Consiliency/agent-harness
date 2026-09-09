@@ -3131,6 +3131,333 @@ def test_partition_rotation_a18e_receipt_journal_must_live_under_the_governing_a
 
 
 @_requires_fabpub
+@_requires_789d
+def test_partition_rotation_a18f_receipt_cutover_id_cannot_carry_the_journal_out_of_the_authority(tmp_path, monkeypatch, request):
+    """A18f: a receipt-controlled ``cutover_id`` may not name a path.
+
+    A18e binds the journal to the GOVERNING authority's
+    ``partition-rotations/<identity>/<cutover_id>.journal.jsonl``; the last
+    free variable in that path is the receipt's own ``cutover_id``.  An
+    absolute id (``/elsewhere/rot``) replaces the authority root outright and a
+    traversing id (``../../elsewhere/rot``) walks out of it, so a receipt plus
+    a journal and inventory copied to the escaped location reproduce their own
+    bytes and the binding is defeated.  The loader refuses the id itself, typed
+    (``LegacyCutoverConflict``), before it names any path: the successor loses
+    active authority, the barrier refuses, nothing moves, and restoring the
+    receipt restores routing (codex r2 finding 2).
+    """
+    live = _live()
+    fx = _blocked_fixture(tmp_path, monkeypatch)
+    p = fx.alpha
+    outcome = _rotate(request, p)
+    receipt_path = outcome.store_root / "partition-receipt.json"
+    original = receipt_path.read_bytes()
+    raw = json.loads(original.decode("utf-8"))
+    real_journal = Path(raw["global_journal_path"])
+    _require(request, real_journal == _journal_path(p), f"receipt journal {real_journal} is not the D1 ceremony path {_journal_path(p)}")
+    inventory = _ceremony_dir(p) / f"{ROTATION_ID}.inventory.json"
+    sealed = json.loads(inventory.read_text(encoding="utf-8"))
+    successor_bytes = _store_bytes(outcome.store_root)
+    _require(request, live.canonical_bytes(raw) + b"\n" == original, "receipt serialisation does not round-trip")
+
+    def forge(escaped_id: str, journal_as_written: Path, journal_on_disk: Path) -> None:
+        """Rewrite the ceremony under ``escaped_id`` at the escaped location."""
+        journal_on_disk.parent.mkdir(parents=True, exist_ok=True)
+        rows = [dict(row, cutover_id=escaped_id) for row in _jsonl(real_journal)]
+        journal_on_disk.write_text(
+            "".join(json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n" for row in rows),
+            encoding="utf-8",
+        )
+        (journal_on_disk.parent / f"{Path(escaped_id).name}.inventory.json").write_bytes(inventory.read_bytes())
+        forged = dict(raw, cutover_id=escaped_id, rotation_cutover_id=escaped_id, global_journal_path=str(journal_as_written))
+        # What the sealed partition reproduces with the escaped id and path:
+        # the ONLY differences from the real receipt are the id and the path.
+        reproduced = live._rotation_receipt_from_partition(escaped_id, sealed["partitions"][p.identity], sealed, journal_as_written)
+        _require(request, reproduced.file_bytes() == live.canonical_bytes(forged) + b"\n", "the forgery differs from what the sealed partition reproduces")
+        receipt_path.write_bytes(live.canonical_bytes(forged) + b"\n")
+        return reproduced
+
+    def assert_refused(label: str, reproduced) -> None:
+        with pytest.raises(live.LegacyCutoverConflict) as refusal:
+            live.load_partition_receipt(outcome.store_root)
+        _require(request, "cutover_id" in str(refusal.value), f"[{label}] refusal does not name the cutover_id: {refusal.value}")
+        with pytest.raises((live.LegacyCutoverConflict, PermissionError)):
+            report = _barrier(live, [p.repo])
+            live.release_barrier_leases(report)
+        _require(request, not live._receipt_active_authority_exists(reproduced, authority_root=p.authority), f"[{label}] a receipt with an escaping cutover_id still has active authority")
+        _require(request, _generation_of(p.container) == 1, f"[{label}] the pointer moved")
+        _require(request, not (p.container / GENERATIONS_DIR / "2").exists(), f"[{label}] a refused barrier opened generation 2")
+        _require(request, _store_bytes(p.container) == fx.gen0, f"[{label}] generation-0 bytes changed")
+        _require(request, real_journal.read_bytes() == journal_bytes, f"[{label}] the real journal changed")
+
+    def assert_restored(label: str) -> None:
+        receipt_path.write_bytes(original)
+        _require(request, live.load_partition_receipt(outcome.store_root) is not None, f"[{label}] the restored receipt does not authenticate")
+        _require(request, _store_bytes(outcome.store_root) == successor_bytes, f"[{label}] successor bytes changed")
+        report = _barrier(live, [p.repo])
+        try:
+            _require(request, _barrier_admitted(report, [p.repo]), f"[{label}] barrier did not admit after the receipt was restored: {report}")
+        finally:
+            live.release_barrier_leases(report)
+
+    journal_bytes = real_journal.read_bytes()
+
+    # (a) an ABSOLUTE id replaces the authority root in the derived path.
+    elsewhere = tmp_path / "elsewhere"
+    absolute_id = str(elsewhere / "rot")
+    absolute_journal = elsewhere / f"rot{live._ROTATION_JOURNAL_SUFFIX}"
+    _require(request, absolute_journal.is_absolute() and not absolute_journal.is_relative_to(p.authority), "the absolute leg does not escape the authority")
+    reproduced = forge(absolute_id, absolute_journal, absolute_journal)
+    assert_refused("absolute-id", reproduced)
+    assert_restored("absolute-id")
+
+    # (b) a TRAVERSING id walks out of the authority; the receipt carries the
+    # unnormalised path (pathlib does not resolve ``..``), the files sit at
+    # the resolved location.
+    traversal_id = "../../escaped/rot"
+    as_written = _ceremony_dir(p) / f"{traversal_id}{live._ROTATION_JOURNAL_SUFFIX}"
+    on_disk = Path(os.path.normpath(as_written))
+    _require(request, on_disk == p.authority / "escaped" / f"rot{live._ROTATION_JOURNAL_SUFFIX}", f"traversal resolves to {on_disk}")
+    reproduced = forge(traversal_id, as_written, on_disk)
+    assert_refused("traversing-id", reproduced)
+    assert_restored("traversing-id")
+
+
+@_requires_fabpub
+@_requires_789d
+def test_partition_rotation_a11f_stale_retry_cannot_end_the_successor_ceremony_drain(tmp_path, monkeypatch, request):
+    """A11f: a retry of a COMPLETED ceremony serialises behind the next one.
+
+    Rotation A (0→1) completes.  Rotation B (1→2) begins under generation
+    1's ``admissions.lock`` and drains the repository-common writer latch; a
+    retry of A arrives in the instant after that drain, before B's DRAINING
+    row exists (so no journal names B yet).  The retry finds the pointer on
+    its own successor and takes the idempotent finish path — which must not
+    activate the latch B is holding DRAINING.  The finish serialises on
+    generation 1's lock (the one B holds across its drain, seal, flip and
+    activation), so while B runs the latch stays DRAINING and the retry is
+    still blocked; once B is ACTIVE on generation 2 the retry refuses, typed,
+    and a fresh retry of A refuses the same way.  B's ceremony, the pointer
+    and every store's bytes are what B alone produced (codex r2 finding 1).
+    """
+    live = _live()
+    refused = _production(request, "PartitionRotationRefused")
+    fx = _blocked_fixture(tmp_path, monkeypatch)
+    p = fx.alpha
+    first = _rotate(request, p)
+    _require(request, first.state == "ACTIVE" and first.generation == 1, f"rotation A outcome {first!r}")
+    gen1 = first.store_root
+    latch = live.WriterGenerationLatch.for_store_root(p.container)
+    # Generation 1 must carry an ambiguity-blocked effect for B to rotate.
+    routed = _successor_service(request, first, p)
+    try:
+        _block_key(SimpleNamespace(service=routed.service), "publish_committed_branch\x00ah789d-a11f-gen1-ambiguous")
+    finally:
+        _release_router(routed)
+    attestation_b = _attestation(p)
+    real_begin_draining = live.WriterGenerationLatch.begin_draining
+    observed: dict[str, object] = {}
+    retry_done = threading.Event()
+
+    def retry_a():
+        try:
+            observed["retry_outcome"] = live.rotate_blocked_partition(
+                p.repo, cutover_id=ROTATION_ID, attestation=_attestation(p), authority_root=p.authority
+            )
+        except Exception as exc:  # noqa: BLE001 - classified below
+            observed["retry_error"] = exc
+        finally:
+            retry_done.set()
+
+    retry = threading.Thread(target=retry_a, daemon=True)
+
+    def hooked_begin_draining(self, *args, **kwargs):
+        result = real_begin_draining(self, *args, **kwargs)
+        if "drained_state" not in observed and self.path == latch.path:
+            # B has drained, under generation 1's lock; no B journal row yet.
+            observed["drained_state"] = latch.read().generation_state
+            observed["journal_b_at_drain"] = _journal_states(p, ROTATION_ID_2)
+            observed["sealed_journal_a"] = _journal_path(p).read_bytes()
+            retry.start()
+            # The retry must NOT complete while B holds the lock: give it a
+            # generous window to misbehave.
+            observed["retry_finished_while_draining"] = retry_done.wait(3.0)
+            observed["state_after_retry_window"] = latch.read().generation_state
+            observed["pointer_after_retry_window"] = _generation_of(p.container)
+        return result
+
+    with monkeypatch.context() as patch:
+        patch.setattr(live.WriterGenerationLatch, "begin_draining", hooked_begin_draining)
+        second = _rotate(request, p, cutover_id=ROTATION_ID_2, attestation=attestation_b)
+    _require(request, "drained_state" in observed, "rotation B never drained the latch")
+    _require(request, observed["drained_state"] == "DRAINING", f"latch was {observed['drained_state']!r} after B drained")
+    _require(request, observed["journal_b_at_drain"] == [], f"B had already journaled {observed['journal_b_at_drain']!r} at the drain; the window is not the pre-journal one")
+    _require(request, observed["retry_finished_while_draining"] is False, f"the stale retry of A finished while B held the drain: {observed.get('retry_outcome')!r} {observed.get('retry_error')!r}")
+    _require(request, observed["state_after_retry_window"] == "DRAINING", f"the stale retry of A ended B's drain: latch {observed['state_after_retry_window']!r}")
+    _require(request, observed["pointer_after_retry_window"] == 1, f"pointer {observed['pointer_after_retry_window']!r} while B was draining")
+    _require(request, second.state == "ACTIVE" and second.generation == 2, f"rotation B outcome {second!r}")
+    _require(request, retry_done.wait(60), "the stale retry of A never returned after B completed")
+    _require(request, isinstance(observed.get("retry_error"), refused), f"the stale retry of A did not refuse typed: outcome={observed.get('retry_outcome')!r} error={observed.get('retry_error')!r}")
+    _require(request, latch.read().generation_state == "ACTIVE", f"latch {latch.read().generation_state!r} after B")
+    _require(request, _generation_of(p.container) == 2, "pointer is not on generation 2")
+    _require(request, _journal_states(p) == ["DRAINING", "INVENTORY_SEALED", "ARMED", "ACTIVE"], f"A's journal {_journal_states(p)!r}")
+    _require(request, _journal_path(p).read_bytes() == observed["sealed_journal_a"], "the stale retry appended to A's journal")
+    _require(request, _journal_states(p, ROTATION_ID_2) == ["DRAINING", "INVENTORY_SEALED", "ARMED", "ACTIVE"], f"B's journal {_journal_states(p, ROTATION_ID_2)!r}")
+    _require(request, _store_bytes(p.container) == fx.gen0, "generation-0 bytes changed")
+    _require(request, live.load_partition_receipt(second.store_root) is not None, "generation 2 does not authenticate")
+    # A fresh retry of A after B refuses the same way; nothing moves.
+    gen2_bytes = _store_bytes(second.store_root)
+    gen1_bytes = _store_bytes(gen1)
+    with pytest.raises(refused):
+        _rotate(request, p)
+    _require(request, latch.read().generation_state == "ACTIVE", "a refused retry left the latch DRAINING")
+    _require(request, _generation_of(p.container) == 2 and _store_bytes(second.store_root) == gen2_bytes and _store_bytes(gen1) == gen1_bytes, "a refused retry moved something")
+    report = _barrier(live, [p.repo])
+    try:
+        _require(request, _barrier_admitted(report, [p.repo]), f"barrier refused generation 2: {report}")
+    finally:
+        live.release_barrier_leases(report)
+
+    # (c) B CRASHED after sealing (latch DRAINING, B's journal not ACTIVE): a
+    # retry of A refuses typed without touching the latch, and B resumes.
+    fx = _blocked_fixture(tmp_path / "crashed-b", monkeypatch)
+    p = fx.alpha
+    first = _rotate(request, p)
+    routed = _successor_service(request, first, p)
+    try:
+        _block_key(SimpleNamespace(service=routed.service), "publish_committed_branch\x00ah789d-a11f-gen1-ambiguous-c")
+    finally:
+        _release_router(routed)
+    attestation_b = _attestation(p)
+    _crash_rotation(request, p, "after_journal_inventory_sealed", cutover_id=ROTATION_ID_2, attestation=attestation_b)
+    latch = live.WriterGenerationLatch.for_store_root(p.container)
+    _require(request, latch.read().generation_state == "DRAINING", "B's crash did not leave the latch DRAINING")
+    latch_bytes = _latch_bytes(p)
+    journal_a = _journal_path(p).read_bytes()
+    journal_b = _journal_path(p, ROTATION_ID_2).read_bytes()
+    with pytest.raises(refused):
+        _rotate(request, p, release=False)
+    _require(request, _latch_bytes(p) == latch_bytes, "a retry of A touched the latch B left DRAINING")
+    _require(request, _journal_path(p).read_bytes() == journal_a and _journal_path(p, ROTATION_ID_2).read_bytes() == journal_b, "a refused retry of A changed a journal")
+    _require(request, _generation_of(p.container) == 1, "a refused retry of A moved the pointer")
+    resumed = _rotate(request, p, cutover_id=ROTATION_ID_2, attestation=attestation_b, release=False)
+    _require(request, resumed.state == "ACTIVE" and resumed.generation == 2, f"B did not resume: {resumed!r}")
+    _require(request, latch.read().generation_state == "ACTIVE", "B's resume did not activate the latch")
+
+
+@_requires_fabpub
+@_requires_789d
+def test_partition_rotation_a11g_late_same_id_rotator_finishes_under_the_successor_lock(tmp_path, monkeypatch, request):
+    """A11g: A11d(a)'s late same-id rotator, with the NEXT ceremony already draining.
+
+    Rotator R (same ``cutover_id`` as A) passes its pre-lock checks against
+    generation 0 and parks at generation 0's ``LOCK_EX``.  Underneath it, A
+    runs to completion and B (1→2) begins under generation 1's lock and drains
+    the latch — no B journal row yet.  R then enters generation 0's lock and
+    finds the pointer on its own successor: the in-lock idempotent path.  It
+    may not activate the latch under generation 0's lock (B holds generation
+    1's); it finishes under the SUCCESSOR's lock instead, so it stays blocked
+    while B holds it, the latch stays DRAINING, and once B is ACTIVE on
+    generation 2 R refuses typed (codex r2 finding 1, ``live.py`` in-lock
+    same-id branch).
+    """
+    import fcntl
+
+    live = _live()
+    refused = _production(request, "PartitionRotationRefused")
+    fx = _blocked_fixture(tmp_path, monkeypatch)
+    p = fx.alpha
+    _release_all(p)
+    lock_path = p.container / "admissions.lock"
+    _require(request, lock_path.exists(), "generation 0 has no admissions.lock to park on")
+    lock_ino = lock_path.stat().st_ino
+    latch = live.WriterGenerationLatch.for_store_root(p.container)
+    real_flock = fcntl.flock
+    real_begin_draining = live.WriterGenerationLatch.begin_draining
+    observed: dict[str, object] = {}
+    b_drained = threading.Event()
+    release_b = threading.Event()
+    r_done = threading.Event()
+    b_done = threading.Event()
+
+    def hooked_begin_draining(self, *args, **kwargs):
+        result = real_begin_draining(self, *args, **kwargs)
+        if "b_started" in observed and self.path == latch.path and not b_drained.is_set():
+            observed["latch_at_b_drain"] = latch.read().generation_state
+            b_drained.set()
+            release_b.wait(60)
+        return result
+
+    def rotator_b():
+        try:
+            observed["b_outcome"] = _rotate(request, p, cutover_id=ROTATION_ID_2, attestation=observed["attestation_b"], release=False)
+        except Exception as exc:  # noqa: BLE001
+            observed["b_error"] = exc
+        finally:
+            b_done.set()
+
+    thread_b = threading.Thread(target=rotator_b, daemon=True)
+
+    def gated_flock(lock, op):
+        if op == fcntl.LOCK_EX and "a" not in observed:
+            fd = lock.fileno() if hasattr(lock, "fileno") else lock
+            if os.fstat(fd).st_ino == lock_ino and sys._getframe(1).f_code.co_name == "rotate_blocked_partition":
+                observed["a"] = "running"
+                observed["a"] = _rotate(request, p)  # A: the whole ceremony, under R's nose
+                routed = _successor_service(request, observed["a"], p)
+                try:
+                    _block_key(SimpleNamespace(service=routed.service), "publish_committed_branch\x00ah789d-a11g-gen1-ambiguous")
+                finally:
+                    _release_router(routed)
+                observed["attestation_b"] = _attestation(p)
+                observed["b_started"] = True
+                thread_b.start()
+                observed["b_drained_before_r_entered"] = b_drained.wait(60)
+        return real_flock(lock, op)
+
+    def rotator_r():
+        try:
+            observed["r_outcome"] = _rotate(request, p, release=False)
+        except Exception as exc:  # noqa: BLE001
+            observed["r_error"] = exc
+        finally:
+            r_done.set()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(fcntl, "flock", gated_flock)
+        patch.setattr(live.WriterGenerationLatch, "begin_draining", hooked_begin_draining)
+        thread_r = threading.Thread(target=rotator_r, daemon=True)
+        thread_r.start()
+        try:
+            _require(request, b_drained.wait(60), "B never drained the latch")
+            _require(request, observed.get("b_drained_before_r_entered") is True or not r_done.is_set(), "R entered the lock before B drained")
+            # R has generation 0's lock available; B holds generation 1's with
+            # the latch DRAINING.  R must not finish while B holds it.
+            observed["r_finished_while_b_drained"] = r_done.wait(3.0)
+            observed["latch_after_window"] = latch.read().generation_state
+            observed["pointer_after_window"] = _generation_of(p.container)
+        finally:
+            release_b.set()
+            _require(request, b_done.wait(60), "B never returned")
+            _require(request, r_done.wait(60), "R never returned after B completed")
+    a_outcome = observed.get("a")
+    _require(request, isinstance(a_outcome, live.PartitionRotationOutcome) and a_outcome.generation == 1, f"A did not complete under R: {a_outcome!r}")
+    _require(request, observed["latch_at_b_drain"] == "DRAINING", f"latch {observed['latch_at_b_drain']!r} after B drained")
+    _require(request, observed["r_finished_while_b_drained"] is False, f"the late same-id rotator finished while B held the drain: {observed.get('r_outcome')!r} {observed.get('r_error')!r}")
+    _require(request, observed["latch_after_window"] == "DRAINING", f"the late same-id rotator ended B's drain: latch {observed['latch_after_window']!r}")
+    _require(request, observed["pointer_after_window"] == 1, f"pointer {observed['pointer_after_window']!r} while B was draining")
+    _require(request, "b_error" not in observed and observed["b_outcome"].state == "ACTIVE" and observed["b_outcome"].generation == 2, f"B outcome {observed.get('b_outcome')!r} error {observed.get('b_error')!r}")
+    _require(request, isinstance(observed.get("r_error"), refused), f"R did not refuse typed after B: outcome={observed.get('r_outcome')!r} error={observed.get('r_error')!r}")
+    _require(request, latch.read().generation_state == "ACTIVE", f"latch {latch.read().generation_state!r} after B")
+    _require(request, _generation_of(p.container) == 2, "pointer is not on generation 2")
+    _require(request, _journal_states(p) == ["DRAINING", "INVENTORY_SEALED", "ARMED", "ACTIVE"], f"A's journal {_journal_states(p)!r}")
+    _require(request, _journal_states(p, ROTATION_ID_2) == ["DRAINING", "INVENTORY_SEALED", "ARMED", "ACTIVE"], f"B's journal {_journal_states(p, ROTATION_ID_2)!r}")
+    _require(request, _store_bytes(p.container) == fx.gen0, "generation-0 bytes changed")
+    _require(request, live.load_partition_receipt(observed["b_outcome"].store_root) is not None, "generation 2 does not authenticate")
+
+
+@_requires_fabpub
+@_requires_789d
 def test_partition_rotation_a11e_resume_uses_the_sealed_successor_number(tmp_path, monkeypatch, request):
     """A11e (D7-2): a resume takes the successor number the ceremony RECORDED when it
     sealed, never one re-derived from the pointer it finds today.
