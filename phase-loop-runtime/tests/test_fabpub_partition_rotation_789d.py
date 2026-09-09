@@ -557,6 +557,34 @@ def _routed_service(p, adapter=None):
     return SimpleNamespace(router=router, snapshot=snapshot, service=service, adapter=adapter)
 
 
+def _expect_routed_publish_refused(request, p, req, *, label: str) -> None:
+    """The production route refuses ``req`` and the provider is never reached.
+
+    The refusal may come from store construction — ``_stores_for`` revalidates
+    the namespace latch (``live.py:3628``) and a latch a crashed ceremony left
+    DRAINING refuses there with ``WriterGenerationBlocked`` — or from
+    ``execute`` on the partition's own block.  Both are ``PermissionError``;
+    neither may reach the adapter, and any lease the router acquired before
+    refusing is released (codex r4 finding 3).
+    """
+    from phase_loop_runtime.convergence.broker.verbs import BrokerService
+
+    live = _live()
+    router = live._RepositoryRoutingBrokerService(
+        admission_policy=lambda _request: True, run=None, allowed_hosts=()
+    )
+    adapter = _CountingAdapter()
+    try:
+        with pytest.raises(PermissionError):
+            admission, evidence = router._stores_for(live.repository_snapshot(p.repo))
+            BrokerService(
+                admission, evidence, adapter, contracts=_supported_contracts("publish_committed_branch")
+            ).execute(req)
+        _require(request, adapter.calls == [], f"[{label}] the blocked partition reached the provider")
+    finally:
+        _release_router(SimpleNamespace(router=router))
+
+
 def _release_router(routed) -> None:
     for lease in list(getattr(routed.router, "_leases", {}).values()):
         with contextlib.suppress(Exception):
@@ -1728,17 +1756,16 @@ def _crash_rotation(request, p, step, *, cutover_id=ROTATION_ID, attestation=Non
 
 
 def _assert_generation_zero_routable_and_blocked(request, p, gen0, *, step: str) -> None:
-    """Post-crash invariant: generation 0 routes, refuses on its block, refuses onboarding."""
+    """Post-crash invariant: generation 0 resolves, refuses a publish, refuses onboarding.
+
+    The publish refusal is accepted at either production stage (store
+    construction on a DRAINING latch, or ``execute`` on the block); the
+    resolver and the bytes are checked independently of it.
+    """
     live = _live()
     snapshot = live.repository_snapshot(p.repo)
     _require(request, snapshot.store_root == p.container, f"[{step}] pointer left generation 0 unroutable")
-    routed = _routed_service(p)
-    try:
-        with pytest.raises(PermissionError):
-            routed.service.execute(p.request)
-        _require(request, routed.adapter.calls == [], f"[{step}] the blocked partition reached the provider")
-    finally:
-        _release_router(routed)
+    _expect_routed_publish_refused(request, p, p.request, label=step)
     with pytest.raises(live.LegacyCutoverConflict):
         live.onboard_zero_legacy_repository(p.repo, authority_root=p.authority)
     _require(request, _store_bytes(p.container) == gen0, f"[{step}] generation-0 bytes changed")
@@ -1883,13 +1910,8 @@ def test_partition_rotation_a13_second_rotation_chains_generations(tmp_path, mon
             _crash_rotation(request, p, step, cutover_id=ROTATION_ID_2)
             _require(request, _generation_of(p.container) == 1, f"[{step}] crash moved the pointer off 1")
             _require(request, live.repository_snapshot(p.repo).store_root == first.store_root, f"[{step}] post-crash routing is not generation 1")
-            routed = _routed_service(p)
-            try:
-                with pytest.raises(PermissionError):
-                    routed.service.execute(_fresh_request(p, f"a13-{step}"))
-                _require(request, routed.adapter.calls == [], f"[{step}] a blocked generation 1 reached the provider")
-            finally:
-                _release_router(routed)
+            _expect_routed_publish_refused(request, p, _fresh_request(p, f"a13-{step}"), label=step)
+            _require(request, _store_bytes(first.store_root) == gen1_bytes, f"[{step}] generation-1 bytes changed across the crash")
         second = _rotate(request, p, cutover_id=ROTATION_ID_2)
         _require(request, second.generation == 2, f"[{step}] second rotation generation {second.generation}")
         _require(request, second.predecessor_store_root == first.store_root, f"[{step}] predecessor is not generation 1")
@@ -2783,15 +2805,19 @@ def test_partition_rotation_a26b_writer_paused_before_terminal_append_is_never_d
     """A26b: a writer inside generation 1's lock paused BEFORE its terminal append
     — its ``provider_call_in_flight`` row is durable, its
     ``effect_terminal_observed`` row is not yet — across a 1→2 rotation whose
-    attestation was built over the PRE-pause bytes.  Plan D9-C admits exactly
-    two outcomes: (a) the rotation is REFUSED (typed) and leaves generation 1
-    ACTIVE with no generation-2 debris, or (b) the rotation succeeds and its
-    predecessor digest binds generation 1's FINAL bytes, i.e. INCLUDING the
-    terminal row that landed after the attestation was built.  A successor
-    that digests the stale (pre-pause) bytes — the attestation's own digest —
-    is the D9-C violation both arms exclude (fable r3 finding 1; A26 only
-    witnessed lock membership).  While the writer holds the lock the rotation
-    must not complete (m28).
+    attestation was built over the PRE-pause bytes.  The attestation binds the
+    predecessor store digests and the ceremony re-verifies it under the
+    predecessor lock (plan D4; D9-C "final predecessor validation ... held
+    across"), so the ONLY admissible outcome is a typed refusal: no
+    generation-2 receipt, pointer still 1, generation 1 still what the
+    resolver names.  A success receipt here means the digests were captured
+    over stale bytes or the attestation was never re-verified in-lock (fable
+    r3 finding 1; codex r4 finding 1).  While the writer holds the lock the
+    ceremony may block on it or refuse early from a pre-lock check (the
+    dangling in-flight row is a non-terminal history, A8; codex r4 finding 2)
+    — it must not COMPLETE (m28).  Whatever journal the refused ceremony
+    leaves is A19 debris and is left as found; no recovery rotation is chained
+    over it (plan D1: a non-ACTIVE journal refuses a new ceremony; grok r4).
     """
     from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore
     from phase_loop_runtime.convergence.provider_contracts import TerminalOutcomeState
@@ -2868,8 +2894,9 @@ def test_partition_rotation_a26b_writer_paused_before_terminal_append_is_never_d
         deadline = time.monotonic() + 5.0
         while time.monotonic() < deadline and t_rotate.is_alive():
             time.sleep(0.05)
-        _require(request, t_rotate.is_alive(), f"the rotation completed while a writer held generation 1's lock: {result}")
-        _require(request, _generation_of(p.container) == 1 and not (p.container / GENERATIONS_DIR / "2" / "partition-receipt.json").exists(), "the rotation sealed generation 2 while a writer held generation 1's lock")
+        # Blocked on the lock (alive) or refused early, typed — never completed.
+        _require(request, t_rotate.is_alive() or "refused" in result, f"the rotation ended without a typed refusal while a writer held generation 1's lock: {result}")
+        _require(request, "outcome" not in result and _generation_of(p.container) == 1 and not (p.container / GENERATIONS_DIR / "2" / "partition-receipt.json").exists(), "the rotation sealed generation 2 while a writer held generation 1's lock")
     finally:
         proceed.set()
         t_writer.join(120)
@@ -2880,28 +2907,11 @@ def test_partition_rotation_a26b_writer_paused_before_terminal_append_is_never_d
     _require(request, result.get("landed") is True, f"the writer did not land: {result}")
     final = _store_bytes(gen1)
     _require(request, final["evidence.jsonl"] != stale["evidence.jsonl"], "the writer's terminal row never landed")
-    if "refused" in result:
-        # Arm (a): typed refusal, generation 1 still ACTIVE, no generation-2 debris.
-        _require(request, _generation_of(p.container) == 1, "a refused rotation moved the pointer")
-        _require(request, not (p.container / GENERATIONS_DIR / "2").exists(), "a refused rotation left generation-2 debris")
-        _require(request, _journal_states(p, ROTATION_ID_2) == [], "a refused rotation left a journal")
-        second = _rotate(request, p, cutover_id=ROTATION_ID_2, attestation=_attestation(p, store_root=gen1))
-    else:
-        # Arm (b): success — the digest must bind the FINAL bytes.
-        second = result["outcome"]
-    _require(request, second.generation == 2 and _generation_of(p.container) == 2, "the rotation did not reach generation 2")
-    _require(request, _store_bytes(gen1) == final, "generation 1's bytes changed after the writer's last append")
-    digests = second.receipt.predecessor_digests
-    _require(
-        request,
-        digests.get("evidence.jsonl") != _sha256_bytes(stale["evidence.jsonl"]),
-        "the successor digested generation 1's STALE (pre-terminal) evidence bytes",
-    )
-    for name in ("evidence.jsonl", "admissions.jsonl"):
-        if final.get(name) is None:
-            continue
-        _require(
-            request,
-            digests.get(name) == _sha256_bytes(final[name]),
-            f"predecessor {name} digest does not bind generation 1's FINAL bytes",
-        )
+    # The attestation's store digest is now stale; the in-lock re-verification
+    # must have refused.  A success receipt is the D9-C violation.
+    _require(request, "refused" in result and "outcome" not in result, f"a rotation attested over stale predecessor bytes was not refused: {result}")
+    _require(request, _generation_of(p.container) == 1, "a refused rotation moved the pointer")
+    _require(request, not (p.container / GENERATIONS_DIR / "2" / "partition-receipt.json").exists(), "a refused rotation sealed a generation-2 receipt")
+    _require(request, live.repository_snapshot(p.repo).store_root == gen1, "generation 1 is no longer what the resolver names")
+    _require(request, "ACTIVE" not in _journal_states(p, ROTATION_ID_2), "a refused rotation journaled ACTIVE")
+    _require(request, _store_bytes(gen1) == final, "generation 1's bytes changed after the refusal")
