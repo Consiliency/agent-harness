@@ -34,6 +34,42 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   afresh exactly once (D1 anchors A1/A2/A5, plan mutants m3/m4 RUN red).
   Consiliency/agent-harness#813 and Consiliency/agent-harness#814 are absorbed.
 
+### Partition rotation operator runbook and read-only preflight (Lane D5 preparation)
+
+- Workstream D, Lane D5 of Consiliency/agent-harness#789, preparation only — the
+  omniagent-plus partition is **not** rotated by this landing. New
+  `docs/fabpub-partition-rotation-runbook.md`: the fleet host gate, the runtime re-pin
+  by commit (no release tag carries the ceremony yet, and the version string cannot
+  distinguish a v3-aware install), the attestation build, the read-only preflight, a
+  rehearsal technique that runs the real verb over byte copies bind-mounted at the real
+  paths in an unprivileged mount namespace, and the state-changing steps each gated on
+  the maintainer's go. Clearing a stale writer-generation lease is authorised by a
+  maintenance reboot with the launchers disabled and by nothing weaker: a lease takes no
+  lock and records no pid, and a broker can fork a detached child that outlives it, so
+  neither a process scan nor a start-time cutoff can establish that no holder remains. Three helper scripts under `phase-loop-runtime/scripts/`:
+  `fabpub_v3_probe.py` (is this interpreter's runtime v3-aware), `fabpub_rotation_attestation.py`
+  (builds a `PartitionRotationAttestation.v1` from the live container, read-only), and
+  `fabpub_rotation_preflight.py` (runs the verb's zero-write validation checks by calling the
+  ceremony's own functions, reports the drain facts, and prints the verdict the verb would
+  reach, including its two resume paths: a pre-flip resume re-checks that the ceremony's
+  sealed inventory derives from the attestation supplied, a post-flip re-run is reported as
+  `already_completed` rather than a refusal, and the writer-generation latch is checked on
+  both paths — the pre-journal gate on a first execution, and the post-flip finish's own
+  predicate (latch present, state `DRAINING` or `ACTIVE`, `ARMED` marker deliberately not
+  required because the finish recreates it) on a completion — so an absent or
+  `LEGACY_OPEN` latch no longer reads as a go on either path). The attestation builder refuses a `--out` inside a broker
+  namespace, a generational store, or an authority's ceremony directory, refuses a
+  `--container` that is not the generation-0 receipt shape, digests an absent store file as
+  `sha256(b"")` the way the ceremony does, and emits `owner_nonce`/`transaction_id` only
+  when the adapter-start owner record names the effect key. The attestation field table in
+  `docs/fabpub-pre-admission-ambiguity.md` now lists `predecessor_receipt_digest`, and
+  states that `owner_nonce`/`transaction_id` bind in both directions — required when the
+  owner names the key, refused when it does not — which the table omitted.
+- Filed from the preparation: Consiliency/agent-harness#819 (`fab_gate` circular import on
+  installs at or after `b09b1a47`) and Consiliency/agent-harness#820 (writer-generation
+  leases carry no liveness token, so a crashed broker's lease blocks the rotation drain
+  until removed by hand).
+
 ### `phase-loop fabpub-rotate-partition` operator verb (Consiliency/agent-harness#818)
 
 - Workstream D, Lane D4 of Consiliency/agent-harness#789. The new CLI verb takes
