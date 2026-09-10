@@ -5048,11 +5048,34 @@ def _exec_leg(
             # The installed OAuth subscription route reads documented NDJSON user
             # events from stdin.  ``-p -`` is not that interface (it ignores the
             # bytes), and a complete review patch cannot safely be an argv item.
-            # The broker bound ``model`` (already in agy invocation form via
-            # ``harden_subscription_model``); the rendered invocation must be that
-            # exact route, never a re-derived or defaulted one.
+            # The rendered invocation must be the caller's own route, never a
+            # re-derived or defaulted one.
+            #
+            # ah#823: this compared ``gemini_model != model`` — an id that HAS the
+            # effort fused in against one that has not. ``gemini_model`` is, a few
+            # lines above, *defined* as ``render_seat_invocation(model, effort)``
+            # whenever ``effort`` is set, so that comparison could only hold if the
+            # caller's model already carried the effort suffix — which
+            # ``validate_seat`` rejects as an unknown model. The two requirements
+            # were mutually unsatisfiable, so every brokered gemini seat with an
+            # effort raised HERE, before ``agy`` was ever exec'd, and surfaced as a
+            # bare ERROR with no detail. CODE_REVIEW_BOARD ships exactly such a seat
+            # (``gemini-3.8-flash`` + ``high``), and ``gemini`` is a REQUIRED landing
+            # seat, so a 4/4 round silently became unlandable. It also reads as
+            # flakiness: the same signature was misdiagnosed as backend stalls for a
+            # whole milestone (#309).
+            #
+            # Compare in the SAME space instead. The anti-defaulting intent is kept
+            # by requiring the caller to have supplied a model at all: a defaulted
+            # route leaves ``model`` falsy and still refuses.
+            authorized_route = (
+                (render_seat_invocation("gemini", model, effort).model if effort is not None else model)
+                if model
+                else None
+            )
             if (
-                gemini_model != model
+                authorized_route is None
+                or authorized_route != gemini_model
                 or harden_subscription_model("gemini", gemini_model, effort) != gemini_model
             ):
                 raise ValueError("brokered Gemini model is not the authorized HARDEN route")

@@ -6,6 +6,29 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Fixed: the brokered gemini seat could never launch (Consiliency/agent-harness#823)
+
+- `_exec_leg`'s brokered-gemini guard compared an effort-fused model id against a raw one.
+  `gemini_model` is defined a few lines earlier as `render_seat_invocation(model, effort)`
+  whenever an effort is set, and the guard then required `gemini_model == model` — which
+  could only hold if the caller's model already carried the effort suffix, a form
+  `validate_seat` rejects as an unknown model. The two requirements were mutually
+  unsatisfiable, so every brokered gemini seat carrying an effort raised
+  `ValueError("brokered Gemini model is not the authorized HARDEN route")` **before `agy`
+  was exec'd**, and the leg surfaced as `status=ERROR` with `detail=None` and an empty
+  body. `CODE_REVIEW_BOARD` ships exactly such a seat (`gemini-3.8-flash` + `high`), and
+  `gemini` is a **required** seat in the review landing policy, so an otherwise complete
+  4/4 round silently became unlandable. The guard now compares in the same space; its
+  anti-defaulting intent is preserved by requiring the caller to have supplied a model at
+  all, so a defaulted route still refuses.
+- The failure was indistinguishable from a transient backend stall, and the same signature
+  was previously misdiagnosed as flakiness/contention for a whole milestone (#309). That
+  earlier diagnosis (headless tool-denial, fixed by `--dangerously-skip-permissions`) was a
+  **different** cause; this one defeats that fix because it raises before launch.
+  Diagnosed by the absence of any `agy` CLI log during the board window, which placed the
+  fault upstream of the CLI.
+
+
 ### Partition rotation: ceremony and generational stores (Consiliency/agent-harness#816)
 
 - Workstream D, Lane D2 of Consiliency/agent-harness#789. A permanently blocked FABPUB
