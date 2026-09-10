@@ -41,12 +41,12 @@ def run_train_generation_leases(worktrees):
     with ExitStack() as stack:
         leases = []
         paths = tuple(sorted({Path(worktree).resolve() for worktree in worktrees}, key=str))
-        for path in paths:
-            namespace_root = repository_namespace_root(path)
+        namespace_roots = {repository_namespace_root(path).resolve() for path in paths}
+        for namespace_root in sorted(namespace_roots, key=str):
             namespace_root.mkdir(parents=True, exist_ok=True)
-            writer_lock = (namespace_root / "run-train-writer.lock").open("a+")
+            writer_lock = stack.enter_context((namespace_root / "run-train-writer.lock").open("a+"))
             fcntl.flock(writer_lock, fcntl.LOCK_EX)
-            stack.callback(writer_lock.close)
+        for path in paths:
             latch = WriterGenerationLatch.open(path)
             snapshot = latch.read()
             generation = _FORCED_WRITER_GENERATIONS.get(str(path), snapshot.generation)
