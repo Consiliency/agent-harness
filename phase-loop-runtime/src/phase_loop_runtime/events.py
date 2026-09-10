@@ -5,7 +5,6 @@ import os
 from dataclasses import replace
 from pathlib import Path
 
-from .closeout import phase_loop_closeout_diagnostic
 from .git_topology import attach_git_topology, collect_git_topology
 from .models import LoopEvent, WorkUnitEventMetadata
 from .roadmap_authority import assert_roadmap_authorized
@@ -116,6 +115,8 @@ def _event_with_closeout_metadata(event: LoopEvent) -> LoopEvent:
 
 
 def _extract_closeout(metadata: dict) -> dict | None:
+    from .closeout import phase_loop_closeout_diagnostic
+
     closeout = metadata.get("phase_loop_closeout")
     if not isinstance(closeout, dict):
         terminal = metadata.get("terminal_summary")
@@ -126,6 +127,8 @@ def _extract_closeout(metadata: dict) -> dict | None:
 
 
 def _extract_work_unit_closeout(payload: dict) -> dict | None:
+    from .closeout import phase_loop_closeout_diagnostic
+
     work_unit = payload.get("work_unit")
     if not isinstance(work_unit, dict):
         return None
