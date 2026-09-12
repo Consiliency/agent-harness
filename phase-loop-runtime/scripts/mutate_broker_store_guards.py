@@ -20,48 +20,86 @@ E = "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/evidence.py"
 C = "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/credsep.py"
 T = ["phase-loop-runtime/tests/test_convergence_broker_credsep.py",
      "phase-loop-runtime/tests/test_broker_evidence_schema_drift_789.py"]
+# (name, file, old, new, MUST_FAIL) — the last element is the defect this mutant
+# reintroduces, named by the test that exists to catch it. A mutant that reds the suite
+# some OTHER way is not caught; it is a broken mutant.
 MUTANTS = [
  ("M1 replay: bare constructor (the ah#789 shape)", E,
   '                try:\n                    raw["state"] = TerminalOutcomeState(raw["state"])\n                    record = EvidenceRecord(**raw)\n                except (TypeError, ValueError, KeyError) as error:',
-  '                raw["state"] = TerminalOutcomeState(raw["state"])\n                record = EvidenceRecord(**raw)\n                if False:\n                    error = None'),
+  '                raw["state"] = TerminalOutcomeState(raw["state"])\n                record = EvidenceRecord(**raw)\n                if False:\n                    error = None',
+  "test_an_unknown_field_refuses_with_a_typed_error_not_a_TypeError"),
  ("M2 coercion back OUTSIDE the guard (r1 fable N1)", E,
   '                try:\n                    raw["state"] = TerminalOutcomeState(raw["state"])\n                    record = EvidenceRecord(**raw)',
-  '                raw["state"] = TerminalOutcomeState(raw["state"])\n                try:\n                    record = EvidenceRecord(**raw)'),
+  '                raw["state"] = TerminalOutcomeState(raw["state"])\n                try:\n                    record = EvidenceRecord(**raw)',
+  "test_an_unknown_STATE_VALUE_is_also_a_typed_refusal"),
  ("M3 base class back to RuntimeError (r1 fable N2)", E,
-  'class EvidenceStoreIncompatible(PermissionError):', 'class EvidenceStoreIncompatible(RuntimeError):'),
+  'class EvidenceStoreIncompatible(PermissionError):', 'class EvidenceStoreIncompatible(RuntimeError):',
+  "test_the_refusal_matches_the_admission_stores_fail_closed_base_class"),
  ("M4 replay SKIPS the unreadable row instead of refusing", E,
   '                except (TypeError, ValueError, KeyError) as error:\n                    unknown, missing = constructor_key_mismatch(EvidenceRecord, raw)',
-  '                except (TypeError, ValueError, KeyError) as error:\n                    continue\n                    unknown, missing = constructor_key_mismatch(EvidenceRecord, raw)'),
+  '                except (TypeError, ValueError, KeyError) as error:\n                    continue\n                    unknown, missing = constructor_key_mismatch(EvidenceRecord, raw)',
+  "test_the_record_is_NOT_skipped_or_coerced"),
  ("M5 collapse the two ambiguity codes", C,
-  '            if not prs:\n                return self._ambiguous(request, "pr-list-empty")\n', ''),
+  '            if not prs:\n                return self._ambiguous(request, "pr-list-empty")\n', '',
+  "test_an_empty_pr_list_is_distinguishable_from_a_non_matching_one"),
  ("M6 empty case becomes a proven NO-EFFECT (fail open)", C,
   '                return self._ambiguous(request, "pr-list-empty")',
-  '                return self._scope_rejected(request, "pr-list-empty")'),
+  '                return self._scope_rejected(request, "pr-list-empty")',
+  "test_an_empty_pr_list_still_fails_CLOSED"),
  ("M7 predicate swap: not prs -> not head_matches (r1 grok)", C,
   '            if not prs:\n                return self._ambiguous(request, "pr-list-empty")',
-  '            if not head_matches:\n                return self._ambiguous(request, "pr-list-empty")'),
+  '            if not head_matches:\n                return self._ambiguous(request, "pr-list-empty")',
+  "test_pr_head_unconfirmed_returns_ambiguous"),
 ]
 def run(root):
     r = subprocess.run(["python3","-m","pytest",*[str(Path(root)/t) for t in T],"-q","-p","no:cacheprovider"],
                        cwd=root, capture_output=True, text=True, timeout=900)
-    tail = [l for l in (r.stdout+r.stderr).strip().splitlines() if "passed" in l or "failed" in l]
-    names = [l.split("::")[-1].split()[0] for l in (r.stdout+r.stderr).splitlines() if l.startswith("FAILED")]
-    return r.returncode, (tail[-1] if tail else "?"), names
+    out = r.stdout + r.stderr
+    tail = [l for l in out.strip().splitlines() if "passed" in l or "failed" in l]
+    names = [l.split("::")[-1].split()[0] for l in out.splitlines() if l.startswith("FAILED")]
+    # A COLLECTION OR IMPORT ERROR IS NOT A CAUGHT MUTANT. pytest exits non-zero for
+    # those too, so classifying on the return code alone counts a broken mutant as a
+    # kill — the exact false-"caught" mode this matrix exists to rule out, and the one
+    # this script itself had. Exit 2 is usage/collection; an "errors" summary or a
+    # zero-collection run is equally disqualifying. (ah#834 r3, codex.)
+    invalid = (
+        r.returncode == 2
+        or " error" in (tail[-1] if tail else "")
+        or "ERROR collecting" in out
+        or "no tests ran" in out
+    )
+    return r.returncode, (tail[-1] if tail else "?"), names, invalid
 print("baseline (unmutated):")
-rc, tail, _ = run(SRC); print(f"  rc={rc}  {tail}")
-if rc != 0: sys.exit("baseline not green")
+rc, tail, _, invalid = run(SRC); print(f"  rc={rc}  {tail}")
+if rc != 0 or invalid: sys.exit("baseline not green — fix that before mutating")
 surv=[]
-for name, rel, old, new in MUTANTS:
+broken=[]
+for name, rel, old, new, must_fail in MUTANTS:
     with tempfile.TemporaryDirectory(prefix="mut834-") as tmp:
         root = Path(tmp)/"repo"
         shutil.copytree(SRC, root, symlinks=True, ignore=shutil.ignore_patterns(".git"))
         f = root/rel; text = f.read_text()
-        if old not in text:
-            print(f"  [ANCHOR MISS] {name}"); surv.append(name); continue
+        if text.count(old) != 1:
+            print(f"  [ANCHOR {'MISS' if old not in text else 'AMBIGUOUS'}] {name}")
+            broken.append(name); continue
         f.write_text(text.replace(old,new,1))
-        rc, tail, names = run(root)
-        v = "caught" if rc != 0 else "SURVIVES"
-        if rc == 0: surv.append(name)
-        print(f"  [{v:>8}] {name}\n             {tail}  via {names[:3]}")
+        rc, tail, names, invalid = run(root)
+        if invalid:
+            v, note = "BROKEN", "the run is invalid (collection/import error) — not a kill"
+            broken.append(name)
+        elif rc == 0:
+            v, note = "SURVIVES", "the suite stayed green"
+            surv.append(name)
+        elif must_fail not in names:
+            v, note = "WRONG-RED", f"red, but NOT via {must_fail} — a mutant that reds some other way is not caught"
+            broken.append(name)
+        else:
+            v, note = "caught", f"via {must_fail}"
+        print(f"  [{v:>9}] {name}\n             {tail}  {note}")
 print()
-print("SURVIVORS:", surv if surv else "none")
+if surv:  print("SURVIVORS (a real coverage gap; record it in-source, never hide it):", surv)
+if broken: print("BROKEN MUTANTS (the matrix cannot vouch for these):", broken)
+if not surv and not broken: print("no survivors; every kill verified by its named test")
+# EXIT NON-ZERO so a survivor or a broken mutant cannot pass unnoticed in CI or a
+# pre-merge check. Printing a problem and exiting 0 is how a checker gets ignored.
+sys.exit(1 if (surv or broken) else 0)
