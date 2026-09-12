@@ -755,3 +755,33 @@ def test_branch_one_also_dedups_its_rows():
         roadmap_slug="v2",
     )
     assert out == [("FREEZE", "executing", "completed")], out
+
+
+def test_a_legacy_same_file_record_can_BE_the_subject_not_only_settle():
+    """r5, codex: the file arm was one-directional.
+
+    A legacy same-file record could SETTLE a phase but could never be the SUBJECT of the
+    original ah#312 comparison, because the ambiguity rule skipped it when picking
+    candidates. So `completed` in the manifest against `executing` in the snapshot — the
+    exact defect ah#312 exists for — went silent whenever the completed record was the
+    legacy one.
+
+    Attribution is a property of the phase. Deciding it once and asking both questions of
+    that set is the only shape in which the two directions cannot disagree about which
+    records speak for the phase.
+    """
+    entries = [_rec("P", "committed", "v2", _A), _rec("P", "completed", None, _A)]
+    out = phase_status_disagreements({"P": "executing"}, entries, roadmap_slug="v2")
+    assert out == [("P", "executing", "completed")], out
+
+
+def test_a_failed_scoped_record_does_not_hide_a_legacy_in_flight_one():
+    """r5, codex's second case: `failed` is terminal but deliberately not `done`.
+
+    With the scoped record `failed` and a legacy same-file record `committed` against a
+    `complete` snapshot, the phase is not settled — `failed` never settles — and the
+    legacy in-flight record contradicts the snapshot. Previously silent.
+    """
+    entries = [_rec("P", "failed", "v2", _A), _rec("P", "committed", None, _A)]
+    out = phase_status_disagreements({"P": "complete"}, entries, roadmap_slug="v2")
+    assert out == [("P", "complete", "committed")], out

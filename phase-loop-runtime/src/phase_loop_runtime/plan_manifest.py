@@ -822,93 +822,53 @@ def phase_status_disagreements(
         # case.
         return not (_ambiguous_aliases and alias in _ambiguous_aliases)
 
+    # ITERATE PHASES, NOT RECORDS, so the attributable set governs BOTH directions.
+    #
+    # The previous shape iterated records and applied `in_scope` to pick the subject,
+    # then used per-phase attribution only for settlement. That made the file arm
+    # one-directional: a legacy same-file `completed` record could settle a phase, but
+    # could never BE the subject of the original ah#312 comparison (manifest done vs
+    # snapshot in-flight), because the ambiguity rule skipped it as a candidate. Two
+    # measured misses:
+    #
+    #   P/A/v2 committed + P/A/null completed, snapshot `executing`
+    #     -> silent, where ('P','executing','completed') is the ah#312 defect itself
+    #   P/A/v2 failed    + P/A/null committed, snapshot `complete`
+    #     -> silent, where the legacy in-flight record contradicts a finished phase
+    #
+    # Attribution is a property of the phase; deciding it once and then asking both
+    # questions of that set is the only shape in which the two directions cannot
+    # disagree about which records speak for the phase. (r5, codex.)
+    ordered_aliases: list[str] = []
     for entry in entries:
         alias = getattr(entry, "phase_alias", None)
-        if not alias or alias not in snapshot_phases:
+        if alias and alias not in ordered_aliases:
+            ordered_aliases.append(alias)
+
+    for alias in ordered_aliases:
+        if alias not in snapshot_phases:
+            # A manifest entry for a phase the snapshot does not carry is not a
+            # contradiction — and looking it up would raise. This repository's manifest
+            # holds 21 aliases absent from the v10 snapshot, and `render.py` wraps
+            # reconciliation in a bare `except`, so the lookup error would surface as
+            # total silence rather than as an error. (r3, fable.)
             continue
-        if not in_scope(entry, alias):
+        attributable = _phase_attributable_records(entries, alias, in_scope)
+        if not attributable:
             continue
         snap = snapshot_phases[alias]
-        man = getattr(entry, "status", "")
-        if man in _MANIFEST_DONE and snap in _SNAPSHOT_IN_FLIGHT:
-            # Deduped like the other branch. Only the in-flight branch had this, so two
-            # `completed` records for one phase printed the same operator line twice.
-            # Unreachable on today's data, and absent from both branches on origin/main —
-            # but the asymmetry is arbitrary, and one phase should occupy one row in
-            # either direction. (r4, fable.)
-            row = (alias, snap, man)
-            if row not in out:
-                out.append(row)
-            continue
-        if man in _MANIFEST_IN_FLIGHT and snap in _SNAPSHOT_DONE:
-            # RECONCILE THE PLAN FIRST, then compare stores.
-            #
-            # A plan FILE can carry more than one manifest entry, and they need not agree
-            # with each other: on Consiliency/omniagent-plus, `plans/phase-plan-v1-CLI.md`
-            # has a `committed` record with an EMPTY lifecycle alongside a `completed`
-            # record whose lifecycle is ['executing', 'completed']. Judging entries in
-            # isolation reported CLI as contradicting a `complete` snapshot while the
-            # manifest's own settled record agreed with it — a false refusal of the
-            # operator's attention, which is the failure mode this detector must not have.
-            #
-            # A record that REACHED a done status settles the PHASE: the work finished,
-            # and a record left behind at an earlier status is manifest bookkeeping, not a
-            # contradiction between the two stores. Only when NO record for that phase
-            # reached done is the disagreement real. (ah#830 r1, fable.)
-            #
-            # Grouped by PHASE, not by plan file. Keying on the file still reported a
-            # phase that was completed through a LATER plan while an earlier, superseded
-            # one sat at `committed` — a plan a re-plan left behind is exactly the
-            # "unused or superseded plan legitimately accompanying a completed phase"
-            # case, and the operator's question is whether this PHASE's state is
-            # disputed, not whether some individual record is stale. (ah#830 r1, codex.)
-            # A SIBLING SETTLES THIS PHASE IF IT IS ABOUT THE SAME PLAN, and there are
-            # two ways to establish that. Four board rounds each found a different
-            # special case, and each patch reintroduced an earlier one, so the rule is
-            # stated once as a concept rather than accumulated as conditions:
-            #
-            #   same plan FILE      -> unambiguously the same plan, whatever its
-            #                          `roadmap_ref` says or fails to say
-            #   same roadmap SCOPE  -> a different plan file for this phase, in the
-            #                          roadmap being asked about
-            #
-            # What each round required, and why one rule covers all of them:
-            #   r1  same file, `committed` beside `completed`     -> settle (same file)
-            #   r1  a SUPERSEDED plan, different file, same
-            #       roadmap                                       -> settle (in scope)
-            #   r2  a different roadmap's `completed`             -> do NOT settle
-            #   r3  same file, one record with a LEGACY null
-            #       `roadmap_ref`, alias ambiguous                -> settle (same file)
-            #
-            # The last is why file identity has to come first: the ambiguous-alias rule
-            # correctly refuses to GUESS which roadmap a legacy null-ref entry belongs
-            # to, but it is not guessing when the entry names the same plan file — that
-            # is the strongest association available, stronger than the roadmap
-            # frontmatter that entry happens to be missing.
-            # (r1 fable/codex, r2 all seats, r3 codex.)
-            # SETTLEMENT IS A PROPERTY OF THE PHASE, computed ONCE — not of whichever
-            # record happens to be under judgement.
-            #
-            # Deciding it per candidate, using that candidate's own file, produced this:
-            #
-            #   plans/A.md  roadmap v2    committed
-            #   plans/A.md  roadmap null  completed
-            #   plans/B.md  roadmap v2    committed
-            #
-            # A settles against its same-file sibling; B does not, because that sibling
-            # is a legacy null-ref entry the ambiguity rule keeps out of scope. So the
-            # phase reported as disputed while one of its own plans had completed it.
-            # (r4, codex.)
-            attributable = _phase_attributable_records(entries, alias, in_scope)
-            if any(getattr(other, "status", "") in _MANIFEST_DONE for other in attributable):
-                continue
-            in_flight = sorted({
-                status for status in (getattr(o, "status", "") for o in attributable)
-                if status in _MANIFEST_IN_FLIGHT
-            })
-            row = (alias, snap, "/".join(in_flight))
-            if row not in out:            # one row per phase, not one per record
-                out.append(row)
+        statuses = {getattr(e, "status", "") for e in attributable}
+
+        if snap in _SNAPSHOT_IN_FLIGHT:
+            done = sorted(statuses & _MANIFEST_DONE)
+            if done:
+                out.append((alias, snap, "/".join(done)))
+        elif snap in _SNAPSHOT_DONE:
+            if statuses & _MANIFEST_DONE:
+                continue            # a record reached done: the phase is settled
+            in_flight = sorted(statuses & _MANIFEST_IN_FLIGHT)
+            if in_flight:
+                out.append((alias, snap, "/".join(in_flight)))
     return out
 
 
