@@ -325,3 +325,60 @@ def test_an_EMPTY_STRING_key_still_reads(tmp_path):
     store = _store(tmp_path)
     store.path.write_text(_line(idempotency_key="") + "\n")
     assert list(store.replay()) == [""]
+
+
+# ---------------------------------------------------------------------------
+# ah#834 r8 (codex, BLOCKING): `read_text(encoding="utf-8")` decoded the WHOLE
+# file before the per-row guard, so one undecodable byte sequence anywhere raised
+# `UnicodeDecodeError` and escaped the typed refusal — the same escape as r7's
+# `json.loads`, one layer further out. The r7 fixtures are all valid UTF-8, so
+# nothing in the suite could see it.
+
+
+@pytest.mark.parametrize(
+    "label,bad_bytes",
+    [
+        ("a truncated UTF-8 sequence", b'{"idempotency_key": "key-2", "x": "\xe2\x82"}'),
+        ("a lone continuation byte", b"\x80\x80\x80"),
+        ("latin-1 text in an otherwise valid row",
+         '{"idempotency_key":"k2","state":"effect_terminal_observed","evidence_reference":"café"}'.encode("latin-1")),
+    ],
+)
+def test_an_UNDECODABLE_row_is_a_typed_refusal_naming_its_line(tmp_path, label, bad_bytes):
+    """Bytes, not text: the decode has to happen per row to be inside the guard.
+
+    `UnicodeDecodeError` is a `ValueError`, so moving the decode inside the existing
+    `except (TypeError, ValueError, KeyError)` types it without widening the caught set —
+    the r2 scope note is unaffected. Written with raw bytes because a `str` fixture cannot
+    express this defect at all, which is why three rounds of tests missed it.
+    """
+    store = _store(tmp_path)
+    store.path.write_bytes(_line(idempotency_key="key-1").encode() + b"\n" + bad_bytes + b"\n")
+    with pytest.raises(EvidenceStoreIncompatible) as caught:
+        store.replay()
+    assert caught.value.line == 2, (label, caught.value.line)
+    assert "at line 2" in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "label,sep,trailing",
+    [
+        ("LF with a trailing newline", b"\n", b"\n"),
+        ("CRLF", b"\r\n", b"\r\n"),
+        ("no trailing newline", b"\n", b""),
+    ],
+)
+def test_byte_splitlines_does_not_change_what_a_READABLE_store_yields(tmp_path, label, sep, trailing):
+    """The control, and the reason this is `splitlines()` rather than `split(b"\\n")`.
+
+    `split(b"\\n")` yields a spurious empty final element for the trailing newline that
+    every append writes, and the r7 shape check REFUSES a blank row — so that spelling
+    would fail-close every store in existence. Byte-splitlines keeps the CR/CRLF/LF
+    behaviour the str version had, which this pins in all three spellings.
+    """
+    store = _store(tmp_path)
+    store.path.write_bytes(
+        _line(idempotency_key="key-1").encode() + sep
+        + _line(idempotency_key="key-2").encode() + trailing
+    )
+    assert sorted(store.replay()) == ["key-1", "key-2"], label

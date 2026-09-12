@@ -78,9 +78,9 @@ MUTANTS = [
   "                    if not isinstance(raw, dict):",
   "                    if False:",
   "test_a_row_that_is_not_a_usable_OBJECT_is_a_typed_refusal_naming_its_line"),
- ("M12 the decode moves back above the guard", E,
-  "                key = None\n                try:\n                    raw = json.loads(line)",
-  "                key = None\n                raw = json.loads(line)\n                try:",
+ ("M12 the json decode moves back above the guard", E,
+  '                try:\n                    line = raw_line.decode("utf-8")\n                    raw = json.loads(line)',
+  '                raw = json.loads(raw_line.decode("utf-8"))\n                try:\n                    line = None',
   "test_a_row_that_is_not_a_usable_OBJECT_is_a_typed_refusal_naming_its_line"),
  ("M13 a non-mapping row is handed to the mismatch helper", E,
   "                    unknown, missing = (\n                        constructor_key_mismatch(EvidenceRecord, raw)\n                        if isinstance(raw, dict) else ((), ())\n                    )",
@@ -109,6 +109,15 @@ MUTANTS = [
   "                    if not isinstance(key, str):",
   "                    if not isinstance(key, str) or not key:",
   "test_an_EMPTY_STRING_key_still_reads"),
+ # The decode, back outside the guard — r7's escape one layer further out. Every r7
+ # fixture is valid UTF-8, so the suite could not see this. (ah#834 r8, codex.)
+ ("M18 the whole file is decoded before the per-row guard", E,
+  '            for index, raw_line in enumerate(self.path.read_bytes().splitlines(), start=1):',
+  '            for index, line in enumerate(self.path.read_text(encoding="utf-8").splitlines(), start=1):\n                raw_line = line.encode()',
+  "test_an_UNDECODABLE_row_is_a_typed_refusal_naming_its_line"),
+ ("M19 split(b'\\n') instead of splitlines (fail-closes every real store)", E,
+  "self.path.read_bytes().splitlines()", 'self.path.read_bytes().split(b"\\n")',
+  "test_byte_splitlines_does_not_change_what_a_READABLE_store_yields"),
 ]
 def run(root):
     r = subprocess.run(["python3","-m","pytest",*[str(Path(root)/t) for t in T],"-q","-p","no:cacheprovider"],

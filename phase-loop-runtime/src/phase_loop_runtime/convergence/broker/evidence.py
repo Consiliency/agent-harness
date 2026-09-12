@@ -133,7 +133,26 @@ class BrokerEvidenceStore:
         # refusing it. (agent-harness#789.)
         result: dict[str, EvidenceRecord] = {}
         if self.path.exists():
-            for index, line in enumerate(self.path.read_text(encoding="utf-8").splitlines(), start=1):
+            # READ BYTES AND DECODE PER ROW. `read_text(encoding="utf-8")` decoded the
+            # WHOLE FILE before the per-row guard, so one undecodable byte sequence
+            # anywhere raised `UnicodeDecodeError` and escaped the typed refusal —
+            # taking the runtime, path and line diagnostics with it. Measured, a valid
+            # first row followed by:
+            #
+            #   a truncated UTF-8 sequence     -> UnicodeDecodeError, untyped
+            #   a lone continuation byte       -> UnicodeDecodeError, untyped
+            #   latin-1 bytes in a valid row   -> UnicodeDecodeError, untyped
+            #
+            # `UnicodeDecodeError` is a `ValueError`, so moving the decode inside the
+            # existing guard types it without widening the caught set at all — the r2
+            # scope note is unaffected.
+            #
+            # `splitlines()` on BYTES, not `split(b"\n")`: the latter yields a spurious
+            # empty final element for the trailing newline every append writes, and the
+            # r7 shape check refuses a blank row — so that spelling would fail-close
+            # every store in existence. Byte-splitlines keeps the CR/CRLF/LF behaviour
+            # the str version had. (ah#834 r8, codex.)
+            for index, raw_line in enumerate(self.path.read_bytes().splitlines(), start=1):
                 # THE DECODE AND THE SHAPE CHECK BELONG INSIDE THE GUARD TOO.
                 #
                 # They sat above the try, so three more shapes escaped the typed refusal
@@ -174,6 +193,7 @@ class BrokerEvidenceStore:
                 # carry this hazard. (ah#834 r2, fable.)
                 key = None
                 try:
+                    line = raw_line.decode("utf-8")
                     raw = json.loads(line)
                     if not isinstance(raw, dict):
                         # A DELIBERATE in-guard raise, not a widening: it converts a
