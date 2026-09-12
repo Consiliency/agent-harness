@@ -71,8 +71,16 @@ class AdmissionStoreIncompatible(PermissionError):
         )
 
 
-def _constructor_key_mismatch(constructor: type, payload: dict) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """``(unknown, missing)`` key names of ``payload`` against a dataclass constructor."""
+def constructor_key_mismatch(constructor: type, payload: dict) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """``(unknown, missing)`` key names of ``payload`` against a dataclass constructor.
+
+    PUBLIC because the sibling evidence store needs the same schema-drift arithmetic to
+    give the same typed refusal. It was `_constructor_key_mismatch`, and importing a
+    private name across modules — the only such import in this package — quietly makes an
+    implementation detail load-bearing for another module with nothing marking it so.
+    Promoted rather than duplicated: two copies of the drift arithmetic is how the two
+    stores end up disagreeing about what drift means. (ah#834 r1, grok.)
+    """
     if not dataclasses.is_dataclass(constructor):
         return (), ()
     declared = [field for field in dataclasses.fields(constructor) if field.init]
@@ -230,7 +238,7 @@ class LinearizableAdmissionStore:
         try:
             return constructor(**payload)
         except TypeError as error:
-            unknown, missing = _constructor_key_mismatch(constructor, payload)
+            unknown, missing = constructor_key_mismatch(constructor, payload)
             raise AdmissionStoreIncompatible(
                 self.path,
                 line=line,

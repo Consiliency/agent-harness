@@ -6,7 +6,7 @@ import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from phase_loop_runtime.convergence.broker.admission import _constructor_key_mismatch
+from phase_loop_runtime.convergence.broker.admission import constructor_key_mismatch
 from phase_loop_runtime.convergence.provider_contracts import TerminalOutcomeState, validate_terminal_transition
 
 
@@ -118,7 +118,7 @@ class BrokerEvidenceStore:
         # `TypeError: AdmissionRecord.__init__() got an unexpected keyword argument
         # 'binding'` — an optional field the old reader did not know. The ADMISSION store
         # was hardened for that (see `AdmissionStoreIncompatible` and
-        # `_constructor_key_mismatch` in admission.py); its sibling EVIDENCE store, whose
+        # `constructor_key_mismatch` in admission.py); its sibling EVIDENCE store, whose
         # replay is the identical `EvidenceRecord(**raw)` construct, was not. So the exact
         # incident that produced a permanently blocked partition remained reachable one
         # module over, and would fire the moment anyone adds an optional field here —
@@ -147,7 +147,7 @@ class BrokerEvidenceStore:
                     raw["state"] = TerminalOutcomeState(raw["state"])
                     record = EvidenceRecord(**raw)
                 except (TypeError, ValueError, KeyError) as error:
-                    unknown, missing = _constructor_key_mismatch(EvidenceRecord, raw)
+                    unknown, missing = constructor_key_mismatch(EvidenceRecord, raw)
                     raise EvidenceStoreIncompatible(
                         self.path,
                         line=index,
