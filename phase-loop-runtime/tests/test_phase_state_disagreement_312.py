@@ -14,6 +14,7 @@ import pytest
 
 from phase_loop_runtime.models import PHASE_STATUSES
 from phase_loop_runtime.plan_manifest import (
+    _CENSUS_IDENTITY_FIELDS,
     ParseablePlanRows,
     _roadmap_claim,
     _MANIFEST_DONE,
@@ -1691,7 +1692,10 @@ def test_an_UNUSABLE_alias_counts_as_incomplete_evidence(tmp_path):
 # that makes "have we swept the class?" answerable by EXECUTION.
 
 
-@pytest.mark.parametrize("field", ["type", "phase_alias", "file"])
+# ITERATE THE TUPLE, DO NOT HAND-LIST IT. The first version of this decorator named the
+# three fields literally — which is the very drift this test exists to prevent, and the
+# matrix caught it the moment `roadmap_ref.*` was added to the tuple and nothing new ran.
+@pytest.mark.parametrize("field", _CENSUS_IDENTITY_FIELDS)
 @pytest.mark.parametrize(
     "unreadable", [None, ["x"], {"a": 1}, 123, "", "   "], ids=lambda v: repr(v)[:12]
 )
@@ -1729,7 +1733,18 @@ def test_EVERY_census_identity_field_is_lost_evidence_when_unreadable(tmp_path, 
         e.update(over)
         return e
 
-    foreign = row("failed", "v1", **{field: unreadable})
+    if field.startswith("roadmap_ref."):
+        # The NESTED identity r11's field table missed and both r12 seats found: a
+        # coerced `slug` can become a POSITIVE direct claim rather than merely vanishing
+        # from a census, so an unreadable one must not be trusted at all.
+        leaf = field.split(".", 1)[1]
+        foreign = row("failed", "v1")
+        foreign["roadmap_ref"] = {"slug": "v1", "file": "specs/v1.md",
+                                  "type": "phase", "status": "imported", leaf: unreadable}
+        if unreadable is None or (isinstance(unreadable, str) and not unreadable.strip()):
+            pytest.skip("absent or blank is the legacy shape, not an unreadable identity")
+    else:
+        foreign = row("failed", "v1", **{field: unreadable})
     _write_manifest(tmp_path, [row("committed", "v2"), foreign, row("completed", None)])
     parsed = parseable_plan_entries(tmp_path)
     assert parsed.skipped == 1, f"{field}={unreadable!r} must count as lost evidence"
@@ -1786,3 +1801,44 @@ def test_the_status_surface_SAYS_the_reconciliation_is_incomplete(tmp_path, monk
     lines = render._manifest_disagreement_lines(_Snap())
     assert any("ALPHA" in line for line in lines), lines
     assert any("INCOMPLETE" in line for line in lines), lines
+
+
+def test_an_unreadable_ref_may_not_MANUFACTURE_a_claim_on_the_active_roadmap(tmp_path):
+    """codex r12: a coerced slug that happens to EQUAL the active roadmap.
+
+    This is the case the field sweep above cannot reach, because there the foreign row
+    claims a different roadmap and a manufactured value simply fails to match. Here the
+    coercion produces the active roadmap's own stem:
+
+        "roadmap_ref": {"slug": 2026, "file": "specs/v1.md"}   ->  slug "2026"
+
+    and the active roadmap IS `2026`. So the row is read as a POSITIVE DIRECT CLAIM
+    despite its ref file naming a foreign roadmap — and direct attribution does not
+    consult the incomplete-evidence flag at all, which is why merely counting the row as
+    lost evidence is insufficient. It must not reach the detector: an identity that cannot
+    be read may not manufacture a claim out of a coercion.
+    """
+    from phase_loop_runtime.plan_manifest import parseable_plan_entries
+
+    A = "plans/phase-plan-A.md"
+    def row(status, ref):
+        e = {"slug": f"{status}-{A}", "file": A, "type": "phase", "status": status,
+             "created_at": "t", "updated_at": "t", "owner_skill": "x", "phase_alias": "P"}
+        if ref is not None:
+            e["roadmap_ref"] = ref
+        return e
+
+    _write_manifest(tmp_path, [
+        row("committed", {"slug": "2026", "file": "specs/2026.md",
+                          "type": "phase", "status": "imported"}),
+        row("completed", {"slug": 2026, "file": "specs/v1.md",
+                          "type": "phase", "status": "imported"}),
+    ])
+    parsed = parseable_plan_entries(tmp_path)
+    assert parsed.skipped == 1, "an unreadable ref identity is lost evidence"
+    assert all(getattr(e, "status", None) != "completed" for e in parsed.entries), \
+        "the row must not reach the detector at all — it could manufacture a claim"
+    assert phase_status_disagreements(
+        {"P": "complete"}, parsed.entries, roadmap_slug="2026",
+        attribution_evidence_complete=parsed.skipped == 0,
+    ) == [("P", "complete", "committed")]

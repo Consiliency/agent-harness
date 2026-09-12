@@ -300,6 +300,7 @@ def parseable_plan_entries(repo: Path) -> ParseablePlanRows:
             # a fact only the loader can still see. (ah#832 r11, fable B1 + codex.)
             if not _raw_row_identity_is_readable(row):
                 skipped += 1
+                entries.pop()   # it may not manufacture a claim from a coercion
     return ParseablePlanRows(entries=tuple(entries), skipped=skipped)
 
 
@@ -889,7 +890,9 @@ _SNAPSHOT_EXCLUDED = frozenset({"unplanned"})
 _SNAPSHOT_IN_FLIGHT = frozenset(PHASE_STATUSES) - set(_SNAPSHOT_DONE) - _SNAPSHOT_EXCLUDED
 
 
-_CENSUS_IDENTITY_FIELDS = ("type", "phase_alias", "file")
+_CENSUS_IDENTITY_FIELDS = (
+    "type", "phase_alias", "file", "roadmap_ref.slug", "roadmap_ref.file",
+)
 """Every raw field the phase censuses read to decide who speaks for a phase.
 
 Enumerated so "have we swept the class?" is answerable by EXECUTION rather than by the
@@ -975,7 +978,32 @@ def _raw_row_identity_is_readable(row) -> bool:
     if not (isinstance(alias, str) and alias.strip()):
         return False
     name = row.get("file")
-    return isinstance(name, str) and name.strip() not in ("", "None")
+    if not (isinstance(name, str) and name.strip() not in ("", "None")):
+        return False
+    # ...AND THE ROADMAP REF'S OWN IDENTITY, which r11's field table missed and BOTH r12
+    # seats found independently. `_ref_from_json` coerces with `str(...)`, so a
+    # `"slug": 2026` becomes the string "2026" — and if that happens to equal the active
+    # roadmap's stem it is read as a POSITIVE DIRECT CLAIM. Measured: a `completed` row
+    # whose ref file names `specs/v1.md` but whose numeric slug coerces to the active
+    # "2026" was attributed in scope and SETTLED the phase, suppressing a real
+    # disagreement with `skipped == 0` and no incomplete qualifier.
+    #
+    # Counting it as lost evidence is NOT sufficient on its own — codex's point — because
+    # direct attribution does not consult the completeness flag at all. So an unreadable
+    # identity now EXCLUDES the row from `entries` entirely: a row whose identity cannot
+    # be read may not manufacture a claim out of a coercion. `roadmap_ref: null` and a
+    # ref that readably names nothing are untouched; they are the legacy shapes r7
+    # exists to serve. (ah#832 r12, codex + fable.)
+    ref = row.get("roadmap_ref")
+    if ref is None:
+        return True
+    if not isinstance(ref, dict):
+        return False
+    for key in ("slug", "file"):
+        value = ref.get(key)
+        if value is not None and not isinstance(value, str):
+            return False
+    return True
 
 
 def _roadmap_claim(candidate) -> str | None:

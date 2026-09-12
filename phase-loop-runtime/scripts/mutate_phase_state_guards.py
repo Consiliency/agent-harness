@@ -155,13 +155,13 @@ MUTANTS = [
   "test_a_skipped_row_that_MIGHT_have_been_a_phase_row_still_disarms"),
  # --- a row that PARSES but is unusable is lost evidence too (r10 codex) ------
  ("M32 a parsed-but-unusable row no longer counts as lost evidence", P,
-  '            if not _raw_row_identity_is_readable(row):\n                skipped += 1',
+  '            if not _raw_row_identity_is_readable(row):\n                skipped += 1\n                entries.pop()',
   '            pass',
   "test_an_UNUSABLE_alias_counts_as_incomplete_evidence"),
  # --- ONE field-general lost-evidence rule (r11 fable B1 + codex) -------------
  ("M33 the identity rule stops covering `file`", P,
-  '    name = row.get("file")\n    return isinstance(name, str) and name.strip() not in ("", "None")',
-  "    return True",
+  '    name = row.get("file")\n    if not (isinstance(name, str) and name.strip() not in ("", "None")):\n        return False',
+  '    name = row.get("file")',
   "test_EVERY_census_identity_field_is_lost_evidence_when_unreadable"),
  ("M34 the identity rule stops covering `phase_alias`", P,
   '    alias = row.get("phase_alias")\n    if not (isinstance(alias, str) and alias.strip()):\n        return False',
@@ -179,6 +179,15 @@ MUTANTS = [
   '    if not complete:',
   '    if False:',
   "test_the_status_surface_SAYS_the_reconciliation_is_incomplete"),
+ # --- the NESTED identity r11's field table missed (r12 codex + fable) --------
+ ("M38 the roadmap ref's own identity is no longer checked", P,
+  '    ref = row.get("roadmap_ref")\n    if ref is None:\n        return True',
+  "    return True\n    ref = row.get(\"roadmap_ref\")\n    if ref is None:\n        return True",
+  "test_EVERY_census_identity_field_is_lost_evidence_when_unreadable"),
+ ("M39 an unreadable identity may still manufacture a claim", P,
+  "                entries.pop()   # it may not manufacture a claim from a coercion",
+  "                pass",
+  "test_an_unreadable_ref_may_not_MANUFACTURE_a_claim_on_the_active_roadmap"),
  # --- the sixth surface: entry `type` (r9 fable F2) ---------------------------
  ("M27 a type:detailed row speaks for a phase again", P,
   '        and getattr(e, "type", None) == "phase"',
