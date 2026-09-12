@@ -665,7 +665,26 @@ def _extract_lanes(path: Path) -> tuple[str, ...]:
 # about execution state and must not warn — that is the normal case for a planned-but-
 # unstarted phase and would drown the real signal.
 _MANIFEST_DONE = {"completed"}
-_MANIFEST_IN_FLIGHT = {"executing"}
+# DERIVED FROM THE LIFECYCLE TABLE, NOT HAND-LISTED.
+#
+# `TRANSITIONS` above already defines which manifest statuses are pre-terminal: a status
+# with outgoing edges still has somewhere to go, so the plan is not finished. Spelling that
+# out a second time as a literal is how this set drifted — it read `{"executing"}` while
+# the table said `imported`, `committed` and `executing` all have edges, so TWO of the
+# three pre-terminal statuses could never be reported.
+#
+# Measured on Consiliency/omniagent-plus, whose runner snapshot reports all 13 phases
+# `complete`: the shipped literal found 0 disagreements, the derived set finds 14 across
+# 9 phases. They are real, not noise — the run artifacts under `.phase-loop/runs/` show
+# IDENTITY, LIMITS and TRANSPORT ending `awaiting_phase_closeout`, and HARDEN and UI
+# ending `blocked`. In every case the manifest is right and the snapshot's `complete` is
+# the claim that does not hold. That is precisely the harm class this detector exists for:
+# resume and dispatch act on a phase the other store believes finished.
+#
+# The done side stays a literal on purpose. It is NOT the complement of this set —
+# `failed` and `orphaned` are terminal but deliberately excluded, for the documented
+# reasons above. Derive what has a rule; enumerate what is a judgement. (ah#830.)
+_MANIFEST_IN_FLIGHT = frozenset(TRANSITIONS)
 _SNAPSHOT_DONE = {"complete"}
 # `blocked` is IN-FLIGHT: the runner is saying work is outstanding / needs repair. A
 # manifest that records the same phase `completed` is the motivating harm class exactly —

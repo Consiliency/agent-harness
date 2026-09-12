@@ -13,6 +13,10 @@ from __future__ import annotations
 import pytest
 
 from phase_loop_runtime.plan_manifest import (
+    _MANIFEST_DONE,
+    _MANIFEST_IN_FLIGHT,
+    PLAN_STATUSES,
+    TRANSITIONS,
     DotfilesPlanEntry,
     DotfilesPlanRef,
     phase_status_disagreements,
@@ -225,3 +229,79 @@ def test_manifest_done_vs_snapshot_executed_is_reported():
     class. It had been classified DONE, which silenced the pair."""
     out = phase_status_disagreements({"P": "executed"}, [_entry("P", "completed")])
     assert out == [("P", "executed", "completed")]
+
+
+# ---------------------------------------------------------------------------
+# ah#830: the manifest side of the vocabulary admitted ONE of three pre-terminal
+# statuses, so `imported` and `committed` plans could never be reported as
+# contradicting a `complete` snapshot. Found on Consiliency/omniagent-plus, where the
+# shipped literal reported 0 disagreements and the lifecycle-derived set reports 14.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("manifest_status", sorted(TRANSITIONS))
+def test_every_pre_terminal_manifest_status_contradicts_a_complete_snapshot(manifest_status):
+    """A plan that still has somewhere to go cannot agree with a finished phase.
+
+    Parametrised over the lifecycle table rather than a hand-written list, so a status
+    added to TRANSITIONS is covered here the moment it exists.
+    """
+    out = phase_status_disagreements({"P": "complete"}, [_entry("P", manifest_status)])
+    assert out == [("P", "complete", manifest_status)]
+
+
+def test_in_flight_set_is_derived_from_the_lifecycle_table():
+    """The completeness guard: the detector's vocabulary IS the lifecycle's.
+
+    This is the defect, not a restatement of the fix. The set was spelled out as a
+    literal `{"executing"}` while TRANSITIONS said three statuses were pre-terminal, and
+    nothing tied the two together — so two thirds of the pre-terminal space was
+    unreportable and no test could see it. Adding a status to TRANSITIONS must never
+    again leave this detector silently behind.
+    """
+    assert _MANIFEST_IN_FLIGHT == set(TRANSITIONS)
+    assert _MANIFEST_IN_FLIGHT == {"imported", "committed", "executing"}
+
+
+def test_terminal_manifest_statuses_are_never_in_flight():
+    """...and the derivation must not sweep the terminal statuses in.
+
+    `failed` and `orphaned` are terminal but deliberately NOT on the done side either;
+    that asymmetry is a judgement recorded at `_MANIFEST_DONE`, and this pins that the
+    derivation left it intact.
+    """
+    terminal = set(PLAN_STATUSES) - set(TRANSITIONS)
+    assert terminal == {"completed", "failed", "orphaned"}
+    assert not (terminal & _MANIFEST_IN_FLIGHT)
+    assert _MANIFEST_DONE == {"completed"}
+
+
+def test_imported_and_committed_were_the_two_that_were_missing():
+    """Pins the regression directly: the old literal cannot satisfy this file again."""
+    assert {"imported", "committed"} <= _MANIFEST_IN_FLIGHT
+    for status in ("imported", "committed"):
+        assert phase_status_disagreements({"X": "complete"}, [_entry("X", status)]) == [
+            ("X", "complete", status)
+        ]
+
+
+def test_a_failed_plan_against_a_complete_snapshot_stays_silent():
+    """Unchanged by ah#830: done-vs-done is outside this detector's declared scope."""
+    assert phase_status_disagreements({"P": "complete"}, [_entry("P", "failed")]) == []
+    assert phase_status_disagreements({"P": "complete"}, [_entry("P", "orphaned")]) == []
+
+
+def test_both_contradicting_records_for_one_alias_are_reported():
+    """Real shape on omniagent-plus: an alias carries a `committed` AND an `imported` plan.
+
+    Each is a distinct plan record that contradicts the snapshot, so each is reported.
+    Collapsing them would hide that two separate records disagree.
+    """
+    out = phase_status_disagreements(
+        {"ADAPTERS": "complete"},
+        [_entry("ADAPTERS", "committed"), _entry("ADAPTERS", "imported")],
+    )
+    assert sorted(out) == [
+        ("ADAPTERS", "complete", "committed"),
+        ("ADAPTERS", "complete", "imported"),
+    ]
