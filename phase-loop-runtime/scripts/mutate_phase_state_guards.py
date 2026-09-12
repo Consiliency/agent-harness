@@ -221,11 +221,23 @@ MUTANTS = [
   "len({phase for phase, _, _ in clashes})", "len(clashes)",
   "test_the_rendered_header_counts_PHASES_not_rows"),
 ]
+# RECORDED EQUIVALENT #5 (r15): the non-dict branch of `_raw_ref_identity_is_readable`
+# (`if not isinstance(ref, dict): return False`). Unreachable, and therefore unkillable:
+# `_ref_from_json` raises `ValueError("manifest plan ref must be an object")` for EVERY
+# non-dict spelling, so such a row fails to parse and takes the except path without ever
+# reaching this predicate. Measured on a string, a list, a number and a bool — all four
+# raise in the parser.
+#
+# Kept, on the same reasoning as #2 and #4: the unreachability depends on a DISTANT
+# invariant — `_ref_from_json`'s own type check — and a guard that states its rule locally
+# is worth a line when the thing making it redundant lives in another function. Recorded
+# rather than printed as a survivor. (ah#832 r15, fable.)
+#
 # RECORDED EQUIVALENT #4 (was M7 until r11): dropping the file arm's
 # `plan_file(e) is not None` clause — the r5 guard. r11's field-general lost-evidence rule
 # subsumes it: a row whose `file` is not a readable string is now counted as lost evidence,
 # which disarms both guessing arms, so the file arm is never consulted for such a row in
-# the first place. Measured: the mutant survived all 139 tests when recorded (r11); re-run and still survives at 184, where it was
+# the first place. Measured: the mutant measured at r11; re-verified by the seat every round since, where it was
 # CAUGHT at r10.
 #
 # Kept, for the same reason equivalent #2 is kept: the subsumption depends on a rule two
@@ -270,7 +282,7 @@ MUTANTS = [
 # Step 2 depends on how ambiguity is COUNTED, two hundred lines away. Count it per
 # roadmap instead and the subsumption silently fails, so the clause is kept as the local
 # statement of the r2 rule rather than deleted on the strength of this argument.
-# Measured: survived all 71 tests when recorded (r7); re-run and still survives at 184. (ah#832 r7.)
+# Measured: measured at r7; re-verified by the seat every round since. (ah#832 r7.)
 #
 # RECORDED EQUIVALENT #1, deliberately not in the matrix above: turning the
 # `if not attributable: continue` guard into `pass`. With no attributable record the
