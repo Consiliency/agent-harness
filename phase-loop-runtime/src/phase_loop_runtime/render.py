@@ -20,7 +20,9 @@ def render_status(snapshot: StateSnapshot, as_json: bool = False, ledger_debug: 
         # ah#312 (CR): automation reads `status --json` — repair and handoff flows rely on
         # it — so the reconciliation must appear here too, not only in the prose branch.
         # Additive key: absent when the stores agree, so no existing consumer changes.
-        disagreements = _manifest_disagreements(snapshot)
+        disagreements, reconciliation_complete = _manifest_disagreements(snapshot)
+        if not reconciliation_complete:
+            payload["state_reconciliation_incomplete"] = True
         if disagreements:
             payload["state_disagreements"] = [
                 {"phase": phase, "status": snap, "manifest": man}
@@ -445,18 +447,51 @@ def _current_terminal_summary(snapshot: StateSnapshot) -> dict[str, object] | No
         return None
     return snapshot.terminal_summary
 
+_INCOMPLETE_NOTE = (
+    "NOTE: at least one manifest row could not be read, so this reconciliation is "
+    "INCOMPLETE — a phase may disagree without being listed, and a listed row may be "
+    "unconfirmed rather than stale."
+)
+
+
 def _manifest_disagreements(snapshot: StateSnapshot) -> list[tuple[str, str, str]]:
     """The reconciliation itself, shared by the prose and JSON branches so they can never
     disagree about whether a disagreement exists."""
     try:
-        from .plan_manifest import phase_status_disagreements, read_manifest
-        entries = read_manifest(Path(snapshot.repo)).plans
+        from .plan_manifest import phase_status_disagreements, parseable_plan_entries
+        # PER-ROW, not `read_manifest`. That load is all-or-nothing, so one row it cannot
+        # parse raised — and the bare `except` below turned that into total silence for
+        # EVERY phase while a real disagreement sat beside it. Same class ah#164 closed
+        # for discovery; this read path was left behind. (ah#832 r8, fable.)
+        rows = parseable_plan_entries(Path(snapshot.repo))
         roadmap_slug = Path(snapshot.roadmap).stem if snapshot.roadmap else None
-        return phase_status_disagreements(
-            snapshot.phases, entries, roadmap_slug=roadmap_slug
+        # `skipped` is load-bearing, not diagnostics: a row this runtime could not parse
+        # is a competing roadmap claim that might have been there, and two of the
+        # detector's attribution arms decide by the ABSENCE of one. (ah#832 r9.)
+        from .plan_manifest import _row_is_readable_evidence
+        complete = rows.skipped == 0 and all(
+            _row_is_readable_evidence(entry) for entry in rows.entries
+        )
+        return (
+            phase_status_disagreements(
+                snapshot.phases, rows.entries, roadmap_slug=roadmap_slug,
+                attribution_evidence_complete=complete,
+            ),
+            complete,
         )
     except Exception:  # never let reconciliation break `status`
-        return []
+        # ...BUT NEVER CALL A FAILED RECONCILIATION COMPLETE. Returning `True` here said
+        # "every manifest row was read" about a manifest this runtime could not read AT
+        # ALL: a non-array `plans`, an unsupported `schema_version`, malformed JSON or a
+        # non-object manifest each raise in the loader BY DESIGN — that is the ah#164
+        # structural disposition this PR deliberately preserves — and all four then
+        # printed nothing and reported complete.
+        #
+        # It is the same defect as the zero-clash case one level further out, and with
+        # the same shape: the surface looked CLEAN precisely when the evidence was
+        # weakest. An empty disagreement list is right (nothing can be compared); the
+        # completeness claim beside it was not. (ah#832 r15, codex.)
+        return [], False
 
 
 def _manifest_disagreement_lines(snapshot: StateSnapshot) -> list[str]:
@@ -471,13 +506,41 @@ def _manifest_disagreement_lines(snapshot: StateSnapshot) -> list[str]:
     render. Only genuine done-vs-in-flight pairs are reported (see
     `plan_manifest.phase_status_disagreements`).
     """
-    clashes = _manifest_disagreements(snapshot)
+    clashes, complete = _manifest_disagreements(snapshot)
     if not clashes:
+        # THE ZERO-CLASH CASE IS THE ONE THAT MOTIVATED THIS. If the row that could not be
+        # read IS the row that would have disagreed, there is nothing else to print — and
+        # an early return here printed nothing at all, so `status` looked clean on a
+        # manifest it could not fully read. The JSON branch carried the flag
+        # unconditionally; the prose branch, which is what a human reads, did not.
+        # (ah#832 r12, fable NB1.)
+        if not complete:
+            return [_INCOMPLETE_NOTE]
         return []
     lines = [
-        f"STATE DISAGREEMENT: {len(clashes)} phase(s) differ between the runner state and "
+        # Count PHASES, not rows. When this landed the detector emitted one row per
+        # contradicting plan file, so counting rows printed "14 phase(s)" for 9 phases —
+        # a wrong number on the surface an operator reads to decide what to do next.
+        # ah#832 r5 then made the detector iterate PHASES, so it now emits at most one
+        # row per phase and the two counts coincide for every input it produces. Kept
+        # deliberately: this function must be right for whatever rows it is handed, and
+        # the one-row-per-phase property lives in another module and could change there
+        # without anyone reading this line. Pinned by
+        # test_the_rendered_header_counts_PHASES_not_rows, which supplies the rows
+        # directly for exactly that reason; reverting to len(clashes) fails it.
+        # (ah#830 r1, fable; premise updated ah#832 r6.)
+        f"STATE DISAGREEMENT: {len({phase for phase, _, _ in clashes})} phase(s) differ between the runner state and "
         "plans/manifest.json (ah#312) — one of these is stale:"
     ]
     for phase, snap, man in clashes:
         lines.append(f"  {phase}: status={snap!r} vs manifest={man!r}")
+    if not complete:
+        # SAY "INCOMPLETE" RATHER THAN ASSERT CERTAINTY. The header above tells the
+        # operator "one of these is stale", and when a manifest row could not be read
+        # that is more than the evidence supports: a dropped row may have been the record
+        # that settled the phase. r11's codex seat is right that the choice was never
+        # only report-or-silence — the third option is in PRESENTATION, keeping the
+        # operator-visible warning without claiming a confirmed contradiction.
+        # (ah#832 r11, codex.)
+        lines.append(_INCOMPLETE_NOTE)
     return lines

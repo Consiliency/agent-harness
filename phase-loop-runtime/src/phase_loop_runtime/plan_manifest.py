@@ -19,6 +19,7 @@ from typing import Any, Iterator
 
 from . import roadmap_assumptions
 from .discovery import PLAN_RE
+from .models import PHASE_STATUSES
 
 
 SCHEMA_VERSION = 1
@@ -173,6 +174,139 @@ def read_manifest(repo: Path) -> DotfilesPlanManifest:
     if manifest.schema_version != SCHEMA_VERSION:
         raise ValueError(f"unsupported manifest schema_version: {manifest.schema_version}")
     return manifest
+
+
+@dataclass(frozen=True)
+class ParseablePlanRows:
+    """The rows a read could parse, AND how many it could not.
+
+    The count is not diagnostics — it is load-bearing. See
+    ``parseable_plan_entries`` for the two false readings that arise when the caller
+    cannot tell a complete manifest from a partially-parsed one. (ah#832 r9.)
+    """
+
+    entries: tuple[DotfilesPlanEntry, ...] = ()
+    skipped: int = 0
+
+
+def parseable_plan_entries(repo: Path) -> ParseablePlanRows:
+    """Every row of ``plans/manifest.json`` this runtime can PARSE, skipping the rest.
+
+    ``read_manifest`` is ALL-OR-NOTHING: it builds every row eagerly, so one row it
+    cannot parse raises and the caller gets nothing. On the detector's read path that is
+    catastrophic rather than inconvenient — ``render._manifest_disagreements`` wraps the
+    whole reconciliation in ``except Exception: return []``, so a single parse-hostile
+    sibling row deletes the ENTIRE report while a real ah#312 disagreement sits beside
+    it. Measured, each with a genuine `ALPHA: executing` vs manifest `completed`
+    disagreement present:
+
+        roadmap_ref: "a string"              -> ValueError -> nothing printed
+        roadmap_ref: ["x"]                   -> ValueError -> nothing printed
+        the entry itself is not an object     -> ValueError -> nothing printed
+        a lifecycle event is not an object    -> ValueError -> nothing printed
+        lifecycle metadata is not an object   -> ValueError -> nothing printed
+
+    THIS IS THE SAME CLASS ah#164 ALREADY CLOSED FOR DISCOVERY, and the CHANGELOG names
+    it in these words: "even a *parse-hostile* sibling row (a non-object entry /
+    `roadmap_ref` / lifecycle event that the all-or-nothing `read_manifest` load raises
+    on) no longer re-hides the valid entries". That fix routed discovery through
+    ``valid_phase_entries``; this read path was left on ``read_manifest``.
+
+    NOT ``valid_phase_entries`` here, deliberately. It materializes only rows that
+    VALIDATE, and validation checks the plan file exists on disk — measured: a row whose
+    plan file was renamed yields 0 entries where ``read_manifest`` yields 1. Dropping
+    that row would introduce a NEW silence in exactly the detector whose purpose is to
+    report disagreements: whether the plan file still exists on disk is not the question
+    being asked, and a renamed file is not a reason to stop reporting that the two stores
+    disagree about the phase.
+
+    A STRUCTURAL failure still hides everything, which is the ah#164 disposition and is
+    right: unparseable JSON, a non-object manifest, a non-array ``plans``, or an
+    unsupported ``schema_version`` means nothing in the file is trustworthy. Only
+    ROW-level parse failures are skipped. (ah#832 r8, fable.)
+
+    THE r8 VERSION OF THIS DOCSTRING CLAIMED "one unparseable row costs its own signal,
+    never anyone else's". THAT WAS FALSE, and two seats proved it independently at r9 from
+    opposite directions. The detector's ambiguity guards are computed over the rows it is
+    HANDED, so a skipped row's ABSENCE changes how every other row is read:
+
+        alias ambiguity   a skipped sibling makes an ambiguous alias look UNAMBIGUOUS, so
+                          a legacy null-ref record is admitted and REPORTED on the
+                          strength of a roadmap that cannot be identified (fable F1) —
+                          a false positive the ambiguity guard's own test forbids
+        contested file    a skipped foreign claimant makes a contested file look
+                          UNCONTESTED, so a legacy `completed` record is admitted and
+                          SUPPRESSES a real disagreement (codex) — a false negative
+
+    Which is why this returns a COUNT and not just the rows. Attribution that has to guess
+    a roadmap is only sound when the evidence of competing claims is complete; the
+    detector refuses to guess when it is not. Returning the rows alone made that
+    impossible to express, and the caller could not have known. (ah#832 r9.)
+    """
+    manifest_path = _manifest_path(repo)
+    if not manifest_path.exists():
+        return ParseablePlanRows()
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("manifest must be an object")
+    if int(data.get("schema_version", 0)) != SCHEMA_VERSION:
+        raise ValueError(f"unsupported manifest schema_version: {data.get('schema_version')}")
+    plans = data.get("plans", [])
+    if not isinstance(plans, list):
+        raise ValueError("manifest plans must be an array")
+    entries: list[DotfilesPlanEntry] = []
+    skipped = 0
+    for row in plans:
+        try:
+            entries.append(_entry_from_json(row))
+        except Exception:
+            # A ROW THAT READABLY IS NOT A PHASE ROW DOES NOT COUNT.
+            #
+            # `skipped` exists to say "a competing claim might have been here", and r9's
+            # own `type` filter makes that impossible for a non-phase row: `_alias_counts`
+            # skips them, and `scoped_files`, `claimed_by` and `contested_files` are all
+            # built from `own`, which filters `type == "phase"`. So a skipped `detailed`
+            # row's absence provably cannot have changed an ambiguity or contested-file
+            # verdict — yet counting it disabled BOTH guessing arms for EVERY phase.
+            #
+            # Measured on this repository's real 58-row manifest (21 of those rows are
+            # `detailed`), roadmap phase-plans-v10, the flagship ah#312 shape:
+            #
+            #     all rows parse                              -> 12 phases reported
+            #     + ONE `detailed` row with bad metadata      ->  6 phases reported
+            #
+            # and the six lost are exactly this repo's six legacy `roadmap_ref: null`
+            # rows — the population the legacy admission exists to serve. (ah#832 r10.)
+            #
+            # THIS IS NOT THE REMEDY r9 REJECTED. That one salvaged skipped rows' ALIASES,
+            # and was rejected because the "not an object" shape has an unreadable alias.
+            # This salvages nothing: it declines to COUNT a row whose raw dict readably
+            # says otherwise, and an unreadable row still counts. Trusting that read is
+            # exactly as trusting as the `type` filter itself, which decides on the same
+            # field — if one is unsound so is the other, and they fail together rather
+            # than silently disagreeing.
+            if _raw_row_cannot_have_mattered(row):
+                continue
+            skipped += 1
+        else:
+            # ...AND A ROW THAT PARSED IS STILL LOST EVIDENCE IF ITS RAW IDENTITY FIELDS
+            # WERE NOT READABLE. This check MUST live here, on the raw dict, and that is
+            # the tension r11's seat named rather than designed around: `_entry_from_json`
+            # coerces with `str(...)`, so by the time the detector sees an entry a
+            # `"type": 123` is the string "123" and a `"file": ["plans/x.md"]` is the
+            # readable-looking garbage `"['plans/x.md']"`. Post-coercion nothing can tell
+            # that from a real name — so the detector cannot make this judgement at all,
+            # and r10's "computed here rather than asked of the caller" does not apply to
+            # a fact only the loader can still see. (ah#832 r11, fable B1 + codex.)
+            if not _raw_row_identity_is_readable(row):
+                skipped += 1
+                if not _raw_ref_identity_is_readable(row):
+                    # ONLY a ref-identity failure justifies destroying the row: it is the
+                    # one that can MANUFACTURE a direct claim out of a coercion. The other
+                    # identity fields merely remove the row from a census, and counting it
+                    # as lost evidence is the whole remedy there. (ah#832 r13, fable.)
+                    entries.pop()
+    return ParseablePlanRows(entries=tuple(entries), skipped=skipped)
 
 
 def append_entry(repo: Path, entry: DotfilesPlanEntry) -> None:
@@ -660,12 +794,53 @@ def _extract_lanes(path: Path) -> tuple[str, ...]:
 # alone — from a genuinely in-flight phase. So SURFACE the disagreement rather than
 # silently rendering one store and discarding the other.
 #
-# Deliberately CONSERVATIVE: only a DONE-vs-IN-FLIGHT pair is a contradiction. A plan
-# that is merely `imported`/`committed` (document written, never executed) says nothing
-# about execution state and must not warn — that is the normal case for a planned-but-
-# unstarted phase and would drown the real signal.
+# Deliberately CONSERVATIVE: only a DONE-vs-IN-FLIGHT pair is a contradiction, in either
+# direction. The concern this records — that a merely `imported`/`committed` plan is the
+# normal case for a planned-but-unstarted phase and warning on it would drown the real
+# signal — is still exactly right, and ah#830 did not weaken it. But what protects it is
+# NARROWER than an earlier revision of this comment claimed. True: a manifest record that
+# never reached a done status is only ever compared against a snapshot in
+# `_SNAPSHOT_DONE`, so an unstarted plan is silent in every non-done snapshot state.
+# FALSE, as that revision had it: that such a snapshot state "stays silent no matter what
+# the manifest says". Against a manifest `completed`, every member of `_SNAPSHOT_IN_FLIGHT`
+# reports — loudly, by design, because that IS the ah#312 defect — and this diff's own
+# `test_a_done_sibling_does_not_mask_the_OTHER_direction` asserts it. The claim was wrong
+# in the direction that matters, and the parametrised test it cited only ever covered the
+# manifest side. Corrected here; that test's snapshot axis is now derived from
+# models.PHASE_STATUSES, so "every" is measured rather than asserted. (ah#832 r6, fable.)
+# Pinned by test_a_plan_that_never_executed_is_not_a_contradiction and
+# test_an_unstarted_plan_is_silent_in_every_non_done_snapshot_state.
+#
+# What ah#830 changed is the OTHER half of the pair: a plan that never reached a done
+# status, against a snapshot claiming the phase is finished.
 _MANIFEST_DONE = {"completed"}
-_MANIFEST_IN_FLIGHT = {"executing"}
+# DERIVED FROM THE LIFECYCLE TABLE, NOT HAND-LISTED.
+#
+# `TRANSITIONS` above already defines which manifest statuses are pre-terminal: a status
+# with outgoing edges still has somewhere to go, so the plan is not finished. Spelling that
+# out a second time as a literal is how this set drifted — it read `{"executing"}` while
+# the table said `imported`, `committed` and `executing` all have edges, so TWO of the
+# three pre-terminal statuses could never be reported.
+#
+# Measured on Consiliency/omniagent-plus, whose runner snapshot reports all 13 phases
+# `complete`: the shipped literal found 0 disagreements, the derived set finds 8 across
+# 8 phases — one per plan, after the reconciliation below.
+#
+# WHAT THIS SET DOES AND DOES NOT CLAIM. It reports that the two stores disagree. It does
+# NOT adjudicate which one is right, and no comment here should. An earlier revision of
+# this one claimed the manifest was right in every case, citing `terminal-summary.json`
+# under `.phase-loop/runs/` reading `awaiting_phase_closeout`. That inference is FALSE:
+# the runner promotes `awaiting_phase_closeout` to `complete` and writes nothing back to
+# the manifest, so the artifact says nothing about whether the phase finished. Refuted by
+# counterexample in the same dataset — CONTRACT, STATELEDGER and WORKTREE are `completed`
+# in the manifest AND `complete` in the snapshot, and their last run carries exactly that
+# artifact. Adjudicating is the operator's job; surfacing is this function's.
+# (ah#830 r1, fable.)
+#
+# The done side stays a literal on purpose. It is NOT the complement of this set —
+# `failed` and `orphaned` are terminal but deliberately excluded, for the documented
+# reasons above. Derive what has a rule; enumerate what is a judgement. (ah#830.)
+_MANIFEST_IN_FLIGHT = frozenset(TRANSITIONS)
 _SNAPSHOT_DONE = {"complete"}
 # `blocked` is IN-FLIGHT: the runner is saying work is outstanding / needs repair. A
 # manifest that records the same phase `completed` is the motivating harm class exactly —
@@ -686,9 +861,410 @@ _SNAPSHOT_DONE = {"complete"}
 # manifest recording that same phase `completed` is the motivating harm class again.
 # (Kept `awaiting_phase_closeout` here rather than on the done side: handoff.py treats it
 # as needing action, pairing it with `blocked` at three sites.)
-_SNAPSHOT_IN_FLIGHT = {
-    "executing", "planned", "blocked", "awaiting_phase_closeout", "executed",
-}
+# DERIVED FROM models.PHASE_STATUSES, NOT HAND-LISTED. Same policy as the manifest
+# operand above — and the same defect had settled on this side unnoticed. The literal
+# listed five of the table's eight statuses, and `unknown` was in NEITHER set, so it was
+# unreportable, silently, exactly as `imported` and `committed` were before ah#830. A
+# diff whose declared purpose is that defect class deriving only one of its two operands
+# is the shape this now closes.
+#
+# `unknown` is the flagship ah#312 case wearing a different label. reconcile.py:108 is
+# `phases[phase] = "unknown" if _dirty(repo) else "executing"` — a still-executing phase
+# is renamed on a DIRTY tree, which is precisely when resume/dispatch is about to act.
+# runner.py already states this at the cross-phase lien: "`unknown` is exactly the
+# disguise the canonical in-flight hazard wears". Measured end to end before the fix: on
+# a clean tree status printed `ALPHA: status='executing' vs manifest='completed'`; the
+# same repo with a dirty tree printed nothing at all. The other producer,
+# reconcile.py:288, demotes a `complete` phase to `unknown` on a newer untrusted terminal
+# event — the runner withdrawing its own completeness claim while the manifest still
+# asserts it is a disagreement the operator must see, not one to hide. (ah#832 r6, fable.)
+#
+# `unplanned` is the one enumerated judgement on this side, and it is an EXCLUSION. It
+# means no plan artifact exists for the phase (classifier.py; reconcile.py:95 drops it
+# before the snapshot is built). The benign reading is already documented at
+# runner.py:1044-1047 — "the roadmap was edited so the phase no longer exists as a unit".
+# Every dropped phase keeps its old `completed` manifest record, so reporting them would
+# drown the real signal in exactly the way ah#312's own comment warns about.
+#
+# Derive what has a rule; enumerate what is a judgement. `_SNAPSHOT_DONE` and
+# `_SNAPSHOT_EXCLUDED` are the judgements; in-flight is the REST of the table, so a status
+# added to models.PHASE_STATUSES is reported by default rather than silently dropped. For
+# a detector whose stated bar rates silence worse than a false positive, fail-loud is the
+# correct default. (ah#830, ah#832.)
+_SNAPSHOT_EXCLUDED = frozenset({"unplanned"})
+_SNAPSHOT_IN_FLIGHT = frozenset(PHASE_STATUSES) - set(_SNAPSHOT_DONE) - _SNAPSHOT_EXCLUDED
+
+
+_CENSUS_IDENTITY_FIELDS = (
+    "type", "phase_alias", "file", "roadmap_ref.slug", "roadmap_ref.file",
+)
+"""Every raw field the phase censuses read to decide who speaks for a phase.
+
+Enumerated so "have we swept the class?" is answerable by EXECUTION rather than by the
+next reviewer's imagination — see
+test_EVERY_census_identity_field_is_lost_evidence_when_unreadable, which iterates this
+tuple and asserts each one conservative. (ah#832 r11.)
+"""
+
+
+def _plan_file(candidate):
+    """The row's plan file, or None when it does not readably name one."""
+    value = getattr(candidate, "file", None)
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return None if stripped in ("", "None") else stripped
+
+
+def _row_is_readable_evidence(entry) -> bool:
+    """Can this row's contribution to the censuses be read at all?
+
+    ONE FIELD-GENERAL RULE, because three rounds of field-specific ones each left the
+    next field open. r10 established that a row which PARSES but is UNUSABLE is lost
+    evidence, and implemented it for `phase_alias` only. `type` and `file` have the same
+    hole, and the parser's `str()` coercion makes them worse: a foreign record with
+    `"file": null` parses to the literal `"None"`, `_plan_file` reads that as "names no
+    file", and the row's claim silently disappears from the contested-file census — so
+    file A looks uncontested, a legacy record settles the phase, and a real disagreement
+    is suppressed while the evidence is still marked COMPLETE. (ah#832 r11, codex + fable.)
+
+    The rule: a row is readable evidence when either
+      * its `type` readably says it is not a phase row — it cannot enter any census, so
+        losing it cannot have changed a verdict (the r10 exemption); or
+      * it is a phase row AND every identity field the censuses read is a usable string.
+    Anything else is lost evidence, because its absence from a census is
+    indistinguishable from a claim that was never there.
+    """
+    # THE EXEMPTION NEEDS A RECOGNISED TYPE, NOT MERELY A STRING. `_entry_from_json`
+    # coerces with `str(...)`, so a corrupted `"type": 7` arrives as the STRING "7" — and
+    # an earlier revision of this rule read any non-"phase" string as "readably not a
+    # phase row", silently dropping that row's census claim. Measured: a foreign `v1`
+    # claimant with `"type": 7` vanished from the contested-file census, file A looked
+    # uncontested, and a legacy record settled the phase while evidence was still marked
+    # complete. `PLAN_TYPES` is the authoritative vocabulary, so an UNRECOGNISED type is
+    # lost evidence, exactly like an unreadable alias or file. (ah#832 r11.)
+    declared = getattr(entry, "type", None)
+    if not isinstance(declared, str) or declared not in PLAN_TYPES:
+        return False
+    if declared != "phase":
+        return True
+    alias = getattr(entry, "phase_alias", None)
+    if not (isinstance(alias, str) and alias):
+        return False
+    return _plan_file(entry) is not None
+
+
+def _raw_row_cannot_have_mattered(row) -> bool:
+    """Is this UNPARSEABLE row readably not a phase row, so losing it changed nothing?"""
+    declared = row.get("type") if isinstance(row, dict) else None
+    return isinstance(declared, str) and declared in PLAN_TYPES and declared != "phase"
+
+
+def _raw_row_identity_is_readable(row) -> bool:
+    """Could every census read this PARSED row's contribution?
+
+    ONE FIELD-GENERAL RULE over the raw values, because three rounds of field-specific
+    ones each left the next field open — r10 fixed `phase_alias` alone, and it could only
+    see that field because it is the one the parser does NOT coerce.
+
+    `_CENSUS_IDENTITY_FIELDS` enumerates what the censuses key on, and
+    test_EVERY_census_identity_field_is_lost_evidence_when_unreadable iterates that tuple
+    so "have we swept the class?" is answerable by execution rather than by the next
+    reviewer's imagination. (ah#832 r11.)
+    """
+    if not isinstance(row, dict):
+        return False
+    declared = row.get("type")
+    if not isinstance(declared, str) or declared not in PLAN_TYPES:
+        return False          # an unrecognised type cannot exempt itself
+    if declared != "phase":
+        return True           # recognised non-phase: enters no census
+    alias = row.get("phase_alias")
+    if not (isinstance(alias, str) and alias.strip()):
+        return False
+    name = row.get("file")
+    if not (isinstance(name, str) and name.strip() not in ("", "None")):
+        return False
+    # ...AND THE ROADMAP REF'S OWN IDENTITY, which r11's field table missed and BOTH r12
+    # seats found independently. `_ref_from_json` coerces with `str(...)`, so a
+    # `"slug": 2026` becomes the string "2026" — and if that happens to equal the active
+    # roadmap's stem it is read as a POSITIVE DIRECT CLAIM. Measured: a `completed` row
+    # whose ref file names `specs/v1.md` but whose numeric slug coerces to the active
+    # "2026" was attributed in scope and SETTLED the phase, suppressing a real
+    # disagreement with `skipped == 0` and no incomplete qualifier.
+    #
+    # Counting it as lost evidence is NOT sufficient on its own — codex's point — because
+    # direct attribution does not consult the completeness flag at all. So an unreadable
+    # identity now EXCLUDES the row from `entries` entirely: a row whose identity cannot
+    # be read may not manufacture a claim out of a coercion. `roadmap_ref: null` and a
+    # ref that readably names nothing are untouched; they are the legacy shapes r7
+    # exists to serve. (ah#832 r12, codex + fable.)
+    return _raw_ref_identity_is_readable(row)
+
+
+def _raw_ref_identity_is_readable(row) -> bool:
+    """Can this row's ROADMAP CLAIM be read, or could it be manufactured by a coercion?
+
+    Split from the identity rule because only this half justifies DESTROYING the row.
+    `_ref_from_json` coerces with `str(...)`, so an unreadable `slug` can become a string
+    that happens to equal the active roadmap's stem — a claim the manifest never made, and
+    one `in_scope` grants directly without consulting the incomplete-evidence flag. Such a
+    row must not reach the detector at all.
+
+    Every OTHER unreadable identity field (`type`, `phase_alias`, `file`) only removes the
+    row from a census. Counting it as lost evidence is the whole remedy there, and
+    excluding it as well destroys a direct claim no coercion invented: measured, a row with
+    a readable `roadmap_ref.slug` of `v2` and an unreadable `file` was dropped entirely and
+    went SILENT on the flagship ah#312 shape, where it should still report while its file
+    claim counts as lost. (ah#832 r13, fable.)
+    """
+    ref = row.get("roadmap_ref") if isinstance(row, dict) else None
+    if ref is None:
+        return True
+    if not isinstance(ref, dict):
+        return False
+    slug = ref.get("slug")
+    if slug is not None and not isinstance(slug, str):
+        return False
+    # MIRROR `_roadmap_claim`'s OWN RESOLUTION ORDER. It reads the slug first and only
+    # falls back to `PurePosixPath(ref.file).stem` when the slug resolves to nothing. So
+    # when the slug DOES resolve, `ref.file` is never consulted and cannot manufacture
+    # anything — destroying the row for it was still over-broad. Measured: a `completed`
+    # row with slug `"v2"` and `"file": 123` had its claim correctly read as `v2`, and was
+    # deleted anyway, suppressing the flagship ah#312 disagreement.
+    #
+    # Only the field the claim is actually DERIVED from can manufacture it, and this
+    # predicate now asks exactly that question.
+    #
+    # AND WHEN THE SLUG RESOLVES, AN UNREADABLE `ref.file` IS NOT LOST EVIDENCE EITHER —
+    # it is not evidence at all. An earlier revision of this comment claimed it "still
+    # counts as lost evidence either way", which is the inverse of what the code does and
+    # of what this commit's own test asserts (`skipped == 0`, "ref.file feeds no census
+    # when the slug resolves"). `_roadmap_claim` is the only consumer in this detector
+    # that reads that field, and it never reaches it once the slug resolves, so there is
+    # no census contribution to lose. Corrected rather than left as a description that is
+    # the inverse of the behaviour, on a predicate narrowed three rounds running.
+    # (ah#832 r15, fable.)
+    # (ah#832 r14, codex.)
+    if isinstance(slug, str) and slug.strip() not in ("", "None"):
+        return True
+    name = ref.get("file")
+    return name is None or isinstance(name, str)
+
+
+def _roadmap_claim(candidate) -> str | None:
+    """The roadmap slug this record CLAIMS, or None when it claims none.
+
+    THE SAME PARSER-COERCION DEFECT r5 FOUND ON `file`, ON THE SIBLING FIELD. Both
+    consumers used to test `slug is not None`, and `_ref_from_json` does
+    `slug=str(data.get("slug", ""))` — so a `roadmap_ref` present but naming nothing
+    arrives as `""` (missing key) or the literal `"None"` (explicit null), never as the
+    object. `DotfilesPlanRef.slug` is typed `str`; the parser cannot produce None.
+
+    The consequence was the silent direction, in both consumers at once: a record that
+    names NO roadmap was read as naming a FOREIGN one, so `in_scope` returned False AND
+    `claims_a_roadmap` returned True — which also slams the file arm shut on it. The
+    record was denied both routes and the phase was reported by nobody. Measured through
+    `read_manifest` on a real manifest file, snapshot `ALPHA: executing` vs manifest
+    `completed`, roadmap `v1`:
+
+        roadmap_ref: null                 -> slug absent   -> REPORTS   (documented legacy)
+        roadmap_ref: {}                   -> slug ''       -> silent
+        roadmap_ref: {"slug": null, ...}  -> slug 'None'   -> silent
+        roadmap_ref: {no slug key, ...}   -> slug ''       -> silent
+        roadmap_ref: {"slug": "v1", ...}  -> slug 'v1'     -> REPORTS   (control)
+
+    `_validate_phase_entry` checks only `roadmap_ref is not None and not isinstance(dict)`
+    — it never requires a slug key or a non-empty one — so these shapes are affirmatively
+    accepted, not merely unvalidated on the render path. Reachable from any hand-edit,
+    outside agent, or writer that emits an empty ref.
+
+    ONE normaliser, read by every consumer (`in_scope`, `claims_a_roadmap`, and the
+    contested-file census), because two copies of this arithmetic is exactly how `file`
+    and `slug` came to disagree about what "names nothing" means. (ah#832 r7, fable.)
+    """
+    ref = getattr(candidate, "roadmap_ref", None)
+    if ref is None:
+        return None
+    value = getattr(ref, "slug", None)
+    if not isinstance(value, str):
+        # A NON-STRING NAMES NOTHING — it is never passed through. Returning the raw
+        # value would carry the `phase_alias` hazard in latent form: a truthy unhashable
+        # slug flows into `claimed_by.setdefault(...).add(slug)` and raises
+        # `TypeError: unhashable type`, which `render.py`'s bare `except` turns into total
+        # silence for every phase. Unreachable today — `_ref_from_json` coerces with
+        # `str(...)` — but the alias census chose isinstance-or-skip for exactly this
+        # arithmetic, and three guards doing the same job should not disagree about it.
+        # (ah#832 r8, fable NB3.)
+        return None
+    stripped = value.strip()
+    if stripped in ("", "None"):
+        # THE SLUG IS ABSENT — BUT THE REF MAY STILL NAME THE ROADMAP BY FILE, and
+        # discarding that was a regression the r7 F1 fix introduced. The production
+        # consumer identifies the active roadmap as `Path(snapshot.roadmap).stem`
+        # (render.py:458), so `roadmap_ref: {"slug": null, "file": "specs/v1.md"}`
+        # explicitly references v1 — it is NOT a record that "names nothing".
+        #
+        # Reading it as legacy let it through the file arm and settle a DIFFERENT
+        # roadmap's phase. Measured, alias `P`, both records on `plans/phase-plan-A.md`,
+        # snapshot `complete`, active roadmap `v2`:
+        #
+        #   v2 committed + (slug null, ref file specs/v1.md) completed  -> []
+        #   correct:                                                    -> ('P','complete','committed')
+        #
+        # i.e. r2's foreign-roadmap false negative, reintroduced through the normaliser
+        # added to fix F1. Same stem rule as the consumer, so the two agree about what
+        # names a roadmap. (ah#832 r8, codex.)
+        ref_file = getattr(ref, "file", None)
+        if isinstance(ref_file, str):
+            stem = PurePosixPath(ref_file.strip()).stem
+            if stem not in ("", "None"):
+                return stem
+        return None
+    # THE ONE VALUE COLLISION THIS SENTINEL CANNOT DISTINGUISH: a roadmap spec literally
+    # named `None.md` would give `roadmap_slug == "None"`, and a record explicitly
+    # claiming it would read as legacy. The choice is forced — `"None"` is exactly what
+    # the parser emits for an explicit JSON null — so this is noted rather than fixed.
+    # (ah#832 r8, fable NB4.)
+    return stripped
+
+
+def _phase_attributable_records(
+    entries, alias: str, in_scope, *, attribute_by_file: bool = True
+) -> list:
+    """Every manifest record that speaks for ``alias`` in the roadmap being asked about.
+
+    A record is attributable two ways, and the SECOND is transitive, which is the whole
+    point of computing this once per phase:
+
+      directly    it carries this alias and passes the roadmap scope test
+      by file     it carries this alias and names a plan FILE that a directly
+                  attributable record also names
+
+    The file arm exists because a legacy entry with `roadmap_ref: null` cannot be
+    attributed to a roadmap by its frontmatter — but naming the same plan file as an
+    in-scope record attributes it just as surely, and more specifically. The ambiguity
+    rule is right to refuse to GUESS a roadmap; it is not guessing here.
+
+    Five board rounds each found a different case, and each per-candidate patch
+    reintroduced an earlier one. These are the cases this one function has to satisfy
+    simultaneously:
+
+      r1  same file, `committed` beside `completed`          -> settled
+      r1  a SUPERSEDED plan, different file, same roadmap    -> settled
+      r2  a DIFFERENT roadmap's `completed`                  -> NOT settled
+      r3  same file, one record with a legacy null ref       -> settled
+      r4  r1 and r3 TOGETHER: a legacy record settles file A
+          while file B, in scope, saw no done sibling        -> settled
+    """
+    # ONLY A `phase` ENTRY SPEAKS FOR A PHASE — the sixth surface, and the one the class
+    # table's completeness claim missed. `type` was never checked, so a `type: "detailed"`
+    # row carrying a `phase_alias` was attributed like a phase plan. Measured, alias
+    # ALPHA, active roadmap v2, snapshot `complete` against a genuine `committed`
+    # disagreement:
+    #
+    #   a detailed row claiming v2, status completed   -> the disagreement went SILENT
+    #   a detailed row on the same plan file           -> the disagreement went SILENT
+    #   a detailed row alone                           -> it BECAME the subject of one
+    #
+    # `validate_manifest` calls all three structurally valid, and `_validate_detailed_entry`
+    # (which rejects `roadmap_ref` on a detailed entry) is only reached through a validator
+    # with no `src/` caller — so this is not covered one layer up. This is exactly the
+    # filter `valid_phase_entries` applies (`entry.type == "phase"`); the r8 load weighed
+    # that helper and omitted that it also filters on type. (ah#832 r9, fable F2.)
+    own = [
+        e for e in entries
+        if getattr(e, "phase_alias", None) == alias
+        and getattr(e, "type", None) == "phase"
+    ]
+
+    def plan_file(candidate):   # thin alias; the rule lives at _plan_file
+        """The record's plan file, or None when it does not actually name one.
+
+        `- {None}` was the original guard and it is DEAD in production: the parser does
+        `str(data.get("file", ""))`, so a missing key becomes `""` and an explicit
+        `"file": null` becomes the literal string `"None"` — never the object. Both
+        placeholders then compare EQUAL to each other, so two records that name no plan
+        at all matched as though they named the same one, and a phase went silent on the
+        strength of two absent values agreeing. Executed on both spellings.
+        (r5, fable.)
+
+        Guarding the values the parser can actually produce, rather than the one it
+        cannot. `validate_manifest` rejects such input, but validation is not on the
+        render path, so this cannot rely on it.
+        """
+        value = getattr(candidate, "file", None)
+        if not isinstance(value, str):
+            return None   # same rule as `_roadmap_claim`; see NB3 there
+        stripped = value.strip()
+        return None if stripped in ("", "None") else stripped
+
+    # No `- {None}` strip here. It and the candidate's `is not None` clause below were
+    # a REDUNDANT PAIR, and the r6 note calling the strip dead was half right: each one
+    # alone is sufficient, so each single removal is an equivalent mutant and NEITHER was
+    # individually killable. Measured: seed-strip-only removed -> 68 pass; clause-only
+    # removed -> 68 pass; BOTH removed -> test_a_record_with_no_plan_file_is_not_
+    # attributable_by_file fails. Keeping the clause and dropping the strip leaves exactly
+    # one guard, which that test does kill. (ah#832 r6.)
+    scoped_files = {plan_file(e) for e in own if in_scope(e, alias)}
+
+    def claims_a_roadmap(candidate) -> bool:
+        return _roadmap_claim(candidate) is not None
+
+    # THE FILE ARM ADMITS ONLY RECORDS THAT MAKE NO ROADMAP CLAIM.
+    #
+    # A record naming a DIFFERENT roadmap has already said where it belongs, and the
+    # right response is to believe it — that is r2's whole finding. Admitting it on a
+    # shared filename let a v1-tagged `completed` settle a v2 phase, i.e. r2's false
+    # negative leaking back in through the arm added for r3. (r4, fable.)
+    #
+    # The arm exists for the record that makes NO claim: a legacy entry with
+    # `roadmap_ref: null` cannot be attributed by frontmatter it does not have, and the
+    # plan file it names is then the strongest evidence available. Refusing to GUESS a
+    # roadmap is right; declining to read an explicit one is not.
+    # ...AND ONLY WHEN THE FILE ITSELF IS NOT CONTESTED.
+    #
+    # The file arm's premise is that naming an in-scope record's plan file attributes a
+    # legacy record "just as surely, and more specifically" than frontmatter would. That
+    # premise fails when TWO roadmaps explicitly claim the same file for this alias: the
+    # legacy record could belong to either, and the arm resolves the tie by silently
+    # picking the one that happens to be in scope. Measured, alias `P`, all naming
+    # `plans/phase-plan-A.md`, snapshot `complete`, roadmap `v2`:
+    #
+    #   v2 committed + v1 completed                -> ('P','complete','committed')
+    #   v2 committed + v1 completed + null completed ->  []   <- the legacy record
+    #                                                          SUPPRESSED a real v2
+    #                                                          disagreement
+    #
+    # So a record whose roadmap is genuinely unknowable silenced the detector, which is
+    # the harm this function's own ambiguity rule exists to prevent — bypassed through
+    # the arm added two rounds later. The alias rule already refuses to guess a roadmap
+    # from a contested ALIAS; this refuses to guess one from a contested FILE. Same rule,
+    # same reason, on the other key. (ah#832 r6, codex.)
+    #
+    # Contested means more than one DISTINCT explicit slug, not merely more than one
+    # record: several records of the same roadmap naming one file is the ordinary
+    # superseded-plan shape (r1), and must keep settling.
+    claimed_by: dict[str, set] = {}
+    for candidate in own:
+        slug = _roadmap_claim(candidate)
+        name = plan_file(candidate)
+        if slug is not None and name is not None:
+            claimed_by.setdefault(name, set()).add(slug)
+    contested_files = {name for name, slugs in claimed_by.items() if len(slugs) > 1}
+
+    # THE FILE ARM IS UNAVAILABLE WHEN A ROW COULD NOT BE PARSED. It decides by the
+    # absence of a competing explicit claim on the same file, and a skipped row is
+    # exactly a claim that might have been there. Measured at r9: a parse-hostile foreign
+    # claimant made a contested file look uncontested and a legacy `completed` record
+    # then suppressed a real disagreement. (ah#832 r9, codex.)
+    return [
+        e for e in own
+        if in_scope(e, alias)
+        or (attribute_by_file and not claims_a_roadmap(e) and plan_file(e) is not None
+            and plan_file(e) in scoped_files
+            and plan_file(e) not in contested_files)
+    ]
 
 
 def phase_status_disagreements(
@@ -696,47 +1272,207 @@ def phase_status_disagreements(
     entries: Sequence[DotfilesPlanEntry],
     *,
     roadmap_slug: str | None = None,
+    attribution_evidence_complete: bool = True,
 ) -> list[tuple[str, str, str]]:
     """Phases where the runner snapshot and the plan manifest CONTRADICT each other.
 
     Returns ``[(phase_alias, snapshot_status, manifest_status), ...]``, empty when the
     two stores agree or say nothing comparable. Pure — no I/O — so it is testable
     without a repo.
+
+    ``attribution_evidence_complete=False`` says some manifest row could not be parsed,
+    so the census of competing claims is INCOMPLETE. Two of this function's arms exist
+    only to attribute a record whose roadmap is not stated, and both decide by the
+    ABSENCE of a competing claim:
+
+        the legacy null-ref admission   admits a record when its alias is unambiguous
+        the file-attribution arm        admits a record when its file is uncontested
+
+    Absence is not evidence when rows are missing. Measured at r9, both directions:
+
+        a skipped sibling made an ambiguous alias look unambiguous, and a legacy record
+        was REPORTED as the manifest side of a disagreement on the strength of a roadmap
+        that cannot be identified — which `in_scope` below calls "actively misleading"
+
+        a skipped foreign claimant made a contested file look uncontested, and a legacy
+        `completed` record SUPPRESSED a real disagreement
+
+    So with incomplete evidence a record speaks for a phase only if it EXPLICITLY claims
+    this roadmap. Direct claims are unaffected — they do not rest on absence — so the
+    r8 load still does what it was for: a real disagreement on an explicitly-claimed
+    record is reported while an unparseable sibling row sits beside it.
+
+    AND THE HALF AN EARLIER REVISION LEFT OUT, because stating only the reassuring half
+    is how a comment becomes a false claim: this ALSO makes a previously-SETTLED phase
+    start reporting. A phase settled by a same-file legacy record — the r1/r3/r4 case the
+    attribution docstring says must stay settled — reports the moment any sibling row is
+    unparseable, because the record that settled it is exactly the kind now refused. That
+    is the fail-loud direction this module prefers, and it follows from the same rule
+    rather than being a separate decision, but it is a real behaviour change and it is
+    pinned by test_a_SETTLED_phase_starts_reporting_when_evidence_is_incomplete rather
+    than left for a later round to discover. (ah#832 r10, fable NB1.)
+
+    Salvaging the aliases of skipped rows was considered and REJECTED: for the
+    "entry is not an object" shape the alias is itself unreadable, so that census would
+    silently under-count exactly the row it needed, and the guard would look closed while
+    one of its five shapes stayed open. Going conservative on an unreadable row is the
+    only form that cannot be wrong. (ah#832 r9, fable F1 + codex, with the fix trap
+    flagged in fable's review.)
     """
+    # A ROW THAT PARSES BUT IS UNUSABLE IS LOST EVIDENCE TOO — for EVERY identity field
+    # the censuses read, not just the one r10 happened to fix. `_row_is_readable_evidence`
+    # states that rule once; `_CENSUS_IDENTITY_FIELDS` enumerates the fields it covers so a
+    # completeness test can assert each one conservative. Computed here rather than asked
+    # of the caller, because a caller that forgets it reintroduces the hole silently.
+    # (ah#832 r11.)
+    if attribution_evidence_complete:
+        attribution_evidence_complete = all(
+            _row_is_readable_evidence(candidate) for candidate in entries
+        )
+
     out: list[tuple[str, str, str]] = []
+    # A NON-STRING ALIAS IS SKIPPED, NOT COUNTED — because counting it RAISES.
+    #
+    # `_entry_from_json` does `phase_alias=data.get("phase_alias")` with NO coercion, so
+    # unlike `file` and `slug` this field arrives exactly as written. A truthy unhashable
+    # value gets past the `if a:` test and then `_alias_counts.get(a, 0)` raises
+    # `TypeError: unhashable type: 'list'`. Measured, two entries where only the SECOND is
+    # malformed:
+    #
+    #   phase_alias: "ALPHA"    -> [('ALPHA','executing','completed')]
+    #   phase_alias: ["A"]      -> TypeError
+    #   phase_alias: {"a": 1}   -> TypeError
+    #
+    # And `render.py` wraps reconciliation in `except Exception: return []`, so that
+    # TypeError becomes TOTAL SILENCE — for EVERY phase, not just the malformed record.
+    # One hand-edited entry disables the whole detector, invisibly. That is the r3
+    # finding's class at its worst: r3 was one phase absent from the snapshot, this is
+    # every phase at once. `[]` and `{}` happen to be falsy and were already skipped,
+    # which is why this never showed up. (ah#832 r7, class sweep.)
     _alias_counts: dict[str, int] = {}
     for e in entries:
         a = getattr(e, "phase_alias", None)
-        if a:
+        # Same `type` restriction as attribution below. Two censuses disagreeing about
+        # which rows speak for a phase is the shape r5 spent a round on. (ah#832 r9.)
+        if getattr(e, "type", None) != "phase":
+            continue
+        if isinstance(a, str) and a:
             _alias_counts[a] = _alias_counts.get(a, 0) + 1
     _ambiguous_aliases = {a for a, n in _alias_counts.items() if n > 1}
+    def in_scope(candidate, alias: str) -> bool:
+        """Is this entry within the roadmap being asked about?
+
+        ONE predicate, applied to BOTH the entry under judgement and the siblings that
+        may settle it. It was applied only to the former, so an entry from a DIFFERENT
+        roadmap — correctly skipped as a subject — could still SETTLE an in-scope
+        disagreement, or leak its status into the reported string. A detector that goes
+        silent is undetectable, which makes that worse than the false positives this
+        same function shipped in round 1. (ah#832 r2, grok.)
+        """
+        if roadmap_slug is None:
+            return True
+        ref_slug = _roadmap_claim(candidate)
+        if ref_slug is not None:
+            return ref_slug == roadmap_slug
+        # CR: legacy entries carry `roadmap_ref: null` (6 exist today, all from v4).
+        # Admitting them keeps the signal for a legitimately-associated entry whose
+        # frontmatter is missing — but if the SAME alias appears more than once in the
+        # manifest we cannot tell which roadmap it belongs to, and reporting it would
+        # name a phase from a DIFFERENT roadmap as contradicting the active one. That is
+        # actively misleading, so require positive association in exactly that ambiguous
+        # case.
+        #
+        # ...AND THE SAME REFUSAL WHEN A ROW COULD NOT BE PARSED AT ALL. The ambiguity
+        # census is computed over the rows this function was handed, so a skipped sibling
+        # makes an ambiguous alias look unambiguous. Admitting on that basis reports a
+        # phase that may belong to another roadmap — the exact outcome this rule exists
+        # to prevent. (ah#832 r9, fable F1.)
+        if not attribution_evidence_complete:
+            return False
+        return not (_ambiguous_aliases and alias in _ambiguous_aliases)
+
+    # ITERATE PHASES, NOT RECORDS, so the attributable set governs BOTH directions.
+    #
+    # The previous shape iterated records and applied `in_scope` to pick the subject,
+    # then used per-phase attribution only for settlement. That made the file arm
+    # one-directional: a legacy same-file `completed` record could settle a phase, but
+    # could never BE the subject of the original ah#312 comparison (manifest done vs
+    # snapshot in-flight), because the ambiguity rule skipped it as a candidate. Two
+    # measured misses:
+    #
+    #   P/A/v2 committed + P/A/null completed, snapshot `executing`
+    #     -> silent, where ('P','executing','completed') is the ah#312 defect itself
+    #   P/A/v2 failed    + P/A/null committed, snapshot `complete`
+    #     -> silent, where the legacy in-flight record contradicts a finished phase
+    #
+    # Attribution is a property of the phase; deciding it once and then asking both
+    # questions of that set is the only shape in which the two directions cannot
+    # disagree about which records speak for the phase. (r5, codex.)
+    ordered_aliases: list[str] = []
     for entry in entries:
         alias = getattr(entry, "phase_alias", None)
-        if not alias or alias not in snapshot_phases:
+        # Same string requirement AND the same `type` filter as the two censuses above.
+        # Only ordering depends on this today, so the divergence was cosmetic — but a
+        # third census over the same field disagreeing with the other two is the shape
+        # r9 spent a round on, and EQ#2's subsumption proof turns on those censuses
+        # agreeing. (ah#832 r10, fable NB2.)
+        if (
+            getattr(entry, "type", None) == "phase"
+            and isinstance(alias, str) and alias and alias not in ordered_aliases
+        ):
+            ordered_aliases.append(alias)
+
+    for alias in ordered_aliases:
+        if alias not in snapshot_phases:
+            # A manifest entry for a phase the snapshot does not carry is not a
+            # contradiction — and looking it up would raise. This repository's manifest
+            # holds 21 aliases absent from the v10 snapshot, and `render.py` wraps
+            # reconciliation in a bare `except`, so the lookup error would surface as
+            # total silence rather than as an error. (r3, fable.)
             continue
-        if roadmap_slug is not None:
-            ref = getattr(entry, "roadmap_ref", None)
-            ref_slug = getattr(ref, "slug", None) if ref else None
-            if ref_slug is not None:
-                if ref_slug != roadmap_slug:
-                    continue
-            elif _ambiguous_aliases and alias in _ambiguous_aliases:
-                # CR: legacy entries carry `roadmap_ref: null` (6 exist today, all from
-                # v4). Admitting them keeps the signal for a legitimately-associated entry
-                # whose frontmatter is missing — but if the SAME alias appears more than
-                # once in the manifest we cannot tell which roadmap it belongs to, and
-                # reporting it would name a phase from a DIFFERENT roadmap as contradicting
-                # the active one. That is actively misleading, so require positive
-                # association in exactly that ambiguous case.
-                continue
-        snap = snapshot_phases[alias]
-        man = getattr(entry, "status", "")
-        contradiction = (
-            (man in _MANIFEST_DONE and snap in _SNAPSHOT_IN_FLIGHT)
-            or (man in _MANIFEST_IN_FLIGHT and snap in _SNAPSHOT_DONE)
+        attributable = _phase_attributable_records(
+            entries, alias, in_scope,
+            attribute_by_file=attribution_evidence_complete,
         )
-        if contradiction:
-            out.append((alias, snap, man))
+        if not attributable:
+            continue
+        snap = snapshot_phases[alias]
+        statuses = {getattr(e, "status", "") for e in attributable}
+
+        if snap in _SNAPSHOT_IN_FLIGHT:
+            done = sorted(statuses & _MANIFEST_DONE)
+            if done:
+                out.append((alias, snap, "/".join(done)))
+        elif snap in _SNAPSHOT_DONE:
+            # THIS DIRECTION IS INDETERMINATE WHEN A PHASE ROW WAS LOST, AND THE TWO
+            # SEATS' FINDINGS CANNOT BOTH BE SATISFIED. Reporting here means "no
+            # attributable record reached done", and a dropped row may have been exactly
+            # that record — so:
+            #
+            #   r9  codex: a dropped FOREIGN row must not let a legacy record settle the
+            #              phase and SUPPRESS a real disagreement   -> we must REPORT
+            #   r10 codex: a dropped in-scope COMPLETED row must not produce a phase
+            #              reported as disagreeing when it is settled -> must NOT report
+            #
+            # Structurally identical from here: a phase row is missing and its identity is
+            # unknowable. Satisfying one reintroduces the other, measured — adding the
+            # r10 refusal turned test_a_skipped_FOREIGN_claimant_does_not_uncontest_a_file
+            # red, which is r9's finding returning.
+            #
+            # The tie breaks on this module's own recorded bar, stated at `in_scope`: "a
+            # detector that goes silent is undetectable, which makes that worse than the
+            # false positives this same function shipped in round 1." So it REPORTS, and
+            # r10's case is a known, documented false positive rather than an oversight.
+            # The operator investigating it finds a settled phase and an unreadable
+            # manifest row — which is itself worth knowing, and is the cheaper error.
+            # fable reached the same disposition independently and rated it non-blocking;
+            # codex rated it blocking. Recorded rather than silently chosen.
+            # (ah#832 r10; r9 codex vs r10 codex.)
+            if statuses & _MANIFEST_DONE:
+                continue            # a record reached done: the phase is settled
+            in_flight = sorted(statuses & _MANIFEST_IN_FLIGHT)
+            if in_flight:
+                out.append((alias, snap, "/".join(in_flight)))
     return out
 
 
