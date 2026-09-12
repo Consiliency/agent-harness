@@ -143,6 +143,17 @@ class BrokerEvidenceStore:
                 # forward-compatibility class as an added field — a new state value is at
                 # least as likely an evolution as a new key — and they were escaping the
                 # very guard written for it. (ah#834 r1, fable N1.)
+                #
+                # THE WIDENING IS EXACTLY SCOPED ONLY WHILE `EvidenceRecord` STAYS A PLAIN
+                # FROZEN DATACLASS. It has no `__post_init__`, so `__init__` runs no user
+                # code and the only `ValueError`/`KeyError` reachable here are the two
+                # raised on the lines above. Give it a validator that rejects a genuinely
+                # invalid record with `ValueError` and this handler would report that real
+                # validation bug as schema drift — a misdiagnosis, on the store whose
+                # replay decides `epoch_blocked`. Narrow the caught set at that point
+                # rather than leaving it to be discovered from a confusing message. The
+                # sibling at admission.py is narrower (`TypeError` only) and does not
+                # carry this hazard. (ah#834 r2, fable.)
                 try:
                     raw["state"] = TerminalOutcomeState(raw["state"])
                     record = EvidenceRecord(**raw)
