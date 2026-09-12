@@ -762,6 +762,47 @@ _SNAPSHOT_EXCLUDED = frozenset({"unplanned"})
 _SNAPSHOT_IN_FLIGHT = frozenset(PHASE_STATUSES) - set(_SNAPSHOT_DONE) - _SNAPSHOT_EXCLUDED
 
 
+def _roadmap_claim(candidate) -> str | None:
+    """The roadmap slug this record CLAIMS, or None when it claims none.
+
+    THE SAME PARSER-COERCION DEFECT r5 FOUND ON `file`, ON THE SIBLING FIELD. Both
+    consumers used to test `slug is not None`, and `_ref_from_json` does
+    `slug=str(data.get("slug", ""))` — so a `roadmap_ref` present but naming nothing
+    arrives as `""` (missing key) or the literal `"None"` (explicit null), never as the
+    object. `DotfilesPlanRef.slug` is typed `str`; the parser cannot produce None.
+
+    The consequence was the silent direction, in both consumers at once: a record that
+    names NO roadmap was read as naming a FOREIGN one, so `in_scope` returned False AND
+    `claims_a_roadmap` returned True — which also slams the file arm shut on it. The
+    record was denied both routes and the phase was reported by nobody. Measured through
+    `read_manifest` on a real manifest file, snapshot `ALPHA: executing` vs manifest
+    `completed`, roadmap `v1`:
+
+        roadmap_ref: null                 -> slug absent   -> REPORTS   (documented legacy)
+        roadmap_ref: {}                   -> slug ''       -> silent
+        roadmap_ref: {"slug": null, ...}  -> slug 'None'   -> silent
+        roadmap_ref: {no slug key, ...}   -> slug ''       -> silent
+        roadmap_ref: {"slug": "v1", ...}  -> slug 'v1'     -> REPORTS   (control)
+
+    `_validate_phase_entry` checks only `roadmap_ref is not None and not isinstance(dict)`
+    — it never requires a slug key or a non-empty one — so these shapes are affirmatively
+    accepted, not merely unvalidated on the render path. Reachable from any hand-edit,
+    outside agent, or writer that emits an empty ref.
+
+    ONE normaliser, read by every consumer (`in_scope`, `claims_a_roadmap`, and the
+    contested-file census), because two copies of this arithmetic is exactly how `file`
+    and `slug` came to disagree about what "names nothing" means. (ah#832 r7, fable.)
+    """
+    ref = getattr(candidate, "roadmap_ref", None)
+    if ref is None:
+        return None
+    value = getattr(ref, "slug", None)
+    if not isinstance(value, str):
+        return value or None
+    stripped = value.strip()
+    return None if stripped in ("", "None") else stripped
+
+
 def _phase_attributable_records(entries, alias: str, in_scope) -> list:
     """Every manifest record that speaks for ``alias`` in the roadmap being asked about.
 
@@ -821,8 +862,7 @@ def _phase_attributable_records(entries, alias: str, in_scope) -> list:
     scoped_files = {plan_file(e) for e in own if in_scope(e, alias)}
 
     def claims_a_roadmap(candidate) -> bool:
-        ref = getattr(candidate, "roadmap_ref", None)
-        return (getattr(ref, "slug", None) if ref else None) is not None
+        return _roadmap_claim(candidate) is not None
 
     # THE FILE ARM ADMITS ONLY RECORDS THAT MAKE NO ROADMAP CLAIM.
     #
@@ -860,8 +900,7 @@ def _phase_attributable_records(entries, alias: str, in_scope) -> list:
     # superseded-plan shape (r1), and must keep settling.
     claimed_by: dict[str, set] = {}
     for candidate in own:
-        ref = getattr(candidate, "roadmap_ref", None)
-        slug = getattr(ref, "slug", None) if ref else None
+        slug = _roadmap_claim(candidate)
         name = plan_file(candidate)
         if slug is not None and name is not None:
             claimed_by.setdefault(name, set()).add(slug)
@@ -907,8 +946,7 @@ def phase_status_disagreements(
         """
         if roadmap_slug is None:
             return True
-        ref = getattr(candidate, "roadmap_ref", None)
-        ref_slug = getattr(ref, "slug", None) if ref else None
+        ref_slug = _roadmap_claim(candidate)
         if ref_slug is not None:
             return ref_slug == roadmap_slug
         # CR: legacy entries carry `roadmap_ref: null` (6 exist today, all from v4).

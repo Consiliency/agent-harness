@@ -883,9 +883,19 @@ def test_every_non_done_snapshot_status_reports_a_completed_manifest_except_unpl
     """
     from phase_loop_runtime.models import PHASE_STATUSES
 
+    # SKIP ONLY THE LITERAL, and pin the exclusion set itself.
+    #
+    # This used to read `if status in _SNAPSHOT_EXCLUDED: continue`, taking its
+    # expectation from the operand under judgement — so a mutation that ADDED a status to
+    # `_SNAPSHOT_EXCLUDED` made the test excuse the very status it had just silenced, and
+    # the test stayed green with its own name ("except unplanned") now false. Adding
+    # `planned` survived all 68 tests and the whole mutation matrix. That is the r6
+    # blocking defect one level up: the hand-listing was fixed on the snapshot axis and
+    # left on the exclusion axis. (ah#832 r7, fable.)
+    assert _SNAPSHOT_EXCLUDED == {"unplanned"}, _SNAPSHOT_EXCLUDED
     silent = []
     for status in PHASE_STATUSES:
-        if status in _SNAPSHOT_DONE or status in _SNAPSHOT_EXCLUDED:
+        if status in _SNAPSHOT_DONE or status == "unplanned":
             continue
         if not phase_status_disagreements({"P": status}, [_entry("P", "completed")]):
             silent.append(status)
@@ -957,3 +967,88 @@ def test_CONTESTED_counts_distinct_ROADMAPS_not_records():
     assert phase_status_disagreements(
         {"P": "complete"}, same_roadmap_twice, roadmap_slug="v2"
     ) == []
+
+
+def test_manifest_done_vs_snapshot_PLANNED_is_reported():
+    """The one in-flight member with no behavioural pin of its own.
+
+    Five of the six had a dedicated test; `planned` appeared only in a test asserting
+    SILENCE against an unstarted plan, so nothing would notice it being silenced against
+    a manifest `completed`. It was in the originally shipped literal, which makes it a
+    published guarantee rather than a new surface.
+
+    Production shape: a repo whose `.phase-loop/state.json` is absent or stale — a fresh
+    clone, a reset, a worktree that never ran the phase — classifies a phase that HAS a
+    plan artifact as `planned` (classifier.py), while `plans/manifest.json` records it
+    `completed`. That is the ah#312 harm class, not a corner case. (ah#832 r7, fable.)
+    """
+    assert phase_status_disagreements({"P": "planned"}, [_entry("P", "completed")]) == [
+        ("P", "planned", "completed")
+    ]
+
+
+# ---------------------------------------------------------------------------
+# ah#832 r7 (fable, BLOCKING): r5's defect on the SIBLING field.
+#
+# `_ref_from_json` does `slug=str(data.get("slug", ""))`, so a `roadmap_ref` that
+# is present but names nothing arrives as `""` or the literal `"None"` — never as
+# the object both consumers tested for. These cases CANNOT be reached with a
+# hand-built DotfilesPlanRef, so they are driven through `read_manifest` on a real
+# manifest file, which is the only way the coercion happens.
+
+
+def _manifest_with_ref(tmp_path, ref, *, status="completed", alias="ALPHA"):
+    """A real plans/manifest.json read back through the real parser."""
+    import json
+    from phase_loop_runtime.plan_manifest import SCHEMA_VERSION, read_manifest
+
+    (tmp_path / "plans").mkdir(parents=True, exist_ok=True)
+    entry = {
+        "slug": f"v1-{alias}", "file": f"plans/phase-plan-v1-{alias}.md", "type": "phase",
+        "status": status, "created_at": "t", "updated_at": "t",
+        "owner_skill": "codex-plan-phase", "phase_alias": alias,
+    }
+    if ref != "OMIT":
+        entry["roadmap_ref"] = ref
+    (tmp_path / "plans" / "manifest.json").write_text(
+        json.dumps({"schema_version": SCHEMA_VERSION, "plans": [entry]})
+    )
+    return read_manifest(tmp_path).plans
+
+
+@pytest.mark.parametrize(
+    "label,ref",
+    [
+        ("no roadmap_ref key at all", "OMIT"),
+        ("roadmap_ref: null (the documented legacy shape)", None),
+        ("roadmap_ref: {}", {}),
+        ("roadmap_ref.slug: null", {"slug": None, "file": "specs/v1.md", "type": "phase", "status": "imported"}),
+        ("roadmap_ref with no slug key", {"file": "specs/v1.md", "type": "phase", "status": "imported"}),
+        ("roadmap_ref.slug: whitespace", {"slug": "   ", "file": "specs/v1.md", "type": "phase", "status": "imported"}),
+    ],
+)
+def test_a_roadmap_ref_that_NAMES_NOTHING_is_not_read_as_a_FOREIGN_roadmap(tmp_path, label, ref):
+    """Each of these silenced the flagship ah#312 case, on a manifest the validator accepts.
+
+    Reading "names nothing" as "names another roadmap" denied the record BOTH routes at
+    once — `in_scope` False and `claims_a_roadmap` True, which also closes the file arm —
+    so the phase was reported by nobody. `_validate_phase_entry` never requires a slug
+    key or a non-empty slug, so these shapes are affirmatively accepted rather than
+    merely unvalidated on the render path.
+    """
+    entries = _manifest_with_ref(tmp_path, ref)
+    assert phase_status_disagreements(
+        {"ALPHA": "executing"}, entries, roadmap_slug="v1"
+    ) == [("ALPHA", "executing", "completed")], label
+
+
+def test_a_ref_naming_a_REAL_OTHER_roadmap_is_still_out_of_scope(tmp_path):
+    """The control the normaliser must not break.
+
+    Normalising absence must not normalise a genuine foreign claim. If this ever reports,
+    the fix has become r2's false negative.
+    """
+    entries = _manifest_with_ref(
+        tmp_path, {"slug": "OTHER", "file": "specs/OTHER.md", "type": "phase", "status": "imported"}
+    )
+    assert phase_status_disagreements({"ALPHA": "executing"}, entries, roadmap_slug="v1") == []

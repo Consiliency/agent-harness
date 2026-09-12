@@ -60,6 +60,20 @@ MUTANTS = [
   "    contested_files = {name for name, slugs in claimed_by.items() if len(slugs) > 1}",
   "    contested_files = {name for name in claimed_by}",
   "test_CONTESTED_counts_distinct_ROADMAPS_not_records"),
+ # --- the slug normaliser: r5's defect on the SIBLING field (r7 fable F1) -----
+ ("M14 the slug guard tests a value the parser cannot produce", P,
+  '    if not isinstance(value, str):\n        return value or None\n    stripped = value.strip()\n    return None if stripped in ("", "None") else stripped',
+  "    return value",
+  "test_a_roadmap_ref_that_NAMES_NOTHING_is_not_read_as_a_FOREIGN_roadmap"),
+ ("M15 the normaliser swallows a REAL foreign claim too", P,
+  '    stripped = value.strip()\n    return None if stripped in ("", "None") else stripped\n\n\ndef _phase_attributable_records',
+  "    stripped = value.strip()\n    return None\n\n\ndef _phase_attributable_records",
+  "test_a_ref_naming_a_REAL_OTHER_roadmap_is_still_out_of_scope"),
+ # --- the exclusion set can only grow if a test pins it (r7 fable F2) ---------
+ ("M16 _SNAPSHOT_EXCLUDED silently grows by `planned`", P,
+  '_SNAPSHOT_EXCLUDED = frozenset({"unplanned"})',
+  '_SNAPSHOT_EXCLUDED = frozenset({"unplanned", "planned"})',
+  "test_manifest_done_vs_snapshot_PLANNED_is_reported"),
  # --- the loop guards --------------------------------------------------------
  ("M9 look up a phase the snapshot does not carry (r3)", P,
   "            # total silence rather than as an error. (r3, fable.)\n            continue",
@@ -107,7 +121,13 @@ def run(root):
                        cwd=root, capture_output=True, text=True, timeout=900)
     out = r.stdout + r.stderr
     tail = [l for l in out.strip().splitlines() if "passed" in l or "failed" in l]
-    names = [l.split("::")[-1].split()[0] for l in out.splitlines() if l.startswith("FAILED")]
+    # STRIP THE PARAMETRISATION before matching. pytest reports a parametrised failure as
+    # `test_name[the case]`, and splitting on whitespace lands mid-bracket, so a
+    # parametrised test can never match its own name and every mutant it catches scores
+    # [WRONG-RED]. Found by the sibling matrix on itself, then reproduced here the moment
+    # a parametrised test was added. (ah#832 r7 / ah#834 r7.)
+    names = [l.split("::")[-1].split()[0].split("[")[0]
+             for l in out.splitlines() if l.startswith("FAILED")]
     # A COLLECTION OR IMPORT ERROR IS NOT A CAUGHT MUTANT. pytest exits non-zero for
     # those too, so classifying on the return code alone counts a broken mutant as a
     # kill — the exact false-"caught" mode this matrix exists to rule out, and the one
