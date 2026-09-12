@@ -176,6 +176,63 @@ def read_manifest(repo: Path) -> DotfilesPlanManifest:
     return manifest
 
 
+def parseable_plan_entries(repo: Path) -> tuple[DotfilesPlanEntry, ...]:
+    """Every row of ``plans/manifest.json`` this runtime can PARSE, skipping the rest.
+
+    ``read_manifest`` is ALL-OR-NOTHING: it builds every row eagerly, so one row it
+    cannot parse raises and the caller gets nothing. On the detector's read path that is
+    catastrophic rather than inconvenient — ``render._manifest_disagreements`` wraps the
+    whole reconciliation in ``except Exception: return []``, so a single parse-hostile
+    sibling row deletes the ENTIRE report while a real ah#312 disagreement sits beside
+    it. Measured, each with a genuine `ALPHA: executing` vs manifest `completed`
+    disagreement present:
+
+        roadmap_ref: "a string"              -> ValueError -> nothing printed
+        roadmap_ref: ["x"]                   -> ValueError -> nothing printed
+        the entry itself is not an object     -> ValueError -> nothing printed
+        a lifecycle event is not an object    -> ValueError -> nothing printed
+        lifecycle metadata is not an object   -> ValueError -> nothing printed
+
+    THIS IS THE SAME CLASS ah#164 ALREADY CLOSED FOR DISCOVERY, and the CHANGELOG names
+    it in these words: "even a *parse-hostile* sibling row (a non-object entry /
+    `roadmap_ref` / lifecycle event that the all-or-nothing `read_manifest` load raises
+    on) no longer re-hides the valid entries". That fix routed discovery through
+    ``valid_phase_entries``; this read path was left on ``read_manifest``.
+
+    NOT ``valid_phase_entries`` here, deliberately. It materializes only rows that
+    VALIDATE, and validation checks the plan file exists on disk — measured: a row whose
+    plan file was renamed yields 0 entries where ``read_manifest`` yields 1. Dropping
+    that row would introduce a NEW silence in exactly the detector whose purpose is to
+    report disagreements: whether the plan file still exists on disk is not the question
+    being asked, and a renamed file is not a reason to stop reporting that the two stores
+    disagree about the phase.
+
+    A STRUCTURAL failure still hides everything, which is the ah#164 disposition and is
+    right: unparseable JSON, a non-object manifest, a non-array ``plans``, or an
+    unsupported ``schema_version`` means nothing in the file is trustworthy. Only
+    ROW-level parse failures are skipped. (ah#832 r8, fable.)
+    """
+    manifest_path = _manifest_path(repo)
+    if not manifest_path.exists():
+        return ()
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("manifest must be an object")
+    if int(data.get("schema_version", 0)) != SCHEMA_VERSION:
+        raise ValueError(f"unsupported manifest schema_version: {data.get('schema_version')}")
+    plans = data.get("plans", [])
+    if not isinstance(plans, list):
+        raise ValueError("manifest plans must be an array")
+    entries: list[DotfilesPlanEntry] = []
+    for row in plans:
+        try:
+            entries.append(_entry_from_json(row))
+        except Exception:
+            # One unparseable row costs its own signal, never anyone else's.
+            continue
+    return tuple(entries)
+
+
 def append_entry(repo: Path, entry: DotfilesPlanEntry) -> None:
     manifest = read_manifest(repo)
     entries = {existing.slug: existing for existing in manifest.plans}

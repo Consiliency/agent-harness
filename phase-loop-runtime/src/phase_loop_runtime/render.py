@@ -449,8 +449,12 @@ def _manifest_disagreements(snapshot: StateSnapshot) -> list[tuple[str, str, str
     """The reconciliation itself, shared by the prose and JSON branches so they can never
     disagree about whether a disagreement exists."""
     try:
-        from .plan_manifest import phase_status_disagreements, read_manifest
-        entries = read_manifest(Path(snapshot.repo)).plans
+        from .plan_manifest import phase_status_disagreements, parseable_plan_entries
+        # PER-ROW, not `read_manifest`. That load is all-or-nothing, so one row it cannot
+        # parse raised — and the bare `except` below turned that into total silence for
+        # EVERY phase while a real disagreement sat beside it. Same class ah#164 closed
+        # for discovery; this read path was left behind. (ah#832 r8, fable.)
+        entries = parseable_plan_entries(Path(snapshot.repo))
         roadmap_slug = Path(snapshot.roadmap).stem if snapshot.roadmap else None
         return phase_status_disagreements(
             snapshot.phases, entries, roadmap_slug=roadmap_slug

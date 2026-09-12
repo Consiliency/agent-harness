@@ -102,8 +102,13 @@ def test_status_output_surfaces_the_disagreement(monkeypatch, tmp_path):
 
     monkeypatch.setattr(render, "attach_git_topology", lambda repo, snap: snap)
     monkeypatch.setattr(
-        pm, "read_manifest",
-        lambda repo: type("M", (), {"plans": [_entry("FREEZE", "completed")]})(),
+        # The seam render actually calls. It was `read_manifest` until r8 moved the
+        # read to a per-row parse; a monkeypatch left on the old name would have gone
+        # vacuous silently — the test would patch a function nobody calls, the real
+        # manifest would be read instead, and the assertion would pass or fail for
+        # reasons unrelated to what it claims. (ah#832 r8.)
+        pm, "parseable_plan_entries",
+        lambda repo: (_entry("FREEZE", "completed"),),
     )
 
     class _Snap:
@@ -178,8 +183,13 @@ def test_status_json_also_carries_the_disagreement(monkeypatch, tmp_path):
 
     monkeypatch.setattr(render, "attach_git_topology", lambda repo, snap: snap)
     monkeypatch.setattr(
-        pm, "read_manifest",
-        lambda repo: type("M", (), {"plans": [_entry("FREEZE", "completed")]})(),
+        # The seam render actually calls. It was `read_manifest` until r8 moved the
+        # read to a per-row parse; a monkeypatch left on the old name would have gone
+        # vacuous silently — the test would patch a function nobody calls, the real
+        # manifest would be read instead, and the assertion would pass or fail for
+        # reasons unrelated to what it claims. (ah#832 r8.)
+        pm, "parseable_plan_entries",
+        lambda repo: (_entry("FREEZE", "completed"),),
     )
 
     class _Snap:
@@ -208,8 +218,13 @@ def test_status_json_omits_the_key_when_the_stores_agree(monkeypatch, tmp_path):
 
     monkeypatch.setattr(render, "attach_git_topology", lambda repo, snap: snap)
     monkeypatch.setattr(
-        pm, "read_manifest",
-        lambda repo: type("M", (), {"plans": [_entry("FREEZE", "completed")]})(),
+        # The seam render actually calls. It was `read_manifest` until r8 moved the
+        # read to a per-row parse; a monkeypatch left on the old name would have gone
+        # vacuous silently — the test would patch a function nobody calls, the real
+        # manifest would be read instead, and the assertion would pass or fail for
+        # reasons unrelated to what it claims. (ah#832 r8.)
+        pm, "parseable_plan_entries",
+        lambda repo: (_entry("FREEZE", "completed"),),
     )
 
     class _Snap:
@@ -1137,3 +1152,118 @@ def test_an_UNRECOGNISED_manifest_status_is_INERT_and_that_is_the_judgement(stat
     """
     assert phase_status_disagreements({"P": "executing"}, [_entry("P", status)]) == []
     assert phase_status_disagreements({"P": "complete"}, [_entry("P", status)]) == []
+
+
+# ---------------------------------------------------------------------------
+# ah#832 r8 (fable, BLOCKING): A13 was FALSE as written.
+#
+# The r8 sweep closed the arm where the parser TOLERATES a value and a guard
+# raises (`phase_alias`). This is the other arm: the parser itself REJECTS the
+# row, and `read_manifest` is all-or-nothing, so one unparseable sibling row
+# raised and `render.py`'s bare `except` deleted the entire report. Same class
+# ah#164 already closed for discovery — the CHANGELOG names these exact shapes —
+# and this read path was left on `read_manifest`.
+
+_GOOD_ROW = {
+    "slug": "v1-ALPHA", "file": "plans/phase-plan-v1-ALPHA.md", "type": "phase",
+    "status": "completed", "created_at": "t", "updated_at": "t",
+    "owner_skill": "codex-plan-phase", "phase_alias": "ALPHA",
+}
+
+
+def _write_manifest(tmp_path, rows):
+    import json
+    from phase_loop_runtime.plan_manifest import SCHEMA_VERSION
+
+    (tmp_path / "plans").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "plans" / "manifest.json").write_text(
+        json.dumps({"schema_version": SCHEMA_VERSION, "plans": rows})
+    )
+
+
+def _real_render_path(tmp_path, monkeypatch):
+    """`render._manifest_disagreements` on a real snapshot and a real manifest file.
+
+    Not the helper: the defect lived in the LOAD, so a test that hands entries straight
+    to `phase_status_disagreements` cannot see it at all.
+    """
+    from phase_loop_runtime import render
+
+    class _Snap:
+        repo = str(tmp_path)
+        roadmap = "specs/phase-plans-v1.md"
+        phases = {"ALPHA": "executing"}
+
+    return render._manifest_disagreements(_Snap())
+
+
+@pytest.mark.parametrize(
+    "label,sibling",
+    [
+        ("roadmap_ref is a string", dict(_GOOD_ROW, slug="b", file="plans/b.md", roadmap_ref="a string")),
+        ("roadmap_ref is a list", dict(_GOOD_ROW, slug="c", file="plans/c.md", roadmap_ref=["x"])),
+        ("the entry is not an object", "not an object"),
+        ("a lifecycle event is not an object", dict(_GOOD_ROW, slug="d", file="plans/d.md", lifecycle=["nope"])),
+        ("lifecycle metadata is not an object",
+         dict(_GOOD_ROW, slug="e", file="plans/e.md",
+              lifecycle=[{"transition": "imported", "by": "x", "at": "t", "metadata": "nope"}])),
+    ],
+)
+def test_a_parse_hostile_SIBLING_row_does_not_delete_the_whole_report(tmp_path, monkeypatch, label, sibling):
+    """One unparseable row costs its own signal, never every other phase's.
+
+    Each of these raised inside `read_manifest`, and the bare `except` at
+    `render._manifest_disagreements` turned that into total silence — with a genuine
+    `ALPHA: executing` vs manifest `completed` disagreement sitting right beside it.
+    Measured on the real render path, which is the only place the defect is visible.
+    """
+    _write_manifest(tmp_path, [_GOOD_ROW, sibling])
+    assert _real_render_path(tmp_path, monkeypatch) == [
+        ("ALPHA", "executing", "completed")
+    ], label
+
+
+@pytest.mark.parametrize(
+    "label,payload",
+    [
+        ("plans is not an array", {"plans": "nope"}),
+        ("unsupported schema_version", {"schema_version": 99}),
+        ("the manifest is not an object", None),
+    ],
+)
+def test_a_STRUCTURAL_failure_still_hides_the_WHOLE_manifest(tmp_path, label, payload):
+    """The ah#164 disposition, kept deliberately: nothing in the file is trustworthy.
+
+    Only ROW-level parse failures are skipped. A structural failure must still refuse,
+    or a corrupt manifest would be read as a partially-valid one — which is the
+    fabricated-partial-read trade the broker stores refuse for the same reason.
+    """
+    import json
+    from phase_loop_runtime.plan_manifest import SCHEMA_VERSION, parseable_plan_entries
+
+    (tmp_path / "plans").mkdir(parents=True, exist_ok=True)
+    body = ["nope"] if payload is None else {"schema_version": SCHEMA_VERSION, "plans": [_GOOD_ROW], **payload}
+    (tmp_path / "plans" / "manifest.json").write_text(json.dumps(body))
+    with pytest.raises(ValueError):
+        parseable_plan_entries(tmp_path)
+
+
+def test_a_RENAMED_plan_file_is_still_reported(tmp_path):
+    """Why this is not `valid_phase_entries`, which the ah#164 fix used.
+
+    That helper materializes only rows that VALIDATE, and validation checks the plan file
+    exists on disk. Measured: with the plan file absent, `valid_phase_entries` yields 0
+    entries where the per-row parse yields 1. Dropping it would introduce a NEW silence
+    in the detector whose whole purpose is to report disagreements — whether the file was
+    renamed is not the question being asked, and it is not a reason to stop saying the two
+    stores disagree about the phase. (ah#832 r8.)
+    """
+    from phase_loop_runtime.plan_manifest import parseable_plan_entries, valid_phase_entries
+
+    _write_manifest(tmp_path, [_GOOD_ROW])  # note: the plan FILE is never created
+    assert len(parseable_plan_entries(tmp_path)) == 1
+    dropped = valid_phase_entries(tmp_path / "plans" / "manifest.json")
+    assert dropped is not None and len(dropped) == 0, dropped
+    assert phase_status_disagreements(
+        {"ALPHA": "executing"}, parseable_plan_entries(tmp_path)
+    ) == [("ALPHA", "executing", "completed")]

@@ -92,6 +92,26 @@ MUTANTS = [
   "        if isinstance(alias, str) and alias and alias not in ordered_aliases:",
   "        if alias and alias not in ordered_aliases:",
   "test_a_malformed_phase_alias_does_not_SILENCE_THE_WHOLE_detector"),
+ # --- the LOAD: all-or-nothing vs per-row (r8 fable) --------------------------
+ ("M19 render goes back to the all-or-nothing read_manifest", R,
+  "        entries = parseable_plan_entries(Path(snapshot.repo))",
+  "        from .plan_manifest import read_manifest\n        entries = read_manifest(Path(snapshot.repo)).plans",
+  "test_a_parse_hostile_SIBLING_row_does_not_delete_the_whole_report"),
+ ("M20 the per-row parse swallows STRUCTURAL failures too", P,
+  '        raise ValueError("manifest plans must be an array")\n    entries: list[DotfilesPlanEntry] = []',
+  "        return ()\n    entries: list[DotfilesPlanEntry] = []",
+  "test_a_STRUCTURAL_failure_still_hides_the_WHOLE_manifest"),
+ ("M21 the load uses valid_phase_entries (drops a renamed plan file)", P,
+  """    entries: list[DotfilesPlanEntry] = []
+    for row in plans:
+        try:
+            entries.append(_entry_from_json(row))
+        except Exception:
+            # One unparseable row costs its own signal, never anyone else's.
+            continue
+    return tuple(entries)""",
+  "    return valid_phase_entries(manifest_path) or ()",
+  "test_a_RENAMED_plan_file_is_still_reported"),
  # --- the operator surface ---------------------------------------------------
  ("M11 the header counts ROWS again, not phases (r2)", R,
   "len({phase for phase, _, _ in clashes})", "len(clashes)",
