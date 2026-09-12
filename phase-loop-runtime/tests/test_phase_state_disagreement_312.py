@@ -701,12 +701,24 @@ def test_a_record_with_no_plan_file_is_not_attributable_by_file():
     # is built from. My first version of this test put it on the out-of-scope record, so
     # the seed was {_A} either way and the guard was never exercised — the mutant that
     # removes it survived. A test that does not reach the line it names is not coverage.
-    entries = [
-        _rec("P", "committed", "v2", None),        # in scope, NO plan file
-        _rec("P", "completed", "v1", None),        # foreign roadmap, also no plan file
-    ]
-    out = phase_status_disagreements({"P": "complete"}, entries, roadmap_slug="v2")
-    assert out == [("P", "complete", "committed")], out
+    # EVERY SPELLING THE PARSER CAN EMIT, not just the object. `_entry_from_json` does
+    # `str(data.get("file", ""))`, so a missing key becomes `""` and an explicit
+    # `"file": null` becomes the literal `"None"` — the `None` object never reaches here.
+    # A guard written against the object alone was dead in production, and the two
+    # placeholders compared equal to each other, so two records naming no plan at all
+    # matched as though they named the same one. (r5, fable.)
+    for absent in (None, "", "None", "  "):
+        entries = [
+            _rec("P", "committed", "v2", absent),      # in scope, names no plan
+            _rec("P", "completed", None, absent),      # LEGACY, also names no plan
+        ]
+        out = phase_status_disagreements({"P": "complete"}, entries, roadmap_slug="v2")
+        assert out == [("P", "complete", "committed")], (absent, out)
+    # control: a REAL shared file must still settle
+    assert phase_status_disagreements(
+        {"P": "complete"},
+        [_rec("P", "committed", "v2", _A), _rec("P", "completed", None, _A)],
+        roadmap_slug="v2") == []
 
 
 def test_a_file_named_only_by_an_OUT_OF_SCOPE_record_does_not_seed_the_closure():

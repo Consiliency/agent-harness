@@ -752,9 +752,29 @@ def _phase_attributable_records(entries, alias: str, in_scope) -> list:
           while file B, in scope, saw no done sibling        -> settled
     """
     own = [e for e in entries if getattr(e, "phase_alias", None) == alias]
-    scoped_files = {
-        getattr(e, "file", None) for e in own if in_scope(e, alias)
-    } - {None}
+
+    def plan_file(candidate):
+        """The record's plan file, or None when it does not actually name one.
+
+        `- {None}` was the original guard and it is DEAD in production: the parser does
+        `str(data.get("file", ""))`, so a missing key becomes `""` and an explicit
+        `"file": null` becomes the literal string `"None"` — never the object. Both
+        placeholders then compare EQUAL to each other, so two records that name no plan
+        at all matched as though they named the same one, and a phase went silent on the
+        strength of two absent values agreeing. Executed on both spellings.
+        (r5, fable.)
+
+        Guarding the values the parser can actually produce, rather than the one it
+        cannot. `validate_manifest` rejects such input, but validation is not on the
+        render path, so this cannot rely on it.
+        """
+        value = getattr(candidate, "file", None)
+        if not isinstance(value, str):
+            return value or None
+        stripped = value.strip()
+        return None if stripped in ("", "None") else stripped
+
+    scoped_files = {plan_file(e) for e in own if in_scope(e, alias)} - {None}
 
     def claims_a_roadmap(candidate) -> bool:
         ref = getattr(candidate, "roadmap_ref", None)
@@ -774,7 +794,8 @@ def _phase_attributable_records(entries, alias: str, in_scope) -> list:
     return [
         e for e in own
         if in_scope(e, alias)
-        or (not claims_a_roadmap(e) and getattr(e, "file", None) in scoped_files)
+        or (not claims_a_roadmap(e) and plan_file(e) is not None
+            and plan_file(e) in scoped_files)
     ]
 
 
