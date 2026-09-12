@@ -725,6 +725,42 @@ _SNAPSHOT_IN_FLIGHT = {
 }
 
 
+def _phase_attributable_records(entries, alias: str, in_scope) -> list:
+    """Every manifest record that speaks for ``alias`` in the roadmap being asked about.
+
+    A record is attributable two ways, and the SECOND is transitive, which is the whole
+    point of computing this once per phase:
+
+      directly    it carries this alias and passes the roadmap scope test
+      by file     it carries this alias and names a plan FILE that a directly
+                  attributable record also names
+
+    The file arm exists because a legacy entry with `roadmap_ref: null` cannot be
+    attributed to a roadmap by its frontmatter — but naming the same plan file as an
+    in-scope record attributes it just as surely, and more specifically. The ambiguity
+    rule is right to refuse to GUESS a roadmap; it is not guessing here.
+
+    Five board rounds each found a different case, and each per-candidate patch
+    reintroduced an earlier one. These are the cases this one function has to satisfy
+    simultaneously:
+
+      r1  same file, `committed` beside `completed`          -> settled
+      r1  a SUPERSEDED plan, different file, same roadmap    -> settled
+      r2  a DIFFERENT roadmap's `completed`                  -> NOT settled
+      r3  same file, one record with a legacy null ref       -> settled
+      r4  r1 and r3 TOGETHER: a legacy record settles file A
+          while file B, in scope, saw no done sibling        -> settled
+    """
+    own = [e for e in entries if getattr(e, "phase_alias", None) == alias]
+    scoped_files = {
+        getattr(e, "file", None) for e in own if in_scope(e, alias)
+    } - {None}
+    return [
+        e for e in own
+        if in_scope(e, alias) or getattr(e, "file", None) in scoped_files
+    ]
+
+
 def phase_status_disagreements(
     snapshot_phases: Mapping[str, str],
     entries: Sequence[DotfilesPlanEntry],
@@ -826,25 +862,28 @@ def phase_status_disagreements(
             # is the strongest association available, stronger than the roadmap
             # frontmatter that entry happens to be missing.
             # (r1 fable/codex, r2 all seats, r3 codex.)
-            plan_file = getattr(entry, "file", None)
-
-            def settles(other) -> bool:
-                if getattr(other, "phase_alias", None) != alias:
-                    return False
-                other_file = getattr(other, "file", None)
-                if plan_file is not None and other_file == plan_file:
-                    return True
-                return in_scope(other, alias)
-
-            siblings = [other for other in entries if settles(other)]
-            if any(getattr(other, "status", "") in _MANIFEST_DONE for other in siblings):
+            # SETTLEMENT IS A PROPERTY OF THE PHASE, computed ONCE — not of whichever
+            # record happens to be under judgement.
+            #
+            # Deciding it per candidate, using that candidate's own file, produced this:
+            #
+            #   plans/A.md  roadmap v2    committed
+            #   plans/A.md  roadmap null  completed
+            #   plans/B.md  roadmap v2    committed
+            #
+            # A settles against its same-file sibling; B does not, because that sibling
+            # is a legacy null-ref entry the ambiguity rule keeps out of scope. So the
+            # phase reported as disputed while one of its own plans had completed it.
+            # (r4, codex.)
+            attributable = _phase_attributable_records(entries, alias, in_scope)
+            if any(getattr(other, "status", "") in _MANIFEST_DONE for other in attributable):
                 continue
             in_flight = sorted({
-                status for status in (getattr(o, "status", "") for o in siblings)
+                status for status in (getattr(o, "status", "") for o in attributable)
                 if status in _MANIFEST_IN_FLIGHT
             })
             row = (alias, snap, "/".join(in_flight))
-            if row not in out:            # one row per plan, not one per record
+            if row not in out:            # one row per phase, not one per record
                 out.append(row)
     return out
 

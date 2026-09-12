@@ -645,3 +645,45 @@ def test_alias_ambiguity_counts_EVERY_entry_not_only_the_null_ref_ones():
     # to v2 and is not judged. Counting only null-ref entries would call P unambiguous,
     # admit it, and report a phase that may belong to another roadmap entirely.
     assert out == [], out
+
+
+def test_settlement_r4_a_legacy_record_settles_the_phase_not_just_its_own_file():
+    """r4, codex: r1 and r3's shapes TOGETHER, which no single-case test caught.
+
+        plans/A.md  roadmap v2    committed
+        plans/A.md  roadmap null  completed
+        plans/B.md  roadmap v2    committed
+
+    A settled against its same-file sibling; B did not, because that sibling is a legacy
+    null-ref record the ambiguity rule keeps out of scope. So the phase reported as
+    disputed while one of its own plans had completed it.
+
+    The cause was structural, not a missing condition: settlement was decided per
+    CANDIDATE using that candidate's file. It is a property of the PHASE and is now
+    computed once, with file association resolved transitively first.
+    """
+    entries = [
+        _rec("P", "committed", "v2", _A),
+        _rec("P", "completed", None, _A),
+        _rec("P", "committed", "v2", _B),
+    ]
+    assert phase_status_disagreements({"P": "complete"}, entries, roadmap_slug="v2") == []
+    # order must not matter — the closure is computed before any judgement
+    assert phase_status_disagreements(
+        {"P": "complete"}, list(reversed(entries)), roadmap_slug="v2") == []
+
+
+def test_r4_does_not_let_a_FOREIGN_file_association_settle_the_phase():
+    """The control for r4: file association must start from an IN-SCOPE record.
+
+    If a legacy null-ref `completed` record shares a file with another roadmap's entry
+    only, it is not attributable here and must not settle — otherwise the r4 remedy
+    reintroduces r2's false negative through the file arm.
+    """
+    entries = [
+        _rec("P", "committed", "v2", _A),          # in scope, in flight
+        _rec("P", "completed", None, "plans/C.md"),  # legacy, unrelated file
+        _rec("P", "imported", "v1", "plans/C.md"),   # foreign roadmap, same file as above
+    ]
+    out = phase_status_disagreements({"P": "complete"}, entries, roadmap_slug="v2")
+    assert out == [("P", "complete", "committed")], out
