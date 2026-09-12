@@ -141,3 +141,66 @@ def test_a_store_this_runtime_CAN_read_is_unaffected(tmp_path):
     replayed = store.replay()
     assert set(replayed) == {"key-1", "key-2"}
     assert replayed["key-1"].evidence_reference == "https://example.invalid/pr/1"
+
+
+# ---------------------------------------------------------------------------
+# ah#834 r6 (fable): the refusal's `line` was never asserted, so two mutants
+# survived — `enumerate(..., start=1)` -> `start=0` and the `line=index` that
+# carries it. The offending row is deliberately NOT the first one: a store whose
+# only row is the bad one cannot tell a correct line number from a constant.
+
+
+def test_the_refusal_NAMES_THE_LINE_of_the_offending_row(tmp_path):
+    """The line number is the actionable half of a multi-row store's refusal.
+
+    `evidence.jsonl` is append-only and grows for the life of a partition, so "this
+    store is unreadable" without a row is a haystack. Two readable rows precede the
+    drifted one here, which is what makes the assertion able to fail: it pins the
+    1-based index of the row that actually broke, not merely that some number was
+    reported.
+    """
+    store = _store(tmp_path)
+    store.path.write_text(
+        _line(idempotency_key="key-1") + "\n"
+        + _line(idempotency_key="key-2") + "\n"
+        + _line(idempotency_key="key-3", future_diagnostic="from a newer writer") + "\n"
+    )
+    with pytest.raises(EvidenceStoreIncompatible) as caught:
+        store.replay()
+    assert caught.value.line == 3, caught.value.line
+    assert caught.value.idempotency_key == "key-3"
+    # ...and the operator reads the message, not the attribute.
+    assert "at line 3" in str(caught.value)
+
+
+def test_the_line_is_ONE_BASED_so_it_matches_what_a_reader_counts(tmp_path):
+    """A first-row failure must report 1, not 0.
+
+    This is the half `start=1` owns: with the bad row first, an off-by-one is the only
+    thing that can move this number, and `sed -n 1p` on the store must land on the row
+    the refusal names.
+    """
+    store = _written_by_a_newer_runtime(tmp_path)
+    with pytest.raises(EvidenceStoreIncompatible) as caught:
+        store.replay()
+    assert caught.value.line == 1, caught.value.line
+
+
+def test_constructor_key_mismatch_returns_EMPTY_for_a_non_dataclass():
+    """The documented unconditional-call contract, which no test reached.
+
+    The docstring promises `((), ())` for a non-dataclass "so a caller may use it
+    unconditionally" — and the refusal path depends on that: it calls the helper before
+    it knows anything about the constructor, and falls back to naming the cause when both
+    tuples are empty. Delete the guard and that call raises inside the except block,
+    replacing a typed refusal with a TypeError from the error handler itself — the exact
+    ah#789 failure shape, relocated. Unpinned, the guard was free to vanish.
+    """
+    from phase_loop_runtime.convergence.broker.admission import constructor_key_mismatch
+
+    class NotADataclass:
+        def __init__(self, **kwargs):
+            raise AssertionError("must not be constructed")
+
+    assert constructor_key_mismatch(NotADataclass, {"anything": 1}) == ((), ())
+    assert constructor_key_mismatch(dict, {"anything": 1}) == ((), ())

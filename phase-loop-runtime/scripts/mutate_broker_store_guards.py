@@ -18,6 +18,7 @@ from pathlib import Path
 SRC = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else Path(__file__).resolve().parents[2]
 E = "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/evidence.py"
 C = "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/credsep.py"
+A = "phase-loop-runtime/src/phase_loop_runtime/convergence/broker/admission.py"
 T = ["phase-loop-runtime/tests/test_convergence_broker_credsep.py",
      "phase-loop-runtime/tests/test_broker_evidence_schema_drift_789.py"]
 # (name, file, old, new, MUST_FAIL) — the last element is the defect this mutant
@@ -50,6 +51,21 @@ MUTANTS = [
   '            if not prs:\n                return self._ambiguous(request, "pr-list-empty")',
   '            if not head_matches:\n                return self._ambiguous(request, "pr-list-empty")',
   "test_pr_head_unconfirmed_returns_ambiguous"),
+ # The refusal's LINE NUMBER. Both of these survived r6 because nothing asserted it;
+ # `evidence.jsonl` is append-only and grows for the life of a partition, so a refusal
+ # without a row is a haystack. (ah#834 r6, fable.)
+ ("M8 line numbering off by one (start=1 -> start=0)", E,
+  "splitlines(), start=1)", "splitlines(), start=0)",
+  "test_the_line_is_ONE_BASED_so_it_matches_what_a_reader_counts"),
+ ("M9 the reported line becomes a constant", E,
+  "line=index,", "line=1,",
+  "test_the_refusal_NAMES_THE_LINE_of_the_offending_row"),
+ # The helper's documented unconditional-call contract. Without the guard, the refusal
+ # path raises inside its own except block: the ah#789 failure shape, relocated into the
+ # error handler. (ah#834 r6, fable.)
+ ("M10 constructor_key_mismatch loses its non-dataclass guard", A,
+  "    if not dataclasses.is_dataclass(constructor):\n        return (), ()\n", "",
+  "test_constructor_key_mismatch_returns_EMPTY_for_a_non_dataclass"),
 ]
 def run(root):
     r = subprocess.run(["python3","-m","pytest",*[str(Path(root)/t) for t in T],"-q","-p","no:cacheprovider"],
