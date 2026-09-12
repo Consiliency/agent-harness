@@ -855,9 +855,45 @@ def _roadmap_claim(candidate) -> str | None:
         return None
     value = getattr(ref, "slug", None)
     if not isinstance(value, str):
-        return value or None
+        # A NON-STRING NAMES NOTHING — it is never passed through. Returning the raw
+        # value would carry the `phase_alias` hazard in latent form: a truthy unhashable
+        # slug flows into `claimed_by.setdefault(...).add(slug)` and raises
+        # `TypeError: unhashable type`, which `render.py`'s bare `except` turns into total
+        # silence for every phase. Unreachable today — `_ref_from_json` coerces with
+        # `str(...)` — but the alias census chose isinstance-or-skip for exactly this
+        # arithmetic, and three guards doing the same job should not disagree about it.
+        # (ah#832 r8, fable NB3.)
+        return None
     stripped = value.strip()
-    return None if stripped in ("", "None") else stripped
+    if stripped in ("", "None"):
+        # THE SLUG IS ABSENT — BUT THE REF MAY STILL NAME THE ROADMAP BY FILE, and
+        # discarding that was a regression the r7 F1 fix introduced. The production
+        # consumer identifies the active roadmap as `Path(snapshot.roadmap).stem`
+        # (render.py:458), so `roadmap_ref: {"slug": null, "file": "specs/v1.md"}`
+        # explicitly references v1 — it is NOT a record that "names nothing".
+        #
+        # Reading it as legacy let it through the file arm and settle a DIFFERENT
+        # roadmap's phase. Measured, alias `P`, both records on `plans/phase-plan-A.md`,
+        # snapshot `complete`, active roadmap `v2`:
+        #
+        #   v2 committed + (slug null, ref file specs/v1.md) completed  -> []
+        #   correct:                                                    -> ('P','complete','committed')
+        #
+        # i.e. r2's foreign-roadmap false negative, reintroduced through the normaliser
+        # added to fix F1. Same stem rule as the consumer, so the two agree about what
+        # names a roadmap. (ah#832 r8, codex.)
+        ref_file = getattr(ref, "file", None)
+        if isinstance(ref_file, str):
+            stem = PurePosixPath(ref_file.strip()).stem
+            if stem not in ("", "None"):
+                return stem
+        return None
+    # THE ONE VALUE COLLISION THIS SENTINEL CANNOT DISTINGUISH: a roadmap spec literally
+    # named `None.md` would give `roadmap_slug == "None"`, and a record explicitly
+    # claiming it would read as legacy. The choice is forced — `"None"` is exactly what
+    # the parser emits for an explicit JSON null — so this is noted rather than fixed.
+    # (ah#832 r8, fable NB4.)
+    return stripped
 
 
 def _phase_attributable_records(entries, alias: str, in_scope) -> list:
@@ -905,7 +941,7 @@ def _phase_attributable_records(entries, alias: str, in_scope) -> list:
         """
         value = getattr(candidate, "file", None)
         if not isinstance(value, str):
-            return value or None
+            return None   # same rule as `_roadmap_claim`; see NB3 there
         stripped = value.strip()
         return None if stripped in ("", "None") else stripped
 

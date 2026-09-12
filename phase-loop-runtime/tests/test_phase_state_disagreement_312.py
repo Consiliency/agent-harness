@@ -14,6 +14,7 @@ import pytest
 
 from phase_loop_runtime.models import PHASE_STATUSES
 from phase_loop_runtime.plan_manifest import (
+    _roadmap_claim,
     _MANIFEST_DONE,
     _MANIFEST_IN_FLIGHT,
     _SNAPSHOT_DONE,
@@ -1146,9 +1147,17 @@ def test_an_UNRECOGNISED_manifest_status_is_INERT_and_that_is_the_judgement(stat
 
     The cost is real and stated plainly: a manifest whose `status` key is missing, or
     misspelled `complete`, will not settle a phase and will not be reported — so a true
-    ah#312 disagreement written with a typo stays silent. `validate_manifest` rejects
-    those statuses, and that is the correct layer for a vocabulary error. Recorded here
-    so a later reader finds a decision rather than an accident. (ah#832 r7.)
+    ah#312 disagreement written with a typo stays silent.
+
+    AND THE BOUND ON THAT COST IS WEAKER THAN THIS DOCSTRING FIRST CLAIMED. It said
+    "`validate_manifest` rejects those statuses, and that is the correct layer for a
+    vocabulary error." Architecturally right, but **the public `validate_manifest` has no
+    caller in `src/` at all** — only tests and the per-phase acceptance commands in
+    `plans/phase-plan-v10-*.md` invoke it; `_validate_manifest_data` is the only internal
+    user. So a misspelled status is silent on every operator surface today, not caught one
+    layer up. The disposition stands — naming `manifest='draft'` as a contradiction
+    asserts a disagreement between two things that may well agree — but this is a genuine
+    gap rather than a covered one. (ah#832 r7; bound corrected r8, fable NB2.)
     """
     assert phase_status_disagreements({"P": "executing"}, [_entry("P", status)]) == []
     assert phase_status_disagreements({"P": "complete"}, [_entry("P", status)]) == []
@@ -1267,3 +1276,68 @@ def test_a_RENAMED_plan_file_is_still_reported(tmp_path):
     assert phase_status_disagreements(
         {"ALPHA": "executing"}, parseable_plan_entries(tmp_path)
     ) == [("ALPHA", "executing", "completed")]
+
+
+# ---------------------------------------------------------------------------
+# ah#832 r8 (codex, BLOCKING): the r7 F1 normaliser discarded the roadmap
+# identity carried in `roadmap_ref.file`. The production consumer identifies the
+# active roadmap as `Path(snapshot.roadmap).stem` (render.py:458), so a ref naming
+# `specs/v1.md` with no slug DOES reference v1. Reading it as "names nothing" let
+# it through the file arm and settle a different roadmap's phase — r2's
+# foreign-roadmap false negative, reintroduced by the fix for F1.
+
+
+def _ref(slug=None, file=None):
+    if slug is None and file is None:
+        return None
+    return DotfilesPlanRef(slug=slug or "", file=file or "", type="phase", status="imported")
+
+
+def _rec_ref(alias, status, ref, file):
+    return DotfilesPlanEntry(
+        slug=f"{status}-{file}-{id(ref)}", file=file, type="phase", status=status,
+        created_at="t", updated_at="t", owner_skill="codex-plan-phase",
+        phase_alias=alias, roadmap_ref=ref,
+    )
+
+
+def test_a_slugless_ref_that_names_a_FOREIGN_roadmap_by_FILE_settles_nothing():
+    """codex's case: the record references v1 through its ref file, so v2 must report."""
+    entries = [
+        _rec_ref("P", "committed", _ref("v2", "specs/v2.md"), _A),
+        _rec_ref("P", "completed", _ref(None, "specs/v1.md"), _A),
+    ]
+    assert phase_status_disagreements({"P": "complete"}, entries, roadmap_slug="v2") == [
+        ("P", "complete", "committed")
+    ]
+
+
+def test_a_slugless_ref_naming_a_FOREIGN_roadmap_is_not_the_subject_either():
+    """The other direction the seat asked for: it must not BE the reported disagreement."""
+    entries = [
+        _rec_ref("P", "committed", _ref("v2", "specs/v2.md"), _A),
+        _rec_ref("P", "completed", _ref(None, "specs/v1.md"), _A),
+    ]
+    assert phase_status_disagreements({"P": "executing"}, entries, roadmap_slug="v2") == []
+
+
+def test_a_slugless_ref_naming_the_ACTIVE_roadmap_by_file_IS_in_scope():
+    """The control that stops the fallback becoming a blanket exclusion.
+
+    Same stem rule as the consumer, so a ref naming `specs/v2.md` is the active roadmap
+    whether or not the slug survived whatever wrote it.
+    """
+    entries = [_rec_ref("P", "completed", _ref(None, "specs/v2.md"), _A)]
+    assert phase_status_disagreements({"P": "executing"}, entries, roadmap_slug="v2") == [
+        ("P", "executing", "completed")
+    ]
+
+
+def test_a_ref_that_names_NOTHING_AT_ALL_is_still_legacy():
+    """r7's F1 fix must survive r8's: `roadmap_ref: {}` claims nothing by slug OR file."""
+    empty = DotfilesPlanRef(slug="", file="", type="", status="")
+    assert phase_status_disagreements(
+        {"P": "executing"}, [_rec_ref("P", "completed", empty, _A)], roadmap_slug="v2"
+    ) == [("P", "executing", "completed")]
+    assert _roadmap_claim(_rec_ref("P", "completed", empty, _A)) is None
+    assert _roadmap_claim(_rec_ref("P", "completed", None, _A)) is None

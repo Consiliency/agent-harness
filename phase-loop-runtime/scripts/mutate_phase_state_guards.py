@@ -61,14 +61,18 @@ MUTANTS = [
   "    contested_files = {name for name in claimed_by}",
   "test_CONTESTED_counts_distinct_ROADMAPS_not_records"),
  # --- the slug normaliser: r5's defect on the SIBLING field (r7 fable F1) -----
- ("M14 the slug guard tests a value the parser cannot produce", P,
-  '    if not isinstance(value, str):\n        return value or None\n    stripped = value.strip()\n    return None if stripped in ("", "None") else stripped',
-  "    return value",
-  "test_a_roadmap_ref_that_NAMES_NOTHING_is_not_read_as_a_FOREIGN_roadmap"),
  ("M15 the normaliser swallows a REAL foreign claim too", P,
-  '    stripped = value.strip()\n    return None if stripped in ("", "None") else stripped\n\n\ndef _phase_attributable_records',
-  "    stripped = value.strip()\n    return None\n\n\ndef _phase_attributable_records",
+  "    return stripped\n\n\ndef _phase_attributable_records",
+  "    return None\n\n\ndef _phase_attributable_records",
   "test_a_ref_naming_a_REAL_OTHER_roadmap_is_still_out_of_scope"),
+ ("M22 the slugless ref discards the roadmap named by its FILE (r8 codex)", P,
+  '        ref_file = getattr(ref, "file", None)',
+  "        ref_file = None",
+  "test_a_slugless_ref_that_names_a_FOREIGN_roadmap_by_FILE_settles_nothing"),
+ ("M23 the file fallback swallows a ref that names NOTHING (r7 F1 regression)", P,
+  '            if stem not in ("", "None"):',
+  "            if True:",
+  "test_a_ref_that_names_NOTHING_AT_ALL_is_still_legacy"),
  # --- the exclusion set can only grow if a test pins it (r7 fable F2) ---------
  ("M16 _SNAPSHOT_EXCLUDED silently grows by `planned`", P,
   '_SNAPSHOT_EXCLUDED = frozenset({"unplanned"})',
@@ -117,6 +121,22 @@ MUTANTS = [
   "len({phase for phase, _, _ in clashes})", "len(clashes)",
   "test_the_rendered_header_counts_PHASES_not_rows"),
 ]
+# RECORDED EQUIVALENT #3 (was M14 until r8): dropping `_roadmap_claim`'s
+# `isinstance(value, str)` guard. Until r8 this mutant was CAUGHT, because that guard was
+# what made an empty/`"None"` slug read as "names nothing". r8 moved that property into
+# the `stripped in ("", "None")` branch and its FILE fallback, which M23 and
+# test_a_ref_that_names_NOTHING_AT_ALL_is_still_legacy now own. What the isinstance check
+# still guards is a NON-STRING slug — and `_ref_from_json` coerces with `str(...)`, so no
+# manifest this parser can produce reaches it. Every test built through `read_manifest`
+# therefore passes with it removed.
+#
+# Kept anyway, and the reason is the r8 sweep's own finding: a truthy unhashable value
+# returned from here flows into `claimed_by.setdefault(...).add(slug)` and raises
+# `TypeError: unhashable type`, which `render.py`'s bare `except` turns into total silence
+# for every phase — the exact hazard the `phase_alias` guards were added to close. Three
+# guards doing the same arithmetic should not disagree about it. A latent-path guard, held
+# deliberately, measured as equivalent rather than printed as a kill. (ah#832 r8, fable NB3.)
+#
 # RECORDED EQUIVALENT #2 (was M6 until r7): dropping the file arm's
 # `not claims_a_roadmap(e)` clause. It is the r2 guard — three seats found that defect
 # independently — and it is now SUBSUMED by M12's contested-file rule. Proof, and it turns
