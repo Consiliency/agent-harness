@@ -687,3 +687,35 @@ def test_r4_does_not_let_a_FOREIGN_file_association_settle_the_phase():
     ]
     out = phase_status_disagreements({"P": "complete"}, entries, roadmap_slug="v2")
     assert out == [("P", "complete", "committed")], out
+
+
+def test_a_record_with_no_plan_file_is_not_attributable_by_file():
+    """`file=None` must not join the closure, or every null-file record settles everything.
+
+    The closure is seeded from the files of in-scope records; `None` is stripped from that
+    seed set deliberately. Without that, a legacy record carrying no plan file at all
+    would match any other record whose file is also missing, and settle a phase on the
+    strength of two absent values being equal.
+    """
+    # The null file must be on the IN-SCOPE side, because that is the side the seed set
+    # is built from. My first version of this test put it on the out-of-scope record, so
+    # the seed was {_A} either way and the guard was never exercised — the mutant that
+    # removes it survived. A test that does not reach the line it names is not coverage.
+    entries = [
+        _rec("P", "committed", "v2", None),        # in scope, NO plan file
+        _rec("P", "completed", "v1", None),        # foreign roadmap, also no plan file
+    ]
+    out = phase_status_disagreements({"P": "complete"}, entries, roadmap_slug="v2")
+    assert out == [("P", "complete", "committed")], out
+
+
+def test_a_file_named_only_by_an_OUT_OF_SCOPE_record_does_not_seed_the_closure():
+    """The closure must start from in-scope records, or r2's false negative returns.
+
+    A `completed` record in another roadmap, naming a file no in-scope record names, is
+    not attributable to this phase in this roadmap and must not settle it. This is the
+    direct control on the seed set: widening it to all records reds the r2 case.
+    """
+    entries = [_rec("P", "committed", "v2", _A), _rec("P", "completed", "v1", "plans/Z.md")]
+    out = phase_status_disagreements({"P": "complete"}, entries, roadmap_slug="v2")
+    assert out == [("P", "complete", "committed")], out
