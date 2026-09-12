@@ -893,6 +893,11 @@ def test_every_non_done_snapshot_status_reports_a_completed_manifest_except_unpl
     # blocking defect one level up: the hand-listing was fixed on the snapshot axis and
     # left on the exclusion axis. (ah#832 r7, fable.)
     assert _SNAPSHOT_EXCLUDED == {"unplanned"}, _SNAPSHOT_EXCLUDED
+    # The r6 defect, stated as the property rather than as a set-shape mirror: `unknown`
+    # was in NEITHER operand, so it was unreportable. Naming it here means a re-hand-listing
+    # that drops it fails on the name of the status, not on a derivation that mirrors the
+    # source line and therefore cannot fail.
+    assert "unknown" in _SNAPSHOT_IN_FLIGHT, sorted(_SNAPSHOT_IN_FLIGHT)
     silent = []
     for status in PHASE_STATUSES:
         if status in _SNAPSHOT_DONE or status == "unplanned":
