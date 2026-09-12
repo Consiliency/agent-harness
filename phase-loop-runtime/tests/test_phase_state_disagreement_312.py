@@ -579,3 +579,69 @@ def test_a_different_phase_sharing_a_plan_file_still_does_not_settle():
         roadmap_slug="v2",
     )
     assert ("P", "complete", "committed") in out, out
+
+
+# ---------------------------------------------------------------------------
+# Three guards that were CORRECT but unpinned — found by mutating the fix, not by
+# reading it. Each survived the whole suite while breaking on real data or real
+# policy. (ah#832 r3, fable.)
+# ---------------------------------------------------------------------------
+
+
+def test_an_entry_for_a_phase_absent_from_the_snapshot_is_skipped_not_looked_up():
+    """The sharpest silencing path in this function, and nothing pinned it.
+
+    Deleting `alias not in snapshot_phases` passes every test here, then raises KeyError
+    on the real manifest — this repository carries v4 aliases (PNL*, ROADMAP) that the
+    v10 snapshot does not contain. `render.py`'s reconciliation is wrapped in a bare
+    `except Exception: return []` so that `status` can never break, which is reasonable
+    on its own and means that KeyError does not surface as an error: the detector simply
+    goes **entirely silent**.
+
+    A guard whose failure mode is silence must be pinned by something other than the
+    happy path.
+    """
+    entries = [
+        _rec("PRESENT", "committed", "v2", _A),
+        _rec("ABSENT_FROM_SNAPSHOT", "committed", "v2", _B),
+    ]
+    out = phase_status_disagreements({"PRESENT": "complete"}, entries, roadmap_slug="v2")
+    assert out == [("PRESENT", "complete", "committed")], out
+
+
+def test_orphaned_and_failed_records_do_NOT_settle_a_phase():
+    """`_MANIFEST_DONE` is `{"completed"}` deliberately; widening it passed every test.
+
+    An orphaned or failed plan did not finish the work, so it cannot settle the phase
+    against a snapshot claiming completion. The live fixture that carries an `orphaned`
+    record never exercised this, because roadmap scoping filtered that record out before
+    the settle check ever saw it.
+    """
+    for terminal_but_not_done in ("orphaned", "failed"):
+        out = phase_status_disagreements(
+            {"P": "complete"},
+            [_rec("P", "committed", "v2", _A), _rec("P", terminal_but_not_done, "v2", _B)],
+            roadmap_slug="v2",
+        )
+        assert out == [("P", "complete", "committed")], (terminal_but_not_done, out)
+
+
+def test_alias_ambiguity_counts_EVERY_entry_not_only_the_null_ref_ones():
+    """Restricting the ambiguity count to null-ref entries passed, and is not equivalent.
+
+    The ambiguity rule exists to refuse attributing a null-ref entry when the alias is
+    claimed by more than one roadmap. Counting only null-ref entries misses exactly the
+    case it is for: one null-ref entry alongside one explicitly-scoped entry for a
+    DIFFERENT roadmap. The existing ambiguity test builds its case from two nulls, so it
+    could not see the difference.
+    """
+    # The null-ref entry must be IN-FLIGHT for the two behaviours to differ: a
+    # `completed` one is done-vs-done either way and reports nothing, which is why the
+    # first version of this test passed under the mutant it was written to kill.
+    null_ref = _rec("P", "committed", None, _B)
+    foreign = _rec("P", "completed", "v1", _A)
+    out = phase_status_disagreements({"P": "complete"}, [null_ref, foreign], roadmap_slug="v2")
+    # HEAD: alias P is claimed by two entries, so the null-ref one cannot be attributed
+    # to v2 and is not judged. Counting only null-ref entries would call P unambiguous,
+    # admit it, and report a phase that may belong to another roadmap entirely.
+    assert out == [], out
