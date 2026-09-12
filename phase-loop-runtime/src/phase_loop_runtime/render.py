@@ -475,9 +475,17 @@ def _manifest_disagreement_lines(snapshot: StateSnapshot) -> list[str]:
     if not clashes:
         return []
     lines = [
-        # Count PHASES, not rows: one phase can carry more than one contradicting plan
-        # file, and "14 phase(s)" for 9 phases is a wrong number on the operator surface.
-        # (ah#830 r1, fable.)
+        # Count PHASES, not rows. When this landed the detector emitted one row per
+        # contradicting plan file, so counting rows printed "14 phase(s)" for 9 phases —
+        # a wrong number on the surface an operator reads to decide what to do next.
+        # ah#832 r5 then made the detector iterate PHASES, so it now emits at most one
+        # row per phase and the two counts coincide for every input it produces. Kept
+        # deliberately: this function must be right for whatever rows it is handed, and
+        # the one-row-per-phase property lives in another module and could change there
+        # without anyone reading this line. Pinned by
+        # test_the_rendered_header_counts_PHASES_not_rows, which supplies the rows
+        # directly for exactly that reason; reverting to len(clashes) fails it.
+        # (ah#830 r1, fable; premise updated ah#832 r6.)
         f"STATE DISAGREEMENT: {len({phase for phase, _, _ in clashes})} phase(s) differ between the runner state and "
         "plans/manifest.json (ah#312) — one of these is stale:"
     ]

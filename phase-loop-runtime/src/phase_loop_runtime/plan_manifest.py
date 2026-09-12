@@ -19,6 +19,7 @@ from typing import Any, Iterator
 
 from . import roadmap_assumptions
 from .discovery import PLAN_RE
+from .models import PHASE_STATUSES
 
 
 SCHEMA_VERSION = 1
@@ -663,11 +664,18 @@ def _extract_lanes(path: Path) -> tuple[str, ...]:
 # Deliberately CONSERVATIVE: only a DONE-vs-IN-FLIGHT pair is a contradiction, in either
 # direction. The concern this records — that a merely `imported`/`committed` plan is the
 # normal case for a planned-but-unstarted phase and warning on it would drown the real
-# signal — is still exactly right, and ah#830 did not weaken it. It cannot arise: the
-# in-flight side is only ever compared against a snapshot in `_SNAPSHOT_DONE`, so a phase
-# the runner calls `planned`, `unplanned`, `executing` or `blocked` stays silent no
-# matter what the manifest says. Verified for every combination; see
-# test_a_plan_that_never_executed_is_not_a_contradiction and
+# signal — is still exactly right, and ah#830 did not weaken it. But what protects it is
+# NARROWER than an earlier revision of this comment claimed. True: a manifest record that
+# never reached a done status is only ever compared against a snapshot in
+# `_SNAPSHOT_DONE`, so an unstarted plan is silent in every non-done snapshot state.
+# FALSE, as that revision had it: that such a snapshot state "stays silent no matter what
+# the manifest says". Against a manifest `completed`, every member of `_SNAPSHOT_IN_FLIGHT`
+# reports — loudly, by design, because that IS the ah#312 defect — and this diff's own
+# `test_a_done_sibling_does_not_mask_the_OTHER_direction` asserts it. The claim was wrong
+# in the direction that matters, and the parametrised test it cited only ever covered the
+# manifest side. Corrected here; that test's snapshot axis is now derived from
+# models.PHASE_STATUSES, so "every" is measured rather than asserted. (ah#832 r6, fable.)
+# Pinned by test_a_plan_that_never_executed_is_not_a_contradiction and
 # test_an_unstarted_plan_is_silent_in_every_non_done_snapshot_state.
 #
 # What ah#830 changed is the OTHER half of the pair: a plan that never reached a done
@@ -720,9 +728,38 @@ _SNAPSHOT_DONE = {"complete"}
 # manifest recording that same phase `completed` is the motivating harm class again.
 # (Kept `awaiting_phase_closeout` here rather than on the done side: handoff.py treats it
 # as needing action, pairing it with `blocked` at three sites.)
-_SNAPSHOT_IN_FLIGHT = {
-    "executing", "planned", "blocked", "awaiting_phase_closeout", "executed",
-}
+# DERIVED FROM models.PHASE_STATUSES, NOT HAND-LISTED. Same policy as the manifest
+# operand above — and the same defect had settled on this side unnoticed. The literal
+# listed five of the table's eight statuses, and `unknown` was in NEITHER set, so it was
+# unreportable, silently, exactly as `imported` and `committed` were before ah#830. A
+# diff whose declared purpose is that defect class deriving only one of its two operands
+# is the shape this now closes.
+#
+# `unknown` is the flagship ah#312 case wearing a different label. reconcile.py:108 is
+# `phases[phase] = "unknown" if _dirty(repo) else "executing"` — a still-executing phase
+# is renamed on a DIRTY tree, which is precisely when resume/dispatch is about to act.
+# runner.py already states this at the cross-phase lien: "`unknown` is exactly the
+# disguise the canonical in-flight hazard wears". Measured end to end before the fix: on
+# a clean tree status printed `ALPHA: status='executing' vs manifest='completed'`; the
+# same repo with a dirty tree printed nothing at all. The other producer,
+# reconcile.py:288, demotes a `complete` phase to `unknown` on a newer untrusted terminal
+# event — the runner withdrawing its own completeness claim while the manifest still
+# asserts it is a disagreement the operator must see, not one to hide. (ah#832 r6, fable.)
+#
+# `unplanned` is the one enumerated judgement on this side, and it is an EXCLUSION. It
+# means no plan artifact exists for the phase (classifier.py; reconcile.py:95 drops it
+# before the snapshot is built). The benign reading is already documented at
+# runner.py:1044-1047 — "the roadmap was edited so the phase no longer exists as a unit".
+# Every dropped phase keeps its old `completed` manifest record, so reporting them would
+# drown the real signal in exactly the way ah#312's own comment warns about.
+#
+# Derive what has a rule; enumerate what is a judgement. `_SNAPSHOT_DONE` and
+# `_SNAPSHOT_EXCLUDED` are the judgements; in-flight is the REST of the table, so a status
+# added to models.PHASE_STATUSES is reported by default rather than silently dropped. For
+# a detector whose stated bar rates silence worse than a false positive, fail-loud is the
+# correct default. (ah#830, ah#832.)
+_SNAPSHOT_EXCLUDED = frozenset({"unplanned"})
+_SNAPSHOT_IN_FLIGHT = frozenset(PHASE_STATUSES) - set(_SNAPSHOT_DONE) - _SNAPSHOT_EXCLUDED
 
 
 def _phase_attributable_records(entries, alias: str, in_scope) -> list:
@@ -774,7 +811,14 @@ def _phase_attributable_records(entries, alias: str, in_scope) -> list:
         stripped = value.strip()
         return None if stripped in ("", "None") else stripped
 
-    scoped_files = {plan_file(e) for e in own if in_scope(e, alias)} - {None}
+    # No `- {None}` strip here. It and the candidate's `is not None` clause below were
+    # a REDUNDANT PAIR, and the r6 note calling the strip dead was half right: each one
+    # alone is sufficient, so each single removal is an equivalent mutant and NEITHER was
+    # individually killable. Measured: seed-strip-only removed -> 68 pass; clause-only
+    # removed -> 68 pass; BOTH removed -> test_a_record_with_no_plan_file_is_not_
+    # attributable_by_file fails. Keeping the clause and dropping the strip leaves exactly
+    # one guard, which that test does kill. (ah#832 r6.)
+    scoped_files = {plan_file(e) for e in own if in_scope(e, alias)}
 
     def claims_a_roadmap(candidate) -> bool:
         ref = getattr(candidate, "roadmap_ref", None)

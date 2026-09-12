@@ -12,9 +12,13 @@ from __future__ import annotations
 
 import pytest
 
+from phase_loop_runtime.models import PHASE_STATUSES
 from phase_loop_runtime.plan_manifest import (
     _MANIFEST_DONE,
     _MANIFEST_IN_FLIGHT,
+    _SNAPSHOT_DONE,
+    _SNAPSHOT_EXCLUDED,
+    _SNAPSHOT_IN_FLIGHT,
     PLAN_STATUSES,
     TRANSITIONS,
     DotfilesPlanEntry,
@@ -338,7 +342,9 @@ def test_a_phase_completed_through_a_LATER_plan_is_not_a_contradiction():
     assert phase_status_disagreements({"P": "complete"}, [current, superseded]) == []
 
 
-@pytest.mark.parametrize("snapshot_status", ["planned", "unplanned", "executing", "blocked"])
+@pytest.mark.parametrize(
+    "snapshot_status", sorted(set(PHASE_STATUSES) - set(_SNAPSHOT_DONE))
+)
 @pytest.mark.parametrize("manifest_status", ["imported", "committed"])
 def test_an_unstarted_plan_is_silent_in_every_non_done_snapshot_state(
     snapshot_status, manifest_status
@@ -349,6 +355,13 @@ def test_an_unstarted_plan_is_silent_in_every_non_done_snapshot_state(
     normal case for a planned-but-unstarted phase and would drown the real signal". Still
     true: the in-flight side is only ever compared against a snapshot in _SNAPSHOT_DONE,
     so the case it protects never reaches the comparison.
+
+    The snapshot axis is DERIVED from models.PHASE_STATUSES, not hand-listed. It was
+    hand-listed as four statuses, which is how the source comment came to claim it had
+    verified "every combination" while `unknown`, `executed` and
+    `awaiting_phase_closeout` were never exercised at all — the same hand-listing defect
+    ah#830 exists to fix, one level up in the test. Deriving it means a status added to
+    the table is covered here whether or not anyone remembers this file. (ah#832 r6.)
     """
     assert phase_status_disagreements(
         {"P": snapshot_status}, [_entry("P", manifest_status)]
@@ -453,26 +466,48 @@ def test_the_shape_that_actually_occurs_in_this_repos_manifest():
     ], out
 
 
-def test_a_completed_entry_is_an_EQUIVALENT_mutant_for_the_continue(tmp_path=None):
-    """Recorded so "no survivors" stays honest.
+def test_the_ONLY_equivalent_continue_is_the_no_attributable_guard():
+    """Recorded so "no survivors" stays honest — and re-measured, not re-argued.
 
-    Deleting the `continue` after the done-vs-in-flight branch survives every test, and
-    always will: `completed` is not in `frozenset(TRANSITIONS)`, so the second branch is
-    unreachable for an entry that took the first. An equivalent mutant, not a gap — and
-    manufacturing a test for it would be the vacuity this file keeps guarding against.
-    (ah#832 r2, fable.)
+    The r2 version of this test claimed the `continue` after the done-vs-in-flight branch
+    was an equivalent mutant. That `continue` no longer exists: r5 turned the per-record
+    loop into a per-phase if/elif. Mutating each of the three surviving `continue`s to
+    `pass` (anchors verified, one match each):
+
+      absent-from-snapshot guard  -> CAUGHT (KeyError; 1 test)
+      no-attributable guard       -> SURVIVES, and is genuinely equivalent
+      settlement continue         -> CAUGHT (8 tests)
+
+    The middle one cannot be caught by any input: with no attributable record the status
+    set is EMPTY, and the empty set intersects neither operand, so both branches append
+    nothing whether the guard returns early or falls through. That is an equivalence
+    argument about the operands, which is what this asserts — manufacturing a test for it
+    would be the vacuity this file keeps guarding against. (ah#832 r6, fable.)
     """
-    assert "completed" not in TRANSITIONS
+    # The equivalence, stated over the operands rather than over the source text.
+    assert set() & _MANIFEST_DONE == set()
+    assert set() & _MANIFEST_IN_FLIGHT == set()
+    # And a phase whose only records are unattributable is silent in BOTH directions,
+    # which is the behaviour the guard and the fall-through share.
+    foreign = [_rec("P", "completed", "other-roadmap", _A)]
+    assert phase_status_disagreements({"P": "executing"}, foreign, roadmap_slug="v2") == []
+    assert phase_status_disagreements({"P": "complete"}, foreign, roadmap_slug="v2") == []
     assert _MANIFEST_DONE.isdisjoint(_MANIFEST_IN_FLIGHT)
 
 
 def test_the_rendered_header_counts_PHASES_not_rows(monkeypatch):
     """The operator-facing count was unpinned: reverting it left the suite green.
 
-    One phase can contribute more than one contradicting row, so counting rows printed
-    "14 phase(s)" for 9 phases — a wrong number on the surface an operator reads to
-    decide what to do next. The fix was correct and load-bearing, and nothing asserted
-    it. (ah#832 r2, fable.)
+    When this landed, one phase could contribute more than one contradicting row, so
+    counting rows printed "14 phase(s)" for 9 phases — a wrong number on the surface an
+    operator reads to decide what to do next. The fix was correct and load-bearing, and
+    nothing asserted it. (ah#832 r2, fable.)
+
+    r5's per-phase loop now emits at most one row per phase, so no input the DETECTOR
+    produces can tell the two counts apart. The rows are therefore injected directly:
+    `_manifest_disagreement_lines` must be correct for whatever it is handed, and the
+    one-row-per-phase property lives in another module. Without the injection this test
+    would have gone quietly vacuous at r5. (ah#832 r6.)
     """
     from phase_loop_runtime import render
 
@@ -690,12 +725,14 @@ def test_r4_does_not_let_a_FOREIGN_file_association_settle_the_phase():
 
 
 def test_a_record_with_no_plan_file_is_not_attributable_by_file():
-    """`file=None` must not join the closure, or every null-file record settles everything.
+    """A record naming no plan file must not be attributable by file.
 
-    The closure is seeded from the files of in-scope records; `None` is stripped from that
-    seed set deliberately. Without that, a legacy record carrying no plan file at all
-    would match any other record whose file is also missing, and settle a phase on the
-    strength of two absent values being equal.
+    Otherwise a legacy record carrying no plan file at all matches any other record whose
+    file is also missing, and settles a phase on the strength of two absent values being
+    equal. The guard is the candidate clause `plan_file(e) is not None`; this test kills
+    its removal. It does NOT reach the seed set's old `- {None}` strip, which
+    short-circuited behind that clause — an equivalent mutant either way, so the strip was
+    removed rather than left as a line no test could exercise. (ah#832 r6.)
     """
     # The null file must be on the IN-SCOPE side, because that is the side the seed set
     # is built from. My first version of this test put it on the out-of-scope record, so
@@ -797,3 +834,42 @@ def test_a_failed_scoped_record_does_not_hide_a_legacy_in_flight_one():
     entries = [_rec("P", "failed", "v2", _A), _rec("P", "committed", None, _A)]
     out = phase_status_disagreements({"P": "complete"}, entries, roadmap_slug="v2")
     assert out == [("P", "complete", "committed")], out
+
+
+# ---------------------------------------------------------------------------
+# ah#832 r6 (fable, BLOCKING): the SNAPSHOT operand had the very defect ah#830
+# exists to fix. `_SNAPSHOT_IN_FLIGHT` was hand-listed while
+# `models.PHASE_STATUSES` is its authoritative table, and `unknown` — the name
+# reconcile gives a still-`executing` phase on a dirty tree — was in neither set,
+# so the flagship ah#312 case went silent the moment the tree was dirty.
+
+
+def test_the_DIRTY_TREE_disguise_of_executing_is_still_reported():
+    """The flagship ah#312 case, wearing the name reconcile gives it on a dirty tree.
+
+    `reconcile.py:108` is `phases[phase] = "unknown" if _dirty(repo) else "executing"`.
+    Same phase, same hazard, different label — and the label is the one the operator
+    sees while the tree is dirty, which is exactly when resume/dispatch is about to act.
+    Silent here means silent in the case the detector was written for.
+    """
+    assert phase_status_disagreements({"P": "unknown"}, [_entry("P", "completed")]) == [
+        ("P", "unknown", "completed")
+    ]
+
+
+def test_every_non_done_snapshot_status_reports_a_completed_manifest_except_unplanned():
+    """The whole snapshot operand, driven from the authoritative table.
+
+    Enumerating the statuses by hand is the defect this pins: the hand-list omitted
+    `unknown`. Derived from `models.PHASE_STATUSES`, so a status added to the table
+    lands in this assertion whether or not anyone remembers this file.
+    """
+    from phase_loop_runtime.models import PHASE_STATUSES
+
+    silent = []
+    for status in PHASE_STATUSES:
+        if status in _SNAPSHOT_DONE or status in _SNAPSHOT_EXCLUDED:
+            continue
+        if not phase_status_disagreements({"P": status}, [_entry("P", "completed")]):
+            silent.append(status)
+    assert silent == [], f"snapshot statuses silent against manifest 'completed': {silent}"
