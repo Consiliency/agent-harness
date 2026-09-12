@@ -30,7 +30,6 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   expect it. `constructor_key_mismatch` is promoted from a private name in
   `admission.py`, since both stores now share that arithmetic.
 
-
 ### Partition rotation: ceremony and generational stores (Consiliency/agent-harness#816)
 
 - Workstream D, Lane D2 of Consiliency/agent-harness#789. A permanently blocked FABPUB

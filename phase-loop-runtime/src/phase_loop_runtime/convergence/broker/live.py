@@ -5196,10 +5196,11 @@ class _RoutingBrokerService:
     ``broker_root/<repo-slug>`` — the stores are NOT shared.  ``epoch_blocked`` is a
     GLOBAL scan over a store (``any(state is OUTCOME_AMBIGUOUS_BLOCKED)``) and an
     ambiguous terminal is durable + permanent, and it fires on BENIGN transients
-    (push-unconfirmed / remote-read-failed / pr-unconfirmed / remote-head-mismatch /
-    pr-list-empty / pr-head-unconfirmed).  A shared store would therefore let one repo's transient
-    hiccup permanently fail-close every OTHER repo in the train (and, with an
-    un-namespaced ``broker_root``, other trains too).  Per-repo stores scope the
+    (push-unconfirmed / remote-read-failed / pr-unconfirmed /
+    remote-head-mismatch / pr-list-empty / pr-head-unconfirmed).  A shared store
+    would therefore let one repo's transient hiccup permanently fail-close every
+    OTHER repo in the train (and, with an un-namespaced ``broker_root``, other
+    trains too).  Per-repo stores scope the
     fail-closed epoch to exactly the repo whose mutation became ambiguous — the correct
     blast radius: repo A's unknown state says nothing about repo B's independent remote.
     The caller namespaces ``broker_root`` per train (see the ``run-train`` CLI), closing
