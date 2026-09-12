@@ -802,11 +802,41 @@ def phase_status_disagreements(
             # "unused or superseded plan legitimately accompanying a completed phase"
             # case, and the operator's question is whether this PHASE's state is
             # disputed, not whether some individual record is stale. (ah#830 r1, codex.)
-            siblings = [
-                other for other in entries
-                if getattr(other, "phase_alias", None) == alias
-                and in_scope(other, alias)
-            ]
+            # A SIBLING SETTLES THIS PHASE IF IT IS ABOUT THE SAME PLAN, and there are
+            # two ways to establish that. Four board rounds each found a different
+            # special case, and each patch reintroduced an earlier one, so the rule is
+            # stated once as a concept rather than accumulated as conditions:
+            #
+            #   same plan FILE      -> unambiguously the same plan, whatever its
+            #                          `roadmap_ref` says or fails to say
+            #   same roadmap SCOPE  -> a different plan file for this phase, in the
+            #                          roadmap being asked about
+            #
+            # What each round required, and why one rule covers all of them:
+            #   r1  same file, `committed` beside `completed`     -> settle (same file)
+            #   r1  a SUPERSEDED plan, different file, same
+            #       roadmap                                       -> settle (in scope)
+            #   r2  a different roadmap's `completed`             -> do NOT settle
+            #   r3  same file, one record with a LEGACY null
+            #       `roadmap_ref`, alias ambiguous                -> settle (same file)
+            #
+            # The last is why file identity has to come first: the ambiguous-alias rule
+            # correctly refuses to GUESS which roadmap a legacy null-ref entry belongs
+            # to, but it is not guessing when the entry names the same plan file — that
+            # is the strongest association available, stronger than the roadmap
+            # frontmatter that entry happens to be missing.
+            # (r1 fable/codex, r2 all seats, r3 codex.)
+            plan_file = getattr(entry, "file", None)
+
+            def settles(other) -> bool:
+                if getattr(other, "phase_alias", None) != alias:
+                    return False
+                other_file = getattr(other, "file", None)
+                if plan_file is not None and other_file == plan_file:
+                    return True
+                return in_scope(other, alias)
+
+            siblings = [other for other in entries if settles(other)]
             if any(getattr(other, "status", "") in _MANIFEST_DONE for other in siblings):
                 continue
             in_flight = sorted({

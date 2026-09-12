@@ -486,3 +486,96 @@ def test_the_rendered_header_counts_PHASES_not_rows(monkeypatch):
     assert "2 phase(s) differ" in lines[0], lines[0]
     assert "3 phase(s)" not in lines[0]
     assert len(lines) == 1 + len(clashes)
+
+
+# ---------------------------------------------------------------------------
+# THE FOUR SETTLEMENT CASES, one per board round, kept together on purpose.
+#
+# Each round found a different special case and each patch reintroduced an earlier
+# one, so they are pinned as a SET: a change that satisfies three and breaks the
+# fourth fails here rather than in the next round.
+# ---------------------------------------------------------------------------
+
+
+def _rec(alias: str, status: str, roadmap_slug: str | None, file: str) -> DotfilesPlanEntry:
+    ref = (
+        DotfilesPlanRef(slug=roadmap_slug, file=f"specs/{roadmap_slug}.md",
+                        type="phase", status="imported")
+        if roadmap_slug else None
+    )
+    return DotfilesPlanEntry(
+        slug=f"{status}-{file}", file=file, type="phase", status=status,
+        created_at="t", updated_at="t", owner_skill="codex-plan-phase",
+        phase_alias=alias, roadmap_ref=ref,
+    )
+
+
+_A = "plans/phase-plan-A.md"
+_B = "plans/phase-plan-B.md"
+
+
+def test_settlement_r1_same_file_committed_beside_completed():
+    """r1, fable: `phase-plan-v1-CLI.md` carried a `committed` stub and a `completed`
+    record. Judging entries in isolation reported a contradiction the manifest's own
+    settled record denied."""
+    assert phase_status_disagreements(
+        {"P": "complete"}, [_rec("P", "committed", "v2", _A), _rec("P", "completed", "v2", _A)],
+        roadmap_slug="v2") == []
+
+
+def test_settlement_r1_superseded_plan_in_a_different_file_same_roadmap():
+    """r1, codex: a phase completed through a LATER plan while the earlier one sits at
+    `committed`. Same roadmap, different file — the phase is finished."""
+    assert phase_status_disagreements(
+        {"P": "complete"}, [_rec("P", "committed", "v2", _A), _rec("P", "completed", "v2", _B)],
+        roadmap_slug="v2") == []
+
+
+def test_settlement_r2_a_DIFFERENT_roadmaps_completed_must_not_settle():
+    """r2, all three working seats: live in this repo's manifest — INTEG `committed`
+    under phase-plans-v10 and `completed` under phase-plans-convergence-v1. A false
+    negative, and a silent detector is undetectable."""
+    assert phase_status_disagreements(
+        {"P": "complete"}, [_rec("P", "committed", "v2", _A), _rec("P", "completed", "v1", _B)],
+        roadmap_slug="v2") == [("P", "complete", "committed")]
+
+
+def test_settlement_r3_same_file_with_a_legacy_null_roadmap_ref():
+    """r3, codex: the r2 scoping fix reintroduced r1's false positive in a narrower case.
+
+    A legacy record carries `roadmap_ref: None`; with the alias appearing twice the
+    ambiguous-alias rule excluded it from the siblings, so it could no longer settle its
+    own plan file. The ambiguous-alias rule is right to refuse to GUESS a roadmap — but
+    it is not guessing when the record names the same plan file, which is a stronger
+    association than the frontmatter it is missing.
+    """
+    assert phase_status_disagreements(
+        {"P": "complete"}, [_rec("P", "committed", "v2", _A), _rec("P", "completed", None, _A)],
+        roadmap_slug="v2") == []
+
+
+def test_a_DIFFERENT_phases_completed_record_must_not_settle_this_one():
+    """The settlement rule is per PHASE first, and that was unpinned.
+
+    Dropping the alias check from the sibling predicate left the whole suite green — so
+    another phase's `completed` record, in the same roadmap, could have settled this
+    phase's real disagreement. Found by mutating the fix rather than by review; a
+    surviving mutant on a settlement arm is exactly the silent-detector class this file
+    has already shipped once.
+    """
+    out = phase_status_disagreements(
+        {"P": "complete", "Q": "complete"},
+        [_rec("P", "committed", "v2", _A), _rec("Q", "completed", "v2", _B)],
+        roadmap_slug="v2",
+    )
+    assert ("P", "complete", "committed") in out, out
+
+
+def test_a_different_phase_sharing_a_plan_file_still_does_not_settle():
+    """...and file identity does not override phase identity either."""
+    out = phase_status_disagreements(
+        {"P": "complete", "Q": "complete"},
+        [_rec("P", "committed", "v2", _A), _rec("Q", "completed", "v2", _A)],
+        roadmap_slug="v2",
+    )
+    assert ("P", "complete", "committed") in out, out
