@@ -744,25 +744,37 @@ def phase_status_disagreements(
         if a:
             _alias_counts[a] = _alias_counts.get(a, 0) + 1
     _ambiguous_aliases = {a for a, n in _alias_counts.items() if n > 1}
+    def in_scope(candidate, alias: str) -> bool:
+        """Is this entry within the roadmap being asked about?
+
+        ONE predicate, applied to BOTH the entry under judgement and the siblings that
+        may settle it. It was applied only to the former, so an entry from a DIFFERENT
+        roadmap — correctly skipped as a subject — could still SETTLE an in-scope
+        disagreement, or leak its status into the reported string. A detector that goes
+        silent is undetectable, which makes that worse than the false positives this
+        same function shipped in round 1. (ah#832 r2, grok.)
+        """
+        if roadmap_slug is None:
+            return True
+        ref = getattr(candidate, "roadmap_ref", None)
+        ref_slug = getattr(ref, "slug", None) if ref else None
+        if ref_slug is not None:
+            return ref_slug == roadmap_slug
+        # CR: legacy entries carry `roadmap_ref: null` (6 exist today, all from v4).
+        # Admitting them keeps the signal for a legitimately-associated entry whose
+        # frontmatter is missing — but if the SAME alias appears more than once in the
+        # manifest we cannot tell which roadmap it belongs to, and reporting it would
+        # name a phase from a DIFFERENT roadmap as contradicting the active one. That is
+        # actively misleading, so require positive association in exactly that ambiguous
+        # case.
+        return not (_ambiguous_aliases and alias in _ambiguous_aliases)
+
     for entry in entries:
         alias = getattr(entry, "phase_alias", None)
         if not alias or alias not in snapshot_phases:
             continue
-        if roadmap_slug is not None:
-            ref = getattr(entry, "roadmap_ref", None)
-            ref_slug = getattr(ref, "slug", None) if ref else None
-            if ref_slug is not None:
-                if ref_slug != roadmap_slug:
-                    continue
-            elif _ambiguous_aliases and alias in _ambiguous_aliases:
-                # CR: legacy entries carry `roadmap_ref: null` (6 exist today, all from
-                # v4). Admitting them keeps the signal for a legitimately-associated entry
-                # whose frontmatter is missing — but if the SAME alias appears more than
-                # once in the manifest we cannot tell which roadmap it belongs to, and
-                # reporting it would name a phase from a DIFFERENT roadmap as contradicting
-                # the active one. That is actively misleading, so require positive
-                # association in exactly that ambiguous case.
-                continue
+        if not in_scope(entry, alias):
+            continue
         snap = snapshot_phases[alias]
         man = getattr(entry, "status", "")
         if man in _MANIFEST_DONE and snap in _SNAPSHOT_IN_FLIGHT:
@@ -793,6 +805,7 @@ def phase_status_disagreements(
             siblings = [
                 other for other in entries
                 if getattr(other, "phase_alias", None) == alias
+                and in_scope(other, alias)
             ]
             if any(getattr(other, "status", "") in _MANIFEST_DONE for other in siblings):
                 continue

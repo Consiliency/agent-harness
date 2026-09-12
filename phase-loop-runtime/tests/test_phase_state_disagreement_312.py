@@ -366,3 +366,60 @@ def test_a_done_sibling_does_not_mask_the_OTHER_direction():
         [_entry("FREEZE", "completed"), _entry("FREEZE", "committed")],
     )
     assert ("FREEZE", "executing", "completed") in out
+
+
+def _scoped(alias: str, status: str, roadmap_slug: str) -> DotfilesPlanEntry:
+    return DotfilesPlanEntry(
+        slug=f"{roadmap_slug}-{alias}", file=f"plans/phase-plan-{roadmap_slug}-{alias}.md",
+        type="phase", status=status, created_at="t", updated_at="t",
+        owner_skill="codex-plan-phase", phase_alias=alias,
+        roadmap_ref=DotfilesPlanRef(slug=roadmap_slug, file=f"specs/{roadmap_slug}.md",
+                                    type="phase", status="imported"),
+    )
+
+
+def test_another_roadmaps_settled_record_must_not_silence_this_one():
+    """A FALSE NEGATIVE, and worse than the r1 false positives: a silent detector is
+    undetectable.
+
+    The roadmap filter was applied to the entry under judgement but not to the siblings
+    that may settle it, so an entry from a DIFFERENT roadmap — correctly skipped as a
+    subject — could still settle an in-scope disagreement. One predicate now serves both.
+    (ah#832 r2, grok.)
+    """
+    in_scope = _scoped("P", "committed", "v2")
+    other_roadmap = _scoped("P", "completed", "v1")
+    assert phase_status_disagreements(
+        {"P": "complete"}, [in_scope], roadmap_slug="v2"
+    ) == [("P", "complete", "committed")]
+    assert phase_status_disagreements(
+        {"P": "complete"}, [in_scope, other_roadmap], roadmap_slug="v2"
+    ) == [("P", "complete", "committed")]
+
+
+def test_the_SAME_roadmaps_settled_record_still_silences_it():
+    """The control: scoping must not break the settlement it was added for."""
+    assert phase_status_disagreements(
+        {"P": "complete"},
+        [_scoped("P", "committed", "v2"), _scoped("P", "completed", "v2")],
+        roadmap_slug="v2",
+    ) == []
+
+
+def test_another_roadmaps_in_flight_status_must_not_leak_into_the_report():
+    """The mis-attribution half: the joined status string is scoped too."""
+    out = phase_status_disagreements(
+        {"P": "complete"},
+        [_scoped("P", "committed", "v2"), _scoped("P", "imported", "v1")],
+        roadmap_slug="v2",
+    )
+    assert out == [("P", "complete", "committed")], out
+
+
+def test_with_no_roadmap_slug_every_entry_still_participates():
+    """Unscoped callers are unaffected — the predicate is a no-op without a slug."""
+    out = phase_status_disagreements(
+        {"P": "complete"},
+        [_scoped("P", "committed", "v2"), _scoped("P", "imported", "v1")],
+    )
+    assert out == [("P", "complete", "committed/imported")]
