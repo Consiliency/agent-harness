@@ -1741,35 +1741,64 @@ def test_EVERY_census_identity_field_is_lost_evidence_when_unreadable(
         e.update(over)
         return e
 
-    if field.startswith("roadmap_ref."):
-        # The NESTED identity r11's field table missed and both r12 seats found: a
-        # coerced `slug` can become a POSITIVE direct claim rather than merely vanishing
-        # from a census, so an unreadable one must not be trusted at all.
-        leaf = field.split(".", 1)[1]
-        foreign = row("failed", "v1")
-        foreign["roadmap_ref"] = {"slug": "v1", "file": "specs/v1.md",
-                                  "type": "phase", "status": "imported", leaf: unreadable}
-        if unreadable is None or (isinstance(unreadable, str) and not unreadable.strip()):
-            pytest.skip("absent or blank is the legacy shape, not an unreadable identity")
-    else:
-        foreign = row("failed", "v1", **{field: unreadable})
+    def corrupt(base):
+        """Apply the unreadable value to `field` on a copy of `base`."""
+        out = dict(base)
+        if field.startswith("roadmap_ref."):
+            leaf = field.split(".", 1)[1]
+            ref = dict(out.get("roadmap_ref") or
+                       {"slug": "v1", "file": "specs/v1.md", "type": "phase", "status": "imported"})
+            ref[leaf] = unreadable
+            out["roadmap_ref"] = ref
+        else:
+            out[field] = unreadable
+        return out
+
+    if field.startswith("roadmap_ref.") and (
+        unreadable is None or (isinstance(unreadable, str) and not unreadable.strip())
+    ):
+        pytest.skip("absent or blank is the legacy ref spelling, not an unreadable identity")
+
     if position == "foreign":
-        rows = [row("committed", "v2"), foreign, row("completed", None)]
-        expected = [("P", "complete", "committed")]
+        # The competing claimant is corrupted. Its claim vanishes from the contested-file
+        # census, so the file looks uncontested, the legacy record settles, and a real v2
+        # disagreement is suppressed unless the row counts as lost evidence.
+        rows = [row("committed", "v2"), corrupt(row("failed", "v1")), row("completed", None)]
+        control = [row("committed", "v2"), row("failed", "v1"), row("completed", None)]
+        snapshot, expected = "complete", [("P", "complete", "committed")]
     else:
-        # SUBJECT position: corrupt the in-scope row itself. Its own claim is then
-        # unreadable, so it must not speak for the phase and must count as lost evidence —
-        # the arms disarm and the legacy record cannot settle on its behalf either.
-        subject = foreign
-        rows = [subject, row("failed", "v1"), row("completed", None)]
-        expected = []
-    _write_manifest(tmp_path, rows)
-    parsed = parseable_plan_entries(tmp_path)
-    assert parsed.skipped == 1, f"{position}/{field}={unreadable!r} must be lost evidence"
-    assert phase_status_disagreements(
-        {"P": "complete"}, parsed.entries, roadmap_slug="v2",
-        attribution_evidence_complete=parsed.skipped == 0,
-    ) == expected, f"{position}/{field}={unreadable!r}"
+        # THE SUBJECT POSITION: the row that would BE the disagreement is corrupted — an
+        # active-roadmap row with a status that can report. r13's seats found the previous
+        # version reused the FOREIGN row here (`failed`, roadmap v1), which is neither, so
+        # the branch re-asserted the foreign case under a second name and swept nothing.
+        rows = [corrupt(row("completed", "v2"))]
+        control = [row("completed", "v2")]
+        snapshot, expected = "executing", []
+
+    def detect(manifest_rows):
+        _write_manifest(tmp_path, manifest_rows)
+        parsed = parseable_plan_entries(tmp_path)
+        return parsed.skipped, phase_status_disagreements(
+            {"P": snapshot}, parsed.entries, roadmap_slug="v2",
+            attribution_evidence_complete=parsed.skipped == 0,
+        )
+
+    # THE CONTROL FIRST, so a case that cannot fail is impossible: with every identity
+    # readable this fixture must produce the OPPOSITE verdict. Without it, `expected == []`
+    # in the subject position would pass against a detector that had stopped reporting
+    # entirely. (r13, codex.)
+    control_skipped, control_out = detect(control)
+    assert control_skipped == 0, f"{position}/{field}: the control must be fully readable"
+    if position == "foreign":
+        assert control_out == expected, f"{position}/{field}: control"
+    else:
+        assert control_out == [("P", "executing", "completed")], (
+            f"{position}/{field}: the readable subject must REPORT, or this case is vacuous"
+        )
+
+    skipped, out = detect(rows)
+    assert skipped == 1, f"{position}/{field}={unreadable!r} must be lost evidence"
+    assert out == expected, f"{position}/{field}={unreadable!r}"
 
 
 def test_a_row_with_every_identity_field_READABLE_is_not_lost_evidence(tmp_path):
