@@ -528,6 +528,34 @@ class GitHubBrokerAdapter:
         if match is None:
             if head_matches:
                 return self._ambiguous(request, "pr-base-unconfirmed")
+            # EMPTY AND STALE ARE DIFFERENT ANSWERS, and one code could not tell them apart.
+            #
+            # agent-harness#789's second incident turned on exactly this. The adapter had
+            # already confirmed the remote branch at the pushed sha; then this one read
+            # returned no matching head and recorded `pr-head-unconfirmed`. The raw list
+            # payload is not retained — deliberately, since it cannot go in the sealed
+            # evidence record without breaking older readers — so afterwards there was no
+            # way to tell whether the list came back EMPTY (the PR was genuinely not
+            # visible yet, a read-after-write race) or came back with OTHER heads (a stale
+            # or mis-scoped read). That distinction is the whole diagnosis, and the
+            # incident could only record it as unproven.
+            #
+            # The code itself now carries it. Same terminal state, same fail-closed
+            # permanence, no schema change: only the reference becomes specific enough to
+            # diagnose the next occurrence.
+            #
+            # A BOUNDED RE-READ IS NOT ADDED, and the honest reason is narrower than the
+            # one first written here ("a permanently ambiguous mutation must not be
+            # re-attempted on a guess"). That conflates re-issuing the READ with
+            # re-attempting the MUTATION: re-reading `gh pr list` mutates nothing, so the
+            # objection does not apply to it. It is declined because the v5 rule above
+            # fixes the meaning of an unconfirmed read as permanently ambiguous rather
+            # than retryable, and because re-reading widens the window in which the
+            # generation lease is held with an unsealed owner — the exact state that
+            # blocked a partition in agent-harness#789. Changing that is a contract
+            # decision, not a repair. (ah#834 r1, fable.)
+            if not prs:
+                return self._ambiguous(request, "pr-list-empty")
             return self._ambiguous(request, "pr-head-unconfirmed")
         _, origin_owner, _ = origin_repo.split("/", 2)
         head_owner = match.get("headRepositoryOwner")

@@ -71,8 +71,16 @@ class AdmissionStoreIncompatible(PermissionError):
         )
 
 
-def _constructor_key_mismatch(constructor: type, payload: dict) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """``(unknown, missing)`` key names of ``payload`` against a dataclass constructor."""
+def constructor_key_mismatch(constructor: type, payload: dict) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """``(unknown, missing)`` key names of ``payload`` against a dataclass constructor.
+
+    ``unknown`` are keys the constructor does not declare (a newer writer); ``missing``
+    are required keys the payload lacks (an older one). Returns ``((), ())`` for a
+    non-dataclass, so a caller may use it unconditionally.
+
+    Shared by both broker stores on purpose: two copies of this arithmetic is how the two
+    stores end up disagreeing about what drift means. (Public since ah#834.)
+    """
     if not dataclasses.is_dataclass(constructor):
         return (), ()
     declared = [field for field in dataclasses.fields(constructor) if field.init]
@@ -230,7 +238,7 @@ class LinearizableAdmissionStore:
         try:
             return constructor(**payload)
         except TypeError as error:
-            unknown, missing = _constructor_key_mismatch(constructor, payload)
+            unknown, missing = constructor_key_mismatch(constructor, payload)
             raise AdmissionStoreIncompatible(
                 self.path,
                 line=line,

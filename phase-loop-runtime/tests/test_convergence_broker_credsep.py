@@ -522,6 +522,49 @@ def test_pr_head_unconfirmed_returns_ambiguous(tmp_path):
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
     assert result is None
     assert evidence.terminal_state == "outcome_ambiguous_blocked"
+    # agent-harness#789: the reference must say the list HAD entries that did not match,
+    # which is a different diagnosis from the list coming back empty. This assertion was
+    # absent, so the two cases were indistinguishable after the fact AND untested.
+    assert evidence.evidence_reference == "pr-head-unconfirmed"
+
+
+# --- agent-harness#789: an EMPTY read and a STALE read are different diagnoses ---
+#
+# The second permanent-ambiguity incident recorded `pr-head-unconfirmed` after the remote
+# branch had already been confirmed at the pushed sha. Because one code covered both
+# shapes and the raw payload is not retained, the incident could only state that "whether
+# it was empty or stale is unproven" — and that distinction is the whole diagnosis: an
+# empty list is a read-after-write visibility race, a non-empty list with other heads is a
+# stale or mis-scoped read. They have different remedies.
+def test_an_empty_pr_list_is_distinguishable_from_a_non_matching_one(tmp_path):
+    run = _FakeRun(_base_responses() + [
+        (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+        (("list",), json.dumps([]), 0),
+    ])
+    result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
+    assert result is None
+    assert evidence.evidence_reference == "pr-list-empty"
+
+
+def test_an_empty_pr_list_still_fails_CLOSED(tmp_path):
+    """The new code must not soften the outcome: still permanently ambiguous.
+
+    A more specific diagnosis is not a weaker one. The push may well have taken effect,
+    so this is never a provable no-effect, and it must never be retried on a guess.
+
+    Builds its own adapter rather than sharing one with the test above: two assertions
+    reading one fixture's result look independent and are not, so a fixture that stopped
+    reaching this branch would silence both at once. (ah#834 r2, grok.)
+    """
+    run = _FakeRun(_base_responses() + [
+        (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
+        (("list",), json.dumps([]), 0),
+    ])
+    result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
+    assert result is None
+    assert evidence.terminal_state == "outcome_ambiguous_blocked"
+    # pin that this branch, not some earlier refusal, produced the outcome
+    assert evidence.evidence_reference == "pr-list-empty"
 
 
 # --- agent-harness#250 (N6, cross-vendor CR, codex): GitHub allows a PR's base to be

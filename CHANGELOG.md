@@ -6,6 +6,30 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Broker stores: typed schema-drift refusal and a diagnosable confirmation read (Consiliency/agent-harness#834)
+
+- Workstream of Consiliency/agent-harness#789's bounded confirmation-read repair.
+  `BrokerEvidenceStore.replay()` now raises `EvidenceStoreIncompatible` — a
+  `PermissionError`, matching its sibling `AdmissionStoreIncompatible` so every
+  fail-closed path stays closed — naming the reading runtime's version and path and the
+  offending keys, instead of a bare `TypeError`. That bare construct is what opened
+  agent-harness#789: an installed runtime met a store written by a newer one and died
+  before the adapter was reached. The admission store was hardened then; its sibling was
+  not. The unreadable record is deliberately NOT skipped or coerced — `epoch_blocked` is
+  computed from exactly these rows, so dropping one would un-block a partition that must
+  stay blocked.
+
+- **New terminal-evidence reference code `pr-list-empty`**, split out of
+  `pr-head-unconfirmed` in the GitHub broker adapter. Same terminal state
+  (`outcome_ambiguous_blocked`), same fail-closed permanence, no schema change; only the
+  reference becomes specific. One code previously covered both "the PR list came back
+  empty" and "it came back with other heads", and the raw payload is not retained, so
+  agent-harness#789's second incident could only record that "whether it was empty or
+  stale is unproven" — a read-after-write visibility race and a stale or mis-scoped read
+  have different causes and different remedies. Readers that match reference codes should
+  expect it. `constructor_key_mismatch` is promoted from a private name in
+  `admission.py`, since both stores now share that arithmetic.
+
 ### Partition rotation: ceremony and generational stores (Consiliency/agent-harness#816)
 
 - Workstream D, Lane D2 of Consiliency/agent-harness#789. A permanently blocked FABPUB
