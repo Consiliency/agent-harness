@@ -285,10 +285,21 @@ def parseable_plan_entries(repo: Path) -> ParseablePlanRows:
             # exactly as trusting as the `type` filter itself, which decides on the same
             # field — if one is unsound so is the other, and they fail together rather
             # than silently disagreeing.
-            declared = row.get("type") if isinstance(row, dict) else None
-            if isinstance(declared, str) and declared != "phase":
+            if _raw_row_cannot_have_mattered(row):
                 continue
             skipped += 1
+        else:
+            # ...AND A ROW THAT PARSED IS STILL LOST EVIDENCE IF ITS RAW IDENTITY FIELDS
+            # WERE NOT READABLE. This check MUST live here, on the raw dict, and that is
+            # the tension r11's seat named rather than designed around: `_entry_from_json`
+            # coerces with `str(...)`, so by the time the detector sees an entry a
+            # `"type": 123` is the string "123" and a `"file": ["plans/x.md"]` is the
+            # readable-looking garbage `"['plans/x.md']"`. Post-coercion nothing can tell
+            # that from a real name — so the detector cannot make this judgement at all,
+            # and r10's "computed here rather than asked of the caller" does not apply to
+            # a fact only the loader can still see. (ah#832 r11, fable B1 + codex.)
+            if not _raw_row_identity_is_readable(row):
+                skipped += 1
     return ParseablePlanRows(entries=tuple(entries), skipped=skipped)
 
 
@@ -878,6 +889,95 @@ _SNAPSHOT_EXCLUDED = frozenset({"unplanned"})
 _SNAPSHOT_IN_FLIGHT = frozenset(PHASE_STATUSES) - set(_SNAPSHOT_DONE) - _SNAPSHOT_EXCLUDED
 
 
+_CENSUS_IDENTITY_FIELDS = ("type", "phase_alias", "file")
+"""Every raw field the phase censuses read to decide who speaks for a phase.
+
+Enumerated so "have we swept the class?" is answerable by EXECUTION rather than by the
+next reviewer's imagination — see
+test_EVERY_census_identity_field_is_lost_evidence_when_unreadable, which iterates this
+tuple and asserts each one conservative. (ah#832 r11.)
+"""
+
+
+def _plan_file(candidate):
+    """The row's plan file, or None when it does not readably name one."""
+    value = getattr(candidate, "file", None)
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    return None if stripped in ("", "None") else stripped
+
+
+def _row_is_readable_evidence(entry) -> bool:
+    """Can this row's contribution to the censuses be read at all?
+
+    ONE FIELD-GENERAL RULE, because three rounds of field-specific ones each left the
+    next field open. r10 established that a row which PARSES but is UNUSABLE is lost
+    evidence, and implemented it for `phase_alias` only. `type` and `file` have the same
+    hole, and the parser's `str()` coercion makes them worse: a foreign record with
+    `"file": null` parses to the literal `"None"`, `_plan_file` reads that as "names no
+    file", and the row's claim silently disappears from the contested-file census — so
+    file A looks uncontested, a legacy record settles the phase, and a real disagreement
+    is suppressed while the evidence is still marked COMPLETE. (ah#832 r11, codex + fable.)
+
+    The rule: a row is readable evidence when either
+      * its `type` readably says it is not a phase row — it cannot enter any census, so
+        losing it cannot have changed a verdict (the r10 exemption); or
+      * it is a phase row AND every identity field the censuses read is a usable string.
+    Anything else is lost evidence, because its absence from a census is
+    indistinguishable from a claim that was never there.
+    """
+    # THE EXEMPTION NEEDS A RECOGNISED TYPE, NOT MERELY A STRING. `_entry_from_json`
+    # coerces with `str(...)`, so a corrupted `"type": 7` arrives as the STRING "7" — and
+    # an earlier revision of this rule read any non-"phase" string as "readably not a
+    # phase row", silently dropping that row's census claim. Measured: a foreign `v1`
+    # claimant with `"type": 7` vanished from the contested-file census, file A looked
+    # uncontested, and a legacy record settled the phase while evidence was still marked
+    # complete. `PLAN_TYPES` is the authoritative vocabulary, so an UNRECOGNISED type is
+    # lost evidence, exactly like an unreadable alias or file. (ah#832 r11.)
+    declared = getattr(entry, "type", None)
+    if not isinstance(declared, str) or declared not in PLAN_TYPES:
+        return False
+    if declared != "phase":
+        return True
+    alias = getattr(entry, "phase_alias", None)
+    if not (isinstance(alias, str) and alias):
+        return False
+    return _plan_file(entry) is not None
+
+
+def _raw_row_cannot_have_mattered(row) -> bool:
+    """Is this UNPARSEABLE row readably not a phase row, so losing it changed nothing?"""
+    declared = row.get("type") if isinstance(row, dict) else None
+    return isinstance(declared, str) and declared in PLAN_TYPES and declared != "phase"
+
+
+def _raw_row_identity_is_readable(row) -> bool:
+    """Could every census read this PARSED row's contribution?
+
+    ONE FIELD-GENERAL RULE over the raw values, because three rounds of field-specific
+    ones each left the next field open — r10 fixed `phase_alias` alone, and it could only
+    see that field because it is the one the parser does NOT coerce.
+
+    `_CENSUS_IDENTITY_FIELDS` enumerates what the censuses key on, and
+    test_EVERY_census_identity_field_is_lost_evidence_when_unreadable iterates that tuple
+    so "have we swept the class?" is answerable by execution rather than by the next
+    reviewer's imagination. (ah#832 r11.)
+    """
+    if not isinstance(row, dict):
+        return False
+    declared = row.get("type")
+    if not isinstance(declared, str) or declared not in PLAN_TYPES:
+        return False          # an unrecognised type cannot exempt itself
+    if declared != "phase":
+        return True           # recognised non-phase: enters no census
+    alias = row.get("phase_alias")
+    if not (isinstance(alias, str) and alias.strip()):
+        return False
+    name = row.get("file")
+    return isinstance(name, str) and name.strip() not in ("", "None")
+
+
 def _roadmap_claim(candidate) -> str | None:
     """The roadmap slug this record CLAIMS, or None when it claims none.
 
@@ -1004,7 +1104,7 @@ def _phase_attributable_records(
         and getattr(e, "type", None) == "phase"
     ]
 
-    def plan_file(candidate):
+    def plan_file(candidate):   # thin alias; the rule lives at _plan_file
         """The record's plan file, or None when it does not actually name one.
 
         `- {None}` was the original guard and it is DEAD in production: the parser does
@@ -1145,25 +1245,16 @@ def phase_status_disagreements(
     only form that cannot be wrong. (ah#832 r9, fable F1 + codex, with the fix trap
     flagged in fable's review.)
     """
-    # A ROW THAT PARSES BUT IS UNUSABLE IS LOST EVIDENCE TOO.
-    #
-    # `skipped` counts rows the PARSER rejected. A phase row whose `phase_alias` is not a
-    # usable string parses fine — so `skipped` stays 0 — and is then dropped by every
-    # census and by attribution, which is indistinguishable from never having been there.
-    # Measured: `v2 committed` + `v1 failed` + legacy `completed` on one file correctly
-    # reports the v2 disagreement; change the foreign row's alias to `["P"]` and the file
-    # looks uncontested, the legacy record settles, and the report vanishes.
-    #
-    # Computed here rather than asked of the caller, because a caller that forgets it
-    # reintroduces the hole silently. (ah#832 r10, codex.)
+    # A ROW THAT PARSES BUT IS UNUSABLE IS LOST EVIDENCE TOO — for EVERY identity field
+    # the censuses read, not just the one r10 happened to fix. `_row_is_readable_evidence`
+    # states that rule once; `_CENSUS_IDENTITY_FIELDS` enumerates the fields it covers so a
+    # completeness test can assert each one conservative. Computed here rather than asked
+    # of the caller, because a caller that forgets it reintroduces the hole silently.
+    # (ah#832 r11.)
     if attribution_evidence_complete:
-        for candidate in entries:
-            if getattr(candidate, "type", None) != "phase":
-                continue
-            candidate_alias = getattr(candidate, "phase_alias", None)
-            if not (isinstance(candidate_alias, str) and candidate_alias):
-                attribution_evidence_complete = False
-                break
+        attribution_evidence_complete = all(
+            _row_is_readable_evidence(candidate) for candidate in entries
+        )
 
     out: list[tuple[str, str, str]] = []
     # A NON-STRING ALIAS IS SKIPPED, NOT COUNTED — because counting it RAISES.

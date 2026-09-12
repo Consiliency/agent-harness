@@ -60,10 +60,6 @@ MUTANTS = [
         )""",
   "        attributable = [e for e in entries if getattr(e, 'phase_alias', None) == alias]",
   "test_settlement_r2_a_DIFFERENT_roadmaps_completed_must_not_settle"),
- ("M7 a record naming NO plan file becomes attributable by file (r5)", P,
-  "and plan_file(e) is not None\n            and plan_file(e) in scoped_files",
-  "and plan_file(e) in scoped_files",
-  "test_a_record_with_no_plan_file_is_not_attributable_by_file"),
  ("M8 the closure is seeded from OUT-OF-SCOPE records too", P,
   "    scoped_files = {plan_file(e) for e in own if in_scope(e, alias)}",
   "    scoped_files = {plan_file(e) for e in own}",
@@ -141,27 +137,48 @@ MUTANTS = [
   "        or (not claims_a_roadmap(e)",
   "test_a_skipped_FOREIGN_claimant_does_not_uncontest_a_file"),
  ("M26 render stops threading the skipped count", R,
-  "            attribution_evidence_complete=rows.skipped == 0,",
-  "            attribution_evidence_complete=True,",
+  '        complete = rows.skipped == 0 and all(',
+  '        complete = True and all(',
   "test_a_NO_CLAIM_record_is_REFUSED_while_a_row_is_unparseable"),
  # --- the skipped-row exemption must be NARROW, both ways (r10 fable B1) ------
  ("M29 a skipped non-phase row disarms the guessing arms again", P,
-  '            declared = row.get("type") if isinstance(row, dict) else None\n            if isinstance(declared, str) and declared != "phase":\n                continue',
-  "            pass",
+  '            if _raw_row_cannot_have_mattered(row):\n                continue',
+  '            pass',
   "test_a_skipped_NON_PHASE_row_does_not_disarm_the_guessing_arms"),
  ("M30 the exemption widens to ANY skipped row", P,
-  '            if isinstance(declared, str) and declared != "phase":',
-  "            if True:",
+  '    return isinstance(declared, str) and declared in PLAN_TYPES and declared != "phase"',
+  '    return True',
   "test_a_skipped_row_that_MIGHT_have_been_a_phase_row_still_disarms"),
  ("M31 an unreadable `type` is treated as an exemption", P,
-  '            if isinstance(declared, str) and declared != "phase":',
-  '            if declared != "phase":',
+  '    return isinstance(declared, str) and declared in PLAN_TYPES and declared != "phase"',
+  '    return declared != "phase"',
   "test_a_skipped_row_that_MIGHT_have_been_a_phase_row_still_disarms"),
  # --- a row that PARSES but is unusable is lost evidence too (r10 codex) ------
- ("M32 an unusable phase alias no longer counts as lost evidence", P,
-  "            if not (isinstance(candidate_alias, str) and candidate_alias):\n                attribution_evidence_complete = False\n                break",
-  "            if False:\n                attribution_evidence_complete = False\n                break",
+ ("M32 a parsed-but-unusable row no longer counts as lost evidence", P,
+  '            if not _raw_row_identity_is_readable(row):\n                skipped += 1',
+  '            pass',
   "test_an_UNUSABLE_alias_counts_as_incomplete_evidence"),
+ # --- ONE field-general lost-evidence rule (r11 fable B1 + codex) -------------
+ ("M33 the identity rule stops covering `file`", P,
+  '    name = row.get("file")\n    return isinstance(name, str) and name.strip() not in ("", "None")',
+  "    return True",
+  "test_EVERY_census_identity_field_is_lost_evidence_when_unreadable"),
+ ("M34 the identity rule stops covering `phase_alias`", P,
+  '    alias = row.get("phase_alias")\n    if not (isinstance(alias, str) and alias.strip()):\n        return False',
+  "    pass",
+  "test_EVERY_census_identity_field_is_lost_evidence_when_unreadable"),
+ ("M35 an UNRECOGNISED type exempts itself again", P,
+  '    if not isinstance(row, dict):\n        return False\n    declared = row.get("type")\n    if not isinstance(declared, str) or declared not in PLAN_TYPES:\n        return False',
+  '    if not isinstance(row, dict):\n        return False\n    declared = row.get("type")\n    if not isinstance(declared, str):\n        return False',
+  "test_EVERY_census_identity_field_is_lost_evidence_when_unreadable"),
+ ("M36 the rule marks EVERY row lost (disarms permanently)", P,
+  "def _raw_row_identity_is_readable(row) -> bool:",
+  "def _raw_row_identity_is_readable(row) -> bool:\n    return False",
+  "test_a_row_with_every_identity_field_READABLE_is_not_lost_evidence"),
+ ("M37 status stops saying the reconciliation is INCOMPLETE", R,
+  '    if not complete:',
+  '    if False:',
+  "test_the_status_surface_SAYS_the_reconciliation_is_incomplete"),
  # --- the sixth surface: entry `type` (r9 fable F2) ---------------------------
  ("M27 a type:detailed row speaks for a phase again", P,
   '        and getattr(e, "type", None) == "phase"',
@@ -176,6 +193,18 @@ MUTANTS = [
   "len({phase for phase, _, _ in clashes})", "len(clashes)",
   "test_the_rendered_header_counts_PHASES_not_rows"),
 ]
+# RECORDED EQUIVALENT #4 (was M7 until r11): dropping the file arm's
+# `plan_file(e) is not None` clause — the r5 guard. r11's field-general lost-evidence rule
+# subsumes it: a row whose `file` is not a readable string is now counted as lost evidence,
+# which disarms both guessing arms, so the file arm is never consulted for such a row in
+# the first place. Measured: the mutant survives all 139 tests at this head, where it was
+# CAUGHT at r10.
+#
+# Kept, for the same reason equivalent #2 is kept: the subsumption depends on a rule two
+# hundred lines away and on the detector-side `_row_is_readable_evidence` mirroring the
+# loader's raw-value check. Change either and the clause is load-bearing again, silently.
+# A guard that states its own rule locally is worth a line. (ah#832 r11.)
+#
 # RECORDED EQUIVALENT #3 (was M14 until r8): dropping `_roadmap_claim`'s
 # `isinstance(value, str)` guard. Until r8 this mutant was CAUGHT, because that guard was
 # what made an empty/`"None"` slug read as "names nothing". r8 moved that property into

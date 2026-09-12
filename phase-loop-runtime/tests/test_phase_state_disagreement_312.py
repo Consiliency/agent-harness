@@ -533,7 +533,7 @@ def test_the_rendered_header_counts_PHASES_not_rows(monkeypatch):
         ("ADAPTERS", "complete", "imported"),
         ("UI", "complete", "committed"),
     ]
-    monkeypatch.setattr(render, "_manifest_disagreements", lambda snapshot: clashes)
+    monkeypatch.setattr(render, "_manifest_disagreements", lambda snapshot: (clashes, True))
     lines = render._manifest_disagreement_lines(object())
     assert "2 phase(s) differ" in lines[0], lines[0]
     assert "3 phase(s)" not in lines[0]
@@ -1204,7 +1204,8 @@ def _real_render_path(tmp_path, monkeypatch):
         roadmap = "specs/phase-plans-v1.md"
         phases = {"ALPHA": "executing"}
 
-    return render._manifest_disagreements(_Snap())
+    clashes, _complete = render._manifest_disagreements(_Snap())
+    return clashes
 
 
 @pytest.mark.parametrize(
@@ -1673,8 +1674,115 @@ def test_an_UNUSABLE_alias_counts_as_incomplete_evidence(tmp_path):
                                    row("failed", "v1", alias=foreign_alias),
                                    row("completed", None)])
         parsed = parseable_plan_entries(tmp_path)
-        assert parsed.skipped == 0, f"{label}: the row PARSES — that is the point"
+        # r10 asserted `skipped == 0` here, because the row PARSES and the rule then
+        # lived in the detector. r11 moved the rule to the LOADER — the only place that
+        # can still see raw `type` and `file` before `str()` coercion makes garbage look
+        # readable — so a parsed-but-unusable row is counted as lost evidence there.
+        # Same outcome for the detector, better place for the judgement.
+        assert parsed.skipped == 1, f"{label}: unusable identity is lost evidence"
         assert phase_status_disagreements(
             {"P": "complete"}, parsed.entries, roadmap_slug="v2",
             attribution_evidence_complete=parsed.skipped == 0,
         ) == [("P", "complete", "committed")], label
+
+
+# ---------------------------------------------------------------------------
+# ah#832 r11: ONE field-general lost-evidence rule, and the completeness test
+# that makes "have we swept the class?" answerable by EXECUTION.
+
+
+@pytest.mark.parametrize("field", ["type", "phase_alias", "file"])
+@pytest.mark.parametrize(
+    "unreadable", [None, ["x"], {"a": 1}, 123, "", "   "], ids=lambda v: repr(v)[:12]
+)
+def test_EVERY_census_identity_field_is_lost_evidence_when_unreadable(tmp_path, field, unreadable):
+    """The closure criterion the r11 seat named, executable.
+
+    r5 fixed `file`, r7 fixed `slug`, r8 fixed `phase_alias`, r10 fixed the
+    parses-but-unusable case for `phase_alias` ALONE — and r11 showed `type` and `file`
+    had the same hole, worse, because the parser's `str()` coercion makes a garbage value
+    look readable (`["plans/x.md"]` becomes `"['plans/x.md']"`). Three rounds of
+    field-specific fixes each left the next field open.
+
+    This iterates `_CENSUS_IDENTITY_FIELDS` rather than listing cases, so a field added to
+    that tuple is covered here whether or not anyone remembers this test, and a field
+    REMOVED from the rule fails it. That is what makes the sweep a measurement instead of
+    a claim.
+
+    The scenario is codex's: three rows on one file, `v2 committed` + `v1 failed` +
+    legacy `completed`, snapshot `complete`. Corrupt only the FOREIGN row's identity and
+    its claim silently vanishes from the contested-file census — so the file looks
+    uncontested, the legacy record settles, and a real v2 disagreement is suppressed
+    unless that row is counted as lost evidence.
+    """
+    from phase_loop_runtime.plan_manifest import _CENSUS_IDENTITY_FIELDS, parseable_plan_entries
+
+    assert field in _CENSUS_IDENTITY_FIELDS
+
+    A = "plans/phase-plan-A.md"
+    def row(status, slug, **over):
+        e = {"slug": f"{status}-{slug}", "file": A, "type": "phase", "status": status,
+             "created_at": "t", "updated_at": "t", "owner_skill": "x", "phase_alias": "P"}
+        if slug:
+            e["roadmap_ref"] = {"slug": slug, "file": f"specs/{slug}.md",
+                                "type": "phase", "status": "imported"}
+        e.update(over)
+        return e
+
+    foreign = row("failed", "v1", **{field: unreadable})
+    _write_manifest(tmp_path, [row("committed", "v2"), foreign, row("completed", None)])
+    parsed = parseable_plan_entries(tmp_path)
+    assert parsed.skipped == 1, f"{field}={unreadable!r} must count as lost evidence"
+    assert phase_status_disagreements(
+        {"P": "complete"}, parsed.entries, roadmap_slug="v2",
+        attribution_evidence_complete=parsed.skipped == 0,
+    ) == [("P", "complete", "committed")], f"{field}={unreadable!r}"
+
+
+def test_a_row_with_every_identity_field_READABLE_is_not_lost_evidence(tmp_path):
+    """The control: the rule must not mark a well-formed manifest incomplete.
+
+    Without this, the sweep above would pass against a loader that had simply started
+    counting every row as lost — which disarms both guessing arms permanently.
+    """
+    from phase_loop_runtime.plan_manifest import parseable_plan_entries
+
+    A = "plans/phase-plan-A.md"
+    rows = [
+        {"slug": "p1", "file": A, "type": "phase", "status": "committed", "created_at": "t",
+         "updated_at": "t", "owner_skill": "x", "phase_alias": "P",
+         "roadmap_ref": {"slug": "v2", "file": "specs/v2.md", "type": "phase", "status": "imported"}},
+        {"slug": "d1", "file": "plans/detailed-x.md", "type": "detailed", "status": "committed",
+         "created_at": "t", "updated_at": "t", "owner_skill": "x"},
+    ]
+    _write_manifest(tmp_path, rows)
+    assert parseable_plan_entries(tmp_path).skipped == 0
+
+
+def test_the_status_surface_SAYS_the_reconciliation_is_incomplete(tmp_path, monkeypatch):
+    """codex r11's third option: say INCOMPLETE rather than assert certainty.
+
+    The header tells the operator "one of these is stale". When a manifest row could not
+    be read that claims more than the evidence supports — a dropped row may have been the
+    record that settled the phase. The choice was never only report-or-silence; the third
+    option is in PRESENTATION, and it keeps the visible warning without asserting a
+    confirmed contradiction. The seat also found that `skipped` reached no operator
+    surface at all, so the consolation the r10 note offered ("the operator finds an
+    unreadable manifest row") was not actually delivered. Now it is.
+    """
+    from phase_loop_runtime import render
+
+    _write_manifest(tmp_path, [
+        dict(_GOOD_ROW, roadmap_ref={"slug": "phase-plans-v1", "file": "specs/phase-plans-v1.md",
+                                     "type": "phase", "status": "imported"}),
+        "not an object",
+    ])
+
+    class _Snap:
+        repo = str(tmp_path)
+        roadmap = "specs/phase-plans-v1.md"
+        phases = {"ALPHA": "executing"}
+
+    lines = render._manifest_disagreement_lines(_Snap())
+    assert any("ALPHA" in line for line in lines), lines
+    assert any("INCOMPLETE" in line for line in lines), lines

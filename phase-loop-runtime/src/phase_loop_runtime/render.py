@@ -20,7 +20,9 @@ def render_status(snapshot: StateSnapshot, as_json: bool = False, ledger_debug: 
         # ah#312 (CR): automation reads `status --json` — repair and handoff flows rely on
         # it — so the reconciliation must appear here too, not only in the prose branch.
         # Additive key: absent when the stores agree, so no existing consumer changes.
-        disagreements = _manifest_disagreements(snapshot)
+        disagreements, reconciliation_complete = _manifest_disagreements(snapshot)
+        if not reconciliation_complete:
+            payload["state_reconciliation_incomplete"] = True
         if disagreements:
             payload["state_disagreements"] = [
                 {"phase": phase, "status": snap, "manifest": man}
@@ -459,12 +461,19 @@ def _manifest_disagreements(snapshot: StateSnapshot) -> list[tuple[str, str, str
         # `skipped` is load-bearing, not diagnostics: a row this runtime could not parse
         # is a competing roadmap claim that might have been there, and two of the
         # detector's attribution arms decide by the ABSENCE of one. (ah#832 r9.)
-        return phase_status_disagreements(
-            snapshot.phases, rows.entries, roadmap_slug=roadmap_slug,
-            attribution_evidence_complete=rows.skipped == 0,
+        from .plan_manifest import _row_is_readable_evidence
+        complete = rows.skipped == 0 and all(
+            _row_is_readable_evidence(entry) for entry in rows.entries
+        )
+        return (
+            phase_status_disagreements(
+                snapshot.phases, rows.entries, roadmap_slug=roadmap_slug,
+                attribution_evidence_complete=complete,
+            ),
+            complete,
         )
     except Exception:  # never let reconciliation break `status`
-        return []
+        return [], True
 
 
 def _manifest_disagreement_lines(snapshot: StateSnapshot) -> list[str]:
@@ -479,7 +488,7 @@ def _manifest_disagreement_lines(snapshot: StateSnapshot) -> list[str]:
     render. Only genuine done-vs-in-flight pairs are reported (see
     `plan_manifest.phase_status_disagreements`).
     """
-    clashes = _manifest_disagreements(snapshot)
+    clashes, complete = _manifest_disagreements(snapshot)
     if not clashes:
         return []
     lines = [
@@ -499,4 +508,16 @@ def _manifest_disagreement_lines(snapshot: StateSnapshot) -> list[str]:
     ]
     for phase, snap, man in clashes:
         lines.append(f"  {phase}: status={snap!r} vs manifest={man!r}")
+    if not complete:
+        # SAY "INCOMPLETE" RATHER THAN ASSERT CERTAINTY. The header above tells the
+        # operator "one of these is stale", and when a manifest row could not be read
+        # that is more than the evidence supports: a dropped row may have been the record
+        # that settled the phase. r11's codex seat is right that the choice was never
+        # only report-or-silence — the third option is in PRESENTATION, keeping the
+        # operator-visible warning without claiming a confirmed contradiction.
+        # (ah#832 r11, codex.)
+        lines.append(
+            "  NOTE: at least one manifest row could not be read, so this reconciliation "
+            "is INCOMPLETE — some rows above may be unconfirmed rather than stale."
+        )
     return lines
