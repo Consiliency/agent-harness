@@ -674,12 +674,19 @@ _MANIFEST_DONE = {"completed"}
 # three pre-terminal statuses could never be reported.
 #
 # Measured on Consiliency/omniagent-plus, whose runner snapshot reports all 13 phases
-# `complete`: the shipped literal found 0 disagreements, the derived set finds 14 across
-# 9 phases. They are real, not noise — the run artifacts under `.phase-loop/runs/` show
-# IDENTITY, LIMITS and TRANSPORT ending `awaiting_phase_closeout`, and HARDEN and UI
-# ending `blocked`. In every case the manifest is right and the snapshot's `complete` is
-# the claim that does not hold. That is precisely the harm class this detector exists for:
-# resume and dispatch act on a phase the other store believes finished.
+# `complete`: the shipped literal found 0 disagreements, the derived set finds 8 across
+# 8 phases — one per plan, after the reconciliation below.
+#
+# WHAT THIS SET DOES AND DOES NOT CLAIM. It reports that the two stores disagree. It does
+# NOT adjudicate which one is right, and no comment here should. An earlier revision of
+# this one claimed the manifest was right in every case, citing `terminal-summary.json`
+# under `.phase-loop/runs/` reading `awaiting_phase_closeout`. That inference is FALSE:
+# the runner promotes `awaiting_phase_closeout` to `complete` and writes nothing back to
+# the manifest, so the artifact says nothing about whether the phase finished. Refuted by
+# counterexample in the same dataset — CONTRACT, STATELEDGER and WORKTREE are `completed`
+# in the manifest AND `complete` in the snapshot, and their last run carries exactly that
+# artifact. Adjudicating is the operator's job; surfacing is this function's.
+# (ah#830 r1, fable.)
 #
 # The done side stays a literal on purpose. It is NOT the complement of this set —
 # `failed` and `orphaned` are terminal but deliberately excluded, for the documented
@@ -750,12 +757,39 @@ def phase_status_disagreements(
                 continue
         snap = snapshot_phases[alias]
         man = getattr(entry, "status", "")
-        contradiction = (
-            (man in _MANIFEST_DONE and snap in _SNAPSHOT_IN_FLIGHT)
-            or (man in _MANIFEST_IN_FLIGHT and snap in _SNAPSHOT_DONE)
-        )
-        if contradiction:
+        if man in _MANIFEST_DONE and snap in _SNAPSHOT_IN_FLIGHT:
             out.append((alias, snap, man))
+            continue
+        if man in _MANIFEST_IN_FLIGHT and snap in _SNAPSHOT_DONE:
+            # RECONCILE THE PLAN FIRST, then compare stores.
+            #
+            # A plan FILE can carry more than one manifest entry, and they need not agree
+            # with each other: on Consiliency/omniagent-plus, `plans/phase-plan-v1-CLI.md`
+            # has a `committed` record with an EMPTY lifecycle alongside a `completed`
+            # record whose lifecycle is ['executing', 'completed']. Judging entries in
+            # isolation reported CLI as contradicting a `complete` snapshot while the
+            # manifest's own settled record agreed with it — a false refusal of the
+            # operator's attention, which is the failure mode this detector must not have.
+            #
+            # A record that REACHED a done status settles the plan: the work finished, and
+            # a sibling stub left behind at an earlier status is manifest bookkeeping, not
+            # a contradiction between the two stores. Only when NO record for that plan
+            # reached done is the disagreement real. (ah#830 r1, fable.)
+            plan_file = getattr(entry, "file", None)
+            siblings = [
+                other for other in entries
+                if getattr(other, "phase_alias", None) == alias
+                and getattr(other, "file", None) == plan_file
+            ]
+            if any(getattr(other, "status", "") in _MANIFEST_DONE for other in siblings):
+                continue
+            in_flight = sorted({
+                status for status in (getattr(o, "status", "") for o in siblings)
+                if status in _MANIFEST_IN_FLIGHT
+            })
+            row = (alias, snap, "/".join(in_flight))
+            if row not in out:            # one row per plan, not one per record
+                out.append(row)
     return out
 
 

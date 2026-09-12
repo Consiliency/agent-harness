@@ -475,7 +475,10 @@ def _manifest_disagreement_lines(snapshot: StateSnapshot) -> list[str]:
     if not clashes:
         return []
     lines = [
-        f"STATE DISAGREEMENT: {len(clashes)} phase(s) differ between the runner state and "
+        # Count PHASES, not rows: one phase can carry more than one contradicting plan
+        # file, and "14 phase(s)" for 9 phases is a wrong number on the operator surface.
+        # (ah#830 r1, fable.)
+        f"STATE DISAGREEMENT: {len({phase for phase, _, _ in clashes})} phase(s) differ between the runner state and "
         "plans/manifest.json (ah#312) — one of these is stale:"
     ]
     for phase, snap, man in clashes:

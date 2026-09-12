@@ -291,17 +291,58 @@ def test_a_failed_plan_against_a_complete_snapshot_stays_silent():
     assert phase_status_disagreements({"P": "complete"}, [_entry("P", "orphaned")]) == []
 
 
-def test_both_contradicting_records_for_one_alias_are_reported():
-    """Real shape on omniagent-plus: an alias carries a `committed` AND an `imported` plan.
+def test_a_sibling_record_that_reached_done_settles_the_plan():
+    """The false positive fable found: judging entries in isolation.
 
-    Each is a distinct plan record that contradicts the snapshot, so each is reported.
-    Collapsing them would hide that two separate records disagree.
+    On Consiliency/omniagent-plus, `plans/phase-plan-v1-CLI.md` carries a `committed`
+    record with an EMPTY lifecycle alongside a `completed` record whose lifecycle is
+    ['executing', 'completed']. The manifest's settled record agrees with the snapshot,
+    but entry-at-a-time evaluation reported CLI as contradicting it — a false claim on
+    the operator surface, which is the failure mode this detector must not have.
+    (ah#830 r1, fable.)
+    """
+    stub = _entry("CLI", "committed")
+    settled = _entry("CLI", "completed")
+    assert phase_status_disagreements({"CLI": "complete"}, [stub, settled]) == []
+    # order must not matter
+    assert phase_status_disagreements({"CLI": "complete"}, [settled, stub]) == []
+
+
+def test_duplicate_in_flight_records_for_one_plan_collapse_to_one_row():
+    """One row per PLAN, not per record — and the row names every status seen.
+
+    Six plan files on that repository carry two entries each, so per-record reporting
+    inflated 8 real disagreements into 14 rows and made `render.py` print a phase count
+    that was simply wrong.
     """
     out = phase_status_disagreements(
         {"ADAPTERS": "complete"},
         [_entry("ADAPTERS", "committed"), _entry("ADAPTERS", "imported")],
     )
-    assert sorted(out) == [
-        ("ADAPTERS", "complete", "committed"),
-        ("ADAPTERS", "complete", "imported"),
-    ]
+    assert out == [("ADAPTERS", "complete", "committed/imported")]
+
+
+def test_two_DIFFERENT_plan_files_for_one_alias_are_still_two_rows():
+    """The collapse is per plan file, not per alias.
+
+    Two genuinely distinct plans for one phase, neither settled, are two separate
+    disagreements and must not be merged into one.
+    """
+    first = _entry("P", "committed")
+    second = _entry("P", "imported")
+    object.__setattr__(second, "file", "plans/phase-plan-v1-P-second.md")
+    out = phase_status_disagreements({"P": "complete"}, [first, second])
+    assert sorted(out) == [("P", "complete", "committed"), ("P", "complete", "imported")]
+
+
+def test_a_done_sibling_does_not_mask_the_OTHER_direction():
+    """The reconciliation applies only to manifest-in-flight vs snapshot-done.
+
+    The reverse case — manifest `completed`, runner still executing — is the original
+    ah#312 defect and must keep firing regardless of siblings.
+    """
+    out = phase_status_disagreements(
+        {"FREEZE": "executing"},
+        [_entry("FREEZE", "completed"), _entry("FREEZE", "committed")],
+    )
+    assert ("FREEZE", "executing", "completed") in out
