@@ -176,7 +176,20 @@ def read_manifest(repo: Path) -> DotfilesPlanManifest:
     return manifest
 
 
-def parseable_plan_entries(repo: Path) -> tuple[DotfilesPlanEntry, ...]:
+@dataclass(frozen=True)
+class ParseablePlanRows:
+    """The rows a read could parse, AND how many it could not.
+
+    The count is not diagnostics — it is load-bearing. See
+    ``parseable_plan_entries`` for the two false readings that arise when the caller
+    cannot tell a complete manifest from a partially-parsed one. (ah#832 r9.)
+    """
+
+    entries: tuple[DotfilesPlanEntry, ...] = ()
+    skipped: int = 0
+
+
+def parseable_plan_entries(repo: Path) -> ParseablePlanRows:
     """Every row of ``plans/manifest.json`` this runtime can PARSE, skipping the rest.
 
     ``read_manifest`` is ALL-OR-NOTHING: it builds every row eagerly, so one row it
@@ -211,10 +224,28 @@ def parseable_plan_entries(repo: Path) -> tuple[DotfilesPlanEntry, ...]:
     right: unparseable JSON, a non-object manifest, a non-array ``plans``, or an
     unsupported ``schema_version`` means nothing in the file is trustworthy. Only
     ROW-level parse failures are skipped. (ah#832 r8, fable.)
+
+    THE r8 VERSION OF THIS DOCSTRING CLAIMED "one unparseable row costs its own signal,
+    never anyone else's". THAT WAS FALSE, and two seats proved it independently at r9 from
+    opposite directions. The detector's ambiguity guards are computed over the rows it is
+    HANDED, so a skipped row's ABSENCE changes how every other row is read:
+
+        alias ambiguity   a skipped sibling makes an ambiguous alias look UNAMBIGUOUS, so
+                          a legacy null-ref record is admitted and REPORTED on the
+                          strength of a roadmap that cannot be identified (fable F1) —
+                          a false positive the ambiguity guard's own test forbids
+        contested file    a skipped foreign claimant makes a contested file look
+                          UNCONTESTED, so a legacy `completed` record is admitted and
+                          SUPPRESSES a real disagreement (codex) — a false negative
+
+    Which is why this returns a COUNT and not just the rows. Attribution that has to guess
+    a roadmap is only sound when the evidence of competing claims is complete; the
+    detector refuses to guess when it is not. Returning the rows alone made that
+    impossible to express, and the caller could not have known. (ah#832 r9.)
     """
     manifest_path = _manifest_path(repo)
     if not manifest_path.exists():
-        return ()
+        return ParseablePlanRows()
     data = json.loads(manifest_path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError("manifest must be an object")
@@ -224,13 +255,13 @@ def parseable_plan_entries(repo: Path) -> tuple[DotfilesPlanEntry, ...]:
     if not isinstance(plans, list):
         raise ValueError("manifest plans must be an array")
     entries: list[DotfilesPlanEntry] = []
+    skipped = 0
     for row in plans:
         try:
             entries.append(_entry_from_json(row))
         except Exception:
-            # One unparseable row costs its own signal, never anyone else's.
-            continue
-    return tuple(entries)
+            skipped += 1
+    return ParseablePlanRows(entries=tuple(entries), skipped=skipped)
 
 
 def append_entry(repo: Path, entry: DotfilesPlanEntry) -> None:
@@ -896,7 +927,9 @@ def _roadmap_claim(candidate) -> str | None:
     return stripped
 
 
-def _phase_attributable_records(entries, alias: str, in_scope) -> list:
+def _phase_attributable_records(
+    entries, alias: str, in_scope, *, attribute_by_file: bool = True
+) -> list:
     """Every manifest record that speaks for ``alias`` in the roadmap being asked about.
 
     A record is attributable two ways, and the SECOND is transitive, which is the whole
@@ -922,7 +955,26 @@ def _phase_attributable_records(entries, alias: str, in_scope) -> list:
       r4  r1 and r3 TOGETHER: a legacy record settles file A
           while file B, in scope, saw no done sibling        -> settled
     """
-    own = [e for e in entries if getattr(e, "phase_alias", None) == alias]
+    # ONLY A `phase` ENTRY SPEAKS FOR A PHASE — the sixth surface, and the one the class
+    # table's completeness claim missed. `type` was never checked, so a `type: "detailed"`
+    # row carrying a `phase_alias` was attributed like a phase plan. Measured, alias
+    # ALPHA, active roadmap v2, snapshot `complete` against a genuine `committed`
+    # disagreement:
+    #
+    #   a detailed row claiming v2, status completed   -> the disagreement went SILENT
+    #   a detailed row on the same plan file           -> the disagreement went SILENT
+    #   a detailed row alone                           -> it BECAME the subject of one
+    #
+    # `validate_manifest` calls all three structurally valid, and `_validate_detailed_entry`
+    # (which rejects `roadmap_ref` on a detailed entry) is only reached through a validator
+    # with no `src/` caller — so this is not covered one layer up. This is exactly the
+    # filter `valid_phase_entries` applies (`entry.type == "phase"`); the r8 load weighed
+    # that helper and omitted that it also filters on type. (ah#832 r9, fable F2.)
+    own = [
+        e for e in entries
+        if getattr(e, "phase_alias", None) == alias
+        and getattr(e, "type", None) == "phase"
+    ]
 
     def plan_file(candidate):
         """The record's plan file, or None when it does not actually name one.
@@ -999,10 +1051,15 @@ def _phase_attributable_records(entries, alias: str, in_scope) -> list:
             claimed_by.setdefault(name, set()).add(slug)
     contested_files = {name for name, slugs in claimed_by.items() if len(slugs) > 1}
 
+    # THE FILE ARM IS UNAVAILABLE WHEN A ROW COULD NOT BE PARSED. It decides by the
+    # absence of a competing explicit claim on the same file, and a skipped row is
+    # exactly a claim that might have been there. Measured at r9: a parse-hostile foreign
+    # claimant made a contested file look uncontested and a legacy `completed` record
+    # then suppressed a real disagreement. (ah#832 r9, codex.)
     return [
         e for e in own
         if in_scope(e, alias)
-        or (not claims_a_roadmap(e) and plan_file(e) is not None
+        or (attribute_by_file and not claims_a_roadmap(e) and plan_file(e) is not None
             and plan_file(e) in scoped_files
             and plan_file(e) not in contested_files)
     ]
@@ -1013,12 +1070,42 @@ def phase_status_disagreements(
     entries: Sequence[DotfilesPlanEntry],
     *,
     roadmap_slug: str | None = None,
+    attribution_evidence_complete: bool = True,
 ) -> list[tuple[str, str, str]]:
     """Phases where the runner snapshot and the plan manifest CONTRADICT each other.
 
     Returns ``[(phase_alias, snapshot_status, manifest_status), ...]``, empty when the
     two stores agree or say nothing comparable. Pure — no I/O — so it is testable
     without a repo.
+
+    ``attribution_evidence_complete=False`` says some manifest row could not be parsed,
+    so the census of competing claims is INCOMPLETE. Two of this function's arms exist
+    only to attribute a record whose roadmap is not stated, and both decide by the
+    ABSENCE of a competing claim:
+
+        the legacy null-ref admission   admits a record when its alias is unambiguous
+        the file-attribution arm        admits a record when its file is uncontested
+
+    Absence is not evidence when rows are missing. Measured at r9, both directions:
+
+        a skipped sibling made an ambiguous alias look unambiguous, and a legacy record
+        was REPORTED as the manifest side of a disagreement on the strength of a roadmap
+        that cannot be identified — which `in_scope` below calls "actively misleading"
+
+        a skipped foreign claimant made a contested file look uncontested, and a legacy
+        `completed` record SUPPRESSED a real disagreement
+
+    So with incomplete evidence a record speaks for a phase only if it EXPLICITLY claims
+    this roadmap. Direct claims are unaffected — they do not rest on absence — so the
+    r8 load still does what it was for: a real disagreement on an explicitly-claimed
+    record is reported while an unparseable sibling row sits beside it.
+
+    Salvaging the aliases of skipped rows was considered and REJECTED: for the
+    "entry is not an object" shape the alias is itself unreadable, so that census would
+    silently under-count exactly the row it needed, and the guard would look closed while
+    one of its five shapes stayed open. Going conservative on an unreadable row is the
+    only form that cannot be wrong. (ah#832 r9, fable F1 + codex, with the fix trap
+    flagged in fable's review.)
     """
     out: list[tuple[str, str, str]] = []
     # A NON-STRING ALIAS IS SKIPPED, NOT COUNTED — because counting it RAISES.
@@ -1042,6 +1129,10 @@ def phase_status_disagreements(
     _alias_counts: dict[str, int] = {}
     for e in entries:
         a = getattr(e, "phase_alias", None)
+        # Same `type` restriction as attribution below. Two censuses disagreeing about
+        # which rows speak for a phase is the shape r5 spent a round on. (ah#832 r9.)
+        if getattr(e, "type", None) != "phase":
+            continue
         if isinstance(a, str) and a:
             _alias_counts[a] = _alias_counts.get(a, 0) + 1
     _ambiguous_aliases = {a for a, n in _alias_counts.items() if n > 1}
@@ -1067,6 +1158,14 @@ def phase_status_disagreements(
         # name a phase from a DIFFERENT roadmap as contradicting the active one. That is
         # actively misleading, so require positive association in exactly that ambiguous
         # case.
+        #
+        # ...AND THE SAME REFUSAL WHEN A ROW COULD NOT BE PARSED AT ALL. The ambiguity
+        # census is computed over the rows this function was handed, so a skipped sibling
+        # makes an ambiguous alias look unambiguous. Admitting on that basis reports a
+        # phase that may belong to another roadmap — the exact outcome this rule exists
+        # to prevent. (ah#832 r9, fable F1.)
+        if not attribution_evidence_complete:
+            return False
         return not (_ambiguous_aliases and alias in _ambiguous_aliases)
 
     # ITERATE PHASES, NOT RECORDS, so the attributable set governs BOTH directions.
@@ -1101,7 +1200,10 @@ def phase_status_disagreements(
             # reconciliation in a bare `except`, so the lookup error would surface as
             # total silence rather than as an error. (r3, fable.)
             continue
-        attributable = _phase_attributable_records(entries, alias, in_scope)
+        attributable = _phase_attributable_records(
+            entries, alias, in_scope,
+            attribute_by_file=attribution_evidence_complete,
+        )
         if not attributable:
             continue
         snap = snapshot_phases[alias]

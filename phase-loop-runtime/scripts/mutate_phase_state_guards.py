@@ -14,6 +14,19 @@ seat showed was wrong, and the suite must turn RED **by a named test**. A mutant
 genuinely EQUIVALENT is recorded as such with the argument, never quietly dropped.
 
     python3 phase-loop-runtime/scripts/mutate_phase_state_guards.py [repo-root]
+
+SCOPE OF "no survivors": it is a claim about the guards ENUMERATED below, exercised by
+`tests/test_phase_state_disagreement_312.py`. It is NOT a claim about the module, and not
+about guards this matrix does not carry — two of the last four blocking findings lived in
+guards it did not enumerate (r7's `slug`, r8's load path), so the qualification is
+load-bearing rather than modesty.
+
+SUBSTRATE, PROVEN RATHER THAN ASSUMED: the driver runs pytest with `cwd=<copytree copy>`
+and no `PYTHONPATH`, which is exactly the shape that would silently exercise an installed
+package and make every "caught" meaningless. Measured — a sentinel confined to the copy
+reds that copy's suite (32 failed), while `import phase_loop_runtime` from the same cwd
+raises `ModuleNotFoundError`, so the import resolves through pytest's rootdir insertion of
+`src` and not a site package. (Technique from the ah#834 r8 fable seat.)
 """
 import shutil, subprocess, sys, tempfile
 from pathlib import Path
@@ -41,7 +54,10 @@ MUTANTS = [
   "test_unplanned_phase_is_not_a_contradiction"),
  # --- attribution: the five settlement cases, one per round -------------------
  ("M5 attribute per RECORD again, not per phase (r5)", P,
-  "        attributable = _phase_attributable_records(entries, alias, in_scope)",
+  """        attributable = _phase_attributable_records(
+            entries, alias, in_scope,
+            attribute_by_file=attribution_evidence_complete,
+        )""",
   "        attributable = [e for e in entries if getattr(e, 'phase_alias', None) == alias]",
   "test_settlement_r2_a_DIFFERENT_roadmaps_completed_must_not_settle"),
  ("M7 a record naming NO plan file becomes attributable by file (r5)", P,
@@ -98,24 +114,46 @@ MUTANTS = [
   "test_a_malformed_phase_alias_does_not_SILENCE_THE_WHOLE_detector"),
  # --- the LOAD: all-or-nothing vs per-row (r8 fable) --------------------------
  ("M19 render goes back to the all-or-nothing read_manifest", R,
-  "        entries = parseable_plan_entries(Path(snapshot.repo))",
-  "        from .plan_manifest import read_manifest\n        entries = read_manifest(Path(snapshot.repo)).plans",
-  "test_a_parse_hostile_SIBLING_row_does_not_delete_the_whole_report"),
+  "        rows = parseable_plan_entries(Path(snapshot.repo))",
+  "        from .plan_manifest import read_manifest, ParseablePlanRows\n        rows = ParseablePlanRows(entries=read_manifest(Path(snapshot.repo)).plans)",
+  "test_a_parse_hostile_SIBLING_row_does_not_delete_an_EXPLICITLY_CLAIMED_report"),
  ("M20 the per-row parse swallows STRUCTURAL failures too", P,
   '        raise ValueError("manifest plans must be an array")\n    entries: list[DotfilesPlanEntry] = []',
   "        return ()\n    entries: list[DotfilesPlanEntry] = []",
   "test_a_STRUCTURAL_failure_still_hides_the_WHOLE_manifest"),
  ("M21 the load uses valid_phase_entries (drops a renamed plan file)", P,
   """    entries: list[DotfilesPlanEntry] = []
+    skipped = 0
     for row in plans:
         try:
             entries.append(_entry_from_json(row))
         except Exception:
-            # One unparseable row costs its own signal, never anyone else's.
-            continue
-    return tuple(entries)""",
-  "    return valid_phase_entries(manifest_path) or ()",
+            skipped += 1
+    return ParseablePlanRows(entries=tuple(entries), skipped=skipped)""",
+  "    return ParseablePlanRows(entries=valid_phase_entries(manifest_path) or ())",
   "test_a_RENAMED_plan_file_is_still_reported"),
+ # --- incomplete evidence must disable the GUESSING arms (r9 fable F1 + codex) -
+ ("M24 the legacy admission ignores that a row was unparseable", P,
+  "        if not attribution_evidence_complete:\n            return False",
+  "        if False:\n            return False",
+  "test_a_NO_CLAIM_record_is_REFUSED_while_a_row_is_unparseable"),
+ ("M25 the file arm ignores that a row was unparseable", P,
+  "        or (attribute_by_file and not claims_a_roadmap(e)",
+  "        or (not claims_a_roadmap(e)",
+  "test_a_skipped_FOREIGN_claimant_does_not_uncontest_a_file"),
+ ("M26 render stops threading the skipped count", R,
+  "            attribution_evidence_complete=rows.skipped == 0,",
+  "            attribution_evidence_complete=True,",
+  "test_a_NO_CLAIM_record_is_REFUSED_while_a_row_is_unparseable"),
+ # --- the sixth surface: entry `type` (r9 fable F2) ---------------------------
+ ("M27 a type:detailed row speaks for a phase again", P,
+  '        and getattr(e, "type", None) == "phase"',
+  "        and True",
+  "test_a_type_DETAILED_row_does_not_speak_for_a_PHASE"),
+ ("M28 the alias census counts non-phase rows", P,
+  '        if getattr(e, "type", None) != "phase":\n            continue',
+  "        if False:\n            continue",
+  "test_a_DETAILED_row_does_not_make_an_alias_look_AMBIGUOUS"),
  # --- the operator surface ---------------------------------------------------
  ("M11 the header counts ROWS again, not phases (r2)", R,
   "len({phase for phase, _, _ in clashes})", "len(clashes)",
@@ -145,8 +183,11 @@ MUTANTS = [
 #   1. The file arm is only consulted when `roadmap_slug is not None`. Otherwise
 #      `in_scope` is True for every record and the `or` short-circuits before it.
 #   2. With a roadmap slug set, a null-ref record is in scope only if its alias is
-#      UNAMBIGUOUS, and `_alias_counts` (plan_manifest.py:892-897) counts every entry —
-#      so unambiguous means the alias appears exactly once, i.e. `len(own) == 1`.
+#      `_alias_counts` (search the symbol, not a line number — an earlier revision of
+#      this proof cited :892-897, which at the current head is an unrelated comment; a
+#      file:line anchor in a proof drifts with every edit and a seat caught this one)
+#      counts every `phase` entry, so unambiguous means the alias appears exactly once,
+#      i.e. `len(own) == 1`.
 #   3. An alias with one record has no OTHER record to admit, so every seeder of
 #      `scoped_files` is a record that explicitly claims the active roadmap.
 #   4. Therefore a foreign explicit record sharing a seeded file always makes that file

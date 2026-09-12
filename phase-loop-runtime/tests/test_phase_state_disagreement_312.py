@@ -14,6 +14,7 @@ import pytest
 
 from phase_loop_runtime.models import PHASE_STATUSES
 from phase_loop_runtime.plan_manifest import (
+    ParseablePlanRows,
     _roadmap_claim,
     _MANIFEST_DONE,
     _MANIFEST_IN_FLIGHT,
@@ -109,7 +110,7 @@ def test_status_output_surfaces_the_disagreement(monkeypatch, tmp_path):
         # manifest would be read instead, and the assertion would pass or fail for
         # reasons unrelated to what it claims. (ah#832 r8.)
         pm, "parseable_plan_entries",
-        lambda repo: (_entry("FREEZE", "completed"),),
+        lambda repo: ParseablePlanRows(entries=(_entry("FREEZE", "completed"),)),
     )
 
     class _Snap:
@@ -190,7 +191,7 @@ def test_status_json_also_carries_the_disagreement(monkeypatch, tmp_path):
         # manifest would be read instead, and the assertion would pass or fail for
         # reasons unrelated to what it claims. (ah#832 r8.)
         pm, "parseable_plan_entries",
-        lambda repo: (_entry("FREEZE", "completed"),),
+        lambda repo: ParseablePlanRows(entries=(_entry("FREEZE", "completed"),)),
     )
 
     class _Snap:
@@ -225,7 +226,7 @@ def test_status_json_omits_the_key_when_the_stores_agree(monkeypatch, tmp_path):
         # manifest would be read instead, and the assertion would pass or fail for
         # reasons unrelated to what it claims. (ah#832 r8.)
         pm, "parseable_plan_entries",
-        lambda repo: (_entry("FREEZE", "completed"),),
+        lambda repo: ParseablePlanRows(entries=(_entry("FREEZE", "completed"),)),
     )
 
     class _Snap:
@@ -1218,18 +1219,63 @@ def _real_render_path(tmp_path, monkeypatch):
               lifecycle=[{"transition": "imported", "by": "x", "at": "t", "metadata": "nope"}])),
     ],
 )
-def test_a_parse_hostile_SIBLING_row_does_not_delete_the_whole_report(tmp_path, monkeypatch, label, sibling):
-    """One unparseable row costs its own signal, never every other phase's.
+def test_a_parse_hostile_SIBLING_row_does_not_delete_an_EXPLICITLY_CLAIMED_report(
+    tmp_path, monkeypatch, label, sibling
+):
+    """An unparseable row must not delete the signal of a record that STATES its roadmap.
 
     Each of these raised inside `read_manifest`, and the bare `except` at
     `render._manifest_disagreements` turned that into total silence — with a genuine
     `ALPHA: executing` vs manifest `completed` disagreement sitting right beside it.
-    Measured on the real render path, which is the only place the defect is visible.
+    Measured on the real render path, which is the only place that defect is visible.
+
+    THE r8 VERSION OF THIS TEST ASSERTED A STRONGER GUARANTEE THAN IS SOUND. It used a
+    record with NO `roadmap_ref` and required it to report anyway. r9 proved that exact
+    shape misleading: with a row skipped, the alias-ambiguity census is incomplete, so
+    admitting a no-claim record reports a phase that may belong to another roadmap. The
+    guarantee that survives — and the one worth having — is about records that do not
+    rest on absence at all: an EXPLICIT claim is still honoured beside an unparseable
+    sibling. The no-claim case is pinned as a refusal directly below. (ah#832 r9.)
     """
-    _write_manifest(tmp_path, [_GOOD_ROW, sibling])
+    claimed = dict(_GOOD_ROW, roadmap_ref={
+        "slug": "phase-plans-v1", "file": "specs/phase-plans-v1.md",
+        "type": "phase", "status": "imported",
+    })
+    _write_manifest(tmp_path, [claimed, sibling])
     assert _real_render_path(tmp_path, monkeypatch) == [
         ("ALPHA", "executing", "completed")
     ], label
+
+
+@pytest.mark.parametrize(
+    "label,sibling",
+    [
+        ("roadmap_ref is a string", dict(_GOOD_ROW, slug="b", file="plans/b.md", roadmap_ref="a string")),
+        ("the entry is not an object", "not an object"),
+    ],
+)
+def test_a_NO_CLAIM_record_is_REFUSED_while_a_row_is_unparseable(tmp_path, monkeypatch, label, sibling):
+    """The conservative half, and the r9 finding stated as a property.
+
+    A record with no `roadmap_ref` is attributed only because its alias looks
+    unambiguous — and that census is computed over the rows the detector was HANDED, so a
+    skipped sibling makes an ambiguous alias look unambiguous. Reporting on that basis is
+    what `in_scope` calls "actively misleading": the phase may belong to another roadmap
+    entirely. With the manifest fully parsed the same record reports (the control below),
+    so this is a refusal caused by missing evidence, not a silenced detector.
+    """
+    _write_manifest(tmp_path, [_GOOD_ROW, sibling])
+    assert _real_render_path(tmp_path, monkeypatch) == [], label
+
+
+def test_the_same_NO_CLAIM_record_DOES_report_when_every_row_parses(tmp_path, monkeypatch):
+    """The control that keeps the refusal above honest.
+
+    Without it, the refusal test would pass against a detector that had simply stopped
+    reporting no-claim records altogether.
+    """
+    _write_manifest(tmp_path, [_GOOD_ROW])
+    assert _real_render_path(tmp_path, monkeypatch) == [("ALPHA", "executing", "completed")]
 
 
 @pytest.mark.parametrize(
@@ -1270,11 +1316,11 @@ def test_a_RENAMED_plan_file_is_still_reported(tmp_path):
     from phase_loop_runtime.plan_manifest import parseable_plan_entries, valid_phase_entries
 
     _write_manifest(tmp_path, [_GOOD_ROW])  # note: the plan FILE is never created
-    assert len(parseable_plan_entries(tmp_path)) == 1
+    assert len(parseable_plan_entries(tmp_path).entries) == 1
     dropped = valid_phase_entries(tmp_path / "plans" / "manifest.json")
     assert dropped is not None and len(dropped) == 0, dropped
     assert phase_status_disagreements(
-        {"ALPHA": "executing"}, parseable_plan_entries(tmp_path)
+        {"ALPHA": "executing"}, parseable_plan_entries(tmp_path).entries
     ) == [("ALPHA", "executing", "completed")]
 
 
@@ -1341,3 +1387,142 @@ def test_a_ref_that_names_NOTHING_AT_ALL_is_still_legacy():
     ) == [("P", "executing", "completed")]
     assert _roadmap_claim(_rec_ref("P", "completed", empty, _A)) is None
     assert _roadmap_claim(_rec_ref("P", "completed", None, _A)) is None
+
+
+# ---------------------------------------------------------------------------
+# ah#832 r9 (fable F2, BLOCKING): the SIXTH surface — entry `type`.
+#
+# The class table claimed five surfaces. `type` was never checked, so a
+# `type: "detailed"` row carrying a `phase_alias` was attributed like a phase
+# plan. `validate_manifest` calls all of these structurally valid, and the
+# per-entry rule that would reject them sits behind a validator with no `src/`
+# caller — so it is not covered one layer up.
+
+
+def _detailed(alias="ALPHA", status="completed", file="plans/detailed-x.md", slug=None):
+    entry = {
+        "slug": f"d-{status}-{file}", "file": file, "type": "detailed", "status": status,
+        "created_at": "t", "updated_at": "t", "owner_skill": "x", "phase_alias": alias,
+    }
+    if slug:
+        entry["roadmap_ref"] = {"slug": slug, "file": f"specs/{slug}.md",
+                                "type": "phase", "status": "imported"}
+    return entry
+
+
+def _phase_row(status, file="plans/phase-plan-A.md", alias="ALPHA", slug="v2"):
+    return {
+        "slug": f"p-{status}-{file}", "file": file, "type": "phase", "status": status,
+        "created_at": "t", "updated_at": "t", "owner_skill": "x", "phase_alias": alias,
+        "roadmap_ref": {"slug": slug, "file": f"specs/{slug}.md",
+                        "type": "phase", "status": "imported"},
+    }
+
+
+def _detect(tmp_path, rows, snapshot="complete"):
+    from phase_loop_runtime.plan_manifest import parseable_plan_entries
+
+    _write_manifest(tmp_path, rows)
+    parsed = parseable_plan_entries(tmp_path)
+    return phase_status_disagreements(
+        {"ALPHA": snapshot}, parsed.entries, roadmap_slug="v2",
+        attribution_evidence_complete=parsed.skipped == 0,
+    )
+
+
+@pytest.mark.parametrize(
+    "label,detailed_row",
+    [
+        ("claiming the active roadmap", _detailed(slug="v2")),
+        ("on the SAME plan file", _detailed(file="plans/phase-plan-A.md")),
+        ("with no claim at all", _detailed()),
+    ],
+)
+def test_a_type_DETAILED_row_does_not_speak_for_a_PHASE(tmp_path, label, detailed_row):
+    """A detailed row must not settle a phase it happens to carry the alias of.
+
+    Measured before the fix: the first two shapes SILENCED a genuine
+    `('ALPHA','complete','committed')` disagreement.
+    """
+    assert _detect(tmp_path, [_phase_row("committed"), detailed_row]) == [
+        ("ALPHA", "complete", "committed")
+    ], label
+
+
+def test_a_type_DETAILED_row_cannot_BE_the_subject_either(tmp_path):
+    """The other direction: before the fix a lone detailed row was reported as the phase."""
+    assert _detect(tmp_path, [_detailed(slug="v2")], snapshot="executing") == []
+
+
+def test_a_real_PHASE_sibling_still_settles(tmp_path):
+    """The control: the `type` filter must not stop real phase rows from settling."""
+    assert _detect(tmp_path, [
+        _phase_row("committed"), _phase_row("completed", file="plans/phase-plan-B.md"),
+    ]) == []
+
+
+def test_a_skipped_FOREIGN_claimant_does_not_uncontest_a_file(tmp_path):
+    """codex's r9 case: corrupting one row's UNRELATED metadata suppressed another's signal.
+
+    Three rows share alias `P` and plan file A: an in-scope `v2 committed`, a foreign
+    `v1 failed`, and a legacy `completed` with no claim. With all three parsed the file is
+    CONTESTED, the legacy record is refused, and the v2 disagreement reports. Make the v1
+    row parse-hostile in a way that has nothing to do with its roadmap claim — a
+    non-object `lifecycle` — and the r8 loader skipped it, the file looked uncontested,
+    the legacy `completed` became attributable and SETTLED the phase. The disagreement
+    vanished because an unrelated field in a different row was corrupt.
+
+    That is the precise inverse of the loader's r8 claim that one unparseable row costs
+    only its own signal. (ah#832 r9, codex.)
+    """
+    from phase_loop_runtime.plan_manifest import parseable_plan_entries
+
+    A = "plans/phase-plan-A.md"
+    def row(status, slug, **extra):
+        entry = {
+            "slug": f"{status}-{slug}", "file": A, "type": "phase", "status": status,
+            "created_at": "t", "updated_at": "t", "owner_skill": "x", "phase_alias": "P",
+        }
+        if slug:
+            entry["roadmap_ref"] = {"slug": slug, "file": f"specs/{slug}.md",
+                                    "type": "phase", "status": "imported"}
+        entry.update(extra)
+        return entry
+
+    intact = [row("committed", "v2"), row("failed", "v1"), row("completed", None)]
+    hostile = [row("committed", "v2"), row("failed", "v1", lifecycle=["nope"]),
+               row("completed", None)]
+    expected = [("P", "complete", "committed")]
+
+    for label, rows in (("all rows parse", intact), ("the v1 row is parse-hostile", hostile)):
+        _write_manifest(tmp_path, rows)
+        parsed = parseable_plan_entries(tmp_path)
+        assert phase_status_disagreements(
+            {"P": "complete"}, parsed.entries, roadmap_slug="v2",
+            attribution_evidence_complete=parsed.skipped == 0,
+        ) == expected, label
+
+
+def test_a_DETAILED_row_does_not_make_an_alias_look_AMBIGUOUS(tmp_path):
+    """The census must agree with attribution about who speaks, in BOTH directions.
+
+    The `type` filter on attribution stops a detailed row settling a phase. The same
+    filter on the alias census stops it causing the opposite harm: counting a detailed
+    row toward ambiguity makes a single legacy phase row look contested, so the legacy
+    record is REFUSED and a real disagreement goes silent. One phase row and one detailed
+    row sharing the alias is the case that crosses the 1-to-2 boundary, and it is the only
+    shape where the two censuses can be told apart. (ah#832 r9.)
+    """
+    from phase_loop_runtime.plan_manifest import parseable_plan_entries
+
+    legacy_only = {
+        "slug": "p-legacy", "file": "plans/phase-plan-A.md", "type": "phase",
+        "status": "completed", "created_at": "t", "updated_at": "t",
+        "owner_skill": "x", "phase_alias": "ALPHA",
+    }
+    _write_manifest(tmp_path, [legacy_only, _detailed(alias="ALPHA", status="committed")])
+    parsed = parseable_plan_entries(tmp_path)
+    assert phase_status_disagreements(
+        {"ALPHA": "executing"}, parsed.entries, roadmap_slug="v2",
+        attribution_evidence_complete=parsed.skipped == 0,
+    ) == [("ALPHA", "executing", "completed")]

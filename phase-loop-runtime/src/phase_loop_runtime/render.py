@@ -454,10 +454,14 @@ def _manifest_disagreements(snapshot: StateSnapshot) -> list[tuple[str, str, str
         # parse raised — and the bare `except` below turned that into total silence for
         # EVERY phase while a real disagreement sat beside it. Same class ah#164 closed
         # for discovery; this read path was left behind. (ah#832 r8, fable.)
-        entries = parseable_plan_entries(Path(snapshot.repo))
+        rows = parseable_plan_entries(Path(snapshot.repo))
         roadmap_slug = Path(snapshot.roadmap).stem if snapshot.roadmap else None
+        # `skipped` is load-bearing, not diagnostics: a row this runtime could not parse
+        # is a competing roadmap claim that might have been there, and two of the
+        # detector's attribution arms decide by the ABSENCE of one. (ah#832 r9.)
         return phase_status_disagreements(
-            snapshot.phases, entries, roadmap_slug=roadmap_slug
+            snapshot.phases, rows.entries, roadmap_slug=roadmap_slug,
+            attribution_evidence_complete=rows.skipped == 0,
         )
     except Exception:  # never let reconciliation break `status`
         return []
