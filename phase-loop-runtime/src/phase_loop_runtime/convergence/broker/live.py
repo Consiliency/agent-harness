@@ -5197,7 +5197,7 @@ class _RoutingBrokerService:
     GLOBAL scan over a store (``any(state is OUTCOME_AMBIGUOUS_BLOCKED)``) and an
     ambiguous terminal is durable + permanent, and it fires on BENIGN transients
     (push-unconfirmed / remote-read-failed / pr-unconfirmed / remote-head-mismatch /
-    pr-head-unconfirmed).  A shared store would therefore let one repo's transient
+    pr-list-empty / pr-head-unconfirmed).  A shared store would therefore let one repo's transient
     hiccup permanently fail-close every OTHER repo in the train (and, with an
     un-namespaced ``broker_root``, other trains too).  Per-repo stores scope the
     fail-closed epoch to exactly the repo whose mutation became ambiguous — the correct

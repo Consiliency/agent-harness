@@ -6,6 +6,7 @@ import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from phase_loop_runtime.convergence.broker.admission import _constructor_key_mismatch
 from phase_loop_runtime.convergence.provider_contracts import TerminalOutcomeState, validate_terminal_transition
 
 
@@ -37,6 +38,53 @@ def _require_generation(root: Path, generation_lease) -> None:
         require_current_generation(root, generation_lease, strict=True)
 
 
+class EvidenceStoreIncompatible(RuntimeError):
+    """This runtime cannot read the evidence store; it refuses rather than guessing.
+
+    Mirrors `AdmissionStoreIncompatible` for the sibling store. Names the reader's own
+    version and path, because the actionable fact in agent-harness#789 was WHICH runtime
+    was reading, not which line failed. (agent-harness#789.)
+    """
+
+    def __init__(
+        self,
+        store_path: Path,
+        *,
+        line: int,
+        idempotency_key: str | None,
+        constructor: type,
+        unknown_keys: tuple[str, ...],
+        missing_keys: tuple[str, ...],
+        cause: TypeError,
+    ) -> None:
+        import phase_loop_runtime
+
+        self.store_path = Path(store_path)
+        self.line = line
+        self.idempotency_key = idempotency_key
+        self.constructor = constructor
+        self.unknown_keys = tuple(unknown_keys)
+        self.missing_keys = tuple(missing_keys)
+        where = (
+            f"record {idempotency_key!r} at line {line}"
+            if idempotency_key is not None
+            else f"record at line {line}"
+        )
+        problems = []
+        if self.unknown_keys:
+            problems.append(f"unknown keys {list(self.unknown_keys)}")
+        if self.missing_keys:
+            problems.append(f"missing keys {list(self.missing_keys)}")
+        if not problems:
+            problems.append(f"constructor rejected the record: {cause}")
+        super().__init__(
+            f"evidence store {self.store_path} is not readable by this runtime "
+            f"(phase_loop_runtime {phase_loop_runtime.__version__} at "
+            f"{Path(phase_loop_runtime.__file__)}): {where} does not fit "
+            f"{constructor.__qualname__}: {'; '.join(problems)}"
+        )
+
+
 class BrokerEvidenceStore:
     def __init__(self, root: Path, generation_lease=_UNDECLARED) -> None:
         self.root = root
@@ -57,10 +105,46 @@ class BrokerEvidenceStore:
         # while the admission lock is held (execute admits, THEN records).
         self.lock_path = root / "admissions.lock"
     def replay(self) -> dict[str, EvidenceRecord]:
+        # SCHEMA DRIFT IS A TYPED REFUSAL, NOT A TypeError.
+        #
+        # This is the defect that opened agent-harness#789. Its first step was an
+        # installed runtime reading a store written by a newer one and dying with
+        # `TypeError: AdmissionRecord.__init__() got an unexpected keyword argument
+        # 'binding'` — an optional field the old reader did not know. The ADMISSION store
+        # was hardened for that (see `AdmissionStoreIncompatible` and
+        # `_constructor_key_mismatch` in admission.py); its sibling EVIDENCE store, whose
+        # replay is the identical `EvidenceRecord(**raw)` construct, was not. So the exact
+        # incident that produced a permanently blocked partition remained reachable one
+        # module over, and would fire the moment anyone adds an optional field here —
+        # which is precisely what a diagnostic-retention change for that same incident
+        # wants to do.
+        #
+        # Refusing with the reader's own version and path, and naming the offending keys,
+        # turns "the runtime crashed somewhere in the broker" into an actionable
+        # compatibility report BEFORE any ownership or provider mutation. It does not make
+        # an incompatible store readable, and deliberately does not skip or coerce the
+        # record: fabricating a partial read of a sealed evidence store is worse than
+        # refusing it. (agent-harness#789.)
         result: dict[str, EvidenceRecord] = {}
         if self.path.exists():
-            for line in self.path.read_text(encoding="utf-8").splitlines():
-                raw = json.loads(line); raw["state"] = TerminalOutcomeState(raw["state"]); result[raw["idempotency_key"]] = EvidenceRecord(**raw)
+            for index, line in enumerate(self.path.read_text(encoding="utf-8").splitlines(), start=1):
+                raw = json.loads(line)
+                raw["state"] = TerminalOutcomeState(raw["state"])
+                key = raw.get("idempotency_key")
+                try:
+                    record = EvidenceRecord(**raw)
+                except TypeError as error:
+                    unknown, missing = _constructor_key_mismatch(EvidenceRecord, raw)
+                    raise EvidenceStoreIncompatible(
+                        self.path,
+                        line=index,
+                        idempotency_key=key,
+                        constructor=EvidenceRecord,
+                        unknown_keys=unknown,
+                        missing_keys=missing,
+                        cause=error,
+                    ) from error
+                result[raw["idempotency_key"]] = record
         return result
     def _authorize(self) -> None:
         """Authenticate BEFORE any directory creation, then create the tree."""
