@@ -62,8 +62,16 @@ def run(root):
     # kill — the exact false-"caught" mode this matrix exists to rule out, and the one
     # this script itself had. Exit 2 is usage/collection; an "errors" summary or a
     # zero-collection run is equally disqualifying. (ah#834 r3, codex.)
+    # A KILL REQUIRES PYTEST'S ORDINARY FAILURE STATUS, NOT MERELY "NOT ZERO".
+    #
+    # pytest exits 1 for test failures, 2 for usage/collection, 3 for INTERNALERROR, 4
+    # for a usage error. Rejecting only 2 let a run that printed the required FAILED line
+    # and THEN crashed (INTERNALERROR, status 3) score as a kill: a genuine failure
+    # followed by an invalid run is still an invalid run, because nothing downstream can
+    # tell which of them the red belongs to. (ah#834 r5, codex.)
     invalid = (
-        r.returncode == 2
+        r.returncode not in (0, 1)
+        or "INTERNALERROR" in out
         or " error" in (tail[-1] if tail else "")
         or "ERROR collecting" in out
         or "no tests ran" in out
