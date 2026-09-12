@@ -68,9 +68,28 @@ def run(root):
         or "ERROR collecting" in out
         or "no tests ran" in out
     )
-    return r.returncode, (tail[-1] if tail else "?"), names, invalid
+    # PIN THE COLLECTED COUNT. Classification is by failing test NAME, which cannot tell
+    # "this mutant broke the guard" from "this mutant broke something else the named test
+    # also touches" — a seat proved it by breaking the exception's message formatter,
+    # leaving the guard intact, and scoring `caught`. Name-matching stays (cause-matching
+    # would mean asserting on messages, which is its own trap), but a mutant that changes
+    # what the suite COLLECTS is now invalid: that is the cheap, robust half of the
+    # signal. (ah#834 r4, fable.)
+    collected = None
+    for line in tail:
+        # `line.split()` leaves the comma attached in "1 failed, 107 passed", which
+        # silently dropped the failure count and made every mutant look like it had
+        # changed the suite size. Strip punctuation before matching the keyword.
+        words = [w.strip(",.") for w in line.split()]
+        counts = [int(tok) for tok, word in zip(words, words[1:])
+                  if tok.isdigit() and word in ("passed", "failed", "skipped", "error", "errors")]
+        if counts:
+            collected = sum(counts)
+            break
+    return r.returncode, (tail[-1] if tail else "?"), names, invalid, collected
 print("baseline (unmutated):")
-rc, tail, _, invalid = run(SRC); print(f"  rc={rc}  {tail}")
+rc, tail, _, invalid, BASELINE_COLLECTED = run(SRC)
+print(f"  rc={rc}  {tail}  (collected {BASELINE_COLLECTED})")
 if rc != 0 or invalid: sys.exit("baseline not green — fix that before mutating")
 surv=[]
 broken=[]
@@ -83,8 +102,13 @@ for name, rel, old, new, must_fail in MUTANTS:
             print(f"  [ANCHOR {'MISS' if old not in text else 'AMBIGUOUS'}] {name}")
             broken.append(name); continue
         f.write_text(text.replace(old,new,1))
-        rc, tail, names, invalid = run(root)
-        if invalid:
+        rc, tail, names, invalid, collected = run(root)
+        if collected is not None and BASELINE_COLLECTED is not None and collected != BASELINE_COLLECTED:
+            v, note = "BROKEN", (f"collected {collected} tests, baseline collected "
+                                 f"{BASELINE_COLLECTED} — the mutant changed the SUITE, "
+                                 "so a red proves nothing about the guard")
+            broken.append(name)
+        elif invalid:
             v, note = "BROKEN", "the run is invalid (collection/import error) — not a kill"
             broken.append(name)
         elif rc == 0:
