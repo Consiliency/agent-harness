@@ -660,10 +660,18 @@ def _extract_lanes(path: Path) -> tuple[str, ...]:
 # alone — from a genuinely in-flight phase. So SURFACE the disagreement rather than
 # silently rendering one store and discarding the other.
 #
-# Deliberately CONSERVATIVE: only a DONE-vs-IN-FLIGHT pair is a contradiction. A plan
-# that is merely `imported`/`committed` (document written, never executed) says nothing
-# about execution state and must not warn — that is the normal case for a planned-but-
-# unstarted phase and would drown the real signal.
+# Deliberately CONSERVATIVE: only a DONE-vs-IN-FLIGHT pair is a contradiction, in either
+# direction. The concern this records — that a merely `imported`/`committed` plan is the
+# normal case for a planned-but-unstarted phase and warning on it would drown the real
+# signal — is still exactly right, and ah#830 did not weaken it. It cannot arise: the
+# in-flight side is only ever compared against a snapshot in `_SNAPSHOT_DONE`, so a phase
+# the runner calls `planned`, `unplanned`, `executing` or `blocked` stays silent no
+# matter what the manifest says. Verified for every combination; see
+# test_a_plan_that_never_executed_is_not_a_contradiction and
+# test_an_unstarted_plan_is_silent_in_every_non_done_snapshot_state.
+#
+# What ah#830 changed is the OTHER half of the pair: a plan that never reached a done
+# status, against a snapshot claiming the phase is finished.
 _MANIFEST_DONE = {"completed"}
 # DERIVED FROM THE LIFECYCLE TABLE, NOT HAND-LISTED.
 #
@@ -771,15 +779,20 @@ def phase_status_disagreements(
             # manifest's own settled record agreed with it — a false refusal of the
             # operator's attention, which is the failure mode this detector must not have.
             #
-            # A record that REACHED a done status settles the plan: the work finished, and
-            # a sibling stub left behind at an earlier status is manifest bookkeeping, not
-            # a contradiction between the two stores. Only when NO record for that plan
+            # A record that REACHED a done status settles the PHASE: the work finished,
+            # and a record left behind at an earlier status is manifest bookkeeping, not a
+            # contradiction between the two stores. Only when NO record for that phase
             # reached done is the disagreement real. (ah#830 r1, fable.)
-            plan_file = getattr(entry, "file", None)
+            #
+            # Grouped by PHASE, not by plan file. Keying on the file still reported a
+            # phase that was completed through a LATER plan while an earlier, superseded
+            # one sat at `committed` — a plan a re-plan left behind is exactly the
+            # "unused or superseded plan legitimately accompanying a completed phase"
+            # case, and the operator's question is whether this PHASE's state is
+            # disputed, not whether some individual record is stale. (ah#830 r1, codex.)
             siblings = [
                 other for other in entries
                 if getattr(other, "phase_alias", None) == alias
-                and getattr(other, "file", None) == plan_file
             ]
             if any(getattr(other, "status", "") in _MANIFEST_DONE for other in siblings):
                 continue

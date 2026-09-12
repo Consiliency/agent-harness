@@ -322,17 +322,37 @@ def test_duplicate_in_flight_records_for_one_plan_collapse_to_one_row():
     assert out == [("ADAPTERS", "complete", "committed/imported")]
 
 
-def test_two_DIFFERENT_plan_files_for_one_alias_are_still_two_rows():
-    """The collapse is per plan file, not per alias.
+def test_a_phase_completed_through_a_LATER_plan_is_not_a_contradiction():
+    """codex's case: a superseded plan left at `committed` beside a completed one.
 
-    Two genuinely distinct plans for one phase, neither settled, are two separate
-    disagreements and must not be merged into one.
+    A re-plan leaves the earlier plan file behind. The phase finished — through the new
+    plan — so the stores do not disagree, and reporting the stale record would be a
+    false claim on the operator surface. An earlier revision of this fix grouped by
+    (alias, FILE) and did exactly that. The operator's question is whether this PHASE's
+    state is disputed, not whether some individual record is stale. (ah#830 r1, codex.)
     """
-    first = _entry("P", "committed")
-    second = _entry("P", "imported")
-    object.__setattr__(second, "file", "plans/phase-plan-v1-P-second.md")
-    out = phase_status_disagreements({"P": "complete"}, [first, second])
-    assert sorted(out) == [("P", "complete", "committed"), ("P", "complete", "imported")]
+    superseded = _entry("P", "committed")
+    current = _entry("P", "completed")
+    object.__setattr__(current, "file", "plans/phase-plan-v2-P.md")
+    assert phase_status_disagreements({"P": "complete"}, [superseded, current]) == []
+    assert phase_status_disagreements({"P": "complete"}, [current, superseded]) == []
+
+
+@pytest.mark.parametrize("snapshot_status", ["planned", "unplanned", "executing", "blocked"])
+@pytest.mark.parametrize("manifest_status", ["imported", "committed"])
+def test_an_unstarted_plan_is_silent_in_every_non_done_snapshot_state(
+    snapshot_status, manifest_status
+):
+    """ah#312's stated concern, pinned so ah#830 cannot be read as having weakened it.
+
+    That comment says a merely `imported`/`committed` plan "must not warn — that is the
+    normal case for a planned-but-unstarted phase and would drown the real signal". Still
+    true: the in-flight side is only ever compared against a snapshot in _SNAPSHOT_DONE,
+    so the case it protects never reaches the comparison.
+    """
+    assert phase_status_disagreements(
+        {"P": snapshot_status}, [_entry("P", manifest_status)]
+    ) == []
 
 
 def test_a_done_sibling_does_not_mask_the_OTHER_direction():
