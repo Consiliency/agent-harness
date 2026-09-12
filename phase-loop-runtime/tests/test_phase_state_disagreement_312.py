@@ -1695,11 +1695,19 @@ def test_an_UNUSABLE_alias_counts_as_incomplete_evidence(tmp_path):
 # ITERATE THE TUPLE, DO NOT HAND-LIST IT. The first version of this decorator named the
 # three fields literally — which is the very drift this test exists to prevent, and the
 # matrix caught it the moment `roadmap_ref.*` was added to the tuple and nothing new ran.
+# BOTH POSITIONS. The r11 sweep varied ONE row of a three-row fixture and called the
+# result a class sweep — the r12 seat identified that as its own method error. A field is
+# only swept when it is corrupted in the row under judgement (SUBJECT) as well as in the
+# competing row (FOREIGN): the two positions reach different code, and r12's blocking
+# finding lived in the one the sweep did not vary.
+@pytest.mark.parametrize("position", ["foreign", "subject"])
 @pytest.mark.parametrize("field", _CENSUS_IDENTITY_FIELDS)
 @pytest.mark.parametrize(
     "unreadable", [None, ["x"], {"a": 1}, 123, "", "   "], ids=lambda v: repr(v)[:12]
 )
-def test_EVERY_census_identity_field_is_lost_evidence_when_unreadable(tmp_path, field, unreadable):
+def test_EVERY_census_identity_field_is_lost_evidence_when_unreadable(
+    tmp_path, field, position, unreadable
+):
     """The closure criterion the r11 seat named, executable.
 
     r5 fixed `file`, r7 fixed `slug`, r8 fixed `phase_alias`, r10 fixed the
@@ -1745,13 +1753,23 @@ def test_EVERY_census_identity_field_is_lost_evidence_when_unreadable(tmp_path, 
             pytest.skip("absent or blank is the legacy shape, not an unreadable identity")
     else:
         foreign = row("failed", "v1", **{field: unreadable})
-    _write_manifest(tmp_path, [row("committed", "v2"), foreign, row("completed", None)])
+    if position == "foreign":
+        rows = [row("committed", "v2"), foreign, row("completed", None)]
+        expected = [("P", "complete", "committed")]
+    else:
+        # SUBJECT position: corrupt the in-scope row itself. Its own claim is then
+        # unreadable, so it must not speak for the phase and must count as lost evidence —
+        # the arms disarm and the legacy record cannot settle on its behalf either.
+        subject = foreign
+        rows = [subject, row("failed", "v1"), row("completed", None)]
+        expected = []
+    _write_manifest(tmp_path, rows)
     parsed = parseable_plan_entries(tmp_path)
-    assert parsed.skipped == 1, f"{field}={unreadable!r} must count as lost evidence"
+    assert parsed.skipped == 1, f"{position}/{field}={unreadable!r} must be lost evidence"
     assert phase_status_disagreements(
         {"P": "complete"}, parsed.entries, roadmap_slug="v2",
         attribution_evidence_complete=parsed.skipped == 0,
-    ) == [("P", "complete", "committed")], f"{field}={unreadable!r}"
+    ) == expected, f"{position}/{field}={unreadable!r}"
 
 
 def test_a_row_with_every_identity_field_READABLE_is_not_lost_evidence(tmp_path):
@@ -1842,3 +1860,59 @@ def test_an_unreadable_ref_may_not_MANUFACTURE_a_claim_on_the_active_roadmap(tmp
         {"P": "complete"}, parsed.entries, roadmap_slug="2026",
         attribution_evidence_complete=parsed.skipped == 0,
     ) == [("P", "complete", "committed")]
+
+
+def test_this_REPOSITORYS_OWN_manifest_is_not_marked_incomplete():
+    """The over-refusal guard, on real data rather than a fixture.
+
+    Every round of this PR has tightened what counts as lost evidence, and each tightening
+    risks the opposite failure: marking a well-formed manifest incomplete disarms both
+    guessing arms permanently and silences the legacy population the arms exist to serve.
+    A synthetic control cannot catch that, because I write the synthetic rows.
+
+    This repository's own `plans/manifest.json` is the adversarial case available for free:
+    58 rows, 21 of them `type: "detailed"`, 6 legacy `roadmap_ref: null`. If the rule ever
+    starts refusing real shipped data, this fails. (ah#832 r12, fable probe 4.)
+    """
+    from pathlib import Path
+
+    from phase_loop_runtime.plan_manifest import parseable_plan_entries
+
+    repo = Path(__file__).resolve().parents[2]
+    if not (repo / "plans" / "manifest.json").exists():
+        pytest.skip("not running inside the agent-harness checkout")
+    parsed = parseable_plan_entries(repo)
+    assert parsed.skipped == 0, (
+        f"{parsed.skipped} row(s) of this repo's own manifest were called unreadable — "
+        "the rule is over-refusing on real data"
+    )
+    assert len(parsed.entries) > 0
+
+
+def test_the_status_PROSE_says_INCOMPLETE_even_with_nothing_else_to_print(tmp_path, monkeypatch):
+    """NB1: the zero-clash case is the one that motivated the whole qualifier.
+
+    If the row that could not be read IS the row that would have disagreed, there is
+    nothing else to print — and the prose branch returned early, so `status` looked clean
+    on a manifest it could not fully read. The JSON branch carried the flag
+    unconditionally; the prose branch, which is what a human reads, did not. The existing
+    test supplies a clash, so it never reached this path.
+    """
+    from phase_loop_runtime import render
+
+    # A manifest with NO disagreement to report, and one unreadable row.
+    _write_manifest(tmp_path, [
+        dict(_GOOD_ROW, status="committed",
+             roadmap_ref={"slug": "phase-plans-v1", "file": "specs/phase-plans-v1.md",
+                          "type": "phase", "status": "imported"}),
+        "not an object",
+    ])
+
+    class _Snap:
+        repo = str(tmp_path)
+        roadmap = "specs/phase-plans-v1.md"
+        phases = {"ALPHA": "executing"}   # vs `committed` -> no done-vs-in-flight pair
+
+    lines = render._manifest_disagreement_lines(_Snap())
+    assert lines, "an unreadable row must not leave the prose surface silent"
+    assert any("INCOMPLETE" in line for line in lines), lines

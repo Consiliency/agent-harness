@@ -175,9 +175,9 @@ MUTANTS = [
   "def _raw_row_identity_is_readable(row) -> bool:",
   "def _raw_row_identity_is_readable(row) -> bool:\n    return False",
   "test_a_row_with_every_identity_field_READABLE_is_not_lost_evidence"),
- ("M37 status stops saying the reconciliation is INCOMPLETE", R,
-  '    if not complete:',
-  '    if False:',
+ ("M37 status stops appending the INCOMPLETE note to a report", R,
+  "        lines.append(_INCOMPLETE_NOTE)",
+  "        pass",
   "test_the_status_surface_SAYS_the_reconciliation_is_incomplete"),
  # --- the NESTED identity r11's field table missed (r12 codex + fable) --------
  ("M38 the roadmap ref's own identity is no longer checked", P,
@@ -188,6 +188,10 @@ MUTANTS = [
   "                entries.pop()   # it may not manufacture a claim from a coercion",
   "                pass",
   "test_an_unreadable_ref_may_not_MANUFACTURE_a_claim_on_the_active_roadmap"),
+ ("M40 the prose surface goes silent again when there is no clash", R,
+  "        if not complete:\n            return [_INCOMPLETE_NOTE]\n        return []",
+  "        return []",
+  "test_the_status_PROSE_says_INCOMPLETE_even_with_nothing_else_to_print"),
  # --- the sixth surface: entry `type` (r9 fable F2) ---------------------------
  ("M27 a type:detailed row speaks for a phase again", P,
   '        and getattr(e, "type", None) == "phase"',

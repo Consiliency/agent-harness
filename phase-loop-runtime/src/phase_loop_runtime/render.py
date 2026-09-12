@@ -447,6 +447,13 @@ def _current_terminal_summary(snapshot: StateSnapshot) -> dict[str, object] | No
         return None
     return snapshot.terminal_summary
 
+_INCOMPLETE_NOTE = (
+    "NOTE: at least one manifest row could not be read, so this reconciliation is "
+    "INCOMPLETE — a phase may disagree without being listed, and a listed row may be "
+    "unconfirmed rather than stale."
+)
+
+
 def _manifest_disagreements(snapshot: StateSnapshot) -> list[tuple[str, str, str]]:
     """The reconciliation itself, shared by the prose and JSON branches so they can never
     disagree about whether a disagreement exists."""
@@ -490,6 +497,14 @@ def _manifest_disagreement_lines(snapshot: StateSnapshot) -> list[str]:
     """
     clashes, complete = _manifest_disagreements(snapshot)
     if not clashes:
+        # THE ZERO-CLASH CASE IS THE ONE THAT MOTIVATED THIS. If the row that could not be
+        # read IS the row that would have disagreed, there is nothing else to print — and
+        # an early return here printed nothing at all, so `status` looked clean on a
+        # manifest it could not fully read. The JSON branch carried the flag
+        # unconditionally; the prose branch, which is what a human reads, did not.
+        # (ah#832 r12, fable NB1.)
+        if not complete:
+            return [_INCOMPLETE_NOTE]
         return []
     lines = [
         # Count PHASES, not rows. When this landed the detector emitted one row per
@@ -516,8 +531,5 @@ def _manifest_disagreement_lines(snapshot: StateSnapshot) -> list[str]:
         # only report-or-silence — the third option is in PRESENTATION, keeping the
         # operator-visible warning without claiming a confirmed contradiction.
         # (ah#832 r11, codex.)
-        lines.append(
-            "  NOTE: at least one manifest row could not be read, so this reconciliation "
-            "is INCOMPLETE — some rows above may be unconfirmed rather than stale."
-        )
+        lines.append(_INCOMPLETE_NOTE)
     return lines
