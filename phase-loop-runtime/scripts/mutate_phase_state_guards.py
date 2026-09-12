@@ -109,8 +109,14 @@ MUTANTS = [
   "        if a:",
   "test_a_malformed_phase_alias_does_not_SILENCE_THE_WHOLE_detector"),
  ("M18 the alias ORDER loop accepts a non-string", P,
-  "        if isinstance(alias, str) and alias and alias not in ordered_aliases:",
-  "        if alias and alias not in ordered_aliases:",
+  """        if (
+            getattr(entry, "type", None) == "phase"
+            and isinstance(alias, str) and alias and alias not in ordered_aliases
+        ):""",
+  """        if (
+            getattr(entry, "type", None) == "phase"
+            and alias and alias not in ordered_aliases
+        ):""",
   "test_a_malformed_phase_alias_does_not_SILENCE_THE_WHOLE_detector"),
  # --- the LOAD: all-or-nothing vs per-row (r8 fable) --------------------------
  ("M19 render goes back to the all-or-nothing read_manifest", R,
@@ -122,15 +128,8 @@ MUTANTS = [
   "        return ()\n    entries: list[DotfilesPlanEntry] = []",
   "test_a_STRUCTURAL_failure_still_hides_the_WHOLE_manifest"),
  ("M21 the load uses valid_phase_entries (drops a renamed plan file)", P,
-  """    entries: list[DotfilesPlanEntry] = []
-    skipped = 0
-    for row in plans:
-        try:
-            entries.append(_entry_from_json(row))
-        except Exception:
-            skipped += 1
-    return ParseablePlanRows(entries=tuple(entries), skipped=skipped)""",
-  "    return ParseablePlanRows(entries=valid_phase_entries(manifest_path) or ())",
+  "    entries: list[DotfilesPlanEntry] = []\n    skipped = 0\n    for row in plans:",
+  "    return ParseablePlanRows(entries=valid_phase_entries(manifest_path) or ())\n    entries: list[DotfilesPlanEntry] = []\n    skipped = 0\n    for row in plans:",
   "test_a_RENAMED_plan_file_is_still_reported"),
  # --- incomplete evidence must disable the GUESSING arms (r9 fable F1 + codex) -
  ("M24 the legacy admission ignores that a row was unparseable", P,
@@ -145,6 +144,19 @@ MUTANTS = [
   "            attribution_evidence_complete=rows.skipped == 0,",
   "            attribution_evidence_complete=True,",
   "test_a_NO_CLAIM_record_is_REFUSED_while_a_row_is_unparseable"),
+ # --- the skipped-row exemption must be NARROW, both ways (r10 fable B1) ------
+ ("M29 a skipped non-phase row disarms the guessing arms again", P,
+  '            declared = row.get("type") if isinstance(row, dict) else None\n            if isinstance(declared, str) and declared != "phase":\n                continue',
+  "            pass",
+  "test_a_skipped_NON_PHASE_row_does_not_disarm_the_guessing_arms"),
+ ("M30 the exemption widens to ANY skipped row", P,
+  '            if isinstance(declared, str) and declared != "phase":',
+  "            if True:",
+  "test_a_skipped_row_that_MIGHT_have_been_a_phase_row_still_disarms"),
+ ("M31 an unreadable `type` is treated as an exemption", P,
+  '            if isinstance(declared, str) and declared != "phase":',
+  '            if declared != "phase":',
+  "test_a_skipped_row_that_MIGHT_have_been_a_phase_row_still_disarms"),
  # --- the sixth surface: entry `type` (r9 fable F2) ---------------------------
  ("M27 a type:detailed row speaks for a phase again", P,
   '        and getattr(e, "type", None) == "phase"',

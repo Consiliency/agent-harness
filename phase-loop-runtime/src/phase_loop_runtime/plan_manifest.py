@@ -260,6 +260,34 @@ def parseable_plan_entries(repo: Path) -> ParseablePlanRows:
         try:
             entries.append(_entry_from_json(row))
         except Exception:
+            # A ROW THAT READABLY IS NOT A PHASE ROW DOES NOT COUNT.
+            #
+            # `skipped` exists to say "a competing claim might have been here", and r9's
+            # own `type` filter makes that impossible for a non-phase row: `_alias_counts`
+            # skips them, and `scoped_files`, `claimed_by` and `contested_files` are all
+            # built from `own`, which filters `type == "phase"`. So a skipped `detailed`
+            # row's absence provably cannot have changed an ambiguity or contested-file
+            # verdict — yet counting it disabled BOTH guessing arms for EVERY phase.
+            #
+            # Measured on this repository's real 58-row manifest (21 of those rows are
+            # `detailed`), roadmap phase-plans-v10, the flagship ah#312 shape:
+            #
+            #     all rows parse                              -> 12 phases reported
+            #     + ONE `detailed` row with bad metadata      ->  6 phases reported
+            #
+            # and the six lost are exactly this repo's six legacy `roadmap_ref: null`
+            # rows — the population the legacy admission exists to serve. (ah#832 r10.)
+            #
+            # THIS IS NOT THE REMEDY r9 REJECTED. That one salvaged skipped rows' ALIASES,
+            # and was rejected because the "not an object" shape has an unreadable alias.
+            # This salvages nothing: it declines to COUNT a row whose raw dict readably
+            # says otherwise, and an unreadable row still counts. Trusting that read is
+            # exactly as trusting as the `type` filter itself, which decides on the same
+            # field — if one is unsound so is the other, and they fail together rather
+            # than silently disagreeing.
+            declared = row.get("type") if isinstance(row, dict) else None
+            if isinstance(declared, str) and declared != "phase":
+                continue
             skipped += 1
     return ParseablePlanRows(entries=tuple(entries), skipped=skipped)
 
@@ -1100,6 +1128,16 @@ def phase_status_disagreements(
     r8 load still does what it was for: a real disagreement on an explicitly-claimed
     record is reported while an unparseable sibling row sits beside it.
 
+    AND THE HALF AN EARLIER REVISION LEFT OUT, because stating only the reassuring half
+    is how a comment becomes a false claim: this ALSO makes a previously-SETTLED phase
+    start reporting. A phase settled by a same-file legacy record — the r1/r3/r4 case the
+    attribution docstring says must stay settled — reports the moment any sibling row is
+    unparseable, because the record that settled it is exactly the kind now refused. That
+    is the fail-loud direction this module prefers, and it follows from the same rule
+    rather than being a separate decision, but it is a real behaviour change and it is
+    pinned by test_a_SETTLED_phase_starts_reporting_when_evidence_is_incomplete rather
+    than left for a later round to discover. (ah#832 r10, fable NB1.)
+
     Salvaging the aliases of skipped rows was considered and REJECTED: for the
     "entry is not an object" shape the alias is itself unreadable, so that census would
     silently under-count exactly the row it needed, and the guard would look closed while
@@ -1188,8 +1226,15 @@ def phase_status_disagreements(
     ordered_aliases: list[str] = []
     for entry in entries:
         alias = getattr(entry, "phase_alias", None)
-        # Same string requirement as the census above, for the same reason.
-        if isinstance(alias, str) and alias and alias not in ordered_aliases:
+        # Same string requirement AND the same `type` filter as the two censuses above.
+        # Only ordering depends on this today, so the divergence was cosmetic — but a
+        # third census over the same field disagreeing with the other two is the shape
+        # r9 spent a round on, and EQ#2's subsumption proof turns on those censuses
+        # agreeing. (ah#832 r10, fable NB2.)
+        if (
+            getattr(entry, "type", None) == "phase"
+            and isinstance(alias, str) and alias and alias not in ordered_aliases
+        ):
             ordered_aliases.append(alias)
 
     for alias in ordered_aliases:

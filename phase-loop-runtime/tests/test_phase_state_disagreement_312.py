@@ -1526,3 +1526,112 @@ def test_a_DETAILED_row_does_not_make_an_alias_look_AMBIGUOUS(tmp_path):
         {"ALPHA": "executing"}, parsed.entries, roadmap_slug="v2",
         attribution_evidence_complete=parsed.skipped == 0,
     ) == [("ALPHA", "executing", "completed")]
+
+
+# ---------------------------------------------------------------------------
+# ah#832 r10 (fable B1/NB1): the r9 refusal was too broad in one direction and
+# undocumented in another.
+
+
+def test_a_skipped_NON_PHASE_row_does_not_disarm_the_guessing_arms(tmp_path):
+    """A `detailed` row cannot have entered any census, so losing it changes nothing.
+
+    r9's own `type` filter is what makes this provable: `_alias_counts` skips non-phase
+    rows, and `scoped_files`, `claimed_by` and `contested_files` are all built from `own`,
+    which filters `type == "phase"`. Counting a skipped `detailed` row disabled both
+    guessing arms for every phase — measured on this repo's real 58-row manifest (21 of
+    them `detailed`), one hostile detailed row took the report from 12 phases to 6, and
+    the six lost were exactly its six legacy `roadmap_ref: null` rows.
+    """
+    from phase_loop_runtime.plan_manifest import parseable_plan_entries
+
+    legacy = {
+        "slug": "p-legacy", "file": "plans/phase-plan-A.md", "type": "phase",
+        "status": "completed", "created_at": "t", "updated_at": "t",
+        "owner_skill": "x", "phase_alias": "ALPHA",
+    }
+    hostile_detailed = {
+        "slug": "d-hostile", "file": "plans/detailed-x.md", "type": "detailed",
+        "status": "committed", "created_at": "t", "updated_at": "t", "owner_skill": "x",
+        "lifecycle": [{"transition": "imported", "by": "x", "at": "t", "metadata": "nope"}],
+    }
+    _write_manifest(tmp_path, [legacy, hostile_detailed])
+    parsed = parseable_plan_entries(tmp_path)
+    assert parsed.skipped == 0, "a readably non-phase row must not count as lost evidence"
+    assert phase_status_disagreements(
+        {"ALPHA": "executing"}, parsed.entries, roadmap_slug="v2",
+        attribution_evidence_complete=parsed.skipped == 0,
+    ) == [("ALPHA", "executing", "completed")]
+
+
+@pytest.mark.parametrize(
+    "label,hostile",
+    [
+        ("a PHASE row", {"slug": "p-h", "file": "plans/p.md", "type": "phase",
+                         "status": "committed", "created_at": "t", "updated_at": "t",
+                         "owner_skill": "x", "phase_alias": "ZZZ", "roadmap_ref": "a string"}),
+        ("an unreadable row", "not an object"),
+        ("a row whose type is not a string", {"slug": "x", "file": "plans/x.md", "type": 7,
+                                              "status": "committed", "created_at": "t",
+                                              "updated_at": "t", "owner_skill": "x",
+                                              "roadmap_ref": "a string"}),
+    ],
+)
+def test_a_skipped_row_that_MIGHT_have_been_a_phase_row_still_disarms(tmp_path, label, hostile):
+    """The control: the exemption is narrow, and an unreadable `type` is not an exemption.
+
+    Without this, the fix above would read as "skipped rows no longer matter", which is
+    the r9 defect restored.
+    """
+    from phase_loop_runtime.plan_manifest import parseable_plan_entries
+
+    legacy = {
+        "slug": "p-legacy", "file": "plans/phase-plan-A.md", "type": "phase",
+        "status": "completed", "created_at": "t", "updated_at": "t",
+        "owner_skill": "x", "phase_alias": "ALPHA",
+    }
+    _write_manifest(tmp_path, [legacy, hostile])
+    parsed = parseable_plan_entries(tmp_path)
+    assert parsed.skipped == 1, label
+    assert phase_status_disagreements(
+        {"ALPHA": "executing"}, parsed.entries, roadmap_slug="v2",
+        attribution_evidence_complete=parsed.skipped == 0,
+    ) == [], label
+
+
+def test_a_SETTLED_phase_starts_reporting_when_evidence_is_incomplete(tmp_path):
+    """NB1: the half the r9 docstring left out, now stated and pinned.
+
+    The r9 note claimed only the reassuring half — "direct claims are unaffected". It is
+    also true that a phase SETTLED by a same-file legacy record (the r1/r3/r4 case) starts
+    REPORTING the moment any sibling row is unparseable, because the record that settled
+    it is exactly the kind now refused. Fail-loud is the direction this module prefers and
+    it follows from the same rule rather than being a separate decision — but it is a real
+    behaviour change, and stating only the comfortable half is how a comment becomes a
+    false claim. Twice on this PR already.
+    """
+    from phase_loop_runtime.plan_manifest import parseable_plan_entries
+
+    A = "plans/phase-plan-A.md"
+    in_scope = {"slug": "p-v2", "file": A, "type": "phase", "status": "committed",
+                "created_at": "t", "updated_at": "t", "owner_skill": "x",
+                "phase_alias": "P",
+                "roadmap_ref": {"slug": "v2", "file": "specs/v2.md",
+                                "type": "phase", "status": "imported"}}
+    settling_legacy = {"slug": "p-legacy", "file": A, "type": "phase", "status": "completed",
+                       "created_at": "t", "updated_at": "t", "owner_skill": "x",
+                       "phase_alias": "P"}
+    hostile_phase = {"slug": "p-h", "file": "plans/p.md", "type": "phase",
+                     "status": "committed", "created_at": "t", "updated_at": "t",
+                     "owner_skill": "x", "phase_alias": "ZZZ", "roadmap_ref": "a string"}
+
+    def detect(rows):
+        _write_manifest(tmp_path, rows)
+        parsed = parseable_plan_entries(tmp_path)
+        return phase_status_disagreements(
+            {"P": "complete"}, parsed.entries, roadmap_slug="v2",
+            attribution_evidence_complete=parsed.skipped == 0,
+        )
+
+    assert detect([in_scope, settling_legacy]) == [], "settled while every row parses"
+    assert detect([in_scope, settling_legacy, hostile_phase]) == [("P", "complete", "committed")]
