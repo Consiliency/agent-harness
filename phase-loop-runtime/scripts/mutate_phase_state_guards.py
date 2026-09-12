@@ -83,6 +83,15 @@ MUTANTS = [
   "                continue            # a record reached done: the phase is settled",
   "                pass                # a record reached done: the phase is settled",
   "test_settlement_r1_same_file_committed_beside_completed"),
+ # --- the class sweep: a parser value no guard handled (r7) -------------------
+ ("M17 the alias census accepts a non-string (one entry silences EVERYTHING)", P,
+  "        if isinstance(a, str) and a:",
+  "        if a:",
+  "test_a_malformed_phase_alias_does_not_SILENCE_THE_WHOLE_detector"),
+ ("M18 the alias ORDER loop accepts a non-string", P,
+  "        if isinstance(alias, str) and alias and alias not in ordered_aliases:",
+  "        if alias and alias not in ordered_aliases:",
+  "test_a_malformed_phase_alias_does_not_SILENCE_THE_WHOLE_detector"),
  # --- the operator surface ---------------------------------------------------
  ("M11 the header counts ROWS again, not phases (r2)", R,
   "len({phase for phase, _, _ in clashes})", "len(clashes)",

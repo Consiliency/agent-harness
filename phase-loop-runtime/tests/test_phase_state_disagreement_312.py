@@ -1052,3 +1052,83 @@ def test_a_ref_naming_a_REAL_OTHER_roadmap_is_still_out_of_scope(tmp_path):
         tmp_path, {"slug": "OTHER", "file": "specs/OTHER.md", "type": "phase", "status": "imported"}
     )
     assert phase_status_disagreements({"ALPHA": "executing"}, entries, roadmap_slug="v1") == []
+
+
+# ---------------------------------------------------------------------------
+# ah#832 r7, class sweep. Three rounds running, every blocking finding has been
+# one instance of ONE class: a value the parser can produce that a guard does not
+# handle. `file` was r5, `slug` was r7 F1. So the remaining two fields the
+# detector consumes were swept rather than waited for.
+
+
+@pytest.mark.parametrize(
+    "label,alias",
+    [
+        ("a list", ["A"]),
+        ("a dict", {"a": 1}),
+        ("a number", 123),
+        ("null", None),
+        ("empty string", ""),
+        ("empty list (falsy — was already skipped)", []),
+        ("empty dict (falsy — was already skipped)", {}),
+    ],
+)
+def test_a_malformed_phase_alias_does_not_SILENCE_THE_WHOLE_detector(tmp_path, label, alias):
+    """One bad entry must not disable the detector for every OTHER phase.
+
+    `_entry_from_json` does `phase_alias=data.get("phase_alias")` with no coercion, so
+    this field arrives exactly as written. A TRUTHY UNHASHABLE value got past the `if a:`
+    test and `_alias_counts.get(a, 0)` then raised `TypeError: unhashable type: 'list'` —
+    and `render.py` wraps reconciliation in `except Exception: return []`, so that
+    TypeError became total silence for EVERY phase, not just the malformed record. One
+    hand-edited entry disabled the whole detector, invisibly.
+
+    `[]` and `{}` are falsy and were already skipped, which is why this never surfaced.
+    The assertion is therefore about the OTHER phase: ALPHA must still be reported with
+    the malformed sibling present.
+    """
+    import json
+    from phase_loop_runtime.plan_manifest import SCHEMA_VERSION, read_manifest
+
+    (tmp_path / "plans").mkdir(parents=True, exist_ok=True)
+    base = {
+        "slug": "v1-ALPHA", "file": "plans/phase-plan-v1-ALPHA.md", "type": "phase",
+        "status": "completed", "created_at": "t", "updated_at": "t",
+        "owner_skill": "codex-plan-phase", "phase_alias": "ALPHA",
+    }
+    malformed = dict(base, slug="v1-BAD", file="plans/phase-plan-v1-BAD.md", phase_alias=alias)
+    (tmp_path / "plans" / "manifest.json").write_text(
+        json.dumps({"schema_version": SCHEMA_VERSION, "plans": [base, malformed]})
+    )
+    entries = read_manifest(tmp_path).plans
+    assert phase_status_disagreements({"ALPHA": "executing"}, entries) == [
+        ("ALPHA", "executing", "completed")
+    ], label
+
+
+@pytest.mark.parametrize("status", ["", "None", "complete", "draft"])
+def test_an_UNRECOGNISED_manifest_status_is_INERT_and_that_is_the_judgement(status):
+    """Pinned as a DECISION, not discovered later as a defect.
+
+    The same coercion exists here — `_entry_from_json` does
+    `status=str(data.get("status", ""))`, so an absent key becomes `""` and an explicit
+    null the literal `"None"` — and `"complete"` is the typo of `"completed"` that this
+    vocabulary invites. None of them is in `_MANIFEST_DONE` or `_MANIFEST_IN_FLIGHT`, so
+    such a record can neither settle a phase nor be reported.
+
+    That is DELIBERATE, and it is where this field differs from `slug`. A coerced `slug`
+    caused a WRONG classification — "names nothing" was read as "names another roadmap",
+    which is a determinate error with a determinate fix. An uninterpretable STATUS is
+    genuinely unknown: reporting `status='executing' vs manifest='draft'` would assert a
+    contradiction between two things that might well agree, which is the false positive
+    r1 shipped and this detector's declared scope ("only a DONE-vs-IN-FLIGHT pair is a
+    contradiction") exists to prevent.
+
+    The cost is real and stated plainly: a manifest whose `status` key is missing, or
+    misspelled `complete`, will not settle a phase and will not be reported — so a true
+    ah#312 disagreement written with a typo stays silent. `validate_manifest` rejects
+    those statuses, and that is the correct layer for a vocabulary error. Recorded here
+    so a later reader finds a decision rather than an accident. (ah#832 r7.)
+    """
+    assert phase_status_disagreements({"P": "executing"}, [_entry("P", status)]) == []
+    assert phase_status_disagreements({"P": "complete"}, [_entry("P", status)]) == []

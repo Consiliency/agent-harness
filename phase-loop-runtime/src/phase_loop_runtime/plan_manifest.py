@@ -928,10 +928,28 @@ def phase_status_disagreements(
     without a repo.
     """
     out: list[tuple[str, str, str]] = []
+    # A NON-STRING ALIAS IS SKIPPED, NOT COUNTED — because counting it RAISES.
+    #
+    # `_entry_from_json` does `phase_alias=data.get("phase_alias")` with NO coercion, so
+    # unlike `file` and `slug` this field arrives exactly as written. A truthy unhashable
+    # value gets past the `if a:` test and then `_alias_counts.get(a, 0)` raises
+    # `TypeError: unhashable type: 'list'`. Measured, two entries where only the SECOND is
+    # malformed:
+    #
+    #   phase_alias: "ALPHA"    -> [('ALPHA','executing','completed')]
+    #   phase_alias: ["A"]      -> TypeError
+    #   phase_alias: {"a": 1}   -> TypeError
+    #
+    # And `render.py` wraps reconciliation in `except Exception: return []`, so that
+    # TypeError becomes TOTAL SILENCE — for EVERY phase, not just the malformed record.
+    # One hand-edited entry disables the whole detector, invisibly. That is the r3
+    # finding's class at its worst: r3 was one phase absent from the snapshot, this is
+    # every phase at once. `[]` and `{}` happen to be falsy and were already skipped,
+    # which is why this never showed up. (ah#832 r7, class sweep.)
     _alias_counts: dict[str, int] = {}
     for e in entries:
         a = getattr(e, "phase_alias", None)
-        if a:
+        if isinstance(a, str) and a:
             _alias_counts[a] = _alias_counts.get(a, 0) + 1
     _ambiguous_aliases = {a for a, n in _alias_counts.items() if n > 1}
     def in_scope(candidate, alias: str) -> bool:
@@ -978,7 +996,8 @@ def phase_status_disagreements(
     ordered_aliases: list[str] = []
     for entry in entries:
         alias = getattr(entry, "phase_alias", None)
-        if alias and alias not in ordered_aliases:
+        # Same string requirement as the census above, for the same reason.
+        if isinstance(alias, str) and alias and alias not in ordered_aliases:
             ordered_aliases.append(alias)
 
     for alias in ordered_aliases:
