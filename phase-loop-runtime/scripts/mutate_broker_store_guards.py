@@ -86,6 +86,29 @@ MUTANTS = [
   "                    unknown, missing = (\n                        constructor_key_mismatch(EvidenceRecord, raw)\n                        if isinstance(raw, dict) else ((), ())\n                    )",
   "                    unknown, missing = constructor_key_mismatch(EvidenceRecord, raw)",
   "test_a_row_that_is_not_a_usable_OBJECT_is_a_typed_refusal_naming_its_line"),
+ # THE TWO SURVIVORS A SEAT FOUND THAT THIS MATRIX DID NOT ENUMERATE. Both were invisible
+ # to all five kill conditions — they left the collected count unchanged and were simply
+ # not here. The old fixture put the drifted row LAST with all-distinct keys, so the true
+ # index equalled both the row count and the records-read count. (ah#834 r7, fable.)
+ ("M14 line becomes the RECORDS-READ count (the plausible refactor)", E,
+  "                        line=index,", "                        line=len(result) + 1,",
+  "test_the_refusal_NAMES_THE_LINE_of_the_offending_row"),
+ ("M15 line becomes the TOTAL ROW COUNT", E,
+  "                        line=index,",
+  "                        line=len(self.path.read_text(encoding='utf-8').splitlines()),",
+  "test_the_refusal_NAMES_THE_LINE_of_the_offending_row"),
+ # The key shape check: `result[raw["idempotency_key"]]` ran below the guard, so an
+ # unhashable key was a bare TypeError out of replay() — the ah#789 signature — and a
+ # hashable non-string key read SILENTLY into the mapping `epoch_blocked` is computed
+ # over. (ah#834 r7, fable.)
+ ("M16 the idempotency_key shape check is dropped", E,
+  "                    if not isinstance(key, str):",
+  "                    if False:",
+  "test_a_NON_STRING_idempotency_key_is_a_typed_refusal"),
+ ("M17 the key check also rejects an EMPTY string (fail-closes a readable store)", E,
+  "                    if not isinstance(key, str):",
+  "                    if not isinstance(key, str) or not key:",
+  "test_an_EMPTY_STRING_key_still_reads"),
 ]
 def run(root):
     r = subprocess.run(["python3","-m","pytest",*[str(Path(root)/t) for t in T],"-q","-p","no:cacheprovider"],

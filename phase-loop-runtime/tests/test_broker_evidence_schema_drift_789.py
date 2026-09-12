@@ -159,16 +159,33 @@ def test_the_refusal_NAMES_THE_LINE_of_the_offending_row(tmp_path):
     1-based index of the row that actually broke, not merely that some number was
     reported.
     """
+    # THE SHAPE A REAL STORE HAS, not the shape that is easy to write.
+    #
+    # The first version put the drifted row LAST and gave every row a distinct key. Under
+    # those two coincidences the true index equals both the row count and the
+    # records-read count, so `line=len(result) + 1` and `line=len(lines)` both SURVIVED —
+    # invisibly, because they were not in the matrix and left the collected count at 111.
+    #
+    # `len(result) + 1` is the plausible refactor ("count what you have read") and it is
+    # wrong on the production shape: `record_intent` appends PROVIDER_CALL_IN_FLIGHT and
+    # `record_terminal` appends the terminal for the SAME key, and `replay()` collapses
+    # them last-row-wins — so on a live store `len(result)` is strictly smaller than the
+    # row index. Rows 1-2 below are that duplicate, and the drifted row is row 3 of 4.
+    #
+    # One fixture kills all four at once: `start=0` reports 2, a constant reports 1, the
+    # total row count reports 4, and records-read+1 reports 2 (only `key-1` is in
+    # `result` when row 3 fails). (ah#834 r7, fable.)
     store = _store(tmp_path)
     store.path.write_text(
-        _line(idempotency_key="key-1") + "\n"
-        + _line(idempotency_key="key-2") + "\n"
-        + _line(idempotency_key="key-3", future_diagnostic="from a newer writer") + "\n"
+        _line(idempotency_key="key-1", state="provider_call_in_flight") + "\n"
+        + _line(idempotency_key="key-1") + "\n"
+        + _line(idempotency_key="key-2", future_diagnostic="from a newer writer") + "\n"
+        + _line(idempotency_key="key-3") + "\n"
     )
     with pytest.raises(EvidenceStoreIncompatible) as caught:
         store.replay()
     assert caught.value.line == 3, caught.value.line
-    assert caught.value.idempotency_key == "key-3"
+    assert caught.value.idempotency_key == "key-2"
     # ...and the operator reads the message, not the attribute.
     assert "at line 3" in str(caught.value)
 
@@ -270,3 +287,41 @@ def test_a_readable_store_is_still_read_after_the_shape_check(tmp_path):
     )
     replayed = store.replay()
     assert sorted(replayed) == ["key-1", "key-2"]
+
+
+@pytest.mark.parametrize(
+    "label,key",
+    [("a list", ["a"]), ("a dict", {"a": 1}), ("a number", 7), ("null", None)],
+)
+def test_a_NON_STRING_idempotency_key_is_a_typed_refusal(tmp_path, label, key):
+    """`result[raw["idempotency_key"]]` ran below the guard.
+
+    An unhashable key raised a bare `TypeError: unhashable type: 'list'` out of
+    `replay()` — the ah#789 signature, after the record had constructed fine. A
+    hashable non-string key was worse than a crash: it read SILENTLY and keyed a record
+    nothing will ever look up, while `epoch_blocked` is computed over exactly this
+    mapping. (ah#834 r7, fable.)
+    """
+    import json
+
+    store = _store(tmp_path)
+    store.path.write_text(
+        _line(idempotency_key="key-1") + "\n"
+        + json.dumps({"idempotency_key": key, "state": "effect_terminal_observed",
+                      "evidence_reference": "https://example.invalid/pr/2"}) + "\n"
+    )
+    with pytest.raises(EvidenceStoreIncompatible) as caught:
+        store.replay()
+    assert caught.value.line == 2, (label, caught.value.line)
+
+
+def test_an_EMPTY_STRING_key_still_reads(tmp_path):
+    """The control on the shape check: it must not fail-close a store that reads today.
+
+    An empty key is hashable and readable. Rejecting it would fail-close a partition for
+    a vocabulary complaint, which this round's own control calls worse than the crash it
+    replaced.
+    """
+    store = _store(tmp_path)
+    store.path.write_text(_line(idempotency_key="") + "\n")
+    assert list(store.replay()) == [""]

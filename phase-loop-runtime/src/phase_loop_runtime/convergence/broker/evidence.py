@@ -185,6 +185,22 @@ class BrokerEvidenceStore:
                             f"row decoded to {type(raw).__name__}, not a JSON object"
                         )
                     key = raw.get("idempotency_key")
+                    if not isinstance(key, str):
+                        # `result[raw["idempotency_key"]]` ran BELOW the guard, so an
+                        # unhashable key raised a bare `TypeError: unhashable type: 'list'`
+                        # straight out of `replay()` — literally the ah#789 signature,
+                        # arising AFTER the record constructed fine. A non-string but
+                        # hashable key (`7`, `null`) was worse than a crash: it read
+                        # silently and keyed a record nothing will ever look up, while
+                        # `epoch_blocked` is computed over exactly this mapping.
+                        #
+                        # An EMPTY string is deliberately still accepted: it is hashable
+                        # and readable, and rejecting it would fail-close a partition that
+                        # reads today, which this round's own control test calls worse
+                        # than the crash it replaced. (ah#834 r7, fable.)
+                        raise TypeError(
+                            f"idempotency_key is {type(key).__name__}, not a string"
+                        )
                     raw["state"] = TerminalOutcomeState(raw["state"])
                     record = EvidenceRecord(**raw)
                 except (TypeError, ValueError, KeyError) as error:
@@ -204,7 +220,7 @@ class BrokerEvidenceStore:
                         missing_keys=missing,
                         cause=error,
                     ) from error
-                result[raw["idempotency_key"]] = record
+                result[key] = record
         return result
     def _authorize(self) -> None:
         """Authenticate BEFORE any directory creation, then create the tree."""
