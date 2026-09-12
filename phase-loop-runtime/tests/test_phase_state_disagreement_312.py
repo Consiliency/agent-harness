@@ -2013,3 +2013,76 @@ def test_an_unreadable_ref_FILE_does_not_destroy_a_row_whose_SLUG_is_readable(tm
         {"P": "executing"}, parsed.entries, roadmap_slug="v2",
         attribution_evidence_complete=parsed.skipped == 0,
     ) == [("P", "executing", "completed")]
+
+
+@pytest.mark.parametrize("absent_slug", [None, "", "   ", "None"])
+def test_a_RESOLVING_ref_FILE_keeps_the_row_when_the_slug_does_not_resolve(tmp_path, absent_slug):
+    """The KEEP direction of the file-fallback arm, which nothing pinned.
+
+    `_raw_ref_identity_is_readable` ends `return name is None or isinstance(name, str)`.
+    Mutating that to `return False` — destroy every row whose slug does not resolve,
+    regardless of its ref file — left the entire suite GREEN, so the arm's keep direction
+    was unverified. It is demonstrably not an equivalent mutant: on the flagship shape
+    (one `completed` row, `roadmap_ref: {"slug": null, "file": "specs/v2.md"}`, snapshot
+    `executing`, active roadmap `v2`) the head keeps the row and reports, while the mutant
+    destroys it and reports nothing.
+
+    This is the fallback path itself — the slug does not resolve, so `_roadmap_claim`
+    derives the claim from `PurePosixPath(ref.file).stem`. A READABLE file there is a
+    usable identity and must be kept. (ah#832 r15, fable.)
+    """
+    from phase_loop_runtime.plan_manifest import parseable_plan_entries
+
+    ref = {"file": "specs/v2.md", "type": "phase", "status": "imported"}
+    if absent_slug is not None:
+        ref["slug"] = absent_slug
+    _write_manifest(tmp_path, [{
+        "slug": "p1", "file": "plans/phase-plan-A.md", "type": "phase", "status": "completed",
+        "created_at": "t", "updated_at": "t", "owner_skill": "x", "phase_alias": "P",
+        "roadmap_ref": ref,
+    }])
+    parsed = parseable_plan_entries(tmp_path)
+    assert len(parsed.entries) == 1, "a readable fallback file is a usable identity"
+    assert parsed.skipped == 0
+    assert phase_status_disagreements(
+        {"P": "executing"}, parsed.entries, roadmap_slug="v2",
+        attribution_evidence_complete=parsed.skipped == 0,
+    ) == [("P", "executing", "completed")]
+
+
+@pytest.mark.parametrize(
+    "body,label",
+    [
+        ('{"schema_version": 1, "plans": "nope"}', "plans is not an array"),
+        ('{"schema_version": 99, "plans": []}', "unsupported schema_version"),
+        ("{not json", "malformed JSON"),
+        ('["nope"]', "the manifest is not an object"),
+    ],
+)
+def test_a_STRUCTURAL_failure_is_never_reported_as_a_COMPLETE_reconciliation(tmp_path, body, label):
+    """codex r15: `_manifest_disagreements` returned `([], True)` after ANY exception.
+
+    A structural failure raises in the loader BY DESIGN — that is the ah#164 disposition
+    this PR deliberately preserves, because nothing in such a file is trustworthy. But the
+    render layer then caught it and reported the reconciliation COMPLETE, printing nothing.
+    All four shapes measured: a manifest this runtime cannot read at all was presented as
+    a clean, complete reconciliation.
+
+    Same shape as the zero-clash case one level further out: the surface looked CLEAN
+    exactly when the evidence was weakest. The empty disagreement list is right — nothing
+    can be compared — but the completeness claim beside it was not.
+    """
+    from phase_loop_runtime import render
+
+    (tmp_path / "plans").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "plans" / "manifest.json").write_text(body)
+
+    class _Snap:
+        repo = str(tmp_path)
+        roadmap = "specs/v2.md"
+        phases = {"P": "executing"}
+
+    clashes, complete = render._manifest_disagreements(_Snap())
+    assert clashes == [], label
+    assert complete is False, f"{label}: a failed reconciliation must not report complete"
+    assert any("INCOMPLETE" in line for line in render._manifest_disagreement_lines(_Snap())), label

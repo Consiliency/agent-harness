@@ -200,6 +200,13 @@ MUTANTS = [
   '    if isinstance(slug, str) and slug.strip() not in ("", "None"):\n        return True',
   "    if False:\n        return True",
   "test_an_unreadable_ref_FILE_does_not_destroy_a_row_whose_SLUG_is_readable"),
+ ("M43 the file-fallback arm destroys every non-resolving slug (X2)", P,
+  "    name = ref.get(\"file\")\n    return name is None or isinstance(name, str)",
+  "    return False",
+  "test_a_RESOLVING_ref_FILE_keeps_the_row_when_the_slug_does_not_resolve"),
+ ("M44 a failed reconciliation reports COMPLETE again", R,
+  "        return [], False", "        return [], True",
+  "test_a_STRUCTURAL_failure_is_never_reported_as_a_COMPLETE_reconciliation"),
  # --- the sixth surface: entry `type` (r9 fable F2) ---------------------------
  ("M27 a type:detailed row speaks for a phase again", P,
   '        and getattr(e, "type", None) == "phase"',

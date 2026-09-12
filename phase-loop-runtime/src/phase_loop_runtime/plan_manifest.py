@@ -1034,9 +1034,17 @@ def _raw_ref_identity_is_readable(row) -> bool:
     # deleted anyway, suppressing the flagship ah#312 disagreement.
     #
     # Only the field the claim is actually DERIVED from can manufacture it, and this
-    # predicate now asks exactly that question. It still counts as lost evidence either
-    # way — `roadmap_ref.file` is a census identity — but lost evidence and a destroyed
-    # row are different remedies, which is the distinction r13 drew and this completes.
+    # predicate now asks exactly that question.
+    #
+    # AND WHEN THE SLUG RESOLVES, AN UNREADABLE `ref.file` IS NOT LOST EVIDENCE EITHER —
+    # it is not evidence at all. An earlier revision of this comment claimed it "still
+    # counts as lost evidence either way", which is the inverse of what the code does and
+    # of what this commit's own test asserts (`skipped == 0`, "ref.file feeds no census
+    # when the slug resolves"). `_roadmap_claim` is the only consumer in this detector
+    # that reads that field, and it never reaches it once the slug resolves, so there is
+    # no census contribution to lose. Corrected rather than left as a description that is
+    # the inverse of the behaviour, on a predicate narrowed three rounds running.
+    # (ah#832 r15, fable.)
     # (ah#832 r14, codex.)
     if isinstance(slug, str) and slug.strip() not in ("", "None"):
         return True

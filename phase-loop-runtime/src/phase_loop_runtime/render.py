@@ -480,7 +480,18 @@ def _manifest_disagreements(snapshot: StateSnapshot) -> list[tuple[str, str, str
             complete,
         )
     except Exception:  # never let reconciliation break `status`
-        return [], True
+        # ...BUT NEVER CALL A FAILED RECONCILIATION COMPLETE. Returning `True` here said
+        # "every manifest row was read" about a manifest this runtime could not read AT
+        # ALL: a non-array `plans`, an unsupported `schema_version`, malformed JSON or a
+        # non-object manifest each raise in the loader BY DESIGN — that is the ah#164
+        # structural disposition this PR deliberately preserves — and all four then
+        # printed nothing and reported complete.
+        #
+        # It is the same defect as the zero-clash case one level further out, and with
+        # the same shape: the surface looked CLEAN precisely when the evidence was
+        # weakest. An empty disagreement list is right (nothing can be compared); the
+        # completeness claim beside it was not. (ah#832 r15, codex.)
+        return [], False
 
 
 def _manifest_disagreement_lines(snapshot: StateSnapshot) -> list[str]:
