@@ -890,3 +890,70 @@ def test_every_non_done_snapshot_status_reports_a_completed_manifest_except_unpl
         if not phase_status_disagreements({"P": status}, [_entry("P", "completed")]):
             silent.append(status)
     assert silent == [], f"snapshot statuses silent against manifest 'completed': {silent}"
+
+
+# ---------------------------------------------------------------------------
+# ah#832 r6 (codex, BLOCKING): the file arm bypassed the ambiguity rule.
+#
+# The alias rule refuses to guess a roadmap from a contested ALIAS. The file arm,
+# added two rounds later, then guessed one from a contested FILE — and a legacy
+# record whose roadmap is genuinely unknowable SUPPRESSED a real disagreement.
+# Both directions, as the seat asked, because the attributable set governs both.
+
+
+def test_a_legacy_record_on_a_CONTESTED_file_settles_nothing():
+    """Two roadmaps explicitly claim this file, so the legacy record could be either.
+
+    Without the legacy record the v2 disagreement is reported. Adding a record whose
+    roadmap is UNKNOWABLE made it disappear — the detector went silent on the strength of
+    a tie it resolved by picking whichever side happened to be in scope. A silent
+    detector is undetectable, which this file's own bar rates worse than a false positive.
+    """
+    contested = [
+        _rec("P", "committed", "v2", _A),    # in scope, in flight
+        _rec("P", "completed", "v1", _A),    # ANOTHER roadmap claims the same file
+        _rec("P", "completed", None, _A),    # legacy: could belong to EITHER
+    ]
+    # The control first: without the legacy record, the disagreement is reported.
+    assert phase_status_disagreements(
+        {"P": "complete"}, contested[:2], roadmap_slug="v2"
+    ) == [("P", "complete", "committed")]
+    # ...and adding the unknowable record must not change that.
+    assert phase_status_disagreements(
+        {"P": "complete"}, contested, roadmap_slug="v2"
+    ) == [("P", "complete", "committed")]
+
+
+def test_a_legacy_record_on_a_CONTESTED_file_is_not_the_subject_either():
+    """The OTHER direction, which the seat asked for explicitly.
+
+    Attribution is one set governing both comparisons, so a record that cannot settle a
+    phase must not be able to BE the subject of one. Before the fix this reported
+    ('P','executing','completed') on the strength of that same unknowable record — the
+    mirror-image error, and it would have named a phase from a roadmap we cannot identify
+    as contradicting the active one.
+    """
+    contested = [
+        _rec("P", "committed", "v2", _A),
+        _rec("P", "completed", "v1", _A),
+        _rec("P", "completed", None, _A),
+    ]
+    assert phase_status_disagreements({"P": "executing"}, contested, roadmap_slug="v2") == []
+
+
+def test_CONTESTED_counts_distinct_ROADMAPS_not_records():
+    """The superseded-plan shape must keep settling, or r1 comes back.
+
+    Several records of the SAME roadmap naming one file is ordinary — that is exactly r1's
+    superseded plan. Only a file claimed by more than one DISTINCT explicit slug is
+    contested. Keying on record count instead would silence every settled phase that had
+    ever been re-planned.
+    """
+    same_roadmap_twice = [
+        _rec("P", "committed", "v2", _A),
+        _rec("P", "executing", "v2", _A),
+        _rec("P", "completed", None, _A),   # legacy, same file, NOT contested
+    ]
+    assert phase_status_disagreements(
+        {"P": "complete"}, same_roadmap_twice, roadmap_slug="v2"
+    ) == []

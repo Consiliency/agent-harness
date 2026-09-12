@@ -44,10 +44,6 @@ MUTANTS = [
   "        attributable = _phase_attributable_records(entries, alias, in_scope)",
   "        attributable = [e for e in entries if getattr(e, 'phase_alias', None) == alias]",
   "test_settlement_r2_a_DIFFERENT_roadmaps_completed_must_not_settle"),
- ("M6 the file arm lets a FOREIGN roadmap settle through a shared filename (r2)", P,
-  "        or (not claims_a_roadmap(e) and plan_file(e) is not None",
-  "        or (plan_file(e) is not None",
-  "test_a_same_file_record_TAGGED_to_another_roadmap_does_not_settle"),
  ("M7 a record naming NO plan file becomes attributable by file (r5)", P,
   "and plan_file(e) is not None\n            and plan_file(e) in scoped_files",
   "and plan_file(e) in scoped_files",
@@ -56,6 +52,14 @@ MUTANTS = [
   "    scoped_files = {plan_file(e) for e in own if in_scope(e, alias)}",
   "    scoped_files = {plan_file(e) for e in own}",
   "test_a_file_named_only_by_an_OUT_OF_SCOPE_record_does_not_seed_the_closure"),
+ ("M12 the file arm guesses a roadmap from a CONTESTED file (r6 codex)", P,
+  "            and plan_file(e) in scoped_files\n            and plan_file(e) not in contested_files)",
+  "            and plan_file(e) in scoped_files)",
+  "test_a_legacy_record_on_a_CONTESTED_file_settles_nothing"),
+ ("M13 contested keyed on RECORD count, not distinct roadmaps", P,
+  "    contested_files = {name for name, slugs in claimed_by.items() if len(slugs) > 1}",
+  "    contested_files = {name for name in claimed_by}",
+  "test_CONTESTED_counts_distinct_ROADMAPS_not_records"),
  # --- the loop guards --------------------------------------------------------
  ("M9 look up a phase the snapshot does not carry (r3)", P,
   "            # total silence rather than as an error. (r3, fable.)\n            continue",
@@ -70,7 +74,27 @@ MUTANTS = [
   "len({phase for phase, _, _ in clashes})", "len(clashes)",
   "test_the_rendered_header_counts_PHASES_not_rows"),
 ]
-# RECORDED EQUIVALENT, deliberately not in the matrix above: turning the
+# RECORDED EQUIVALENT #2 (was M6 until r7): dropping the file arm's
+# `not claims_a_roadmap(e)` clause. It is the r2 guard — three seats found that defect
+# independently — and it is now SUBSUMED by M12's contested-file rule. Proof, and it turns
+# on a DISTANT invariant, which is why the clause stays in the source:
+#
+#   1. The file arm is only consulted when `roadmap_slug is not None`. Otherwise
+#      `in_scope` is True for every record and the `or` short-circuits before it.
+#   2. With a roadmap slug set, a null-ref record is in scope only if its alias is
+#      UNAMBIGUOUS, and `_alias_counts` (plan_manifest.py:892-897) counts every entry —
+#      so unambiguous means the alias appears exactly once, i.e. `len(own) == 1`.
+#   3. An alias with one record has no OTHER record to admit, so every seeder of
+#      `scoped_files` is a record that explicitly claims the active roadmap.
+#   4. Therefore a foreign explicit record sharing a seeded file always makes that file
+#      contested ({active, foreign}), and M12's guard rejects it first.
+#
+# Step 2 depends on how ambiguity is COUNTED, two hundred lines away. Count it per
+# roadmap instead and the subsumption silently fails, so the clause is kept as the local
+# statement of the r2 rule rather than deleted on the strength of this argument.
+# Measured: survives all 71 tests at this head. (ah#832 r7.)
+#
+# RECORDED EQUIVALENT #1, deliberately not in the matrix above: turning the
 # `if not attributable: continue` guard into `pass`. With no attributable record the
 # status set is EMPTY, and the empty set intersects neither operand, so both branches
 # append nothing whether the guard returns early or falls through. Measured: survives all

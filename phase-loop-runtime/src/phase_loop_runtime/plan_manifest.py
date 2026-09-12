@@ -835,11 +835,44 @@ def _phase_attributable_records(entries, alias: str, in_scope) -> list:
     # `roadmap_ref: null` cannot be attributed by frontmatter it does not have, and the
     # plan file it names is then the strongest evidence available. Refusing to GUESS a
     # roadmap is right; declining to read an explicit one is not.
+    # ...AND ONLY WHEN THE FILE ITSELF IS NOT CONTESTED.
+    #
+    # The file arm's premise is that naming an in-scope record's plan file attributes a
+    # legacy record "just as surely, and more specifically" than frontmatter would. That
+    # premise fails when TWO roadmaps explicitly claim the same file for this alias: the
+    # legacy record could belong to either, and the arm resolves the tie by silently
+    # picking the one that happens to be in scope. Measured, alias `P`, all naming
+    # `plans/phase-plan-A.md`, snapshot `complete`, roadmap `v2`:
+    #
+    #   v2 committed + v1 completed                -> ('P','complete','committed')
+    #   v2 committed + v1 completed + null completed ->  []   <- the legacy record
+    #                                                          SUPPRESSED a real v2
+    #                                                          disagreement
+    #
+    # So a record whose roadmap is genuinely unknowable silenced the detector, which is
+    # the harm this function's own ambiguity rule exists to prevent — bypassed through
+    # the arm added two rounds later. The alias rule already refuses to guess a roadmap
+    # from a contested ALIAS; this refuses to guess one from a contested FILE. Same rule,
+    # same reason, on the other key. (ah#832 r6, codex.)
+    #
+    # Contested means more than one DISTINCT explicit slug, not merely more than one
+    # record: several records of the same roadmap naming one file is the ordinary
+    # superseded-plan shape (r1), and must keep settling.
+    claimed_by: dict[str, set] = {}
+    for candidate in own:
+        ref = getattr(candidate, "roadmap_ref", None)
+        slug = getattr(ref, "slug", None) if ref else None
+        name = plan_file(candidate)
+        if slug is not None and name is not None:
+            claimed_by.setdefault(name, set()).add(slug)
+    contested_files = {name for name, slugs in claimed_by.items() if len(slugs) > 1}
+
     return [
         e for e in own
         if in_scope(e, alias)
         or (not claims_a_roadmap(e) and plan_file(e) is not None
-            and plan_file(e) in scoped_files)
+            and plan_file(e) in scoped_files
+            and plan_file(e) not in contested_files)
     ]
 
 
