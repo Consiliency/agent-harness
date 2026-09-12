@@ -31,12 +31,12 @@ MUTANTS = [
  # exception types reach the refusal, so each mutant now narrows the caught set by one and
  # lets exactly the defect's exception escape untyped.
  ("M1 TypeError escapes the guard again (the ah#789 shape)", E,
-  "                except (TypeError, ValueError, KeyError) as error:",
-  "                except KeyError as error:",
+  "                except (TypeError, ValueError, KeyError, RecursionError) as error:",
+  "                except (KeyError, RecursionError) as error:",
   "test_an_unknown_field_refuses_with_a_typed_error_not_a_TypeError"),
  ("M2 ValueError escapes again — an unknown STATE VALUE (r1 fable N1)", E,
-  "                except (TypeError, ValueError, KeyError) as error:",
-  "                except (TypeError, KeyError) as error:",
+  "                except (TypeError, ValueError, KeyError, RecursionError) as error:",
+  "                except (TypeError, KeyError, RecursionError) as error:",
   "test_an_unknown_STATE_VALUE_is_also_a_typed_refusal"),
  ("M3 base class back to RuntimeError (r1 fable N2)", E,
   'class EvidenceStoreIncompatible(PermissionError):', 'class EvidenceStoreIncompatible(RuntimeError):',
@@ -118,6 +118,12 @@ MUTANTS = [
  ("M19 split(b'\\n') instead of splitlines (fail-closes every real store)", E,
   "self.path.read_bytes().splitlines()", 'self.path.read_bytes().split(b"\\n")',
   "test_byte_splitlines_does_not_change_what_a_READABLE_store_yields"),
+ # RecursionError is not a ValueError, so it needed naming explicitly. Every r8 non-object
+ # fixture is shallow, which is why the suite could not see this. (ah#834 r9, codex.)
+ ("M20 RecursionError escapes the guard again (deeply nested row)", E,
+  "                except (TypeError, ValueError, KeyError, RecursionError) as error:",
+  "                except (TypeError, ValueError, KeyError) as error:",
+  "test_a_DEEPLY_NESTED_row_is_a_typed_refusal_naming_its_line"),
 ]
 def run(root):
     r = subprocess.run(["python3","-m","pytest",*[str(Path(root)/t) for t in T],"-q","-p","no:cacheprovider"],

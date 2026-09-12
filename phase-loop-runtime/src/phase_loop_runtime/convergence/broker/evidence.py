@@ -181,6 +181,18 @@ class BrokerEvidenceStore:
                 # least as likely an evolution as a new key — and they were escaping the
                 # very guard written for it. (ah#834 r1, fable N1.)
                 #
+                # `RecursionError` IS CAUGHT AND IT IS NOT A `ValueError`. `json.loads` on a
+                # deeply nested row raises it — measured: a valid first row followed by
+                # `"[" * 2000 + "0" + "]" * 2000` escaped the refusal entirely under the
+                # normal recursion limit, while a 500-deep row was already a typed refusal
+                # (it is simply a non-object row). That is an A8 shape, so it must carry
+                # the store/runtime/line diagnostics like every other one.
+                #
+                # Exactly scoped, by the same argument as the rest of this handler: within
+                # this `try` the only recursive call is the JSON decoder. `EvidenceRecord`
+                # is a plain frozen dataclass and `TerminalOutcomeState` a plain
+                # `(str, Enum)`, so neither can recurse. (ah#834 r9, codex.)
+                #
                 # THE WIDENING IS EXACTLY SCOPED ONLY WHILE `EvidenceRecord` STAYS A PLAIN
                 # FROZEN DATACLASS. It has no `__post_init__`, so `__init__` runs no user
                 # code and the only `ValueError`/`KeyError` reachable here are the two
@@ -223,7 +235,7 @@ class BrokerEvidenceStore:
                         )
                     raw["state"] = TerminalOutcomeState(raw["state"])
                     record = EvidenceRecord(**raw)
-                except (TypeError, ValueError, KeyError) as error:
+                except (TypeError, ValueError, KeyError, RecursionError) as error:
                     # Never hand a non-mapping to the mismatch helper: it would be a
                     # second crash inside the error handler, which is the ah#789 shape
                     # relocated one more time.

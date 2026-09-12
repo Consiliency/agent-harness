@@ -382,3 +382,43 @@ def test_byte_splitlines_does_not_change_what_a_READABLE_store_yields(tmp_path, 
         + _line(idempotency_key="key-2").encode() + trailing
     )
     assert sorted(store.replay()) == ["key-1", "key-2"], label
+
+
+# ---------------------------------------------------------------------------
+# ah#834 r9 (codex, BLOCKING): `json.loads` raises RecursionError on a deeply
+# nested row, and RecursionError is NOT a ValueError — so it escaped the handler.
+# The r8 non-object fixtures are all SHALLOW, which is why the suite could not
+# see it: the same lesson as r8's all-valid-UTF-8 fixtures, one field deeper.
+
+
+@pytest.mark.parametrize(
+    "label,depth,open_tok,close_tok",
+    [
+        ("2000-deep array", 2000, "[", "]"),
+        ("20000-deep array", 20000, "[", "]"),
+        ("2000-deep object", 2000, '{"a":', "}"),
+    ],
+)
+def test_a_DEEPLY_NESTED_row_is_a_typed_refusal_naming_its_line(
+    tmp_path, label, depth, open_tok, close_tok
+):
+    """A row too deep for the decoder is an A8 shape and must carry the diagnostics.
+
+    Measured before the fix: a valid first row followed by `"[" * 2000 + "0" + "]" * 2000`
+    raised a bare `RecursionError` under the normal recursion limit, bypassing
+    `EvidenceStoreIncompatible` entirely. A 500-deep row was already a typed refusal — it
+    is simply a non-object row — so the defect only appears past the decoder's limit,
+    and every shallow fixture in the suite missed it.
+
+    The 20000-deep case is here to prove the HANDLER itself survives: catching
+    `RecursionError` is only useful if there is enough stack left to build the refusal.
+    """
+    store = _store(tmp_path)
+    store.path.write_text(
+        _line(idempotency_key="key-1") + "\n"
+        + open_tok * depth + "0" + close_tok * depth + "\n"
+    )
+    with pytest.raises(EvidenceStoreIncompatible) as caught:
+        store.replay()
+    assert caught.value.line == 2, (label, caught.value.line)
+    assert "at line 2" in str(caught.value)
