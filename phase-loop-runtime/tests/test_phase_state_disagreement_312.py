@@ -762,10 +762,27 @@ def test_a_file_named_only_by_an_OUT_OF_SCOPE_record_does_not_seed_the_closure()
     """The closure must start from in-scope records, or r2's false negative returns.
 
     A `completed` record in another roadmap, naming a file no in-scope record names, is
-    not attributable to this phase in this roadmap and must not settle it. This is the
-    direct control on the seed set: widening it to all records reds the r2 case.
+    not attributable to this phase in this roadmap and must not settle it.
+
+    THE SECOND CASE IS THE ONE THAT ACTUALLY REACHES THE SEED SET, and until ah#832 r6
+    this test had only the first. Widening the seed to every record does NOT red case 1:
+    the foreign record claims a roadmap, so the file arm's `not claims_a_roadmap` clause
+    rejects it whatever the seed contains, and the test passed under the very mutant its
+    docstring claimed to control. Case 2 puts a LEGACY record (null ref, so it passes
+    that clause) on the foreign record's file, with the alias ambiguous so it is not in
+    scope directly. Then the seed is the only thing standing between that file and
+    attribution — measured: green on correct code, red under the widened seed.
     """
     entries = [_rec("P", "committed", "v2", _A), _rec("P", "completed", "v1", "plans/Z.md")]
+    out = phase_status_disagreements({"P": "complete"}, entries, roadmap_slug="v2")
+    assert out == [("P", "complete", "committed")], out
+
+    # Case 2: a legacy record sitting on the OUT-OF-SCOPE record's file.
+    entries = [
+        _rec("P", "committed", "v2", _A),                 # in scope, in flight
+        _rec("P", "completed", "v1", "plans/Z.md"),        # ANOTHER roadmap, file Z
+        _rec("P", "completed", None, "plans/Z.md"),        # legacy, also file Z
+    ]
     out = phase_status_disagreements({"P": "complete"}, entries, roadmap_slug="v2")
     assert out == [("P", "complete", "committed")], out
 
