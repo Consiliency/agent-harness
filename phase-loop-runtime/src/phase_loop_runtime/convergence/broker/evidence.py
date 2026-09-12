@@ -134,8 +134,26 @@ class BrokerEvidenceStore:
         result: dict[str, EvidenceRecord] = {}
         if self.path.exists():
             for index, line in enumerate(self.path.read_text(encoding="utf-8").splitlines(), start=1):
-                raw = json.loads(line)
-                key = raw.get("idempotency_key")
+                # THE DECODE AND THE SHAPE CHECK BELONG INSIDE THE GUARD TOO.
+                #
+                # They sat above the try, so three more shapes escaped the typed refusal
+                # entirely and crashed exactly the way ah#789 crashed — in the store whose
+                # replay decides `epoch_blocked`:
+                #
+                #   a row that is valid JSON but NOT an object (`null`, `[]`, `"x"`)
+                #     -> AttributeError: 'NoneType' object has no attribute 'get'
+                #   a row that is not valid JSON at all (a truncated final append)
+                #     -> JSONDecodeError
+                #   a blank line
+                #     -> JSONDecodeError
+                #
+                # Measured on all five: every one bypassed `EvidenceStoreIncompatible`
+                # and lost the runtime, path and line diagnostics the refusal exists to
+                # carry. A truncated tail is the likeliest of them in production — the
+                # store is append-only and a crash mid-append leaves exactly that — and
+                # refusing it is correct: fabricating a partial read of a sealed evidence
+                # store is the documented worse option. (ah#834 r7, codex.)
+                raw: object = None
                 # The STATE COERCION BELONGS INSIDE THE GUARD. It used to sit above the
                 # try, so only one of three drift shapes was typed: a newer writer adding
                 # an unknown TerminalOutcomeState VALUE still raised a bare ValueError,
@@ -154,11 +172,29 @@ class BrokerEvidenceStore:
                 # rather than leaving it to be discovered from a confusing message. The
                 # sibling at admission.py is narrower (`TypeError` only) and does not
                 # carry this hazard. (ah#834 r2, fable.)
+                key = None
                 try:
+                    raw = json.loads(line)
+                    if not isinstance(raw, dict):
+                        # A DELIBERATE in-guard raise, not a widening: it converts a
+                        # shape the constructor could never accept into this function's
+                        # own typed refusal. The scope note above still holds — the only
+                        # exceptions this handler interprets as drift are the ones raised
+                        # on these lines.
+                        raise TypeError(
+                            f"row decoded to {type(raw).__name__}, not a JSON object"
+                        )
+                    key = raw.get("idempotency_key")
                     raw["state"] = TerminalOutcomeState(raw["state"])
                     record = EvidenceRecord(**raw)
                 except (TypeError, ValueError, KeyError) as error:
-                    unknown, missing = constructor_key_mismatch(EvidenceRecord, raw)
+                    # Never hand a non-mapping to the mismatch helper: it would be a
+                    # second crash inside the error handler, which is the ah#789 shape
+                    # relocated one more time.
+                    unknown, missing = (
+                        constructor_key_mismatch(EvidenceRecord, raw)
+                        if isinstance(raw, dict) else ((), ())
+                    )
                     raise EvidenceStoreIncompatible(
                         self.path,
                         line=index,

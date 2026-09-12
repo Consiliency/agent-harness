@@ -25,20 +25,25 @@ T = ["phase-loop-runtime/tests/test_convergence_broker_credsep.py",
 # reintroduces, named by the test that exists to catch it. A mutant that reds the suite
 # some OTHER way is not caught; it is a broken mutant.
 MUTANTS = [
- ("M1 replay: bare constructor (the ah#789 shape)", E,
-  '                try:\n                    raw["state"] = TerminalOutcomeState(raw["state"])\n                    record = EvidenceRecord(**raw)\n                except (TypeError, ValueError, KeyError) as error:',
-  '                raw["state"] = TerminalOutcomeState(raw["state"])\n                record = EvidenceRecord(**raw)\n                if False:\n                    error = None',
+ # M1/M2 are re-expressed as the OBSERVABLE defect rather than the old source shape:
+ # r7 moved the decode inside the guard, so "the coercion sits above the try" is no longer
+ # writable (`raw` does not exist above it). What the r1 findings were about is which
+ # exception types reach the refusal, so each mutant now narrows the caught set by one and
+ # lets exactly the defect's exception escape untyped.
+ ("M1 TypeError escapes the guard again (the ah#789 shape)", E,
+  "                except (TypeError, ValueError, KeyError) as error:",
+  "                except KeyError as error:",
   "test_an_unknown_field_refuses_with_a_typed_error_not_a_TypeError"),
- ("M2 coercion back OUTSIDE the guard (r1 fable N1)", E,
-  '                try:\n                    raw["state"] = TerminalOutcomeState(raw["state"])\n                    record = EvidenceRecord(**raw)',
-  '                raw["state"] = TerminalOutcomeState(raw["state"])\n                try:\n                    record = EvidenceRecord(**raw)',
+ ("M2 ValueError escapes again — an unknown STATE VALUE (r1 fable N1)", E,
+  "                except (TypeError, ValueError, KeyError) as error:",
+  "                except (TypeError, KeyError) as error:",
   "test_an_unknown_STATE_VALUE_is_also_a_typed_refusal"),
  ("M3 base class back to RuntimeError (r1 fable N2)", E,
   'class EvidenceStoreIncompatible(PermissionError):', 'class EvidenceStoreIncompatible(RuntimeError):',
   "test_the_refusal_matches_the_admission_stores_fail_closed_base_class"),
  ("M4 replay SKIPS the unreadable row instead of refusing", E,
-  '                except (TypeError, ValueError, KeyError) as error:\n                    unknown, missing = constructor_key_mismatch(EvidenceRecord, raw)',
-  '                except (TypeError, ValueError, KeyError) as error:\n                    continue\n                    unknown, missing = constructor_key_mismatch(EvidenceRecord, raw)',
+  "                    raise EvidenceStoreIncompatible(",
+  "                    continue\n                    raise EvidenceStoreIncompatible(",
   "test_the_record_is_NOT_skipped_or_coerced"),
  ("M5 collapse the two ambiguity codes", C,
   '            if not prs:\n                return self._ambiguous(request, "pr-list-empty")\n', '',
@@ -66,13 +71,34 @@ MUTANTS = [
  ("M10 constructor_key_mismatch loses its non-dataclass guard", A,
   "    if not dataclasses.is_dataclass(constructor):\n        return (), ()\n", "",
   "test_constructor_key_mismatch_returns_EMPTY_for_a_non_dataclass"),
+ # The decode and the shape check, back OUTSIDE the guard. Three shapes escaped the typed
+ # refusal entirely before r7 — including a truncated final append, the likeliest of them
+ # on an append-only store. (ah#834 r7, codex.)
+ ("M11 the shape check is dropped (a non-object row crashes untyped)", E,
+  "                    if not isinstance(raw, dict):",
+  "                    if False:",
+  "test_a_row_that_is_not_a_usable_OBJECT_is_a_typed_refusal_naming_its_line"),
+ ("M12 the decode moves back above the guard", E,
+  "                key = None\n                try:\n                    raw = json.loads(line)",
+  "                key = None\n                raw = json.loads(line)\n                try:",
+  "test_a_row_that_is_not_a_usable_OBJECT_is_a_typed_refusal_naming_its_line"),
+ ("M13 a non-mapping row is handed to the mismatch helper", E,
+  "                    unknown, missing = (\n                        constructor_key_mismatch(EvidenceRecord, raw)\n                        if isinstance(raw, dict) else ((), ())\n                    )",
+  "                    unknown, missing = constructor_key_mismatch(EvidenceRecord, raw)",
+  "test_a_row_that_is_not_a_usable_OBJECT_is_a_typed_refusal_naming_its_line"),
 ]
 def run(root):
     r = subprocess.run(["python3","-m","pytest",*[str(Path(root)/t) for t in T],"-q","-p","no:cacheprovider"],
                        cwd=root, capture_output=True, text=True, timeout=900)
     out = r.stdout + r.stderr
     tail = [l for l in out.strip().splitlines() if "passed" in l or "failed" in l]
-    names = [l.split("::")[-1].split()[0] for l in out.splitlines() if l.startswith("FAILED")]
+    # STRIP THE PARAMETRISATION before matching. pytest reports a parametrised failure as
+    # `test_name[the case]`, and splitting on whitespace lands mid-bracket, so a
+    # parametrised test could never match its own name and every mutant it caught scored
+    # [WRONG-RED]. Found by this matrix on itself when the r7 regression was added
+    # parametrised — the fourth classifier defect in five rounds. (ah#834 r7.)
+    names = [l.split("::")[-1].split()[0].split("[")[0]
+             for l in out.splitlines() if l.startswith("FAILED")]
     # A COLLECTION OR IMPORT ERROR IS NOT A CAUGHT MUTANT. pytest exits non-zero for
     # those too, so classifying on the return code alone counts a broken mutant as a
     # kill — the exact false-"caught" mode this matrix exists to rule out, and the one

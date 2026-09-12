@@ -204,3 +204,69 @@ def test_constructor_key_mismatch_returns_EMPTY_for_a_non_dataclass():
 
     assert constructor_key_mismatch(NotADataclass, {"anything": 1}) == ((), ())
     assert constructor_key_mismatch(dict, {"anything": 1}) == ((), ())
+
+
+# ---------------------------------------------------------------------------
+# ah#834 r7 (codex, BLOCKING): the decode and the shape check sat OUTSIDE the
+# guard, so three more shapes crashed untyped — losing the runtime, path and line
+# diagnostics the refusal exists to carry, in the store whose replay decides
+# `epoch_blocked`. A multi-row store, per the seat, so the line number is proven
+# too.
+
+
+@pytest.mark.parametrize(
+    "label,row",
+    [
+        ("json null", "null"),
+        ("json list", "[]"),
+        ("json string", '"not an object"'),
+        ("json number", "5"),
+        ("truncated append", '{"idempotency_key": "k2", '),
+        ("blank line", ""),
+        ("whitespace only", "   "),
+    ],
+)
+def test_a_row_that_is_not_a_usable_OBJECT_is_a_typed_refusal_naming_its_line(
+    tmp_path, label, row
+):
+    """Every one of these bypassed `EvidenceStoreIncompatible` before r7.
+
+    `json.loads(line)` and `raw.get(...)` both ran above the try, so a non-object row
+    raised `AttributeError: 'NoneType' object has no attribute 'get'` and an undecodable
+    one raised `JSONDecodeError` — the ah#789 failure mode exactly, an untyped crash on a
+    sealed store read, with no diagnostics.
+
+    The truncated-append case is the one most likely in production: the store is
+    append-only, so a crash mid-append leaves precisely that. Refusing it is correct —
+    fabricating a partial read of a sealed evidence store is the documented worse option.
+    """
+    store = _store(tmp_path)
+    store.path.write_text(
+        _line(idempotency_key="key-1") + "\n" + row + "\n"
+    )
+    with pytest.raises(EvidenceStoreIncompatible) as caught:
+        store.replay()
+    assert caught.value.line == 2, (label, caught.value.line)
+    assert "at line 2" in str(caught.value)
+    # No keys can be named for a row that is not a mapping — and the mismatch helper must
+    # never have been handed one, or the error handler itself would have crashed.
+    assert caught.value.unknown_keys == ()
+    assert caught.value.missing_keys == ()
+    # The refusal still names the reading runtime, which is the actionable fact in ah#789.
+    import phase_loop_runtime
+    assert phase_loop_runtime.__version__ in str(caught.value)
+
+
+def test_a_readable_store_is_still_read_after_the_shape_check(tmp_path):
+    """The guard must not have narrowed the success path.
+
+    Two valid rows, both returned, keyed by idempotency key. A shape check that rejected
+    a legitimate record would fail-close a partition that should be readable, which is a
+    worse outcome than the crash it replaced.
+    """
+    store = _store(tmp_path)
+    store.path.write_text(
+        _line(idempotency_key="key-1") + "\n" + _line(idempotency_key="key-2") + "\n"
+    )
+    replayed = store.replay()
+    assert sorted(replayed) == ["key-1", "key-2"]
