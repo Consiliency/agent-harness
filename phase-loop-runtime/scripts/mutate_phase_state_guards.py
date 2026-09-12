@@ -157,6 +157,11 @@ MUTANTS = [
   '            if isinstance(declared, str) and declared != "phase":',
   '            if declared != "phase":',
   "test_a_skipped_row_that_MIGHT_have_been_a_phase_row_still_disarms"),
+ # --- a row that PARSES but is unusable is lost evidence too (r10 codex) ------
+ ("M32 an unusable phase alias no longer counts as lost evidence", P,
+  "            if not (isinstance(candidate_alias, str) and candidate_alias):\n                attribution_evidence_complete = False\n                break",
+  "            if False:\n                attribution_evidence_complete = False\n                break",
+  "test_an_UNUSABLE_alias_counts_as_incomplete_evidence"),
  # --- the sixth surface: entry `type` (r9 fable F2) ---------------------------
  ("M27 a type:detailed row speaks for a phase again", P,
   '        and getattr(e, "type", None) == "phase"',

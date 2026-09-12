@@ -1599,7 +1599,7 @@ def test_a_skipped_row_that_MIGHT_have_been_a_phase_row_still_disarms(tmp_path, 
     ) == [], label
 
 
-def test_a_SETTLED_phase_starts_reporting_when_evidence_is_incomplete(tmp_path):
+def test_a_SETTLED_phase_REPORTS_when_evidence_is_incomplete_a_KNOWN_trade(tmp_path):
     """NB1: the half the r9 docstring left out, now stated and pinned.
 
     The r9 note claimed only the reassuring half — "direct claims are unaffected". It is
@@ -1634,4 +1634,47 @@ def test_a_SETTLED_phase_starts_reporting_when_evidence_is_incomplete(tmp_path):
         )
 
     assert detect([in_scope, settling_legacy]) == [], "settled while every row parses"
+    # ...and it REPORTS once a row is lost. That is a KNOWN false positive, not an
+    # oversight, and it is the side of a trade that cannot be won: r9's codex finding
+    # requires reporting here (a dropped foreign row must not let a legacy record suppress
+    # a real disagreement) and r10's codex finding requires silence (a dropped in-scope
+    # `completed` row must not produce a false report). The two are structurally identical
+    # from inside the detector — a phase row is missing, its identity unknowable — and
+    # implementing the r10 refusal turned the r9 regression test red, which is that
+    # finding returning. The tie breaks on this module's recorded bar: silence is worse
+    # than a false positive here. The operator sees a settled phase AND an unreadable
+    # manifest row, which is worth knowing.
     assert detect([in_scope, settling_legacy, hostile_phase]) == [("P", "complete", "committed")]
+
+
+def test_an_UNUSABLE_alias_counts_as_incomplete_evidence(tmp_path):
+    """r10 codex #2: a row that PARSES but is unusable is lost evidence too.
+
+    `skipped` counts rows the parser rejected. A phase row whose `phase_alias` is not a
+    usable string parses fine — so `skipped` stays 0 — and is then dropped by every census
+    and by attribution, which is indistinguishable from never having been there. Measured:
+    `v2 committed` + `v1 failed` + legacy `completed` on one file correctly reports the v2
+    disagreement; change the foreign row's alias to `["P"]` and the file looked
+    uncontested, the legacy record settled, and the report vanished.
+    """
+    from phase_loop_runtime.plan_manifest import parseable_plan_entries
+
+    A = "plans/phase-plan-A.md"
+    def row(status, slug, alias="P"):
+        e = {"slug": f"{status}-{slug}", "file": A, "type": "phase", "status": status,
+             "created_at": "t", "updated_at": "t", "owner_skill": "x", "phase_alias": alias}
+        if slug:
+            e["roadmap_ref"] = {"slug": slug, "file": f"specs/{slug}.md",
+                                "type": "phase", "status": "imported"}
+        return e
+
+    for label, foreign_alias in (("a list", ["P"]), ("a number", 7), ("empty", ""), ("null", None)):
+        _write_manifest(tmp_path, [row("committed", "v2"),
+                                   row("failed", "v1", alias=foreign_alias),
+                                   row("completed", None)])
+        parsed = parseable_plan_entries(tmp_path)
+        assert parsed.skipped == 0, f"{label}: the row PARSES — that is the point"
+        assert phase_status_disagreements(
+            {"P": "complete"}, parsed.entries, roadmap_slug="v2",
+            attribution_evidence_complete=parsed.skipped == 0,
+        ) == [("P", "complete", "committed")], label

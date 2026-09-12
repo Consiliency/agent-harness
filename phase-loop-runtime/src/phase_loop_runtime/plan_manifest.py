@@ -1145,6 +1145,26 @@ def phase_status_disagreements(
     only form that cannot be wrong. (ah#832 r9, fable F1 + codex, with the fix trap
     flagged in fable's review.)
     """
+    # A ROW THAT PARSES BUT IS UNUSABLE IS LOST EVIDENCE TOO.
+    #
+    # `skipped` counts rows the PARSER rejected. A phase row whose `phase_alias` is not a
+    # usable string parses fine — so `skipped` stays 0 — and is then dropped by every
+    # census and by attribution, which is indistinguishable from never having been there.
+    # Measured: `v2 committed` + `v1 failed` + legacy `completed` on one file correctly
+    # reports the v2 disagreement; change the foreign row's alias to `["P"]` and the file
+    # looks uncontested, the legacy record settles, and the report vanishes.
+    #
+    # Computed here rather than asked of the caller, because a caller that forgets it
+    # reintroduces the hole silently. (ah#832 r10, codex.)
+    if attribution_evidence_complete:
+        for candidate in entries:
+            if getattr(candidate, "type", None) != "phase":
+                continue
+            candidate_alias = getattr(candidate, "phase_alias", None)
+            if not (isinstance(candidate_alias, str) and candidate_alias):
+                attribution_evidence_complete = False
+                break
+
     out: list[tuple[str, str, str]] = []
     # A NON-STRING ALIAS IS SKIPPED, NOT COUNTED — because counting it RAISES.
     #
@@ -1259,6 +1279,30 @@ def phase_status_disagreements(
             if done:
                 out.append((alias, snap, "/".join(done)))
         elif snap in _SNAPSHOT_DONE:
+            # THIS DIRECTION IS INDETERMINATE WHEN A PHASE ROW WAS LOST, AND THE TWO
+            # SEATS' FINDINGS CANNOT BOTH BE SATISFIED. Reporting here means "no
+            # attributable record reached done", and a dropped row may have been exactly
+            # that record — so:
+            #
+            #   r9  codex: a dropped FOREIGN row must not let a legacy record settle the
+            #              phase and SUPPRESS a real disagreement   -> we must REPORT
+            #   r10 codex: a dropped in-scope COMPLETED row must not produce a phase
+            #              reported as disagreeing when it is settled -> must NOT report
+            #
+            # Structurally identical from here: a phase row is missing and its identity is
+            # unknowable. Satisfying one reintroduces the other, measured — adding the
+            # r10 refusal turned test_a_skipped_FOREIGN_claimant_does_not_uncontest_a_file
+            # red, which is r9's finding returning.
+            #
+            # The tie breaks on this module's own recorded bar, stated at `in_scope`: "a
+            # detector that goes silent is undetectable, which makes that worse than the
+            # false positives this same function shipped in round 1." So it REPORTS, and
+            # r10's case is a known, documented false positive rather than an oversight.
+            # The operator investigating it finds a settled phase and an unreadable
+            # manifest row — which is itself worth knowing, and is the cheaper error.
+            # fable reached the same disposition independently and rated it non-blocking;
+            # codex rated it blocking. Recorded rather than silently chosen.
+            # (ah#832 r10; r9 codex vs r10 codex.)
             if statuses & _MANIFEST_DONE:
                 continue            # a record reached done: the phase is settled
             in_flight = sorted(statuses & _MANIFEST_IN_FLIGHT)
