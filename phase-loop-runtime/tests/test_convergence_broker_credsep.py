@@ -551,6 +551,10 @@ def test_an_empty_pr_list_still_fails_CLOSED(tmp_path):
 
     A more specific diagnosis is not a weaker one. The push may well have taken effect,
     so this is never a provable no-effect, and it must never be retried on a guess.
+
+    Builds its own adapter rather than sharing one with the test above: two assertions
+    reading one fixture's result look independent and are not, so a fixture that stopped
+    reaching this branch would silence both at once. (ah#834 r2, grok.)
     """
     run = _FakeRun(_base_responses() + [
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
@@ -559,6 +563,8 @@ def test_an_empty_pr_list_still_fails_CLOSED(tmp_path):
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
     assert result is None
     assert evidence.terminal_state == "outcome_ambiguous_blocked"
+    # pin that this branch, not some earlier refusal, produced the outcome
+    assert evidence.evidence_reference == "pr-list-empty"
 
 
 # --- agent-harness#250 (N6, cross-vendor CR, codex): GitHub allows a PR's base to be

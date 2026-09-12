@@ -74,12 +74,12 @@ class AdmissionStoreIncompatible(PermissionError):
 def constructor_key_mismatch(constructor: type, payload: dict) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """``(unknown, missing)`` key names of ``payload`` against a dataclass constructor.
 
-    PUBLIC because the sibling evidence store needs the same schema-drift arithmetic to
-    give the same typed refusal. It was `_constructor_key_mismatch`, and importing a
-    private name across modules — the only such import in this package — quietly makes an
-    implementation detail load-bearing for another module with nothing marking it so.
-    Promoted rather than duplicated: two copies of the drift arithmetic is how the two
-    stores end up disagreeing about what drift means. (ah#834 r1, grok.)
+    ``unknown`` are keys the constructor does not declare (a newer writer); ``missing``
+    are required keys the payload lacks (an older one). Returns ``((), ())`` for a
+    non-dataclass, so a caller may use it unconditionally.
+
+    Shared by both broker stores on purpose: two copies of this arithmetic is how the two
+    stores end up disagreeing about what drift means. (Public since ah#834.)
     """
     if not dataclasses.is_dataclass(constructor):
         return (), ()
