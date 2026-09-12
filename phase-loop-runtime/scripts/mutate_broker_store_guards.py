@@ -12,6 +12,19 @@ collection error and not by a skip. A SURVIVOR is a real coverage gap and belong
 source as a recorded limitation, never hidden.
 
     python3 phase-loop-runtime/scripts/mutate_broker_store_guards.py [repo-root]
+
+SCOPE OF "no survivors": it is a claim about the guards ENUMERATED below, exercised by the
+two test files in `T`. It is NOT a claim about the modules, and not about guards this
+matrix does not carry — r7 and r8 both found real survivors it did not enumerate, and r7
+and r8 were FIXTURE defects rather than classifier defects (a fixture pinning coincidences,
+then a fixture set that was entirely valid UTF-8). Attack the fixtures, not only this file.
+
+SUBSTRATE, PROVEN RATHER THAN ASSUMED: the driver runs pytest with `cwd=<copytree copy>`
+and no `PYTHONPATH`, which is exactly the shape that would silently exercise an INSTALLED
+package and make every "caught" meaningless. A seat measured it — a sentinel confined to
+the copy reds that copy's suite, while `import phase_loop_runtime` from the same cwd raises
+`ModuleNotFoundError`, so the import resolves through pytest's rootdir insertion of `src`
+and not a site package. (ah#834 r8, fable.)
 """
 import shutil, subprocess, sys, tempfile
 from pathlib import Path

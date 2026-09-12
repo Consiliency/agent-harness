@@ -152,6 +152,15 @@ class BrokerEvidenceStore:
             # r7 shape check refuses a blank row — so that spelling would fail-close
             # every store in existence. Byte-splitlines keeps the CR/CRLF/LF behaviour
             # the str version had. (ah#834 r8, codex.)
+            #
+            # AND IT NARROWS A DIVERGENCE THE r8 SEAT FLAGGED. `str.splitlines()` also
+            # splits on U+2028, U+2029 and U+0085, which a newline-counting reader does
+            # not, so the reported line number could disagree with `sed -n Np`. Measured:
+            # `bytes.splitlines()` splits on none of the three (only CR, CRLF, LF), so the
+            # remaining divergence is bare `\r` alone, which both spellings split. The
+            # writer cannot emit any of them regardless — `json.dumps` with default
+            # `ensure_ascii` plus an explicit `"\n"` — and `_parse_strict_jsonl` documents
+            # the same class. (ah#834 r8 fable note 2, resolved by the r8 fix.)
             for index, raw_line in enumerate(self.path.read_bytes().splitlines(), start=1):
                 # THE DECODE AND THE SHAPE CHECK BELONG INSIDE THE GUARD TOO.
                 #
@@ -193,16 +202,32 @@ class BrokerEvidenceStore:
                 # is a plain frozen dataclass and `TerminalOutcomeState` a plain
                 # `(str, Enum)`, so neither can recurse. (ah#834 r9, codex.)
                 #
-                # THE WIDENING IS EXACTLY SCOPED ONLY WHILE `EvidenceRecord` STAYS A PLAIN
-                # FROZEN DATACLASS. It has no `__post_init__`, so `__init__` runs no user
-                # code and the only `ValueError`/`KeyError` reachable here are the two
-                # raised on the lines above. Give it a validator that rejects a genuinely
-                # invalid record with `ValueError` and this handler would report that real
-                # validation bug as schema drift — a misdiagnosis, on the store whose
-                # replay decides `epoch_blocked`. Narrow the caught set at that point
-                # rather than leaving it to be discovered from a confusing message. The
-                # sibling at admission.py is narrower (`TypeError` only) and does not
-                # carry this hazard. (ah#834 r2, fable.)
+                # THE SCOPE OF THIS CATCH, STATED AS A RULE RATHER THAN A LIST.
+                #
+                # An earlier revision ENUMERATED which exceptions were reachable, and the
+                # list went stale three times in three rounds as rounds 7, 8 and 9 each
+                # added a reachable source (`json.loads`' JSONDecodeError, the per-row
+                # `UnicodeDecodeError`, and `RecursionError`). A seat caught the first
+                # drift; enumerating a set that every round extends is the same defect
+                # class this PR has been fixing all along, so the enumeration is gone.
+                #
+                # THE RULE: everything inside this `try` is either a decode of untrusted
+                # bytes or a construction from them, so every exception it can raise means
+                # "this runtime cannot read this row" — which is exactly what the refusal
+                # says. Three of the raises are OURS and deliberate (the non-object shape
+                # check, the key shape check, and the decode), and they are part of that
+                # same statement.
+                #
+                # THE PRECONDITION, which is what actually needs watching: it holds only
+                # while `EvidenceRecord` stays a plain frozen dataclass with no
+                # `__post_init__` and `TerminalOutcomeState` a plain `(str, Enum)` with no
+                # `_missing_`. Give either one user code and a genuine validation bug would
+                # be reported as schema drift — a misdiagnosis, on the store whose replay
+                # decides `epoch_blocked`. Split the guard at that point rather than
+                # leaving it to be discovered from a confusing message;
+                # Consiliency/agent-harness#835 tracks doing it now. The sibling at
+                # admission.py is narrower (`TypeError` only) and does not carry this
+                # hazard. (ah#834 r2, fable; enumeration dropped r9 after its third drift.)
                 key = None
                 try:
                     line = raw_line.decode("utf-8")
