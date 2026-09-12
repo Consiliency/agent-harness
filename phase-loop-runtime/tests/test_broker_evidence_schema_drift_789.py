@@ -100,6 +100,40 @@ def test_the_record_is_NOT_skipped_or_coerced(tmp_path):
         store.replay()
 
 
+def test_an_unknown_STATE_VALUE_is_also_a_typed_refusal(tmp_path):
+    """Drift is not only new KEYS — a new state VALUE is at least as likely.
+
+    The coercion `TerminalOutcomeState(raw["state"])` originally sat OUTSIDE the guard,
+    so a newer writer adding a state this runtime does not know raised a bare ValueError
+    and escaped the very protection written for forward compatibility.
+    (ah#834 r1, fable N1.)
+    """
+    store = _store(tmp_path)
+    store.path.write_text(_line(state="some_future_terminal_state") + "\n")
+    with pytest.raises(EvidenceStoreIncompatible) as caught:
+        store.replay()
+    assert "some_future_terminal_state" in str(caught.value.__cause__)
+
+
+def test_a_row_with_no_state_key_is_also_a_typed_refusal(tmp_path):
+    """The third drift shape: an older writer that predates the field entirely."""
+    store = _store(tmp_path)
+    store.path.write_text('{"idempotency_key": "key-1"}\n')
+    with pytest.raises(EvidenceStoreIncompatible):
+        store.replay()
+
+
+def test_the_refusal_matches_the_admission_stores_fail_closed_base_class(tmp_path):
+    """`AdmissionStoreIncompatible` is a PermissionError "so every fail-closed path stays
+    closed". Its twin must be too, or a handler written to that convention misses this one.
+    (ah#834 r1, fable N2.)
+    """
+    from phase_loop_runtime.convergence.broker.admission import AdmissionStoreIncompatible
+
+    assert issubclass(EvidenceStoreIncompatible, PermissionError)
+    assert issubclass(AdmissionStoreIncompatible, PermissionError)
+
+
 def test_a_store_this_runtime_CAN_read_is_unaffected(tmp_path):
     """The guard must not refuse anything it understands."""
     store = _store(tmp_path)

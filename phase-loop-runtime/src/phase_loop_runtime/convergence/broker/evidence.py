@@ -38,12 +38,18 @@ def _require_generation(root: Path, generation_lease) -> None:
         require_current_generation(root, generation_lease, strict=True)
 
 
-class EvidenceStoreIncompatible(RuntimeError):
-    """This runtime cannot read the evidence store; it refuses rather than guessing.
+class EvidenceStoreIncompatible(PermissionError):
+    """This runtime cannot read one ``evidence.jsonl`` record (agent-harness#789).
 
-    Mirrors `AdmissionStoreIncompatible` for the sibling store. Names the reader's own
-    version and path, because the actionable fact in agent-harness#789 was WHICH runtime
-    was reading, not which line failed. (agent-harness#789.)
+    Mirrors `AdmissionStoreIncompatible` for the sibling store, down to the BASE CLASS:
+    that docstring records `PermissionError` as load-bearing "so every fail-closed path
+    stays closed". A twin raising `RuntimeError` would not be caught by a handler written
+    to that convention — inconsequential today, but the two stores are read by the same
+    paths and divergence here is a trap for whoever writes that handler next.
+    (ah#834 r1, fable N2.)
+
+    Names the reader's own version and path, because the actionable fact in
+    agent-harness#789 was WHICH runtime was reading, not which line failed.
     """
 
     def __init__(
@@ -55,7 +61,7 @@ class EvidenceStoreIncompatible(RuntimeError):
         constructor: type,
         unknown_keys: tuple[str, ...],
         missing_keys: tuple[str, ...],
-        cause: TypeError,
+        cause: Exception,
     ) -> None:
         import phase_loop_runtime
 
@@ -129,11 +135,18 @@ class BrokerEvidenceStore:
         if self.path.exists():
             for index, line in enumerate(self.path.read_text(encoding="utf-8").splitlines(), start=1):
                 raw = json.loads(line)
-                raw["state"] = TerminalOutcomeState(raw["state"])
                 key = raw.get("idempotency_key")
+                # The STATE COERCION BELONGS INSIDE THE GUARD. It used to sit above the
+                # try, so only one of three drift shapes was typed: a newer writer adding
+                # an unknown TerminalOutcomeState VALUE still raised a bare ValueError,
+                # and a row missing `state` entirely raised KeyError. Those are the same
+                # forward-compatibility class as an added field — a new state value is at
+                # least as likely an evolution as a new key — and they were escaping the
+                # very guard written for it. (ah#834 r1, fable N1.)
                 try:
+                    raw["state"] = TerminalOutcomeState(raw["state"])
                     record = EvidenceRecord(**raw)
-                except TypeError as error:
+                except (TypeError, ValueError, KeyError) as error:
                     unknown, missing = _constructor_key_mismatch(EvidenceRecord, raw)
                     raise EvidenceStoreIncompatible(
                         self.path,
