@@ -719,3 +719,39 @@ def test_a_file_named_only_by_an_OUT_OF_SCOPE_record_does_not_seed_the_closure()
     entries = [_rec("P", "committed", "v2", _A), _rec("P", "completed", "v1", "plans/Z.md")]
     out = phase_status_disagreements({"P": "complete"}, entries, roadmap_slug="v2")
     assert out == [("P", "complete", "committed")], out
+
+
+def test_a_same_file_record_TAGGED_to_another_roadmap_does_not_settle():
+    """r4, fable: the file arm was letting r2's defect back in.
+
+    A record naming a DIFFERENT roadmap has already said where it belongs, and the right
+    response is to believe it — that is r2's whole finding. Admitting it on a shared
+    filename let a v1-tagged `completed` settle a v2 phase.
+
+    The arm exists for the record that makes NO claim: a legacy entry with
+    `roadmap_ref: null` cannot be attributed by frontmatter it does not have. Refusing to
+    guess a roadmap is right; declining to read an explicit one is not.
+    """
+    out = phase_status_disagreements(
+        {"P": "complete"},
+        [_rec("P", "committed", "v2", _A), _rec("P", "completed", "v1", _A)],
+        roadmap_slug="v2",
+    )
+    assert out == [("P", "complete", "committed")], out
+
+
+def test_branch_one_also_dedups_its_rows():
+    """r4, fable: only the in-flight branch had the dedup, so the done-vs-in-flight branch
+    could print one phase twice.
+
+    Two `completed` records for one phase against an `executing` snapshot emitted two
+    identical operator lines. Unreachable on today's data and absent from `origin/main`
+    too, but the asymmetry is arbitrary: the same phase should occupy one row in both
+    directions.
+    """
+    out = phase_status_disagreements(
+        {"FREEZE": "executing"},
+        [_rec("FREEZE", "completed", "v2", _A), _rec("FREEZE", "completed", "v2", _B)],
+        roadmap_slug="v2",
+    )
+    assert out == [("FREEZE", "executing", "completed")], out

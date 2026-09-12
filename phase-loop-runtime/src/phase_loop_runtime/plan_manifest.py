@@ -755,9 +755,26 @@ def _phase_attributable_records(entries, alias: str, in_scope) -> list:
     scoped_files = {
         getattr(e, "file", None) for e in own if in_scope(e, alias)
     } - {None}
+
+    def claims_a_roadmap(candidate) -> bool:
+        ref = getattr(candidate, "roadmap_ref", None)
+        return (getattr(ref, "slug", None) if ref else None) is not None
+
+    # THE FILE ARM ADMITS ONLY RECORDS THAT MAKE NO ROADMAP CLAIM.
+    #
+    # A record naming a DIFFERENT roadmap has already said where it belongs, and the
+    # right response is to believe it — that is r2's whole finding. Admitting it on a
+    # shared filename let a v1-tagged `completed` settle a v2 phase, i.e. r2's false
+    # negative leaking back in through the arm added for r3. (r4, fable.)
+    #
+    # The arm exists for the record that makes NO claim: a legacy entry with
+    # `roadmap_ref: null` cannot be attributed by frontmatter it does not have, and the
+    # plan file it names is then the strongest evidence available. Refusing to GUESS a
+    # roadmap is right; declining to read an explicit one is not.
     return [
         e for e in own
-        if in_scope(e, alias) or getattr(e, "file", None) in scoped_files
+        if in_scope(e, alias)
+        or (not claims_a_roadmap(e) and getattr(e, "file", None) in scoped_files)
     ]
 
 
@@ -814,7 +831,14 @@ def phase_status_disagreements(
         snap = snapshot_phases[alias]
         man = getattr(entry, "status", "")
         if man in _MANIFEST_DONE and snap in _SNAPSHOT_IN_FLIGHT:
-            out.append((alias, snap, man))
+            # Deduped like the other branch. Only the in-flight branch had this, so two
+            # `completed` records for one phase printed the same operator line twice.
+            # Unreachable on today's data, and absent from both branches on origin/main —
+            # but the asymmetry is arbitrary, and one phase should occupy one row in
+            # either direction. (r4, fable.)
+            row = (alias, snap, man)
+            if row not in out:
+                out.append(row)
             continue
         if man in _MANIFEST_IN_FLIGHT and snap in _SNAPSHOT_DONE:
             # RECONCILE THE PLAN FIRST, then compare stores.
