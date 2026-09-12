@@ -196,6 +196,10 @@ MUTANTS = [
   "                if not _raw_ref_identity_is_readable(row):",
   "                if True:",
   "test_EVERY_census_identity_field_is_lost_evidence_when_unreadable"),
+ ("M42 the ref rule stops mirroring _roadmap_claim's resolution order", P,
+  '    if isinstance(slug, str) and slug.strip() not in ("", "None"):\n        return True',
+  "    if False:\n        return True",
+  "test_an_unreadable_ref_FILE_does_not_destroy_a_row_whose_SLUG_is_readable"),
  # --- the sixth surface: entry `type` (r9 fable F2) ---------------------------
  ("M27 a type:detailed row speaks for a phase again", P,
   '        and getattr(e, "type", None) == "phase"',

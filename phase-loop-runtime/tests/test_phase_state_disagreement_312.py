@@ -1749,6 +1749,16 @@ def test_EVERY_census_identity_field_is_lost_evidence_when_unreadable(
             ref = dict(out.get("roadmap_ref") or
                        {"slug": "v1", "file": "specs/v1.md", "type": "phase", "status": "imported"})
             ref[leaf] = unreadable
+            if leaf == "file":
+                # CORRUPT THE FIELD IN THE CONTEXT WHERE IT IS ACTUALLY USED.
+                # `_roadmap_claim` reads the slug FIRST and only falls back to
+                # `PurePosixPath(ref.file).stem` when the slug resolves to nothing — so with
+                # a readable slug present, `ref.file` feeds no census and corrupting it
+                # loses nothing. Testing it there would assert lost evidence that was never
+                # evidence. Dropping the slug makes the file load-bearing, which is the only
+                # configuration in which this field is part of the identity at all.
+                # (ah#832 r14, codex.)
+                ref.pop("slug", None)
             out["roadmap_ref"] = ref
         else:
             out[field] = unreadable
@@ -1970,3 +1980,36 @@ def test_the_status_PROSE_says_INCOMPLETE_even_with_nothing_else_to_print(tmp_pa
     lines = render._manifest_disagreement_lines(_Snap())
     assert lines, "an unreadable row must not leave the prose surface silent"
     assert any("INCOMPLETE" in line for line in lines), lines
+
+
+@pytest.mark.parametrize("bad_file", [123, ["specs/v2.md"], {"a": 1}])
+def test_an_unreadable_ref_FILE_does_not_destroy_a_row_whose_SLUG_is_readable(tmp_path, bad_file):
+    """codex r14: only the field the claim is DERIVED from can manufacture it.
+
+    `_roadmap_claim` reads the slug first and falls back to `PurePosixPath(ref.file).stem`
+    only when the slug resolves to nothing. So with a readable `"slug": "v2"`, `ref.file`
+    is never consulted — it cannot manufacture the claim, it feeds no census, and nothing
+    is lost by its being unreadable.
+
+    Measured before this fix: such a row was DELETED from `entries` and the flagship
+    ah#312 disagreement went silent, with only the generic INCOMPLETE note printing. The
+    exclusion was correct in kind (r13) and still too wide in degree.
+
+    This is the third narrowing of the same rule, and each one was found by measuring what
+    the claim actually derives from rather than by reasoning about which field "looks"
+    like identity.
+    """
+    from phase_loop_runtime.plan_manifest import parseable_plan_entries
+
+    _write_manifest(tmp_path, [{
+        "slug": "p1", "file": "plans/phase-plan-A.md", "type": "phase", "status": "completed",
+        "created_at": "t", "updated_at": "t", "owner_skill": "x", "phase_alias": "P",
+        "roadmap_ref": {"slug": "v2", "file": bad_file, "type": "phase", "status": "imported"},
+    }])
+    parsed = parseable_plan_entries(tmp_path)
+    assert len(parsed.entries) == 1, "a readable slug means the claim is not manufactured"
+    assert parsed.skipped == 0, "ref.file feeds no census when the slug resolves"
+    assert phase_status_disagreements(
+        {"P": "executing"}, parsed.entries, roadmap_slug="v2",
+        attribution_evidence_complete=parsed.skipped == 0,
+    ) == [("P", "executing", "completed")]

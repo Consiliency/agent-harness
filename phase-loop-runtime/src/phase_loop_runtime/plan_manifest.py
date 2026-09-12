@@ -1023,11 +1023,25 @@ def _raw_ref_identity_is_readable(row) -> bool:
         return True
     if not isinstance(ref, dict):
         return False
-    for key in ("slug", "file"):
-        value = ref.get(key)
-        if value is not None and not isinstance(value, str):
-            return False
-    return True
+    slug = ref.get("slug")
+    if slug is not None and not isinstance(slug, str):
+        return False
+    # MIRROR `_roadmap_claim`'s OWN RESOLUTION ORDER. It reads the slug first and only
+    # falls back to `PurePosixPath(ref.file).stem` when the slug resolves to nothing. So
+    # when the slug DOES resolve, `ref.file` is never consulted and cannot manufacture
+    # anything — destroying the row for it was still over-broad. Measured: a `completed`
+    # row with slug `"v2"` and `"file": 123` had its claim correctly read as `v2`, and was
+    # deleted anyway, suppressing the flagship ah#312 disagreement.
+    #
+    # Only the field the claim is actually DERIVED from can manufacture it, and this
+    # predicate now asks exactly that question. It still counts as lost evidence either
+    # way — `roadmap_ref.file` is a census identity — but lost evidence and a destroyed
+    # row are different remedies, which is the distinction r13 drew and this completes.
+    # (ah#832 r14, codex.)
+    if isinstance(slug, str) and slug.strip() not in ("", "None"):
+        return True
+    name = ref.get("file")
+    return name is None or isinstance(name, str)
 
 
 def _roadmap_claim(candidate) -> str | None:
