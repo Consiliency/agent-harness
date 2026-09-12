@@ -423,3 +423,66 @@ def test_with_no_roadmap_slug_every_entry_still_participates():
         [_scoped("P", "committed", "v2"), _scoped("P", "imported", "v1")],
     )
     assert out == [("P", "complete", "committed/imported")]
+
+
+def test_the_shape_that_actually_occurs_in_this_repos_manifest():
+    """The live case, not a synthetic one: `plans/manifest.json` really carries this.
+
+    At the time this was written, INTEG is `committed` under `phase-plans-v10` AND
+    `completed` under `phase-plans-convergence-v1` — different roadmaps, different plan
+    files. Before the sibling scan was scoped, the convergence-v1 record silenced INTEG's
+    real v10 disagreement. RUNTIME survived only because its sibling happened to be
+    `orphaned` rather than `completed`, which is luck, not a guard.
+
+    Reproduced from the real records by a board seat; kept here as a fixture so the shape
+    is pinned even after the manifest moves on. (ah#832 r2, fable.)
+    """
+    integ_v10 = _scoped("INTEG", "committed", "phase-plans-v10")
+    integ_convergence = _scoped("INTEG", "completed", "phase-plans-convergence-v1")
+    runtime_v10 = _scoped("RUNTIME", "committed", "phase-plans-v10")
+    runtime_convergence = _scoped("RUNTIME", "orphaned", "phase-plans-convergence-v1")
+    snapshot = {"INTEG": "complete", "RUNTIME": "complete"}
+    out = phase_status_disagreements(
+        snapshot,
+        [integ_v10, integ_convergence, runtime_v10, runtime_convergence],
+        roadmap_slug="phase-plans-v10",
+    )
+    assert sorted(out) == [
+        ("INTEG", "complete", "committed"),
+        ("RUNTIME", "complete", "committed"),
+    ], out
+
+
+def test_a_completed_entry_is_an_EQUIVALENT_mutant_for_the_continue(tmp_path=None):
+    """Recorded so "no survivors" stays honest.
+
+    Deleting the `continue` after the done-vs-in-flight branch survives every test, and
+    always will: `completed` is not in `frozenset(TRANSITIONS)`, so the second branch is
+    unreachable for an entry that took the first. An equivalent mutant, not a gap — and
+    manufacturing a test for it would be the vacuity this file keeps guarding against.
+    (ah#832 r2, fable.)
+    """
+    assert "completed" not in TRANSITIONS
+    assert _MANIFEST_DONE.isdisjoint(_MANIFEST_IN_FLIGHT)
+
+
+def test_the_rendered_header_counts_PHASES_not_rows(monkeypatch):
+    """The operator-facing count was unpinned: reverting it left the suite green.
+
+    One phase can contribute more than one contradicting row, so counting rows printed
+    "14 phase(s)" for 9 phases — a wrong number on the surface an operator reads to
+    decide what to do next. The fix was correct and load-bearing, and nothing asserted
+    it. (ah#832 r2, fable.)
+    """
+    from phase_loop_runtime import render
+
+    clashes = [
+        ("ADAPTERS", "complete", "committed"),
+        ("ADAPTERS", "complete", "imported"),
+        ("UI", "complete", "committed"),
+    ]
+    monkeypatch.setattr(render, "_manifest_disagreements", lambda snapshot: clashes)
+    lines = render._manifest_disagreement_lines(object())
+    assert "2 phase(s) differ" in lines[0], lines[0]
+    assert "3 phase(s)" not in lines[0]
+    assert len(lines) == 1 + len(clashes)
