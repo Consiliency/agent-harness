@@ -300,7 +300,12 @@ def parseable_plan_entries(repo: Path) -> ParseablePlanRows:
             # a fact only the loader can still see. (ah#832 r11, fable B1 + codex.)
             if not _raw_row_identity_is_readable(row):
                 skipped += 1
-                entries.pop()   # it may not manufacture a claim from a coercion
+                if not _raw_ref_identity_is_readable(row):
+                    # ONLY a ref-identity failure justifies destroying the row: it is the
+                    # one that can MANUFACTURE a direct claim out of a coercion. The other
+                    # identity fields merely remove the row from a census, and counting it
+                    # as lost evidence is the whole remedy there. (ah#832 r13, fable.)
+                    entries.pop()
     return ParseablePlanRows(entries=tuple(entries), skipped=skipped)
 
 
@@ -994,7 +999,26 @@ def _raw_row_identity_is_readable(row) -> bool:
     # be read may not manufacture a claim out of a coercion. `roadmap_ref: null` and a
     # ref that readably names nothing are untouched; they are the legacy shapes r7
     # exists to serve. (ah#832 r12, codex + fable.)
-    ref = row.get("roadmap_ref")
+    return _raw_ref_identity_is_readable(row)
+
+
+def _raw_ref_identity_is_readable(row) -> bool:
+    """Can this row's ROADMAP CLAIM be read, or could it be manufactured by a coercion?
+
+    Split from the identity rule because only this half justifies DESTROYING the row.
+    `_ref_from_json` coerces with `str(...)`, so an unreadable `slug` can become a string
+    that happens to equal the active roadmap's stem — a claim the manifest never made, and
+    one `in_scope` grants directly without consulting the incomplete-evidence flag. Such a
+    row must not reach the detector at all.
+
+    Every OTHER unreadable identity field (`type`, `phase_alias`, `file`) only removes the
+    row from a census. Counting it as lost evidence is the whole remedy there, and
+    excluding it as well destroys a direct claim no coercion invented: measured, a row with
+    a readable `roadmap_ref.slug` of `v2` and an unreadable `file` was dropped entirely and
+    went SILENT on the flagship ah#312 shape, where it should still report while its file
+    claim counts as lost. (ah#832 r13, fable.)
+    """
+    ref = row.get("roadmap_ref") if isinstance(row, dict) else None
     if ref is None:
         return True
     if not isinstance(ref, dict):

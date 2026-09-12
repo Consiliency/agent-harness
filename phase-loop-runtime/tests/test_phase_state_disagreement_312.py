@@ -1773,7 +1773,20 @@ def test_EVERY_census_identity_field_is_lost_evidence_when_unreadable(
         # the branch re-asserted the foreign case under a second name and swept nothing.
         rows = [corrupt(row("completed", "v2"))]
         control = [row("completed", "v2")]
-        snapshot, expected = "executing", []
+        snapshot = "executing"
+        # WHAT THE SUBJECT SHOULD DO DEPENDS ON WHICH IDENTITY IS UNREADABLE, and saying
+        # so here is the behavioural half of r13's criterion:
+        #
+        #   roadmap_ref.*  the claim could be MANUFACTURED by the `str()` coercion, and
+        #                  `in_scope` grants a direct claim without consulting the
+        #                  evidence flag — so the row is destroyed and cannot report.
+        #   phase_alias    it cannot be attributed to any phase; nothing to report.
+        #   type           `own` admits only `type == "phase"`, so it cannot speak.
+        #   file           ITS CLAIM IS STILL READABLE. Only its FILE-census contribution
+        #                  is lost, so it must STILL REPORT while counting as lost
+        #                  evidence. Destroying it here was the r13 over-reach: a direct
+        #                  claim no coercion invented was being thrown away.
+        expected = [("P", "executing", "completed")] if field == "file" else []
 
     def detect(manifest_rows):
         _write_manifest(tmp_path, manifest_rows)
@@ -1902,6 +1915,18 @@ def test_this_REPOSITORYS_OWN_manifest_is_not_marked_incomplete():
     This repository's own `plans/manifest.json` is the adversarial case available for free:
     58 rows, 21 of them `type: "detailed"`, 6 legacy `roadmap_ref: null`. If the rule ever
     starts refusing real shipped data, this fails. (ah#832 r12, fable probe 4.)
+
+    THE GUARD'S CLAIM IS SCOPED TO THIS REPO, and that matters more than it reads. The r13
+    seat ran the rule over 68 real `plans/manifest.json` files on its host: this one is
+    clean, and ONE other is not — `pmcp`'s `phase-plan-v12-UPDPATH` carries
+    `"type": "phase"` with `"phase_alias": null`, so a shipped writer demonstrably emits
+    that shape. The refusal there is SOUND (a readable alias would have incremented
+    `_alias_counts`, so losing it can flip an alias from ambiguous to unambiguous — r9's
+    false-positive class) and its effect on that repo is bounded: the report is unchanged,
+    because that row is its only legacy null-ref phase row. But on a repo that DOES carry a
+    legacy population the cost is real — injecting that exact shape into this manifest takes
+    the report from 9 phases to 8. Recorded so nobody reads a green test here as "the rule
+    refuses nothing real". (ah#832 r13, fable NB1.)
     """
     from pathlib import Path
 

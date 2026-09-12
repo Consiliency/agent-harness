@@ -155,7 +155,7 @@ MUTANTS = [
   "test_a_skipped_row_that_MIGHT_have_been_a_phase_row_still_disarms"),
  # --- a row that PARSES but is unusable is lost evidence too (r10 codex) ------
  ("M32 a parsed-but-unusable row no longer counts as lost evidence", P,
-  '            if not _raw_row_identity_is_readable(row):\n                skipped += 1\n                entries.pop()',
+  '            if not _raw_row_identity_is_readable(row):\n                skipped += 1\n                if not _raw_ref_identity_is_readable(row):\n                    # ONLY a ref-identity failure justifies destroying the row: it is the\n                    # one that can MANUFACTURE a direct claim out of a coercion. The other\n                    # identity fields merely remove the row from a census, and counting it\n                    # as lost evidence is the whole remedy there. (ah#832 r13, fable.)\n                    entries.pop()',
   '            pass',
   "test_an_UNUSABLE_alias_counts_as_incomplete_evidence"),
  # --- ONE field-general lost-evidence rule (r11 fable B1 + codex) -------------
@@ -181,17 +181,21 @@ MUTANTS = [
   "test_the_status_surface_SAYS_the_reconciliation_is_incomplete"),
  # --- the NESTED identity r11's field table missed (r12 codex + fable) --------
  ("M38 the roadmap ref's own identity is no longer checked", P,
-  '    ref = row.get("roadmap_ref")\n    if ref is None:\n        return True',
-  "    return True\n    ref = row.get(\"roadmap_ref\")\n    if ref is None:\n        return True",
+  '    return _raw_ref_identity_is_readable(row)',
+  '    return True',
   "test_EVERY_census_identity_field_is_lost_evidence_when_unreadable"),
  ("M39 an unreadable identity may still manufacture a claim", P,
-  "                entries.pop()   # it may not manufacture a claim from a coercion",
-  "                pass",
+  '                if not _raw_ref_identity_is_readable(row):',
+  '                if False:',
   "test_an_unreadable_ref_may_not_MANUFACTURE_a_claim_on_the_active_roadmap"),
  ("M40 the prose surface goes silent again when there is no clash", R,
   "        if not complete:\n            return [_INCOMPLETE_NOTE]\n        return []",
   "        return []",
   "test_the_status_PROSE_says_INCOMPLETE_even_with_nothing_else_to_print"),
+ ("M41 the exclusion widens back to EVERY unreadable identity", P,
+  "                if not _raw_ref_identity_is_readable(row):",
+  "                if True:",
+  "test_EVERY_census_identity_field_is_lost_evidence_when_unreadable"),
  # --- the sixth surface: entry `type` (r9 fable F2) ---------------------------
  ("M27 a type:detailed row speaks for a phase again", P,
   '        and getattr(e, "type", None) == "phase"',
@@ -210,7 +214,7 @@ MUTANTS = [
 # `plan_file(e) is not None` clause — the r5 guard. r11's field-general lost-evidence rule
 # subsumes it: a row whose `file` is not a readable string is now counted as lost evidence,
 # which disarms both guessing arms, so the file arm is never consulted for such a row in
-# the first place. Measured: the mutant survives all 139 tests at this head, where it was
+# the first place. Measured: the mutant survived all 139 tests when recorded (r11); re-run and still survives at 184, where it was
 # CAUGHT at r10.
 #
 # Kept, for the same reason equivalent #2 is kept: the subsumption depends on a rule two
@@ -255,7 +259,7 @@ MUTANTS = [
 # Step 2 depends on how ambiguity is COUNTED, two hundred lines away. Count it per
 # roadmap instead and the subsumption silently fails, so the clause is kept as the local
 # statement of the r2 rule rather than deleted on the strength of this argument.
-# Measured: survives all 71 tests at this head. (ah#832 r7.)
+# Measured: survived all 71 tests when recorded (r7); re-run and still survives at 184. (ah#832 r7.)
 #
 # RECORDED EQUIVALENT #1, deliberately not in the matrix above: turning the
 # `if not attributable: continue` guard into `pass`. With no attributable record the
