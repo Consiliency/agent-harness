@@ -6101,7 +6101,7 @@
       "acceptance_criteria_count": 4,
       "created_at": "2026-09-13T23:34:51.639173+00:00",
       "file": "plans/detailed-verification-test-dependencies-428-20260913.md",
-      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260913T233451Z-verification-test-dependencies-428.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260913T235651Z-verification-test-dependencies-428-r2.md",
       "if_gates_produced": [],
       "input_main": "c6b9924b414769ed45bdc3ea47a8d66ec1fe52c7",
       "lanes": [],
@@ -6120,14 +6120,25 @@
       "owner_skill": "codex-plan-detailed",
       "phase_accepted": false,
       "phase_alias": null,
+      "plan_revision": {
+        "plan_approval": false,
+        "prior_private_archive": "ff6cff6509d7fdf78fa125c968af780e194fa7c4",
+        "prior_review_head": "f54e9670573980de1390e2721a139813bd5d7fbd",
+        "prior_review_verdicts": {
+          "claude": "PARTIALLY AGREE",
+          "codex": "PARTIALLY AGREE",
+          "gemini": "PARTIALLY AGREE",
+          "grok": "PARTIALLY AGREE"
+        }
+      },
       "publication_status": "held_by_agent-harness#827",
-      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-detailed/reflections/108ba407/codex-v10-verification-environment-428-20260913/20260913T233451Z-verification-test-dependencies-428.md",
+      "reflection_ref": null,
       "roadmap_ref": null,
       "slug": "verification-test-dependencies-428-20260913",
       "status": "committed",
       "task_summary": "Declare native test build dependencies and visual launch profile (agent-harness#428)",
       "type": "detailed",
-      "updated_at": "2026-09-13T23:34:51.639173+00:00"
+      "updated_at": "2026-09-13T23:56:51.787830+00:00"
     }
   ],
   "schema_version": 1

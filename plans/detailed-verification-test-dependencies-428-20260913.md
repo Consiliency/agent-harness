@@ -24,12 +24,20 @@ repair. They are not formal plan approval and their other recommendations differ
 
 ### `phase-loop-runtime/pyproject.toml` (modify)
 
-- Extend `[dependency-groups].test` with `build==1.5.1` and `setuptools>=68`.
+- Extend `[dependency-groups].test` with `build==1.5.1`, `setuptools>=70.1` and
+  `pip`. The unchanged packaging helper invokes `sys.executable -m pip` for
+  both direct and sdist-derived wheels. The test-only setuptools floor supplies
+  `bdist_wheel` for its `--no-isolation` builds without another undeclared tool;
+  this command was incorporated in setuptools 70.1
+  ([upstream history](https://setuptools.pypa.io/en/latest/history.html#v70-1-0)).
   Keep `pytest>=8,<9` and the existing `[project.optional-dependencies].visual`
   requirement unchanged. Select visual explicitly at launch instead of duplicating
   its requirement or relying on self-referential group behavior.
-- Preserve the complete `[project]` and build-system tables, runtime dependencies,
-  package metadata, Python floor, scripts and pytest configuration.
+- Correct the adjacent visual-extra comment: missing Pillow blocks in opt-in
+  blocking mode; warning mode intentionally stays silent. Preserve that behavior.
+- Preserve the parsed `[project]` and build-system tables, runtime dependencies,
+  Python floor, scripts and pytest configuration. The README change below does
+  change the built package's long description, as intended.
 
 ### `phase-loop-runtime/uv.lock` (modify)
 
@@ -42,11 +50,12 @@ repair. They are not formal plan approval and their other recommendations differ
 
 - Add a short contributor test-environment example, run from the repository root:
   `uv sync --project phase-loop-runtime --group test --extra visual --python 3.14 --locked`.
-  Follow it with `phase-loop-runtime/.venv/bin/python -m pytest` and the explicit
-  target files. Explain that the native repository-wide interpreter guard currently
+  Follow it with `PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests
+  phase-loop-runtime/.venv/bin/python -m pytest` and the explicit target files.
+  Explain that the native repository-wide interpreter guard currently
   includes the dagger subproject's Python 3.14 floor; this is separate from the
   runtime package's Python 3.10 minimum and CI's interpreter matrix.
-- State that the group supplies test build tools and the extra enables image
+- State that the group supplies test build/install tools, including pip, and the extra enables image
   decoding. This does not establish complete CI equivalence, visual behavior
   without Pillow, full-suite acceptance or production readiness.
 
@@ -55,6 +64,9 @@ repair. They are not formal plan approval and their other recommendations differ
 Register this plan and lifecycle through the native manifest helper; preserve
 all prior manifest objects. Ignored handoffs, reflections, exact inputs, native
 artifacts and every failed/successful session remain in private evidence custody.
+Set this plan's tracked `reflection_ref` to null; the real reflection location
+stays in ignored native planning records and encrypted recovery. Preserve the
+original unpushed plan commit and its review evidence privately.
 No frozen test, workflow, generic runner, interpreter guard, privacy rule, public
 signature, serialized field, seal or protocol vocabulary changes in this scope.
 
@@ -71,14 +83,16 @@ change, not required to correct the native project's missing declarations.
    historical review or president ruling transfers.
 2. Record the clean starting tree, uv version, exact manifest/lock/test hashes
    and native coordinator import identity. In a new owned venv on unchanged
-   main, run the declared locked sync with the existing visual extra, then record
+   main, run the declared locked sync with the existing visual extra and require
+   exit zero. Record missing build/setuptools/pip with importlib discovery, then record
    native RED for the packaging node: the missing build/setuptools prerequisite
    assertion must fail. The visual node is already a positive control with the
    explicit extra and must not be claimed as a new RED falsifier. Preserve the
    earlier no-extra failure separately. No existing test needs alteration.
 3. Apply only the manifest, lock and README changes. Use the native detailed-plan
-   executor's lifecycle and `verification_evidence.run_verification` for GREEN.
-   Explicitly provide the reviewed project-scoped sync as `env_refresh`; the
+   executor's lifecycle and call `verification_evidence.run_verification` directly
+   for GREEN. Explicitly provide the reviewed project-scoped sync argv as
+   `env_refresh` and the absolute lexical venv path as `python_pin`; the
    generic changed-manifest installer currently infers a root-level bare uv sync
    and must not be substituted or modified by this plan.
 4. Obtain fresh four-vendor source review of the exact candidate and its evidence.
@@ -95,12 +109,29 @@ temporary fixtures. Never reuse a failed run directory or clear session files.
 Provision before resolving the explicit interpreter pin because native
 `run_verification` resolves that pin before executing `env_refresh`. Record this
 initial locked sync and its exit status; then use the identical command as the
-explicit native refresh. Both operate only on this owned project environment:
+explicit native refresh. In this isolated native caller, bind
+`UV_PROJECT_ENVIRONMENT` to the absolute lexical path of this owned worktree's
+`phase-loop-runtime/.venv` for both calls. The core control uses its own different
+environment selector. Neither sync may target an inherited or shared environment.
+
+RED on unchanged input uses this successful sync and then the packaging node
+alone. Before that test, an isolated `importlib.util.find_spec` inspection must
+record build, setuptools and pip as absent. Do not run or claim a successful
+post-repair import probe in this stage:
 
 ```sh
 uv sync --project phase-loop-runtime --group test --extra visual --python 3.14 --locked
-uv lock --project phase-loop-runtime --check
-phase-loop-runtime/.venv/bin/python -c 'import build, setuptools, PIL; import sys; assert sys.version_info[:2] == (3, 14); assert sys.prefix != sys.base_prefix'
+PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests phase-loop-runtime/.venv/bin/python -m pytest -q phase-loop-runtime/tests/test_outside_agent_contract_drift.py::test_sdist_and_wheel_include_only_digest_enumerated_contract_mirror
+```
+
+GREEN repeats the same successful locked sync after the reviewed manifest/lock
+repair. It then runs the following import/prefix check and the complete native
+suite. Record exact locked and installed versions, including setuptools, and
+require them to agree; locked sync already rejects stale lockfiles, so a separate
+lock --check adds no independent falsifier.
+
+```sh
+phase-loop-runtime/.venv/bin/python -I -c 'import build, setuptools, PIL, pip; import sys; from importlib.metadata import version; from packaging.version import Version; assert sys.version_info[:2] == (3, 14); assert sys.prefix != sys.base_prefix; assert Version(version("setuptools")) >= Version("70.1")'
 ```
 
 Use the absolute lexical path of `phase-loop-runtime/.venv/bin/python` as
@@ -109,8 +140,11 @@ known bare-python shim venv defect is preserved separately, not hidden by a
 claim that it passed. No PATH stripping or guard change is needed. Set
 `PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests` and `TMPDIR=/tmp`
 in the test process. Record actual sys.executable/sys.prefix privately and verify
-the imported runtime source matches the candidate. Native privacy redaction stays
-enabled in public-shaped diagnostics.
+the imported runtime source matches the candidate. Set cwd to this worktree root
+and verify the suite's relative executable names exactly the lexical absolute
+pin. Use repo-relative JUnit output paths. The retained native redaction probe
+accepted this env-assignment argv and rejected a private-path control; no privacy
+exception is needed. Native privacy redaction stays enabled in public-shaped diagnostics.
 
 ```yaml
 automation:
@@ -134,8 +168,12 @@ expensive suite rerun is required for this manifest-only repair; the prior
 
 Use a second fresh owned control venv selected by `UV_PROJECT_ENVIRONMENT` and
 the same Python 3.14 pin for `uv sync --project phase-loop-runtime --no-default-groups
---no-group test --no-extra visual --locked`. Require importlib discovery to find
-neither build nor PIL in that core environment, proving opt-in dependency scope.
+--no-group test --no-extra visual --python 3.14 --locked`. Require sync exit zero,
+then execute that control venv's Python with `-I`: positively import
+`phase_loop_runtime`, verify its selected venv prefix, and require importlib
+discovery to find none of build, setuptools, pip or PIL. Record the installed
+distributions, including setuptools absence. An empty/failed sync or imports
+from the test environment cannot satisfy this control. This proves opt-in scope.
 Do not use the test venv as this control or let sync prune another agent's env.
 Compare the parsed original and candidate project/build-system tables and the
 complete old-test hash inventory. Validate native artifact seals and statuses,
@@ -149,9 +187,11 @@ check `git diff --check`, and inspect the exact lock delta before source review.
 - [ ] The effective native suite above passes both complete affected files;
   JUnit and native artifact validation agree and every existing test hash is
   unchanged. This does not accept the remaining agent-harness#428 failures.
-- [ ] The separate core-only sync/import control proves build and PIL remain
+- [ ] The separate successful core-only sync and positive runtime import prove
+  build, setuptools, pip and PIL remain
   opt-in; project/build-system table comparison and lock-delta inspection show
-  no runtime dependency, metadata, Python-floor or unrelated upgrade changes.
+  no runtime dependency, project/build-system table, Python-floor or unrelated
+  upgrade changes. The README long-description and adjacent comment changes are explicit.
 - [ ] Fresh plan and source reviews bind their respective exact candidates and
   include non-author ablations; all session evidence is archived and independently
   restored before eligible cleanup. No publication or V10 acceptance is inferred.
