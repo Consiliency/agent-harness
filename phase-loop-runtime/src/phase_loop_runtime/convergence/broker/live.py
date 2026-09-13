@@ -797,9 +797,13 @@ UNDECLARED_LEASE = object()
 
 
 def require_current_generation(
-    store_root: Path, lease: "WriterGenerationLease | None" = None, *, strict: bool = True
-) -> None:
-    """Revalidate the writer generation INSIDE a store lock, before an append.
+    store_root: Path, lease: "WriterGenerationLease | None" = None, *, strict: bool = True,
+    effect=None,
+):
+    """Validate before an append, or hold the latch across a synchronous effect.
+
+    Validation-only callers hold their store lock. Effect callbacks must not
+    acquire store locks, append evidence, release leases or wait for drain.
 
     SL1-SOL-02/07: a MISSING latch is only legal where no activation authority
     exists.  If the namespace carries an authenticated receipt, an absent latch
@@ -815,9 +819,11 @@ def require_current_generation(
                 f"{store_root} carries an authenticated partition receipt but no writer "
                 "generation latch; refusing to append without an activation authority"
             )
-        return
-    latch.validate_lease(lease, strict=strict)
-    _require_active_generation_root(store_root)
+        return effect() if effect is not None else None
+    with latch.exclusive() if effect is not None else contextlib.nullcontext():
+        latch.validate_lease(lease, strict=strict)
+        _require_active_generation_root(store_root)
+        return effect() if effect is not None else None
 
 
 def _require_active_generation_root(root: Path) -> None:

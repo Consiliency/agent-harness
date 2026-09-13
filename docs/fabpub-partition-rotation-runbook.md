@@ -263,8 +263,9 @@ liveness token (Consiliency/agent-harness#820). The ceremony counts files, so an
 orphan blocks the drain exactly like a live writer.
 
 **No check can prove a lease is orphaned, and the scans below are not
-jointly complete either.** `acquire` writes a JSON file and returns: it takes no
-`flock`, records no pid, and need not keep a descriptor open. A broker embedded
+jointly complete either.** `acquire` takes the latch's exclusive `flock` while
+writing its JSON file, then releases that lock before returning. The lease file
+records no pid and holds no descriptor for its lifetime. A broker embedded
 in a process whose argv names neither `phase-loop` nor `run-train`, whose cwd is
 outside the worktree, and which holds no open descriptor under the namespace,
 escapes **all three** scans at once; a detached child reparents to init and
@@ -322,13 +323,50 @@ generation silently: its writes through the broker API are fenced by the
 `DRAINING` latch and by the successor's generation nonce after the flip, and any
 change to the predecessor's digested bytes between the attestation and the drain
 refuses the ceremony fail-closed (`the predecessor store changed between
-attestation and drain; re-attest over the current bytes`). The failure mode is a
-refused ceremony or a fenced writer, not a silent divergence. A routing client
+attestation and drain; re-attest over the current bytes`). Those checks fence
+store writes; they do not establish provider-child custody or cancellation.
+A routing client
 from `build_routing_broker_client()` that a surviving holder built before the
 flip refuses every later request with `WriterGenerationBlocked` (`this broker
 client is bound to retired partition generation …`) before it reads or writes
 either generation's store. It never rebinds itself, so restart that process
 (agent-harness#1315).
+
+The bounded synchronous repair for Consiliency/agent-harness#820 holds the
+repository-common latch across complete generation validation and each existing
+`git push` or `gh pr create` call, in separate sections. With a resolved namespace
+and valid lease, protocol-mediated release or drain cannot pass either running
+call. Lease files must be mutated through that latch protocol; directly deleting
+a file during a call does not obey this exclusion. Validation-only store callers
+retain their existing lock duration. Readback and local probes stay outside the
+provider sections. Unactivated compatibility paths remain unfenced, and the
+malformed-routing admission gap in Consiliency/agent-harness#833 remains open.
+That undeclared-resolution bypass applies to PR creation as well as push.
+
+These subprocess calls have no timeout. A hung call can indefinitely block
+same-namespace appends, admissions, lease operations and rotation. Provider
+children, including git hooks or gh extensions, must not reenter the namespace
+stores or latch while the parent waits: that dependency can deadlock. This
+repair adds no timeout, process-reaper or operational recovery policy.
+
+A drain between the two sections can leave a pushed branch without a new PR.
+The second fence then refuses creation. The direct adapter can raise; if the
+BrokerService's terminal append is also refused under DRAINING, durable in-flight
+evidence and its unsealed owner remain. A fence refusal before even the first
+effect still receives conservative permanent ambiguous classification where the
+store permits recording it. Under DRAINING or a revoked shared lease, a refused
+terminal append propagates `WriterGenerationBlocked`; the human-publication route
+currently maps that post-entry refusal to `repair_fabpub_authority`. This existing
+misroute is tracked in agent-harness#1628; changing it is separate work.
+
+Parent death proves neither cancellation nor lock release. An exec'd provider
+child does not inherit Python's non-inheritable lock descriptor and may outlive
+its parent after the lock disappears; a fork-only descendant can retain it.
+Neither this fix nor an empty process scan establishes ownership of survivors.
+The September 10 boot and unchanged legacy lease timestamps also do not exclude
+a newer process adopting persisted v1 handles. The existing recovery prerequisites
+remain unresolved; this synchronous guarantee authorizes no lease cleanup,
+rotation, risk acceptance or reboot.
 
 ## 7. Execute — STATE CHANGE, needs go
 

@@ -205,12 +205,12 @@ class GitHubBrokerAdapter:
         self.generation_lease = generation_lease
         self._generation_root = None
 
-    def _revalidate_generation_before_effect(self) -> None:
-        """Fence direct adapter entry immediately before its first mutation."""
+    def _revalidate_generation_before_effect(self, *, effect=None):
+        """Validate entry or fence one synchronous mutation with its generation."""
         from .live import fabpub_capability_active, repository_broker_namespace, require_current_generation
 
         if not fabpub_capability_active():
-            return
+            return effect() if effect is not None else None
         root = self._generation_root
         if root is None:
             try:
@@ -221,12 +221,12 @@ class GitHubBrokerAdapter:
                 # generation namespace to mutate; a declared missing lease,
                 # however, remains a fail-closed real-repository error.
                 if self.generation_lease is _UNDECLARED_GENERATION:
-                    return
+                    return effect() if effect is not None else None
                 raise
             self._generation_root = root
         if self.generation_lease is _UNDECLARED_GENERATION:
             raise PermissionError("legacy_writer_after_fabpub_activation")
-        require_current_generation(root, self.generation_lease, strict=True)
+        return require_current_generation(root, self.generation_lease, strict=True, effect=effect)
 
     def _acquire_service_generation_lease(self, store_root: Path):
         """Bridge an admitted BrokerService compatibility call without leaking a lease."""
@@ -471,8 +471,10 @@ class GitHubBrokerAdapter:
         # push (concurrent writer in the same workspace); pinning the source side means the
         # push can only ever publish the validated commit, never whatever the ref points to
         # by the time this runs.
-        self._revalidate_generation_before_effect()
-        pushed = self.run(["git", "-C", str(self.repo_path), "push", origin_url, f"{request.head_sha}:{ref}"], capture_output=True, text=True)
+        pushed = self._revalidate_generation_before_effect(effect=lambda: self.run(
+            ["git", "-C", str(self.repo_path), "push", origin_url, f"{request.head_sha}:{ref}"],
+            capture_output=True, text=True,
+        ))
         if pushed.returncode: return self._ambiguous(request, "push-unconfirmed")
         # `gh pr create` REQUIRES --title (+ --body) when non-interactive; the bare
         # `--draft`/`--fill` form aborts headless ("must provide --title and --body").
@@ -486,7 +488,9 @@ class GitHubBrokerAdapter:
         title = self._output("log", "-1", "--format=%s") or request.branch
         args = ["gh", "pr", "create", "--repo", origin_repo, "--head", request.branch, "--base", request.base, "--title", title, "--body", request.pr_body or title]
         if request.draft: args.append("--draft")
-        created = self.run(args, cwd=self.repo_path, capture_output=True, text=True)
+        created = self._revalidate_generation_before_effect(effect=lambda: self.run(
+            args, cwd=self.repo_path, capture_output=True, text=True,
+        ))
         # An exact branch may already have an open PR (for example after a prior
         # process pushed and created it but died before recording terminal evidence).
         # `gh pr create` reports that condition as a non-zero exit. Reconcile only
