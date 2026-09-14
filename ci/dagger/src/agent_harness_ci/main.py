@@ -125,11 +125,13 @@ class AgentHarnessCi:
             container
             .with_mounted_directory("/src", source)
             .with_workdir("/src")
+            # Match the test-group and hosted pytest build pin; Gate A's separate
+            # inner test environment retains its unpinned tool install.
             .with_exec(
                 [
                     "python", "-m", "pip", "install", "--quiet",
-                    "./phase-loop-runtime[visual]", "pytest", "build==1.5.1",
-                    "setuptools>=68",
+                    "./phase-loop-runtime[visual]", "pytest", "build==1.6.1",
+                    "setuptools>=70.1",
                 ]
             )
         )

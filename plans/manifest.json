@@ -6192,6 +6192,41 @@
             "source_approval": false
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-09-14T02:42:18Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "plan_approval_ref": ".phase-loop/diagnostics/verification-environment-428-20260913/plan-approval-r5.json",
+            "plan_artifact": "plans/detailed-verification-test-dependencies-428-20260913.md",
+            "plan_review_archive_commit": "a2278a831cd00a43222d2b900d4432d2a0b84ce4",
+            "plan_sha256": "5b1775417994c939c5f24613a7880a611e869dc9eeff580592d46f04d181cccb",
+            "publication_allowed": false,
+            "run_id": "verification-428-green-r5-20260914",
+            "selected_build": "1.6.1",
+            "source_approval": false
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-09-14T03:19:50Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "acceptance_criteria_satisfied": 5,
+            "actual_pr_head_approval": false,
+            "diagnostic": "native publication pending",
+            "doc_delta_decision": "docs_updated",
+            "plan_artifact": "plans/detailed-verification-test-dependencies-428-20260913.md",
+            "publication_reason": "Successor generation authenticated; governed admission and actual PR-head/CI gates remain",
+            "publication_status": "pending_native_publication",
+            "reflection_record": ".phase-loop/diagnostics/verification-environment-428-20260913/execution-closeout-r3.json",
+            "run_id": "20260914T031950Z-verification-428-source-closeout",
+            "source_candidate_approval": true,
+            "v10_accepted": false,
+            "verification_artifact_path": ".phase-loop/diagnostics/verification-environment-428-20260913/implementation-green-r5/native/verification.json",
+            "verification_status": "passed"
+          },
+          "transition": "completed"
         }
       ],
       "owner_skill": "codex-plan-detailed",
@@ -6212,10 +6247,10 @@
       "reflection_ref": null,
       "roadmap_ref": null,
       "slug": "verification-test-dependencies-428-20260913",
-      "status": "committed",
+      "status": "completed",
       "task_summary": "Declare supported native test tools and align hosted/Dagger test pins (agent-harness#428)",
       "type": "detailed",
-      "updated_at": "2026-09-14T02:21:29.039775+00:00"
+      "updated_at": "2026-09-14T03:19:50Z"
     }
   ],
   "schema_version": 1
