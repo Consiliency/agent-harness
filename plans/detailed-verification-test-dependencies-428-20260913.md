@@ -5,7 +5,8 @@
 Repair the dependency-composition part of agent-harness#428. A locked native
 test environment must contain the build prerequisites required by the existing
 packaging test; the documented test launch must select the existing visual
-extra. This bounded repair does not complete a V10 exit criterion or close
+extra. Align the native and CI build-tool pins on a non-yanked release.
+This bounded repair does not complete a V10 exit criterion or close
 agent-harness#428. Seven other environment/fixture failures, the separate proven
 venv-identity defect, agent-harness#797, CONFORM and publication gates remain.
 
@@ -20,11 +21,26 @@ because those dependencies are absent. The package test explicitly builds with
 environment. All four design consultations recommend a project-scoped manifest
 repair. They are not formal plan approval and their other recommendations differ.
 
+The first implementation reproduced native RED and passed all 66 tests in both
+affected files plus the independent core-only control, with all 597 existing test
+hashes unchanged. Source review still failed: Grok rejected the newly declared
+yanked `build==1.5.1`; Fable required an in-tree exception and tracked upgrade.
+The original plan approval, failed source review and successful checks remain
+preserved for their exact inputs and do not approve this revision.
+
+Official [PyPI metadata](https://pypi.org/project/build/1.6.1/) identifies 1.6.1
+as non-yanked, with Python >=3.10 and the same declared dependency requirements
+as 1.5.1. Its [changelog](https://build.pypa.io/en/stable/changelog.html)
+retains the no-isolation path and fixes a Windows symlink regression from 1.6.0.
+This revision replaces the withdrawn pin and explicitly admits only the matching
+CI install-step change. Recheck the selected release metadata before installation;
+a changed yank status blocks execution rather than silently choosing another pin.
+
 ## Changes
 
 ### `phase-loop-runtime/pyproject.toml` (modify)
 
-- Extend `[dependency-groups].test` with `build==1.5.1`, `setuptools>=70.1` and
+- Extend `[dependency-groups].test` with `build==1.6.1`, `setuptools>=70.1` and
   `pip`. The unchanged packaging helper invokes `sys.executable -m pip` for
   both direct and sdist-derived wheels. The test-only setuptools floor supplies
   `bdist_wheel` for its `--no-isolation` builds without another undeclared tool;
@@ -45,6 +61,9 @@ repair. They are not formal plan approval and their other recommendations differ
   installed uv version, without upgrade flags. Accept only the added test-group
   dependency closure and necessary lock metadata. Inspect every other change;
   unrelated package upgrades require correction or re-review, not acceptance.
+  Relative to the preserved first candidate, only the build version/artifacts and
+  corresponding test requirement should change; compare against both that lock
+  and the original input-main lock, retaining all other resolved package objects.
 
 ### `phase-loop-runtime/README.md` (modify)
 
@@ -59,6 +78,16 @@ repair. They are not formal plan approval and their other recommendations differ
   decoding. This does not establish complete CI equivalence, visual behavior
   without Pillow, full-suite acceptance or production readiness.
 
+### `.github/workflows/test.yml` (modify)
+
+- In the existing phase-loop-runtime install step, replace `build==1.5.1` with
+  `build==1.6.1` and align its explicit setuptools floor to `setuptools>=70.1`.
+  Update the adjacent comment to say CI installs test tools explicitly while the
+  contributor dependency group is declared in pyproject.toml. Keep the visual
+  extra and every other command argument unchanged.
+- Preserve every job, matrix, trigger, permission, action version and test command.
+  Do not change CI to consume the uv group or claim local tests execute hosted CI.
+
 ### Recording files
 
 Register this plan and lifecycle through the native manifest helper; preserve
@@ -67,29 +96,30 @@ artifacts and every failed/successful session remain in private evidence custody
 Set this plan's tracked `reflection_ref` to null; the real reflection location
 stays in ignored native planning records and encrypted recovery. Preserve the
 original unpushed plan commit and its review evidence privately.
-No frozen test, workflow, generic runner, interpreter guard, privacy rule, public
+No frozen test, other workflow behavior, generic runner, interpreter guard, privacy rule, public
 signature, serialized field, seal or protocol vocabulary changes in this scope.
 
 ## Documentation impact
 
-The runtime README records the declared contributor environment. CI keeps its
-existing installation command; consuming the group in CI is a separate workflow
-change, not required to correct the native project's missing declarations.
+The runtime README records the declared contributor environment. The named CI
+installation step keeps its form while aligning the build pin and setuptools
+floor. Its nearby comment describes the existing contributor group. Consuming
+the group in CI remains a separate workflow change.
 
 ## Dependencies & order
 
 1. Obtain fresh four-vendor native plan review of these exact bytes under the
    current interim authority; recheck agent-harness#752. No consultation vote,
    historical review or president ruling transfers.
-2. Record the clean starting tree, uv version, exact manifest/lock/test hashes
-   and native coordinator import identity. In a new owned venv on unchanged
-   main, run the declared locked sync with the existing visual extra and require
-   exit zero. Record missing build/setuptools/pip with importlib discovery, then record
-   native RED for the packaging node: the missing build/setuptools prerequisite
-   assertion must fail. The visual node is already a positive control with the
-   explicit extra and must not be claimed as a new RED falsifier. Preserve the
-   earlier no-extra failure separately. No existing test needs alteration.
-3. Apply only the manifest, lock and README changes. Use the native detailed-plan
+2. Record the current owned dirty boundary, uv version, manifest/lock/test hashes
+   and native coordinator identity. Reverify the preserved original native RED
+   artifact, log seal, successful locked sync and missing build/setuptools/pip
+   probe against their independently restored archive and original source/test
+   hashes. This already witnesses the missing-prerequisite assertion on unchanged
+   main; do not reconstruct clean history or relabel the first candidate's GREEN
+   as RED. Preserve both original results. The visual node remains a positive
+   control with the explicit extra, not a new RED falsifier. No test is altered.
+3. Apply only the manifest, lock, README and named CI install-step changes. Use the native detailed-plan
    executor's lifecycle and call `verification_evidence.run_verification` directly
    for GREEN. Explicitly provide the reviewed project-scoped sync argv as
    `env_refresh` and the absolute lexical venv path as `python_pin`; the
@@ -113,6 +143,11 @@ explicit native refresh. In this isolated native caller, bind
 `UV_PROJECT_ENVIRONMENT` to the absolute lexical path of this owned worktree's
 `phase-loop-runtime/.venv` for both calls. The core control uses its own different
 environment selector. Neither sync may target an inherited or shared environment.
+
+The RED procedure below describes the preserved original unchanged-input run.
+Reverify that evidence; this revision does not repeat it by undoing the owned
+implementation. The revised GREEN uses new retained run directories and fresh
+basetemps. The prior 66-passed GREEN remains separate evidence for build1.5.1.
 
 RED on unchanged input uses this successful sync and then the packaging node
 alone. Before that test, an isolated `importlib.util.find_spec` inspection must
@@ -179,6 +214,18 @@ Compare the parsed original and candidate project/build-system tables and the
 complete old-test hash inventory. Validate native artifact seals and statuses,
 check `git diff --check`, and inspect the exact lock delta before source review.
 
+Include the isolated GREEN import/version check as a native `commands` entry so
+its exit status is sealed with the suite. Require installed build==1.6.1, its
+locked version, the test-group specifier and the parsed CI install pin to agree.
+Record the official release's current non-yanked metadata and artifact hashes.
+For the CI delta, parse both original and candidate YAML, identify the existing
+runtime install step, verify only the two declared requirement arguments changed,
+then normalize that one `run` value and require the complete documents equal.
+The adjacent comment change is visible in the exact diff. This structural and
+pin-consistency check runs as another sealed native `commands` entry. It does not
+claim hosted CI or the unrun interpreter matrix passed. Record both owned venvs'
+Git ignore status and the complete untracked-file inventory before closeout.
+
 ## Acceptance criteria
 
 - [ ] The preserved native RED fails the unchanged packaging assertion for
@@ -192,6 +239,10 @@ check `git diff --check`, and inspect the exact lock delta before source review.
   opt-in; project/build-system table comparison and lock-delta inspection show
   no runtime dependency, project/build-system table, Python-floor or unrelated
   upgrade changes. The README long-description and adjacent comment changes are explicit.
+- [ ] The selected build release is non-yanked; native group, lock, installed tool
+  and CI pin agree on 1.6.1. CI's setuptools floor agrees with the group, and the
+  parsed workflow differs only in the declared install-step requirements. Hosted
+  CI remains unclaimed until an eligible actual candidate receives those checks.
 - [ ] Fresh plan and source reviews bind their respective exact candidates and
   include non-author ablations; all session evidence is archived and independently
   restored before eligible cleanup. No publication or V10 acceptance is inferred.

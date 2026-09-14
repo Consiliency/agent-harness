@@ -6098,10 +6098,10 @@
       "updated_at": "2026-07-28T22:28:34Z"
     },
     {
-      "acceptance_criteria_count": 4,
+      "acceptance_criteria_count": 5,
       "created_at": "2026-09-13T23:34:51.639173+00:00",
       "file": "plans/detailed-verification-test-dependencies-428-20260913.md",
-      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260913T235651Z-verification-test-dependencies-428-r2.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260914T012506Z-verification-test-dependencies-428-r3.md",
       "if_gates_produced": [],
       "input_main": "c6b9924b414769ed45bdc3ea47a8d66ec1fe52c7",
       "lanes": [],
@@ -6115,30 +6115,75 @@
             "source_approval": false
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-09-14T00:49:33Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "plan_approval_ref": ".phase-loop/diagnostics/verification-environment-428-20260913/plan-approval.json",
+            "plan_artifact": "plans/detailed-verification-test-dependencies-428-20260913.md",
+            "run_id": "verification-428-baseline-red-20260914",
+            "source_approval": false
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-09-14T01:21:46Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "diagnostic": "acceptance criterion unmet",
+            "doc_delta_decision": "docs_updated",
+            "publication_allowed": false,
+            "reflection_record_ref": ".phase-loop/diagnostics/verification-environment-428-20260913/execution-failed-closeout-record.json",
+            "run_id": "verification-428-source-review-r1-20260914",
+            "source_review_result_sha256": "95928dd06c822f209854ac5c0501a9c0e26bd2918b2b00b9fc87546072cea36b",
+            "source_review_status": "failed",
+            "source_review_summary_ref": ".phase-loop/diagnostics/verification-environment-428-20260913/source-review-r1/terminal-summary.json",
+            "verification_artifact_path": ".phase-loop/diagnostics/verification-environment-428-20260913/implementation-green/native/verification.json",
+            "verification_status": "passed"
+          },
+          "transition": "failed"
+        },
+        {
+          "at": "2026-09-14T01:25:06.325637+00:00",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "new_revision_implementation_started": false,
+            "plan_approval": false,
+            "plan_artifact": "plans/detailed-verification-test-dependencies-428-20260913.md",
+            "plan_sha256": "ab0345e087d26b94e989668d4fde0d44773578ef59b8674b198c1785c532d74d",
+            "prior_source_review_result_sha256": "95928dd06c822f209854ac5c0501a9c0e26bd2918b2b00b9fc87546072cea36b",
+            "revision": "r3",
+            "scope_delta": "align the named CI install pin, setuptools floor and comment",
+            "selected_build": "1.6.1",
+            "source_approval": false,
+            "source_review_archive_commit": "9176b937a8207dc96dcfb7993ae71821a7c4260c"
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-detailed",
       "phase_accepted": false,
       "phase_alias": null,
       "plan_revision": {
+        "new_revision_implementation_started": false,
         "plan_approval": false,
-        "prior_private_archive": "ff6cff6509d7fdf78fa125c968af780e194fa7c4",
-        "prior_review_head": "f54e9670573980de1390e2721a139813bd5d7fbd",
-        "prior_review_verdicts": {
-          "claude": "PARTIALLY AGREE",
-          "codex": "PARTIALLY AGREE",
-          "gemini": "PARTIALLY AGREE",
-          "grok": "PARTIALLY AGREE"
-        }
+        "plan_sha256": "ab0345e087d26b94e989668d4fde0d44773578ef59b8674b198c1785c532d74d",
+        "prior_source_review_result_sha256": "95928dd06c822f209854ac5c0501a9c0e26bd2918b2b00b9fc87546072cea36b",
+        "revision": "r3",
+        "scope_delta": "align the named CI install pin, setuptools floor and comment",
+        "selected_build": "1.6.1",
+        "source_approval": false,
+        "source_review_archive_commit": "9176b937a8207dc96dcfb7993ae71821a7c4260c"
       },
       "publication_status": "held_by_agent-harness#827",
       "reflection_ref": null,
       "roadmap_ref": null,
       "slug": "verification-test-dependencies-428-20260913",
       "status": "committed",
-      "task_summary": "Declare native test build dependencies and visual launch profile (agent-harness#428)",
+      "task_summary": "Declare supported native verification test tools and align the existing CI install step (agent-harness#428)",
       "type": "detailed",
-      "updated_at": "2026-09-13T23:56:51.787830+00:00"
+      "updated_at": "2026-09-14T01:25:06.325637+00:00"
     }
   ],
   "schema_version": 1
