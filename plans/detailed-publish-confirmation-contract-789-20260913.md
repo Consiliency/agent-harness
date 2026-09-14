@@ -57,6 +57,7 @@ transition, classification or enum is introduced.
 Change only post-create confirmation in `GitHubBrokerAdapter.execute`, plus
 standard-library imports needed for sleep and diagnostic logging. Leave push,
 PR-create, request preflight, generation revalidation and terminal storage intact.
+Replace the superseded inline rationale declining re-reads within this same block.
 
 1. Attempt at most one push and one PR create, as today. After they reach the
    existing confirmation path, allow at most three observation rounds in this
@@ -85,8 +86,12 @@ PR-create, request preflight, generation revalidation and terminal storage intac
    round index, classification (`pr-list-empty` / `pr-head-unconfirmed`), and
    whether another round will occur. Use a module logger at WARNING so the
    default Python stderr handler receives it without an INFO configuration.
-   Prove this with a subprocess under the normal publisher logging setup, using
-   fake provider reads and captured stderr, not just caplog. Do not log raw payloads, credentials,
+   The existing native launcher calls `phase_loop_runtime.cli:main` for
+   `run-train`; inspection of that entrypoint, train_runner, publishing and
+   all runtime source found no logging configuration/level changes. The test
+   subprocess imports `cli`, `train_runner`, and `publishing` before running the
+   fake adapter; it must not install a handler or lower levels. Capture stderr,
+   not just caplog. Do not log raw payloads, credentials,
    URLs, repository names, paths, headers or account identities. These logs are
    diagnostics, not new sealed evidence or substitutes for terminal records.
 
@@ -108,7 +113,13 @@ owner/fork failure `pr-head-repository-unconfirmed`, origin URL failure
 `pr-url-unconfirmed`, and recognized diagnostic URL inequality
 `pr-url-readback-mismatch`. Validate metadata fields with caplog and with a
 fresh subprocess that forces empty/stale sequences at normal WARNING logging;
-assert exact diagnostic lines and absence of synthetic sensitive markers.
+assert exact diagnostic lines admitting only round, classification and boolean
+continuation. Seed distinct synthetic markers in branch, base, full-hex request
+head, admission key, attempt id, origin/PR/diagnostic URLs, payload, working
+directory and create stderr. All must be absent from diagnostic output. Include
+numeric `0` for `isCrossRepository`, 40/64 length mismatch, and empty then
+multiple-PR ambiguity; after-wait negatives keep only the first `[1]` sleep and
+leave appended success bait unread.
 
 Exercise the broker's existing replay/ambiguity path: repeat after exhaustion
 and prove no adapter call or further push/read occurs and the terminal remains
@@ -116,6 +127,8 @@ blocking. Add a wait-boundary interruption case using the existing
 `PublishCrashInjected` seam and activated generation fixture: inspect the actual
 held lease and unsealed owner during sleep, interrupt, then prove a restarted
 or competing publication refuses without another adapter mutation. Assert the
+lease exists, the owner is unsealed, and the triple is still in-flight with no
+terminal INSIDE the sleep callback before raising. Assert the
 existing finally-release behavior after the injected Python exception; do not
 claim it models an OS crash or leaves a lease orphan. Keep owner/fence/storage
 implementations unchanged. Tests must fail
@@ -134,6 +147,8 @@ assert `[1, 2]`; this prevents nine seconds of real waits and explicitly changes
 their witness from single-read refusal to exhausted-read refusal. Retain their
 terminal assertions. Freeze these test edits with the new tests before source
 implementation; no global sleep patch or deletion/weakening of tests.
+Clarify the empty-list control's docstring: it forbids mutation retry, not the
+bounded confirmation reads authorized here.
 
 ### `docs/phase-loop/convergence-contracts.md` (modify)
 
@@ -162,6 +177,8 @@ append its real four-column row to the existing interim ratification ledger
 recording row in fresh exact-head review before landing. No invented PR number
 or approval. The initial publication is a draft; no unreviewed source is added
 by the recording step. No package version or unrelated roadmap edits.
+The initial PR body must cite the interim decision note explicitly and state
+that landing is conditional on the real ledger row and final four-seat review.
 
 ## Dependencies and order
 
@@ -199,12 +216,27 @@ by the recording step. No package version or unrelated roadmap edits.
    never reuse or retry an ambiguous terminal. Check remote final head and
    required CI, then merge only under standing operator authorization. Keep the
    publication hold until this fix is landed. No standalone contract/cleanup PR.
+   The verified operator comment authorizes "that fix's own PR", not an
+   unrelated publication; this plan interprets that scope as including necessary
+   reviewed updates of the same PR, not permission to retry a failed attempt.
+   Known risk: the recording-head update enters the existing-PR single-read
+   confirmation path in the qualified main publisher. It may block generation 2
+   and leave the fix unmerged. The same stop/report rule applies there too.
 
 ## Verification
 
 Use Python 3.14 for the repository's aggregated native guard (including
-`ci/dagger/pyproject.toml`); executable pin is `python3.14`, not `3.14`.
+`ci/dagger/pyproject.toml`). `uv --python 3.14` is its version selector; the
+native verification API's executable pin is the resolved `.venv/bin/python`
+created with that selector, not the literal string `3.14`.
 Run the focused sequence tests first, then the complete bounded regression set:
+
+Inventory on input main: the evidence and schema-drift files exercise durable
+store records, not GitHub confirmation. Recovery-controls uses `_CountingAdapter`
+and a no-remote sentinel, not PR-list fixtures. Live-enable's `_fake_git_gh`,
+`_routing_fake`, and inline routing fake return the exact requested PR head;
+its negative cases stop at remote mismatch/failure. None adds eligible empty
+or differing-head PR observations, so those four files need no edits or sleeps.
 
 ```bash
 uv run --project phase-loop-runtime --group test --python 3.14 python -m pytest -q phase-loop-runtime/tests/test_pr_readback_789.py
