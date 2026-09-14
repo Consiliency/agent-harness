@@ -6101,7 +6101,7 @@
       "acceptance_criteria_count": 5,
       "created_at": "2026-09-14T06:51:19.627720+00:00",
       "file": "plans/detailed-verification-venv-identity-428-20260914.md",
-      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260914T074559Z-verification-venv-identity-428-r3.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260914T075309Z-venv-428-r3-inventory.md",
       "if_gates_produced": [],
       "input_main": "d05a4c9c1a4256158b65fa4aa06675cbfaafb1ae",
       "lanes": [],
@@ -6145,6 +6145,23 @@
             "source_approval": false
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-09-14T07:53:09.580394+00:00",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "implementation_started": false,
+            "observed_regression_modules": 6,
+            "plan_approval": false,
+            "plan_sha256": "1270bbf468f9206dbaa30b1fef9d77dbe6d5a383a376f97f140a629f974775ae",
+            "pre_dispatch_inventory_correction": true,
+            "prior_plan_review_archive_commit": "b194643456e48eed29f17f88a40b3811220f09ec",
+            "prior_plan_review_result_sha256": "c6ff6154658f64f964178e0045d05e9bcff616ff56271150648a5a5366d5fef4",
+            "revision": "r3",
+            "scope_delta": "Unify discovery/probe/execution PATH policy; preserve repo-relative consumed overrides; add probe/discovery and later-process witnesses; expand consumer regression inventory",
+            "source_approval": false
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-detailed",
@@ -6152,8 +6169,10 @@
       "phase_alias": null,
       "plan_revision": {
         "implementation_started": false,
+        "observed_regression_modules": 6,
         "plan_approval": false,
-        "plan_sha256": "642d4189ea8cebb022bbae700bc0a6b47cec321ada14b5495c41d2e36f31170e",
+        "plan_sha256": "1270bbf468f9206dbaa30b1fef9d77dbe6d5a383a376f97f140a629f974775ae",
+        "pre_dispatch_inventory_correction": true,
         "prior_plan_review_archive_commit": "b194643456e48eed29f17f88a40b3811220f09ec",
         "prior_plan_review_result_sha256": "c6ff6154658f64f964178e0045d05e9bcff616ff56271150648a5a5366d5fef4",
         "revision": "r3",
@@ -6167,7 +6186,7 @@
       "status": "committed",
       "task_summary": "Preserve selected virtual-environment identity during native verification and pip refresh (agent-harness#428)",
       "type": "detailed",
-      "updated_at": "2026-09-14T07:45:59.291110+00:00"
+      "updated_at": "2026-09-14T07:53:09.580394+00:00"
     }
   ],
   "schema_version": 1

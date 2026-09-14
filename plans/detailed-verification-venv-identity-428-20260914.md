@@ -237,11 +237,12 @@ must remain a nonzero artifact, never converted to a passing native result.
 
 Derive the regression inventory using `rg -l` over the tests tree for
 `_interpreter_path|_build_interpreter_shim|_resolve_suite_interpreter|_align_install_interpreter|_interp_shim|_interpreter_full_version|_run_process|python_pin|SuiteInterpreter|suite interpreter:|automation\.python|_append_verification_command`.
-At the input head it yields these five existing modules:
+At the input head the expanded inventory includes:
 `test_verification_interpreter_guard_221.py`,
 `test_suite_interpreter_satisfies_requires_python.py`,
 `test_verification_evidence.py`, `test_cr_fixes_pr220.py` and
-`test_legible_evidence.py`. Rerun the expanded search before RED and include any
+`test_legible_evidence.py` and `test_legible_review_repairs.py`.
+Rerun the expanded search before RED and include any
 additional matching module; this inventory is not a future fixed test-count gate.
 Run all matching modules unchanged through native verification before and after
 implementation. Compare collected node IDs and per-node JUnit
