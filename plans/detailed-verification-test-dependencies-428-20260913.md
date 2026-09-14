@@ -33,16 +33,26 @@ Official [PyPI metadata](https://pypi.org/project/build/1.6.1/) identifies 1.6.1
 as non-yanked, with Python >=3.10 and the same declared dependency requirements
 as 1.5.1. Its [changelog](https://build.pypa.io/en/stable/changelog.html)
 retains the no-isolation path and fixes a Windows symlink regression from 1.6.0.
-The r3 plan review found its CI inventory incomplete. The retained search under
-`.github`, `ci` and `scripts` confirms the same withdrawn pin and setuptools>=68
+The r3/r4 plan reviews found the CI inventory incomplete. The completed search
+under `.github`, `ci` and `phase-loop-runtime/scripts` confirms the same withdrawn pin and setuptools>=68
 in `AgentHarnessCi._base` in `ci/dagger/src/agent_harness_ci/main.py`.
 `ci/offload-gate.sh` delegates to that module; it does not install build itself.
-The cleanroom step and both publication workflows install build unpinned;
-`ci/dagger/pyproject.toml` uses the separate uv_build backend. Those paths stay
-unchanged. This revision admits the two existing pinned test-install commands.
+Root `scripts`, `.dagger` and `dagger` directories do not exist in this checkout.
+The cleanroom step and both publication workflows install build unpinned.
+Gate A builds with its caller's frontend, then installs unpinned build and
+setuptools>=68 into its separate test venv; its script stays unchanged.
+`ci/dagger/pyproject.toml` uses the separate uv_build backend.
+The unchanged release-wheel step in `publish-pypi.yml` already runs
+`uv sync --group test --extra visual --locked --no-install-project --active`
+on Python 3.12. It therefore acquires this revised test closure, including its
+locked pip, without a workflow edit. PRs touching `phase-loop-runtime/**` trigger
+that workflow. Its future 3.12 execution remains unclaimed; local proof is 3.14.
+This revision edits only the two existing pinned test-install commands.
 The repeated amendments came from copying one CI install line without checking
-upstream yank status or the offload installer. The complete inventory and its
-raw search output now remain review inputs; no previous vote transfers.
+upstream yank status, the offload installer or indirect group consumers. R4 also
+omitted the committed candidate identity from the staged packet. Complete direct
+and group-consumer search outputs, Gate A source and a generated committed-identity
+record must be staged with the next review; no previous vote transfers.
 Recheck the selected release metadata before installation;
 a changed yank status blocks execution rather than silently choosing another pin.
 
@@ -82,7 +92,9 @@ a changed yank status blocks execution rather than silently choosing another pin
 - Add a short contributor test-environment example, run from the repository root:
   `uv sync --project phase-loop-runtime --group test --extra visual --python 3.14 --locked`.
   Follow it with `PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests
-  phase-loop-runtime/.venv/bin/python -m pytest` and the explicit target files.
+  phase-loop-runtime/.venv/bin/python -m pytest` and the two packaging/visual
+  target files. The verification suite additionally runs chronology-scope
+  regression controls; the README example remains the two-file contributor example.
   Explain that the native repository-wide interpreter guard currently
   includes the dagger subproject's Python 3.14 floor; this is separate from the
   runtime package's Python 3.10 minimum and CI's interpreter matrix.
@@ -94,8 +106,8 @@ a changed yank status blocks execution rather than silently choosing another pin
 
 - In the existing phase-loop-runtime install step, replace `build==1.5.1` with
   `build==1.6.1` and align its explicit setuptools floor to `setuptools>=70.1`.
-  Update the adjacent comment to say CI installs test tools explicitly while the
-  contributor dependency group is declared in pyproject.toml. Keep the visual
+  Update the adjacent comment to say this hosted pytest step installs test tools
+  explicitly while the contributor dependency group is declared in pyproject.toml. Keep the visual
   extra and every other command argument unchanged.
 - The comment names the contributor group and Dagger pin as coordinated inputs.
 - Preserve every job, matrix, trigger, permission, action version and test command.
@@ -119,15 +131,17 @@ artifacts and every failed/successful session remain in private evidence custody
 Set this plan's tracked `reflection_ref` to null; the real reflection location
 stays in ignored native planning records and encrypted recovery. Preserve the
 original unpushed plan commit and its review evidence privately.
-No frozen test, other workflow behavior, generic runner, interpreter guard, privacy rule, public
+No frozen test, other workflow definition, generic runner, interpreter guard, privacy rule, public
 signature, serialized field, seal or protocol vocabulary changes in this scope.
 
 ## Documentation impact
 
 The runtime README records the declared contributor environment. The named CI
 installation step and Dagger installer keep their form while aligning the build
-pin and setuptools floor. Nearby comments name all three coordinated pins. Consuming
-the group in CI remains a separate workflow change.
+pin and setuptools floor. Nearby comments name all three coordinated pins.
+The existing publication workflow already consumes the group and receives its
+new locked closure on Python 3.12; its file stays unchanged. Migrating the two
+explicit test installers to consume the group is outside this change.
 
 ## Dependencies & order
 
@@ -222,8 +236,9 @@ automation:
 
 This is the effective `automation.suite_command`, with run-specific JUnit and
 basetemp arguments recorded by the native caller. It exercises both complete
-affected test files and the existing CI chronology-scope controls because the
-Dagger module is a chronology-selection consumer. RED selects the existing
+affected test files and the existing CI chronology-scope regression controls
+because Dagger is a chronology-selection consumer. Those tests do not read the
+installer list; the AST check below does. RED selects the existing
 packaging test alone. No full expensive suite rerun is required for this repair; the prior
 5400-passed/53-failed broad result remains FAILED and is not superseded here.
 
@@ -244,7 +259,8 @@ Include the isolated GREEN import/version check as a native `commands` entry so
 its exit status is sealed with the suite. Require installed build==1.6.1, its
 locked version, the test-group specifier and both parsed CI install pins to agree.
 Record the official release's current non-yanked metadata and artifact hashes.
-Require lock stderr to contain no yank warning and require the locked build
+Require lock stderr, initial sync stderr and both sealed native refresh logs to
+contain no yank warning, and require the locked build
 sdist/wheel hashes to match the official release-file hashes. Retain the SHA256
 of every executed check script in the run inputs; native argv seals alone do not
 bind script bytes. Recheck that inventory after verification.
@@ -256,8 +272,11 @@ pin-consistency check also parses the original and candidate Dagger module AST:
 identify the unique `_base` pip-install list, verify its complete argv changes
 only those two requirements, normalize just those two constants, then require
 the entire AST equal without source-location attributes. Preserve offload,
-cleanroom and publication file hashes; rerun the retained pin search and require
-no remaining build==1.5.1 in the actual CI installer trees. These checks run as
+Gate A and publication file hashes; normalized YAML equality preserves the
+cleanroom job within the edited workflow. Rerun the pin and group-consumer searches
+over `.github`, `ci`, `phase-loop-runtime/scripts` and any existing root `scripts`,
+`.dagger` or `dagger`; record absent roots and require no remaining build==1.5.1
+in these installer trees. These checks run as
 another sealed native `commands` entry. They do not
 claim hosted CI or the unrun interpreter matrix passed. Record both owned venvs'
 Git ignore status and the complete untracked-file inventory before closeout.
@@ -279,7 +298,7 @@ Git ignore status and the complete untracked-file inventory before closeout.
 - [ ] The selected build release is non-yanked; native group, lock, installed tool
   and both CI pins agree on 1.6.1. Both CI setuptools floors agree with the group;
   YAML/AST normalization proves only the two declared installer argv changes.
-  Official artifact hashes agree with the lock and its stderr has no yank warning.
+  Official artifact hashes agree with the lock; lock and sync logs have no yank warning.
   Hosted and offloaded CI remain unclaimed until an eligible actual candidate
   receives those checks; point-in-time agreement is not a permanent drift guard.
 - [ ] Fresh plan and source reviews bind their respective exact candidates and

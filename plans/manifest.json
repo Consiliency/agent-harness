@@ -6101,7 +6101,7 @@
       "acceptance_criteria_count": 5,
       "created_at": "2026-09-13T23:34:51.639173+00:00",
       "file": "plans/detailed-verification-test-dependencies-428-20260913.md",
-      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260914T020703Z-verification-test-dependencies-428-r4.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260914T022129Z-verification-test-dependencies-428-r5.md",
       "if_gates_produced": [],
       "input_main": "c6b9924b414769ed45bdc3ea47a8d66ec1fe52c7",
       "lanes": [],
@@ -6176,6 +6176,22 @@
             "source_approval": false
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-09-14T02:21:29.039775+00:00",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "new_revision_implementation_started": false,
+            "plan_approval": false,
+            "plan_sha256": "5b1775417994c939c5f24613a7880a611e869dc9eeff580592d46f04d181cccb",
+            "prior_plan_review_archive_commit": "00853c020679f289c013683c677f15910cde338a",
+            "prior_plan_review_result_sha256": "027f52182dfda545c26a581bd1f510d03382d6a8be5faa01c2af439921652825",
+            "revision": "r5",
+            "scope_delta": "research and review-packet correction only; source scope unchanged",
+            "selected_build": "1.6.1",
+            "source_approval": false
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-detailed",
@@ -6184,11 +6200,11 @@
       "plan_revision": {
         "new_revision_implementation_started": false,
         "plan_approval": false,
-        "plan_sha256": "6e423e75747bfbbfe8a1d26834e46028f6375e8d7f1eb3621fb066f2d45099f1",
-        "prior_plan_review_archive_commit": "91702fb826bcd6d0ea6f48a1505bbba057097094",
-        "prior_plan_review_result_sha256": "711ae986f573bec4e30f8d7c805b7869047ba5113cbb566b7ac7ee793bc9ad63",
-        "revision": "r4",
-        "scope_delta": "align both existing pinned hosted pytest and Dagger test installers",
+        "plan_sha256": "5b1775417994c939c5f24613a7880a611e869dc9eeff580592d46f04d181cccb",
+        "prior_plan_review_archive_commit": "00853c020679f289c013683c677f15910cde338a",
+        "prior_plan_review_result_sha256": "027f52182dfda545c26a581bd1f510d03382d6a8be5faa01c2af439921652825",
+        "revision": "r5",
+        "scope_delta": "research and review-packet correction only; source scope unchanged",
         "selected_build": "1.6.1",
         "source_approval": false
       },
@@ -6199,7 +6215,7 @@
       "status": "committed",
       "task_summary": "Declare supported native test tools and align hosted/Dagger test pins (agent-harness#428)",
       "type": "detailed",
-      "updated_at": "2026-09-14T02:07:03.419781+00:00"
+      "updated_at": "2026-09-14T02:21:29.039775+00:00"
     }
   ],
   "schema_version": 1
