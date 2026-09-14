@@ -6243,14 +6243,14 @@
         "selected_build": "1.6.1",
         "source_approval": false
       },
-      "publication_status": "held_by_agent-harness#827",
+      "publication_status": "pending_native_publication",
       "reflection_ref": null,
       "roadmap_ref": null,
       "slug": "verification-test-dependencies-428-20260913",
       "status": "completed",
       "task_summary": "Declare supported native test tools and align hosted/Dagger test pins (agent-harness#428)",
       "type": "detailed",
-      "updated_at": "2026-09-14T03:19:50Z"
+      "updated_at": "2026-09-14T06:19:13Z"
     }
   ],
   "schema_version": 1
