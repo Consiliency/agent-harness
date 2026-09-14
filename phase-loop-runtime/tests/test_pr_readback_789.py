@@ -4,6 +4,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -295,7 +296,8 @@ assert evidence.terminal_state == ("effect_terminal_observed" if final == "match
     env = {"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path),
            "PYTHONPATH": os.pathsep.join((str(root / "src"), str(root / "tests"))),
            "PHASE_LOOP_FABPUB_AUTHORITY_ROOT": str(tmp_path / "authority")}
-    process = subprocess.run([sys.executable, "-c", code, str(tmp_path / "WORKDIR_MARKER"), final],
+    process = subprocess.run([sys.executable, "-X", f"pycache_prefix={tmp_path / 'cold-cache'}",
+                              "-c", code, str(tmp_path / "WORKDIR_MARKER"), final],
                              env=env, capture_output=True, text=True, check=True)
     expected = ["publication-confirmation round=1 classification=pr-list-empty continue=true",
                 "publication-confirmation round=2 classification=pr-head-unconfirmed continue=true"]
@@ -303,8 +305,47 @@ assert evidence.terminal_state == ("effect_terminal_observed" if final == "match
         reason = "pr-list-empty" if final == "empty" else "pr-head-unconfirmed"
         expected.append(f"publication-confirmation round=3 classification={reason} continue=false")
     assert process.stdout == ""
-    assert process.stderr.splitlines() == expected
+    # Cold imports may emit these existing compile-time warnings outside this fix.
+    warning_path = re.escape(str(root / "src/phase_loop_runtime/fab_delta.py"))
+    diagnostics = re.sub(
+        rf'^{warning_path}:\d+: SyntaxWarning: [^\n]*invalid escape sequence[^\n]*\n  [^\n]*\n',
+        "", process.stderr, flags=re.MULTILINE,
+    )
+    assert diagnostics.splitlines() == expected
     for marker in ("BRANCH_MARKER", "BASE_MARKER", "c" * 40, "d" * 40, "KEY_MARKER", "ATTEMPT_MARKER",
                    "REPOSITORY_MARKER", "OWNER_MARKER", "ORIGIN_MARKER", "/pull/947", "PAYLOAD_MARKER",
                    "WORKDIR_MARKER", "CREATE_STDERR_MARKER", "SUBJECT_MARKER"):
         assert marker not in process.stderr
+
+
+@pytest.mark.parametrize("kind", ["oversized-integer", "decoder-recursion"])
+@pytest.mark.parametrize("after_wait", [False, True], ids=["first", "after-wait"])
+def test_decoder_failure_stops_before_success_bait(tmp_path, monkeypatch, caplog, kind, after_wait):
+    request = _request()
+    if kind == "oversized-integer":
+        limit = sys.get_int_max_str_digits()
+        assert limit > 0
+        payload = "[" + "9" * (limit + 1) + "]"
+    else:
+        payload = '["DECODER_RECURSION_MARKER"]'
+        original_loads = json.loads
+
+        def loads(value, *args, **kwargs):
+            # Synthetic decoder exception control, not a platform depth claim.
+            if value == payload:
+                raise RecursionError("decoder recursion control")
+            return original_loads(value, *args, **kwargs)
+
+        monkeypatch.setattr(credsep.json, "loads", loads)
+    prefix = [_observation("empty", request)] if after_wait else []
+    bait = _observation("match", request)
+    run = _SequenceRun(request, prefix + [_response(payload), bait])
+    monkeypatch.setattr(credsep, "sleep", run.sleep)
+    result, evidence = credsep.GitHubBrokerAdapter(tmp_path, run=run).execute(request)
+    assert result is None and evidence.terminal_state == "outcome_ambiguous_blocked"
+    assert evidence.evidence_reference == "pr-read-unparsable"
+    _assert_trace(run, 2 if after_wait else 1, [1] if after_wait else [])
+    assert run.observations == [bait] and len(run.remotes) == 1
+    assert [r.getMessage() for r in _diagnostics(caplog)] == (
+        ["publication-confirmation round=1 classification=pr-list-empty continue=true"] if after_wait else []
+    )

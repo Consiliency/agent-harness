@@ -513,7 +513,7 @@ class GitHubBrokerAdapter:
                 return self._ambiguous(request, "pr-read-unparsable")
             try:
                 prs = json.loads(listed.stdout)
-            except json.JSONDecodeError:
+            except (ValueError, RecursionError):
                 return self._ambiguous(request, "pr-read-unparsable")
             if not isinstance(prs, list):
                 return self._ambiguous(request, "pr-read-unparsable")
