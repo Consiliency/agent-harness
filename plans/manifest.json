@@ -6101,7 +6101,7 @@
       "acceptance_criteria_count": 5,
       "created_at": "2026-09-13T23:34:51.639173+00:00",
       "file": "plans/detailed-verification-test-dependencies-428-20260913.md",
-      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260914T012506Z-verification-test-dependencies-428-r3.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260914T020703Z-verification-test-dependencies-428-r4.md",
       "if_gates_produced": [],
       "input_main": "c6b9924b414769ed45bdc3ea47a8d66ec1fe52c7",
       "lanes": [],
@@ -6160,6 +6160,22 @@
             "source_review_archive_commit": "9176b937a8207dc96dcfb7993ae71821a7c4260c"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-09-14T02:07:03.419781+00:00",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "new_revision_implementation_started": false,
+            "plan_approval": false,
+            "plan_sha256": "6e423e75747bfbbfe8a1d26834e46028f6375e8d7f1eb3621fb066f2d45099f1",
+            "prior_plan_review_archive_commit": "91702fb826bcd6d0ea6f48a1505bbba057097094",
+            "prior_plan_review_result_sha256": "711ae986f573bec4e30f8d7c805b7869047ba5113cbb566b7ac7ee793bc9ad63",
+            "revision": "r4",
+            "scope_delta": "align both existing pinned hosted pytest and Dagger test installers",
+            "selected_build": "1.6.1",
+            "source_approval": false
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-detailed",
@@ -6168,22 +6184,22 @@
       "plan_revision": {
         "new_revision_implementation_started": false,
         "plan_approval": false,
-        "plan_sha256": "ab0345e087d26b94e989668d4fde0d44773578ef59b8674b198c1785c532d74d",
-        "prior_source_review_result_sha256": "95928dd06c822f209854ac5c0501a9c0e26bd2918b2b00b9fc87546072cea36b",
-        "revision": "r3",
-        "scope_delta": "align the named CI install pin, setuptools floor and comment",
+        "plan_sha256": "6e423e75747bfbbfe8a1d26834e46028f6375e8d7f1eb3621fb066f2d45099f1",
+        "prior_plan_review_archive_commit": "91702fb826bcd6d0ea6f48a1505bbba057097094",
+        "prior_plan_review_result_sha256": "711ae986f573bec4e30f8d7c805b7869047ba5113cbb566b7ac7ee793bc9ad63",
+        "revision": "r4",
+        "scope_delta": "align both existing pinned hosted pytest and Dagger test installers",
         "selected_build": "1.6.1",
-        "source_approval": false,
-        "source_review_archive_commit": "9176b937a8207dc96dcfb7993ae71821a7c4260c"
+        "source_approval": false
       },
       "publication_status": "held_by_agent-harness#827",
       "reflection_ref": null,
       "roadmap_ref": null,
       "slug": "verification-test-dependencies-428-20260913",
       "status": "committed",
-      "task_summary": "Declare supported native verification test tools and align the existing CI install step (agent-harness#428)",
+      "task_summary": "Declare supported native test tools and align hosted/Dagger test pins (agent-harness#428)",
       "type": "detailed",
-      "updated_at": "2026-09-14T01:25:06.325637+00:00"
+      "updated_at": "2026-09-14T02:07:03.419781+00:00"
     }
   ],
   "schema_version": 1
