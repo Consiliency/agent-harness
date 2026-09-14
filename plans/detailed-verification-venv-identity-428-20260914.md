@@ -29,24 +29,42 @@ no parent shim exclusion, test amendment or privacy relaxation is part of this f
 ### `phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py` (modify)
 
 - `_interpreter_path` — return an absolute lexical path for a discovered
-  executable, without following symlinks. Preserve its current discovery anchor
-  and PATH lookup semantics. Convert a relative result at discovery time so the
+  executable, without following symlinks. Preserve its current discovery anchor;
+  pass the shared anchored PATH explicitly to `shutil.which` for name lookup.
+  Convert a relative result at discovery time so the
   version probe and execution use the same file even when their working directory
   differs. Do not reinterpret relative pins as a new repo-relative interface.
-- Add a small pure PATH-anchoring helper, shared by `_interpreter_full_version`
-  and `_run_process`: convert relative and empty effective PATH entries to
-  absolute lexical entries against the caller's discovery directory; preserve
+- Add a small PATH-anchoring helper, shared by `_interpreter_path`,
+  `_interpreter_full_version` and `_run_process`, with explicit environment and
+  anchor-directory inputs: convert relative and empty effective PATH entries to
+  absolute lexical entries against that directory; preserve
   entry order, duplicates and absolute entries without resolving symlinks or
-  collapsing `..`. A missing PATH uses `os.defpath`, matching `shutil.which`;
-  an explicitly empty PATH means the discovery directory. Do not mutate global
-  environment or cwd. Use this PATH in repo-context version-probe subprocesses
+  collapsing `..`. For a missing PATH, preserve the current discovery default:
+  `os.confstr("CS_PATH")`, falling back to `os.defpath` on `AttributeError` or
+  `ValueError`, as `shutil.which` does. An explicitly empty PATH intentionally
+  becomes the anchor directory in all three consumers, including discovery.
+  This changes empty-PATH name discovery: the current `shutil.which(name)` finds
+  nothing, while POSIX execution searches cwd. The explicit shared policy removes
+  that mismatch; an unprobeable versioned executable found there must be shadowed.
+  Do not mutate global environment or cwd. Use a full copied environment with
+  this PATH in repo-context version-probe subprocesses
   and, only when an interpreter shim is active, in verification subprocesses
-  before prepending that shim. Preserve explicit command environment overrides
-  as overrides, anchoring their relative entries by the same documented rule.
+  before prepending that shim. Discovery, probes and inherited command PATH use
+  the calling process's cwd as anchor. Explicit leading `PATH=` assignments
+  consumed by `_process_env_and_argv` instead anchor to the command's repository
+  cwd, even when their value equals the inherited PATH. Identify those assignments
+  from the consumed argv prefix; do not change the parser's return signature or
+  parse shell payloads/arguments to an external `env` command. Other environment
+  assignments do not turn inherited PATH into an override. Preserve entry order
+  and prepend the shim after anchoring. Explicit overrides remain operator choices.
   This keeps the shadows-only `all_present_ok` branch's execution aligned with
   discovery even when caller directory A differs from target repository B.
   Normalization also covers versioned names that need no rejection wrapper.
   No-spec/no-pin command execution retains its existing environment behavior.
+  Post-aggregate commands use the later invoking process's cwd for inherited
+  PATH and the command's repository cwd for consumed overrides. The reused
+  launcher's absolute target remains pinned, but no historical ambient PATH is
+  reconstructed or newly guaranteed across processes. Add no artifact field.
 - `_build_interpreter_shim` — write one executable `_selected_python` launcher
   in the existing shim directory, using `/bin/sh` and `exec` with a correctly
   `shlex.quote`-escaped absolute lexical target and unchanged `"$@"` forwarding.
@@ -54,8 +72,10 @@ no parent shim exclusion, test amendment or privacy relaxation is part of this f
   when symlinks are unavailable, write the same launcher bytes at each bare name.
   Never link either bare name directly to the venv Python executable. Preserve
   exit status and the exec process boundary. With `interpreter=None`, retain the
-  existing shadows-only behavior and do not add bare redirects.
-  Absolutize in the shim builder too, without `resolve`/`realpath`. Before writing
+  existing shadows-only behavior and do not add bare redirects or a launcher.
+  At discovery, shim construction and resolver metadata, use a lexical cwd/path
+  join without `resolve`, `realpath`, `abspath` or `normpath`; preserve symlink/`..`
+  spelling. Before writing
   `_selected_python`, unlink an existing entry just as the existing shadow
   writers do; never write through a pre-existing symlink. Verify an outside
   sentinel is unchanged. Update the builder docstring as well as the dataclass.
@@ -68,7 +88,8 @@ no parent shim exclusion, test amendment or privacy relaxation is part of this f
   metadata/pip preference for `python3`, then `python`. Do not claim one shared
   venv when those aliases differ; use an explicit pin when that guarantee is
   required. Login profiles and explicit command overrides can still select a
-  different environment. This repair does not add shell-profile or argv parsing.
+  different environment. This repair does not add shell-profile or shell/`env`
+  argument parsing; it only identifies assignments the existing parser consumed.
 - Preserve full-version and repo-context probing, malformed-spec rejection,
   below/above-bound rejection, present-but-unprobeable rejection, versioned-name
   shadow wrappers, login-shell rewriting and failure evidence. Do not alter
@@ -100,11 +121,32 @@ basetemp; do not automatically delete them on failure. No network is needed.
   containing a different real venv at the same relative PATH entry. Require
   actual prefixes, marker visibility and pip alignment to select A. Exercise
   versioned aliases as well as both bare names, so anchoring only the latter
-  cannot pass. Cover empty and missing PATH, symlink-directory/`..` spelling,
+  cannot pass. Cover symlink-directory/`..` spelling
   and mixed satisfying bare aliases: preserve each alias's discovered venv and
   explicitly assert the documented metadata/pip preference. Retain a mutant
   that omits execution-side PATH anchoring; its two-directory control must fail
   on the intended identity assertion while the positive control succeeds.
+- Cover empty and missing PATH with a satisfying absolute pin, rather than
+  assuming either discovers the fixture venv through `all_present_ok`. For empty
+  PATH, put a nominally satisfying but unprobeable versioned executable in A:
+  require native shadow rejection and no suite-side candidate effect. A retained
+  mutant using implicit `shutil.which(name)` must expose the discovery/execution
+  mismatch after successful fixture setup. For missing PATH, verify the C-library
+  default and Python fallback policy independently of the host's current PATH.
+- Add a real delegated-interpreter fixture: a versioned wrapper in an absolute
+  PATH directory delegates via a distinct name found in relative PATH entries
+  under A and B. The delegate name must never be a shim alias or shadow. Each
+  delegate runs its own real venv and records probe/execution prefix identity in
+  per-case JSON. A native fallback run must probe and execute A consistently;
+  a mutant omitting probe-side anchoring must expose B-probe/A-execution drift.
+  Both positive setup and the intended identity failure must be demonstrated.
+- Verify consumed explicit `PATH=` overrides use repository B, including an
+  override byte-equal to inherited relative PATH; an unrelated leading assignment
+  must leave inherited PATH anchored to A. Cover a fresh-process post-aggregate
+  command from C: the selected launcher's absolute venv still wins for bare Python,
+  inherited ambient PATH anchors to C and consumed overrides to B. Preserve the
+  native artifact and log resealing checks. This does not promise historical
+  ambient lookup or revalidate all names in a reused shim.
 - Create a second venv with stdlib `ensurepip` provisioning. Run native env
   refresh using the existing `python -m pip --version` argv shape and a marker
   suite. Require its captured pip location, recorded aligned argv and suite
@@ -138,8 +180,10 @@ basetemp; do not automatically delete them on failure. No network is needed.
 Document that an explicit `automation.python` virtual-environment pin preserves
 that environment for bare Python and pip refresh while still enforcing the
 repository's Python constraints. Document relative PATH anchoring during guarded
-verification and version probes, its effect on command lookup from a different
-cwd, the no-pin mixed-alias/profile limits, and remaining nested-test/redaction
+discovery, verification and version probes, the deliberate empty-PATH discovery
+change, preserved missing-PATH discovery default, repository-relative consumed
+overrides and later-process anchors, the no-pin mixed-alias/profile limits,
+and remaining nested-test/redaction
 limitations. Add an Unreleased entry
 qualified with agent-harness#428. Do not claim a release, full-suite success or
 completion of the dependency repair in agent-harness#841.
@@ -180,20 +224,25 @@ automation:
     - -m
     - pytest
     - -q
+    - --junitxml=.phase-loop/diagnostics/venv-identity-428-20260914/red/junit.xml
+    - --basetemp=/tmp/ah428-venv-red-20260914
     - phase-loop-runtime/tests/test_verification_venv_identity_428.py
 ```
 
-Supply distinct native run directories, JUnit files and fresh short real `/tmp`
+The displayed argv is the RED shape. Before each run, render distinct native
+run directories, JUnit files and fresh short real `/tmp`
 basetemps for RED, control, GREEN, mutants and installed-runtime controls. No
 acceptance test may skip or xfail. Validate each native artifact; expected RED
 must remain a nonzero artifact, never converted to a passing native result.
 
 Derive the regression inventory using `rg -l` over the tests tree for
-`_interpreter_path|_build_interpreter_shim|_resolve_suite_interpreter|_align_install_interpreter|_interp_shim|_interpreter_full_version|_run_process`.
-At the input head it yields exactly these four existing modules:
+`_interpreter_path|_build_interpreter_shim|_resolve_suite_interpreter|_align_install_interpreter|_interp_shim|_interpreter_full_version|_run_process|python_pin|SuiteInterpreter|suite interpreter:|automation\.python|_append_verification_command`.
+At the input head it yields these five existing modules:
 `test_verification_interpreter_guard_221.py`,
 `test_suite_interpreter_satisfies_requires_python.py`,
-`test_verification_evidence.py` and `test_cr_fixes_pr220.py`.
+`test_verification_evidence.py`, `test_cr_fixes_pr220.py` and
+`test_legible_evidence.py`. Rerun the expanded search before RED and include any
+additional matching module; this inventory is not a future fixed test-count gate.
 Run all matching modules unchanged through native verification before and after
 implementation. Compare collected node IDs and per-node JUnit
 outcomes; allow no newly failing node or lost passing node. The three known
