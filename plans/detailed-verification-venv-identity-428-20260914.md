@@ -10,7 +10,7 @@ V10 exit criterion or close the broader environment-composition issue.
 ## Research summary
 
 Input main is `d05a4c9c1a4256158b65fa4aa06675cbfaafb1ae`.
-`verification_evidence.py` has SHA256
+The original `verification_evidence.py` has SHA256
 `1e877edbe355b0587dea9299e7b8d9b05c42646081543239e7382c9563c22b47`, identical to
 the source used by the retained native reproduction. Its explicit venv command
 finds an installed marker and passes; bare `python` through the generated shim
@@ -23,6 +23,29 @@ to `_align_install_interpreter`, so pip refresh can target the base environment.
 The existing guard test requires bare aliases to remain symlinks when supported.
 The separate four redaction and three nested-discovery failures remain unresolved;
 no parent shim exclusion, test amendment or privacy relaxation is part of this fix.
+
+R3 execution is preserved, not replaced by this amendment: its local runtime
+`e6458c9c2c35aa376581ad7d04844617fa10ac49c6e256890e61a404f7c579a6` passes 25 of
+26 new tests. All 380 existing regression outcomes are unchanged (372 passed,
+7 failed, 1 skipped), and six mutants fail their intended assertions. The complete
+execution and surviving fixtures independently restored at private recovery commit
+`1e67005891414775c7be928391b09ffee1c4be01`. The new test file is frozen at
+`a3bc122132e19cf79b086986ce706185ff90dbe7410eccbe108f4d1294dfefe5` and must not change.
+
+The remaining witness uses `a/link -> a/real/nested` and a pin through
+`a/link/../chosen/bin/python`. Both direct lexical Python and R3's launcher choose
+`a/chosen`, while the frozen witness requires `a/real/chosen`. The original direct
+control used only the physical spelling. CPython v3.14.7 `Modules/getpath.py`
+first makes the program path absolute and later finds `pyvenv.cfg` from it;
+`Modules/getpath.c` performs lexical normalization during that absolutization.
+The exact three observed controls and upstream source digests are retained under
+`.phase-loop/diagnostics/venv-identity-428-20260914/symlink-dotdot-diagnosis/`.
+The installed build's source identity is not inferred from an upstream tag.
+R4 follows this recorded diagnosis: retain lexical discovery and log metadata,
+but resolve traversable directory components containing `..` at every relevant
+execution boundary, preserving the final executable symlink. This strengthens
+the implementation to meet the unchanged physical-environment witness; it does
+not change that witness to accept the other environment.
 
 ## Changes
 
@@ -47,7 +70,7 @@ no parent shim exclusion, test amendment or privacy relaxation is part of this f
   nothing, while POSIX execution searches cwd. The explicit shared policy removes
   that mismatch; an unprobeable versioned executable found there must be shadowed.
   Do not mutate global environment or cwd. Use a full copied environment with
-  this PATH in repo-context version-probe subprocesses
+  this PATH, after the execution-directory conversion below, in repo-context version-probe subprocesses
   and, only when an interpreter shim is active, in verification subprocesses
   before prepending that shim. Discovery, probes and inherited command PATH use
   the calling process's cwd as anchor. Explicit leading `PATH=` assignments
@@ -65,24 +88,48 @@ no parent shim exclusion, test amendment or privacy relaxation is part of this f
   PATH and the command's repository cwd for consumed overrides. The reused
   launcher's absolute target remains pinned, but no historical ambient PATH is
   reconstructed or newly guaranteed across processes. Add no artifact field.
+- Add two small private execution-path helpers. For a selected interpreter,
+  keep its absolute lexical path when its parent has no `..` component. When
+  the parent contains `..` and is a traversable directory, resolve that parent
+  directory and append the original final filename; never resolve the final
+  executable symlink. For child PATH, apply the same directory-only conversion
+  to each anchored entry containing `..`, retaining order, duplicates and all
+  other entry strings. An absent or untraversable entry must remain unchanged,
+  not become an existing search directory by collapsing `missing/..`. Directory
+  conversion is based on the existing filesystem, not string-only normalization.
+  Use the interpreter conversion for `_interpreter_full_version`'s argv[0],
+  `_build_interpreter_shim`'s exec target, and pip alignment in
+  `_align_install_interpreter`. Use the PATH conversion in version-probe and
+  guarded `_run_process` environments, after the existing anchor selection and
+  before shim prepending. Discovery and `SuiteInterpreter.interpreter` remain
+  lexical, including the frozen symlink/`..` metadata assertions. Log metadata
+  records the declared selection; aligned pip argv records its actual execution
+  spelling. Their directory spelling can differ, but their selected environment
+  must agree. This correction also covers unredirected versioned/bare names in
+  `all_present_ok`, consumed PATH overrides and later-process commands. Preserve
+  the existing no-spec/no-pin exception. It adds no guarantee against concurrent
+  filesystem changes or historical PATH reconstruction. No environment variable,
+  Python startup override, shell payload parser or new artifact field is added.
 - `_build_interpreter_shim` — write one executable `_selected_python` launcher
   in the existing shim directory, using `/bin/sh` and `exec` with a correctly
-  `shlex.quote`-escaped absolute lexical target and unchanged `"$@"` forwarding.
+  `shlex.quote`-escaped absolute execution target and unchanged `"$@"` forwarding.
   Point `python` and `python3` at this launcher using the existing symlink path;
   when symlinks are unavailable, write the same launcher bytes at each bare name.
   Never link either bare name directly to the venv Python executable. Preserve
   exit status and the exec process boundary. With `interpreter=None`, retain the
   existing shadows-only behavior and do not add bare redirects or a launcher.
-  At discovery, shim construction and resolver metadata, use a lexical cwd/path
+  At discovery and resolver metadata, use a lexical cwd/path
   join without `resolve`, `realpath`, `abspath` or `normpath`; preserve symlink/`..`
-  spelling. Before writing
+  spelling. Shim construction applies the directory-only execution conversion
+  above to that lexical selection. Before writing
   `_selected_python`, unlink an existing entry just as the existing shadow
   writers do; never write through a pre-existing symlink. Verify an outside
   sentinel is unchanged. Update the builder docstring as well as the dataclass.
 - `_resolve_suite_interpreter` — retain the absolute lexical selected path in
   all three successful returns (explicit pin, already-satisfying bare interpreter,
-  and automatic fallback). Keep the current selection order. The existing pip
-  alignment consumer then receives the same executable that verification uses.
+  and automatic fallback). Keep the current selection order. The pip alignment
+  consumer receives this lexical selection and applies the same directory-only
+  execution conversion as the launcher and probe.
   Update the `SuiteInterpreter` documentation accordingly. With no explicit pin,
   preserve distinct satisfying `python`/`python3` alias choices and the existing
   metadata/pip preference for `python3`, then `python`. Do not claim one shared
@@ -94,13 +141,19 @@ no parent shim exclusion, test amendment or privacy relaxation is part of this f
   below/above-bound rejection, present-but-unprobeable rejection, versioned-name
   shadow wrappers, login-shell rewriting and failure evidence. Do not alter
   `_nonsatisfying_shadow_names`, `_version_satisfies`, redaction or public signatures.
-  The version probe's sole behavioral addition is the anchored PATH environment;
+  The version probe adds the anchored/converted PATH environment and the
+  directory-only conversion of its executable;
   its cwd, full-version query, timeout and failure handling remain unchanged.
   The existing vocabulary remains `SCHEMA_VERSION = 2` with
   `_SUPPORTED_SCHEMA_VERSIONS = frozenset({1, 2, 3})`; no artifact field, schema,
   failure kind or exemption is added.
 
-### `phase-loop-runtime/tests/test_verification_venv_identity_428.py` (create)
+### `phase-loop-runtime/tests/test_verification_venv_identity_428.py` (retain frozen)
+
+This file already exists with the SHA above. Its original native RED/control,
+R3 failure and all fixtures remain authoritative historical outcomes. The
+requirements below describe its original test-first scope, not permission to
+recreate, edit, weaken or remove any of its 26 tests. R4 must pass all 26 unchanged.
 
 Use real temporary venvs created by the selected Python, real subprocesses and
 native `run_verification` artifacts. Keep venvs and logs in the retained pytest
@@ -175,6 +228,40 @@ basetemp; do not automatically delete them on failure. No network is needed.
   Parse login-shell identity from a per-case JSON file written by the child,
   so incidental profile stdout cannot masquerade as malformed test evidence.
 
+### `phase-loop-runtime/tests/test_verification_dotdot_execution_428.py` (create)
+
+Add supplemental real-venv/native-artifact tests without changing the frozen
+file. Every fixture, including failures, stays under a fresh retained basetemp.
+
+- Reproduce both exact-lexical and physical direct invocations in a symlink/`..`
+  fixture with distinct real venvs and marker paths. Record actual child JSON;
+  do not infer venv identity from the shared base executable or fabricated versions.
+- Use fixture-local `sitecustomize.py` startup records in the two real venvs
+  to observe which environment native full-version probes and execution use.
+  Preserve the actual full-version query and outputs. Require probe, both bare
+  launchers, real `python -m pip --version` refresh and suite to select the
+  physical directory reached by the declared path. Keep lexical discovery/log
+  metadata and verify the actual aligned pip argv/location separately. Include
+  a passing direct physical control and retained exact-lexical mismatch evidence.
+- Cover relative and absolute PATH entries with symlink/`..` in `all_present_ok`,
+  both bare aliases and an unshadowed versioned alias, with caller and repository
+  directories different. Prove the physical environment survives all three
+  consumers. Also exercise byte-equal consumed overrides and a later-process
+  append with the reused pin and current inherited/override anchors; preserve
+  native artifact/log resealing. Existing no-`..` cases stay unchanged.
+- A PATH entry `missing/../existing-bin` must remain untraversable: conversion
+  must not introduce a previously undiscovered executable. Cover a nominally
+  satisfying but unprobeable versioned name in the existing-bin counterpart,
+  assert no suite effect, and retain the corresponding native failure artifact.
+  Include a positive traversable-directory control so unconditional rejection
+  cannot pass. Check entry order, duplicates and unchanged no-`..` strings.
+- Observe native supplemental RED against the retained R3 implementation before
+  applying R4 source changes, then freeze the supplemental test hash. Run all
+  original 26 tests unchanged alongside it. Retained mutants omitting each of
+  the new probe, launcher, pip and child-PATH conversions must fail the intended
+  identity/lookup assertion after successful setup and positive controls. Do not
+  count a setup exception, missing prerequisite, skip or xfail as acceptance.
+
 ### `phase-loop-runtime/README.md` and `CHANGELOG.md` (modify)
 
 Document that an explicit `automation.python` virtual-environment pin preserves
@@ -183,6 +270,12 @@ repository's Python constraints. Document relative PATH anchoring during guarded
 discovery, verification and version probes, the deliberate empty-PATH discovery
 change, preserved missing-PATH discovery default, repository-relative consumed
 overrides and later-process anchors, the no-pin mixed-alias/profile limits,
+and the R4 directory-only conversion for traversable `..` paths. Explain that
+discovery/log metadata remains lexical while probe/launcher/pip and child PATH
+use the physical directory spelling when needed, retaining the final executable
+symlink; this deliberately differs from direct Python's lexical `..` behavior.
+Absent/untraversable PATH entries are preserved, not collapsed into new candidates.
+Document unchanged no-`..` entry strings
 and remaining nested-test/redaction
 limitations. Add an Unreleased entry
 qualified with agent-harness#428. Do not claim a release, full-suite success or
@@ -190,17 +283,22 @@ completion of the dependency repair in agent-harness#841.
 
 ## Dependencies and order
 
-1. Register this plan with native manifest/handoff helpers, commit only this
+1. Register the R4 amendment with native manifest/handoff helpers, commit only this
    plan and its owned manifest row, and obtain a fresh complete four-vendor plan
-   review before tests or implementation. Earlier consultation and source votes
-   do not transfer. The agent-harness#828 publication owner remains untouched.
-2. Provision an owned `phase-loop-runtime/.venv` with the existing locked test
+   review before supplemental tests or further implementation. Preserve the R3
+   failed source/doc/test bytes and failed lifecycle event; do not manufacture
+   a clean candidate or transfer its plan votes. The agent-harness#828 publication
+   owner remains untouched.
+2. Reverify the already provisioned owned `phase-loop-runtime/.venv` and locked test
    group on Python 3.14. Record the interpreter, uv version and selected runtime
    module hash. Confirm stdlib venv/ensurepip and `/bin/sh`/bash prerequisites.
    No dependency-manifest or frozen-contract change is planned.
-3. Write the new tests; run native RED/control and record the existing guard
-   suite baseline. Freeze the test hash, implement the bounded source/doc delta,
-   then run native GREEN and the same existing guard suite again.
+3. Write only the supplemental tests; run native RED/control against the retained
+   R3 source. The existing six-module R3 after-run is the R4 before baseline only
+   while its exact source/test/dependency/environment inputs remain unchanged;
+   otherwise refresh that baseline. Freeze the supplemental hash, implement the
+   R4 source/doc delta, then run native GREEN of both frozen acceptance modules
+   and the same complete existing guard inventory again. Preserve all outcomes.
 4. Preserve every outcome and fixture, run exact-source four-vendor review,
    and encrypt/independently restore evidence before eligible publication or
    cleanup. Install the repaired runtime into an owned environment, verify its
@@ -227,9 +325,12 @@ automation:
     - --junitxml=.phase-loop/diagnostics/venv-identity-428-20260914/red/junit.xml
     - --basetemp=/tmp/ah428-venv-red-20260914
     - phase-loop-runtime/tests/test_verification_venv_identity_428.py
+    - phase-loop-runtime/tests/test_verification_dotdot_execution_428.py
 ```
 
-The displayed argv is the RED shape. Before each run, render distinct native
+The displayed argv is the shape; R3's named RED paths are retained and must not
+be reused. Use fresh `red-r4`, `control-r4`, `green-r4` and corresponding fixture
+names. Before each run, render distinct native
 run directories, JUnit files and fresh short real `/tmp`
 basetemps for RED, control, GREEN, mutants and installed-runtime controls. No
 acceptance test may skip or xfail. Validate each native artifact; expected RED
@@ -258,7 +359,9 @@ frozen tests to manufacture a passing result.
 Run `git diff --check`, native manifest validation and native `docs-audit` against
 the actual candidate. Verify all existing tests, dependency files, unchanged
 guard functions and artifact vocabulary hashes remain unchanged. The only
-version-probe change is its PATH environment; inspect its AST delta accordingly.
+version-probe changes are its PATH environment and directory-only executable
+conversion; inspect its AST delta accordingly. The source/contract vocabulary
+still matches the quoted constants above; no new failure kind or field is added.
 The canonical packaged runtime/verification contract was searched for a promise
 that bare aliases link directly to the interpreter; none was found. Preserve
 that contract's bytes. This bounded repair
@@ -271,10 +374,12 @@ reflection paths, owned venv and explicitly recorded temporary fixtures.
 ## Acceptance criteria
 
 - [ ] Native RED/control proves the selected environment is lost before repair;
-  the frozen new test file and all original test hashes remain unchanged.
+  the frozen R3 test file and all original test hashes remain unchanged, and
+  supplemental R4 RED is observed before freezing its hash and changing source.
 - [ ] The complete new native suite passes without skips, including both aliases,
   login shell, selection branches, lexical paths, real pip refresh, argument/exit
-  behavior and symlink fallback; retained mutants fail for the intended reason.
+  behavior, symlink fallback and directory-only execution conversion; both frozen
+  acceptance modules pass and retained mutants fail for the intended reason.
 - [ ] The complete existing guard-suite comparison has no new failing or lost
   passing node; unchanged safety controls pass. Remaining inherited-shim failures
   remain explicitly failed and do not imply agent-harness#428 acceptance.
