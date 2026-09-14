@@ -6101,7 +6101,7 @@
       "acceptance_criteria_count": 5,
       "created_at": "2026-09-14T06:51:19.627720+00:00",
       "file": "plans/detailed-verification-venv-identity-428-20260914.md",
-      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/venv-428-r4-directory-execution-20260914.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/venv-428-r5-boundary-witnesses-20260914.md",
       "if_gates_produced": [],
       "input_main": "d05a4c9c1a4256158b65fa4aa06675cbfaafb1ae",
       "lanes": [],
@@ -6272,6 +6272,24 @@
             "source_approval": false
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-09-14T09:36:33.868405+00:00",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "further_implementation_started": false,
+            "plan_approval": false,
+            "plan_sha256": "8699bd817c8c8c7de6295ebfc6dafc3706014f2d7b84d40018dcf7cd187823b9",
+            "preexisting_untracked_test_not_planning_output": true,
+            "prior_failed_implementation_preserved": true,
+            "prior_review": "/mnt/HC_Volume_105438154/worktrees/agent-harness-428-venv-identity-20260914/.phase-loop/diagnostics/venv-identity-428-20260914/plan-review-r4/terminal-summary.json",
+            "prior_review_archive": "5f1592fca651da8f5434bfe3556fddcd64a47c58",
+            "prior_review_sha256": "154708d5bc33556e0bf5d3978355288a5e31746c3992ee35dffaf375bc07d83a",
+            "revision": "r5",
+            "scope_delta": "Five boundary-specific witnesses; direct/grandchild controls; strict directory resolution with preserved invalid spelling and effective invalid-directory evidence; exact unchanged PATH strings",
+            "source_approval": false
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-detailed",
@@ -6280,14 +6298,14 @@
       "plan_revision": {
         "further_implementation_started": false,
         "plan_approval": false,
-        "plan_sha256": "6fad7283789b15c62977e8776e3a95a4141dab71c7d5aa58b6f21f12c883a96c",
+        "plan_sha256": "8699bd817c8c8c7de6295ebfc6dafc3706014f2d7b84d40018dcf7cd187823b9",
         "preexisting_untracked_test_not_planning_output": true,
-        "prior_execution_archive": "1e67005891414775c7be928391b09ffee1c4be01",
-        "prior_failed_execution": "/mnt/HC_Volume_105438154/worktrees/agent-harness-428-venv-identity-20260914/.phase-loop/diagnostics/venv-identity-428-20260914/execution-terminal-summary.json",
-        "prior_failed_execution_sha256": "22c9b828f34295b97ab929357be5a47ab5437c87cd68523f5cf78220ce8c4c83",
         "prior_failed_implementation_preserved": true,
-        "revision": "r4",
-        "scope_delta": "Directory-only execution conversion for traversable .. paths; consistent probe/launcher/pip/child PATH; supplemental tests, all frozen tests unchanged",
+        "prior_review": "/mnt/HC_Volume_105438154/worktrees/agent-harness-428-venv-identity-20260914/.phase-loop/diagnostics/venv-identity-428-20260914/plan-review-r4/terminal-summary.json",
+        "prior_review_archive": "5f1592fca651da8f5434bfe3556fddcd64a47c58",
+        "prior_review_sha256": "154708d5bc33556e0bf5d3978355288a5e31746c3992ee35dffaf375bc07d83a",
+        "revision": "r5",
+        "scope_delta": "Five boundary-specific witnesses; direct/grandchild controls; strict directory resolution with preserved invalid spelling and effective invalid-directory evidence; exact unchanged PATH strings",
         "source_approval": false
       },
       "publication_status": "pending_native_publication",
@@ -6297,7 +6315,7 @@
       "status": "committed",
       "task_summary": "Preserve selected virtual-environment identity during native verification and pip refresh (agent-harness#428)",
       "type": "detailed",
-      "updated_at": "2026-09-14T09:09:50.508712+00:00"
+      "updated_at": "2026-09-14T09:36:33.868405+00:00"
     }
   ],
   "schema_version": 1

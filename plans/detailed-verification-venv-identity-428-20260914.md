@@ -47,6 +47,19 @@ execution boundary, preserving the final executable symlink. This strengthens
 the implementation to meet the unchanged physical-environment witness; it does
 not change that witness to accept the other environment.
 
+R4 review did not converge: Codex and Fable required stronger discrimination
+and invalid-directory coverage; Grok's backend search was correctly rejected.
+Its complete private review archive is `5f1592fca651da8f5434bfe3556fddcd64a47c58`.
+A fresh direct diagnostic checked Fable's claim that bare-name lookup already
+selects the physical venv. On the installed Python, both the bare lexical child
+and its re-executed grandchild selected the sibling; the physical-PATH control
+selected the intended environment in both generations. The claim-based assertion
+failed and is retained under `r4-author-grandchild-diagnosis/`; it is not a native
+acceptance result. R5 adds the requested transition control without claiming a
+grandchild is necessary to expose this installed build's failure. Separate probe
+argv, probe PATH, launcher, pip and child PATH witnesses must discriminate their
+own omissions, rather than inferring one boundary from another.
+
 ## Changes
 
 ### `phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py` (modify)
@@ -88,7 +101,8 @@ not change that witness to accept the other environment.
   PATH and the command's repository cwd for consumed overrides. The reused
   launcher's absolute target remains pinned, but no historical ambient PATH is
   reconstructed or newly guaranteed across processes. Add no artifact field.
-- Add two small private execution-path helpers. For a selected interpreter,
+- Add small private interpreter/PATH execution helpers sharing one directory
+  conversion primitive. For a selected interpreter,
   keep its absolute lexical path when its parent has no `..` component. When
   the parent contains `..` and is a traversable directory, resolve that parent
   directory and append the original final filename; never resolve the final
@@ -97,6 +111,14 @@ not change that witness to accept the other environment.
   other entry strings. An absent or untraversable entry must remain unchanged,
   not become an existing search directory by collapsing `missing/..`. Directory
   conversion is based on the existing filesystem, not string-only normalization.
+  Check the original directory before resolving it with `strict=True`. Preserve
+  its original spelling on failed traversal or resolution, catching both
+  `OSError` and `RuntimeError` around those operations; older supported Python
+  versions report symlink loops as `RuntimeError`. These failures must not escape
+  before native verification can record its command failure. Absolute PATH
+  entries without conversion remain the original strings, including `.` and
+  repeated/trailing separators; do not round-trip them through `Path` in the
+  anchoring helper. Relative entries retain the declared lexical anchoring policy.
   Use the interpreter conversion for `_interpreter_full_version`'s argv[0],
   `_build_interpreter_shim`'s exec target, and pip alignment in
   `_align_install_interpreter`. Use the PATH conversion in version-probe and
@@ -236,6 +258,11 @@ file. Every fixture, including failures, stays under a fresh retained basetemp.
 - Reproduce both exact-lexical and physical direct invocations in a symlink/`..`
   fixture with distinct real venvs and marker paths. Record actual child JSON;
   do not infer venv identity from the shared base executable or fabricated versions.
+  Include direct bare-name controls under lexical and physical PATH entries,
+  and children that re-execute their reported `sys.executable`. Record the actual
+  direct lexical behavior as diagnostic evidence rather than requiring an
+  unverified build-specific mismatch. Native guarded child and grandchild must
+  both preserve the intended physical environment.
 - Use fixture-local `sitecustomize.py` startup records in the two real venvs
   to observe which environment native full-version probes and execution use.
   Preserve the actual full-version query and outputs. Require probe, both bare
@@ -243,6 +270,11 @@ file. Every fixture, including failures, stays under a fresh retained basetemp.
   physical directory reached by the declared path. Keep lexical discovery/log
   metadata and verify the actual aligned pip argv/location separately. Include
   a passing direct physical control and retained exact-lexical mismatch evidence.
+  Startup records write only to a fixture file, never stdout. Separately use an
+  absolute wrapper without `..` that delegates through a distinct alias in a real
+  venv reached through a symlink/`..` PATH entry. That alias is neither a bare shim
+  alias nor a shadow. Assert the actual delegated probe identity, so omission of
+  probe PATH conversion is distinguishable from omission of probe argv conversion.
 - Cover relative and absolute PATH entries with symlink/`..` in `all_present_ok`,
   both bare aliases and an unshadowed versioned alias, with caller and repository
   directories different. Prove the physical environment survives all three
@@ -254,13 +286,26 @@ file. Every fixture, including failures, stays under a fresh retained basetemp.
   satisfying but unprobeable versioned name in the existing-bin counterpart,
   assert no suite effect, and retain the corresponding native failure artifact.
   Include a positive traversable-directory control so unconditional rejection
-  cannot pass. Check entry order, duplicates and unchanged no-`..` strings.
+  cannot pass. Add looping symlinks, symlink-to-file/non-directory components and
+  permission-denied traversal. Prove effective permission denial as the test's
+  actual UID; ineffective chmod or skipped setup is not acceptance. After
+  recording the denied behavior, restore only the owned fixture's traversal
+  permissions for archival and retain the before/after mode record. Exercise
+  the `RuntimeError` resolution branch explicitly as well as the real loop on
+  the installed interpreter. Native failure evidence must survive these cases.
+  Check entry order, duplicates, and absolute no-`..` entries containing `.` and
+  repeated/trailing separators in the actual probe and guarded-child environments.
 - Observe native supplemental RED against the retained R3 implementation before
-  applying R4 source changes, then freeze the supplemental test hash. Run all
-  original 26 tests unchanged alongside it. Retained mutants omitting each of
-  the new probe, launcher, pip and child-PATH conversions must fail the intended
+  applying further source changes, then freeze the supplemental test hash. Name
+  the expected-RED node set separately from missing-entry/no-`..` cases already
+  green under R3. Run all original 26 tests unchanged alongside it, keeping both
+  acceptance modules separate from the original regression comparison. Retained
+  mutants omitting each of the five boundaries (probe argv, probe PATH, launcher,
+  pip and child PATH), plus an unsafe unconditional non-strict directory
+  canonicalization mutant, must fail the intended
   identity/lookup assertion after successful setup and positive controls. Do not
   count a setup exception, missing prerequisite, skip or xfail as acceptance.
+  Retain the final-executable-dereference mutant from the original scope as well.
 
 ### `phase-loop-runtime/README.md` and `CHANGELOG.md` (modify)
 
@@ -283,9 +328,10 @@ completion of the dependency repair in agent-harness#841.
 
 ## Dependencies and order
 
-1. Register the R4 amendment with native manifest/handoff helpers, commit only this
+1. Register the R5 amendment with native manifest/handoff helpers, commit only this
    plan and its owned manifest row, and obtain a fresh complete four-vendor plan
-   review before supplemental tests or further implementation. Preserve the R3
+   review before supplemental tests or further implementation. Preserve the R4
+   review and failed author diagnostic along with the R3
    failed source/doc/test bytes and failed lifecycle event; do not manufacture
    a clean candidate or transfer its plan votes. The agent-harness#828 publication
    owner remains untouched.
@@ -329,7 +375,7 @@ automation:
 ```
 
 The displayed argv is the shape; R3's named RED paths are retained and must not
-be reused. Use fresh `red-r4`, `control-r4`, `green-r4` and corresponding fixture
+be reused. Use fresh `red-r5`, `control-r5`, `green-r5` and corresponding fixture
 names. Before each run, render distinct native
 run directories, JUnit files and fresh short real `/tmp`
 basetemps for RED, control, GREEN, mutants and installed-runtime controls. No
