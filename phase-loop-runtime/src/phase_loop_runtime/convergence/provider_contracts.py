@@ -86,10 +86,12 @@ AUTOMATED_PROVIDER_VERBS = frozenset(
 # evidence: after a by-name (non-force) push it READS the remote and only reports
 # the effect terminally observed when the remote branch head equals the pushed
 # head_sha AND the PR's ``headRefOid`` equals it — resolving the real PR url.  Any
-# read-failure / mismatch / ambiguous push fails closed to
-# ``outcome_ambiguous_blocked`` (never inferred as no-effect, never fabricated as
-# success — v5 rule).  ``BrokerService`` de-dups on the canonical
-# ``(repo, branch, head_sha)`` triple with idempotent replay recovery.
+# invalid/error read, mismatched remote head, or ambiguous push fails closed to
+# ``outcome_ambiguous_blocked``. The adapter implements bounded observations for
+# an empty PR list or an otherwise identity-validated, well-formed differing head.
+# Exhaustion remains ambiguous, never inferred as no-effect or fabricated as
+# success. No mutation retry or terminal recovery is permitted. ``BrokerService``
+# de-dups on the canonical ``(repo, branch, head_sha)`` triple with idempotent replay recovery.
 _SUPPORTED_GITHUB_PUBLISH = ProviderCompletionContract(
     verb="publish_committed_branch",
     provider="github",
@@ -100,10 +102,10 @@ _SUPPORTED_GITHUB_PUBLISH = ProviderCompletionContract(
     terminal_success_evidence="remote branch head == pushed head_sha AND PR headRefOid == pushed head_sha -> effect_terminal_observed with the real PR url",
     terminal_no_effect_evidence="ONLY a provider-confirmed rejection is no-effect; a failed/ambiguous push is NOT no-effect and fails closed to outcome_ambiguous_blocked (v5)",
     non_late_commit_guarantee="by-name non-force push linearizes onto origin/<branch> or is rejected; there is no delayed/late apply after the ls-remote read",
-    guaranteed_processing_horizon="N/A — synchronous git push + gh reads; no asynchronous provider processing queue to drain",
+    guaranteed_processing_horizon="N/A — git push is synchronous; these confirmation reads do not rely on asynchronous provider processing, a visibility SLA, or a provider-effect drain; they are defensive against unverified possible read-visibility lag",
     expected_version_predicate="origin/<branch> head == pushed head_sha (exact-published-head match)",
     revocation_affects_accepted="no — an accepted (linearized) push observed at head_sha is not revoked by the broker; only ambiguity fails closed",
-    stabilization_drain_interval="N/A — verification is synchronous; no stabilization/drain window",
+    stabilization_drain_interval="Optional confirmation observations within one uninterrupted original adapter invocation: at most 3 rounds, with waits of 1 then 2 seconds only for a valid empty PR list or one otherwise identity-validated PR with a well-formed differing head; recheck the exact remote head each round; all other confirmation-read failures and exhaustion remain outcome_ambiguous_blocked. This bounds rounds and added sleeps, not command durations or lease lifetime; no mutation retry or terminal recovery.",
 )
 
 # Every OTHER verb×provider stays HUMAN_EXECUTED (merge, release, package, publish
