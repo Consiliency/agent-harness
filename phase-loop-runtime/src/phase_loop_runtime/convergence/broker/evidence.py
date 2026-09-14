@@ -6,6 +6,7 @@ import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from phase_loop_runtime.convergence.broker.admission import constructor_key_mismatch
 from phase_loop_runtime.convergence.provider_contracts import TerminalOutcomeState, validate_terminal_transition
 
 
@@ -37,6 +38,59 @@ def _require_generation(root: Path, generation_lease) -> None:
         require_current_generation(root, generation_lease, strict=True)
 
 
+class EvidenceStoreIncompatible(PermissionError):
+    """This runtime cannot read one ``evidence.jsonl`` record (agent-harness#789).
+
+    Mirrors `AdmissionStoreIncompatible` for the sibling store, down to the BASE CLASS:
+    that docstring records `PermissionError` as load-bearing "so every fail-closed path
+    stays closed". A twin raising `RuntimeError` would not be caught by a handler written
+    to that convention — inconsequential today, but the two stores are read by the same
+    paths and divergence here is a trap for whoever writes that handler next.
+    (ah#834 r1, fable N2.)
+
+    Names the reader's own version and path, because the actionable fact in
+    agent-harness#789 was WHICH runtime was reading, not which line failed.
+    """
+
+    def __init__(
+        self,
+        store_path: Path,
+        *,
+        line: int,
+        idempotency_key: str | None,
+        constructor: type,
+        unknown_keys: tuple[str, ...],
+        missing_keys: tuple[str, ...],
+        cause: Exception,
+    ) -> None:
+        import phase_loop_runtime
+
+        self.store_path = Path(store_path)
+        self.line = line
+        self.idempotency_key = idempotency_key
+        self.constructor = constructor
+        self.unknown_keys = tuple(unknown_keys)
+        self.missing_keys = tuple(missing_keys)
+        where = (
+            f"record {idempotency_key!r} at line {line}"
+            if idempotency_key is not None
+            else f"record at line {line}"
+        )
+        problems = []
+        if self.unknown_keys:
+            problems.append(f"unknown keys {list(self.unknown_keys)}")
+        if self.missing_keys:
+            problems.append(f"missing keys {list(self.missing_keys)}")
+        if not problems:
+            problems.append(f"constructor rejected the record: {cause}")
+        super().__init__(
+            f"evidence store {self.store_path} is not readable by this runtime "
+            f"(phase_loop_runtime {phase_loop_runtime.__version__} at "
+            f"{Path(phase_loop_runtime.__file__)}): {where} does not fit "
+            f"{constructor.__qualname__}: {'; '.join(problems)}"
+        )
+
+
 class BrokerEvidenceStore:
     def __init__(self, root: Path, generation_lease=_UNDECLARED) -> None:
         self.root = root
@@ -57,10 +111,173 @@ class BrokerEvidenceStore:
         # while the admission lock is held (execute admits, THEN records).
         self.lock_path = root / "admissions.lock"
     def replay(self) -> dict[str, EvidenceRecord]:
+        # SCHEMA DRIFT IS A TYPED REFUSAL, NOT A TypeError.
+        #
+        # This is the defect that opened agent-harness#789. Its first step was an
+        # installed runtime reading a store written by a newer one and dying with
+        # `TypeError: AdmissionRecord.__init__() got an unexpected keyword argument
+        # 'binding'` — an optional field the old reader did not know. The ADMISSION store
+        # was hardened for that (see `AdmissionStoreIncompatible` and
+        # `constructor_key_mismatch` in admission.py); its sibling EVIDENCE store, whose
+        # replay is the identical `EvidenceRecord(**raw)` construct, was not. So the exact
+        # incident that produced a permanently blocked partition remained reachable one
+        # module over, and would fire the moment anyone adds an optional field here —
+        # which is precisely what a diagnostic-retention change for that same incident
+        # wants to do.
+        #
+        # Refusing with the reader's own version and path, and naming the offending keys,
+        # turns "the runtime crashed somewhere in the broker" into an actionable
+        # compatibility report BEFORE any ownership or provider mutation. It does not make
+        # an incompatible store readable, and deliberately does not skip or coerce the
+        # record: fabricating a partial read of a sealed evidence store is worse than
+        # refusing it. (agent-harness#789.)
         result: dict[str, EvidenceRecord] = {}
         if self.path.exists():
-            for line in self.path.read_text(encoding="utf-8").splitlines():
-                raw = json.loads(line); raw["state"] = TerminalOutcomeState(raw["state"]); result[raw["idempotency_key"]] = EvidenceRecord(**raw)
+            # READ BYTES AND DECODE PER ROW. `read_text(encoding="utf-8")` decoded the
+            # WHOLE FILE before the per-row guard, so one undecodable byte sequence
+            # anywhere raised `UnicodeDecodeError` and escaped the typed refusal —
+            # taking the runtime, path and line diagnostics with it. Measured, a valid
+            # first row followed by:
+            #
+            #   a truncated UTF-8 sequence     -> UnicodeDecodeError, untyped
+            #   a lone continuation byte       -> UnicodeDecodeError, untyped
+            #   latin-1 bytes in a valid row   -> UnicodeDecodeError, untyped
+            #
+            # `UnicodeDecodeError` is a `ValueError`, so moving the decode inside the
+            # existing guard types it without widening the caught set at all — the r2
+            # scope note is unaffected.
+            #
+            # `splitlines()` on BYTES, not `split(b"\n")`: the latter yields a spurious
+            # empty final element for the trailing newline every append writes, and the
+            # r7 shape check refuses a blank row — so that spelling would fail-close
+            # every store in existence. Byte-splitlines keeps the CR/CRLF/LF behaviour
+            # the str version had. (ah#834 r8, codex.)
+            #
+            # AND IT NARROWS A DIVERGENCE THE r8 SEAT FLAGGED. `str.splitlines()` also
+            # splits on U+2028, U+2029 and U+0085, which a newline-counting reader does
+            # not, so the reported line number could disagree with `sed -n Np`. Measured:
+            # `bytes.splitlines()` splits on none of the three (only CR, CRLF, LF), so the
+            # remaining divergence is bare `\r` alone, which both spellings split. The
+            # writer cannot emit any of them regardless — `json.dumps` with default
+            # `ensure_ascii` plus an explicit `"\n"` — and `_parse_strict_jsonl` documents
+            # the same class. (ah#834 r8 fable note 2, resolved by the r8 fix.)
+            for index, raw_line in enumerate(self.path.read_bytes().splitlines(), start=1):
+                # THE DECODE AND THE SHAPE CHECK BELONG INSIDE THE GUARD TOO.
+                #
+                # They sat above the try, so three more shapes escaped the typed refusal
+                # entirely and crashed exactly the way ah#789 crashed — in the store whose
+                # replay decides `epoch_blocked`:
+                #
+                #   a row that is valid JSON but NOT an object (`null`, `[]`, `"x"`)
+                #     -> AttributeError: 'NoneType' object has no attribute 'get'
+                #   a row that is not valid JSON at all (a truncated final append)
+                #     -> JSONDecodeError
+                #   a blank line
+                #     -> JSONDecodeError
+                #
+                # Measured on all five: every one bypassed `EvidenceStoreIncompatible`
+                # and lost the runtime, path and line diagnostics the refusal exists to
+                # carry. A truncated tail is the likeliest of them in production — the
+                # store is append-only and a crash mid-append leaves exactly that — and
+                # refusing it is correct: fabricating a partial read of a sealed evidence
+                # store is the documented worse option. (ah#834 r7, codex.)
+                raw: object = None
+                # The STATE COERCION BELONGS INSIDE THE GUARD. It used to sit above the
+                # try, so only one of three drift shapes was typed: a newer writer adding
+                # an unknown TerminalOutcomeState VALUE still raised a bare ValueError,
+                # and a row missing `state` entirely raised KeyError. Those are the same
+                # forward-compatibility class as an added field — a new state value is at
+                # least as likely an evolution as a new key — and they were escaping the
+                # very guard written for it. (ah#834 r1, fable N1.)
+                #
+                # `RecursionError` IS CAUGHT AND IT IS NOT A `ValueError`. `json.loads` on a
+                # deeply nested row raises it — measured: a valid first row followed by
+                # `"[" * 2000 + "0" + "]" * 2000` escaped the refusal entirely under the
+                # normal recursion limit, while a 500-deep row was already a typed refusal
+                # (it is simply a non-object row). That is an A8 shape, so it must carry
+                # the store/runtime/line diagnostics like every other one.
+                #
+                # Exactly scoped, by the same argument as the rest of this handler: within
+                # this `try` the only recursive call is the JSON decoder. `EvidenceRecord`
+                # is a plain frozen dataclass and `TerminalOutcomeState` a plain
+                # `(str, Enum)`, so neither can recurse. (ah#834 r9, codex.)
+                #
+                # THE SCOPE OF THIS CATCH, STATED AS A RULE RATHER THAN A LIST.
+                #
+                # An earlier revision ENUMERATED which exceptions were reachable, and the
+                # list went stale three times in three rounds as rounds 7, 8 and 9 each
+                # added a reachable source (`json.loads`' JSONDecodeError, the per-row
+                # `UnicodeDecodeError`, and `RecursionError`). A seat caught the first
+                # drift; enumerating a set that every round extends is the same defect
+                # class this PR has been fixing all along, so the enumeration is gone.
+                #
+                # THE RULE: everything inside this `try` is either a decode of untrusted
+                # bytes or a construction from them, so every exception it can raise means
+                # "this runtime cannot read this row" — which is exactly what the refusal
+                # says. Three of the raises are OURS and deliberate (the non-object shape
+                # check, the key shape check, and the decode), and they are part of that
+                # same statement.
+                #
+                # THE PRECONDITION, which is what actually needs watching: it holds only
+                # while `EvidenceRecord` stays a plain frozen dataclass with no
+                # `__post_init__` and `TerminalOutcomeState` a plain `(str, Enum)` with no
+                # `_missing_`. Give either one user code and a genuine validation bug would
+                # be reported as schema drift — a misdiagnosis, on the store whose replay
+                # decides `epoch_blocked`. Split the guard at that point rather than
+                # leaving it to be discovered from a confusing message;
+                # Consiliency/agent-harness#835 tracks doing it now. The sibling at
+                # admission.py is narrower (`TypeError` only) and does not carry this
+                # hazard. (ah#834 r2, fable; enumeration dropped r9 after its third drift.)
+                key = None
+                try:
+                    line = raw_line.decode("utf-8")
+                    raw = json.loads(line)
+                    if not isinstance(raw, dict):
+                        # A DELIBERATE in-guard raise, not a widening: it converts a
+                        # shape the constructor could never accept into this function's
+                        # own typed refusal. The scope note above still holds — the only
+                        # exceptions this handler interprets as drift are the ones raised
+                        # on these lines.
+                        raise TypeError(
+                            f"row decoded to {type(raw).__name__}, not a JSON object"
+                        )
+                    key = raw.get("idempotency_key")
+                    if not isinstance(key, str):
+                        # `result[raw["idempotency_key"]]` ran BELOW the guard, so an
+                        # unhashable key raised a bare `TypeError: unhashable type: 'list'`
+                        # straight out of `replay()` — literally the ah#789 signature,
+                        # arising AFTER the record constructed fine. A non-string but
+                        # hashable key (`7`, `null`) was worse than a crash: it read
+                        # silently and keyed a record nothing will ever look up, while
+                        # `epoch_blocked` is computed over exactly this mapping.
+                        #
+                        # An EMPTY string is deliberately still accepted: it is hashable
+                        # and readable, and rejecting it would fail-close a partition that
+                        # reads today, which this round's own control test calls worse
+                        # than the crash it replaced. (ah#834 r7, fable.)
+                        raise TypeError(
+                            f"idempotency_key is {type(key).__name__}, not a string"
+                        )
+                    raw["state"] = TerminalOutcomeState(raw["state"])
+                    record = EvidenceRecord(**raw)
+                except (TypeError, ValueError, KeyError, RecursionError) as error:
+                    # Never hand a non-mapping to the mismatch helper: it would be a
+                    # second crash inside the error handler, which is the ah#789 shape
+                    # relocated one more time.
+                    unknown, missing = (
+                        constructor_key_mismatch(EvidenceRecord, raw)
+                        if isinstance(raw, dict) else ((), ())
+                    )
+                    raise EvidenceStoreIncompatible(
+                        self.path,
+                        line=index,
+                        idempotency_key=key,
+                        constructor=EvidenceRecord,
+                        unknown_keys=unknown,
+                        missing_keys=missing,
+                        cause=error,
+                    ) from error
+                result[key] = record
         return result
     def _authorize(self) -> None:
         """Authenticate BEFORE any directory creation, then create the tree."""
