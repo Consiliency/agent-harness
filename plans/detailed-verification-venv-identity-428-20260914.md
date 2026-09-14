@@ -2,9 +2,9 @@
 
 ## Task
 
-Repair the proven virtual-environment identity loss in agent-harness#428. A
-selected environment must supply the interpreter, packages and pip invocation
-used by native verification. This standalone tooling repair does not satisfy a
+Repair the proven virtual-environment identity loss in agent-harness#428. An
+explicitly selected environment must supply the interpreter, packages and pip
+invocation used by native verification. This standalone tooling repair does not satisfy a
 V10 exit criterion or close the broader environment-composition issue.
 
 ## Research summary
@@ -33,6 +33,20 @@ no parent shim exclusion, test amendment or privacy relaxation is part of this f
   and PATH lookup semantics. Convert a relative result at discovery time so the
   version probe and execution use the same file even when their working directory
   differs. Do not reinterpret relative pins as a new repo-relative interface.
+- Add a small pure PATH-anchoring helper, shared by `_interpreter_full_version`
+  and `_run_process`: convert relative and empty effective PATH entries to
+  absolute lexical entries against the caller's discovery directory; preserve
+  entry order, duplicates and absolute entries without resolving symlinks or
+  collapsing `..`. A missing PATH uses `os.defpath`, matching `shutil.which`;
+  an explicitly empty PATH means the discovery directory. Do not mutate global
+  environment or cwd. Use this PATH in repo-context version-probe subprocesses
+  and, only when an interpreter shim is active, in verification subprocesses
+  before prepending that shim. Preserve explicit command environment overrides
+  as overrides, anchoring their relative entries by the same documented rule.
+  This keeps the shadows-only `all_present_ok` branch's execution aligned with
+  discovery even when caller directory A differs from target repository B.
+  Normalization also covers versioned names that need no rejection wrapper.
+  No-spec/no-pin command execution retains its existing environment behavior.
 - `_build_interpreter_shim` — write one executable `_selected_python` launcher
   in the existing shim directory, using `/bin/sh` and `exec` with a correctly
   `shlex.quote`-escaped absolute lexical target and unchanged `"$@"` forwarding.
@@ -41,15 +55,26 @@ no parent shim exclusion, test amendment or privacy relaxation is part of this f
   Never link either bare name directly to the venv Python executable. Preserve
   exit status and the exec process boundary. With `interpreter=None`, retain the
   existing shadows-only behavior and do not add bare redirects.
+  Absolutize in the shim builder too, without `resolve`/`realpath`. Before writing
+  `_selected_python`, unlink an existing entry just as the existing shadow
+  writers do; never write through a pre-existing symlink. Verify an outside
+  sentinel is unchanged. Update the builder docstring as well as the dataclass.
 - `_resolve_suite_interpreter` — retain the absolute lexical selected path in
   all three successful returns (explicit pin, already-satisfying bare interpreter,
   and automatic fallback). Keep the current selection order. The existing pip
   alignment consumer then receives the same executable that verification uses.
-  Update the `SuiteInterpreter` documentation accordingly.
+  Update the `SuiteInterpreter` documentation accordingly. With no explicit pin,
+  preserve distinct satisfying `python`/`python3` alias choices and the existing
+  metadata/pip preference for `python3`, then `python`. Do not claim one shared
+  venv when those aliases differ; use an explicit pin when that guarantee is
+  required. Login profiles and explicit command overrides can still select a
+  different environment. This repair does not add shell-profile or argv parsing.
 - Preserve full-version and repo-context probing, malformed-spec rejection,
   below/above-bound rejection, present-but-unprobeable rejection, versioned-name
   shadow wrappers, login-shell rewriting and failure evidence. Do not alter
   `_nonsatisfying_shadow_names`, `_version_satisfies`, redaction or public signatures.
+  The version probe's sole behavioral addition is the anchored PATH environment;
+  its cwd, full-version query, timeout and failure handling remain unchanged.
   The existing vocabulary remains `SCHEMA_VERSION = 2` with
   `_SUPPORTED_SCHEMA_VERSIONS = frozenset({1, 2, 3})`; no artifact field, schema,
   failure kind or exemption is added.
@@ -71,6 +96,15 @@ basetemp; do not automatically delete them on failure. No network is needed.
   launcher as real subprocesses. Assert the reported lexical interpreter agrees
   with the executable used for pip alignment. Cover a relative discovered path
   with distinct discovery and target-repo directories.
+- Add a native `all_present_ok` case with directory A and repository B each
+  containing a different real venv at the same relative PATH entry. Require
+  actual prefixes, marker visibility and pip alignment to select A. Exercise
+  versioned aliases as well as both bare names, so anchoring only the latter
+  cannot pass. Cover empty and missing PATH, symlink-directory/`..` spelling,
+  and mixed satisfying bare aliases: preserve each alias's discovered venv and
+  explicitly assert the documented metadata/pip preference. Retain a mutant
+  that omits execution-side PATH anchoring; its two-directory control must fail
+  on the intended identity assertion while the positive control succeeds.
 - Create a second venv with stdlib `ensurepip` provisioning. Run native env
   refresh using the existing `python -m pip --version` argv shape and a marker
   suite. Require its captured pip location, recorded aligned argv and suite
@@ -78,7 +112,11 @@ basetemp; do not automatically delete them on failure. No network is needed.
   installation or network action. Missing ensurepip is a prerequisite failure,
   not a skipped acceptance case.
 - Force symlink creation to fail only in launcher construction and execute both
-  fallback files. Check literal argv forwarding and a nonzero target exit status.
+  fallback files using a metacharacter venv name. Assert prefix and marker
+  visibility, literal argv forwarding and a nonzero target exit status. Compare
+  both fallback files byte-for-byte with the launcher. Retain a double-quote
+  interpolation mutant and prove the metacharacter witness rejects it for its
+  actual side effect or identity failure after successful fixture setup.
   Keep the existing symlink-backed alias test unchanged.
 - Exercise the unchanged fail-closed guard with an unsatisfiable pin and require
   that native verification executes neither env refresh nor suite. Verify a
@@ -92,13 +130,17 @@ basetemp; do not automatically delete them on failure. No network is needed.
   mutants live only in retained fixtures and never alter the candidate or frozen
   tests. A mutant failure counts only after confirming setup and its positive
   control completed, and must identify the intended identity assertion.
+  Parse login-shell identity from a per-case JSON file written by the child,
+  so incidental profile stdout cannot masquerade as malformed test evidence.
 
 ### `phase-loop-runtime/README.md` and `CHANGELOG.md` (modify)
 
 Document that an explicit `automation.python` virtual-environment pin preserves
 that environment for bare Python and pip refresh while still enforcing the
-repository's Python constraints. Document the unchanged relative-discovery
-anchor and remaining nested-test/redaction limitations. Add an Unreleased entry
+repository's Python constraints. Document relative PATH anchoring during guarded
+verification and version probes, its effect on command lookup from a different
+cwd, the no-pin mixed-alias/profile limits, and remaining nested-test/redaction
+limitations. Add an Unreleased entry
 qualified with agent-harness#428. Do not claim a release, full-suite success or
 completion of the dependency repair in agent-harness#841.
 
@@ -119,7 +161,8 @@ completion of the dependency repair in agent-harness#841.
    and encrypt/independently restore evidence before eligible publication or
    cleanup. Install the repaired runtime into an owned environment, verify its
    source hashes and repeat the native identity/pip controls using that installed
-   copy before relying on it. No global or fleet replacement is implicit.
+   copy with source checkout paths removed from PYTHONPATH before relying on it.
+   No global or fleet replacement is implicit.
 
 ## Verification
 
@@ -145,20 +188,30 @@ basetemps for RED, control, GREEN, mutants and installed-runtime controls. No
 acceptance test may skip or xfail. Validate each native artifact; expected RED
 must remain a nonzero artifact, never converted to a passing native result.
 
-Separately run the complete unchanged
-`test_verification_interpreter_guard_221.py` and
-`test_suite_interpreter_satisfies_requires_python.py` through native verification
-before and after implementation. Compare collected node IDs and per-node JUnit
+Derive the regression inventory using `rg -l` over the tests tree for
+`_interpreter_path|_build_interpreter_shim|_resolve_suite_interpreter|_align_install_interpreter|_interp_shim|_interpreter_full_version|_run_process`.
+At the input head it yields exactly these four existing modules:
+`test_verification_interpreter_guard_221.py`,
+`test_suite_interpreter_satisfies_requires_python.py`,
+`test_verification_evidence.py` and `test_cr_fixes_pr220.py`.
+Run all matching modules unchanged through native verification before and after
+implementation. Compare collected node IDs and per-node JUnit
 outcomes; allow no newly failing node or lost passing node. The three known
-inherited-shim cases may remain failed and must be reported as such, with their
+inherited-shim cases and four redaction cases may remain failed and must be reported as such, with their
 original full artifacts intact. This comparison is regression evidence, not a
 green suite. Any unexpected failure or changed failure cause blocks source
-closeout until explained and reviewed. Never exclude, weaken or rewrite those
+closeout until explained and reviewed. A newly failing resolved-symlink-shape
+assertion is a blocking owning-lane finding, not authorization to amend that test.
+Never exclude, weaken or rewrite those
 frozen tests to manufacture a passing result.
 
 Run `git diff --check`, native manifest validation and native `docs-audit` against
-the actual candidate. Verify all existing tests, dependency files, guarded
-functions and artifact vocabulary hashes remain unchanged. This bounded repair
+the actual candidate. Verify all existing tests, dependency files, unchanged
+guard functions and artifact vocabulary hashes remain unchanged. The only
+version-probe change is its PATH environment; inspect its AST delta accordingly.
+The canonical packaged runtime/verification contract was searched for a promise
+that bare aliases link directly to the interpreter; none was found. Preserve
+that contract's bytes. This bounded repair
 does not justify rerunning the expensive repository-wide suite.
 
 Execution may write only its owned source/doc/test/plan/manifest boundary,
