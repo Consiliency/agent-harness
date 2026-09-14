@@ -372,6 +372,31 @@
       "updated_at": "2026-09-07T00:00:00Z"
     },
     {
+      "acceptance_criteria_count": 20,
+      "created_at": "2026-09-08T18:05:00Z",
+      "file": "plans/detailed-789d-fabpub-partition-rotation-20260908.md",
+      "handoff_ref": ".dev-skills/handoffs/claude-plan-detailed/latest.md",
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-09-08T18:05:00Z",
+          "by": "claude-plan-detailed",
+          "metadata": {},
+          "transition": "committed"
+        }
+      ],
+      "owner_skill": "claude-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "789d-fabpub-partition-rotation",
+      "status": "committed",
+      "task_summary": "Consiliency/agent-harness#789 Workstream D: governed recovery for a permanently blocked FABPUB repository partition via a journaled partition rotation \u2014 LegacyRepositoryPartitionReceipt.v3 with a rotation proof and key-granular adjudicated_effect_dispositions (observed_landed / attested_not_landed), a human attestation the runtime never derives from the remote, typed pre-v3 skew refusal, and the retired store preserved byte-identical. Discharges acceptance item (5) first half as a capability.",
+      "type": "detailed",
+      "updated_at": "2026-09-08T22:22:36Z"
+    },
+    {
       "acceptance_criteria_count": 4,
       "created_at": "2026-07-18T06:20:00Z",
       "file": "plans/detailed-available-panel-legs-grok-171-20260718.md",
@@ -580,6 +605,34 @@
       "task_summary": "Detailed implementation plan for issue #39 train live reverify hard-mode fail-closed behavior.",
       "type": "detailed",
       "updated_at": "2026-06-30T21:06:48Z"
+    },
+    {
+      "acceptance_criteria_count": 5,
+      "created_at": "2026-09-14T22:03:35.951574+00:00",
+      "file": "plans/detailed-publish-confirmation-contract-789-20260913.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260914-confirmation-fix.md",
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-09-14T22:03:35.951574+00:00",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "implementation_started": false,
+            "review_status": "pending"
+          },
+          "transition": "committed"
+        }
+      ],
+      "owner_skill": "codex-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "detailed-publish-confirmation-contract-789-20260913",
+      "status": "committed",
+      "task_summary": "Reconcile the confirmation contract and implementation under agent-harness#789 single fix-PR exception",
+      "type": "detailed",
+      "updated_at": "2026-09-14T22:03:35.951574+00:00"
     },
     {
       "acceptance_criteria_count": 5,
@@ -6071,31 +6124,6 @@
       "task_summary": "Thread live run alias into verification.json (ah#85b)",
       "type": "detailed",
       "updated_at": "2026-07-28T22:28:34Z"
-    },
-    {
-      "acceptance_criteria_count": 20,
-      "created_at": "2026-09-08T18:05:00Z",
-      "file": "plans/detailed-789d-fabpub-partition-rotation-20260908.md",
-      "handoff_ref": ".dev-skills/handoffs/claude-plan-detailed/latest.md",
-      "if_gates_produced": [],
-      "lanes": [],
-      "lifecycle": [
-        {
-          "at": "2026-09-08T18:05:00Z",
-          "by": "claude-plan-detailed",
-          "metadata": {},
-          "transition": "committed"
-        }
-      ],
-      "owner_skill": "claude-plan-detailed",
-      "phase_alias": null,
-      "reflection_ref": null,
-      "roadmap_ref": null,
-      "slug": "789d-fabpub-partition-rotation",
-      "status": "committed",
-      "task_summary": "Consiliency/agent-harness#789 Workstream D: governed recovery for a permanently blocked FABPUB repository partition via a journaled partition rotation \u2014 LegacyRepositoryPartitionReceipt.v3 with a rotation proof and key-granular adjudicated_effect_dispositions (observed_landed / attested_not_landed), a human attestation the runtime never derives from the remote, typed pre-v3 skew refusal, and the retired store preserved byte-identical. Discharges acceptance item (5) first half as a capability.",
-      "type": "detailed",
-      "updated_at": "2026-09-08T22:22:36Z"
     }
   ],
   "schema_version": 1
