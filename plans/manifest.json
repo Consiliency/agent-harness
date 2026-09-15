@@ -6135,6 +6135,161 @@
       "task_summary": "Thread live run alias into verification.json (ah#85b)",
       "type": "detailed",
       "updated_at": "2026-07-28T22:28:34Z"
+    },
+    {
+      "acceptance_criteria_count": 5,
+      "created_at": "2026-09-13T23:34:51.639173+00:00",
+      "file": "plans/detailed-verification-test-dependencies-428-20260913.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260914T022129Z-verification-test-dependencies-428-r5.md",
+      "if_gates_produced": [],
+      "input_main": "c6b9924b414769ed45bdc3ea47a8d66ec1fe52c7",
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-09-13T23:34:51.639173+00:00",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "plan_approval": false,
+            "planning_artifact_only": true,
+            "source_approval": false
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-09-14T00:49:33Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "plan_approval_ref": ".phase-loop/diagnostics/verification-environment-428-20260913/plan-approval.json",
+            "plan_artifact": "plans/detailed-verification-test-dependencies-428-20260913.md",
+            "run_id": "verification-428-baseline-red-20260914",
+            "source_approval": false
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-09-14T01:21:46Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "diagnostic": "acceptance criterion unmet",
+            "doc_delta_decision": "docs_updated",
+            "publication_allowed": false,
+            "reflection_record_ref": ".phase-loop/diagnostics/verification-environment-428-20260913/execution-failed-closeout-record.json",
+            "run_id": "verification-428-source-review-r1-20260914",
+            "source_review_result_sha256": "95928dd06c822f209854ac5c0501a9c0e26bd2918b2b00b9fc87546072cea36b",
+            "source_review_status": "failed",
+            "source_review_summary_ref": ".phase-loop/diagnostics/verification-environment-428-20260913/source-review-r1/terminal-summary.json",
+            "verification_artifact_path": ".phase-loop/diagnostics/verification-environment-428-20260913/implementation-green/native/verification.json",
+            "verification_status": "passed"
+          },
+          "transition": "failed"
+        },
+        {
+          "at": "2026-09-14T01:25:06.325637+00:00",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "new_revision_implementation_started": false,
+            "plan_approval": false,
+            "plan_artifact": "plans/detailed-verification-test-dependencies-428-20260913.md",
+            "plan_sha256": "ab0345e087d26b94e989668d4fde0d44773578ef59b8674b198c1785c532d74d",
+            "prior_source_review_result_sha256": "95928dd06c822f209854ac5c0501a9c0e26bd2918b2b00b9fc87546072cea36b",
+            "revision": "r3",
+            "scope_delta": "align the named CI install pin, setuptools floor and comment",
+            "selected_build": "1.6.1",
+            "source_approval": false,
+            "source_review_archive_commit": "9176b937a8207dc96dcfb7993ae71821a7c4260c"
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-09-14T02:07:03.419781+00:00",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "new_revision_implementation_started": false,
+            "plan_approval": false,
+            "plan_sha256": "6e423e75747bfbbfe8a1d26834e46028f6375e8d7f1eb3621fb066f2d45099f1",
+            "prior_plan_review_archive_commit": "91702fb826bcd6d0ea6f48a1505bbba057097094",
+            "prior_plan_review_result_sha256": "711ae986f573bec4e30f8d7c805b7869047ba5113cbb566b7ac7ee793bc9ad63",
+            "revision": "r4",
+            "scope_delta": "align both existing pinned hosted pytest and Dagger test installers",
+            "selected_build": "1.6.1",
+            "source_approval": false
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-09-14T02:21:29.039775+00:00",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "new_revision_implementation_started": false,
+            "plan_approval": false,
+            "plan_sha256": "5b1775417994c939c5f24613a7880a611e869dc9eeff580592d46f04d181cccb",
+            "prior_plan_review_archive_commit": "00853c020679f289c013683c677f15910cde338a",
+            "prior_plan_review_result_sha256": "027f52182dfda545c26a581bd1f510d03382d6a8be5faa01c2af439921652825",
+            "revision": "r5",
+            "scope_delta": "research and review-packet correction only; source scope unchanged",
+            "selected_build": "1.6.1",
+            "source_approval": false
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-09-14T02:42:18Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "plan_approval_ref": ".phase-loop/diagnostics/verification-environment-428-20260913/plan-approval-r5.json",
+            "plan_artifact": "plans/detailed-verification-test-dependencies-428-20260913.md",
+            "plan_review_archive_commit": "a2278a831cd00a43222d2b900d4432d2a0b84ce4",
+            "plan_sha256": "5b1775417994c939c5f24613a7880a611e869dc9eeff580592d46f04d181cccb",
+            "publication_allowed": false,
+            "run_id": "verification-428-green-r5-20260914",
+            "selected_build": "1.6.1",
+            "source_approval": false
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-09-14T03:19:50Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "acceptance_criteria_satisfied": 5,
+            "actual_pr_head_approval": false,
+            "diagnostic": "native publication pending",
+            "doc_delta_decision": "docs_updated",
+            "plan_artifact": "plans/detailed-verification-test-dependencies-428-20260913.md",
+            "publication_reason": "Successor generation authenticated; governed admission and actual PR-head/CI gates remain",
+            "publication_status": "pending_native_publication",
+            "reflection_record": ".phase-loop/diagnostics/verification-environment-428-20260913/execution-closeout-r3.json",
+            "run_id": "20260914T031950Z-verification-428-source-closeout",
+            "source_candidate_approval": true,
+            "v10_accepted": false,
+            "verification_artifact_path": ".phase-loop/diagnostics/verification-environment-428-20260913/implementation-green-r5/native/verification.json",
+            "verification_status": "passed"
+          },
+          "transition": "completed"
+        }
+      ],
+      "owner_skill": "codex-plan-detailed",
+      "phase_accepted": false,
+      "phase_alias": null,
+      "plan_revision": {
+        "new_revision_implementation_started": false,
+        "plan_approval": false,
+        "plan_sha256": "5b1775417994c939c5f24613a7880a611e869dc9eeff580592d46f04d181cccb",
+        "prior_plan_review_archive_commit": "00853c020679f289c013683c677f15910cde338a",
+        "prior_plan_review_result_sha256": "027f52182dfda545c26a581bd1f510d03382d6a8be5faa01c2af439921652825",
+        "revision": "r5",
+        "scope_delta": "research and review-packet correction only; source scope unchanged",
+        "selected_build": "1.6.1",
+        "source_approval": false
+      },
+      "publication_status": "pending_native_publication",
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "verification-test-dependencies-428-20260913",
+      "status": "completed",
+      "task_summary": "Declare supported native test tools and align hosted/Dagger test pins (agent-harness#428)",
+      "type": "detailed",
+      "updated_at": "2026-09-14T06:19:13Z"
     }
   ],
   "schema_version": 1

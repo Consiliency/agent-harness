@@ -67,12 +67,14 @@ dependencies = [
 # non_black_pixels/pixel_min/pixel_max can never override a real decode.
 # Pillow is imported LAZILY inside the derivation (models.py) -- it is NOT a
 # hard core dependency; an install without the `visual` extra still runs
-# every other command, and the visual-evidence gate itself fails CLOSED
-# (never silently passes on self-reported numbers) when Pillow is absent.
+# every other command. Missing Pillow blocks the opt-in blocking gate;
+# warning mode intentionally stays silent without image decoding.
 visual = ["Pillow>=10,<13"]
 
 [dependency-groups]
-test = ["pytest>=8,<9"]
+# Keep build aligned with hosted pytest and Dagger _base. Gate A's inner
+# test environment intentionally installs unpinned tools.
+test = ["pytest>=8,<9", "build==1.6.1", "setuptools>=70.1", "pip"]
 
 [project.urls]
 Homepage = "https://github.com/Consiliency/agent-harness"

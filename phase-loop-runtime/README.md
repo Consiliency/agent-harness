@@ -33,6 +33,24 @@ This exposes two console scripts — `phase-loop` and `codex-phase-loop` — bot
 `phase_loop_runtime.cli:main`. The canonical protocol document ships in the wheel as
 package data and is also installed to `share/phase-loop-runtime/protocol/protocol.md`.
 
+## Contributor test environment
+
+From the repository root, install the declared test tools and visual extra, then
+run the packaging and visual-evidence tests with the project environment:
+
+```sh
+uv sync --project phase-loop-runtime --group test --extra visual --python 3.14 --locked
+PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests phase-loop-runtime/.venv/bin/python -m pytest -q phase-loop-runtime/tests/test_outside_agent_contract_drift.py phase-loop-runtime/tests/test_visual_avatar_evidence_validator.py
+```
+
+The test group supplies pytest and package build/install tools, including pip;
+the visual extra supplies Pillow for image decoding. Both are opt-in. The native
+repository-wide interpreter guard includes the dagger subproject's Python 3.14
+floor, which is separate from this runtime package's Python 3.10 minimum and CI's
+interpreter matrix. These commands verify the two selected files; they do not
+establish complete CI equivalence, behavior without Pillow, full-suite acceptance
+or production readiness.
+
 ## Roadmap validation
 
 Lint a phase-plan roadmap spec (required headings, unique aliases, acyclic dependency
