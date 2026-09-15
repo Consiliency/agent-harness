@@ -104,6 +104,7 @@ class AgentHarnessCi:
             .from_(f"python:{python_version}-bookworm")
             .with_exec(["apt-get", "update"])
             .with_exec(["apt-get", "install", "-y", "--no-install-recommends", *BASE_PACKAGES])
+            .with_exec(["useradd", "--uid", "1000", "--user-group", "--create-home", "--home-dir", "/home/ci", "--shell", "/bin/bash", "ci"])
             # Cache pip across runs, keyed per interpreter so wheels never cross
             # versions, and per scope so concurrent stages never share one volume.
             .with_mounted_cache(
@@ -134,6 +135,13 @@ class AgentHarnessCi:
                     "setuptools>=70.1",
                 ]
             )
+            .with_exec(["chown", "-R", "ci:ci", "/src"])
+            .with_exec(["install", "-d", "-o", "ci", "-g", "ci", "/junit"])
+            .with_env_variable("HOME", "/home/ci")
+            .with_env_variable("USER", "ci")
+            .with_env_variable("LOGNAME", "ci")
+            # Permission-denial acceptance must run with an effective ordinary UID.
+            .with_user("ci")
         )
 
     @function

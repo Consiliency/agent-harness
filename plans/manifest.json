@@ -448,6 +448,19 @@
             "source_approval": false
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-09-15T13:23:30Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "phase_acceptance": false,
+            "plan_artifact": "plans/detailed-ci-nonroot-853-20260915.md",
+            "plan_review": ".phase-loop/diagnostics/ci-nonroot-853-20260915/plan-review-r2/terminal-summary.json",
+            "plan_sha256": "262068138de5cac403d5a4fe199b97f5d9aa03be096f51ad9bb66c4c0e46a9b7",
+            "private_review_archive": "4558b7158815196e63476049da469e7796aa905f",
+            "run_id": "ci-nonroot-853-20260915"
+          },
+          "transition": "executing"
         }
       ],
       "owner_skill": "codex-plan-detailed",
@@ -465,10 +478,10 @@
       "reflection_ref": null,
       "roadmap_ref": null,
       "slug": "ci-nonroot-853-20260915",
-      "status": "committed",
+      "status": "executing",
       "task_summary": "Run Dagger test stages as a real non-root user (agent-harness#853)",
       "type": "detailed",
-      "updated_at": "2026-09-15T12:52:35.933421+00:00"
+      "updated_at": "2026-09-15T13:23:30Z"
     },
     {
       "acceptance_criteria_count": 5,
