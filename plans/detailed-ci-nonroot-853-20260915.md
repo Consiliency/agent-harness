@@ -50,6 +50,12 @@ workstream. Previous review approvals do not transfer to this revision.
 The original baseline is already retained; resume this revision at plan review
 on the owned branch, preserving its existing implementation and lifecycle.
 
+Revision 3 received two AGREE and two PARTIALLY AGREE verdicts with all native
+bindings valid. Revision 4 makes the new regression criterion explicit, preserves
+revision/ledger history, and specifies capture before runtime cleanup. The source
+repair remains the same single setup argument. These are gaps exposed by the
+full-CI failure and review, not future-history constraints or a new workstream.
+
 ## Changes
 
 ### `ci/dagger/src/agent_harness_ci/main.py` (modify)
@@ -64,6 +70,8 @@ on the owned branch, preserving its existing implementation and lifecycle.
   the new home is already user-owned. The worktree directory is container-local,
   never a host mount. Add it to the existing privileged `install -d` argv, before
   the user switch; the existing runtime then uses its preferred location.
+  Comment that PROOFGATE fell back to unwritable `/` in CI run 34979555385, so
+  the provisioned root and `/junit` are necessary ordinary-user prerequisites.
   These changes apply only to the container snapshot, never the host checkout.
 - Set `HOME=/home/ci`, `USER=ci` and `LOGNAME=ci`, then end `_base` with
   `.with_user("ci")`. Every subsequent Git probe, suite and Gate A command must
@@ -80,14 +88,16 @@ on the owned branch, preserving its existing implementation and lifecycle.
 
 Add a short repo-specific Dagger note: package/image preparation is privileged,
 but stage commands use the named ordinary user with writable source, home and
-evidence directories. This makes Unix permission-denial tests meaningful. It
+evidence directories, including `/mnt/workspace/worktrees`. This makes Unix
+permission-denial tests meaningful. It
 does not provide a security boundary against the host operator or independent
 HARDEN evidence custody. Preserve all command/exit-code vocabulary unchanged.
 
 ### `CHANGELOG.md` (modify)
 
 Add an Unreleased entry qualified with agent-harness#853 describing ordinary-user
-Dagger stage execution. Do not claim runtime repair, release or V10 acceptance.
+Dagger stage execution and its writable worktree root. Do not claim runtime
+repair, release or V10 acceptance.
 
 ### Recording files
 
@@ -102,6 +112,12 @@ need fresh four-vendor review before landing. Write the row before that final
 round, recording only already completed review facts and explicitly leaving the
 final round pending. Record the final round's actual result on the PR, without
 another self-referential recording commit.
+For this already published PR, extend its unmerged row in place after actual
+revision-4 source review, keeping the R2 head, red CI run and raw log SHA256
+541cab43131c45f9dda849eaa2f50550adac1be3283a5ce193aeb08ff285eb14 as history.
+Do not rewrite any landed row. Keep prior plan-revision metadata in a manifest
+revision-history array when replacing the current revision metadata; retain its
+earlier review/archive pointers. The acceptance-criteria count is now five.
 
 ## Documentation impact
 
@@ -185,6 +201,23 @@ the pre-repair baseline. Preserve all existing root-baseline and 45-node overlay
 diagnostics as historical inputs. Requalify the existing 45-node diagnostic on
 all three revised images with the same labelled frozen overlay, alongside these
 separate unoverlaid regressions. Complete required CI still precedes merge.
+Before image dispatch, search existing tests for worktree-root/fallback-location
+assumptions and record the findings. Qualification must record traversable parent
+directories and actual directory creation by UID 1000, not merely path existence.
+
+For the new unoverlaid diagnostics, capture the runtime's baseline worktree and
+complete native-captured command output before its return-code branch, then the
+final worktree/output before its existing cleanup. Use a diagnostic-only pytest
+trace observer bound to exact runtime hashes and unique AST/code sites; do not
+patch runtime functions, subprocess, frames, cleanup or frozen tests. Capture
+failure makes the outer diagnostic fail while original cleanup still executes.
+Observe actual executor returns for both nodes, including all ten parameter
+executions, so early chronology-guard returns cannot masquerade as coverage.
+The detailed capture boundary, path ownership, byte/mode/symlink verification,
+success/failure/capture-error controls and retention limits are frozen in the
+owned `proofgate-diagnostic-retention-design.md` under the train directory below,
+SHA256 5ca596cff95f199cbe98d1d93db82b9f2bc664568f9ceafead379541250ea847.
+Implement and pass those diagnostic controls before accepting real-image results.
 Compile the changed Dagger module and inspect its AST: only `_base` may change.
 Verify its order explicitly: privileged setup/install, source and evidence
 ownership, environment variables, then user switch last. Keep privileged nesting
@@ -242,6 +275,11 @@ No VM is needed. No source or fixture may be removed before verified recovery.
 - [ ] Native local CI-control suite, AST/hash boundaries, docs/manifest checks
   and diff checks pass. All pre-existing tests and non-owned CI behavior remain
   unchanged; complete required CI matrix/Gate A and chronology/JUnit gates pass.
+- [ ] Both original failed PROOFGATE nodes pass on all three real Python images
+  using the unoverlaid committed runtime. Evidence proves actual executor and
+  mutation coverage, UID/EUID 1000, unwritable `/`, and run-directory bindings
+  beneath the provisioned writable root. Pre-cleanup snapshots and full captured
+  outputs pass the declared retention controls and independent restore checks.
 - [ ] Exact-source and final committed-candidate reviews satisfy the existing
   four-vendor/interim rules; native publication confirms the actual PR/head.
   Complete private evidence independently restores before eligible cleanup.
