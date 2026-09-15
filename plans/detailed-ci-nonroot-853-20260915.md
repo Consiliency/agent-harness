@@ -28,6 +28,16 @@ Neither file may change or be skipped. Dagger v0.21.7's upstream generated SDK
 supports `Container.with_user`; its source snapshot is retained with SHA256
 6670603b446f644cde2280e528164ffbc1a1bd0b5528dedfb42676ab9040e894.
 
+The first plan review did not converge: three AGREE and one PARTIALLY AGREE.
+Its exact plan, all four native results and 23 correlated provider files remain
+retained. This revision addresses the baseline-input and retention-scope gaps;
+no previous vote transfers. Agent-harness#854 separately records the existing
+production artifact-loss path: `all()` raises before exporting when a stage
+fails, and Gate A deletes its temporary WORK tree. This plan preserves complete
+owned diagnostic/provider sessions and their fixtures, plus all actual GitHub
+logs/artifacts that CI produces. It does not claim to repair that production
+retention defect or recover files already deleted by an earlier execution.
+
 ## Changes
 
 ### `ci/dagger/src/agent_harness_ci/main.py` (modify)
@@ -73,7 +83,10 @@ PR exists, record only its actual review facts in
 `plans/decision-interim-president-ratification-20260904.md` under the existing
 interim rule while agent-harness#752 remains open. No future SHA, commit count
 or required history topology is prescribed. That row and the actual final head
-need fresh four-vendor review before landing.
+need fresh four-vendor review before landing. Write the row before that final
+round, recording only already completed review facts and explicitly leaving the
+final round pending. Record the final round's actual result on the PR, without
+another self-referential recording commit.
 
 ## Documentation impact
 
@@ -88,9 +101,16 @@ surface changes. Existing contract exit codes 0, 2, 10, 20, 21 and 30 stay intac
    evidence. Commit only the plan/owned manifest row and obtain fresh four-vendor
    native plan review before editing source. Preserve all outcomes and inputs.
 2. Establish the root baseline with the unmodified frozen permission witness in
-   an isolated diagnostic image built through exact input `_base` bytes. Record
-   real/effective UID, namespace UID map, interpreter and the expected assertion
-   failure. Preserve its complete output and fixtures; do not call it green.
+   an isolated diagnostic image built through exact input `_base` bytes. Both
+   baseline and candidate use the same pending venv runtime overlay with SHA256
+   41b0133662b604c3e3f16fdabb2b17f7ea4f6c07d7e3a14d085d417847ce82b0
+   and the two unchanged frozen tests named above. The witness's preceding direct
+   venv control must pass before reaching the intended UID assertion failure;
+   an earlier identity/setup failure does not satisfy this baseline. The planned
+   `_base` execution-user transition is the experimental difference, not a change
+   to runtime/test bytes. Record real/effective UID, namespace UID map, CapEff,
+   interpreter and the expected assertion failure. Preserve its complete output
+   and fixtures; do not call the root test green.
 3. Make only the declared implementation/docs edits. Provision an owned locked
    test environment and use native detailed execution/verification artifacts.
    A separate diagnostic module may expose the unchanged candidate `_base` for
@@ -140,6 +160,9 @@ automation:
 
 Also run `git diff --check`, native manifest validation and native `docs-audit`.
 Compile the changed Dagger module and inspect its AST: only `_base` may change.
+Verify its order explicitly: privileged setup/install, source and evidence
+ownership, environment variables, then user switch last. Keep privileged nesting
+and insecure root capabilities at their unchanged disabled defaults.
 Compare every existing test file and the workflow, offload script, Gate A script,
 matrix/chronology constants and dependency files against the recorded input.
 Do not add tests that merely mirror the fluent API implementation.
@@ -148,7 +171,8 @@ For actual image qualification, retain a diagnostic driver with explicit
 `baseline` and `candidate` invocations. It must use the pinned Dagger module/SDK,
 an isolated complete Git snapshot, current existing AI offload lease protocol,
 fresh correlation IDs, and the exact hashed `_base` implementation. Preserve
-the command, container-side UID/GID and namespace maps, selected Python/ensurepip,
+the command, container-side UID/GID and namespace maps, CapEff from
+`/proc/self/status`, selected Python/ensurepip,
 test collection/results, native artifacts, and all owned fixture bytes/modes
 before tearing down the diagnostic. Export failure data from that same executed
 container (for example using Dagger's ANY exit policy plus a captured real exit
@@ -156,6 +180,10 @@ code); never convert a failed test into a passing native result. Do not edit or
 bypass the frozen witness. Retain the raw root failure, then require non-root
 positive controls and all frozen acceptance nodes without skips/xfails on
 3.10, 3.11 and 3.12. A missing prerequisite blocks that image's acceptance.
+Record setup and test-time pip timings against the existing offload budget.
+Do not grant write access to system interpreters to fix an out-of-venv install.
+Any login-shell or other cross-image identity failure remains an owning runtime
+finding, not permission to alter the frozen test or image profiles.
 
 Required GitHub `test.yml` remains the authoritative full matrix/Gate A gate.
 Its offload entrypoint is `bash ci/offload-gate.sh` with the workflow's existing
