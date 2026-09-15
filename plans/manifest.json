@@ -468,12 +468,12 @@
       "phase_alias": null,
       "plan_revision": {
         "plan_approval": false,
-        "plan_sha256": "55a0cb47f87315df7ca7c4f61a378a40834f88192f572b68ca9af18835b1f85e",
+        "plan_sha256": "2f68b20a92e8124d9260a9b9d2ee1d2e36e6045cf9e8df960f3d2c036d0d510e",
         "prior_lifecycle_preserved": true,
-        "prior_review_archive": "b630121112142e10aa969f8d7e34cc2dfd881e88",
+        "prior_review_archive": "4fe07a73fdcd21c837da6d4d4519442ff6f06bf5",
         "prior_votes_transfer": false,
-        "revision": 4,
-        "scope_delta": "Before first R4 dispatch, source search found workspace-sensitive bootstrap test; provision both workspace and worktree directory and require its unchanged negative test. Preserve R4 retention and history requirements.",
+        "revision": 5,
+        "scope_delta": "Complete source-wide workspace audit and labelled real-runtime planning probe; provision canonical uv store directories and add unchanged uv policy tests plus lane path probes. Mark undispatched preparation explicitly.",
         "source_approval": false,
         "trigger": "GitHub CI 34979555385: two PROOFGATE EACCES failures on each Python image; Gate A passed"
       },
@@ -499,15 +499,31 @@
           "trigger": "GitHub CI 34979555385: two PROOFGATE EACCES failures on each Python image; Gate A passed"
         },
         {
+          "own_review_archive": null,
           "plan_approval": false,
           "plan_sha256": "1f25b535fd66ca7956f4d7b064ca7109e343615cd6d01bbfbdf6da5292fe3116",
           "prior_lifecycle_preserved": true,
           "prior_review_archive": "b630121112142e10aa969f8d7e34cc2dfd881e88",
           "prior_votes_transfer": false,
+          "review_dispatched": false,
           "revision": 4,
           "scope_delta": "Explicit regression criterion; diagnostic capture before runtime cleanup; preserve prior revision metadata and actual unmerged ledger history; explain directory prerequisite",
           "source_approval": false,
           "trigger": "GitHub CI 34979555385: two PROOFGATE EACCES failures on each Python image; Gate A passed"
+        },
+        {
+          "own_review_archive": "4fe07a73fdcd21c837da6d4d4519442ff6f06bf5",
+          "plan_approval": false,
+          "plan_sha256": "55a0cb47f87315df7ca7c4f61a378a40834f88192f572b68ca9af18835b1f85e",
+          "prior_lifecycle_preserved": true,
+          "prior_review_archive": "b630121112142e10aa969f8d7e34cc2dfd881e88",
+          "prior_votes_transfer": false,
+          "review_dispatched": true,
+          "revision": 4,
+          "scope_delta": "Before first R4 dispatch, source search found workspace-sensitive bootstrap test; provision both workspace and worktree directory and require its unchanged negative test. Preserve R4 retention and history requirements.",
+          "source_approval": false,
+          "trigger": "GitHub CI 34979555385: two PROOFGATE EACCES failures on each Python image; Gate A passed",
+          "verdict": "three AGREE; Fable PARTIALLY AGREE"
         }
       ],
       "reflection_ref": null,
@@ -516,7 +532,7 @@
       "status": "executing",
       "task_summary": "Run Dagger test stages as a real non-root user (agent-harness#853)",
       "type": "detailed",
-      "updated_at": "2026-09-15T18:19:41.662257+00:00"
+      "updated_at": "2026-09-15T18:32:16.948582+00:00"
     },
     {
       "acceptance_criteria_count": 5,

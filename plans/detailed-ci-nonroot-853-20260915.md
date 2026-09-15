@@ -62,6 +62,14 @@ Root-owned ancestors would introduce another EACCES failure; this is a source-
 derived counterexample, not a claimed executed result. Provision the workspace
 itself with the same owner and add this unchanged test to narrow qualification.
 
+Revision 4 then received three AGREE and one PARTIALLY AGREE: the remaining
+objection was source-wide workspace dependency coverage. The expanded audit
+found the default uv workspace authority, whose four storage directories must
+already exist. A retained planning probe of unchanged code reproduced rejection
+with only a worktree root and passed after adding the complete layout. Revision
+5 provisions that layout through the same setup command and adds the existing
+uv policy tests. No real-image result is claimed by this synthetic-path probe.
+
 ## Changes
 
 ### `ci/dagger/src/agent_harness_ci/main.py` (modify)
@@ -73,13 +81,15 @@ itself with the same owner and add this unchanged test to narrow qualification.
 - After that privileged installation, assign `/src` and its contents to `ci:ci`
   so build-created files and the full Git object database are writable by the
   test owner. Create `/junit`, `/mnt/workspace` and `/mnt/workspace/worktrees`
-  owned by `ci:ci`;
+  plus `/mnt/workspace/uv-data`, `/mnt/workspace/uv-data/tools`,
+  `/mnt/workspace/uv-data/python` and `/mnt/workspace/uv-cache`, owned by `ci:ci`;
   the new home is already user-owned. The worktree directory is container-local,
-  never a host mount. Add both workspace paths to the existing privileged
+  never a host mount. Add the workspace paths, parents before children, to the existing privileged
   `install -d` argv, before
   the user switch; the existing runtime then uses its preferred location.
   Comment that PROOFGATE fell back to unwritable `/` in CI run 34979555385, so
   the provisioned root and `/junit` are necessary ordinary-user prerequisites.
+  Explain that workspace presence also selects the existing canonical uv stores.
   These changes apply only to the container snapshot, never the host checkout.
 - Set `HOME=/home/ci`, `USER=ci` and `LOGNAME=ci`, then end `_base` with
   `.with_user("ci")`. Every subsequent Git probe, suite and Gate A command must
@@ -96,7 +106,8 @@ itself with the same owner and add this unchanged test to narrow qualification.
 
 Add a short repo-specific Dagger note: package/image preparation is privileged,
 but stage commands use the named ordinary user with writable source, home and
-evidence directories, including `/mnt/workspace` and its `worktrees` directory. This makes Unix
+evidence directories, including `/mnt/workspace`, its worktree directory and
+canonical uv stores. This makes Unix
 permission-denial tests meaningful. It
 does not provide a security boundary against the host operator or independent
 HARDEN evidence custody. Preserve all command/exit-code vocabulary unchanged.
@@ -104,7 +115,7 @@ HARDEN evidence custody. Preserve all command/exit-code vocabulary unchanged.
 ### `CHANGELOG.md` (modify)
 
 Add an Unreleased entry qualified with agent-harness#853 describing ordinary-user
-Dagger stage execution and its writable worktree root. Do not claim runtime
+Dagger stage execution and its writable workspace layout. Do not claim runtime
 repair, release or V10 acceptance.
 
 ### Recording files
@@ -121,11 +132,13 @@ round, recording only already completed review facts and explicitly leaving the
 final round pending. Record the final round's actual result on the PR, without
 another self-referential recording commit.
 For this already published PR, extend its unmerged row in place after actual
-revision-4 source review, keeping the R2 head, red CI run and raw log SHA256
+current-revision source review, keeping the R2 head, red CI run and raw log SHA256
 541cab43131c45f9dda849eaa2f50550adac1be3283a5ce193aeb08ff285eb14 as history.
 Do not rewrite any landed row. Keep prior plan-revision metadata in a manifest
 revision-history array when replacing the current revision metadata; retain its
 earlier review/archive pointers. The acceptance-criteria count is now five.
+Mark the first revision-4 preparation as undispatched with no review archive of
+its own; its earlier-review archive pointer remains historical provenance.
 
 ## Documentation impact
 
@@ -198,13 +211,17 @@ automation:
 ```
 
 Also run `git diff --check`, native manifest validation and native `docs-audit`.
-For revision 3, rerun the two unchanged failed nodes on each real Python image:
+For this revision, rerun the two unchanged failed nodes on each real Python image:
 `phase-loop-runtime/tests/test_acceptance_falsifier_contract.py::test_mutation_manifest_requires_exact_criterion_parameter_and_command_coverage`
 and
 `phase-loop-runtime/tests/test_verification_evidence.py::VerificationEvidenceTest::test_proofgate_v3_matched_anchor_kill_requires_green_identical_command_baseline`.
 Also run the unchanged workspace-sensitive node
 `phase-loop-runtime/tests/test_agy_canary_evidence.py::test_bootstrap_attest_rejects_child_visible_evidence_root_before_launch[workspace]`
 on all three images. Its child-visible root must still be rejected before launch.
+Also run the same file's unchanged
+`test_synthetic_installation_identity_uses_hermetic_canonical_uv_store`,
+`test_uv_store_authority_matches_committed_workspace_policy` and
+`test_uv_store_authority_rejects_symlink_and_sealed_identity_drift` on each image.
 Use the unoverlaid committed runtime for those regressions. Bind their parent
 directory evidence to UID/EUID 1000, a writable container-local worktree root,
 and the unchanged non-writable `/`; the observed original CI failure supplies
@@ -212,9 +229,16 @@ the pre-repair baseline. Preserve all existing root-baseline and 45-node overlay
 diagnostics as historical inputs. Requalify the existing 45-node diagnostic on
 all three revised images with the same labelled frozen overlay, alongside these
 separate unoverlaid regressions. Complete required CI still precedes merge.
-Before image dispatch, search existing tests for worktree-root/fallback-location
-assumptions and record the findings. Qualification must record traversable parent
+Before image dispatch, inspect existing tests, all runtime source and scripts,
+CI and workflow code for workspace selectors, including aliases and callers;
+record the findings. The retained dependency audit is frozen as
+`workspace-dependency-audit.md` in the train directory below, SHA256
+1d73194777e672e897ed3ba1dba8aae5bf1b90b4bc0c23cd08d400d7c8940f67.
+Qualification must record traversable parent
 directories and actual directory creation by UID 1000, not merely path existence.
+Record calls to unchanged `lane_worktree_root` with the actual container workspace
+and an explicit absent mount, checking both path selections and retaining the
+owned probe fixtures. No global runtime selector or test fixture is patched.
 
 For the new unoverlaid diagnostics, capture the runtime's baseline worktree and
 complete native-captured command output before its return-code branch, then the
@@ -292,7 +316,8 @@ No VM is needed. No source or fixture may be removed before verified recovery.
   beneath the provisioned writable root. Pre-cleanup snapshots and full captured
   outputs pass the declared retention controls and independent restore checks.
   The workspace-sensitive bootstrap test also passes unchanged on all images;
-  `/mnt/workspace` is writable by `ci`, and `/` remains unwritable.
+  the three uv-policy tests and both lane path-selection probes pass;
+  the complete workspace layout is writable by `ci`, and `/` remains unwritable.
 - [ ] Exact-source and final committed-candidate reviews satisfy the existing
   four-vendor/interim rules; native publication confirms the actual PR/head.
   Complete private evidence independently restores before eligible cleanup.
