@@ -11,6 +11,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Container image and dependency preparation remains privileged; stage commands
   run as `ci` with writable source, home and evidence directories so Unix
   permission-denial tests can prove denied access.
+- Provision the container-local workspace, worktree root and canonical uv stores
+  for existing runtime paths selected by workspace presence.
 
 ### Declare verification test tools (Consiliency/agent-harness#428)
 

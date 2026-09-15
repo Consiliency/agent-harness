@@ -101,8 +101,9 @@ that is the consumer/pilot repo's responsibility.
 
 In agent-harness's `ci/dagger` module, image and package preparation runs as root,
 then every stage command runs as the named ordinary user `ci`. Source, Git
-objects, home and evidence directories are writable by that user, so Unix
-permission-denial tests exercise real denied access. This does not establish a
+objects, home and evidence directories are writable by that user. The container's
+`/mnt/workspace` includes writable worktrees and canonical uv storage directories.
+Unix permission-denial tests exercise real denied access. This does not establish a
 security boundary against the host operator or independent HARDEN evidence custody.
 
 ## Worktree Safety

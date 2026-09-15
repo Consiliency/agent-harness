@@ -136,7 +136,16 @@ class AgentHarnessCi:
                 ]
             )
             .with_exec(["chown", "-R", "ci:ci", "/src"])
-            .with_exec(["install", "-d", "-o", "ci", "-g", "ci", "/junit"])
+            # CI run 34979555385: PROOFGATE fell back to unwritable /.
+            # Stage evidence and the selected workspace uv stores also need owners.
+            .with_exec(
+                [
+                    "install", "-d", "-o", "ci", "-g", "ci", "/junit",
+                    "/mnt/workspace", "/mnt/workspace/worktrees",
+                    "/mnt/workspace/uv-data", "/mnt/workspace/uv-data/tools",
+                    "/mnt/workspace/uv-data/python", "/mnt/workspace/uv-cache",
+                ]
+            )
             .with_env_variable("HOME", "/home/ci")
             .with_env_variable("USER", "ci")
             .with_env_variable("LOGNAME", "ci")

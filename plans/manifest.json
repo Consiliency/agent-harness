@@ -432,6 +432,17 @@
     {
       "acceptance_criteria_count": 5,
       "created_at": "2026-09-15T12:36:05.572000+00:00",
+      "execution_revision": {
+        "at": "2026-09-15T18:44:05.068789+00:00",
+        "existing_executing_lifecycle_preserved": true,
+        "phase_accepted": false,
+        "plan_approved": true,
+        "plan_result_sha256": "caca273e17994bf8c9f0880327003bd2532f15be8315d9a8284bf59884c78e71",
+        "plan_review": ".phase-loop/diagnostics/ci-nonroot-853-20260915/plan-review-r5/terminal-summary.json",
+        "plan_sha256": "2f68b20a92e8124d9260a9b9d2ee1d2e36e6045cf9e8df960f3d2c036d0d510e",
+        "private_plan_archive": "b1d8e0ab807f904d2826dceaa78675a99b2ea16d",
+        "run_id": "ci-nonroot-853-r5-20260915"
+      },
       "file": "plans/detailed-ci-nonroot-853-20260915.md",
       "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260915-ci-nonroot-853.md",
       "if_gates_produced": [],
@@ -532,7 +543,7 @@
       "status": "executing",
       "task_summary": "Run Dagger test stages as a real non-root user (agent-harness#853)",
       "type": "detailed",
-      "updated_at": "2026-09-15T18:32:16.948582+00:00"
+      "updated_at": "2026-09-15T18:44:05.068789+00:00"
     },
     {
       "acceptance_criteria_count": 5,
