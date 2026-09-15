@@ -14,6 +14,22 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Provision the container-local workspace, worktree root and canonical uv stores
   for existing runtime paths selected by workspace presence.
 
+### Preserve selected verification virtual environments (agent-harness#428)
+
+- Bare Python aliases use an exec launcher for the selected environment.
+  Probes, launchers, pip and guarded child PATH resolve traversable `..` directory
+  components while retaining the executable symlink; discovery/log metadata stays
+  lexical. Invalid directories retain their spelling, and unchanged absolute PATH
+  entries preserve their exact strings. Interpreter constraints and rejection
+  wrappers remain enforced.
+- Guarded discovery, probes and commands anchor relative/empty PATH entries
+  consistently. Empty PATH now discovers cwd candidates; missing PATH uses the
+  C-library default, including during guarded execution. Consumed leading PATH
+  overrides anchor to the repository; later post-aggregate calls use their own
+  caller directory for inherited PATH. Mixed unpinned aliases and profile/override
+  choices retain their documented limits. Existing nested-discovery and redaction
+  failures and agent-harness#841's dependency repair remain separate.
+
 ### Declare verification test tools (Consiliency/agent-harness#428)
 
 - The runtime's test dependency group now includes `build==1.6.1`,

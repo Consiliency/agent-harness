@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -146,13 +147,15 @@ class SuiteInterpreter:
 
     ``shim_dir`` — a directory to prepend to the suite subprocess ``PATH``. When a
     below/above-floor bare interpreter had to be redirected it holds
-    ``python``/``python3`` links to the satisfying interpreter; when the host default
+    ``python``/``python3`` links to an exec launcher for the satisfying interpreter;
+    when the host default
     already satisfies (ah#221) it holds only the fail-closed shadows of the
     non-satisfying versioned ``python3.X`` names (bare names are left untouched so an
     active venv is preserved). ``None`` only when there is no ``requires-python``
     constraint at all. ``blocker`` — a clear, named reason when no satisfying
-    interpreter exists; the caller fails closed. ``interpreter`` — the resolved path,
-    for the log.
+    interpreter exists; the caller fails closed. ``interpreter`` — the absolute
+    lexical selection for the log; pip alignment converts its execution directory
+    when needed while preserving virtual-environment identity.
     """
 
     shim_dir: "Path | None"
@@ -262,12 +265,45 @@ def _version_satisfies_simple(version: str, specs: list[str]) -> bool:
     return True
 
 
+def _anchored_path(environment: Mapping[str, str], anchor: Path) -> str:
+    path = environment.get("PATH")
+    if path is None:
+        try:
+            path = os.confstr("CS_PATH")
+        except (AttributeError, ValueError):
+            path = os.defpath
+    return os.pathsep.join(
+        entry if Path(entry).is_absolute() else str(anchor / entry)
+        for entry in path.split(os.pathsep)
+    )
+
+
+def _execution_directory(path: str) -> str:
+    directory = Path(path)
+    if ".." not in directory.parts:
+        return path
+    try:
+        if directory.is_dir():
+            return str(directory.resolve(strict=True))
+    except (OSError, RuntimeError):
+        pass
+    return path
+
+
+def _interpreter_execution_path(interpreter: Path) -> Path:
+    return Path(_execution_directory(str(interpreter.parent))) / interpreter.name
+
+
+def _execution_path(path: str) -> str:
+    return os.pathsep.join(_execution_directory(entry) for entry in path.split(os.pathsep))
+
+
 def _interpreter_path(name: str) -> Path | None:
     candidate = Path(name)
     if candidate.is_absolute() or os.sep in name or (os.altsep and os.altsep in name):
-        return candidate if candidate.exists() and os.access(candidate, os.X_OK) else None
-    resolved = shutil.which(name)
-    return Path(resolved) if resolved else None
+        return Path.cwd() / candidate if candidate.exists() and os.access(candidate, os.X_OK) else None
+    resolved = shutil.which(name, path=_anchored_path(os.environ, Path.cwd()))
+    return Path.cwd() / resolved if resolved else None
 
 
 def _interpreter_minor_version(interpreter: Path) -> str | None:
@@ -313,11 +349,12 @@ def _interpreter_full_version(interpreter: Path, cwd: "Path | None" = None) -> s
     ``.python-version`` at run time (ah#221 CR)."""
     try:
         out = subprocess.check_output(
-            [str(interpreter), "-c", "import sys; print('%d.%d.%d' % sys.version_info[:3])"],
+            [str(_interpreter_execution_path(interpreter)), "-c", "import sys; print('%d.%d.%d' % sys.version_info[:3])"],
             text=True,
             stderr=subprocess.DEVNULL,
             timeout=10,  # a pathological python3.X must not stall guard construction
             cwd=str(cwd) if cwd is not None else None,
+            env={**os.environ, "PATH": _execution_path(_anchored_path(os.environ, Path.cwd()))},
         )
     except Exception:
         return None
@@ -360,7 +397,9 @@ def _build_interpreter_shim(
 ) -> Path:
     """Build the ``_interp_shim`` PATH dir (ah#219a / ah#221).
 
-    When ``interpreter`` is given, ``python``/``python3`` resolve to it. Each name in
+    When ``interpreter`` is given, ``python``/``python3`` link to an exec launcher
+    invoking its absolute path with any traversable ``..`` directory resolved,
+    preserving the final executable symlink and its virtual environment. Each name in
     ``shadow_names`` (e.g. ``python3.10``) is shadowed by a fail-closed wrapper so a suite or
     ``commands`` entry that explicitly names a ``requires-python``-non-satisfying versioned
     interpreter errors instead of running below the floor. Interception is at executable
@@ -370,16 +409,22 @@ def _build_interpreter_shim(
     shim_dir = run_path / "_interp_shim"
     shim_dir.mkdir(parents=True, exist_ok=True)
     if interpreter is not None:
-        target = interpreter.resolve()
+        target = _interpreter_execution_path(Path.cwd() / interpreter)
+        launcher = Path.cwd() / shim_dir / "_selected_python"
+        if launcher.exists() or launcher.is_symlink():
+            launcher.unlink()
+        launcher_text = f'#!/bin/sh\nexec {shlex.quote(str(target))} "$@"\n'
+        launcher.write_text(launcher_text, encoding="utf-8")
+        launcher.chmod(0o755)
         for name in ("python", "python3"):
             link = shim_dir / name
             try:
                 if link.exists() or link.is_symlink():
                     link.unlink()
-                os.symlink(target, link)
+                os.symlink(launcher, link)
             except OSError:
                 # Fall back to a tiny exec wrapper if symlinks are unavailable.
-                link.write_text(f'#!/bin/sh\nexec "{target}" "$@"\n', encoding="utf-8")
+                link.write_text(launcher_text, encoding="utf-8")
                 link.chmod(0o755)
     reason = f"requires-python ({', '.join(specs)})" if specs else "the target's requires-python"
     for name in shadow_names:
@@ -438,7 +483,7 @@ def _resolve_suite_interpreter(repo: Path, run_path: Path, python_pin: str | Non
                     None,
                 )
         return SuiteInterpreter(
-            _build_interpreter_shim(run_path, resolved, shadow_names, specs), None, str(resolved.resolve())
+            _build_interpreter_shim(run_path, resolved, shadow_names, specs), None, str(Path.cwd() / resolved)
         )
 
     if not specs:
@@ -459,7 +504,7 @@ def _resolve_suite_interpreter(repo: Path, run_path: Path, python_pin: str | Non
         # Bare names already satisfy: do not redirect them, but still shadow non-satisfying
         # versioned names so a `python3.10` in the suite/commands fails closed.
         return SuiteInterpreter(
-            _build_interpreter_shim(run_path, None, shadow_names, specs), None, str(present[0].resolve())
+            _build_interpreter_shim(run_path, None, shadow_names, specs), None, str(Path.cwd() / present[0])
         )
 
     candidate = _lowest_satisfying_interpreter(specs, repo)
@@ -467,7 +512,7 @@ def _resolve_suite_interpreter(repo: Path, run_path: Path, python_pin: str | Non
         joined = ", ".join(specs)
         return SuiteInterpreter(None, f"no host interpreter satisfies requires-python ({joined})", None)
     return SuiteInterpreter(
-        _build_interpreter_shim(run_path, candidate, shadow_names, specs), None, str(candidate.resolve())
+        _build_interpreter_shim(run_path, candidate, shadow_names, specs), None, str(Path.cwd() / candidate)
     )
 
 
@@ -1864,7 +1909,9 @@ def _run_process(
         # ``python``/``python3`` in the command resolves to the satisfying
         # interpreter rather than the host default.
         process_env = dict(process_env if process_env is not None else os.environ)
-        process_env["PATH"] = f"{path_prepend}{os.pathsep}{process_env.get('PATH', '')}"
+        consumed_prefix = command_argv[:len(command_argv) - len(process_argv)]
+        anchor = repo if any(part.startswith("PATH=") for part in consumed_prefix) else Path.cwd()
+        process_env["PATH"] = f"{path_prepend}{os.pathsep}{_execution_path(_anchored_path(process_env, anchor))}"
         # ah#221: keep the shim winning inside a login shell whose profile reorders PATH.
         process_argv = _relogin_shell_shim(process_argv, path_prepend)
     offset = log_file.tell()
@@ -1932,7 +1979,7 @@ def _align_install_interpreter(install_argv: list[str], suite_interpreter: str |
     Substitute the pip interpreter only; leave npm/uv/pnpm untouched.
     """
     if suite_interpreter and _is_pip_invocation(install_argv):
-        return [suite_interpreter, *install_argv[1:]]
+        return [str(_interpreter_execution_path(Path(suite_interpreter))), *install_argv[1:]]
     return install_argv
 
 

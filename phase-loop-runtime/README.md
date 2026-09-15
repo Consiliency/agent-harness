@@ -51,6 +51,45 @@ interpreter matrix. These commands verify the two selected files; they do not
 establish complete CI equivalence, behavior without Pillow, full-suite acceptance
 or production readiness.
 
+## Python verification environments
+
+An explicit `automation.python` pin to a virtual environment preserves that
+environment for bare `python`/`python3` commands and Python pip refresh. The
+interpreter still must satisfy the repository's `requires-python` constraints.
+The verification shim uses an exec launcher so interpreter symlinks retain their
+venv identity and installed packages.
+
+During guarded discovery, version probes and verification, relative or empty PATH
+entries anchor to the invoking process's working directory. This deliberately
+changes empty-PATH discovery to search that directory. Missing PATH retains the
+C-library discovery default (with Python's default fallback); guarded execution
+uses that same default instead of its previous trailing-empty cwd search. Entry
+order and duplicates remain intact. Leading `PATH=` overrides
+consumed by the verification command parser anchor to the target repository,
+including overrides equal to the inherited value. Shell payloads and external
+`env` arguments are not parsed. Execution without a constraint or pin is unchanged.
+
+Discovery and log metadata preserve the lexical interpreter selection. For
+execution, traversable directory components containing `..` are resolved before
+version probes, launchers, pip refresh and guarded child PATH lookup. The final
+Python executable symlink is retained. This preserves the physical virtual
+environment reached through a symlink/`..` path, even when direct Python startup
+would normalize that spelling to another environment. Recorded pip argv uses
+the execution spelling while the log retains the declared selection. Missing,
+looping, non-directory or inaccessible entries retain their original spelling;
+they cannot become new search directories through normalization. Absolute PATH
+entries without `..` keep their exact strings, including repeated separators.
+
+Post-aggregate commands reuse the absolute pinned launcher, while inherited PATH
+anchors to the later invoking process's directory and consumed overrides to the
+repository. They do not reconstruct historical PATH or revalidate every name in
+a reused shim. Without an explicit pin, distinct satisfying `python` and `python3`
+aliases keep their environments; metadata and pip prefer `python3`, then `python`.
+Login profiles and explicit overrides can select another environment. Known
+nested-discovery and diagnostic-redaction test failures remain separate work under
+agent-harness#428; this repair does not establish full-suite success or completion
+of agent-harness#841's dependency repair.
+
 ## Roadmap validation
 
 Lint a phase-plan roadmap spec (required headings, unique aliases, acyclic dependency

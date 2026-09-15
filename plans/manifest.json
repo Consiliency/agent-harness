@@ -6600,6 +6600,83 @@
             "source_approval": false
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-09-14T10:03:38Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "further_source_edit_started": false,
+            "plan": "plans/detailed-verification-venv-identity-428-20260914.md",
+            "plan_approval_record": "/mnt/HC_Volume_105438154/worktrees/agent-harness-428-venv-identity-20260914/.phase-loop/diagnostics/venv-identity-428-20260914/plan-review-r5-convergence.json",
+            "plan_approval_sha256": "e19d803d2cad9bed4b6c8624f80e65cdc713c91bc1587c3a59b0cf112109ea35",
+            "prior_failed_implementation_preserved": true,
+            "publication_allowed": false,
+            "review_archive_commit": "e7cfacbed13bd31c6233b8f1e0c7cc77f121dac8",
+            "reviewed_plan_head": "e84217abfad4e7e9046d06668826d3dae68d9f51",
+            "run_id": "venv-428-execution-r5-20260914",
+            "test_first": true
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-09-14T10:44:31Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "acceptance_criteria": [
+              {
+                "index": 1,
+                "satisfied": true
+              },
+              {
+                "index": 2,
+                "satisfied": true
+              },
+              {
+                "index": 3,
+                "satisfied": true
+              },
+              {
+                "index": 4,
+                "satisfied": true
+              },
+              {
+                "index": 5,
+                "satisfied": true
+              }
+            ],
+            "broad_suite_status": "failed",
+            "dirty_path_classification": {
+              "CHANGELOG.md": "plan_owned",
+              "phase-loop-runtime/README.md": "plan_owned",
+              "phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py": "plan_owned",
+              "phase-loop-runtime/tests/test_verification_dotdot_execution_428.py": "plan_owned",
+              "phase-loop-runtime/tests/test_verification_venv_identity_428.py": "plan_owned",
+              "plans/manifest.json": "plan_owned"
+            },
+            "doc_delta_decision": "docs_updated",
+            "installed_verification_artifact_path": "/mnt/HC_Volume_105438154/worktrees/agent-harness-428-venv-identity-20260914/.phase-loop/diagnostics/venv-identity-428-20260914/installed-r5/native/verification.json",
+            "phase_accepted": false,
+            "plan_artifact": "plans/detailed-verification-venv-identity-428-20260914.md",
+            "publication_reason": "specific human adjudication pending for agent-harness#828 generation1 epoch8; no native publication retry performed",
+            "publication_status": "blocked",
+            "reflection_path": "/home/viperjuice/.codex/skills/codex-execute-detailed/reflections/57ded3a7/codex-v10-verification-venv-identity-428-20260914/venv-428-execution-r5-20260914.md",
+            "regression_comparison_path": "/mnt/HC_Volume_105438154/worktrees/agent-harness-428-venv-identity-20260914/.phase-loop/diagnostics/venv-identity-428-20260914/regression-comparison-r5.json",
+            "regression_counts": {
+              "error": 0,
+              "failure": 7,
+              "passed": 372,
+              "skipped": 1
+            },
+            "run_id": "venv-428-execution-r5-20260914",
+            "source_archive": "a66348b082020623a083695281b4e969cd232108",
+            "source_review_candidate_head": "e84217abfad4e7e9046d06668826d3dae68d9f51",
+            "source_review_result_sha256": "6acc50d086df82a7b3b70deb696c42b7a80a3e9b90d21866878ee7558f56b349",
+            "source_sha256": "41b0133662b604c3e3f16fdabb2b17f7ea4f6c07d7e3a14d085d417847ce82b0",
+            "verification_artifact_path": "/mnt/HC_Volume_105438154/worktrees/agent-harness-428-venv-identity-20260914/.phase-loop/diagnostics/venv-identity-428-20260914/green-r5/native/verification.json",
+            "verification_scope": "approved bounded venv-identity repair and unchanged regression comparison",
+            "verification_status": "passed"
+          },
+          "transition": "completed"
         }
       ],
       "owner_skill": "codex-plan-detailed",
@@ -6622,10 +6699,10 @@
       "reflection_ref": null,
       "roadmap_ref": null,
       "slug": "verification-venv-identity-428-20260914",
-      "status": "committed",
+      "status": "completed",
       "task_summary": "Preserve selected virtual-environment identity during native verification and pip refresh (agent-harness#428)",
       "type": "detailed",
-      "updated_at": "2026-09-14T09:36:33.868405+00:00"
+      "updated_at": "2026-09-14T10:44:31Z"
     }
   ],
   "schema_version": 1
