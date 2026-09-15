@@ -13,6 +13,7 @@ status so a verbose auth error is never mistaken for a real review.
 from __future__ import annotations
 
 import logging
+import errno
 import mimetypes
 import os
 import re
@@ -57,6 +58,7 @@ from .agy_canary_evidence import (
     _OwnedCleanupRoot,
     _create_owned_cleanup_root,
     _cleanup_owned_roots,
+    _rename_noreplace,
     AgyCanaryCapture,
     AgyCanaryEvidenceError,
     bind_staged_review_inputs,
@@ -69,6 +71,11 @@ from .agy_canary_evidence import (
     seal_provider_launches,
 )
 from .claude_agent_view import ClaudeAgentViewAdapter
+from .private_session_capture import (
+    PrivateCaptureAttempt, PrivateCaptureError, current_private_capture,
+    _open_directory as _open_capture_directory,
+    _identity as _capture_file_identity,
+)
 from .launcher import GROK_REVIEW_READONLY_TOOLS
 from .profiles import CLAUDE_IMPLEMENTER_MODEL  # noqa: F401 - public compatibility export
 from .advisor_board import backing as _advisor_board_backing
@@ -215,6 +222,7 @@ class _ProviderQuiescenceLatch:
         self._condition = threading.Condition(self._lock)
         self._primary: ProviderProcessGroupQuiescenceError | None = None
         self._processes: dict[int, subprocess.Popen[bytes]] = {}
+        self._pending_launch: subprocess.Popen[bytes] | None = None
         self._sweeping = False
 
     def launch(
@@ -225,14 +233,45 @@ class _ProviderQuiescenceLatch:
             if self._primary is not None:
                 raise self._primary
             proc = factory()
-            _anchor_process_group(proc)
-            if proc.pid in self._processes:
-                _terminate_process_group(proc)
-                raise ProviderProcessGroupQuiescenceError(
-                    "provider process group registration collided"
-                )
-            self._processes[proc.pid] = proc
+            self._pending_launch = proc
+            try:
+                _anchor_process_group(proc)
+                if proc.pid in self._processes:
+                    raise ProviderProcessGroupQuiescenceError(
+                        "provider process group registration collided"
+                    )
+                self._processes[proc.pid] = proc
+            except BaseException:
+                try:
+                    _terminate_process_group(proc)
+                except BaseException as cleanup_error:
+                    primary = (
+                        cleanup_error if isinstance(cleanup_error, ProviderProcessGroupQuiescenceError)
+                        else ProviderProcessGroupQuiescenceError("provider launch cleanup is unproven")
+                    )
+                    self._primary = primary
+                    self._event.set()
+                    if primary is cleanup_error:
+                        raise
+                    raise primary from cleanup_error
+                if self._processes.get(proc.pid) is proc:
+                    del self._processes[proc.pid]
+                self._close_pending_launch()
+                raise
+            self._pending_launch = None
             return proc
+
+    def _close_pending_launch(self) -> None:
+        """Release failed-launch pipes only after its group is proven absent."""
+        proc = self._pending_launch
+        if proc is not None:
+            for pipe in (proc.stdin, proc.stdout, proc.stderr):
+                if pipe is not None:
+                    try:
+                        pipe.close()
+                    except OSError:
+                        pass
+        self._pending_launch = None
 
     def execute_if_open(
         self, mutation: Callable[[], _CaptureMutationResult],
@@ -275,11 +314,14 @@ class _ProviderQuiescenceLatch:
                 return primary
             self._sweeping = True
             processes = tuple(self._processes.values())
+            pending = self._pending_launch
+            if pending is not None and all(proc is not pending for proc in processes):
+                processes += (pending,)
         try:
             for proc in processes:
                 try:
                     _terminate_process_group(proc, force_group=True)
-                except ProviderProcessGroupQuiescenceError:
+                except BaseException:
                     # The primary already states that quiescence is unproven.  Sweep
                     # every sibling before returning it; never replace it with a
                     # later group's diagnostic or stop at the first stubborn group.
@@ -287,13 +329,30 @@ class _ProviderQuiescenceLatch:
         finally:
             with self._condition:
                 for pid, proc in tuple(self._processes.items()):
-                    if os.name == "nt":
-                        absent = proc.poll() is not None
-                    else:
-                        absent = not _process_group_exists(pid)
-                    if absent:
-                        proc.poll()
-                        del self._processes[pid]
+                    try:
+                        if os.name == "nt":
+                            absent = proc.poll() is not None
+                        else:
+                            absent = not _process_group_exists(pid)
+                        if absent:
+                            proc.poll()
+                            del self._processes[pid]
+                    except BaseException:
+                        # Failed observation cannot release owned state or replace
+                        # the fatal authority that initiated this sweep.
+                        continue
+                pending = self._pending_launch
+                if pending is not None:
+                    try:
+                        absent = (
+                            pending.poll() is not None if os.name == "nt"
+                            else not _process_group_exists(pending.pid)
+                        )
+                        if absent:
+                            pending.poll()
+                            self._close_pending_launch()
+                    except BaseException:
+                        pass
                 self._sweeping = False
                 self._condition.notify_all()
         return primary
@@ -313,7 +372,7 @@ class _ProviderQuiescenceLatch:
     def is_quiescent(self) -> bool:
         """True only when no provider group remains owned by this operation."""
         with self._condition:
-            return not self._processes and not self._sweeping
+            return not self._processes and self._pending_launch is None and not self._sweeping
 
 
 def _capture_mutation(
@@ -903,6 +962,11 @@ class PanelLegResult:
     def harden_isolation_evidence(self) -> Mapping[str, object] | None:
         """Actual broker/namespace facts, deliberately outside result serialization."""
         return getattr(self, "_harden_isolation_evidence", None)
+
+    @property
+    def diagnostic_retention(self) -> Mapping[str, object] | None:
+        """Best-effort diagnostic sidecar receipt, never a review/approval field."""
+        return getattr(self, "_diagnostic_retention", None)
 
 
 def attach_native_agent_request(
@@ -2930,10 +2994,189 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
     return final
 
 
+def _verify_retained_transcript_directory(path, pinned_fd):
+    try:
+        current_fd = _open_capture_directory(path)
+    except FileNotFoundError:
+        if pinned_fd is None:
+            return
+        raise PrivateCaptureError("capture_transcript_directory_disappeared") from None
+    try:
+        if pinned_fd is None:
+            raise PrivateCaptureError("capture_transcript_directory_appeared")
+        current, pinned = os.fstat(current_fd), os.fstat(pinned_fd)
+        if ((current.st_dev, current.st_ino) != (pinned.st_dev, pinned.st_ino)
+                or any(info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o022
+                       for info in (current, pinned))):
+            raise PrivateCaptureError("capture_transcript_directory_changed")
+    finally:
+        os.close(current_fd)
+
+
+def _retained_transcript_recovery_locator(path, parent_fd, name):
+    locator = {"status": "unresolved", "name": name}
+    try:
+        parent = os.fstat(parent_fd)
+        locator.update(directory_device=parent.st_dev, directory_inode=parent.st_ino)
+        info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        locator.update(device=info.st_dev, inode=info.st_ino)
+        _verify_retained_transcript_directory(path, parent_fd)
+    except Exception:
+        return locator
+    locator.update(status="verified", path=str(path / name))
+    return locator
+
+
+def _cleanup_retained_claude_transcript(path, evidence, capture):
+    """Retire only the verified captured inode, inside an owned quarantine."""
+    source = {"path": str(path), "cleanup_verified": False}
+    capture.receipt["source"] = source
+    parent_fd = quarantine_fd = None
+    quarantine = None
+    moved = retired = cleanup_ready = False
+    try:
+        if not capture.quiescent:
+            capture.fail("capture_quiescence_unproven")
+        capture.check()
+        identity = capture.copy_transcript(path, required=False)
+        try:
+            parent_fd = _open_capture_directory(path.parent)
+        except FileNotFoundError:
+            if identity is not None:
+                raise PrivateCaptureError("capture_transcript_parent_disappeared") from None
+        if parent_fd is not None:
+            parent_info = os.fstat(parent_fd)
+            if parent_info.st_uid != os.getuid() or stat.S_IMODE(parent_info.st_mode) & 0o022:
+                raise PrivateCaptureError("capture_transcript_parent_unsafe")
+        _verify_retained_transcript_directory(path.parent, parent_fd)
+        if identity is None:
+            if parent_fd is not None:
+                try:
+                    os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise PrivateCaptureError("capture_transcript_appeared_after_absence")
+            if evidence is not None:
+                evidence.update(
+                    claude_transcript_existed=False, claude_transcript_sha256=None,
+                    claude_transcript_bytes=0,
+                )
+            cleanup_ready = True
+            return True
+        capture.check()
+        info = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        if _capture_file_identity(info) != identity:
+            raise PrivateCaptureError("capture_transcript_changed_before_cleanup")
+        quarantine = ".phase-loop-retained-" + uuid.uuid4().hex
+        os.mkdir(quarantine, 0o700, dir_fd=parent_fd)
+        quarantine_fd = os.open(quarantine, os.O_RDONLY | os.O_DIRECTORY |
+                                os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent_fd)
+        _verify_retained_transcript_directory(path.parent, parent_fd)
+        _verify_retained_transcript_directory(path.parent / quarantine, quarantine_fd)
+        _rename_noreplace(parent_fd, path.name, quarantine_fd, "transcript.jsonl")
+        moved = True
+        fd = os.open("transcript.jsonl", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK |
+                     os.O_CLOEXEC, dir_fd=quarantine_fd)
+        try:
+            before = os.fstat(fd)
+            # Rename changes ctime; every other captured identity fact must match.
+            if _capture_file_identity(before)[:-1] != identity[:-1]:
+                raise PrivateCaptureError("capture_transcript_replaced_before_retirement")
+            digest = sha256()
+            remaining = before.st_size
+            while remaining:
+                chunk = os.read(fd, min(65536, remaining))
+                if not chunk:
+                    raise PrivateCaptureError("capture_transcript_short_retirement_read")
+                digest.update(chunk)
+                remaining -= len(chunk)
+            named = os.stat("transcript.jsonl", dir_fd=quarantine_fd, follow_symlinks=False)
+            if (_capture_file_identity(before) != _capture_file_identity(os.fstat(fd))
+                    or _capture_file_identity(before) != _capture_file_identity(named)
+                    or digest.hexdigest() != capture.files["claude.jsonl"]["sha256"]):
+                raise PrivateCaptureError("capture_transcript_changed_during_retirement")
+            _verify_retained_transcript_directory(path.parent, parent_fd)
+            _verify_retained_transcript_directory(path.parent / quarantine, quarantine_fd)
+            os.unlink("transcript.jsonl", dir_fd=quarantine_fd)
+            moved = False
+            retired = True
+            os.fsync(quarantine_fd)
+        finally:
+            os.close(fd)
+        try:
+            os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise PrivateCaptureError("capture_transcript_reappeared_after_retirement")
+        if evidence is not None:
+            evidence.update(
+                claude_transcript_existed=True,
+                claude_transcript_sha256=digest.hexdigest(),
+                claude_transcript_bytes=before.st_size,
+            )
+        cleanup_ready = True
+        return True
+    except Exception:
+        capture.fail("capture_transcript_retirement_failed")
+        if evidence is not None:
+            evidence["claude_transcript_cleanup_verified"] = False
+        capture.check()
+    finally:
+        if moved and quarantine_fd is not None:
+            # No-clobber restoration; if another file appeared, retain quarantine.
+            try:
+                _rename_noreplace(quarantine_fd, "transcript.jsonl", parent_fd, path.name)
+                moved = False
+            except Exception:
+                capture.receipt["source_preservation"] = "quarantined"
+        if parent_fd is not None:
+            if quarantine is not None and not moved:
+                try:
+                    _verify_retained_transcript_directory(path.parent / quarantine, quarantine_fd)
+                    os.rmdir(quarantine, dir_fd=parent_fd)
+                    os.fsync(parent_fd)
+                except Exception:
+                    capture.fail("capture_retirement_directory_sync_failed")
+        if cleanup_ready and not capture.failure:
+            try:
+                if parent_fd is not None:
+                    try:
+                        os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+                    except FileNotFoundError:
+                        pass
+                    else:
+                        raise PrivateCaptureError("capture_transcript_reappeared_after_retirement")
+                _verify_retained_transcript_directory(path.parent, parent_fd)
+            except Exception:
+                capture.fail("capture_transcript_retirement_failed")
+        if capture.failure and parent_fd is not None and not retired:
+            locator = _retained_transcript_recovery_locator(
+                path.parent / quarantine if moved else path.parent,
+                quarantine_fd if moved else parent_fd,
+                "transcript.jsonl" if moved else path.name,
+            )
+            source["recovery_locator"] = locator
+            if moved and locator["status"] == "verified":
+                source["quarantine_path"] = locator["path"]
+        if quarantine_fd is not None:
+            os.close(quarantine_fd)
+        if parent_fd is not None:
+            os.close(parent_fd)
+        source["cleanup_verified"] = cleanup_ready and not capture.failure
+        if evidence is not None:
+            evidence["claude_transcript_cleanup_verified"] = source["cleanup_verified"]
+        capture.check()
+
+
 def _cleanup_broker_claude_transcript(
     path: Path, evidence: dict[str, object] | None,
+    *, private_capture: PrivateCaptureAttempt | None = None,
 ) -> bool:
     """Retain only metadata for the exact owned session, then remove that file."""
+    if private_capture is not None:
+        return _cleanup_retained_claude_transcript(path, evidence, private_capture)
     existed = False
     size = 0
     digest = ""
@@ -3257,6 +3500,7 @@ def _run_leg_with_liveness(
     stall_threshold_s: float = _LEG_STALL_THRESHOLD_S,
     input_text: str | None = None,
     quiescence_latch: _ProviderQuiescenceLatch | None = None,
+    private_capture: PrivateCaptureAttempt | None = None,
 ) -> "_LegRun":
     """Run a print-mode CLI leg, killing it on HEARTBEAT EXTINCTION, not a blind clock.
 
@@ -3275,7 +3519,7 @@ def _run_leg_with_liveness(
     filling its own stdout/stderr pipe buffers.
     """
     def _popen() -> subprocess.Popen[bytes]:
-        return subprocess.Popen(
+        started = subprocess.Popen(
             list(cmd),
             cwd=str(cwd),
             env=dict(env),
@@ -3284,12 +3528,30 @@ def _run_leg_with_liveness(
             stderr=subprocess.PIPE,
             start_new_session=True,  # pgid == proc.pid: group CPU sampling + group kill
         )
+        if private_capture is not None:
+            private_capture.quiescent = False
+        return started
 
-    if quiescence_latch is None:
-        proc = _popen()
-        _anchor_process_group(proc)
-    else:
-        proc = quiescence_latch.launch(_popen)
+    private_streams = None
+    if private_capture is not None:
+        private_capture.process_number += 1
+        number = private_capture.process_number
+        private_capture.save(f"stdin-{number}.bin", (input_text or "").encode("utf-8", errors="replace"))
+        private_streams = (
+            private_capture.open_stream(f"stdout-{number}.bin"),
+            private_capture.open_stream(f"stderr-{number}.bin"),
+        )
+    try:
+        if quiescence_latch is None:
+            proc = _popen()
+            _anchor_process_group(proc)
+        else:
+            proc = quiescence_latch.launch(_popen)
+    except ProviderProcessGroupQuiescenceError:
+        if private_capture is not None:
+            private_capture.quiescent = False
+            private_capture.fail("capture_quiescence_unproven")
+        raise
     if input_text is not None and proc.stdin is not None:
 
         def _feed() -> None:
@@ -3339,9 +3601,15 @@ def _run_leg_with_liveness(
                 try:
                     chunk = os.read(fd, 65536)
                 except OSError:
+                    if private_capture is not None:
+                        private_capture.fail("capture_pipe_read_failed")
                     chunk = b""
                 if chunk:
                     fd_map[fd].extend(chunk)
+                    if private_capture is not None:
+                        private_capture.append(
+                            private_streams[0 if fd == proc.stdout.fileno() else 1], chunk,
+                        )
                     last_heartbeat = time.monotonic()
                 else:
                     open_fds.discard(fd)  # EOF on this pipe
@@ -3388,6 +3656,24 @@ def _run_leg_with_liveness(
             _terminate_process_group(proc)
             if quiescence_latch is not None:
                 quiescence_latch.release(proc)
+            if private_capture is not None:
+                private_capture.quiescent = True
+                for pipe, name in zip((proc.stdout, proc.stderr), private_streams):
+                    try:
+                        os.set_blocking(pipe.fileno(), False)
+                    except (OSError, ValueError):
+                        private_capture.fail("capture_pipe_drain_incomplete")
+                        private_capture.check()
+                    while True:
+                        try:
+                            chunk = os.read(pipe.fileno(), 65536)
+                        except OSError:
+                            private_capture.fail("capture_pipe_drain_incomplete")
+                            break
+                        if not chunk:
+                            break
+                        private_capture.append(name, chunk)
+                    private_capture.finish_stream(name)
         finally:
             for pipe in (proc.stdout, proc.stderr):
                 try:
@@ -3550,6 +3836,30 @@ def _sanitized_pty_tail(terminal_bytes: bytes, max_chars: int = 200) -> str:
     text = _ANSI_OSC_RE.sub("", text)
     text = _ANSI_CSI_RE.sub("", text)
     text = _TUI_CTRL_RE.sub("", text)
+    text = re.sub(
+        r"(?s)-----BEGIN [A-Z0-9 ]+-----.*?(?:-----END [A-Z0-9 ]+-----|$)",
+        "<redacted>", text,
+    )
+    # Encoded log lines can hide credential keys or delimiters. Suppress those
+    # lines instead of attempting lossy, potentially recursive JSON decoding.
+    text = re.sub(
+        r"""(?m)^.*\\(?:["\\/]|u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}).*$""",
+        "<redacted encoded diagnostic>", text,
+    )
+    text = re.sub(r"(?i)([a-z][a-z0-9+.-]*://)[^\s/]*@", r"\1<redacted>@", text)
+    # Header schemes and quoted JSON values must be redacted before the generic
+    # key/value scrubber or it can remove only "Bearer" and leave the credential.
+    text = re.sub(r"(?i)\b(?:bearer|basic)\s+[^\s\"']+", "<redacted>", text)
+    text = re.sub(
+        r"(?i)(api[_-]?key|authorization|token|secret|password)"
+        r"([\"']?\s*[:=]\s*)(?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|\S+)",
+        r"\1\2<redacted>", text,
+    )
+    text = re.sub(
+        r"\b(?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{16,}"
+        r"|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\b",
+        "<redacted>", text,
+    )
     # max_chars > len ⇒ redact the COMPLETE text with no head-truncation, then tail-slice.
     redacted = _redacted_stderr_excerpt(text, max_chars=len(text) + 8)
     return redacted[-max_chars:].strip()
@@ -3570,9 +3880,14 @@ def _run_claude_tui_session(
     quiescence_latch: _ProviderQuiescenceLatch | None = None,
     allow_transcript_final: bool = False,
     broker_transcript_path: Path | None = None,
+    private_capture: PrivateCaptureAttempt | None = None,
 ) -> tuple[int, str, str, str]:
     if fcntl is None or pty is None or termios is None:
         return 1, "", "claude_tui_unsupported_platform", ""
+    private_stream = None
+    if private_capture is not None:
+        private_capture.process_number += 1
+        private_stream = private_capture.open_stream(f"pty-{private_capture.process_number}.bin")
 
     start_monotonic = time.monotonic()
     start_wall = time.time()
@@ -3688,7 +4003,7 @@ def _run_claude_tui_session(
             pass
         try:
             def _popen() -> subprocess.Popen[bytes]:
-                return subprocess.Popen(
+                spawned = subprocess.Popen(
                     list(command),
                     cwd=str(cwd),
                     env=dict(env),
@@ -3699,6 +4014,9 @@ def _run_claude_tui_session(
                     close_fds=True,
                     start_new_session=True,
                 )
+                if private_capture is not None:
+                    private_capture.quiescent = False
+                return spawned
 
             if quiescence_latch is None:
                 proc = _popen()
@@ -3710,10 +4028,21 @@ def _run_claude_tui_session(
     except FileNotFoundError:
         if master_fd is not None:
             os.close(master_fd)
+        if private_capture is not None and proc is not None:
+            private_capture.fail("capture_process_launch_failed")
         return 127, "", "missing_claude_cli", ""
+    except ProviderProcessGroupQuiescenceError:
+        if master_fd is not None:
+            os.close(master_fd)
+        if private_capture is not None:
+            private_capture.quiescent = False
+            private_capture.fail("capture_quiescence_unproven")
+        raise
     except Exception as exc:
         if master_fd is not None:
             os.close(master_fd)
+        if private_capture is not None and proc is not None:
+            private_capture.fail("capture_process_launch_failed")
         return 1, "", f"claude_tui_launch_error:{type(exc).__name__}", ""
 
     try:
@@ -3726,10 +4055,14 @@ def _run_claude_tui_session(
                 if readable:
                     try:
                         chunk = os.read(master_fd, 8192)
-                    except OSError:
+                    except OSError as exc:
+                        if private_capture is not None and exc.errno != errno.EIO:
+                            private_capture.fail("capture_pty_read_failed")
                         chunk = b""
                     if chunk:
                         terminal_bytes.extend(chunk)
+                        if private_capture is not None:
+                            private_capture.append(private_stream, chunk)
                         # #188: a raw PTY chunk is a heartbeat ONLY if it carries
                         # SUBSTANTIVE novel text. The TUI's animated "thinking"
                         # status line (rotating verb + per-second timer) repaints
@@ -3933,6 +4266,25 @@ def _run_claude_tui_session(
                 _terminate_process_group(proc)
                 if quiescence_latch is not None:
                     quiescence_latch.release(proc)
+            if private_capture is not None:
+                private_capture.quiescent = True
+                if master_fd is not None:
+                    try:
+                        os.set_blocking(master_fd, False)
+                    except (OSError, ValueError):
+                        private_capture.fail("capture_pty_drain_incomplete")
+                        private_capture.check()
+                    while True:
+                        try:
+                            chunk = os.read(master_fd, 8192)
+                        except OSError as exc:
+                            if exc.errno != errno.EIO:
+                                private_capture.fail("capture_pty_drain_incomplete")
+                            break
+                        if not chunk:
+                            break
+                        private_capture.append(private_stream, chunk)
+                private_capture.finish_stream(private_stream)
         finally:
             if master_fd is not None:
                 try:
@@ -4323,6 +4675,7 @@ def _exec_claude_tui_leg(
     quiescence_latch: _ProviderQuiescenceLatch | None = None,
     broker_prompt: str | None = None,
     broker_evidence: dict[str, object] | None = None,
+    private_capture: PrivateCaptureAttempt | None = None,
 ) -> tuple[str, str]:
     """Run the Claude panel leg through the local Claude Code TUI.
 
@@ -4341,10 +4694,10 @@ def _exec_claude_tui_leg(
         quiescence_latch.raise_if_set()
     brokered = broker_prompt is not None
     if brokered and not broker_prompt:
-        return "UNAVAILABLE", "brokered route rejects empty prompt"
+        return _BrokeredSpawnResult("UNAVAILABLE", "", diagnostic_detail="brokered route rejects empty prompt")
     env = _broker_subscription_env(env) if brokered else _subscription_env(env)
     if brokered and (research_seat is not None or agy_capture is not None):
-        return "UNAVAILABLE", "brokered route rejects capture and research transports"
+        return _BrokeredSpawnResult("UNAVAILABLE", "", diagnostic_detail="brokered route rejects capture and research transports")
     if research_seat is not None:
         env = scrub_research_env(env)
     # A governed Claude seat never falls through to a native Task/subagent. Inside
@@ -4354,7 +4707,7 @@ def _exec_claude_tui_leg(
         logging.getLogger(__name__).warning(
             "advisor-panel claude leg unavailable [tui_adapter_required]"
         )
-        return "UNAVAILABLE", "tui_adapter_required"
+        return _BrokeredSpawnResult("UNAVAILABLE", "", diagnostic_detail="tui_adapter_required")
 
     output_file = out_dir / "panel-claude.txt"
     tui_cwd = out_dir.resolve() if brokered else out_dir
@@ -4365,7 +4718,11 @@ def _exec_claude_tui_leg(
         else None
     )
     if broker_transcript_path is not None and os.path.lexists(broker_transcript_path):
-        return "UNAVAILABLE", "brokered_claude_session_collision"
+        return _BrokeredSpawnResult("UNAVAILABLE", "", diagnostic_detail="brokered_claude_session_collision")
+    if private_capture is not None and broker_transcript_path is not None:
+        private_capture.receipt["source"] = {
+            "path": str(broker_transcript_path), "cleanup_verified": False,
+        }
     child_review_dir = review_dir
     child_output_file = output_file
     capture_output_reader: Callable[[], str] | None = None
@@ -4398,11 +4755,11 @@ def _exec_claude_tui_leg(
     else:
         supported, support_detail = _claude_code_support_status()
         if not supported:
-            return "UNAVAILABLE", support_detail
+            return _BrokeredSpawnResult("UNAVAILABLE", "", diagnostic_detail=support_detail)
 
         authed, auth_detail = _claude_subscription_auth_ok(env)
         if not authed:
-            return "UNAVAILABLE", auth_detail
+            return _BrokeredSpawnResult("UNAVAILABLE", "", diagnostic_detail=auth_detail)
 
     prompt = (
         broker_prompt
@@ -4473,6 +4830,8 @@ def _exec_claude_tui_leg(
     )
     if quiescence_latch is not None:
         tui_extra["quiescence_latch"] = quiescence_latch
+    if private_capture is not None:
+        tui_extra["private_capture"] = private_capture
     leg_started = time.monotonic()
     total_backstop_s = (
         max(1, int(backstop_s))
@@ -4480,6 +4839,7 @@ def _exec_claude_tui_leg(
         else max(1, int(timeout_s), _MAX_LEG_TIMEOUT_S)
     )
     transcript_cleanup_ok = True
+    transcript_quiescence_failed = False
     tui_session_kwargs = {
         "command": command,
         "cwd": tui_cwd,
@@ -4501,13 +4861,31 @@ def _exec_claude_tui_leg(
         rc, review_text, log_text, pty_tail = _run_claude_tui_session(
             **tui_session_kwargs,
         )
+    except ProviderProcessGroupQuiescenceError:
+        transcript_quiescence_failed = True
+        if private_capture is not None:
+            private_capture.fail("capture_quiescence_unproven")
+        raise
     finally:
         if broker_transcript_path is not None:
-            transcript_cleanup_ok = _cleanup_broker_claude_transcript(
-                broker_transcript_path, broker_evidence,
-            )
+            if private_capture is not None:
+                # A failed capture must not delete the only exact transcript.
+                # Unproven provider quiescence remains the primary failure.
+                if private_capture.quiescent and not transcript_quiescence_failed:
+                    transcript_cleanup_ok = _cleanup_broker_claude_transcript(
+                        broker_transcript_path, broker_evidence,
+                        private_capture=private_capture,
+                    )
+                else:
+                    private_capture.fail("capture_quiescence_unproven")
+            else:
+                transcript_cleanup_ok = _cleanup_broker_claude_transcript(
+                    broker_transcript_path, broker_evidence,
+                )
+    if private_capture is not None:
+        private_capture.check()
     if not transcript_cleanup_ok:
-        return "UNAVAILABLE", "brokered_claude_transcript_cleanup_failed"
+        return _BrokeredSpawnResult("UNAVAILABLE", "", diagnostic_detail="brokered_claude_transcript_cleanup_failed")
     # Consiliency/agent-harness#343: a read-only by-reference Fable review can
     # suffer turn extinction after otherwise healthy tool progress. Retry that
     # exact typed failure once in a fresh scratch cwd. The retry stays inside the
@@ -4577,11 +4955,7 @@ def _exec_claude_tui_leg(
     }
     if log_text in _typed_operational and status != "OK":
         status = "DEGRADED"
-        text = (
-            review_text  # real review content only (empty ⇒ governed WARN, not block)
-        )
-    else:
-        text = review_text or log_text
+    text = review_text  # Diagnostics never substitute for missing review content.
     # R3: preserve the bounded, redacted, control-stripped PTY tail as DIAGNOSABLE
     # EVIDENCE for every non-OK failure — via a WARNING log, NOT ``text`` (which feeds
     # verdict-conformance). The tail is already credential-scrubbed and bounded.
@@ -4589,7 +4963,14 @@ def _exec_claude_tui_leg(
         logging.getLogger(__name__).warning(
             "advisor-panel claude TUI leg %s [%s]: %s", status, log_text, pty_tail
         )
-    return status, text
+    detail = None
+    if status != "OK":
+        detail = f"returncode={rc}; " + _sanitized_pty_tail(
+            f"{log_text}: {pty_tail}".encode("utf-8", errors="replace"), max_chars=1024,
+        )
+    # Direct adapter callers still unpack a pair. Carry the diagnostic around
+    # the broker's frozen pair rather than putting it in verdict text.
+    return _BrokeredSpawnResult(status, text, diagnostic_detail=detail)
 
 
 def _exec_claude_agent_view_attempt(
@@ -4752,6 +5133,7 @@ def _exec_leg(
     quiescence_latch: _ProviderQuiescenceLatch | None = None,
     broker_prompt: str | None = None,
     broker_evidence: dict[str, object] | None = None,
+    private_capture: PrivateCaptureAttempt | None = None,
 ) -> tuple[int, str, str]:
     """Run one CLI leg against the staged review dir; return (rc, review_text, log_text).
 
@@ -5127,6 +5509,7 @@ def _exec_leg(
                             cmd, cwd=provider_cwd, env=agy_env,
                             deadline_s=deadline_s, input_text=broker_stream_input,
                             quiescence_latch=quiescence_latch,
+                            **({"private_capture": private_capture} if private_capture is not None else {}),
                         )
                 else:
                     proc = _run_leg_with_liveness(
@@ -5375,10 +5758,12 @@ class _BrokeredSpawnResult(tuple):
     def __new__(
         cls, status: str, text: str, detail: str | None = None,
         *, evidence: Mapping[str, object] | None = None,
+        diagnostic_detail: str | None = None,
     ) -> "_BrokeredSpawnResult":
         value = (status, text) if detail is None else (status, text, detail)
         result = super().__new__(cls, value)
         result.harden_isolation_evidence = dict(evidence or {})
+        result.diagnostic_detail = diagnostic_detail
         return result
 
 
@@ -5569,6 +5954,10 @@ def _default_spawn(
             )
             response: dict[str, object] | None = None
             probe: Mapping[str, object] | None = None
+            diagnostic: list[str | None] = [None]
+            retention_error: list[PrivateCaptureError | None] = [None]
+            primary_quiescence: list[ProviderProcessGroupQuiescenceError | None] = [None]
+            private_scope = current_private_capture()
             try:
                 broker_latch = _ProviderQuiescenceLatch()
                 broker_extra = {**extra, "quiescence_latch": broker_latch}
@@ -5584,20 +5973,79 @@ def _default_spawn(
                     "provider_input_inline": True,
                     "provider_live_tree_cwd": False,
                 })
-                def _parent_infer() -> tuple[str, str]:
+                def _infer_with_capture(attempt) -> tuple[str, str]:
+                    provider_extra = {
+                        **broker_extra,
+                        **({"private_capture": attempt} if attempt is not None else {}),
+                    }
                     if leg == "claude":
-                        return _exec_claude_tui_leg(
+                        outcome = _exec_claude_tui_leg(
                             review_dir, out_dir, leg_timeout, artifact,
                             repo_dir=out_dir, mode=provider_mode, model=broker_model,
                             backstop_s=leg_deadline, broker_prompt=sealed_prompt,
-                            broker_evidence=broker.evidence, **broker_extra,
+                            broker_evidence=broker.evidence, **provider_extra,
                         )
+                        diagnostic[0] = getattr(outcome, "diagnostic_detail", None)
+                        return outcome
                     rc, text, log = _exec_leg(
                         leg, review_dir, out_dir, leg_timeout, artifact, provider_mode, broker_model,
                         deadline_s=leg_deadline, broker_prompt=sealed_prompt,
-                        broker_evidence=broker.evidence, **broker_extra,
+                        broker_evidence=broker.evidence, **provider_extra,
                     )
-                    return _classify_leg(rc, text, log, provider_mode), text
+                    status = _classify_leg(rc, text, log, provider_mode)
+                    if status != "OK":
+                        diagnostic[0] = f"returncode={rc}; " + _sanitized_pty_tail(
+                            log.encode("utf-8", errors="replace"), max_chars=1024,
+                        )
+                    return status, text
+                def _parent_infer() -> tuple[str, str]:
+                    attempt = None
+                    completed = False
+                    inference_started = False
+                    primary = None
+                    try:
+                        if private_scope is not None and leg in {"claude", "gemini"}:
+                            attempt = private_scope.begin(leg, broker_model)
+                            attempt.save("bundle.md", (review_dir / "review-bundle.md").read_bytes())
+                            attempt.save("instructions.md", (review_dir / "review-instructions.md").read_bytes())
+                            attempt.save("input.txt", sealed_prompt.encode("utf-8"))
+                        inference_started = True
+                        result = _infer_with_capture(attempt)
+                        if attempt is not None:
+                            attempt.outcome = {
+                                "status": result[0],
+                                "review_text_sha256": sha256(result[1].encode("utf-8")).hexdigest(),
+                                "detail": diagnostic[0],
+                            }
+                        completed = True
+                        return result
+                    except BaseException as exc:
+                        primary = exc
+                        if isinstance(exc, ProviderProcessGroupQuiescenceError):
+                            primary_quiescence[0] = exc
+                        if isinstance(exc, PrivateCaptureError):
+                            retention_error[0] = exc
+                        elif (isinstance(exc, Exception)
+                              and not isinstance(exc, ProviderProcessGroupQuiescenceError)
+                              and inference_started and attempt is not None
+                              and attempt.quiescent and not attempt.failure):
+                            # A provider exception can still leave a complete capture.
+                            diagnostic[0] = _sanitized_pty_tail(
+                                f"{type(exc).__name__}: {exc}".encode("utf-8", errors="replace"), max_chars=1024,
+                            )
+                            attempt.outcome = {
+                                "status": "DEGRADED", "review_text_sha256": sha256(b"").hexdigest(),
+                                "detail": diagnostic[0],
+                            }
+                            completed = True
+                        raise
+                    finally:
+                        if attempt is not None:
+                            attempt.close(completed=completed)
+                            if attempt.failure and not isinstance(primary, ProviderProcessGroupQuiescenceError):
+                                retention_error[0] = PrivateCaptureError(attempt.failure)
+                                if primary is None:
+                                    raise retention_error[0]
                 def _cancel_parent_infer() -> None:
                     broker_latch.trip(ProviderProcessGroupQuiescenceError(
                         "broker operation deadline elapsed"
@@ -5607,10 +6055,22 @@ def _default_spawn(
                     _cancel_parent_infer,
                     broker_latch.is_quiescent,
                 )
-                response, probe = broker.run_credentialless_client(
-                    adapter, deadline_s=float(leg_deadline),
-                )
+                try:
+                    response, probe = broker.run_credentialless_client(
+                        adapter, deadline_s=float(leg_deadline),
+                    )
+                except Exception:
+                    broker_latch.raise_if_set()
+                    if primary_quiescence[0] is not None:
+                        raise primary_quiescence[0]
+                    if retention_error[0] is not None:
+                        raise retention_error[0]
+                    raise
                 broker_latch.raise_if_set()
+                if primary_quiescence[0] is not None:
+                    raise primary_quiescence[0]
+                if retention_error[0] is not None:
+                    raise retention_error[0]
             finally:
                 broker.close()
             if response is None or probe is None:
@@ -5622,7 +6082,7 @@ def _default_spawn(
                 "provider_response_bytes": len(response_text.encode()),
             })
             return _BrokeredSpawnResult(
-                str(response["status"]), response_text, evidence=probe
+                str(response["status"]), response_text, diagnostic[0], evidence=probe
             )
         if leg == "claude":
             if quiescence_latch is not None:
@@ -5678,10 +6138,14 @@ def _default_spawn(
         if status != "OK" and not str(review_text).strip() and str(log_text).strip():
             return status, review_text, str(log_text).strip()[:2000]
         return status, review_text
-    except ProviderProcessGroupQuiescenceError:
+    except (ProviderProcessGroupQuiescenceError, PrivateCaptureError):
         raise
     except Exception as exc:  # fail-closed
-        return "DEGRADED", str(exc)[:200]
+        return _BrokeredSpawnResult(
+            "DEGRADED", "", diagnostic_detail=_sanitized_pty_tail(
+                f"{type(exc).__name__}: {exc}".encode("utf-8", errors="replace"), max_chars=1024,
+            ),
+        )
     finally:
         if provider_output_dir is not None and agy_capture is None:
             shutil.rmtree(provider_output_dir, ignore_errors=True)
@@ -5763,6 +6227,7 @@ def _default_spawn_via_provider(
     _diagnostic: list[str | None] = [None]
     _broker_evidence: list[Mapping[str, object] | None] = [None]
     _quiescence_error: list[ProviderProcessGroupQuiescenceError | None] = [None]
+    _retention_error: list[PrivateCaptureError | None] = [None]
 
     def _spawn_2tuple(request, register_process=None):
         if quiescence_latch is not None:
@@ -5781,10 +6246,14 @@ def _default_spawn_via_provider(
                 else exc
             )
             raise
+        except PrivateCaptureError as exc:
+            _retention_error[0] = exc
+            raise
         if isinstance(spawned, tuple) and len(spawned) == 3:
             status_, text_, _diagnostic[0] = spawned
             _broker_evidence[0] = getattr(spawned, "harden_isolation_evidence", None)
             return status_, text_
+        _diagnostic[0] = getattr(spawned, "diagnostic_detail", None)
         _broker_evidence[0] = getattr(spawned, "harden_isolation_evidence", None)
         return spawned
 
@@ -5803,6 +6272,9 @@ def _default_spawn_via_provider(
     )
     if _quiescence_error[0] is not None:
         raise _quiescence_error[0]
+    if _retention_error[0] is not None:
+        provider.close_session(session.id)
+        raise _retention_error[0]
     if quiescence_latch is not None:
         quiescence_latch.raise_if_set()
     status, text = "DEGRADED", ""
@@ -5835,6 +6307,182 @@ _PRODUCTION_PREPARE_REVIEW_ISOLATION_AUTHORIZATION = (
 )
 
 
+def _write_incremental_diagnostic(
+    review_dir: Path, index: int, result: "PanelLegResult", verdict_sha256: str,
+    *, verdict_name: str | None = None, verdict_identity: Mapping[str, int] | None = None,
+) -> None:
+    """Retain allowlisted metadata separately, without changing frozen verdicts."""
+    evidence = result.harden_isolation_evidence or {}
+    if not evidence and not result.detail:
+        return
+    directory_fd: int | None = None
+    temporary: str | None = None
+    try:
+        retained: dict[str, object] = {}
+        for key in (
+            "stage_bundle_sha256", "stage_instructions_sha256", "provider_input_sha256",
+            "provider_response_sha256", "provider_stream_output_sha256",
+            "claude_session_id_sha256", "claude_transcript_sha256",
+        ):
+            value = evidence.get(key)
+            if isinstance(value, str) and re.fullmatch(r"[a-f0-9]{64}", value):
+                retained[key] = value
+        for key in (
+            "provider_input_bytes", "provider_response_bytes", "provider_stream_output_bytes",
+            "provider_stream_chunk_count", "provider_stream_result_count", "claude_transcript_bytes",
+            "provider_liveness_prompt_bytes",
+        ):
+            value = evidence.get(key)
+            if type(value) is int and 0 <= value <= 2**63 - 1:
+                retained[key] = value
+        for key in ("operation_deadline_s", "provider_liveness_stall_threshold_s"):
+            value = evidence.get(key)
+            if type(value) in (int, float) and 0 <= value <= 2**63 - 1:
+                retained[key] = value
+        for key in (
+            "provider_stream_acknowledgements_verified", "provider_stream_final_no_truncation",
+            "claude_transcript_existed", "claude_transcript_cleanup_verified",
+            "provider_agy_home_cleanup_verified", "child_quiescent", "cleanup_root_removed",
+        ):
+            if type(evidence.get(key)) is bool:
+                retained[key] = evidence[key]
+        outcome = evidence.get("provider_stream_outcome")
+        if isinstance(outcome, str) and outcome in {
+            "accepted", "parse_error", "session_reset", "result_count_mismatch",
+            "acknowledgement_mismatch", "final_result_invalid", "truncation_marker",
+        }:
+            retained["provider_stream_outcome"] = outcome
+        payload = {
+            "schema": "advisor_leg_diagnostic.v1",
+            "index": index,
+            "verdict_sha256": verdict_sha256,
+            "verdict_file_identity": dict(verdict_identity) if verdict_identity is not None else None,
+            "seat_key_sha256": sha256(str(result.seat_key or result.leg).encode()).hexdigest(),
+            "detail": _sanitized_pty_tail(str(result.detail or "").encode(), max_chars=1100),
+            "evidence": retained,
+        }
+        body = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
+        digest = sha256(body).hexdigest()
+        name = f"leg-{index:04d}-{digest}.diagnostic.json"
+        root = review_dir.absolute()
+        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+        directory_fd = os.open(root.anchor, flags)
+        for part in root.parts[1:]:
+            child_fd = os.open(part, flags, dir_fd=directory_fd)
+            os.close(directory_fd)
+            directory_fd = child_fd
+        opened = os.fstat(directory_fd)
+        if opened.st_uid != os.getuid() or stat.S_IMODE(opened.st_mode) & 0o022:
+            raise OSError("diagnostic directory is not owner-controlled")
+
+        def verify_verdict() -> None:
+            if verdict_identity is None:
+                return
+            fd = os.open(verdict_name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd)
+            with os.fdopen(fd, "rb") as handle:
+                before = os.fstat(handle.fileno())
+                if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()
+                        or before.st_nlink != 1 or stat.S_IMODE(before.st_mode) != 0o600):
+                    raise OSError("unsafe verdict artifact")
+                content = handle.read(verdict_identity["st_size"] + 1)
+                os.fsync(handle.fileno())
+                after = os.fstat(handle.fileno())
+                named = os.stat(verdict_name, dir_fd=directory_fd, follow_symlinks=False)
+                if (any(getattr(info, key) != value
+                        for info in (before, after, named)
+                        for key, value in verdict_identity.items())
+                        or sha256(content).hexdigest() != verdict_sha256):
+                    raise OSError("verdict artifact changed")
+
+        def verify_diagnostic(fd, filename, *, links=1, expected=None):
+            before = os.fstat(fd)
+            if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()
+                    or before.st_nlink != links or stat.S_IMODE(before.st_mode) != 0o600
+                    or before.st_size != len(body)
+                    or (expected is not None and (before.st_dev, before.st_ino) != expected)):
+                raise OSError("unsafe diagnostic artifact")
+            os.lseek(fd, 0, os.SEEK_SET)
+            content = os.read(fd, len(body) + 1)
+            named = os.stat(filename, dir_fd=directory_fd, follow_symlinks=False)
+            if (_capture_file_identity(before) != _capture_file_identity(os.fstat(fd))
+                    or _capture_file_identity(before) != _capture_file_identity(named)
+                    or content != body):
+                raise OSError("diagnostic artifact changed")
+            return before
+
+        verify_verdict()
+        temporary = f".diagnostic-{uuid.uuid4().hex}.tmp"
+        fd = os.open(temporary, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory_fd)
+        with os.fdopen(fd, "w+b") as handle:
+            handle.write(body)
+            handle.flush()
+            os.fsync(handle.fileno())
+            source = verify_diagnostic(handle.fileno(), temporary)
+            expected = (source.st_dev, source.st_ino)
+            linked = True
+            try:
+                os.link(temporary, name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd, follow_symlinks=False)
+            except FileExistsError:
+                linked = False
+            published_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd)
+            try:
+                published = verify_diagnostic(
+                    published_fd, name, links=2 if linked else 1,
+                    expected=expected if linked else None,
+                )
+                if linked and any(
+                    _capture_file_identity(published) != _capture_file_identity(info)
+                    for info in (
+                        os.fstat(handle.fileno()),
+                        os.stat(temporary, dir_fd=directory_fd, follow_symlinks=False),
+                    )
+                ):
+                    raise OSError("diagnostic publication changed")
+                os.unlink(temporary, dir_fd=directory_fd)
+                temporary = None
+                os.fsync(published_fd)
+                os.fsync(directory_fd)
+                verify_verdict()
+                final = verify_diagnostic(
+                    published_fd, name, expected=(published.st_dev, published.st_ino),
+                )
+                retained_identity = os.fstat(handle.fileno()) if linked else published
+                if _capture_file_identity(final) != _capture_file_identity(retained_identity):
+                    raise OSError("diagnostic publication changed")
+                current_fd = _open_capture_directory(root)
+                try:
+                    if any(
+                        (info.st_dev, info.st_ino) != (opened.st_dev, opened.st_ino)
+                        or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o022
+                        for info in (os.fstat(current_fd), os.fstat(directory_fd))
+                    ):
+                        raise OSError("diagnostic directory changed")
+                    named = os.stat(name, dir_fd=current_fd, follow_symlinks=False)
+                    if (_capture_file_identity(final) != _capture_file_identity(os.fstat(published_fd))
+                            or _capture_file_identity(final) != _capture_file_identity(named)):
+                        raise OSError("diagnostic publication changed")
+                finally:
+                    os.close(current_fd)
+                object.__setattr__(result, "_diagnostic_retention", {
+                    "status": "saved", "file": name, "sha256": digest,
+                })
+            finally:
+                os.close(published_fd)
+    except Exception as exc:
+        object.__setattr__(result, "_diagnostic_retention", {"status": "failed"})
+        logging.getLogger(__name__).warning(
+            "streaming diagnostic write failed for index %s (%s)", index, type(exc).__name__,
+        )
+    finally:
+        if directory_fd is not None:
+            if temporary is not None:
+                try:
+                    os.unlink(temporary, dir_fd=directory_fd)
+                except OSError:
+                    pass
+            os.close(directory_fd)
+
+
 def _write_incremental_verdict(
     review_dir: Path, index: int, result: "PanelLegResult"
 ) -> None:
@@ -5845,6 +6493,8 @@ def _write_incremental_verdict(
     (the consolidated ordered return is still authoritative). The filename is
     index-prefixed so it is stable, submission-ordered on disk, and unique even for
     two same-vendor seats sharing a leg label."""
+    if result.detail or result.harden_isolation_evidence:
+        object.__setattr__(result, "_diagnostic_retention", {"status": "pending"})
     try:
         review_dir.mkdir(parents=True, exist_ok=True)
         label = re.sub(r"[^0-9A-Za-z._-]+", "_", str(result.seat_key or result.leg))
@@ -5861,10 +6511,28 @@ def _write_incremental_verdict(
         # Atomic publish: write a temp sibling then os.replace, so a directory
         # watcher never observes/parses a partially-written verdict file.
         body = json.dumps(payload, indent=2, sort_keys=True)
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(body, encoding="utf-8")
-        os.replace(tmp, path)
+        tmp = path.with_name(path.name + f".{uuid.uuid4().hex}.tmp")
+        verdict_identity = None
+        if hasattr(os, "O_NOFOLLOW"):
+            fd = os.open(tmp, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "w+b") as handle:
+                handle.write(body.encode("utf-8"))
+                handle.flush()
+                os.replace(tmp, path)
+                published = os.fstat(handle.fileno())
+                verdict_identity = {
+                    key: getattr(published, key)
+                    for key in ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+                }
+        else:
+            # Keep portable verdict streaming when private descriptor-relative
+            # diagnostic capture is unsupported (including Windows).
+            with tmp.open("x", encoding="utf-8") as handle:
+                handle.write(body)
+            os.replace(tmp, path)
     except Exception:  # fail-open: streaming side-channel never breaks the review
+        if result.detail or result.harden_isolation_evidence:
+            object.__setattr__(result, "_diagnostic_retention", {"status": "failed"})
         # Best-effort cleanup of a half-written temp sibling (a failure between the
         # write and the replace); harmless to watchers (the .tmp misses the glob).
         try:
@@ -5875,6 +6543,11 @@ def _write_incremental_verdict(
             "streaming verdict write failed for leg %s",
             getattr(result, "leg", "?"),
             exc_info=True,
+        )
+    else:
+        _write_incremental_diagnostic(
+            review_dir, index, result, sha256(body.encode()).hexdigest(),
+            verdict_name=path.name, verdict_identity=verdict_identity,
         )
 
 
@@ -5909,9 +6582,10 @@ def _run_legs_ordered(
       index). The resolver re-keys results by position and the golden proof asserts
       order + content, so this is load-bearing.
     * **Fail-closed per item** — ``run_one`` turns ordinary provider exceptions into
-      a DEGRADED ``PanelLegResult``.  The sole exception is an unproven provider
-      process-group quiescence authority, which must cross the worker boundary and
-      abort before capture-result sealing or private-root cleanup.
+      a DEGRADED ``PanelLegResult``. Unproven provider process-group quiescence
+      must cross the worker boundary and abort before capture-result sealing or
+      private-root cleanup. An opted-in private capture failure also propagates;
+      it must never be presented as successful retention or as reviewer text.
     * **Parallel is the default; sequential is opt-in** — ``max_concurrency`` bounds
       the pool: ``None`` (default) fans out up to ``_PANEL_MAX_WORKERS``; ``1`` forces
       sequential (the escape hatch for debugging / rate-limits / a constrained host);
@@ -5938,8 +6612,13 @@ def _run_legs_ordered(
         return []
     max_workers = max(1, min(max_concurrency or len(seq), _PANEL_MAX_WORKERS))
     streaming = on_leg_complete is not None or review_dir is not None
+    private_scope = current_private_capture()
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = [pool.submit(run_one, item) for item in seq]
+        futures = [
+            pool.submit(run_one, item) if private_scope is None
+            else pool.submit(private_scope.run, run_one, item)
+            for item in seq
+        ]
 
         def _cancel_and_raise(
             error: ProviderProcessGroupQuiescenceError,
@@ -5949,6 +6628,19 @@ def _run_legs_ordered(
                 pending.cancel()
             raise primary
 
+        def _cancel_capture_and_raise(error: PrivateCaptureError) -> None:
+            for pending in futures:
+                pending.cancel()
+            pool.shutdown(wait=True)
+            if fatal_latch is not None:
+                fatal_latch.raise_if_set()
+            for pending in futures:
+                if not pending.cancelled():
+                    failure = pending.exception()
+                    if isinstance(failure, ProviderProcessGroupQuiescenceError):
+                        _cancel_and_raise(failure)
+            raise error
+
         if not streaming:
             # DEFAULT PATH — byte-identical: block in submission order, return in order.
             ordered: list[PanelLegResult] = []
@@ -5957,6 +6649,8 @@ def _run_legs_ordered(
                     ordered.append(future.result())
             except ProviderProcessGroupQuiescenceError as exc:
                 _cancel_and_raise(exc)
+            except PrivateCaptureError as exc:
+                _cancel_capture_and_raise(exc)
             return ordered
         # STREAMING PATH — deliver each leg as it LANDS (out of order), then re-sort
         # the consolidated return to submission order.
@@ -5968,6 +6662,8 @@ def _run_legs_ordered(
                 result = future.result()
             except ProviderProcessGroupQuiescenceError as exc:
                 _cancel_and_raise(exc)
+            except PrivateCaptureError as exc:
+                _cancel_capture_and_raise(exc)
             results[i] = result
             if review_dir is not None:
                 try:
@@ -6153,7 +6849,7 @@ def invoke_panel(
                     status, text, spawn_detail = spawned
                 else:
                     status, text = spawned
-            except ProviderProcessGroupQuiescenceError:
+            except (ProviderProcessGroupQuiescenceError, PrivateCaptureError):
                 raise
             except Exception as exc:
                 result = PanelLegResult(
@@ -6212,7 +6908,7 @@ def invoke_panel(
         # process-group quiescence remains fatal across the worker boundary.
         try:
             spawned = runner(leg, artifact)
-        except ProviderProcessGroupQuiescenceError:
+        except (ProviderProcessGroupQuiescenceError, PrivateCaptureError):
             raise
         except Exception as exc:
             return PanelLegResult(
@@ -7154,6 +7850,8 @@ def invoke_board(
                 if primary is exc:
                     raise
                 raise primary
+            except PrivateCaptureError:
+                raise
             except Exception as exc:  # fail-closed: a broken seat degrades, never crashes
                 result = PanelLegResult(
                     leg=leg,

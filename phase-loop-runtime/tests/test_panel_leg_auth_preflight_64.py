@@ -139,10 +139,11 @@ def test_claude_unproven_auth_never_launches_tui(tmp_path, monkeypatch):
     )
     launched = []
     monkeypatch.setattr(pi, "_run_claude_tui_session", lambda **kwargs: launched.append(kwargs))
-    status, detail = pi._exec_claude_tui_leg(
+    result = pi._exec_claude_tui_leg(
         review_dir, out_dir, 60, "bundle", env={}
     )
-    assert (status, detail) == ("UNAVAILABLE", "subscription_auth_unproven")
+    assert result == ("UNAVAILABLE", "")
+    assert result.diagnostic_detail == "subscription_auth_unproven"
     assert launched == []
 
 
