@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 from pathlib import Path
+from time import sleep
 from typing import Mapping
 from urllib.parse import urlsplit
 
@@ -495,79 +497,64 @@ class GitHubBrokerAdapter:
             diagnostic_pr_url = self._create_reports_existing_pr(created, request, origin_repo)
             if diagnostic_pr_url is None:
                 return self._ambiguous(request, "pr-unconfirmed")
-        # Exact-published-head verification: READ the remote and confirm the branch
-        # head on origin equals the pushed sha, then resolve the REAL PR url and
-        # confirm its headRefOid matches.  Only then is the effect terminally observed.
-        remote = self.run(["git", "-C", str(self.repo_path), "ls-remote", origin_url, ref], capture_output=True, text=True)
-        if remote.returncode: return self._ambiguous(request, "remote-read-failed")
-        remote_sha = remote.stdout.split("\t", 1)[0].strip() if remote.stdout.strip() else ""
-        if not remote_sha: return self._ambiguous(request, "remote-branch-absent")
-        if remote_sha != request.head_sha: return self._ambiguous(request, "remote-head-mismatch")
-        listed = self.run(["gh", "pr", "list", "--repo", origin_repo, "--head", request.branch, "--state", "open", "--json", "url,headRefOid,baseRefName,headRepositoryOwner,isCrossRepository"], cwd=self.repo_path, capture_output=True, text=True)
-        if listed.returncode: return self._ambiguous(request, "pr-read-failed")
-        try:
-            prs = json.loads(listed.stdout or "[]")
-        except json.JSONDecodeError:
-            return self._ambiguous(request, "pr-read-unparsable")
-        if not isinstance(prs, list):
-            return self._ambiguous(request, "pr-read-unparsable")
-        if len(prs) > 1:
-            return self._ambiguous(request, "pr-list-ambiguous")
-        # Head-only matching is not enough (agent-harness#250, cross-vendor CR, codex):
-        # GitHub allows a PR's base to be retargeted after creation, and a same-head PR
-        # could simply target a different base than the one scope-checked above. A PR
-        # matched on headRefOid alone could therefore be recorded as the successful
-        # effect of THIS request even though it no longer targets (or never targeted)
-        # request.base — silently bypassing the #202 owned-scope check, since a later
-        # branch-based merge would use whatever base the PR actually carries. Require
-        # BOTH headRefOid AND baseRefName to equal the request's before accepting the
-        # match; a head-matched/base-mismatched PR fails CLOSED as ambiguous (a PR
-        # genuinely exists at that head, so this is not a provable no-effect).
-        head_matches = [p for p in prs if isinstance(p, dict) and p.get("headRefOid") == request.head_sha]
-        match = next((p for p in head_matches if p.get("baseRefName") == request.base), None)
-        if match is None:
-            if head_matches:
-                return self._ambiguous(request, "pr-base-unconfirmed")
-            # EMPTY AND STALE ARE DIFFERENT ANSWERS, and one code could not tell them apart.
-            #
-            # agent-harness#789's second incident turned on exactly this. The adapter had
-            # already confirmed the remote branch at the pushed sha; then this one read
-            # returned no matching head and recorded `pr-head-unconfirmed`. The raw list
-            # payload is not retained — deliberately, since it cannot go in the sealed
-            # evidence record without breaking older readers — so afterwards there was no
-            # way to tell whether the list came back EMPTY (the PR was genuinely not
-            # visible yet, a read-after-write race) or came back with OTHER heads (a stale
-            # or mis-scoped read). That distinction is the whole diagnosis, and the
-            # incident could only record it as unproven.
-            #
-            # The code itself now carries it. Same terminal state, same fail-closed
-            # permanence, no schema change: only the reference becomes specific enough to
-            # diagnose the next occurrence.
-            #
-            # A BOUNDED RE-READ IS NOT ADDED, and the honest reason is narrower than the
-            # one first written here ("a permanently ambiguous mutation must not be
-            # re-attempted on a guess"). That conflates re-issuing the READ with
-            # re-attempting the MUTATION: re-reading `gh pr list` mutates nothing, so the
-            # objection does not apply to it. It is declined because the v5 rule above
-            # fixes the meaning of an unconfirmed read as permanently ambiguous rather
-            # than retryable, and because re-reading widens the window in which the
-            # generation lease is held with an unsealed owner — the exact state that
-            # blocked a partition in agent-harness#789. Changing that is a contract
-            # decision, not a repair. (ah#834 r1, fable.)
-            if not prs:
-                return self._ambiguous(request, "pr-list-empty")
-            return self._ambiguous(request, "pr-head-unconfirmed")
-        _, origin_owner, _ = origin_repo.split("/", 2)
-        head_owner = match.get("headRepositoryOwner")
-        if (
-            not isinstance(head_owner, dict)
-            or head_owner.get("login") != origin_owner
-            or match.get("isCrossRepository") is not False
-        ):
-            return self._ambiguous(request, "pr-head-repository-unconfirmed")
-        pr_url = match.get("url")
-        if not self._pr_url_matches_origin(pr_url, origin_repo):
-            return self._ambiguous(request, "pr-url-unconfirmed")
-        if diagnostic_pr_url is not None and pr_url != diagnostic_pr_url:
-            return self._ambiguous(request, "pr-url-readback-mismatch")
-        return PublishCommittedBranchResult(request.branch, request.head_sha, pr_url), BrokerTerminalEvidence(request.admission.idempotency_key, "effect_terminal_observed", pr_url)
+        # agent-harness#789: only valid empty or identity-validated differing-head
+        # observations may wait before terminalization. These shapes establish no
+        # historical cause or visibility SLA. Push/create are never repeated, and
+        # the existing owner/lease remains held for the entire observation window.
+        for round_index in range(1, 4):
+            remote = self.run(["git", "-C", str(self.repo_path), "ls-remote", origin_url, ref], capture_output=True, text=True)
+            if remote.returncode: return self._ambiguous(request, "remote-read-failed")
+            remote_sha = remote.stdout.split("\t", 1)[0].strip() if remote.stdout.strip() else ""
+            if not remote_sha: return self._ambiguous(request, "remote-branch-absent")
+            if remote_sha != request.head_sha: return self._ambiguous(request, "remote-head-mismatch")
+            listed = self.run(["gh", "pr", "list", "--repo", origin_repo, "--head", request.branch, "--state", "open", "--json", "url,headRefOid,baseRefName,headRepositoryOwner,isCrossRepository"], cwd=self.repo_path, capture_output=True, text=True)
+            if listed.returncode: return self._ambiguous(request, "pr-read-failed")
+            if not isinstance(listed.stdout, str):
+                return self._ambiguous(request, "pr-read-unparsable")
+            try:
+                prs = json.loads(listed.stdout)
+            except (ValueError, RecursionError):
+                return self._ambiguous(request, "pr-read-unparsable")
+            if not isinstance(prs, list):
+                return self._ambiguous(request, "pr-read-unparsable")
+            if len(prs) > 1:
+                return self._ambiguous(request, "pr-list-ambiguous")
+            reason = "pr-list-empty"
+            if prs:
+                match = prs[0]
+                if not isinstance(match, dict):
+                    return self._ambiguous(request, "pr-read-unparsable")
+                pr_head = match.get("headRefOid")
+                if pr_head != request.head_sha and (
+                    not isinstance(pr_head, str)
+                    or len(pr_head) not in (40, 64)
+                    or len(pr_head) != len(request.head_sha)
+                    or any(char not in "0123456789abcdef" for char in pr_head)
+                ):
+                    return self._ambiguous(request, "pr-read-unparsable")
+                # Retargeted/foreign PRs must fail before a wait, even on stale heads.
+                if match.get("baseRefName") != request.base:
+                    return self._ambiguous(request, "pr-base-unconfirmed")
+                _, origin_owner, _ = origin_repo.split("/", 2)
+                head_owner = match.get("headRepositoryOwner")
+                if (
+                    not isinstance(head_owner, dict)
+                    or head_owner.get("login") != origin_owner
+                    or match.get("isCrossRepository") is not False
+                ):
+                    return self._ambiguous(request, "pr-head-repository-unconfirmed")
+                pr_url = match.get("url")
+                if not self._pr_url_matches_origin(pr_url, origin_repo):
+                    return self._ambiguous(request, "pr-url-unconfirmed")
+                if diagnostic_pr_url is not None and pr_url != diagnostic_pr_url:
+                    return self._ambiguous(request, "pr-url-readback-mismatch")
+                if pr_head == request.head_sha:
+                    return PublishCommittedBranchResult(request.branch, request.head_sha, pr_url), BrokerTerminalEvidence(request.admission.idempotency_key, "effect_terminal_observed", pr_url)
+                reason = "pr-head-unconfirmed"
+            logging.getLogger(__name__).warning(
+                "publication-confirmation round=%d classification=%s continue=%s",
+                round_index, reason, "true" if round_index < 3 else "false",
+            )
+            if round_index == 3:
+                return self._ambiguous(request, reason)
+            sleep(round_index)

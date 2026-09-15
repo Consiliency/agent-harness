@@ -951,21 +951,6 @@ def _default_build_publish_authority(runtime, node, workspace: Path, owned_paths
     return PublishAuthorityPreimages(Path(getattr(runtime, "coordinator_root")), authority)
 
 
-def _install_train_runner_authority_surface() -> None:
-    # SL-2 owns the transaction surface while the legacy runner remains untouched
-    # until SL-3.  Exporting these two handoff helpers here keeps the handoff
-    # type single-sourced without changing the runner's legacy execution path.
-    try:
-        from . import train_runner
-    except Exception:
-        return
-    setattr(train_runner, "PublishAuthorityPreimages", PublishAuthorityPreimages)
-    setattr(train_runner, "_default_build_publish_authority", _default_build_publish_authority)
-
-
-_install_train_runner_authority_surface()
-
-
 def _envelope_from_transaction(transaction: PublishTransaction, authority: dict, repo: Path) -> PreAdmissionEnvelope:
     values = {key: value for key, value in authority.items() if key != "schema"}
     return PreAdmissionEnvelope(
