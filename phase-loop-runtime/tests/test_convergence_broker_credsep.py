@@ -23,7 +23,7 @@ def test_only_broker_role_receives_mutation_credentials():
 
 
 # --- Blocker 3: exact-published-head verification (injectable git/gh seam) ---
-_HEAD = "abc123def456"
+_HEAD = "a" * 40
 _BRANCH = "feat/x"
 
 
@@ -514,10 +514,12 @@ def test_remote_read_failure_returns_ambiguous_not_no_effect(tmp_path):
     assert evidence.evidence_reference == "remote-read-failed"
 
 
-def test_pr_head_unconfirmed_returns_ambiguous(tmp_path):
+def test_pr_head_unconfirmed_returns_ambiguous(tmp_path, monkeypatch):
+    sleeps = []
+    monkeypatch.setattr("phase_loop_runtime.convergence.broker.credsep.sleep", sleeps.append, raising=False)
     run = _FakeRun(_base_responses() + [
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
-        (("list",), json.dumps([_same_repo_pr(head="other-sha")]), 0),
+        (("list",), json.dumps([_same_repo_pr(head="b" * 40)]), 0),
     ])
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
     assert result is None
@@ -526,6 +528,7 @@ def test_pr_head_unconfirmed_returns_ambiguous(tmp_path):
     # which is a different diagnosis from the list coming back empty. This assertion was
     # absent, so the two cases were indistinguishable after the fact AND untested.
     assert evidence.evidence_reference == "pr-head-unconfirmed"
+    assert sleeps == [1, 2]
 
 
 # --- agent-harness#789: an EMPTY read and a STALE read are different diagnoses ---
@@ -534,9 +537,11 @@ def test_pr_head_unconfirmed_returns_ambiguous(tmp_path):
 # branch had already been confirmed at the pushed sha. Because one code covered both
 # shapes and the raw payload is not retained, the incident could only state that "whether
 # it was empty or stale is unproven" — and that distinction is the whole diagnosis: an
-# empty list is a read-after-write visibility race, a non-empty list with other heads is a
-# stale or mis-scoped read. They have different remedies.
-def test_an_empty_pr_list_is_distinguishable_from_a_non_matching_one(tmp_path):
+# empty list and a non-empty list with other heads are different observed shapes,
+# neither of which establishes the cause of the historical incidents.
+def test_an_empty_pr_list_is_distinguishable_from_a_non_matching_one(tmp_path, monkeypatch):
+    sleeps = []
+    monkeypatch.setattr("phase_loop_runtime.convergence.broker.credsep.sleep", sleeps.append, raising=False)
     run = _FakeRun(_base_responses() + [
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
         (("list",), json.dumps([]), 0),
@@ -544,18 +549,22 @@ def test_an_empty_pr_list_is_distinguishable_from_a_non_matching_one(tmp_path):
     result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(_request())
     assert result is None
     assert evidence.evidence_reference == "pr-list-empty"
+    assert sleeps == [1, 2]
 
 
-def test_an_empty_pr_list_still_fails_CLOSED(tmp_path):
+def test_an_empty_pr_list_still_fails_CLOSED(tmp_path, monkeypatch):
     """The new code must not soften the outcome: still permanently ambiguous.
 
     A more specific diagnosis is not a weaker one. The push may well have taken effect,
-    so this is never a provable no-effect, and it must never be retried on a guess.
+    so this is never a provable no-effect. The mutation is never retried;
+    bounded confirmation reads precede the permanent ambiguous terminal.
 
     Builds its own adapter rather than sharing one with the test above: two assertions
     reading one fixture's result look independent and are not, so a fixture that stopped
     reaching this branch would silence both at once. (ah#834 r2, grok.)
     """
+    sleeps = []
+    monkeypatch.setattr("phase_loop_runtime.convergence.broker.credsep.sleep", sleeps.append, raising=False)
     run = _FakeRun(_base_responses() + [
         (("ls-remote",), f"{_HEAD}\trefs/heads/{_BRANCH}", 0),
         (("list",), json.dumps([]), 0),
@@ -565,6 +574,7 @@ def test_an_empty_pr_list_still_fails_CLOSED(tmp_path):
     assert evidence.terminal_state == "outcome_ambiguous_blocked"
     # pin that this branch, not some earlier refusal, produced the outcome
     assert evidence.evidence_reference == "pr-list-empty"
+    assert sleeps == [1, 2]
 
 
 # --- agent-harness#250 (N6, cross-vendor CR, codex): GitHub allows a PR's base to be
