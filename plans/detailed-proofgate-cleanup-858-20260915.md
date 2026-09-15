@@ -38,21 +38,33 @@ Neither anchor nor any existing frozen test, guard, receipt or manifest may chan
   the proof result is available before cleanup and cleanup is assessed before
   returning. Use a nested worktree-execution helper for the existing baseline,
   mutation and observable logic; preserve its behavior and bindings.
-- Run the existing native cleanup once. Capture its return code and stdout/stderr;
+- Track successful completion of `git worktree add`. Run the existing native
+  cleanup once even if add fails; preserve that original setup failure's status,
+  reason and replacement count, adding cleanup diagnostics without relabeling it
+  as a post-proof cleanup failure. Failed add does not establish either absence
+  of residue or a completed proof. Record whether the allocated path remains.
+  This distinction is source-derived and requires its own setup-failure control.
+- Capture cleanup's return code and stdout/stderr;
   catch cleanup `OSError` without replacing a previously obtained proof result.
   Do not add permission normalization, a retry, a filesystem sweep, a prune call,
   a recursive-delete fallback, or cleanup of any path beyond this invocation.
-- On cleanup success, return the original proof dictionary unchanged. On failure,
+- After successful add, cleanup success returns the original proof dictionary
+  unchanged. Cleanup failure returns
   return existing status `execution_failure`, reason `worktree_cleanup_failed`,
-  the original applied-replacement count and bindings, the full original result
+  the original applied-replacement count and bindings when originally present,
+  the full original result
   under `proof_result`, and a `cleanup` object containing the owned worktree path,
-  nullable returncode, nullable exception type, and captured stdout/stderr.
+  add-completed flag, path-exists-after-cleanup observation, nullable returncode,
+  nullable exception type, and stdout/stderr decoded to JSON-compatible text.
   These are additive dictionary fields, not new status/exit-code vocabulary.
   Preserve baseline diagnostics and original error details in `proof_result`.
-  Propagate uncaught `BaseException` normally; cleanup errors must not mask it.
+  Never return from `finally`. Propagate uncaught `BaseException` after the same
+  single cleanup attempt; its nonzero return or `OSError` must not mask it.
 - In the aggregate return, add `cleanup_failures` only when failures exist,
   mapping the affected parameter IDs to their failed-cleanup result dictionaries.
-  Existing classifications and block counts must prevent all-killed acceptance.
+  Classify using the outer status, never nested `proof_result.status`; block
+  counts must prevent all-killed acceptance. Setup failures remain blocked by
+  their original outer status, even when their secondary cleanup also fails.
   Preserve the established aggregate shape exactly when no cleanup fails.
 
 ### `phase-loop-runtime/tests/test_proofgate_cleanup.py` (create)
@@ -62,14 +74,25 @@ Neither anchor nor any existing frozen test, guard, receipt or manifest may chan
   Require equal nonzero real/effective UIDs for permission acceptance; no root
   skip/xfail can satisfy the negative case. On workspace hosts, all fixture roots
   belong beneath a fresh owned `/mnt/workspace/worktrees/agent-harness-858-*` path.
+  Elsewhere use a fresh system-temporary fixture root; let the executor retain
+  its existing workspace-or-repo-parent worktree placement. Change cwd to the
+  synthetic repository before calling the executor. Required CI must run these
+  permission cases as an ordinary user after agent-harness#855 lands; root-only
+  execution is a failed acceptance prerequisite, not a substitute green run.
 - Cover green proof plus cleanup failure, baseline failure plus cleanup failure,
   execution exception plus cleanup failure, aggregate failure propagation, and
-  unchanged normal results. Inject only the cleanup-call `OSError` for its specific
-  failure-path control; never replace proof execution in the permission cases.
+  unchanged normal results. Add failed-worktree-add and uncaught `BaseException`
+  controls, proving original reasons/exceptions survive secondary cleanup errors.
+  Bounded fault injection is allowed for those exception controls and cleanup-call
+  `OSError`; never replace proof execution in the real permission cases.
 - Assert only the invocation's allocated path is passed to cleanup and no
   permission repair, retry or foreign-path deletion occurs. Preserve original
   outputs, diagnostic records and residue before fixture retirement. Keep native
   cleanup behavior distinct from the test harness's eventual owned-fixture cleanup.
+  Record and preserve the executor's actual allocated path, which may lie outside
+  the synthetic repository root; eventual test-only retirement may touch only
+  those captured invocation-owned paths after evidence verification. Preserve the
+  original diagnostic residue independently; it is not a new test fixture.
 
 ### `CHANGELOG.md` (modify)
 
@@ -89,8 +112,10 @@ write that row before fresh final-head review and preserve landed rows.
 ## Dependencies and order
 
 1. Preserve the reproduced failure and control. Author this plan only; source
-   implementation waits for native four-vendor plan convergence. Fable's current
-   credit exhaustion is not permission to replace it or waive the review.
+   implementation waits for native four-vendor plan convergence. Fable recovered
+   after the operator's reset and completed round1. That round did not converge;
+   its full data is preserved before this amendment. Changed plan bytes require
+   a fresh panel; no earlier vote transfers.
 2. Land agent-harness#855 and continue the existing agent-harness#428 priority
    work. Before this implementation, integrate actual current main and reconcile
    any changes to `verification_evidence.py`; refresh plan review for changed
@@ -110,6 +135,10 @@ Provision an owned locked test environment through
 Use native `verification_evidence.run_verification` with the owned environment's
 lexical Python pin and explicit environment refresh. Render a fresh run ID into
 the JUnit and basetemp paths before each run; never reuse a destructive basetemp.
+Resolve `OWNED_BASETEMP` before dispatch: a fresh owned workspace worktrees path
+when that directory exists, otherwise a fresh system-temporary path. It is an
+author-time placeholder replaced with the literal resolved path, not a shell
+expansion in pytest's argv.
 
 ```yaml
 automation:
@@ -121,7 +150,7 @@ automation:
     - pytest
     - -q
     - --junitxml=.phase-loop/diagnostics/proofgate-cleanup-858/RUN_ID/junit.xml
-    - --basetemp=/mnt/workspace/worktrees/agent-harness-858-RUN_ID
+    - --basetemp=OWNED_BASETEMP
     - phase-loop-runtime/tests/test_proofgate_cleanup.py
 ```
 

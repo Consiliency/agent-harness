@@ -842,6 +842,30 @@
       "owner_skill": "codex-plan-detailed",
       "phase_accepted": false,
       "phase_alias": null,
+      "plan_revision": {
+        "plan_approval": false,
+        "plan_sha256": "cd3b3e9e59b33bce6c1d5c18044ffa2421db050a36c7e54360d90cd0f2580b26",
+        "prior_review_archive": "89d62f444be44cafa922270684eb0ca79e81e055",
+        "prior_votes_transfer": false,
+        "revision": 2,
+        "source_approval": false,
+        "trigger": "Fable and Grok PARTIALLY AGREE; distinguish setup failure, bind ordinary-user CI and portable fixtures, preserve exceptions and outer classifications."
+      },
+      "plan_revision_history": [
+        {
+          "own_review_archive": "89d62f444be44cafa922270684eb0ca79e81e055",
+          "plan_approval": false,
+          "plan_sha256": "5d4f5287ecb7278c1b8365a43511adef6c63205832365ada56d5f736eba4022d",
+          "review_result_sha256": "39f34b722b9a2717ce05656682125333cc2b883ede7f1ae0617b7acddf3e5ed8",
+          "revision": 1,
+          "verdicts": {
+            "claude": "PARTIALLY AGREE",
+            "codex": "AGREE",
+            "gemini": "AGREE",
+            "grok": "PARTIALLY AGREE"
+          }
+        }
+      ],
       "reflection_ref": null,
       "required_plan_review_pending": true,
       "roadmap_ref": null,
@@ -849,7 +873,7 @@
       "status": "committed",
       "task_summary": "Report PROOFGATE cleanup failures without losing proof outcomes (agent-harness#858)",
       "type": "detailed",
-      "updated_at": "2026-09-15T20:26:24.866609+00:00"
+      "updated_at": "2026-09-15T21:53:30.581048+00:00"
     },
     {
       "acceptance_criteria_count": 5,
