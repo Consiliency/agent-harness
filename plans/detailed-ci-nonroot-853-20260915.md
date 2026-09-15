@@ -53,8 +53,14 @@ on the owned branch, preserving its existing implementation and lifecycle.
 Revision 3 received two AGREE and two PARTIALLY AGREE verdicts with all native
 bindings valid. Revision 4 makes the new regression criterion explicit, preserves
 revision/ledger history, and specifies capture before runtime cleanup. The source
-repair remains the same single setup argument. These are gaps exposed by the
+repair stays within the existing setup command. These are gaps exposed by the
 full-CI failure and review, not future-history constraints or a new workstream.
+Before dispatching revision 4 review, the requested search found that
+`test_bootstrap_attest_rejects_child_visible_evidence_root_before_launch[workspace]`
+also selects `/mnt/workspace` when it exists and creates a child directly there.
+Root-owned ancestors would introduce another EACCES failure; this is a source-
+derived counterexample, not a claimed executed result. Provision the workspace
+itself with the same owner and add this unchanged test to narrow qualification.
 
 ## Changes
 
@@ -66,9 +72,11 @@ full-CI failure and review, not future-history constraints or a new workstream.
   and per-stage root pip cache, and dependency installation unchanged.
 - After that privileged installation, assign `/src` and its contents to `ci:ci`
   so build-created files and the full Git object database are writable by the
-  test owner. Create `/junit` and `/mnt/workspace/worktrees` owned by `ci:ci`;
+  test owner. Create `/junit`, `/mnt/workspace` and `/mnt/workspace/worktrees`
+  owned by `ci:ci`;
   the new home is already user-owned. The worktree directory is container-local,
-  never a host mount. Add it to the existing privileged `install -d` argv, before
+  never a host mount. Add both workspace paths to the existing privileged
+  `install -d` argv, before
   the user switch; the existing runtime then uses its preferred location.
   Comment that PROOFGATE fell back to unwritable `/` in CI run 34979555385, so
   the provisioned root and `/junit` are necessary ordinary-user prerequisites.
@@ -88,7 +96,7 @@ full-CI failure and review, not future-history constraints or a new workstream.
 
 Add a short repo-specific Dagger note: package/image preparation is privileged,
 but stage commands use the named ordinary user with writable source, home and
-evidence directories, including `/mnt/workspace/worktrees`. This makes Unix
+evidence directories, including `/mnt/workspace` and its `worktrees` directory. This makes Unix
 permission-denial tests meaningful. It
 does not provide a security boundary against the host operator or independent
 HARDEN evidence custody. Preserve all command/exit-code vocabulary unchanged.
@@ -194,6 +202,9 @@ For revision 3, rerun the two unchanged failed nodes on each real Python image:
 `phase-loop-runtime/tests/test_acceptance_falsifier_contract.py::test_mutation_manifest_requires_exact_criterion_parameter_and_command_coverage`
 and
 `phase-loop-runtime/tests/test_verification_evidence.py::VerificationEvidenceTest::test_proofgate_v3_matched_anchor_kill_requires_green_identical_command_baseline`.
+Also run the unchanged workspace-sensitive node
+`phase-loop-runtime/tests/test_agy_canary_evidence.py::test_bootstrap_attest_rejects_child_visible_evidence_root_before_launch[workspace]`
+on all three images. Its child-visible root must still be rejected before launch.
 Use the unoverlaid committed runtime for those regressions. Bind their parent
 directory evidence to UID/EUID 1000, a writable container-local worktree root,
 and the unchanged non-writable `/`; the observed original CI failure supplies
@@ -280,6 +291,8 @@ No VM is needed. No source or fixture may be removed before verified recovery.
   mutation coverage, UID/EUID 1000, unwritable `/`, and run-directory bindings
   beneath the provisioned writable root. Pre-cleanup snapshots and full captured
   outputs pass the declared retention controls and independent restore checks.
+  The workspace-sensitive bootstrap test also passes unchanged on all images;
+  `/mnt/workspace` is writable by `ci`, and `/` remains unwritable.
 - [ ] Exact-source and final committed-candidate reviews satisfy the existing
   four-vendor/interim rules; native publication confirms the actual PR/head.
   Complete private evidence independently restores before eligible cleanup.
