@@ -202,6 +202,222 @@ def test_replacement_at_retirement_is_restored_not_deleted(tmp_path, private_roo
     assert next(private_root.glob("session-*/claude.jsonl")).read_bytes() == b"ORIGINAL"
 
 
+@pytest.mark.parametrize("initial_source", ["present", "empty_parent", "missing_parent"])
+def test_source_parent_change_after_open_cannot_verify_cleanup(
+    tmp_path, private_root, monkeypatch, initial_source,
+):
+    project = tmp_path / "project"
+    displaced = tmp_path / "displaced"
+    transcript = project / "exact.jsonl"
+    if initial_source != "missing_parent":
+        project.mkdir(mode=0o700)
+    if initial_source == "present":
+        transcript.write_bytes(b"ORIGINAL")
+    actual_open = pi._open_capture_directory
+    changed = False
+
+    def replace_parent(path):
+        nonlocal changed
+        try:
+            return actual_open(path)
+        finally:
+            if path == project and not changed:
+                changed = True
+                if project.exists():
+                    project.rename(displaced)
+                project.mkdir(mode=0o700)
+                transcript.write_bytes(b"NEW_UNCAPTURED")
+
+    monkeypatch.setattr(pi, "_open_capture_directory", replace_parent)
+    evidence = {}
+    with pytest.raises(PrivateCaptureError):
+        with PrivateSessionCapture(private_root) as capture:
+            attempt = capture.begin("claude", "test")
+            try:
+                pi._cleanup_broker_claude_transcript(transcript, evidence, private_capture=attempt)
+            finally:
+                attempt.close(completed=True)
+    assert transcript.read_bytes() == b"NEW_UNCAPTURED"
+    assert capture.receipts[0]["status"] == "failed"
+    assert capture.receipts[0]["source"]["cleanup_verified"] is False
+    assert evidence["claude_transcript_cleanup_verified"] is False
+    if initial_source == "present":
+        assert (displaced / transcript.name).read_bytes() == b"ORIGINAL"
+        assert next(private_root.glob("session-*/claude.jsonl")).read_bytes() == b"ORIGINAL"
+
+
+@pytest.mark.parametrize("restore_collision", [False, True])
+def test_source_parent_change_after_move_preserves_source_and_honest_locator(
+    tmp_path, private_root, monkeypatch, restore_collision,
+):
+    project = tmp_path / "project"
+    project.mkdir(mode=0o700)
+    displaced = tmp_path / "displaced"
+    transcript = project / "exact.jsonl"
+    transcript.write_bytes(b"ORIGINAL")
+    actual_rename = pi._rename_noreplace
+    changed = False
+
+    def replace_parent(source_fd, source, destination_fd, destination):
+        nonlocal changed
+        actual_rename(source_fd, source, destination_fd, destination)
+        if source == transcript.name and not changed:
+            changed = True
+            project.rename(displaced)
+            project.mkdir(mode=0o700)
+            transcript.write_bytes(b"NEW_UNCAPTURED")
+            if restore_collision:
+                (displaced / transcript.name).write_bytes(b"BLOCK_RESTORE")
+
+    monkeypatch.setattr(pi, "_rename_noreplace", replace_parent)
+    evidence = {}
+    with pytest.raises(PrivateCaptureError):
+        with PrivateSessionCapture(private_root) as capture:
+            attempt = capture.begin("claude", "test")
+            try:
+                pi._cleanup_broker_claude_transcript(transcript, evidence, private_capture=attempt)
+            finally:
+                attempt.close(completed=True)
+    assert transcript.read_bytes() == b"NEW_UNCAPTURED"
+    assert next(private_root.glob("session-*/claude.jsonl")).read_bytes() == b"ORIGINAL"
+    if restore_collision:
+        assert (displaced / transcript.name).read_bytes() == b"BLOCK_RESTORE"
+        retained = next(displaced.glob(".phase-loop-retained-*/transcript.jsonl"))
+        assert capture.receipts[0]["source_preservation"] == "quarantined"
+    else:
+        retained = displaced / transcript.name
+    assert retained.read_bytes() == b"ORIGINAL"
+    source = capture.receipts[0]["source"]
+    assert source["cleanup_verified"] is False
+    assert evidence["claude_transcript_cleanup_verified"] is False
+    assert capture.receipts[0]["status"] == "failed"
+    assert "quarantine_path" not in source
+    locator = source["recovery_locator"]
+    assert locator["status"] == "unresolved"
+    assert "path" not in locator
+    assert locator["directory_device"] == retained.parent.stat().st_dev
+    assert locator["directory_inode"] == retained.parent.stat().st_ino
+    assert locator["name"] == retained.name
+    manifest = json.loads(next(private_root.glob("session-*/manifest.json")).read_bytes())
+    assert manifest["source"]["recovery_locator"] == locator
+
+
+def test_restore_collision_records_verified_quarantine_locator(
+    tmp_path, private_root, monkeypatch,
+):
+    transcript = tmp_path / "exact.jsonl"
+    transcript.write_bytes(b"ORIGINAL")
+    actual_rename = pi._rename_noreplace
+
+    def replace_and_block_restore(source_fd, source, destination_fd, destination):
+        if source == transcript.name:
+            replacement = tmp_path / "replacement"
+            replacement.write_bytes(b"NEW_UNCAPTURED")
+            os.replace(replacement, transcript)
+        actual_rename(source_fd, source, destination_fd, destination)
+        if source == transcript.name:
+            transcript.write_bytes(b"BLOCK_RESTORE")
+
+    monkeypatch.setattr(pi, "_rename_noreplace", replace_and_block_restore)
+    with pytest.raises(PrivateCaptureError):
+        with PrivateSessionCapture(private_root) as capture:
+            attempt = capture.begin("claude", "test")
+            try:
+                pi._cleanup_broker_claude_transcript(transcript, {}, private_capture=attempt)
+            finally:
+                attempt.close(completed=True)
+    assert transcript.read_bytes() == b"BLOCK_RESTORE"
+    source = capture.receipts[0]["source"]
+    retained = Path(source["quarantine_path"])
+    assert retained.read_bytes() == b"NEW_UNCAPTURED"
+    assert source["recovery_locator"]["status"] == "verified"
+    assert source["recovery_locator"]["path"] == str(retained)
+    assert next(private_root.glob("session-*/claude.jsonl")).read_bytes() == b"ORIGINAL"
+
+
+@pytest.mark.parametrize("last_operation", ["unlink", "rmdir"])
+def test_source_parent_change_during_final_cleanup_cannot_report_success(
+    tmp_path, private_root, monkeypatch, last_operation,
+):
+    project = tmp_path / "project"
+    project.mkdir(mode=0o700)
+    transcript = project / "exact.jsonl"
+    transcript.write_bytes(b"ORIGINAL")
+    actual = getattr(os, last_operation)
+    changed = False
+
+    def replace_parent(name, *args, **kwargs):
+        nonlocal changed
+        result = actual(name, *args, **kwargs)
+        is_retirement = (name == "transcript.jsonl" if last_operation == "unlink"
+                         else str(name).startswith(".phase-loop-retained-"))
+        if is_retirement and kwargs.get("dir_fd") is not None and not changed:
+            changed = True
+            project.rename(tmp_path / "displaced")
+            project.mkdir(mode=0o700)
+            transcript.write_bytes(b"NEW_UNCAPTURED")
+        return result
+
+    monkeypatch.setattr(os, last_operation, replace_parent)
+    evidence = {}
+    with pytest.raises(PrivateCaptureError):
+        with PrivateSessionCapture(private_root) as capture:
+            attempt = capture.begin("claude", "test")
+            try:
+                pi._cleanup_broker_claude_transcript(transcript, evidence, private_capture=attempt)
+            finally:
+                attempt.close(completed=True)
+    assert changed
+    assert transcript.read_bytes() == b"NEW_UNCAPTURED"
+    assert next(private_root.glob("session-*/claude.jsonl")).read_bytes() == b"ORIGINAL"
+    assert capture.receipts[0]["status"] == "failed"
+    assert capture.receipts[0]["source"]["cleanup_verified"] is False
+    assert evidence["claude_transcript_cleanup_verified"] is False
+
+
+def test_parent_change_after_restoration_leaves_recovery_locator_unresolved(
+    tmp_path, private_root, monkeypatch,
+):
+    project = tmp_path / "project"
+    project.mkdir(mode=0o700)
+    displaced = tmp_path / "displaced"
+    transcript = project / "exact.jsonl"
+    transcript.write_bytes(b"ORIGINAL")
+    actual_rename = pi._rename_noreplace
+    actual_rmdir = os.rmdir
+
+    def replace_before_move(source_fd, source, destination_fd, destination):
+        if source == transcript.name:
+            replacement = project / "replacement"
+            replacement.write_bytes(b"NEW_UNCAPTURED")
+            os.replace(replacement, transcript)
+        actual_rename(source_fd, source, destination_fd, destination)
+
+    def replace_after_restore(name, *args, **kwargs):
+        result = actual_rmdir(name, *args, **kwargs)
+        if str(name).startswith(".phase-loop-retained-"):
+            project.rename(displaced)
+            project.mkdir(mode=0o700)
+            transcript.write_bytes(b"RECREATED_SOURCE")
+        return result
+
+    monkeypatch.setattr(pi, "_rename_noreplace", replace_before_move)
+    monkeypatch.setattr(os, "rmdir", replace_after_restore)
+    with pytest.raises(PrivateCaptureError):
+        with PrivateSessionCapture(private_root) as capture:
+            attempt = capture.begin("claude", "test")
+            try:
+                pi._cleanup_broker_claude_transcript(transcript, {}, private_capture=attempt)
+            finally:
+                attempt.close(completed=True)
+    assert transcript.read_bytes() == b"RECREATED_SOURCE"
+    assert (displaced / transcript.name).read_bytes() == b"NEW_UNCAPTURED"
+    locator = capture.receipts[0]["source"]["recovery_locator"]
+    assert locator["status"] == "unresolved"
+    assert "path" not in locator
+    assert locator["directory_inode"] == displaced.stat().st_ino
+
+
 @pytest.fixture
 def threaded_broker(monkeypatch, request):
     calls, kwargs = request.getfixturevalue("broker_control")
@@ -356,10 +572,12 @@ def test_preflight_rejection_records_outcome_without_claiming_provider_output(
     monkeypatch.setattr(pi, "_run_claude_tui_session", lambda **kw: pytest.fail("no process expected"))
     with PrivateSessionCapture(private_root) as capture:
         result = pi._default_spawn_via_provider("claude", "artifact", **kwargs)
-        assert result[:2] == ("UNAVAILABLE", "synthetic_unavailable")
+        assert result[:2] == ("UNAVAILABLE", "")
+        assert result[2] == "synthetic_unavailable"
         saved = _attempt_path(private_root, capture)
         manifest = json.loads((saved / "manifest.json").read_bytes())
         assert manifest["provider_outcome"]["status"] == "UNAVAILABLE"
+        assert manifest["provider_outcome"]["detail"] == "synthetic_unavailable"
         assert set(manifest["files"]) == {"input.txt", "instructions.md", "bundle.md"}
 
 

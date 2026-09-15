@@ -1752,10 +1752,9 @@ def test_default_spawn_preserves_fatal_quiescence_authority(monkeypatch, tmp_pat
         raise OSError("ordinary provider failure")
 
     monkeypatch.setattr(pi, "_exec_leg", ordinary_failure)
-    assert pi._default_spawn("codex", "review", repo_dir=tmp_path) == (
-        "DEGRADED",
-        "ordinary provider failure",
-    )
+    result = pi._default_spawn("codex", "review", repo_dir=tmp_path)
+    assert result == ("DEGRADED", "")
+    assert result.diagnostic_detail == "OSError: ordinary provider failure"
 
 
 @pytest.mark.parametrize("mutation_kind", ["ledger", "output"])

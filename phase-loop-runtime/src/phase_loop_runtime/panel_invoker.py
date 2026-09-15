@@ -2942,13 +2942,46 @@ def _final_assistant_text_from_jsonl(path: Path) -> str:
     return final
 
 
+def _verify_retained_transcript_directory(path, pinned_fd):
+    try:
+        current_fd = _open_capture_directory(path)
+    except FileNotFoundError:
+        if pinned_fd is None:
+            return
+        raise PrivateCaptureError("capture_transcript_directory_disappeared") from None
+    try:
+        if pinned_fd is None:
+            raise PrivateCaptureError("capture_transcript_directory_appeared")
+        current, pinned = os.fstat(current_fd), os.fstat(pinned_fd)
+        if ((current.st_dev, current.st_ino) != (pinned.st_dev, pinned.st_ino)
+                or any(info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o022
+                       for info in (current, pinned))):
+            raise PrivateCaptureError("capture_transcript_directory_changed")
+    finally:
+        os.close(current_fd)
+
+
+def _retained_transcript_recovery_locator(path, parent_fd, name):
+    locator = {"status": "unresolved", "name": name}
+    try:
+        parent = os.fstat(parent_fd)
+        locator.update(directory_device=parent.st_dev, directory_inode=parent.st_ino)
+        info = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        locator.update(device=info.st_dev, inode=info.st_ino)
+        _verify_retained_transcript_directory(path, parent_fd)
+    except Exception:
+        return locator
+    locator.update(status="verified", path=str(path / name))
+    return locator
+
+
 def _cleanup_retained_claude_transcript(path, evidence, capture):
     """Retire only the verified captured inode, inside an owned quarantine."""
     source = {"path": str(path), "cleanup_verified": False}
     capture.receipt["source"] = source
     parent_fd = quarantine_fd = None
     quarantine = None
-    moved = False
+    moved = retired = cleanup_ready = False
     try:
         if not capture.quiescent:
             capture.fail("capture_quiescence_unproven")
@@ -2963,6 +2996,7 @@ def _cleanup_retained_claude_transcript(path, evidence, capture):
             parent_info = os.fstat(parent_fd)
             if parent_info.st_uid != os.getuid() or stat.S_IMODE(parent_info.st_mode) & 0o022:
                 raise PrivateCaptureError("capture_transcript_parent_unsafe")
+        _verify_retained_transcript_directory(path.parent, parent_fd)
         if identity is None:
             if parent_fd is not None:
                 try:
@@ -2974,9 +3008,9 @@ def _cleanup_retained_claude_transcript(path, evidence, capture):
             if evidence is not None:
                 evidence.update(
                     claude_transcript_existed=False, claude_transcript_sha256=None,
-                    claude_transcript_bytes=0, claude_transcript_cleanup_verified=True,
+                    claude_transcript_bytes=0,
                 )
-            source["cleanup_verified"] = True
+            cleanup_ready = True
             return True
         capture.check()
         info = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
@@ -2986,6 +3020,8 @@ def _cleanup_retained_claude_transcript(path, evidence, capture):
         os.mkdir(quarantine, 0o700, dir_fd=parent_fd)
         quarantine_fd = os.open(quarantine, os.O_RDONLY | os.O_DIRECTORY |
                                 os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=parent_fd)
+        _verify_retained_transcript_directory(path.parent, parent_fd)
+        _verify_retained_transcript_directory(path.parent / quarantine, quarantine_fd)
         _rename_noreplace(parent_fd, path.name, quarantine_fd, "transcript.jsonl")
         moved = True
         fd = os.open("transcript.jsonl", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK |
@@ -3008,8 +3044,11 @@ def _cleanup_retained_claude_transcript(path, evidence, capture):
                     or _capture_file_identity(before) != _capture_file_identity(named)
                     or digest.hexdigest() != capture.files["claude.jsonl"]["sha256"]):
                 raise PrivateCaptureError("capture_transcript_changed_during_retirement")
+            _verify_retained_transcript_directory(path.parent, parent_fd)
+            _verify_retained_transcript_directory(path.parent / quarantine, quarantine_fd)
             os.unlink("transcript.jsonl", dir_fd=quarantine_fd)
             moved = False
+            retired = True
             os.fsync(quarantine_fd)
         finally:
             os.close(fd)
@@ -3024,9 +3063,8 @@ def _cleanup_retained_claude_transcript(path, evidence, capture):
                 claude_transcript_existed=True,
                 claude_transcript_sha256=digest.hexdigest(),
                 claude_transcript_bytes=before.st_size,
-                claude_transcript_cleanup_verified=True,
             )
-        source["cleanup_verified"] = True
+        cleanup_ready = True
         return True
     except Exception:
         capture.fail("capture_transcript_retirement_failed")
@@ -3041,20 +3079,43 @@ def _cleanup_retained_claude_transcript(path, evidence, capture):
                 moved = False
             except Exception:
                 capture.receipt["source_preservation"] = "quarantined"
-                source["quarantine_path"] = str(path.parent / quarantine / "transcript.jsonl")
-        if quarantine_fd is not None:
-            os.close(quarantine_fd)
         if parent_fd is not None:
             if quarantine is not None and not moved:
                 try:
+                    _verify_retained_transcript_directory(path.parent / quarantine, quarantine_fd)
                     os.rmdir(quarantine, dir_fd=parent_fd)
                     os.fsync(parent_fd)
-                except OSError:
+                except Exception:
                     capture.fail("capture_retirement_directory_sync_failed")
-                    source["cleanup_verified"] = False
-                    if evidence is not None:
-                        evidence["claude_transcript_cleanup_verified"] = False
+        if cleanup_ready and not capture.failure:
+            try:
+                if parent_fd is not None:
+                    try:
+                        os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+                    except FileNotFoundError:
+                        pass
+                    else:
+                        raise PrivateCaptureError("capture_transcript_reappeared_after_retirement")
+                _verify_retained_transcript_directory(path.parent, parent_fd)
+            except Exception:
+                capture.fail("capture_transcript_retirement_failed")
+        if capture.failure and parent_fd is not None and not retired:
+            locator = _retained_transcript_recovery_locator(
+                path.parent / quarantine if moved else path.parent,
+                quarantine_fd if moved else parent_fd,
+                "transcript.jsonl" if moved else path.name,
+            )
+            source["recovery_locator"] = locator
+            if moved and locator["status"] == "verified":
+                source["quarantine_path"] = locator["path"]
+        if quarantine_fd is not None:
+            os.close(quarantine_fd)
+        if parent_fd is not None:
             os.close(parent_fd)
+        source["cleanup_verified"] = cleanup_ready and not capture.failure
+        if evidence is not None:
+            evidence["claude_transcript_cleanup_verified"] = source["cleanup_verified"]
+        capture.check()
 
 
 def _cleanup_broker_claude_transcript(
@@ -3406,7 +3467,7 @@ def _run_leg_with_liveness(
     filling its own stdout/stderr pipe buffers.
     """
     def _popen() -> subprocess.Popen[bytes]:
-        return subprocess.Popen(
+        started = subprocess.Popen(
             list(cmd),
             cwd=str(cwd),
             env=dict(env),
@@ -3415,6 +3476,9 @@ def _run_leg_with_liveness(
             stderr=subprocess.PIPE,
             start_new_session=True,  # pgid == proc.pid: group CPU sampling + group kill
         )
+        if private_capture is not None:
+            private_capture.quiescent = False
+        return started
 
     private_streams = None
     if private_capture is not None:
@@ -3425,16 +3489,16 @@ def _run_leg_with_liveness(
             private_capture.open_stream(f"stdout-{number}.bin"),
             private_capture.open_stream(f"stderr-{number}.bin"),
         )
-        private_capture.quiescent = False
     try:
         if quiescence_latch is None:
             proc = _popen()
             _anchor_process_group(proc)
         else:
             proc = quiescence_latch.launch(_popen)
-    except BaseException:
+    except ProviderProcessGroupQuiescenceError:
         if private_capture is not None:
-            private_capture.fail("capture_process_launch_failed")
+            private_capture.quiescent = False
+            private_capture.fail("capture_quiescence_unproven")
         raise
     if input_text is not None and proc.stdin is not None:
 
@@ -3883,7 +3947,7 @@ def _run_claude_tui_session(
             pass
         try:
             def _popen() -> subprocess.Popen[bytes]:
-                return subprocess.Popen(
+                spawned = subprocess.Popen(
                     list(command),
                     cwd=str(cwd),
                     env=dict(env),
@@ -3894,20 +3958,21 @@ def _run_claude_tui_session(
                     close_fds=True,
                     start_new_session=True,
                 )
+                if private_capture is not None:
+                    private_capture.quiescent = False
+                return spawned
 
             if quiescence_latch is None:
                 proc = _popen()
                 _anchor_process_group(proc)
             else:
                 proc = quiescence_latch.launch(_popen)
-            if private_capture is not None:
-                private_capture.quiescent = False
         finally:
             os.close(slave_fd)
     except FileNotFoundError:
         if master_fd is not None:
             os.close(master_fd)
-        if private_capture is not None:
+        if private_capture is not None and proc is not None:
             private_capture.fail("capture_process_launch_failed")
         return 127, "", "missing_claude_cli", ""
     except ProviderProcessGroupQuiescenceError:
@@ -3920,7 +3985,7 @@ def _run_claude_tui_session(
     except Exception as exc:
         if master_fd is not None:
             os.close(master_fd)
-        if private_capture is not None:
+        if private_capture is not None and proc is not None:
             private_capture.fail("capture_process_launch_failed")
         return 1, "", f"claude_tui_launch_error:{type(exc).__name__}", ""
 
@@ -4569,10 +4634,10 @@ def _exec_claude_tui_leg(
         quiescence_latch.raise_if_set()
     brokered = broker_prompt is not None
     if brokered and not broker_prompt:
-        return "UNAVAILABLE", "brokered route rejects empty prompt"
+        return _BrokeredSpawnResult("UNAVAILABLE", "", diagnostic_detail="brokered route rejects empty prompt")
     env = _broker_subscription_env(env) if brokered else _subscription_env(env)
     if brokered and (research_seat is not None or agy_capture is not None):
-        return "UNAVAILABLE", "brokered route rejects capture and research transports"
+        return _BrokeredSpawnResult("UNAVAILABLE", "", diagnostic_detail="brokered route rejects capture and research transports")
     if research_seat is not None:
         env = scrub_research_env(env)
     # A governed Claude seat never falls through to a native Task/subagent. Inside
@@ -4582,7 +4647,7 @@ def _exec_claude_tui_leg(
         logging.getLogger(__name__).warning(
             "advisor-panel claude leg unavailable [tui_adapter_required]"
         )
-        return "UNAVAILABLE", "tui_adapter_required"
+        return _BrokeredSpawnResult("UNAVAILABLE", "", diagnostic_detail="tui_adapter_required")
 
     output_file = out_dir / "panel-claude.txt"
     tui_cwd = out_dir.resolve() if brokered else out_dir
@@ -4593,7 +4658,7 @@ def _exec_claude_tui_leg(
         else None
     )
     if broker_transcript_path is not None and os.path.lexists(broker_transcript_path):
-        return "UNAVAILABLE", "brokered_claude_session_collision"
+        return _BrokeredSpawnResult("UNAVAILABLE", "", diagnostic_detail="brokered_claude_session_collision")
     if private_capture is not None and broker_transcript_path is not None:
         private_capture.receipt["source"] = {
             "path": str(broker_transcript_path), "cleanup_verified": False,
@@ -4630,11 +4695,11 @@ def _exec_claude_tui_leg(
     else:
         supported, support_detail = _claude_code_support_status()
         if not supported:
-            return "UNAVAILABLE", support_detail
+            return _BrokeredSpawnResult("UNAVAILABLE", "", diagnostic_detail=support_detail)
 
         authed, auth_detail = _claude_subscription_auth_ok(env)
         if not authed:
-            return "UNAVAILABLE", auth_detail
+            return _BrokeredSpawnResult("UNAVAILABLE", "", diagnostic_detail=auth_detail)
 
     prompt = (
         broker_prompt
@@ -4760,7 +4825,7 @@ def _exec_claude_tui_leg(
     if private_capture is not None:
         private_capture.check()
     if not transcript_cleanup_ok:
-        return "UNAVAILABLE", "brokered_claude_transcript_cleanup_failed"
+        return _BrokeredSpawnResult("UNAVAILABLE", "", diagnostic_detail="brokered_claude_transcript_cleanup_failed")
     # Consiliency/agent-harness#343: a read-only by-reference Fable review can
     # suffer turn extinction after otherwise healthy tool progress. Retry that
     # exact typed failure once in a fresh scratch cwd. The retry stays inside the
@@ -4830,11 +4895,7 @@ def _exec_claude_tui_leg(
     }
     if log_text in _typed_operational and status != "OK":
         status = "DEGRADED"
-        text = (
-            review_text  # real review content only (empty ⇒ governed WARN, not block)
-        )
-    else:
-        text = review_text or log_text
+    text = review_text  # Diagnostics never substitute for missing review content.
     # R3: preserve the bounded, redacted, control-stripped PTY tail as DIAGNOSABLE
     # EVIDENCE for every non-OK failure — via a WARNING log, NOT ``text`` (which feeds
     # verdict-conformance). The tail is already credential-scrubbed and bounded.
@@ -5880,6 +5941,7 @@ def _default_spawn(
                 def _parent_infer() -> tuple[str, str]:
                     attempt = None
                     completed = False
+                    inference_started = False
                     primary = None
                     try:
                         if private_scope is not None and leg in {"claude", "gemini"}:
@@ -5887,6 +5949,7 @@ def _default_spawn(
                             attempt.save("bundle.md", (review_dir / "review-bundle.md").read_bytes())
                             attempt.save("instructions.md", (review_dir / "review-instructions.md").read_bytes())
                             attempt.save("input.txt", sealed_prompt.encode("utf-8"))
+                        inference_started = True
                         result = _infer_with_capture(attempt)
                         if attempt is not None:
                             attempt.outcome = {
@@ -5902,6 +5965,19 @@ def _default_spawn(
                             primary_quiescence[0] = exc
                         if isinstance(exc, PrivateCaptureError):
                             retention_error[0] = exc
+                        elif (isinstance(exc, Exception)
+                              and not isinstance(exc, ProviderProcessGroupQuiescenceError)
+                              and inference_started and attempt is not None
+                              and attempt.quiescent and not attempt.failure):
+                            # A provider exception can still leave a complete capture.
+                            diagnostic[0] = _sanitized_pty_tail(
+                                f"{type(exc).__name__}: {exc}".encode("utf-8", errors="replace"), max_chars=1024,
+                            )
+                            attempt.outcome = {
+                                "status": "DEGRADED", "review_text_sha256": sha256(b"").hexdigest(),
+                                "detail": diagnostic[0],
+                            }
+                            completed = True
                         raise
                     finally:
                         if attempt is not None:
@@ -6005,7 +6081,11 @@ def _default_spawn(
     except (ProviderProcessGroupQuiescenceError, PrivateCaptureError):
         raise
     except Exception as exc:  # fail-closed
-        return "DEGRADED", str(exc)[:200]
+        return _BrokeredSpawnResult(
+            "DEGRADED", "", diagnostic_detail=_sanitized_pty_tail(
+                f"{type(exc).__name__}: {exc}".encode("utf-8", errors="replace"), max_chars=1024,
+            ),
+        )
     finally:
         if provider_output_dir is not None and agy_capture is None:
             shutil.rmtree(provider_output_dir, ignore_errors=True)
@@ -6254,6 +6334,22 @@ def _write_incremental_diagnostic(
                         or sha256(content).hexdigest() != verdict_sha256):
                     raise OSError("verdict artifact changed")
 
+        def verify_diagnostic(fd, filename, *, links=1, expected=None):
+            before = os.fstat(fd)
+            if (not stat.S_ISREG(before.st_mode) or before.st_uid != os.getuid()
+                    or before.st_nlink != links or stat.S_IMODE(before.st_mode) != 0o600
+                    or before.st_size != len(body)
+                    or (expected is not None and (before.st_dev, before.st_ino) != expected)):
+                raise OSError("unsafe diagnostic artifact")
+            os.lseek(fd, 0, os.SEEK_SET)
+            content = os.read(fd, len(body) + 1)
+            named = os.stat(filename, dir_fd=directory_fd, follow_symlinks=False)
+            if (_capture_file_identity(before) != _capture_file_identity(os.fstat(fd))
+                    or _capture_file_identity(before) != _capture_file_identity(named)
+                    or content != body):
+                raise OSError("diagnostic artifact changed")
+            return before
+
         verify_verdict()
         temporary = f".diagnostic-{uuid.uuid4().hex}.tmp"
         fd = os.open(temporary, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory_fd)
@@ -6261,29 +6357,46 @@ def _write_incremental_diagnostic(
             handle.write(body)
             handle.flush()
             os.fsync(handle.fileno())
-            handle.seek(0)
-            if handle.read(len(body) + 1) != body:
-                raise OSError("diagnostic write verification failed")
-        try:
-            os.link(temporary, name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd, follow_symlinks=False)
-        except FileExistsError:
-            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd)
-            with os.fdopen(fd, "rb") as handle:
-                info = os.fstat(handle.fileno())
-                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-                        or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o600
-                        or handle.read(len(body) + 1) != body):
-                    raise OSError("diagnostic artifact conflict")
-        os.unlink(temporary, dir_fd=directory_fd)
-        temporary = None
-        os.fsync(directory_fd)
-        current = root.lstat()
-        if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
-            raise OSError("diagnostic directory identity changed")
-        verify_verdict()
-        object.__setattr__(result, "_diagnostic_retention", {
-            "status": "saved", "file": name, "sha256": digest,
-        })
+            source = verify_diagnostic(handle.fileno(), temporary)
+            expected = (source.st_dev, source.st_ino)
+            linked = True
+            try:
+                os.link(temporary, name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd, follow_symlinks=False)
+            except FileExistsError:
+                linked = False
+            published_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory_fd)
+            try:
+                published = verify_diagnostic(
+                    published_fd, name, links=2 if linked else 1,
+                    expected=expected if linked else None,
+                )
+                if linked and any(
+                    _capture_file_identity(published) != _capture_file_identity(info)
+                    for info in (
+                        os.fstat(handle.fileno()),
+                        os.stat(temporary, dir_fd=directory_fd, follow_symlinks=False),
+                    )
+                ):
+                    raise OSError("diagnostic publication changed")
+                os.unlink(temporary, dir_fd=directory_fd)
+                temporary = None
+                os.fsync(published_fd)
+                os.fsync(directory_fd)
+                current = root.lstat()
+                if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+                    raise OSError("diagnostic directory identity changed")
+                verify_verdict()
+                final = verify_diagnostic(
+                    published_fd, name, expected=(published.st_dev, published.st_ino),
+                )
+                retained_identity = os.fstat(handle.fileno()) if linked else published
+                if _capture_file_identity(final) != _capture_file_identity(retained_identity):
+                    raise OSError("diagnostic publication changed")
+                object.__setattr__(result, "_diagnostic_retention", {
+                    "status": "saved", "file": name, "sha256": digest,
+                })
+            finally:
+                os.close(published_fd)
     except Exception as exc:
         object.__setattr__(result, "_diagnostic_retention", {"status": "failed"})
         logging.getLogger(__name__).warning(

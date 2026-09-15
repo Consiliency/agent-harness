@@ -121,7 +121,10 @@ def test_stream_retains_separate_bound_diagnostic(tmp_path):
     assert set(json.loads(verdict.read_text())) == {"index", "leg", "seat_key", "status", "usable", "text", "detail"}
     assert asdict(leg) == before
     assert sidecar.stat().st_mode & 0o777 == 0o600
+    assert sidecar.stat().st_uid == os.getuid()
+    assert sidecar.stat().st_nlink == 1
     assert leg.diagnostic_retention["status"] == "saved"
+    assert leg.diagnostic_retention["sha256"] == sha256(sidecar.read_bytes()).hexdigest()
 
 
 def test_diagnostic_failure_is_observable_without_altering_verdict(tmp_path, monkeypatch, caplog):
@@ -238,6 +241,141 @@ def test_existing_diagnostic_cannot_be_redirected_or_overwritten(tmp_path, kind)
     pi._write_incremental_diagnostic(tmp_path, 0, leg, "d" * 64)
     assert leg.diagnostic_retention["status"] == "failed"
     assert destination.read_bytes() == before
+    assert not list(tmp_path.glob(".diagnostic-*.tmp"))
+
+
+def test_unchanged_diagnostic_reuse_preserves_the_saved_artifact(tmp_path):
+    leg = _leg()
+    before = asdict(leg)
+    pi._write_incremental_diagnostic(tmp_path, 0, leg, "d" * 64)
+    receipt = dict(leg.diagnostic_retention)
+    destination = tmp_path / receipt["file"]
+    content = destination.read_bytes()
+    identity = pi._capture_file_identity(destination.stat())
+
+    pi._write_incremental_diagnostic(tmp_path, 0, leg, "d" * 64)
+
+    assert leg.diagnostic_retention == receipt
+    assert receipt["status"] == "saved"
+    assert receipt["sha256"] == sha256(content).hexdigest()
+    assert destination.read_bytes() == content
+    assert pi._capture_file_identity(destination.stat()) == identity
+    assert asdict(leg) == before
+    assert len(list(tmp_path.glob("*.diagnostic.json"))) == 1
+    assert not list(tmp_path.glob(".diagnostic-*.tmp"))
+
+
+@pytest.mark.parametrize("kind", [
+    "source_swap", "source_identical", "destination_replace", "destination_identical",
+    "mode", "content", "hardlink", "symlink",
+])
+def test_diagnostic_publication_races_are_not_reported_saved(tmp_path, monkeypatch, kind):
+    real_link = os.link
+    changed = []
+
+    def change_at_link(source, destination, **kwargs):
+        source_path = tmp_path / source
+        destination_path = tmp_path / destination
+        replacement = tmp_path / "replacement"
+        if kind.startswith("source_"):
+            content = source_path.read_bytes() if kind == "source_identical" else b"replaced temporary diagnostic"
+            replacement.write_bytes(content)
+            replacement.chmod(0o600)
+            os.replace(replacement, source_path)
+        real_link(source, destination, **kwargs)
+        if kind.startswith("destination_"):
+            content = source_path.read_bytes() if kind == "destination_identical" else b"replaced published diagnostic"
+            replacement.write_bytes(content)
+            replacement.chmod(0o600)
+            os.replace(replacement, destination_path)
+        elif kind == "mode":
+            destination_path.chmod(0o644)
+        elif kind == "content":
+            destination_path.write_bytes(b"mutated published diagnostic")
+        elif kind == "hardlink":
+            real_link(destination_path, tmp_path / "extra-link")
+        elif kind == "symlink":
+            replacement.write_bytes(b"symlink replacement diagnostic")
+            replacement.chmod(0o600)
+            destination_path.unlink()
+            destination_path.symlink_to(replacement)
+        changed.append(kind)
+
+    monkeypatch.setattr(os, "link", change_at_link)
+    leg = _leg()
+    before = asdict(leg)
+    pi._write_incremental_verdict(tmp_path, 0, leg)
+
+    assert changed == [kind]
+    assert leg.diagnostic_retention == {"status": "failed"}
+    assert asdict(leg) == before
+    assert next(tmp_path.glob("*.verdict.json")).is_file()
+    assert list(tmp_path.glob("*.diagnostic.json"))
+    assert not list(tmp_path.glob(".diagnostic-*.tmp"))
+
+
+def test_existing_diagnostic_changed_during_directory_sync_is_not_reported_saved(tmp_path, monkeypatch):
+    leg = _leg()
+    before = asdict(leg)
+    pi._write_incremental_diagnostic(tmp_path, 0, leg, "d" * 64)
+    destination = tmp_path / leg.diagnostic_retention["file"]
+    real_fsync = os.fsync
+    changed = []
+
+    def change_during_sync(fd):
+        real_fsync(fd)
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            destination.chmod(0o644)
+            changed.append(True)
+
+    monkeypatch.setattr(os, "fsync", change_during_sync)
+    pi._write_incremental_diagnostic(tmp_path, 0, leg, "d" * 64)
+
+    assert changed == [True]
+    assert leg.diagnostic_retention == {"status": "failed"}
+    assert asdict(leg) == before
+    assert not list(tmp_path.glob(".diagnostic-*.tmp"))
+
+
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("kind", ["content_preserved_mtime", "identical_replacement"])
+def test_diagnostic_change_during_final_read_is_not_reported_saved(tmp_path, monkeypatch, existing, kind):
+    leg = _leg()
+    before = asdict(leg)
+    if existing:
+        pi._write_incremental_diagnostic(tmp_path, 0, leg, "d" * 64)
+    real_read, real_fsync = os.read, os.fsync
+    synced, changed = [], []
+
+    def record_sync(fd):
+        real_fsync(fd)
+        if stat.S_ISDIR(os.fstat(fd).st_mode):
+            synced.append(True)
+
+    def change_after_read(fd, count):
+        content = real_read(fd, count)
+        if synced and not changed:
+            destination = next(tmp_path.glob("*.diagnostic.json"))
+            info = destination.stat()
+            if info.st_ino == os.fstat(fd).st_ino:
+                if kind == "content_preserved_mtime":
+                    destination.write_bytes(b"x" + content[1:])
+                    os.utime(destination, ns=(info.st_atime_ns, info.st_mtime_ns))
+                else:
+                    replacement = tmp_path / "replacement"
+                    replacement.write_bytes(content)
+                    replacement.chmod(0o600)
+                    os.replace(replacement, destination)
+                changed.append(True)
+        return content
+
+    monkeypatch.setattr(os, "fsync", record_sync)
+    monkeypatch.setattr(os, "read", change_after_read)
+    pi._write_incremental_diagnostic(tmp_path, 0, leg, "d" * 64)
+
+    assert changed == [True]
+    assert leg.diagnostic_retention == {"status": "failed"}
+    assert asdict(leg) == before
     assert not list(tmp_path.glob(".diagnostic-*.tmp"))
 
 

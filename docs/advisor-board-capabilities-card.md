@@ -345,11 +345,16 @@ and preserves the source; capture failures cannot replace that authority.
 
 The `private_provider_session.v1` manifest separates capture status from provider
 outcome. A `saved` capture can contain a failed or unavailable provider response.
+An ordinary pre-process launch failure keeps its existing provider status; it
+does not become a fatal retention error solely because capture is enabled.
 Preflight rejection may produce inputs only; absent files are not proof that a
 provider emitted no data. Files include byte counts and hashes, while the receipt
 binds the manifest hash. A private source locator records where an original or
 quarantined Claude transcript may still need recovery; it is not exported into
-verdicts or HARDEN evidence. Canonical owner-controlled paths, no-follow file
+verdicts or HARDEN evidence. If a parent pathname changes, cleanup is not verified;
+an unresolved locator retains the pinned directory/file identities and relative
+name instead of claiming the stale pathname still locates the source.
+Canonical owner-controlled paths, no-follow file
 descriptors, stable inode checks, final-path readback and file/directory `fsync`
 establish capture-time integrity. They do not prevent later same-user changes or
 make restored files current review evidence.

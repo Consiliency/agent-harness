@@ -235,8 +235,11 @@ def test_non_typed_failure_logs_pty_tail(tmp_path, monkeypatch, caplog):
     out_dir.mkdir(parents=True)
     import logging as _logging
     with caplog.at_level(_logging.WARNING):
-        status, text = _exec_claude_tui_leg(review_dir, out_dir, 30, "bundle", env={})
+        result = _exec_claude_tui_leg(review_dir, out_dir, 30, "bundle", env={})
+    status, text = result
     assert status != "OK"
+    assert text == ""
+    assert "claude_tui_missing_canonical_output" in result.diagnostic_detail
     assert "diag tail Z" in caplog.text, "the diagnostic tail must be logged for a non-OK leg"
 
 

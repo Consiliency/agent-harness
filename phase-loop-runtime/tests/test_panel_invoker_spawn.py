@@ -146,10 +146,12 @@ class ClaudeTuiLegTest(unittest.TestCase):
             ):
                 # env={} == a non-Claude host so the support check is reached (CR F4
                 # ordered the under-Claude-Code deferral BEFORE the support check).
-                status, text = pi._exec_claude_tui_leg(review_dir, out_dir, 600, "bundle", env={})
+                result = pi._exec_claude_tui_leg(review_dir, out_dir, 600, "bundle", env={})
 
+        status, text = result
         self.assertEqual(status, "UNAVAILABLE")
-        self.assertIn("below_minimum", text)
+        self.assertEqual(text, "")
+        self.assertIn("below_minimum", result.diagnostic_detail)
         run_tui.assert_not_called()
 
     def test_claude_tui_timeout_omits_artifact_payload(self):
@@ -167,11 +169,13 @@ class ClaudeTuiLegTest(unittest.TestCase):
                 patch("phase_loop_runtime.panel_invoker._claude_subscription_auth_ok", return_value=(True, "")),
                 patch("phase_loop_runtime.panel_invoker._run_claude_tui_session", side_effect=fake_tui),
             ):
-                status, text = pi._exec_claude_tui_leg(review_dir, out_dir, 777, "SECRET-SENTINEL")
+                result = pi._exec_claude_tui_leg(review_dir, out_dir, 777, "SECRET-SENTINEL")
 
+        status, text = result
         self.assertEqual(status, "TIMEOUT")
-        self.assertIn("777s", text)
-        self.assertNotIn("SECRET-SENTINEL", text)
+        self.assertEqual(text, "")
+        self.assertIn("777s", result.diagnostic_detail)
+        self.assertNotIn("SECRET-SENTINEL", result.diagnostic_detail)
 
     def test_claude_tui_missing_canonical_file_is_not_success(self):
         def fake_tui(**kwargs):
@@ -217,11 +221,13 @@ class ClaudeLegUnavailableUnderClaudeCodeTest(unittest.TestCase):
                 patch("phase_loop_runtime.panel_invoker._claude_code_support_status", return_value=(True, "supported")),
                 patch("phase_loop_runtime.panel_invoker._run_claude_tui_session") as run_tui,
             ):
-                status, text = pi._exec_claude_tui_leg(
+                result = pi._exec_claude_tui_leg(
                     review_dir, out_dir, 600, "bundle", env={"CLAUDECODE": "1"}
                 )
+        status, text = result
         self.assertEqual(status, "UNAVAILABLE")
-        self.assertEqual(text, "tui_adapter_required")
+        self.assertEqual(text, "")
+        self.assertEqual(result.diagnostic_detail, "tui_adapter_required")
         run_tui.assert_not_called()  # no PTY, no deadline wait
 
     def test_under_claude_code_detection(self):
