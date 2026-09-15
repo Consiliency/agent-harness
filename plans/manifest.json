@@ -819,6 +819,40 @@
     },
     {
       "acceptance_criteria_count": 5,
+      "blocking_prerequisite": "agent-harness#855",
+      "created_at": "2026-09-15T20:26:24.866609+00:00",
+      "file": "plans/detailed-proofgate-cleanup-858-20260915.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260915-proofgate-cleanup-858.md",
+      "if_gates_produced": [],
+      "input_main": "c90b1357d65e76ef778330c3845f4410d38c9710",
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-09-15T20:26:24.866609+00:00",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "plan_approval": false,
+            "plan_sha256": "5d4f5287ecb7278c1b8365a43511adef6c63205832365ada56d5f736eba4022d",
+            "planning_artifact_only": true,
+            "source_approval": false
+          },
+          "transition": "committed"
+        }
+      ],
+      "owner_skill": "codex-plan-detailed",
+      "phase_accepted": false,
+      "phase_alias": null,
+      "reflection_ref": null,
+      "required_plan_review_pending": true,
+      "roadmap_ref": null,
+      "slug": "proofgate-cleanup-858-20260915",
+      "status": "committed",
+      "task_summary": "Report PROOFGATE cleanup failures without losing proof outcomes (agent-harness#858)",
+      "type": "detailed",
+      "updated_at": "2026-09-15T20:26:24.866609+00:00"
+    },
+    {
+      "acceptance_criteria_count": 5,
       "created_at": "2026-09-03T06:10:04Z",
       "file": ".consiliency/plans/detailed-split-pr-gate-chronology-746-20260903-0609.md",
       "handoff_ref": ".dev-skills/handoffs/claude-plan-detailed/latest.md",
