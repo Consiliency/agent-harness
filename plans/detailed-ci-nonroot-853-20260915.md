@@ -38,6 +38,18 @@ owned diagnostic/provider sessions and their fixtures, plus all actual GitHub
 logs/artifacts that CI produces. It does not claim to repair that production
 retention defect or recover files already deleted by an earlier execution.
 
+The first published ordinary-user candidate's full CI run 34979555385 completed
+with two identical PROOFGATE failures on each Python image; Gate A passed. The
+runtime selects `/mnt/workspace/worktrees` if present, otherwise the repository's
+parent. In the container the repository is `/src`, so the absent preferred path
+causes attempts to create `/proofgate-mutation-*` as UID 1000. The captured errors
+are EACCES before mutant execution. Revision 3 provisions that existing runtime
+worktree location inside each container; it changes no runtime or frozen test.
+This is a concrete CI prerequisite exposed by the full run, not a new roadmap
+workstream. Previous review approvals do not transfer to this revision.
+The original baseline is already retained; resume this revision at plan review
+on the owned branch, preserving its existing implementation and lifecycle.
+
 ## Changes
 
 ### `ci/dagger/src/agent_harness_ci/main.py` (modify)
@@ -48,7 +60,10 @@ retention defect or recover files already deleted by an earlier execution.
   and per-stage root pip cache, and dependency installation unchanged.
 - After that privileged installation, assign `/src` and its contents to `ci:ci`
   so build-created files and the full Git object database are writable by the
-  test owner. Create `/junit` owned by `ci:ci`; the new home is already user-owned.
+  test owner. Create `/junit` and `/mnt/workspace/worktrees` owned by `ci:ci`;
+  the new home is already user-owned. The worktree directory is container-local,
+  never a host mount. Add it to the existing privileged `install -d` argv, before
+  the user switch; the existing runtime then uses its preferred location.
   These changes apply only to the container snapshot, never the host checkout.
 - Set `HOME=/home/ci`, `USER=ci` and `LOGNAME=ci`, then end `_base` with
   `.with_user("ci")`. Every subsequent Git probe, suite and Gate A command must
@@ -159,6 +174,17 @@ automation:
 ```
 
 Also run `git diff --check`, native manifest validation and native `docs-audit`.
+For revision 3, rerun the two unchanged failed nodes on each real Python image:
+`phase-loop-runtime/tests/test_acceptance_falsifier_contract.py::test_mutation_manifest_requires_exact_criterion_parameter_and_command_coverage`
+and
+`phase-loop-runtime/tests/test_verification_evidence.py::VerificationEvidenceTest::test_proofgate_v3_matched_anchor_kill_requires_green_identical_command_baseline`.
+Use the unoverlaid committed runtime for those regressions. Bind their parent
+directory evidence to UID/EUID 1000, a writable container-local worktree root,
+and the unchanged non-writable `/`; the observed original CI failure supplies
+the pre-repair baseline. Preserve all existing root-baseline and 45-node overlay
+diagnostics as historical inputs. Requalify the existing 45-node diagnostic on
+all three revised images with the same labelled frozen overlay, alongside these
+separate unoverlaid regressions. Complete required CI still precedes merge.
 Compile the changed Dagger module and inspect its AST: only `_base` may change.
 Verify its order explicitly: privileged setup/install, source and evidence
 ownership, environment variables, then user switch last. Keep privileged nesting

@@ -468,12 +468,14 @@
       "phase_alias": null,
       "plan_revision": {
         "plan_approval": false,
-        "plan_sha256": "262068138de5cac403d5a4fe199b97f5d9aa03be096f51ad9bb66c4c0e46a9b7",
-        "planning_artifact_only": true,
-        "prior_review": ".phase-loop/diagnostics/ci-nonroot-853-20260915/plan-review-r1/terminal-summary.json",
-        "prior_review_archive": "8874db5775e9ec48f6597e5698a7e6393c1537f8",
-        "scope_delta": "bind common runtime overlay in baseline and candidate; distinguish diagnostic retention from agent-harness#854; clarify final ledger review ordering and execution evidence",
-        "source_approval": false
+        "plan_sha256": "f6f9afc256c48fc0ac4ffa5443223ee1d3e945420c0e56859df6073e927a8d64",
+        "prior_lifecycle_preserved": true,
+        "prior_review_archive": "5a5e0df0b545f4dde513909691190af5300f71bc",
+        "prior_votes_transfer": false,
+        "revision": 3,
+        "scope_delta": "Provision container-local /mnt/workspace/worktrees through existing privileged install -d; unoverlaid two-node regressions and repeated frozen overlay qualification on all images",
+        "source_approval": false,
+        "trigger": "GitHub CI 34979555385: two PROOFGATE EACCES failures on each Python image; Gate A passed"
       },
       "reflection_ref": null,
       "roadmap_ref": null,
@@ -481,7 +483,7 @@
       "status": "executing",
       "task_summary": "Run Dagger test stages as a real non-root user (agent-harness#853)",
       "type": "detailed",
-      "updated_at": "2026-09-15T13:23:30Z"
+      "updated_at": "2026-09-15T18:04:35.108511+00:00"
     },
     {
       "acceptance_criteria_count": 5,
