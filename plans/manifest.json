@@ -430,6 +430,38 @@
       "updated_at": "2026-07-28T22:28:34Z"
     },
     {
+      "acceptance_criteria_count": 4,
+      "created_at": "2026-09-15T12:36:05.572000+00:00",
+      "file": "plans/detailed-ci-nonroot-853-20260915.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260915-ci-nonroot-853.md",
+      "if_gates_produced": [],
+      "input_main": "c90b1357d65e76ef778330c3845f4410d38c9710",
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-09-15T12:36:05.572000+00:00",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "plan_approval": false,
+            "plan_sha256": "b75b5f82e01b0815fdd4dc1a9838e73d88eccd0ff6b9a3dfcdafdc13a129feaf",
+            "planning_artifact_only": true,
+            "source_approval": false
+          },
+          "transition": "committed"
+        }
+      ],
+      "owner_skill": "codex-plan-detailed",
+      "phase_accepted": false,
+      "phase_alias": null,
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "ci-nonroot-853-20260915",
+      "status": "committed",
+      "task_summary": "Run Dagger test stages as a real non-root user (agent-harness#853)",
+      "type": "detailed",
+      "updated_at": "2026-09-15T12:36:05.572000+00:00"
+    },
+    {
       "acceptance_criteria_count": 5,
       "created_at": "2026-08-13T04:34:28.803689+00:00",
       "file": "plans/detailed-ci-single-lane-chronology-20260812.md",
