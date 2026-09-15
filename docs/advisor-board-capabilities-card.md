@@ -256,6 +256,122 @@ for leg in result.legs:
 
 ---
 
+## Failure diagnostics and streaming retention
+
+Brokered Gemini errors and Claude TUI operational failures retain a bounded,
+credential-scrubbed explanation in the existing `PanelLegResult.detail` channel.
+The adapter's return code is included. Diagnostics do not replace review text,
+change a verdict, or turn an unusable seat into approval.
+Known credential forms are redacted before truncation; escaped/encoded log lines
+are suppressed conservatively. This scrubber is not a general declassification
+boundary for arbitrary provider content.
+
+With the existing `stream_dir` opt-in, a leg carrying diagnostics or broker
+metadata additionally writes an immutable
+`leg-<index>-<digest>.diagnostic.json` sidecar. Its independent schema,
+`advisor_leg_diagnostic.v1`, binds the exact verdict-file bytes, local publication
+identity, seat-key digest,
+and allowlisted input/output digests, counts, Gemini stream outcome, timing
+limits and cleanup observations. It omits arbitrary broker fields, raw sessions,
+provider responses, prompts, argument lists and credential paths. The existing
+verdict JSON, dataclass serialization and HARDEN evidence schema are unchanged.
+
+Diagnostic files use mode 0600 and exclusive, descriptor-relative publication
+with file/directory synchronization. The diagnostic writer requires a canonical,
+owner-controlled directory and rejects symlinked ancestors, conflicting files,
+hard links and unsafe modes. Existing sidecars are not overwritten. Streaming
+remains best-effort: a failed write does not change the leg result. Inspect the
+non-serializing `leg.diagnostic_retention` receipt (`saved` with filename/hash,
+or `failed`), including from `on_leg_complete`; `None` means no capture was
+attempted. A receipt is marked `pending` while its write is in progress. Without
+`stream_dir`, no sidecar is written. These receipts are not approval evidence.
+Hosts without the required POSIX descriptor operations retain ordinary verdict
+streaming; diagnostic capture reports failure rather than using an unsafe fallback.
+
+For disk-only correlation, match both `verdict_sha256` and
+`verdict_file_identity` (device, inode, size, mtime_ns and post-publication
+ctime_ns). Read and check the verdict through one no-follow descriptor, checking
+identity before and after hashing. Identical verdict bytes from a new publication
+must not select an older sidecar. A copied or restored artifact whose identity no
+longer matches is historical, not a proven current binding. This is not protection
+against privileged filesystem identity recreation or snapshot rollback.
+
+The binding identifies the **currently present local verdict artifact**, not the
+latest attempted review: a failed verdict replacement can leave a previously
+saved pair intact. Use the consolidated result and current run state to establish
+attempt status; never infer freshness or approval solely from a retained pair.
+
+These sidecars retain diagnostic metadata, **not raw sessions**. They cannot
+reconstruct deleted raw data. The separate private capture below is not enabled
+by `stream_dir`. See agent-harness#369, agent-harness#525 and agent-harness#734.
+
+### Explicit private session capture
+
+Python callers can opt in around an already-authorized brokered Claude/Gemini
+invocation without changing its public signature:
+
+```python
+from phase_loop_runtime.private_session_capture import PrivateSessionCapture
+
+# Existing absolute canonical directory, owned by this user with mode 0700.
+with PrivateSessionCapture(private_root) as capture:
+    result = invoke_board(board, artifact, **authorized_arguments)
+# Inspect capture.receipts privately; a receipt is not a reviewer verdict.
+```
+
+There is no CLI flag or implicit environment opt-in. This scope does not grant
+HARDEN authority, change the requested model/route, or enable a provider retry.
+Only brokered Claude/Gemini attempts are captured; skipped seats, injected test
+spawns and other routes need not create receipts. An empty receipt list is not
+proof that a requested seat was captured.
+
+Each attempt gets a random mode-0700 directory with exclusively created mode-0600
+files. Capture includes the staged bundle and instructions, intended inline
+prompt, raw Gemini stdout/stderr, and Claude PTY bytes plus the exact newly
+allocated session JSONL when present. Numbered pipe files distinguish existing
+adapter attempts. `stdin-N.bin` records prepared input, not proof every byte was
+delivered or consumed; existing protocol acknowledgements retain that role.
+No adjacent sessions, credential stores, Gemini temporary-home contents, or
+native debug/trajectory stores are copied. Default temporary-home cleanup stays
+unchanged.
+
+Raw stream bytes are captured before decoding, including non-UTF-8 bytes and
+output drained during the existing process-group shutdown. Claude's exact JSONL
+is copied, synchronized and verified before retirement. Retirement checks the
+captured inode and content again through a private quarantine; replacement or
+capture failure preserves the remaining source. An absent transcript is recorded
+as missing, never reconstructed. Unproven process shutdown remains a fatal error
+and preserves the source; capture failures cannot replace that authority.
+
+The `private_provider_session.v1` manifest separates capture status from provider
+outcome. A `saved` capture can contain a failed or unavailable provider response.
+Preflight rejection may produce inputs only; absent files are not proof that a
+provider emitted no data. Files include byte counts and hashes, while the receipt
+binds the manifest hash. A private source locator records where an original or
+quarantined Claude transcript may still need recovery; it is not exported into
+verdicts or HARDEN evidence. Canonical owner-controlled paths, no-follow file
+descriptors, stable inode checks, final-path readback and file/directory `fsync`
+establish capture-time integrity. They do not prevent later same-user changes or
+make restored files current review evidence.
+
+Defaults limit each attempt to 32 MiB and each scope to 128 MiB, including
+manifests; both limits can be set explicitly up to a 1 GiB scope ceiling. Limits
+are not a rolling disk-retention policy. Exhaustion, unsafe paths or storage/read
+failure produce a failed receipt and propagate `PrivateCaptureError`, never an
+ordinary reviewer verdict. Existing provider termination runs before that error
+escapes. Prefix files remain private and incomplete; even the manifest may be
+missing or incomplete if storage fails. No successful-recovery claim follows from
+mere file presence. Storage work uses the existing caller deadline; this feature
+does not extend liveness thresholds.
+
+Raw captures and their receipts can contain sensitive prompts, provider output
+and local source paths. They are **not redacted, encrypted, remotely backed up,
+or safe to attach to public issues**. Keep the root private and outside source
+control; archive or dispose of it through a separately authorized workflow. This
+opt-in requires POSIX descriptor operations, and Claude retirement requires
+no-clobber rename support; unsupported hosts fail capture instead of weakening
+the checks. Without this scope, existing capture/cleanup behavior is unchanged.
+
 ## How to add a custom board
 
 Boards layer over the presets from
