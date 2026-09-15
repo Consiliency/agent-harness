@@ -1,6 +1,6 @@
 """Offline process and broker controls for private capture before cleanup."""
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import errno
 from hashlib import sha256
 import json
@@ -113,6 +113,109 @@ def test_final_pipe_read_failure_cannot_claim_complete_capture(tmp_path, private
             attempt.close(completed=True)
             assert capture.receipts[0]["status"] == "failed"
             assert "PLANTED_SECRET" not in str(capture.receipts)
+
+
+@pytest.mark.parametrize("provider", ["gemini", "claude"])
+@pytest.mark.parametrize("fail_setup", [False, True])
+def test_shutdown_drain_setup_failure_is_fatal_through_broker_wrapper(
+    monkeypatch, threaded_broker, private_root, tmp_path, provider, fail_setup,
+):
+    calls, kwargs = threaded_broker
+    project = tmp_path / "project"
+    project.mkdir(mode=0o700)
+    journal = tmp_path / "shutdown-writes.json"
+    out_tail, err_tail = b"STDOUT_TAIL:\xff", b"STDERR_TAIL:\xfe"
+    script = """
+import json, os, signal, sys, time
+from pathlib import Path
+journal = Path(sys.argv[1])
+transcript = Path(sys.argv[2]) if sys.argv[2] else None
+if transcript is not None:
+    transcript.write_bytes(b"ORIGINAL_TRANSCRIPT")
+def stop(*args):
+    counts = [os.write(1, b"STDOUT_TAIL:\\xff"), os.write(2, b"STDERR_TAIL:\\xfe")]
+    journal.write_text(json.dumps(counts))
+    sys.exit(0)
+signal.signal(signal.SIGTERM, stop)
+os.write(1, b"READY:")
+time.sleep(30)
+"""
+    processes, attempts, source_paths = [], [], []
+    real_popen, real_set_blocking = subprocess.Popen, os.set_blocking
+    real_pipe, real_pty = pi._run_leg_with_liveness, pi._run_claude_tui_session
+
+    def owned_popen(command, **params):
+        assert list(command[:3]) == [sys.executable, "-c", script]
+        process = real_popen(command, **params)
+        processes.append(process)
+        return process
+
+    def pipe_offline(command, **params):
+        assert command[0] == "agy"
+        attempts.append(params["private_capture"])
+        params.update(deadline_s=0.5, env={})
+        return real_pipe([sys.executable, "-c", script, str(journal), ""], **params)
+
+    def pty_offline(**params):
+        attempts.append(params["private_capture"])
+        source_paths.append(Path(params["broker_transcript_path"]))
+        params.update(command=[sys.executable, "-c", script, str(journal), str(source_paths[-1])],
+                      env={}, backstop_s=1, stall_threshold_s=0.2)
+        return real_pty(**params)
+
+    def drain_setup(fd, blocking):
+        if fail_setup and not blocking:
+            assert attempts[-1].quiescent
+            raise OSError(errno.EBADF, "PLANTED_SECRET")
+        return real_set_blocking(fd, blocking)
+
+    monkeypatch.setattr(pi, "_claude_project_dir_for_cwd", lambda cwd: project)
+    monkeypatch.setattr(pi, "_LEG_LIVENESS_READ_INTERVAL_S", 0.01)
+    monkeypatch.setattr(pi, "_CLAUDE_TUI_READ_INTERVAL_S", 0.01)
+    monkeypatch.setattr(pi, "_CLAUDE_TUI_SUBMIT_DELAY_S", 20)
+    monkeypatch.setattr(pi, "_run_leg_with_liveness", pipe_offline)
+    monkeypatch.setattr(pi, "_run_claude_tui_session", pty_offline)
+    monkeypatch.setattr(subprocess, "Popen", owned_popen)
+    monkeypatch.setattr(os, "set_blocking", drain_setup)
+    reason = "capture_pipe_drain_incomplete" if provider == "gemini" else "capture_pty_drain_incomplete"
+    try:
+        expected = pytest.raises(PrivateCaptureError, match=reason) if fail_setup else nullcontext()
+        with expected:
+            with PrivateSessionCapture(private_root) as capture:
+                result = pi._default_spawn_via_provider(provider, "artifact", **kwargs)
+        assert len(processes) == len(attempts) == 1
+        assert calls == ["closed"]
+        assert json.loads(journal.read_bytes()) == [len(out_tail), len(err_tail)]
+        assert attempts[0].quiescent
+        assert all(process.poll() is not None for process in processes)
+        assert all(not pi._process_group_exists(process.pid) for process in processes)
+        saved = _attempt_path(private_root, capture)
+        manifest = json.loads((saved / "manifest.json").read_bytes())
+        status = "failed" if fail_setup else "saved"
+        assert capture.receipts[0]["status"] == manifest["status"] == status
+        assert manifest["quiescent"] is True
+        assert manifest["reason"] == (reason if fail_setup else None)
+        names = ["pty-1.bin"] if provider == "claude" else ["stdout-1.bin", "stderr-1.bin"]
+        raw = b"".join((saved / (name + ".partial" if fail_setup else name)).read_bytes()
+                       for name in names)
+        assert (out_tail in raw and err_tail in raw) is (not fail_setup)
+        assert "PLANTED_SECRET" not in str(capture.receipts) + json.dumps(manifest)
+        if fail_setup:
+            assert manifest["provider_outcome"] is None
+        else:
+            assert not result[1]
+            assert manifest["provider_outcome"]["status"] == result[0]
+        if provider == "claude":
+            assert manifest["source"]["cleanup_verified"] is (not fail_setup)
+            if fail_setup:
+                assert source_paths[0].read_bytes() == b"ORIGINAL_TRANSCRIPT"
+            else:
+                assert not source_paths[0].exists()
+                assert (saved / "claude.jsonl").read_bytes() == b"ORIGINAL_TRANSCRIPT"
+    finally:
+        for process in processes:
+            pi._terminate_process_group(process)
+            process.wait(timeout=5)
 
 
 def test_verified_transcript_survives_native_cleanup(tmp_path, private_root):

@@ -222,6 +222,7 @@ class _ProviderQuiescenceLatch:
         self._condition = threading.Condition(self._lock)
         self._primary: ProviderProcessGroupQuiescenceError | None = None
         self._processes: dict[int, subprocess.Popen[bytes]] = {}
+        self._pending_launch: subprocess.Popen[bytes] | None = None
         self._sweeping = False
 
     def launch(
@@ -232,14 +233,45 @@ class _ProviderQuiescenceLatch:
             if self._primary is not None:
                 raise self._primary
             proc = factory()
-            _anchor_process_group(proc)
-            if proc.pid in self._processes:
-                _terminate_process_group(proc)
-                raise ProviderProcessGroupQuiescenceError(
-                    "provider process group registration collided"
-                )
-            self._processes[proc.pid] = proc
+            self._pending_launch = proc
+            try:
+                _anchor_process_group(proc)
+                if proc.pid in self._processes:
+                    raise ProviderProcessGroupQuiescenceError(
+                        "provider process group registration collided"
+                    )
+                self._processes[proc.pid] = proc
+            except BaseException:
+                try:
+                    _terminate_process_group(proc)
+                except BaseException as cleanup_error:
+                    primary = (
+                        cleanup_error if isinstance(cleanup_error, ProviderProcessGroupQuiescenceError)
+                        else ProviderProcessGroupQuiescenceError("provider launch cleanup is unproven")
+                    )
+                    self._primary = primary
+                    self._event.set()
+                    if primary is cleanup_error:
+                        raise
+                    raise primary from cleanup_error
+                if self._processes.get(proc.pid) is proc:
+                    del self._processes[proc.pid]
+                self._close_pending_launch()
+                raise
+            self._pending_launch = None
             return proc
+
+    def _close_pending_launch(self) -> None:
+        """Release failed-launch pipes only after its group is proven absent."""
+        proc = self._pending_launch
+        if proc is not None:
+            for pipe in (proc.stdin, proc.stdout, proc.stderr):
+                if pipe is not None:
+                    try:
+                        pipe.close()
+                    except OSError:
+                        pass
+        self._pending_launch = None
 
     def execute_if_open(
         self, mutation: Callable[[], _CaptureMutationResult],
@@ -282,11 +314,14 @@ class _ProviderQuiescenceLatch:
                 return primary
             self._sweeping = True
             processes = tuple(self._processes.values())
+            pending = self._pending_launch
+            if pending is not None and all(proc is not pending for proc in processes):
+                processes += (pending,)
         try:
             for proc in processes:
                 try:
                     _terminate_process_group(proc, force_group=True)
-                except ProviderProcessGroupQuiescenceError:
+                except BaseException:
                     # The primary already states that quiescence is unproven.  Sweep
                     # every sibling before returning it; never replace it with a
                     # later group's diagnostic or stop at the first stubborn group.
@@ -294,13 +329,30 @@ class _ProviderQuiescenceLatch:
         finally:
             with self._condition:
                 for pid, proc in tuple(self._processes.items()):
-                    if os.name == "nt":
-                        absent = proc.poll() is not None
-                    else:
-                        absent = not _process_group_exists(pid)
-                    if absent:
-                        proc.poll()
-                        del self._processes[pid]
+                    try:
+                        if os.name == "nt":
+                            absent = proc.poll() is not None
+                        else:
+                            absent = not _process_group_exists(pid)
+                        if absent:
+                            proc.poll()
+                            del self._processes[pid]
+                    except BaseException:
+                        # Failed observation cannot release owned state or replace
+                        # the fatal authority that initiated this sweep.
+                        continue
+                pending = self._pending_launch
+                if pending is not None:
+                    try:
+                        absent = (
+                            pending.poll() is not None if os.name == "nt"
+                            else not _process_group_exists(pending.pid)
+                        )
+                        if absent:
+                            pending.poll()
+                            self._close_pending_launch()
+                    except BaseException:
+                        pass
                 self._sweeping = False
                 self._condition.notify_all()
         return primary
@@ -320,7 +372,7 @@ class _ProviderQuiescenceLatch:
     def is_quiescent(self) -> bool:
         """True only when no provider group remains owned by this operation."""
         with self._condition:
-            return not self._processes and not self._sweeping
+            return not self._processes and self._pending_launch is None and not self._sweeping
 
 
 def _capture_mutation(
@@ -3607,7 +3659,11 @@ def _run_leg_with_liveness(
             if private_capture is not None:
                 private_capture.quiescent = True
                 for pipe, name in zip((proc.stdout, proc.stderr), private_streams):
-                    os.set_blocking(pipe.fileno(), False)
+                    try:
+                        os.set_blocking(pipe.fileno(), False)
+                    except (OSError, ValueError):
+                        private_capture.fail("capture_pipe_drain_incomplete")
+                        private_capture.check()
                     while True:
                         try:
                             chunk = os.read(pipe.fileno(), 65536)
@@ -4213,7 +4269,11 @@ def _run_claude_tui_session(
             if private_capture is not None:
                 private_capture.quiescent = True
                 if master_fd is not None:
-                    os.set_blocking(master_fd, False)
+                    try:
+                        os.set_blocking(master_fd, False)
+                    except (OSError, ValueError):
+                        private_capture.fail("capture_pty_drain_incomplete")
+                        private_capture.check()
                     while True:
                         try:
                             chunk = os.read(master_fd, 8192)
@@ -6382,9 +6442,6 @@ def _write_incremental_diagnostic(
                 temporary = None
                 os.fsync(published_fd)
                 os.fsync(directory_fd)
-                current = root.lstat()
-                if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
-                    raise OSError("diagnostic directory identity changed")
                 verify_verdict()
                 final = verify_diagnostic(
                     published_fd, name, expected=(published.st_dev, published.st_ino),
@@ -6392,6 +6449,20 @@ def _write_incremental_diagnostic(
                 retained_identity = os.fstat(handle.fileno()) if linked else published
                 if _capture_file_identity(final) != _capture_file_identity(retained_identity):
                     raise OSError("diagnostic publication changed")
+                current_fd = _open_capture_directory(root)
+                try:
+                    if any(
+                        (info.st_dev, info.st_ino) != (opened.st_dev, opened.st_ino)
+                        or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o022
+                        for info in (os.fstat(current_fd), os.fstat(directory_fd))
+                    ):
+                        raise OSError("diagnostic directory changed")
+                    named = os.stat(name, dir_fd=current_fd, follow_symlinks=False)
+                    if (_capture_file_identity(final) != _capture_file_identity(os.fstat(published_fd))
+                            or _capture_file_identity(final) != _capture_file_identity(named)):
+                        raise OSError("diagnostic publication changed")
+                finally:
+                    os.close(current_fd)
                 object.__setattr__(result, "_diagnostic_retention", {
                     "status": "saved", "file": name, "sha256": digest,
                 })

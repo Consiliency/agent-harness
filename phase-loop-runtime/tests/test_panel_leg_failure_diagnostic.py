@@ -15,6 +15,8 @@ from contextlib import contextmanager, nullcontext
 from hashlib import sha256
 import json
 from pathlib import Path
+from subprocess import Popen as _RealPopen
+import sys
 import threading
 
 import pytest
@@ -407,33 +409,50 @@ def test_tripped_launch_latch_preserves_primary_and_capture_reason(no_child_brok
 
 
 @pytest.mark.parametrize("provider", ["claude", "gemini"])
-def test_anchor_failure_after_dummy_launch_cannot_save_quiescent_capture(
+def test_anchor_failure_after_real_launch_reaps_child_and_fails_capture(
     monkeypatch, no_child_broker, tmp_path, provider,
 ):
     calls, kwargs = no_child_broker
     private_root = tmp_path / "private"
     private_root.mkdir(mode=0o700)
-    dummy = object()
+    children = []
     sequence = []
 
-    def launch_dummy(*args, **kwargs):
+    def launch_owned(*args, **kwargs):
         sequence.append("popen")
-        return dummy
+        kwargs["env"] = {}
+        child = _RealPopen([sys.executable, "-c", "import time; time.sleep(30)"], **kwargs)
+        children.append(child)
+        return child
 
     def fail_anchor(proc):
-        assert proc is dummy
+        assert proc is children[0]
         sequence.append("anchor")
         raise MemoryError("synthetic anchor failure after launch")
 
-    monkeypatch.setattr(pi.subprocess, "Popen", launch_dummy)
+    monkeypatch.setattr(pi.subprocess, "Popen", launch_owned)
     monkeypatch.setattr(pi, "_anchor_process_group", fail_anchor)
-    with pytest.raises(PrivateCaptureError):
-        with PrivateSessionCapture(private_root) as capture:
-            pi.invoke_panel(
-                "artifact", [provider],
-                spawn=lambda leg, artifact: pi._default_spawn_via_provider(leg, artifact, **kwargs),
-                stream_dir=tmp_path / "verdicts",
-            )
+    try:
+        with pytest.raises(PrivateCaptureError):
+            with PrivateSessionCapture(private_root) as capture:
+                pi.invoke_panel(
+                    "artifact", [provider],
+                    spawn=lambda leg, artifact: pi._default_spawn_via_provider(leg, artifact, **kwargs),
+                    stream_dir=tmp_path / "verdicts",
+                )
+        assert len(children) == 1
+        assert children[0].poll() is not None
+        assert not pi._process_group_exists(children[0].pid)
+        assert all(pipe is None or pipe.closed for pipe in (
+            children[0].stdin, children[0].stdout, children[0].stderr,
+        ))
+    finally:
+        for child in children:
+            pi._terminate_process_group(child)
+            child.wait(timeout=5)
+            for pipe in (child.stdin, child.stdout, child.stderr):
+                if pipe is not None:
+                    pipe.close()
 
     assert sequence == ["popen", "anchor"]
     assert len(capture.receipts) == 1
@@ -444,3 +463,156 @@ def test_anchor_failure_after_dummy_launch_cannot_save_quiescent_capture(
     assert manifest["provider_outcome"] is None
     assert not list((tmp_path / "verdicts").glob("*.verdict.json"))
     assert calls == ["closed"]
+
+
+@pytest.fixture
+def owned_launch_child():
+    children = []
+    terminate = pi._terminate_process_group
+
+    def launch():
+        child = _RealPopen(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            stdin=pi.subprocess.PIPE, stdout=pi.subprocess.PIPE,
+            stderr=pi.subprocess.PIPE, start_new_session=True, env={},
+        )
+        children.append(child)
+        return child
+
+    try:
+        yield launch, children
+    finally:
+        for child in children:
+            terminate(child)
+            child.wait(timeout=5)
+            for pipe in (child.stdin, child.stdout, child.stderr):
+                if pipe is not None:
+                    pipe.close()
+            assert not pi._process_group_exists(child.pid)
+
+
+@pytest.mark.parametrize("stage", ["anchor", "registration"])
+@pytest.mark.parametrize("failure", [MemoryError, KeyboardInterrupt])
+def test_post_creation_failure_reaps_owned_group_and_preserves_primary(
+    monkeypatch, owned_launch_child, stage, failure,
+):
+    launch, children = owned_launch_child
+    latch = pi._ProviderQuiescenceLatch()
+    primary = failure("synthetic post-creation failure")
+
+    def fail(*args):
+        raise primary
+
+    if stage == "anchor":
+        monkeypatch.setattr(pi, "_anchor_process_group", fail)
+    else:
+        class FailedRegistration(dict):
+            __setitem__ = fail
+        latch._processes = FailedRegistration()
+    with pytest.raises(failure) as caught:
+        latch.launch(launch)
+    assert caught.value is primary
+    assert children[0].poll() is not None
+    assert not pi._process_group_exists(children[0].pid)
+    assert all(pipe.closed for pipe in (children[0].stdin, children[0].stdout, children[0].stderr))
+    assert latch.is_quiescent() and not latch.is_set()
+
+
+@pytest.mark.parametrize("stage", ["anchor", "registration"])
+@pytest.mark.parametrize("typed", [False, True])
+def test_failed_launch_cleanup_keeps_ownership_and_fatal_authority_until_swept(
+    monkeypatch, owned_launch_child, stage, typed,
+):
+    launch, children = owned_launch_child
+    latch = pi._ProviderQuiescenceLatch()
+    cleanup_error = (
+        pi.ProviderProcessGroupQuiescenceError("synthetic unproven group")
+        if typed else OSError("synthetic shutdown failure")
+    )
+
+    def fail_creation(*args):
+        raise MemoryError("synthetic post-creation failure")
+
+    def fail_shutdown(*args, **kwargs):
+        raise cleanup_error
+
+    if stage == "anchor":
+        monkeypatch.setattr(pi, "_anchor_process_group", fail_creation)
+    else:
+        class FailedRegistration(dict):
+            __setitem__ = fail_creation
+        latch._processes = FailedRegistration()
+    with monkeypatch.context() as shutdown_patch:
+        shutdown_patch.setattr(pi, "_terminate_process_group", fail_shutdown)
+        with pytest.raises(pi.ProviderProcessGroupQuiescenceError) as caught:
+            latch.launch(launch)
+        primary = caught.value
+        if typed:
+            assert primary is cleanup_error
+        else:
+            assert primary.__cause__ is cleanup_error
+        assert children[0].poll() is None
+        assert not latch.is_quiescent() and latch.is_set()
+        with pytest.raises(pi.ProviderProcessGroupQuiescenceError) as refused:
+            latch.launch(lambda: pytest.fail("launch admitted after unproven cleanup"))
+        assert refused.value is primary
+
+    assert latch.trip(primary) is primary
+    assert children[0].poll() is not None
+    assert not pi._process_group_exists(children[0].pid)
+    assert all(pipe.closed for pipe in (children[0].stdin, children[0].stdout, children[0].stderr))
+    assert latch.is_quiescent()
+    with pytest.raises(pi.ProviderProcessGroupQuiescenceError) as retained:
+        latch.raise_if_set()
+    assert retained.value is primary
+
+
+@pytest.mark.parametrize("failure_point", ["termination", "observation"])
+def test_fatal_sweep_keeps_primary_and_visits_registered_and_pending_children(
+    monkeypatch, owned_launch_child, failure_point,
+):
+    launch, children = owned_launch_child
+    latch = pi._ProviderQuiescenceLatch()
+    latch.launch(launch)
+    primary = pi.ProviderProcessGroupQuiescenceError("first unproven launch cleanup")
+
+    def fail_anchor(proc):
+        raise MemoryError("synthetic anchoring failure")
+
+    def first_cleanup(*args, **kwargs):
+        raise primary
+
+    with monkeypatch.context() as setup:
+        setup.setattr(pi, "_anchor_process_group", fail_anchor)
+        setup.setattr(pi, "_terminate_process_group", first_cleanup)
+        with pytest.raises(pi.ProviderProcessGroupQuiescenceError) as caught:
+            latch.launch(launch)
+    assert caught.value is primary
+    assert len(children) == 2 and all(child.poll() is None for child in children)
+    visited = []
+
+    def fail_termination(proc, **kwargs):
+        visited.append(proc.pid)
+        raise OSError("persistent cleanup failure")
+
+    def fail_observation(pid):
+        visited.append(pid)
+        raise OSError("process-group observation unavailable")
+
+    with monkeypatch.context() as sweep:
+        if failure_point == "termination":
+            sweep.setattr(pi, "_terminate_process_group", fail_termination)
+        else:
+            sweep.setattr(pi, "_terminate_process_group", lambda *a, **kw: None)
+            sweep.setattr(pi, "_process_group_exists", fail_observation)
+        assert latch.trip(primary) is primary
+        assert visited == [child.pid for child in children]
+        assert not latch.is_quiescent() and not latch._sweeping
+        with pytest.raises(pi.ProviderProcessGroupQuiescenceError) as retained:
+            latch.raise_if_set()
+        assert retained.value is primary
+
+    assert latch.trip(primary) is primary
+    assert latch.is_quiescent()
+    assert all(child.poll() is not None and not pi._process_group_exists(child.pid) for child in children)
+    assert all(pipe.closed for pipe in (children[1].stdin, children[1].stdout, children[1].stderr))

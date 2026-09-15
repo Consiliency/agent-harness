@@ -6,6 +6,7 @@ from hashlib import sha256
 import json
 import os
 import stat
+from types import SimpleNamespace
 
 import pytest
 
@@ -406,6 +407,115 @@ def test_directory_sync_failure_does_not_claim_durability(tmp_path, monkeypatch)
     assert leg.diagnostic_retention["status"] == "failed"
     # Publication was atomic, but directory persistence was not established.
     assert json.loads(next(tmp_path.glob("*.diagnostic.json")).read_text())
+
+
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("stage", ["directory_sync", "final_read"])
+@pytest.mark.parametrize("change", ["stable", "mode", "owner", "replacement", "ancestor_symlink"])
+def test_diagnostic_publication_rechecks_directory_authority(tmp_path, monkeypatch, existing, stage, change):
+    ancestor = tmp_path / "ancestor"
+    ancestor.mkdir(mode=0o700)
+    root = ancestor / "review"
+    root.mkdir(mode=0o700)
+    original = root.stat()
+    root_identity = (original.st_dev, original.st_ino)
+    leg = _leg()
+    before = asdict(leg)
+    if existing:
+        pi._write_incremental_diagnostic(root, 0, leg, "d" * 64)
+        assert leg.diagnostic_retention["status"] == "saved"
+    real_fsync, real_fstat, real_read = os.fsync, os.fstat, os.read
+    synced, changed, owner_observed = [], [], []
+
+    def change_root():
+        if change == "mode":
+            root.chmod(0o777)
+        elif change == "replacement":
+            root.rename(ancestor / "displaced-review")
+            root.mkdir(mode=0o700)
+        elif change == "ancestor_symlink":
+            displaced = tmp_path / "displaced-ancestor"
+            ancestor.rename(displaced)
+            ancestor.symlink_to(displaced, target_is_directory=True)
+        changed.append(True)
+
+    def observe_owner(fd):
+        info = real_fstat(fd)
+        if (change == "owner" and changed
+                and (info.st_dev, info.st_ino) == root_identity):
+            values = {key: getattr(info, key) for key in dir(info) if key.startswith("st_")}
+            values["st_uid"] = info.st_uid + 1
+            owner_observed.append(True)
+            return SimpleNamespace(**values)
+        return info
+
+    def change_at_sync(fd):
+        real_fsync(fd)
+        info = real_fstat(fd)
+        if (info.st_dev, info.st_ino) == root_identity:
+            synced.append(True)
+            if stage == "directory_sync" and not changed:
+                change_root()
+
+    def change_after_read(fd, count):
+        content = real_read(fd, count)
+        if stage == "final_read" and synced and not changed:
+            change_root()
+        return content
+
+    monkeypatch.setattr(os, "fsync", change_at_sync)
+    monkeypatch.setattr(os, "fstat", observe_owner)
+    monkeypatch.setattr(os, "read", change_after_read)
+    pi._write_incremental_diagnostic(root, 0, leg, "d" * 64)
+
+    assert changed == [True]
+    assert asdict(leg) == before
+    if change == "stable":
+        assert leg.diagnostic_retention["status"] == "saved"
+        sidecar = root / leg.diagnostic_retention["file"]
+        assert leg.diagnostic_retention["sha256"] == sha256(sidecar.read_bytes()).hexdigest()
+        assert sidecar.stat().st_mode & 0o777 == 0o600
+        assert len(list(root.glob("*.diagnostic.json"))) == 1
+    else:
+        assert leg.diagnostic_retention == {"status": "failed"}
+    if change == "owner":
+        assert owner_observed
+    assert not list(tmp_path.rglob(".diagnostic-*.tmp"))
+
+
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("change", ["content", "identical_replacement"])
+def test_diagnostic_change_during_directory_reopen_is_not_reported_saved(tmp_path, monkeypatch, existing, change):
+    leg = _leg()
+    before = asdict(leg)
+    if existing:
+        pi._write_incremental_diagnostic(tmp_path, 0, leg, "d" * 64)
+        assert leg.diagnostic_retention["status"] == "saved"
+    real_open = pi._open_capture_directory
+    changed = []
+
+    def change_after_reopen(path):
+        fd = real_open(path)
+        if path == tmp_path and not changed:
+            sidecar = next(tmp_path.glob("*.diagnostic.json"))
+            content = sidecar.read_bytes()
+            if change == "content":
+                sidecar.write_bytes(b"x" + content[1:])
+            else:
+                replacement = tmp_path / "replacement"
+                replacement.write_bytes(content)
+                replacement.chmod(0o600)
+                os.replace(replacement, sidecar)
+            changed.append(True)
+        return fd
+
+    monkeypatch.setattr(pi, "_open_capture_directory", change_after_reopen)
+    pi._write_incremental_diagnostic(tmp_path, 0, leg, "d" * 64)
+
+    assert changed == [True]
+    assert leg.diagnostic_retention == {"status": "failed"}
+    assert asdict(leg) == before
+    assert not list(tmp_path.glob(".diagnostic-*.tmp"))
 
 
 def test_failed_diagnostic_after_identical_verdict_does_not_match_old_sidecar(tmp_path, monkeypatch):
