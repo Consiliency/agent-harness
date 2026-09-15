@@ -6,6 +6,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Declare verification test tools (Consiliency/agent-harness#428)
+
+- The runtime's test dependency group now includes `build==1.6.1`,
+  `setuptools>=70.1` and `pip` for packaging checks that build without isolation.
+  The hosted pytest and Dagger installers use the same build pin and setuptools
+  floor. This replaces the withdrawn `build==1.5.1` pin in those installers.
+- Contributor instructions select the existing visual extra explicitly and show
+  the Python 3.14 test environment required by the repository's interpreter guard.
+  The runtime package's Python 3.10 minimum and runtime dependencies are unchanged.
+
 ### Broker stores: typed schema-drift refusal and a diagnosable confirmation read (Consiliency/agent-harness#834)
 
 - Workstream of Consiliency/agent-harness#789's bounded confirmation-read repair.

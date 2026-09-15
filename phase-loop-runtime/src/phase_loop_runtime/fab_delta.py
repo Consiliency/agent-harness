@@ -1,4 +1,4 @@
-"""FAB (Consiliency/agent-harness#191) Lane C — delta-chain binding,
+r"""FAB (Consiliency/agent-harness#191) Lane C — delta-chain binding,
 clean-finding carry-forward, boundary-manifest escalation, and `review_scope`
 enforcement.
 
@@ -583,7 +583,7 @@ def _normalize_glob_components(glob: str) -> str | None:
 
 
 def _translate_glob_to_regex(glob: str) -> re.Pattern[str]:
-    """Translate ONE boundary-manifest glob into an anchored, case-sensitive
+    r"""Translate ONE boundary-manifest glob into an anchored, case-sensitive
     regex, segment-wise on `/` (design's "PurePosixPath-style `**`/`*`/`?`"):
 
       * a segment that is EXACTLY `**` is a globstar unit: matches "zero or
