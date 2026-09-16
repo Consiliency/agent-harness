@@ -1082,6 +1082,24 @@
         "reason": "Specify storage-owner boundary, terminal precedence and nonzero-exit controls; preserve native historical lifecycle while binding current reviewed bytes.",
         "review_result_sha256": "0d2410fa7eb9d40082975bc57714dd2d460932e78c28023353dce594ab99a063"
       },
+      "approved_plan_review": {
+        "at": "2026-09-16T07:56:44.474630+00:00",
+        "plan_sha256": "63ebcccd0ec14be0a5b24971186385fea55d66192a9ff668e48afbb6916024b7",
+        "result_sha256": "3bb4a05269e587a007144d3202e7d6241d396ee3fddc8c4de230b710004acbf5"
+      },
+      "approved_tests_review": {
+        "actual_red_summary": "28 passed, 59 failed; native verification nonzero",
+        "at": "2026-09-16T07:56:44.474630+00:00",
+        "phase_acceptance": false,
+        "private_recovery_commit": "40334d6e43fdc1996b88dfee55de9a3eb04bd8e7",
+        "red_run": "new-tests-red-r3",
+        "result_sha256": "8e37b66c0e709b5ed8b01d1b281a44287cb4b9c4320cf5d5f029a5cb84c29d21",
+        "source_approval": false,
+        "test_sha256": {
+          "phase-loop-runtime/tests/test_runtime_adapter_output_720.py": "e273fb08fc5702fdc54c2e5fc4c64d01a043efc860492e3b64e0663ceca99904",
+          "phase-loop-runtime/tests/test_runtime_event_log_hardening_720.py": "c5d794481c37d87ad337cf8042857e6842c065b9b56f5f65ec9da3dda0281b1b"
+        }
+      },
       "created_at": "2026-09-16T06:38:37.324085+00:00",
       "file": "plans/detailed-runtime-hardening-720-20260916.md",
       "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260916-runtime-hardening-720.md",
@@ -1100,19 +1118,33 @@
             "source_approval": false
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-09-16T07:26:09Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "phase_accepted": false,
+            "plan_commit": "13df06a269dda60b1865b81f8939a10292c307b4",
+            "plan_review_result_sha256": "3bb4a05269e587a007144d3202e7d6241d396ee3fddc8c4de230b710004acbf5",
+            "plan_sha256": "63ebcccd0ec14be0a5b24971186385fea55d66192a9ff668e48afbb6916024b7",
+            "run_id": "20260916-runtime-hardening-720-tests-r1",
+            "source_approval": false,
+            "stage": "new_regression_tests_before_production"
+          },
+          "transition": "executing"
         }
       ],
       "owner_skill": "codex-plan-detailed",
       "phase_accepted": false,
       "phase_alias": null,
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-detailed/reflections/538a00e8/codex-v10-runtime-resume-20260916/20260916-runtime-hardening-720.md",
-      "required_plan_review_pending": true,
+      "required_plan_review_pending": false,
       "roadmap_ref": null,
       "slug": "runtime-hardening-720-20260916",
-      "status": "committed",
+      "status": "executing",
       "task_summary": "Repair committed log corruption, containment and adapter output capture (agent-harness#720 items 1-3)",
       "type": "detailed",
-      "updated_at": "2026-09-16T07:13:59.000538+00:00"
+      "updated_at": "2026-09-16T07:56:44.474630+00:00"
     },
     {
       "acceptance_criteria_count": 5,
