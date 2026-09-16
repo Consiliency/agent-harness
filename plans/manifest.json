@@ -938,6 +938,15 @@
       "blocking_prerequisite": null,
       "created_at": "2026-09-15T20:26:24.866609+00:00",
       "file": "plans/detailed-proofgate-cleanup-858-20260915.md",
+      "final_review_history": [
+        {
+          "does_not_transfer_to_corrected_tests": true,
+          "four_native_agree": true,
+          "head": "7e72ec034fc47248c872db454cdd749427acaf9f",
+          "landing_blocked_by_source_CI": 35044068108,
+          "result_sha256": "e6f7e68419b713eade8fc8016242e0f6775559f6b39beaa7e50eefa73e800ff6"
+        }
+      ],
       "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260915-proofgate-cleanup-858.md",
       "if_gates_produced": [],
       "input_main": "c90b1357d65e76ef778330c3845f4410d38c9710",
@@ -1002,6 +1011,8 @@
         "final_head_review_pending": true,
         "pr_url": "https://github.com/Consiliency/agent-harness/pull/861",
         "required_final_CI_pending": true,
+        "reviewed_source_head": "a613c77c2b5490d3eb7296639d1cac94edaefdf4",
+        "source_CI_failure": 35044068108,
         "source_head": "d84df37d8e48c58cf1c664fcc0dd4d2e7eeb6dd3"
       },
       "reflection_ref": null,
@@ -1014,13 +1025,14 @@
       "slug": "proofgate-cleanup-858-20260915",
       "source_review": {
         "all_four_native_bindings_verified": true,
-        "corrected_source_archive": "53f116cb65b23121b4d23560ea2acc0a9c143aa7",
         "prior_votes_transferred": false,
-        "result_sha256": "403e55a7912c0d138a387bd070baa2c2b51c8002cea576428a6984ce0054871a",
-        "reviewed_input_head": "38b1a58afe33bed1940c2d67181856d986701b51",
+        "python310_hook_portability_corrected": true,
+        "result_sha256": "ae7c1e36a9bc8bf8b41dcd8f42be3050a4ceb368c4de129372a8173ac0e473fb",
+        "reviewed_input_head": "7e72ec034fc47248c872db454cdd749427acaf9f",
         "source_approval": true,
-        "source_head": "d84df37d8e48c58cf1c664fcc0dd4d2e7eeb6dd3",
-        "source_publication_archive": "f2e8baa4e7039349f82e01d622cd2df7856242c7"
+        "source_archive": "6899abdf9e96531ae40c44c39dcbf1f52263fc43",
+        "source_head": "a613c77c2b5490d3eb7296639d1cac94edaefdf4",
+        "test_sha256": "7fa8f3d8aef00689910e894517cb4019adee7bc76691f721f42402825ab8b5a8"
       },
       "source_review_history": [
         {
@@ -1029,12 +1041,22 @@
           "preserved_archive": "ccbe2b9da75a52c0dd5bf24e1b3c37c3aa727a8a",
           "result_sha256": "0719e3f0fcc42fe162b01cc134418b62398e1625c821274214412d66fd107ab3",
           "source_approval": false
+        },
+        {
+          "all_four_native_bindings_verified": true,
+          "corrected_source_archive": "53f116cb65b23121b4d23560ea2acc0a9c143aa7",
+          "prior_votes_transferred": false,
+          "result_sha256": "403e55a7912c0d138a387bd070baa2c2b51c8002cea576428a6984ce0054871a",
+          "reviewed_input_head": "38b1a58afe33bed1940c2d67181856d986701b51",
+          "source_approval": true,
+          "source_head": "d84df37d8e48c58cf1c664fcc0dd4d2e7eeb6dd3",
+          "source_publication_archive": "f2e8baa4e7039349f82e01d622cd2df7856242c7"
         }
       ],
       "status": "executing",
       "task_summary": "Report PROOFGATE cleanup failures without losing proof outcomes (agent-harness#858)",
       "type": "detailed",
-      "updated_at": "2026-09-16T01:28:00.818569+00:00"
+      "updated_at": "2026-09-16T02:05:41.867345+00:00"
     },
     {
       "acceptance_criteria_count": 5,
