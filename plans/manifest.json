@@ -1060,6 +1060,183 @@
     },
     {
       "acceptance_criteria_count": 5,
+      "amendment_r2": {
+        "at": "2026-09-16T06:56:20.394704+00:00",
+        "current_plan_sha256": "d65ecd59584a11fa57cba243563d1e83d5429194d34e70a3e937748febae6753",
+        "implementation_started": false,
+        "new_review_required": true,
+        "phase_accepted": false,
+        "previous_plan_sha256": "4b9fc157e27bcc364600121ebbceb77b30363a7043e069268cc53bd16830d430",
+        "prior_review_converged": false,
+        "reason": "Resolve Fable leader-exit, frozen-probe, root-identity and byte-tokenizer findings before freezing new tests.",
+        "review_result_sha256": "aa36892b5d28dcad3bcecbd635e2047ca4e3bdce0437d7793d9c1660a825263a"
+      },
+      "amendment_r3": {
+        "at": "2026-09-16T07:13:59.000538+00:00",
+        "current_plan_sha256": "63ebcccd0ec14be0a5b24971186385fea55d66192a9ff668e48afbb6916024b7",
+        "implementation_started": false,
+        "new_review_required": true,
+        "phase_accepted": false,
+        "previous_plan_sha256": "d65ecd59584a11fa57cba243563d1e83d5429194d34e70a3e937748febae6753",
+        "prior_review_converged": false,
+        "reason": "Specify storage-owner boundary, terminal precedence and nonzero-exit controls; preserve native historical lifecycle while binding current reviewed bytes.",
+        "review_result_sha256": "0d2410fa7eb9d40082975bc57714dd2d460932e78c28023353dce594ab99a063"
+      },
+      "approved_plan_review": {
+        "at": "2026-09-16T07:56:44.474630+00:00",
+        "plan_sha256": "63ebcccd0ec14be0a5b24971186385fea55d66192a9ff668e48afbb6916024b7",
+        "result_sha256": "3bb4a05269e587a007144d3202e7d6241d396ee3fddc8c4de230b710004acbf5"
+      },
+      "approved_source_review": {
+        "approval_sha256": "b45a4ff23ba1af60c4f1f4e867fb7a12a9423baa95a9a66e9de53390eabadc9b",
+        "final_committed_head_review_pending": true,
+        "focused_passed": 220,
+        "installed_module_count": 205,
+        "installed_passed": 170,
+        "phase_acceptance": false,
+        "private_recovery_commit": "781aa4c390472a6a915fc0a2fc1d35dc25516d1c",
+        "required_ci_pending": true,
+        "seats": [
+          {
+            "completed_leg_sha256": "fcb5d9ba9ce393389825a0cb23723cf6075494430d2b0d60ea0df273bab70b08",
+            "leg": "codex",
+            "result_sha256": "b31227c9b579afad5c83219e2f49a730866265bf8231799f5f00934a6f828130",
+            "review": "source-review-r3"
+          },
+          {
+            "completed_leg_sha256": "c85a635b6e6d148566383dc47b6bf4deade86719df5590d204a8ae9ffada63b1",
+            "leg": "claude",
+            "result_sha256": "b31227c9b579afad5c83219e2f49a730866265bf8231799f5f00934a6f828130",
+            "review": "source-review-r3"
+          },
+          {
+            "completed_leg_sha256": "44c1dee8ddf46e11d466436c366f9749adcb6ad0a81ae884cfa9fdf7f4b8e650",
+            "leg": "grok",
+            "result_sha256": "b31227c9b579afad5c83219e2f49a730866265bf8231799f5f00934a6f828130",
+            "review": "source-review-r3"
+          },
+          {
+            "completed_leg_sha256": "47391df456d5e5c4a26bee9bc5501dd334b8d3294d86fb9f7ea6a385834f4e2a",
+            "leg": "gemini",
+            "result_sha256": "eb5bbc3e840ff41ad92f16af400228244d41caed1480a57de6014972f05b8408",
+            "review": "source-review-r3-gemini-r1"
+          }
+        ],
+        "source_head": "2ec3d3a9ad0414faf06c0b6cd5411edb76dc48a7"
+      },
+      "approved_tests_review": {
+        "actual_red_summary": "128 passed, 19 failed, 0 errors/skips; native verification remains nonzero",
+        "at": "2026-09-16T10:08:00.093277+00:00",
+        "phase_acceptance": false,
+        "private_recovery_commit": "2ebf09c7132c8d97d149f834e1831b5dfab0353c",
+        "red_run": "/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-runtime-resume-20260916/.phase-loop/diagnostics/runtime-acceptance-audit-20260916/source-findings-tests-red-r6/verification.json",
+        "result_sha256": "db6851dabe37a5d882f0f39bac40d8ebe9c9d49175e6909984fbb9039f0434c7",
+        "review": "tests-review-r6",
+        "source_approval": false,
+        "test_sha256": {
+          "phase-loop-runtime/tests/test_runtime_adapter_output_720.py": "ba89e599268437b3268e063b0591f5bd18b1c4c0d9554d054c24de3342e6df47",
+          "phase-loop-runtime/tests/test_runtime_event_log_hardening_720.py": "79f9835f15138ea9c7a0e9376d05b8ff7116d9e945b41b3135831615a48aa06d"
+        }
+      },
+      "approved_tests_review_history": [
+        {
+          "actual_red_summary": "28 passed, 59 failed; native verification nonzero",
+          "at": "2026-09-16T07:56:44.474630+00:00",
+          "phase_acceptance": false,
+          "private_recovery_commit": "40334d6e43fdc1996b88dfee55de9a3eb04bd8e7",
+          "red_run": "new-tests-red-r3",
+          "result_sha256": "8e37b66c0e709b5ed8b01d1b281a44287cb4b9c4320cf5d5f029a5cb84c29d21",
+          "source_approval": false,
+          "test_sha256": {
+            "phase-loop-runtime/tests/test_runtime_adapter_output_720.py": "e273fb08fc5702fdc54c2e5fc4c64d01a043efc860492e3b64e0663ceca99904",
+            "phase-loop-runtime/tests/test_runtime_event_log_hardening_720.py": "c5d794481c37d87ad337cf8042857e6842c065b9b56f5f65ec9da3dda0281b1b"
+          }
+        },
+        {
+          "phase_acceptance": false,
+          "result_sha256": "312b14caef67615a9d7f402e3c3172823de93ff219dfac667c11a66586939d0d",
+          "review": "tests-review-r2",
+          "review_finished_at": "2026-09-16T08:11:44.495112+00:00",
+          "source_approval": false,
+          "test_sha256": {
+            "phase-loop-runtime/tests/test_runtime_adapter_output_720.py": "5c4c6c446ec03a927bd48bf5e45c2dc8c39cfa5101522ca655609d8f41f1f2ba",
+            "phase-loop-runtime/tests/test_runtime_event_log_hardening_720.py": "c5d794481c37d87ad337cf8042857e6842c065b9b56f5f65ec9da3dda0281b1b"
+          }
+        },
+        {
+          "phase_acceptance": false,
+          "result_sha256": "3ed048bbd30a04e8b6eb325e9d50e0d135f74492ed8d7398d3961f7d91c93e73",
+          "review": "tests-review-r3",
+          "review_finished_at": "2026-09-16T08:33:30.376597+00:00",
+          "source_approval": false,
+          "test_sha256": {
+            "phase-loop-runtime/tests/test_runtime_adapter_output_720.py": "90098545aba03eda9be962262493669d085764b8ccfe63bae6e9b52292804cf0",
+            "phase-loop-runtime/tests/test_runtime_event_log_hardening_720.py": "c5d794481c37d87ad337cf8042857e6842c065b9b56f5f65ec9da3dda0281b1b"
+          }
+        },
+        {
+          "actual_red_summary": "110 passed, 10 failed, 0 errors/skips; native verification remains nonzero",
+          "at": "2026-09-16T09:35:46.559593+00:00",
+          "phase_acceptance": false,
+          "private_recovery_commit": "cf5b451c40955a77228de7ad849cb9c0b2d307bb",
+          "red_run": "/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-runtime-resume-20260916/.phase-loop/diagnostics/runtime-acceptance-audit-20260916/source-findings-tests-red-r5/verification.json",
+          "result_sha256": "f71c1794a2d5094c6864d7ada7e20a542a9d46d0eaf5e152d6965aa91a129150",
+          "review": "tests-review-r5",
+          "source_approval": false,
+          "test_sha256": {
+            "phase-loop-runtime/tests/test_runtime_adapter_output_720.py": "3b0bf242e0d75fb13e903b7341b3a42ac5e6b90f6a3b9e933a4244a511b7a062",
+            "phase-loop-runtime/tests/test_runtime_event_log_hardening_720.py": "79f9835f15138ea9c7a0e9376d05b8ff7116d9e945b41b3135831615a48aa06d"
+          }
+        }
+      ],
+      "created_at": "2026-09-16T06:38:37.324085+00:00",
+      "file": "plans/detailed-runtime-hardening-720-20260916.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260916-runtime-hardening-720.md",
+      "if_gates_produced": [],
+      "input_main": "cfbedcb172bc5ab590ca5c91cca89a5db59382bb",
+      "issue": "Consiliency/agent-harness#720",
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-09-16T06:38:37.324085+00:00",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "plan_approval": false,
+            "plan_sha256": "4b9fc157e27bcc364600121ebbceb77b30363a7043e069268cc53bd16830d430",
+            "planning_artifact_only": true,
+            "source_approval": false
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-09-16T07:26:09Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "phase_accepted": false,
+            "plan_commit": "13df06a269dda60b1865b81f8939a10292c307b4",
+            "plan_review_result_sha256": "3bb4a05269e587a007144d3202e7d6241d396ee3fddc8c4de230b710004acbf5",
+            "plan_sha256": "63ebcccd0ec14be0a5b24971186385fea55d66192a9ff668e48afbb6916024b7",
+            "run_id": "20260916-runtime-hardening-720-tests-r1",
+            "source_approval": false,
+            "stage": "new_regression_tests_before_production"
+          },
+          "transition": "executing"
+        }
+      ],
+      "owner_skill": "codex-plan-detailed",
+      "phase_accepted": false,
+      "phase_alias": null,
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-detailed/reflections/538a00e8/codex-v10-runtime-resume-20260916/20260916-runtime-hardening-720.md",
+      "required_plan_review_pending": false,
+      "roadmap_ref": null,
+      "slug": "runtime-hardening-720-20260916",
+      "status": "executing",
+      "task_summary": "Repair committed log corruption, containment and adapter output capture (agent-harness#720 items 1-3)",
+      "type": "detailed",
+      "updated_at": "2026-09-16T10:37:27.113748+00:00"
+    },
+    {
+      "acceptance_criteria_count": 5,
       "created_at": "2026-09-03T06:10:04Z",
       "file": ".consiliency/plans/detailed-split-pr-gate-chronology-746-20260903-0609.md",
       "handoff_ref": ".dev-skills/handoffs/claude-plan-detailed/latest.md",
