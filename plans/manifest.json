@@ -836,6 +836,19 @@
         "review": "plan-review-r2",
         "source_approval": false
       },
+      "approved_tests_review": {
+        "actual_red_summary": "146 nodes per version; 109 pass/37 expected failures on3.10/3.11;97 pass/49 expected failures on3.12/3.13/3.14;zero errors/skips",
+        "at": "2026-09-16T18:52:26.431643+00:00",
+        "phase_acceptance": false,
+        "private_recovery_commit": "d9ffc862c1374de94d146b58f8d960b8a2f7b99a",
+        "red_matrix": "/mnt/HC_Volume_105438154/worktrees/agent-harness-json-depth-825-20260916/.phase-loop/diagnostics/json-depth-825-20260916/regression-red-matrix-r2.json",
+        "result_sha256": "415d30646be9d6a5f04d98cb546fabaf0b66da427cb16f17412ad1956c302fa3",
+        "review": "tests-review-r2",
+        "source_approval": false,
+        "tests_sha256": {
+          "phase-loop-runtime/tests/test_harden_json_depth_825.py": "606446ba888fd8a1ce0b3121f05369c889b31a98dd719899020fd2848e0dad8f"
+        }
+      },
       "created_at": "2026-09-16T17:37:01.011003+00:00",
       "file": "plans/detailed-json-depth-825-20260916.md",
       "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260916-json-depth-825-r1.md",
@@ -880,7 +893,7 @@
       "status": "executing",
       "task_summary": "Bound HARDEN verifier JSON nesting across Python versions (agent-harness#825)",
       "type": "detailed",
-      "updated_at": "2026-09-16T18:52:14.119235+00:00"
+      "updated_at": "2026-09-16T18:52:26.431643+00:00"
     },
     {
       "acceptance_criteria_count": 4,
