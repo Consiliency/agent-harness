@@ -394,3 +394,94 @@ def test_cleanup_interrupt_outweighs_ordinary_cleanup_error_unless_primary_exist
             assert observed["waits"] and all(t is not None and 0 < t <= 1 for t in observed["waits"])
             _assert_quiescent(tmp_path, observed)
     assert caught.value is expected
+
+
+@pytest.mark.parametrize("primary_type, selector_type, later_stage, later_type", [
+    (primary, cleanup, None, None)
+    for primary in (OSError, KeyboardInterrupt, SystemExit)
+    for cleanup in (OSError, KeyboardInterrupt, SystemExit)
+] + [(None, OSError, None, None)] + [
+    (None, OSError, stage, OSError)
+    for stage in ("kill", "stdout", "wait")
+] + [
+    (None, OSError, stage, interrupt)
+    for stage in ("kill", "stdout", "wait")
+    for interrupt in (KeyboardInterrupt, SystemExit)
+] + [
+    (None, interrupt, stage, OSError)
+    for stage in ("kill", "stdout", "wait")
+    for interrupt in (KeyboardInterrupt, SystemExit)
+] + [
+    (None, KeyboardInterrupt, "wait", SystemExit),
+    (None, SystemExit, "wait", KeyboardInterrupt),
+])
+def test_selector_cleanup_preserves_operation_and_cleanup_precedence(tmp_path, observed, monkeypatch, primary_type, selector_type, later_stage, later_type):
+    real_selector = base.selectors.DefaultSelector
+    real_spawn, real_kill = subprocess.Popen, os.killpg
+    primary = primary_type("injected operation error") if primary_type else None
+    selector_error = selector_type("injected selector close error")
+    later_error = later_type("injected later cleanup error") if later_type else None
+    entered = []
+    primary_entered = []
+    thrown = []
+
+    def cleanup(name, action, *args, **kwargs):
+        value = action(*args, **kwargs)
+        entered.append(name)
+        failure = selector_error if name == "selector" else later_error if name == later_stage else None
+        if failure is not None:
+            thrown.append(failure)
+            raise failure
+        return value
+
+    def selector(*args, **kwargs):
+        instance = real_selector(*args, **kwargs)
+        real_close = instance.close
+        monkeypatch.setattr(instance, "close", lambda: cleanup("selector", real_close))
+        return instance
+
+    def spawn(*args, **kwargs):
+        process = real_spawn(*args, **kwargs)
+        for name, pipe in (("stdout", process.stdout), ("stderr", process.stderr)):
+            real_close = pipe.close
+            monkeypatch.setattr(pipe, "close", lambda name=name, close=real_close: cleanup(name, close))
+        real_wait = process.wait
+
+        def wait(timeout=None):
+            observed["waits"].append(timeout)
+            return cleanup("wait", real_wait, timeout=timeout)
+
+        monkeypatch.setattr(process, "wait", wait)
+        return process
+
+    def fail_read(fd, size):
+        if fd in observed["streams"] and not primary_entered:
+            primary_entered.append(True)
+            raise primary
+        return observed["read"](fd, size)
+
+    monkeypatch.setattr(base.selectors, "DefaultSelector", selector)
+    monkeypatch.setattr(subprocess, "Popen", spawn)
+    monkeypatch.setattr(os, "killpg", lambda pgid, signum: cleanup("kill", real_kill, pgid, signum))
+    if primary is not None:
+        monkeypatch.setattr(os, "read", fail_read)
+    request = _request(tmp_path, _output_body(b'{"status":"completed"}', linger=primary is not None))
+    caught = result = None
+    try:
+        result = base.run_bounded(request, provider="codex")
+    except BaseException as exc:
+        caught = exc
+    finally:
+        assert sorted(entered) == ["kill", "selector", "stderr", "stdout", "wait"], "all real cleanup stages must run exactly once"
+        assert bool(primary_entered) is (primary is not None)
+        assert observed["waits"] and all(t is not None and 0 < t <= 1 for t in observed["waits"])
+        _assert_quiescent(tmp_path, observed)
+    interruptions = [error for error in thrown if isinstance(error, (KeyboardInterrupt, SystemExit))]
+    if primary is not None:
+        assert caught is primary
+    elif interruptions:
+        assert caught is interruptions[0], "the first cleanup interruption must survive ordinary cleanup errors"
+    else:
+        assert caught is None, "an ordinary selector-close error is a cleanup failure, not an operation exception"
+        assert result.status.value == "degraded"
+        assert result.detail and "cleanup" in result.detail.lower()

@@ -1088,16 +1088,16 @@
         "result_sha256": "3bb4a05269e587a007144d3202e7d6241d396ee3fddc8c4de230b710004acbf5"
       },
       "approved_tests_review": {
-        "actual_red_summary": "110 passed, 10 failed, 0 errors/skips; native verification remains nonzero",
-        "at": "2026-09-16T09:35:46.559593+00:00",
+        "actual_red_summary": "128 passed, 19 failed, 0 errors/skips; native verification remains nonzero",
+        "at": "2026-09-16T10:08:00.093277+00:00",
         "phase_acceptance": false,
-        "private_recovery_commit": "cf5b451c40955a77228de7ad849cb9c0b2d307bb",
-        "red_run": "/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-runtime-resume-20260916/.phase-loop/diagnostics/runtime-acceptance-audit-20260916/source-findings-tests-red-r5/verification.json",
-        "result_sha256": "f71c1794a2d5094c6864d7ada7e20a542a9d46d0eaf5e152d6965aa91a129150",
-        "review": "tests-review-r5",
+        "private_recovery_commit": "2ebf09c7132c8d97d149f834e1831b5dfab0353c",
+        "red_run": "/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-runtime-resume-20260916/.phase-loop/diagnostics/runtime-acceptance-audit-20260916/source-findings-tests-red-r6/verification.json",
+        "result_sha256": "db6851dabe37a5d882f0f39bac40d8ebe9c9d49175e6909984fbb9039f0434c7",
+        "review": "tests-review-r6",
         "source_approval": false,
         "test_sha256": {
-          "phase-loop-runtime/tests/test_runtime_adapter_output_720.py": "3b0bf242e0d75fb13e903b7341b3a42ac5e6b90f6a3b9e933a4244a511b7a062",
+          "phase-loop-runtime/tests/test_runtime_adapter_output_720.py": "ba89e599268437b3268e063b0591f5bd18b1c4c0d9554d054c24de3342e6df47",
           "phase-loop-runtime/tests/test_runtime_event_log_hardening_720.py": "79f9835f15138ea9c7a0e9376d05b8ff7116d9e945b41b3135831615a48aa06d"
         }
       },
@@ -1135,6 +1135,20 @@
           "test_sha256": {
             "phase-loop-runtime/tests/test_runtime_adapter_output_720.py": "90098545aba03eda9be962262493669d085764b8ccfe63bae6e9b52292804cf0",
             "phase-loop-runtime/tests/test_runtime_event_log_hardening_720.py": "c5d794481c37d87ad337cf8042857e6842c065b9b56f5f65ec9da3dda0281b1b"
+          }
+        },
+        {
+          "actual_red_summary": "110 passed, 10 failed, 0 errors/skips; native verification remains nonzero",
+          "at": "2026-09-16T09:35:46.559593+00:00",
+          "phase_acceptance": false,
+          "private_recovery_commit": "cf5b451c40955a77228de7ad849cb9c0b2d307bb",
+          "red_run": "/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-runtime-resume-20260916/.phase-loop/diagnostics/runtime-acceptance-audit-20260916/source-findings-tests-red-r5/verification.json",
+          "result_sha256": "f71c1794a2d5094c6864d7ada7e20a542a9d46d0eaf5e152d6965aa91a129150",
+          "review": "tests-review-r5",
+          "source_approval": false,
+          "test_sha256": {
+            "phase-loop-runtime/tests/test_runtime_adapter_output_720.py": "3b0bf242e0d75fb13e903b7341b3a42ac5e6b90f6a3b9e933a4244a511b7a062",
+            "phase-loop-runtime/tests/test_runtime_event_log_hardening_720.py": "79f9835f15138ea9c7a0e9376d05b8ff7116d9e945b41b3135831615a48aa06d"
           }
         }
       ],
@@ -1182,7 +1196,7 @@
       "status": "executing",
       "task_summary": "Repair committed log corruption, containment and adapter output capture (agent-harness#720 items 1-3)",
       "type": "detailed",
-      "updated_at": "2026-09-16T09:35:46.559593+00:00"
+      "updated_at": "2026-09-16T10:08:00.093277+00:00"
     },
     {
       "acceptance_criteria_count": 5,
