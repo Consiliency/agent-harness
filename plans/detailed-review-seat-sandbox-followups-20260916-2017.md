@@ -29,9 +29,9 @@ Two constraints carry over and are unchanged by this plan:
 - `EC-SBXEXEC-7` (line 25) — modify — its falsifier names only one of EC-HARDEN-5's three falsifier
   clauses, so it drifts from the criterion it cites. Replace the falsifier with "any EC-HARDEN-5
   falsifier firing on such a path".
-- `EC-SBXFETCH-6` (lines 74–77) — modify — two claim clauses have no falsifier. Add one for the
-  snapshot being unreadable from the shared-layer build, and one for a build backend outside the
-  pin's admitted set.
+- `EC-SBXFETCH-6` (lines 74–77) — modify — two claim clauses have no falsifier. Add one that fires when the
+  snapshot is readable from the shared-layer build, and one for a build backend outside the pin's
+  admitted set.
 - `EC-SBXSEAT-3` (line 116) — modify — "a recorded pass" is not bound to the built code, while the
   proposal promises evidence against the built code. Require the record to be content-bound in the
   EC-GOVLEAN-2 form, citing that ID.
@@ -40,6 +40,9 @@ Two constraints carry over and are unchanged by this plan:
 - `EC-SBXSEAT-6` (line 123) — modify — the claim says "while EC-HARDEN-5 is UNMET", but the falsifier
   fires only on a *recorded* UNMET, so an absent record passes. Falsify on any state other than MET,
   absent included.
+- Phase 14 `Scope notes` — add — carry the gate 9 positive-control obligation here, where the
+  fragment's verbatim append takes it into v10, rather than in a file that stops being authoritative
+  at promotion.
 
 ### `docs/proposals/review-seat-sandbox.md` (modify)
 
@@ -57,9 +60,8 @@ Two constraints carry over and are unchanged by this plan:
   opens.
 - `## Promotion rule`, Stopping rule (lines 113–115) — modify — say whether a revision that only pins
   evidence digests counts as a re-panel. It does not: it changes no obligation.
-- `## Promotion rule`, new sentence under the obligations — add — record that the SBXEXEC detailed
-  plan must name the test subset and fixture layer satisfying gate 9's positive control, which has to
-  pass at SBXEXEC closeout, before the fetch pipeline that EC-SBXFETCH-4 later requires exists.
+- `## Promotion rule`, obligations list — modify — note that the gate 9 positive-control obligation
+  lives in the fragment, not here, so it survives promotion.
 
 ## Documentation impact
 

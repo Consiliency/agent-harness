@@ -33,6 +33,10 @@ Lane B publishes the layer-store interface (IF-0-SBXEXEC-1) on day 1 so lane A c
 `panel_invoker.py` has a single writer, so the authorization hook that routes an authorized call to
 the executor lands last, in lane A.
 
+Gate 9's positive control ("the real test subset passes") must pass at this phase's closeout, before
+the fetch and publish pipeline that EC-SBXFETCH-4 later requires exists. This phase's detailed plan
+names the test subset and the fixture layer that satisfy it.
+
 **Non-goals**
 - Dependency fetching (SBXFETCH).
 - Seat tool transport and activation (SBXSEAT).
