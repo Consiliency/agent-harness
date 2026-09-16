@@ -1254,6 +1254,52 @@
       "updated_at": "2026-09-03T06:58:16Z"
     },
     {
+      "acceptance_criteria_count": 4,
+      "amendment_r2": {
+        "current_plan_sha256": "8182b74c40c636023f459f214cdf607fc1551f33c8d6121dff13410517a6b1b1",
+        "fresh_review_required": true,
+        "predecessor_plan_sha256": "bf91824be8a281fcc0b29868b55b06b57c6452148c1db33a267fad47f2f5d44d",
+        "previous_review_approved": false,
+        "required_changes": [
+          "Exact public-dispatch Linux refusal; real valid repo and non-president policy; permit/count only repository metadata git and never replace spawn seams.",
+          "Mechanically compare composition executable code objects after stripping docstrings while retaining assertions and exception tables.",
+          "Explicit availability-only live composition denial case."
+        ],
+        "review_result_sha256": "577bd3612db266f42eddc32893c06daf76173f2694d2eea0dc76de7e5ad669b2"
+      },
+      "created_at": "2026-09-16T11:26:20.357948+00:00",
+      "file": "plans/detailed-static-import-862-20260916.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260916-static-import-862.md",
+      "if_gates_produced": [],
+      "input_main": "a830620c6e048c2608750787ae02dc5e3b1310dc",
+      "issue": "Consiliency/agent-harness#862",
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-09-16T11:26:20.357948+00:00",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "plan_approval": false,
+            "plan_sha256": "bf91824be8a281fcc0b29868b55b06b57c6452148c1db33a267fad47f2f5d44d",
+            "planning_artifact_only": true,
+            "source_approval": false
+          },
+          "transition": "committed"
+        }
+      ],
+      "owner_skill": "codex-plan-detailed",
+      "phase_accepted": false,
+      "phase_alias": null,
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-detailed/reflections/fe4c656d/codex-static-import-862-20260916/20260916-static-import-862.md",
+      "required_plan_review_pending": true,
+      "roadmap_ref": null,
+      "slug": "static-import-862-20260916",
+      "status": "committed",
+      "task_summary": "Repair static board imports without weakening live review admission (agent-harness#862)",
+      "type": "detailed",
+      "updated_at": "2026-09-16T11:39:56.273015+00:00"
+    },
+    {
       "acceptance_criteria_count": null,
       "created_at": "2026-07-11T22:48:16Z",
       "file": "plans/phase-plan-v1-task-message-sourcebroker-SOURCEBROKER.md",
