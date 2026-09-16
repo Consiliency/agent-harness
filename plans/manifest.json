@@ -829,6 +829,122 @@
     },
     {
       "acceptance_criteria_count": 4,
+      "approved_plan_review": {
+        "at": "2026-09-16T18:52:14.119235+00:00",
+        "plan_sha256": "2c81983591330c98440829926d0feac3d90c168cc0cf718fa921a229069458ff",
+        "result_sha256": "7bd26c81e2938823506dc81eaa6e1d4219e60c220f224cbd7fba2e69268425c8",
+        "review": "plan-review-r2",
+        "source_approval": false
+      },
+      "approved_source_review": {
+        "approval_sha256": "d01756dcf51b0d9118c63935778e337d114bff2ff676764e688f2991bb9ac09e",
+        "final_committed_head_review_pending": true,
+        "full_selftest_adversarial_rejections_per_interpreter": 337,
+        "merged_standalone_adoption_pending": true,
+        "original_failed_runs_preserved": true,
+        "phase_acceptance": false,
+        "plan_suite_tests_passed": 149,
+        "pr_url": "https://github.com/Consiliency/agent-harness/pull/868",
+        "private_recovery_commit": "ddc3971c98c6abbed724245a00715d6a974d10db",
+        "python_versions": [
+          "3.10",
+          "3.11",
+          "3.12",
+          "3.13",
+          "3.14"
+        ],
+        "regression_cases_per_interpreter": 146,
+        "required_ci_pending": true,
+        "seats": [
+          {
+            "completed_leg_sha256": "f2827687cfda3bd85a42d5404b47461684ea41c22fdbbeb4d1f773700c0c424f",
+            "leg": "grok",
+            "result_sha256": "844f807c7e5f8e4f8be63767d4f4f8397adcd4269bd30a3e924268a8dfa2e564",
+            "review": "prepublication-review-r1"
+          },
+          {
+            "completed_leg_sha256": "7744ffc2a4f97552f4b6212b883b070a93e4640367c75e243b20a13db2980186",
+            "leg": "claude",
+            "result_sha256": "844f807c7e5f8e4f8be63767d4f4f8397adcd4269bd30a3e924268a8dfa2e564",
+            "review": "prepublication-review-r1"
+          },
+          {
+            "completed_leg_sha256": "a8058579e41c288520fde0a423e481b3d7f08a9ea556292f8804066895cd551a",
+            "leg": "codex",
+            "result_sha256": "844f807c7e5f8e4f8be63767d4f4f8397adcd4269bd30a3e924268a8dfa2e564",
+            "review": "prepublication-review-r1"
+          },
+          {
+            "completed_leg_sha256": "3431624bb493441e3892babe817dfdc16670a42aedb89ca0977e8f70b419f877",
+            "leg": "gemini",
+            "result_sha256": "844f807c7e5f8e4f8be63767d4f4f8397adcd4269bd30a3e924268a8dfa2e564",
+            "review": "prepublication-review-r1"
+          }
+        ],
+        "source_and_frozen_tests_unchanged": true,
+        "source_head": "93dcf1810191e57f17e04d9805402bcd5711eca7"
+      },
+      "approved_tests_review": {
+        "actual_red_summary": "146 nodes per version; 109 pass/37 expected failures on3.10/3.11;97 pass/49 expected failures on3.12/3.13/3.14;zero errors/skips",
+        "at": "2026-09-16T18:52:26.431643+00:00",
+        "phase_acceptance": false,
+        "private_recovery_commit": "d9ffc862c1374de94d146b58f8d960b8a2f7b99a",
+        "red_matrix": "/mnt/HC_Volume_105438154/worktrees/agent-harness-json-depth-825-20260916/.phase-loop/diagnostics/json-depth-825-20260916/regression-red-matrix-r2.json",
+        "result_sha256": "415d30646be9d6a5f04d98cb546fabaf0b66da427cb16f17412ad1956c302fa3",
+        "review": "tests-review-r2",
+        "source_approval": false,
+        "tests_sha256": {
+          "phase-loop-runtime/tests/test_harden_json_depth_825.py": "606446ba888fd8a1ce0b3121f05369c889b31a98dd719899020fd2848e0dad8f"
+        }
+      },
+      "created_at": "2026-09-16T17:37:01.011003+00:00",
+      "file": "plans/detailed-json-depth-825-20260916.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260916-json-depth-825-r1.md",
+      "if_gates_produced": [],
+      "input_main": "83f41b9a1e94b411f81af9ea5af1bf2da06b0ea9",
+      "issue": "Consiliency/agent-harness#825",
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-09-16T17:37:01.011003+00:00",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "plan_approval": false,
+            "plan_sha256": "419ceba811593b5c64cc1be2082b11dbab8a8d5cda3ef34c00bd9aea3cd7ee05",
+            "planning_artifact_only": true,
+            "source_approval": false
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-09-16T18:20:45Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "artifact": "plans/detailed-json-depth-825-20260916.md",
+            "phase_accepted": false,
+            "plan_approval_artifact": "/mnt/HC_Volume_105438154/worktrees/agent-harness-json-depth-825-20260916/.phase-loop/diagnostics/json-depth-825-20260916/plan-review-r2/terminal-reduction.json",
+            "plan_review_result_sha256": "7bd26c81e2938823506dc81eaa6e1d4219e60c220f224cbd7fba2e69268425c8",
+            "plan_sha256": "2c81983591330c98440829926d0feac3d90c168cc0cf718fa921a229069458ff",
+            "private_recovery_commit": "bae82c43c0fa4b3c55b0762755abce7590705afc",
+            "run_id": "20260916-json-depth-825-execution-r1"
+          },
+          "transition": "executing"
+        }
+      ],
+      "owner_skill": "codex-plan-detailed",
+      "phase_accepted": false,
+      "phase_alias": null,
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-detailed/reflections/7156f3f7/codex-json-depth-825-20260916/20260916-json-depth-825-r1.md",
+      "required_plan_review_pending": false,
+      "roadmap_ref": null,
+      "slug": "json-depth-825-20260916",
+      "status": "executing",
+      "task_summary": "Bound HARDEN verifier JSON nesting across Python versions (agent-harness#825)",
+      "type": "detailed",
+      "updated_at": "2026-09-16T19:48:55.155908+00:00"
+    },
+    {
+      "acceptance_criteria_count": 4,
       "created_at": "2026-07-18T21:00:00Z",
       "file": "plans/detailed-lane-scheduler-work-unit-preflight-186-20260718.md",
       "handoff_ref": null,

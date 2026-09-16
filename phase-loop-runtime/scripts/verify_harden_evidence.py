@@ -62,6 +62,7 @@ MODEL_ID = re.compile(r"^[a-z0-9][a-z0-9.-]{1,63}$")
 MAX_ARTIFACT_BYTES = 8 * 1024 * 1024
 MAX_JSON_BYTES = 2 * 1024 * 1024
 MAX_JSON_INTEGER_DIGITS = 4096
+MAX_JSON_NESTING = 512
 MAX_VISUAL_PREFIX_CHARS = 256
 MAX_VISUAL_WILDCARD_ADVANCE = 3
 MIN_VISUAL_ANCHOR_POSITIONS = 3
@@ -468,6 +469,25 @@ def strict_json_loads(data: bytes, label: str) -> Any:
         decoded = data.decode("utf-8")
     except UnicodeDecodeError:
         fail(f"{label}: invalid JSON")
+    depth = 0
+    in_string = False
+    escaped = False
+    for character in decoded:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+        elif character == '"':
+            in_string = True
+        elif character in "[{":
+            depth += 1
+            if depth > MAX_JSON_NESTING:
+                fail(f"{label}: JSON nesting exceeds limit")
+        elif character in "]}":
+            depth -= 1
     try:
         return json.loads(
             decoded,
