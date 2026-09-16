@@ -1348,6 +1348,45 @@
           }
         ]
       },
+      "approved_source_review": {
+        "actual_mac_native_cases": 8,
+        "approval_sha256": "0ef408d659ec6f503fd5ee7845582d4ba7218756a228ee6ab37bc3ab3cb6a2ce",
+        "final_committed_head_review_pending": true,
+        "focused_passed": 131,
+        "installed_module_count": 205,
+        "installed_passed": 131,
+        "phase_acceptance": false,
+        "prepublication_head": "9c8230708d88345de24eeb9f83cd9ee23ae150d5",
+        "private_recovery_commit": "d60429439cbaf9180e1425e09861ea38e072b5f0",
+        "required_ci_pending": true,
+        "seats": [
+          {
+            "completed_leg_sha256": "a23e8c74ffeb7e98924871f89f8b3787b903b6a98beaba9277a06715369106ad",
+            "leg": "grok",
+            "result_sha256": "bb06cdaefcc4b154ea889a4a364a8d54666d8acf12300dac40a07e820e87f28e",
+            "review": "final-review-r2"
+          },
+          {
+            "completed_leg_sha256": "c03b42a02f9c39c3e89fced75e3b00d5282795542c00edd1f318e693b583eb50",
+            "leg": "claude",
+            "result_sha256": "bb06cdaefcc4b154ea889a4a364a8d54666d8acf12300dac40a07e820e87f28e",
+            "review": "final-review-r2"
+          },
+          {
+            "completed_leg_sha256": "88b546be14dcead0ce56233ecc3ba1ebafc3916c6934fe32d6d421005b77fe85",
+            "leg": "codex",
+            "result_sha256": "bb06cdaefcc4b154ea889a4a364a8d54666d8acf12300dac40a07e820e87f28e",
+            "review": "final-review-r2"
+          },
+          {
+            "completed_leg_sha256": "1d0b442c1f36e15faedf8724ca8b488f59cbc1e8def8de27a75ffbf800b9004e",
+            "leg": "gemini",
+            "result_sha256": "bb06cdaefcc4b154ea889a4a364a8d54666d8acf12300dac40a07e820e87f28e",
+            "review": "final-review-r2"
+          }
+        ],
+        "source_head": "bd4bba1d408ea36df594d912ada2498a3c9f2572"
+      },
       "approved_tests_review": {
         "actual_red_summary": "9 failures, 0 errors/skips: 2 discriminating static-import failures and 7 incidental downstream import failures; 122 positive controls pass",
         "at": "2026-09-16T12:28:04.211657+00:00",
@@ -1407,7 +1446,7 @@
       "status": "executing",
       "task_summary": "Repair static board imports without weakening live review admission (agent-harness#862)",
       "type": "detailed",
-      "updated_at": "2026-09-16T12:28:04.211657+00:00"
+      "updated_at": "2026-09-16T14:39:23.897667+00:00"
     },
     {
       "acceptance_criteria_count": null,
