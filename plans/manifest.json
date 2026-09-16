@@ -1050,6 +1050,138 @@
       "updated_at": "2026-07-29T00:00:00Z"
     },
     {
+      "acceptance_criteria_count": 4,
+      "approved_plan_review": {
+        "at": "2026-09-16T22:15:52.615480+00:00",
+        "plan_sha256": "331af995cc61e4908c0507f673326fb8cfa48029d1f42ab27eae77fa1fe6acc9",
+        "result_sha256": "d46bf2c089f73492ac72e70e1ea84c21777365c6bc12682818381c6f876e9198",
+        "review": "plan-review-r1",
+        "source_approval": false
+      },
+      "approved_source_review": {
+        "approval_sha256": "0f8544bc7861db1556f3c4320a8364949c3ed2ad5f813a17f655bcacd15acbc8",
+        "final_committed_head_review_pending": true,
+        "merged_helper_qualification_pending": true,
+        "original_failed_runs_preserved": true,
+        "phase_acceptance": false,
+        "plan_suite_tests_passed": 86,
+        "pr_url": "https://github.com/Consiliency/agent-harness/pull/871",
+        "private_recovery_commit": "7ac5662c90c280bc74704ec966c4ba8e5cdb16b9",
+        "python_versions": [
+          "3.10",
+          "3.11",
+          "3.12",
+          "3.13",
+          "3.14"
+        ],
+        "real_red_failures_per_interpreter": 2,
+        "regression_cases_per_interpreter": 86,
+        "required_ci_pending": true,
+        "seats": [
+          {
+            "completed_leg_sha256": "7d8cb3e42a3b3e4e9a99aa8cefe8248016c49cf0a5a0d918e85cbcf062e95e54",
+            "leg": "grok",
+            "result_sha256": "2ed1711e057a2965d56397995d235f40ac588a967eb45630c1e5af93f92575f4",
+            "review": "source-review-r1"
+          },
+          {
+            "completed_leg_sha256": "24c8ea3a6edce099e7b82c8178b4f233e1c9473a9ef66e310455f3f1121b338c",
+            "leg": "claude",
+            "result_sha256": "2ed1711e057a2965d56397995d235f40ac588a967eb45630c1e5af93f92575f4",
+            "review": "source-review-r1"
+          },
+          {
+            "completed_leg_sha256": "6995ff79710f0a47fd1e0dd324a974f4f6005ae4f555e73ec0d146f340c4f1ad",
+            "leg": "codex",
+            "result_sha256": "2ed1711e057a2965d56397995d235f40ac588a967eb45630c1e5af93f92575f4",
+            "review": "source-review-r1"
+          },
+          {
+            "completed_leg_sha256": "c265e425330b51d14ea72436afe77f2005e0555eabf519cd95fe97b83c0cc507",
+            "leg": "gemini",
+            "result_sha256": "2ed1711e057a2965d56397995d235f40ac588a967eb45630c1e5af93f92575f4",
+            "review": "source-review-r1"
+          }
+        ],
+        "source_and_frozen_tests_unchanged": true,
+        "source_head": "c41d43983d98a13584f873ca5a73ae5d3c7dd9fc"
+      },
+      "approved_tests_review": {
+        "actual_red_summary": "9 nodes per version; 7 pass/2 real kernel ESRCH failures on3.10 through3.14;zero errors/skips",
+        "at": "2026-09-16T22:16:01.424218+00:00",
+        "phase_acceptance": false,
+        "private_recovery_commit": "d5f29c16e872de04a5dc33eaac7ad3ad07a941c9",
+        "red_matrix": "/mnt/HC_Volume_105438154/worktrees/agent-harness-procfs-oracle-870-20260916/.phase-loop/diagnostics/procfs-oracle-870-20260916/red-matrix-r2.json",
+        "result_sha256": "bb82442319c8e57a3c42a69cd32291bd92330009ac1427c30176b5156c9d5035",
+        "review": "tests-review-r1",
+        "source_approval": false,
+        "tests_sha256": {
+          "phase-loop-runtime/tests/test_runtime_procfs_identity_870.py": "bb0eae977dfa0e5b869f6f13e64f635251c9d6d167958f2d7fcf3f774a1e416e"
+        }
+      },
+      "created_at": "2026-09-16T21:45:36.010903+00:00",
+      "file": "plans/detailed-procfs-oracle-870-20260916.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260916-procfs-oracle-870-r1.md",
+      "helper_amendment": {
+        "exact_single_exception_clause": true,
+        "green_evidence_sha256": "948d0b3577201ef6811c264331376d2dbe397f1706d20bf368bca58c8dbb9368",
+        "implementation_review_pending": true,
+        "new_sha256": "249881786c7a637f9b8c094998096a7005bdf15f5372dc90572a0b3b01e1060d",
+        "old_sha256": "ba89e599268437b3268e063b0591f5bd18b1c4c0d9554d054c24de3342e6df47",
+        "original_freeze_preserved": true,
+        "phase_acceptance": false,
+        "production_changed": false,
+        "tests_sha256": "bb0eae977dfa0e5b869f6f13e64f635251c9d6d167958f2d7fcf3f774a1e416e"
+      },
+      "if_gates_produced": [],
+      "input_main": "31ca27c62ceaca77cca4d7abb110bc413d181c87",
+      "issue": "Consiliency/agent-harness#870",
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-09-16T21:45:36.010903+00:00",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "plan_approval": false,
+            "plan_sha256": "331af995cc61e4908c0507f673326fb8cfa48029d1f42ab27eae77fa1fe6acc9",
+            "planning_artifact_only": true,
+            "source_approval": false
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-09-16T21:57:15Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "four_native_agree": true,
+            "handoff_ref": ".dev-skills/handoffs/codex-execute-detailed/20260916-procfs-oracle-870-execution-r1.md",
+            "historical_rows_preserved": true,
+            "phase_acceptance": false,
+            "plan_review_sha256": "d46bf2c089f73492ac72e70e1ea84c21777365c6bc12682818381c6f876e9198",
+            "plan_sha256": "331af995cc61e4908c0507f673326fb8cfa48029d1f42ab27eae77fa1fe6acc9",
+            "previous_test_sha256": "ba89e599268437b3268e063b0591f5bd18b1c4c0d9554d054c24de3342e6df47",
+            "reflection_ref": "/home/viperjuice/.codex/skills/codex-execute-detailed/reflections/edca4655/codex-procfs-oracle-870-20260916/20260916-procfs-oracle-870-execution-r1.md",
+            "run_id": "20260916-procfs-oracle-870-execution-r1",
+            "test_oracle_amendment": true
+          },
+          "transition": "executing"
+        }
+      ],
+      "owner_skill": "codex-plan-detailed",
+      "phase_accepted": false,
+      "phase_alias": null,
+      "previous_test_sha256": "ba89e599268437b3268e063b0591f5bd18b1c4c0d9554d054c24de3342e6df47",
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-detailed/reflections/edca4655/codex-procfs-oracle-870-20260916/20260916-procfs-oracle-870-r1.md",
+      "required_plan_review_pending": false,
+      "roadmap_ref": null,
+      "slug": "procfs-oracle-870-20260916",
+      "status": "executing",
+      "task_summary": "Repair procfs process-exit liveness oracle (agent-harness#870)",
+      "test_oracle_amendment": true,
+      "type": "detailed",
+      "updated_at": "2026-09-16T22:31:07.667236+00:00"
+    },
+    {
       "acceptance_criteria_count": 5,
       "blocking_prerequisite": null,
       "created_at": "2026-09-15T20:26:24.866609+00:00",
