@@ -125,6 +125,14 @@ non-coordinating action and return only the frozen `ConvergenceResultEnvelope`.
 They do not coordinate trains, publish, merge, release, or package, and they
 import no coordinator, publisher, or broker effect path.
 
+The convergence package and its pure environment scrubber can be imported on
+Linux and macOS without acquiring live review authority. Import-time board
+snapshots explicitly supply pure availability and auth callbacks. Live board
+composition, config loading and review dispatch still require Linux admission;
+static board data grants no execution authority. Import portability does not
+qualify adapter execution on macOS, including process-lifecycle support on older
+Python interpreters (agent-harness#862).
+
 - **Identity is exact.** `argv[0]` must name the expected provider executable
   exactly; a prefix match would admit a look-alike such as `codex-rogue`.
 - **Version binding.** The seven-field `AdmissionRequest` is preserved and its

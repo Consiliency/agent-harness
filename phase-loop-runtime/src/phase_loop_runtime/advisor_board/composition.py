@@ -170,15 +170,15 @@ def compose_review_board(
     ``default_board_auth_ok`` (the cached, timeout-bounded, fail-closed
     ``auth_ok_for`` gate), so the production default is genuinely auth-aware.
 
-    **Test affordance (documented coupling, not the general contract):** when
-    ``is_available`` is INJECTED but ``auth_ok`` is not, auth defaults to
-    pass-through (every vendor treated authed) so an availability-SIMULATION caller
-    fully owns the gate and never shells out to the real auth probe. Inject
-    ``auth_ok`` explicitly to simulate the auth dimension. The all-vendors-up static
-    presets (``presets.CODE_REVIEW_BOARD``, ``resolver._STANDIN_CODE_REVIEW``) rely
-    on this so their module-import composition stays hermetic. Any NON-test caller
-    that injects ``is_available`` alone therefore opts OUT of auth gating — pass
-    ``auth_ok`` (e.g. ``default_board_auth_ok``) to keep it.
+    **Injected probes:** when ``is_available`` is supplied but ``auth_ok`` is
+    absent, auth defaults to pass-through (every vendor treated authed), while
+    live composition admission still applies. Supply ``auth_ok`` explicitly to
+    simulate authentication, or use ``default_board_auth_ok`` for the real gate.
+    Import-time snapshots (``presets.CODE_REVIEW_BOARD`` and
+    ``resolver._STANDIN_CODE_REVIEW``) supply BOTH pure callbacks explicitly so
+    static catalog construction requires no live admission. Passing the actual
+    registry availability method or ``default_board_auth_ok`` still requires
+    live admission even when both arguments are supplied.
 
     Returns a ``Board`` of exactly ``target`` seats whenever ≥1 vendor is available
     and authed (never fewer than ``floor``); an empty board only when NO vendor is
