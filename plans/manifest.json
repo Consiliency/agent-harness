@@ -836,6 +836,54 @@
         "review": "plan-review-r2",
         "source_approval": false
       },
+      "approved_source_review": {
+        "approval_sha256": "d01756dcf51b0d9118c63935778e337d114bff2ff676764e688f2991bb9ac09e",
+        "final_committed_head_review_pending": true,
+        "full_selftest_adversarial_rejections_per_interpreter": 337,
+        "merged_standalone_adoption_pending": true,
+        "original_failed_runs_preserved": true,
+        "phase_acceptance": false,
+        "plan_suite_tests_passed": 149,
+        "pr_url": "https://github.com/Consiliency/agent-harness/pull/868",
+        "private_recovery_commit": "ddc3971c98c6abbed724245a00715d6a974d10db",
+        "python_versions": [
+          "3.10",
+          "3.11",
+          "3.12",
+          "3.13",
+          "3.14"
+        ],
+        "regression_cases_per_interpreter": 146,
+        "required_ci_pending": true,
+        "seats": [
+          {
+            "completed_leg_sha256": "f2827687cfda3bd85a42d5404b47461684ea41c22fdbbeb4d1f773700c0c424f",
+            "leg": "grok",
+            "result_sha256": "844f807c7e5f8e4f8be63767d4f4f8397adcd4269bd30a3e924268a8dfa2e564",
+            "review": "prepublication-review-r1"
+          },
+          {
+            "completed_leg_sha256": "7744ffc2a4f97552f4b6212b883b070a93e4640367c75e243b20a13db2980186",
+            "leg": "claude",
+            "result_sha256": "844f807c7e5f8e4f8be63767d4f4f8397adcd4269bd30a3e924268a8dfa2e564",
+            "review": "prepublication-review-r1"
+          },
+          {
+            "completed_leg_sha256": "a8058579e41c288520fde0a423e481b3d7f08a9ea556292f8804066895cd551a",
+            "leg": "codex",
+            "result_sha256": "844f807c7e5f8e4f8be63767d4f4f8397adcd4269bd30a3e924268a8dfa2e564",
+            "review": "prepublication-review-r1"
+          },
+          {
+            "completed_leg_sha256": "3431624bb493441e3892babe817dfdc16670a42aedb89ca0977e8f70b419f877",
+            "leg": "gemini",
+            "result_sha256": "844f807c7e5f8e4f8be63767d4f4f8397adcd4269bd30a3e924268a8dfa2e564",
+            "review": "prepublication-review-r1"
+          }
+        ],
+        "source_and_frozen_tests_unchanged": true,
+        "source_head": "93dcf1810191e57f17e04d9805402bcd5711eca7"
+      },
       "approved_tests_review": {
         "actual_red_summary": "146 nodes per version; 109 pass/37 expected failures on3.10/3.11;97 pass/49 expected failures on3.12/3.13/3.14;zero errors/skips",
         "at": "2026-09-16T18:52:26.431643+00:00",
@@ -893,7 +941,7 @@
       "status": "executing",
       "task_summary": "Bound HARDEN verifier JSON nesting across Python versions (agent-harness#825)",
       "type": "detailed",
-      "updated_at": "2026-09-16T18:52:26.431643+00:00"
+      "updated_at": "2026-09-16T19:48:55.155908+00:00"
     },
     {
       "acceptance_criteria_count": 4,
