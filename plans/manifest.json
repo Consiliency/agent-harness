@@ -997,6 +997,13 @@
           }
         }
       ],
+      "publication": {
+        "draft": true,
+        "final_head_review_pending": true,
+        "pr_url": "https://github.com/Consiliency/agent-harness/pull/861",
+        "required_final_CI_pending": true,
+        "source_head": "d84df37d8e48c58cf1c664fcc0dd4d2e7eeb6dd3"
+      },
       "reflection_ref": null,
       "required_plan_review_pending": false,
       "resolved_prerequisites": [
@@ -1006,16 +1013,28 @@
       "roadmap_ref": null,
       "slug": "proofgate-cleanup-858-20260915",
       "source_review": {
-        "head": "38b1a58afe33bed1940c2d67181856d986701b51",
-        "material_finding_reproduced": true,
-        "preserved_archive": "ccbe2b9da75a52c0dd5bf24e1b3c37c3aa727a8a",
-        "result_sha256": "0719e3f0fcc42fe162b01cc134418b62398e1625c821274214412d66fd107ab3",
-        "source_approval": false
+        "all_four_native_bindings_verified": true,
+        "corrected_source_archive": "53f116cb65b23121b4d23560ea2acc0a9c143aa7",
+        "prior_votes_transferred": false,
+        "result_sha256": "403e55a7912c0d138a387bd070baa2c2b51c8002cea576428a6984ce0054871a",
+        "reviewed_input_head": "38b1a58afe33bed1940c2d67181856d986701b51",
+        "source_approval": true,
+        "source_head": "d84df37d8e48c58cf1c664fcc0dd4d2e7eeb6dd3",
+        "source_publication_archive": "f2e8baa4e7039349f82e01d622cd2df7856242c7"
       },
+      "source_review_history": [
+        {
+          "head": "38b1a58afe33bed1940c2d67181856d986701b51",
+          "material_finding_reproduced": true,
+          "preserved_archive": "ccbe2b9da75a52c0dd5bf24e1b3c37c3aa727a8a",
+          "result_sha256": "0719e3f0fcc42fe162b01cc134418b62398e1625c821274214412d66fd107ab3",
+          "source_approval": false
+        }
+      ],
       "status": "executing",
       "task_summary": "Report PROOFGATE cleanup failures without losing proof outcomes (agent-harness#858)",
       "type": "detailed",
-      "updated_at": "2026-09-16T01:01:06.898262+00:00"
+      "updated_at": "2026-09-16T01:28:00.818569+00:00"
     },
     {
       "acceptance_criteria_count": 5,
