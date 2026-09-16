@@ -1267,6 +1267,54 @@
         ],
         "review_result_sha256": "577bd3612db266f42eddc32893c06daf76173f2694d2eea0dc76de7e5ad669b2"
       },
+      "approved_plan_review": {
+        "plan_sha256": "8182b74c40c636023f459f214cdf607fc1551f33c8d6121dff13410517a6b1b1",
+        "policy": "docs/agent-phase-convergence.md:221-230",
+        "source_approval": false,
+        "standing_seats": [
+          {
+            "bundle_sha256": "a4c0f7a6ccdf0ca077783846a16c018fdfba478702c5ea24ddc9c0742c6f15b5",
+            "leg": "claude",
+            "result_sha256": "b638ba2f86d33dba4c420ff5ceeebedf9a490ed600f8299cd610de8e3fb8c6e1",
+            "standing": "carried_from_r2_on_unchanged_plan",
+            "verdict": "AGREE"
+          },
+          {
+            "bundle_sha256": "a4c0f7a6ccdf0ca077783846a16c018fdfba478702c5ea24ddc9c0742c6f15b5",
+            "leg": "codex",
+            "result_sha256": "b638ba2f86d33dba4c420ff5ceeebedf9a490ed600f8299cd610de8e3fb8c6e1",
+            "standing": "carried_from_r2_on_unchanged_plan",
+            "verdict": "AGREE"
+          },
+          {
+            "bundle_sha256": "a4c0f7a6ccdf0ca077783846a16c018fdfba478702c5ea24ddc9c0742c6f15b5",
+            "leg": "gemini",
+            "result_sha256": "b638ba2f86d33dba4c420ff5ceeebedf9a490ed600f8299cd610de8e3fb8c6e1",
+            "standing": "carried_from_r2_on_unchanged_plan",
+            "verdict": "AGREE"
+          },
+          {
+            "bundle_sha256": "3ba8a0c752fd336922d6617aee57610ee9b5cf2d7cbdfbb10b3ef63912922e95",
+            "leg": "grok",
+            "result_sha256": "33b1769bd46044a60a01303c04d253bbcc5487561c94dfb1c8229eaecc475a98",
+            "standing": "fresh_clarification",
+            "verdict": "AGREE"
+          }
+        ]
+      },
+      "approved_tests_review": {
+        "actual_red_summary": "9 failures, 0 errors/skips: 2 discriminating static-import failures and 7 incidental downstream import failures; 122 positive controls pass",
+        "at": "2026-09-16T12:28:04.211657+00:00",
+        "phase_acceptance": false,
+        "private_recovery_commit": "7d8b43d4e06e43d0dc91fb90cce1bc910207c73e",
+        "red_run": "/mnt/HC_Volume_105438154/worktrees/agent-harness-import-862-20260916/.phase-loop/diagnostics/static-import-862-20260916/tests-red-r2/verification.json",
+        "result_sha256": "f2473579c9bd518b11c546a8f8e48787b7b64451a88dc30ec14db1bcdcf6c452",
+        "review": "tests-review-r2",
+        "source_approval": false,
+        "test_sha256": {
+          "phase-loop-runtime/tests/test_advisor_board_static_import_862.py": "59c953458fed84bf092c948964765255c60439795dc54a44d0da872e63e337ff"
+        }
+      },
       "created_at": "2026-09-16T11:26:20.357948+00:00",
       "file": "plans/detailed-static-import-862-20260916.md",
       "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260916-static-import-862.md",
@@ -1285,19 +1333,35 @@
             "source_approval": false
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-09-16T11:56:25Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "handoff_ref": "/mnt/HC_Volume_105438154/worktrees/agent-harness-import-862-20260916/.dev-skills/handoffs/codex-execute-detailed/20260916-static-import-862-tests-r1.md",
+            "phase_acceptance": false,
+            "plan": "plans/detailed-static-import-862-20260916.md",
+            "plan_approval_ref": "/mnt/HC_Volume_105438154/worktrees/agent-harness-import-862-20260916/.phase-loop/diagnostics/static-import-862-20260916/plan-approval-r2.json",
+            "plan_sha256": "8182b74c40c636023f459f214cdf607fc1551f33c8d6121dff13410517a6b1b1",
+            "reflection_ref": "/home/viperjuice/.codex/skills/codex-execute-detailed/reflections/fe4c656d/codex-static-import-862-20260916/20260916-static-import-862-tests-r1.md",
+            "run_id": "20260916-static-import-862-tests-r1",
+            "source_boundary": "Only additive test_advisor_board_static_import_862.py before independent tests review",
+            "starting_status": ""
+          },
+          "transition": "executing"
         }
       ],
       "owner_skill": "codex-plan-detailed",
       "phase_accepted": false,
       "phase_alias": null,
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-detailed/reflections/fe4c656d/codex-static-import-862-20260916/20260916-static-import-862.md",
-      "required_plan_review_pending": true,
+      "required_plan_review_pending": false,
       "roadmap_ref": null,
       "slug": "static-import-862-20260916",
-      "status": "committed",
+      "status": "executing",
       "task_summary": "Repair static board imports without weakening live review admission (agent-harness#862)",
       "type": "detailed",
-      "updated_at": "2026-09-16T11:39:56.273015+00:00"
+      "updated_at": "2026-09-16T12:28:04.211657+00:00"
     },
     {
       "acceptance_criteria_count": null,
