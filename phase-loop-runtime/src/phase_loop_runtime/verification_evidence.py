@@ -1261,11 +1261,8 @@ def execute_proofgate_mutation_manifest(
             worktree_parent = repo_root.parent
         worktree = Path(tempfile.mkdtemp(prefix="proofgate-mutation-", dir=worktree_parent))
         shutil.rmtree(worktree)
-        try:
-            subprocess.run(
-                ["git", "worktree", "add", "--detach", str(worktree), candidate],
-                cwd=repo_root, check=True, capture_output=True, text=True,
-            )
+
+        def _execute_worktree() -> dict[str, Any]:
             run_dir = worktree / ".phase-loop" / "proofgate-mutation" / str(param.get("parameter_id"))
             run_dir.mkdir(parents=True, exist_ok=True)
             argv = [str(arg).replace("$PHASE_LOOP_RUN_DIR", str(run_dir)) for arg in param.get("proof_command", [])]
@@ -1310,10 +1307,42 @@ def execute_proofgate_mutation_manifest(
             else:
                 status = "killed"
             return {"status": status, "baseline_status": "passed", "applied_replacements": 1, "bindings": bindings}
+
+        add_completed = False
+        try:
+            subprocess.run(
+                ["git", "worktree", "add", "--detach", str(worktree), candidate],
+                cwd=repo_root, check=True, capture_output=True, text=True,
+            )
+            add_completed = True
+            proof_result = _execute_worktree()
         except (OSError, subprocess.SubprocessError) as exc:
-            return {"status": "execution_failure", "reason": str(exc), "applied_replacements": 0}
+            proof_result = {"status": "execution_failure", "reason": str(exc), "applied_replacements": 0}
         finally:
-            subprocess.run(["git", "worktree", "remove", "--force", str(worktree)], cwd=repo_root, capture_output=True)
+            cleanup = {"worktree": str(worktree), "add_completed": add_completed}
+            try:
+                completed = subprocess.run(
+                    ["git", "worktree", "remove", "--force", str(worktree)],
+                    cwd=repo_root, capture_output=True,
+                )
+                cleanup.update(
+                    returncode=completed.returncode, exception_type=None,
+                    stdout=(completed.stdout or b"").decode("utf-8", errors="replace"),
+                    stderr=(completed.stderr or b"").decode("utf-8", errors="replace"),
+                )
+            except OSError as exc:
+                cleanup.update(returncode=None, exception_type=type(exc).__name__,
+                               stdout="", stderr=str(exc))
+            cleanup["path_exists_after_cleanup"] = worktree.exists()
+        if not add_completed:
+            return {**proof_result, "cleanup": cleanup}
+        if cleanup["returncode"] == 0:
+            return proof_result
+        return {
+            "status": "execution_failure", "reason": "worktree_cleanup_failed",
+            **{key: proof_result[key] for key in ("applied_replacements", "bindings") if key in proof_result},
+            "proof_result": proof_result, "cleanup": cleanup,
+        }
 
     results = {str(param["parameter_id"]): _execute_one(param) for param in selected}
     if parameter_id is not None:
@@ -1322,13 +1351,20 @@ def execute_proofgate_mutation_manifest(
     killed = sum(status == "killed" for status in classifications.values())
     survived = sum(status == "survived" for status in classifications.values())
     blocked = len(classifications) - killed - survived
-    return {
+    aggregate = {
         "parameters_count": len(all_parameters), "killed_count": killed,
         "survived_count": survived, "block_count": blocked,
         "status": "killed" if killed == len(all_parameters) else "blocked",
         "classifications": classifications,
         "bindings": {pid: result.get("bindings", {}) for pid, result in results.items()},
     }
+    cleanup_failures = {
+        pid: result for pid, result in results.items()
+        if result.get("cleanup", {}).get("returncode", 0) != 0
+    }
+    if cleanup_failures:
+        aggregate["cleanup_failures"] = cleanup_failures
+    return aggregate
 
 
 def validate_verification_artifact(path: Path) -> VerificationArtifactValidation:

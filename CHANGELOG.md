@@ -6,6 +6,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Report failed proof worktree cleanup (Consiliency/agent-harness#858)
+
+- PROOFGATE reports unsuccessful worktree cleanup as an execution failure while
+  preserving the original proof outcome, command diagnostics and residue path.
+  Setup failures and interruptions retain their original cause; failed cleanup
+  prevents aggregate all-killed acceptance.
+
 ### Run Dagger stages as an ordinary user (Consiliency/agent-harness#853)
 
 - Container image and dependency preparation remains privileged; stage commands
