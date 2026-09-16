@@ -18,13 +18,13 @@ Durability contract for one append:
   lock before the new record is appended, so the next append is readable
   instead of being concatenated onto a half-written line.
 
-Corruption before the final record is never repaired and never tolerated: only
-the last line may be torn, because only the last line can be an interrupted
-in-progress append.
+Every newline-terminated record is committed and must parse. Only an
+unterminated final fragment can be repaired as an interrupted append.
 """
 from __future__ import annotations
 
 import fcntl
+import errno
 import json
 import os
 import threading
@@ -61,14 +61,74 @@ class RecoveredTrainState:
 
 
 def default_convergence_event_log_path(coordinator_root: Path, train_id: str) -> Path:
+    if not train_id or train_id in {".", ".."} or any(c in train_id for c in ("/", "\\", "\0")):
+        raise ValueError("train identity must be one nonempty path component")
     path = coordinator_root / "convergence" / f"train-{train_id}.events.jsonl"
     _reject_phase_loop(path)
+    root = coordinator_root.resolve()
+    parent = root / "convergence"
+    candidate = parent / path.name
+    if parent.is_symlink() or candidate.is_symlink() or not candidate.resolve().is_relative_to(parent):
+        raise ValueError("convergence storage descendants cannot be symlinks")
     return path
 
 
 def _reject_phase_loop(path: Path) -> None:
+    if ".phase-loop" in path.parts or ".phase-loop" in path.resolve().parts:
+        raise ValueError("convergence event logs cannot be stored under .phase-loop")
+
+
+def _open_log(path: Path, *, create: bool) -> tuple[int, int]:
+    """Bind canonical storage once; its owner must not relocate bound objects."""
+
+    parent = path.parent.resolve()
     if ".phase-loop" in path.parts:
         raise ValueError("convergence event logs cannot be stored under .phase-loop")
+    _reject_phase_loop(parent / path.name)
+    root = parent
+    missing = []
+    while not root.exists():
+        if not create:
+            raise FileNotFoundError(path)
+        missing.append(root.name)
+        root = root.parent
+    reference = root.stat()
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    traversal_flags = (
+        getattr(os, "O_SEARCH", getattr(os, "O_PATH", os.O_RDONLY))
+        | os.O_DIRECTORY | os.O_NOFOLLOW
+    )
+    parent_fd = None
+    try:
+        parent_fd = os.open(root.anchor, traversal_flags)
+        for name in root.parts[1:]:
+            next_fd = os.open(name, traversal_flags, dir_fd=parent_fd)
+            os.close(parent_fd)
+            parent_fd = next_fd
+        opened = os.fstat(parent_fd)
+        if (opened.st_dev, opened.st_ino) != (reference.st_dev, reference.st_ino):
+            raise ValueError("convergence storage changed during binding")
+        next_fd = os.open(".", directory_flags, dir_fd=parent_fd)
+        os.close(parent_fd)
+        parent_fd = next_fd
+        for name in reversed(missing):
+            try:
+                os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+                os.fsync(parent_fd)
+            except FileExistsError:
+                pass
+            next_fd = os.open(name, directory_flags, dir_fd=parent_fd)
+            os.close(parent_fd)
+            parent_fd = next_fd
+        flags = os.O_RDWR | os.O_CREAT | os.O_APPEND if create else os.O_RDONLY
+        fd = os.open(path.name, flags | os.O_NOFOLLOW, 0o600, dir_fd=parent_fd)
+        return fd, parent_fd
+    except BaseException as exc:
+        if parent_fd is not None:
+            os.close(parent_fd)
+        if isinstance(exc, OSError) and exc.errno in {errno.ELOOP, errno.ENOTDIR}:
+            raise ValueError("convergence storage cannot follow a replaced path") from exc
+        raise
 
 
 def _key(event: CoordinatorEvent) -> tuple[str, str, str | None, int | None]:
@@ -100,28 +160,18 @@ def _write_fully(fd: int, raw: bytes) -> None:
 def _durable_records(raw: bytes) -> tuple[int, tuple[CoordinatorEvent, ...]]:
     """The durable prefix length of ``raw`` and the records it holds.
 
-    Only the final record may be torn -- it is the sole record an interrupted
-    append can have been writing -- so a malformed final record reports the
-    offset it starts at, and everything before it is kept verbatim. Any earlier
-    malformed line is real corruption and is raised rather than truncated away.
+    Only the unterminated fragment after the last LF may be torn. Every complete
+    line is decoded independently and malformed committed bytes are refused.
     """
 
     end = raw.rfind(b"\n") + 1
-    # ``split`` on the newline-terminated prefix leaves one empty tail element;
-    # offsets are tracked explicitly so a blank line can never shift the cut.
-    complete: list[tuple[int, bytes]] = []
-    offset = 0
-    for line in raw[:end].split(b"\n")[:-1]:
-        if line.strip():
-            complete.append((offset, line))
-        offset += len(line) + 1
     events: list[CoordinatorEvent] = []
-    for index, (start, line) in enumerate(complete):
+    for index, line in enumerate(raw[:end].split(b"\n")[:-1]):
+        if not line.strip():
+            continue
         try:
             events.append(_event(json.loads(line.decode("utf-8"))))
-        except (ValueError, TypeError, UnicodeDecodeError) as exc:
-            if index == len(complete) - 1:
-                return start, tuple(events)
+        except (ValueError, TypeError, KeyError) as exc:
             raise ValueError(f"malformed convergence event at line {index + 1}") from exc
     return end, tuple(events)
 
@@ -146,47 +196,27 @@ def _append(path: Path, event: CoordinatorEvent, *, require_intent: bool) -> Non
     check with the other's write.
     """
 
-    _reject_phase_loop(path)
     raw = _payload(event)
-    parent = path.parent
-    created_parent = not parent.exists()
-    if created_parent:
-        parent.mkdir(parents=True, exist_ok=True)
-    created_entry = created_parent or not path.exists()
     with _LOCK:
-        fd = os.open(str(path), os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
+        fd, parent_fd = _open_log(path, create=True)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
             raw_existing = _read_all(fd)
             keep, existing = _durable_records(raw_existing)
+            already_recorded = _is_already_recorded(existing, event, require_intent=require_intent)
             if keep != len(raw_existing):
                 # Truncate the torn final record so this append lands on a clean
                 # boundary instead of being concatenated onto a half-written line.
                 os.ftruncate(fd, keep)
                 os.fsync(fd)
-            if _is_already_recorded(existing, event, require_intent=require_intent):
+            if already_recorded:
                 return
             _write_fully(fd, raw)
             os.fsync(fd)
+            os.fsync(parent_fd)
         finally:
             os.close(fd)
-    if created_entry:
-        _fsync_directory(parent)
-
-
-def _fsync_directory(directory: Path) -> None:
-    """Make a newly created directory entry durable, tolerating platforms without it."""
-
-    try:
-        dir_fd = os.open(str(directory), os.O_RDONLY)
-    except OSError:  # pragma: no cover - directory fds are unavailable on some hosts
-        return
-    try:
-        os.fsync(dir_fd)
-    except OSError:  # pragma: no cover - defensive
-        pass
-    finally:
-        os.close(dir_fd)
+            os.close(parent_fd)
 
 
 def _is_already_recorded(
@@ -231,37 +261,50 @@ def record_outcome(path: Path, event: CoordinatorEvent) -> None:
 
 
 def _event(value: dict) -> CoordinatorEvent:
+    if not isinstance(value, dict):
+        raise ValueError("convergence event must be an object")
     value = dict(value)
-    value["kind"] = CoordinatorEventKind(value["kind"])
-    for name in ("owned_paths", "upstream_dep_shas", "seat_outcomes"):
-        value[name] = tuple(value.get(name, ()))
-    return CoordinatorEvent(**value)
+    collections = ("owned_paths", "upstream_dep_shas", "seat_outcomes")
+    try:
+        value["kind"] = CoordinatorEventKind(value["kind"])
+        for name in collections:
+            items = value.get(name, [])
+            if not isinstance(items, list) or not all(isinstance(item, str) for item in items):
+                raise ValueError("convergence event collection must contain strings")
+            value[name] = tuple(items)
+        for name, item in value.items():
+            if name in collections:
+                continue
+            if name == "epoch":
+                if item is not None and type(item) is not int:
+                    raise ValueError("convergence epoch must be an integer")
+            elif item is not None and not isinstance(item, str):
+                raise ValueError("convergence event metadata must be text")
+        return CoordinatorEvent(**value)
+    except (KeyError, TypeError) as exc:
+        raise ValueError("malformed convergence event fields") from exc
 
 
 def _parse(text: str) -> tuple[CoordinatorEvent, ...]:
-    lines = [line for line in text.splitlines() if line.strip()]
-    events: list[CoordinatorEvent] = []
-    for index, line in enumerate(lines):
-        try:
-            events.append(_event(json.loads(line)))
-        except (ValueError, TypeError, json.JSONDecodeError) as exc:
-            if index == len(lines) - 1:
-                break
-            raise ValueError(f"malformed convergence event at line {index + 1}") from exc
-    return tuple(events)
+    return _durable_records(text.encode("utf-8"))[1]
 
 
 def read_convergence_events(path: Path) -> tuple[CoordinatorEvent, ...]:
     """Replay ``path`` without mutating a byte of it.
 
-    A malformed *final* record is tolerated -- a concurrent writer's in-progress
-    append looks exactly like that -- and is repaired only by the next append,
-    so every reader stays byte-neutral.
+    An unterminated fragment is ignored and repaired only by the next append.
+    Complete malformed records are refused, and every reader stays byte-neutral.
     """
 
-    if not path.exists():
+    try:
+        fd, parent_fd = _open_log(path, create=False)
+    except FileNotFoundError:
         return ()
-    return _parse(path.read_text(encoding="utf-8"))
+    try:
+        return _durable_records(_read_all(fd))[1]
+    finally:
+        os.close(fd)
+        os.close(parent_fd)
 
 
 def recover_train_state(events: Iterable[CoordinatorEvent]) -> RecoveredTrainState:

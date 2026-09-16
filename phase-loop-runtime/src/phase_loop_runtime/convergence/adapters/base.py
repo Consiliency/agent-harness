@@ -16,7 +16,7 @@ Four bounds hold on every execution:
 * **Time and process group.** The child runs in its own session; a timeout kills
   the whole process group, so a provider that forked helpers cannot outlive its
   bound.
-* **Output.** Only a bounded prefix of the child's stdout is parsed, and the
+* **Output.** Each pipe is limited in bytes before accumulation, and the
   returned diagnostic is a fixed metadata-only phrase. Provider text is never
   copied into the envelope, so a credential the provider printed cannot be
   laundered into a result.
@@ -28,8 +28,10 @@ from __future__ import annotations
 
 import json
 import os
+import selectors
 import signal
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -53,6 +55,8 @@ _DETAIL_SPAWN_FAILED = "adapter could not be executed"
 _DETAIL_NONZERO = "adapter exited non-zero"
 _DETAIL_MALFORMED = "adapter returned no parseable convergence result"
 _DETAIL_OK = "adapter returned a bounded convergence result"
+_DETAIL_OVERFLOW = "adapter exceeded its bounded output size"
+_DETAIL_CLEANUP = "adapter process cleanup failed"
 
 
 @dataclass(frozen=True)
@@ -95,18 +99,27 @@ def _envelope(status: ConvergenceResultStatus, attempt_id: str, detail: str) -> 
 
 
 def run_bounded(request: AdapterExecutionRequest, *, provider: str) -> ConvergenceResultEnvelope:
-    """Run one bounded provider action and normalize it into the frozen envelope."""
+    """Run one bounded provider action and normalize it into the frozen envelope.
+
+    Keep an operation exception even if later cleanup is interrupted.
+    """
 
     if Path(request.argv[0]).name != provider:
         return _envelope(ConvergenceResultStatus.BLOCKED, request.attempt_id, _DETAIL_OUT_OF_BOUNDS)
     if not request.cwd.is_dir():
         return _envelope(ConvergenceResultStatus.BLOCKED, request.attempt_id, _DETAIL_BAD_CWD)
+    stdout = bytearray()
+    counts = {"stdout": 0, "stderr": 0}
+    overflow = expired = False
+    returncode = None
+    primary_error = cleanup_error = None
+    selector = None
     try:
         process = subprocess.Popen(
             list(request.argv),
             cwd=str(request.cwd),
             env=_child_environment(),
-            text=True,
+            bufsize=0,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -115,32 +128,98 @@ def run_bounded(request: AdapterExecutionRequest, *, provider: str) -> Convergen
     except OSError:
         return _envelope(ConvergenceResultStatus.FAILED, request.attempt_id, _DETAIL_SPAWN_FAILED)
     try:
-        stdout, _stderr = process.communicate(timeout=request.timeout_seconds)
-    except subprocess.TimeoutExpired:
-        # ``start_new_session`` made the child its own process-group leader, so
-        # its pid is the pgid: killing the group reclaims any helper it forked
-        # rather than orphaning them behind the timed-out leader.
+        deadline = time.monotonic() + request.timeout_seconds
+        selector = selectors.DefaultSelector()
+        for name, pipe in (("stdout", process.stdout), ("stderr", process.stderr)):
+            os.set_blocking(pipe.fileno(), False)
+            selector.register(pipe, selectors.EVENT_READ, name)
+        while not overflow:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                expired = True
+                break
+            # Keep the leader unreaped until its group is reclaimed: its
+            # PID cannot be reused as an unrelated group's identity.
+            exited = os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            if exited is not None:
+                returncode = exited.si_status if exited.si_code == os.CLD_EXITED else -exited.si_status
+            ready = selector.select(0 if returncode is not None else min(remaining, 0.05))
+            if not ready and returncode is not None:
+                break
+            for key, _mask in ready:
+                name = key.data
+                try:
+                    chunk = os.read(key.fd, min(8192, _MAX_OUTPUT_BYTES + 1 - counts[name]))
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                counts[name] += len(chunk)
+                if name == "stdout":
+                    stdout.extend(chunk[:_MAX_OUTPUT_BYTES - len(stdout)])
+                if counts[name] > _MAX_OUTPUT_BYTES:
+                    overflow = True
+                    break
+    except BaseException as exc:
+        primary_error = exc
+    finally:
+        try:
+            if selector is not None:
+                selector.close()
+        except BaseException as exc:
+            cleanup_error = exc
         try:
             os.killpg(process.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):  # pragma: no cover - already reaped
-            process.kill()
-        process.communicate()
+        except ProcessLookupError:
+            pass
+        except BaseException as exc:
+            if cleanup_error is None or (
+                isinstance(cleanup_error, Exception) and not isinstance(exc, Exception)
+            ):
+                cleanup_error = exc
+        for pipe in (process.stdout, process.stderr):
+            try:
+                pipe.close()
+            except BaseException as exc:
+                if cleanup_error is None or (
+                    isinstance(cleanup_error, Exception) and not isinstance(exc, Exception)
+                ):
+                    cleanup_error = exc
+        try:
+            process.wait(timeout=1)
+        except BaseException as exc:
+            if cleanup_error is None or (
+                isinstance(cleanup_error, Exception) and not isinstance(exc, Exception)
+            ):
+                cleanup_error = exc
+    if primary_error is not None:
+        raise primary_error
+    if cleanup_error is not None:
+        if not isinstance(cleanup_error, Exception):
+            raise cleanup_error
+        return _envelope(ConvergenceResultStatus.DEGRADED, request.attempt_id, _DETAIL_CLEANUP)
+    if overflow:
+        return _envelope(ConvergenceResultStatus.BLOCKED, request.attempt_id, _DETAIL_OVERFLOW)
+    if expired:
         return _envelope(ConvergenceResultStatus.DEGRADED, request.attempt_id, _DETAIL_TIMEOUT)
-    if process.returncode:
+    if returncode:
         return _envelope(ConvergenceResultStatus.FAILED, request.attempt_id, _DETAIL_NONZERO)
-    return _envelope(_declared_status(stdout), request.attempt_id, _declared_detail(stdout))
+    try:
+        decoded = stdout.decode("utf-8")
+    except UnicodeDecodeError:
+        return _envelope(ConvergenceResultStatus.BLOCKED, request.attempt_id, _DETAIL_MALFORMED)
+    return _envelope(_declared_status(decoded), request.attempt_id, _declared_detail(decoded))
 
 
 def _parse_status(stdout: str | None) -> ConvergenceResultStatus | None:
     """The status a well-formed bounded result declares, or ``None``.
 
-    Output is read only up to the metadata-only bound, so a provider that
-    streams unbounded text yields a truncated -- therefore unparseable -- payload
-    and is blocked instead of being trusted.
+    The caller enforces the byte budget before decoding and parsing.
     """
 
     try:
-        payload = json.loads((stdout or "")[:_MAX_OUTPUT_BYTES])
+        payload = json.loads(stdout or "")
     except (ValueError, TypeError):
         return None
     if not isinstance(payload, dict):

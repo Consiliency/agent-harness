@@ -26,16 +26,43 @@ One append is durable before the call returns:
 
 ## Corruption and torn records
 
-Only the **final** record may be torn, because only the final record can be an
-interrupted in-progress append.
+Only a final fragment **without a terminating LF byte** is treated as a torn
+append. A carriage return alone is not a record boundary.
 
-- A reader tolerates a malformed final record and is otherwise byte-neutral: it
-  repairs nothing, so `train-status` can never change the log it is inspecting.
-- The next **append** truncates a torn final record under the same exclusive
-  lock, so the new record lands on a clean boundary instead of being
-  concatenated onto a half-written line.
-- Malformed content **before** the final record is real corruption. It is
-  reported and never repaired away.
+- A reader ignores that unterminated fragment and repairs nothing, so
+  `train-status` can never change the log it is inspecting. An absent log reads
+  as empty.
+- An accepted **append**, including an identical replay, may truncate the torn
+  fragment under the exclusive lock. Replay conflicts are checked first; a
+  rejected append changes no bytes.
+- Every complete malformed record, including the final record, raises
+  `ValueError`. Invalid UTF-8, JSON, event kinds and field shapes are corruption
+  and are never repaired away. If a crash persists the newline but loses earlier
+  bytes, this refusal preserves the damaged record for investigation.
+
+## Log path containment
+
+The default path helper accepts opaque, single-component train IDs, including
+interior dots, spaces and Unicode. Empty IDs, dot components, NUL and either
+slash are rejected. Root aliases such as `/mnt/workspace` are supported; the
+helper rejects symlinks below the selected root, including links that resolve
+back inside it, and requires the result to stay beneath its `convergence`
+directory.
+
+Each read or append validates its path afresh, including direct callers. Both
+lexical and resolved `.phase-loop` components are forbidden. I/O binds the
+canonical ancestor's device/inode and walks directories and the log through
+relative, no-follow opens, including every component of that canonical ancestor.
+Replacing an alias or symlink cannot redirect that operation. Unsafe paths raise
+`ValueError`. Direct callers resolve parent aliases, including dangling aliases
+to ordinary storage; the helper's descendant-symlink restriction applies when
+selecting a default path.
+
+The helper returns a compatible lexical path, not lasting authority for future
+I/O. The selected storage owner must keep bound files and directories, including
+canonical ancestors, in place during an operation. Descriptor binding preserves
+object identity; it does not stop a hostile owner or privileged actor from
+relocating an open object. Cooperative appenders remain serialized by `flock`.
 
 ## Replay
 
@@ -106,11 +133,25 @@ import no coordinator, publisher, or broker effect path.
 - **Environment.** The child inherits only what survives the two pure scrubbers,
   the subscription scrubber and the mutation-credential stripper, so no
   mutation credential, vendor API key, or endpoint escape reaches it.
-- **Time and process group.** The child runs in its own session and a timeout
-  kills the whole process group, so a provider's forked helpers cannot outlive
-  the bound. The result is `degraded`.
-- **Argv, cwd, and output** are bounded; only a bounded prefix of stdout is
-  parsed.
+- **Time and process group.** The child runs in its own session. Every exit,
+  including an interruption, attempts to kill its owned group before reaping
+  the leader. Cleanup closes the selector and pipes without draining and limits the leader wait
+  to one second. A completed leader's already readable output is consumed
+  within the original deadline; descendant-held pipes cannot extend the wait.
+- **Argv, cwd, and output** are bounded. Stdout and stderr each have a 65536-byte
+  budget, measured before accumulation, with at most one extra byte read to
+  detect overflow. At most that stdout budget is retained; stderr is discarded
+  but still charged. Overflow on either stream returns `blocked`, even when
+  stdout starts with valid success JSON. Verbose stderr is therefore a contract
+  violation, not an unlimited allowance. These bounds are qualified with
+  synthetic executables, not live providers.
+- **Terminal precedence.** An existing `BaseException` is preserved. Otherwise
+  the first cleanup interruption is re-raised after completing cleanup, even if
+  an ordinary cleanup error happened first. Ordinary cleanup failure returns
+  `degraded`, then overflow selects `blocked`, timeout
+  selects `degraded`, and nonzero leader exit selects `failed`. Only bounded
+  output from a successful leader is parsed. Malformed UTF-8 blocks with a
+  fixed diagnostic. The status vocabulary and attempt identity are unchanged.
 - **Unparseable, non-object, unknown-status, truncated, or non-zero-exit
   results are never reported as success.** An outside-agent run is admitted only
   behind a passing conformance verdict — a missing submission blocks rather

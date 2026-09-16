@@ -6,6 +6,21 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Harden convergence log storage and adapter output (agent-harness#720)
+
+- Reject malformed newline-terminated log records, including the last record,
+  without changing their bytes. Only unterminated tails may be recovered;
+  conflicting replays are rejected before any repair.
+- Validate train IDs and log containment, reject descendant symlinks and
+  `.phase-loop` paths, and bind file operations through directory descriptors
+  while preserving ordinary root aliases.
+- Enforce a separate 64 KiB output budget on each adapter pipe before
+  accumulation. Reclaim the owned process group on success, failure, timeout
+  or interruption, and bound the final leader wait. Overflow blocks; cleanup
+  failure degrades; an operation error keeps its original cause, and cleanup
+  preserves the first interruption over ordinary cleanup errors.
+  This repairs agent-harness#720 items 1–3 without claiming phase acceptance.
+
 ### Report failed proof worktree cleanup (Consiliency/agent-harness#858)
 
 - PROOFGATE reports unsuccessful worktree cleanup as an execution failure while
