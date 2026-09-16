@@ -935,6 +935,131 @@
     },
     {
       "acceptance_criteria_count": 5,
+      "blocking_prerequisite": null,
+      "created_at": "2026-09-15T20:26:24.866609+00:00",
+      "file": "plans/detailed-proofgate-cleanup-858-20260915.md",
+      "final_review_history": [
+        {
+          "does_not_transfer_to_corrected_tests": true,
+          "four_native_agree": true,
+          "head": "7e72ec034fc47248c872db454cdd749427acaf9f",
+          "landing_blocked_by_source_CI": 35044068108,
+          "result_sha256": "e6f7e68419b713eade8fc8016242e0f6775559f6b39beaa7e50eefa73e800ff6"
+        }
+      ],
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260915-proofgate-cleanup-858.md",
+      "if_gates_produced": [],
+      "input_main": "c90b1357d65e76ef778330c3845f4410d38c9710",
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-09-15T20:26:24.866609+00:00",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "plan_approval": false,
+            "plan_sha256": "5d4f5287ecb7278c1b8365a43511adef6c63205832365ada56d5f736eba4022d",
+            "planning_artifact_only": true,
+            "source_approval": false
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-09-15T23:53:58Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "artifact": "plans/detailed-proofgate-cleanup-858-20260915.md",
+            "executor_ast_equal_at_pending_priority_head": "0e7645335089020da3273cc2c607c328a96b92b9",
+            "input_main": "cef351dc7096e9dcd973067fb63672c25362ebe4",
+            "plan_review_result_sha256": "4349320ea752f4ab36856496e1cc4048dd5fde86c5a98051be9fa23efb716b9f",
+            "priority_pr": "Consiliency/agent-harness#860",
+            "publication_waits_for_priority_merge": true,
+            "run_id": "20260916-proofgate-cleanup-858-r1"
+          },
+          "transition": "executing"
+        }
+      ],
+      "owner_skill": "codex-plan-detailed",
+      "phase_accepted": false,
+      "phase_alias": null,
+      "plan_revision": {
+        "plan_approval": true,
+        "plan_sha256": "cd3b3e9e59b33bce6c1d5c18044ffa2421db050a36c7e54360d90cd0f2580b26",
+        "prior_review_archive": "89d62f444be44cafa922270684eb0ca79e81e055",
+        "prior_votes_transfer": false,
+        "review_result_sha256": "4349320ea752f4ab36856496e1cc4048dd5fde86c5a98051be9fa23efb716b9f",
+        "revision": 2,
+        "source_approval": false,
+        "trigger": "Fable and Grok PARTIALLY AGREE; distinguish setup failure, bind ordinary-user CI and portable fixtures, preserve exceptions and outer classifications."
+      },
+      "plan_revision_history": [
+        {
+          "own_review_archive": "89d62f444be44cafa922270684eb0ca79e81e055",
+          "plan_approval": false,
+          "plan_sha256": "5d4f5287ecb7278c1b8365a43511adef6c63205832365ada56d5f736eba4022d",
+          "review_result_sha256": "39f34b722b9a2717ce05656682125333cc2b883ede7f1ae0617b7acddf3e5ed8",
+          "revision": 1,
+          "verdicts": {
+            "claude": "PARTIALLY AGREE",
+            "codex": "AGREE",
+            "gemini": "AGREE",
+            "grok": "PARTIALLY AGREE"
+          }
+        }
+      ],
+      "publication": {
+        "draft": true,
+        "final_head_review_pending": true,
+        "pr_url": "https://github.com/Consiliency/agent-harness/pull/861",
+        "required_final_CI_pending": true,
+        "reviewed_source_head": "a613c77c2b5490d3eb7296639d1cac94edaefdf4",
+        "source_CI_failure": 35044068108,
+        "source_head": "d84df37d8e48c58cf1c664fcc0dd4d2e7eeb6dd3"
+      },
+      "reflection_ref": null,
+      "required_plan_review_pending": false,
+      "resolved_prerequisites": [
+        "Consiliency/agent-harness#855",
+        "Consiliency/agent-harness#860"
+      ],
+      "roadmap_ref": null,
+      "slug": "proofgate-cleanup-858-20260915",
+      "source_review": {
+        "all_four_native_bindings_verified": true,
+        "prior_votes_transferred": false,
+        "python310_hook_portability_corrected": true,
+        "result_sha256": "ae7c1e36a9bc8bf8b41dcd8f42be3050a4ceb368c4de129372a8173ac0e473fb",
+        "reviewed_input_head": "7e72ec034fc47248c872db454cdd749427acaf9f",
+        "source_approval": true,
+        "source_archive": "6899abdf9e96531ae40c44c39dcbf1f52263fc43",
+        "source_head": "a613c77c2b5490d3eb7296639d1cac94edaefdf4",
+        "test_sha256": "7fa8f3d8aef00689910e894517cb4019adee7bc76691f721f42402825ab8b5a8"
+      },
+      "source_review_history": [
+        {
+          "head": "38b1a58afe33bed1940c2d67181856d986701b51",
+          "material_finding_reproduced": true,
+          "preserved_archive": "ccbe2b9da75a52c0dd5bf24e1b3c37c3aa727a8a",
+          "result_sha256": "0719e3f0fcc42fe162b01cc134418b62398e1625c821274214412d66fd107ab3",
+          "source_approval": false
+        },
+        {
+          "all_four_native_bindings_verified": true,
+          "corrected_source_archive": "53f116cb65b23121b4d23560ea2acc0a9c143aa7",
+          "prior_votes_transferred": false,
+          "result_sha256": "403e55a7912c0d138a387bd070baa2c2b51c8002cea576428a6984ce0054871a",
+          "reviewed_input_head": "38b1a58afe33bed1940c2d67181856d986701b51",
+          "source_approval": true,
+          "source_head": "d84df37d8e48c58cf1c664fcc0dd4d2e7eeb6dd3",
+          "source_publication_archive": "f2e8baa4e7039349f82e01d622cd2df7856242c7"
+        }
+      ],
+      "status": "executing",
+      "task_summary": "Report PROOFGATE cleanup failures without losing proof outcomes (agent-harness#858)",
+      "type": "detailed",
+      "updated_at": "2026-09-16T02:05:41.867345+00:00"
+    },
+    {
+      "acceptance_criteria_count": 5,
       "created_at": "2026-09-03T06:10:04Z",
       "file": ".consiliency/plans/detailed-split-pr-gate-chronology-746-20260903-0609.md",
       "handoff_ref": ".dev-skills/handoffs/claude-plan-detailed/latest.md",
