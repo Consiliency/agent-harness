@@ -22,7 +22,7 @@ agent-harness#848 consensus design. The Phase-0 gates below are that design's nu
 - [ ] EC-SBXEXEC-6 — Every non-success outcome carries exactly one class from the agent-harness#848 result taxonomy, and only `test-failed` can surface as a repository finding. Falsified by either of:
   - an infrastructure failure reaching a seat verdict as a finding;
   - a non-success outcome carrying no class, or more than one.
-- [ ] EC-SBXEXEC-7 — The executor spawn path, sandbox setup, and every fetch or layer effect are execution-capable paths under EC-HARDEN-5. Falsified by a missing, forged, stale, or wrong-operation authorization reaching any such effect.
+- [ ] EC-SBXEXEC-7 — The executor spawn path, sandbox setup, and every fetch or layer effect are execution-capable paths under EC-HARDEN-5. Falsified by any EC-HARDEN-5 falsifier firing on such a path.
 
 **Scope notes**
 Decompose into 2 lanes:
@@ -73,7 +73,8 @@ and attacker-controlled code execution.
 - [ ] EC-SBXFETCH-5 — Cold-cache coverage holds. Falsified by any check of agent-harness#848 Phase-0 gate 10 failing.
 - [ ] EC-SBXFETCH-6 — The shared layer is built offline with `--no-build --require-hashes` in an executor-class sandbox without the snapshot. The built environment is never started for inspection, and validation and compilation use an independent pinned `-I -S` interpreter. The per-call editable install uses the recipe-pinned, hash-admitted build backend, ignores the PR's `[build-system].requires`, and keeps outputs inside `/work`. Falsified by any of:
   - a `.pth` or console-script sentinel in an admitted wheel executing during build or validation;
-  - a PR-declared build requirement being installed;
+  - a PR-declared build requirement being installed, or any build backend outside the pin's admitted set running;
+  - the PR snapshot being readable from the shared-layer build;
   - an install output appearing outside `/work`.
 - [ ] EC-SBXFETCH-7 — Cache GC evicts only unleased objects, keeps every leased graph complete, and refuses admission below the free-space floor. Falsified by either of:
   - an object in an active lease being evicted;
@@ -113,14 +114,16 @@ execution per vendor only on passing evidence.
   - credential-home writes appearing in the host home;
   - a vendor that fails wrapper authentication gaining an executable path.
 - [ ] EC-SBXSEAT-2 — The text-request loop dispatcher is strict. Falsified by any check of agent-harness#848 Phase-0 gate 6 failing.
-- [ ] EC-SBXSEAT-3 — A vendor's MCP transport is enabled only by a recorded pass of its agent-harness#848 Phase-0 gate (3, 4, or 5); otherwise that vendor stays on the loop or sealed. Falsified by a vendor dispatching over MCP without a recorded passing gate.
+- [ ] EC-SBXSEAT-3 — A vendor's MCP transport is enabled only by a recorded pass of its agent-harness#848 Phase-0 gate (3, 4, or 5); otherwise that vendor stays on the loop or sealed. The record is content-bound to the built code in the EC-GOVLEAN-2 form. Falsified by either of:
+  - a vendor dispatching over MCP without a recorded passing gate;
+  - a record binding to code other than what runs.
 - [ ] EC-SBXSEAT-4 — Evidence follows the agent-harness#848 evidence ruling. A finding that quotes executor output is accepted only when the quoted span matches the journal. An unexecuted runtime claim is capped below DISAGREE. Falsified by either of:
   - a finding with a valid `call_id` but an altered quoted span being accepted;
   - an unexecuted runtime claim reaching DISAGREE.
 - [ ] EC-SBXSEAT-5 — The full-suite execution class stays disabled until a passing gate-11 calibration is recorded. Falsified by either of:
   - any check of agent-harness#848 Phase-0 gate 11 failing while the class is enabled;
-  - a full-suite call being accepted with no passing calibration record.
-- [ ] EC-SBXSEAT-6 — No seat gains an executable path while EC-HARDEN-5 is UNMET. Falsified by an executable seat path being enabled while EC-HARDEN-5's recorded state is UNMET.
+  - a full-suite call being accepted with no passing calibration record, or with a record not content-bound to the built code in the EC-GOVLEAN-2 form.
+- [ ] EC-SBXSEAT-6 — No seat gains an executable path while EC-HARDEN-5 is UNMET. Falsified by an executable seat path being enabled while EC-HARDEN-5's recorded state is anything other than MET, an absent record included.
 
 **Scope notes**
 Decompose into 2 lanes:

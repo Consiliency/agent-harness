@@ -26,7 +26,7 @@ All pins are external inputs. None is an output of this work.
 |---|---|
 | Base roadmap `specs/phase-plans-v10.md` | sha256 `9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0` |
 | Consensus design (rounds 3–4, 4/4 AGREE) | [agent-harness#848 comment 5674979186](https://github.com/Consiliency/agent-harness/issues/848#issuecomment-5674979186), body sha256 `c720b742fb8de61c11dd7a31309307441033d7d6ef6b517705ab3830ebdd5d80` (measured as `gh api repos/Consiliency/agent-harness/issues/comments/5674979186 --jq .body \| sha256sum`) |
-| Phase-0 gate evidence | Not yet published. Passing evidence for gates 9 and 11 is posted on agent-harness#848 and pinned here by digest before promotion (see the promotion rule). Other gates' evidence is pinned when it passes, before activation. |
+| Phase-0 gate evidence | Not yet published. Passing evidence for gates 9 and 11 is posted on agent-harness#848 and pinned here by digest before promotion (see the promotion rule). Every other gate's evidence is recorded as that phase's closeout evidence when it passes, before activation; this file is not its home after promotion. |
 
 The design comment carries the detail: the architecture, numbers, layer keys, result taxonomy, and
 the 12 Phase-0 gates. The phases cite it by gate number and never restate it. If that comment's body
@@ -90,16 +90,22 @@ lint checks none of these, also adds:
 - the DAG edges (`HARDEN`/`REVIEWTRUTH`/`LEGLIFE → SBXEXEC → SBXFETCH → SBXSEAT`), plus the serial-edge and frontier prose;
 - the `IF-0-SBXEXEC-*` entries under `## Top Interface-Freeze Gates`;
 - a `**Spec closeout policy**` block per phase;
-- the design-comment pin (comment id and body digest), so the gate references survive leaving `docs/proposals/`.
+- the design-comment pin (comment id and body digest) and the gate 9 and 11 evidence digests, so both survive leaving `docs/proposals/`.
+
+One obligation falls on the SBXEXEC detailed plan rather than this file: gate 9's positive control
+("the real test subset passes") must pass at SBXEXEC closeout, before the fetch and publish pipeline
+EC-SBXFETCH-4 later requires exists. That plan names the test subset and the fixture layer that
+satisfy it.
 
 Who: the LEGIBLE owner authors it, it is reviewed by the four-seat board, and the operator signs it.
 
-Mechanics: it is resealed with `roadmap_reseal.py`, and every committed or executing plan's
-`roadmap_sha256` is rebound in the same PR.
+Mechanics: it is resealed with `roadmap_reseal.py`, and every committed plan's `roadmap_sha256` is
+rebound in the same PR. No executing plan is rebound, because the Fallback below forbids amending at
+all while one exists; that check is evaluated at the promotion PR's merge, not only when it opens.
 
 It may open only when all of these hold:
 1. HARDEN's manifest lifecycle is `completed`, and EC-HARDEN-5's state is recorded.
-2. The two host-fact agent-harness#848 Phase-0 gates, which could invalidate the design before any code exists, have passing evidence pinned above by digest: gate 9 (the seccomp filter loads via FD on the target host) and gate 11 (full-suite calibration).
+2. The two host-fact agent-harness#848 Phase-0 gates, which could invalidate the design before any code exists, have passing evidence pinned above by digest: every check of gate 9, whose positive control is the design-invalidating host fact, and gate 11 (full-suite calibration).
 3. The composed candidate passes the validate-and-score recipe against the then-current v10.
 
 Every gate, including those two, is also carried by a phase exit criterion, so activation requires passing evidence for every gate against the built code.
@@ -111,5 +117,7 @@ promote the fragment into the next `specs/phase-plans-v<N>.md` when v10 is flipp
 flipping the registry and banner in the same LEGIBLE-owned PR.
 
 **Stopping rule.** Board rounds on this proposal's first PR are review rounds, not re-panels. After
-it merges, each revision that needs a new board review counts as one re-panel. If more than two are
-needed before HARDEN lands, abandon or re-diagnose the proposal rather than amending again.
+it merges, each revision that needs a new board review counts as one re-panel. A revision that only
+pins published evidence digests is not a re-panel: it changes no obligation. If more than two
+re-panels are needed before HARDEN lands, abandon or re-diagnose the proposal rather than amending
+again.
