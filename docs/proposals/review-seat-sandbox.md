@@ -89,11 +89,12 @@ Promotion is one v10 amendment PR. It appends the fragment verbatim as Phases 14
 lint checks none of these, also adds:
 - the DAG edges (`HARDEN`/`REVIEWTRUTH`/`LEGLIFE → SBXEXEC → SBXFETCH → SBXSEAT`), plus the serial-edge and frontier prose;
 - the `IF-0-SBXEXEC-*` entries under `## Top Interface-Freeze Gates`;
-- a `**Spec closeout policy**` block per phase.
-
-The gate 9 positive-control obligation is carried in the fragment's own Phase 14 `Scope notes`, so it
-is appended verbatim and does not depend on this file surviving promotion.
+- a `**Spec closeout policy**` block per phase;
 - the design-comment pin (comment id and body digest) and the gate 9 and 11 evidence digests, so both survive leaving `docs/proposals/`.
+
+The gate 9 positive-control obligation is not in that list: it is carried in the fragment's own
+Phase 14 `Scope notes`, so it is appended verbatim and does not depend on this file surviving
+promotion.
 
 Who: the LEGIBLE owner authors it, it is reviewed by the four-seat board, and the operator signs it.
 
