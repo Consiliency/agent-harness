@@ -1058,6 +1058,19 @@
         "review": "plan-review-r1",
         "source_approval": false
       },
+      "approved_tests_review": {
+        "actual_red_summary": "9 nodes per version; 7 pass/2 real kernel ESRCH failures on3.10 through3.14;zero errors/skips",
+        "at": "2026-09-16T22:16:01.424218+00:00",
+        "phase_acceptance": false,
+        "private_recovery_commit": "d5f29c16e872de04a5dc33eaac7ad3ad07a941c9",
+        "red_matrix": "/mnt/HC_Volume_105438154/worktrees/agent-harness-procfs-oracle-870-20260916/.phase-loop/diagnostics/procfs-oracle-870-20260916/red-matrix-r2.json",
+        "result_sha256": "bb82442319c8e57a3c42a69cd32291bd92330009ac1427c30176b5156c9d5035",
+        "review": "tests-review-r1",
+        "source_approval": false,
+        "tests_sha256": {
+          "phase-loop-runtime/tests/test_runtime_procfs_identity_870.py": "bb0eae977dfa0e5b869f6f13e64f635251c9d6d167958f2d7fcf3f774a1e416e"
+        }
+      },
       "created_at": "2026-09-16T21:45:36.010903+00:00",
       "file": "plans/detailed-procfs-oracle-870-20260916.md",
       "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260916-procfs-oracle-870-r1.md",
@@ -1107,7 +1120,7 @@
       "task_summary": "Repair procfs process-exit liveness oracle (agent-harness#870)",
       "test_oracle_amendment": true,
       "type": "detailed",
-      "updated_at": "2026-09-16T22:15:52.615480+00:00"
+      "updated_at": "2026-09-16T22:16:01.424218+00:00"
     },
     {
       "acceptance_criteria_count": 5,
