@@ -6406,6 +6406,303 @@
       "task_summary": "Declare supported native test tools and align hosted/Dagger test pins (agent-harness#428)",
       "type": "detailed",
       "updated_at": "2026-09-14T06:19:13Z"
+    },
+    {
+      "acceptance_criteria_count": 5,
+      "created_at": "2026-09-14T06:51:19.627720+00:00",
+      "file": "plans/detailed-verification-venv-identity-428-20260914.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/venv-428-r5-boundary-witnesses-20260914.md",
+      "if_gates_produced": [],
+      "input_main": "d05a4c9c1a4256158b65fa4aa06675cbfaafb1ae",
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-09-14T06:51:19.627720+00:00",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "plan_approval": false,
+            "planning_artifact_only": true,
+            "source_approval": false
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-09-14T07:15:05.327479+00:00",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "implementation_started": false,
+            "plan_approval": false,
+            "plan_sha256": "a6ffa20a19fda6819f5350acfd3421a89e04692a36226ff206b112139c84bb67",
+            "prior_plan_review_archive_commit": "1a3e1c6d503a5c98881fa869ea60da51e5eb1572",
+            "prior_plan_review_result_sha256": "39ff25083babf9bec15b06045b18a7fc5bb87135b79953a6fee02e45033d94b8",
+            "revision": "r2",
+            "scope_delta": "Anchor relative PATH during probes and guarded execution; preserve alias/profile limits; complete regression and launcher witnesses",
+            "source_approval": false
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-09-14T07:45:59.291110+00:00",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "implementation_started": false,
+            "plan_approval": false,
+            "plan_sha256": "642d4189ea8cebb022bbae700bc0a6b47cec321ada14b5495c41d2e36f31170e",
+            "prior_plan_review_archive_commit": "b194643456e48eed29f17f88a40b3811220f09ec",
+            "prior_plan_review_result_sha256": "c6ff6154658f64f964178e0045d05e9bcff616ff56271150648a5a5366d5fef4",
+            "revision": "r3",
+            "scope_delta": "Unify discovery/probe/execution PATH policy; preserve repo-relative consumed overrides; add probe/discovery and later-process witnesses; expand consumer regression inventory",
+            "source_approval": false
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-09-14T07:53:09.580394+00:00",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "implementation_started": false,
+            "observed_regression_modules": 6,
+            "plan_approval": false,
+            "plan_sha256": "1270bbf468f9206dbaa30b1fef9d77dbe6d5a383a376f97f140a629f974775ae",
+            "pre_dispatch_inventory_correction": true,
+            "prior_plan_review_archive_commit": "b194643456e48eed29f17f88a40b3811220f09ec",
+            "prior_plan_review_result_sha256": "c6ff6154658f64f964178e0045d05e9bcff616ff56271150648a5a5366d5fef4",
+            "revision": "r3",
+            "scope_delta": "Unify discovery/probe/execution PATH policy; preserve repo-relative consumed overrides; add probe/discovery and later-process witnesses; expand consumer regression inventory",
+            "source_approval": false
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-09-14T08:36:20Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "plan": "plans/detailed-verification-venv-identity-428-20260914.md",
+            "plan_approval_record": "/mnt/HC_Volume_105438154/worktrees/agent-harness-428-venv-identity-20260914/.phase-loop/diagnostics/venv-identity-428-20260914/plan-review-r3-convergence.json",
+            "plan_approval_sha256": "80e7873f240beb9dde7f2af382ffebe761bbecea8cc45f4a91dcd3b6e1e7f8a9",
+            "publication_allowed": false,
+            "review_archive_commit": "91e31b4c72df41ccb58ffa7f29116e6638b79f4c",
+            "reviewed_plan_head": "8ee51cdded6433062f563078d4e63ac75ead1495",
+            "run_id": "venv-428-execution-20260914",
+            "source_implementation_started": false,
+            "test_first": true
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-09-14T08:53:23Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "acceptance": {
+              "docs_manifest_hash_checks": "satisfied",
+              "frozen_tests": "satisfied",
+              "installed_runtime_replay": "pending reviewed source",
+              "mutants": "satisfied",
+              "new_suite_green": "unmet",
+              "no_regression": "satisfied with retained seven failures and one skip",
+              "red_and_control": "satisfied",
+              "source_review": "pending failed-witness resolution"
+            },
+            "at": "2026-09-14T08:53:23.990290+00:00",
+            "automation_status": "failed",
+            "blocker_class": "repeated_verification_failure",
+            "blocker_summary": "One frozen identity witness expects physical symlink/.. traversal, while direct lexical Python and the approved launcher select the same other venv. Requires owning-lane plan/design review; tests may not be weakened.",
+            "dirty_paths": {
+              "CHANGELOG.md": "plan-owned",
+              "phase-loop-runtime/README.md": "plan-owned",
+              "phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py": "plan-owned",
+              "phase-loop-runtime/tests/test_verification_venv_identity_428.py": "plan-owned",
+              "plans/manifest.json": "plan-owned"
+            },
+            "doc_delta_decision": "docs_updated",
+            "head": "8ee51cdded6433062f563078d4e63ac75ead1495",
+            "human_required": false,
+            "issue_comment": "https://github.com/Consiliency/agent-harness/issues/428#issuecomment-5661429614",
+            "mutants_caught": 6,
+            "new_suite": {
+              "error": 0,
+              "failure": 1,
+              "passed": 25,
+              "skipped": 0
+            },
+            "next": "Archive complete execution and fixtures. Return the concrete counterexample through the native author/review workflow without editing frozen tests or treating failed GREEN as acceptance. Publication recovery separately awaits human adjudication of agent-harness#828 generation1 epoch8.",
+            "owned_installed_runtime_qualified": false,
+            "phase_accepted": false,
+            "plan": "plans/detailed-verification-venv-identity-428-20260914.md",
+            "plan_approval": true,
+            "provider_update": "https://github.com/Consiliency/agent-harness/issues/730#issuecomment-5661429823",
+            "publication_allowed": false,
+            "regression_comparison": {
+              "added_nodes": [],
+              "after": {
+                "error": 0,
+                "failure": 7,
+                "passed": 372,
+                "skipped": 1
+              },
+              "baseline": {
+                "error": 0,
+                "failure": 7,
+                "passed": 372,
+                "skipped": 1
+              },
+              "changed_outcomes": [],
+              "full_suite_green": false,
+              "lost_nodes": [],
+              "no_new_failures": true
+            },
+            "source_approval": false,
+            "source_changes_committed": false,
+            "source_changes_merged": false,
+            "source_changes_pushed": false,
+            "spec_delta_closeout": {
+              "decision": "no_spec_delta",
+              "reason": "Standalone tooling repair; roadmap contracts and exit criteria remain unchanged. A separate owning-plan clarification is required before further source changes.",
+              "redaction_posture": "metadata_only"
+            },
+            "verification_artifact_path": "/mnt/HC_Volume_105438154/worktrees/agent-harness-428-venv-identity-20260914/.phase-loop/diagnostics/venv-identity-428-20260914/green/native/verification.json",
+            "verification_status": "failed"
+          },
+          "transition": "failed"
+        },
+        {
+          "at": "2026-09-14T09:09:50.508712+00:00",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "further_implementation_started": false,
+            "plan_approval": false,
+            "plan_sha256": "6fad7283789b15c62977e8776e3a95a4141dab71c7d5aa58b6f21f12c883a96c",
+            "preexisting_untracked_test_not_planning_output": true,
+            "prior_execution_archive": "1e67005891414775c7be928391b09ffee1c4be01",
+            "prior_failed_execution": "/mnt/HC_Volume_105438154/worktrees/agent-harness-428-venv-identity-20260914/.phase-loop/diagnostics/venv-identity-428-20260914/execution-terminal-summary.json",
+            "prior_failed_execution_sha256": "22c9b828f34295b97ab929357be5a47ab5437c87cd68523f5cf78220ce8c4c83",
+            "prior_failed_implementation_preserved": true,
+            "revision": "r4",
+            "scope_delta": "Directory-only execution conversion for traversable .. paths; consistent probe/launcher/pip/child PATH; supplemental tests, all frozen tests unchanged",
+            "source_approval": false
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-09-14T09:36:33.868405+00:00",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "further_implementation_started": false,
+            "plan_approval": false,
+            "plan_sha256": "8699bd817c8c8c7de6295ebfc6dafc3706014f2d7b84d40018dcf7cd187823b9",
+            "preexisting_untracked_test_not_planning_output": true,
+            "prior_failed_implementation_preserved": true,
+            "prior_review": "/mnt/HC_Volume_105438154/worktrees/agent-harness-428-venv-identity-20260914/.phase-loop/diagnostics/venv-identity-428-20260914/plan-review-r4/terminal-summary.json",
+            "prior_review_archive": "5f1592fca651da8f5434bfe3556fddcd64a47c58",
+            "prior_review_sha256": "154708d5bc33556e0bf5d3978355288a5e31746c3992ee35dffaf375bc07d83a",
+            "revision": "r5",
+            "scope_delta": "Five boundary-specific witnesses; direct/grandchild controls; strict directory resolution with preserved invalid spelling and effective invalid-directory evidence; exact unchanged PATH strings",
+            "source_approval": false
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-09-14T10:03:38Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "further_source_edit_started": false,
+            "plan": "plans/detailed-verification-venv-identity-428-20260914.md",
+            "plan_approval_record": "/mnt/HC_Volume_105438154/worktrees/agent-harness-428-venv-identity-20260914/.phase-loop/diagnostics/venv-identity-428-20260914/plan-review-r5-convergence.json",
+            "plan_approval_sha256": "e19d803d2cad9bed4b6c8624f80e65cdc713c91bc1587c3a59b0cf112109ea35",
+            "prior_failed_implementation_preserved": true,
+            "publication_allowed": false,
+            "review_archive_commit": "e7cfacbed13bd31c6233b8f1e0c7cc77f121dac8",
+            "reviewed_plan_head": "e84217abfad4e7e9046d06668826d3dae68d9f51",
+            "run_id": "venv-428-execution-r5-20260914",
+            "test_first": true
+          },
+          "transition": "executing"
+        },
+        {
+          "at": "2026-09-14T10:44:31Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "acceptance_criteria": [
+              {
+                "index": 1,
+                "satisfied": true
+              },
+              {
+                "index": 2,
+                "satisfied": true
+              },
+              {
+                "index": 3,
+                "satisfied": true
+              },
+              {
+                "index": 4,
+                "satisfied": true
+              },
+              {
+                "index": 5,
+                "satisfied": true
+              }
+            ],
+            "broad_suite_status": "failed",
+            "dirty_path_classification": {
+              "CHANGELOG.md": "plan_owned",
+              "phase-loop-runtime/README.md": "plan_owned",
+              "phase-loop-runtime/src/phase_loop_runtime/verification_evidence.py": "plan_owned",
+              "phase-loop-runtime/tests/test_verification_dotdot_execution_428.py": "plan_owned",
+              "phase-loop-runtime/tests/test_verification_venv_identity_428.py": "plan_owned",
+              "plans/manifest.json": "plan_owned"
+            },
+            "doc_delta_decision": "docs_updated",
+            "installed_verification_artifact_path": "/mnt/HC_Volume_105438154/worktrees/agent-harness-428-venv-identity-20260914/.phase-loop/diagnostics/venv-identity-428-20260914/installed-r5/native/verification.json",
+            "phase_accepted": false,
+            "plan_artifact": "plans/detailed-verification-venv-identity-428-20260914.md",
+            "publication_reason": "specific human adjudication pending for agent-harness#828 generation1 epoch8; no native publication retry performed",
+            "publication_status": "blocked",
+            "reflection_path": "/home/viperjuice/.codex/skills/codex-execute-detailed/reflections/57ded3a7/codex-v10-verification-venv-identity-428-20260914/venv-428-execution-r5-20260914.md",
+            "regression_comparison_path": "/mnt/HC_Volume_105438154/worktrees/agent-harness-428-venv-identity-20260914/.phase-loop/diagnostics/venv-identity-428-20260914/regression-comparison-r5.json",
+            "regression_counts": {
+              "error": 0,
+              "failure": 7,
+              "passed": 372,
+              "skipped": 1
+            },
+            "run_id": "venv-428-execution-r5-20260914",
+            "source_archive": "a66348b082020623a083695281b4e969cd232108",
+            "source_review_candidate_head": "e84217abfad4e7e9046d06668826d3dae68d9f51",
+            "source_review_result_sha256": "6acc50d086df82a7b3b70deb696c42b7a80a3e9b90d21866878ee7558f56b349",
+            "source_sha256": "41b0133662b604c3e3f16fdabb2b17f7ea4f6c07d7e3a14d085d417847ce82b0",
+            "verification_artifact_path": "/mnt/HC_Volume_105438154/worktrees/agent-harness-428-venv-identity-20260914/.phase-loop/diagnostics/venv-identity-428-20260914/green-r5/native/verification.json",
+            "verification_scope": "approved bounded venv-identity repair and unchanged regression comparison",
+            "verification_status": "passed"
+          },
+          "transition": "completed"
+        }
+      ],
+      "owner_skill": "codex-plan-detailed",
+      "phase_accepted": false,
+      "phase_alias": null,
+      "plan_revision": {
+        "further_implementation_started": false,
+        "plan_approval": false,
+        "plan_sha256": "8699bd817c8c8c7de6295ebfc6dafc3706014f2d7b84d40018dcf7cd187823b9",
+        "preexisting_untracked_test_not_planning_output": true,
+        "prior_failed_implementation_preserved": true,
+        "prior_review": "/mnt/HC_Volume_105438154/worktrees/agent-harness-428-venv-identity-20260914/.phase-loop/diagnostics/venv-identity-428-20260914/plan-review-r4/terminal-summary.json",
+        "prior_review_archive": "5f1592fca651da8f5434bfe3556fddcd64a47c58",
+        "prior_review_sha256": "154708d5bc33556e0bf5d3978355288a5e31746c3992ee35dffaf375bc07d83a",
+        "revision": "r5",
+        "scope_delta": "Five boundary-specific witnesses; direct/grandchild controls; strict directory resolution with preserved invalid spelling and effective invalid-directory evidence; exact unchanged PATH strings",
+        "source_approval": false
+      },
+      "publication_status": "pending_native_publication",
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "verification-venv-identity-428-20260914",
+      "status": "completed",
+      "task_summary": "Preserve selected virtual-environment identity during native verification and pip refresh (agent-harness#428)",
+      "type": "detailed",
+      "updated_at": "2026-09-14T10:44:31Z"
     }
   ],
   "schema_version": 1
