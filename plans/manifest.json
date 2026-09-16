@@ -1074,6 +1074,17 @@
       "created_at": "2026-09-16T21:45:36.010903+00:00",
       "file": "plans/detailed-procfs-oracle-870-20260916.md",
       "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260916-procfs-oracle-870-r1.md",
+      "helper_amendment": {
+        "exact_single_exception_clause": true,
+        "green_evidence_sha256": "948d0b3577201ef6811c264331376d2dbe397f1706d20bf368bca58c8dbb9368",
+        "implementation_review_pending": true,
+        "new_sha256": "249881786c7a637f9b8c094998096a7005bdf15f5372dc90572a0b3b01e1060d",
+        "old_sha256": "ba89e599268437b3268e063b0591f5bd18b1c4c0d9554d054c24de3342e6df47",
+        "original_freeze_preserved": true,
+        "phase_acceptance": false,
+        "production_changed": false,
+        "tests_sha256": "bb0eae977dfa0e5b869f6f13e64f635251c9d6d167958f2d7fcf3f774a1e416e"
+      },
       "if_gates_produced": [],
       "input_main": "31ca27c62ceaca77cca4d7abb110bc413d181c87",
       "issue": "Consiliency/agent-harness#870",
@@ -1120,7 +1131,7 @@
       "task_summary": "Repair procfs process-exit liveness oracle (agent-harness#870)",
       "test_oracle_amendment": true,
       "type": "detailed",
-      "updated_at": "2026-09-16T22:16:01.424218+00:00"
+      "updated_at": "2026-09-16T22:20:11.218466+00:00"
     },
     {
       "acceptance_criteria_count": 5,
