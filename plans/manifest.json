@@ -1221,6 +1221,52 @@
             "stage": "new_regression_tests_before_production"
           },
           "transition": "executing"
+        },
+        {
+          "at": "2026-09-16T13:26:36Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "all_five_bounded_acceptance_items_satisfied": true,
+            "artifact": "plans/detailed-runtime-hardening-720-20260916.md",
+            "diagnostic": "bounded repair complete; historical RUNTIME receipt and INTEG obligations remain unresolved",
+            "dirty_path_classification": {
+              "non_plan_output": [],
+              "plan_owned": [
+                "plans/manifest.json"
+              ],
+              "preexisting_unrelated": []
+            },
+            "doc_delta_decision": "docs_updated",
+            "final_ci_run": "35087540266",
+            "final_review_four_native_agree": true,
+            "final_review_result_sha256": "ef3009e36e70967f6bfd101c72abc5ddd2d2b6a262e777708ac30e5a9e6ca706",
+            "handoff_ref": ".dev-skills/handoffs/codex-execute-detailed/20260916-runtime-863-closeout-r1.md",
+            "historical_source_review_pending_flags_superseded_by_this_event": true,
+            "installed_module_count": 205,
+            "installed_passed": 170,
+            "merged_ci_receipt_sha256": "72b57ffb187ebd086dd71f0b417e1c27e4f94e1a45d589d145ac743c79685aeb",
+            "merged_ci_run": "35088960871",
+            "merged_head": "a830620c6e048c2608750787ae02dc5e3b1310dc",
+            "native_review_cleanup_verified": true,
+            "phase_acceptance": false,
+            "pr_url": "https://github.com/Consiliency/agent-harness/pull/863",
+            "private_recovery_commit": "1214b95b55c3919eb89fefa6d2cce20824fbf5a6",
+            "private_recovery_prefix": "handoff/runtime-863-main-ci-r1-20260916",
+            "private_restoration_verified": true,
+            "reflection_ref": "/home/viperjuice/.codex/skills/codex-execute-detailed/reflections/233c03d3/codex-runtime-863-closeout-20260916/20260916-runtime-863-closeout-r1.md",
+            "reviewed_head": "7c3300a327eb99b231ff2316d6d0a6fb7b50c407",
+            "run_id": "20260916-runtime-863-closeout-r1",
+            "scope": "agent-harness#720 items 1-3 only",
+            "source_focused_passed": 220,
+            "spec_delta_closeout": "no_spec_delta",
+            "umbrella_issue_closed": false,
+            "verification_artifact_path": "/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-runtime-resume-20260916/.phase-loop/diagnostics/runtime-acceptance-audit-20260916/installed-merged-r1/verification.json",
+            "verification_artifact_sha256": "aa2224c60012096645dd372bfcecda2cb2d7e70da43148435a50f59ec713156a",
+            "verification_status": "passed",
+            "wheel_sha256": "c10dba3145644d20029b05f2190f65474621ec8c95043b59ad90eabb11f0be2e",
+            "worktree_removal_pending_final_archive": true
+          },
+          "transition": "completed"
         }
       ],
       "owner_skill": "codex-plan-detailed",
@@ -1230,10 +1276,10 @@
       "required_plan_review_pending": false,
       "roadmap_ref": null,
       "slug": "runtime-hardening-720-20260916",
-      "status": "executing",
+      "status": "completed",
       "task_summary": "Repair committed log corruption, containment and adapter output capture (agent-harness#720 items 1-3)",
       "type": "detailed",
-      "updated_at": "2026-09-16T10:37:27.113748+00:00"
+      "updated_at": "2026-09-16T13:26:36Z"
     },
     {
       "acceptance_criteria_count": 5,
