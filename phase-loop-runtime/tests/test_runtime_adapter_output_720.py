@@ -1,5 +1,6 @@
 """Exercise real bounded adapter streams and cleanup (agent-harness#720)."""
 
+import errno
 import json
 import os
 from pathlib import Path
@@ -27,14 +28,27 @@ def _identity(pid):
 
 def _alive(pid, start):
     observed = _identity(pid)
-    return observed is not None and observed[1] == start and observed[0] != "Z"
+    return observed is not None and observed[1] == start and observed[0] not in {"Z", "X"}
+
+
+@pytest.mark.parametrize("state, expected", [
+    ("R", True), ("S", True), ("D", True), ("T", True), ("t", True),
+    ("I", True), ("?", True), ("Z", False), ("X", False),
+])
+def test_liveness_oracle_distinguishes_dead_from_running(monkeypatch, state, expected):
+    monkeypatch.setitem(globals(), "_identity", lambda pid: (state, "start"))
+    assert _alive(123, "start") is expected
 
 
 def _kill_owned(pid, start):
+    if not _alive(pid, start):
+        return
     try:
         fd = os.pidfd_open(pid)
-    except ProcessLookupError:
-        return
+    except OSError as exc:
+        if exc.errno in (errno.ESRCH, errno.EINVAL) and not _alive(pid, start):
+            return
+        raise
     try:
         if _alive(pid, start):
             signal.pidfd_send_signal(fd, signal.SIGKILL)
@@ -294,3 +308,89 @@ def test_cleanup_failure_overrides_observed_overflow(tmp_path, observed):
     assert sum(received for name, _requested, received in observed["reads"] if name == "stdout") == _LIMIT + 1
     _assert_bounded_reads(observed)
     _assert_quiescent(tmp_path, observed)
+
+
+@pytest.mark.parametrize("error_type", [KeyboardInterrupt, SystemExit])
+def test_first_postspawn_clock_interrupt_reclaims_real_child(tmp_path, observed, monkeypatch, error_type):
+    real_clock = time.monotonic
+    failure = error_type("injected first post-spawn clock interruption")
+    entered = []
+
+    def interrupted_clock():
+        if observed["processes"] and not entered:
+            entered.append(True)
+            raise failure
+        return real_clock()
+
+    request = _request(tmp_path, "time.sleep(5)")
+    monkeypatch.setattr(time, "monotonic", interrupted_clock)
+    with pytest.raises(error_type) as caught:
+        base.run_bounded(request, provider="codex")
+    assert caught.value is failure
+    assert entered and observed["kills"]
+    _assert_quiescent(tmp_path, observed)
+
+
+@pytest.mark.parametrize("error_type", [KeyboardInterrupt, SystemExit])
+@pytest.mark.parametrize("primary_failure", [False, True])
+@pytest.mark.parametrize("stages", [("kill", "wait"), ("stdout", "stderr")])
+@pytest.mark.parametrize("interruption_first", [False, True])
+def test_cleanup_interrupt_outweighs_ordinary_cleanup_error_unless_primary_exists(tmp_path, observed, monkeypatch, error_type, primary_failure, stages, interruption_first):
+    real_spawn, real_kill = subprocess.Popen, os.killpg
+    interrupt = error_type("injected cleanup interruption")
+    primary = OSError("injected primary read failure")
+    entered = []
+    primary_entered = []
+
+    def after_cleanup(name, action, *args, **kwargs):
+        result = action(*args, **kwargs)
+        if name == stages[0]:
+            entered.append(name)
+            if interruption_first:
+                raise interrupt
+            raise PermissionError("injected first cleanup error")
+        if name == stages[1]:
+            entered.append(name)
+            if interruption_first:
+                raise PermissionError("injected later cleanup error")
+            raise interrupt
+        return result
+
+    def spawn(*args, **kwargs):
+        process = real_spawn(*args, **kwargs)
+        for name, pipe in (("stdout", process.stdout), ("stderr", process.stderr)):
+            real_close = pipe.close
+            monkeypatch.setattr(pipe, "close", lambda name=name, close=real_close: after_cleanup(name, close))
+        real_wait = process.wait
+
+        def wait(timeout=None):
+            observed["waits"].append(timeout)
+            return after_cleanup("wait", real_wait, timeout=timeout)
+
+        monkeypatch.setattr(process, "wait", wait)
+        return process
+
+    def kill(pgid, signum):
+        return after_cleanup("kill", real_kill, pgid, signum)
+
+    def fail_read(fd, size):
+        if fd in observed["streams"] and not primary_entered:
+            primary_entered.append(True)
+            raise primary
+        return observed["read"](fd, size)
+
+    monkeypatch.setattr(subprocess, "Popen", spawn)
+    monkeypatch.setattr(os, "killpg", kill)
+    if primary_failure:
+        monkeypatch.setattr(os, "read", fail_read)
+    request = _request(tmp_path, _output_body(b'{"status":"completed"}', linger=primary_failure))
+    expected = primary if primary_failure else interrupt
+    with pytest.raises(BaseException) as caught:
+        try:
+            base.run_bounded(request, provider="codex")
+        finally:
+            assert entered == list(stages), "both ordered cleanup failure paths must enter"
+            assert bool(primary_entered) is primary_failure
+            assert observed["waits"] and all(t is not None and 0 < t <= 1 for t in observed["waits"])
+            _assert_quiescent(tmp_path, observed)
+    assert caught.value is expected

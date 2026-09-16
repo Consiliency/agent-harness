@@ -1088,18 +1088,56 @@
         "result_sha256": "3bb4a05269e587a007144d3202e7d6241d396ee3fddc8c4de230b710004acbf5"
       },
       "approved_tests_review": {
-        "actual_red_summary": "28 passed, 59 failed; native verification nonzero",
-        "at": "2026-09-16T07:56:44.474630+00:00",
+        "actual_red_summary": "110 passed, 10 failed, 0 errors/skips; native verification remains nonzero",
+        "at": "2026-09-16T09:35:46.559593+00:00",
         "phase_acceptance": false,
-        "private_recovery_commit": "40334d6e43fdc1996b88dfee55de9a3eb04bd8e7",
-        "red_run": "new-tests-red-r3",
-        "result_sha256": "8e37b66c0e709b5ed8b01d1b281a44287cb4b9c4320cf5d5f029a5cb84c29d21",
+        "private_recovery_commit": "cf5b451c40955a77228de7ad849cb9c0b2d307bb",
+        "red_run": "/mnt/HC_Volume_105438154/worktrees/agent-harness-v10-runtime-resume-20260916/.phase-loop/diagnostics/runtime-acceptance-audit-20260916/source-findings-tests-red-r5/verification.json",
+        "result_sha256": "f71c1794a2d5094c6864d7ada7e20a542a9d46d0eaf5e152d6965aa91a129150",
+        "review": "tests-review-r5",
         "source_approval": false,
         "test_sha256": {
-          "phase-loop-runtime/tests/test_runtime_adapter_output_720.py": "e273fb08fc5702fdc54c2e5fc4c64d01a043efc860492e3b64e0663ceca99904",
-          "phase-loop-runtime/tests/test_runtime_event_log_hardening_720.py": "c5d794481c37d87ad337cf8042857e6842c065b9b56f5f65ec9da3dda0281b1b"
+          "phase-loop-runtime/tests/test_runtime_adapter_output_720.py": "3b0bf242e0d75fb13e903b7341b3a42ac5e6b90f6a3b9e933a4244a511b7a062",
+          "phase-loop-runtime/tests/test_runtime_event_log_hardening_720.py": "79f9835f15138ea9c7a0e9376d05b8ff7116d9e945b41b3135831615a48aa06d"
         }
       },
+      "approved_tests_review_history": [
+        {
+          "actual_red_summary": "28 passed, 59 failed; native verification nonzero",
+          "at": "2026-09-16T07:56:44.474630+00:00",
+          "phase_acceptance": false,
+          "private_recovery_commit": "40334d6e43fdc1996b88dfee55de9a3eb04bd8e7",
+          "red_run": "new-tests-red-r3",
+          "result_sha256": "8e37b66c0e709b5ed8b01d1b281a44287cb4b9c4320cf5d5f029a5cb84c29d21",
+          "source_approval": false,
+          "test_sha256": {
+            "phase-loop-runtime/tests/test_runtime_adapter_output_720.py": "e273fb08fc5702fdc54c2e5fc4c64d01a043efc860492e3b64e0663ceca99904",
+            "phase-loop-runtime/tests/test_runtime_event_log_hardening_720.py": "c5d794481c37d87ad337cf8042857e6842c065b9b56f5f65ec9da3dda0281b1b"
+          }
+        },
+        {
+          "phase_acceptance": false,
+          "result_sha256": "312b14caef67615a9d7f402e3c3172823de93ff219dfac667c11a66586939d0d",
+          "review": "tests-review-r2",
+          "review_finished_at": "2026-09-16T08:11:44.495112+00:00",
+          "source_approval": false,
+          "test_sha256": {
+            "phase-loop-runtime/tests/test_runtime_adapter_output_720.py": "5c4c6c446ec03a927bd48bf5e45c2dc8c39cfa5101522ca655609d8f41f1f2ba",
+            "phase-loop-runtime/tests/test_runtime_event_log_hardening_720.py": "c5d794481c37d87ad337cf8042857e6842c065b9b56f5f65ec9da3dda0281b1b"
+          }
+        },
+        {
+          "phase_acceptance": false,
+          "result_sha256": "3ed048bbd30a04e8b6eb325e9d50e0d135f74492ed8d7398d3961f7d91c93e73",
+          "review": "tests-review-r3",
+          "review_finished_at": "2026-09-16T08:33:30.376597+00:00",
+          "source_approval": false,
+          "test_sha256": {
+            "phase-loop-runtime/tests/test_runtime_adapter_output_720.py": "90098545aba03eda9be962262493669d085764b8ccfe63bae6e9b52292804cf0",
+            "phase-loop-runtime/tests/test_runtime_event_log_hardening_720.py": "c5d794481c37d87ad337cf8042857e6842c065b9b56f5f65ec9da3dda0281b1b"
+          }
+        }
+      ],
       "created_at": "2026-09-16T06:38:37.324085+00:00",
       "file": "plans/detailed-runtime-hardening-720-20260916.md",
       "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260916-runtime-hardening-720.md",
@@ -1144,7 +1182,7 @@
       "status": "executing",
       "task_summary": "Repair committed log corruption, containment and adapter output capture (agent-harness#720 items 1-3)",
       "type": "detailed",
-      "updated_at": "2026-09-16T07:56:44.474630+00:00"
+      "updated_at": "2026-09-16T09:35:46.559593+00:00"
     },
     {
       "acceptance_criteria_count": 5,

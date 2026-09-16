@@ -232,3 +232,37 @@ def test_alias_retarget_after_parent_binding_does_not_redirect_append(tmp_path, 
     assert swapped
     assert outside.read_bytes() == b""
     assert event_log.read_convergence_events(physical) == (_event(), second)
+
+
+@pytest.mark.parametrize("operation", ["read", "append"])
+@pytest.mark.parametrize("destination", ["inside", "outside", "phase_loop"])
+def test_missing_intermediate_symlink_inserted_after_validation_cannot_redirect_io(tmp_path, monkeypatch, operation, destination):
+    root = tmp_path.resolve()
+    selected = root / "selected"
+    selected.mkdir()
+    target = {"inside": selected / "real", "outside": root / "outside",
+              "phase_loop": root / ".phase-loop"}[destination]
+    (target / "sub").mkdir(parents=True)
+    path = selected / "new" / "sub" / "events.jsonl"
+    outside = target / "sub" / "events.jsonl"
+    outside_raw = _line(_event(node_id="outside", attempt_id="outside"))
+    outside.write_bytes(outside_raw)
+    entered = []
+    real_validate = event_log._reject_phase_loop
+
+    def insert_after_validation(candidate):
+        real_validate(candidate)
+        if candidate == path and not entered:
+            (selected / "new").symlink_to(target, target_is_directory=True)
+            entered.append(True)
+
+    monkeypatch.setattr(event_log, "_reject_phase_loop", insert_after_validation)
+    with pytest.raises(ValueError):
+        try:
+            if operation == "read":
+                event_log.read_convergence_events(path)
+            else:
+                event_log.record_intent(path, _event(node_id="next", attempt_id="next"))
+        finally:
+            assert entered, "the previously missing suffix must change after real path validation"
+            assert outside.read_bytes() == outside_raw
