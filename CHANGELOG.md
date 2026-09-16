@@ -11,7 +11,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - PROOFGATE reports unsuccessful worktree cleanup as an execution failure while
   preserving the original proof outcome, command diagnostics and residue path.
   Setup failures and interruptions retain their original cause; failed cleanup
-  prevents aggregate all-killed acceptance.
+  prevents aggregate all-killed acceptance. Unavailable residue observations
+  are reported as unknown with their error, preserving the primary outcome.
 
 ### Run Dagger stages as an ordinary user (Consiliency/agent-harness#853)
 

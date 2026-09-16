@@ -1378,7 +1378,17 @@ def execute_proofgate_mutation_manifest(
             except OSError as exc:
                 cleanup.update(returncode=None, exception_type=type(exc).__name__,
                                stdout="", stderr=str(exc))
-            cleanup["path_exists_after_cleanup"] = worktree.exists()
+            if not add_completed or cleanup["returncode"] != 0:
+                try:
+                    worktree.stat()
+                except (FileNotFoundError, NotADirectoryError):
+                    cleanup["path_exists_after_cleanup"] = False
+                except OSError as exc:
+                    cleanup.update(path_exists_after_cleanup=None,
+                                   path_observation_error={"exception_type": type(exc).__name__,
+                                                           "message": str(exc)})
+                else:
+                    cleanup["path_exists_after_cleanup"] = True
         if not add_completed:
             return {**proof_result, "cleanup": cleanup}
         if cleanup["returncode"] == 0:

@@ -301,3 +301,80 @@ def test_aggregate_reports_secondary_setup_cleanup_failure(proof):
     assert failed['reason'] == 'original worktree add failure'
     assert failed['cleanup']['add_completed'] is False
     assert failed['cleanup']['exception_type'] == 'OSError'
+
+
+@pytest.fixture
+def failed_observation(proof, monkeypatch, record_property):
+    state = SimpleNamespace(armed=False, error=PermissionError, calls=[])
+    real_run = ve.subprocess.run
+    real_stat = os.stat
+
+    def run(argv, *args, **kwargs):
+        try:
+            return real_run(argv, *args, **kwargs)
+        finally:
+            if list(argv)[:3] == ['git', 'worktree', 'remove']:
+                state.armed = True
+
+    def stat(path, *args, **kwargs):
+        if state.armed and isinstance(path, (str, os.PathLike)) and Path(path) in proof.allocated:
+            state.armed = False
+            state.calls.append(str(path))
+            raise state.error(13 if state.error is PermissionError else 5,
+                              'residue observation unavailable', str(path))
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(ve.subprocess, 'run', run)
+    monkeypatch.setattr(ve.os, 'stat', stat)
+    try:
+        yield state
+    finally:
+        state.armed = False
+        record_property('proofgate_observation_fault', json.dumps({
+            'exception_type': state.error.__name__, 'observed_paths': state.calls,
+            'synthetic_fault_injection': True}))
+
+
+@pytest.mark.parametrize('error', [PermissionError, OSError])
+@pytest.mark.parametrize('cleanup_fault', ['nonzero', 'oserror'])
+@pytest.mark.parametrize('fault', [None, 'execute', 'add', 'partial_add'])
+def test_unavailable_residue_observation_preserves_primary_result(
+        proof, failed_observation, error, cleanup_fault, fault):
+    proof.fault = fault
+    proof.cleanup_fault = cleanup_fault
+    failed_observation.error = error
+    result = _execute(proof)
+    assert result['status'] == 'execution_failure'
+    if fault in ('add', 'partial_add'):
+        assert result['reason'] == 'original worktree add failure'
+        assert 'proof_result' not in result
+        assert result['applied_replacements'] == 0
+    else:
+        assert result['reason'] == 'worktree_cleanup_failed'
+        original = result['proof_result']
+        assert original['status'] == ('killed' if fault is None else 'execution_failure')
+        assert result['applied_replacements'] == original['applied_replacements']
+        if fault is None:
+            assert result['bindings'] == original['bindings']
+        else:
+            assert original['reason'] == 'original proof execution failure'
+    cleanup = result['cleanup']
+    assert cleanup['path_exists_after_cleanup'] is None
+    assert cleanup['path_observation_error']['exception_type'] == error.__name__
+    assert 'residue observation unavailable' in cleanup['path_observation_error']['message']
+    assert cleanup['returncode'] == (37 if cleanup_fault == 'nonzero' else None)
+    assert failed_observation.calls == [str(proof.allocated[0])]
+    json.dumps(result)
+
+
+@pytest.mark.parametrize('error', [PermissionError, OSError])
+@pytest.mark.parametrize('cleanup_fault', [None, 'nonzero', 'oserror'])
+def test_unavailable_residue_observation_does_not_mask_interrupt(
+        proof, failed_observation, error, cleanup_fault):
+    proof.fault = 'interrupt'
+    proof.cleanup_fault = cleanup_fault
+    failed_observation.error = error
+    with pytest.raises(KeyboardInterrupt, match='original proof interruption'):
+        _execute(proof)
+    if cleanup_fault is not None:
+        assert failed_observation.calls == [str(proof.allocated[0])]

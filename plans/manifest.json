@@ -935,7 +935,7 @@
     },
     {
       "acceptance_criteria_count": 5,
-      "blocking_prerequisite": "agent-harness#855",
+      "blocking_prerequisite": null,
       "created_at": "2026-09-15T20:26:24.866609+00:00",
       "file": "plans/detailed-proofgate-cleanup-858-20260915.md",
       "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260915-proofgate-cleanup-858.md",
@@ -973,10 +973,11 @@
       "phase_accepted": false,
       "phase_alias": null,
       "plan_revision": {
-        "plan_approval": false,
+        "plan_approval": true,
         "plan_sha256": "cd3b3e9e59b33bce6c1d5c18044ffa2421db050a36c7e54360d90cd0f2580b26",
         "prior_review_archive": "89d62f444be44cafa922270684eb0ca79e81e055",
         "prior_votes_transfer": false,
+        "review_result_sha256": "4349320ea752f4ab36856496e1cc4048dd5fde86c5a98051be9fa23efb716b9f",
         "revision": 2,
         "source_approval": false,
         "trigger": "Fable and Grok PARTIALLY AGREE; distinguish setup failure, bind ordinary-user CI and portable fixtures, preserve exceptions and outer classifications."
@@ -997,13 +998,24 @@
         }
       ],
       "reflection_ref": null,
-      "required_plan_review_pending": true,
+      "required_plan_review_pending": false,
+      "resolved_prerequisites": [
+        "Consiliency/agent-harness#855",
+        "Consiliency/agent-harness#860"
+      ],
       "roadmap_ref": null,
       "slug": "proofgate-cleanup-858-20260915",
+      "source_review": {
+        "head": "38b1a58afe33bed1940c2d67181856d986701b51",
+        "material_finding_reproduced": true,
+        "preserved_archive": "ccbe2b9da75a52c0dd5bf24e1b3c37c3aa727a8a",
+        "result_sha256": "0719e3f0fcc42fe162b01cc134418b62398e1625c821274214412d66fd107ab3",
+        "source_approval": false
+      },
       "status": "executing",
       "task_summary": "Report PROOFGATE cleanup failures without losing proof outcomes (agent-harness#858)",
       "type": "detailed",
-      "updated_at": "2026-09-15T23:53:58Z"
+      "updated_at": "2026-09-16T01:01:06.898262+00:00"
     },
     {
       "acceptance_criteria_count": 5,
