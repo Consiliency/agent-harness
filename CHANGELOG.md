@@ -6,6 +6,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Keep static board imports independent of live admission (agent-harness#862)
+
+- Static board snapshots supply explicit pure availability and auth callbacks,
+  allowing convergence and scrubber imports on macOS without starting live review
+  composition. Board data and Linux-only live composition, config and dispatch
+  admission remain unchanged. This does not qualify macOS adapter execution.
+
 ### Harden convergence log storage and adapter output (agent-harness#720)
 
 - Reject malformed newline-terminated log records, including the last record,

@@ -46,7 +46,9 @@ from .schema import Board, Seat
 # The static preset here is the all-available composition (so a snapshot / config
 # validation sees the canonical 4-seat board); it supersedes the old three-seat
 # adversarial board.
-CODE_REVIEW_BOARD: Board = compose_review_board(is_available=lambda _vendor: True)
+CODE_REVIEW_BOARD: Board = compose_review_board(
+    is_available=lambda _vendor: True, auth_ok=lambda _vendor: True,
+)
 
 # brainstorm: divergent, multi-vendor, each seat a different thinking lens.
 BRAINSTORM_BOARD: Board = Board(

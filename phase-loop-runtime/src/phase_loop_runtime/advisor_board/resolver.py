@@ -116,7 +116,9 @@ def parse_seats(
 # stand-in is the all-vendors-up SNAPSHOT (identical to ``presets.CODE_REVIEW_BOARD``)
 # and is deliberately NOT availability-aware — it is off every live path (a real
 # caller seeds ``BoardResolver`` from ``load_boards``, never this default catalog).
-_STANDIN_CODE_REVIEW = compose_review_board(is_available=lambda _vendor: True)
+_STANDIN_CODE_REVIEW = compose_review_board(
+    is_available=lambda _vendor: True, auth_ok=lambda _vendor: True,
+)
 
 STANDIN_BOARDS: dict[str, Board] = {
     DEFAULT_BOARD.name: DEFAULT_BOARD,
