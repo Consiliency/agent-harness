@@ -326,6 +326,7 @@ def failed_observation(proof, monkeypatch, record_property):
 
     monkeypatch.setattr(ve.subprocess, 'run', run)
     monkeypatch.setattr(ve.os, 'stat', stat)
+    monkeypatch.setattr(Path, 'stat', stat)
     try:
         yield state
     finally:
