@@ -1087,6 +1087,43 @@
         "plan_sha256": "63ebcccd0ec14be0a5b24971186385fea55d66192a9ff668e48afbb6916024b7",
         "result_sha256": "3bb4a05269e587a007144d3202e7d6241d396ee3fddc8c4de230b710004acbf5"
       },
+      "approved_source_review": {
+        "approval_sha256": "b45a4ff23ba1af60c4f1f4e867fb7a12a9423baa95a9a66e9de53390eabadc9b",
+        "final_committed_head_review_pending": true,
+        "focused_passed": 220,
+        "installed_module_count": 205,
+        "installed_passed": 170,
+        "phase_acceptance": false,
+        "private_recovery_commit": "781aa4c390472a6a915fc0a2fc1d35dc25516d1c",
+        "required_ci_pending": true,
+        "seats": [
+          {
+            "completed_leg_sha256": "fcb5d9ba9ce393389825a0cb23723cf6075494430d2b0d60ea0df273bab70b08",
+            "leg": "codex",
+            "result_sha256": "b31227c9b579afad5c83219e2f49a730866265bf8231799f5f00934a6f828130",
+            "review": "source-review-r3"
+          },
+          {
+            "completed_leg_sha256": "c85a635b6e6d148566383dc47b6bf4deade86719df5590d204a8ae9ffada63b1",
+            "leg": "claude",
+            "result_sha256": "b31227c9b579afad5c83219e2f49a730866265bf8231799f5f00934a6f828130",
+            "review": "source-review-r3"
+          },
+          {
+            "completed_leg_sha256": "44c1dee8ddf46e11d466436c366f9749adcb6ad0a81ae884cfa9fdf7f4b8e650",
+            "leg": "grok",
+            "result_sha256": "b31227c9b579afad5c83219e2f49a730866265bf8231799f5f00934a6f828130",
+            "review": "source-review-r3"
+          },
+          {
+            "completed_leg_sha256": "47391df456d5e5c4a26bee9bc5501dd334b8d3294d86fb9f7ea6a385834f4e2a",
+            "leg": "gemini",
+            "result_sha256": "eb5bbc3e840ff41ad92f16af400228244d41caed1480a57de6014972f05b8408",
+            "review": "source-review-r3-gemini-r1"
+          }
+        ],
+        "source_head": "2ec3d3a9ad0414faf06c0b6cd5411edb76dc48a7"
+      },
       "approved_tests_review": {
         "actual_red_summary": "128 passed, 19 failed, 0 errors/skips; native verification remains nonzero",
         "at": "2026-09-16T10:08:00.093277+00:00",
@@ -1196,7 +1233,7 @@
       "status": "executing",
       "task_summary": "Repair committed log corruption, containment and adapter output capture (agent-harness#720 items 1-3)",
       "type": "detailed",
-      "updated_at": "2026-09-16T10:08:00.093277+00:00"
+      "updated_at": "2026-09-16T10:37:27.113748+00:00"
     },
     {
       "acceptance_criteria_count": 5,
