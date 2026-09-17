@@ -6,6 +6,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Document the split `PHASE_LOOP_VERIFY_ENFORCE` defaults as intended (agent-harness#796)
+
+- When the variable is unset, the closeout evidence gate still defaults to `hard`, and the execute
+  preflight and train re-verify still default to `warn`. The `verify_enforce_mode` docstring now
+  records this split as the intended posture, not an accident. No behaviour change.
+
 ### Keep static board imports independent of live admission (agent-harness#862)
 
 - Static board snapshots supply explicit pure availability and auth callbacks,
