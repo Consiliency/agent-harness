@@ -55,6 +55,12 @@ bodies (#660; #678, #685, #720), that acceptance must be read from every ask rat
 (#720, #633), that "phase completed" does not prove a review happened (CONFORM), and that the
 validator trusted the artifact under test.
 
+**Round 3 found** that the batch named a PR number before the PR existed, prescribed re-approval that
+only one batch could validate, dated a PR reference by the PR's creation, let an out-of-scope close and a
+contradictory precedence trace through item 2, and let R5 skip the required #361 comment. Each is fixed
+by narrowing (one batch per run, PR mutations by branch, bindings gate closes only) or by checking a
+value already recorded.
+
 **Round 2 added:**
 1. **Two more binding channels.** #341 and #360 are bound by *content*: #341 is EC-RESIDUAL-7 and IF-0-RESIDUAL-4, #360 is EC-RESIDUAL-5, and neither is cited by number in `specs/` or `plans/`. #428 is bound by two **executing detailed plans** (`plans/detailed-ci-nonroot-853-20260915.md`, `plans/detailed-proofgate-cleanup-858-20260915.md`), which the phase-only checks never read. Scanning every non-completed manifest entry's file at `11283f80` also binds #688, #748, #817, #842 and #843, and still binds none of #488, #470, #464.
 2. **The remaining validator defects were one class:** a check reading, from the artifact under test, the property it claims to verify (the live exclusion union, the ref for the binding re-check, approval), plus a publication receipt that cannot exist inside the bytes it publishes. The fix is the threat model under `## Shared execution rules`, not more self-checking.
@@ -85,7 +91,7 @@ time order. Issue numbers are JSON integers.
 - **R1 — In-flight exclusion union.** `exclusion_union(with_sources=False)` returns the union below; with
   `with_sources=True` it returns `{n: [{source, at}]}`, where `at` is when that source first named `n`:
   - `codex_inflight_exclusions` from the pinned snapshot (`at` = the snapshot time);
-  - issue numbers in open PR titles, bodies and head-branch names (`at` = the PR's `createdAt`);
+  - issue numbers in open PR titles, bodies and head-branch names (`at` = `pr_reference_time(pr, n)`: the earliest title, body or rename revision GitHub records naming `n`, or the PR's `createdAt` when its head branch names it — so a body edited after a close to name the issue dates from the edit);
   - issue numbers in every `origin/codex/*` branch name, and in `git diff origin/main...origin/codex/<b>` for **every** `codex/*` branch not merged to main, with no age cutoff (`at` = the author date of the earliest unmerged commit on that branch that names `n`; author dates survive rebases);
   - operator holds recorded in an issue body or comment, kept in the helper's `OPERATOR_HOLDS` table with the quoted text (`at` = that body's or comment's `createdAt`). Seeded with #843 ("Under the operator hold, do not publish this follow-up before the post-push PR-confirmation fix lands"); the executor adds any hold found while reading bodies under R3.
 
@@ -95,7 +101,7 @@ time order. Issue numbers are JSON integers.
   `agent-harness#N`, or a word-bounded `#N`. "Unfinished" means a `plans/manifest.json` entry of **any**
   `type` whose `status` is not `completed` or `orphaned`; entries are keyed by `file`, never by alias.
   - **(i)** `specs/phase-plans-v10.md` hits outside the sections of phases whose manifest entry is `completed`. Execution Notes and other top-level sections count as binding.
-  - **(ii)** Hits in the `file` of any unfinished manifest entry — phase plans and detailed plans alike.
+  - **(ii)** Hits in the `file` of any unfinished manifest entry — phase plans and detailed plans alike — except `specs/phase-plans-v10.md` itself (its manifest entry is `imported`), which only (i) reads, so (i)'s completed-phase carve-out holds.
   - **(iii)** Hits anywhere in an unfinished manifest entry's JSON, nested fields included (for example SCHED's `deferred_findings_issue`).
   - **(iv)** A **recorded judgment**: the issue's title, body or comments name an unfinished phase as the owner, the gate, or the deferral target. Examples: "SCHED tests-only deferred board findings", "INTEG-owned binding", "DEFERRED under EC-REVIEWTRUTH-19".
   - **(v)** A **recorded judgment**: an unfinished phase's exit criterion, interface-freeze gate or lane has this finding as its subject, whether or not it cites the number. The helper's `KNOWN_CONTENT_BINDINGS` table records each such binding found (seeded: #341 → EC-RESIDUAL-7 / IF-0-RESIDUAL-4; #360 → EC-RESIDUAL-5), and `mechanical_only=True` returns them together with (i)–(iii).
@@ -121,7 +127,7 @@ time order. Issue numbers are JSON integers.
   written). Before each close or comment:
   1. re-read the issue. Any change from the baseline means the mutation is skipped (`action: skipped`, `skip_reason: "drifted: <what changed>"`);
   2. recompute `exclusion_union()`. Membership means skipped;
-  3. re-run `phase_bindings(n, freshly fetched origin/main, mechanical_only=True)`. Any hit means skipped;
+  3. before a **close** only: re-run `phase_bindings(n, freshly fetched origin/main, mechanical_only=True)`. Any hit means skipped. A binding never blocks a comment: R2 protects against closing a bound issue, not commenting on it (item 2's #361 redirect comments on a bound issue);
   4. confirm every cited effect commit is an ancestor of that origin/main and every direct check still gives its recorded result. Any failure means skipped.
 
   Stop the whole run on any `gh` error, and never retry a mutation blindly.
@@ -136,8 +142,11 @@ time order. Issue numbers are JSON integers.
 
 **Close checks (normative).** These functions are copied verbatim into `shared_rules.py`, next to
 `exclusion_union`, `phase_bindings`, `OPERATOR_HOLDS` and `KNOWN_CONTENT_BINDINGS`. Both validators call
-them, so the two items cannot check a close differently. `close_ref` relies on `main` advancing only
-through PR merges, whose committer date is the merge time.
+them, so the two items cannot check a close differently. `close_ref` assumes a first-parent commit's committer
+date is when it reached `main`. That holds for PR merges; a rare direct push (the last was `fb0989fa`,
+2026-09-04) is dated before its push. R5's live re-check at mutation time is the primary binding guard,
+and validation is the backstop. `posted()` compares executor and GitHub timestamps, so the executing
+host must be NTP-synchronized (claw is).
 
 ```python
 import hashlib, json, re, subprocess
@@ -171,6 +180,26 @@ def posted(issue, mutation, receipt):
     """True if a comment created at or after the receipt's start carries the approved body."""
     return any(c["createdAt"] >= receipt["started_at"] and body_sha256(c["body"]) == mutation["body_sha256"]
                for c in issue["comments"])
+
+def pr_reference_time(pr, n):
+    """Earliest time GitHub shows PR `pr` naming issue `n`: in its head branch (from creation), its title
+    (original title at creation, then each rename), or its body (each userContentEdits revision; the oldest
+    revision is the original body). None if no revision names it. R1 uses this as a PR source's `at`."""
+    q = ("query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){"
+         "createdAt headRefName title body userContentEdits(first:100){nodes{editedAt diff}} "
+         "timelineItems(itemTypes:[RENAMED_TITLE_EVENT],first:100){nodes{... on RenamedTitleEvent{createdAt previousTitle currentTitle}}}}}}")
+    owner, name = REPO.split("/")
+    p = gh_json("api", "graphql", "-f", f"query={q}", "-f", f"o={owner}", "-f", f"r={name}", "-F", f"n={pr}")["data"]["repository"]["pullRequest"]
+    ref = re.compile(r"(?:Consiliency/agent-harness#|agent-harness#|(?<![\w])#)%d\b" % n)
+    if re.search(r"(?<!\d)%d(?!\d)" % n, p["headRefName"]):
+        return p["createdAt"]
+    renames = p["timelineItems"]["nodes"]
+    texts = [(p["createdAt"], renames[0]["previousTitle"] if renames else p["title"])]
+    texts += [(e["createdAt"], e["currentTitle"]) for e in renames]
+    edits = p["userContentEdits"]["nodes"]
+    texts += [(e["editedAt"], e["diff"] or "") for e in edits] if edits else [(p["createdAt"], p["body"] or "")]
+    hits = [t for t, text in texts if ref.search(text)]
+    return min(hits) if hits else None
 
 def close_failures(n, entry, issue, mutation, receipt, fixed):
     """Every reason one executed close is unsafe; [] means safe. Reads GitHub and git, never the artifact's
@@ -271,9 +300,10 @@ def grep_absent(pattern, paths, ref):
 ```
 
 **Helper self-test** (`python3 shared_rules.py --self-test`, which must exit 0 before any verdict):
-- at ref `11283f80`, `phase_bindings(n, ref, mechanical_only=True)` returns at least one hit for each of #454, #733, #660, #358, #398, #442, #428, #341 and #360, and zero hits for each of #488, #470 and #464;
+- at ref `11283f80`, `phase_bindings(n, ref, mechanical_only=True)` returns at least one hit for each of #454, #733, #660, #358, #398, #442, #428, #341 and #360, and zero hits for each of #488, #470, #464 and #392 (cited only inside completed LEGIBLE's spec section);
 - `exclusion_union()` is a superset of the snapshot's `codex_inflight_exclusions` and contains #843;
 - the R7 fence for a string containing a run of five backticks is at least six backticks long;
+- `pr_reference_time` on fixture PRs returns the edit time for a body edited to name the issue, `createdAt` for a head branch naming it, the rename time for a renamed title, and `None` when only a longer number (`#4880`) appears;
 - `close_failures` on synthetic inputs (no GitHub call beyond R1): a correct #488 close whose condition cites `97d223e7` returns `[]`; the same close returns a failure when `binding_review.iv` is a quote, when its effect commit is not on main, when its conditions are empty, when the posted comment differs from the approved body, and when R1 names #488 through a source dated before `closedAt`; a close of #454 returns a binding failure;
 - `parse_register` on a register whose header shows the row format inside a fence, and whose rows carry the real bodies of #399, #463, #539 and #590, returns exactly the real rows; with one row's `origin` removed it raises.
 
@@ -281,7 +311,7 @@ def grep_absent(pattern, paths, ref):
 
 - **Schema `landed_fix_verdicts.v1`.** Top-level fields:
   - `schema`;
-  - `run_status` — `complete` (every approved issue mutation executed or skipped), `verdicts_only` (the descope path; no issue mutations), or `aborted` (stopped on an error; receipts partial);
+  - `run_status` — `complete` (every approved issue mutation executed or skipped), `verdicts_only` (the descope path; no issue mutations), or `aborted` (stopped on an error; receipts partial). An `aborted` run never validates; the operator decides the next step;
   - `snapshot_ref` `{path, sha256, snapshot_at, origin_main}`;
   - `executed_at`, `origin_main_at_execution` (the SHA verdicts were evaluated at; a record, not a validation input);
   - `verdicts` — exactly one entry per snapshot candidate, all 30;
@@ -292,7 +322,7 @@ def grep_absent(pattern, paths, ref):
   - `acceptance_conditions` — a list of `{text, source, holds_on_main, evidence}`, per R3 and R4;
   - `phase_bindings` and `binding_review`, per R2;
   - `action` — `closed`, `commented`, `handed_to_item2`, `declined` (the operator removed it from the batch), `skipped` (with `skip_reason`), or `recorded_only`.
-- **Approval batch `item1-approval-batch.json`.** `{approved_at, operator_message, publications, mutations}`, where `publications` names the comments to be posted (`batch`, `artifact`) and each mutation is `{kind, target, reason, body_sha256}` with `body_sha256 = body_sha256(<full comment text>)`.
+- **Approval batch `item1-approval-batch.json`.** `{approved_at, operator_message, publications, mutations}`, where `publications` names the comments to be posted (`batch`, `artifact`) and each mutation is `{kind, target, reason, body_sha256}` with `body_sha256 = body_sha256(<full comment text>)`. `target` is the issue number, or, for `pr_open` and `pr_merge`, the PR's head branch name, because GitHub assigns a PR number only at creation; the validator resolves a PR receipt's number to its head branch.
 - **Rendered companion `item1-landed-fix-verdicts.md`.** The human table and every comment body; this is what the operator reads before approving.
 
 ### Verdict rule (normative)
@@ -327,8 +357,9 @@ On approval, write `item1-approval-batch.json` with the operator's message quote
 before the first issue mutation**, as a comment on the plans PR carrying its exact bytes (see
 Publication). Every executed issue mutation must be in the published batch with a matching body hash,
 and must start after the batch comment's `created_at`. Every approved mutation that does not execute
-is `skipped` with a reason. Anything not in the batch requires a new approval and a new published
-batch.
+is `skipped` with a reason. **A run has exactly one batch.** An item that would need to be added to or
+changed in the batch after publication is not mutated in this run: it is `skipped` with `skip_reason:
+"needs re-approval"` and waits for a new run with its own artifact and batch.
 
 ### Publication (cross-host)
 
@@ -448,6 +479,7 @@ on main, a condition that does not hold, empty conditions, a close missing from 
 close neither executed nor skipped, a mutation started before the batch was published, a posted comment
 that differs from the approved text, a wrong close reason on GitHub, a comment approved on a B issue, a
 published artifact that differs from the local file, a non-candidate close, and a close of excluded #870.
+Its `close_failures` is shared with item 2's script, whose attack list covers the round-3 fixes.
 
 Behaviours to observe:
 - #825, #870, #525, #789 and #241 are never mutated.
@@ -464,7 +496,7 @@ Behaviours to observe:
 ## Acceptance criteria
 
 - [ ] `shared_rules.py --self-test` exits 0, including its `close_failures` and `parse_register` controls.
-- [ ] The validator above prints `artifact OK` against live GitHub state for the run's `run_status`.
+- [ ] The validator above prints `artifact OK` against live GitHub state (`complete` or `verdicts_only` runs).
 - [ ] Every successful `issue_close` receipt's issue is `CLOSED/COMPLETED` on GitHub with `close_failures(...) == []`.
 - [ ] The approval batch and the artifact are each published with bytes equal to their local files; the batch comment predates every issue mutation. The attributable result is the count of successful close receipts, reported against the 3–7 estimate.
 

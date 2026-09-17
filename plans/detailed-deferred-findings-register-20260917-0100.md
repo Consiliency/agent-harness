@@ -148,14 +148,14 @@ structure. A row does not state the issue's GitHub state; GitHub does.
 
   Each entry records:
   - `issue`, `bucket`, `disposition`, `evidence`;
-  - `precedence_trace` — one `{category, applies, reason}` step per category, in precedence order, up to and including the disposition; the STILL-LIVE step also carries `floor_class` (`none` or the class);
+  - `precedence_trace` — one `{category, applies, reason}` step per category, in precedence order, up to and including the disposition; `applies` is `false` for every step but the last, which is `true`; the STILL-LIVE step also carries `floor_class` (`none` or the class);
   - `phase_bindings` and `binding_review`, per R2;
   - for ALREADY-FIXED: item 1's verdict-entry fields `naming_commits`, `effect_commits`, `acceptance_conditions` and `verdict_baseline`, with the same meaning;
   - `reachability_negative` — for a floor-class close: `{"kind": "removed", "removal_commit", "grep_pattern", "paths"}` or `{"kind": "callers", "callers": [{"site", "why_unreachable"}]}`;
   - `removal` — for OBSOLETE: `{commit, grep_pattern, paths}`;
   - `president_deferred` — whether the original ruling is a president `DEFERRED`;
   - `register_row` — `R-NNN` or `null`;
-  - `action` — `closed_not_planned`, `closed_completed`, `declined`, `skipped` (with `skip_reason`), or `none`.
+  - `action` — `closed_not_planned`, `closed_completed`, `declined` (a closable disposition the operator left out of the batch, with `skip_reason`), `skipped` (an approved close not executed, with `skip_reason`), or `none`.
 - **`item2-approval-batch.json`** — item 1's approval-batch format.
 - **`item2-approval-batch.md`** — the rendered list the operator reads.
 - **`item2-publication-receipts.json`** — per R6.
@@ -224,15 +224,15 @@ It contributes nothing to the measured delta.
    Issues opened after the snapshot are never added (convergence rule 1). EXCLUDED issues remain in scope as a disposition, so coverage is exact.
 3. **Disposition every scope issue** by the precedence above, writing `item2-dispositions.json`. For an overlap issue item 1 ruled PARTIAL, re-verify item 1's held conditions at this plan's execution SHA before relying on them.
 4. **Approval.** Run R5 over every intended mutation, then present `item2-approval-batch.md`. It enumerates:
-   - each close: disposition, the precedence trace's floor-class call and reason, the register row anchor, and the full comment text. A not-planned close comment links its row as `https://github.com/Consiliency/agent-harness/blob/<merged main SHA>/docs/registers/deferred-findings.md#r-nnn`; the SHA is unknown until merge, so the approved text carries `{MERGED_MAIN}` there, and `body_sha256` abstracts exactly that SHA;
+   - each close: disposition, the precedence trace's floor-class call and reason, the register row anchor, and the full comment text. A not-planned close comment links its row as `https://github.com/Consiliency/agent-harness/blob/<merged main SHA>/docs/registers/deferred-findings.md#r-nnn` (the fragment names the row id for the validator; GitHub may not scroll to it); the SHA is unknown until merge, so the approved text carries `{MERGED_MAIN}` there, and `body_sha256` abstracts exactly that SHA;
    - **as a separate group, every PARKED close whose `president_deferred` is true.** Approving this group is the operator's ruling that a register row with a promotion rule satisfies #442's "becomes tracked work"; declining it leaves those issues open, dispositioned PARKED, with action `declined`;
    - the #361 comment;
-   - the register PR's open and merge (also governed by the standing public-repo CR gate);
+   - the register PR's open and merge, identified by head branch (also governed by the standing public-repo CR gate);
    - the two publication comments (batch, artifact).
 
    On approval, write and publish `item2-approval-batch.json` per item 1's Operator approval gate and Publication. Nothing is mutated before it is published.
 5. **Build the register branch** from the approved rows plus the `AGENTS.md` pointer. Verify locally, then open the register PR (receipt `pr_open`).
-6. **Board review of the register PR**, at most 3 rounds. If review changes a row's content or a disposition, the changed items return to the operator for re-approval and a new published batch.
+6. **Board review of the register PR**, at most 3 rounds. A run has one batch (item 1's Operator approval gate): if review changes a row's content or a disposition, that row is removed from the PR and its close is `skipped` with `skip_reason: "needs re-approval"`, for a later run.
 7. **Merge** only after a 4/4 board and green CI (receipt `pr_merge`).
 8. **For each approved close:** run R5, then close with the permalink at the merged main SHA, then record a receipt. After the closes, post the #361 comment (receipt).
 9. **Set `run_status`, measure, publish** the artifact per item 1's Publication.
@@ -240,7 +240,8 @@ It contributes nothing to the measured delta.
 **Descope, terminal.** If the register PR is not 4/4 AGREE by round 3, or this plan's own board does not
 converge by its round 3, nothing merges and nothing is closed: the register PR stays unmerged, every
 approved close is `skipped` with `skip_reason: "descoped: <reason>"`, `run_status` is `verdicts_only`,
-and the artifact is published. The dispositions still stand as a record.
+and the artifact is published. If the descope comes before step 4, the operator still approves and
+publishes a batch with no mutations, as in item 1's descope. The dispositions still stand as a record.
 
 ## Verification
 
@@ -286,13 +287,25 @@ expected = {n for n in pinned - i1_closed if not (live[n]["state"] == "CLOSED" a
 E = {e["issue"]: e for e in d["entries"]}
 assert len(E) == len(d["entries"]), "an issue appears twice"
 assert set(E) == expected, f"coverage: missing {sorted(expected - set(E))}, extra {sorted(set(E) - expected)}"
-# 2. every mutation was approved, published first, and executed or skipped
+# 2. every mutation was approved, published first, and executed or skipped; issue targets are scope entries
 M = {(m["kind"], m["target"]): m for m in batch["mutations"]}
 assert len(M) == len(batch["mutations"]), "duplicate batch entry"
+for kind, target in M:
+    assert kind in ("issue_close", "issue_comment", "pr_open", "pr_merge"), f"bad batch kind {kind}"
+    if kind == "issue_close":
+        assert target in E, f"batch closes #{target}, which is not a scope entry"
+    elif kind == "issue_comment":
+        assert target == 361, f"batch comments on #{target}; only the #361 redirect is approved"
+    else:
+        assert type(target) is str and target, f"{kind} must be approved by head branch name"
 done = {}
 for r in d["receipts"]:
-    key = (r["kind"], r["issue_or_pr"])
-    assert r["kind"] in ("issue_close", "issue_comment", "pr_open", "pr_merge") and type(r["issue_or_pr"]) is int, f"bad receipt {key}"
+    n = r["issue_or_pr"]
+    assert type(n) is int, f"bad receipt {r}"
+    if r["kind"] in ("pr_open", "pr_merge"):
+        key = (r["kind"], sr.gh_json("pr", "view", str(n), "-R", sr.REPO, "--json", "headRefName")["headRefName"])
+    else:
+        key = (r["kind"], n)
     assert key in M, f"{key} executed but not in the published approved batch"
     assert r["started_at"] >= batch_at, f"{key} started before the approved batch was published"
     if r["exit_code"] == 0:
@@ -301,7 +314,7 @@ for key in M:
     if key in done:
         continue
     if key[0] == "issue_close":
-        assert key[1] in E and E[key[1]]["action"] == "skipped", f"approved {key} neither executed nor recorded as skipped"
+        assert E[key[1]]["action"] == "skipped", f"approved {key} neither executed nor recorded as skipped"
     else:
         assert d["run_status"] != "complete", f"approved {key} not executed in a complete run"
 if d["run_status"] == "verdicts_only":
@@ -312,6 +325,7 @@ for n, e in E.items():
     disp, act = e["disposition"], e["action"]
     assert disp in ORDER and e["evidence"].strip(), f"#{n} bad disposition or empty evidence"
     assert [t["category"] for t in e["precedence_trace"]] == ORDER[:ORDER.index(disp) + 1], f"#{n} precedence trace is not the ordered prefix up to {disp}"
+    assert [t["applies"] for t in e["precedence_trace"]] == [False] * ORDER.index(disp) + [True], f"#{n} trace applies values contradict disposition {disp}"
     if n in A or n in snap_x:
         assert disp == "EXCLUDED", f"#{n} is excluded by the snapshot but dispositioned {disp}"
     k = ("issue_close", n)
@@ -321,6 +335,8 @@ for n, e in E.items():
         assert M[k]["reason"] == ("completed" if disp == "ALREADY-FIXED" else "not_planned"), f"#{n} approved close reason"
     if act == "skipped":
         assert k in M and e.get("skip_reason", "").strip(), f"#{n} skipped without an approved close or a reason"
+    if act == "declined":
+        assert k not in M and disp in ("ALREADY-FIXED", "OBSOLETE", "PARKED"), f"#{n} declined but approved, or not closable"
     if k not in done:
         continue
     fixed = disp == "ALREADY-FIXED"
@@ -369,12 +385,14 @@ python3 -m pytest -q phase-loop-runtime/tests/test_entry_doc_check.py
 ```
 
 Script 2 was run before this revision against synthetic runs with a fake `gh`. It passes a correct
-complete run, an unrelated later comment, a close skipped after its row merged, and a terminal descope.
+complete run, an unrelated later comment, a close skipped after its row merged, a terminal descope, and a close declined from the batch.
 It fails a close of an issue R1 named before the close, a PARKED close of content-bound #341, an
 ALREADY-FIXED close of #595 without conditions, a precedence trace that skips STILL-LIVE, a floor-class
 close without a negative, an approved close neither executed nor skipped, a register row for an issue
 neither closed nor skipped, a permalink whose row names another issue, a mutation started before the
-batch was published, a dropped entry, and a closed #361.
+batch was published, a dropped entry, a closed #361, a `pr_open` receipt for another branch's PR, an
+approved and executed close of out-of-scope #841, a trace recording STILL-LIVE as applying under a
+PARKED disposition, and a comment approved on an issue other than #361.
 
 **Measurement (convergence rule 4).** The attributable delta is the number of successful `issue_close`
 receipts. The raw open count before and after is recorded but not asserted, because codex opens and
@@ -382,16 +400,16 @@ closes issues concurrently. #361 contributes nothing.
 
 **Expected delta.** A judgmental band, not a statistical interval.
 - **Base pool:** the 59 non-overlap scope issues (74 B ∪ D without #361, minus the 15 overlap issues), EXCLUDED and SCHEDULED issues included.
-- **Rate:** applying the sample's closable rate of 33–47% gives about 19–28.
+- **Rate:** the sample's closable rate of 33–47% gives about 19–28; the unfinished-detailed-plan bindings found in round 2 lower that slightly.
 - **Overlap:** returned overlap issues may add 0–5 more.
-- **Expectation: 18–33 closes**, before any operator decision on the president-`DEFERRED` group. Below 12 is reported as under-delivery, with reasons. Above 40 triggers an audit of every floor-class call before closing.
+- **Expectation: 15–30 closes**, before any operator decision on the president-`DEFERRED` group. Below 10 is reported as under-delivery, with reasons. Above 40 triggers an audit of every floor-class call before closing.
 
 ## Acceptance criteria
 
 - [ ] `shared_rules.py --self-test` exits 0, and verification script 2 prints `dispositions OK` for the run's `run_status`.
 - [ ] If `run_status` is `complete`: `docs/registers/deferred-findings.md` on main is unowned and unread, contains R-001..R-005, and has a parseable row for every not-planned close and no row for an issue neither closed nor skipped; the register PR's diff is exactly `AGENTS.md` and the register; docs-audit and `test_entry_doc_check.py` pass; the PR merged after a 4/4 board and green CI; #361 is open with its redirect comment.
 - [ ] If `run_status` is `verdicts_only`: no issue was closed, no register PR merged, and the dispositions artifact is published.
-- [ ] The attributable delta (successful close receipts) is reported against the 18–33 band, with reasons if it falls outside, and no issue was opened by this item.
+- [ ] The attributable delta (successful close receipts) is reported against the 15–30 band, with reasons if it falls outside, and no issue was opened by this item.
 
 ## Execution Policy
 
