@@ -929,6 +929,120 @@
             "run_id": "20260916-json-depth-825-execution-r1"
           },
           "transition": "executing"
+        },
+        {
+          "at": "2026-09-17T00:37:16Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "all_four_bounded_acceptance_items_satisfied": true,
+            "artifact": "plans/detailed-json-depth-825-20260916.md",
+            "current_descendant_main_ci": {
+              "chronology": [
+                {
+                  "chronology_passed": true,
+                  "passed": 5769,
+                  "path": "artifact-10474317799/gate-a/junit-gate-a.xml",
+                  "sha256": "6faef7a1935decf6b630ff9269d0071feb21af30a05ff8cbff29ed02dfcb222a",
+                  "skipped": 255
+                },
+                {
+                  "chronology_passed": true,
+                  "passed": 5893,
+                  "path": "artifact-10474317799/py310/junit-py310.xml",
+                  "sha256": "50755b037b5ff73dc3c8d8de3027a10f775c9b7f87b9e08cb4600f2efd19b040",
+                  "skipped": 116
+                }
+              ],
+              "conclusion": "success",
+              "head": "11283f8084c4fde9c7d2e0e9b727d2076f4a2fd6",
+              "run_id": "35161079379"
+            },
+            "diagnostic": "Bounded merged repair qualified. Original failed main CI35146332035 remains failed with missing JUnit; descendant main passes after agent-harness#871. Historical HARDEN/RUNTIME and downstream acceptance remain unresolved.",
+            "dirty_path_classification": {
+              "non_plan_output": [],
+              "plan_owned": [
+                "plans/manifest.json"
+              ],
+              "preexisting_unrelated": []
+            },
+            "doc_delta_decision": "docs_updated",
+            "eligible_seats": [
+              {
+                "completed_leg_sha256": "28e38f4f11c5dc6a4810c27ec1aca0b047f347d4c5e486a814172a8e1abe0705",
+                "leg": "grok",
+                "result_sha256": "328e4e678fe52e562fd245e3f989e1e54e37b338ecd494242826b20a2b7ea085",
+                "review": "final-review-r1"
+              },
+              {
+                "completed_leg_sha256": "0da72cf75e90967accad81a9b562a2fbf951477eaaa6ac3bdefa9a8584b7bdec",
+                "leg": "claude",
+                "result_sha256": "328e4e678fe52e562fd245e3f989e1e54e37b338ecd494242826b20a2b7ea085",
+                "review": "final-review-r1"
+              },
+              {
+                "completed_leg_sha256": "8e511d6ebffd4d0de23295d64cac948d10c205ac62545888a13e222efd9354e0",
+                "leg": "codex",
+                "result_sha256": "328e4e678fe52e562fd245e3f989e1e54e37b338ecd494242826b20a2b7ea085",
+                "review": "final-review-r1"
+              },
+              {
+                "completed_leg_sha256": "07044d60e8e3a7484efc5c3b72c1f6e755625c653c9658a2d51b8483c128e725",
+                "leg": "gemini",
+                "result_sha256": "328e4e678fe52e562fd245e3f989e1e54e37b338ecd494242826b20a2b7ea085",
+                "review": "final-review-r1"
+              }
+            ],
+            "final_approval_sha256": "ee9401a324f95a1c3cb08ff14c2fe371758389d9162e35c5e49b330ba8136d85",
+            "final_ci_run": {
+              "conclusion": "success",
+              "head": "b3a432b8ccabd42c81e2092a62af2e7c28ad4bcb",
+              "run_id": "35144478491"
+            },
+            "final_review_four_native_agree": true,
+            "handoff_ref": ".dev-skills/handoffs/codex-execute-detailed/20260917-merged-repairs-closeout-r1.md",
+            "historical_source_review_pending_flags_superseded_by_this_event": true,
+            "independent_issuer": false,
+            "installed_runtime_modules_equal_merged": 205,
+            "interpreter_versions": [
+              "3.10",
+              "3.11",
+              "3.12",
+              "3.13",
+              "3.14"
+            ],
+            "merged_adoption_artifact_sha256": "5453246b4fd0a0fe5573f2068869a602a1ae49974624499377b2df3a53d24949",
+            "merged_head": "31ca27c62ceaca77cca4d7abb110bc413d181c87",
+            "merged_source_and_tests_unchanged_in_current_main": {
+              "phase-loop-runtime/scripts/verify_harden_evidence.py": "bd00a2e80f0a323fd82001a236c436f10e31cddd39d4f2b598bc6aa1032a8eb9",
+              "phase-loop-runtime/tests/test_harden_json_depth_825.py": "606446ba888fd8a1ce0b3121f05369c889b31a98dd719899020fd2848e0dad8f",
+              "plans/detailed-json-depth-825-20260916.md": "2c81983591330c98440829926d0feac3d90c168cc0cf718fa921a229069458ff"
+            },
+            "merged_standalone_sha256": "bd00a2e80f0a323fd82001a236c436f10e31cddd39d4f2b598bc6aa1032a8eb9",
+            "merged_standalone_verifier": "/mnt/HC_Volume_105438154/trains/agent-harness-runtime-repairs-20260910/json-depth-825-merged-operational-r1-20260916/phase-loop-runtime/scripts/verify_harden_evidence.py",
+            "native_review_cleanup_verified": true,
+            "original_failed_runs_preserved": true,
+            "original_main_ci": {
+              "conclusion": "failure",
+              "head": "31ca27c62ceaca77cca4d7abb110bc413d181c87",
+              "run_id": "35146332035"
+            },
+            "phase_acceptance": false,
+            "pr_url": "https://github.com/Consiliency/agent-harness/pull/868",
+            "private_recovery_commit": "b4428ec67524dc05c28240ff3cf3ce6642b415b4",
+            "private_recovery_prefix": "handoff/json-depth-825-main-failure-r3-20260916",
+            "private_restoration_verified": true,
+            "reflection_ref": "/home/viperjuice/.codex/skills/codex-execute-detailed/reflections/76c30b55/codex-merged-repairs-closeout-20260917/20260917-merged-repairs-closeout-r1.md",
+            "regression_cases_per_interpreter": 146,
+            "reviewed_head": "b3a432b8ccabd42c81e2092a62af2e7c28ad4bcb",
+            "run_id": "20260917-merged-repairs-closeout-r1",
+            "scope": "bounded json-depth-825 repair only",
+            "spec_delta_closeout": "no_spec_delta",
+            "unchanged_full_selftest_adversarial_rejections_per_interpreter": 337,
+            "verification_artifact_path": "/mnt/HC_Volume_105438154/trains/agent-harness-runtime-repairs-20260910/json-depth-825-merged-operational-r1-20260916/phase-loop-runtime/.phase-loop/diagnostics/json-depth-825-merged-r1/py314/verification.json",
+            "verification_status": "passed",
+            "worktree_removal_pending_final_archive": true
+          },
+          "transition": "completed"
         }
       ],
       "owner_skill": "codex-plan-detailed",
@@ -938,10 +1052,10 @@
       "required_plan_review_pending": false,
       "roadmap_ref": null,
       "slug": "json-depth-825-20260916",
-      "status": "executing",
+      "status": "completed",
       "task_summary": "Bound HARDEN verifier JSON nesting across Python versions (agent-harness#825)",
       "type": "detailed",
-      "updated_at": "2026-09-16T19:48:55.155908+00:00"
+      "updated_at": "2026-09-17T00:37:16Z"
     },
     {
       "acceptance_criteria_count": 4,
@@ -1165,6 +1279,117 @@
             "test_oracle_amendment": true
           },
           "transition": "executing"
+        },
+        {
+          "at": "2026-09-17T00:37:16Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "all_four_bounded_acceptance_items_satisfied": true,
+            "artifact": "plans/detailed-procfs-oracle-870-20260916.md",
+            "current_descendant_main_ci": {
+              "chronology": [
+                {
+                  "chronology_passed": true,
+                  "passed": 5769,
+                  "path": "artifact-10474317799/gate-a/junit-gate-a.xml",
+                  "sha256": "6faef7a1935decf6b630ff9269d0071feb21af30a05ff8cbff29ed02dfcb222a",
+                  "skipped": 255
+                },
+                {
+                  "chronology_passed": true,
+                  "passed": 5893,
+                  "path": "artifact-10474317799/py310/junit-py310.xml",
+                  "sha256": "50755b037b5ff73dc3c8d8de3027a10f775c9b7f87b9e08cb4600f2efd19b040",
+                  "skipped": 116
+                }
+              ],
+              "conclusion": "success",
+              "head": "11283f8084c4fde9c7d2e0e9b727d2076f4a2fd6",
+              "run_id": "35161079379"
+            },
+            "diagnostic": "Bounded merged repair qualified. Original failed main CI35146332035 remains failed with missing JUnit; descendant main passes after agent-harness#871. Historical HARDEN/RUNTIME and downstream acceptance remain unresolved.",
+            "dirty_path_classification": {
+              "non_plan_output": [],
+              "plan_owned": [
+                "plans/manifest.json"
+              ],
+              "preexisting_unrelated": []
+            },
+            "doc_delta_decision": "docs_updated",
+            "eligible_seats": [
+              {
+                "completed_leg_sha256": "a5b5c96bdafffa250ed6a11a2055dec01118c32d7b6cc9037dd4afa105d8783a",
+                "leg": "grok",
+                "result_sha256": "66fee5a1c1dcb219bd796d5a478ea314ae5f6b2d852c90ffef80690d8aa10476",
+                "review": "final-review-r1"
+              },
+              {
+                "completed_leg_sha256": "9c042f10cf90e04dba64397ca1c763ba8a2f7f33f391938cabdc483daa6eaf2a",
+                "leg": "claude",
+                "result_sha256": "66fee5a1c1dcb219bd796d5a478ea314ae5f6b2d852c90ffef80690d8aa10476",
+                "review": "final-review-r1"
+              },
+              {
+                "completed_leg_sha256": "d03d1dff2edc93a7c0e0cd15929fd588cafbaa9a97cf941440c53f24466297d8",
+                "leg": "codex",
+                "result_sha256": "66fee5a1c1dcb219bd796d5a478ea314ae5f6b2d852c90ffef80690d8aa10476",
+                "review": "final-review-r1"
+              },
+              {
+                "completed_leg_sha256": "2a137808c7481d2d401b7b100281ce09d0271940968f22d94d28756c4b0f725e",
+                "leg": "gemini",
+                "result_sha256": "66fee5a1c1dcb219bd796d5a478ea314ae5f6b2d852c90ffef80690d8aa10476",
+                "review": "final-review-r1"
+              }
+            ],
+            "final_approval_sha256": "989d69a4c14d7b503f8d63667aff24d2551787307b32fac4a8014b332cbf90d5",
+            "final_ci_run": {
+              "conclusion": "success",
+              "head": "ec1d24da4f152560a2f4406cc74f4864a6613b93",
+              "run_id": "35158670409"
+            },
+            "final_review_four_native_agree": true,
+            "handoff_ref": ".dev-skills/handoffs/codex-execute-detailed/20260917-merged-repairs-closeout-r1.md",
+            "historical_source_review_pending_flags_superseded_by_this_event": true,
+            "independent_issuer": false,
+            "installed_runtime_modules_equal_merged": 205,
+            "interpreter_versions": [
+              "3.10",
+              "3.11",
+              "3.12",
+              "3.13",
+              "3.14"
+            ],
+            "merged_adoption_artifact_sha256": "b2abd3467cd4f34aa46dc1bd833c622b3ab5837492060253478e69f23295de01",
+            "merged_head": "11283f8084c4fde9c7d2e0e9b727d2076f4a2fd6",
+            "merged_source_and_tests_unchanged_in_current_main": {
+              "phase-loop-runtime/tests/test_runtime_adapter_output_720.py": "249881786c7a637f9b8c094998096a7005bdf15f5372dc90572a0b3b01e1060d",
+              "phase-loop-runtime/tests/test_runtime_procfs_identity_870.py": "bb0eae977dfa0e5b869f6f13e64f635251c9d6d167958f2d7fcf3f774a1e416e",
+              "plans/detailed-procfs-oracle-870-20260916.md": "331af995cc61e4908c0507f673326fb8cfa48029d1f42ab27eae77fa1fe6acc9"
+            },
+            "native_review_cleanup_verified": true,
+            "original_failed_runs_preserved": true,
+            "original_main_ci": {
+              "conclusion": "success",
+              "head": "11283f8084c4fde9c7d2e0e9b727d2076f4a2fd6",
+              "run_id": "35161079379"
+            },
+            "phase_acceptance": false,
+            "pr_url": "https://github.com/Consiliency/agent-harness/pull/871",
+            "private_recovery_commit": "68bb7f16385b438c34ad789b6b3111cfc105e76a",
+            "private_recovery_prefix": "handoff/procfs-oracle-870-postmerge-recovery-r1-20260917",
+            "private_restoration_verified": true,
+            "reflection_ref": "/home/viperjuice/.codex/skills/codex-execute-detailed/reflections/76c30b55/codex-merged-repairs-closeout-20260917/20260917-merged-repairs-closeout-r1.md",
+            "regression_cases_per_interpreter": 86,
+            "reviewed_head": "ec1d24da4f152560a2f4406cc74f4864a6613b93",
+            "run_id": "20260917-merged-repairs-closeout-r1",
+            "scope": "bounded procfs-oracle-870 repair only",
+            "spec_delta_closeout": "no_spec_delta",
+            "verification_artifact_path": "/mnt/HC_Volume_105438154/trains/agent-harness-runtime-repairs-20260910/procfs-oracle-870-merged-operational-r1-20260916/phase-loop-runtime/.phase-loop/diagnostics/procfs-oracle-870-merged-r1/py314/verification.json",
+            "verification_status": "passed",
+            "worktree_removal_pending_final_archive": true
+          },
+          "transition": "completed"
         }
       ],
       "owner_skill": "codex-plan-detailed",
@@ -1175,11 +1400,11 @@
       "required_plan_review_pending": false,
       "roadmap_ref": null,
       "slug": "procfs-oracle-870-20260916",
-      "status": "executing",
+      "status": "completed",
       "task_summary": "Repair procfs process-exit liveness oracle (agent-harness#870)",
       "test_oracle_amendment": true,
       "type": "detailed",
-      "updated_at": "2026-09-16T22:31:07.667236+00:00"
+      "updated_at": "2026-09-17T00:37:16Z"
     },
     {
       "acceptance_criteria_count": 5,
