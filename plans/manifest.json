@@ -795,6 +795,59 @@
       "updated_at": "2026-07-28T22:28:34Z"
     },
     {
+      "acceptance_criteria_count": 8,
+      "created_at": "2026-09-17T08:22:16Z",
+      "file": "plans/detailed-fixture-isolation-884-20260917.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260917T082216Z-e2ecbf.md",
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-09-17T08:22:16Z",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "amended_at": "2026-09-17T08:32:18Z",
+            "implementation_started": false,
+            "plan_approval": false,
+            "plan_sha256": "361d109ac5d65611ea58ad4f6ff87f2531ef85efaf1bb2291247d51b38ef5dc5",
+            "planning_artifact_only": true,
+            "review_dispatched": false,
+            "revision": 1,
+            "source_approval": false
+          },
+          "transition": "committed"
+        },
+        {
+          "at": "2026-09-17T08:50:48Z",
+          "by": "codex-execute-detailed",
+          "metadata": {
+            "author_model": "GPT-5.6Terra/max",
+            "author_vendor": "OpenAI",
+            "helper_repair_started": false,
+            "plan_file": "plans/detailed-fixture-isolation-884-20260917.md",
+            "plan_sha256": "361d109ac5d65611ea58ad4f6ff87f2531ef85efaf1bb2291247d51b38ef5dc5",
+            "regression_review_pending": true,
+            "run_id": "fixture-test-author-r1",
+            "scope": "additive fixture-isolation regression authoring only",
+            "source_approval": false,
+            "test_approval": false,
+            "test_source_sha256_before": "283dc82212a6c4d7e8002500170479d5e23fef8c61f9f0de8b55214b1344042a",
+            "tests_executed": false
+          },
+          "transition": "executing"
+        }
+      ],
+      "owner_skill": "codex-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-detailed/reflections/6493dd71/codex-leases-807-integration-20260917/20260917T082216Z-e2ecbf.md",
+      "roadmap_ref": null,
+      "slug": "fixture-isolation-884-20260917",
+      "status": "executing",
+      "task_summary": "Isolate agent-harness#883 Git fixtures for the confirmed agent-harness#884 N3 defect without changing production runtime code",
+      "type": "detailed",
+      "updated_at": "2026-09-17T08:50:48Z"
+    },
+    {
       "acceptance_criteria_count": 4,
       "created_at": "2026-07-18T07:00:00Z",
       "file": "plans/detailed-grokexec-effort-clamp-224-20260718.md",
