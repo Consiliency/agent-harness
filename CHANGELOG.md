@@ -6,6 +6,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Bind the packaged vector manifest to the contract pin (agent-harness#527)
+
+- `run_outside_agent_vectors()` with no explicit manifest now blocks with `digest_mismatch` unless the
+  packaged manifest's raw-byte SHA-256 equals the contract pin's `vector_manifest_hash`. The existing
+  `manifest_digest` arm never fired for the packaged manifest, because it carries no such key. Explicitly
+  supplied manifests keep their existing checks.
+
 ### Plan validators fail closed when a check cannot run (agent-harness#552)
 
 - `validate_plan_doc.py` reports `(GOVLEAN) contract_bug` when the GOVLEAN plan-pin lint cannot be
