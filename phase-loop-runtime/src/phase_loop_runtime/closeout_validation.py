@@ -140,9 +140,27 @@ def verify_enforce_mode(env: Mapping[str, str] | None = None, *, default: str) -
 
     The parse is single-sourced here. ``default`` is now DECLARED by each caller
     rather than implied by which copy of the parser it reached, and it is pinned
-    by test_verify_enforce_mode_defaults_are_declared. Collapsing the two
-    defaults into one is a live behaviour change on every host (see the PR
-    description) and is deliberately NOT done here.
+    by test_verify_enforce_mode_defaults_are_declared.
+
+    The split defaults are INTENDED (operator ruling on agent-harness#796):
+
+    - ``hard`` for the closeout evidence gate
+      (``verification_enforcement_mode``): it validates evidence a run has
+      already produced, so a failure there is a real integrity defect and fails
+      closed.
+    - ``warn`` for the execute preflight (``runner._verification_enforcement_mode``)
+      and train re-verify (``train_runner._train_reverify_enforcement_mode``):
+      they judge a launch before its evidence exists. When the mode is ``hard``,
+      the execute preflight (``runner._execute_verification_preflight_blocker``)
+      blocks any launch whose plan has intake verification findings or no
+      resolvable ``automation.suite_command``. Making ``hard`` the preflight
+      DEFAULT would therefore block such launches on every host that leaves the
+      variable unset. Under the ``warn`` default that preflight is skipped
+      entirely and emits nothing. Train re-verify still runs any declared
+      verification, and treats a plan with no verification as a pass. Evidence
+      is still enforced later, at closeout.
+
+    Setting the variable to ``hard`` or ``warn`` applies that posture to all three.
     """
     if env is None:
         import os as _os
