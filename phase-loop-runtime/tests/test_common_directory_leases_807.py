@@ -9,8 +9,24 @@ import time
 import pytest
 
 
+_GIT_LOCATION_ENV = (
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_COMMON_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    "GIT_GRAFT_FILE",
+    "GIT_SHALLOW_FILE",
+)
+
+
 def git(directory, *args):
-    subprocess.run(["git", "-C", str(directory), *args], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(directory), *args], check=True, capture_output=True,
+                   env={key: value for key, value in os.environ.items() if key not in _GIT_LOCATION_ENV})
 
 
 @pytest.fixture
@@ -29,7 +45,120 @@ def repositories(tmp_path):
 
 
 def environment():
-    return dict(os.environ, PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"))
+    return dict({key: value for key, value in os.environ.items() if key not in _GIT_LOCATION_ENV},
+                PYTHONPATH=str(Path(__file__).resolve().parents[1] / "src"))
+
+
+def test_fixture_helpers_scrub_repository_routing_git_environment(tmp_path, monkeypatch):
+    import hashlib
+
+    control_env = {key: value for key, value in os.environ.items() if key not in _GIT_LOCATION_ENV}
+    external = (tmp_path / "external").resolve()
+    intended = (tmp_path / "intended").resolve()
+    external.mkdir()
+    intended.mkdir()
+    subprocess.run(["git", "-C", str(external), "init", "-q"], check=True, capture_output=True,
+                   env=control_env)
+    (external / "tracked.txt").write_text("baseline\n")
+    subprocess.run(["git", "-C", str(external), "add", "tracked.txt"], check=True, capture_output=True,
+                   env=control_env)
+    subprocess.run(
+        ["git", "-C", str(external), "-c", "user.name=Fixture",
+         "-c", "user.email=fixture@example.invalid", "commit", "-q", "-m", "baseline"],
+        check=True, capture_output=True, env=control_env,
+    )
+    external_index = Path(subprocess.run(
+        ["git", "-C", str(external), "rev-parse", "--path-format=absolute", "--git-path", "index"],
+        check=True, capture_output=True, text=True, env=control_env,
+    ).stdout.strip())
+    external_head_before = subprocess.run(
+        ["git", "-C", str(external), "rev-parse", "HEAD"], check=True, capture_output=True, text=True,
+        env=control_env,
+    ).stdout.strip()
+    external_index_before = external_index.read_bytes()
+    external_index_digest_before = hashlib.sha256(external_index_before).hexdigest()
+    ambient_git_variable_names = sorted(name for name in os.environ if name.startswith("GIT_"))
+    routing_paths = {
+        "GIT_DIR": (external / ".git").resolve(),
+        "GIT_WORK_TREE": external,
+        "GIT_COMMON_DIR": (external / ".git").resolve(),
+        "GIT_INDEX_FILE": external_index.resolve(),
+    }
+    for name in _GIT_LOCATION_ENV:
+        if name not in routing_paths:
+            monkeypatch.delenv(name, raising=False)
+    for name, path in routing_paths.items():
+        monkeypatch.setenv(name, str(path))
+    git(intended, "init", "-q")
+    git_init_completed = True
+    git(intended, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+        "commit", "-q", "--allow-empty", "-m", "intended")
+    git_commit_completed = True
+    intended_git = intended / ".git"
+    intended_commit_identity = None
+    if intended_git.is_dir():
+        intended_commit_identity = subprocess.run(
+            ["git", "-C", str(intended), "rev-parse", "HEAD"], check=True, capture_output=True,
+            text=True, env=control_env,
+        ).stdout.strip()
+    child = subprocess.run(
+        [sys.executable, "-c", """
+from pathlib import Path
+import sys
+from phase_loop_runtime.convergence.broker.live import repository_namespace_root
+print(repository_namespace_root(Path(sys.argv[1])))
+""", str(intended)],
+        env=environment(), capture_output=True, text=True, timeout=5,
+    )
+    external_head_after = subprocess.run(
+        ["git", "-C", str(external), "rev-parse", "HEAD"], check=True, capture_output=True, text=True,
+        env=control_env,
+    ).stdout.strip()
+    external_index_after = external_index.read_bytes()
+    external_index_digest_after = hashlib.sha256(external_index_after).hexdigest()
+    child_namespace = child.stdout.strip()
+    child_namespace_path = Path(child_namespace).resolve() if child.returncode == 0 and child_namespace else None
+    expected_namespace_parent = intended_git.resolve()
+    namespace_in_intended_git = child_namespace_path is not None and (
+        child_namespace_path == expected_namespace_parent
+        or expected_namespace_parent in child_namespace_path.parents
+    )
+    namespace_outside_external = child_namespace_path is not None and (
+        child_namespace_path != external and external not in child_namespace_path.parents
+    )
+    observations = {
+        "ambient_git_variable_names": ambient_git_variable_names,
+        "child_namespace": child_namespace,
+        "child_returncode": child.returncode,
+        "child_stderr": child.stderr,
+        "expected_namespace_parent": str(expected_namespace_parent),
+        "external_head_after": external_head_after,
+        "external_head_before": external_head_before,
+        "external_index_after": external_index_after,
+        "external_index_before": external_index_before,
+        "external_index_digest_after": external_index_digest_after,
+        "external_index_digest_before": external_index_digest_before,
+        "external_index_path": str(external_index),
+        "git_commit_completed": git_commit_completed,
+        "git_init_completed": git_init_completed,
+        "intended_commit_identity": intended_commit_identity,
+        "intended_git_exists": intended_git.is_dir(),
+        "namespace_in_intended_git": namespace_in_intended_git,
+        "namespace_outside_external": namespace_outside_external,
+        "routing_paths": {name: str(path) for name, path in routing_paths.items()},
+    }
+    assert (
+        git_init_completed
+        and git_commit_completed
+        and external_head_before == external_head_after
+        and external_index_before == external_index_after
+        and external_index_digest_before == external_index_digest_after
+        and intended_git.is_dir()
+        and intended_commit_identity is not None
+        and child.returncode == 0
+        and namespace_in_intended_git
+        and namespace_outside_external
+    ), observations
 
 
 @pytest.mark.parametrize("shape,expected", [
