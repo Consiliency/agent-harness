@@ -43,6 +43,16 @@ def run_outside_agent_vectors(
 ) -> tuple[OutsideAgentVectorResult, ...]:
     manifest_data, manifest_digest = _load_manifest(manifest)
     blockers = _validate_manifest(manifest_data, manifest_digest)
+    if not blockers and manifest is None and manifest_digest != contract_pin.vector_manifest_hash:
+        # The packaged manifest carries no `manifest_digest`, so `_validate_manifest`'s digest arm never
+        # fires for it. Bind it to the contract pin instead (agent-harness#527 F4).
+        blockers = (
+            OutsideAgentBlocker(
+                "digest_mismatch",
+                "packaged outside-agent vector manifest does not match the contract pin",
+                ref=contract_pin.vector_manifest_name,
+            ),
+        )
     if blockers:
         return (
             OutsideAgentVectorResult(
