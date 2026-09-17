@@ -380,6 +380,18 @@ class LinearizableAdmissionStore:
                                 )
                         return None
 
+                    # agent-harness#655: a grant stored under the legacy v1 authority digest is never
+                    # silently re-admitted under v2. Refuse it after the epoch/policy/checkpoint refusals
+                    # but before deduplication and the branch-history, scope and diff predicates, so
+                    # later branch history cannot let a stale authority through as a fresh grant.
+                    legacy_digest = auth.legacy_v1_authority_digest
+                    for record in records:
+                        if record.binding is not None and record.binding.authority_digest == legacy_digest:
+                            raise PermissionError(
+                                "authority was granted under the legacy v1 authority digest; "
+                                "replay refused (agent-harness#655): readmit forward from the granted head"
+                            )
+
                     # Deduplication check
                     for record in records:
                         if record.binding is not None and record.binding.authority_digest == auth.authority_digest:

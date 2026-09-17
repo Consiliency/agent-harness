@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass, field
 
 from enum import Enum
@@ -236,6 +237,9 @@ def evaluate_resource_isolation(
     return ResourceIsolationDecision(True, "disjoint paths with frozen interfaces")
 
 
+_AUTHORITY_DIGEST_V2_DOMAIN = b"FABREADMIT-AUTHORITY-DIGEST-v2\0"
+
+
 @dataclass(frozen=True)
 class DeltaReadmitAuthority:
     """IF-0-FABREADMIT-1 immutable delta readmission request."""
@@ -269,7 +273,11 @@ class DeltaReadmitAuthority:
             raise ValueError("DeltaReadmitAuthority authority fields cannot be empty")
 
     @property
-    def authority_digest(self) -> str:
+    def legacy_v1_authority_digest(self) -> str:
+        """The pre-agent-harness#655 (v1) digest of this authority, kept ONLY to refuse replays of v1 grants.
+
+        v1 is collision-prone; never use it as an identity or a dedup key.
+        """
         payload = (
             f"{self.repository}\0{self.branch}\0{self.prior_head_sha}\0"
             f"{self.proposed_head_sha}\0{self.train_id}\0{self.node_id}\0"
@@ -277,6 +285,39 @@ class DeltaReadmitAuthority:
             f"{','.join(self.owned_scope)}"
         )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    @property
+    def authority_digest(self) -> str:
+        """Readmission authority digest, v2 (agent-harness#655).
+
+        The v1 preimage NUL-joined the fields and comma-joined ``owned_scope``, so
+        ``("a.py", "b.py")`` and ``("a.py,b.py",)`` collided, and admission
+        deduplication (which compares this digest before the scope checks) could reuse
+        a grant for a different authority. v2 hashes a domain-separated, canonical JSON
+        encoding of the same bound fields, which is injective. Adapter worktree,
+        checkpoint root and base remain outside the digest, as in v1. Stored v1 grant
+        bindings no longer compare equal; admission refuses a replay whose stored grant
+        binding carries this authority's legacy v1 digest (see
+        ``LinearizableAdmissionStore.admit_next``) rather than re-admitting it.
+        """
+        preimage = json.dumps(
+            {
+                "repository": self.repository,
+                "branch": self.branch,
+                "prior_head_sha": self.prior_head_sha,
+                "proposed_head_sha": self.proposed_head_sha,
+                "train_id": self.train_id,
+                "node_id": self.node_id,
+                "fab_run_id": self.fab_run_id,
+                "roadmap_digest": self.roadmap_digest,
+                "provenance_digest": self.provenance_digest,
+                "owned_scope": list(self.owned_scope),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        return hashlib.sha256(_AUTHORITY_DIGEST_V2_DOMAIN + preimage.encode("utf-8")).hexdigest()
 
     @property
     def attempt_identity(self) -> str:
