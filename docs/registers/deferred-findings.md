@@ -694,8 +694,8 @@ This issue is non-blocking for the FABREADMIT tests-only lane under the digest-b
 - **bound criteria:** none
 - **current-main check:** c0e51591: node still at phase-loop-runtime/tests/test_tdd_chronology.py:5746; no `gc.auto` stabilization under phase-loop-runtime/tests
 - **safety floor:** not floor-class — a temp-directory cleanup race that fails loudly (`OSError`)
-- **disposition:** PARKED — President-DEFERRED test-infrastructure flake.
-- **promotion:** none
+- **disposition:** STILL-LIVE — reproduced in required package CI after substantive assertions; repair remains separate from agent-harness#883.
+- **promotion:** PROMOTED 2026-09-17 — [agent-harness#656 recurrence evidence](https://github.com/Consiliency/agent-harness/issues/656#issuecomment-5712891240).
 - **finding:**
 
 Issue body:
