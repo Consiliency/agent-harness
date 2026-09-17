@@ -216,7 +216,7 @@ It contributes nothing to the measured delta.
 
 ## Dependencies & order
 
-1. **Start contract.** Check item 1's artifact against its "Contract with item 2" with `published()`. On any failure, do not start and report to the operator. Run `shared_rules.py --self-test` too; it must exit 0.
+1. **Start contract.** PR agent-harness#873 has merged (item 1's "Before execution"). Check item 1's artifact against its "Contract with item 2" with `published()`. On any failure, do not start and report to the operator. Run `shared_rules.py --self-test` too; it must exit 0.
 2. **Scope.** The scope is:
 
    ((pinned B ∪ D) − {361}) − {issues with a successful item-1 `issue_close` receipt} − {issues GitHub shows closed before `started_at`}
@@ -274,7 +274,7 @@ assert i1["run_status"] in ("complete", "verdicts_only"), "item 1 not in a start
 d = json.load(open(f"{T}/item2-dispositions.json"))
 batch, batch_at = sr.published(f"{T}/item2-publication-receipts.json", "batch")
 art, _ = sr.published(f"{T}/item2-publication-receipts.json", "artifact")
-assert art == d and d["schema"] == "item2_dispositions.v1" and d["run_status"] in ("complete", "verdicts_only", "aborted"), "schema/run_status"
+assert art == d and d["schema"] == "item2_dispositions.v1" and d["run_status"] in ("complete", "verdicts_only"), "schema/run_status (an aborted run never validates)"
 assert batch["approved_at"] <= batch_at, "batch published before its approval"
 ORDER = ["EXCLUDED", "SCHEDULED", "DECISION-REQUIRED", "STILL-LIVE", "ALREADY-FIXED", "OBSOLETE", "PARKED"]
 A = set(s["buckets"]["A1"] + s["buckets"]["A2"] + s["buckets"]["A3"])
@@ -392,7 +392,7 @@ close without a negative, an approved close neither executed nor skipped, a regi
 neither closed nor skipped, a permalink whose row names another issue, a mutation started before the
 batch was published, a dropped entry, a closed #361, a `pr_open` receipt for another branch's PR, an
 approved and executed close of out-of-scope #841, a trace recording STILL-LIVE as applying under a
-PARKED disposition, and a comment approved on an issue other than #361.
+PARKED disposition, a comment approved on an issue other than #361, and an `aborted` run.
 
 **Measurement (convergence rule 4).** The attributable delta is the number of successful `issue_close`
 receipts. The raw open count before and after is recorded but not asserted, because codex opens and
@@ -400,16 +400,16 @@ closes issues concurrently. #361 contributes nothing.
 
 **Expected delta.** A judgmental band, not a statistical interval.
 - **Base pool:** the 59 non-overlap scope issues (74 B ∪ D without #361, minus the 15 overlap issues), EXCLUDED and SCHEDULED issues included.
-- **Rate:** the sample's closable rate of 33–47% gives about 19–28; the unfinished-detailed-plan bindings found in round 2 lower that slightly.
+- **Rate:** applying the sample's closable rate of 33–47% gives about 19–28.
 - **Overlap:** returned overlap issues may add 0–5 more.
-- **Expectation: 15–30 closes**, before any operator decision on the president-`DEFERRED` group. Below 10 is reported as under-delivery, with reasons. Above 40 triggers an audit of every floor-class call before closing.
+- **Expectation: 18–33 closes**, before any operator decision on the president-`DEFERRED` group. Below 12 is reported as under-delivery, with reasons. Above 40 triggers an audit of every floor-class call before closing.
 
 ## Acceptance criteria
 
 - [ ] `shared_rules.py --self-test` exits 0, and verification script 2 prints `dispositions OK` for the run's `run_status`.
 - [ ] If `run_status` is `complete`: `docs/registers/deferred-findings.md` on main is unowned and unread, contains R-001..R-005, and has a parseable row for every not-planned close and no row for an issue neither closed nor skipped; the register PR's diff is exactly `AGENTS.md` and the register; docs-audit and `test_entry_doc_check.py` pass; the PR merged after a 4/4 board and green CI; #361 is open with its redirect comment.
 - [ ] If `run_status` is `verdicts_only`: no issue was closed, no register PR merged, and the dispositions artifact is published.
-- [ ] The attributable delta (successful close receipts) is reported against the 15–30 band, with reasons if it falls outside, and no issue was opened by this item.
+- [ ] The attributable delta (successful close receipts) is reported against the 18–33 band, with reasons if it falls outside, and no issue was opened by this item.
 
 ## Execution Policy
 

@@ -186,7 +186,7 @@ def pr_reference_time(pr, n):
     (original title at creation, then each rename), or its body (each userContentEdits revision; the oldest
     revision is the original body). None if no revision names it. R1 uses this as a PR source's `at`."""
     q = ("query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){"
-         "createdAt headRefName title body userContentEdits(first:100){nodes{editedAt diff}} "
+         "createdAt headRefName title body userContentEdits(first:100){totalCount nodes{editedAt diff}} "
          "timelineItems(itemTypes:[RENAMED_TITLE_EVENT],first:100){nodes{... on RenamedTitleEvent{createdAt previousTitle currentTitle}}}}}}")
     owner, name = REPO.split("/")
     p = gh_json("api", "graphql", "-f", f"query={q}", "-f", f"o={owner}", "-f", f"r={name}", "-F", f"n={pr}")["data"]["repository"]["pullRequest"]
@@ -196,10 +196,14 @@ def pr_reference_time(pr, n):
     renames = p["timelineItems"]["nodes"]
     texts = [(p["createdAt"], renames[0]["previousTitle"] if renames else p["title"])]
     texts += [(e["createdAt"], e["currentTitle"]) for e in renames]
-    edits = p["userContentEdits"]["nodes"]
-    texts += [(e["editedAt"], e["diff"] or "") for e in edits] if edits else [(p["createdAt"], p["body"] or "")]
+    edits = p["userContentEdits"]
+    if edits["totalCount"] > len(edits["nodes"]):
+        return p["createdAt"]  # history truncated: the earliest possible time, so validation fails closed
+    texts += [(e["editedAt"], e["diff"] or "") for e in edits["nodes"]] + [(p["createdAt"], p["body"] or "")] * (not edits["nodes"])
     hits = [t for t, text in texts if ref.search(text)]
-    return min(hits) if hits else None
+    if hits:
+        return min(hits)
+    return p["createdAt"] if ref.search((p["title"] or "") + "\n" + (p["body"] or "")) else None
 
 def close_failures(n, entry, issue, mutation, receipt, fixed):
     """Every reason one executed close is unsafe; [] means safe. Reads GitHub and git, never the artifact's
@@ -303,7 +307,7 @@ def grep_absent(pattern, paths, ref):
 - at ref `11283f80`, `phase_bindings(n, ref, mechanical_only=True)` returns at least one hit for each of #454, #733, #660, #358, #398, #442, #428, #341 and #360, and zero hits for each of #488, #470, #464 and #392 (cited only inside completed LEGIBLE's spec section);
 - `exclusion_union()` is a superset of the snapshot's `codex_inflight_exclusions` and contains #843;
 - the R7 fence for a string containing a run of five backticks is at least six backticks long;
-- `pr_reference_time` on fixture PRs returns the edit time for a body edited to name the issue, `createdAt` for a head branch naming it, the rename time for a renamed title, and `None` when only a longer number (`#4880`) appears;
+- `pr_reference_time` on fixture PRs returns the edit time for a body edited to name the issue, `createdAt` for a head branch naming it, the rename time for a renamed title, `None` when only a longer number (`#4880`) appears, and `createdAt` (the fail-closed earliest time) when the edit history is truncated (`totalCount` above the nodes returned) or no recorded revision explains a current mention;
 - `close_failures` on synthetic inputs (no GitHub call beyond R1): a correct #488 close whose condition cites `97d223e7` returns `[]`; the same close returns a failure when `binding_review.iv` is a quote, when its effect commit is not on main, when its conditions are empty, when the posted comment differs from the approved body, and when R1 names #488 through a source dated before `closedAt`; a close of #454 returns a binding failure;
 - `parse_register` on a register whose header shows the row format inside a fence, and whose rows carry the real bodies of #399, #463, #539 and #590, returns exactly the real rows; with one row's `origin` removed it raises.
 
@@ -311,7 +315,7 @@ def grep_absent(pattern, paths, ref):
 
 - **Schema `landed_fix_verdicts.v1`.** Top-level fields:
   - `schema`;
-  - `run_status` — `complete` (every approved issue mutation executed or skipped), `verdicts_only` (the descope path; no issue mutations), or `aborted` (stopped on an error; receipts partial). An `aborted` run never validates; the operator decides the next step;
+  - `run_status` — `complete` (every approved issue mutation executed or skipped), `verdicts_only` (the descope path; no issue mutations), or `aborted` (stopped on an error; receipts partial). The validators reject an `aborted` run; the operator decides the next step;
   - `snapshot_ref` `{path, sha256, snapshot_at, origin_main}`;
   - `executed_at`, `origin_main_at_execution` (the SHA verdicts were evaluated at; a record, not a validation input);
   - `verdicts` — exactly one entry per snapshot candidate, all 30;
@@ -357,9 +361,11 @@ On approval, write `item1-approval-batch.json` with the operator's message quote
 before the first issue mutation**, as a comment on the plans PR carrying its exact bytes (see
 Publication). Every executed issue mutation must be in the published batch with a matching body hash,
 and must start after the batch comment's `created_at`. Every approved mutation that does not execute
-is `skipped` with a reason. **A run has exactly one batch.** An item that would need to be added to or
-changed in the batch after publication is not mutated in this run: it is `skipped` with `skip_reason:
-"needs re-approval"` and waits for a new run with its own artifact and batch.
+is `skipped` with a reason. **A run has exactly one batch.** After publication nothing is added to or changed in it. An approved
+mutation whose item would need a change is `skipped` with `skip_reason: "needs re-approval"`; an item
+that would need to be *added* is not in the batch, so it is recorded as `declined` with the same
+`skip_reason` (a B/D issue may instead be `handed_to_item2`). Either waits for a new run with its own
+artifact and batch.
 
 ### Publication (cross-host)
 
@@ -377,7 +383,7 @@ or `llms*.txt`, and no public surface. The only committed file is this plan.
 ## Dependencies & order
 
 - **Before execution:**
-  1. this plan passes the board within the round cap;
+  1. this plan passes the board and PR agent-harness#873 has **merged** (while it is open, its own description and comments name candidate issues, which would put them in R1's union);
   2. the pinned snapshot hashes to the value above;
   3. the helper self-test exits 0.
 - **Execution order:**
@@ -420,7 +426,7 @@ a = json.load(open(f"{T}/item1-landed-fix-verdicts.json"))
 batch, batch_at = sr.published(f"{T}/item1-publication-receipts.json", "batch")
 art, _ = sr.published(f"{T}/item1-publication-receipts.json", "artifact")
 assert art == a, "published artifact differs from the local artifact"
-assert a["schema"] == "landed_fix_verdicts.v1" and a["run_status"] in ("complete", "verdicts_only", "aborted"), "schema/run_status"
+assert a["schema"] == "landed_fix_verdicts.v1" and a["run_status"] in ("complete", "verdicts_only"), "schema/run_status (an aborted run never validates)"
 assert batch["approved_at"] <= batch_at, "batch published before its approval"
 cand = sorted(int(n) for n in s["landed_commit_candidates"])
 V = {v["issue"]: v for v in a["verdicts"]}
@@ -478,7 +484,8 @@ issue R1 named before the close, a bound close (#454), a quoted `binding_review`
 on main, a condition that does not hold, empty conditions, a close missing from the batch, an approved
 close neither executed nor skipped, a mutation started before the batch was published, a posted comment
 that differs from the approved text, a wrong close reason on GitHub, a comment approved on a B issue, a
-published artifact that differs from the local file, a non-candidate close, and a close of excluded #870.
+published artifact that differs from the local file, a non-candidate close, a close of excluded #870, and
+an `aborted` run. It also passes an item added after publication and recorded `declined`.
 Its `close_failures` is shared with item 2's script, whose attack list covers the round-3 fixes.
 
 Behaviours to observe:
