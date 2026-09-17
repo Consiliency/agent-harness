@@ -14,7 +14,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   field set is unchanged. `attempt_identity` follows the new digest. A replay whose stored grant carries the
   authority's legacy v1 digest is refused explicitly ("legacy v1 authority digest"), before deduplication
   and the branch-history, scope and diff predicates. It is never silently re-admitted as a fresh grant, so
-  in-flight v1 readmissions need an explicit re-admission after upgrade.
+  an in-flight v1 readmission cannot be replayed after upgrade; readmit forward from its granted head.
 
 ### Bind the packaged vector manifest to the contract pin (agent-harness#527)
 

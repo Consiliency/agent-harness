@@ -389,7 +389,7 @@ class LinearizableAdmissionStore:
                         if record.binding is not None and record.binding.authority_digest == legacy_digest:
                             raise PermissionError(
                                 "authority was granted under the legacy v1 authority digest; "
-                                "replay refused (agent-harness#655): re-admit explicitly"
+                                "replay refused (agent-harness#655): readmit forward from the granted head"
                             )
 
                     # Deduplication check

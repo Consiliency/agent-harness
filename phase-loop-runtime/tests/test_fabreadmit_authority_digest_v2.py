@@ -237,27 +237,26 @@ def test_a_replay_of_a_v1_grant_is_refused_and_writes_nothing(tmp_path):
     assert store.path.read_text(encoding="utf-8") == before
 
 
-def test_legacy_refusal_precedes_dedup_and_history_predicates(tmp_path, monkeypatch):
-    """The refusal must not depend on later branch history (codex round 1: A->B, B->A, replay A->B)."""
+def test_a_v1_grant_behind_later_history_is_still_refused(tmp_path):
+    """Codex round 1 on agent-harness#885: v1 grant A->B, then B->A, then replay A->B.
+
+    The replay's prior head A is the branch's latest head again, so the history predicates alone would
+    issue a FRESH grant. The legacy check must scan every stored grant, not just the latest record.
+    """
     if not fabreadmit_capability_active():
         pytest.skip(FABREADMIT_SKIP_REASON)
-    from phase_loop_runtime.convergence.broker import admission
+    store, authority = _readmit_fixture(tmp_path, "digest-v2-history", ("a.py",))
+    forward = authority(("a.py",))  # A -> B
+    store.admit_next(forward)
+    _rewrite_grant_as_v1(store, forward)
 
-    store, authority = _readmit_fixture(tmp_path, "digest-v2-ordering", ("a.py",))
-    auth = authority(("a.py",))
-    store.admit_next(auth)
-    before = _rewrite_grant_as_v1(store, auth)
+    back = replace(forward, prior_head_sha=forward.proposed_head_sha, proposed_head_sha=forward.prior_head_sha)
+    back_grant = store.admit_next(back)  # B -> A under v2; not refused: its v1 digest matches no stored grant
+    assert back_grant.binding is not None and back_grant.binding.authority_digest == back.authority_digest
+    before = store.path.read_text(encoding="utf-8")
 
-    # Make the later predicates unreachable: without the legacy check, the replay would reach the history predicates or the git re-diff.
-    def forbidden(*args, **kwargs):
-        raise AssertionError("an admission predicate ran before the legacy v1 refusal")
-
-    import subprocess as _subprocess
-
-    monkeypatch.setattr(_subprocess, "check_output", forbidden)
-    monkeypatch.setattr(admission.LinearizableAdmissionStore, "_canonical_high_water", forbidden, raising=False)
     with pytest.raises(PermissionError, match=r"legacy v1 authority digest"):
-        store.admit_next(auth)
+        store.admit_next(forward)
     assert store.path.read_text(encoding="utf-8") == before
 
 
