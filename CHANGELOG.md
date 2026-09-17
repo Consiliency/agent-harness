@@ -6,6 +6,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Versioned, unambiguous readmission authority digest (agent-harness#655)
+
+- `DeltaReadmitAuthority.authority_digest` now hashes a domain-separated canonical JSON encoding
+  (`FABREADMIT-AUTHORITY-DIGEST-v2`). The v1 comma-joined `owned_scope` let `("a.py", "b.py")` and
+  `("a.py,b.py",)` collide, so admission dedup could reuse a grant for a different authority. The bound
+  field set is unchanged. Grants stored under v1 no longer dedup: a replay takes the full admission path
+  and fails closed. `attempt_identity` follows the new digest.
+
 ### Bind the packaged vector manifest to the contract pin (agent-harness#527)
 
 - `run_outside_agent_vectors()` with no explicit manifest now blocks with `digest_mismatch` unless the
