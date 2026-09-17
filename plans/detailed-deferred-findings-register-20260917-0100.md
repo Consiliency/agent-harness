@@ -2,287 +2,250 @@
 
 ## Task
 
-Convergence item 2. Build one non-scheduling register for board findings that were ruled
-non-blocking, then give each open issue in triage buckets B and D its own disposition.
-- **Bucket B:** 63 issues left over from phases the manifest records as `completed`.
-- **Bucket D:** 12 deferred follow-ups that belong to no phase.
+Convergence item 2. It does three things:
+- builds one non-scheduling register for board findings ruled non-blocking;
+- gives each open issue in triage buckets B (63 leftovers from phases the manifest records as `completed`) and D (12 deferred follow-ups that belong to no phase) its own disposition;
+- makes the register the documented destination for deferred findings from now on.
 
-Issues dispositioned PARKED or OBSOLETE move into the register and are closed as not planned. Every
-other issue stays open with a recorded reason. The register also becomes the documented destination
-for DEFERRED findings from now on.
+Issues dispositioned PARKED or OBSOLETE get a register row and are closed as not planned. Issues
+dispositioned ALREADY-FIXED are closed as completed. Every other issue stays open with a recorded
+reason.
 
-**Input (pinned, not re-derived):**
-- file: `/mnt/workspace/board-tools/backlog-triage/triage-snapshot.json`
-- taken at `2026-09-17T00:55:58Z` against origin/main `11283f80`, with 223 open issues
-- scope: `buckets.B` (63) ∪ `buckets.D` (12) = 75
+**Rules.** The execution rules shared with item 1 — R1 in-flight exclusion union, R2 phase-binding
+guard, R3 acceptance extraction, R4 procedural conditions, R5 freshness, R6 mutation receipts, R7
+verbatim fencing, and the `shared_rules.py` helper and its self-test — are defined **once**, in
+`## Shared execution rules` of `plans/detailed-close-landed-fix-issues-20260917-0100.md`. This plan
+cites them by name and restates none of them.
 
-**Contract with convergence item 1, which is binding:**
-- Item 1 owns the 30 `landed_commit_candidates` and runs first. 15 of them also sit in B or D:
-  - in B: 428, 451, 454, 456, 463, 464, 470, 481, 488, 490, 493, 498, 688, 789;
-  - in D: 733.
-- Item 1 records its verdicts in `/mnt/workspace/board-tools/backlog-triage/item1-landed-fix-verdicts.json`,
-  schema `landed_fix_verdicts.v1`, and posts a sha256-pinned copy to the plans PR. Its verdicts are
-  FIXED, PARTIAL, MENTION-ONLY, REVERTED, OUT-OF-SCOPE, and DRIFTED.
-- For B/D issues, item 1 closes only those it rules FIXED; those leave this plan's scope.
-- PARTIAL and MENTION-ONLY come back here without any item-1 comment. REVERTED also comes back here.
-  OUT-OF-SCOPE stays EXCLUDED. DRIFTED is stale and is handled in Dependencies step 1.
-- A-bucket issues and every issue in `codex_inflight_exclusions` are out of scope for both plans. They
-  are reported, never parked.
-- Neither plan opens a new issue.
-- No GitHub mutation happens without an explicit operator approval of a batch list.
+### Pinned input
+
+`/mnt/workspace/board-tools/backlog-triage/triage-snapshot.json`, sha256 `230a8a9c…`, taken
+2026-09-17T00:55:58Z against origin/main `11283f80`. Scope source: `buckets.B` ∪ `buckets.D` (75), less
+agent-harness#361, which is handled as a migration (see "#361").
+
+### Contract with item 1
+
+Item 1's `## Dependencies & order` → "Contract with item 2" is binding and is not restated here. In
+short, this plan starts only on an item-1 artifact whose `run_status` is `complete` or `verdicts_only`
+and whose bytes match the published digest. Every B/D issue without a successful item-1 `issue_close`
+receipt is in this plan's scope.
 
 ## Research summary
 
 **Where the register lives.**
-- `roadmap_ownership.owners_for` against `specs/phase-plans-v10.md` at `11283f80` returns `[]` for
-  `docs/registers/deferred-findings.md`, and `['GOVLEAN']` for the `plans/` alternative.
-- `git grep -nE 'docs/registers|deferred-findings'` over `phase-loop-runtime/src`,
-  `phase-loop-runtime/scripts`, `.github`, `ci`, and `scripts` returns nothing.
-- The runtime reads only specifically named `docs/` paths, such as the `adoption_bundle.py` contracts
-  and the outside-agent conformance docs. No runner, discovery path, or gate reads a `docs/registers/`
-  file.
-- `docs_surfaces.classify_surface` returns `None` for the register path and for `AGENTS.md`, so
-  docs-audit requires no surface decision.
-- `AGENTS.md` is in `entry_doc_check.PACKAGE_LONG_DESCRIPTION_DOCS`
-  (`phase-loop-runtime/src/phase_loop_runtime/entry_doc_check.py:68-75`), so any path it names must
-  resolve.
+- `roadmap_ownership.owners_for` against v10 at `11283f80` returns `[]` for `docs/registers/deferred-findings.md`, and `['GOVLEAN']` for any `plans/` path.
+- `git grep -nE 'docs/registers|deferred-findings'` over `phase-loop-runtime/src`, `phase-loop-runtime/scripts`, `.github`, `ci` and `scripts` is empty, so no runner, discovery path or gate reads it.
+- `docs_surfaces.classify_surface` returns `None` for both new paths.
+- `AGENTS.md` is in `entry_doc_check.PACKAGE_LONG_DESCRIPTION_DOCS`, so any path it names must exist.
 
-**The frozen roadmap already dictates a destination, and it is an issue.**
-- v10 Execution Notes gate 2 (`specs/phase-plans-v10.md`, the chair paragraph at `:1357`) says a
-  downstream finding is "mapped to its existing criterion, or filed as a repository-qualified issue
-  when unscheduled".
-- `specs/` must not change. So for v10 phase-plan panels, the convention in this plan cannot remove
-  the filing step; it can only change what happens after filing. See Changes.
+**The ratchet has a ratified input, and this plan must comply with it.**
+- The maintainer-ratified design on agent-harness#442 (2026-08-04) states: *"every `DEFERRED` finding must have a filed issue carrying its verbatim text before dispatch"*. It is falsified by *"a `DEFERRED` finding with no filed issue at dispatch"*. It is an anti-rubber-stamping safeguard, and the committed REVIEWTRUTH phase records it as hand-enforced at every gate.
+- Frozen v10 Execution Notes gate 2 (`specs/phase-plans-v10.md:1357`) likewise files an unscheduled finding "as a repository-qualified issue".
+- The register therefore cannot replace filing. It can only give a filed finding a disposition, and so an exit from the open queue. Round 1 of this PR's board caught the earlier draft's "no issue filed for non-phase-plan boards", which contradicted both texts and also left register rows with no source issue for promotion to reopen.
 
-**#361 is itself cited by the frozen roadmap.** HARDEN Non-goals (`specs/phase-plans-v10.md:658`)
-read "Re-opening the accepted-residual register (agent-harness#361). Items there are promoted
-individually only on new reachability evidence." Any change to #361 must leave that reference
-resolvable.
+**#361 is cited by frozen text.** HARDEN Non-goals (`specs/phase-plans-v10.md:658`) reads "Re-opening
+the accepted-residual register (agent-harness#361). Items there are promoted individually only on new
+reachability evidence." HARDEN is `committed`. Closing #361 would contradict item 1's binding principle
+(R2), so #361 stays open as a redirect.
 
-**B and D contain scheduled obligations that a title or number match cannot detect.** Grepping
-`#N` against v10 and the v10 phase plans found:
-- #361 (HARDEN Non-goals);
-- #392 (LEGIBLE);
-- #454 (`plans/phase-plan-v10-RELEASE.md`; RELEASE is `committed`);
-- #733 (`plans/phase-plan-v10-RESIDUAL.md`);
-- citations in the completed CONFORM and PROOFGATE plans, which are historical.
+**B and D contain bound, held, and live issues that titles hide.**
+- **Bound through RESIDUAL:** #341 is RESIDUAL's `IF-0-RESIDUAL-4` and lane SL-3; #360 is `EC-RESIDUAL-5`.
+- **Bound to a committed criterion:** #445 and #444 are "DEFERRED under `EC-REVIEWTRUTH-19`".
+- **Under an operator hold:** #843 is held pending #789 and #842.
+- **Live despite a mitigation:** #595 records that a direct `run_train` call skips the generation lease. The defect is still at `train_runner.py:3620-3621` and contradicts frozen FABPUB text (`specs/phase-plans-v10.md:298`), even though the CLI path is fail-closed.
 
-Reading the RESIDUAL plan found two more that carry no issue number:
-- **#341** (the 28 F841 findings) is RESIDUAL's `IF-0-RESIDUAL-4` (`plan:83-91`) and its lane SL-3
-  scope "retire all remaining F841 rows" (`plan:175`);
-- **#360** (channel-route session-model provenance) is `EC-RESIDUAL-5`, also in RESIDUAL SL-3
-  ("Bind or caveat session models", `plan:175`).
+**Sample of 16 B/D bodies**, read at `11283f80`, provisionally classified under the revised rules below:
 
-RESIDUAL is `committed`. Parking either issue would silently drop a roadmap obligation.
-
-**Sample of 16 B/D bodies, read at `11283f80`,** spread across CONFORM, PROOFGATE, FABPUB,
-FABREADMIT, GOVLEAN, LEGIBLE, and D:
-
-| Issue | Phase | What the body establishes | Provisional class |
+| Issue | Phase | What the body establishes | Provisional |
 |---|---|---|---|
-| #445 | CONFORM | Fable president: "non-blocking design/hardening note … tracked here as `DEFERRED` under `EC-REVIEWTRUTH-19`"; verbatim finding: producer provenance not independently enforced | authority-adjacent: STILL-LIVE unless a reachability negative is shown |
-| #519 | CONFORM | Seal digest depends on build-host umask; mitigated by generating seals under `umask 022` | PARKED (mitigation recorded) |
+| #445 | CONFORM | DEFERRED "under `EC-REVIEWTRUTH-19`"; producer provenance not independently enforced | SCHEDULED (R2 check iv) |
+| #519 | CONFORM | Seal digest depends on build-host umask; mitigated under `umask 022` | PARKED |
 | #790 | CONFORM | `vectors_executed` hardcoded `false`; the corpus runner is never called outside tests | DECISION-REQUIRED |
-| #474 | PROOFGATE | Fable president DEFERRED PGB-003, filed "to satisfy the MAINTAINER-RATIFIED agent-harness#442 rule" | OBSOLETE candidate (PROOFGATE re-planned 2026-08-15) |
-| #761 | PROOFGATE | Receipt/attestation mechanism "owned by nothing" after the re-plan; abandon or re-home | OBSOLETE or DECISION-REQUIRED |
-| #590 | FABPUB | Documented verification command is lifecycle-position dependent; workaround recorded | PARKED |
-| #817 | FABPUB | Receipt loader trusts receipt-supplied `global_journal_path`; `cutover_id` joined raw, so an absolute id or `..` escapes | STILL-LIVE (path containment) |
-| #842 | FABPUB | Import-time "test seam" rebinds the production writer-generation latch | EXCLUDED (codex-owned by standing operator instruction) |
-| #640 | FABREADMIT | Grok 4.6 president: "downstream tightening rather than blockers"; verbatim `FINDING … DEFERRED` lines | PARKED |
-| #554 | GOVLEAN | President classified every item DEFERRED; disposition `carried_with_owner` | PARKED |
-| #748 | GOVLEAN | A proposal: CI attests the agent's EC-GOVLEAN-4 receipt | DECISION-REQUIRED |
+| #474 | PROOFGATE | Fable president DEFERRED PGB-003 | OBSOLETE only if its mechanism is removed from main; otherwise PARKED |
+| #761 | PROOFGATE | Receipt mechanism "owned by nothing" after re-plan; "abandon or re-home" | DECISION-REQUIRED |
+| #590 | FABPUB | Verification command is lifecycle-position dependent; workaround recorded | PARKED |
+| #817 | FABPUB | Receipt loader joins a receipt-supplied `cutover_id` raw; an absolute path or `..` escapes | STILL-LIVE (safety floor) |
+| #842 | FABPUB | Import-time test seam rebinds the production latch | EXCLUDED (codex, by standing instruction) |
+| #640 | FABREADMIT | Grok 4.6 president: "downstream tightening rather than blockers" | PARKED |
+| #554 | GOVLEAN | President classified every item DEFERRED; `carried_with_owner` | PARKED, unless an item is floor-class |
+| #748 | GOVLEAN | Proposal: CI attests the agent's EC-GOVLEAN-4 receipt | DECISION-REQUIRED |
 | #539 | LEGIBLE | Canonical test arm never runs in CI; "filed so the asymmetry is on the record" | PARKED |
-| #797 | LEGIBLE | Three `test_legible_roadmap_contract` probes red on main; not fixable outside the LEGIBLE lane | STILL-LIVE |
-| #399 | D | Four non-blocking follow-ups from a 4/4 AGREE round, "none are urgent" | PARKED |
-| #754 | D | Bounded TOCTOU residual, carried per a round cap | PARKED |
-| #796 | D | Choose one `PHASE_LOOP_VERIFY_ENFORCE` default; either choice changes production behaviour | DECISION-REQUIRED |
+| #797 | LEGIBLE | Three contract probes red on main | STILL-LIVE |
+| #399 | D | Four non-blocking follow-ups; "none are urgent" | PARKED |
+| #754 | D | Bounded TOCTOU residual carried per a round cap | STILL-LIVE, unless a reachability negative is recorded (floor class) |
+| #796 | D | Choose one `PHASE_LOOP_VERIFY_ENFORCE` default | DECISION-REQUIRED |
 
-What the sample shows:
-- B is not homogeneous. Titles hide live security-shaped defects (#817), red probes on main (#797),
-  and maintainer decisions (#790, #796), next to genuinely parkable deferrals.
-- Classification must therefore happen per issue, from the body, comments, and current code, as the
-  codex seat warned.
-- Several deferrals are bound by text to later criteria (#445 → `EC-REVIEWTRUTH-19`, which
-  `plans/manifest.json` records as a `president_authority_criterion`). A register row must keep that
-  binding verbatim.
+**Corrected arithmetic.** The sample has 16 rows; #842 is EXCLUDED, leaving 15 evaluable. Under the
+revised rules, 5 to 7 are closable: PARKED #519, #590, #640, #539 and #399, plus #554 and #474 if
+confirmed. That is 33–47%. The table also shows that bucket B is not homogeneous, so every issue must be
+decided from its body, its comments and current code, never from its title.
+
+**Round-1 validator findings.**
+- Findings copied byte-for-byte contain `###` headings (7 of the 75 bodies, including #399) and triple-backtick fences (18, including #539 and #590). A register parser that splits on `### ` or fences with three backticks breaks on real data.
+- A coverage check that reads the artifact's own `scope` field passes an empty artifact.
+- A post-mutation check that filters on an undefined `approved` field passes vacuously.
 
 ## Changes
 
 ### `docs/registers/deferred-findings.md` (create)
 
-- **Header, "Purpose and status": add.** It states that this register is a record, not a work queue.
-  It carries #361's rule verbatim ("Do not schedule from this register directly") and states that
-  nothing in the runtime reads the file.
-- **Header, "How findings enter this register": add.** This is the single written definition of the
-  DEFERRED-destination convention; nothing else restates it. It covers two cases:
-  - **Board findings on anything other than a v10 phase-plan panel** (detailed-plan boards and PR
-    code-review boards): a finding ruled DEFERRED, non-blocking, or nit gets a register row. No
-    issue is filed.
-  - **v10 phase-plan panels:** Execution Notes gate 2 is frozen and still requires a
-    repository-qualified issue for an unscheduled finding. The issue is filed, its finding is copied
-    into a register row in the same change, and the issue is then closed as not planned with a
-    comment pointing at the row.
+- **Header, "Purpose and status": add.** It states:
+  - this is a record, not a work queue;
+  - nothing in the runtime reads it;
+  - #361's rule, quoted verbatim: "Do not schedule from this register directly."
+- **Header, "How findings enter": add.** This is the single written definition of the convention.
+  1. **Filing.** Every finding a board president or chair rules `DEFERRED`, and every finding a board records as non-blocking, is filed as an issue carrying its verbatim text before dispatch. That is exactly what agent-harness#442's ratified design and v10 Execution Notes gate 2 require; the register does not change it.
+  2. **Disposition.** The filed issue is then dispositioned under this register's categories and precedence **before the board's PR merges**.
+     - PARKED or OBSOLETE: a register row lands in that PR or a register PR, and only after the row is on main is the issue closed as not planned, with a link to the row.
+     - SCHEDULED, STILL-LIVE or DECISION-REQUIRED: the issue stays open, with its reason recorded as a comment.
+  3. **Result.** A filed finding is never left open without a disposition.
+  4. **Scope.** This is a documented convention only. Runtime enforcement of a destination for `DEFERRED` rulings is a later convergence item.
+- **Header, "Categories and precedence": add.** The seven dispositions and the precedence below, stated once here and cited by the convention.
+- **Header, "Promotion rule": add.**
+  - **Trigger:** a row returns to scheduled work only on new reachability evidence — a new production caller, a changed trust boundary, or a demonstrated exploit or failure path — and the evidence is cited.
+  - **Mechanism:** reopen the row's source issue with that evidence. The row is marked `PROMOTED <date> <evidence link>` and is never deleted.
+- **Rows R-001..R-005: add.** The five residuals in #361's table (#276, #273, #272, #269, #266, all closed today), migrated verbatim. Each row's `original ruling` quotes #361's table row. The register header quotes #361's original promotion text verbatim: "split it back out as its own P-ranked issue WITH the reachability evidence". Reopening the source issue satisfies that text, because the source issue is that residual's own issue.
+- **Rows R-006 onward: add.** One row per issue dispositioned PARKED or OBSOLETE and approved.
 
-  It also states that this is a documented convention only; runtime enforcement of a destination
-  for `DEFERRED` rulings is a later convergence item and is not part of this change.
-- **Header, "Promotion rule": add.** It is adapted from #361 and covers two things:
-  - **Trigger:** a parked row returns to scheduled work only on new reachability evidence — a new
-    production caller, a changed trust boundary, or a demonstrated exploit or failure path — and the
-    evidence must be cited.
-  - **Mechanism:** promotion reopens the row's source issue with that evidence; it never opens a new
-    issue. The row is marked `PROMOTED` with the date and a link to the evidence, and is never
-    deleted.
-- **Rows R-001..R-005: add.** The five residuals in #361's table (#276, #273, #272, #269, #266),
-  migrated verbatim with #361 recorded as their source register.
-- **Rows R-006 onward: add.** One row per issue dispositioned PARKED or OBSOLETE during execution,
-  using the row schema below.
+**Row format**, machine-parseable and safe for verbatim content:
 
-Row schema, one `### R-NNN` section per row. Findings run to several paragraphs, so a single table
-would be unreadable.
+````markdown
+<!-- row:R-006 -->
+### R-006 — <issue title>
+- **source:** Consiliency/agent-harness#640 (closed as not planned)
+- **origin:** <phase; board / PR / exact head SHA / artifact digests as the issue records them; the typed
+  `issue_dispositions` record from the owning phase's plans/manifest.json lifecycle, quoted, when one exists>
+- **original ruling:** <verbatim ruling text and who ruled>
+- **bound criteria:** <verbatim EC/IF identifiers the issue binds itself to, or `none`>
+- **current-main check:** <SHA; what was checked; result>
+- **safety floor:** <`not floor-class`, or the floor class plus its reachability negative>
+- **disposition:** <`PARKED` | `OBSOLETE`> — <one sentence; OBSOLETE cites the removal commit>
+- **promotion:** none
+- **finding:**
+<the issue's finding text, byte-for-byte, fenced per R7>
+````
 
-| Field | Content |
-|---|---|
-| `source` | the repository-qualified issue, e.g. `Consiliency/agent-harness#640`, closed as not planned |
-| `origin` | phase of origin, and the board / PR / exact head SHA / artifact digests exactly as the issue records them |
-| `original ruling` | the original disposition text and who ruled, verbatim (e.g. "Grok 4.6 president … DEFERRED") |
-| `bound criteria` | any EC or IF identifier the issue binds itself to, verbatim (e.g. `EC-REVIEWTRUTH-19`), or `none` |
-| `finding` | the finding text copied byte-for-byte from the issue body into a fenced block, never paraphrased |
-| `current-main check` | the SHA checked, what was checked, and the result |
-| `disposition` | `PARKED` or `OBSOLETE`, with a one-sentence reason; for OBSOLETE, the superseding commit or plan line |
-| `promotion` | `none`, or `PROMOTED <date> <evidence link>` |
+`finding` is always the last field, so a verbatim `###` heading or code fence inside it cannot be
+mistaken for row structure. Rows are delimited only by `<!-- row:R-NNN -->` lines.
 
 ### `AGENTS.md` (modify)
 
-- **`## Plan discipline (why phases stall)`: add one pointer sentence.** It says board findings ruled
-  DEFERRED or non-blocking are recorded in `docs/registers/deferred-findings.md`, and names that file
-  as the rule's definition. It restates nothing, following the pointer-drift lesson. It is the pointer
-  both agents actually read, because codex and Claude both load the repo's `AGENTS.md`.
+- **`## Plan discipline (why phases stall)`: add one pure pointer sentence.** "The destination for
+  deferred and non-blocking board findings is defined in `docs/registers/deferred-findings.md`." It
+  states no part of the rule, so it cannot drift from it.
 
 ### No other repository file changes
 
-- No `specs/` change.
-- No `plans/manifest.json` row: the prior decision stands, since another agent appends to that
-  array.
-- No runtime code.
-- No change to any RESIDUAL-owned path. RESIDUAL's own triage artifact is
-  `plans/evidence/v10-RESIDUAL-f841-triage.md` (`plans/phase-plan-v10-RESIDUAL.md:191`), and this plan
-  does not touch it.
+- no `specs/` change;
+- no `plans/manifest.json` row;
+- no runtime code;
+- no RESIDUAL-owned path, including RESIDUAL's own `plans/evidence/v10-RESIDUAL-f841-triage.md`.
 
-### Execution artifacts, off-repo (not committed)
+### Execution artifacts, off-repo
 
-- **`/mnt/workspace/board-tools/backlog-triage/item2-dispositions.json`:** the per-finding triage
-  table covering every in-scope issue exactly once, in EC-RESIDUAL-7's form ("a triage table covering
-  all N with a per-finding disposition, not a blanket deferral"). Each entry records: issue,
-  disposition, evidence, and the GitHub action planned and taken.
-- **`/mnt/workspace/board-tools/backlog-triage/item2-approval-batch.md`:** the exact list shown to the
-  operator before any mutation.
+- **`/mnt/workspace/board-tools/backlog-triage/item2-dispositions.json`**, schema `item2_dispositions.v1`. Top level:
+  - `schema`, `run_status` (as item 1 defines it), `started_at`, `origin_main_at_execution`;
+  - `item1_artifact_sha256`;
+  - `approval` `{approved_at, batch_list_sha256}`;
+  - `entries`, one per scope issue;
+  - `receipts`, per R6.
 
-### Disposition categories
+  Each entry records:
+  - `issue`, `bucket`, `disposition`, `evidence`;
+  - `precedence_trace` — each category tested in order, with the reason it did or did not apply;
+  - `phase_bindings` and `binding_review`, per R2;
+  - `safety_floor_class` — `none` or the class;
+  - `reachability_negative` — a string, required for a floor-class close;
+  - `removal_commit` — required for OBSOLETE;
+  - `register_row` — `R-NNN` or `null`;
+  - `approved` — bool;
+  - `action` — `closed_not_planned`, `closed_completed`, `commented`, `declined`, or `none`.
+- **`item2-approval-batch.md`** — the exact list shown to the operator.
 
-Every in-scope issue gets exactly one. Each is decided by reading the full body, all comments, any
-linked PR or commit, and the current code at the cited location — never from the title.
+### Disposition categories and precedence
 
-| Disposition | Evidence required | GitHub action |
+Each scope issue is tested against the categories **in this order**; the first that applies is its
+disposition:
+
+**EXCLUDED > SCHEDULED > DECISION-REQUIRED > STILL-LIVE > ALREADY-FIXED > OBSOLETE > PARKED**
+
+Every decision reads the full body, all comments, any linked PR or commit, and the current code at the
+cited location.
+
+| Disposition | Applies when | Action |
 |---|---|---|
-| **EXCLUDED** | Membership in any of: an A bucket; `codex_inflight_exclusions` at the pinned snapshot; codex in-flight work recomputed at execution with the same rule item 1 uses (see "Common rules"); an item-1 OUT-OF-SCOPE verdict; an issue the operator has assigned to codex by standing instruction (#842). Already known in B∪D: #388, #789 (also an item-1 candidate), #842. | none; reported in the operator summary |
-| **SCHEDULED** | The issue's subject is an obligation of a phase that is not `completed`, citing the exact EC, IF gate, or phase-plan lane text. Known now: #341 (`IF-0-RESIDUAL-4`, RESIDUAL SL-3), #360 (`EC-RESIDUAL-5`, RESIDUAL SL-3). #454 (RELEASE plan) and #733 (RESIDUAL plan) are item-1 candidates; if item 1 returns them, they land here. | none; stays open |
-| **ALREADY-FIXED** | A landed commit on main whose diff, not its subject, resolves the issue's stated problem, and has not been reverted. | none from item 2. Recorded for item 1's rule. An issue item 1 already judged not-FIXED cannot be re-labelled ALREADY-FIXED here without new evidence that item 1 did not see. |
-| **STILL-LIVE** | The defect is reachable on current main: a reproduction, or the cited code unchanged and reached from a production caller. **Mandatory safety floor:** any finding about path containment, credentials, authorization or authority, or fail-open verification is STILL-LIVE unless the row records a concrete reachability negative. | none; stays open, reason recorded |
-| **DECISION-REQUIRED** | The issue asks for a maintainer choice that changes production behaviour or policy (e.g. #796, #790). | none; stays open, listed for the operator |
-| **OBSOLETE** | The mechanism, file, or phase path the finding concerns was removed or explicitly descoped, citing the superseding commit or the plan line that states the descope. | register row, then close as not planned with a comment linking the row and the superseding evidence |
-| **PARKED** | All four hold: the original ruling classed it DEFERRED, non-blocking, or nit; it is not SCHEDULED; it clears the safety floor; and the current-main check does not show a reachable failure. | register row, then close as not planned with a comment linking the row |
+| **EXCLUDED** | The issue is in an A bucket, or in R1's exclusion union at execution. R1 already includes operator holds such as #843. | none |
+| **SCHEDULED** | R2 returns any binding (checks i–iv). Examples: #341, #360, #445, #444, and item-1 guard-held issues such as #454 and #733. | none; stays open, with the binding recorded |
+| **DECISION-REQUIRED** | The issue asks for a maintainer choice that changes production behaviour or policy (#790, #796, #748). This includes "abandon or re-home" cases (#761), and anything descoped but still present in the code. | none; stays open, listed for the operator |
+| **STILL-LIVE** | The defect is reachable on current main. Also applies to **any finding in a safety-floor class that lacks a reachability negative**, and to any finding that **contradicts a frozen requirement** — spec text or a frozen test invariant, mirroring #442's non-deferrable class. | none; stays open, reason recorded |
+| **ALREADY-FIXED** | Item 1's verdict rule (R3, R4) yields FIXED at the execution SHA. | close as `completed` with item 1's close-comment format, under this plan's approval gate |
+| **OBSOLETE** | The mechanism, file or path the finding concerns has been **removed from current main**. This needs the removal commit plus a grep that proves the mechanism is absent. "Explicitly descoped" alone does not qualify. | register row, then close as not planned |
+| **PARKED** | The original ruling classed the finding `DEFERRED`, non-blocking or nit; no earlier category applied; and the safety floor is satisfied. | register row, then close as not planned |
 
-### Common rules, shared with item 1
+**Safety floor.** The floor is a precondition of **every** close path that leaves a defect unfixed (OBSOLETE and PARKED).
 
-- **Codex in-flight exclusion set.** Build it at execution time, not from the pinned snapshot alone,
-  as the union of:
-  - issue numbers in the titles, bodies, and head-branch names of open PRs;
-  - issue numbers in `codex/*` branch names;
-  - issue numbers appearing in the diff of any `codex/*` branch not yet merged to main
-    (`git diff origin/main...origin/codex/<branch>`, including `plans/manifest.json` hunks).
+*Floor classes:* path containment, credentials, authorization or authority, fail-open verification,
+and concurrency or TOCTOU on an authority or evidence path.
 
-  Branch names alone are not enough. `origin/codex/merged-repairs-closeout-20260917` carries no issue
-  number in its name, yet its diff records the #868/#871 repairs in `plans/manifest.json`, so codex
-  may be closing issues itself.
-- **Procedural acceptance conditions.** Examples: "Sol/Fable review before landing", "exact-head board
-  before dispatch". For a bucket B issue, such a condition is treated as met when its owning phase is
-  `completed` in `plans/manifest.json`. That is the same convention item 1 uses. It is a **board
-  judgement call**, and is flagged as such in the PR body.
-- **Conditions outside the body.** When an issue body only points elsewhere — "see consolidation", a
-  linked issue, a PR comment, a board artifact — follow the link. A condition that cannot be found is
-  UNVERIFIABLE and is never silently treated as met. An issue whose disposition would depend on it is
-  DECISION-REQUIRED, with the unverifiable condition named in its evidence.
-- **PARTIAL from item 1.** A PARTIAL issue can be PARKED or OBSOLETE only for its *unlanded*
-  remainder. The row's `current-main check` cites item 1's recorded landed part, and the finding field
-  quotes only the unresolved text.
+*Reachability negative.* A floor-class finding may be closed only with one of these, recorded with
+file:line evidence at `origin_main_at_execution`:
+- **(a)** the cited code or mechanism no longer exists on main, shown by the removal commit plus a grep that proves its absence; or
+- **(b)** every production caller of the cited code is enumerated, and each is shown not to reach the defect.
 
-#361 itself is handled as a migration, not a disposition:
-- its five rows become R-001..R-005;
-- it is closed as completed, with a comment saying the register now lives at the docs path;
-- v10 HARDEN Non-goals' reference to #361 still resolves to that closed issue and its redirect.
+These **never** count as a reachability negative:
+- the original deferral's reasoning;
+- a mitigation note or workaround;
+- a fail-closed CLI when a direct API path remains (#595);
+- "not urgent".
+
+### Agent-harness#361
+
+#361 is **not** dispositioned and **not** closed. Its five rows migrate as R-001..R-005, and it
+receives one approval-listed comment. The comment:
+- redirects to the register;
+- quotes `specs/phase-plans-v10.md:658`;
+- explains that the issue stays open because frozen HARDEN Non-goals cite it.
+
+It contributes nothing to the measured delta.
 
 ## Documentation impact
 
-- **`docs/registers/deferred-findings.md`: add.** The register, and the single definition of the
-  DEFERRED-destination convention.
-- **`AGENTS.md`: modify.** A one-sentence pointer in `## Plan discipline`. It is an entry doc, so
-  entry-doc-check must resolve the named path, which exists in the same PR.
-- **`CHANGELOG.md`: no change.** `classify_surface` returns `None` for both files, so docs-audit
-  requires no decision.
-- **`specs/phase-plans-v10.md`: no change** (frozen). The gate-2 interaction is handled in the
-  register's convention text instead.
+- `docs/registers/deferred-findings.md` — add — the register, and the single definition of the convention.
+- `AGENTS.md` — modify — one pure pointer sentence. The path it names exists in the same PR, as entry-doc-check requires.
+- `CHANGELOG.md` — no change. `classify_surface` returns `None` for both paths.
+- `specs/phase-plans-v10.md` — no change (frozen). The convention complies with gate 2 as written.
 
 ## Dependencies & order
 
-1. **Item 1 has finished, and its verdict artifact is consistent.** This is a hard precondition
-   checked before step 2.
-   - **Artifact:** `/mnt/workspace/board-tools/backlog-triage/item1-landed-fix-verdicts.json`, schema
-     `landed_fix_verdicts.v1`, plus the sha256-pinned copy item 1 posted to the plans PR.
-   - **Missing:** if either copy is missing, or the schema is not `landed_fix_verdicts.v1`, item 2 does
-     not start at all. It must not partially proceed, because the 15 overlap issues could otherwise be
-     actioned twice.
-   - **Mismatched:** if the local file's sha256 differs from the pinned copy, stop and report.
-   - **Incomplete:** every B/D issue item 1 marks FIXED must be closed on GitHub. Any FIXED-but-open
-     issue means item 1 is unfinished; stop.
-   - **Stale:** an overlap issue is stale if item 1 ruled it DRIFTED, or if its `updatedAt` is later
-     than the artifact's recording time (reopened, edited, or newly commented). Re-run item 1's
-     verification rule on it before it enters this scope.
-   - **Routing:** PARTIAL, MENTION-ONLY, and REVERTED enter this scope. OUT-OF-SCOPE is EXCLUDED. A
-     FIXED issue that item 1 held back under its committed-phase citation guard (`cited_by_open_phase`
-     non-empty; #454 and #733 are expected) also enters this scope, and is dispositioned SCHEDULED.
-2. **Re-snapshot open issues** and compute the execution scope:
+1. **Start contract.** Check item 1's artifact against its "Contract with item 2": it exists, its `run_status` is `complete` or `verdicts_only`, its schema matches, and its local sha256 equals the published digest. On any failure, do not start and report to the operator. Run `shared_rules.py --self-test` too; it must exit 0.
+2. **Scope.** The scope is:
 
-   (pinned B ∪ D) ∩ (open now) − (item-1 FIXED) − EXCLUDED
+   ((pinned B ∪ D) − {361}) − {issues with a successful item-1 `issue_close` receipt} − {issues already closed before `started_at`}
 
-   Issues opened after the pinned snapshot are **not** added: the list is fixed (convergence rule 1).
-   Report the drift instead.
-3. **Read and disposition every in-scope issue.** Write `item2-dispositions.json`, one entry per
-   issue.
-4. **On the branch, build the register.** Write R-001..R-005 from #361, then R-006 onward from the
-   PARKED and OBSOLETE entries, plus the `AGENTS.md` pointer.
-5. **Run local verification**, then open a PR. The PR body uses `Refs` and never a closing keyword:
-   "Closes … stays open" qualifiers still auto-close.
-6. **Board review of the PR**, at most 3 rounds. If round 3 is not 4/4 AGREE, descope to:
-   - the register document;
-   - the #361 migration;
-   - PARKED closes for completed-phase (bucket B) deferrals only.
+   Issues opened after the snapshot are never added (convergence rule 1). EXCLUDED issues remain in scope as a disposition, so coverage is exact.
+3. **Disposition every scope issue** by the precedence above, writing `item2-dispositions.json`. For an overlap issue item 1 ruled PARTIAL, re-verify item 1's held conditions at this plan's execution SHA before relying on them, because a revert between runs must not let a reverted defect be parked unseen.
+4. **Run R5 over every intended mutation.** Then present `item2-approval-batch.md`, which enumerates every GitHub mutation this item will make:
+   - each close (disposition, reason, register row anchor, full comment text);
+   - the #361 comment;
+   - the publication comment;
+   - the register PR's open and merge.
 
-   The descope drops D-bucket dispositions and the `AGENTS.md` convention.
-7. **Operator approval gate.** Present `item2-approval-batch.md`, which lists every intended mutation
-   as issue, disposition, register row anchor, and action. Nothing is closed without an explicit yes
-   to that exact list.
-8. **Merge the register PR first,** so each close comment can link a row anchor at a merged commit on
-   main.
-9. **Apply the approved closes** (not planned, each with its row link), then close #361 with its
-   redirect. Stop on the first failed mutation, and re-read the state before continuing.
-10. **Measure** (see Verification).
+   The open and merge are listed for visibility; they are also governed by the standing public-repo CR gate. Record `batch_list_sha256`. Nothing is mutated before approval.
+5. **Build the register branch** from the approved rows plus the `AGENTS.md` pointer. Verify locally, then open the register PR (receipt `pr_open`).
+6. **Board review of the register PR**, at most 3 rounds. If review changes a row's content or a disposition, the changed items return to the operator for re-approval. If round 3 is not 4/4 AGREE, descope to: the register header, R-001..R-005, and PARKED rows for bucket B only. The descope drops the D-bucket dispositions and the `AGENTS.md` pointer.
+7. **Merge** only after the board agrees and CI is green (receipt `pr_merge`).
+8. **For each approved close:** run R5, then close with the row anchor at the merged main SHA, then record a receipt. After the closes, post the #361 comment (receipt).
+9. **Set `run_status`, measure, publish.** Measurement is by receipts. Publish `item2-dispositions.json`'s exact bytes to the register PR as item 1's "Publication" section specifies (receipt `pr_comment`).
 
 ## Verification
 
-Run from the worktree root, with `PYTHONPATH=$PWD/phase-loop-runtime/src`.
+Run from a checkout at the merged register commit, with `PYTHONPATH=$PWD/phase-loop-runtime/src`.
 
 ```bash
-# 1. ownership and non-readership of the new paths
+T=/mnt/workspace/board-tools/backlog-triage
+python3 $T/shared_rules.py --self-test
+
+# 1. ownership, non-readership, exact file set of the register PR
 python3 - <<'PY'
 from pathlib import Path
 from phase_loop_runtime import roadmap_ownership as ro
@@ -291,93 +254,112 @@ assert ro.owners_for('docs/registers/deferred-findings.md', m) == [], 'register 
 print('owners OK')
 PY
 test -z "$(git grep -nE 'docs/registers|deferred-findings' -- phase-loop-runtime/src phase-loop-runtime/scripts .github ci scripts)" && echo 'unread OK'
+# on the register PR: expect exactly AGENTS.md and docs/registers/deferred-findings.md
+gh pr diff <REGISTER_PR> -R Consiliency/agent-harness --name-only | sort
 
-# 2. repo diff is exactly the register, the AGENTS.md pointer, and this plan
-git diff --name-only origin/main...HEAD | sort
-# expect exactly: AGENTS.md, docs/registers/deferred-findings.md, plans/detailed-deferred-findings-register-20260917-0100.md
-test -z "$(git diff --name-only origin/main...HEAD -- specs/ plans/manifest.json)" && echo 'specs/manifest untouched OK'
-
-# 3a. item 1's artifact is present, on the agreed schema, and matches its PR-pinned digest
+# 2. coverage recomputed independently, dispositions legal, register rows parse, closes are safe
 python3 - <<'PY'
-import json, hashlib, sys
-p = '/mnt/workspace/board-tools/backlog-triage/item1-landed-fix-verdicts.json'
-raw = open(p, 'rb').read(); a = json.loads(raw)
-assert a.get('schema') == 'landed_fix_verdicts.v1', 'item 1 artifact schema mismatch'
-print('item1 sha256', hashlib.sha256(raw).hexdigest(), '(must equal the digest pinned on the plans PR)')
-PY
-
-# 3b. triage table covers the whole scope exactly once, and rows match closable dispositions
-python3 - <<'PY'
-import json, re, collections
+import json, re, sys, subprocess, collections
 T = '/mnt/workspace/board-tools/backlog-triage'
-disp = json.load(open(f'{T}/item2-dispositions.json'))
-scope = {e['issue'] for e in disp['entries']}
-assert len(scope) == len(disp['entries']), 'an issue appears twice'
-assert set(disp['scope']) == scope, 'triage table does not cover the computed scope exactly'
-allowed = {'EXCLUDED','SCHEDULED','ALREADY-FIXED','STILL-LIVE','DECISION-REQUIRED','OBSOLETE','PARKED'}
-assert all(e['disposition'] in allowed and e['evidence'].strip() for e in disp['entries'])
+sys.path.insert(0, T)
+import shared_rules as sr
+s = json.load(open(f'{T}/triage-snapshot.json'))
+i1 = json.load(open(f'{T}/item1-landed-fix-verdicts.json'))
+d = json.load(open(f'{T}/item2-dispositions.json'))
+assert i1['run_status'] in ('complete', 'verdicts_only'), 'item 1 not in a startable state'
+assert d['schema'] == 'item2_dispositions.v1', 'schema'
+i1_closed = {r['issue_or_pr'] for r in i1['receipts'] if r['kind'] == 'issue_close' and r['exit_code'] == 0}
+pinned = (set(s['buckets']['B']) | set(s['buckets']['D'])) - {361}
+allst = json.loads(subprocess.run(['gh', 'issue', 'list', '-R', 'Consiliency/agent-harness', '--state', 'all',
+    '--limit', '1000', '--json', 'number,closedAt'], capture_output=True, text=True, check=True).stdout)
+closed_before = {x['number'] for x in allst if x['closedAt'] and x['closedAt'] < d['started_at']}
+expected = pinned - i1_closed - (closed_before - {r['issue_or_pr'] for r in d['receipts']})
+got = [e['issue'] for e in d['entries']]
+assert len(got) == len(set(got)), 'an issue appears twice'
+assert set(got) == expected, f'coverage mismatch: missing {sorted(expected - set(got))}, extra {sorted(set(got) - expected)}'
+allowed = ['EXCLUDED', 'SCHEDULED', 'DECISION-REQUIRED', 'STILL-LIVE', 'ALREADY-FIXED', 'OBSOLETE', 'PARKED']
+snap_x = set(s['codex_inflight_exclusions'])
+A = set(s['buckets']['A1'] + s['buckets']['A2'] + s['buckets']['A3'])
 reg = open('docs/registers/deferred-findings.md').read()
-sections = {m.group(1): body for m, body in
-            ((re.match(r'(R-\d{3})\b', s), s) for s in re.split(r'^### ', reg, flags=re.M)[1:]) if m}
-fields = ('source','origin','original ruling','bound criteria','finding','current-main check','disposition','promotion')
-row_issues = collections.Counter()
-for rid, body in sections.items():
-    for f in fields: assert f'`{f}`' in body, f'{rid} missing field {f}'
-    src = re.search(r'`source`[^\n]*?#(\d+)', body); assert src, f'{rid} has no source issue'
-    row_issues[int(src.group(1))] += 1
-closable = {e['issue'] for e in disp['entries'] if e['disposition'] in {'PARKED','OBSOLETE'}}
-for i in closable: assert row_issues[i] == 1, f'#{i} needs exactly one row'
-for r in ('R-001','R-002','R-003','R-004','R-005'): assert r in sections, f'{r} (#361 migration) missing'
-print('coverage OK:', collections.Counter(e['disposition'] for e in disp['entries']))
+rows = {}
+for m in re.finditer(r'^<!-- row:(R-\d{3}) -->\n(.*?)(?=^<!-- row:R-\d{3} -->\n|\Z)', reg, re.S | re.M):
+    head = m.group(2).split('- **finding:**', 1)
+    assert len(head) == 2, f'{m.group(1)} has no finding field'
+    for f in ('source', 'origin', 'original ruling', 'bound criteria', 'current-main check', 'safety floor', 'disposition', 'promotion'):
+        assert f'- **{f}:**' in head[0], f'{m.group(1)} missing field {f}'
+    src = re.search(r'- \*\*source:\*\*[^\n]*?#(\d+)', head[0])
+    assert src, f'{m.group(1)} has no source issue'
+    rows[m.group(1)] = int(src.group(1))
+for r in ('R-001', 'R-002', 'R-003', 'R-004', 'R-005'):
+    assert r in rows, f'{r} (#361 migration) missing'
+row_issues = collections.Counter(rows.values())
+receipts_closed = {r['issue_or_pr']: r for r in d['receipts'] if r['kind'] == 'issue_close' and r['exit_code'] == 0}
+for e in d['entries']:
+    n, disp = e['issue'], e['disposition']
+    assert disp in allowed and e['evidence'].strip(), f'#{n} bad disposition or empty evidence'
+    assert e['precedence_trace'], f'#{n} has no precedence trace'
+    if n in receipts_closed:
+        assert e['approved'] is True, f'#{n} closed without approval'
+        assert disp in ('ALREADY-FIXED', 'OBSOLETE', 'PARKED'), f'#{n} closed with disposition {disp}'
+        assert n not in snap_x and n not in A, f'#{n} closed but excluded'
+        assert not sr.phase_bindings(n, d['origin_main_at_execution'], mechanical_only=True), f'#{n} closed while bound'
+        assert e['binding_review'].strip(), f'#{n} closed without a check-(iv) judgment'
+        if disp in ('OBSOLETE', 'PARKED'):
+            assert row_issues[n] == 1, f'#{n} needs exactly one register row'
+            if e['safety_floor_class'] != 'none':
+                assert e['reachability_negative'].strip(), f'#{n} floor-class close without a reachability negative'
+        if disp == 'OBSOLETE':
+            assert e['removal_commit'], f'#{n} OBSOLETE without a removal commit'
+    elif disp in ('ALREADY-FIXED', 'OBSOLETE', 'PARKED') and e['approved']:
+        assert e['action'] == 'declined' or 'DRIFTED' in e['evidence'], f'#{n} approved but neither closed nor recorded as a skip'
+print('dispositions OK:', collections.Counter(e['disposition'] for e in d['entries']), '| closes:', len(receipts_closed))
 PY
 
-# 4. the docs gates that cover AGENTS.md and the new file
+# 3. receipts match GitHub; #361 stays open
+python3 - <<'PY'
+import json, subprocess
+T = '/mnt/workspace/board-tools/backlog-triage'
+d = json.load(open(f'{T}/item2-dispositions.json'))
+disp = {e['issue']: e['disposition'] for e in d['entries']}
+for r in d['receipts']:
+    if r['exit_code'] != 0 or r['kind'] != 'issue_close':
+        continue
+    n = r['issue_or_pr']
+    v = json.loads(subprocess.run(['gh', 'issue', 'view', str(n), '-R', 'Consiliency/agent-harness',
+        '--json', 'state,stateReason,comments'], capture_output=True, text=True, check=True).stdout)
+    want = 'COMPLETED' if disp[n] == 'ALREADY-FIXED' else 'NOT_PLANNED'
+    assert (v['state'], v['stateReason']) == ('CLOSED', want), (n, v['state'], v['stateReason'])
+    if want == 'NOT_PLANNED':
+        assert 'docs/registers/deferred-findings.md' in v['comments'][-1]['body'], f'#{n} close comment lacks the register link'
+v = json.loads(subprocess.run(['gh', 'issue', 'view', '361', '-R', 'Consiliency/agent-harness', '--json', 'state'],
+    capture_output=True, text=True, check=True).stdout)
+assert v['state'] == 'OPEN', '#361 must stay open'
+print('receipts match GitHub; #361 open')
+PY
+
+# 4. docs gates
 python3 -m phase_loop_runtime.cli docs-audit --repo . --json
 python3 -m pytest -q phase-loop-runtime/tests/test_entry_doc_check.py
 ```
 
-After the approved mutations, confirm that exactly the approved batch changed and nothing else:
+**Measurement (convergence rule 4).** The attributable delta is the number of successful `issue_close`
+receipts. The raw open count before and after is recorded, but it is not asserted, because codex opens
+and closes issues concurrently. #361 contributes nothing.
 
-```bash
-python3 - <<'PY'
-import json, subprocess
-T = '/mnt/workspace/board-tools/backlog-triage'
-approved = {e['issue'] for e in json.load(open(f'{T}/item2-dispositions.json'))['entries']
-            if e['disposition'] in {'PARKED','OBSOLETE'} and e.get('approved')}
-for n in sorted(approved):
-    v = json.loads(subprocess.run(['gh','issue','view',str(n),'-R','Consiliency/agent-harness',
-        '--json','state,stateReason,comments'], capture_output=True, text=True, check=True).stdout)
-    assert v['state'] == 'CLOSED' and v['stateReason'] == 'NOT_PLANNED', n
-    assert 'docs/registers/deferred-findings.md' in v['comments'][-1]['body'], n
-print('closes OK:', len(approved))
-PY
-gh issue view 361 -R Consiliency/agent-harness --json state,stateReason --jq '.state+" "+.stateReason'   # expect CLOSED COMPLETED
-```
-
-**Measurement (convergence rule 4).**
-- The count is `gh issue list -R Consiliency/agent-harness --state open --limit 1000 --json number --jq length`,
-  taken immediately before step 9 and immediately after it.
-- Only closes on the approved list are credited to item 2, which separates them from concurrent codex
-  activity.
-- The weekly opened-minus-closed figure for the week of execution is also recorded.
-
-**Expected delta.** Of the 13 non-excluded bodies in the sample, 9 look closable (6 PARKED + 3
-OBSOLETE or OBSOLETE-candidates), or 60–70%. Allowing for that n=13 uncertainty, use 45–70%.
-Applied to the non-overlap scope of about 56 issues (75, minus the 15 item-1 overlaps, minus #388
-and #842, minus SCHEDULED #341 and #360), plus #361 itself, that gives an expected reduction of
-**26–40 open issues**. Up to about 10 more are possible if item 1 returns non-FIXED overlap issues
-that turn out closable here.
-- **Below 20:** the item under-delivered, and the reason goes in the closeout.
-- **Above 45:** it over-parked. Before closing, audit the safety-floor decisions.
+**Expected delta.** This is a judgmental band, not a statistical interval.
+- **Base pool:** the 59 non-overlap scope issues. That is 74 (B ∪ D without #361) minus the 15 overlap issues. The pool still contains its EXCLUDED and SCHEDULED issues.
+- **Rate:** applying the sample's closable rate of 33–47% gives about 19–28.
+- **Overlap:** returned overlap issues may add 0–5 more.
+- **Expectation: 18–33 closes.** Below 12 is reported as under-delivery, with reasons. Above 40 triggers an audit of every floor-class call before closing.
 
 ## Acceptance criteria
 
-- [ ] `item2-dispositions.json` covers the computed execution scope exactly once. Every entry has a disposition from the seven categories and non-empty evidence (verification script 3b passes).
-- [ ] `docs/registers/deferred-findings.md` exists, is unowned (`owners_for` returns `[]`), and is unread by runtime and workflows. It contains R-001..R-005 migrated from #361, and exactly one schema-complete row for every PARKED or OBSOLETE issue (verification scripts 1, 3a and 3b pass).
-- [ ] `git diff --name-only origin/main...HEAD` is exactly `AGENTS.md`, `docs/registers/deferred-findings.md`, and this plan. No `specs/` or `plans/manifest.json` change. docs-audit and `test_entry_doc_check.py` pass.
-- [ ] After the operator-approved batch, every approved PARKED or OBSOLETE issue is `CLOSED`/`NOT_PLANNED` with a comment linking the register, #361 is `CLOSED`/`COMPLETED`, and no issue outside the approved batch changed state (post-mutation script passes).
-- [ ] The **attributable** delta — the number of approved PARKED/OBSOLETE issues confirmed `CLOSED`/`NOT_PLANNED` by the post-mutation script, plus #361 — falls in the 26–40 range, or its shortfall or excess has a recorded reason. The raw open count before and after is recorded separately and is not asserted equal, because codex opens and closes issues concurrently. No new issue was opened by this item.
+- [ ] `shared_rules.py --self-test` exits 0, and verification script 2 prints `dispositions OK`. It independently recomputes scope coverage from the snapshot, item 1's receipts and GitHub state, and it checks precedence traces, safety-floor evidence, row parsing and binding re-checks.
+- [ ] `docs/registers/deferred-findings.md` is unowned and unread. It contains R-001..R-005 migrated from #361, and exactly one schema-complete row, parsed by its `<!-- row:R-NNN -->` marker, for every closed PARKED or OBSOLETE issue.
+- [ ] The register PR's diff is exactly `AGENTS.md` and `docs/registers/deferred-findings.md`, with no `specs/` or `plans/manifest.json` change. docs-audit and `test_entry_doc_check.py` pass, and the PR merged only after a 4/4 board and green CI.
+- [ ] Every successful `issue_close` receipt matches GitHub (`NOT_PLANNED` with a register link, or `COMPLETED` for ALREADY-FIXED), was approved, and its start postdates `approval.approved_at`. #361 is still open and carries its redirect comment.
+- [ ] The attributable delta (successful close receipts) is reported against the 18–33 band, with reasons if it falls outside, and no issue was opened by this item.
 
 ## Execution Policy
 
-- execute: effort=medium, reason=about 60 issue bodies each need a judgment call against the code, with a mandatory safety floor; docs-only repository change
+- execute: effort=medium, reason=about 60 issue bodies each need an ordered precedence decision against current code, with a mandatory safety floor; docs-only repository change
