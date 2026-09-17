@@ -3,8 +3,9 @@
 The v1 digest joined `owned_scope` with commas, so `("a.py", "b.py")` and `("a.py,b.py",)` hashed
 identically, and `LinearizableAdmissionStore.admit_next` deduplicates on digest equality before the
 scope re-diff. A grant could therefore be reused for an authority with a different scope. The v2
-digest hashes a domain-separated canonical JSON encoding of the same bound fields. Stored v1
-bindings no longer match, so a replay takes the full admission path instead of deduplicating.
+digest hashes a domain-separated canonical JSON encoding of the same bound fields. A replay whose
+stored grant binding carries the authority's legacy v1 digest is refused explicitly, before
+deduplication and the branch-history, scope and diff predicates.
 """
 
 from __future__ import annotations
@@ -32,6 +33,14 @@ BOUND_FIELDS = (
     "provenance_digest",
 )
 
+
+# Known-answer vectors for `_authority()`: the v2 digest, the legacy v1 digest, and the attempt identity.
+# These are SHA-256 outputs of public test inputs, not credentials.
+KNOWN_ANSWERS = (
+    "5d9c8a8a4a725ee5611c4b810ce508c0dbdaece20152bf51d1ba6aadc6842b1c",
+    "b5c612dde54ca0171af9761d364d70109bef8c55a1c5307f3541aabb88d923c9",
+    "cf49cbf4b2836e18f4f7d4ba14c4c76663eb568fa0528d739a3f622e68ec1435",
+)
 
 def _authority(**overrides) -> DeltaReadmitAuthority:
     fields = dict(
@@ -94,6 +103,20 @@ def test_every_bound_field_changes_the_digest_and_unbound_fields_do_not():
     # The field set is unchanged from v1: worktree, checkpoint root and base stay outside the digest.
     for name, value in (("adapter_worktree", "/other"), ("checkpoint_root", "/other"), ("base", "develop")):
         assert replace(base, **{name: value}).authority_digest == base.authority_digest, name
+
+
+def test_known_answer_vectors():
+    auth = _authority()
+    preimage = json.dumps(
+        {name: getattr(auth, name) for name in BOUND_FIELDS} | {"owned_scope": list(auth.owned_scope)},
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    independent = hashlib.sha256(b"FABREADMIT-AUTHORITY-DIGEST-v2\0" + preimage.encode("utf-8")).hexdigest()
+    assert auth.authority_digest == independent == KNOWN_ANSWERS[0]
+    assert auth.legacy_v1_authority_digest == _v1_digest(auth) == KNOWN_ANSWERS[1]
+    assert auth.attempt_identity == KNOWN_ANSWERS[2]
 
 
 def test_attempt_identity_follows_the_v2_digest():
@@ -188,27 +211,61 @@ def test_dedup_does_not_reuse_a_grant_for_a_comma_joined_scope(tmp_path):
     assert len(store.replay()) == count
 
 
-def test_a_stored_v1_binding_is_not_deduplicated(tmp_path):
+def _rewrite_grant_as_v1(store, auth):
+    """Rewrite the durable grant exactly as a pre-v2 host stored it: v1 digest AND the attempt identity derived from it."""
+    v1 = _v1_digest(auth)
+    v1_attempt = hashlib.sha256(b"FABREADMIT-READMISSION-ATTEMPT-v1\0" + bytes.fromhex(v1)).hexdigest()
+    text = store.path.read_text(encoding="utf-8")
+    assert auth.authority_digest in text and auth.attempt_identity in text
+    rewritten = text.replace(auth.authority_digest, v1).replace(auth.attempt_identity, v1_attempt)
+    store.path.write_text(rewritten, encoding="utf-8")
+    stored = [r for r in store.replay() if r.binding is not None]
+    assert stored[-1].binding.authority_digest == v1
+    return rewritten
+
+
+def test_a_replay_of_a_v1_grant_is_refused_and_writes_nothing(tmp_path):
     if not fabreadmit_capability_active():
         pytest.skip(FABREADMIT_SKIP_REASON)
     store, authority = _readmit_fixture(tmp_path, "digest-v2-migration", ("a.py",))
     auth = authority(("a.py",))
-    granted = store.admit_next(auth)
-    assert granted.binding.authority_digest == auth.authority_digest
+    store.admit_next(auth)
+    before = _rewrite_grant_as_v1(store, auth)
 
-    # Rewrite the durable grant as a pre-v2 host would have stored it.
-    log = store.path
-    lines = log.read_text(encoding="utf-8").splitlines()
-    rewritten = [line.replace(auth.authority_digest, _v1_digest(auth)) for line in lines]
-    assert rewritten != lines
-    log.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
-    stored = [r for r in store.replay() if r.binding is not None]
-    assert stored and stored[-1].binding.authority_digest == _v1_digest(auth)
+    with pytest.raises(PermissionError, match=r"legacy v1 authority digest"):
+        store.admit_next(auth)
+    assert store.path.read_text(encoding="utf-8") == before
 
-    # The v1 grant is not returned as a dedup hit. The replay takes the full admission path, which fails closed.
-    try:
-        outcome = store.admit_next(auth)
-    except PermissionError:
-        return
-    assert outcome.binding is not None and outcome.binding.authority_digest == auth.authority_digest
-    assert outcome.sequence != stored[-1].sequence
+
+def test_legacy_refusal_precedes_dedup_and_history_predicates(tmp_path, monkeypatch):
+    """The refusal must not depend on later branch history (codex round 1: A->B, B->A, replay A->B)."""
+    if not fabreadmit_capability_active():
+        pytest.skip(FABREADMIT_SKIP_REASON)
+    from phase_loop_runtime.convergence.broker import admission
+
+    store, authority = _readmit_fixture(tmp_path, "digest-v2-ordering", ("a.py",))
+    auth = authority(("a.py",))
+    store.admit_next(auth)
+    before = _rewrite_grant_as_v1(store, auth)
+
+    # Make the later predicates unreachable: without the legacy check, the replay would reach the history predicates or the git re-diff.
+    def forbidden(*args, **kwargs):
+        raise AssertionError("an admission predicate ran before the legacy v1 refusal")
+
+    import subprocess as _subprocess
+
+    monkeypatch.setattr(_subprocess, "check_output", forbidden)
+    monkeypatch.setattr(admission.LinearizableAdmissionStore, "_canonical_high_water", forbidden, raising=False)
+    with pytest.raises(PermissionError, match=r"legacy v1 authority digest"):
+        store.admit_next(auth)
+    assert store.path.read_text(encoding="utf-8") == before
+
+
+def test_an_unrelated_authority_is_not_refused_by_the_legacy_check(tmp_path):
+    if not fabreadmit_capability_active():
+        pytest.skip(FABREADMIT_SKIP_REASON)
+    store, authority = _readmit_fixture(tmp_path, "digest-v2-unrelated", ("a.py", "b.py"))
+    split = authority(("a.py", "b.py"))
+    granted = store.admit_next(split)
+    # A v2-era store holds no v1 digests: the identical authority still deduplicates to its own grant.
+    assert store.admit_next(split) == granted

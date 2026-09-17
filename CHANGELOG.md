@@ -11,8 +11,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - `DeltaReadmitAuthority.authority_digest` now hashes a domain-separated canonical JSON encoding
   (`FABREADMIT-AUTHORITY-DIGEST-v2`). The v1 comma-joined `owned_scope` let `("a.py", "b.py")` and
   `("a.py,b.py",)` collide, so admission dedup could reuse a grant for a different authority. The bound
-  field set is unchanged. Grants stored under v1 no longer dedup: a replay takes the full admission path
-  and fails closed. `attempt_identity` follows the new digest.
+  field set is unchanged. `attempt_identity` follows the new digest. A replay whose stored grant carries the
+  authority's legacy v1 digest is refused explicitly ("legacy v1 authority digest"), before deduplication
+  and the branch-history, scope and diff predicates. It is never silently re-admitted as a fresh grant, so
+  in-flight v1 readmissions need an explicit re-admission after upgrade.
 
 ### Bind the packaged vector manifest to the contract pin (agent-harness#527)
 

@@ -273,6 +273,20 @@ class DeltaReadmitAuthority:
             raise ValueError("DeltaReadmitAuthority authority fields cannot be empty")
 
     @property
+    def legacy_v1_authority_digest(self) -> str:
+        """The pre-agent-harness#655 (v1) digest of this authority, kept ONLY to refuse replays of v1 grants.
+
+        v1 is collision-prone; never use it as an identity or a dedup key.
+        """
+        payload = (
+            f"{self.repository}\0{self.branch}\0{self.prior_head_sha}\0"
+            f"{self.proposed_head_sha}\0{self.train_id}\0{self.node_id}\0"
+            f"{self.fab_run_id}\0{self.roadmap_digest}\0{self.provenance_digest}\0"
+            f"{','.join(self.owned_scope)}"
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    @property
     def authority_digest(self) -> str:
         """Readmission authority digest, v2 (agent-harness#655).
 
@@ -282,8 +296,9 @@ class DeltaReadmitAuthority:
         a grant for a different authority. v2 hashes a domain-separated, canonical JSON
         encoding of the same bound fields, which is injective. Adapter worktree,
         checkpoint root and base remain outside the digest, as in v1. Stored v1 grant
-        bindings no longer compare equal, so a replay against one takes the full
-        admission path rather than deduplicating.
+        bindings no longer compare equal; admission refuses a replay whose stored grant
+        binding carries this authority's legacy v1 digest (see
+        ``LinearizableAdmissionStore.admit_next``) rather than re-admitting it.
         """
         preimage = json.dumps(
             {
