@@ -6,6 +6,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Remove the abandoned PROOFGATE receipt/isolation test files (agent-harness#761)
+
+- Deletes `test_proofgate_isolation.py`, `test_proofgate_receipts.py` and `test_proofgate_attestation_workflow.py`.
+  Their 10 tests always skipped: the modules they import (`proofgate_isolation`, `proofgate_receipts`) belong
+  to the receipt/attestation mechanism the operator ruled abandoned on agent-harness#761.
+  PROOFGATE's frozen bootstrap inventories still name these node IDs, as a historical record; they are unchanged.
+
 ### Document the split `PHASE_LOOP_VERIFY_ENFORCE` defaults as intended (agent-harness#796)
 
 - When the variable is unset, the closeout evidence gate still defaults to `hard`, and the execute
