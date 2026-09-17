@@ -382,7 +382,11 @@ def _check_govlean_plan_pins(src: str, path: Path, repo_root: Optional[Path]) ->
     try:
         from phase_loop_runtime.plan_pin_lint import find_plan_pin_violations
     except ImportError:
-        return []
+        # Fail closed, as Check Q does: a missing lint must not read as a clean plan (agent-harness#552).
+        return [
+            "(GOVLEAN) contract_bug: plan-pin lint runtime is unavailable; "
+            "run this validator with phase_loop_runtime installed"
+        ]
     return [
         f"(GOVLEAN) {finding.category} at line {finding.line}: {finding.text.strip()}"
         for finding in find_plan_pin_violations(src, repo_root, path)
@@ -486,6 +490,9 @@ def _check_d_owned_files_disjoint(
                 glob_origin[norm] = sl_id
 
     if tracked is None:
+        if repo_root is not None:
+            # In a repository but `git ls-files` failed: fail closed rather than skip expansion (agent-harness#552).
+            out.append("(D) contract_bug: `git ls-files` failed; owned-file overlap could not be checked")
         # No repo context — skip expansion, only the exact-duplicate check ran.
         return out
 

@@ -6,6 +6,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Plan validators fail closed when a check cannot run (agent-harness#552)
+
+- `validate_plan_doc.py` reports `(GOVLEAN) contract_bug` when the GOVLEAN plan-pin lint cannot be
+  imported, instead of returning no findings. This matches Check Q's existing behaviour.
+- Both the plan-phase and execute-phase validators report `(D) contract_bug` when `git ls-files` fails
+  inside a repository, instead of silently skipping the owned-file overlap check. Outside a repository
+  the behaviour is unchanged.
+
 ### Document the split `PHASE_LOOP_VERIFY_ENFORCE` defaults as intended (agent-harness#796)
 
 - When the variable is unset, the closeout evidence gate still defaults to `hard`, and the execute

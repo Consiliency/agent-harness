@@ -397,6 +397,10 @@ def _check_d_owned_files_disjoint(
                 glob_origin[norm] = sl_id
 
     if tracked is None:
+        if repo_root is not None:
+            # In a repository but `git ls-files` failed: fail closed rather than warn (agent-harness#552).
+            out.append("(D) contract_bug: `git ls-files` failed; owned-file overlap could not be checked")
+            return out
         # No repo context — skip expansion, only the exact-duplicate check ran.
         out.append(
             "(D) WARN: not running inside a git repo; owned-file disjointness only checked for exact duplicates"
