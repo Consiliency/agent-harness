@@ -150,13 +150,15 @@ def verify_enforce_mode(env: Mapping[str, str] | None = None, *, default: str) -
       closed.
     - ``warn`` for the execute preflight (``runner._verification_enforcement_mode``)
       and train re-verify (``train_runner._train_reverify_enforcement_mode``):
-      they judge a launch before its evidence exists. Under ``hard`` the execute
-      preflight blocks any launch whose plan has intake verification findings or
-      no resolvable ``automation.suite_command`` (``runner._execute_verification_preflight_blocker``),
-      on every host that does not set the variable. Under ``warn`` that preflight
-      is skipped entirely and emits nothing. Train re-verify still runs any
-      declared verification, and treats a plan with no verification as a pass.
-      Evidence is still enforced later, at closeout.
+      they judge a launch before its evidence exists. When the mode is ``hard``,
+      the execute preflight (``runner._execute_verification_preflight_blocker``)
+      blocks any launch whose plan has intake verification findings or no
+      resolvable ``automation.suite_command``. Making ``hard`` the preflight
+      DEFAULT would therefore block such launches on every host that leaves the
+      variable unset. Under the ``warn`` default that preflight is skipped
+      entirely and emits nothing. Train re-verify still runs any declared
+      verification, and treats a plan with no verification as a pass. Evidence
+      is still enforced later, at closeout.
 
     Setting the variable to ``hard`` or ``warn`` applies that posture to all three.
     """
