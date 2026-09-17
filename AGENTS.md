@@ -40,3 +40,6 @@ becomes unsatisfiable and every landing forces another amendment.
 
 Full rationale, measured evidence, and the portable (one-machine) version:
 `docs/agent-phase-convergence.md`.
+
+The destination for filed deferred board findings is defined in
+`docs/registers/deferred-findings.md`.
