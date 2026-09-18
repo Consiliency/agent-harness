@@ -11,7 +11,6 @@ flag, an order, or a default.
 
 from __future__ import annotations
 
-from pathlib import Path
 
 from phase_loop_runtime import panel_invoker
 from phase_loop_runtime.advisor_board.backing import (

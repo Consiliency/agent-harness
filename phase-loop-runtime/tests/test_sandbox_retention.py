@@ -25,7 +25,6 @@ import os
 import time
 from pathlib import Path
 
-import pytest
 
 from phase_loop_runtime import sandbox_retention
 

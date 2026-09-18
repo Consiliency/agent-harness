@@ -23,7 +23,6 @@ import os
 import subprocess
 from pathlib import Path
 
-import pytest
 
 from phase_loop_runtime import review_stage
 
