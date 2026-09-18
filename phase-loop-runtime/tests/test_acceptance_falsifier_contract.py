@@ -385,7 +385,19 @@ def test_guard_requires_production_construction_site():
     run_proofgate_contract(nodeid, _contract)
 
 
-def test_mutation_manifest_requires_exact_criterion_parameter_and_command_coverage():
+def test_mutation_manifest_requires_exact_criterion_parameter_and_command_coverage(monkeypatch, tmp_path):
+    private_root = tmp_path / "private-worktrees"
+    monkeypatch.setenv("WORKTREE_ROOT", str(private_root))
+    original_mkdtemp = tempfile.mkdtemp
+    mutation_paths = []
+
+    def record_mkdtemp(*args, **kwargs):
+        result = original_mkdtemp(*args, **kwargs)
+        if kwargs.get("prefix") == "proofgate-mutation-":
+            mutation_paths.append(Path(result))
+        return result
+
+    monkeypatch.setattr(tempfile, "mkdtemp", record_mkdtemp)
     nodeid = "phase-loop-runtime/tests/test_acceptance_falsifier_contract.py::test_mutation_manifest_requires_exact_criterion_parameter_and_command_coverage"
     if not guard_proofgate_nodeid(nodeid):
         return
@@ -495,6 +507,8 @@ def test_mutation_manifest_requires_exact_criterion_parameter_and_command_covera
         assert exec_res.get("survived_count") == 0
         assert exec_res.get("block_count") == 0
         assert exec_res.get("status") == "killed"
+        assert mutation_paths
+        assert all(path.parent == private_root for path in mutation_paths)
         assert len(exec_res.get("classifications", {})) == 9
         assert all(v == "killed" for v in exec_res["classifications"].values())
         bindings = exec_res.get("bindings", {})

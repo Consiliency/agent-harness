@@ -193,3 +193,19 @@ failing verify — as a pass:
 
 The plain (non-`--check-only`) path is unchanged — it keeps the silent green
 `skipped` no-op on an un-adopted repo and its existing exit `0`.
+
+### Runtime import compatibility
+
+FAB registration supports panel, closeout, and CLI imports in any order. Durable
+seat outcomes live in the dependency-neutral `seat_outcome` module;
+`panel_invoker.SeatOutcomeRecord` and `panel_invoker.serialize_seat_outcome`
+remain compatibility exports with unchanged record fields and JSON encoding.
+Event readers load the closeout diagnostic only when inspecting closeout metadata.
+Installed-runtime qualification must check gate registration and required APIs,
+not only the package version. Offline compatibility does not authorize provider
+execution, a president ruling, or a live CHAR operation.
+
+On shared hosts, set `WORKTREE_ROOT` to an absolute private per-user directory.
+Lane worktrees and proofgate mutation worktrees use this root; an explicitly
+supplied workspace mount still takes precedence. Relative overrides are rejected.
+Without an override, the existing workspace-mount/repository-sibling layout applies.

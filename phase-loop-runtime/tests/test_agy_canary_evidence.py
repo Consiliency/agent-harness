@@ -114,10 +114,14 @@ def _canonical_test_account_home(monkeypatch, tmp_path: Path) -> None:
         ".cache/uv",
     ):
         (account_home / relative).mkdir(parents=True)
-    if evidence._UV_WORKSPACE_ROOT.is_dir():
-        workspace_info = evidence._UV_WORKSPACE_ROOT.resolve(strict=True).stat()
-        for path in (account_home, *account_home.rglob("*")):
-            os.chown(path, workspace_info.st_uid, workspace_info.st_gid)
+    workspace_root = tmp_path / "canonical-workspace"
+    for relative in ("uv-data/tools", "uv-data/python", "uv-cache"):
+        (workspace_root / relative).mkdir(parents=True)
+    monkeypatch.setattr(evidence, "_UV_WORKSPACE_ROOT", workspace_root)
+    monkeypatch.setattr(
+        evidence._uv_store_authority, "__kwdefaults__",
+        {"workspace_root": workspace_root},
+    )
     monkeypatch.setattr(evidence, "_account_home", lambda: account_home)
     monkeypatch.setenv("HOME", str(account_home))
     if _REAL_EFFECTIVE_UID == 0:
@@ -321,7 +325,7 @@ def test_git_run_uses_sealed_executable_and_strict_environment(
 def test_github_run_uses_sealed_executable_and_strict_environment(
     monkeypatch, tmp_path,
 ):
-    trusted = Path("/usr/bin/true")
+    trusted = Path("/usr/bin/true").resolve(strict=True)
     assert trusted.is_file()
     monkeypatch.setattr(evidence, "_GITHUB_EXECUTABLE", trusted)
     monkeypatch.setattr(evidence, "_SEALED_GITHUB_AUTHORITY", None)
@@ -352,7 +356,7 @@ def test_github_run_uses_sealed_executable_and_strict_environment(
     monkeypatch.setattr(evidence.subprocess, "run", record_run)
     assert evidence._github_run("--version").returncode == 0
     assert len(seen) == 1
-    assert seen[0][0] == ["/usr/bin/true", "--version"]
+    assert seen[0][0] == [str(trusted), "--version"]
     assert seen[0][1]["env"] == {
         "HOME": str(evidence._account_home()), "PATH": "/usr/bin", "LC_ALL": "C",
     }
@@ -875,7 +879,8 @@ def test_git_repository_authority_accepts_required_core_worktree_and_linked_chec
 def _installation_identity() -> dict[str, object]:
     interpreter_authority = evidence._system_interpreter_authority()
     uv_store_authority = evidence._uv_store_authority(
-        account_home=evidence._account_home()
+        account_home=evidence._account_home(),
+        workspace_root=evidence._UV_WORKSPACE_ROOT,
     )
     tool_dir = Path(uv_store_authority["directories"]["tool"]["path"])
     environment_root = tool_dir / "phase-loop-runtime"
@@ -3083,7 +3088,7 @@ def test_probe_selects_1_1_13_stream_json_only_after_complete_capability_matrix(
         assert result["complete"] is True
         assert result["mode"] == "stream_json"
         assert result["schema"] == "agy_capability_probe.v2"
-        assert result["agy_runtime"]["path"] == "/usr/bin/true"
+        assert result["agy_runtime"]["path"] == str(Path("/usr/bin/true").resolve(strict=True))
         assert result["agy_runtime"]["version"] == result["agy_version"]
         assert [row["class"] for row in result["classes"]] == [item[0] for item in evidence._CAPABILITY_CLASSES]
         assert all(row["attempt"] and row["execution"] and row["result"] == "text" for row in result["classes"])
@@ -3223,7 +3228,7 @@ def test_bootstrap_attest_rejects_child_visible_evidence_root_before_launch(
     if location == "home":
         parent = evidence._account_home()
     else:
-        parent = Path("/mnt/workspace") if Path("/mnt/workspace").is_dir() else tmp_path
+        parent = evidence._UV_WORKSPACE_ROOT
     root = parent / f"phase-loop-invalid-evidence-{os.getpid()}-{tmp_path.name}"
     root.mkdir(mode=0o700)
     monkeypatch.setattr(

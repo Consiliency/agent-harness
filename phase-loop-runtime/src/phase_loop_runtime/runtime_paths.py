@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import re
+import os
 from pathlib import Path
 
 
@@ -110,6 +111,11 @@ def phase_loop_runs_dir(repo: Path) -> Path:
 
 
 def lane_worktree_root(repo: Path, *, workspace_mount: Path | None = None) -> Path:
+    if workspace_mount is None and (configured := os.environ.get("WORKTREE_ROOT")):
+        root = Path(configured)
+        if not root.is_absolute():
+            raise ValueError("WORKTREE_ROOT must be an absolute path")
+        return root
     mount = workspace_mount or Path("/mnt/workspace")
     if mount.exists():
         return mount / "worktrees"

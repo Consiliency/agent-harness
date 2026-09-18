@@ -1256,9 +1256,10 @@ def execute_proofgate_mutation_manifest(
         except (OSError, subprocess.CalledProcessError) as exc:
             return {"status": "harness_error", "reason": "candidate_resolution_failed", "detail": str(exc)}
 
-        worktree_parent = Path("/mnt/workspace/worktrees")
-        if not worktree_parent.is_dir():
-            worktree_parent = repo_root.parent
+        from .runtime_paths import lane_worktree_root
+
+        worktree_parent = lane_worktree_root(repo_root)
+        worktree_parent.mkdir(parents=True, exist_ok=True)
         worktree = Path(tempfile.mkdtemp(prefix="proofgate-mutation-", dir=worktree_parent))
         shutil.rmtree(worktree)
         try:

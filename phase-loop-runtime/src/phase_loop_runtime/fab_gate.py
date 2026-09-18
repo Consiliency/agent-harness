@@ -214,7 +214,7 @@ from .fab_provenance import (
     reverify_material,
     verify_chain,
 )
-from .panel_invoker import SeatOutcomeRecord, serialize_seat_outcome
+from .seat_outcome import SeatOutcomeRecord, serialize_seat_outcome
 
 # --------------------------------------------------------------------------- #
 # Exceptions — ProvenanceInvalid subclasses so every FAB lane shares one
