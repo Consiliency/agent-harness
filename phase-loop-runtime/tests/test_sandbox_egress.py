@@ -94,3 +94,41 @@ class TestRealEnforcement:
         assert "private=BLOCKED" in out or "private=000" in out, (
             f"private space must NOT be reachable:\n{out}"
         )
+
+
+class TestEvidenceRecording:
+    def test_the_enforcement_report_reaches_the_leg_evidence(self):
+        """pyflakes caught this: the report was computed and discarded.
+
+        A value that is calculated and never recorded is indistinguishable, from the
+        outside, from one that was never calculated -- and the commit message claimed it
+        was recorded. The lint finding was a real defect, not noise.
+        """
+        from phase_loop_runtime import panel_invoker, sandbox_policy
+
+        choice = sandbox_policy.SandboxRootChoice(
+            host="ai", path=__import__("pathlib").Path("/storage/sb"),
+            fell_back=True, reason="ai unreachable within 5.0s",
+        )
+        panel_invoker._record_sandbox_facts(choice, sandbox_egress.enforcement_report(True))
+        recorded = panel_invoker._sandbox_evidence()
+
+        assert recorded["sandbox_root_host"] == "ai"
+        assert recorded["sandbox_root_fell_back"] is True
+        assert "unreachable" in recorded["sandbox_root_reason"]
+        assert recorded["sandbox_network_filtered"] is True
+        assert recorded["sandbox_network_mechanism"] == "user-namespace+slirp4netns"
+
+    def test_unenforced_egress_is_recorded_as_unenforced_with_a_reason(self):
+        from phase_loop_runtime import panel_invoker, sandbox_policy
+
+        choice = sandbox_policy.SandboxRootChoice(
+            host=None, path=__import__("pathlib").Path("/tmp"), fell_back=False,
+        )
+        panel_invoker._record_sandbox_facts(choice, sandbox_egress.enforcement_report(False))
+        recorded = panel_invoker._sandbox_evidence()
+
+        assert recorded["sandbox_network_filtered"] is False
+        assert recorded["sandbox_network_unfiltered_reason"], (
+            "a seat that was NOT isolated must say so, and say why"
+        )

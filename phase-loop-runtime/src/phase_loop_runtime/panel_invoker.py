@@ -1785,6 +1785,29 @@ def legs_without_sandbox_delivery(legs: tuple[str, ...] | None = None) -> tuple[
     return tuple(leg for leg in known if leg not in _SANDBOX_DELIVERY_BUILDERS)
 
 
+_SANDBOX_ROUND_FACTS: dict[str, object] = {}
+
+
+def _record_sandbox_facts(
+    root_choice: "_sandbox_policy.SandboxRootChoice", enforcement: dict[str, object],
+) -> None:
+    """Remember what this round chose, so the leg evidence can state it."""
+    _SANDBOX_ROUND_FACTS.clear()
+    _SANDBOX_ROUND_FACTS.update({
+        "sandbox_root_host": root_choice.host,
+        "sandbox_root_path": str(root_choice.path),
+        "sandbox_root_fell_back": root_choice.fell_back,
+        "sandbox_root_reason": root_choice.reason or None,
+        "sandbox_network_filtered": enforcement.get("network_filtered"),
+        "sandbox_network_mechanism": enforcement.get("mechanism"),
+        "sandbox_network_unfiltered_reason": enforcement.get("reason"),
+    })
+
+
+def _sandbox_evidence() -> dict[str, object]:
+    return dict(_SANDBOX_ROUND_FACTS)
+
+
 def _sandbox_in(review_dir: Path | str | None) -> Path | None:
     """The sandbox inside a review dir, or ``None`` when no tree was staged.
 
@@ -5719,6 +5742,7 @@ def _default_spawn(
                 # What was ACTUALLY enforced, not what was intended: a seat that believes
                 # it is network-isolated and is not would produce evidence nobody can trust.
                 sandbox_enforcement = _sandbox_egress.enforcement_report()
+                _record_sandbox_facts(root_choice, sandbox_enforcement)
                 staged_tree = _review_stage.stage_review_tree(resolved_repo_dir, review_dir)
                 # Track the ACTUAL path across the ownership transfer. If the rename
                 # fails, the hardened tree is still under its `pl-panel-stage-*` name,
@@ -5837,6 +5861,11 @@ def _default_spawn(
                     "provider_input_bytes": len(sealed_prompt.encode()),
                     "provider_input_inline": True,
                     "provider_live_tree_cwd": False,
+                    # What the sandbox ACTUALLY was and enforced. A reader of this record
+                    # must be able to tell a network-isolated seat from one that merely
+                    # intended to be: an unenforced policy recorded as enforced is the
+                    # fail-open class this work exists to remove.
+                    **_sandbox_evidence(),
                 })
                 def _parent_infer() -> tuple[str, str]:
                     if leg == "claude":
