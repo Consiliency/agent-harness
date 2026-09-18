@@ -654,6 +654,44 @@ class ReviewIsolationAuthorization:
     canonical_repo_sha256: str
     issued_monotonic_ns: int
     _seal: object
+    # Digest of the reviewed TREE a seat is allowed to read, or None when no tree
+    # is staged (the historical shape, byte-for-byte). `canonical_repo_sha256`
+    # binds repository IDENTITY and cannot stand in for this: it does not move when
+    # the reviewed bytes change. Without this field a tree placed in the staged dir
+    # would be unattested -- nothing would record which bytes the seat actually
+    # read -- so a tree swapped between authorization and launch would be reviewed
+    # silently. Bound here, that swap fails closed (agent-harness#848).
+    staged_tree_sha256: str | None = None
+
+
+def _staged_tree_digest(canonical_repo_authority: Path | str | None) -> str | None:
+    """Digest of the reviewed tree a seat will be allowed to read.
+
+    Imported lazily and locally: ``review_stage`` sits below this package so that
+    ``launcher`` (which imports ``advisor_board``) can share it without a cycle.
+    Returns ``None`` when the tree cannot be read, so the caller mints an
+    authorization that permits NO staged tree rather than one asserting a digest
+    it could not compute.
+    """
+    from ..review_stage import review_tree_manifest_sha256
+
+    # Normalize to the SAME git toplevel `_canonical_review_repo_authority` resolves
+    # at spawn. Digesting an unnormalized path would bind a different tree than the
+    # one actually staged, and the mismatch would only surface as a refusal at launch.
+    candidate = Path(canonical_repo_authority) if canonical_repo_authority is not None else Path.cwd()
+    try:
+        root = subprocess.check_output(
+            ["git", "-C", str(candidate), "rev-parse", "--show-toplevel"],
+            text=True, stderr=subprocess.DEVNULL, timeout=3,
+        ).strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if not root:
+        return None
+    try:
+        return review_tree_manifest_sha256(Path(root).resolve())
+    except (OSError, ValueError):
+        return None
 
 
 def _canonical_repo_digest(canonical_repo_authority: Path | str | None) -> str:
@@ -728,6 +766,7 @@ def prepare_review_isolation_authorization(
     *,
     mode: str,
     canonical_repo_authority: Path | str | None = None,
+    stage_review_tree: bool = False,
 ) -> ReviewIsolationAuthorization:
     """Authorize a review before composition or any provider/session effect.
 
@@ -757,6 +796,7 @@ def prepare_review_isolation_authorization(
                 raise
     canonical_repo_sha256 = _canonical_repo_digest(canonical_repo_authority)
     instructions_sha256 = _REVIEW_INSTRUCTIONS_SHA256.get()
+    staged_tree_sha256 = _staged_tree_digest(canonical_repo_authority) if stage_review_tree else None
     issued = time.monotonic_ns()
     authorization = ReviewIsolationAuthorization(
         operation="public_board_review.v1", purpose=str(getattr(board, "purpose", "")),
@@ -768,6 +808,7 @@ def prepare_review_isolation_authorization(
         canonical_repo_sha256=canonical_repo_sha256,
         issued_monotonic_ns=issued,
         _seal=_AUTHORIZATION_SEAL,
+        staged_tree_sha256=staged_tree_sha256,
     )
     _remember_lease(authorization)
     return authorization
@@ -811,6 +852,38 @@ def _expected_review_fields(
         "api_fallback": False,
         "canonical_repo_sha256": _canonical_repo_digest(canonical_repo_authority),
     }
+
+
+def _revalidate_staged_tree(
+    authorization: ReviewIsolationAuthorization, staged_dir: Path,
+) -> None:
+    """Bind the tree the seat can read to the tree the authorization approved.
+
+    Fails closed in both directions:
+
+    * an authorization that permits no tree, but a tree is present in the staged
+      dir -- an unattested tree must never be reviewable; and
+    * an authorization that names a tree whose staged bytes do not hash to the
+      approved digest -- the swap this field exists to catch.
+    """
+    from ..review_stage import REVIEW_STAGE_TREE_DIRNAME, review_tree_manifest_sha256
+
+    tree = staged_dir / REVIEW_STAGE_TREE_DIRNAME
+    approved = authorization.staged_tree_sha256
+    if approved is None:
+        if tree.exists():
+            raise ValueError(
+                "HARDEN review staged tree present without authorization"
+            )
+        return
+    if not tree.is_dir():
+        raise ValueError("HARDEN review staged tree is missing")
+    try:
+        observed = review_tree_manifest_sha256(tree)
+    except (OSError, ValueError) as exc:
+        raise ValueError("HARDEN review staged tree is unreadable") from exc
+    if observed != approved:
+        raise ValueError("HARDEN review staged tree does not match authorization")
 
 
 def revalidate_review_isolation_authorization(
@@ -867,6 +940,7 @@ def revalidate_review_isolation_authorization(
             or sha256(instructions.read_bytes()).hexdigest() != authorization.instructions_sha256
         ):
             raise ValueError("HARDEN review staged input does not match authorization")
+        _revalidate_staged_tree(authorization, staged_dir)
         if bundle.stat().st_mode & 0o222 or instructions.stat().st_mode & 0o222:
             raise ValueError("HARDEN review staged input is writable")
 

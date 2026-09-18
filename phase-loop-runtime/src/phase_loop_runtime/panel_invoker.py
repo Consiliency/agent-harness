@@ -108,6 +108,7 @@ from .advisor_board.schema import (
     Seat,
     identify_host_leg,
 )
+from . import review_stage as _review_stage
 from .advisor_board.research import (
     RESEARCH_CAPABLE_LANES,
     ResearchLedger,
@@ -5486,6 +5487,19 @@ def _default_spawn(
             )
             for staged_input in (review_dir / "review-bundle.md", review_dir / "review-instructions.md"):
                 staged_input.chmod(0o400)
+            # A seat that cannot open the code under review can only judge what the
+            # bundle inlines, which is what pushes bundles toward the 512 KiB cap
+            # (agent-harness#848). Stage a read-only COPY when -- and only when --
+            # the authorization approved one; `revalidate_...` below refuses both an
+            # unattested tree and one whose bytes do not match the approved digest.
+            if getattr(review_authorization, "staged_tree_sha256", None) is not None:
+                staged_tree = _review_stage.stage_review_tree(resolved_repo_dir, review_dir)
+                staged_tree.rename(review_dir / _review_stage.REVIEW_STAGE_TREE_DIRNAME)
+                # Staging is a NEW effect introduced here, so it is validated here --
+                # unconditionally, not behind the injected-seam predicate that skips
+                # the broader revalidation below. Otherwise a test seam, or any future
+                # caller reaching this path, could hand a seat a tree nobody approved.
+                _advisor_board_backing._revalidate_staged_tree(review_authorization, review_dir)
         if (
             mode == "review"
             and review_authorization is not None
@@ -5686,6 +5700,11 @@ def _default_spawn(
         if provider_output_dir is not None and agy_capture is None:
             shutil.rmtree(provider_output_dir, ignore_errors=True)
         if base is not None:
+            # The staged tree is deliberately read-only, and `rmtree(ignore_errors=True)`
+            # cannot unlink through a 0o500 directory -- it would fail SILENTLY and leak
+            # the whole stage every round. Drop it first, through the helper that
+            # restores modes on the way down.
+            _review_stage.remove_review_stage(base / "review" / _review_stage.REVIEW_STAGE_TREE_DIRNAME)
             shutil.rmtree(base, ignore_errors=True)
         if capture_scratch is not None and agy_capture is None:
             shutil.rmtree(capture_scratch, ignore_errors=True)
