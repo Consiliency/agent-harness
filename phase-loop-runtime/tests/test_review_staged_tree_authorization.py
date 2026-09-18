@@ -111,11 +111,15 @@ def test_authorization_defaults_to_permitting_no_tree():
 
 
 def test_default_spawn_stages_the_tree_only_when_authorized(tmp_path, monkeypatch):
-    """End-to-end wiring: the authorization, not the caller, decides.
+    """The authorization, not the caller, decides whether a tree is staged.
 
-    The pre-existing bundle-only invariant
-    (`test_panel_leg_review_dir_never_contains_the_repo`) still holds for an
-    unauthorized spawn; this covers the opt-in path it does not reach.
+    SCOPE, because an earlier version of this test overclaimed: monkeypatching
+    `_exec_leg` sets `_has_injected_review_execution_seam`, which SKIPS the brokered
+    branch entirely. So this exercises the staging and validation wiring, and proves
+    nothing about what a real brokered seat can read. No brokered seat is currently
+    given a path to the staged tree -- brokered codex runs with `--cd <out_dir>` and
+    brokered gemini drops `--add-dir` -- so an end-to-end read assertion here would pin
+    a capability of the fake (ah#890 board round 1, fable seat).
     """
     from phase_loop_runtime import panel_invoker
 
@@ -146,7 +150,10 @@ def test_default_spawn_stages_the_tree_only_when_authorized(tmp_path, monkeypatc
     )
 
     assert review_stage.REVIEW_STAGE_TREE_DIRNAME in seen["entries"]
-    assert seen["staged_source"] == "code under review\n", "the seat must be able to read the code"
+    assert seen["staged_source"] == "code under review\n", (
+        "the staged tree must contain the reviewed bytes (NOT a claim that a brokered "
+        "seat can reach it -- see this test's docstring)"
+    )
     # The seat read a copy; the reviewed tree is untouched and no .git was exposed.
     assert (repo / "SOURCE.py").read_text(encoding="utf-8") == "code under review\n"
     assert not (Path(seen["review_dir"]) / review_stage.REVIEW_STAGE_TREE_DIRNAME / ".git").exists()

@@ -234,3 +234,31 @@ def test_a_planted_tree_is_refused_even_when_the_lease_approves_none(tmp_path):
     )
     with pytest.raises(ValueError, match="without authorization"):
         backing._revalidate_staged_tree(lease_approving_no_tree, staged_dir)
+
+
+def test_gc_reclaims_a_killed_rounds_readonly_stage(tmp_path):
+    """Fable finding: `_gc_stale_panel_scratch` used the exact bare rmtree this module
+    documents as unable to unlink through its own 0o500 directories.
+
+    A round killed before its `finally` therefore leaked the whole stage PERMANENTLY --
+    the GC that exists to reclaim it silently failed on every later pass.
+    """
+    from phase_loop_runtime import panel_invoker
+
+    repo = _repo(tmp_path / "repo")
+    (repo / "pkg" / "deep").mkdir(parents=True)
+    (repo / "pkg" / "deep" / "a.py").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+
+    scratch = tmp_path / "scratch"
+    base = scratch / "pl-panel-killed"
+    (base / "review").mkdir(parents=True)
+    staged = review_stage.stage_review_tree(repo, base / "review")
+    staged.rename(base / "review" / review_stage.REVIEW_STAGE_TREE_DIRNAME)
+
+    os.utime(base, (0, 0))  # older than any cutoff
+    panel_invoker._gc_stale_panel_scratch(root=scratch, max_age_s=1)
+
+    assert not base.exists(), (
+        "a killed round's read-only stage must be reclaimable by the GC"
+    )

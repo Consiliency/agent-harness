@@ -1,11 +1,18 @@
 """Staged review trees for board seats, and the digest that attests them.
 
-A cross-vendor review seat runs inside the HARDEN review sandbox
-(``advisor_board/backing.py``: ``bwrap --unshare-all --clearenv`` with the staged
-dir ``--ro-bind``ed). Until now that dir held only ``review-bundle.md`` and
-``review-instructions.md``, so a seat could not open the code under review and
-every fact it might need had to be inlined into the bundle -- the pressure behind
-200-340 KiB bundles against the 512 KiB transport cap (agent-harness#848).
+Until now the staged review dir held only ``review-bundle.md`` and
+``review-instructions.md``, so a seat could not open the code under review and every
+fact it might need had to be inlined into the bundle -- the pressure behind 200-340 KiB
+bundles against the 512 KiB transport cap (agent-harness#848).
+
+**Scope, stated plainly.** This module materializes and attests a staged tree. It does
+NOT yet deliver that tree to a brokered seat. The ``bwrap --unshare-all --clearenv``
+child in ``advisor_board/backing.py`` is a fixed parent-generated posture probe, not a
+seat: the seats run in the PARENT via ``_parent_infer``/``_exec_leg``, where brokered
+codex is launched with ``--cd <out_dir>`` and brokered gemini drops ``--add-dir``
+entirely. Neither argv, nor the broker prompt, nor ``review-instructions.md`` names this
+tree. Wiring that delivery changes the attested provider argv and is deliberately not
+done here (ah#890 board round 1, fable seat).
 
 Two rules shape this module:
 

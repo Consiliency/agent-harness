@@ -1655,7 +1655,11 @@ def _gc_stale_panel_scratch(
         for path in base.glob("pl-panel-*"):
             try:
                 if path.is_dir() and path.stat().st_mtime < cutoff:
-                    shutil.rmtree(path, ignore_errors=True)
+                    # A killed round can leave a staged review tree whose directories
+                    # are 0o500; `rmtree(ignore_errors=True)` cannot unlink through
+                    # those and fails SILENTLY, so the scratch dir would never be
+                    # reclaimed. Restore modes on the way down first.
+                    _review_stage.remove_review_stage(path)
             except OSError:
                 continue
     except Exception:
