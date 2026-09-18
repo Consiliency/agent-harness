@@ -142,3 +142,59 @@ class TestEgress:
     def test_cloud_metadata_is_denied(self):
         """169.254.169.254 is the standard credential-theft target and is easy to forget."""
         assert not sandbox_policy.egress_allowlist().allows("169.254.169.254", 80)
+
+
+class TestTheSandboxIsActuallyReachable:
+    """The audit found the sandbox was built, tested, and DORMANT.
+
+    `prepare_review_isolation_authorization(stage_review_tree=...)` defaulted to a bare
+    `False` and no caller anywhere passed it -- so no production round could ever be
+    granted a sandbox. Every existing test hand-built an authorization with
+    `staged_tree_sha256` already set, which proves the mechanism and says nothing about
+    whether anything reaches it.
+
+    This is the third time in this branch that a mechanism was complete and its activation
+    was not. These tests check the activation.
+    """
+
+    def test_the_real_mint_grants_a_sandbox_by_default(self, tmp_path, monkeypatch):
+        import subprocess
+        from phase_loop_runtime.advisor_board import backing
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@e.st"], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+        (repo / "a.py").write_text("x\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "-c", "commit.gpgsign=false", "commit", "-qm", "c"],
+            check=True,
+        )
+
+        monkeypatch.delenv("PHASE_LOOP_SANDBOX_DISABLE", raising=False)
+        digest = backing._staged_tree_digest(repo)
+        assert digest, "the mint must be able to digest a reviewed tree"
+
+    def test_the_knob_can_turn_it_off_for_the_historical_posture(self, monkeypatch):
+        monkeypatch.setenv("PHASE_LOOP_SANDBOX_DISABLE", "1")
+        assert sandbox_policy.sandbox_enabled() is False
+
+    def test_it_is_on_by_default(self, monkeypatch):
+        """Dormant-by-default is how the capability shipped unreachable the first time."""
+        monkeypatch.delenv("PHASE_LOOP_SANDBOX_DISABLE", raising=False)
+        assert sandbox_policy.sandbox_enabled() is True
+
+    def test_no_production_caller_hardcodes_the_flag(self):
+        """A caller passing an explicit False would re-create the dormant state silently."""
+        from pathlib import Path as _P
+        src = _P(sandbox_policy.__file__).parent
+        offenders = []
+        for path in src.rglob("*.py"):
+            if path.name in ("sandbox_policy.py", "backing.py"):
+                continue
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            if "stage_review_tree=False" in text:
+                offenders.append(path.name)
+        assert offenders == [], f"these pin the sandbox off: {offenders}"

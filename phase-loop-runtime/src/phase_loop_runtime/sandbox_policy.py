@@ -43,6 +43,7 @@ __all__ = [
     "max_total_bytes",
     "probe_timeout_s",
     "archive_destination",
+    "sandbox_enabled",
 ]
 
 # Dev-friendly defaults. Production raises the floor by configuration, not by code.
@@ -160,6 +161,19 @@ def _probe_with_deadline(location: str, timeout_s: float) -> bool:
             return False
     finally:
         executor.shutdown(wait=False)
+
+
+def sandbox_enabled() -> bool:
+    """Should a review round stage a sandbox for its seats?
+
+    Default ON: a board whose seats cannot open the code they review is the defect this
+    exists to fix, and leaving it off by default would ship the machinery dormant -- which
+    is exactly what happened before this knob existed.
+
+    ``PHASE_LOOP_SANDBOX_DISABLE=1`` turns it off for an operator who wants the historical
+    bundle-only posture, and the brokered surface is then byte-identical to before.
+    """
+    return os.environ.get("PHASE_LOOP_SANDBOX_DISABLE", "").strip() not in ("1", "true", "yes")
 
 
 def configured_root() -> str | None:

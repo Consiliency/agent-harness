@@ -781,7 +781,7 @@ def prepare_review_isolation_authorization(
     *,
     mode: str,
     canonical_repo_authority: Path | str | None = None,
-    stage_review_tree: bool = False,
+    stage_review_tree: bool | None = None,
 ) -> ReviewIsolationAuthorization:
     """Authorize a review before composition or any provider/session effect.
 
@@ -811,6 +811,14 @@ def prepare_review_isolation_authorization(
                 raise
     canonical_repo_sha256 = _canonical_repo_digest(canonical_repo_authority)
     instructions_sha256 = _REVIEW_INSTRUCTIONS_SHA256.get()
+    # ``None`` means "ask the policy", which is what every production caller passes.
+    # This defaulted to a bare ``False`` with no caller anywhere overriding it, so the
+    # whole sandbox was built, tested, and UNREACHABLE: no seat could ever be granted
+    # one short of editing this line. An explicit False still disables it.
+    if stage_review_tree is None:
+        from ..sandbox_policy import sandbox_enabled
+
+        stage_review_tree = sandbox_enabled()
     staged_tree_sha256 = _staged_tree_digest(canonical_repo_authority) if stage_review_tree else None
     issued = time.monotonic_ns()
     authorization = ReviewIsolationAuthorization(

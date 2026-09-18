@@ -2286,12 +2286,19 @@ def _digest_bound_broker_delimiters(
 def _render_broker_inline_prompt(
     artifact: str, instructions: str, mode: str, staged_tree: Path | None = None,
 ) -> str:
-    """Render the sole brokered provider input without a file/tool pointer.
+    """Render the sole brokered provider input.
 
     This intentionally does not share the historical pointer renderer below: the
-    brokered provider is given exact parent-owned bytes inline and no path it can
-    select, inspect, or mutate.  The delimiters and both digests make prompt
-    injection boundaries explicit to the model and auditable to the parent.
+    brokered provider is given exact parent-owned bytes inline.  The delimiters and
+    both digests make prompt injection boundaries explicit to the model and
+    auditable to the parent.
+
+    ``staged_tree`` is the ONE exception to "no path it can select, inspect, or
+    mutate", which this docstring previously asserted unconditionally and which is
+    false whenever a sandbox is staged.  The path granted is a disposable clone with
+    its own object store, never the live checkout, and the seat is told so.  The
+    sibling statement on ``ReviewIsolationAuthorization`` was corrected when the
+    binding landed; this one was missed and read as authoritative.
     """
     artifact_bytes = artifact.encode("utf-8", errors="strict")
     instruction_bytes = instructions.encode("utf-8", errors="strict")
