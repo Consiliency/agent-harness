@@ -164,3 +164,99 @@ def test_the_sandbox_is_a_clone_so_the_reviewed_tree_cannot_be_reached(tmp_path)
     tree = _sandbox(tmp_path)
     assert (tree / ".git").is_dir()
     assert not (tree / ".git" / "objects" / "info" / "alternates").exists()
+
+
+def test_the_real_spawn_path_hands_a_seat_a_working_sandbox(tmp_path, monkeypatch):
+    """End-to-end through `_default_spawn`, against the REAL command builders.
+
+    The earlier version of this test asserted "the seat must be able to read the code"
+    from inside a monkeypatched `_exec_leg`, which skips the brokered branch entirely --
+    it pinned a capability of the fake while no brokered seat could read anything. This
+    one intercepts at the last possible point instead: it captures the argv and prompt the
+    real builders produced, then checks a command actually runs in that directory.
+    """
+    from phase_loop_runtime.advisor_board import backing
+
+    repo = tmp_path / "reviewed-repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@e.st"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+    (repo / "SOURCE.py").write_text("value = 41\n", encoding="utf-8")
+    (repo / "test_source.py").write_text(
+        "from SOURCE import value\n\ndef test_value():\n    assert value == 42\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "commit.gpgsign=false", "commit", "-qm", "c"],
+        check=True,
+    )
+    source_digest = review_stage.review_tree_manifest_sha256(repo)
+
+    seen: dict[str, object] = {}
+
+    def _capture(leg, review_dir, out_dir, timeout_s, artifact, mode, model, **kwargs):
+        review_dir = Path(review_dir)
+        tree = panel_invoker._sandbox_in(review_dir)
+        seen["tree"] = tree
+        seen["codex_argv"] = panel_invoker._brokered_codex_command(
+            model=None, out_dir=out_dir, out_file=Path(out_dir) / "x.txt",
+            codex_effort_args=(), staged_tree=tree,
+        )
+        seen["gemini_argv"] = panel_invoker._brokered_gemini_command(
+            model="gemini-3.8-flash", deadline_s=900.0, staged_tree=tree,
+        )
+        seen["prompt"] = panel_invoker._render_broker_inline_prompt(
+            "B", "I", "review", staged_tree=tree,
+        )
+        # Run INSIDE the leg: the sandbox is disposable and `_default_spawn` correctly
+        # reaps it on the way out, so anything checked afterwards is checking a corpse.
+        if tree is not None:
+            seen["red"] = subprocess.run(
+                ["python3", "-m", "pytest", "test_source.py", "-q", "-p", "no:randomly"],
+                cwd=tree, capture_output=True, text=True,
+            )
+            (tree / "SOURCE.py").write_text("value = 42\n", encoding="utf-8")
+            seen["green"] = subprocess.run(
+                ["python3", "-m", "pytest", "test_source.py", "-q", "-p", "no:randomly"],
+                cwd=tree, capture_output=True, text=True,
+            )
+        return 0, "ok review", "log"
+
+    monkeypatch.setattr(panel_invoker, "_exec_leg", _capture)
+
+    auth = backing.ReviewIsolationAuthorization(
+        operation="public_board_review.v1", purpose="t", input_sha256="0" * 64,
+        instructions_sha256="1" * 64, broker_contract=backing.PARENT_UNIX_BROKER_V1,
+        routes=(), readonly_tools=("Read",), child_credentialless=True,
+        child_network_egress=False, live_tree_exposed=False, api_fallback=False,
+        canonical_repo_sha256="2" * 64, issued_monotonic_ns=0,
+        _seal=backing._AUTHORIZATION_SEAL, staged_tree_sha256=source_digest,
+    )
+    panel_invoker._default_spawn(
+        "gemini", "REVIEW BUNDLE BODY", repo_dir=repo,
+        review_authorization=auth, canonical_repo_authority=repo,
+    )
+
+    tree = seen["tree"]
+    assert tree is not None, "the real spawn path must produce a sandbox"
+
+    # The seat is pointed at it, by both vendors and by the prompt.
+    assert seen["codex_argv"][seen["codex_argv"].index("--cd") + 1] == str(tree)
+    assert str(tree) in seen["gemini_argv"]
+    assert str(tree) in seen["prompt"]
+
+    # A command really ran there, and the failing test failed for its OWN reason.
+    red = seen["red"]
+    assert red.returncode != 0 and "assert 41 == 42" in red.stdout, (
+        f"a seat must be able to run the code it reviews:\n{red.stdout}\n{red.stderr}"
+    )
+    # Editing the sandbox turned it green: the seat can TEST a hypothesis, not just read.
+    assert seen["green"].returncode == 0, "a seat must be able to test a hypothesis"
+
+    # None of it reached the reviewed tree, and the sandbox is gone afterwards.
+    assert review_stage.review_tree_manifest_sha256(repo) == source_digest, (
+        "nothing the seat did may reach the reviewed tree"
+    )
+    assert not tree.exists(), "the sandbox is disposable and must not survive the leg"

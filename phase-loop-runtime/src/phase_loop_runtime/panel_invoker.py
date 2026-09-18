@@ -1746,6 +1746,21 @@ def _require_staged_tree(staged_tree: Path | None) -> Path | None:
     return tree
 
 
+def _sandbox_in(review_dir: Path | str | None) -> Path | None:
+    """The sandbox inside a review dir, or ``None`` when no tree was staged.
+
+    Derived rather than threaded: every call site that builds a provider command already
+    has `review_dir`, and a separate parameter would be one more thing that can silently
+    disagree with what was actually staged.
+    """
+    if review_dir is None:
+        return None
+    tree = Path(review_dir) / _review_stage.REVIEW_STAGE_TREE_DIRNAME
+    if not (tree / ".git" / "phase-loop-source-commit").is_file():
+        return None
+    return tree
+
+
 def _brokered_codex_command(
     *,
     model: str | None,
@@ -4984,6 +4999,7 @@ def _exec_leg(
             cmd = _brokered_codex_command(
                 model=model, out_dir=out_dir, out_file=out_file,
                 codex_effort_args=codex_effort_args,
+                staged_tree=_sandbox_in(review_dir),
             )
             _record_broker_provider_evidence(
                 broker_evidence, harness="codex",
@@ -5178,7 +5194,10 @@ def _exec_leg(
                 raise ValueError("brokered Gemini model is not the authorized HARDEN route")
             broker_stream = _broker_gemini_stream_protocol(prompt)
             broker_stream_input = broker_stream.transport
-            cmd = _brokered_gemini_command(model=gemini_model, deadline_s=deadline_s)
+            cmd = _brokered_gemini_command(
+                model=gemini_model, deadline_s=deadline_s,
+                staged_tree=_sandbox_in(review_dir),
+            )
         if agy_capture is not None:
             if provider_authority is None:
                 raise AgyCanaryEvidenceError("capture-enabled Gemini launch has no prepared namespace")
@@ -5718,6 +5737,7 @@ def _default_spawn(
                     (review_dir / "review-bundle.md").read_text(encoding="utf-8"),
                     (review_dir / "review-instructions.md").read_text(encoding="utf-8"),
                     provider_mode,
+                    staged_tree=_sandbox_in(review_dir),
                 )
                 broker.evidence.update({
                     "provider_input_sha256": sha256(sealed_prompt.encode()).hexdigest(),
