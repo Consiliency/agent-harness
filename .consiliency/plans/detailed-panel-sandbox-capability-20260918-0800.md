@@ -14,6 +14,12 @@ Trust model, which drives every decision below: **the sandbox protects the revie
 not against the reviewer.** Panelists are trusted like the agent that writes the code. The
 boundary exists so a reviewer can act freely without touching live state.
 
+Placement model: **the panelist runs wherever its sandbox is.** The sandbox root is a
+LOCATION, not just a path, and the seat executes there. This removes the remote-filesystem
+problem entirely -- no NFS, no small-file I/O over the network, no venv-over-NFS fragility,
+and nothing for Windows or macOS to support beyond the local default. It also makes
+archival cheap: if sandboxes live on `ai`, archiving to `ai:/storage` is a local move.
+
 ## Research summary
 
 Established across board round 1 on `agent-harness#890` and the follow-up investigation:
@@ -58,8 +64,10 @@ Established across board round 1 on `agent-harness#890` and the follow-up invest
 
 Single source for the knobs, all env-overridable, all defaulting to a working local setup:
 
-- `PHASE_LOOP_SANDBOX_ROOT` — default: system temp dir (**local**; no remote by default)
-- `PHASE_LOOP_SANDBOX_FALLBACK_ROOT` — default: system temp dir
+- `PHASE_LOOP_SANDBOX_ROOT` — a LOCATION: bare path = local, `<host>:<path>` = that host.
+  Default: system temp dir (**local**; no remote by default). The seat executes wherever
+  this resolves to.
+- `PHASE_LOOP_SANDBOX_FALLBACK_ROOT` — default: system temp dir (always local)
 - `PHASE_LOOP_SANDBOX_FLOOR_BYTES` — dev default **2 GiB**; production raised by config
 - `PHASE_LOOP_SANDBOX_TTL_S` — default 24 h (matches the existing GC default)
 - `PHASE_LOOP_SANDBOX_MAX_TOTAL_BYTES` — footprint ceiling, reaped oldest-first
@@ -87,6 +95,19 @@ floor check. Zero-config works on a laptop.
   keystone).
 - `_gc_stale_panel_scratch` — extend to the configured root(s); add the size ceiling; archive
   before reaping.
+
+### Remote execution (when the root resolves to another host)
+
+The seat's CLI is launched **on that host, in that directory**, over SSH — the transport the
+fleet already uses everywhere else. The staged copy is made there; nothing is mounted back.
+
+Deliberately NOT Dagger, despite it being this repo's CI offload mechanism
+(`ci/offload-gate.sh`, `AGENT_REMOTE_HOST`): Dagger containers are ephemeral one-shot
+environments, which is right for a CI suite and wrong here — a sandbox has to survive an idle
+overnight so a panelist can be resumed against it with its context intact. That requirement is
+what selects a persistent directory over a container.
+
+Reaping and archiving run **on the host that owns the sandbox**, not from the coordinator.
 
 ### `phase-loop-runtime/src/phase_loop_runtime/advisor_board/backing.py` (modify)
 
@@ -157,6 +178,10 @@ Run the sweep on a tree **left untouched** for its duration — editing during a
 - [ ] With both roots below the floor, the round refuses rather than filling the disk.
 - [ ] A sandbox older than the TTL is reaped; its session record is archived first and survives.
 - [ ] With no tree authorized, the brokered argv and prompt are byte-identical to today.
+- [ ] With a remote root configured, the seat's process runs ON that host, in that sandbox,
+      and nothing is mounted back to the coordinator.
+- [ ] A sandbox on a remote root is reaped and archived BY that host.
+- [ ] An unreachable remote host costs one warning and a local run, within the probe timeout.
 
 ## Non-goals
 
@@ -164,8 +189,6 @@ Run the sweep on a tree **left untouched** for its duration — editing during a
   in the sandbox removes the immediate need.
 - The v10 roadmap amendment — currently forbidden by the proposal's own fallback rule while a
   plan is `executing` (`agent-harness#889`).
-- Running the whole panelist on `ai`. That is the right answer for a disk-constrained host and
-  should reuse the existing CI offload, but it is a follow-on, not a path parameter.
 - Triage of the 1,406 existing worktrees. Separate and more urgent for disk, unrelated to this.
 
 ## Execution Policy
