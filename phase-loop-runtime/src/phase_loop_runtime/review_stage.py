@@ -87,62 +87,108 @@ def review_tree_paths(repo: Path) -> list[str] | None:
 
 
 def _refuse_escaping_symlinks(repo: Path, root: Path) -> None:
-    """Fail closed on any symlink pointing outside the tree being staged."""
+    """Fail closed on any symlink that could leave the tree, at any mount point.
+
+    Containment is decided TEXTUALLY on the link target rather than by resolving it:
+    an absolute target is refused, and a relative target may never traverse above the
+    tree root. A textual rule is relocation invariant, so the verdict does not change
+    when the stage is bind-mounted at ``/run/phase-loop-review/reviewed-tree``, and it
+    does not depend on resolving through intermediate symlinks (each of which is itself
+    checked by this same pass, so the whole link graph is covered inductively).
+
+    Note a target that leaves and RE-ENTERS the tree -- e.g.
+    ``proc/sys/kernel/leak -> ../../../proc/sys/kernel/hostname`` from three levels down
+    -- normalizes back inside and is allowed: ``../../../`` lands exactly on the root,
+    not above it. It is in-tree under any mount point. A real escape needs more ``..``
+    components than the link's depth.
+    """
     for candidate in repo.rglob("*"):
         if not candidate.is_symlink():
             continue
-        if Path(os.readlink(candidate)).is_absolute():
+        target = os.readlink(candidate)
+        if Path(target).is_absolute():
             raise ValueError(f"review staging refuses absolute symlink: {candidate}")
-        try:
-            candidate.resolve(strict=True).relative_to(root)
-        except (OSError, RuntimeError, ValueError) as exc:
+        rel_dir = candidate.parent.relative_to(root)
+        normalized = os.path.normpath(os.path.join(str(rel_dir), target))
+        if normalized == ".." or normalized.startswith(".." + os.sep):
             raise ValueError(
                 f"review staging refuses symlink escaping source tree: {candidate}"
+                f" -> {target} (normalizes to {normalized})"
+            )
+        # Belt and braces: also refuse anything that RESOLVES outside. The two rules
+        # catch different things and the board split on which to keep, so both are
+        # applied. Lexical is relocation invariant and does not read the filesystem;
+        # resolution catches a target reached through an intermediate symlink. A
+        # dangling in-tree link is fine -- the stage is a partial copy by design, so
+        # absence is expected and is not an escape.
+        try:
+            resolved = candidate.resolve(strict=True)
+        except (OSError, RuntimeError):
+            continue
+        try:
+            resolved.relative_to(root)
+        except ValueError as exc:
+            raise ValueError(
+                f"review staging refuses symlink escaping source tree: {candidate}"
+                f" -> {target} (resolves to {resolved})"
             ) from exc
+
+
+def _selected_paths(root: Path) -> list[str]:
+    """The path set to hash, on EITHER side of the copy.
+
+    A stage has no ``.git``, so ``review_tree_paths`` returns ``None`` there and the
+    walk below is used. The source uses git selection. Both must therefore agree on a
+    faithful copy, which means only MATERIALIZED files may be hashed: a tracked file
+    deleted from the working tree is listed by ``git ls-files`` but cannot exist in the
+    stage, and hashing it on one side only made an honest tree fail validation.
+    Dropping it loses nothing -- a deletion still removes the path from the set, which
+    still moves the digest.
+    """
+    rel_paths = review_tree_paths(root)
+    if rel_paths is None:
+        rel_paths = [
+            str(p.relative_to(root))
+            for p in root.rglob("*")
+            if (p.is_file() or p.is_symlink()) and ".git" not in p.relative_to(root).parts
+        ]
+    return sorted(
+        rel for rel in rel_paths
+        if (root / rel).is_symlink() or (root / rel).is_file()
+    )
 
 
 def review_tree_manifest_sha256(root: Path) -> str:
     """Digest binding the reviewed PATH SET and its BYTES.
 
-    Both halves matter. Hashing content alone would let a rename pass unnoticed;
-    hashing paths alone would let a length-preserving edit pass. Each record is
-    ``<sha256-of-bytes> <byte-length> <relative-path>\\n`` over a sorted path list,
-    so the digest is deterministic and order-independent.
+    Both halves matter: hashing content alone would let a rename pass unnoticed, and
+    hashing paths alone would let a length-preserving edit pass.
 
-    Symlinks are recorded by their target text rather than followed, so a stage
-    cannot be made to hash like its source by pointing at different bytes.
+    **Every field is fixed width.** A delimited record such as
+    ``blob <sha> <len> <path>\n`` is NOT injective, because a path may contain a
+    newline (git permits it and ``ls-files -z`` preserves it), so a single file named
+    ``"a\nblob <sha-of-empty> 0 b"`` serialized byte-identically to two empty files
+    ``a`` and ``b``. Hashing the path instead of embedding it makes every record the
+    same length, so the concatenation can be parsed exactly one way.
+
+    Symlinks are recorded by their target text rather than followed, so a stage cannot
+    be made to hash like its source by pointing at different bytes.
     """
     root = Path(root).resolve(strict=True)
-    rel_paths = review_tree_paths(root)
-    if rel_paths is None:
-        rel_paths = sorted(
-            str(p.relative_to(root))
-            for p in root.rglob("*")
-            if (p.is_file() or p.is_symlink()) and ".git" not in p.relative_to(root).parts
-        )
-
     digest = hashlib.sha256()
-    for rel in rel_paths:
+    for rel in _selected_paths(root):
         target = root / rel
         if target.is_symlink():
             payload = os.readlink(target).encode("utf-8")
             kind = b"link"
-        elif target.is_file():
+        else:
             payload = target.read_bytes()
             kind = b"blob"
-        else:
-            # Recorded as absent so a deletion moves the digest.
-            digest.update(b"gone 0 " + rel.encode("utf-8") + b"\n")
-            continue
         digest.update(
-            kind
-            + b" "
-            + hashlib.sha256(payload).hexdigest().encode("ascii")
-            + b" "
-            + str(len(payload)).encode("ascii")
-            + b" "
-            + rel.encode("utf-8")
-            + b"\n"
+            kind                                                    # 4 bytes, fixed
+            + hashlib.sha256(payload).hexdigest().encode("ascii")   # 64 bytes, fixed
+            + b"%020d" % len(payload)                               # 20 bytes, fixed
+            + hashlib.sha256(rel.encode("utf-8")).hexdigest().encode("ascii")  # 64, fixed
         )
     return digest.hexdigest()
 
@@ -176,10 +222,11 @@ def stage_review_tree(repo: Path, parent: Path | None = None) -> Path:
                 ignore=shutil.ignore_patterns(".git"),
             )
         else:
-            for rel in rel_paths:
+            # `_selected_paths`, not the raw git list: a submodule gitlink is listed by
+            # `ls-files` but is a DIRECTORY, and `shutil.copy2` raises IsADirectoryError
+            # on it. Filtering here also keeps the staged set identical to the hashed set.
+            for rel in _selected_paths(root):
                 source = root / rel
-                if not source.exists() and not source.is_symlink():
-                    continue
                 destination = staged / rel
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 if source.is_symlink():
@@ -188,7 +235,9 @@ def stage_review_tree(repo: Path, parent: Path | None = None) -> Path:
                     shutil.copy2(source, destination)
         _harden_modes(staged)
     except Exception:
-        shutil.rmtree(staged, ignore_errors=True)
+        # The tree may already be partially hardened, and a bare rmtree cannot unlink
+        # through a 0o500 directory -- it would fail silently and leak the stage.
+        remove_review_stage(staged)
         raise
     return staged
 
@@ -205,6 +254,11 @@ def remove_review_stage(staged: Path) -> None:
     a cleanup error would be worse than leaking a temp dir.
     """
     staged = Path(staged)
+    if staged.is_symlink():
+        # Never traverse or chmod through a symlinked root: that would change
+        # permissions on a directory outside the stage.
+        staged.unlink(missing_ok=True)
+        return
     if not staged.exists():
         return
     for path in sorted(staged.rglob("*"), key=lambda p: len(p.parts), reverse=True):

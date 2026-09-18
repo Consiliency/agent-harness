@@ -5474,6 +5474,7 @@ def _default_spawn(
     except Exception:
         raise
     provider_output_dir: Path | None = out_dir if provider_authority is not None else None
+    staged_tree_path: Path | None = None
     try:
         if quiescence_latch is not None:
             quiescence_latch.raise_if_set()
@@ -5494,11 +5495,24 @@ def _default_spawn(
             # unattested tree and one whose bytes do not match the approved digest.
             if getattr(review_authorization, "staged_tree_sha256", None) is not None:
                 staged_tree = _review_stage.stage_review_tree(resolved_repo_dir, review_dir)
+                # Track the ACTUAL path across the ownership transfer. If the rename
+                # fails, the hardened tree is still under its `pl-panel-stage-*` name,
+                # and cleanup that only knows the post-rename name would leave it --
+                # a bare `rmtree(ignore_errors=True)` cannot unlink through 0o500.
+                staged_tree_path = staged_tree
                 staged_tree.rename(review_dir / _review_stage.REVIEW_STAGE_TREE_DIRNAME)
+                staged_tree_path = review_dir / _review_stage.REVIEW_STAGE_TREE_DIRNAME
                 # Staging is a NEW effect introduced here, so it is validated here --
                 # unconditionally, not behind the injected-seam predicate that skips
                 # the broader revalidation below. Otherwise a test seam, or any future
                 # caller reaching this path, could hand a seat a tree nobody approved.
+                staged_tree_path = review_dir / _review_stage.REVIEW_STAGE_TREE_DIRNAME
+            # Outside the digest branch on purpose: a lease that approves NO tree must
+            # still refuse a tree someone planted in the staged dir. Keeping this inside
+            # that branch left the case uncaught on an injected-seam path. It stays
+            # gated on HAVING a lease, because an unauthorized spawn stages nothing and
+            # has no lease to check against.
+            if review_authorization is not None:
                 _advisor_board_backing._revalidate_staged_tree(review_authorization, review_dir)
         if (
             mode == "review"
@@ -5704,7 +5718,8 @@ def _default_spawn(
             # cannot unlink through a 0o500 directory -- it would fail SILENTLY and leak
             # the whole stage every round. Drop it first, through the helper that
             # restores modes on the way down.
-            _review_stage.remove_review_stage(base / "review" / _review_stage.REVIEW_STAGE_TREE_DIRNAME)
+            if staged_tree_path is not None:
+                _review_stage.remove_review_stage(staged_tree_path)
             shutil.rmtree(base, ignore_errors=True)
         if capture_scratch is not None and agy_capture is None:
             shutil.rmtree(capture_scratch, ignore_errors=True)
