@@ -25,6 +25,10 @@ from phase_loop_runtime import review_stage
 def _repo(root: Path) -> Path:
     root.mkdir(parents=True, exist_ok=True)
     subprocess.run(["git", "init", "-q", str(root)], check=True)
+    # CI containers carry no git identity, so `git commit` exits 128 there while
+    # passing on any developer box that has a global config. Configure it per repo.
+    subprocess.run(["git", "-C", str(root), "config", "user.email", "t@e.st"], check=True)
+    subprocess.run(["git", "-C", str(root), "config", "user.name", "t"], check=True)
     return root
 
 
