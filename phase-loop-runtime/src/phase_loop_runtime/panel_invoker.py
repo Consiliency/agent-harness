@@ -1765,9 +1765,24 @@ def _require_staged_tree(staged_tree: Path | None) -> Path | None:
         raise ValueError(
             f"refusing to grant a staged review tree whose marker is not a commit id: {tree}"
         )
-    if not (tree / ".git" / "objects").is_dir():
+    if (tree / ".git").is_symlink() or not (tree / ".git").is_dir():
         raise ValueError(
             f"refusing to grant a staged review tree that is not a git repository: {tree}"
+        )
+    # Ask git whether the recorded commit actually EXISTS here. A 40-hex string and an
+    # empty `.git/objects` directory satisfied the previous check, which a panelist can
+    # fabricate inside its own writable clone (board round 3).
+    try:
+        resolved = subprocess.run(
+            ["git", "-C", str(tree), "cat-file", "-e", f"{commit}^{{commit}}"],
+            capture_output=True, timeout=10,
+        ).returncode
+    except (OSError, subprocess.SubprocessError):
+        resolved = 1
+    if resolved != 0:
+        raise ValueError(
+            f"refusing to grant a staged review tree whose recorded commit is not present "
+            f"in it: {tree}"
         )
     return tree
 
@@ -1814,15 +1829,20 @@ def legs_without_sandbox_delivery(legs: tuple[str, ...] | None = None) -> tuple[
 _MULTI_ROUTE_LEGS: dict[str, tuple[str, ...]] = {"claude": ("claude:brokered",)}
 
 
-_SANDBOX_ROUND_FACTS: dict[str, object] = {}
+# Per-leg, not process-global. As a module dict this carried a sandboxed launch's facts
+# onto a later UNSANDBOXED launch -- reporting `network_filtered=True` for a seat that had
+# no prefix -- and concurrent seats overwrote each other. A ContextVar is per-task, and
+# `_sandbox_evidence()` returns nothing when the current leg recorded nothing.
+_SANDBOX_ROUND_FACTS: ContextVar[dict[str, object]] = ContextVar(
+    "_SANDBOX_ROUND_FACTS", default={},
+)
 
 
 def _record_sandbox_facts(
     root_choice: "_sandbox_policy.SandboxRootChoice", enforcement: dict[str, object],
 ) -> None:
     """Remember what this round chose, so the leg evidence can state it."""
-    _SANDBOX_ROUND_FACTS.clear()
-    _SANDBOX_ROUND_FACTS.update({
+    _SANDBOX_ROUND_FACTS.set({
         "sandbox_root_host": root_choice.host,
         "sandbox_root_path": str(root_choice.path),
         "sandbox_root_fell_back": root_choice.fell_back,
@@ -1834,7 +1854,7 @@ def _record_sandbox_facts(
 
 
 def _sandbox_evidence() -> dict[str, object]:
-    return dict(_SANDBOX_ROUND_FACTS)
+    return dict(_SANDBOX_ROUND_FACTS.get())
 
 
 # Legs whose brokered route CANNOT act on a sandbox, whatever is staged for them.
@@ -5862,7 +5882,10 @@ def _default_spawn(
                 # Open the filtered namespace for the whole leg. `applied=True` is passed
                 # ONLY from inside this block, so the evidence cannot claim a boundary that
                 # was not actually held open around the launch.
-                egress_ctx = _sandbox_egress.isolated_network()
+                # Outlive the leg: the namespace must not expire under a long review.
+                egress_ctx = _sandbox_egress.isolated_network(
+                    timeout_s=float(_LEG_TIMEOUT_MAX_S) + 300.0,
+                )
                 egress_prefix = egress_stack.enter_context(egress_ctx)
                 egress_token = _EGRESS_LAUNCH_PREFIX.set(tuple(egress_prefix))
                 egress_stack.callback(_EGRESS_LAUNCH_PREFIX.reset, egress_token)

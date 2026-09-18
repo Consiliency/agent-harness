@@ -161,7 +161,7 @@ def require_egress_isolation(available: bool | None = None) -> None:
 
 
 @contextlib.contextmanager
-def isolated_network(policy: EgressPolicy | None = None, *, timeout_s: float = 600.0):
+def isolated_network(policy: EgressPolicy | None = None, *, timeout_s: float = 3600.0):
     """Hold a filtered network namespace open and yield an argv PREFIX for it.
 
     This is the piece the board found missing. `run_in_isolated_network` ran a script in a
@@ -169,6 +169,10 @@ def isolated_network(policy: EgressPolicy | None = None, *, timeout_s: float = 6
     filtering that was never applied to it. A prefix composes with the existing spawn --
     argv, cwd, env, stdin and process-group handling all stay exactly as they were, and the
     provider lands inside the namespace instead of beside it.
+
+    ``timeout_s`` bounds how long the holder survives and must EXCEED the leg budget: at a
+    fixed 600s a long leg outlived its own namespace mid-run. Callers with a known deadline
+    should pass it.
 
     Yields ``()`` and warns if the mechanism is unavailable, so a caller can record
     truthfully rather than assume. Callers that must not proceed unisolated should call
@@ -209,12 +213,31 @@ def isolated_network(policy: EgressPolicy | None = None, *, timeout_s: float = 6
             )
             time.sleep(2.5)  # the tap must be configured before traffic flows
 
-            prefix = ("nsenter", "--net", "-t", nspid, "-U", "--preserve-credentials")
-            # Apply the policy INSIDE the namespace, before anything else runs in it.
-            subprocess.run(
-                [*prefix, "bash", "-c", "ip link set lo up 2>/dev/null || true\n" + rules],
-                capture_output=True, timeout=30,
+            admin = ("nsenter", "--net", "-t", nspid, "-U", "--preserve-credentials")
+            # Apply the policy INSIDE the namespace, before anything else runs in it, and
+            # CHECK it: a partially installed ruleset that still yielded a prefix would be
+            # reported as applied filtering while leaving holes.
+            installed = subprocess.run(
+                [*admin, "bash", "-c",
+                 "set -e\nip link set lo up 2>/dev/null || true\n" + rules],
+                capture_output=True, text=True, timeout=30,
             )
+            if installed.returncode != 0:
+                warnings.warn(
+                    "egress rules failed to install "
+                    f"({installed.stderr.strip()[:120]}); launching UNISOLATED",
+                    RuntimeWarning, stacklevel=2,
+                )
+                yield ()
+                return
+
+            # The seat runs with the capability bounding set EMPTIED. Without this the
+            # provider holds CAP_NET_ADMIN over the very namespace that confines it: board
+            # round 3 demonstrated `iptables -F OUTPUT` taking qdrant from BLOCKED to 200 in
+            # one command. Rules a reviewer can withdraw are a suggestion, not a boundary.
+            # Emptying the BOUNDING set (not merely the effective one) means the capability
+            # cannot be regained by re-exec either.
+            prefix = (*admin, "setpriv", "--bounding-set=-all", "--inh-caps=-all", "--")
             yield prefix
         finally:
             if slirp is not None:

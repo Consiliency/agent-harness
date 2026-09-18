@@ -21,6 +21,7 @@ rather than a wall.
 from __future__ import annotations
 
 import shutil
+from pathlib import Path
 
 import pytest
 
@@ -165,7 +166,7 @@ class TestTheReportCannotClaimUnappliedFiltering:
         import phase_loop_runtime.panel_invoker as pi
         source = _P(pi.__file__).read_text(encoding="utf-8")
         if "applied=" in source:
-            assert "isolated_network()" in source, (
+            assert "isolated_network(" in source, (
                 "the evidence claims applied filtering while no namespace is opened"
             )
             assert "_EGRESS_LAUNCH_PREFIX.get()" in source, (
@@ -226,3 +227,87 @@ def test_the_unavailable_path_warns_instead_of_crashing(monkeypatch):
     with pytest.warns(RuntimeWarning, match="WITHOUT network restriction"):
         with sandbox_egress.isolated_network() as prefix:
             assert prefix == (), "no isolation means no prefix, not a crash"
+
+
+@pytest.mark.skipif(
+    shutil.which("slirp4netns") is None or shutil.which("setpriv") is None,
+    reason="needs slirp4netns + setpriv (Linux)",
+)
+class TestTheSeatCannotWithdrawItsOwnFirewall:
+    """Board round 3, BLOCKING and DEMONSTRATED.
+
+    The provider launched inside the same user namespace that owned the network namespace,
+    so it held CAP_NET_ADMIN over its own confinement. Measured before the fix:
+
+        before flush  qdrant -> BLOCKED
+        iptables -F OUTPUT   -> FLUSHED
+        after flush   qdrant -> 200
+
+    One command took ~69 GB of user data from unreachable to readable. Rules a reviewer can
+    withdraw are a suggestion, not a boundary. The bounding set is now emptied, so the
+    capability cannot be regained even by re-exec.
+    """
+
+    def test_flushing_the_rules_is_refused_and_the_policy_still_holds(self):
+        import subprocess as sp
+        from phase_loop_runtime import sandbox_egress as se
+
+        if not se.egress_isolation_available():
+            pytest.skip("user namespaces unavailable")
+
+        with se.isolated_network() as prefix:
+            assert prefix, "isolation must be available for this test to mean anything"
+
+            def run(script):
+                return sp.run([*prefix, "bash", "-c", script],
+                              capture_output=True, text=True, timeout=45).stdout.strip()
+
+            flush = run("iptables -F OUTPUT 2>&1 && echo FLUSHED || echo REFUSED")
+            assert "FLUSHED" not in flush, f"the seat withdrew its own firewall: {flush!r}"
+
+            after = run(
+                "timeout 5 curl -s -o /dev/null -w %{http_code} --max-time 4 "
+                "http://100.84.171.76:6333/collections || echo BLOCKED"
+            )
+            assert "BLOCKED" in after or "000" in after, (
+                f"private space reachable after a flush attempt: {after!r}"
+            )
+            public = run(
+                "timeout 5 curl -s -o /dev/null -w %{http_code} --max-time 4 "
+                "https://1.1.1.1 || echo BLOCKED"
+            )
+            assert "301" in public or "200" in public, "the internet must still work"
+
+    def test_the_prefix_drops_the_capability_bounding_set(self):
+        from phase_loop_runtime import sandbox_egress as se
+        if not se.egress_isolation_available():
+            pytest.skip("user namespaces unavailable")
+        with se.isolated_network() as prefix:
+            assert "--bounding-set=-all" in prefix, (
+                "emptying the EFFECTIVE set alone is regainable by re-exec"
+            )
+
+
+def test_round_facts_do_not_leak_between_legs():
+    """Board round 3: `_SANDBOX_ROUND_FACTS` was a process-global dict.
+
+    A sandboxed launch attached `network_filtered=True`, and a later UNSANDBOXED launch
+    inherited it -- reporting a boundary for a seat that had no prefix. Legs fan out across
+    threads, and a ContextVar gives each thread its own context, so one seat's facts cannot
+    become another's.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from phase_loop_runtime import panel_invoker, sandbox_policy
+
+    choice = sandbox_policy.SandboxRootChoice(host=None, path=Path("/tmp"), fell_back=False)
+    panel_invoker._record_sandbox_facts(
+        choice, sandbox_egress.enforcement_report(True, applied=True)
+    )
+    assert panel_invoker._sandbox_evidence()["sandbox_network_filtered"] is True
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        other = pool.submit(panel_invoker._sandbox_evidence).result()
+
+    assert other.get("sandbox_network_filtered") is not True, (
+        "an unsandboxed leg inherited a sandboxed leg's isolation claim"
+    )

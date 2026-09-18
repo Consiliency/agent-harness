@@ -464,3 +464,23 @@ def test_the_tui_prompt_names_the_sandbox_and_its_real_limits(tmp_path):
     (plain_dir / "review-bundle.md").write_text("b\n", encoding="utf-8")
     without = panel_invoker._render_leg_prompt("BUNDLE", plain_dir, "review")
     assert "disposable copy" not in without, "unchanged when nothing is staged"
+
+
+def test_a_fabricated_marker_no_longer_passes_provenance(tmp_path):
+    """Board round 3: 40 zeroes plus an EMPTY `.git/objects` satisfied the check.
+
+    A panelist can build that shape inside its own writable clone. Provenance must ask git
+    whether the recorded commit actually exists, not whether a directory does.
+    """
+    fake = tmp_path / "review" / review_stage.REVIEW_STAGE_TREE_DIRNAME
+    (fake / ".git" / "objects").mkdir(parents=True)
+    (fake / ".git" / "phase-loop-source-commit").write_text("0" * 40 + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="not present in it|not a git repository"):
+        panel_invoker._require_staged_tree(fake)
+
+
+def test_a_real_staged_tree_still_passes_provenance(tmp_path):
+    """Negative control: tightening must not reject genuine sandboxes."""
+    tree = _sandbox(tmp_path)
+    assert panel_invoker._require_staged_tree(tree) == tree
