@@ -1771,7 +1771,12 @@ _SANDBOX_DELIVERY_BUILDERS: dict[str, str] = {
     "codex": "_brokered_codex_command",
     "gemini": "_brokered_gemini_command",
     "grok": "_brokered_grok_command",
+    # BOTH claude routes, because the guard previously named only the non-brokered one
+    # and therefore passed while `_broker_claude_tui_command` -- the route claude takes in
+    # production outside Claude Code -- had no delivery whatsoever. A completeness check
+    # that names the wrong function is worse than none: it reports coverage it never had.
     "claude": "_claude_tui_command",
+    "claude:brokered": "_broker_claude_tui_command",
 }
 
 
@@ -1782,7 +1787,17 @@ def legs_without_sandbox_delivery(legs: tuple[str, ...] | None = None) -> tuple[
     state board round 1 found for codex and gemini.
     """
     known = tuple(_AVAILABLE_PANEL_LEGS if legs is None else legs)
-    return tuple(leg for leg in known if leg not in _SANDBOX_DELIVERY_BUILDERS)
+    missing = [leg for leg in known if leg not in _SANDBOX_DELIVERY_BUILDERS]
+    # A leg with more than one production route needs every route covered. Naming only
+    # one is how `claude` passed this check while its brokered route was unwired.
+    for leg, routes in _MULTI_ROUTE_LEGS.items():
+        if leg in known:
+            missing += [r for r in routes if r not in _SANDBOX_DELIVERY_BUILDERS]
+    return tuple(dict.fromkeys(missing))
+
+
+# Legs whose production path forks into more than one command builder.
+_MULTI_ROUTE_LEGS: dict[str, tuple[str, ...]] = {"claude": ("claude:brokered",)}
 
 
 _SANDBOX_ROUND_FACTS: dict[str, object] = {}
@@ -1806,6 +1821,27 @@ def _record_sandbox_facts(
 
 def _sandbox_evidence() -> dict[str, object]:
     return dict(_SANDBOX_ROUND_FACTS)
+
+
+# Legs whose brokered route CANNOT act on a sandbox, whatever is staged for them.
+#
+# `claude` brokered runs with `--tools "" --allowedTools ""` and an explicit disallow list
+# (`_broker_claude_tui_command`), so every capability the sandbox preamble names is absent.
+# `gemini` brokered is worse than absent: `_brokered_agy_environment` denies `read_file(*)`
+# and `command(*)`, and the brokered argv omits `--dangerously-skip-permissions`, which this
+# file documents as the difference between a review and a dead leg -- the first auto-denied
+# tool call destroys the ENTIRE response. Telling such a seat to "run the test" is not an
+# unusable suggestion, it is an instruction to zero itself.
+#
+# So the preamble is chosen by what the seat can DO, never by what was staged.
+_SANDBOX_INCAPABLE_BROKERED_LEGS: frozenset[str] = frozenset({"claude", "gemini"})
+
+
+def sandbox_usable_by(leg: str | None, brokered: bool) -> bool:
+    """Can this leg act on a staged sandbox on this route?"""
+    if leg is None:
+        return True
+    return not (brokered and leg in _SANDBOX_INCAPABLE_BROKERED_LEGS)
 
 
 def _sandbox_in(review_dir: Path | str | None) -> Path | None:
@@ -5861,7 +5897,14 @@ def _default_spawn(
                     (review_dir / "review-bundle.md").read_text(encoding="utf-8"),
                     (review_dir / "review-instructions.md").read_text(encoding="utf-8"),
                     provider_mode,
-                    staged_tree=_sandbox_in(review_dir),
+                    # Gate on CAPABILITY, not on what was staged: a seat told it may run
+                    # commands when it cannot either wastes the round or, for brokered
+                    # agy, destroys its own response on the first denied call.
+                    staged_tree=(
+                        _sandbox_in(review_dir)
+                        if sandbox_usable_by(leg, brokered=True)
+                        else None
+                    ),
                 )
                 broker.evidence.update({
                     "provider_input_sha256": sha256(sealed_prompt.encode()).hexdigest(),

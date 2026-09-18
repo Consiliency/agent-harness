@@ -346,3 +346,43 @@ def test_the_completeness_guard_would_actually_catch_a_missing_leg():
     assert panel_invoker.legs_without_sandbox_delivery(("codex", "opencode", "pi")) == (
         "opencode", "pi",
     )
+
+
+# --- the preamble must match what the seat can actually DO -----------------------
+
+def test_a_seat_that_cannot_act_is_not_told_that_it_can(tmp_path):
+    """Audit finding: the sandbox preamble reached seats with no way to use it.
+
+    Brokered claude runs with `--tools "" --allowedTools ""` and an explicit disallow list,
+    so every capability the preamble names is absent. Brokered agy is worse: its settings
+    deny `read_file(*)` and `command(*)`, and the brokered argv omits
+    `--dangerously-skip-permissions`, which this file documents as the difference between a
+    review and a dead leg -- the FIRST auto-denied tool call destroys the entire response.
+
+    So "run the test, check the history" is not a useless suggestion to those seats, it is
+    an instruction to zero themselves.
+    """
+    assert panel_invoker.sandbox_usable_by("codex", brokered=True) is True
+    assert panel_invoker.sandbox_usable_by("grok", brokered=True) is True
+    assert panel_invoker.sandbox_usable_by("claude", brokered=True) is False
+    assert panel_invoker.sandbox_usable_by("gemini", brokered=True) is False
+    # Non-brokered routes are a different posture and keep their grant.
+    assert panel_invoker.sandbox_usable_by("gemini", brokered=False) is True
+
+
+def test_an_incapable_seat_gets_the_historical_sealed_preamble(tmp_path):
+    """It must fall back cleanly, not receive a half-sandbox prompt."""
+    tree = _sandbox(tmp_path)
+    capable = panel_invoker._render_broker_inline_prompt("B", "I", "review", staged_tree=tree)
+    incapable = panel_invoker._render_broker_inline_prompt("B", "I", "review", staged_tree=None)
+    assert "You MAY run commands" in capable
+    assert "You MAY run commands" not in incapable
+    assert "Do not use or request tools" in incapable
+
+
+def test_the_completeness_guard_covers_both_claude_routes():
+    """The guard named only the non-brokered builder, so it passed while the route claude
+    actually takes in production had no delivery at all. A completeness check that names
+    the wrong function reports coverage it never had."""
+    assert panel_invoker.legs_without_sandbox_delivery() == ()
+    assert "claude:brokered" in panel_invoker._SANDBOX_DELIVERY_BUILDERS
