@@ -109,7 +109,12 @@ def _refuse_escaping_symlinks(repo: Path, root: Path) -> None:
     not above it. It is in-tree under any mount point. A real escape needs more ``..``
     components than the link's depth.
     """
-    for candidate in repo.rglob("*"):
+    # Scoped to the SELECTED paths, not the whole tree. Walking `rglob` scanned
+    # gitignored paths that staging would never copy, so an ordinary `.venv/bin/python
+    # -> /usr/bin/python3` (absolute, ignored, never staged) refused the entire stage and
+    # degraded every seat in the round -- on this repo, which gitignores `.venv`.
+    for rel in _selected_paths(repo):
+        candidate = repo / rel
         if not candidate.is_symlink():
             continue
         target = os.readlink(candidate)

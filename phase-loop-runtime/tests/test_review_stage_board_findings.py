@@ -262,3 +262,40 @@ def test_gc_reclaims_a_killed_rounds_readonly_stage(tmp_path):
     assert not base.exists(), (
         "a killed round's read-only stage must be reclaimable by the GC"
     )
+
+
+def test_an_ignored_venv_symlink_does_not_block_staging(tmp_path):
+    """Fable finding 4: containment scanned paths staging would never copy.
+
+    `python -m venv .venv` leaves `.venv/bin/python -> /usr/bin/python3`, which is
+    absolute and gitignored. Scanning the whole tree refused the ENTIRE stage over a file
+    that is never copied, degrading every seat in the round -- on this repo, whose
+    `.gitignore` carries `.venv`.
+    """
+    repo = _repo(tmp_path / "repo")
+    (repo / ".gitignore").write_text(".venv/\n", encoding="utf-8")
+    (repo / "src.py").write_text("code\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+
+    (repo / ".venv" / "bin").mkdir(parents=True)
+    os.symlink("/usr/bin/python3", repo / ".venv" / "bin" / "python")
+
+    staged = review_stage.stage_review_tree(repo, tmp_path / "stage")
+    assert (staged / "src.py").is_file()
+    assert not (staged / ".venv").exists(), "ignored paths must not be staged"
+
+
+def test_a_dangling_in_tree_symlink_is_staged_not_refused(tmp_path):
+    """Fable finding 4(b): `resolve(strict=True)` raises on a dangling link.
+
+    A tracked `link.so -> build/out.so` whose target is gitignored or not yet built was
+    reported as "escaping source tree". The stage is a partial copy by design, so an
+    absent target is expected and is not an escape.
+    """
+    repo = _repo(tmp_path / "repo")
+    (repo / ".gitignore").write_text("build/\n", encoding="utf-8")
+    os.symlink(os.path.join("build", "out.so"), repo / "link.so")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+
+    staged = review_stage.stage_review_tree(repo, tmp_path / "stage")
+    assert (staged / "link.so").is_symlink()
