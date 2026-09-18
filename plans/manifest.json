@@ -762,6 +762,35 @@
       "updated_at": "2026-09-14T22:47:56Z"
     },
     {
+      "acceptance_criteria_count": 6,
+      "created_at": "2026-09-18T18:02:34Z",
+      "file": "plans/detailed-review-monitor-policy-20260918-1802.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20260918T180234Z-eb8e.md",
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-09-18T18:02:34Z",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "artifact_state": "untracked",
+            "implementation_started": false,
+            "verification_status": "not_run"
+          },
+          "transition": "committed"
+        }
+      ],
+      "owner_skill": "codex-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-detailed/reflections/f9cee9f8/codex-heartbeat-policy-plan-20260918/20260918T180234Z-eb8e.md",
+      "roadmap_ref": null,
+      "slug": "detailed-review-monitor-policy-20260918-1802",
+      "status": "committed",
+      "task_summary": "Explicit heartbeat-only review policy with sealed admission and cancellation, agent-harness#735 and agent-harness#826",
+      "type": "detailed",
+      "updated_at": "2026-09-18T18:02:34Z"
+    },
+    {
       "acceptance_criteria_count": 5,
       "created_at": "2026-07-18T03:20:00Z",
       "file": "plans/detailed-fable-tui-workspace-trust-stall-20260718.md",
