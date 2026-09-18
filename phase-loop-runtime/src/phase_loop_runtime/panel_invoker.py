@@ -2696,9 +2696,28 @@ def _record_broker_provider_evidence(
 
 
 def _render_leg_prompt(artifact: str, review_dir: Path, mode: str = "review") -> str:
+    """Prompt for a leg that reads its inputs from files rather than inline bytes.
+
+    When a sandbox is staged this names it, and names the capability HONESTLY. The TUI
+    adapter is granted the clone as an add-dir but runs with ``allowed_tools = "Read,Write"``
+    and no ``Bash``: it can open and edit the code, and cannot run it. A grant the seat is
+    never told about is a wasted grant; a grant described as more than it is produces a seat
+    that reports checks it could not perform.
+    """
     digest, size = _artifact_metadata(artifact)
     instructions_path = review_dir / "review-instructions.md"
     bundle_path = review_dir / "review-bundle.md"
+    sandbox = _sandbox_in(review_dir)
+    sandbox_note = (
+        ""
+        if sandbox is None
+        else (
+            f"\nA disposable copy of the code under review is at {sandbox}. It is a clone,"
+            " not the live checkout, and is deleted when this review ends. You may READ and"
+            " EDIT files there to check a claim. You cannot run commands in this seat, so do"
+            " not report results you could not have executed.\n"
+        )
+    )
     # #107: mode-aware framing hygiene. The REVIEW branch below is BYTE-IDENTICAL to
     # today's single-string framing (the golden asserts the exact prompt/argv — do
     # NOT change a byte). The ADVISORY branch keeps the instructions/material
@@ -2723,6 +2742,7 @@ def _render_leg_prompt(artifact: str, review_dir: Path, mode: str = "review") ->
     return (
         _mode_instructions(mode)
         + "\n\n"
+        + sandbox_note
         + framing
         + "Do not rely on this prompt for the review bundle contents; the bundle is intentionally staged as a "
         "Markdown file instead of being pasted into the initial prompt.\n\n"

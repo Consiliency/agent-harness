@@ -444,3 +444,23 @@ def test_a_research_seat_gets_neither_the_live_repo_nor_the_sandbox(tmp_path):
     # A normal seat still gets it.
     plain = panel_invoker._claude_tui_command(review_dir, repo)
     assert str(tree) in plain
+
+
+def test_the_tui_prompt_names_the_sandbox_and_its_real_limits(tmp_path):
+    """The TUI leg was granted the clone as an add-dir and never told it existed.
+
+    It runs with `allowed_tools = "Read,Write"` and no `Bash`: it can open and edit the
+    code, and cannot run it. A grant the seat is never told about is wasted; a grant
+    described as more than it is produces a seat that reports checks it could not perform.
+    """
+    tree = _sandbox(tmp_path)
+    with_box = panel_invoker._render_leg_prompt("BUNDLE", tree.parent, "review")
+    assert str(tree) in with_box
+    assert "cannot run commands" in with_box.lower(), "it must not imply execution"
+    assert "deleted when this review ends" in with_box
+
+    plain_dir = tmp_path / "plain"
+    plain_dir.mkdir()
+    (plain_dir / "review-bundle.md").write_text("b\n", encoding="utf-8")
+    without = panel_invoker._render_leg_prompt("BUNDLE", plain_dir, "review")
+    assert "disposable copy" not in without, "unchanged when nothing is staged"
