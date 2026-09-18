@@ -46,6 +46,9 @@ __all__ = [
     "review_tree_manifest_sha256",
     "stage_review_tree",
     "remove_review_stage",
+    "staged_source_commit",
+    "is_stale",
+    "CLONE_DEPTH",
     "REVIEW_STAGE_TREE_DIRNAME",
 ]
 
@@ -57,11 +60,9 @@ REVIEW_STAGE_DIR_PREFIX = "pl-panel-stage-"
 # directory while the seat reads another.
 REVIEW_STAGE_TREE_DIRNAME = "reviewed-tree"
 
-# Read-only for the owner: the sandbox binds this tree read-only anyway, but a
-# restrictive mode means a seam that runs a seat outside the sandbox still cannot
-# quietly rewrite the reviewed bytes.
-_STAGED_FILE_MODE = 0o400
-_STAGED_DIR_MODE = 0o500
+# The stage is WRITABLE on purpose: a panelist has to be able to run tests in it, and
+# pytest writes caches before it does anything. Cleanup still restores modes on the way
+# down, because a panelist may create read-only directories of its own.
 
 
 def review_tree_paths(repo: Path) -> list[str] | None:
@@ -205,16 +206,60 @@ def review_tree_manifest_sha256(root: Path) -> str:
     return digest.hexdigest()
 
 
+CLONE_DEPTH = 50
+
+
+def _git(repo: Path, *args: str, check: bool = True) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        capture_output=True, text=True, check=check,
+    ).stdout
+
+
+def staged_source_commit(staged: Path) -> str | None:
+    """The commit this sandbox was staged from, or ``None`` if it is not a clone."""
+    marker = Path(staged) / ".git" / "phase-loop-source-commit"
+    if marker.is_file():
+        return marker.read_text(encoding="utf-8").strip() or None
+    return None
+
+
+def is_stale(staged: Path, source: Path) -> bool:
+    """Has the source moved since this sandbox was staged?
+
+    Resuming a sandbox against code that has changed underneath it is not a cosmetic
+    problem: the panelist reports on lines that no longer exist, with citations, and
+    nothing in its output signals that it is out of date.
+    """
+    recorded = staged_source_commit(staged)
+    if recorded is None:
+        return False
+    try:
+        current = _git(Path(source), "rev-parse", "HEAD").strip()
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return bool(current) and current != recorded
+
+
 def stage_review_tree(repo: Path, parent: Path | None = None) -> Path:
-    """Materialize a throwaway, read-only copy of ``repo`` for a review seat.
+    """Materialize a writable, independent shallow clone of ``repo`` for a review seat.
 
-    Never a linked worktree and never ``git clone --shared``: both leave the stage
-    pointing into the live gitdir or its object store. This is a plain copy with
-    ``.git`` omitted.
+    A clone rather than a copy, so a panelist can run ``git log``/``blame``/``diff`` --
+    the cheapest way to answer "when did this change and why". Depth is bounded
+    (:data:`CLONE_DEPTH`) because full history costs ~8x more for history a review will
+    not read.
 
-    The copy is created under ``parent`` (default: the system temp dir) and is the
-    caller's to remove. On any failure the partial copy is removed here rather than
-    leaked, and the failure is raised.
+    Independent by construction: cloned from a ``file://`` URL, which forces a real object
+    copy. A plain path clone would hardlink into the source object store, and ``--shared``
+    or a linked worktree would leave the sandbox resolving objects through the LIVE gitdir
+    -- at which point it is not a copy at all.
+
+    The clone lands at the source's HEAD, so the working tree is then overlaid: a reviewer
+    is shown the working tree, and a sandbox that silently showed the last commit instead
+    would have the panelist review code nobody proposed.
+
+    Writable on purpose. ``pytest`` writes caches before it does anything, so a read-only
+    tree cannot host the test run this sandbox exists for.
     """
     root = Path(repo).resolve(strict=True)
     if not root.is_dir():
@@ -226,32 +271,73 @@ def stage_review_tree(repo: Path, parent: Path | None = None) -> Path:
 
     try:
         _refuse_escaping_symlinks(root, root)
-        rel_paths = review_tree_paths(root)
-        if rel_paths is None:
-            shutil.copytree(
-                root, staged,
-                dirs_exist_ok=True, symlinks=True,
-                ignore=shutil.ignore_patterns(".git"),
-            )
-        else:
-            # `_selected_paths`, not the raw git list: a submodule gitlink is listed by
-            # `ls-files` but is a DIRECTORY, and `shutil.copy2` raises IsADirectoryError
-            # on it. Filtering here also keeps the staged set identical to the hashed set.
-            for rel in _selected_paths(root):
-                source = root / rel
-                destination = staged / rel
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                if source.is_symlink():
-                    os.symlink(os.readlink(source), destination)
-                else:
-                    shutil.copy2(source, destination)
-        _harden_modes(staged)
+        head = _git(root, "rev-parse", "HEAD", check=False).strip()
+        if not head:
+            # Not a git checkout (or no commits yet): fall back to a contained copy so a
+            # non-git tree is still reviewable, just without history.
+            _copy_selected(root, staged)
+            return staged
+
+        subprocess.run(
+            ["git", "clone", "--quiet", "--depth", str(CLONE_DEPTH), "--no-single-branch",
+             f"file://{root}", str(staged)],
+            capture_output=True, text=True, check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(staged), "checkout", "--quiet", "--detach", head],
+            capture_output=True, text=True, check=False,
+        )
+        _overlay_working_tree(root, staged)
+        # Inside `.git` on purpose: the marker describes the clone, and anything in the
+        # tree itself would be hashed into the manifest and break source/stage equality.
+        (staged / ".git" / "phase-loop-source-commit").write_text(head + "\n", encoding="utf-8")
     except Exception:
-        # The tree may already be partially hardened, and a bare rmtree cannot unlink
-        # through a 0o500 directory -- it would fail silently and leak the stage.
         remove_review_stage(staged)
         raise
     return staged
+
+
+def _copy_selected(root: Path, staged: Path) -> None:
+    """Copy the selected paths verbatim (the no-git fallback)."""
+    for rel in _selected_paths(root):
+        source = root / rel
+        destination = staged / rel
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_symlink():
+            os.symlink(os.readlink(source), destination)
+        else:
+            shutil.copy2(source, destination)
+
+
+def _overlay_working_tree(root: Path, staged: Path) -> None:
+    """Make the clone match the source's WORKING TREE, not just its last commit.
+
+    Three kinds of divergence, all of which a reviewer is shown and a bare clone would
+    hide: modified tracked files, tracked files deleted but not yet committed, and
+    untracked-but-not-ignored additions.
+    """
+    selected = set(_selected_paths(root))
+
+    tracked_in_clone = {
+        rel for rel in _git(staged, "ls-files", check=False).split("\n") if rel
+    }
+    for rel in tracked_in_clone - selected:
+        stale_path = staged / rel
+        if stale_path.is_file() or stale_path.is_symlink():
+            stale_path.unlink()
+
+    for rel in selected:
+        source = root / rel
+        destination = staged / rel
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_symlink():
+            if destination.is_symlink() or destination.exists():
+                destination.unlink()
+            os.symlink(os.readlink(source), destination)
+        elif source.is_file():
+            if destination.is_file() and destination.read_bytes() == source.read_bytes():
+                continue
+            shutil.copy2(source, destination)
 
 
 def remove_review_stage(staged: Path) -> None:
@@ -287,12 +373,3 @@ def remove_review_stage(staged: Path) -> None:
     shutil.rmtree(staged, ignore_errors=True)
 
 
-def _harden_modes(staged: Path) -> None:
-    """Make the stage read-only, deepest paths first so parents stay writable."""
-    for path in sorted(staged.rglob("*"), key=lambda p: len(p.parts), reverse=True):
-        if path.is_symlink():
-            continue
-        try:
-            path.chmod(_STAGED_FILE_MODE if path.is_file() else _STAGED_DIR_MODE)
-        except OSError:
-            pass

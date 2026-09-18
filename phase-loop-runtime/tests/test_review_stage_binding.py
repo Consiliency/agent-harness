@@ -55,24 +55,25 @@ def test_stage_is_a_copy_and_never_the_live_tree(tmp_path):
     assert repo.resolve() not in staged.resolve().parents
     assert (staged / "src.py").read_text(encoding="utf-8") == "live tree file\n"
 
-    # The stage is read-only, so a seat's write is refused outright. Running as
-    # root defeats the mode bits, so the load-bearing assertion is the one that
-    # holds either way: the reviewed tree is untouched.
-    try:
-        (staged / "src.py").write_text("seat scribbled\n", encoding="utf-8")
-    except PermissionError:
-        pass
-    else:
-        assert os.geteuid() == 0, "a non-root seat must not be able to write the stage"
+    # The stage is WRITABLE by design -- a panelist has to run tests in it. The
+    # load-bearing assertion is the one that always mattered: writing the copy cannot
+    # reach the reviewed tree.
+    (staged / "src.py").write_text("seat scribbled\n", encoding="utf-8")
     assert (repo / "src.py").read_text(encoding="utf-8") == "live tree file\n"
 
 
-def test_stage_excludes_git_metadata_and_ignored_paths(tmp_path):
-    """No .git (so no live gitdir, no shared alternates) and no build artifacts."""
+def test_stage_carries_an_independent_git_and_no_ignored_paths(tmp_path):
+    """`.git` is now PRESENT but independent: a panelist needs history to reason with.
+
+    The property that always mattered is unchanged -- no link to the live object store.
+    A `--shared` clone or a linked worktree would leave the sandbox resolving objects
+    through the reviewed repo, at which point it is not a copy.
+    """
     repo = _git_repo(tmp_path / "repo")
     staged = review_stage.stage_review_tree(repo, tmp_path / "stage")
 
-    assert not (staged / ".git").exists()
+    assert (staged / ".git").is_dir(), "a real gitdir, not a worktree pointer file"
+    assert not (staged / ".git" / "objects" / "info" / "alternates").exists()
     assert not (staged / "ignored" / "artifact.bin").exists()
     assert (staged / ".gitignore").is_file()
 

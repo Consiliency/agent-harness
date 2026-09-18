@@ -134,33 +134,36 @@ def test_an_in_tree_relative_symlink_is_still_allowed(tmp_path):
     assert (staged / "pkg" / "sideways.py").is_symlink()
 
 
-def test_a_partially_hardened_stage_is_cleaned_up_on_failure(tmp_path, monkeypatch):
-    """Finding 6 (BLOCKING): the failure path used a bare rmtree.
+def test_a_failed_stage_does_not_leak_a_partial_sandbox(tmp_path, monkeypatch):
+    """Finding 6 (BLOCKING), carried forward to the clone implementation.
 
-    `stage_review_tree` hardens to 0o500/0o400 and then may raise; a bare
-    `rmtree(ignore_errors=True)` cannot unlink through those directories, so the stage
-    leaked silently on every failure.
+    The original defect was a bare `rmtree` on the failure path that could not unlink
+    through the stage's own directories. The read-only hardening that caused it is gone,
+    but the invariant it protected is not: a stage that fails part-way through must leave
+    nothing behind, or every failed round leaks a clone.
     """
     repo = _repo(tmp_path / "repo")
     (repo / "pkg").mkdir()
     (repo / "pkg" / "a.py").write_text("a\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "commit.gpgsign=false", "commit", "-qm", "i"],
+        check=True,
+    )
 
     parent = tmp_path / "stage"
-    boom = RuntimeError("hardening blew up")
 
-    def _explode(staged):
-        # Harden for real, then fail: the exact shape that used to leak.
-        for path in sorted(Path(staged).rglob("*"), key=lambda p: len(p.parts), reverse=True):
-            path.chmod(0o500 if path.is_dir() else 0o400)
-        raise boom
+    def _explode(root, staged):
+        # Fail AFTER the clone exists, which is the shape that used to leak.
+        (Path(staged) / "pkg").mkdir(parents=True, exist_ok=True)
+        raise RuntimeError("overlay blew up")
 
-    monkeypatch.setattr(review_stage, "_harden_modes", _explode)
+    monkeypatch.setattr(review_stage, "_overlay_working_tree", _explode)
     with pytest.raises(RuntimeError):
         review_stage.stage_review_tree(repo, parent)
 
     leaked = list(parent.glob(review_stage.REVIEW_STAGE_DIR_PREFIX + "*"))
-    assert leaked == [], f"a partially hardened stage leaked: {leaked}"
+    assert leaked == [], f"a failed stage leaked: {leaked}"
 
 
 def test_remove_review_stage_never_chmods_through_a_symlinked_root(tmp_path):
