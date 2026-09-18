@@ -410,3 +410,37 @@ def test_the_evidence_records_the_controls_actually_in_force(tmp_path):
     assert "tools-empty" in grok_plain
     assert "tools-empty" not in grok_boxed, "the allow-list is not empty with a sandbox"
     assert "tools-sandbox-allowlist" in grok_boxed
+
+
+def test_a_research_seat_gets_neither_the_live_repo_nor_the_sandbox(tmp_path):
+    """Regression: the sandbox branch was placed AHEAD of an existing guard.
+
+    `_claude_tui_command` withholds a source directory from a research seat because such a
+    seat has network access AND pre-approved Write, and granting source combines them. My
+    first version checked the sandbox before that guard, so research seats silently gained
+    a directory the existing code deliberately withheld. Whether a disposable clone is safe
+    enough for a research seat may well be true -- it is not a question to answer by
+    accident.
+    """
+    import dataclasses
+    from phase_loop_runtime.advisor_board.research import ResearchSeatConfig
+
+    tree = _sandbox(tmp_path)
+    review_dir = tree.parent
+    repo = tmp_path / "live-repo"
+    repo.mkdir()
+
+    def _stub(field):
+        return Path(tmp_path / field.name) if field.type in (Path, "Path") else "x"
+
+    seat = ResearchSeatConfig(**{
+        f.name: _stub(f) for f in dataclasses.fields(ResearchSeatConfig)
+    })
+    cmd = panel_invoker._claude_tui_command(review_dir, repo, research_seat=seat)
+
+    assert str(tree) not in cmd, "a research seat must not receive the sandbox"
+    assert str(repo) not in cmd, "nor the live repo, which was always the rule"
+
+    # A normal seat still gets it.
+    plain = panel_invoker._claude_tui_command(review_dir, repo)
+    assert str(tree) in plain

@@ -2776,11 +2776,19 @@ def _claude_tui_command(
     # read nothing -- the asymmetry the sandbox work removes. `allowed_tools` here already
     # includes Write, which is safe against a disposable clone and was not against a live
     # tree.
-    sandbox = _sandbox_in(review_dir)
+    # A research seat may write only its isolated output workspace: it has network access
+    # AND pre-approved Write, and granting it a source directory combines the two. That
+    # guard predates the sandbox and still applies -- an earlier version of this change put
+    # the sandbox branch AHEAD of it, which silently handed research seats a directory the
+    # existing code deliberately withheld. Whether a disposable clone is safe enough for a
+    # research seat is a real question; it is not one to answer by accident.
+    sandbox = _sandbox_in(review_dir) if research_seat is None else None
     if sandbox is not None:
+        # Sandboxed: this leg reviews the CLONE instead of the live repo. It was the only
+        # leg ever granted `repo_dir`, so before the sandbox it read the live checkout
+        # while the brokered seats read nothing. `allowed_tools` includes Write, which is
+        # safe against a disposable clone and was not against a live tree.
         add_dirs.append(sandbox)
-    # A research seat may write only its isolated output workspace. Granting the
-    # live repo as an add-dir would combine network access with pre-approved Write.
     elif research_seat is None and repo_dir.resolve() != review_dir.resolve():
         add_dirs.append(repo_dir)
     # ABDHOME: effort is plumbed per-seat. ``effort is None`` (legacy/default path)
