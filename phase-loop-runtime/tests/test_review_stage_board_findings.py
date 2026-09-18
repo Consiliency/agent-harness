@@ -299,3 +299,32 @@ def test_a_dangling_in_tree_symlink_is_staged_not_refused(tmp_path):
 
     staged = review_stage.stage_review_tree(repo, tmp_path / "stage")
     assert (staged / "link.so").is_symlink()
+
+
+def test_a_staged_tree_does_not_inflate_the_leg_timeout(tmp_path):
+    """Fable finding 6: staging happens BEFORE the deadline is computed.
+
+    `_review_bytes` summed every file under the review dir, so the ~23 MiB tree
+    saturated `_leg_timeout_for` at its maximum for every leg. Measured before the fix: a
+    22 KiB bundle's reference moved from 852 s to 1800 s, silently changing both the
+    subprocess timeout and the agent-harness#114 retry heuristic. The tree is not
+    transport material and must not scale the timeout.
+    """
+    from phase_loop_runtime import panel_invoker
+
+    review_dir = tmp_path / "review"
+    review_dir.mkdir()
+    (review_dir / "review-bundle.md").write_text("x" * 20000, encoding="utf-8")
+    (review_dir / "review-instructions.md").write_text("y" * 2000, encoding="utf-8")
+    bundle_only = panel_invoker._leg_timeout_for(review_dir)
+
+    repo = _repo(tmp_path / "repo")
+    for i in range(50):
+        (repo / f"f{i}.py").write_text("z" * 20000, encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    staged = review_stage.stage_review_tree(repo, review_dir)
+    staged.rename(review_dir / review_stage.REVIEW_STAGE_TREE_DIRNAME)
+
+    assert panel_invoker._leg_timeout_for(review_dir) == bundle_only, (
+        "the staged tree must not scale a leg's timeout"
+    )

@@ -42,6 +42,7 @@ import tempfile
 import threading
 import time
 import struct
+import warnings
 import weakref
 
 from .fixtures import DEFAULT_SEATS
@@ -690,7 +691,15 @@ def _staged_tree_digest(canonical_repo_authority: Path | str | None) -> str | No
         return None
     try:
         return review_tree_manifest_sha256(Path(root).resolve())
-    except (OSError, ValueError):
+    except (OSError, ValueError) as exc:
+        # Fail closed, but never silently: the caller asked for a staged tree and is
+        # about to get an authorization that permits none. The revalidation mirror of
+        # this raises; the mint side would otherwise drop the opt-in with no signal.
+        warnings.warn(
+            f"review staging requested but the reviewed tree could not be digested"
+            f" ({type(exc).__name__}); authorizing NO staged tree",
+            RuntimeWarning, stacklevel=2,
+        )
         return None
 
 

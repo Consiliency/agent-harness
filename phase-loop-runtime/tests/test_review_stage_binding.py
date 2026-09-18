@@ -102,8 +102,13 @@ def test_stage_refuses_symlinks_that_leave_the_tree(tmp_path, kind):
         review_stage.stage_review_tree(repo, tmp_path / "stage")
 
 
-def test_manifest_digest_is_content_bound_and_order_independent(tmp_path):
-    """The digest must change when reviewed BYTES change, and not otherwise."""
+def test_manifest_digest_is_content_bound_and_creation_order_independent(tmp_path):
+    """The digest must change when reviewed BYTES change, and not otherwise.
+
+    The old name claimed order independence while only hashing the same repo twice, so
+    it could not have caught an order-dependent digest (ah#890 board, fable finding 9).
+    Two trees with identical content created in OPPOSITE order now pin it.
+    """
     repo = _git_repo(tmp_path / "repo")
 
     first = review_stage.review_tree_manifest_sha256(repo)
@@ -117,6 +122,18 @@ def test_manifest_digest_is_content_bound_and_order_independent(tmp_path):
 
     (repo / "src.py").write_text("changed\n", encoding="utf-8")
     assert review_stage.review_tree_manifest_sha256(repo) != first
+
+    # Actually permute: same content, opposite creation order, must hash identically.
+    forward = _git_repo(tmp_path / "forward")
+    for name in ("aaa.py", "mmm.py", "zzz.py"):
+        (forward / name).write_text(name, encoding="utf-8")
+    backward = _git_repo(tmp_path / "backward")
+    for name in ("zzz.py", "mmm.py", "aaa.py"):
+        (backward / name).write_text(name, encoding="utf-8")
+    for r in (forward, backward):
+        subprocess.run(["git", "-C", str(r), "add", "-A"], check=True)
+    assert review_stage.review_tree_manifest_sha256(forward) == \
+        review_stage.review_tree_manifest_sha256(backward)
 
 
 def test_manifest_digest_detects_a_swapped_file_of_equal_length(tmp_path):

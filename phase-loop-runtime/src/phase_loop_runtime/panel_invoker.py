@@ -4702,9 +4702,19 @@ def _exec_claude_agent_view_attempt(
 
 
 def _review_bytes(review_dir: Path) -> int:
-    """Total byte size of the staged review material — the timeout-scaling input."""
+    """Total byte size of the staged review material — the timeout-scaling input.
+
+    The staged REVIEWED TREE is excluded. It is not transport material: it is never sent
+    to a provider, so it must not scale a leg's timeout. Counting it saturated
+    `_leg_timeout_for` at the maximum for every leg (measured: a 22 KiB bundle moved from
+    852 s to 1800 s), which silently changed both the subprocess timeout and the
+    agent-harness#114 retry heuristic that asks whether a leg burned most of its budget.
+    """
     total = 0
+    tree = review_dir / _review_stage.REVIEW_STAGE_TREE_DIRNAME
     for path in review_dir.rglob("*"):
+        if tree in path.parents or path == tree:
+            continue
         if path.is_file():
             try:
                 total += path.stat().st_size
