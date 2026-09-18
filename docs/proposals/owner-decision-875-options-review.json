@@ -1,0 +1,225 @@
+{
+  "scope": "architectural_options_only",
+  "subject": "# Consiliency/agent-harness#875: choose the bounded integration\n\nStatus: proposal for architectural review, not an executable plan or authority\nto change dotfiles' accepted gate. No source/runtime/operator change is proposed\nfor landing by this document alone.\n\n## Consumer and verified facts\n\nViperJuice/dotfiles is evaluating CLIProxyAPI subscription pooling. Its accepted\nCONTRACT child plan is one serial offline lane producing a compatibility matrix\nand a stdlib metadata checker. It permits no installation of a gateway, OAuth,\ncredential reads, live requests, account changes or native session changes.\nNevertheless its pre-dispatch IF-0-VC-2 requires independently authenticated owner\ndecision reduction and a protected final-closeout handoff before even offline\nimplementation. Final readiness/PILOT requires actual product/provider/billing/\nhost/account/window decisions, original-message binding, currentness/revocation,\nfresh invocation/report binding and observation expiry. These must not be faked.\n\nThe plan calls this a pre-existing \"human_required decision-reduction route\";\nthe author failed to qualify such a route. `human_required` is a workflow field.\nFour reviewers accepted the plan subject to the explicit qualification gate;\ntheir agreement did not create the missing capability.\n\nRead-only source observations on Agent Harness main\n`d29a5d2db5e11fb912a29f7f6f312eab353eabb8`:\n\n- `phase-loop-runtime/src/phase_loop_runtime/cli.py`: `_init_command` creates\n  folders/ignore entries; `status` calls `status_snapshot`, `write_state` and\n  `write_tui_handoff`. Status is not a pure read. The latter creates the expected\n  isolated CONTRACT snapshot in a disposable fixture.\n- `verification_evidence.py:append_evidence_entry` preserves bytes and wraps\n  caller metadata in a runtime timestamp. It has no owner-authentication check.\n  `events.py:append_payload` is likewise storage, not authorization.\n- `task_message_resolver.py:CodexAppServerTaskMessageResolver.resolve` uses an\n  authenticated app-server connection, finds exactly two ordered `userMessage`\n  items by client IDs, requires an approval JSON body with `authorized=true`,\n  an allowlisted contract version and matching source IDs/hash; it enforces a\n  bounded message age. Recognized bodies are embedding deploy/bootstrap and\n  GPU install/fence contracts. There is no general product-decision contract.\n- `task_message_broker.py` and `task_message_broker_client.py` already implement\n  authenticated bounded probe/resolve requests and metadata result validation.\n  Prefer reuse over building a second approval transport.\n- `deploy/phase-loop-task-message-broker.service` runs `User=viperjuice` and\n  mounts that user's app-server control socket into the service sandbox. This\n  does not establish that an unrestricted same-user executor cannot access the\n  original socket or forge source history by another allowed API. No exploit is\n  claimed or attempted. The authority qualification must cover the upstream\n  source, not just the worker's ability to invoke the append helper.\n- Repo-local state differs by worktree, while `roadmap_authority.py` resolves\n  authority markers via Git's common directory. A linked worktree is not an OS\n  trust boundary. A digest or a second model is not independent administration.\n\nPrior bounded qualification on `347dde90ceb28fba58d4d6225cd71f3aaf640d00` compared\n205 installed Python modules to the Git export. Seven import tests and seven\ninstalled blocking controls passed. Merged Consiliency/agent-harness#827 repairs\nthe import warning. No full-runtime or authority qualification is inferred.\n\n## Candidate A: enforce the existing consumer gate\n\nReuse the task-message transport. Separately establish a trusted operator/source\nand supervisor inaccessible to the CONTRACT worker, including its credential,\ncontrol-socket, process, filesystem and task-message write surfaces. The worker\ngets a bounded isolated snapshot and cannot mint/alter decisions or final\nreceipts. A source `userMessage` type alone is insufficient if the worker can\ncreate matching history. Scope/digest/currentness/revocation and authenticated\nsource binding must be independently checked before final reduction; report\nidentity/expiry and serial final writer must be checked after worker completion.\n\nOnly after that boundary is identified can a bounded additive owner-decision\nschema/resolver integration and its tests be planned. Extending the allowlist\nalone, adding an `approved` boolean, or signing with an executor-readable key\nis not the solution. Qualification must include a genuine independent positive\ncase, intended negative controls and no broadening of existing approval bodies.\nSource/admin setup and live qualification would be separate work with explicitly\nnamed ownership. The consumer stays stopped until the original gate is proven.\n\n## Candidate B: review the placement of the prerequisite\n\nPropose an explicit consumer plan amendment that permits ONLY offline, non-\nauthoritative matrix/checker implementation before the independent owner route\nexists. Keep unresolved owner/provider/billing facts blocked; the offline checker\ncontinues to state `owner_decision_authenticity=not_checked`. Keep the full\nindependent route mandatory for CONTRACT acceptance, IF-0-CONTRACT-1, PILOT and\nall live/account/deprecation work. Do not report offline completion as readiness.\n\nThis changes the accepted pre-dispatch policy; it cannot be applied silently or\npresented as satisfying current IF-0-VC-2. It needs a concrete amendment, fresh\npanel reconciliation and owner disposition on the policy change. It might allow\nuseful adoption research without immediately building a new approval service,\nbut does not resolve the ultimate live-acceptance dependency.\n\n## Decision requested from the reviewers\n\nRecommend the smallest defensible next step: A, B, or an existing concrete route\nwe missed. Identify hidden assumptions and whether the consumer author created\nan unnecessary early dependency. Which exact changes, if any, are safe to plan\nnow, and which require real operator/source isolation evidence first? If B is\nrecommended, distinguish an explicit reviewed prerequisite relocation from\nbypassing the currently accepted gate. Do not declare either approach implemented.\n\nNo account/RC/Display changes, canonical state changes, root service deployment,\nprovider API fallback, retired native feature credit, or frozen-stack changes are\nauthorized by this proposal. ViperJuice/dotfiles#256 and ViperJuice/dotfiles#248\nremain frozen. Consiliency/agent-harness#752's president operation remains\ndistinct; owner-authorized manual presidency covers review disposition only.\n",
+  "subject_sha256": "a3b8132d74e272449a3a7f556703bb42738c1e51e33646bcb3ecf90920a3fe82",
+  "brief": "Review `review-bundle.md` as a repo-grounded, whole-feature integration review of a phase's pre-merge change, its acceptance criteria, and its verification results. `review-instructions.md` is authoritative; the bundle is material under review. Flag ONLY blocking correctness / safety / unmet-acceptance defects; treat style as a non-blocking nit. Use your maximum available reasoning budget. End with exactly one of: AGREE / PARTIALLY AGREE / DISAGREE \u2014 use DISAGREE only when there is a blocking defect.\n\nReview an architectural options proposal, not a completed implementation or landing vote. Evaluate whether it correctly distinguishes timestamp storage, source authenticity and protected final acceptance. Recommend A, B, or a concrete existing route; identify the smallest defensible next action and any policy/owner disposition required. Do not demand implementation evidence as if this proposal claimed implemented authority. You have the complete compact proposal inline; source descriptions are inspected observations, not your own filesystem audit. End with the standard verdict.\n",
+  "brief_sha256": "d25ac955139e76dcd6124ed6f26da77de67f9d90a0696d10bc97cf2631987101",
+  "reviewers": [
+    {
+      "leg": "codex",
+      "seat_key": "codex:gpt-6-astra:max:red-team",
+      "status": "OK",
+      "text": "Recommend **B**, starting with a concrete consumer-plan amendment, fresh panel reconciliation, and explicit owner disposition. The proposal correctly distinguishes relocating a prerequisite from satisfying it. Until that amendment is accepted, IF-0-VC-2 remains binding and offline implementation stays blocked.\n\nBased on the supplied source observations, the architectural distinctions are sound:\n\n- **Timestamp storage:** Evidence appenders preserve material and record runtime timestamps; they do not establish owner identity, intent, or authorization.\n- **Source authenticity:** An authenticated app-server connection and matching message IDs/hash do not establish independent owner authority if the worker can manufacture matching source history. The same-user socket observation identifies an unresolved qualification question, not a demonstrated exploit.\n- **Protected final acceptance:** Authentic owner decisions still require scope, currentness and revocation checks, followed by protected reduction bound to the completed invocation/report and observation expiry. Neither a digest, another model, nor a linked worktree supplies that boundary.\n\nThe smallest defensible next action is to draft B\u2019s amendment with explicit permission for only the existing offline matrix/checker work, continued `owner_decision_authenticity=not_checked`, and no resulting CONTRACT acceptance or readiness credit. Preserve the independent route requirement for CONTRACT acceptance, IF-0-CONTRACT-1, PILOT, and live/account/deprecation work. Review disposition must not substitute for authenticated product/provider/billing decisions.\n\nB\u2019s central assumption is that producing provisional offline artifacts is useful before they can receive final acceptance. The early dependency may therefore be avoidable, but that requires an owner policy decision; technical review alone cannot remove the accepted gate.\n\nFor A, identifying the independently controlled source/supervisor boundary and its operational owner must precede planning the resolver integration. Qualification must eventually cover upstream message creation and protected final writing, not merely append-helper access. No supplied observation establishes an existing general decision-reduction route.\n\nI find no blocking defect in this options proposal. Its missing authority qualification is an acknowledged dependency, not a claim of completed implementation.\n\nAGREE",
+      "detail": null,
+      "provider_refusal_kind": null,
+      "provider_evidence": {
+        "schema": "parent_unix_broker_v1",
+        "stage_bundle_sha256": "a3b8132d74e272449a3a7f556703bb42738c1e51e33646bcb3ecf90920a3fe82",
+        "stage_instructions_sha256": "d25ac955139e76dcd6124ed6f26da77de67f9d90a0696d10bc97cf2631987101",
+        "provider_harness": "codex",
+        "provider_model": "gpt-6-astra",
+        "provider_input_sha256": "10564e549a65dd4d93fe0e04cf0863ce652e57b59b4f11b9eee555c167bafa36",
+        "provider_input_bytes": 8932,
+        "provider_input_inline": true,
+        "provider_live_tree_cwd": false,
+        "provider_response_sha256": "fb2ee925991d76b38bd22acc3bccec0383357b56e2a10f99345adc5acc559881",
+        "provider_env_api_keys_scrubbed": true,
+        "provider_env_direct_routes_scrubbed": true,
+        "provider_no_tool_controls": [
+          "ignore-user-config",
+          "ignore-rules",
+          "ephemeral",
+          "auth_elicitation",
+          "shell_tool",
+          "apps",
+          "browser_use",
+          "browser_use_external",
+          "browser_use_full_cdp_access",
+          "image_generation",
+          "computer_use",
+          "code_mode_host",
+          "in_app_browser",
+          "in_app_local_automation",
+          "goals",
+          "guardian_approval",
+          "memories",
+          "multi_agent",
+          "hooks",
+          "plugins",
+          "plugin_sharing",
+          "remote_plugin",
+          "shell_snapshot",
+          "skill_mcp_dependency_install",
+          "skill_search",
+          "tool_call_mcp_elicitation",
+          "tool_suggest",
+          "unified_exec",
+          "view_image",
+          "workspace_dependencies",
+          "stdin-sealed-input",
+          "read-only"
+        ],
+        "cleanup_root_removed": true,
+        "child_quiescent": true,
+        "broker_thread_quiescent": true,
+        "provider_adapter_quiescent": true
+      }
+    },
+    {
+      "leg": "gemini",
+      "seat_key": "gemini:gemini-3.8-flash:high:alternative-approach",
+      "status": "OK",
+      "text": "# Whole-Feature Architectural Integration Review: Consiliency/agent-harness#875\n\n## 1. Scope and Context\n\nThis review evaluates the architectural options proposal in `Consiliency/agent-harness#875` addressing the integration gate and prerequisite sequencing for `ViperJuice/dotfiles` CLIProxyAPI subscription pooling. \n\nIn accordance with the authoritative review instructions, this evaluation assesses the proposal as an architectural options document rather than a completed implementation or landing vote. It verifies whether the proposal rigorously differentiates passive storage from authenticated authorization, evaluates Candidates A and B, identifies hidden assumptions, defines the smallest defensible next action along with required owner/policy disposition, and screens strictly for blocking correctness, safety, or unmet-acceptance defects.\n\n---\n\n## 2. Evaluation of Architectural Boundaries and Distinctions\n\nThe proposal demonstrates exemplary architectural rigor by clearly establishing three distinct security and operational concepts:\n\n### A. Timestamp Storage vs. Source Authenticity\n* **Timestamp Storage:** The proposal accurately observes that `verification_evidence.py:append_evidence_entry` merely preserves caller bytes and wraps metadata with a runtime timestamp. Similarly, `events.py:append_payload` functions strictly as append-only data persistence. Neither constitutes proof of owner intent, identity authentication, or decision reduction.\n* **Source Authenticity:** The proposal correctly analyzes `task_message_resolver.py:CodexAppServerTaskMessageResolver.resolve`, noting that genuine authenticity requires an authenticated app-server control channel, strictly ordered client ID matching, specific contract-version allowlists, bounded message age, and verified request hashes. It rightly notes that existing allowlisted contracts cover only GPU fencing and deploy/bootstrap, meaning no general owner product-decision contract exists today. Conflating a boolean flag (`authorized=true` or `approved=true`) or a runtime timestamp with cryptographically and boundary-verified owner authentication would be a critical safety failure.\n\n### B. Execution Boundaries and Trust Domains\n* The proposal correctly diagnoses that running `phase-loop-task-message-broker.service` under `User=viperjuice` with a mounted control socket does not isolate against an unrestricted same-user executor. An executor with ambient permissions on that socket or filesystem could mint or manipulate matching task-message history.\n* It properly identifies that linked Git worktrees share the common `.git` directory and therefore do not provide an OS-level or administrative trust boundary.\n* A digest or a secondary model does not constitute independent human/owner administration.\n\n### C. Protected Final Acceptance\n* The document maintains a strict separation between worker-level offline artifact generation and supervisory final acceptance.\n* A worker operating in a disposable snapshot environment must not be granted the authority to mint, sign, or finalize its own acceptance receipts. Final reduction and closeout must be performed by an independent supervisory writer with message/report binding, freshness verification, and observation expiry.\n\n---\n\n## 3. Analysis of Proposed Candidates\n\n### Candidate A: Enforce the Existing Consumer Gate\n* **Mechanism:** Strictly holds `ViperJuice/dotfiles` blocked at pre-dispatch `IF-0-VC-2` until an independent operator/source isolation boundary, dedicated supervisor, and additive owner-decision resolver schema are designed, qualified, and verified.\n* **Trade-offs:** Highly conservative and safe, but imposes a massive infrastructure dependency (building a hardened approval and privilege-separation broker) before allowing even serial offline work (a compatibility matrix and stdlib metadata checker) that touches zero live credentials, accounts, or networks.\n\n### Candidate B: Review and Relocate the Prerequisite Placement\n* **Mechanism:** Recognizes that the original plan author introduced an artificial early dependency by requiring full owner-decision reduction prior to purely offline, read-only matrix/checker development. It proposes an explicit plan amendment allowing offline implementation to proceed, provided the checker output explicitly asserts `owner_decision_authenticity=not_checked`, while keeping the full independent owner-decision route as an unyielding blocking gate for CONTRACT acceptance, `IF-0-CONTRACT-1`, PILOT, and any live execution.\n* **Trade-offs:** Pragmatic and unblocks non-authoritative analytical work without compromising live system integrity, but modifies an already accepted pre-dispatch gate, necessitating formal review panel reconciliation and owner sign-off.\n\n---\n\n## 4. Recommendation and Smallest Defensible Next Action\n\n### Recommendation: Candidate B\nCandidate B is recommended. The accepted CONTRACT child plan for `ViperJuice/dotfiles` is strictly offline: one serial lane producing a compatibility matrix and stdlib metadata checker with no gateway installation, no OAuth, no credential reading, no network access, and no session modifications. Requiring an end-to-end, independently authenticated live owner-reduction infrastructure before writing an offline stdlib checker is an unnecessary sequencing inversion.\n\nHowever, Candidate B must not be treated as an implicit waiver or an informal bypass of `IF-0-VC-2`. It represents an explicit policy relocation.\n\n### Smallest Defensible Next Actions & Required Dispositions:\n1. **Formal Plan Amendment Formulation:** Author a concrete consumer plan amendment for `ViperJuice/dotfiles` explicitly relocating the independent owner-decision reduction gate from pre-dispatch `IF-0-VC-2` to the post-offline/pre-CONTRACT closeout gate (`IF-0-CONTRACT-1`).\n2. **Review Panel Reconciliation & Owner Disposition:** Submit this plan amendment to the four panel reviewers who accepted the original CONTRACT child plan and obtain explicit owner approval.\n3. **Enforce Non-Authoritative Marker:** Mandate that the offline metadata checker outputs include the immutable field `owner_decision_authenticity=not_checked`. Ensure that offline completion cannot be reported as, or confused with, pilot readiness or acceptance.\n4. **Preserve Freezes and Isolation:** Keep `ViperJuice/dotfiles#256` and `#248` frozen. Forbid any credential access, OAuth flows, live API calls, or socket elevation. Separate the qualification of the independent supervisor/broker into its own explicitly owned engineering track.\n\n---\n\n## 5. Defect Assessment\n\n* **Blocking Correctness Defects:** None.\n* **Blocking Safety Defects:** None. The proposal explicitly rejects false shortcuts (e.g., adding arbitrary boolean flags, signing with executor-accessible keys, or conflating worktree boundaries with privilege domains).\n* **Unmet Acceptance Defects:** None. The proposal satisfies all requirements for an architectural options review.\n\n---\n\nAGREE\n",
+      "detail": null,
+      "provider_refusal_kind": null,
+      "provider_evidence": {
+        "schema": "parent_unix_broker_v1",
+        "stage_bundle_sha256": "a3b8132d74e272449a3a7f556703bb42738c1e51e33646bcb3ecf90920a3fe82",
+        "stage_instructions_sha256": "d25ac955139e76dcd6124ed6f26da77de67f9d90a0696d10bc97cf2631987101",
+        "provider_harness": "gemini",
+        "provider_model": "gemini-3.8-flash-high",
+        "provider_input_sha256": "10564e549a65dd4d93fe0e04cf0863ce652e57b59b4f11b9eee555c167bafa36",
+        "provider_input_bytes": 8932,
+        "provider_input_inline": true,
+        "provider_live_tree_cwd": false,
+        "provider_response_sha256": "944d6ff8534316452950121e1863d05cfd9004a6651ac86467be2006ab350b2b",
+        "provider_env_api_keys_scrubbed": true,
+        "provider_env_direct_routes_scrubbed": true,
+        "provider_no_tool_controls": [
+          "sandbox",
+          "mode-plan",
+          "disable-slash-commands",
+          "deny-all-actions",
+          "stream-json-same-session-ingestion",
+          "no-add-dir",
+          "no-dangerous-permissions"
+        ],
+        "cleanup_root_removed": true,
+        "child_quiescent": true,
+        "broker_thread_quiescent": true,
+        "provider_adapter_quiescent": true
+      }
+    },
+    {
+      "leg": "grok",
+      "seat_key": "grok:grok-4.6:max:adversarial",
+      "status": "OK",
+      "text": "## Architectural options review (not a landing vote)\n\nThe compact proposal is a decision memo, not an implemented authority claim. It does not propose source, runtime, operator, frozen-stack, or canonical-state changes by itself. Review is limited to whether the options are correctly framed, whether any existing route already satisfies the gate, and what may be planned now.\n\n### Storage vs authenticity vs protected final acceptance\n\nThe proposal correctly keeps three layers apart.\n\n| Layer | What the observations actually show | What it is not |\n|---|---|---|\n| Timestamp / evidence storage | `append_evidence_entry` preserves bytes and stamps caller metadata; `append_payload` is the same class of helper; `status` writes state/TUI handoff | Owner authentication, currentness, or revocation |\n| Source authenticity | Bounded app-server resolve: authenticated connection, two ordered `userMessage`s, `authorized=true`, allowlisted contract version, matching IDs/hash, message-age bound | A general product/billing/account decision contract; proof the CONTRACT worker cannot mint matching history |\n| Protected final acceptance | Independent pre-reduction checks (scope/digest/currentness/revocation/source binding) and post-worker checks (report identity/expiry, serial final writer, isolated snapshot) | An `approved` boolean, allowlist edit, executor-readable signature, worktree marker, digest, or second model |\n\nThat split is the load-bearing part of the memo. Treating runtime timestamps, evidence append, `human_required` as a workflow field, Git common-dir authority markers, or same-user broker invocation as independently authenticated owner reduction would be the blocking mistake. The proposal does not make it.\n\nAlso correct, and necessary:\n\n- A source `userMessage` type is insufficient if the worker can create matching history.\n- `User=viperjuice` plus a mounted app-server socket is not an OS trust boundary; qualification has to cover the upstream source, not merely that a worker can call the append helper.\n- A linked worktree is not an isolation boundary.\n- Extending the existing approval allowlist, adding `approved`, or signing with an executor-readable key is not a solution.\n- Four reviewers gating qualification did not create the missing capability.\n- Recognized resolver bodies remain embedding deploy/bootstrap and GPU install/fence. There is still no general product-decision contract.\n- Prefer the existing task-message broker/probe/resolve path over a second approval transport, *after* a supervisor/source the CONTRACT worker cannot reach is identified.\n\nNo missed concrete route: presidency (`#752`) is review disposition only; `human_required` is a field; module-export qualification on `347dde90\u2026` / `#827` is import/blocking-control evidence, not authority qualification.\n\n### Did the consumer author create an unnecessary early dependency?\n\nYes, as coupling, not as a fake of live readiness.\n\nThe accepted offline lane (compatibility matrix + stdlib metadata checker, no gateway/OAuth/credentials/live/account/session changes) does not need authentic product/provider/billing/host/window decisions to exist as non-authoritative research. PILOT/final readiness *does*. IF-0-VC-2 currently binds independently authenticated owner reduction and protected final-closeout *before even that offline work*. Naming a non-existent \u201chuman_required decision-reduction route\u201d then made the false dependency look pre-solved.\n\nThe live-acceptance requirements themselves are not the defect. Faking original-message binding, currentness/revocation, invocation/report binding, or observation expiry would be a blocking defect. The proposal refuses that.\n\n### Hidden assumptions\n\n- A supervisor/source actually unreachable from the CONTRACT worker (credential, control socket, process, filesystem, task-message write) can be stood up on this fleet. Current broker deploy does not demonstrate it.\n- Additive owner-decision schema/resolver work can be designed without broadening existing approval bodies. True only after isolation is real and tests include a genuine independent positive case plus intended negatives.\n- Offline matrix/checker output will not be narrated as CONTRACT/PILOT readiness. That requires an explicit label (`owner_decision_authenticity=not_checked`) and a still-closed acceptance gate, not hope.\n- Status quo without owner disposition is **A**: the accepted pre-dispatch gate still binds.\n\n### Recommendation\n\n**B as an explicit reviewed prerequisite relocation, not as a bypass of IF-0-VC-2. A remains the only architecture that can ever satisfy owner-decision authenticity and protected final-closeout.**\n\nThey are layered, not substitutes:\n\n- **B** is the policy move: relocate \u201cindependently authenticated owner reduction + protected final-closeout\u201d so it no longer blocks the already-scoped offline matrix/checker, while keeping those artifacts non-authoritative.\n- **A** is the authenticity architecture: reuse task-message transport; isolate operator/source/supervisor from the worker; then, and only then, plan a bounded additive owner-decision schema/resolver and its tests.\n\n**Smallest defensible next action:** owner disposition on that relocation, then a concrete consumer-plan amendment and fresh panel reconciliation. Do not start offline implementation, and do not plan schema/resolver integration, until that disposition exists. If the owner keeps IF-0-VC-2 as written, the consumer stays stopped (A) and isolation/qualification is prerequisite to any authenticity work.\n\nSafe to plan now, and only now, after explicit owner/panel disposition on B:\n\n- Amendment text that permits *only* offline, non-authoritative matrix/checker work.\n- Required checker output `owner_decision_authenticity=not_checked`.\n- Unchanged hard block on unresolved owner/provider/billing facts, CONTRACT acceptance, IF-0-CONTRACT-1, PILOT, live/account/deprecation work, and any readiness claim from offline completion.\n\nNot safe to plan until real operator/source isolation evidence exists:\n\n- Owner-decision schema, resolver allowlist addition, tests that mint or close authentic receipts, or any final-closeout writer the worker can influence.\n- Treat existing GPU/embed approval bodies as reusable product-decision contracts.\n\nIf B is chosen, it is a **policy change**. It does not satisfy current IF-0-VC-2. Silent application would be a blocking process defect; the memo already forbids that.\n\nNo account/RC/Display, canonical state, root service, provider-API fallback, retired native-feature credit, or frozen-stack change is in scope. ViperJuice/dotfiles#256 and #248 stay frozen. `#752` presidency stays distinct.\n\n### Non-blocking nit\n\nFrame A and B as sequenced layers (policy relocation vs authenticity architecture), not as mutually exclusive end-states. That is presentation, not a correctness defect.\n\nNo blocking correctness, safety, or unmet-acceptance defect in this proposal.\n\nAGREE\n",
+      "detail": null,
+      "provider_refusal_kind": null,
+      "provider_evidence": {
+        "schema": "parent_unix_broker_v1",
+        "stage_bundle_sha256": "a3b8132d74e272449a3a7f556703bb42738c1e51e33646bcb3ecf90920a3fe82",
+        "stage_instructions_sha256": "d25ac955139e76dcd6124ed6f26da77de67f9d90a0696d10bc97cf2631987101",
+        "provider_harness": "grok",
+        "provider_model": "grok-4.6",
+        "provider_input_sha256": "10564e549a65dd4d93fe0e04cf0863ce652e57b59b4f11b9eee555c167bafa36",
+        "provider_input_bytes": 8932,
+        "provider_input_inline": true,
+        "provider_live_tree_cwd": false,
+        "provider_response_sha256": "0471fdad132c104f5035fe4ba13d7579f1dd42e942ef4d8fec6d1e84e62d4d66",
+        "provider_env_api_keys_scrubbed": true,
+        "provider_env_direct_routes_scrubbed": true,
+        "provider_no_tool_controls": [
+          "tools-empty",
+          "disable-web-search",
+          "no-memory",
+          "no-subagents",
+          "permission-plan",
+          "prompt-file-stdin-sealed"
+        ],
+        "cleanup_root_removed": true,
+        "child_quiescent": true,
+        "broker_thread_quiescent": true,
+        "provider_adapter_quiescent": true
+      }
+    },
+    {
+      "leg": "claude",
+      "seat_key": "claude:claude-fable-5-1:max:correctness",
+      "status": "DEGRADED",
+      "text": "",
+      "detail": null,
+      "provider_refusal_kind": null,
+      "provider_evidence": {
+        "schema": "parent_unix_broker_v1",
+        "stage_bundle_sha256": "a3b8132d74e272449a3a7f556703bb42738c1e51e33646bcb3ecf90920a3fe82",
+        "stage_instructions_sha256": "d25ac955139e76dcd6124ed6f26da77de67f9d90a0696d10bc97cf2631987101",
+        "provider_harness": "claude",
+        "provider_model": "claude-fable-5-1",
+        "provider_input_sha256": "10564e549a65dd4d93fe0e04cf0863ce652e57b59b4f11b9eee555c167bafa36",
+        "provider_input_bytes": 8932,
+        "provider_input_inline": true,
+        "provider_live_tree_cwd": false,
+        "provider_response_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "provider_env_api_keys_scrubbed": true,
+        "provider_env_direct_routes_scrubbed": true,
+        "provider_no_tool_controls": [
+          "safe-mode",
+          "no-chrome",
+          "disable-slash-commands",
+          "strict-mcp-config",
+          "empty-mcp",
+          "empty-agents",
+          "tools-empty"
+        ],
+        "cleanup_root_removed": true,
+        "child_quiescent": true,
+        "broker_thread_quiescent": true,
+        "provider_adapter_quiescent": true
+      }
+    }
+  ],
+  "manual_fable": {
+    "session_id": "536c133a-3219-40b3-83b6-7ed6d67ddd16",
+    "route": "manual first-party subscription TUI",
+    "models": [
+      "claude-fable-5-1"
+    ],
+    "read_paths": [
+      "/home/viperjuice/.local/state/ah875-options-review-a_3uj_17/manual-inputs/REVIEW.md",
+      "/home/viperjuice/.local/state/ah875-options-review-a_3uj_17/manual-inputs/proposal.md"
+    ],
+    "text": "",
+    "status": "stopped_without_verdict",
+    "reason": "No assistant review text after approximately five minutes following Reads; stopped owned session at required owner-policy decision boundary. Not a successful vote.",
+    "transcript_sha256": "68433c719791d8247b30ad1a5eeda3f3c2b406d7e26b7a73352e022e18a59141",
+    "observed_at": "2026-09-17T06:32:03.033358+00:00"
+  },
+  "manual_failed_initial_attempt": {
+    "session": "2573ee50",
+    "status": "stopped_not_counted",
+    "reason": "inherited launch stdin appended launch script to prompt; retry uses DEVNULL"
+  },
+  "president_attempts": [
+    {
+      "rung": "fable",
+      "seat_model": "claude-fable-5-1",
+      "leg": "claude",
+      "status": "failed",
+      "code": "president_execution_route_unavailable",
+      "detail": "seat 'claude-fable-5-1' (claude) matches rung 'fable' but no HARDEN-authorized president execution operation exists; the governed review operation cannot carry a FORCING DECISION ruling",
+      "chars": 0
+    }
+  ],
+  "automatic_gate_passed": false,
+  "four_vendor_convergence": false,
+  "owner_policy_choice": "pending",
+  "authority_metadata": {
+    "executor_uid": 1000,
+    "source_control_socket": "/home/viperjuice/.codex/app-server-control/app-server-control.sock",
+    "exists": true,
+    "symlink": false,
+    "is_socket": true,
+    "owner_uid": 1000,
+    "mode": "0o600",
+    "same_uid": true,
+    "writable_by_current_executor": true,
+    "broker_unit_metadata": {
+      "exit": 0,
+      "properties": "LoadState=not-found\nActiveState=inactive\nSubState=dead\nUser=\nGroup=",
+      "probe_error": false
+    }
+  },
+  "private_retention_root": "/home/viperjuice/.local/state/ah875-options-review-a_3uj_17"
+}
