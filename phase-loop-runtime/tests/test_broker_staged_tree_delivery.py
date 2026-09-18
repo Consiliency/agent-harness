@@ -217,7 +217,11 @@ def test_the_real_spawn_path_hands_a_seat_a_working_sandbox(tmp_path, monkeypatc
                 ["python3", "-m", "pytest", "test_source.py", "-q", "-p", "no:randomly"],
                 cwd=tree, capture_output=True, text=True,
             )
-            (tree / "SOURCE.py").write_text("value = 42\n", encoding="utf-8")
+            # Deliberately a DIFFERENT length: `41`->`42` is the same size and often the
+            # same mtime second, so CPython's (mtime, size) pyc check does not fire and a
+            # seat re-running a test would silently get its own stale bytecode. Worth
+            # knowing about the sandbox, not a defect in it.
+            (tree / "SOURCE.py").write_text("value = 42  # fixed\n", encoding="utf-8")
             seen["green"] = subprocess.run(
                 ["python3", "-m", "pytest", "test_source.py", "-q", "-p", "no:randomly"],
                 cwd=tree, capture_output=True, text=True,
@@ -260,3 +264,85 @@ def test_the_real_spawn_path_hands_a_seat_a_working_sandbox(tmp_path, monkeypatc
         "nothing the seat did may reach the reviewed tree"
     )
     assert not tree.exists(), "the sandbox is disposable and must not survive the leg"
+
+
+# --- all four seats, not just the two that were obviously blind ------------------
+
+def test_every_seat_is_pointed_at_the_sandbox(tmp_path):
+    """Harness-agnostic: codex, gemini, grok and the claude TUI adapter alike.
+
+    The original defect was described as "codex and gemini cannot read", which is how the
+    first pass came to wire only those two. grok is a fourth board seat, and the claude TUI
+    adapter was the one leg that ALREADY had a path -- to the LIVE repo. Pointing it at the
+    clone instead is a straight improvement, not a relaxation.
+    """
+    tree = _sandbox(tmp_path)
+
+    codex = panel_invoker._brokered_codex_command(
+        model=None, out_dir=tmp_path / "o", out_file=tmp_path / "o" / "x",
+        codex_effort_args=(), staged_tree=tree,
+    )
+    assert codex[codex.index("--cd") + 1] == str(tree)
+
+    gemini = panel_invoker._brokered_gemini_command(
+        model="m", deadline_s=1.0, staged_tree=tree,
+    )
+    assert str(tree) in gemini
+
+    grok = panel_invoker._brokered_grok_command(
+        model=None, out_dir=tmp_path / "o", grok_effort_args=(), staged_tree=tree,
+    )
+    assert grok[grok.index("--cwd") + 1] == str(tree)
+    # For grok the ALLOW-LIST is the enforcement lever, not a sandbox flag.
+    assert "run_terminal_command" in grok[grok.index("--tools") + 1]
+
+    claude = panel_invoker._claude_tui_command(tree.parent, tmp_path / "live-repo")
+    assert str(tree) in claude
+    assert str(tmp_path / "live-repo") not in claude, (
+        "the TUI adapter must review the clone, not the live checkout"
+    )
+
+
+def test_grok_is_byte_identical_when_no_tree_is_authorized(tmp_path):
+    legacy = panel_invoker._brokered_grok_command(
+        model=None, out_dir=tmp_path / "o", grok_effort_args=(),
+    )
+    explicit_none = panel_invoker._brokered_grok_command(
+        model=None, out_dir=tmp_path / "o", grok_effort_args=(), staged_tree=None,
+    )
+    assert legacy == explicit_none
+    assert legacy[legacy.index("--tools") + 1] == "", "no sandbox means no tools"
+    assert legacy[legacy.index("--cwd") + 1] == str(tmp_path / "o")
+
+
+def test_the_claude_adapter_still_gets_the_live_repo_when_unsandboxed(tmp_path):
+    """Byte-for-byte historical behaviour when nothing was staged."""
+    review_dir = tmp_path / "review"
+    review_dir.mkdir()
+    repo = tmp_path / "live-repo"
+    repo.mkdir()
+    cmd = panel_invoker._claude_tui_command(review_dir, repo)
+    assert str(repo) in cmd
+
+
+# --- the guard that makes the next harness safe ---------------------------------
+
+def test_every_known_leg_has_sandbox_delivery_wired():
+    """Adding a leg without a sandbox must fail here, not ship blind.
+
+    The first pass covered codex and gemini and silently left grok out, because the defect
+    had been described as "codex and gemini cannot read the code". `opencode` and `pi` are
+    expected next -- the installer already targets five harnesses -- and the same omission
+    would be just as invisible.
+    """
+    assert panel_invoker.legs_without_sandbox_delivery() == (), (
+        "these legs would review code they cannot open: "
+        f"{panel_invoker.legs_without_sandbox_delivery()}"
+    )
+
+
+def test_the_completeness_guard_would_actually_catch_a_missing_leg():
+    """The instrument needs its own falsifier: a green guard and a vacuous one look alike."""
+    assert panel_invoker.legs_without_sandbox_delivery(("codex", "opencode", "pi")) == (
+        "opencode", "pi",
+    )

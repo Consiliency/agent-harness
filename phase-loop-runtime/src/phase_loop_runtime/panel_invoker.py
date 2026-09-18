@@ -1746,6 +1746,33 @@ def _require_staged_tree(staged_tree: Path | None) -> Path | None:
     return tree
 
 
+# Which leg gets its sandbox through which builder. Mapped by NAME so this does not
+# depend on definition order.
+#
+# This exists to make a missing wiring LOUD. The first pass of the sandbox work covered
+# codex and gemini, because the defect had been described as "codex and gemini cannot read
+# the code" -- and silently left grok, a fourth board seat, blind. `opencode` and `pi` are
+# expected next (the installer already targets five harnesses), and the same omission would
+# be just as easy and just as invisible. `legs_without_sandbox_delivery` is checked by a
+# test, so adding a leg without deciding about its sandbox fails rather than ships.
+_SANDBOX_DELIVERY_BUILDERS: dict[str, str] = {
+    "codex": "_brokered_codex_command",
+    "gemini": "_brokered_gemini_command",
+    "grok": "_brokered_grok_command",
+    "claude": "_claude_tui_command",
+}
+
+
+def legs_without_sandbox_delivery(legs: tuple[str, ...] | None = None) -> tuple[str, ...]:
+    """Legs this runtime knows about that have no sandbox delivery wired.
+
+    A non-empty result is a seat that would review the code it cannot open -- the exact
+    state board round 1 found for codex and gemini.
+    """
+    known = tuple(_AVAILABLE_PANEL_LEGS if legs is None else legs)
+    return tuple(leg for leg in known if leg not in _SANDBOX_DELIVERY_BUILDERS)
+
+
 def _sandbox_in(review_dir: Path | str | None) -> Path | None:
     """The sandbox inside a review dir, or ``None`` when no tree was staged.
 
@@ -1791,6 +1818,42 @@ def _brokered_codex_command(
         "--sandbox", "read-only" if tree is None else "workspace-write",
         "--model", model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["codex"],
         *codex_effort_args, "--output-last-message", str(out_file), "-",
+    ]
+
+
+# Tools a grok review seat may use INSIDE a sandbox. Headless `grok -p` auto-approves
+# writes regardless of `--permission-mode`/`--sandbox` (agent-harness#147), so the
+# allow-list is the only lever that holds -- which is exactly why it is the thing that
+# changes here rather than a sandbox flag. The workspace it can now mutate IS the
+# disposable clone, deleted when the round ends.
+GROK_SANDBOX_TOOLS = "read_file,grep,list_dir,search_tool,write,search_replace,run_terminal_command"
+
+
+def _brokered_grok_command(
+    *,
+    model: str | None,
+    out_dir: Path,
+    grok_effort_args: tuple[str, ...] | list[str],
+    staged_tree: Path | None = None,
+) -> list[str]:
+    """The brokered grok argv.
+
+    Without a sandbox this is the historical posture byte-for-byte: an empty `--tools`
+    allow-list, `--permission-mode plan`, and `--cwd` at an empty output directory.
+
+    With one, the seat works in the clone and its allow-list gains the run/write built-ins,
+    because for grok the allow-list -- not a sandbox flag -- is the enforcement lever.
+    `--no-memory` and `--no-subagents` are retained either way.
+    """
+    tree = _require_staged_tree(staged_tree)
+    return [
+        "grok", "--disable-web-search", "--no-memory", "--no-subagents",
+        "--permission-mode", "plan", "--prompt-file", "/dev/stdin",
+        "--output-format", "plain",
+        "--cwd", str(out_dir if tree is None else tree), "-m",
+        model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["grok"],
+        *grok_effort_args,
+        "--tools", "" if tree is None else GROK_SANDBOX_TOOLS,
     ]
 
 
@@ -2603,9 +2666,18 @@ def _claude_tui_command(
     research_seat: ResearchSeatConfig | None = None,
 ) -> list[str]:
     add_dirs = [review_dir]
+    # When a sandbox was staged, this leg is pointed at the CLONE instead of the live
+    # repo. It is the only leg that was ever granted `repo_dir`, so before the sandbox
+    # existed it reviewed the live checkout directly while the three brokered seats could
+    # read nothing -- the asymmetry the sandbox work removes. `allowed_tools` here already
+    # includes Write, which is safe against a disposable clone and was not against a live
+    # tree.
+    sandbox = _sandbox_in(review_dir)
+    if sandbox is not None:
+        add_dirs.append(sandbox)
     # A research seat may write only its isolated output workspace. Granting the
     # live repo as an add-dir would combine network access with pre-approved Write.
-    if research_seat is None and repo_dir.resolve() != review_dir.resolve():
+    elif research_seat is None and repo_dir.resolve() != review_dir.resolve():
         add_dirs.append(repo_dir)
     # ABDHOME: effort is plumbed per-seat. ``effort is None`` (legacy/default path)
     # keeps today's hard-coded ``--effort max`` byte-for-byte; a board seat renders
@@ -5414,13 +5486,10 @@ def _exec_leg(
             grok_tools,
         ]
         if brokered:
-            cmd = [
-                "grok", "--disable-web-search", "--no-memory", "--no-subagents",
-                "--permission-mode", "plan", "--prompt-file", "/dev/stdin",
-                "--output-format", "plain", "--cwd", str(out_dir), "-m",
-                model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["grok"],
-                *grok_effort_args, "--tools", "",
-            ]
+            cmd = _brokered_grok_command(
+                model=model, out_dir=out_dir, grok_effort_args=grok_effort_args,
+                staged_tree=_sandbox_in(review_dir),
+            )
             _record_broker_provider_evidence(
                 broker_evidence, harness="grok",
                 model=model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["grok"],
