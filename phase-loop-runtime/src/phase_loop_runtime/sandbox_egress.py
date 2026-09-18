@@ -37,6 +37,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import warnings
 import time
 
 from .sandbox_policy import EgressPolicy, egress_allowlist

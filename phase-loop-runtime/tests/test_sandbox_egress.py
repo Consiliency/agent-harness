@@ -215,3 +215,14 @@ class TestTheLaunchSeamIsActuallyIsolated:
         """Byte-identical spawn when no sandbox is in use."""
         from phase_loop_runtime import panel_invoker
         assert panel_invoker._EGRESS_LAUNCH_PREFIX.get() == ()
+
+
+def test_the_unavailable_path_warns_instead_of_crashing(monkeypatch):
+    """Ruff caught `warnings` unimported: the unavailable branch would have raised
+    NameError instead of warning, and every test exercised only the AVAILABLE path
+    because this host has user namespaces. A host without them would have crashed.
+    """
+    monkeypatch.setattr(sandbox_egress, "egress_isolation_available", lambda: False)
+    with pytest.warns(RuntimeWarning, match="WITHOUT network restriction"):
+        with sandbox_egress.isolated_network() as prefix:
+            assert prefix == (), "no isolation means no prefix, not a crash"
