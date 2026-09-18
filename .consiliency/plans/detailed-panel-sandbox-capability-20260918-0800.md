@@ -46,9 +46,73 @@ Established across board round 1 on `agent-harness#890` and the follow-up invest
 
 ## Changes
 
+### Sandbox layout and provenance
+
+A sandbox is two directories with different lifetimes:
+
+- `reviewed-tree/` — RECONSTRUCTIBLE. An **independent shallow git clone** at the pinned
+  commit, never `--shared` and never a linked worktree, so it carries its own object store
+  and no pointer into the live gitdir. Re-stageable at will.
+- `work/` — IRREPRODUCIBLE. The panelist's own scratch: notes, probe scripts, partial
+  findings. Never reaped while the sandbox lives; always archived.
+
+That split is the same principle the retention policy uses, and it is what makes a stale
+resume recoverable rather than destructive.
+
+**Clone depth: 50**, measured on this repo rather than guessed:
+
+| form | total | `.git` | commits reachable |
+|---|---|---|---|
+| full history | — | 111 MB | all |
+| depth 50 | 34 MB | 14 MB | 634, back to 2026-05-21 |
+| depth 20 | 34 MB | 14 MB | — |
+| depth 1 | 29 MB | 8.3 MB | 1 |
+
+Depth 50 costs the same as depth 20 and is **8x smaller than full history**, while giving a
+panelist ~4 months of `git log`/`blame`/`diff`. Git is a small fraction of a used sandbox
+(~34 MB against ~150-250 MB once a venv exists), so the tooling is close to free.
+
+This reverses the earlier decision to exclude `.git`. That was right about not linking to the
+LIVE gitdir and wrong about git generally: an independent clone gives the panelist history to
+reason with, and makes a stale resume a `fetch` instead of a re-copy.
+
+### Resuming an idle sandbox
+
+On resume, compare the recorded source commit against the branch's current head:
+
+- unchanged → resume as-is;
+- moved → **re-stage `reviewed-tree/` at the new head, preserve `work/`, and hand the panelist
+  the diff** between what it last saw and now.
+
+A stale resume is not a cosmetic problem: a panelist reviewing vanished code produces confident,
+well-cited, wrong findings — the exact cost this work exists to remove. `staged_tree_sha256` was
+built as a tamper check and doubles as the staleness detector for free.
+
+If the panelist edited `reviewed-tree/` itself (it is writable), those edits are experiments,
+not deliverables: capture them as a patch into `work/` before re-staging and tell the panelist
+where it went. Never silently discard, never attempt a merge.
+
+### Platform support
+
+Review isolation is **Linux-only today and already fails closed**: `backing.py:746` raises
+"HARDEN review composition requires Linux", and `:512` refuses without an executable
+`/usr/bin/bwrap`. Copying a tree and running a process in it is portable; filesystem
+confinement and network egress control are not (`bwrap` vs deprecated `sandbox-exec` vs WFP --
+three unrelated implementations).
+
+Co-location resolves this without per-OS sandboxes: the coordinator's OS no longer determines
+the sandbox's OS, so a macOS or Windows user points the root at a Linux host and gets full
+isolation. The fleet has four Linux hosts.
+
+Each sandbox therefore **declares what it actually enforced** into the review evidence — tree
+isolated, network filtered, credentials scrubbed, filesystem confined. Policy default is to
+REFUSE when a required property cannot be enforced, never to degrade silently. A sandbox that
+claims network denial it cannot deliver is a fail-open in the evidence record.
+
 ### `phase-loop-runtime/src/phase_loop_runtime/review_stage.py` (modify)
 
-- `stage_review_tree` — remove the read-only hardening; a sandbox must be writable.
+- `stage_review_tree` — remove the read-only hardening; a sandbox must be writable. Stage via
+  an independent `git clone --depth 50`, not a file copy.
 - `_harden_modes` — delete. Its only purpose was the read-only posture, and it is the sole
   reason cleanup needed mode restoration.
 - `remove_review_stage` — keep (still used for reaping), simplify now that modes are normal;
@@ -182,6 +246,20 @@ Run the sweep on a tree **left untouched** for its duration — editing during a
       and nothing is mounted back to the coordinator.
 - [ ] A sandbox on a remote root is reaped and archived BY that host.
 - [ ] An unreachable remote host costs one warning and a local run, within the probe timeout.
+
+## Deferred, with reasons recorded
+
+- **Docker Desktop containers as a portable sandbox.** Works on Linux, macOS and Windows, and
+  a NAMED container persists across an idle overnight, so it avoids the ephemerality that ruled
+  out Dagger. Deferred because co-location already gives cross-platform users full isolation via
+  a remote Linux root, and a container runtime is a heavy new dependency. This is the fallback
+  if remote-Linux roots prove awkward in practice. Tracked separately so the reasoning survives.
+
+## Open question for the board
+
+Whether the independent clone should be shallow (depth 50, as planned) or full history. The
+measurements above argue for shallow; a seat that wants deep `blame` on old code may disagree.
+Put this to the panelists explicitly in the round brief.
 
 ## Non-goals
 
