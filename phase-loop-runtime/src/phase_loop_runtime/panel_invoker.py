@@ -109,6 +109,9 @@ from .advisor_board.schema import (
     identify_host_leg,
 )
 from . import review_stage as _review_stage
+from . import sandbox_egress as _sandbox_egress
+from . import sandbox_policy as _sandbox_policy
+from . import sandbox_retention as _sandbox_retention
 from .advisor_board.research import (
     RESEARCH_CAPABLE_LANES,
     ResearchLedger,
@@ -1655,13 +1658,22 @@ def _gc_stale_panel_scratch(
         for path in base.glob("pl-panel-*"):
             try:
                 if path.is_dir() and path.stat().st_mtime < cutoff:
-                    # A killed round can leave a staged review tree whose directories
-                    # are 0o500; `rmtree(ignore_errors=True)` cannot unlink through
+                    # A killed round can leave a staged tree whose directories a panelist
+                    # made read-only; `rmtree(ignore_errors=True)` cannot unlink through
                     # those and fails SILENTLY, so the scratch dir would never be
                     # reclaimed. Restore modes on the way down first.
                     _review_stage.remove_review_stage(path)
             except OSError:
                 continue
+        # After the age sweep, apply the configured retention policy: a burst of rounds
+        # fills the disk faster than any TTL expires, and the panelist's `work/` is
+        # archived before anything is removed.
+        _sandbox_retention.reap(
+            base,
+            ttl_s=_sandbox_policy.ttl_seconds(),
+            max_total_bytes=_sandbox_policy.max_total_bytes(),
+            archive_dest=_sandbox_policy.archive_destination(),
+        )
     except Exception:
         return
 
@@ -5695,6 +5707,18 @@ def _default_spawn(
             # the authorization approved one; `revalidate_...` below refuses both an
             # unattested tree and one whose bytes do not match the approved digest.
             if getattr(review_authorization, "staged_tree_sha256", None) is not None:
+                # One root for the whole round. Unreachable falls back with a warning;
+                # below the free-space floor REFUSES, because filling this filesystem
+                # takes the host down while a refused round costs minutes.
+                root_choice = _sandbox_policy.select_sandbox_root(
+                    configured=_sandbox_policy.configured_root(),
+                    fallback=review_dir,
+                    floor_bytes=_sandbox_policy.floor_bytes(),
+                    probe_timeout_s=_sandbox_policy.probe_timeout_s(),
+                )
+                # What was ACTUALLY enforced, not what was intended: a seat that believes
+                # it is network-isolated and is not would produce evidence nobody can trust.
+                sandbox_enforcement = _sandbox_egress.enforcement_report()
                 staged_tree = _review_stage.stage_review_tree(resolved_repo_dir, review_dir)
                 # Track the ACTUAL path across the ownership transfer. If the rename
                 # fails, the hardened tree is still under its `pl-panel-stage-*` name,
