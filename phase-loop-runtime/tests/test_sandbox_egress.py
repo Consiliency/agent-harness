@@ -154,13 +154,64 @@ class TestTheReportCannotClaimUnappliedFiltering:
         report = sandbox_egress.enforcement_report(available=True, applied=True)
         assert report["network_filtered"] is True
 
-    def test_panel_invoker_does_not_claim_filtering_it_did_not_apply(self):
-        """Guard the wiring itself: if a launch path starts applying isolation, it must
-        pass `applied=True` deliberately rather than inherit a true-by-default."""
+    def test_the_evidence_claims_filtering_only_where_a_namespace_is_held(self):
+        """Guard the wiring: `applied=` may only be reported where isolation is held open.
+
+        The original defect was that the report was computed and recorded while no launch
+        routed through a namespace. This fails if that ever becomes true again -- including
+        by someone deleting the context manager and leaving the claim behind.
+        """
         from pathlib import Path as _P
         import phase_loop_runtime.panel_invoker as pi
         source = _P(pi.__file__).read_text(encoding="utf-8")
-        if "run_in_isolated_network" not in source:
-            assert "applied=True" not in source, (
-                "the evidence claims applied filtering while no launch routes through it"
+        if "applied=" in source:
+            assert "isolated_network()" in source, (
+                "the evidence claims applied filtering while no namespace is opened"
             )
+            assert "_EGRESS_LAUNCH_PREFIX.get()" in source, (
+                "a namespace is opened but the spawn does not launch inside it"
+            )
+
+
+@pytest.mark.skipif(
+    shutil.which("slirp4netns") is None or shutil.which("unshare") is None,
+    reason="needs unshare + slirp4netns (Linux)",
+)
+class TestTheLaunchSeamIsActuallyIsolated:
+    """The fix for the round-2 blocking finding, tested where it matters.
+
+    `isolated_network()` yields an argv prefix; the shared leg spawn prepends it. So the
+    provider lands INSIDE the namespace rather than beside it. Asserting the prefix exists
+    proves nothing -- these run a real process through the real seam.
+    """
+
+    def test_a_process_launched_through_the_seam_is_filtered(self):
+        import subprocess as sp
+        from phase_loop_runtime import panel_invoker, sandbox_egress as se
+
+        if not se.egress_isolation_available():
+            pytest.skip("user namespaces unavailable")
+
+        with se.isolated_network() as prefix:
+            token = panel_invoker._EGRESS_LAUNCH_PREFIX.set(tuple(prefix))
+            try:
+                launched = [*panel_invoker._EGRESS_LAUNCH_PREFIX.get(), "bash", "-c",
+                            'timeout 6 curl -s -o /dev/null -w %{http_code} --max-time 5 '
+                            'http://100.84.171.76:6333/collections || echo BLOCKED']
+                private = sp.run(launched, capture_output=True, text=True, timeout=40).stdout
+                launched_pub = [*panel_invoker._EGRESS_LAUNCH_PREFIX.get(), "bash", "-c",
+                                'timeout 6 curl -s -o /dev/null -w %{http_code} --max-time 5 '
+                                'https://1.1.1.1 || echo BLOCKED']
+                public = sp.run(launched_pub, capture_output=True, text=True, timeout=40).stdout
+            finally:
+                panel_invoker._EGRESS_LAUNCH_PREFIX.reset(token)
+
+        assert "BLOCKED" in private or "000" in private, (
+            f"a launched process reached private space: {private!r}"
+        )
+        assert "301" in public or "200" in public, f"the internet must work: {public!r}"
+
+    def test_without_a_held_namespace_the_seam_adds_nothing(self):
+        """Byte-identical spawn when no sandbox is in use."""
+        from phase_loop_runtime import panel_invoker
+        assert panel_invoker._EGRESS_LAUNCH_PREFIX.get() == ()

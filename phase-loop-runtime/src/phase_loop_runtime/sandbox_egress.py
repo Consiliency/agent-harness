@@ -30,7 +30,10 @@ target             result      note
 
 from __future__ import annotations
 
+import contextlib
+
 import os
+from pathlib import Path
 import shutil
 import subprocess
 import tempfile
@@ -47,6 +50,7 @@ __all__ = [
     "enforcement_report",
     "require_egress_isolation",
     "run_in_isolated_network",
+    "isolated_network",
 ]
 
 # slirp4netns puts the uplink here. It sits INSIDE 10/8, so denying 10/8 without
@@ -152,6 +156,69 @@ def require_egress_isolation(available: bool | None = None) -> None:
         available = egress_isolation_available()
     if not available:
         raise EgressUnavailable(enforcement_report(False)["reason"])
+
+
+
+@contextlib.contextmanager
+def isolated_network(policy: EgressPolicy | None = None, *, timeout_s: float = 600.0):
+    """Hold a filtered network namespace open and yield an argv PREFIX for it.
+
+    This is the piece the board found missing. `run_in_isolated_network` ran a script in a
+    namespace and was never reachable from the launch path, so a seat's evidence claimed
+    filtering that was never applied to it. A prefix composes with the existing spawn --
+    argv, cwd, env, stdin and process-group handling all stay exactly as they were, and the
+    provider lands inside the namespace instead of beside it.
+
+    Yields ``()`` and warns if the mechanism is unavailable, so a caller can record
+    truthfully rather than assume. Callers that must not proceed unisolated should call
+    :func:`require_egress_isolation` first.
+    """
+    if not egress_isolation_available():
+        warnings.warn(
+            "egress isolation unavailable; launching WITHOUT network restriction",
+            RuntimeWarning, stacklevel=2,
+        )
+        yield ()
+        return
+
+    rules = "\n".join(f"iptables {rule}" for rule in egress_rules(policy))
+    with tempfile.TemporaryDirectory(prefix="pl-egress-ns-") as work:
+        ready = os.path.join(work, "ready")
+        pidfile = os.path.join(work, "pid")
+        holder = subprocess.Popen(
+            ["unshare", "--net", "--map-root-user", "bash", "-c",
+             f'echo $$ > {pidfile}; touch {ready}; sleep {timeout_s}'],
+        )
+        slirp = None
+        try:
+            deadline = time.monotonic() + 15
+            while not os.path.exists(ready) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            if not os.path.exists(ready):
+                warnings.warn("network namespace did not come up; launching UNISOLATED",
+                              RuntimeWarning, stacklevel=2)
+                yield ()
+                return
+            nspid = Path(pidfile).read_text(encoding="utf-8").strip()
+
+            slirp = subprocess.Popen(
+                ["slirp4netns", "--configure", "--mtu=65520",
+                 "--disable-host-loopback", nspid, "tap0"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            time.sleep(2.5)  # the tap must be configured before traffic flows
+
+            prefix = ("nsenter", "--net", "-t", nspid, "-U", "--preserve-credentials")
+            # Apply the policy INSIDE the namespace, before anything else runs in it.
+            subprocess.run(
+                [*prefix, "bash", "-c", "ip link set lo up 2>/dev/null || true\n" + rules],
+                capture_output=True, timeout=30,
+            )
+            yield prefix
+        finally:
+            if slirp is not None:
+                slirp.terminate()
+            holder.terminate()
 
 
 def run_in_isolated_network(

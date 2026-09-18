@@ -32,6 +32,7 @@ import uuid
 from collections import Counter
 from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import contextlib
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from enum import Enum
@@ -1857,6 +1858,11 @@ def sandbox_usable_by(leg: str | None, brokered: bool) -> bool:
     return not (brokered and leg in _SANDBOX_INCAPABLE_BROKERED_LEGS)
 
 
+_EGRESS_LAUNCH_PREFIX: ContextVar[tuple[str, ...]] = ContextVar(
+    "_EGRESS_LAUNCH_PREFIX", default=(),
+)
+
+
 def _sandbox_in(review_dir: Path | str | None) -> Path | None:
     """The sandbox inside a review dir, or ``None`` when no tree was staged.
 
@@ -3621,8 +3627,12 @@ def _run_leg_with_liveness(
     filling its own stdout/stderr pipe buffers.
     """
     def _popen() -> subprocess.Popen[bytes]:
+        # Launch INSIDE the filtered network namespace when one is held. The board found
+        # the filtering was computed, reported, and never applied to a provider; a prefix
+        # here composes with argv, cwd, env, stdin and process-group handling unchanged,
+        # so the seat lands in the namespace instead of beside it.
         return subprocess.Popen(
-            list(cmd),
+            [*_EGRESS_LAUNCH_PREFIX.get(), *cmd],
             cwd=str(cwd),
             env=dict(env),
             stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
@@ -5818,6 +5828,7 @@ def _default_spawn(
         raise
     provider_output_dir: Path | None = out_dir if provider_authority is not None else None
     staged_tree_path: Path | None = None
+    egress_stack = contextlib.ExitStack()
     try:
         if quiescence_latch is not None:
             quiescence_latch.raise_if_set()
@@ -5848,7 +5859,16 @@ def _default_spawn(
                 )
                 # What was ACTUALLY enforced, not what was intended: a seat that believes
                 # it is network-isolated and is not would produce evidence nobody can trust.
-                sandbox_enforcement = _sandbox_egress.enforcement_report()
+                # Open the filtered namespace for the whole leg. `applied=True` is passed
+                # ONLY from inside this block, so the evidence cannot claim a boundary that
+                # was not actually held open around the launch.
+                egress_ctx = _sandbox_egress.isolated_network()
+                egress_prefix = egress_stack.enter_context(egress_ctx)
+                egress_token = _EGRESS_LAUNCH_PREFIX.set(tuple(egress_prefix))
+                egress_stack.callback(_EGRESS_LAUNCH_PREFIX.reset, egress_token)
+                sandbox_enforcement = _sandbox_egress.enforcement_report(
+                    applied=bool(egress_prefix),
+                )
                 _record_sandbox_facts(root_choice, sandbox_enforcement)
                 staged_tree = _review_stage.stage_review_tree(resolved_repo_dir, review_dir)
                 # Track the ACTUAL path across the ownership transfer. If the rename
@@ -6086,6 +6106,7 @@ def _default_spawn(
     except Exception as exc:  # fail-closed
         return "DEGRADED", str(exc)[:200]
     finally:
+        egress_stack.close()
         if provider_output_dir is not None and agy_capture is None:
             shutil.rmtree(provider_output_dir, ignore_errors=True)
         if base is not None:
