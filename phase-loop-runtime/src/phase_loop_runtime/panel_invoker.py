@@ -1859,6 +1859,32 @@ def _sandbox_in(review_dir: Path | str | None) -> Path | None:
     return tree
 
 
+def _broker_tool_controls(leg: str, staged_tree: "Path | None") -> tuple[str, ...]:
+    """The tool controls ACTUALLY in force, derived from the sandbox branch.
+
+    These were hardcoded, so with a sandbox staged the evidence asserted controls that were
+    no longer in place: grok claimed `tools-empty` while its allow-list carried
+    `run_terminal_command`, and codex claimed `read-only` and a disabled `shell_tool` while
+    running `workspace-write` with the shell enabled. An evidence record that overstates the
+    controls is the same fail-open as a sandbox claiming isolation it does not have --
+    a reader cannot tell a confined seat from one that merely recorded itself as confined.
+    """
+    if leg == "codex":
+        if staged_tree is None:
+            return ("ignore-user-config", "ignore-rules", "ephemeral",
+                    *_BROKER_CODEX_DISABLED_FEATURES, "stdin-sealed-input", "read-only")
+        return ("ignore-user-config", "ignore-rules", "ephemeral",
+                *(f for f in _BROKER_CODEX_DISABLED_FEATURES if f != "shell_tool"),
+                "stdin-sealed-input", "workspace-write-sandbox-only")
+    if leg == "grok":
+        if staged_tree is None:
+            return ("tools-empty", "disable-web-search", "no-memory", "no-subagents",
+                    "permission-plan", "prompt-file-stdin-sealed")
+        return ("tools-sandbox-allowlist", "disable-web-search", "no-memory",
+                "no-subagents", "permission-plan", "prompt-file-stdin-sealed")
+    raise ValueError(f"no tool-control derivation for leg {leg!r}")
+
+
 def _brokered_codex_command(
     *,
     model: str | None,
@@ -5156,10 +5182,7 @@ def _exec_leg(
                 model=model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["codex"],
                 command=cmd, prompt=prompt, cwd=out_dir, env=env,
                 prompt_transport="stdin_sealed",
-                no_tool_controls=(
-                    "ignore-user-config", "ignore-rules", "ephemeral",
-                    *_BROKER_CODEX_DISABLED_FEATURES, "stdin-sealed-input", "read-only",
-                ),
+                no_tool_controls=_broker_tool_controls("codex", _sandbox_in(review_dir)),
                 stdin_prompt=True,
             )
         if agy_capture is not None:
@@ -5573,7 +5596,7 @@ def _exec_leg(
                 model=model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["grok"],
                 command=cmd, prompt=prompt, cwd=out_dir, env=env,
                 prompt_transport="stdin_sealed",
-                no_tool_controls=("tools-empty", "disable-web-search", "no-memory", "no-subagents", "permission-plan", "prompt-file-stdin-sealed"),
+                no_tool_controls=_broker_tool_controls("grok", _sandbox_in(review_dir)),
                 redacted_argv_values={"/dev/stdin": "<STDIN_SEALED_INLINE_PROMPT>"},
             )
         if agy_capture is not None:

@@ -386,3 +386,27 @@ def test_the_completeness_guard_covers_both_claude_routes():
     the wrong function reports coverage it never had."""
     assert panel_invoker.legs_without_sandbox_delivery() == ()
     assert "claude:brokered" in panel_invoker._SANDBOX_DELIVERY_BUILDERS
+
+
+def test_the_evidence_records_the_controls_actually_in_force(tmp_path):
+    """Audit item 7: the tuples were hardcoded and went false under a sandbox.
+
+    grok recorded `tools-empty` while its allow-list carried `run_terminal_command`; codex
+    recorded `read-only` and a disabled `shell_tool` while running `workspace-write` with
+    the shell enabled. A record that overstates the controls is the same fail-open as a
+    sandbox claiming isolation it lacks: a reader cannot tell a confined seat from one that
+    merely recorded itself as confined.
+    """
+    tree = _sandbox(tmp_path)
+
+    codex_plain = panel_invoker._broker_tool_controls("codex", None)
+    codex_boxed = panel_invoker._broker_tool_controls("codex", tree)
+    assert "read-only" in codex_plain and "shell_tool" in codex_plain
+    assert "read-only" not in codex_boxed, "it is workspace-write with a sandbox"
+    assert "shell_tool" not in codex_boxed, "the shell is enabled with a sandbox"
+
+    grok_plain = panel_invoker._broker_tool_controls("grok", None)
+    grok_boxed = panel_invoker._broker_tool_controls("grok", tree)
+    assert "tools-empty" in grok_plain
+    assert "tools-empty" not in grok_boxed, "the allow-list is not empty with a sandbox"
+    assert "tools-sandbox-allowlist" in grok_boxed
