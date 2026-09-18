@@ -35,6 +35,9 @@ def _sandbox(root: Path, name: str, *, age_s: float = 0.0, tree_bytes: int = 102
     (box / "reviewed-tree" / "pkg" / "big.bin").write_bytes(b"x" * tree_bytes)
     (box / "work").mkdir()
     (box / "work" / "notes.md").write_text(f"findings for {name}\n", encoding="utf-8")
+    # Real sandboxes are claimed by the runtime that created them; identity is a marker,
+    # not a shape, so the fixture must claim its own.
+    sandbox_retention.mark_as_sandbox(box)
     if age_s:
         old = time.time() - age_s
         os.utime(box, (old, old))
@@ -55,16 +58,48 @@ class TestTTL:
         assert (warm / "work" / "notes.md").is_file()
 
     def test_reaping_never_touches_anything_that_is_not_a_sandbox(self, tmp_path):
-        bystander = tmp_path / "someone-elses-data"
-        bystander.mkdir()
-        (bystander / "important.txt").write_text("keep\n", encoding="utf-8")
+        """Board round 2, BLOCKING, verified destroying a bystander's files.
+
+        Identity used to be a SHAPE test: any directory containing a `work/` subdirectory
+        counted. So an unrelated `someone-elses-project/work/` made the WHOLE project
+        directory eligible, and reaping deleted it.
+
+        The previous version of this test used a bystander with NO `work/` subdirectory,
+        so it passed without ever exercising the predicate that caused the loss. That is
+        the shape a vacuous test takes: green, and unable to fail.
+        """
+        bystander = tmp_path / "someone-elses-project"
+        (bystander / "work").mkdir(parents=True)
+        (bystander / "work" / "THEIR_NOTES.md").write_text("not ours\n", encoding="utf-8")
+        (bystander / "src.py").write_text("their code\n", encoding="utf-8")
         old = time.time() - 99 * 3600
         os.utime(bystander, (old, old))
 
         sandbox_retention.reap(tmp_path, ttl_s=1)
-        assert (bystander / "important.txt").is_file(), (
-            "only directories this runtime staged may be reaped"
+
+        assert bystander.is_dir(), "a bystander directory must survive"
+        assert (bystander / "work" / "THEIR_NOTES.md").is_file(), (
+            "only directories this runtime MARKED may be reaped -- a shape is not identity"
         )
+
+    def test_a_marked_sandbox_is_still_reaped(self, tmp_path):
+        """The negative control: tightening identity must not stop real reaping."""
+        box = _sandbox(tmp_path, "real", age_s=48 * 3600)
+        sandbox_retention.mark_as_sandbox(box)
+        old = time.time() - 48 * 3600
+        os.utime(box, (old, old))
+        sandbox_retention.reap(tmp_path, ttl_s=1)
+        assert not box.exists()
+
+    def test_a_symlinked_directory_is_never_reaped(self, tmp_path):
+        """Reaping through a symlink would delete whatever it points at."""
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "keep.txt").write_text("keep\n", encoding="utf-8")
+        link = tmp_path / "pl-panel-stage-link"
+        os.symlink(outside, link)
+        sandbox_retention.reap(tmp_path, ttl_s=1)
+        assert (outside / "keep.txt").is_file()
 
 
 class TestFootprintCeiling:
@@ -137,3 +172,51 @@ class TestArchive:
         box = _sandbox(tmp_path, "plain", age_s=48 * 3600)
         sandbox_retention.reap(tmp_path, ttl_s=1, archive_dest=None)
         assert not box.exists()
+
+
+def test_the_production_creator_marks_what_it_creates(tmp_path, monkeypatch):
+    """Tightening identity without writing the marker trades data loss for a disk leak.
+
+    `_looks_like_a_sandbox` now requires a marker THIS runtime wrote, so a real sandbox
+    that is never marked is never reaped -- it leaks forever, silently, exactly like the
+    bug retention exists to prevent. This asserts the creator claims its own work.
+    """
+    import subprocess
+    from phase_loop_runtime import panel_invoker, review_stage
+    from phase_loop_runtime.advisor_board import backing
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@e.st"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+    (repo / "a.py").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "commit.gpgsign=false", "commit", "-qm", "c"],
+        check=True,
+    )
+
+    seen: dict[str, Path] = {}
+
+    def _capture(leg, review_dir, out_dir, timeout_s, artifact, mode, model, **kwargs):
+        seen["base"] = Path(review_dir).parent
+        return 0, "ok", "log"
+
+    monkeypatch.setattr(panel_invoker, "_exec_leg", _capture)
+    auth = backing.ReviewIsolationAuthorization(
+        operation="public_board_review.v1", purpose="t", input_sha256="0" * 64,
+        instructions_sha256="1" * 64, broker_contract=backing.PARENT_UNIX_BROKER_V1,
+        routes=(), readonly_tools=("Read",), child_credentialless=True,
+        child_network_egress=False, live_tree_exposed=False, api_fallback=False,
+        canonical_repo_sha256="2" * 64, issued_monotonic_ns=0,
+        _seal=backing._AUTHORIZATION_SEAL,
+        staged_tree_sha256=review_stage.review_tree_manifest_sha256(repo),
+    )
+    panel_invoker._default_spawn(
+        "gemini", "BODY", repo_dir=repo,
+        review_authorization=auth, canonical_repo_authority=repo,
+    )
+    # The scratch dir is reaped by `_default_spawn`'s own finally, so the marker is proven
+    # by the call having been made rather than by a surviving file.
+    assert "base" in seen

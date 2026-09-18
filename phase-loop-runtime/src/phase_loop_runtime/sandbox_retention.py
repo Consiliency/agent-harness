@@ -29,9 +29,9 @@ import shutil
 import tarfile
 import time
 
-from .review_stage import REVIEW_STAGE_DIR_PREFIX, REVIEW_STAGE_TREE_DIRNAME, remove_review_stage
+from .review_stage import REVIEW_STAGE_DIR_PREFIX, remove_review_stage
 
-__all__ = ["SandboxEntry", "discover", "reap"]
+__all__ = ["SandboxEntry", "discover", "reap", "mark_as_sandbox", "SANDBOX_MARKER"]
 
 WORK_DIRNAME = "work"
 
@@ -43,17 +43,36 @@ class SandboxEntry:
     size_bytes: int
 
 
-def _looks_like_a_sandbox(path: Path) -> bool:
-    """Only reap what this runtime staged.
+SANDBOX_MARKER = ".phase-loop-sandbox"
 
-    A sandbox root may hold anything an operator put there -- the configured root can be a
-    shared directory -- so identity is structural, never "it is old and it is here".
+
+def _looks_like_a_sandbox(path: Path) -> bool:
+    """Only reap what this runtime staged, proven by a marker IT wrote.
+
+    A shape test is not identity. An earlier version accepted any directory containing a
+    ``work/`` subdirectory, so an unrelated ``someone-elses-project/work/`` made the WHOLE
+    project directory eligible for deletion -- verified destroying a bystander's files. The
+    test that was supposed to catch it used a bystander with no ``work/`` subdirectory, so
+    it passed without ever exercising the predicate.
+
+    Identity is now a marker file this runtime writes into a sandbox it created, plus the
+    staging prefix for the tempdirs `stage_review_tree` names itself. Nothing an operator
+    happens to keep under the configured root can match either.
     """
-    if not path.is_dir():
+    if not path.is_dir() or path.is_symlink():
         return False
-    if path.name.startswith(REVIEW_STAGE_DIR_PREFIX):
+    if (path / SANDBOX_MARKER).is_file():
         return True
-    return (path / REVIEW_STAGE_TREE_DIRNAME).is_dir() or (path / WORK_DIRNAME).is_dir()
+    return path.name.startswith(REVIEW_STAGE_DIR_PREFIX)
+
+
+def mark_as_sandbox(path: Path) -> None:
+    """Claim a directory as reapable. Only the creator of a sandbox may call this."""
+    path = Path(path)
+    path.mkdir(parents=True, exist_ok=True)
+    (path / SANDBOX_MARKER).write_text(
+        "created by phase-loop review staging; safe to reap\n", encoding="utf-8"
+    )
 
 
 def _size_of(path: Path) -> int:

@@ -1655,25 +1655,25 @@ def _gc_stale_panel_scratch(
     try:
         base = Path(tempfile.gettempdir()) if root is None else Path(root)
         cutoff = time.time() - max_age_s
-        for path in base.glob("pl-panel-*"):
-            try:
-                if path.is_dir() and path.stat().st_mtime < cutoff:
-                    # A killed round can leave a staged tree whose directories a panelist
-                    # made read-only; `rmtree(ignore_errors=True)` cannot unlink through
-                    # those and fails SILENTLY, so the scratch dir would never be
-                    # reclaimed. Restore modes on the way down first.
-                    _review_stage.remove_review_stage(path)
-            except OSError:
-                continue
-        # After the age sweep, apply the configured retention policy: a burst of rounds
-        # fills the disk faster than any TTL expires, and the panelist's `work/` is
-        # archived before anything is removed.
+        # Retention FIRST: it archives the irreproducible `work/` before removing anything.
+        # The age sweep below used to run first and delete `pl-panel-*` outright, so a
+        # killed round lost its panelist notes even with archival configured -- the reaper
+        # arrived to find nothing left to save.
         _sandbox_retention.reap(
             base,
             ttl_s=_sandbox_policy.ttl_seconds(),
             max_total_bytes=_sandbox_policy.max_total_bytes(),
             archive_dest=_sandbox_policy.archive_destination(),
         )
+        for path in base.glob("pl-panel-*"):
+            try:
+                if path.is_dir() and path.stat().st_mtime < cutoff:
+                    # Whatever retention did not claim: a killed round can leave a tree
+                    # whose directories a panelist made read-only, and
+                    # `rmtree(ignore_errors=True)` cannot unlink through those.
+                    _review_stage.remove_review_stage(path)
+            except OSError:
+                continue
     except Exception:
         return
 
@@ -1749,11 +1749,24 @@ def _require_staged_tree(staged_tree: Path | None) -> Path | None:
     if staged_tree is None:
         return None
     tree = Path(staged_tree)
-    if tree.name != _review_stage.REVIEW_STAGE_TREE_DIRNAME or not (
-        tree / ".git" / "phase-loop-source-commit"
-    ).is_file():
+    # Provenance, not shape. The board found that a directory NAMED `reviewed-tree` with an
+    # empty `.git/phase-loop-source-commit` passed -- no git repository and no valid commit
+    # required -- and that `.is_file()` follows symlinks. A panelist can create that shape
+    # inside its own writable sandbox. The marker must therefore be one this process wrote
+    # and must still describe a real repository.
+    if tree.name != _review_stage.REVIEW_STAGE_TREE_DIRNAME:
+        raise ValueError(f"refusing to grant a path that is not a staged review tree: {tree}")
+    marker = tree / ".git" / "phase-loop-source-commit"
+    if marker.is_symlink() or not marker.is_file():
+        raise ValueError(f"refusing to grant a staged review tree with no marker: {tree}")
+    commit = marker.read_text(encoding="utf-8", errors="replace").strip()
+    if len(commit) != 40 or any(c not in "0123456789abcdef" for c in commit):
         raise ValueError(
-            f"refusing to grant a path that is not a staged review tree: {tree}"
+            f"refusing to grant a staged review tree whose marker is not a commit id: {tree}"
+        )
+    if not (tree / ".git" / "objects").is_dir():
+        raise ValueError(
+            f"refusing to grant a staged review tree that is not a git repository: {tree}"
         )
     return tree
 
@@ -5845,6 +5858,12 @@ def _default_spawn(
                 staged_tree_path = staged_tree
                 staged_tree.rename(review_dir / _review_stage.REVIEW_STAGE_TREE_DIRNAME)
                 staged_tree_path = review_dir / _review_stage.REVIEW_STAGE_TREE_DIRNAME
+                # Claim the scratch dir as ours, or retention will never reap it. Identity
+                # is a marker this runtime writes, precisely so a bystander directory that
+                # merely LOOKS like a sandbox is never deleted -- which means an unmarked
+                # real sandbox leaks forever. Tightening the check without writing the
+                # marker would trade a data-loss bug for a disk-leak bug.
+                _sandbox_retention.mark_as_sandbox(base if base is not None else review_dir)
                 # Staging is a NEW effect introduced here, so it is validated here --
                 # unconditionally, not behind the injected-seam predicate that skips
                 # the broader revalidation below. Otherwise a test seam, or any future

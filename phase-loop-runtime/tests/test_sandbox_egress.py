@@ -57,7 +57,7 @@ class TestRuleGeneration:
 
 class TestCapabilityDeclaration:
     def test_a_sandbox_declares_what_it_actually_enforced(self):
-        report = sandbox_egress.enforcement_report(available=True)
+        report = sandbox_egress.enforcement_report(available=True, applied=True)
         assert report["network_filtered"] is True
         assert report["mechanism"] == "user-namespace+slirp4netns"
 
@@ -109,7 +109,9 @@ class TestEvidenceRecording:
             host="ai", path=__import__("pathlib").Path("/storage/sb"),
             fell_back=True, reason="ai unreachable within 5.0s",
         )
-        panel_invoker._record_sandbox_facts(choice, sandbox_egress.enforcement_report(True))
+        panel_invoker._record_sandbox_facts(
+            choice, sandbox_egress.enforcement_report(True, applied=True)
+        )
         recorded = panel_invoker._sandbox_evidence()
 
         assert recorded["sandbox_root_host"] == "ai"
@@ -131,3 +133,34 @@ class TestEvidenceRecording:
         assert recorded["sandbox_network_unfiltered_reason"], (
             "a seat that was NOT isolated must say so, and say why"
         )
+
+
+class TestTheReportCannotClaimUnappliedFiltering:
+    """Board round 2, BLOCKING: the filtering was never applied to a provider launch.
+
+    `enforcement_report()` was wired into the leg evidence and `run_in_isolated_network`
+    was never called from `panel_invoker`. So a seat's record said
+    `sandbox_network_filtered=True` while nothing restricted that seat -- the exact
+    fail-open this module exists to prevent, inside the module that prevents it.
+    """
+
+    def test_available_but_unapplied_is_reported_as_NOT_filtered(self):
+        report = sandbox_egress.enforcement_report(available=True)
+        assert report["network_filtered"] is False
+        assert report["available_but_unapplied"] is True
+        assert "does not yet run through it" in report["reason"]
+
+    def test_only_an_applied_launch_may_claim_filtering(self):
+        report = sandbox_egress.enforcement_report(available=True, applied=True)
+        assert report["network_filtered"] is True
+
+    def test_panel_invoker_does_not_claim_filtering_it_did_not_apply(self):
+        """Guard the wiring itself: if a launch path starts applying isolation, it must
+        pass `applied=True` deliberately rather than inherit a true-by-default."""
+        from pathlib import Path as _P
+        import phase_loop_runtime.panel_invoker as pi
+        source = _P(pi.__file__).read_text(encoding="utf-8")
+        if "run_in_isolated_network" not in source:
+            assert "applied=True" not in source, (
+                "the evidence claims applied filtering while no launch routes through it"
+            )

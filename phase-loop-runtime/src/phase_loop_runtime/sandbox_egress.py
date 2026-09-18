@@ -102,7 +102,9 @@ def egress_isolation_available() -> bool:
         return False
 
 
-def enforcement_report(available: bool | None = None) -> dict[str, object]:
+def enforcement_report(
+    available: bool | None = None, *, applied: bool = False,
+) -> dict[str, object]:
     """What this sandbox ACTUALLY enforced, for the review evidence.
 
     Never what it intended. A sandbox that records ``network_filtered: true`` without
@@ -111,12 +113,28 @@ def enforcement_report(available: bool | None = None) -> dict[str, object]:
     """
     if available is None:
         available = egress_isolation_available()
-    if available:
+    if available and applied:
         return {
             "network_filtered": True,
             "mechanism": "user-namespace+slirp4netns",
             "denied": list(PRIVATE_CIDRS),
             "allowed": [f"{h}:{p}" for h, p in egress_allowlist().allow],
+        }
+    if available and not applied:
+        # The board caught this: the mechanism was built and verified, the report was
+        # wired into the evidence, and NO provider was ever launched through
+        # `run_in_isolated_network`. The record therefore claimed a boundary that was not
+        # in force -- the exact fail-open this module exists to prevent, inside the module
+        # that prevents it. Until the launch path routes through the namespace, the record
+        # says so.
+        return {
+            "network_filtered": False,
+            "mechanism": None,
+            "available_but_unapplied": True,
+            "reason": (
+                "egress isolation is AVAILABLE on this host but the provider launch does "
+                "not yet run through it; this seat was NOT network-restricted"
+            ),
         }
     return {
         "network_filtered": False,
