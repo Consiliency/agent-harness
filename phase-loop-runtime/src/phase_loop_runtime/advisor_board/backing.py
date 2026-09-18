@@ -635,10 +635,16 @@ class ParentUnixBroker:
 class ReviewIsolationAuthorization:
     """Unforgeable-in-normal-use capability for one brokered review operation.
 
-    It deliberately contains only metadata and an input digest: no child
+    It deliberately contains only metadata and input digests: no child
     credentials, provider method, host command, live-tree path, or mutable
     cleanup handle can cross this boundary.  ``_seal`` is identity-checked by
     this module and is never serialized or accepted from external JSON.
+
+    ``live_tree_exposed`` means the LIVE working tree is neither reachable nor
+    mutable from the sandbox. It does NOT mean the reviewed contents are withheld:
+    an attested read-only COPY may cross, bound by ``staged_tree_sha256``. The
+    distinction is deliberate, because the older reading of this field ("the seat
+    cannot see repo contents") is no longer what it guarantees (agent-harness#890).
     """
 
     operation: str
