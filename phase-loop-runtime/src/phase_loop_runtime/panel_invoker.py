@@ -6221,7 +6221,18 @@ def _default_spawn(
     except ProviderProcessGroupQuiescenceError:
         raise
     except Exception as exc:  # fail-closed
-        return "DEGRADED", str(exc)[:200]
+        # THE REASON GOES IN `detail`, NEVER IN `text`. Three comments in this file say so
+        # already, and this handler was violating all three: a 2-tuple puts the message in
+        # `text`, and `governed_review._findings_from_panel` keys BLOCK-vs-WARN on
+        # `leg.text.strip()` -- non-empty text on an unusable leg is `panel_nonconforming`,
+        # a promotion BLOCK. So an operational failure was reported as "this seat violated
+        # the verdict contract".
+        #
+        # Board round 8 executed it: a `SandboxSpaceError` -- a FULL DISK -- came back as
+        # `panel_nonconforming | block | review_gate_block`. The identical exception raised
+        # one call site away went to `detail` with empty text and was a WARN. Same fault,
+        # two verdicts, decided by which line raised.
+        return "DEGRADED", "", str(exc)[:2000]
     finally:
         egress_stack.close()
         if provider_output_dir is not None and agy_capture is None:

@@ -227,7 +227,20 @@ def ensure_staging_space(destination: Path | str, floor_bytes: int | None = None
     selection.
     """
     floor = _DEFAULT_FLOOR_BYTES if floor_bytes is None else floor_bytes
-    free = _free_bytes_at(SandboxLocation(None, Path(destination)), 5.0)
+    target = Path(destination)
+    if not target.is_dir():
+        # UNKNOWN IS NOT FULL, and this is where that has to be decided -- not by a
+        # `free is not None` guard, which board round 8 showed is dead for a local path:
+        # `_free_bytes_at` with no host always returns an int or raises. `_free_bytes`
+        # walks up to the nearest existing ancestor, so an unmeasurable destination landed
+        # on a pseudo-filesystem reporting 0 and REFUSED -- the opposite of the intent, and
+        # the test that claimed otherwise monkeypatched a `None` production cannot produce.
+        warnings.warn(
+            f"cannot measure free space at {destination}; staging is NOT space-checked",
+            RuntimeWarning, stacklevel=2,
+        )
+        return
+    free = _free_bytes_at(SandboxLocation(None, target), 5.0)
     if free is not None and free < floor:
         raise SandboxSpaceError(
             f"the staging filesystem at {destination} has {free / 1024**3:.1f} GiB free, "

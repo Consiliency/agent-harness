@@ -219,13 +219,15 @@ def test_staging_a_tree_the_authorization_did_not_approve_is_refused(tmp_path, m
                         lambda *a, **k: (0, "ok review", "log"))
 
     # Authorize `reviewed`, but point the canonical authority at `other`.
-    status, detail = panel_invoker._default_spawn(
+    _result = panel_invoker._default_spawn(
         "gemini", "REVIEW BUNDLE BODY", repo_dir=reviewed,
         review_authorization=_authorization(
             review_stage.review_tree_manifest_sha256(reviewed)
         ),
         canonical_repo_authority=other,
     )
+    # `_default_spawn` returns 2- or 3-tuples; the reason is always LAST.
+    status, detail = _result[0], _result[-1]
     assert status == "DEGRADED"
     assert "staged tree does not match authorization" in detail
 
@@ -263,13 +265,15 @@ def test_an_unauthorized_tree_is_refused_as_UNAUTHORIZED_on_an_unfilterable_host
     monkeypatch.setattr(panel_invoker, "_exec_leg",
                         lambda *a, **k: (0, "ok review", "log"))
 
-    status, detail = panel_invoker._default_spawn(
+    _result = panel_invoker._default_spawn(
         "gemini", "REVIEW BUNDLE BODY", repo_dir=reviewed,
         review_authorization=_authorization(
             review_stage.review_tree_manifest_sha256(reviewed)
         ),
         canonical_repo_authority=other,
     )
+    # `_default_spawn` returns 2- or 3-tuples; the reason is always LAST.
+    status, detail = _result[0], _result[-1]
 
     assert status == "DEGRADED"
     assert "staged tree does not match authorization" in detail, (

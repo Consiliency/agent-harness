@@ -535,10 +535,12 @@ def test_a_host_that_cannot_isolate_refuses_the_leg(tmp_path, monkeypatch):
         staged_tree_sha256=review_stage.review_tree_manifest_sha256(repo),
     )
 
-    status, detail = panel_invoker._default_spawn(
+    _result = panel_invoker._default_spawn(
         "gemini", "REVIEW BUNDLE BODY", repo_dir=repo,
         review_authorization=auth, canonical_repo_authority=repo,
     )
+    # `_default_spawn` returns 2- or 3-tuples; the reason is always LAST.
+    status, detail = _result[0], _result[-1]
 
     assert launched == [], (
         "the leg ran on a host that cannot enforce the policy -- this is the fail-open "

@@ -242,11 +242,133 @@ class TestTheFloorMeasuresTheFilesystemThatReceivesTheClone:
         monkeypatch.setattr(sandbox_policy, "_free_bytes_at", lambda loc, t=0: None)
         sandbox_policy.ensure_staging_space(tmp_path, 2 * 1024**3)
 
-    def test_the_launch_path_checks_the_destination_not_the_selection(self):
-        import inspect
-        from phase_loop_runtime import panel_invoker
+    def test_the_launch_path_checks_the_DESTINATION_not_the_selection(
+        self, tmp_path, monkeypatch,
+    ):
+        """EXECUTED, because the grep that used to stand here bound nothing.
 
-        source = inspect.getsource(panel_invoker._default_spawn)
-        assert "ensure_staging_space(" in source, (
-            "the launch path selects a root and stages somewhere else without measuring it"
+        Board round 8 mutated the call to measure `root_choice.path` -- the pre-fix
+        behaviour this test's own name forbids -- and 161 tests passed. That is the class
+        commit `2f851489` claimed to close, reappearing two commits later in the fix for a
+        different finding. So this drives `_default_spawn` and asserts on what happens.
+        """
+        import subprocess
+
+        from phase_loop_runtime import panel_invoker, review_stage
+        from phase_loop_runtime.advisor_board import backing
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@e.st"], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+        (repo / "a.py").write_text("x\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+        subprocess.run(
+            ["git", "-C", str(repo), "-c", "commit.gpgsign=false", "commit", "-qm", "c"],
+            check=True,
         )
+
+        # A configured root that is healthy and enormous; the local destination is not.
+        monkeypatch.setenv("PHASE_LOOP_SANDBOX_ROOT", "ai:/storage/sandboxes")
+        monkeypatch.setenv("PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL", "1")
+        monkeypatch.setattr(sandbox_policy, "_probe_root", lambda loc, t: True)
+        monkeypatch.setattr(
+            sandbox_policy, "_free_bytes_at",
+            lambda loc, t=0: 500 * 1024**3 if loc.host else 1 * 1024**2,
+        )
+        monkeypatch.setattr(sandbox_policy, "floor_bytes", lambda: 2 * 1024**3)
+
+        staged: list[str] = []
+        monkeypatch.setattr(
+            review_stage, "stage_review_tree",
+            lambda *a, **k: staged.append("staged"),
+        )
+        monkeypatch.setattr(panel_invoker, "_exec_leg", lambda *a, **k: (0, "ok", "log"))
+
+        auth = backing.ReviewIsolationAuthorization(
+            operation="public_board_review.v1", purpose="t", input_sha256="0" * 64,
+            instructions_sha256="1" * 64, broker_contract=backing.PARENT_UNIX_BROKER_V1,
+            routes=(), readonly_tools=("Read",), child_credentialless=True,
+            child_network_egress=False, live_tree_exposed=False, api_fallback=False,
+            canonical_repo_sha256="2" * 64, issued_monotonic_ns=0,
+            _seal=backing._AUTHORIZATION_SEAL,
+            staged_tree_sha256=review_stage.review_tree_manifest_sha256(repo),
+        )
+        _result = panel_invoker._default_spawn(
+            "gemini", "BODY", repo_dir=repo,
+            review_authorization=auth, canonical_repo_authority=repo,
+        )
+        # `_default_spawn` returns 2- or 3-tuples; the reason is always LAST.
+        status, detail = _result[0], _result[-1]
+
+        assert staged == [], (
+            "the clone was staged onto a filesystem that was never measured; the healthy "
+            "REMOTE selection was checked instead of the local destination"
+        )
+        assert status == "DEGRADED"
+        assert "staging filesystem" in detail, f"the operator cannot act on {detail!r}"
+
+
+def test_an_operational_failure_is_not_reported_as_a_verdict_violation():
+    """A full disk must not read as "this seat violated the verdict contract".
+
+    Board round 8 executed it: `SandboxSpaceError` reached `_default_spawn`'s fail-closed
+    handler, which returned a 2-TUPLE, so the message landed in `text`.
+    `governed_review._findings_from_panel` keys BLOCK-vs-WARN on `leg.text.strip()` --
+    non-empty text on an unusable leg is `panel_nonconforming`, a promotion BLOCK. The
+    identical exception raised one call site away went to `detail` with empty text and was
+    a non-gating WARN. Same fault, two verdicts, decided by which line raised.
+
+    Three separate comments in `panel_invoker` already forbid putting a diagnostic in
+    `text`; the handler was violating all three.
+    """
+    import subprocess
+
+    from phase_loop_runtime import panel_invoker, review_stage
+    from phase_loop_runtime.advisor_board import backing
+
+    import tempfile
+    tmp = Path(tempfile.mkdtemp())
+    repo = tmp / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@e.st"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+    (repo / "a.py").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "commit.gpgsign=false", "commit", "-qm", "c"],
+        check=True,
+    )
+
+    import pytest as _pytest
+    monkey = _pytest.MonkeyPatch()
+    try:
+        monkey.setenv("PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL", "1")
+        monkey.setattr(sandbox_policy, "floor_bytes", lambda: 10 ** 18)  # nothing passes
+        monkey.setattr(panel_invoker, "_exec_leg", lambda *a, **k: (0, "ok", "log"))
+
+        auth = backing.ReviewIsolationAuthorization(
+            operation="public_board_review.v1", purpose="t", input_sha256="0" * 64,
+            instructions_sha256="1" * 64, broker_contract=backing.PARENT_UNIX_BROKER_V1,
+            routes=(), readonly_tools=("Read",), child_credentialless=True,
+            child_network_egress=False, live_tree_exposed=False, api_fallback=False,
+            canonical_repo_sha256="2" * 64, issued_monotonic_ns=0,
+            _seal=backing._AUTHORIZATION_SEAL,
+            staged_tree_sha256=review_stage.review_tree_manifest_sha256(repo),
+        )
+        result = panel_invoker._default_spawn(
+            "gemini", "BODY", repo_dir=repo,
+            review_authorization=auth, canonical_repo_authority=repo,
+        )
+    finally:
+        monkey.undo()
+
+    assert result[0] == "DEGRADED"
+    assert len(result) == 3, "the reason must travel in `detail`, which needs a 3-tuple"
+    assert result[1] == "", (
+        "a diagnostic in `text` turns every operational failure into a promotion BLOCK "
+        f"via panel_nonconforming: {result[1]!r}"
+    )
+    assert "floor" in result[2], f"the reason must survive into detail: {result[2]!r}"

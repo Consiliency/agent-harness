@@ -195,6 +195,33 @@ def _bindings(tree: ast.Module) -> tuple[dict[str, str], dict[str, str], list[st
                     if resolved in SPAWN_FUNCTIONS and direct.get(argument.arg) != resolved:
                         direct[argument.arg] = resolved
                         discovered += 1
+            elif isinstance(node, ast.ClassDef):
+                # `_R.mk = subprocess.Popen` called as `_R.mk(cmd)`. The bare-attribute
+                # binding below records `mk`, but `_resolve` on `_R.mk` looks up `_R`,
+                # which is neither a module nor an aliased spawn, so it returned None --
+                # and `mk` is not spelled like a spawn, so the fail-closed net dropped it
+                # too. Board round 8 executed this against the shipped walker: 0 sites.
+                #
+                # The existing "class-attribute alias" fixture passed only because it
+                # happened to name the attribute `run`, which IS in SPAWN_ATTRS. It was
+                # green for the wrong reason.
+                for statement in node.body:
+                    if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                        continue
+                    value = statement.value
+                    if value is None:
+                        continue
+                    resolved = _resolve(value, modules, direct)
+                    if resolved not in SPAWN_FUNCTIONS:
+                        continue
+                    targets = (statement.targets if isinstance(statement, ast.Assign)
+                               else [statement.target])
+                    for target in targets:
+                        if isinstance(target, ast.Name):
+                            qualified = f"{node.name}.{target.id}"
+                            if direct.get(qualified) != resolved:
+                                direct[qualified] = resolved
+                                discovered += 1
             elif isinstance(node, (ast.Assign, ast.AnnAssign)):
                 value = node.value
                 if value is None:
@@ -221,6 +248,9 @@ def _resolve(func: ast.expr, modules: dict[str, str], direct: dict[str, str]) ->
         return direct.get(func.id)
     if isinstance(func, ast.Attribute):
         if isinstance(func.value, ast.Name):
+            qualified = direct.get(f"{func.value.id}.{func.attr}")
+            if qualified:
+                return qualified
             module = modules.get(func.value.id)
             if module:
                 return f"{module}.{func.attr}"
