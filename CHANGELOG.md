@@ -15,8 +15,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   seats (codex, grok, gemini/agy, claude), including the non-native TUI adapter.
 - **Network egress is filtered, and refusing is the default.** The seat runs in an unprivileged
   user namespace with `slirp4netns` for uplink: the public internet and the inference router
-  (`ai:8020`, `ai:3131`) are reachable; RFC1918, the tailnet CGNAT range, loopback and cloud
-  metadata are not. The capability bounding set is emptied, so the seat cannot withdraw its own
+  (`ai:8020`, `ai:3131`) are reachable **by name** -- the namespace carries slirp4netns's
+  DNS forwarder, because denying loopback denies the systemd stub resolver and a sandbox
+  that resolves nothing is not a usable internet; RFC1918, the tailnet CGNAT range,
+  loopback and cloud metadata are not. The capability bounding set is emptied, so the seat cannot withdraw its own
   rules. When isolation cannot be enforced -- mechanism absent, namespace not up, or rules only
   partly installed -- the launch is **refused**, not degraded.
   `PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL=1` makes it best-effort for a host that cannot do it

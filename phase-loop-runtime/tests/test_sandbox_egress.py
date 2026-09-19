@@ -84,6 +84,13 @@ class TestRealEnforcement:
             pytest.skip("user namespaces unavailable on this host")
 
         probe = (
+            # BY NAME, deliberately. Probing `1.1.1.1` alone passed for six rounds while
+            # no name resolved inside the namespace -- an internet a reviewer cannot
+            # actually use. A raw-IP probe measures routing; a name measures the
+            # capability the policy claims to grant.
+            'echo "resolved=$(getent hosts github.com >/dev/null 2>&1 && echo yes || echo NO)";'
+            'echo "byname=$(timeout 10 curl -s -o /dev/null -w %{http_code} --max-time 9 '
+            'https://github.com 2>/dev/null || echo NAME_FAILED)";'
             'echo "public=$(timeout 6 curl -s -o /dev/null -w %{http_code} --max-time 5 '
             'https://1.1.1.1 2>/dev/null || echo BLOCKED)";'
             'echo "private=$(timeout 6 curl -s -o /dev/null -w %{http_code} --max-time 5 '
@@ -102,6 +109,13 @@ class TestRealEnforcement:
                 capture_output=True, text=True, timeout=60,
             ).stdout
 
+        assert "resolved=yes" in out, (
+            f"NO NAME RESOLVES inside the sandbox; the seat cannot search, read docs or "
+            f"install anything a check needs:\n{out}"
+        )
+        assert "byname=200" in out or "byname=301" in out, (
+            f"the internet must be usable BY NAME, not only by raw IP:\n{out}"
+        )
         assert "public=301" in out or "public=200" in out, f"internet must work:\n{out}"
         assert "private=BLOCKED" in out or "private=000" in out, (
             f"private space must NOT be reachable:\n{out}"

@@ -18,14 +18,22 @@ filtered" would be a fail-open in the evidence record.
 
 Measured on this host before it was built:
 
-=================  ==========  ==========================================
-target             result      note
-=================  ==========  ==========================================
-``1.1.1.1``        ``301``     public internet reachable
-``ai:8020``        ``200``     inference router, allowlisted host+port
-``ai:6333``        BLOCKED     qdrant, ~69 GB of user data, same machine
-``169.254.169.254``  BLOCKED   cloud metadata / credential-theft target
-=================  ==========  ==========================================
+===================  ==========  ========================================
+target               result      note
+===================  ==========  ========================================
+``github.com``       ``200``     resolved BY NAME, then fetched
+``1.1.1.1``          ``301``     public internet by raw IP
+``ai:8020``          ``200``     inference router, allowlisted host+port
+``ai:6333``          BLOCKED     qdrant, ~69 GB of user data, same machine
+``169.254.169.254``  BLOCKED     cloud metadata / credential-theft target
+===================  ==========  ========================================
+
+The first row is the one that matters, and it was missing for six board rounds. This
+table used to measure ``1.1.1.1`` alone -- a bare IP -- so it reported a reachable
+internet while NO name resolved inside the namespace: the host's resolver is the
+systemd stub at ``127.0.0.53``, which ``127.0.0.0/8`` correctly denies. A reviewer
+could reach raw addresses and nothing else, which is not the capability this policy
+claims. Measure the capability, not the mechanism.
 """
 
 from __future__ import annotations
@@ -251,8 +259,24 @@ def isolated_network(
     with tempfile.TemporaryDirectory(prefix="pl-egress-ns-") as work:
         ready = os.path.join(work, "ready")
         pidfile = os.path.join(work, "pid")
+        # DNS. Denying 127.0.0.0/8 denies the host's stub resolver, and on any systemd
+        # host `/etc/resolv.conf` says `nameserver 127.0.0.53`. Measured inside the
+        # namespace before this: every NAME failed to resolve while `https://1.1.1.1`
+        # returned 301 -- so "the public internet is reachable" was true of raw IPs and
+        # false of everything a reviewer would actually do. The evidence table in this
+        # module measured a bare IP, which is why six board rounds did not notice, and
+        # the gemini seat in round 6 died on `lookup ... operation not permitted`.
+        #
+        # slirp4netns runs a DNS forwarder at 10.0.2.3, inside the uplink subnet that is
+        # already ACCEPTed ahead of the 10/8 deny. Point the namespace at it -- which
+        # needs a MOUNT namespace too, so `/etc/resolv.conf` can be replaced for the seat
+        # without touching the host's.
+        resolv = os.path.join(work, "resolv.conf")
+        with open(resolv, "w", encoding="utf-8") as handle:
+            handle.write("nameserver 10.0.2.3\noptions timeout:2 attempts:2\n")
         holder = subprocess.Popen(
-            ["unshare", "--net", "--map-root-user", "bash", "-c",
+            ["unshare", "--net", "--mount", "--map-root-user", "bash", "-c",
+             f'mount --bind {resolv} /etc/resolv.conf 2>/dev/null; '
              f'echo $$ > {pidfile}; touch {ready}; sleep {timeout_s}'],
         )
         slirp = None
@@ -272,7 +296,9 @@ def isolated_network(
             )
             time.sleep(2.5)  # the tap must be configured before traffic flows
 
-            admin = ("nsenter", "--net", "-t", nspid, "-U", "--preserve-credentials")
+            # `--mount` as well as `--net`: the seat must see the resolv.conf bound above,
+            # or it inherits the host's 127.0.0.53 and resolves nothing.
+            admin = ("nsenter", "--net", "--mount", "-t", nspid, "-U", "--preserve-credentials")
             # Apply the policy INSIDE the namespace, before anything else runs in it, and
             # CHECK it: a partially installed ruleset that still yielded a prefix would be
             # reported as applied filtering while leaving holes.
