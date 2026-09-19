@@ -323,18 +323,37 @@ def _overlay_working_tree(root: Path, staged: Path) -> None:
     """
     selected = set(_selected_paths(root))
 
+    # `-z`, like the source side. Plain `ls-files` QUOTES any name containing a tab or a
+    # newline (`"docs\there"`), so the clone set and the source set spelled the same path
+    # differently -- stale removal looked for the quoted form, missed the real entry, and
+    # left a committed symlink standing for the overlay to write through. Board round 8,
+    # codex; reproduced with a tabbed directory name (agent-harness#890).
     tracked_in_clone = {
-        rel for rel in _git(staged, "ls-files", check=False).split("\n") if rel
+        rel for rel in _git(staged, "ls-files", "-z", check=False).split("\0") if rel
     }
     for rel in tracked_in_clone - selected:
         stale_path = staged / rel
         if stale_path.is_file() or stale_path.is_symlink():
             stale_path.unlink()
 
+    stage_root = staged.resolve()
     for rel in selected:
         source = root / rel
         destination = staged / rel
         destination.parent.mkdir(parents=True, exist_ok=True)
+        # CONTAINMENT, checked on the RESOLVED parent. Unlinking a symlink at the LEAF is
+        # not enough: the escape can sit at any ANCESTOR. A committed directory symlink
+        # pointing outside is recreated by the clone, `mkdir(exist_ok=True)` happily
+        # accepts it, the leaf check sees an ordinary name, and `copy2` writes through it
+        # to wherever the ancestor points. Resolving the parent catches every spelling and
+        # every depth at once, instead of another special case per shape.
+        resolved_parent = destination.parent.resolve()
+        if resolved_parent != stage_root and stage_root not in resolved_parent.parents:
+            raise ValueError(
+                f"refusing to stage {rel!r}: its destination resolves outside the "
+                f"sandbox ({resolved_parent}). A committed symlink is pointing out of "
+                "the tree."
+            )
         if source.is_symlink():
             if destination.is_symlink() or destination.exists():
                 destination.unlink()

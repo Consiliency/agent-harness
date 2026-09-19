@@ -291,3 +291,84 @@ class TestStagingNeverWritesOutsideTheClone:
         assert (outside / "keep.txt").read_text(encoding="utf-8") == "keep me\n", (
             "staging wrote through a directory symlink"
         )
+
+
+class TestAnAncestorSymlinkCannotCarryAWriteOutside:
+    """Board round 8, codex, BLOCKING — the round-7 fix covered only the LEAF.
+
+    Reproduced before fixing, with a TAB in a committed directory symlink's name:
+
+        committed as: "docs\\there"
+        before: 'PRECIOUS ORIGINAL CONTENT'
+        after : 'ATTACKER PAYLOAD'
+
+    Two compounding causes. `git ls-files` QUOTES any name containing a tab or newline,
+    while the source side used `ls-files -z`, so the clone set and the source set spelled
+    the same path differently and stale removal never matched the real entry. And the
+    escape sat at an ANCESTOR: `mkdir(parents=True, exist_ok=True)` accepts a symlink to an
+    existing directory, and the leaf `is_symlink()` check sees an ordinary filename.
+
+    The fix is containment on the RESOLVED parent rather than another shape check -- it
+    covers every spelling and every depth, which is what two rounds of special cases did
+    not.
+    """
+
+    def _outside_victim(self, tmp_path):
+        outside = tmp_path / "OUTSIDE"
+        outside.mkdir()
+        victim = outside / "victim.txt"
+        victim.write_text("PRECIOUS ORIGINAL CONTENT\n", encoding="utf-8")
+        return outside, victim
+
+    def test_a_tabbed_directory_symlink_cannot_be_written_through(self, tmp_path):
+        outside, victim = self._outside_victim(tmp_path)
+        repo = _repo(tmp_path / "repo")
+
+        link = repo / "docs\there"
+        link.symlink_to(outside, target_is_directory=True)
+        _commit(repo, "commit a tabbed dir symlink")
+
+        link.unlink()
+        link.mkdir()
+        (link / "victim.txt").write_text("ATTACKER PAYLOAD\n", encoding="utf-8")
+
+        try:
+            review_stage.stage_review_tree(repo, tmp_path / "stage")
+        except Exception:
+            pass   # refusing is a correct outcome; writing outside is not
+
+        assert victim.read_text(encoding="utf-8") == "PRECIOUS ORIGINAL CONTENT\n", (
+            "staging wrote outside the clone through an ANCESTOR symlink"
+        )
+
+    def test_a_plain_directory_symlink_cannot_be_written_through_either(self, tmp_path):
+        """The same escape without the quoting trick, so the containment check is not
+        mistaken for a quoting fix."""
+        outside, victim = self._outside_victim(tmp_path)
+        repo = _repo(tmp_path / "repo")
+
+        link = repo / "docs"
+        link.symlink_to(outside, target_is_directory=True)
+        _commit(repo, "commit a dir symlink")
+
+        link.unlink()
+        link.mkdir()
+        (link / "victim.txt").write_text("ATTACKER PAYLOAD\n", encoding="utf-8")
+
+        try:
+            review_stage.stage_review_tree(repo, tmp_path / "stage")
+        except Exception:
+            pass
+
+        assert victim.read_text(encoding="utf-8") == "PRECIOUS ORIGINAL CONTENT\n"
+
+    def test_ordinary_nested_files_still_stage(self, tmp_path):
+        """The falsifier: containment must not refuse legitimate nested paths."""
+        repo = _repo(tmp_path / "repo")
+        nested = repo / "a" / "b" / "c"
+        nested.mkdir(parents=True)
+        (nested / "deep.py").write_text("x = 1\n", encoding="utf-8")
+        _commit(repo, "nested")
+
+        staged = review_stage.stage_review_tree(repo, tmp_path / "stage")
+        assert (staged / "a" / "b" / "c" / "deep.py").read_text(encoding="utf-8") == "x = 1\n"

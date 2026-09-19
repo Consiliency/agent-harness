@@ -69,39 +69,57 @@ NOT_A_PROCESS_LAUNCH: dict[str, str] = {
     ),
 }
 
-PARENT_SIDE_ALLOWLIST: dict[str, str] = {
-    "probe": "capability probe for the harness itself",
-    "['claude', 'auth', 'status', '--json']": "parent checks ITS OWN credentials",
-    "[claude_bin, '--version']": "parent reads the installed CLI version",
-    "adapter.list_command()": "parent enumerates sessions it owns",
-    "adapter.stop_command(session_id)": "parent tears down a session it started",
-    "adapter.logs_command(session_id)": "parent reads back a session's log",
-    "['git', '-C', str(tree), 'cat-file', '-e', f'{commit}^{{commit}}']":
+PARENT_SIDE_ALLOWLIST: dict[tuple[str, str], str] = {
+    # KEYED BY (module, argv). Keying on the argv expression ALONE exempted the same
+    # spelling everywhere: the entry below for backing.py's bwrap probe is the bare name
+    # `argv`, so board round 8 pointed out that ANY `subprocess.Popen(argv)` in any scanned
+    # module inherited the exemption --
+    #
+    #     def launch_provider(command):
+    #         argv = list(command)
+    #         return subprocess.Popen(argv)
+    #
+    # -- confirmed by execution: seen by the walker, accepted by the assertion. An
+    # exemption has to name the call site it excuses, not a string that might occur
+    # anywhere.
+    ("panel_invoker.py", "probe"): "capability probe for the harness itself",
+    ("panel_invoker.py", "['claude', 'auth', 'status', '--json']"):
+        "parent checks ITS OWN credentials",
+    ("panel_invoker.py", "[claude_bin, '--version']"):
+        "parent reads the installed CLI version",
+    ("panel_invoker.py", "adapter.list_command()"): "parent enumerates sessions it owns",
+    ("panel_invoker.py", "adapter.stop_command(session_id)"):
+        "parent tears down a session it started",
+    ("panel_invoker.py", "adapter.logs_command(session_id)"):
+        "parent reads back a session's log",
+    ("panel_invoker.py", "['git', '-C', str(tree), 'cat-file', '-e', f'{commit}^{{commit}}']"):
         "parent verifies a commit in the REVIEWED repo, not the sandbox",
-    "['git', '-C', str(candidate), 'rev-parse', '--show-toplevel']":
+    ("panel_invoker.py", "['git', '-C', str(candidate), 'rev-parse', '--show-toplevel']"):
         "parent resolves the repo root",
-    # --- the rest of the leg path, in scope since round 7 ---
-    "argv": (
-        "backing.py: the bwrap posture-probe child, launched with --unshare-all so it has "
-        "NO network at all; an egress prefix would be redundant and would fight bwrap"
-    ),
-    "['git', '-C', str(self.canonical_repo), 'ls-files', '-z']":
+    ("backing.py", "['git', '-C', str(candidate), 'rev-parse', '--show-toplevel']"):
+        "parent resolves the repo root",
+    ("backing.py", "argv"):
+        "the bwrap posture-probe child, launched --unshare-all so it has NO network; an "
+        "egress prefix would be redundant and would fight bwrap",
+    ("backing.py", "['git', '-C', str(self.canonical_repo), 'ls-files', '-z']"):
         "parent digests the canonical repo to bind the authorization",
-    "['git', '-C', str(repo), 'ls-files', '-z']": "parent enumerates tracked files to stage",
-    "['git', '-C', str(repo), 'ls-files', '-z', '--others', '--exclude-standard']":
+    ("review_stage.py", "['git', '-C', str(repo), 'ls-files', '-z']"):
+        "parent enumerates tracked files to stage",
+    ("review_stage.py", "['git', '-C', str(repo), 'ls-files', '-z', '--others', '--exclude-standard']"):
         "parent enumerates untracked-but-not-ignored files to stage",
-    "['git', '-C', str(repo), *args]": "parent runs git against the REVIEWED repo",
-    "['git', 'clone', '--quiet', '--depth', str(CLONE_DEPTH), '--no-single-branch', f'file://{root}', str(staged)]":
+    ("review_stage.py", "['git', '-C', str(repo), *args]"):
+        "parent runs git against the REVIEWED repo",
+    ("review_stage.py", "['git', 'clone', '--quiet', '--depth', str(CLONE_DEPTH), '--no-single-branch', f'file://{root}', str(staged)]"):
         "parent creates the sandbox clone; it IS the staging step",
-    "['git', '-C', str(staged), 'checkout', '--quiet', '--detach', head]":
+    ("review_stage.py", "['git', '-C', str(staged), 'checkout', '--quiet', '--detach', head]"):
         "parent pins the fresh clone to the reviewed commit",
-    "['unshare', '--net', '--mount', '--map-root-user', 'bash', '-c', f'mount --bind {resolv} /etc/resolv.conf 2>/dev/null; echo $$ > {pidfile}; touch {ready}; sleep {timeout_s}']":
+    ("sandbox_egress.py", "['unshare', '--net', '--mount', '--map-root-user', 'bash', '-c', f'mount --bind {resolv} /etc/resolv.conf 2>/dev/null; echo $$ > {pidfile}; touch {ready}; sleep {timeout_s}']"):
         "the namespace HOLDER -- it creates the confinement, so it cannot be inside it",
-    "['slirp4netns', '--configure', '--mtu=65520', '--disable-host-loopback', nspid, 'tap0']":
+    ("sandbox_egress.py", "['slirp4netns', '--configure', '--mtu=65520', '--disable-host-loopback', nspid, 'tap0']"):
         "the uplink for that namespace, run from OUTSIDE it by definition",
-    "[*admin, 'bash', '-c', 'set -e\\nip link set lo up 2>/dev/null || true\\n' + rules]":
+    ("sandbox_egress.py", "[*admin, 'bash', '-c', 'set -e\\nip link set lo up 2>/dev/null || true\\n' + rules]"):
         "installs the policy INSIDE the namespace; already carries the nsenter prefix",
-    "['unshare', '--net', '--map-root-user', 'true']":
+    ("sandbox_egress.py", "['unshare', '--net', '--map-root-user', 'true']"):
         "capability probe: can this host make a namespace at all",
 }
 
@@ -150,44 +168,50 @@ def _bindings(tree: ast.Module) -> tuple[dict[str, str], dict[str, str], list[st
                     continue
                 direct[alias.asname or alias.name] = f"{node.module}.{alias.name}"
 
-    # Parameter DEFAULTS bind names too, and they are the cheapest indirection there is:
+    # Parameter DEFAULTS and ASSIGNMENTS both bind names, and either can depend on the
+    # other, so neither may be resolved "first". An earlier version walked defaults and
+    # then assignments once each, which board round 8 defeated with:
     #
-    #     def provider_launch(cmd, make=subprocess.Popen): return make(cmd)
+    #     _LAUNCH = subprocess.Popen
+    #     def launch_provider(command, make=_LAUNCH): return make(command)
     #
-    # Board round 7, codex. Confirmed by execution -- the walker found 0 sites. `make` is
-    # not import-bound and is not spelled like a spawn, so it was dropped by both the
-    # resolver and the fail-closed net.
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-            continue
-        arguments = node.args
-        positional = arguments.posonlyargs + arguments.args
-        pairs: list[tuple[ast.arg, ast.expr]] = []
-        if arguments.defaults:
-            pairs += list(zip(positional[-len(arguments.defaults):], arguments.defaults))
-        pairs += [(a, d) for a, d in zip(arguments.kwonlyargs, arguments.kw_defaults) if d]
-        for argument, default in pairs:
-            if _resolve(default, modules, direct) in SPAWN_FUNCTIONS:
-                direct[argument.arg] = _resolve(default, modules, direct)
-
-    # Follow assignments that alias a spawn, at any nesting level: module, class body,
-    # or inside a function. `_LAUNCH = subprocess.Popen` must not hide a launch.
-    for _ in range(3):                       # chained aliases: A = Popen; B = A
+    # `make` was resolved against a binding table that did not yet contain `_LAUNCH`, and
+    # nothing revisited it. Confirmed by execution: 0 sites. Iterating to a FIXPOINT
+    # removes the ordering question entirely rather than swapping one order for another.
+    for _pass in range(8):
+        discovered = 0
         for node in ast.walk(tree):
-            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
-                continue
-            value = node.value
-            if value is None:
-                continue
-            resolved = _resolve(value, modules, direct)
-            if resolved not in SPAWN_FUNCTIONS:
-                continue
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            for target in targets:
-                if isinstance(target, ast.Name):
-                    direct[target.id] = resolved
-                elif isinstance(target, ast.Attribute):
-                    direct[target.attr] = resolved
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                arguments = node.args
+                positional = arguments.posonlyargs + arguments.args
+                pairs: list[tuple[ast.arg, ast.expr]] = []
+                if arguments.defaults:
+                    pairs += list(zip(positional[-len(arguments.defaults):],
+                                      arguments.defaults))
+                pairs += [(a, d) for a, d in zip(arguments.kwonlyargs, arguments.kw_defaults)
+                          if d]
+                for argument, default in pairs:
+                    resolved = _resolve(default, modules, direct)
+                    if resolved in SPAWN_FUNCTIONS and direct.get(argument.arg) != resolved:
+                        direct[argument.arg] = resolved
+                        discovered += 1
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                value = node.value
+                if value is None:
+                    continue
+                resolved = _resolve(value, modules, direct)
+                if resolved not in SPAWN_FUNCTIONS:
+                    continue
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for target in targets:
+                    name = (target.id if isinstance(target, ast.Name)
+                            else target.attr if isinstance(target, ast.Attribute) else None)
+                    if name and direct.get(name) != resolved:
+                        direct[name] = resolved
+                        discovered += 1
+        if not discovered:
+            break
+
     return modules, direct, unresolvable
 
 
@@ -314,7 +338,7 @@ def test_every_provider_launch_carries_the_egress_prefix():
         (module, lineno, func, argv)
         for module, lineno, func, argv in _spawn_sites()
         if PREFIX_EXPR not in argv
-        and argv not in PARENT_SIDE_ALLOWLIST
+        and (module, argv) not in PARENT_SIDE_ALLOWLIST
         and func not in NOT_A_PROCESS_LAUNCH
     ]
     assert not unprefixed, (
@@ -336,7 +360,7 @@ def test_at_least_the_three_known_seats_are_wired():
 
 def test_the_allowlist_does_not_rot():
     """An entry that no longer matches any spawn is a stale exemption -- delete it."""
-    live = {argv for _module, _lineno, _func, argv in _spawn_sites()}
+    live = {(module, argv) for module, _lineno, _func, argv in _spawn_sites()}
     stale = sorted(set(PARENT_SIDE_ALLOWLIST) - live)
     assert not stale, f"these allowlist entries match no spawn any more: {stale}"
 
@@ -356,7 +380,7 @@ def test_the_walker_actually_fails_on_an_unwired_spawn(tmp_path, monkeypatch):
     sites = _spawn_sites()
     assert sites, "the fixture must present a spawn"
     assert all(PREFIX_EXPR not in argv for _m, _l, _f, argv in sites)
-    assert all(argv not in PARENT_SIDE_ALLOWLIST for _m, _l, _f, argv in sites), (
+    assert all((m, argv) not in PARENT_SIDE_ALLOWLIST for m, _l, _f, argv in sites), (
         "the fixture's spawn must be caught, not exempted"
     )
     with pytest.raises(AssertionError, match="neither egress-prefixed nor declared"):
@@ -482,6 +506,21 @@ class TestTheWalkerResistsTheEvasionsTheBoardDemonstrated:
             "import subprocess\n"
             "def launch(cmd, *, make=subprocess.Popen):\n"
             "    return make(cmd)\n"
+        ),
+        # --- round 8: both confirmed by execution against the shipped walker ---
+        "default referencing an assignment alias": (
+            "import subprocess\n"
+            "_LAUNCH = subprocess.Popen\n"
+            "def launch(command, make=_LAUNCH):\n"
+            "    return make(command)\n"
+        ),
+        "argv rebound as a local": (
+            # Not an evasion of the WALKER -- it sees this -- but of the ASSERTION, via an
+            # exemption keyed on the bare expression `argv` that belonged to another module.
+            "import subprocess\n"
+            "def launch(command):\n"
+            "    argv = list(command)\n"
+            "    return subprocess.Popen(argv)\n"
         ),
         "class-attribute alias": (
             "import subprocess\n"
