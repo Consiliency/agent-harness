@@ -80,6 +80,29 @@ PARENT_SIDE_ALLOWLIST: dict[str, str] = {
         "parent verifies a commit in the REVIEWED repo, not the sandbox",
     "['git', '-C', str(candidate), 'rev-parse', '--show-toplevel']":
         "parent resolves the repo root",
+    # --- the rest of the leg path, in scope since round 7 ---
+    "argv": (
+        "backing.py: the bwrap posture-probe child, launched with --unshare-all so it has "
+        "NO network at all; an egress prefix would be redundant and would fight bwrap"
+    ),
+    "['git', '-C', str(self.canonical_repo), 'ls-files', '-z']":
+        "parent digests the canonical repo to bind the authorization",
+    "['git', '-C', str(repo), 'ls-files', '-z']": "parent enumerates tracked files to stage",
+    "['git', '-C', str(repo), 'ls-files', '-z', '--others', '--exclude-standard']":
+        "parent enumerates untracked-but-not-ignored files to stage",
+    "['git', '-C', str(repo), *args]": "parent runs git against the REVIEWED repo",
+    "['git', 'clone', '--quiet', '--depth', str(CLONE_DEPTH), '--no-single-branch', f'file://{root}', str(staged)]":
+        "parent creates the sandbox clone; it IS the staging step",
+    "['git', '-C', str(staged), 'checkout', '--quiet', '--detach', head]":
+        "parent pins the fresh clone to the reviewed commit",
+    "['unshare', '--net', '--mount', '--map-root-user', 'bash', '-c', f'mount --bind {resolv} /etc/resolv.conf 2>/dev/null; echo $$ > {pidfile}; touch {ready}; sleep {timeout_s}']":
+        "the namespace HOLDER -- it creates the confinement, so it cannot be inside it",
+    "['slirp4netns', '--configure', '--mtu=65520', '--disable-host-loopback', nspid, 'tap0']":
+        "the uplink for that namespace, run from OUTSIDE it by definition",
+    "[*admin, 'bash', '-c', 'set -e\\nip link set lo up 2>/dev/null || true\\n' + rules]":
+        "installs the policy INSIDE the namespace; already carries the nsenter prefix",
+    "['unshare', '--net', '--map-root-user', 'true']":
+        "capability probe: can this host make a namespace at all",
 }
 
 
@@ -182,14 +205,48 @@ def _argv_of(node: ast.Call) -> str | None:
     return None
 
 
-def _spawn_sites() -> list[tuple[int, str, str]]:
-    source = Path(panel_invoker.__file__).read_text(encoding="utf-8")
+# Every module on the path from a review leg to a launched provider. Round 7 flagged that
+# scanning `panel_invoker` alone left the rest of that path unchecked. The package has 248
+# spawns across 68 modules; scanning all of them would need a ~240-entry allowlist that
+# nobody would read, and most are git plumbing for unrelated subsystems. So the scope is
+# the LEG PATH, named explicitly, rather than one module pretending to be it or the whole
+# package pretending to be reviewable.
+LEG_PATH_MODULES = ("panel_invoker", "advisor_board.backing", "review_stage", "sandbox_egress")
+
+
+def _module_paths() -> list[tuple[str, Path]]:
+    root = Path(panel_invoker.__file__).parent
+    paths = [(name, root.joinpath(*name.split(".")).with_suffix(".py"))
+             for name in LEG_PATH_MODULES]
+    # Missing files are skipped so the evasion fixtures -- which point `__file__` at a
+    # single synthetic module -- exercise the walker itself. `test_the_leg_path_modules_
+    # all_exist` is what stops that tolerance from hiding a renamed or deleted module.
+    return [(name, path) for name, path in paths if path.is_file()]
+
+
+def test_the_leg_path_modules_all_exist():
+    """Guard the tolerance above: every declared module must really be scanned."""
+    root = Path(panel_invoker.__file__).parent
+    missing = [name for name in LEG_PATH_MODULES
+               if not root.joinpath(*name.split(".")).with_suffix(".py").is_file()]
+    assert not missing, (
+        f"these leg-path modules are not being scanned at all: {missing}. "
+        "A rename silently narrows this guard to whatever still resolves."
+    )
+
+
+def _spawn_sites() -> list[tuple[str, int, str, str]]:
+    return [site for _name, path in _module_paths() for site in _sites_in(path)]
+
+
+def _sites_in(path: Path) -> list[tuple[str, int, str, str]]:
+    source = path.read_text(encoding="utf-8")
     tree = ast.parse(source)
     modules, direct, unresolvable = _bindings(tree)
     sites: list[tuple[int, str, str]] = []
 
     for note in unresolvable:
-        sites.append((0, "<unresolvable-import>", f"<{note}>"))
+        sites.append((path.name, 0, "<unresolvable-import>", f"<{note}>"))
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -210,7 +267,7 @@ def _spawn_sites() -> list[tuple[int, str, str]]:
 
         if resolved in SPAWN_FUNCTIONS:
             argv = _argv_of(call)
-            sites.append((node.lineno, resolved, argv if argv is not None
+            sites.append((path.name, node.lineno, resolved, argv if argv is not None
                           else f"<unreadable argv at line {node.lineno}>"))
             continue
 
@@ -222,7 +279,7 @@ def _spawn_sites() -> list[tuple[int, str, str]]:
         leaf = callee.rsplit(".", 1)[-1]
         if resolved is None and leaf in SPAWN_ATTRS:
             argv = _argv_of(call) or "<no argv>"
-            sites.append((node.lineno, f"<unresolved:{callee}>", argv))
+            sites.append((path.name, node.lineno, f"<unresolved:{callee}>", argv))
 
     return sites
 
@@ -234,15 +291,15 @@ def test_the_module_still_has_spawn_sites_to_check():
 
 def test_every_provider_launch_carries_the_egress_prefix():
     unprefixed = [
-        (lineno, func, argv)
-        for lineno, func, argv in _spawn_sites()
+        (module, lineno, func, argv)
+        for module, lineno, func, argv in _spawn_sites()
         if PREFIX_EXPR not in argv
         and argv not in PARENT_SIDE_ALLOWLIST
         and func not in NOT_A_PROCESS_LAUNCH
     ]
     assert not unprefixed, (
         "these spawns are neither egress-prefixed nor declared parent-side:\n"
-        + "\n".join(f"  panel_invoker.py:{n}  {f}({a})" for n, f, a in unprefixed)
+        + "\n".join(f"  {m}:{n}  {f}({a})" for m, n, f, a in unprefixed)
         + "\n\nWire it with [*_EGRESS_LAUNCH_PREFIX.get(), *argv], or add it to "
           "PARENT_SIDE_ALLOWLIST with the reason it is the parent acting, not a reviewer."
     )
@@ -250,7 +307,7 @@ def test_every_provider_launch_carries_the_egress_prefix():
 
 def test_at_least_the_three_known_seats_are_wired():
     """A stale allowlist could satisfy the test above by covering everything."""
-    prefixed = [s for s in _spawn_sites() if PREFIX_EXPR in s[2]]
+    prefixed = [s for s in _spawn_sites() if PREFIX_EXPR in s[3]]
     assert len(prefixed) >= 3, (
         f"expected the CLI-leg, TUI-PTY and agent-view launches to be wired; "
         f"found {len(prefixed)}"
@@ -259,14 +316,15 @@ def test_at_least_the_three_known_seats_are_wired():
 
 def test_the_allowlist_does_not_rot():
     """An entry that no longer matches any spawn is a stale exemption -- delete it."""
-    live = {argv for _lineno, _func, argv in _spawn_sites()}
+    live = {argv for _module, _lineno, _func, argv in _spawn_sites()}
     stale = sorted(set(PARENT_SIDE_ALLOWLIST) - live)
     assert not stale, f"these allowlist entries match no spawn any more: {stale}"
 
 
 def test_the_walker_actually_fails_on_an_unwired_spawn(tmp_path, monkeypatch):
     """The falsifier. A guard that has never been seen to fail is not a guard."""
-    fake = tmp_path / "fake_invoker.py"
+    # Named `panel_invoker.py` because the scanner resolves modules BY NAME now.
+    fake = tmp_path / "panel_invoker.py"
     fake.write_text(
         "import subprocess\n"
         "def launch(cmd):\n"
@@ -277,8 +335,8 @@ def test_the_walker_actually_fails_on_an_unwired_spawn(tmp_path, monkeypatch):
 
     sites = _spawn_sites()
     assert sites, "the fixture must present a spawn"
-    assert all(PREFIX_EXPR not in argv for _l, _f, argv in sites)
-    assert all(argv not in PARENT_SIDE_ALLOWLIST for _l, _f, argv in sites), (
+    assert all(PREFIX_EXPR not in argv for _m, _l, _f, argv in sites)
+    assert all(argv not in PARENT_SIDE_ALLOWLIST for _m, _l, _f, argv in sites), (
         "the fixture's spawn must be caught, not exempted"
     )
     with pytest.raises(AssertionError, match="neither egress-prefixed nor declared"):
@@ -405,7 +463,9 @@ class TestTheWalkerResistsTheEvasionsTheBoardDemonstrated:
     }
 
     def _sites_for(self, tmp_path, monkeypatch, name, source):
-        fake = tmp_path / f"{name.replace(' ', '_').replace('.', '_')}.py"
+        holder = tmp_path / name.replace(" ", "_").replace(".", "_")
+        holder.mkdir(exist_ok=True)
+        fake = holder / "panel_invoker.py"
         fake.write_text(source, encoding="utf-8")
         monkeypatch.setattr(panel_invoker, "__file__", str(fake))
         return _spawn_sites()
@@ -429,4 +489,4 @@ class TestTheWalkerResistsTheEvasionsTheBoardDemonstrated:
             "import subprocess\ndef launch(**kw):\n    return subprocess.Popen(**kw)\n",
         )
         assert sites, "an argv-less spawn must still be reported"
-        assert "unreadable" in sites[0][2]
+        assert "unreadable" in sites[0][3]

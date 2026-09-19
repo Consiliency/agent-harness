@@ -16,6 +16,20 @@ honoured only by programs that choose to honour it: a raw socket, or a tool that
 the variables, walks straight past. That is a speed bump, and recording it as "network
 filtered" would be a fail-open in the evidence record.
 
+**WHAT THIS DOES NOT DO.** It is a network boundary, not a filesystem one. A seat can read
+the operator's on-disk credentials -- board round 7 read `~/.ssh/id_*` from inside a live
+sandbox -- and the public internet is deliberately open, so nothing here prevents
+exfiltration of anything the seat can read. Calling ``169.254.169.254`` a "credential-theft
+target" invited exactly the wrong inference: blocking the metadata vector is not blocking
+credential theft.
+
+That is a disclosed consequence of the trust model, not a hole: a panelist is trusted like
+the agent that writes the code, and that agent already reads the disk. But
+``network_filtered: true`` must never be read as "this seat could not exfiltrate". It means
+the private network -- the tailnet, loopback services, the docker bridges, cloud metadata --
+was unreachable. Filesystem confinement would need a mount-namespace jail, which this is
+not (agent-harness#895).
+
 Measured on this host before it was built:
 
 ===================  ==========  ========================================
@@ -25,7 +39,7 @@ target               result      note
 ``1.1.1.1``          ``301``     public internet by raw IP
 ``ai:8020``          ``200``     inference router, allowlisted host+port
 ``ai:6333``          BLOCKED     qdrant, ~69 GB of user data, same machine
-``169.254.169.254``  BLOCKED     cloud metadata / credential-theft target
+``169.254.169.254``  BLOCKED     cloud metadata endpoint
 ===================  ==========  ========================================
 
 The first row is the one that matters, and it was missing for six board rounds. This
@@ -152,6 +166,14 @@ def enforcement_report(
             "mechanism": "user-namespace+slirp4netns",
             "denied": list(PRIVATE_CIDRS),
             "allowed": [f"{h}:{p}" for h, p in egress_allowlist().allow],
+            # Bound the claim IN the record. A reader seeing `network_filtered: true`
+            # otherwise infers "this seat could not take anything", which is false: the
+            # public internet is open by design and the filesystem is not confined.
+            "scope": (
+                "network egress only; the seat could still READ operator files and send "
+                "them to the permitted public internet. Not a filesystem boundary."
+            ),
+            "filesystem_confined": False,
         }
     if not available and not egress_required():
         return {

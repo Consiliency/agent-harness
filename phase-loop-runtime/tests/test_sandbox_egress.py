@@ -646,3 +646,44 @@ class TestTheRecordSaysWhereTheSandboxACTUALLYIs:
                 assert panel_invoker._sandbox_evidence()["sandbox_staged_at"]
             finally:
                 panel_invoker._SANDBOX_ROUND_FACTS.reset(token)
+
+
+class TestTheRecordDoesNotOverstateWhatIsProtected:
+    """Board round 7: the firewall does not protect what its own docstring named.
+
+    The seat read `~/.ssh/id_*` from inside a live sandbox and reached
+    `https://example.com` in the same breath. The policy stops the private network; it
+    stops nothing a seat can already read from leaving over the permitted internet.
+    Calling `169.254.169.254` a "credential-theft target" invited the inference that
+    credential theft was prevented. It is not.
+
+    That is a DISCLOSED consequence of the trust model -- a panelist is trusted like the
+    agent that writes the code, which already reads the disk -- so it is not a hole. But
+    an evidence field that a downstream reader over-reads is the same defect class this
+    branch has hit sixteen times: the record must bound its own claim.
+    """
+
+    def test_a_filtered_record_says_it_is_not_a_filesystem_boundary(self):
+        report = sandbox_egress.enforcement_report(True, applied=True)
+        assert report["network_filtered"] is True
+        assert report["filesystem_confined"] is False, (
+            "a reader seeing network_filtered=true will infer the seat could not take "
+            "anything; the record must say otherwise"
+        )
+        assert "READ operator files" in str(report["scope"])
+
+    def test_the_docstring_does_not_claim_credential_theft_is_prevented(self):
+        import inspect
+
+        doc = inspect.getdoc(sandbox_egress) or ""
+        assert "credential-theft target" not in doc, (
+            "the metadata row framed the policy as preventing credential theft"
+        )
+        assert "not a filesystem" in doc.lower() or "not a filesystem one" in doc.lower(), (
+            "the docstring must state the boundary it is NOT"
+        )
+
+    def test_the_unfiltered_record_makes_no_protective_claim_at_all(self):
+        report = sandbox_egress.enforcement_report(False)
+        assert report["network_filtered"] is False
+        assert "filesystem_confined" not in report or report["filesystem_confined"] is False
