@@ -21,7 +21,11 @@ the real module rather than in a replica of it.
 
 from __future__ import annotations
 
+import platform
 import threading
+from pathlib import Path
+
+import pytest
 
 from phase_loop_runtime.panel_invoker import _EGRESS_LAUNCH_PREFIX
 
@@ -131,4 +135,74 @@ def test_the_prefix_is_not_silently_global():
     """A module-level tuple would make the tests above pass for the wrong reason."""
     assert _EGRESS_LAUNCH_PREFIX.get() == (), (
         "the prefix leaked out of a previous test's context"
+    )
+
+
+@pytest.mark.skipif(
+    not (Path("/usr/bin/bwrap").is_file() and platform.system() == "Linux"),
+    reason="the real brokered launch needs bwrap on Linux",
+)
+def test_END_TO_END_the_prefix_reaches_adapter_invoke_through_the_real_broker(tmp_path):
+    """The whole chain: real `ParentUnixBroker`, real sealed authorization, real bwrap child.
+
+    Adapted from the probe the claude seat wrote in board round 6 to demonstrate that the
+    guard above it was a string grep. Its measurement before the fix, and the reason this
+    test exists rather than another assertion about source:
+
+        parent-thread prefix:              ('nsenter','--net','-t','999999','--')
+        SERVE-THREAD PREFIX (real module): ()
+
+    `adapter.invoke` is where the provider is launched. If the prefix is not visible HERE,
+    every brokered seat runs outside its namespace no matter how the source reads.
+    """
+    import hashlib
+    import time
+
+    from phase_loop_runtime.advisor_board import backing
+
+    repo = Path(__file__).resolve().parents[2]
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    (staged / "review-bundle.md").write_text("BUNDLE", encoding="utf-8")
+    (staged / "review-instructions.md").write_text("INSTR", encoding="utf-8")
+    for name in ("review-bundle.md", "review-instructions.md"):
+        (staged / name).chmod(0o400)
+
+    authorization = backing.ReviewLegAuthorization(
+        operation="public_board_review.v1", purpose="probe",
+        input_sha256=hashlib.sha256(b"BUNDLE").hexdigest(),
+        instructions_sha256=hashlib.sha256(b"INSTR").hexdigest(),
+        canonical_repo_sha256=backing._canonical_repo_digest(repo),
+        broker_contract=backing.PARENT_UNIX_BROKER_V1, harness="codex", model="m",
+        issued_monotonic_ns=time.monotonic_ns(),
+        expires_monotonic_ns=time.monotonic_ns() + 300 * 10**9,
+        _seal=backing._AUTHORIZATION_SEAL,
+    )
+    backing._remember_leg_claim(authorization)
+    broker = backing.ParentUnixBroker(
+        authorization, harness="codex", model="m", staged_dir=staged, canonical_repo=repo,
+    )
+
+    seen: dict[str, tuple[str, ...]] = {}
+
+    def invoke() -> tuple[str, str]:
+        seen["serve"] = _EGRESS_LAUNCH_PREFIX.get()   # where the provider is launched
+        return ("OK", "probe-response")
+
+    adapter = backing._make_broker_inference_adapter(invoke, lambda: None, lambda: True)
+
+    token = _EGRESS_LAUNCH_PREFIX.set(PREFIX)
+    try:
+        broker.run_credentialless_client(adapter, deadline_s=60.0)
+    finally:
+        _EGRESS_LAUNCH_PREFIX.reset(token)
+        try:
+            broker.close()
+        except Exception:
+            pass
+
+    assert "serve" in seen, "the broker never reached adapter.invoke; the probe proved nothing"
+    assert seen["serve"] == PREFIX, (
+        "the provider launches OUTSIDE the namespace: the prefix did not reach "
+        f"adapter.invoke through the real broker ({seen['serve']!r})"
     )
