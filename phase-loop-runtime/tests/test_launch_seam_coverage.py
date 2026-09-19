@@ -534,12 +534,40 @@ def test_all_three_seats_start_through_the_interface():
     )
 
 
-def test_the_allowlist_does_not_rot():
-    """An entry that no longer matches any spawn is a stale exemption -- delete it."""
-    live = {(module, owner, argv)
-            for module, _lineno, _func, argv, owner in _spawn_sites()}
-    stale = sorted(set(PARENT_SIDE_ALLOWLIST) - live)
+def test_every_allowlist_entry_covers_EXACTLY_ONE_site():
+    """An exemption must excuse one site: not zero, and above all not two.
+
+    Zero is a stale entry. TWO is the fifth bypass, found by the claude seat in board round
+    11: membership was tested with `in` -- a set test, not a count -- so a SECOND spawn
+    added inside an already-allowlisted function inherited that entry's exemption.
+    Reproduced by rebinding `adapter` inside the real `_exec_claude_agent_view_attempt` so
+    its argv rendered as the allowlisted key: walker 56/56 green with a live unprefixed
+    provider launch, and a kernel probe of the same construction measured two payload
+    executions against one prefix execution.
+
+    `THE_LAUNCH_INTERFACE` already had this guard -- `per_owner[key] == 1`, whose comment
+    reads "a second spawn inside it launches unprefixed and exempt" -- and
+    `test_the_probe_exemption_is_narrow` closed it for the single spelling `probe`. The
+    hole was known, fixed for one table and one entry, and left open for the other
+    twenty-two. Counting closes all of them at once rather than one more spelling.
+    """
+    from collections import Counter
+
+    per_key = Counter(
+        (module, owner, argv)
+        for module, _lineno, _func, argv, owner in _spawn_sites()
+    )
+    stale = sorted(key for key in PARENT_SIDE_ALLOWLIST if per_key[key] == 0)
     assert not stale, f"these allowlist entries match no spawn any more: {stale}"
+
+    doubled = sorted(
+        (key, per_key[key]) for key in PARENT_SIDE_ALLOWLIST if per_key[key] > 1
+    )
+    assert not doubled, (
+        "these allowlist entries cover MORE THAN ONE spawn, so the second and subsequent "
+        "ones are exempt without ever being declared:\n"
+        + "\n".join(f"  {key} covers {n} sites" for key, n in doubled)
+    )
 
 
 def test_the_walker_actually_fails_on_an_unwired_spawn(tmp_path, monkeypatch):
