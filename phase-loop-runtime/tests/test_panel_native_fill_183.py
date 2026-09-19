@@ -139,6 +139,13 @@ class HeadlessNonClaudeRunsLeg(unittest.TestCase):
             scratch = Path(td) / "scratch"
             scratch.mkdir()
             with (
+                # Native fill, not egress. This drives the REAL authorization mint, which
+                # now grants a sandbox by default, and a sandboxed leg fails closed on a
+                # host without user namespaces -- so without this the seat comes back
+                # DEGRADED for a reason that has nothing to do with headless native fill.
+                unittest.mock.patch.dict(
+                    os.environ, {"PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL": "1"}
+                ),
                 unittest.mock.patch.object(
                     pi, "_claude_code_support_status", return_value=(True, "supported")
                 ),
