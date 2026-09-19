@@ -69,6 +69,13 @@ NOT_A_PROCESS_LAUNCH: dict[str, str] = {
     ),
 }
 
+# The ONE sanctioned provider spawn, by site. Everything else in a leg-path module is
+# either declared parent-side or a defect.
+THE_LAUNCH_INTERFACE: dict[tuple[str, str], str] = {
+    ("panel_invoker.py", "[*_EGRESS_LAUNCH_PREFIX.get(), *argv]"):
+        "launch_provider -- the only Popen that may start a review provider",
+}
+
 PARENT_SIDE_ALLOWLIST: dict[tuple[str, str], str] = {
     # KEYED BY (module, argv). Keying on the argv expression ALONE exempted the same
     # spelling everywhere: the entry below for backing.py's bwrap probe is the bare name
@@ -364,27 +371,98 @@ def test_the_module_still_has_spawn_sites_to_check():
 
 
 def test_every_provider_launch_carries_the_egress_prefix():
-    unprefixed = [
+    """The invariant, restated so it can actually be established.
+
+    It used to be "every spawn mentions `_EGRESS_LAUNCH_PREFIX.get()`", which is a claim
+    about SOURCE TEXT, and seats evaded it twenty-three times across four rounds -- by
+    aliasing, by parameter defaults, by class attributes, by an exemption keyed on a bare
+    identifier. Pattern-matching call sites cannot establish it.
+
+    It is now "the leg-path modules contain no provider spawn outside
+    `launch_provider`/`run_provider`". One call site, so a new launch that forgets the
+    prefix is not a spelling the walker must recognise -- it is an undeclared spawn, and
+    it fails whatever it is called and however it is bound.
+    """
+    undeclared = [
         (module, lineno, func, argv)
         for module, lineno, func, argv in _spawn_sites()
-        if PREFIX_EXPR not in argv
-        and (module, argv) not in PARENT_SIDE_ALLOWLIST
+        if (module, argv) not in PARENT_SIDE_ALLOWLIST
         and func not in NOT_A_PROCESS_LAUNCH
+        and (module, argv) not in THE_LAUNCH_INTERFACE
     ]
-    assert not unprefixed, (
-        "these spawns are neither egress-prefixed nor declared parent-side:\n"
-        + "\n".join(f"  {m}:{n}  {f}({a})" for m, n, f, a in unprefixed)
-        + "\n\nWire it with [*_EGRESS_LAUNCH_PREFIX.get(), *argv], or add it to "
-          "PARENT_SIDE_ALLOWLIST with the reason it is the parent acting, not a reviewer."
+    assert not undeclared, (
+        "these spawns are neither the launch interface nor declared parent-side:\n"
+        + "\n".join(f"  {m}:{n}  {f}({a})" for m, n, f, a in undeclared)
+        + "\n\nStart providers through `panel_invoker.launch_provider` / `run_provider`, "
+          "or add this site to PARENT_SIDE_ALLOWLIST with the reason it is the parent "
+          "acting on its own host rather than a reviewer executing."
     )
 
 
-def test_at_least_the_three_known_seats_are_wired():
-    """A stale allowlist could satisfy the test above by covering everything."""
-    prefixed = [s for s in _spawn_sites() if PREFIX_EXPR in s[3]]
-    assert len(prefixed) >= 3, (
-        f"expected the CLI-leg, TUI-PTY and agent-view launches to be wired; "
-        f"found {len(prefixed)}"
+def test_the_launch_interface_is_the_only_thing_that_prefixes():
+    """And it must actually prefix. The rule above is worthless if it does not."""
+    import inspect
+
+    for name in ("launch_provider", "run_provider"):
+        source = inspect.getsource(getattr(panel_invoker, name))
+        assert "_EGRESS_LAUNCH_PREFIX.get()" in source, (
+            f"{name} is the only sanctioned way to start a provider and it does not "
+            "apply the egress prefix"
+        )
+
+
+def test_the_interface_actually_applies_the_prefix_when_called():
+    """Executed, not read -- the lesson of the last two rounds."""
+
+    token = panel_invoker._EGRESS_LAUNCH_PREFIX.set(("/bin/echo", "PREFIXED"))
+    try:
+        result = panel_invoker.run_provider(
+            ["hello"], capture_output=True, text=True, timeout=30,
+        )
+    finally:
+        panel_invoker._EGRESS_LAUNCH_PREFIX.reset(token)
+    assert result.stdout.strip() == "PREFIXED hello", (
+        f"the interface did not prepend the prefix: {result.stdout!r}"
+    )
+
+
+def test_all_three_seats_start_through_the_interface():
+    """A stale allowlist could satisfy the rule above by covering everything.
+
+    The three provider launches -- CLI leg, TUI PTY, agent-view -- must each call the
+    interface rather than build their own argv. Asserting "2 sites are prefixed" would now
+    be satisfied by the two helper bodies alone while every seat bypassed them.
+    """
+
+    # Two of the three launches live in nested `_popen` closures, so this reads the
+    # ENCLOSING functions -- naming `_exec_leg` and getting a pass from a docstring would
+    # be the proxy trap again.
+    import ast
+
+    source_text = Path(panel_invoker.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source_text)
+    interface_calls = {
+        node.lineno for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and ast.unparse(node.func) in ("launch_provider", "run_provider")
+    }
+    assert len(interface_calls) >= 3, (
+        f"expected the CLI-leg, TUI-PTY and agent-view launches to route through the "
+        f"interface; found {len(interface_calls)} call(s) at {sorted(interface_calls)}"
+    )
+
+    enclosing = set()
+    for line in interface_calls:
+        best = None
+        for node in ast.walk(tree):
+            if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and node.lineno <= line <= (node.end_lineno or 0)
+                    and (best is None or node.lineno > best.lineno)):
+                best = node
+        if best is not None:
+            enclosing.add(best.name)
+    assert len(enclosing) >= 2, (
+        f"all interface calls collapsed into one place: {enclosing}"
     )
 
 
@@ -413,7 +491,7 @@ def test_the_walker_actually_fails_on_an_unwired_spawn(tmp_path, monkeypatch):
     assert all((m, argv) not in PARENT_SIDE_ALLOWLIST for m, _l, _f, argv in sites), (
         "the fixture's spawn must be caught, not exempted"
     )
-    with pytest.raises(AssertionError, match="neither egress-prefixed nor declared"):
+    with pytest.raises(AssertionError, match="neither the launch interface nor declared"):
         test_every_provider_launch_carries_the_egress_prefix()
 
 
@@ -578,7 +656,7 @@ class TestTheWalkerResistsTheEvasionsTheBoardDemonstrated:
     def test_each_evasion_is_REPORTED_not_merely_counted(self, name, tmp_path, monkeypatch):
         """Seeing it is not enough: an unprefixed, unallowlisted spawn must FAIL."""
         self._sites_for(tmp_path, monkeypatch, name, self.EVASIONS[name])
-        with pytest.raises(AssertionError, match="neither egress-prefixed nor declared"):
+        with pytest.raises(AssertionError, match="neither the launch interface nor declared"):
             test_every_provider_launch_carries_the_egress_prefix()
 
     def test_an_unreadable_argv_fails_closed(self, tmp_path, monkeypatch):

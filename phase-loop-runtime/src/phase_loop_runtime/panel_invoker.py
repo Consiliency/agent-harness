@@ -1849,6 +1849,32 @@ _SANDBOX_ROUND_FACTS: ContextVar[dict[str, object]] = ContextVar(
 )
 
 
+def launch_provider(argv, **kwargs) -> "subprocess.Popen[bytes]":
+    """THE one place a review provider process is started. Popen form.
+
+    Board rounds 5-8 found four separate ways a provider could be launched outside the
+    network namespace, and each fix was an instance: wire the second seam, wire the third,
+    resolve aliases, resolve defaults. The guard that was supposed to end the class was an
+    AST walk keyed on source text, and seats evaded it twenty-three times.
+
+    Both codex and the claude seat converged on the same remedy -- "enforce isolation
+    through a common launch interface", "key by site identity or this stays a treadmill" --
+    because the invariant "every provider launch is prefixed" cannot be established by
+    pattern-matching call sites. It CAN be established by having one call site.
+
+    So the rule the walker enforces is no longer "every spawn mentions the prefix". It is
+    "the leg-path modules contain no provider spawn except this function's". A new launch
+    that forgets the prefix is not a spelling the walker has to recognise; it is an
+    undeclared spawn, which fails whatever it is called and however it is bound.
+    """
+    return subprocess.Popen([*_EGRESS_LAUNCH_PREFIX.get(), *argv], **kwargs)
+
+
+def run_provider(argv, **kwargs) -> "subprocess.CompletedProcess[str]":
+    """THE one place a review provider is started and waited on. See `launch_provider`."""
+    return subprocess.run([*_EGRESS_LAUNCH_PREFIX.get(), *argv], **kwargs)
+
+
 def _record_sandbox_facts(
     root_choice: "_sandbox_policy.SandboxRootChoice",
     enforcement: dict[str, object],
@@ -3691,8 +3717,8 @@ def _run_leg_with_liveness(
         # the filtering was computed, reported, and never applied to a provider; a prefix
         # here composes with argv, cwd, env, stdin and process-group handling unchanged,
         # so the seat lands in the namespace instead of beside it.
-        return subprocess.Popen(
-            [*_EGRESS_LAUNCH_PREFIX.get(), *cmd],
+        return launch_provider(
+            cmd,
             cwd=str(cwd),
             env=dict(env),
             stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
@@ -4108,8 +4134,8 @@ def _run_claude_tui_session(
                 # `_popen`, so a TUI seat launched OUTSIDE the namespace entirely -- the
                 # gap the board named as "I cannot establish that every alternative
                 # provider-launch path uses `_popen`".
-                return subprocess.Popen(
-                    [*_EGRESS_LAUNCH_PREFIX.get(), *command],
+                return launch_provider(
+                    command,
                     cwd=str(cwd),
                     env=dict(env),
                     stdin=slave_fd,
@@ -5038,8 +5064,8 @@ def _exec_claude_agent_view_attempt(
         # reaches it), which is exactly why it is wired: an unwired seam that acquires a
         # caller later is a silent hole, and `test_launch_seam_coverage` refuses to let
         # one exist rather than trusting that this one stays unreachable.
-        proc = subprocess.run(
-            [*_EGRESS_LAUNCH_PREFIX.get(), *command],
+        proc = run_provider(
+            command,
             cwd=str(review_dir),
             env=env,
             capture_output=True,
