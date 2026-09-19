@@ -198,3 +198,55 @@ class TestTheSandboxIsActuallyReachable:
             if "stage_review_tree=False" in text:
                 offenders.append(path.name)
         assert offenders == [], f"these pin the sandbox off: {offenders}"
+
+
+class TestTheFloorMeasuresTheFilesystemThatReceivesTheClone:
+    """Board round 7, codex, BLOCKING — the floor could validate the wrong filesystem.
+
+    `select_sandbox_root` measures the root it SELECTS. Nothing consumes that selection
+    for placement (agent-harness#896): the clone is always staged locally. So a healthy
+    configured root -- remote, or merely on another local filesystem -- returned early and
+    the real destination was never measured. Recording `sandbox_root_applied=False` makes
+    the evidence honest about placement; it does nothing about the disk.
+
+    Filling the filesystem holding the broker's scratch takes the host down with it, which
+    is the whole reason the floor refuses instead of warning.
+    """
+
+    def test_a_healthy_remote_root_does_not_excuse_a_full_local_destination(
+        self, tmp_path, monkeypatch,
+    ):
+        monkeypatch.setattr(sandbox_policy, "_probe_root", lambda loc, t: True)
+        monkeypatch.setattr(
+            sandbox_policy, "_free_bytes_at",
+            lambda loc, t=0: 100 * 1024**3 if loc.host else 50 * 1024**2,
+        )
+        # The selection is happily remote and above its own floor...
+        choice = sandbox_policy.select_sandbox_root(
+            configured="ai:/storage/sandboxes", fallback=tmp_path,
+            floor_bytes=2 * 1024**3,
+        )
+        assert choice.host == "ai"
+
+        # ...and the place the clone actually lands is refused anyway.
+        with pytest.raises(sandbox_policy.SandboxSpaceError, match="staging filesystem"):
+            sandbox_policy.ensure_staging_space(tmp_path, 2 * 1024**3)
+
+    def test_it_passes_when_the_real_destination_has_room(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sandbox_policy, "_free_bytes_at", lambda loc, t=0: 100 * 1024**3)
+        sandbox_policy.ensure_staging_space(tmp_path, 2 * 1024**3)
+
+    def test_an_unmeasurable_destination_does_not_block(self, tmp_path, monkeypatch):
+        """Unknown is not "full". Refusing on an unreadable stat would take the host down
+        for a different reason than the one this guard exists to prevent."""
+        monkeypatch.setattr(sandbox_policy, "_free_bytes_at", lambda loc, t=0: None)
+        sandbox_policy.ensure_staging_space(tmp_path, 2 * 1024**3)
+
+    def test_the_launch_path_checks_the_destination_not_the_selection(self):
+        import inspect
+        from phase_loop_runtime import panel_invoker
+
+        source = inspect.getsource(panel_invoker._default_spawn)
+        assert "ensure_staging_space(" in source, (
+            "the launch path selects a root and stages somewhere else without measuring it"
+        )

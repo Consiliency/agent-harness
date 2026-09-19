@@ -150,6 +150,26 @@ def _bindings(tree: ast.Module) -> tuple[dict[str, str], dict[str, str], list[st
                     continue
                 direct[alias.asname or alias.name] = f"{node.module}.{alias.name}"
 
+    # Parameter DEFAULTS bind names too, and they are the cheapest indirection there is:
+    #
+    #     def provider_launch(cmd, make=subprocess.Popen): return make(cmd)
+    #
+    # Board round 7, codex. Confirmed by execution -- the walker found 0 sites. `make` is
+    # not import-bound and is not spelled like a spawn, so it was dropped by both the
+    # resolver and the fail-closed net.
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue
+        arguments = node.args
+        positional = arguments.posonlyargs + arguments.args
+        pairs: list[tuple[ast.arg, ast.expr]] = []
+        if arguments.defaults:
+            pairs += list(zip(positional[-len(arguments.defaults):], arguments.defaults))
+        pairs += [(a, d) for a, d in zip(arguments.kwonlyargs, arguments.kw_defaults) if d]
+        for argument, default in pairs:
+            if _resolve(default, modules, direct) in SPAWN_FUNCTIONS:
+                direct[argument.arg] = _resolve(default, modules, direct)
+
     # Follow assignments that alias a spawn, at any nesting level: module, class body,
     # or inside a function. `_LAUNCH = subprocess.Popen` must not hide a launch.
     for _ in range(3):                       # chained aliases: A = Popen; B = A
@@ -452,6 +472,16 @@ class TestTheWalkerResistsTheEvasionsTheBoardDemonstrated:
             "import multiprocessing\n"
             "def launch(cmd):\n"
             "    return multiprocessing.Process(target=cmd)\n"
+        ),
+        "parameter default": (
+            "import subprocess\n"
+            "def launch(cmd, make=subprocess.Popen):\n"
+            "    return make(cmd)\n"
+        ),
+        "kwonly parameter default": (
+            "import subprocess\n"
+            "def launch(cmd, *, make=subprocess.Popen):\n"
+            "    return make(cmd)\n"
         ),
         "class-attribute alias": (
             "import subprocess\n"

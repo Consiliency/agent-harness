@@ -210,6 +210,32 @@ def archive_destination() -> str | None:
     return os.environ.get("PHASE_LOOP_SANDBOX_ARCHIVE_DEST") or None
 
 
+def ensure_staging_space(destination: Path | str, floor_bytes: int | None = None) -> None:
+    """Refuse if the filesystem that will ACTUALLY hold the sandbox is below the floor.
+
+    `select_sandbox_root` checks the free space of the root it SELECTS. Nothing consumes
+    that selection for placement yet (agent-harness#896): the clone is always staged
+    locally under the leg's scratch dir. So a healthy configured root -- remote, or simply
+    on another local filesystem -- returned early and the real destination was never
+    measured, and recording `sandbox_root_applied=False` documents that without preventing
+    it. Board round 7, codex, BLOCKING: "deferring remote placement is acceptable only if
+    the actual staging filesystem is still checked."
+
+    Filling the filesystem that holds the broker's scratch takes the host down with it,
+    which is why this refuses rather than warns -- the same trade the floor was introduced
+    for. Call it with the directory the clone will be written into, not the policy's
+    selection.
+    """
+    floor = _DEFAULT_FLOOR_BYTES if floor_bytes is None else floor_bytes
+    free = _free_bytes_at(SandboxLocation(None, Path(destination)), 5.0)
+    if free is not None and free < floor:
+        raise SandboxSpaceError(
+            f"the staging filesystem at {destination} has {free / 1024**3:.1f} GiB free, "
+            f"below the {floor / 1024**3:.1f} GiB floor; refusing to stage a sandbox "
+            "rather than fill the filesystem the broker and the host depend on"
+        )
+
+
 def select_sandbox_root(
     configured: str | None = None,
     fallback: str | os.PathLike[str] | None = None,

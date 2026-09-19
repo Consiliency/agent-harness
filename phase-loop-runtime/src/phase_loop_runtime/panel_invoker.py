@@ -5931,6 +5931,16 @@ def _default_spawn(
                 # The namespace is acquired AFTER both revalidations, not here -- see
                 # `sandbox_root_choice` below.
                 sandbox_root_choice = root_choice
+                # CHECK THE FILESYSTEM THAT ACTUALLY RECEIVES THE CLONE. `root_choice`
+                # measured the root the policy SELECTED, and nothing consumes that
+                # selection for placement yet (agent-harness#896) -- the stage is always
+                # local. So a healthy configured root let staging proceed onto a local
+                # filesystem that was never measured. Recording `sandbox_root_applied=
+                # False` documents that; it does not prevent filling the disk the broker
+                # and the host run on (board round 7, codex, BLOCKING).
+                _sandbox_policy.ensure_staging_space(
+                    review_dir, _sandbox_policy.floor_bytes(),
+                )
                 staged_tree = _review_stage.stage_review_tree(resolved_repo_dir, review_dir)
                 # Track the ACTUAL path across the ownership transfer. If the rename
                 # fails, the hardened tree is still under its `pl-panel-stage-*` name,
