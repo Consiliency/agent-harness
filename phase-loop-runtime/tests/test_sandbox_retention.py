@@ -204,6 +204,10 @@ def test_the_production_creator_marks_what_it_creates(tmp_path, monkeypatch):
         return 0, "ok", "log"
 
     monkeypatch.setattr(panel_invoker, "_exec_leg", _capture)
+    # Retention, not egress. Egress fails closed, so on a host without user namespaces the
+    # leg would refuse before it ever staged anything and this would pass vacuously in the
+    # other direction. Declare the best-effort posture explicitly rather than weakening it.
+    monkeypatch.setenv("PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL", "1")
     auth = backing.ReviewIsolationAuthorization(
         operation="public_board_review.v1", purpose="t", input_sha256="0" * 64,
         instructions_sha256="1" * 64, broker_contract=backing.PARENT_UNIX_BROKER_V1,

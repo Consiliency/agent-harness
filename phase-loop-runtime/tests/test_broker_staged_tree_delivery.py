@@ -230,6 +230,13 @@ def test_the_real_spawn_path_hands_a_seat_a_working_sandbox(tmp_path, monkeypatc
 
     monkeypatch.setattr(panel_invoker, "_exec_leg", _capture)
 
+    # This test is about DELIVERY, not egress. Egress now fails CLOSED, so on a host
+    # without user namespaces (a bare CI container) the leg would refuse before reaching
+    # `_exec_leg` and this would fail for an unrelated reason. Declare the best-effort
+    # posture explicitly rather than weakening the default; the refusal itself is asserted
+    # by `test_a_host_that_cannot_isolate_refuses_the_leg` below.
+    monkeypatch.setenv("PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL", "1")
+
     auth = backing.ReviewIsolationAuthorization(
         operation="public_board_review.v1", purpose="t", input_sha256="0" * 64,
         instructions_sha256="1" * 64, broker_contract=backing.PARENT_UNIX_BROKER_V1,
@@ -484,3 +491,108 @@ def test_a_real_staged_tree_still_passes_provenance(tmp_path):
     """Negative control: tightening must not reject genuine sandboxes."""
     tree = _sandbox(tmp_path)
     assert panel_invoker._require_staged_tree(tree) == tree
+
+
+def test_a_host_that_cannot_isolate_refuses_the_leg(tmp_path, monkeypatch):
+    """The activation test for fail-closed: refusal reaches the real spawn path.
+
+    Four board rounds produced a mechanism that refused correctly in isolation while the
+    launch went ahead anyway, so asserting on `isolated_network` alone proves nothing about
+    what a seat actually gets. This drives `_default_spawn` end to end with the mechanism
+    absent and requires that no leg runs.
+    """
+    import subprocess
+    from phase_loop_runtime import panel_invoker, review_stage, sandbox_egress
+    from phase_loop_runtime.advisor_board import backing
+
+    repo = tmp_path / "reviewed-repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@e.st"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+    (repo / "SOURCE.py").write_text("value = 41\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "commit.gpgsign=false", "commit", "-qm", "c"],
+        check=True,
+    )
+
+    launched: list[str] = []
+    monkeypatch.setattr(
+        panel_invoker, "_exec_leg",
+        lambda *a, **k: launched.append("leg") or (0, "ok", "log"),
+    )
+    monkeypatch.delenv("PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL", raising=False)
+    monkeypatch.setattr(sandbox_egress, "egress_isolation_available", lambda: False)
+
+    auth = backing.ReviewIsolationAuthorization(
+        operation="public_board_review.v1", purpose="t", input_sha256="0" * 64,
+        instructions_sha256="1" * 64, broker_contract=backing.PARENT_UNIX_BROKER_V1,
+        routes=(), readonly_tools=("Read",), child_credentialless=True,
+        child_network_egress=False, live_tree_exposed=False, api_fallback=False,
+        canonical_repo_sha256="2" * 64, issued_monotonic_ns=0,
+        _seal=backing._AUTHORIZATION_SEAL,
+        staged_tree_sha256=review_stage.review_tree_manifest_sha256(repo),
+    )
+
+    status, detail = panel_invoker._default_spawn(
+        "gemini", "REVIEW BUNDLE BODY", repo_dir=repo,
+        review_authorization=auth, canonical_repo_authority=repo,
+    )
+
+    assert launched == [], (
+        "the leg ran on a host that cannot enforce the policy -- this is the fail-open "
+        "that survived four board rounds"
+    )
+    # `_default_spawn`'s fail-closed handler turns the refusal into a DEGRADED seat rather
+    # than propagating: the round reports a seat it could not safely fill, which is what
+    # the operator needs to see. What matters is that NOTHING ran, and that the reason is
+    # legible rather than an anonymous failure.
+    assert status == "DEGRADED"
+    assert "network restriction" in detail, f"the operator cannot act on {detail!r}"
+
+
+def test_the_opt_out_lets_that_same_host_proceed(tmp_path, monkeypatch):
+    """The falsifier for the test above: refusal must come from the POSTURE, not a
+    fixture that was broken anyway."""
+    import subprocess
+    from phase_loop_runtime import panel_invoker, review_stage, sandbox_egress
+    from phase_loop_runtime.advisor_board import backing
+
+    repo = tmp_path / "reviewed-repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.email", "t@e.st"], check=True)
+    subprocess.run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+    (repo / "SOURCE.py").write_text("value = 41\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "commit.gpgsign=false", "commit", "-qm", "c"],
+        check=True,
+    )
+
+    launched: list[str] = []
+    monkeypatch.setattr(
+        panel_invoker, "_exec_leg",
+        lambda *a, **k: launched.append("leg") or (0, "ok", "log"),
+    )
+    monkeypatch.setenv("PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL", "1")
+    monkeypatch.setattr(sandbox_egress, "egress_isolation_available", lambda: False)
+
+    auth = backing.ReviewIsolationAuthorization(
+        operation="public_board_review.v1", purpose="t", input_sha256="0" * 64,
+        instructions_sha256="1" * 64, broker_contract=backing.PARENT_UNIX_BROKER_V1,
+        routes=(), readonly_tools=("Read",), child_credentialless=True,
+        child_network_egress=False, live_tree_exposed=False, api_fallback=False,
+        canonical_repo_sha256="2" * 64, issued_monotonic_ns=0,
+        _seal=backing._AUTHORIZATION_SEAL,
+        staged_tree_sha256=review_stage.review_tree_manifest_sha256(repo),
+    )
+
+    with pytest.warns(RuntimeWarning, match="refusing to launch WITHOUT"):
+        panel_invoker._default_spawn(
+            "gemini", "REVIEW BUNDLE BODY", repo_dir=repo,
+            review_authorization=auth, canonical_repo_authority=repo,
+        )
+
+    assert launched == ["leg"], "the opt-out must let an unfilterable host still review"
