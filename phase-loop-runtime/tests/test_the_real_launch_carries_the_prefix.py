@@ -39,13 +39,24 @@ from phase_loop_runtime import panel_invoker
 
 
 def _marker_prefix(marker: Path) -> tuple[str, ...]:
-    """A prefix that RUNS: it writes `marker`, then execs whatever follows it.
+    """A prefix that RUNS: it writes `marker` with its own PID, then execs what follows.
 
     Chosen over a recording shim deliberately. Anything that merely records an argv is
     another proxy -- it proves what was passed to a function, not what a kernel executed.
     The marker exists only if this wrapper actually ran in front of the real command.
+
+    The PID binds the two observations into one process: `exec` keeps the PID, so a payload
+    that reports the same PID ran IN the prefixed process. A launch that prefixed some
+    auxiliary command and started the provider separately would produce a marker and a
+    payload with different PIDs (board PR #904 round 1, codex).
     """
-    return ("/bin/sh", "-c", f'echo FIRED > {marker}; exec "$@"', "--")
+    return ("/bin/sh", "-c", f'echo FIRED $$ > {marker}; exec "$@"', "--")
+
+
+def _marker_pid(marker: Path) -> str:
+    fired, pid = marker.read_text(encoding="utf-8").split()
+    assert fired == "FIRED"
+    return pid
 
 
 class TestTheCLILegLaunch:
@@ -54,7 +65,7 @@ class TestTheCLILegLaunch:
         token = panel_invoker._EGRESS_LAUNCH_PREFIX.set(_marker_prefix(marker))
         try:
             run = panel_invoker._run_leg_with_liveness(
-                ["/bin/echo", "provider-output"],
+                ["/bin/sh", "-c", "echo provider-output pid=$$"],
                 cwd=tmp_path, env=dict(os.environ), deadline_s=60.0,
             )
         finally:
@@ -64,12 +75,15 @@ class TestTheCLILegLaunch:
             "the egress prefix did NOT execute in front of the provider; the launch "
             "reached the kernel without it, whatever the source says"
         )
-        assert marker.read_text(encoding="utf-8").strip() == "FIRED"
         assert run.returncode == 0
         stdout = run.stdout if isinstance(run.stdout, str) else run.stdout.decode()
         assert "provider-output" in stdout, (
             "the prefix ran but the real command did not; a wrapper that swallows its "
             "payload would pass the marker check while breaking every seat"
+        )
+        assert f"pid={_marker_pid(marker)}" in stdout, (
+            "the prefix and the provider ran in DIFFERENT processes: something prefixed "
+            "an auxiliary command and launched the provider separately"
         )
 
     def test_no_prefix_means_no_marker(self, tmp_path):
@@ -101,6 +115,7 @@ class TestTheHelpersThemselves:
         finally:
             panel_invoker._EGRESS_LAUNCH_PREFIX.reset(token)
         assert marker.exists(), "launch_provider did not execute the prefix"
+        assert _marker_pid(marker).isdigit()
         assert out.strip() == "hi"
 
     def test_run_provider_executes_the_prefix(self, tmp_path):
@@ -114,6 +129,7 @@ class TestTheHelpersThemselves:
         finally:
             panel_invoker._EGRESS_LAUNCH_PREFIX.reset(token)
         assert marker.exists(), "run_provider did not execute the prefix"
+        assert _marker_pid(marker).isdigit()
         assert done.stdout.strip() == "hi"
 
 
@@ -131,7 +147,7 @@ class TestTheTUILaunch:
     def _provider(output_file: Path) -> list[str]:
         return [
             "/bin/sh", "-c",
-            f"printf 'Reviewed.\\n\\nAGREE\\n' > {output_file}; exit 0",
+            f"printf 'Reviewed. pid=%s\\n\\nAGREE\\n' $$ > {output_file}; exit 0",
         ]
 
     def test_the_prefix_actually_executes_in_front_of_the_tui_provider(self, tmp_path):
@@ -155,11 +171,13 @@ class TestTheTUILaunch:
             "the egress prefix did NOT execute in front of the TUI provider; the PTY "
             f"launch reached the kernel without it (status={status!r} tail={tail!r})"
         )
-        assert marker.read_text(encoding="utf-8").strip() == "FIRED"
         assert status == "claude_tui_file_output", (status, tail)
         assert "AGREE" in text, (
             "the prefix ran but the real provider did not write its verdict; a wrapper "
             "that swallows its payload would pass the marker check while breaking the seat"
+        )
+        assert f"pid={_marker_pid(marker)}" in text, (
+            "the prefix and the TUI provider ran in DIFFERENT processes"
         )
 
     def test_no_prefix_means_no_marker_on_the_tui_seam(self, tmp_path):
@@ -194,7 +212,7 @@ class TestTheAgentViewLaunch:
 
     class _Adapter:
         def launch_command(self, _prompt, **_kwargs):
-            return ["/bin/sh", "-c", "echo agent-view-payload; exit 3"]
+            return ["/bin/sh", "-c", "echo agent-view-payload pid=$$; exit 3"]
 
     def test_the_prefix_actually_executes_in_front_of_the_agent_view_launch(self, tmp_path):
         marker = tmp_path / "AGENT_VIEW_PREFIX_RAN"
@@ -211,10 +229,12 @@ class TestTheAgentViewLaunch:
             "the egress prefix did NOT execute in front of the agent-view launch "
             f"(status={status!r} log={log!r})"
         )
-        assert marker.read_text(encoding="utf-8").strip() == "FIRED"
         assert "agent-view-payload" in log, (
             "the prefix ran but the real launch did not; a wrapper that swallows its "
             "payload would pass the marker check"
+        )
+        assert f"pid={_marker_pid(marker)}" in log, (
+            "the prefix and the agent-view launch ran in DIFFERENT processes"
         )
         assert status != "OK"
 
@@ -230,16 +250,18 @@ class TestTheAgentViewLaunch:
 
 
 def test_every_launch_site_has_a_marker_proof_above():
-    """Bind the three seams by NAME so a fourth launch site cannot appear un-proven.
+    """A TRIPWIRE, not a proof: the count of conventionally spelled launch-interface call
+    sites in `panel_invoker` must equal the number of seams the marker proofs above drive.
 
-    This is the one SOURCE-level assertion kept, and it is narrow on purpose: it counts the
-    call sites of the launch interface in `panel_invoker` and requires that count to equal
-    the number of seams driven by the marker proofs in this file. It does not try to prove
-    "nothing else spawns" -- the AST walker that tried (`test_launch_seam_coverage.py`,
-    agent-harness#890 rounds 7-11) was a Python-only self-scanner that the board defeated
-    five times, and it was removed in favour of observing the launches that exist. A new
-    `launch_provider(`/`run_provider(` call site fails this test until it gets a marker
-    proof; a raw `subprocess` launch is a review finding, not a walker finding.
+    It is spelling-sensitive by construction. `launch = launch_provider; launch(cmd)`, a
+    call with a space before the paren, or a call placed in another module all evade it,
+    and it associates no site with any function -- it is a cardinality, nothing more. It
+    exists so that the ORDINARY way of adding a fourth seam trips a test that says "add a
+    marker proof", and for no stronger reason. It does not try to prove "nothing else
+    spawns" -- the AST walker that tried (`test_launch_seam_coverage.py`, agent-harness#890
+    rounds 7-11) was a Python-only self-scanner the board defeated five times on spelling,
+    and it was removed in favour of observing the launches that exist. A raw `subprocess`
+    launch of a provider is a review finding, not a test finding.
     """
     import inspect
     import re

@@ -1862,10 +1862,12 @@ def launch_provider(argv, **kwargs) -> "subprocess.Popen[bytes]":
     because the invariant "every provider launch is prefixed" cannot be established by
     pattern-matching call sites. It CAN be established by having one call site.
 
-    So the rule the walker enforces is no longer "every spawn mentions the prefix". It is
-    "the leg-path modules contain no provider spawn except this function's". A new launch
-    that forgets the prefix is not a spelling the walker has to recognise; it is an
-    undeclared spawn, which fails whatever it is called and however it is bound.
+    So the rule is no longer "every spawn mentions the prefix". It is "a provider is
+    launched here and nowhere else". Each call site of this interface is proven by
+    observation in `test_the_real_launch_carries_the_prefix.py` -- a marker prefix that
+    executes in front of the real launch -- rather than by a source scanner; the AST walker
+    that read call sites was defeated on spelling five times and removed. A raw spawn of a
+    provider added elsewhere is a review finding.
     """
     return subprocess.Popen([*_EGRESS_LAUNCH_PREFIX.get(), *argv], **kwargs)
 
