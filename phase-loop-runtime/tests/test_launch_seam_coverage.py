@@ -90,74 +90,70 @@ THE_LAUNCH_INTERFACE: dict[tuple[str, str], str] = {
         "the only subprocess.run that may start a review provider",
 }
 
-PARENT_SIDE_ALLOWLIST: dict[tuple[str, str], str] = {
-    # KEYED BY (module, argv). Keying on the argv expression ALONE exempted the same
-    # spelling everywhere: the entry below for backing.py's bwrap probe is the bare name
-    # `argv`, so board round 8 pointed out that ANY `subprocess.Popen(argv)` in any scanned
-    # module inherited the exemption --
+PARENT_SIDE_ALLOWLIST: dict[tuple[str, str, str], str] = {
+    # KEYED BY (module, TOP-LEVEL enclosing def, argv). Board round 10, the fourth bypass:
+    # the table was still keyed by argv SOURCE TEXT, so any of its spellings exempted a
+    # brand-new unprefixed provider launch. Executed --
     #
-    #     def launch_provider(command):
-    #         argv = list(command)
-    #         return subprocess.Popen(argv)
+    #     class _AdapterArgv:
+    #         def list_command(self): return self._command
+    #     def _exec_leg_agent_view(command, cwd, env):
+    #         return subprocess.Popen(_AdapterArgv(command).list_command(), ...)
     #
-    # -- confirmed by execution: seen by the walker, accepted by the assertion. An
-    # exemption has to name the call site it excuses, not a string that might occur
-    # anywhere.
-    # Board round 9, codex: a bare-name exemption is a name anyone can reuse --
+    # -- 61 tests green with a live unprefixed seam. `THE_LAUNCH_INTERFACE` was given site
+    # identity in round 9; this table is the other half of the same assertion and was not.
+    # Round 8 narrowed a name across modules, round 9 narrowed `probe` within one: each
+    # remedy applied to the INSTANCE. The owner is what makes an exemption name the site
+    # it excuses.
     #
-    #     def launch_provider(argv, **kwargs):
-    #         _EGRESS_LAUNCH_PREFIX.get()      # satisfies the grep
-    #         probe = list(argv)               # inherits this exemption
-    #         return subprocess.Popen(probe, **kwargs)
-    #
-    # That replacement passed all 53 launch-seam tests with filtering removed from BOTH
-    # Popen paths. (It was still caught -- by the end-to-end broker test -- so the branch
-    # never shipped an unfiltered launch. But the guard that CLAIMS the invariant did not
-    # hold it, which is the finding.) Only the auth probe may spell its argv `probe`.
-    ("panel_invoker.py", "probe"): (
-        "capability probe for the harness itself; see test_the_probe_exemption_is_narrow"
-    ),
-    ("panel_invoker.py", "['claude', 'auth', 'status', '--json']"):
-        "parent checks ITS OWN credentials",
-    ("panel_invoker.py", "[claude_bin, '--version']"):
-        "parent reads the installed CLI version",
-    ("panel_invoker.py", "adapter.list_command()"): "parent enumerates sessions it owns",
-    ("panel_invoker.py", "adapter.stop_command(session_id)"):
-        "parent tears down a session it started",
-    ("panel_invoker.py", "adapter.logs_command(session_id)"):
+    # argv remains in the key as a TIEBREAKER, not as the identity -- four namespace
+    # spawns share `isolated_network`, so (module, owner) alone cannot separate them.
+    ('backing.py', '__init__', "['git', '-C', str(self.canonical_repo), 'ls-files', '-z']"):
+        'parent digests the canonical repo to bind the authorization',
+    ('backing.py', '_canonical_repo_digest', "['git', '-C', str(candidate), 'rev-parse', '--show-toplevel']"):
+        'parent resolves the repo root',
+    ('backing.py', '_staged_tree_digest', "['git', '-C', str(candidate), 'rev-parse', '--show-toplevel']"):
+        'parent resolves the repo root',
+    ('backing.py', 'run_credentialless_client', 'argv'):
+        'the bwrap posture-probe child, launched --unshare-all so it has NO network; an egress prefix would be redundant and would fight bwrap',
+    ('panel_invoker.py', '_canonical_review_repo_authority', "['git', '-C', str(candidate), 'rev-parse', '--show-toplevel']"):
+        'parent resolves the repo root',
+    ('panel_invoker.py', '_claude_code_support_status', "[claude_bin, '--version']"):
+        'parent reads the installed CLI version',
+    ('panel_invoker.py', '_claude_subscription_auth_ok', "['claude', 'auth', 'status', '--json']"):
+        'parent checks ITS OWN credentials',
+    ('panel_invoker.py', '_cleanup_claude_launch_timeout', 'adapter.list_command()'):
+        'parent enumerates sessions it owns',
+    ('panel_invoker.py', '_exec_claude_agent_view_attempt', 'adapter.list_command()'):
+        'parent enumerates sessions it owns',
+    ('panel_invoker.py', '_exec_claude_agent_view_attempt', 'adapter.logs_command(session_id)'):
         "parent reads back a session's log",
-    ("panel_invoker.py", "['git', '-C', str(tree), 'cat-file', '-e', f'{commit}^{{commit}}']"):
-        "parent verifies a commit in the REVIEWED repo, not the sandbox",
-    ("panel_invoker.py", "['git', '-C', str(candidate), 'rev-parse', '--show-toplevel']"):
-        "parent resolves the repo root",
-    ("backing.py", "['git', '-C', str(candidate), 'rev-parse', '--show-toplevel']"):
-        "parent resolves the repo root",
-    ("backing.py", "argv"):
-        "the bwrap posture-probe child, launched --unshare-all so it has NO network; an "
-        "egress prefix would be redundant and would fight bwrap",
-    ("backing.py", "['git', '-C', str(self.canonical_repo), 'ls-files', '-z']"):
-        "parent digests the canonical repo to bind the authorization",
-    ("review_stage.py", "['git', '-C', str(repo), 'ls-files', '-z']"):
-        "parent enumerates tracked files to stage",
-    ("review_stage.py", "['git', '-C', str(repo), 'ls-files', '-z', '--others', '--exclude-standard']"):
-        "parent enumerates untracked-but-not-ignored files to stage",
-    ("review_stage.py", "['git', '-C', str(repo), *args]"):
-        "parent runs git against the REVIEWED repo",
-    ("review_stage.py", "['git', 'clone', '--quiet', '--depth', str(CLONE_DEPTH), '--no-single-branch', f'file://{root}', str(staged)]"):
-        "parent creates the sandbox clone; it IS the staging step",
-    ("review_stage.py", "['git', '-C', str(staged), 'checkout', '--quiet', '--detach', head]"):
-        "parent pins the fresh clone to the reviewed commit",
-    ("sandbox_egress.py", "['unshare', '--net', '--mount', '--map-root-user', 'bash', '-c', f'mount --bind {resolv} /etc/resolv.conf || exit 9; echo $$ > {pidfile}; touch {ready}; sleep {timeout_s}']"):
-        "the namespace HOLDER -- it creates the confinement, so it cannot be inside it",
-    ("sandbox_egress.py", "[*prefix, 'getent', 'hosts', 'github.com']"):
-        "the capability probe that verifies DNS works INSIDE the namespace before the "
-        "prefix is yielded; it already carries the prefix by construction",
-    ("sandbox_egress.py", "['slirp4netns', '--configure', '--mtu=65520', '--disable-host-loopback', nspid, 'tap0']"):
-        "the uplink for that namespace, run from OUTSIDE it by definition",
-    ("sandbox_egress.py", "[*admin, 'bash', '-c', 'set -e\\nip link set lo up 2>/dev/null || true\\n' + rules]"):
-        "installs the policy INSIDE the namespace; already carries the nsenter prefix",
-    ("sandbox_egress.py", "['unshare', '--net', '--map-root-user', 'true']"):
-        "capability probe: can this host make a namespace at all",
+    ('panel_invoker.py', '_leg_auth_ok', 'probe'):
+        'capability probe for the harness itself; see test_the_probe_exemption_is_narrow',
+    ('panel_invoker.py', '_require_staged_tree', "['git', '-C', str(tree), 'cat-file', '-e', f'{commit}^{{commit}}']"):
+        'parent verifies a commit in the REVIEWED repo, not the sandbox',
+    ('panel_invoker.py', '_stop_claude_agent', 'adapter.stop_command(session_id)'):
+        'parent tears down a session it started',
+    ('review_stage.py', '_git', "['git', '-C', str(repo), *args]"):
+        'parent runs git against the REVIEWED repo',
+    ('review_stage.py', 'review_tree_paths', "['git', '-C', str(repo), 'ls-files', '-z', '--others', '--exclude-standard']"):
+        'parent enumerates untracked-but-not-ignored files to stage',
+    ('review_stage.py', 'review_tree_paths', "['git', '-C', str(repo), 'ls-files', '-z']"):
+        'parent enumerates tracked files to stage',
+    ('review_stage.py', 'stage_review_tree', "['git', '-C', str(staged), 'checkout', '--quiet', '--detach', head]"):
+        'parent pins the fresh clone to the reviewed commit',
+    ('review_stage.py', 'stage_review_tree', "['git', 'clone', '--quiet', '--depth', str(CLONE_DEPTH), '--no-single-branch', f'file://{root}', str(staged)]"):
+        'parent creates the sandbox clone; it IS the staging step',
+    ('sandbox_egress.py', 'egress_isolation_available', "['unshare', '--net', '--map-root-user', 'true']"):
+        'capability probe: can this host make a namespace at all',
+    ('sandbox_egress.py', 'isolated_network', "['slirp4netns', '--configure', '--mtu=65520', '--disable-host-loopback', nspid, 'tap0']"):
+        'the uplink for that namespace, run from OUTSIDE it by definition',
+    ('sandbox_egress.py', 'isolated_network', "['unshare', '--net', '--mount', '--map-root-user', 'bash', '-c', f'mount --bind {resolv} /etc/resolv.conf || exit 9; echo $$ > {pidfile}; touch {ready}; sleep {timeout_s}']"):
+        'the namespace HOLDER -- it creates the confinement, so it cannot be inside it',
+    ('sandbox_egress.py', 'isolated_network', "[*admin, 'bash', '-c', 'set -e\\nip link set lo up 2>/dev/null || true\\n' + rules]"):
+        'installs the policy INSIDE the namespace; already carries the nsenter prefix',
+    ('sandbox_egress.py', 'isolated_network', "[*prefix, 'getent', 'hosts', 'github.com']"):
+        'the capability probe that verifies DNS works INSIDE the namespace before the prefix is yielded; it already carries the prefix by construction',
 }
 
 
@@ -436,7 +432,7 @@ def test_every_provider_launch_carries_the_egress_prefix():
     undeclared = [
         (module, lineno, func, argv)
         for module, lineno, func, argv, owner in _spawn_sites()
-        if (module, argv) not in PARENT_SIDE_ALLOWLIST
+        if (module, owner, argv) not in PARENT_SIDE_ALLOWLIST
         and func not in NOT_A_PROCESS_LAUNCH
         and (module, owner) not in THE_LAUNCH_INTERFACE
     ]
@@ -540,7 +536,8 @@ def test_all_three_seats_start_through_the_interface():
 
 def test_the_allowlist_does_not_rot():
     """An entry that no longer matches any spawn is a stale exemption -- delete it."""
-    live = {(module, argv) for module, _lineno, _func, argv, _owner in _spawn_sites()}
+    live = {(module, owner, argv)
+            for module, _lineno, _func, argv, owner in _spawn_sites()}
     stale = sorted(set(PARENT_SIDE_ALLOWLIST) - live)
     assert not stale, f"these allowlist entries match no spawn any more: {stale}"
 
@@ -560,7 +557,8 @@ def test_the_walker_actually_fails_on_an_unwired_spawn(tmp_path, monkeypatch):
     sites = _spawn_sites()
     assert sites, "the fixture must present a spawn"
     assert all(PREFIX_EXPR not in argv for _m, _l, _f, argv, _o in sites)
-    assert all((m, argv) not in PARENT_SIDE_ALLOWLIST for m, _l, _f, argv, _o in sites), (
+    assert all((m, o, argv) not in PARENT_SIDE_ALLOWLIST
+               for m, _l, _f, argv, o in sites), (
         "the fixture's spawn must be caught, not exempted"
     )
     with pytest.raises(AssertionError, match="neither the launch interface nor declared"):

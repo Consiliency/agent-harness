@@ -364,11 +364,23 @@ def isolated_network(
             # returned 0 or that slirp is running; it resolves a NAME inside the namespace
             # the seat will actually use. A working step is a proxy; a resolved name is the
             # capability.
-            probe = subprocess.run(
-                [*prefix, "getent", "hosts", "github.com"],
-                capture_output=True, timeout=30,
-            )
-            if probe.returncode != 0:
+            # Retried once, and the TIMEOUT caught. Board round 10: this tested only
+            # `returncode != 0`, so `subprocess.TimeoutExpired` propagated past every
+            # `_degrade` path and surfaced as an unhandled exception instead of a DEGRADED
+            # leg -- a slow resolver escaped the channel built to report exactly this.
+            # One name and one attempt also made a transient blip take down a whole round.
+            resolved = False
+            for _attempt in range(2):
+                try:
+                    if subprocess.run(
+                        [*prefix, "getent", "hosts", "github.com"],
+                        capture_output=True, timeout=30,
+                    ).returncode == 0:
+                        resolved = True
+                        break
+                except subprocess.TimeoutExpired:
+                    continue
+            if not resolved:
                 yield _degrade(
                     "the namespace came up but cannot resolve a hostname; a seat here "
                     "could reach raw IPs and nothing else (round-6 failure mode)"
