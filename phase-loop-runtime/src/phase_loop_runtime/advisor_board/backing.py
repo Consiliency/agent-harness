@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable, Mapping
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from dataclasses import dataclass
 from hashlib import sha256
 import json
@@ -42,6 +42,7 @@ import tempfile
 import threading
 import time
 import struct
+import warnings
 import weakref
 
 from .fixtures import DEFAULT_SEATS
@@ -349,6 +350,33 @@ def _send_frame(sock: socket.socket, payload: bytes) -> None:
     sock.sendall(struct.pack("!I", len(payload)) + payload)
 
 
+def start_context_carrying_thread(
+    target: "Callable[[], None]", *, daemon: bool
+) -> threading.Thread:
+    """Start a thread that INHERITS the caller's context, and return it.
+
+    This exists as a named function so the property can be tested by EXECUTION. The
+    previous guard asserted that the literal ``copy_context()`` appeared on the line that
+    built the thread, and a reviewer defeated it in one line while fully restoring the
+    defect::
+
+        threading.Thread(target=(lambda _ctx=copy_context(): serve()), ...)
+
+    ``copy_context()`` is present, its result is discarded, the serve thread gets a fresh
+    context, and all four tests passed. That is the same instrument class this branch has
+    now been caught by twice: a source-text check proves a mechanism is MENTIONED, never
+    that it WORKS. A helper you can call is the difference.
+
+    Why it matters here: ``serve`` launches the provider, and every ContextVar the parent
+    set -- ``_EGRESS_LAUNCH_PREFIX`` above all -- reads back as its default on a plain
+    thread, so the seat launches outside its network namespace while the parent records
+    that it was filtered (agent-harness#890 board rounds 5 and 6).
+    """
+    thread = threading.Thread(target=copy_context().run, args=(target,), daemon=daemon)
+    thread.start()
+    return thread
+
+
 class ParentUnixBroker:
     """One-request parent-owned AF_UNIX broker; child selects no provider action."""
     def __init__(
@@ -560,7 +588,9 @@ class ParentUnixBroker:
                     adapter, expected_pid=child[0][0].pid, expected_start=child[0][1]
                 )
             except BaseException as exc: error.append(exc)
-        thread=threading.Thread(target=serve, daemon=False); thread.start()
+        # `serve` launches the provider; a plain thread would start with a FRESH
+        # context and lose the egress prefix. See `start_context_carrying_thread`.
+        thread = start_context_carrying_thread(serve, daemon=False)
         proc=subprocess.Popen(argv,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,env={"PATH":"/usr/bin","PYTHONNOUSERSITE":"1","PYTHONDONTWRITEBYTECODE":"1"},close_fds=True,start_new_session=True)
         _ppid, start = self._proc_stat(proc.pid)
         child.append((proc, start)); child_ready.set()
@@ -634,10 +664,16 @@ class ParentUnixBroker:
 class ReviewIsolationAuthorization:
     """Unforgeable-in-normal-use capability for one brokered review operation.
 
-    It deliberately contains only metadata and an input digest: no child
+    It deliberately contains only metadata and input digests: no child
     credentials, provider method, host command, live-tree path, or mutable
     cleanup handle can cross this boundary.  ``_seal`` is identity-checked by
     this module and is never serialized or accepted from external JSON.
+
+    ``live_tree_exposed`` means the LIVE working tree is neither reachable nor
+    mutable from the sandbox. It does NOT mean the reviewed contents are withheld:
+    an attested read-only COPY may cross, bound by ``staged_tree_sha256``. The
+    distinction is deliberate, because the older reading of this field ("the seat
+    cannot see repo contents") is no longer what it guarantees (agent-harness#890).
     """
 
     operation: str
@@ -654,6 +690,52 @@ class ReviewIsolationAuthorization:
     canonical_repo_sha256: str
     issued_monotonic_ns: int
     _seal: object
+    # Digest of the reviewed TREE a seat is allowed to read, or None when no tree
+    # is staged (the historical shape, byte-for-byte). `canonical_repo_sha256`
+    # binds repository IDENTITY and cannot stand in for this: it does not move when
+    # the reviewed bytes change. Without this field a tree placed in the staged dir
+    # would be unattested -- nothing would record which bytes the seat actually
+    # read -- so a tree swapped between authorization and launch would be reviewed
+    # silently. Bound here, that swap fails closed (agent-harness#848).
+    staged_tree_sha256: str | None = None
+
+
+def _staged_tree_digest(canonical_repo_authority: Path | str | None) -> str | None:
+    """Digest of the reviewed tree a seat will be allowed to read.
+
+    Imported lazily and locally: ``review_stage`` sits below this package so that
+    ``launcher`` (which imports ``advisor_board``) can share it without a cycle.
+    Returns ``None`` when the tree cannot be read, so the caller mints an
+    authorization that permits NO staged tree rather than one asserting a digest
+    it could not compute.
+    """
+    from ..review_stage import review_tree_manifest_sha256
+
+    # Normalize to the SAME git toplevel `_canonical_review_repo_authority` resolves
+    # at spawn. Digesting an unnormalized path would bind a different tree than the
+    # one actually staged, and the mismatch would only surface as a refusal at launch.
+    candidate = Path(canonical_repo_authority) if canonical_repo_authority is not None else Path.cwd()
+    try:
+        root = subprocess.check_output(
+            ["git", "-C", str(candidate), "rev-parse", "--show-toplevel"],
+            text=True, stderr=subprocess.DEVNULL, timeout=3,
+        ).strip()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if not root:
+        return None
+    try:
+        return review_tree_manifest_sha256(Path(root).resolve())
+    except (OSError, ValueError) as exc:
+        # Fail closed, but never silently: the caller asked for a staged tree and is
+        # about to get an authorization that permits none. The revalidation mirror of
+        # this raises; the mint side would otherwise drop the opt-in with no signal.
+        warnings.warn(
+            f"review staging requested but the reviewed tree could not be digested"
+            f" ({type(exc).__name__}); authorizing NO staged tree",
+            RuntimeWarning, stacklevel=2,
+        )
+        return None
 
 
 def _canonical_repo_digest(canonical_repo_authority: Path | str | None) -> str:
@@ -728,6 +810,7 @@ def prepare_review_isolation_authorization(
     *,
     mode: str,
     canonical_repo_authority: Path | str | None = None,
+    stage_review_tree: bool | None = None,
 ) -> ReviewIsolationAuthorization:
     """Authorize a review before composition or any provider/session effect.
 
@@ -757,6 +840,15 @@ def prepare_review_isolation_authorization(
                 raise
     canonical_repo_sha256 = _canonical_repo_digest(canonical_repo_authority)
     instructions_sha256 = _REVIEW_INSTRUCTIONS_SHA256.get()
+    # ``None`` means "ask the policy", which is what every production caller passes.
+    # This defaulted to a bare ``False`` with no caller anywhere overriding it, so the
+    # whole sandbox was built, tested, and UNREACHABLE: no seat could ever be granted
+    # one short of editing this line. An explicit False still disables it.
+    if stage_review_tree is None:
+        from ..sandbox_policy import sandbox_enabled
+
+        stage_review_tree = sandbox_enabled()
+    staged_tree_sha256 = _staged_tree_digest(canonical_repo_authority) if stage_review_tree else None
     issued = time.monotonic_ns()
     authorization = ReviewIsolationAuthorization(
         operation="public_board_review.v1", purpose=str(getattr(board, "purpose", "")),
@@ -768,6 +860,7 @@ def prepare_review_isolation_authorization(
         canonical_repo_sha256=canonical_repo_sha256,
         issued_monotonic_ns=issued,
         _seal=_AUTHORIZATION_SEAL,
+        staged_tree_sha256=staged_tree_sha256,
     )
     _remember_lease(authorization)
     return authorization
@@ -811,6 +904,38 @@ def _expected_review_fields(
         "api_fallback": False,
         "canonical_repo_sha256": _canonical_repo_digest(canonical_repo_authority),
     }
+
+
+def _revalidate_staged_tree(
+    authorization: ReviewIsolationAuthorization, staged_dir: Path,
+) -> None:
+    """Bind the tree the seat can read to the tree the authorization approved.
+
+    Fails closed in both directions:
+
+    * an authorization that permits no tree, but a tree is present in the staged
+      dir -- an unattested tree must never be reviewable; and
+    * an authorization that names a tree whose staged bytes do not hash to the
+      approved digest -- the swap this field exists to catch.
+    """
+    from ..review_stage import REVIEW_STAGE_TREE_DIRNAME, review_tree_manifest_sha256
+
+    tree = staged_dir / REVIEW_STAGE_TREE_DIRNAME
+    approved = authorization.staged_tree_sha256
+    if approved is None:
+        if tree.exists():
+            raise ValueError(
+                "HARDEN review staged tree present without authorization"
+            )
+        return
+    if not tree.is_dir():
+        raise ValueError("HARDEN review staged tree is missing")
+    try:
+        observed = review_tree_manifest_sha256(tree)
+    except (OSError, ValueError) as exc:
+        raise ValueError("HARDEN review staged tree is unreadable") from exc
+    if observed != approved:
+        raise ValueError("HARDEN review staged tree does not match authorization")
 
 
 def revalidate_review_isolation_authorization(
@@ -867,6 +992,7 @@ def revalidate_review_isolation_authorization(
             or sha256(instructions.read_bytes()).hexdigest() != authorization.instructions_sha256
         ):
             raise ValueError("HARDEN review staged input does not match authorization")
+        _revalidate_staged_tree(authorization, staged_dir)
         if bundle.stat().st_mode & 0o222 or instructions.stat().st_mode & 0o222:
             raise ValueError("HARDEN review staged input is writable")
 

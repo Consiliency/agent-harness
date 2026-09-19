@@ -1752,10 +1752,19 @@ def test_default_spawn_preserves_fatal_quiescence_authority(monkeypatch, tmp_pat
         raise OSError("ordinary provider failure")
 
     monkeypatch.setattr(pi, "_exec_leg", ordinary_failure)
-    assert pi._default_spawn("codex", "review", repo_dir=tmp_path) == (
-        "DEGRADED",
-        "ordinary provider failure",
-    )
+    # The reason now travels in `detail`, NOT in `text`. `_findings_from_panel` keys
+    # BLOCK-vs-WARN on non-empty `text` for an unusable leg, so a diagnostic there turned
+    # every operational failure -- a full disk, a dead provider -- into
+    # `panel_nonconforming`, a promotion BLOCK, while the identical fault raised one call
+    # site away went to `detail` and was a non-gating WARN (board round 8).
+    #
+    # Asserting the three fields separately rather than the tuple shape pins the property
+    # that matters instead of the arity: the fault is still reported, and it is reported
+    # in the field that does not change the verdict.
+    status, text, detail = pi._default_spawn("codex", "review", repo_dir=tmp_path)
+    assert status == "DEGRADED"
+    assert text == "", "a diagnostic in `text` misclassifies the leg as nonconforming"
+    assert detail == "ordinary provider failure"
 
 
 @pytest.mark.parametrize("mutation_kind", ["ledger", "output"])

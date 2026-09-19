@@ -1,0 +1,393 @@
+"""Enforce the sandbox egress policy: public internet yes, private network no.
+
+A panelist needs the internet -- to search, read documentation, and install what a check
+requires -- so blanket denial is the wrong boundary. What must stay unreachable is
+everything *inside*: the rest of the tailnet, loopback services (the review broker among
+them), the docker bridges, and cloud metadata.
+
+**Enforcement is real, and unprivileged.** Inside a user namespace we hold ``NET_ADMIN``
+for that namespace, so ``iptables`` rules there are binding. ``slirp4netns`` supplies the
+uplink in userspace. Nothing needs root, a sudoers entry, or a container runtime, which
+also means it behaves the same for any operator rather than depending on how a host was
+set up.
+
+The alternative -- exporting ``HTTP_PROXY`` and filtering at a proxy -- was rejected. It is
+honoured only by programs that choose to honour it: a raw socket, or a tool that ignores
+the variables, walks straight past. That is a speed bump, and recording it as "network
+filtered" would be a fail-open in the evidence record.
+
+**WHAT THIS DOES NOT DO.** It is a network boundary, not a filesystem one. A seat can read
+the operator's on-disk credentials -- board round 7 read `~/.ssh/id_*` from inside a live
+sandbox -- and the public internet is deliberately open, so nothing here prevents
+exfiltration of anything the seat can read. Calling ``169.254.169.254`` a "credential-theft
+target" invited exactly the wrong inference: blocking the metadata vector is not blocking
+credential theft.
+
+That is a disclosed consequence of the trust model, not a hole: a panelist is trusted like
+the agent that writes the code, and that agent already reads the disk. But
+``network_filtered: true`` must never be read as "this seat could not exfiltrate". It means
+the private network -- the tailnet, loopback services, the docker bridges, cloud metadata --
+was unreachable. Filesystem confinement would need a mount-namespace jail, which this is
+not (agent-harness#895).
+
+Measured on this host before it was built:
+
+===================  ==========  ========================================
+target               result      note
+===================  ==========  ========================================
+``github.com``       ``200``     resolved BY NAME, then fetched
+``1.1.1.1``          ``301``     public internet by raw IP
+``ai:8020``          ``200``     inference router, allowlisted host+port
+``ai:6333``          BLOCKED     qdrant, ~69 GB of user data, same machine
+``169.254.169.254``  BLOCKED     cloud metadata endpoint
+===================  ==========  ========================================
+
+The first row is the one that matters, and it was missing for six board rounds. This
+table used to measure ``1.1.1.1`` alone -- a bare IP -- so it reported a reachable
+internet while NO name resolved inside the namespace: the host's resolver is the
+systemd stub at ``127.0.0.53``, which ``127.0.0.0/8`` correctly denies. A reviewer
+could reach raw addresses and nothing else, which is not the capability this policy
+claims. Measure the capability, not the mechanism.
+"""
+
+from __future__ import annotations
+
+import contextlib
+
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import tempfile
+import warnings
+import time
+
+from .sandbox_policy import EgressPolicy, egress_allowlist
+
+__all__ = [
+    "EgressUnavailable",
+    "SLIRP_UPLINK_CIDR",
+    "PRIVATE_CIDRS",
+    "egress_rules",
+    "egress_isolation_available",
+    "egress_required",
+    "enforcement_report",
+    "require_egress_isolation",
+    "isolated_network",
+]
+
+# slirp4netns puts the uplink here. It sits INSIDE 10/8, so denying 10/8 without
+# re-allowing this first kills every connection including the ones we mean to permit.
+SLIRP_UPLINK_CIDR = "10.0.2.0/24"
+
+PRIVATE_CIDRS: tuple[str, ...] = (
+    "10.0.0.0/8",        # RFC1918 + the docker bridges
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "100.64.0.0/10",     # CGNAT: the tailnet. Neither "private" nor "global" to Python.
+    "169.254.0.0/16",    # link-local, and cloud metadata at .169.254
+    "127.0.0.0/8",       # loopback services, including the review broker socket
+)
+
+
+class EgressUnavailable(RuntimeError):
+    """Egress isolation was required and could not be enforced."""
+
+
+def egress_required() -> bool:
+    """Isolation is REQUIRED by default; refusing is the policy, degrading is not.
+
+    The plan states it directly: "Policy default is to REFUSE when a required property
+    cannot be enforced, never to degrade silently." Four board rounds went the other way
+    -- round 2 claimed filtering that was never applied, round 3 let a partial install
+    claim `applied`, round 4 reported honestly and still launched unrestricted. Honest
+    evidence plus open execution is still open execution.
+
+    This costs nothing on a non-Linux coordinator, which cannot obtain review isolation at
+    all (``backing.py`` refuses without Linux and ``bwrap``). It costs something on a Linux
+    host without ``slirp4netns`` -- a bare CI container, for one -- so
+    ``PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL=1`` makes isolation best-effort there. OPTIONAL,
+    deliberately, rather than DISABLE: it must not drop filtering on a host that can do it.
+    """
+    return os.environ.get(
+        "PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL", ""
+    ).strip() not in ("1", "true", "yes")
+
+
+def egress_rules(policy: EgressPolicy | None = None) -> list[str]:
+    """The iptables rules, in the order they must be applied.
+
+    Order IS the policy. The allowlisted endpoints come first, because they live inside
+    ``100.64.0.0/10`` and a deny for that range would otherwise swallow them. The uplink
+    subnet comes before the ``10/8`` deny for the same reason.
+    """
+    policy = policy or egress_allowlist()
+    rules = [f"-I OUTPUT 1 -d {SLIRP_UPLINK_CIDR} -j ACCEPT"]
+    rules += [
+        f"-A OUTPUT -d {host} -p tcp --dport {port} -j ACCEPT"
+        for host, port in policy.allow
+    ]
+    rules += [f"-A OUTPUT -d {cidr} -j REJECT" for cidr in PRIVATE_CIDRS]
+    return rules
+
+
+def egress_isolation_available() -> bool:
+    """Can this host enforce the policy at all?
+
+    Checked by trying it, not by inspecting the platform: a kernel flag, a seccomp profile
+    or a container runtime can each remove unprivileged user namespaces without changing
+    anything observable about the OS.
+    """
+    if not (shutil.which("unshare") and shutil.which("slirp4netns") and shutil.which("iptables")):
+        return False
+    try:
+        return subprocess.run(
+            ["unshare", "--net", "--map-root-user", "true"],
+            capture_output=True, timeout=10,
+        ).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def enforcement_report(
+    available: bool | None = None, *, applied: bool = False,
+) -> dict[str, object]:
+    """What this sandbox ACTUALLY enforced, for the review evidence.
+
+    Never what it intended. A sandbox that records ``network_filtered: true`` without
+    having filtered anything is worse than one that admits it could not: the first is
+    believed.
+    """
+    if available is None:
+        available = egress_isolation_available()
+    if available and applied:
+        return {
+            "network_filtered": True,
+            "mechanism": "user-namespace+slirp4netns",
+            "denied": list(PRIVATE_CIDRS),
+            "allowed": [f"{h}:{p}" for h, p in egress_allowlist().allow],
+            # Bound the claim IN the record. A reader seeing `network_filtered: true`
+            # otherwise infers "this seat could not take anything", which is false: the
+            # public internet is open by design and the filesystem is not confined.
+            "scope": (
+                "network egress only; the seat could still READ operator files and send "
+                "them to the permitted public internet. Not a filesystem boundary."
+            ),
+            "filesystem_confined": False,
+        }
+    if not available and not egress_required():
+        return {
+            "network_filtered": False,
+            "mechanism": None,
+            "operator_opt_out": True,
+            "reason": (
+                "egress isolation unavailable on this host and "
+                "PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL is set; this seat was NOT "
+                "network-restricted and could reach the private network"
+            ),
+        }
+    if available and not applied:
+        # The board caught this: the mechanism was built and verified, the report was
+        # wired into the evidence, and NO provider was ever launched through
+        # `run_in_isolated_network`. The record therefore claimed a boundary that was not
+        # in force -- the exact fail-open this module exists to prevent, inside the module
+        # that prevents it. Until the launch path routes through the namespace, the record
+        # says so.
+        return {
+            "network_filtered": False,
+            "mechanism": None,
+            "available_but_unapplied": True,
+            "reason": (
+                "egress isolation is AVAILABLE on this host but the provider launch does "
+                "not yet run through it; this seat was NOT network-restricted"
+            ),
+        }
+    return {
+        "network_filtered": False,
+        "mechanism": None,
+        "reason": (
+            "unprivileged user namespaces or slirp4netns unavailable; egress was NOT "
+            "restricted and this seat could reach the private network"
+        ),
+    }
+
+
+def require_egress_isolation(available: bool | None = None) -> None:
+    """Refuse rather than run a seat that believes it is isolated and is not.
+
+    NO PRODUCTION CALLER, and that is correct rather than an oversight. The refusal is
+    made by :func:`isolated_network` itself, on all three of its degraded exits, because
+    a caller-side guard could only ever cover the first -- which is how a fail-open
+    survived four rounds. This is kept as the public spelling of that check for an
+    external caller; the launch path must not use it, or the decision moves back out of
+    the module that owns the policy.
+
+    Its sibling `run_in_isolated_network` was DELETED in board round 6: it ran a script in
+    a namespace, no production path ever reached it, and a second way to do the same thing
+    is how the wrong one gets called (agent-harness#890, round 2 found it unreachable and
+    round 6 found it still unreachable).
+    """
+    if available is None:
+        available = egress_isolation_available()
+    if not available:
+        raise EgressUnavailable(enforcement_report(False)["reason"])
+
+
+
+@contextlib.contextmanager
+def isolated_network(
+    policy: EgressPolicy | None = None,
+    *,
+    timeout_s: float = 3600.0,
+    required: bool | None = None,
+):
+    """Hold a filtered network namespace open and yield an argv PREFIX for it.
+
+    This is the piece the board found missing. `run_in_isolated_network` ran a script in a
+    namespace and was never reachable from the launch path, so a seat's evidence claimed
+    filtering that was never applied to it. A prefix composes with the existing spawn --
+    argv, cwd, env, stdin and process-group handling all stay exactly as they were, and the
+    provider lands inside the namespace instead of beside it.
+
+    ``timeout_s`` bounds how long the holder survives and must EXCEED the leg budget: at a
+    fixed 600s a long leg outlived its own namespace mid-run. Callers with a known deadline
+    should pass it.
+
+    There are THREE ways this can fail -- the mechanism is absent, the namespace never
+    comes up, and the rules fail to install -- and every one of them used to fall through to
+    ``yield ()``. A caller-side ``require_egress_isolation()`` guards only the first, which
+    is why the decision lives HERE, in the module that owns the policy: ``required`` makes
+    all three raise :class:`EgressUnavailable`. It defaults to :func:`egress_required`.
+
+    With ``required=False`` the degraded branches still ``yield ()`` and warn, so a
+    best-effort caller can record truthfully rather than assume.
+    """
+    if required is None:
+        required = egress_required()
+
+    def _degrade(reason: str):
+        if required:
+            raise EgressUnavailable(reason)
+        warnings.warn(reason, RuntimeWarning, stacklevel=3)
+        return ()
+
+    if not egress_isolation_available():
+        yield _degrade(
+            "egress isolation unavailable; refusing to launch WITHOUT network restriction"
+        )
+        return
+
+    rules = "\n".join(f"iptables {rule}" for rule in egress_rules(policy))
+    with tempfile.TemporaryDirectory(prefix="pl-egress-ns-") as work:
+        ready = os.path.join(work, "ready")
+        pidfile = os.path.join(work, "pid")
+        # DNS. Denying 127.0.0.0/8 denies the host's stub resolver, and on any systemd
+        # host `/etc/resolv.conf` says `nameserver 127.0.0.53`. Measured inside the
+        # namespace before this: every NAME failed to resolve while `https://1.1.1.1`
+        # returned 301 -- so "the public internet is reachable" was true of raw IPs and
+        # false of everything a reviewer would actually do. The evidence table in this
+        # module measured a bare IP, which is why six board rounds did not notice, and
+        # the gemini seat in round 6 died on `lookup ... operation not permitted`.
+        #
+        # slirp4netns runs a DNS forwarder at 10.0.2.3, inside the uplink subnet that is
+        # already ACCEPTed ahead of the 10/8 deny. Point the namespace at it -- which
+        # needs a MOUNT namespace too, so `/etc/resolv.conf` can be replaced for the seat
+        # without touching the host's.
+        resolv = os.path.join(work, "resolv.conf")
+        with open(resolv, "w", encoding="utf-8") as handle:
+            handle.write("nameserver 10.0.2.3\noptions timeout:2 attempts:2\n")
+        holder = subprocess.Popen(
+            ["unshare", "--net", "--mount", "--map-root-user", "bash", "-c",
+             f'mount --bind {resolv} /etc/resolv.conf || exit 9; '
+             f'echo $$ > {pidfile}; touch {ready}; sleep {timeout_s}'],
+        )
+        slirp = None
+        try:
+            deadline = time.monotonic() + 15
+            while not os.path.exists(ready) and time.monotonic() < deadline:
+                time.sleep(0.05)
+            if not os.path.exists(ready):
+                yield _degrade("network namespace did not come up; launch is UNISOLATED")
+                return
+            nspid = Path(pidfile).read_text(encoding="utf-8").strip()
+
+            slirp = subprocess.Popen(
+                ["slirp4netns", "--configure", "--mtu=65520",
+                 "--disable-host-loopback", nspid, "tap0"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            time.sleep(2.5)  # the tap must be configured before traffic flows
+            if slirp.poll() is not None:
+                yield _degrade(
+                    f"slirp4netns exited ({slirp.returncode}) before the uplink was "
+                    "usable; the namespace has no network"
+                )
+                return
+
+            # `--mount` as well as `--net`: the seat must see the resolv.conf bound above,
+            # or it inherits the host's 127.0.0.53 and resolves nothing.
+            admin = ("nsenter", "--net", "--mount", "-t", nspid, "-U", "--preserve-credentials")
+            # Apply the policy INSIDE the namespace, before anything else runs in it, and
+            # CHECK it: a partially installed ruleset that still yielded a prefix would be
+            # reported as applied filtering while leaving holes.
+            installed = subprocess.run(
+                [*admin, "bash", "-c",
+                 "set -e\nip link set lo up 2>/dev/null || true\n" + rules],
+                capture_output=True, text=True, timeout=30,
+            )
+            if installed.returncode != 0:
+                # A PARTIAL ruleset is the worst outcome of the three: the namespace is up,
+                # so everything downstream looks isolated while specific denies are missing.
+                yield _degrade(
+                    "egress rules failed to install "
+                    f"({installed.stderr.strip()[:120]}); launch is UNISOLATED"
+                )
+                return
+
+            # The seat runs with the capability bounding set EMPTIED. Without this the
+            # provider holds CAP_NET_ADMIN over the very namespace that confines it: board
+            # round 3 demonstrated `iptables -F OUTPUT` taking qdrant from BLOCKED to 200 in
+            # one command. Rules a reviewer can withdraw are a suggestion, not a boundary.
+            # Emptying the BOUNDING set (not merely the effective one) means the capability
+            # cannot be regained by re-exec either.
+            prefix = (*admin, "setpriv", "--bounding-set=-all", "--inh-caps=-all", "--")
+
+            # MEASURE THE CAPABILITY, NOT THE STEPS. Board round 9, codex: the resolver
+            # bind's failure was suppressed with `2>/dev/null` and slirp was started
+            # without checking it survived, so a namespace with no DNS and no uplink still
+            # yielded a prefix that looked fine. That is exactly the round-6 failure --
+            # every CLI seat died because nothing inside could resolve a name -- able to
+            # recur silently.
+            #
+            # The lesson of that round was that the evidence measured `1.1.1.1`, a bare IP,
+            # and reported it as reachability. So this does not check that the bind command
+            # returned 0 or that slirp is running; it resolves a NAME inside the namespace
+            # the seat will actually use. A working step is a proxy; a resolved name is the
+            # capability.
+            # Retried once, and the TIMEOUT caught. Board round 10: this tested only
+            # `returncode != 0`, so `subprocess.TimeoutExpired` propagated past every
+            # `_degrade` path and surfaced as an unhandled exception instead of a DEGRADED
+            # leg -- a slow resolver escaped the channel built to report exactly this.
+            # One name and one attempt also made a transient blip take down a whole round.
+            resolved = False
+            for _attempt in range(2):
+                try:
+                    if subprocess.run(
+                        [*prefix, "getent", "hosts", "github.com"],
+                        capture_output=True, timeout=30,
+                    ).returncode == 0:
+                        resolved = True
+                        break
+                except subprocess.TimeoutExpired:
+                    continue
+            if not resolved:
+                yield _degrade(
+                    "the namespace came up but cannot resolve a hostname; a seat here "
+                    "could reach raw IPs and nothing else (round-6 failure mode)"
+                )
+                return
+            yield prefix
+        finally:
+            if slirp is not None:
+                slirp.terminate()
+            holder.terminate()
