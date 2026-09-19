@@ -254,8 +254,12 @@ def test_every_launch_site_has_a_marker_proof_above():
     sites in `panel_invoker` must equal the number of seams the marker proofs above drive.
 
     It is spelling-sensitive by construction. `launch = launch_provider; launch(cmd)`, a
-    call with a space before the paren, or a call placed in another module all evade it,
-    and it associates no site with any function -- it is a cardinality, nothing more. It
+    call with a space before the paren, a call placed in another module, or a call site
+    that appears in a docstring all evade or inflate it, and it associates no site with any
+    function -- it is a cardinality, nothing more. It does count every ordinary binding
+    form (`return`, assignment to any name, `with`, `yield`, a bare statement): the first
+    version admitted only two spellings, and the claude seat added a fourth site as
+    `handle = launch_provider(...)` and watched the count stay at three (board PR #904 r1). It
     exists so that the ORDINARY way of adding a fourth seam trips a test that says "add a
     marker proof", and for no stronger reason. It does not try to prove "nothing else
     spawns" -- the AST walker that tried (`test_launch_seam_coverage.py`, agent-harness#890
@@ -267,7 +271,13 @@ def test_every_launch_site_has_a_marker_proof_above():
     import re
 
     source = inspect.getsource(panel_invoker)
-    sites = re.findall(r"^\s+(?:return |proc = )?(?:launch_provider|run_provider)\(", source, flags=re.M)
+    # Any binding form (`return x(`, `p = x(`, `with x(`, `yield x(`, a bare call) counts;
+    # only the two `def` lines are excluded. Not `\bname(`: `\b` would also match
+    # `other.launch_provider(`, which is a different attribute, hence the lookbehind.
+    sites = [
+        m for m in re.finditer(r"(?<![\w.])(?:launch_provider|run_provider)\(", source)
+        if not source[source.rfind("\n", 0, m.start()) + 1 : m.start()].lstrip().startswith("def ")
+    ]
     proven = {"_run_leg_with_liveness", "_run_claude_tui_session", "_exec_claude_agent_view_attempt"}
     assert len(sites) == len(proven), (
         f"{len(sites)} launch-interface call sites in panel_invoker but marker proofs exist "

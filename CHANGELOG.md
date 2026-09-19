@@ -29,9 +29,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   partly installed -- the launch is **refused**, not degraded.
   `PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL=1` makes it best-effort for a host that cannot do it
   (a bare CI container); it does not disable filtering where the mechanism works.
-- Every provider-launch seam in `panel_invoker` runs inside the namespace, enforced by an AST
-  walk over the module rather than by inspection: a new spawn is either prefixed or declared
-  parent-side with a reason.
+- Every provider-launch seam in `panel_invoker` runs inside the namespace: a provider is
+  started by `launch_provider`/`run_provider` and nowhere else, and each call site of that
+  interface is proven by a marker prefix that executes in front of the real launch (see the
+  bullet above). Nothing asserts that no OTHER spawn exists; a raw provider launch added
+  elsewhere is a review finding, and that is the cost of removing the walker.
 - A sandbox is deleted when its leg finishes. The TTL and total-footprint reaper, the
   marker-based identification and the archive-before-reap rule therefore govern **scratch
   left by a run that was killed before its cleanup ran** -- a timeout or a crash -- not
