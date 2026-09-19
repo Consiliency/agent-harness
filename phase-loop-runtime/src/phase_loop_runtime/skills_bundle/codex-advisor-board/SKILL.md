@@ -37,6 +37,23 @@ There are THREE DISTINCT ways to give the panel material. The #114 fix names the
 
 ## Bounding A Slow Leg
 
+**Explicit no-deadline instructions MUST select and preflight
+`monitoring_policy="heartbeat_only"` on `invoke_board`.** Omitting
+`timeouts_by_leg` still imposes a hard backstop. Do not substitute giant
+timeouts, bypass the broker, or silently replace reviewers.
+
+Heartbeat-only supports the brokered subscription TUI and codex/grok routes on
+Linux. The gemini/agy route, API/gateway routes, capture, and legacy `invoke_panel` are
+unsupported. The CLI's default four-vendor board refuses
+`--monitoring-policy heartbeat_only` before auth; explicitly supported boards
+use `invoke_board`. Refuse the whole incompatible board; do not drop a seat.
+No automatic retries or model/silence deadlines apply. Silence or flat CPU is
+`progress_unobserved`, never remote-health proof. Explicit cancellation,
+native failure/completion, and owner loss still end an operation and require
+cleanup. Admission remains finite and single-use.
+
+**The following timeout/retry instructions describe bounded mode only.**
+
 Legs fan out concurrently, so panel wall-clock ≈ max(leg), not sum. Each leg's default
 timeout is INPUT-SCALED (~600s floor + ~12s/KB) and then raised to a ~1800s backstop.
 

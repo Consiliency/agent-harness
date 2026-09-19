@@ -192,6 +192,39 @@ _REVIEW_INSTRUCTIONS_SHA256: ContextVar[str | None] = ContextVar(
 
 
 @dataclass(frozen=True)
+class ReviewMonitoringPolicy:
+    requested: str
+    effective: str
+    admission_window_s: float = 10.0
+    model_deadline_s: None = None
+
+
+def resolve_review_monitoring_policy(
+    requested: str, board: object, *, timeouts_by_leg: Mapping | None = None,
+    mode: str = "review", capture: bool = False, research: bool = False,
+    gateway: bool = False,
+) -> ReviewMonitoringPolicy:
+    """Pure whole-board preflight; never probe or replace a requested seat."""
+    if requested not in ("bounded", "heartbeat_only"):
+        raise ValueError("review_monitoring_policy_invalid")
+    if requested == "heartbeat_only":
+        if timeouts_by_leg:
+            raise ValueError("review_monitoring_timeout_conflict")
+        if mode != "review" or capture or research or gateway:
+            raise ValueError("review_monitoring_unsupported_transport")
+        if getattr(board, "allow_api_key_fallback", False):
+            raise ValueError("review_monitoring_unsupported_api_fallback")
+        for seat in getattr(board, "seats", ()):
+            lane = str(seat.harness or "").lower()
+            if (lane not in ("claude", "codex", "grok")
+                or seat.auth != AUTH_SUBSCRIPTION or seat.backing != BACKING_HOMEBREW
+                or seat.host_leg):
+                raise ValueError(f"review_monitoring_unsupported_route:{lane or 'unresolved'}")
+            harden_subscription_model(lane, seat.model, seat.effort)
+    return ReviewMonitoringPolicy(requested, requested)
+
+
+@dataclass(frozen=True)
 class BrokerRequest:
     operation: str
     nonce: str
@@ -216,6 +249,7 @@ class ReviewLegAuthorization:
     issued_monotonic_ns: int
     expires_monotonic_ns: int
     _seal: object
+    monitoring_policy: str = "bounded"
 
 
 @dataclass(frozen=True)
@@ -236,14 +270,18 @@ class _ReviewInvocationLease:
         self.route_counts = Counter(authorization.routes)
         self.active = False
         self.closed = False
+        self.monitoring_policy = authorization.monitoring_policy
+        self.cancel_event = threading.Event()
 
 
 class _ReviewLegClaim:
     """Private single-consumer state for a minted leg capability."""
 
-    def __init__(self) -> None:
+    def __init__(self, authorization: ReviewLegAuthorization, lease: _ReviewInvocationLease | None) -> None:
         self.lock = threading.Lock()
         self.claimed = False
+        self.monitoring_policy = authorization.monitoring_policy
+        self.lease = lease
 
 
 class _BrokerInferenceAdapter:
@@ -302,7 +340,7 @@ def _lease_for(authorization: "ReviewIsolationAuthorization") -> _ReviewInvocati
         return current[1]
 
 
-def _remember_leg_claim(authorization: ReviewLegAuthorization) -> None:
+def _remember_leg_claim(authorization: ReviewLegAuthorization, lease: _ReviewInvocationLease | None = None) -> None:
     key = id(authorization)
 
     def discard(reference: weakref.ReferenceType[ReviewLegAuthorization]) -> None:
@@ -312,7 +350,7 @@ def _remember_leg_claim(authorization: ReviewLegAuthorization) -> None:
                 _LEG_CLAIMS.pop(key, None)
 
     with _LEASES_LOCK:
-        _LEG_CLAIMS[key] = (weakref.ref(authorization, discard), _ReviewLegClaim())
+        _LEG_CLAIMS[key] = (weakref.ref(authorization, discard), _ReviewLegClaim(authorization, lease))
 
 
 def _claim_leg_authorization(authorization: ReviewLegAuthorization) -> None:
@@ -322,17 +360,36 @@ def _claim_leg_authorization(authorization: ReviewLegAuthorization) -> None:
             raise ValueError("missing HARDEN review leg claim")
         claim = current[1]
     with claim.lock:
+        if authorization.monitoring_policy != claim.monitoring_policy:
+            raise ValueError("review_monitoring_policy_mismatch")
         if claim.claimed:
             raise ValueError("HARDEN review leg capability already consumed")
         claim.claimed = True
 
 
-def _recv_frame(sock: socket.socket, maximum: int) -> bytes:
+def _leg_operation_active(authorization: ReviewLegAuthorization) -> bool:
+    with _LEASES_LOCK:
+        entry = _LEG_CLAIMS.get(id(authorization))
+        if entry is None or entry[0]() is not authorization:
+            return False
+        claim = entry[1]
+    if claim.monitoring_policy != authorization.monitoring_policy:
+        return False
+    lease = claim.lease
+    if lease is None:
+        return authorization.monitoring_policy == "bounded"
+    with lease.lock:
+        return lease.active and not lease.closed and not lease.cancel_event.is_set()
+
+
+def _recv_frame(sock: socket.socket, maximum: int, *, admission_check: Callable[[], float] | None = None) -> bytes:
     """Read one length-delimited AF_UNIX message; streams have no message edges."""
     def exact(size: int) -> bytes:
         chunks: list[bytes] = []
         remaining = size
         while remaining:
+            if admission_check is not None:
+                sock.settimeout(admission_check())
             chunk = sock.recv(remaining)
             if not chunk:
                 raise ValueError("truncated broker frame")
@@ -413,12 +470,20 @@ class ParentUnixBroker:
         self._instruction_sha256 = sha256(instructions.read_bytes()).hexdigest()
         self.nonce = secrets.token_hex(32)
         self.root = Path(tempfile.mkdtemp(prefix="phase-loop-broker-")); self.root.chmod(0o700)
-        secret_fd, secret_path = tempfile.mkstemp(prefix="phase-loop-host-probe-")
+        secret_fd = None
+        secret_path = None
         try:
+            secret_fd, secret_path = tempfile.mkstemp(prefix="phase-loop-host-probe-")
             os.fchmod(secret_fd, 0o600)
             os.write(secret_fd, secrets.token_bytes(32))
+        except BaseException:
+            if secret_path is not None:
+                Path(secret_path).unlink(missing_ok=True)
+            self.root.rmdir()
+            raise
         finally:
-            os.close(secret_fd)
+            if secret_fd is not None:
+                os.close(secret_fd)
         self._host_secret_probe = Path(secret_path)
         self.path = self.root / "intended-inference.sock"; self._used = False
         self.evidence: dict[str, object] = {
@@ -433,10 +498,43 @@ class ParentUnixBroker:
             "cleanup_root_removed": False,
             "child_quiescent": False,
         }
-        self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); self._sock.bind(str(self.path)); self._sock.listen(1); self._sock.settimeout(10)
-        self.path.chmod(0o600)
+        try:
+            self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            self._sock.bind(str(self.path))
+            self._sock.listen(1)
+            self._sock.settimeout(10)
+            self.path.chmod(0o600)
+        except BaseException:
+            try:
+                self.close()
+            except OSError:
+                self.evidence["cleanup_failed"] = True
+            raise
+        self._connection: socket.socket | None = None
+        self._cancel_event = threading.Event()
+        self._stopping = False
+
+    def _admission_remaining(self) -> float:
+        remaining = (self.authorization.expires_monotonic_ns - time.monotonic_ns()) / 1e9
+        if remaining <= 0:
+            raise ValueError("broker authorization expired")
+        if self._stopping or self._cancel_event.is_set() or not _leg_operation_active(self.authorization):
+            raise ValueError("broker operation cancelled or closed")
+        return remaining
+
+    def _wake_server(self) -> None:
+        self._stopping = True
+        for sock in (self._connection, self._sock):
+            if sock is not None:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
     def close(self) -> None:
-        self._sock.close()
+        sock = getattr(self, "_sock", None)
+        if sock is not None:
+            sock.close()
         try: self.path.unlink()
         except FileNotFoundError: pass
         try: self.root.rmdir()
@@ -472,7 +570,9 @@ class ParentUnixBroker:
         expected_pid: int,
         expected_start: int,
     ) -> None:
+        self._sock.settimeout(min(10.0, self._admission_remaining()))
         conn, _ = self._sock.accept()
+        self._connection = conn
         with conn:
             if not hasattr(socket, "SO_PEERCRED"): raise ValueError("peer credentials unavailable")
             peer = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
@@ -480,11 +580,14 @@ class ParentUnixBroker:
             if uid != os.getuid() or gid != os.getgid() or not self._descends_from(pid, expected_pid, expected_start): raise ValueError("broker peer ancestry mismatch")
             self.evidence.update({"peer_pid": pid, "peer_uid": uid, "peer_gid": gid, "peer_ancestry_verified": True})
             if time.monotonic_ns() >= self.authorization.expires_monotonic_ns: raise ValueError("broker authorization expired")
-            raw = _recv_frame(conn, _BROKER_MAX_BYTES)
+            raw = _recv_frame(conn, _BROKER_MAX_BYTES, admission_check=self._admission_remaining)
             data = json.loads(raw)
             if set(data) != {"schema","operation","nonce","harness","model","purpose","input_sha256"}: raise ValueError("broker request grammar")
             if self._used or data != {"schema":PARENT_UNIX_BROKER_V1,"operation":self.authorization.operation,"nonce":self.nonce,"harness":self.harness,"model":self.model,"purpose":self.authorization.purpose,"input_sha256":self.authorization.input_sha256}: raise ValueError("broker request binding")
-            self._used = True; status, text = adapter.invoke()
+            self._admission_remaining()
+            self._used = True
+            conn.settimeout(None)
+            status, text = adapter.invoke()
             if (
                 status not in _BROKER_RESPONSE_STATUSES
                 or not isinstance(text, str)
@@ -497,7 +600,8 @@ class ParentUnixBroker:
             _send_frame(conn, json.dumps({"schema":PARENT_UNIX_BROKER_V1,"status":status,"text":text}, separators=(",", ":")).encode())
 
     def run_credentialless_client(
-        self, adapter: _BrokerInferenceAdapter, *, deadline_s: float,
+        self, adapter: _BrokerInferenceAdapter, *, deadline_s: float | None,
+        cancel_event: threading.Event | None = None,
     ) -> tuple[dict[str, object], dict[str, object]]:
         """Run the sole child operation: a fixed broker request in a no-net namespace."""
         if (
@@ -506,6 +610,14 @@ class ParentUnixBroker:
             or not adapter.is_quiescent()
         ):
             raise ValueError("broker requires a quiescent cancellable inference adapter")
+        heartbeat_only = self.authorization.monitoring_policy == "heartbeat_only"
+        if (heartbeat_only and deadline_s is not None) or (not heartbeat_only and (
+            deadline_s is None or not math.isfinite(deadline_s) or deadline_s <= 0
+        )):
+            raise ValueError("review_monitoring_policy_mismatch")
+        if cancel_event is not None:
+            self._cancel_event = cancel_event
+        self._admission_remaining()
         bwrap = Path("/usr/bin/bwrap")
         python = Path("/usr/bin/python3")
         if platform.system() != "Linux" or not bwrap.is_file() or not os.access(bwrap, os.X_OK) or not python.is_file():
@@ -551,53 +663,78 @@ class ParentUnixBroker:
         argv = [str(bwrap),"--unshare-all","--die-with-parent","--new-session","--clearenv",*runtime_binds,"--dir","/run","--ro-bind",str(self.root),"/run/phase-loop-broker","--ro-bind",str(self.staged_dir),"/run/phase-loop-review","--tmpfs","/tmp","--proc","/proc","--dev","/dev","--setenv","PATH","/usr/bin","--setenv","PYTHONNOUSERSITE","1","--setenv","PYTHONDONTWRITEBYTECODE","1",str(python),"-I","-S","-c",code]
         error: list[BaseException] = []
         child: list[tuple[subprocess.Popen[bytes], int]] = []
-        child_ready = threading.Event()
         def serve() -> None:
-            if not child_ready.wait(timeout=max(1.0, deadline_s)):
-                error.append(ValueError("broker child launch was not observed")); return
             try:
                 self.serve_once(
                     adapter, expected_pid=child[0][0].pid, expected_start=child[0][1]
                 )
             except BaseException as exc: error.append(exc)
-        thread=threading.Thread(target=serve, daemon=False); thread.start()
-        proc=subprocess.Popen(argv,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,env={"PATH":"/usr/bin","PYTHONNOUSERSITE":"1","PYTHONDONTWRITEBYTECODE":"1"},close_fds=True,start_new_session=True)
-        _ppid, start = self._proc_stat(proc.pid)
-        child.append((proc, start)); child_ready.set()
+        thread=threading.Thread(target=serve, daemon=False)
+        proc = None
+        start = None
         stdout = b""; stderr = b""; timed_out = False; provider_cancelled = False
+        completed = False
+        started = time.monotonic()
         try:
-            # Include a small transport allowance only after the bounded parent
-            # inference deadline; this is never the former fixed 15-second wall.
-            stdout, stderr = proc.communicate(
-                json.dumps(request,separators=(",",":")).encode(),
-                timeout=max(1.0, float(deadline_s)) + 2.0,
-            )
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            try:
-                os.killpg(proc.pid, 15)
-            except ProcessLookupError:
-                pass
-            try:
-                stdout, stderr = proc.communicate(timeout=2)
-            except subprocess.TimeoutExpired:
+            proc=subprocess.Popen(argv,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,env={"PATH":"/usr/bin","PYTHONNOUSERSITE":"1","PYTHONDONTWRITEBYTECODE":"1"},close_fds=True,start_new_session=True)
+            _ppid, start = self._proc_stat(proc.pid)
+            child.append((proc, start))
+            thread.start()
+            payload = json.dumps(request,separators=(",",":")).encode()
+            while True:
+                if self._cancel_event.is_set() or not _leg_operation_active(self.authorization):
+                    error.append(ValueError("broker operation cancelled or closed"))
+                    break
+                if error:
+                    break
+                if deadline_s is not None and time.monotonic() - started >= max(1.0, deadline_s) + 2.0:
+                    timed_out = True
+                    break
                 try:
-                    os.killpg(proc.pid, 9)
-                except ProcessLookupError:
-                    pass
-                stdout, stderr = proc.communicate()
+                    stdout, stderr = proc.communicate(payload, timeout=0.1)
+                    completed = proc.returncode == 0
+                    break
+                except subprocess.TimeoutExpired:
+                    payload = None
         finally:
-            # Closing the listener wakes an accept that has not reached the
-            # inference call.  The non-daemon server is joined before returning.
-            try: self._sock.close()
-            except OSError: pass
-            if timed_out:
-                adapter.cancel()
-                provider_cancelled = True
-            # The only accepted adapter is parent-owned and must acknowledge
-            # cancellation.  A bounded join prevents an uncooperative injected
-            # callback from turning the broker into an unbounded hidden thread.
-            thread.join(timeout=_BROKER_TRANSPORT_ALLOWANCE_NS / 1_000_000_000)
+            if not completed or self._cancel_event.is_set():
+                self._wake_server()
+                try:
+                    provider_cancelled = True
+                    adapter.cancel()
+                except BaseException as exc:
+                    error.append(exc)
+                finally:
+                    if proc is not None:
+                        for signum in (15, 9):
+                            try:
+                                try: os.killpg(proc.pid, signum)
+                                except ProcessLookupError: pass
+                                stdout, stderr = proc.communicate(timeout=2)
+                                break
+                            except BaseException as exc:
+                                error.append(exc)
+            if thread.ident is not None:
+                thread.join(timeout=_BROKER_TRANSPORT_ALLOWANCE_NS / 1_000_000_000)
+            if proc is not None:
+                for pipe in (proc.stdin, proc.stdout, proc.stderr):
+                    if pipe is not None:
+                        try: pipe.close()
+                        except BaseException as exc: error.append(exc)
+            try:
+                provider_quiescent = adapter.is_quiescent()
+            except BaseException as exc:
+                error.append(exc)
+                provider_quiescent = False
+            self.evidence.update({
+                "child_quiescent": proc is None or proc.poll() is not None,
+                "broker_thread_quiescent": not thread.is_alive(),
+                "provider_adapter_quiescent": provider_quiescent,
+                "provider_cancel_requested": provider_cancelled,
+            })
+            if not provider_quiescent or thread.is_alive() or (proc is not None and proc.poll() is None):
+                from ..panel_invoker import ProviderProcessGroupQuiescenceError
+                raise ProviderProcessGroupQuiescenceError("broker provider or server quiescence unproven")
         adapter_quiescent = adapter.is_quiescent()
         self.evidence.update({
             "bwrap": str(bwrap), "outer_bwrap_pid": proc.pid, "outer_bwrap_start": start,
@@ -616,12 +753,25 @@ class ParentUnixBroker:
             "child_returncode": proc.returncode, "child_quiescent": proc.poll() is not None,
             "no_inherited_fd_observed": proc.returncode == 0,
             "child_stderr_sha256": sha256(stderr).hexdigest(),
-            "operation_deadline_s": float(deadline_s),
+            "operation_deadline_s": float(deadline_s) if deadline_s is not None else None,
             "child_timeout": timed_out,
             "broker_thread_quiescent": not thread.is_alive(),
             "provider_adapter_quiescent": adapter_quiescent,
             "provider_cancel_requested": provider_cancelled,
         })
+        if heartbeat_only:
+            self.evidence["monitoring"] = {
+                "schema": "review_monitoring.v1", "requested_policy": "heartbeat_only",
+                "effective_policy": "heartbeat_only", "operation_deadline_s": None,
+                "authorization_expiry_scope": "admission_only",
+                "admission_expires_monotonic_ns": self.authorization.expires_monotonic_ns,
+            }
+        if self._cancel_event.is_set() or not _leg_operation_active(self.authorization):
+            error.append(ValueError("broker operation cancelled or closed"))
+        from ..panel_invoker import ProviderProcessGroupQuiescenceError
+        for failure in error:
+            if isinstance(failure, ProviderProcessGroupQuiescenceError):
+                raise failure
         if timed_out or error or thread.is_alive() or not adapter_quiescent or proc.returncode != 0:
             raise ValueError(f"credentialless broker client failed: {error[0] if error else 'deadline' if timed_out else proc.returncode}")
         result=json.loads(stdout)
@@ -654,6 +804,7 @@ class ReviewIsolationAuthorization:
     canonical_repo_sha256: str
     issued_monotonic_ns: int
     _seal: object
+    monitoring_policy: str = "bounded"
 
 
 def _canonical_repo_digest(canonical_repo_authority: Path | str | None) -> str:
@@ -728,12 +879,14 @@ def prepare_review_isolation_authorization(
     *,
     mode: str,
     canonical_repo_authority: Path | str | None = None,
+    monitoring_policy: str = "bounded",
 ) -> ReviewIsolationAuthorization:
     """Authorize a review before composition or any provider/session effect.
 
     The caller must provide the final immutable artifact bytes.  Unsupported or
     non-subscription seats are rejected rather than silently downgraded.
     """
+    resolve_review_monitoring_policy(monitoring_policy, board, mode=mode)
     if platform.system() != "Linux" or mode != "review":
         raise ValueError("HARDEN review isolation requires a Linux review operation")
     seats = getattr(board, "seats", ())
@@ -768,6 +921,7 @@ def prepare_review_isolation_authorization(
         canonical_repo_sha256=canonical_repo_sha256,
         issued_monotonic_ns=issued,
         _seal=_AUTHORIZATION_SEAL,
+        monitoring_policy=monitoring_policy,
     )
     _remember_lease(authorization)
     return authorization
@@ -817,6 +971,7 @@ def revalidate_review_isolation_authorization(
     authorization: ReviewIsolationAuthorization | None, board: object | None, artifact: str, *, mode: str,
     staged_dir: Path | None = None,
     canonical_repo_authority: Path | str | None = None,
+    monitoring_policy: str | None = None,
 ) -> None:
     """Independently revalidate the operation capability immediately before use."""
     if not isinstance(authorization, ReviewIsolationAuthorization) or authorization._seal is not _AUTHORIZATION_SEAL:
@@ -827,6 +982,9 @@ def revalidate_review_isolation_authorization(
     # staging) runs behind an authorization that can no longer be activated.
     lease = _lease_for(authorization)
     with lease.lock:
+        if (authorization.monitoring_policy != lease.monitoring_policy
+            or (monitoring_policy is not None and monitoring_policy != lease.monitoring_policy)):
+            raise ValueError("review_monitoring_policy_mismatch")
         if lease.closed:
             raise ValueError("HARDEN review authorization is closed")
         if (
@@ -918,12 +1076,13 @@ def close_review_isolation_authorization(
     with lease.lock:
         lease.active = False
         lease.closed = True
+        lease.cancel_event.set()
 
 
 def derive_review_leg_authorization(
     authorization: ReviewIsolationAuthorization | None,
     artifact: str,
-    *, harness: str, model: str, deadline_s: float, mode: str,
+    *, harness: str, model: str, deadline_s: float | None, mode: str,
     canonical_repo_authority: Path | str | None,
 ) -> ReviewLegAuthorization:
     """Mint the short-lived, single-route capability immediately before launch."""
@@ -937,8 +1096,9 @@ def derive_review_leg_authorization(
     if (
         not isinstance(authorization, ReviewIsolationAuthorization)
         or (harness, model) not in authorization.routes
-        or not math.isfinite(deadline_s)
-        or deadline_s <= 0
+        or (authorization.monitoring_policy == "bounded" and (
+            deadline_s is None or not math.isfinite(deadline_s) or deadline_s <= 0))
+        or (authorization.monitoring_policy == "heartbeat_only" and deadline_s is not None)
     ):
         raise ValueError("invalid HARDEN review leg authority")
     lease = _lease_for(authorization)
@@ -957,10 +1117,14 @@ def derive_review_leg_authorization(
         canonical_repo_sha256=authorization.canonical_repo_sha256,
         broker_contract=PARENT_UNIX_BROKER_V1, harness=harness, model=model,
         issued_monotonic_ns=issued,
-        expires_monotonic_ns=issued + int(float(deadline_s) * 1_000_000_000) + _BROKER_TRANSPORT_ALLOWANCE_NS,
+        expires_monotonic_ns=issued + (
+            10_000_000_000 if authorization.monitoring_policy == "heartbeat_only"
+            else int(float(deadline_s) * 1_000_000_000) + _BROKER_TRANSPORT_ALLOWANCE_NS
+        ),
         _seal=_AUTHORIZATION_SEAL,
+        monitoring_policy=authorization.monitoring_policy,
     )
-    _remember_leg_claim(leg)
+    _remember_leg_claim(leg, lease)
     return leg
 
 # Credentials and routing selectors that can move a Claude Code process away

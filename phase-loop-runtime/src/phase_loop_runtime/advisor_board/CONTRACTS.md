@@ -473,3 +473,25 @@ a landing decision. `tests/test_president_wiring.py`.
 - **Standalone launchers.** A caller that wants the four-seat board without a
   president passes an explicit `review_policy=ReviewLandingPolicy(required_seats=...,
   requires_president=False)` rather than a president-requiring tier.
+
+## Review monitoring policy v1 (agent-harness#892)
+
+The opt-in policy vocabulary is `bounded | heartbeat_only`; omission is bounded.
+Heartbeat-only permits only brokered subscription/homebrew Claude TUI, Codex,
+and Grok, with no timeout overrides, capture, research, API fallback, gateway,
+or native host seat. Whole-board capability preflight precedes availability,
+auth, session creation, and provider dispatch. Gemini/agy remains unsupported.
+
+The requested/effective policy is bound to the operation lease and minted leg.
+Heartbeat-only admission expires 10 seconds after minting and is single-use;
+complete frame receipt and ownership are checked before inference. Admitted
+model response waiting has no aggregate wall-clock deadline or silence cutoff.
+It makes one attempt, including when that attempt completes empty.
+Cancellation and owner loss retain child/provider/server ownership until
+quiescence; unproven quiescence cannot become successful evidence.
+
+`review_monitoring.v1` is a separate metadata-only opt-in record: invocation and
+seat position, requested/effective policy, admission window, null model/silence
+deadlines, last observed progress age, observation state, and terminal reason.
+Unknown silence is `progress_unobserved`, never a health attestation. Frozen
+broker request/response keys, status literals, and observer envelopes are unchanged.
