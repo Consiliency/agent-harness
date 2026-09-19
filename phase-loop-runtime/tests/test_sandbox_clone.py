@@ -446,3 +446,76 @@ class TestTheContainmentCheckHasItsOwnFalsifier:
         staged.mkdir()
         review_stage._overlay_working_tree(repo, staged)
         assert (staged / "a" / "b" / "deep.py").read_text(encoding="utf-8") == "x = 1\n"
+
+
+class TestTheStageIsFaithfulToTheWorkingTree:
+    """Board round 11, codex: two shapes where an HONEST tree failed its own validation.
+
+    Both are the sandbox refusing a legitimate review of legitimate uncommitted work —
+    the thing the stage exists to show. Neither is a security defect; both make the
+    feature unusable for the case it was built for.
+    """
+
+    def test_a_committed_directory_replaced_by_a_file_stages_as_a_file(self, tmp_path):
+        """Stale removal unlinked files and left their DIRECTORIES standing.
+
+        `slot/old.txt` committed, `slot` now a regular file: the empty `slot/` survived
+        and `copy2` wrote `slot/slot`. Measured before the fix — source and staged digests
+        differed, so `_default_spawn` refused the review.
+        """
+        import shutil
+
+        repo = _repo(tmp_path / "repo")
+        (repo / "slot").mkdir()
+        (repo / "slot" / "old.txt").write_text("old\n", encoding="utf-8")
+        _commit(repo, "committed a directory")
+
+        shutil.rmtree(repo / "slot")
+        (repo / "slot").write_text("now a file\n", encoding="utf-8")
+
+        source_digest = review_stage.review_tree_manifest_sha256(repo)
+        staged = review_stage.stage_review_tree(repo, tmp_path / "stage")
+
+        assert (staged / "slot").is_file(), "the type transition did not reach the stage"
+        assert not (staged / "slot" / "slot").exists() if (staged / "slot").is_dir() else True
+        assert review_stage.review_tree_manifest_sha256(staged) == source_digest, (
+            "the staged tree diverged from its source; the leg would refuse its own copy"
+        )
+
+    def test_a_force_added_ignored_file_survives_revalidation(self, tmp_path):
+        """The stage is enumerated from the FILESYSTEM, not from the clone's index.
+
+        `_selected_paths` used git selection on both sides. That was right when a stage
+        was a file copy with no `.git`; once it became a CLONE, the clone's index
+        described the COMMIT — so a file force-added but not committed reached the stage
+        correctly and was then dropped from the stage-side digest alone.
+        """
+        import subprocess
+
+        repo = _repo(tmp_path / "repo")
+        (repo / ".gitignore").write_text("generated.py\n", encoding="utf-8")
+        (repo / "a.py").write_text("x\n", encoding="utf-8")
+        _commit(repo, "ignore generated.py")
+
+        (repo / "generated.py").write_text("GENERATED CONTENT\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(repo), "add", "-f", "generated.py"], check=True)
+
+        source_digest = review_stage.review_tree_manifest_sha256(repo)
+        staged = review_stage.stage_review_tree(repo, tmp_path / "stage")
+
+        assert (staged / "generated.py").read_text(encoding="utf-8") == "GENERATED CONTENT\n"
+        assert review_stage.review_tree_manifest_sha256(staged) == source_digest, (
+            "a faithful copy was rejected because the two sides selected differently"
+        )
+
+    def test_an_ordinary_ignored_file_still_does_not_reach_the_stage(self, tmp_path):
+        """The falsifier: switching the stage to a filesystem walk must not smuggle in
+        genuinely ignored files, which was the point of git selection."""
+        repo = _repo(tmp_path / "repo")
+        (repo / ".gitignore").write_text("secrets/\n", encoding="utf-8")
+        (repo / "secrets").mkdir()
+        (repo / "secrets" / "key.txt").write_text("do not copy\n", encoding="utf-8")
+        _commit(repo, "ignore secrets")
+
+        staged = review_stage.stage_review_tree(repo, tmp_path / "stage")
+        assert not (staged / "secrets" / "key.txt").exists()

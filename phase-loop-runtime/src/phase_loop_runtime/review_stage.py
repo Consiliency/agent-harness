@@ -147,6 +147,15 @@ def _refuse_escaping_symlinks(repo: Path, root: Path) -> None:
             ) from exc
 
 
+def is_review_stage(root: Path) -> bool:
+    """Is this directory a stage this runtime produced, rather than a source repo?
+
+    Keyed on the marker `stage_review_tree` writes into the clone's own gitdir, so it
+    cannot be confused with an ordinary checkout that happens to sit under the same root.
+    """
+    return (Path(root) / ".git" / "phase-loop-source-commit").is_file()
+
+
 def _selected_paths(root: Path) -> list[str]:
     """The path set to hash, on EITHER side of the copy.
 
@@ -158,7 +167,14 @@ def _selected_paths(root: Path) -> list[str]:
     Dropping it loses nothing -- a deletion still removes the path from the set, which
     still moves the digest.
     """
-    rel_paths = review_tree_paths(root)
+    # A REVIEW STAGE is enumerated from the FILESYSTEM, never from git. This docstring
+    # used to say "a stage has no `.git`, so the walk below is used" -- true when staging
+    # was a file copy, false since it became a git CLONE. The clone's index describes the
+    # COMMIT, so anything staged that git would not list there is silently dropped from
+    # the digest: board round 11, codex, a force-added file matching an ignore rule
+    # reached the stage correctly and then failed revalidation because only the SOURCE
+    # side counted it. The premise went stale under a change three rounds earlier.
+    rel_paths = None if is_review_stage(root) else review_tree_paths(root)
     if rel_paths is None:
         rel_paths = [
             str(p.relative_to(root))
@@ -343,6 +359,16 @@ def _overlay_working_tree(root: Path, staged: Path) -> None:
         stale_path = staged / rel
         if stale_path.is_file() or stale_path.is_symlink():
             stale_path.unlink()
+
+    # A committed DIRECTORY replaced by a regular file in the working tree. Stale removal
+    # above unlinks files and leaves their directories, so `slot/` survived and
+    # `copy2(source, staged/"slot")` wrote `slot/slot` -- the staged tree diverged from
+    # the source and the leg refused its own faithful copy (board round 11, codex;
+    # reproduced). Clear a destination whose TYPE no longer matches the source.
+    for rel in selected:
+        source, destination = root / rel, staged / rel
+        if destination.is_dir() and not destination.is_symlink() and not source.is_dir():
+            shutil.rmtree(destination)
 
     stage_root = staged.resolve()
     for rel in selected:
