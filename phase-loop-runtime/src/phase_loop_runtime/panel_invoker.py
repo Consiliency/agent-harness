@@ -2064,6 +2064,9 @@ def _broker_review_sandbox_preamble(staged_tree: Path) -> str:
         "You are a reviewer with a private sandbox. Produce exactly one report.\n"
         f"You MAY run commands and read and write files inside {staged_tree}, and you MAY use "
         "the network to look things up or install what a check needs.\n"
+        "The PUBLIC internet is reachable. This machine's private network is not: RFC1918, "
+        "the tailnet, loopback and cloud metadata are denied at the packet level, so a "
+        "connection to one of those failing is the policy working, not a defect to report.\n"
         "That directory is a DISPOSABLE CLONE of the code under review, not the live "
         "checkout. It is deleted when this review ends. Anything you change there is an "
         "experiment, never a deliverable, and reaches no one's working tree.\n"
@@ -4069,8 +4072,12 @@ def _run_claude_tui_session(
             pass
         try:
             def _popen() -> subprocess.Popen[bytes]:
+                # The SECOND launch seam. The first wiring covered only the CLI-leg
+                # `_popen`, so a TUI seat launched OUTSIDE the namespace entirely -- the
+                # gap the board named as "I cannot establish that every alternative
+                # provider-launch path uses `_popen`".
                 return subprocess.Popen(
-                    list(command),
+                    [*_EGRESS_LAUNCH_PREFIX.get(), *command],
                     cwd=str(cwd),
                     env=dict(env),
                     stdin=slave_fd,
@@ -4995,8 +5002,12 @@ def _exec_claude_agent_view_attempt(
         tools="Read",
     )
     try:
+        # The THIRD provider-launch seam. It has no production caller today (only a test
+        # reaches it), which is exactly why it is wired: an unwired seam that acquires a
+        # caller later is a silent hole, and `test_launch_seam_coverage` refuses to let
+        # one exist rather than trusting that this one stays unreachable.
         proc = subprocess.run(
-            command,
+            [*_EGRESS_LAUNCH_PREFIX.get(), *command],
             cwd=str(review_dir),
             env=env,
             capture_output=True,
@@ -5892,12 +5903,25 @@ def _default_spawn(
                     timeout_s=float(_LEG_TIMEOUT_MAX_S) + 300.0,
                 )
                 egress_prefix = egress_stack.enter_context(egress_ctx)
+                if _sandbox_egress.egress_required() and not egress_prefix:
+                    # Belt and braces. `isolated_network(required=...)` raises on each of
+                    # its three degraded paths; this refuses a FOURTH that does not exist
+                    # yet -- an empty prefix reaching the launch means the seat runs
+                    # unfiltered while the evidence is assembled as if it did not.
+                    raise _sandbox_egress.EgressUnavailable(
+                        "egress isolation yielded an empty launch prefix"
+                    )
                 egress_token = _EGRESS_LAUNCH_PREFIX.set(tuple(egress_prefix))
                 egress_stack.callback(_EGRESS_LAUNCH_PREFIX.reset, egress_token)
                 sandbox_enforcement = _sandbox_egress.enforcement_report(
                     applied=bool(egress_prefix),
                 )
-                _record_sandbox_facts(root_choice, sandbox_enforcement)
+                # Reset the facts too. The recorder returns a token precisely because an
+                # earlier version set this and never reset it, so the NEXT leg on the same
+                # worker thread inherited this leg's isolation claim (board round 4). The
+                # recorder was fixed; the caller kept discarding the token.
+                facts_token = _record_sandbox_facts(root_choice, sandbox_enforcement)
+                egress_stack.callback(_SANDBOX_ROUND_FACTS.reset, facts_token)
                 staged_tree = _review_stage.stage_review_tree(resolved_repo_dir, review_dir)
                 # Track the ACTUAL path across the ownership transfer. If the rename
                 # fails, the hardened tree is still under its `pl-panel-stage-*` name,

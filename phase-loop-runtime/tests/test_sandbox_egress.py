@@ -222,11 +222,107 @@ def test_the_unavailable_path_warns_instead_of_crashing(monkeypatch):
     """Ruff caught `warnings` unimported: the unavailable branch would have raised
     NameError instead of warning, and every test exercised only the AVAILABLE path
     because this host has user namespaces. A host without them would have crashed.
+
+    This is now the BEST-EFFORT posture (`required=False`); the default refuses. See
+    :class:`TestItFailsClosed`.
     """
     monkeypatch.setattr(sandbox_egress, "egress_isolation_available", lambda: False)
-    with pytest.warns(RuntimeWarning, match="WITHOUT network restriction"):
-        with sandbox_egress.isolated_network() as prefix:
+    with pytest.warns(RuntimeWarning, match="refusing to launch WITHOUT"):
+        with sandbox_egress.isolated_network(required=False) as prefix:
             assert prefix == (), "no isolation means no prefix, not a crash"
+
+
+class TestItFailsClosed:
+    """Round 4, the finding that ended the board: honest evidence, open execution.
+
+    Round 2 claimed filtering that was never applied. Round 3 let a PARTIAL install claim
+    `applied`. Round 4 recorded truthfully -- `network_filtered=False` -- and launched the
+    seat completely unrestricted anyway. Three rounds of fixing the reported symptom and
+    reproducing the property, because the record was treated as the boundary.
+
+    `isolated_network` has THREE ways to fail, and all three used to `yield ()`. A
+    caller-side `require_egress_isolation()` guards only the first, which is why the
+    decision now lives in the module that owns the policy.
+    """
+
+    def test_the_default_refuses_when_the_mechanism_is_absent(self, monkeypatch):
+        monkeypatch.delenv("PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL", raising=False)
+        monkeypatch.setattr(sandbox_egress, "egress_isolation_available", lambda: False)
+        with pytest.raises(sandbox_egress.EgressUnavailable, match="unavailable"):
+            with sandbox_egress.isolated_network():
+                pytest.fail("the body must never run unisolated")
+
+    def test_a_namespace_that_never_comes_up_refuses(self, monkeypatch):
+        """Failure two of three: the mechanism exists and the namespace does not appear."""
+        monkeypatch.delenv("PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL", raising=False)
+        monkeypatch.setattr(sandbox_egress, "egress_isolation_available", lambda: True)
+        monkeypatch.setattr(sandbox_egress.os.path, "exists", lambda _p: False)
+
+        class _Dead:
+            def terminate(self): pass
+
+        monkeypatch.setattr(sandbox_egress.subprocess, "Popen", lambda *a, **k: _Dead())
+        with pytest.raises(sandbox_egress.EgressUnavailable, match="did not come up"):
+            with sandbox_egress.isolated_network(timeout_s=1.0):
+                pytest.fail("the body must never run unisolated")
+
+    def test_rules_that_fail_to_install_refuse(self, monkeypatch):
+        """Failure three, and the worst: the namespace is up, so everything LOOKS isolated
+        while specific denies are missing."""
+        import subprocess as sp
+        monkeypatch.delenv("PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL", raising=False)
+        monkeypatch.setattr(sandbox_egress, "egress_isolation_available", lambda: True)
+
+        real_run = sp.run
+
+        def _fail_rules(argv, *a, **k):
+            if any("iptables" in str(part) for part in argv):
+                return sp.CompletedProcess(argv, 1, "", "iptables: permission denied")
+            return real_run(argv, *a, **k)
+
+        monkeypatch.setattr(sandbox_egress.subprocess, "run", _fail_rules)
+        if not shutil.which("unshare") or not shutil.which("slirp4netns"):
+            pytest.skip("needs a real namespace to reach the rule-install branch")
+        with pytest.raises(sandbox_egress.EgressUnavailable, match="failed to install"):
+            with sandbox_egress.isolated_network(timeout_s=5.0):
+                pytest.fail("a partial ruleset must not yield a prefix")
+
+
+class TestTheOptOutIsOptionalNotDisable:
+    """The knob makes isolation BEST-EFFORT; it must never drop it on a capable host.
+
+    A `..._DISABLE` knob would do the opposite, and an operator setting it once for a bare
+    CI container would silently unfilter every seat on claw.
+    """
+
+    def test_required_by_default(self, monkeypatch):
+        monkeypatch.delenv("PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL", raising=False)
+        assert sandbox_egress.egress_required() is True
+
+    def test_the_knob_makes_it_best_effort(self, monkeypatch):
+        monkeypatch.setenv("PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL", "1")
+        assert sandbox_egress.egress_required() is False
+
+    def test_opting_out_still_isolates_where_it_can(self, monkeypatch):
+        """Best-effort means best EFFORT: an available mechanism is still applied."""
+        monkeypatch.setenv("PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL", "1")
+        if not sandbox_egress.egress_isolation_available():
+            pytest.skip("needs the mechanism to prove it is still used")
+        with sandbox_egress.isolated_network(timeout_s=5.0) as prefix:
+            assert prefix, "the opt-out must not disable a working mechanism"
+
+    def test_the_opt_out_reason_is_distinguishable_from_a_missing_mechanism(self, monkeypatch):
+        """Two different facts. An operator decision and a host limitation must not read
+        the same in the evidence."""
+        monkeypatch.setenv("PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL", "1")
+        opted = sandbox_egress.enforcement_report(False)
+        monkeypatch.delenv("PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL", raising=False)
+        absent = sandbox_egress.enforcement_report(False)
+
+        assert opted["network_filtered"] is False and absent["network_filtered"] is False
+        assert opted.get("operator_opt_out") is True
+        assert absent.get("operator_opt_out") is not True
+        assert opted["reason"] != absent["reason"]
 
 
 @pytest.mark.skipif(
@@ -310,4 +406,85 @@ def test_round_facts_do_not_leak_between_legs():
 
     assert other.get("sandbox_network_filtered") is not True, (
         "an unsandboxed leg inherited a sandboxed leg's isolation claim"
+    )
+
+
+def test_round_facts_do_not_leak_to_the_NEXT_leg_on_the_same_thread():
+    """The leak the board actually found, which the cross-thread test above does not reach.
+
+    A ContextVar gives each THREAD its own context, so the cross-thread test passes whether
+    or not anyone resets the token -- it was green throughout the round the leak survived.
+    Legs also run SEQUENTIALLY on a reused worker: leg 1 records `network_filtered=True`,
+    leg 2 runs unsandboxed on that same thread and inherits it. The recorder was fixed to
+    return a token; the caller kept discarding it, so the leak stayed live through the
+    round whose commit message said it was fixed.
+
+    Both legs run on ONE pool worker, which is the shape the leak needs. Running it in a
+    fresh thread also keeps it honest: assert in this thread and an earlier test's
+    unreset write is the baseline, so the test measures pollution rather than resetting.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from phase_loop_runtime import panel_invoker, sandbox_policy
+
+    choice = sandbox_policy.SandboxRootChoice(host=None, path=Path("/tmp"), fell_back=False)
+
+    def leg_one() -> object:
+        token = panel_invoker._record_sandbox_facts(
+            choice, sandbox_egress.enforcement_report(True, applied=True)
+        )
+        assert token is not None, "the recorder must hand back something resettable"
+        assert panel_invoker._sandbox_evidence()["sandbox_network_filtered"] is True
+        # What the launch site does in its ExitStack callback.
+        panel_invoker._SANDBOX_ROUND_FACTS.reset(token)
+        return token
+
+    def leg_two() -> dict:
+        return dict(panel_invoker._sandbox_evidence())
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(leg_one).result()
+        inherited = pool.submit(leg_two).result()
+
+    assert inherited.get("sandbox_network_filtered") is not True, (
+        "the next leg on this worker inherited the previous leg's isolation claim"
+    )
+
+
+def test_a_leg_that_never_resets_DOES_leak(monkeypatch):
+    """The falsifier for the test above: without the reset, the leak is real and visible.
+
+    Without this, a `_sandbox_evidence()` that stopped reporting the key at all would make
+    the leak test pass by saying nothing.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from phase_loop_runtime import panel_invoker, sandbox_policy
+
+    choice = sandbox_policy.SandboxRootChoice(host=None, path=Path("/tmp"), fell_back=False)
+
+    def leg_one() -> None:
+        panel_invoker._record_sandbox_facts(  # token deliberately discarded
+            choice, sandbox_egress.enforcement_report(True, applied=True)
+        )
+
+    def leg_two() -> dict:
+        return dict(panel_invoker._sandbox_evidence())
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(leg_one).result()
+        inherited = pool.submit(leg_two).result()
+
+    assert inherited.get("sandbox_network_filtered") is True, (
+        "if discarding the token does NOT leak, the reset above proves nothing"
+    )
+
+
+def test_the_launch_site_resets_the_facts_token():
+    """Returning a token nobody resets is the mechanism-without-activation pattern again."""
+    import inspect
+    from phase_loop_runtime import panel_invoker
+
+    source = inspect.getsource(panel_invoker._default_spawn)
+    assert "_record_sandbox_facts(" in source, "the launch site must record facts"
+    assert "_SANDBOX_ROUND_FACTS.reset" in source, (
+        "the launch site records facts and never resets them"
     )

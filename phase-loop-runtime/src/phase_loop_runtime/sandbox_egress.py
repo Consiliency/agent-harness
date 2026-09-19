@@ -48,6 +48,7 @@ __all__ = [
     "PRIVATE_CIDRS",
     "egress_rules",
     "egress_isolation_available",
+    "egress_required",
     "enforcement_report",
     "require_egress_isolation",
     "run_in_isolated_network",
@@ -70,6 +71,26 @@ PRIVATE_CIDRS: tuple[str, ...] = (
 
 class EgressUnavailable(RuntimeError):
     """Egress isolation was required and could not be enforced."""
+
+
+def egress_required() -> bool:
+    """Isolation is REQUIRED by default; refusing is the policy, degrading is not.
+
+    The plan states it directly: "Policy default is to REFUSE when a required property
+    cannot be enforced, never to degrade silently." Four board rounds went the other way
+    -- round 2 claimed filtering that was never applied, round 3 let a partial install
+    claim `applied`, round 4 reported honestly and still launched unrestricted. Honest
+    evidence plus open execution is still open execution.
+
+    This costs nothing on a non-Linux coordinator, which cannot obtain review isolation at
+    all (``backing.py`` refuses without Linux and ``bwrap``). It costs something on a Linux
+    host without ``slirp4netns`` -- a bare CI container, for one -- so
+    ``PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL=1`` makes isolation best-effort there. OPTIONAL,
+    deliberately, rather than DISABLE: it must not drop filtering on a host that can do it.
+    """
+    return os.environ.get(
+        "PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL", ""
+    ).strip() not in ("1", "true", "yes")
 
 
 def egress_rules(policy: EgressPolicy | None = None) -> list[str]:
@@ -125,6 +146,17 @@ def enforcement_report(
             "denied": list(PRIVATE_CIDRS),
             "allowed": [f"{h}:{p}" for h, p in egress_allowlist().allow],
         }
+    if not available and not egress_required():
+        return {
+            "network_filtered": False,
+            "mechanism": None,
+            "operator_opt_out": True,
+            "reason": (
+                "egress isolation unavailable on this host and "
+                "PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL is set; this seat was NOT "
+                "network-restricted and could reach the private network"
+            ),
+        }
     if available and not applied:
         # The board caught this: the mechanism was built and verified, the report was
         # wired into the evidence, and NO provider was ever launched through
@@ -161,7 +193,12 @@ def require_egress_isolation(available: bool | None = None) -> None:
 
 
 @contextlib.contextmanager
-def isolated_network(policy: EgressPolicy | None = None, *, timeout_s: float = 3600.0):
+def isolated_network(
+    policy: EgressPolicy | None = None,
+    *,
+    timeout_s: float = 3600.0,
+    required: bool | None = None,
+):
     """Hold a filtered network namespace open and yield an argv PREFIX for it.
 
     This is the piece the board found missing. `run_in_isolated_network` ran a script in a
@@ -174,16 +211,28 @@ def isolated_network(policy: EgressPolicy | None = None, *, timeout_s: float = 3
     fixed 600s a long leg outlived its own namespace mid-run. Callers with a known deadline
     should pass it.
 
-    Yields ``()`` and warns if the mechanism is unavailable, so a caller can record
-    truthfully rather than assume. Callers that must not proceed unisolated should call
-    :func:`require_egress_isolation` first.
+    There are THREE ways this can fail -- the mechanism is absent, the namespace never
+    comes up, and the rules fail to install -- and every one of them used to fall through to
+    ``yield ()``. A caller-side ``require_egress_isolation()`` guards only the first, which
+    is why the decision lives HERE, in the module that owns the policy: ``required`` makes
+    all three raise :class:`EgressUnavailable`. It defaults to :func:`egress_required`.
+
+    With ``required=False`` the degraded branches still ``yield ()`` and warn, so a
+    best-effort caller can record truthfully rather than assume.
     """
+    if required is None:
+        required = egress_required()
+
+    def _degrade(reason: str):
+        if required:
+            raise EgressUnavailable(reason)
+        warnings.warn(reason, RuntimeWarning, stacklevel=3)
+        return ()
+
     if not egress_isolation_available():
-        warnings.warn(
-            "egress isolation unavailable; launching WITHOUT network restriction",
-            RuntimeWarning, stacklevel=2,
+        yield _degrade(
+            "egress isolation unavailable; refusing to launch WITHOUT network restriction"
         )
-        yield ()
         return
 
     rules = "\n".join(f"iptables {rule}" for rule in egress_rules(policy))
@@ -200,9 +249,7 @@ def isolated_network(policy: EgressPolicy | None = None, *, timeout_s: float = 3
             while not os.path.exists(ready) and time.monotonic() < deadline:
                 time.sleep(0.05)
             if not os.path.exists(ready):
-                warnings.warn("network namespace did not come up; launching UNISOLATED",
-                              RuntimeWarning, stacklevel=2)
-                yield ()
+                yield _degrade("network namespace did not come up; launch is UNISOLATED")
                 return
             nspid = Path(pidfile).read_text(encoding="utf-8").strip()
 
@@ -223,12 +270,12 @@ def isolated_network(policy: EgressPolicy | None = None, *, timeout_s: float = 3
                 capture_output=True, text=True, timeout=30,
             )
             if installed.returncode != 0:
-                warnings.warn(
+                # A PARTIAL ruleset is the worst outcome of the three: the namespace is up,
+                # so everything downstream looks isolated while specific denies are missing.
+                yield _degrade(
                     "egress rules failed to install "
-                    f"({installed.stderr.strip()[:120]}); launching UNISOLATED",
-                    RuntimeWarning, stacklevel=2,
+                    f"({installed.stderr.strip()[:120]}); launch is UNISOLATED"
                 )
-                yield ()
                 return
 
             # The seat runs with the capability bounding set EMPTIED. Without this the

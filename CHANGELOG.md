@@ -6,6 +6,35 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Review seats run in a writable sandbox with filtered egress (agent-harness#848)
+
+- A review seat is now staged into its own **independent shallow git clone** (`--depth 50`,
+  never `--shared`, never a linked worktree) with the working tree overlaid, so a panelist can
+  run `git log`/`blame`/`diff`, edit files, and execute tests without touching the reviewed
+  tree. The previous read-only copy could not host a `pytest` run at all. Delivered to all four
+  seats (codex, grok, gemini/agy, claude), including the non-native TUI adapter.
+- **Network egress is filtered, and refusing is the default.** The seat runs in an unprivileged
+  user namespace with `slirp4netns` for uplink: the public internet and the inference router
+  (`ai:8020`, `ai:3131`) are reachable; RFC1918, the tailnet CGNAT range, loopback and cloud
+  metadata are not. The capability bounding set is emptied, so the seat cannot withdraw its own
+  rules. When isolation cannot be enforced -- mechanism absent, namespace not up, or rules only
+  partly installed -- the launch is **refused**, not degraded.
+  `PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL=1` makes it best-effort for a host that cannot do it
+  (a bare CI container); it does not disable filtering where the mechanism works.
+- Every provider-launch seam in `panel_invoker` runs inside the namespace, enforced by an AST
+  walk over the module rather than by inspection: a new spawn is either prefixed or declared
+  parent-side with a reason.
+- Sandboxes are reaped on a TTL and a total-footprint ceiling, oldest-first, identified by a
+  marker this runtime writes. The panelist's irreproducible `work/` is archived before a reap
+  and the clone is not; a failed archive leaves the sandbox in place.
+- The sandbox root is a LOCATION (`host:path`), defaulting to the local machine. An unreachable
+  remote falls back locally with a recorded reason; below the free-space floor the round is
+  refused rather than filling the host's disk. `PHASE_LOOP_SANDBOX_DISABLE=1` restores the
+  historical posture.
+- **Not covered:** staged-tree provenance still authenticates a constructible shape, so a
+  panelist can forge the marker. That needs a parent-held identity and is tracked in
+  agent-harness#895.
+
 ### Versioned, unambiguous readmission authority digest (agent-harness#655)
 
 - `DeltaReadmitAuthority.authority_digest` now hashes a domain-separated canonical JSON encoding
