@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable, Mapping
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from dataclasses import dataclass
 from hashlib import sha256
 import json
@@ -561,7 +561,28 @@ class ParentUnixBroker:
                     adapter, expected_pid=child[0][0].pid, expected_start=child[0][1]
                 )
             except BaseException as exc: error.append(exc)
-        thread=threading.Thread(target=serve, daemon=False); thread.start()
+        # CARRY THE PARENT'S CONTEXT ACROSS THE THREAD BOUNDARY.
+        #
+        # `serve` calls `adapter.invoke()`, which is the real provider launch
+        # (`_parent_infer` -> `_exec_leg` -> the egress-prefixed `_popen` seams). A plain
+        # `threading.Thread` starts with a FRESH context, so every ContextVar the parent
+        # set reads back as its default here -- and `_EGRESS_LAUNCH_PREFIX` read back as
+        # `()`. Every brokered seat therefore launched OUTSIDE the network namespace while
+        # the parent thread, where the prefix was populated, recorded
+        # `network_filtered: true` into the seat's evidence.
+        #
+        # Found by the claude seat in agent-harness#890 board round 5 and observed live
+        # from inside its sandbox by grok ("on the host netns, full capability bounding
+        # set"). Proven:
+        #
+        #     parent thread prefix  : ('nsenter','--net','-t',...)
+        #     serve  thread prefix  : ()
+        #     argv actually launched: ['codex', 'exec', ...]
+        #     evidence would record : applied = True
+        #
+        # `copy_context()` is evaluated HERE, on the parent thread, and the snapshot is
+        # what the serve thread runs under.
+        thread=threading.Thread(target=copy_context().run, args=(serve,), daemon=False); thread.start()
         proc=subprocess.Popen(argv,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,env={"PATH":"/usr/bin","PYTHONNOUSERSITE":"1","PYTHONDONTWRITEBYTECODE":"1"},close_fds=True,start_new_session=True)
         _ppid, start = self._proc_stat(proc.pid)
         child.append((proc, start)); child_ready.set()

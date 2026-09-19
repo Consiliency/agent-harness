@@ -24,9 +24,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Every provider-launch seam in `panel_invoker` runs inside the namespace, enforced by an AST
   walk over the module rather than by inspection: a new spawn is either prefixed or declared
   parent-side with a reason.
-- Sandboxes are reaped on a TTL and a total-footprint ceiling, oldest-first, identified by a
-  marker this runtime writes. The panelist's irreproducible `work/` is archived before a reap
-  and the clone is not; a failed archive leaves the sandbox in place.
+- A sandbox is deleted when its leg finishes. The TTL and total-footprint reaper, the
+  marker-based identification and the archive-before-reap rule therefore govern **scratch
+  left by a run that was killed before its cleanup ran** -- a timeout or a crash -- not
+  sandboxes from normal rounds, which never survive to be reaped. A failed archive leaves
+  that scratch in place rather than trading the panelist's irreproducible `work/` for disk.
+  Keeping a sandbox alive after its leg so a panelist can be resumed against it is
+  **not implemented**; it is agent-harness#897.
 - The sandbox root is a LOCATION (`host:path`), defaulting to the local machine. An unreachable
   remote falls back locally with a recorded reason; below the free-space floor the round is
   refused rather than filling the host's disk. `PHASE_LOOP_SANDBOX_DISABLE=1` restores the
