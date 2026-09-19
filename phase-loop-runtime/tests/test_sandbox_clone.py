@@ -194,3 +194,100 @@ def test_a_stale_sandbox_is_detected_when_the_branch_moves(tmp_path):
     assert review_stage.is_stale(staged, repo), (
         "a panelist resumed against vanished code reports confident, cited, wrong findings"
     )
+
+
+class TestStagingNeverWritesOutsideTheClone:
+    """Board round 5, codex, BLOCKING — reproduced before the fix, outside sentinel clobbered.
+
+    The clone recreates what the COMMIT held. So a committed symlink pointing outside the
+    repo is sitting at the destination even when the working tree has since replaced it
+    with a regular file. `_refuse_escaping_symlinks` inspects the SOURCE, where the symlink
+    no longer exists, so it accepts -- and `shutil.copy2` follows the destination link and
+    overwrites the victim with the parent process's permissions.
+
+    Measured before the fix:
+
+        before staging: victim = 'PRECIOUS ORIGINAL CONTENT'
+        after  staging: victim = 'ATTACKER PAYLOAD'
+
+    This fires during STAGING, before a reviewer acts at all, so it is not covered by any
+    reasoning about what a sandboxed seat can reach. The sentinel lives OUTSIDE the repo,
+    because a sentinel inside it would be staged and prove nothing.
+    """
+
+    def _victim_and_repo(self, tmp_path):
+        victim = tmp_path / "VICTIM.txt"
+        victim.write_text("PRECIOUS ORIGINAL CONTENT\n", encoding="utf-8")
+        repo = _repo(tmp_path / "repo")
+        return victim, repo
+
+    def test_a_committed_symlink_replaced_by_a_regular_file_cannot_clobber_its_target(
+        self, tmp_path,
+    ):
+        victim, repo = self._victim_and_repo(tmp_path)
+
+        link = repo / "innocent.txt"
+        link.symlink_to(victim)
+        _commit(repo, "commit the symlink")
+
+        link.unlink()
+        link.write_text("ATTACKER PAYLOAD\n", encoding="utf-8")
+
+        try:
+            staged = review_stage.stage_review_tree(repo, tmp_path / "stage")
+        except Exception:
+            # Refusing is also a correct outcome; what must never happen is the write.
+            staged = None
+
+        assert victim.read_text(encoding="utf-8") == "PRECIOUS ORIGINAL CONTENT\n", (
+            "staging wrote OUTSIDE the clone"
+        )
+        if staged is not None:
+            assert (staged / "innocent.txt").read_text(encoding="utf-8") == "ATTACKER PAYLOAD\n", (
+                "the reviewer must still see the working tree's regular file"
+            )
+            assert not (staged / "innocent.txt").is_symlink()
+
+    def test_the_content_shortcircuit_does_not_read_through_the_link(self, tmp_path):
+        """`is_file()` follows symlinks, so the skip-if-identical check could compare the
+        VICTIM's bytes and silently leave a link where a file belongs."""
+        victim, repo = self._victim_and_repo(tmp_path)
+
+        link = repo / "innocent.txt"
+        link.symlink_to(victim)
+        _commit(repo, "commit the symlink")
+
+        link.unlink()
+        # Byte-identical to the victim: the short-circuit would `continue` and keep a
+        # symlink pointing out of the sandbox as if the file had been staged.
+        link.write_text("PRECIOUS ORIGINAL CONTENT\n", encoding="utf-8")
+
+        staged = review_stage.stage_review_tree(repo, tmp_path / "stage")
+
+        assert not (staged / "innocent.txt").is_symlink(), (
+            "a link OUT of the sandbox survived staging as the reviewed file"
+        )
+        assert victim.read_text(encoding="utf-8") == "PRECIOUS ORIGINAL CONTENT\n"
+
+    def test_a_symlink_to_a_directory_outside_is_replaced_not_followed(self, tmp_path):
+        outside = tmp_path / "outside_dir"
+        outside.mkdir()
+        (outside / "keep.txt").write_text("keep me\n", encoding="utf-8")
+        repo = _repo(tmp_path / "repo")
+
+        link = repo / "docs"
+        link.symlink_to(outside, target_is_directory=True)
+        _commit(repo, "commit a dir symlink")
+
+        link.unlink()
+        link.mkdir()
+        (link / "keep.txt").write_text("staged content\n", encoding="utf-8")
+
+        try:
+            review_stage.stage_review_tree(repo, tmp_path / "stage")
+        except Exception:
+            pass
+
+        assert (outside / "keep.txt").read_text(encoding="utf-8") == "keep me\n", (
+            "staging wrote through a directory symlink"
+        )

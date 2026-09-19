@@ -1668,6 +1668,17 @@ def _gc_stale_panel_scratch(
         )
         for path in base.glob("pl-panel-*"):
             try:
+                if _sandbox_retention._looks_like_a_sandbox(path):
+                    # RETENTION OWNS THIS ONE, AND IT HAS ALREADY DECIDED. It deliberately
+                    # keeps a sandbox whose `_archive_work` raised -- "never trade the
+                    # irreproducible half for disk space; space comes back on the next
+                    # pass, the panelist's work does not". This sweep then deleted exactly
+                    # those, so an unreachable or full archive destroyed the notes the
+                    # failure handling exists to protect (agent-harness#890 board round 5,
+                    # codex; reproduced -- `reap` returned [] and the sweep removed it
+                    # anyway). The retention test exercised `reap` alone and could not see
+                    # the composition.
+                    continue
                 if path.is_dir() and path.stat().st_mtime < cutoff:
                     # Whatever retention did not claim: a killed round can leave a tree
                     # whose directories a panelist made read-only, and

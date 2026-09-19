@@ -224,3 +224,78 @@ def test_the_production_creator_marks_what_it_creates(tmp_path, monkeypatch):
     # The scratch dir is reaped by `_default_spawn`'s own finally, so the marker is proven
     # by the call having been made rather than by a surviving file.
     assert "base" in seen
+
+
+class TestTheGCDoesNotUndoRetentionsRefusal:
+    """Board round 5, codex, BLOCKING — reproduced: the age sweep destroyed retained work.
+
+    `reap` deliberately RETAINS a sandbox whose `_archive_work` raised, on the rule that
+    disk space comes back on the next pass and the panelist's notes do not. The legacy
+    age sweep in `_gc_stale_panel_scratch` then deleted exactly those directories, so an
+    unreachable or full archive destination destroyed the work the failure handling exists
+    to protect.
+
+    The existing failed-archive test exercises `reap` ALONE, so it was green throughout.
+    This one drives the production composition -- which is where the two halves meet and
+    where the guarantee actually lives or dies.
+    """
+
+    def _retained_sandbox(self, tmp_path):
+        import os
+        import time
+        from phase_loop_runtime import sandbox_retention
+
+        sandbox = tmp_path / "pl-panel-victim"
+        (sandbox / "work").mkdir(parents=True)
+        (sandbox / "work" / "notes.md").write_text("IRREPRODUCIBLE\n", encoding="utf-8")
+        sandbox_retention.mark_as_sandbox(sandbox)
+        stale = time.time() - 10 * 24 * 3600
+        os.utime(sandbox, (stale, stale))
+        return sandbox
+
+    def test_work_retained_because_archiving_failed_survives_the_age_sweep(
+        self, tmp_path, monkeypatch,
+    ):
+        from phase_loop_runtime import panel_invoker, sandbox_retention
+
+        sandbox = self._retained_sandbox(tmp_path)
+        # A destination that cannot be written: `_archive_work` raises, `_retire` returns
+        # False, the sandbox is kept. It has to be configured where the GC's OWN reap
+        # call reads it -- an earlier version of this test set it only on a direct `reap`,
+        # so the GC ran with NO destination, reaped legitimately (nothing to preserve to),
+        # and the test failed against a correct fix.
+        broken = tmp_path / "archive-dest"
+        broken.write_text("not a directory\n", encoding="utf-8")
+        monkeypatch.setenv("PHASE_LOOP_SANDBOX_ARCHIVE_DEST", str(broken))
+
+        removed = sandbox_retention.reap(tmp_path, ttl_s=3600, archive_dest=broken)
+        assert removed == [], "precondition: retention must refuse to reap it"
+        assert (sandbox / "work" / "notes.md").exists()
+
+        panel_invoker._gc_stale_panel_scratch(root=str(tmp_path), max_age_s=3600)
+
+        assert (sandbox / "work" / "notes.md").exists(), (
+            "the GC destroyed work retention had refused to trade for disk space"
+        )
+
+    def test_the_sweep_still_reclaims_scratch_that_is_NOT_a_sandbox(self, tmp_path):
+        """The falsifier: deferring to retention must not disable the sweep entirely.
+
+        Its whole purpose is a run KILLED before its `finally` -- scratch with no marker,
+        which retention does not claim and nothing else will ever remove.
+        """
+        import os
+        import time
+        from phase_loop_runtime import panel_invoker
+
+        orphan = tmp_path / "pl-panel-killed-run"
+        (orphan / "review").mkdir(parents=True)
+        (orphan / "review" / "leftover.txt").write_text("x\n", encoding="utf-8")
+        stale = time.time() - 10 * 24 * 3600
+        os.utime(orphan, (stale, stale))
+
+        panel_invoker._gc_stale_panel_scratch(root=str(tmp_path), max_age_s=3600)
+
+        assert not orphan.exists(), (
+            "unmarked scratch from a killed run must still be reclaimed"
+        )

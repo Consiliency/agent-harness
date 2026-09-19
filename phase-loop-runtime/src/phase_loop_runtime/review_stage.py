@@ -304,8 +304,13 @@ def _copy_selected(root: Path, staged: Path) -> None:
         destination = staged / rel
         destination.parent.mkdir(parents=True, exist_ok=True)
         if source.is_symlink():
+            if destination.is_symlink() or destination.exists():
+                destination.unlink()
             os.symlink(os.readlink(source), destination)
         else:
+            # Same class as `_overlay_working_tree`: never follow a destination link.
+            if destination.is_symlink():
+                destination.unlink()
             shutil.copy2(source, destination)
 
 
@@ -335,7 +340,20 @@ def _overlay_working_tree(root: Path, staged: Path) -> None:
                 destination.unlink()
             os.symlink(os.readlink(source), destination)
         elif source.is_file():
-            if destination.is_file() and destination.read_bytes() == source.read_bytes():
+            # NEVER write THROUGH a destination symlink. The clone recreates whatever the
+            # COMMIT held, so a committed symlink pointing outside the repo can still be
+            # sitting at `destination` when the working tree has since replaced it with a
+            # regular file. `_refuse_escaping_symlinks` inspects the SOURCE, where the
+            # symlink no longer exists, so it accepts -- and `shutil.copy2` then follows
+            # the destination link and overwrites the victim with the parent's
+            # permissions. Demonstrated on agent-harness#890 board round 5: staging wrote
+            # outside the clone, before any reviewer acted.
+            #
+            # `is_symlink()` MUST be tested before `is_file()`, which follows links: the
+            # content short-circuit below would otherwise compare the VICTIM's bytes.
+            if destination.is_symlink():
+                destination.unlink()
+            elif destination.is_file() and destination.read_bytes() == source.read_bytes():
                 continue
             shutil.copy2(source, destination)
 
