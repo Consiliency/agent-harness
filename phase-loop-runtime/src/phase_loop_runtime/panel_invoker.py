@@ -1840,9 +1840,14 @@ _SANDBOX_ROUND_FACTS: ContextVar[dict[str, object]] = ContextVar(
 
 def _record_sandbox_facts(
     root_choice: "_sandbox_policy.SandboxRootChoice", enforcement: dict[str, object],
-) -> None:
-    """Remember what this round chose, so the leg evidence can state it."""
-    _SANDBOX_ROUND_FACTS.set({
+):
+    """Remember what this leg chose, and return a token the caller MUST reset.
+
+    Returning the token is the point: an earlier version set this and never reset it, so a
+    later launch on the same worker inherited the previous leg's isolation claim (board
+    round 4).
+    """
+    return _SANDBOX_ROUND_FACTS.set({
         "sandbox_root_host": root_choice.host,
         "sandbox_root_path": str(root_choice.path),
         "sandbox_root_fell_back": root_choice.fell_back,
