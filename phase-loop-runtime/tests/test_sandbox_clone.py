@@ -23,6 +23,8 @@ import os
 import subprocess
 from pathlib import Path
 
+import pytest
+
 
 from phase_loop_runtime import review_stage
 
@@ -372,3 +374,75 @@ class TestAnAncestorSymlinkCannotCarryAWriteOutside:
 
         staged = review_stage.stage_review_tree(repo, tmp_path / "stage")
         assert (staged / "a" / "b" / "c" / "deep.py").read_text(encoding="utf-8") == "x = 1\n"
+
+
+class TestTheContainmentCheckHasItsOwnFalsifier:
+    """Board round 9: the resolved-parent check NEVER FIRED in 61 tests.
+
+    Removing it left 177 green, because the `-z` quoting fix covers the same escape from
+    the other side. Two fixes covering each other means neither is individually falsified,
+    and the payload had called this one "the load-bearing change" — by execution it was the
+    redundant half. A later refactor of the stale-removal loop would have silently rested
+    the whole property on an unexercised branch.
+
+    So this drives `_overlay_working_tree` DIRECTLY against a clone that already contains a
+    directory symlink pointing outside — the state the quoting fix is what normally
+    prevents. No git, no clone, nothing else able to catch it.
+    """
+
+    def test_the_check_refuses_a_destination_that_resolves_outside(self, tmp_path):
+        outside = tmp_path / "OUTSIDE"
+        outside.mkdir()
+        victim = outside / "victim.txt"
+        victim.write_text("PRECIOUS ORIGINAL CONTENT\n", encoding="utf-8")
+
+        repo = _repo(tmp_path / "repo")
+        (repo / "docs").mkdir()
+        (repo / "docs" / "victim.txt").write_text("ATTACKER PAYLOAD\n", encoding="utf-8")
+        _commit(repo, "a real docs dir in the source")
+
+        # The clone already holds a directory symlink out of the tree. Reached normally
+        # via a committed symlink the stale-removal loop failed to match; planted here so
+        # the containment check is the ONLY thing standing between it and the victim.
+        staged = tmp_path / "stage"
+        staged.mkdir()
+        (staged / "docs").symlink_to(outside, target_is_directory=True)
+
+        try:
+            review_stage._overlay_working_tree(repo, staged)
+        except Exception:
+            pass   # refusing is correct; writing outside is not
+
+        assert victim.read_text(encoding="utf-8") == "PRECIOUS ORIGINAL CONTENT\n", (
+            "the containment check did not stop a write through a planted ancestor symlink"
+        )
+
+    def test_it_refuses_rather_than_silently_skipping(self, tmp_path):
+        """A silent skip would leave the reviewer a tree missing files, with no signal."""
+        outside = tmp_path / "OUTSIDE"
+        outside.mkdir()
+        (outside / "victim.txt").write_text("keep\n", encoding="utf-8")
+
+        repo = _repo(tmp_path / "repo")
+        (repo / "docs").mkdir()
+        (repo / "docs" / "victim.txt").write_text("payload\n", encoding="utf-8")
+        _commit(repo, "c")
+
+        staged = tmp_path / "stage"
+        staged.mkdir()
+        (staged / "docs").symlink_to(outside, target_is_directory=True)
+
+        with pytest.raises(ValueError, match="resolves outside the sandbox"):
+            review_stage._overlay_working_tree(repo, staged)
+
+    def test_ordinary_nested_paths_are_unaffected(self, tmp_path):
+        """The falsifier: containment must not refuse legitimate nesting."""
+        repo = _repo(tmp_path / "repo")
+        (repo / "a" / "b").mkdir(parents=True)
+        (repo / "a" / "b" / "deep.py").write_text("x = 1\n", encoding="utf-8")
+        _commit(repo, "nested")
+
+        staged = tmp_path / "stage"
+        staged.mkdir()
+        review_stage._overlay_working_tree(repo, staged)
+        assert (staged / "a" / "b" / "deep.py").read_text(encoding="utf-8") == "x = 1\n"

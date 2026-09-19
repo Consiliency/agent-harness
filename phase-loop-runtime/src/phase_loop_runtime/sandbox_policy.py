@@ -240,8 +240,13 @@ def ensure_staging_space(destination: Path | str, floor_bytes: int | None = None
             RuntimeWarning, stacklevel=2,
         )
         return
+    # `_free_bytes_at` with no host returns an int or raises -- it can never be None, so
+    # the `free is not None` guard that stood here was DEAD, and the test that claimed to
+    # cover it monkeypatched a None production cannot produce. That is the same vacuous
+    # shape the comment above condemns, committed in the fix for it (board round 9).
+    # Unmeasurable is decided above, by `is_dir()`, which is the reachable branch.
     free = _free_bytes_at(SandboxLocation(None, target), 5.0)
-    if free is not None and free < floor:
+    if free < floor:
         raise SandboxSpaceError(
             f"the staging filesystem at {destination} has {free / 1024**3:.1f} GiB free, "
             f"below the {floor / 1024**3:.1f} GiB floor; refusing to stage a sandbox "

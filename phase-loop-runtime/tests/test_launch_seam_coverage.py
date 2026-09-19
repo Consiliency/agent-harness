@@ -72,8 +72,22 @@ NOT_A_PROCESS_LAUNCH: dict[str, str] = {
 # The ONE sanctioned provider spawn, by site. Everything else in a leg-path module is
 # either declared parent-side or a defect.
 THE_LAUNCH_INTERFACE: dict[tuple[str, str], str] = {
-    ("panel_invoker.py", "[*_EGRESS_LAUNCH_PREFIX.get(), *argv]"):
-        "launch_provider -- the only Popen that may start a review provider",
+    # Keyed by (module, TOP-LEVEL enclosing def) -- SITE IDENTITY, not argv text. Board
+    # round 9 defeated the text key by shadowing the name locally so the argv rendered
+    # identically while the prefix was empty:
+    #
+    #     def _launch_leg_shadowed(argv, **kwargs):
+    #         _EGRESS_LAUNCH_PREFIX = _NoPrefix          # .get() -> ()
+    #         return subprocess.Popen([*_EGRESS_LAUNCH_PREFIX.get(), *argv], **kwargs)
+    #
+    # Executed: 54 tests green, and the launch emitted `codex exec` with no prefix. Told
+    # twice to key by site identity, I had keyed by (module, argv) -- which narrows the
+    # blast radius to one module and leaves the class open. A function's top-level name
+    # cannot be forged by shadowing a variable or naming a local.
+    ("panel_invoker.py", "launch_provider"):
+        "the only Popen that may start a review provider",
+    ("panel_invoker.py", "run_provider"):
+        "the only subprocess.run that may start a review provider",
 }
 
 PARENT_SIDE_ALLOWLIST: dict[tuple[str, str], str] = {
@@ -332,18 +346,35 @@ def test_the_leg_path_modules_all_exist():
     )
 
 
-def _spawn_sites() -> list[tuple[str, int, str, str]]:
+def _spawn_sites() -> list[tuple[str, int, str, str, str]]:
     return [site for _name, path in _module_paths() for site in _sites_in(path)]
 
 
-def _sites_in(path: Path) -> list[tuple[str, int, str, str]]:
+def _top_level_owner(tree: ast.Module, line: int) -> str:
+    """The OUTERMOST def containing `line`, or "<module>".
+
+    Outermost deliberately. Board round 9: keying on the innermost def would be defeated
+    by a nested `def launch_provider` inside `_exec_leg` -- the seat said so before I could
+    write it wrong. A top-level qualname cannot be forged by shadowing a name or by naming
+    a local variable, which is what defeated every text key before it.
+    """
+    best = None
+    for node in ast.walk(tree):
+        if (isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.lineno <= line <= (node.end_lineno or 0)
+                and (best is None or node.lineno < best.lineno)):
+            best = node
+    return best.name if best is not None else "<module>"
+
+
+def _sites_in(path: Path) -> list[tuple[str, int, str, str, str]]:
     source = path.read_text(encoding="utf-8")
     tree = ast.parse(source)
     modules, direct, unresolvable = _bindings(tree)
     sites: list[tuple[int, str, str]] = []
 
     for note in unresolvable:
-        sites.append((path.name, 0, "<unresolvable-import>", f"<{note}>"))
+        sites.append((path.name, 0, "<unresolvable-import>", f"<{note}>", "<module>"))
 
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -364,8 +395,10 @@ def _sites_in(path: Path) -> list[tuple[str, int, str, str]]:
 
         if resolved in SPAWN_FUNCTIONS:
             argv = _argv_of(call)
-            sites.append((path.name, node.lineno, resolved, argv if argv is not None
-                          else f"<unreadable argv at line {node.lineno}>"))
+            sites.append((path.name, node.lineno, resolved,
+                          argv if argv is not None
+                          else f"<unreadable argv at line {node.lineno}>",
+                          _top_level_owner(tree, node.lineno)))
             continue
 
         # FAIL CLOSED ON WHAT WE CANNOT RESOLVE. The previous walker returned None for any
@@ -376,7 +409,8 @@ def _sites_in(path: Path) -> list[tuple[str, int, str, str]]:
         leaf = callee.rsplit(".", 1)[-1]
         if resolved is None and leaf in SPAWN_ATTRS:
             argv = _argv_of(call) or "<no argv>"
-            sites.append((path.name, node.lineno, f"<unresolved:{callee}>", argv))
+            sites.append((path.name, node.lineno, f"<unresolved:{callee}>", argv,
+                          _top_level_owner(tree, node.lineno)))
 
     return sites
 
@@ -401,10 +435,10 @@ def test_every_provider_launch_carries_the_egress_prefix():
     """
     undeclared = [
         (module, lineno, func, argv)
-        for module, lineno, func, argv in _spawn_sites()
+        for module, lineno, func, argv, owner in _spawn_sites()
         if (module, argv) not in PARENT_SIDE_ALLOWLIST
         and func not in NOT_A_PROCESS_LAUNCH
-        and (module, argv) not in THE_LAUNCH_INTERFACE
+        and (module, owner) not in THE_LAUNCH_INTERFACE
     ]
     assert not undeclared, (
         "these spawns are neither the launch interface nor declared parent-side:\n"
@@ -506,7 +540,7 @@ def test_all_three_seats_start_through_the_interface():
 
 def test_the_allowlist_does_not_rot():
     """An entry that no longer matches any spawn is a stale exemption -- delete it."""
-    live = {(module, argv) for module, _lineno, _func, argv in _spawn_sites()}
+    live = {(module, argv) for module, _lineno, _func, argv, _owner in _spawn_sites()}
     stale = sorted(set(PARENT_SIDE_ALLOWLIST) - live)
     assert not stale, f"these allowlist entries match no spawn any more: {stale}"
 
@@ -525,8 +559,8 @@ def test_the_walker_actually_fails_on_an_unwired_spawn(tmp_path, monkeypatch):
 
     sites = _spawn_sites()
     assert sites, "the fixture must present a spawn"
-    assert all(PREFIX_EXPR not in argv for _m, _l, _f, argv in sites)
-    assert all((m, argv) not in PARENT_SIDE_ALLOWLIST for m, _l, _f, argv in sites), (
+    assert all(PREFIX_EXPR not in argv for _m, _l, _f, argv, _o in sites)
+    assert all((m, argv) not in PARENT_SIDE_ALLOWLIST for m, _l, _f, argv, _o in sites), (
         "the fixture's spawn must be caught, not exempted"
     )
     with pytest.raises(AssertionError, match="neither the launch interface nor declared"):
@@ -705,3 +739,48 @@ class TestTheWalkerResistsTheEvasionsTheBoardDemonstrated:
         )
         assert sites, "an argv-less spawn must still be reported"
         assert "unreadable" in sites[0][3]
+
+
+def test_the_interface_is_exactly_two_sites_each_alone_in_its_function():
+    """Site identity is only as strong as the sites being unique and unshared.
+
+    Board round 9's remedy in full: key by module + top-level enclosing def, AND assert
+    exactly two sites match, each the SOLE spawn inside its function. Without the second
+    half, a second `subprocess.Popen` added inside `launch_provider` would inherit the
+    exemption -- identity keying alone would have moved the hole rather than closed it.
+    """
+    interface = [s for s in _spawn_sites() if (s[0], s[4]) in THE_LAUNCH_INTERFACE]
+    assert len(interface) == 2, (
+        f"expected exactly two interface spawns, found {len(interface)}: "
+        f"{[(s[0], s[1], s[4]) for s in interface]}"
+    )
+
+    from collections import Counter
+    per_owner = Counter((s[0], s[4]) for s in _spawn_sites())
+    for key in THE_LAUNCH_INTERFACE:
+        assert per_owner[key] == 1, (
+            f"{key[1]} contains {per_owner[key]} spawns; the exemption is granted to the "
+            "FUNCTION, so a second spawn inside it launches unprefixed and exempt"
+        )
+
+
+def test_the_interface_owners_are_module_level():
+    """A nested `def launch_provider` inside `_exec_leg` must not inherit the exemption.
+
+    `_top_level_owner` returns the OUTERMOST def, so a nested definition reports its
+    enclosing top-level function and fails the key. This pins that choice: keying on the
+    innermost name would have been defeated by one indented `def`.
+    """
+    import ast
+
+    source = Path(panel_invoker.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    module_level = {
+        node.name for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    for _module, owner in THE_LAUNCH_INTERFACE:
+        assert owner in module_level, (
+            f"{owner!r} is not a module-level def in panel_invoker; the interface key "
+            "must name a top-level function or it can be shadowed by a nested one"
+        )

@@ -236,11 +236,29 @@ class TestTheFloorMeasuresTheFilesystemThatReceivesTheClone:
         monkeypatch.setattr(sandbox_policy, "_free_bytes_at", lambda loc, t=0: 100 * 1024**3)
         sandbox_policy.ensure_staging_space(tmp_path, 2 * 1024**3)
 
-    def test_an_unmeasurable_destination_does_not_block(self, tmp_path, monkeypatch):
-        """Unknown is not "full". Refusing on an unreadable stat would take the host down
-        for a different reason than the one this guard exists to prevent."""
-        monkeypatch.setattr(sandbox_policy, "_free_bytes_at", lambda loc, t=0: None)
-        sandbox_policy.ensure_staging_space(tmp_path, 2 * 1024**3)
+    def test_an_unmeasurable_destination_does_not_block(self):
+        """Unknown is not "full" -- exercised on the branch that is actually REACHABLE.
+
+        The previous version monkeypatched `_free_bytes_at` to return None, which the
+        source itself documents as impossible for a local path. Board round 9 mutated the
+        live branch to raise and 21 tests still passed: the test covered a stub, not the
+        code. This drives a real path that cannot be measured, with nothing patched.
+        """
+        import warnings
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            sandbox_policy.ensure_staging_space(
+                "/proc/self/fd/9999999/not-a-directory", 2 * 1024**3,
+            )
+        assert any("cannot measure" in str(w.message) for w in caught), (
+            "an unmeasurable destination must warn, not pass silently"
+        )
+
+    def test_a_measurable_destination_below_the_floor_still_refuses(self, tmp_path):
+        """The falsifier for the above: tolerance must not disable the check."""
+        with pytest.raises(sandbox_policy.SandboxSpaceError):
+            sandbox_policy.ensure_staging_space(tmp_path, 10 ** 18)
 
     def test_the_launch_path_checks_the_DESTINATION_not_the_selection(
         self, tmp_path, monkeypatch,
