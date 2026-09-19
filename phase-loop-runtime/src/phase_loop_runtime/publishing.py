@@ -6,6 +6,7 @@ restart an exact ref-CAS retry rather than a second commit attempt.
 """
 from __future__ import annotations
 
+import ast
 import base64
 import contextlib
 import hashlib
@@ -13,6 +14,8 @@ import json
 import os
 import subprocess
 import threading
+import warnings
+from importlib.metadata import version
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -489,6 +492,7 @@ class PublishTransaction:
     def resume(self) -> "PublishTransaction":
         if self.state in (PublishTransactionState.ABANDONED, PublishTransactionState.CONFLICTED):
             raise RuntimeError("tombstoned transaction cannot resume")
+        _validate_transaction_source_audit(self.repo, self)
         if self.state == PublishTransactionState.PREPARED:
             validate_transaction_owned_workspace(self.repo, self)
             _persist_commit_object(self)
@@ -547,6 +551,7 @@ def _transaction_payload(
     authority: dict,
     original_message: bytes,
     mode: str,
+    publication_audit: dict | None = None,
 ) -> dict:
     parent = (
         _git_output(repo, "rev-parse", f"refs/heads/{branch}")
@@ -559,6 +564,10 @@ def _transaction_payload(
     tree = _git_output(repo, "write-tree")
     if not tree:
         raise ValueError("staged tree cannot be resolved")
+    if publication_audit is not None and (
+        publication_audit["tree_oid"] != tree or publication_audit["parent_head_sha"] != parent
+    ):
+        raise ValueError("publication audit no longer matches the staged tree and parent")
     # The legacy primitive defaults to ``base="main"`` even for a freshly
     # initialized repository whose default branch is named ``master``.  The
     # commit parent is the only stable base-tip available in that compatibility
@@ -587,7 +596,7 @@ def _transaction_payload(
     }
     intent = build_pre_trailer_intent(intent_inputs, original_message=original_message)
     construction = _construction_inputs(repo, parent, tree)
-    return {
+    payload = {
         "schema": "PublishCheckpoint.v1",
         "state": PublishTransactionState.PREPARED,
         "checkpoint_root": str(Path(checkpoint_root).resolve()),
@@ -616,6 +625,9 @@ def _transaction_payload(
         "envelope_authority_preimage": authority,
         "construction_inputs": asdict(construction),
     }
+    if publication_audit and publication_audit["source_exceptions"]:
+        payload["publication_audit"] = publication_audit
+    return payload
 
 
 def _load_transaction(
@@ -699,6 +711,7 @@ def prepare_publish_transaction(
     pr_body: str = "",
     commit_message: str | bytes | None = None,
     node_id: str | None = None,
+    publication_audit: dict | None = None,
 ) -> PublishTransaction:
     """Stage-owned normal publish preparation through durable object construction."""
     original = (
@@ -713,6 +726,7 @@ def prepare_publish_transaction(
         repo=Path(repo), checkpoint_root=Path(checkpoint_root), branch=branch, base=base,
         owned_paths=canonical_owned, draft=draft, pr_body=pr_body,
         authority=dict(envelope_authority_preimage), original_message=original, mode="normal",
+        publication_audit=publication_audit,
     )
     node = resolve_transaction_node_id(envelope_authority_preimage, node_id)
     store = PublishTransactionStore(Path(checkpoint_root), node)
@@ -730,6 +744,7 @@ def prepare_publish_transaction(
                     raise RuntimeError("transaction conflict: active checkpoint has different pre-trailer identity")
                 return existing
         transaction = PublishTransaction(Path(repo), store, payload)
+        _validate_transaction_source_audit(Path(repo), transaction)
         transaction._write()
         store.write_active(transaction.transaction_id)
         _persist_commit_object(transaction)
@@ -796,11 +811,40 @@ def prepare_prebuilt_transaction(
         return transaction
 
 
+def _validate_transaction_source_audit(repo: Path, transaction: PublishTransaction) -> None:
+    # Prebuilt commits retain their existing publication contract; this exception
+    # applies only to normal staged publication, including direct preparation.
+    if transaction.mode != "normal":
+        return
+    changed = _git_bytes(repo, "diff", "--name-only", "--no-renames", "-z",
+                         transaction.parent_head_sha, transaction.tree_oid)
+    if changed is None:
+        raise RuntimeError("cannot enumerate frozen publication diff")
+    suspect_paths = sorted(os.fsdecode(path) for path in changed.split(b"\0")
+                           if path and _is_secret_path(os.fsdecode(path)))
+    if suspect_paths:
+        audit = transaction._payload.get("publication_audit")
+        if not audit or (
+            audit.get("tree_oid") != transaction.tree_oid
+            or audit.get("parent_head_sha") != transaction.parent_head_sha
+        ):
+            raise RuntimeError("source exception requires a matching normal publication audit")
+        try:
+            expected = [_source_path_evidence(repo, path, transaction.parent_head_sha, transaction.tree_oid)
+                        for path in sorted(suspect_paths)]
+            valid = all(expected) and expected == audit.get("source_exceptions")
+        except Exception:
+            valid = False
+        if not valid:
+            raise RuntimeError("frozen source publication audit failed")
+
+
 def validate_transaction_owned_workspace(repo: Path, transaction: PublishTransaction) -> None:
     """Validate the only workspace state from which this transaction may resume."""
     repo = Path(repo).resolve()
     if repo != transaction.repo:
         raise RuntimeError("transaction workspace mismatch")
+    _validate_transaction_source_audit(repo, transaction)
     status = _git_bytes(repo, "status", "--porcelain=v1", "-z")
     if status is None:
         raise RuntimeError("cannot inspect transaction workspace")
@@ -907,6 +951,65 @@ def _is_secret_path(path: str) -> bool:
     return name.startswith(".env") or any(fragment in name for fragment in ("credential", "secret", ".key", "private"))
 
 
+def _source_path_evidence(repo: Path, path: str, parent: str, tree: str) -> dict | None:
+    """Classify existing Python modules, never merely a Python-looking filename."""
+    candidate = Path(path)
+    if candidate.suffix != ".py" or any(
+        part.lower().startswith(".env") or ".key" in part.lower()
+        or part.lower().endswith((".pem", ".p12", ".pfx"))
+        for part in candidate.parts
+    ):
+        return None
+    blobs = []
+    for ref in (parent, tree):
+        entry = _git_bytes(repo, "--literal-pathspecs", "ls-tree", "-z", ref, "--", path)
+        if not entry or len(entry.split(b"\0")) != 2:
+            return None
+        metadata, _, returned_path = entry.partition(b"\t")
+        if returned_path != os.fsencode(path) + b"\0":
+            return None
+        fields = metadata.split()
+        if len(fields) != 3 or fields[0] not in (b"100644", b"100755") or fields[1] != b"blob":
+            return None
+        oid = fields[2].decode("ascii")
+        size = _git_output(repo, "cat-file", "-s", oid)
+        if size is None or int(size) > 1_048_576:
+            return None
+        blob = _git_bytes(repo, "cat-file", "blob", oid)
+        if blob is None:
+            return None
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                module = ast.parse(blob, filename="<publication-source>")
+                compile(module, "<publication-source>", "exec", dont_inherit=True)
+        except (SyntaxError, ValueError, Warning):
+            return None
+        if not any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) for node in module.body):
+            return None
+        blobs.append((oid, blob))
+    # Instantiate only the pinned built-in detectors: no repo config, allowlist,
+    # verification requests, or filters that can suppress a finding.
+    if version("detect-secrets") != "1.5.0":
+        raise ValueError("unsupported publication scanner version")
+    from detect_secrets.core.plugins.util import get_mapping_from_secret_type_to_class
+
+    plugins = [kind() for kind in get_mapping_from_secret_type_to_class().values()]
+    if not plugins:
+        raise ValueError("publication scanner has no detectors")
+    oid, blob = blobs[-1]
+    # ast.parse accepts source encoding declarations; scanning must use the same decoding.
+    import io
+    import tokenize
+
+    encoding, _ = tokenize.detect_encoding(io.BytesIO(blob).readline)
+    for number, line in enumerate(blob.decode(encoding).splitlines(), 1):
+        if any(plugin.analyze_line(filename=path, line=line, line_number=number) for plugin in plugins):
+            return None
+    return {"path": path, "parent_blob_oid": blobs[0][0], "blob_oid": oid,
+            "blob_sha256": _sha256(blob), "policy": "tracked-python-detect-secrets-1.5.0-v1"}
+
+
 def _blocked(reason: str, detail: str = "") -> dict[str, Any]:
     result: dict[str, Any] = {"status": "publication_blocked", "reason": reason}
     if detail:
@@ -914,19 +1017,37 @@ def _blocked(reason: str, detail: str = "") -> dict[str, Any]:
     return result
 
 
-def _audit_staged_diff(repo: Path, owned_paths: Sequence[str]) -> dict[str, Any] | None:
+def _audit_staged_diff(repo: Path, owned_paths: Sequence[str], *, evidence: dict | None = None) -> dict[str, Any] | None:
     owned_set = {Path(path).as_posix() for path in owned_paths}
-    staged_raw = _git_output(repo, "diff", "--cached", "--name-only")
-    staged_paths = [path.strip() for path in (staged_raw or "").splitlines() if path.strip()]
+    parent = _git_output(repo, "rev-parse", "HEAD")
+    tree = _git_output(repo, "write-tree")
+    if not parent or not tree:
+        return _blocked("staged_audit_failed", "Cannot freeze the staged tree and parent")
+    staged_raw = _git_bytes(repo, "diff", "--name-only", "--no-renames", "-z", parent, tree)
+    if staged_raw is None:
+        return _blocked("staged_audit_failed", "Cannot enumerate the staged diff")
+    staged_paths = [os.fsdecode(path) for path in staged_raw.split(b"\0") if path]
     if not staged_paths:
         return _blocked("nothing_staged", "No changes were staged after git add")
-    for path in staged_paths:
+    source_exceptions = []
+    for path in sorted(staged_paths):
         if Path(path).as_posix() not in owned_set:
             return _blocked("out_of_scope_staged_path", f"Staged path {path!r} is not in the owned-paths set")
         if _is_secret_path(path):
-            return _blocked("secret_staged_path", f"Staged path {path!r} matches a secret/credential/.env pattern")
+            try:
+                source = _source_path_evidence(repo, path, parent, tree) if evidence is not None else None
+            except Exception:
+                # Do not expose scanner exception text; it may contain source or secret bytes.
+                return _blocked("source_scan_failed", "Cannot establish staged source safety")
+            if source is None:
+                return _blocked("secret_staged_path", f"Staged path {path!r} matches a secret/credential/.env pattern")
+            source_exceptions.append(source)
     if _git(repo, "diff", "--cached", "--check").returncode:
         return _blocked("staged_check_failed", "git diff --cached --check found whitespace errors")
+    if _git_output(repo, "write-tree") != tree or _git_output(repo, "rev-parse", "HEAD") != parent:
+        return _blocked("staged_audit_changed", "Staged tree or parent changed during audit")
+    if evidence is not None:
+        evidence.update(tree_oid=tree, parent_head_sha=parent, source_exceptions=source_exceptions)
     return None
 
 
@@ -1019,7 +1140,8 @@ def publish_from_worktree(
         return _blocked("no_owned_paths", "No owned paths to stage; nothing to publish")
     if not prebuilt and not resuming and _git(repo, "add", "--", *owned_paths).returncode:
         return _blocked("stage_failed", "git add -- <owned_paths> failed")
-    audit = None if prebuilt or resuming else _audit_staged_diff(repo, owned_paths)
+    publication_audit = {} if active and authority is not None else None
+    audit = None if prebuilt or resuming else _audit_staged_diff(repo, owned_paths, evidence=publication_audit)
     if audit is not None:
         return audit
     if broker_client is None:
@@ -1054,7 +1176,7 @@ def publish_from_worktree(
             transaction = (
                 prepare_prebuilt_transaction(repo, owned_paths=owned_paths, checkpoint_root=Path(checkpoint_root), branch=branch, envelope_authority_preimage=authority, base=base, draft=draft, pr_body=pr_body or "", node_id=node_id)
                 if prebuilt
-                else prepare_publish_transaction(repo, owned_paths=owned_paths, checkpoint_root=Path(checkpoint_root), branch=branch, envelope_authority_preimage=authority, base=base, draft=draft, pr_body=pr_body or "", commit_message=commit_message, node_id=node_id)
+                else prepare_publish_transaction(repo, owned_paths=owned_paths, checkpoint_root=Path(checkpoint_root), branch=branch, envelope_authority_preimage=authority, base=base, draft=draft, pr_body=pr_body or "", commit_message=commit_message, node_id=node_id, publication_audit=publication_audit)
             )
         transaction.resume()
         _crash_at("after_committed_checkpoint_before_broker_execute")
