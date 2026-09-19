@@ -8,6 +8,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Review seats run in a writable sandbox with filtered egress (agent-harness#848)
 
+- **Launch-seam verification now observes, it no longer reads.** The three provider-launch
+  seams (CLI leg, Claude TUI PTY, agent-view) are each proven by a marker prefix that
+  executes in front of the real launch, with a falsifier per seam. The Python-only AST
+  walker (`test_launch_seam_coverage.py`), which the review board defeated five times on
+  spelling alone, is removed; a new launch-interface call site fails a count check until it
+  gets a marker proof of its own.
 - A review seat is now staged into its own **independent shallow git clone** (`--depth 50`,
   never `--shared`, never a linked worktree) with the working tree overlaid, so a panelist can
   run `git log`/`blame`/`diff`, edit files, and execute tests without touching the reviewed

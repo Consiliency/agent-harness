@@ -5062,8 +5062,9 @@ def _exec_claude_agent_view_attempt(
     try:
         # The THIRD provider-launch seam. It has no production caller today (only a test
         # reaches it), which is exactly why it is wired: an unwired seam that acquires a
-        # caller later is a silent hole, and `test_launch_seam_coverage` refuses to let
-        # one exist rather than trusting that this one stays unreachable.
+        # caller later is a silent hole. `test_the_real_launch_carries_the_prefix` drives
+        # this seam with a marker prefix and observes the launch, rather than trusting
+        # that it stays unreachable.
         proc = run_provider(
             command,
             cwd=str(review_dir),
