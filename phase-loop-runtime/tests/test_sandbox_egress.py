@@ -311,8 +311,22 @@ class TestItFailsClosed:
         monkeypatch.setattr(sandbox_egress, "egress_isolation_available", lambda: True)
 
         class _Holder:
+            """Stands in for both the namespace holder and slirp4netns.
+
+            `poll()` returns None -- alive. The production code now checks that slirp
+            SURVIVED before yielding a prefix (board round 9: it was started and never
+            checked, so a dead uplink still yielded a usable-looking prefix). A stub
+            without `poll` would make this test fail for a reason unrelated to the
+            rule-install branch it is about.
+            """
+
+            returncode = None
+
             def __init__(self, *a, **k):
                 pass
+
+            def poll(self):
+                return None
 
             def terminate(self):
                 pass
@@ -347,8 +361,22 @@ class TestItFailsClosed:
         monkeypatch.setattr(sandbox_egress, "egress_isolation_available", lambda: True)
 
         class _Holder:
+            """Stands in for both the namespace holder and slirp4netns.
+
+            `poll()` returns None -- alive. The production code now checks that slirp
+            SURVIVED before yielding a prefix (board round 9: it was started and never
+            checked, so a dead uplink still yielded a usable-looking prefix). A stub
+            without `poll` would make this test fail for a reason unrelated to the
+            rule-install branch it is about.
+            """
+
+            returncode = None
+
             def __init__(self, *a, **k):
                 pass
+
+            def poll(self):
+                return None
 
             def terminate(self):
                 pass

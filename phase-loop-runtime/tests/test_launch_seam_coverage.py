@@ -89,7 +89,20 @@ PARENT_SIDE_ALLOWLIST: dict[tuple[str, str], str] = {
     # -- confirmed by execution: seen by the walker, accepted by the assertion. An
     # exemption has to name the call site it excuses, not a string that might occur
     # anywhere.
-    ("panel_invoker.py", "probe"): "capability probe for the harness itself",
+    # Board round 9, codex: a bare-name exemption is a name anyone can reuse --
+    #
+    #     def launch_provider(argv, **kwargs):
+    #         _EGRESS_LAUNCH_PREFIX.get()      # satisfies the grep
+    #         probe = list(argv)               # inherits this exemption
+    #         return subprocess.Popen(probe, **kwargs)
+    #
+    # That replacement passed all 53 launch-seam tests with filtering removed from BOTH
+    # Popen paths. (It was still caught -- by the end-to-end broker test -- so the branch
+    # never shipped an unfiltered launch. But the guard that CLAIMS the invariant did not
+    # hold it, which is the finding.) Only the auth probe may spell its argv `probe`.
+    ("panel_invoker.py", "probe"): (
+        "capability probe for the harness itself; see test_the_probe_exemption_is_narrow"
+    ),
     ("panel_invoker.py", "['claude', 'auth', 'status', '--json']"):
         "parent checks ITS OWN credentials",
     ("panel_invoker.py", "[claude_bin, '--version']"):
@@ -120,8 +133,11 @@ PARENT_SIDE_ALLOWLIST: dict[tuple[str, str], str] = {
         "parent creates the sandbox clone; it IS the staging step",
     ("review_stage.py", "['git', '-C', str(staged), 'checkout', '--quiet', '--detach', head]"):
         "parent pins the fresh clone to the reviewed commit",
-    ("sandbox_egress.py", "['unshare', '--net', '--mount', '--map-root-user', 'bash', '-c', f'mount --bind {resolv} /etc/resolv.conf 2>/dev/null; echo $$ > {pidfile}; touch {ready}; sleep {timeout_s}']"):
+    ("sandbox_egress.py", "['unshare', '--net', '--mount', '--map-root-user', 'bash', '-c', f'mount --bind {resolv} /etc/resolv.conf || exit 9; echo $$ > {pidfile}; touch {ready}; sleep {timeout_s}']"):
         "the namespace HOLDER -- it creates the confinement, so it cannot be inside it",
+    ("sandbox_egress.py", "[*prefix, 'getent', 'hosts', 'github.com']"):
+        "the capability probe that verifies DNS works INSIDE the namespace before the "
+        "prefix is yielded; it already carries the prefix by construction",
     ("sandbox_egress.py", "['slirp4netns', '--configure', '--mtu=65520', '--disable-host-loopback', nspid, 'tap0']"):
         "the uplink for that namespace, run from OUTSIDE it by definition",
     ("sandbox_egress.py", "[*admin, 'bash', '-c', 'set -e\\nip link set lo up 2>/dev/null || true\\n' + rules]"):
@@ -411,18 +427,40 @@ def test_the_launch_interface_is_the_only_thing_that_prefixes():
         )
 
 
-def test_the_interface_actually_applies_the_prefix_when_called():
-    """Executed, not read -- the lesson of the last two rounds."""
+def test_BOTH_interface_helpers_actually_apply_the_prefix_when_called():
+    """Executed, not read -- and BOTH, which is the round-9 correction.
+
+    The previous version exercised `run_provider` only and checked `launch_provider` with
+    a source grep. codex removed the prefix from `launch_provider` while leaving the grep
+    satisfiable and every launch-seam test stayed green. TWO of the three provider
+    launches go through `launch_provider`, so that was the half that mattered.
+    """
+    import subprocess as sp
 
     token = panel_invoker._EGRESS_LAUNCH_PREFIX.set(("/bin/echo", "PREFIXED"))
     try:
-        result = panel_invoker.run_provider(
+        completed = panel_invoker.run_provider(
             ["hello"], capture_output=True, text=True, timeout=30,
         )
+        proc = panel_invoker.launch_provider(["hello"], stdout=sp.PIPE)
+        launched = proc.communicate(timeout=30)[0].decode()
     finally:
         panel_invoker._EGRESS_LAUNCH_PREFIX.reset(token)
-    assert result.stdout.strip() == "PREFIXED hello", (
-        f"the interface did not prepend the prefix: {result.stdout!r}"
+
+    assert completed.stdout.strip() == "PREFIXED hello", (
+        f"run_provider did not prepend the prefix: {completed.stdout!r}"
+    )
+    assert launched.strip() == "PREFIXED hello", (
+        f"launch_provider did not prepend the prefix: {launched!r}"
+    )
+
+
+def test_the_probe_exemption_is_narrow():
+    """`probe` is exempt in exactly ONE place; it must not become a magic word."""
+    hits = [s for s in _spawn_sites() if s[3] == "probe"]
+    assert len(hits) == 1, (
+        f"the argv spelling `probe` now appears at {len(hits)} spawn sites; the exemption "
+        "excuses all of them. Rename the others or narrow the exemption."
     )
 
 

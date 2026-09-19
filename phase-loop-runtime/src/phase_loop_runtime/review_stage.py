@@ -197,8 +197,16 @@ def review_tree_manifest_sha256(root: Path) -> str:
         else:
             payload = target.read_bytes()
             kind = b"blob"
+        # The EXECUTABLE BIT is execution-relevant state, so it belongs in the digest.
+        # Without it a stage that silently dropped `chmod +x` still matched the source and
+        # the authorization accepted it -- the reviewer got a script it could not run and
+        # nothing said so (board round 9, codex). One bit, fixed width, and a mode change
+        # now moves the digest instead of hiding inside it. Only the executable bit: the
+        # rest of the mode is noise that would make the digest depend on umask.
+        executable = b"1" if (not target.is_symlink() and os.access(target, os.X_OK)) else b"0"
         digest.update(
             kind                                                    # 4 bytes, fixed
+            + executable                                            # 1 byte, fixed
             + hashlib.sha256(payload).hexdigest().encode("ascii")   # 64 bytes, fixed
             + b"%020d" % len(payload)                               # 20 bytes, fixed
             + hashlib.sha256(rel.encode("utf-8")).hexdigest().encode("ascii")  # 64, fixed
@@ -373,6 +381,16 @@ def _overlay_working_tree(root: Path, staged: Path) -> None:
             if destination.is_symlink():
                 destination.unlink()
             elif destination.is_file() and destination.read_bytes() == source.read_bytes():
+                # Bytes match, so the CONTENT copy is unnecessary -- but `copy2` also
+                # carries the MODE, and skipping it dropped an executable bit the working
+                # tree had and the commit did not. Board round 9, codex; reproduced:
+                #
+                #     source mode 0o755 executable      staged mode 0o664 NOT executable
+                #     ./check.sh -> PermissionError
+                #
+                # A reviewer could not run a script its author can, in a sandbox whose
+                # whole purpose is "form a hypothesis and RUN it". Copy the mode anyway.
+                shutil.copymode(source, destination)
                 continue
             shutil.copy2(source, destination)
 

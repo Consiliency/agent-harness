@@ -298,7 +298,7 @@ def isolated_network(
             handle.write("nameserver 10.0.2.3\noptions timeout:2 attempts:2\n")
         holder = subprocess.Popen(
             ["unshare", "--net", "--mount", "--map-root-user", "bash", "-c",
-             f'mount --bind {resolv} /etc/resolv.conf 2>/dev/null; '
+             f'mount --bind {resolv} /etc/resolv.conf || exit 9; '
              f'echo $$ > {pidfile}; touch {ready}; sleep {timeout_s}'],
         )
         slirp = None
@@ -317,6 +317,12 @@ def isolated_network(
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
             time.sleep(2.5)  # the tap must be configured before traffic flows
+            if slirp.poll() is not None:
+                yield _degrade(
+                    f"slirp4netns exited ({slirp.returncode}) before the uplink was "
+                    "usable; the namespace has no network"
+                )
+                return
 
             # `--mount` as well as `--net`: the seat must see the resolv.conf bound above,
             # or it inherits the host's 127.0.0.53 and resolves nothing.
@@ -345,6 +351,29 @@ def isolated_network(
             # Emptying the BOUNDING set (not merely the effective one) means the capability
             # cannot be regained by re-exec either.
             prefix = (*admin, "setpriv", "--bounding-set=-all", "--inh-caps=-all", "--")
+
+            # MEASURE THE CAPABILITY, NOT THE STEPS. Board round 9, codex: the resolver
+            # bind's failure was suppressed with `2>/dev/null` and slirp was started
+            # without checking it survived, so a namespace with no DNS and no uplink still
+            # yielded a prefix that looked fine. That is exactly the round-6 failure --
+            # every CLI seat died because nothing inside could resolve a name -- able to
+            # recur silently.
+            #
+            # The lesson of that round was that the evidence measured `1.1.1.1`, a bare IP,
+            # and reported it as reachability. So this does not check that the bind command
+            # returned 0 or that slirp is running; it resolves a NAME inside the namespace
+            # the seat will actually use. A working step is a proxy; a resolved name is the
+            # capability.
+            probe = subprocess.run(
+                [*prefix, "getent", "hosts", "github.com"],
+                capture_output=True, timeout=30,
+            )
+            if probe.returncode != 0:
+                yield _degrade(
+                    "the namespace came up but cannot resolve a hostname; a seat here "
+                    "could reach raw IPs and nothing else (round-6 failure mode)"
+                )
+                return
             yield prefix
         finally:
             if slirp is not None:
