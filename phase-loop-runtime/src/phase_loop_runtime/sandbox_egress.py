@@ -51,7 +51,6 @@ __all__ = [
     "egress_required",
     "enforcement_report",
     "require_egress_isolation",
-    "run_in_isolated_network",
     "isolated_network",
 ]
 
@@ -184,7 +183,20 @@ def enforcement_report(
 
 
 def require_egress_isolation(available: bool | None = None) -> None:
-    """Refuse rather than run a seat that believes it is isolated and is not."""
+    """Refuse rather than run a seat that believes it is isolated and is not.
+
+    NO PRODUCTION CALLER, and that is correct rather than an oversight. The refusal is
+    made by :func:`isolated_network` itself, on all three of its degraded exits, because
+    a caller-side guard could only ever cover the first -- which is how a fail-open
+    survived four rounds. This is kept as the public spelling of that check for an
+    external caller; the launch path must not use it, or the decision moves back out of
+    the module that owns the policy.
+
+    Its sibling `run_in_isolated_network` was DELETED in board round 6: it ran a script in
+    a namespace, no production path ever reached it, and a second way to do the same thing
+    is how the wrong one gets called (agent-harness#890, round 2 found it unreachable and
+    round 6 found it still unreachable).
+    """
     if available is None:
         available = egress_isolation_available()
     if not available:
@@ -289,64 +301,4 @@ def isolated_network(
         finally:
             if slirp is not None:
                 slirp.terminate()
-            holder.terminate()
-
-
-def run_in_isolated_network(
-    script: str,
-    *,
-    timeout_s: float = 120.0,
-    policy: EgressPolicy | None = None,
-    cwd: str | os.PathLike[str] | None = None,
-) -> str:
-    """Run ``script`` in a network namespace carrying the egress policy.
-
-    Returns combined output. Raises :class:`EgressUnavailable` when the mechanism is not
-    available, rather than silently running without isolation.
-    """
-    require_egress_isolation()
-    rules = "\n".join(f"iptables {rule}" for rule in egress_rules(policy))
-
-    with tempfile.TemporaryDirectory(prefix="pl-egress-") as work:
-        ready = os.path.join(work, "ready")
-        pidfile = os.path.join(work, "pid")
-        payload = os.path.join(work, "payload.sh")
-        with open(payload, "w", encoding="utf-8") as handle:
-            handle.write(
-                "set -e\n"
-                "ip link set lo up 2>/dev/null || true\n"
-                f"{rules}\n"
-                + (f"cd {cwd}\n" if cwd else "")
-                + script
-                + "\n"
-            )
-
-        holder = subprocess.Popen(
-            ["unshare", "--net", "--map-root-user", "bash", "-c",
-             f'echo $$ > {pidfile}; touch {ready}; sleep {timeout_s + 10}'],
-        )
-        try:
-            deadline = time.monotonic() + 15
-            while not os.path.exists(ready) and time.monotonic() < deadline:
-                time.sleep(0.1)
-            if not os.path.exists(ready):
-                raise EgressUnavailable("network namespace did not come up")
-            with open(pidfile, encoding="utf-8") as handle:
-                nspid = handle.read().strip()
-
-            slirp = subprocess.Popen(
-                ["slirp4netns", "--configure", "--mtu=65520",
-                 "--disable-host-loopback", nspid, "tap0"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-            try:
-                time.sleep(2.5)  # slirp needs the tap configured before traffic flows
-                return subprocess.run(
-                    ["nsenter", "--net", "-t", nspid, "-U", "--preserve-credentials",
-                     "bash", payload],
-                    capture_output=True, text=True, timeout=timeout_s,
-                ).stdout
-            finally:
-                slirp.terminate()
-        finally:
             holder.terminate()

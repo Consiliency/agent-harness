@@ -89,7 +89,19 @@ class TestRealEnforcement:
             'echo "private=$(timeout 6 curl -s -o /dev/null -w %{http_code} --max-time 5 '
             'http://100.84.171.76:6333/collections 2>/dev/null || echo BLOCKED)"'
         )
-        out = sandbox_egress.run_in_isolated_network(probe, timeout_s=45)
+        # Through `isolated_network` -- the context manager the LAUNCH PATH uses -- not
+        # the retired `run_in_isolated_network`, which had no production caller and was
+        # deleted in board round 6. Testing enforcement through a mechanism nothing
+        # launches through proves the policy, never the product.
+        import subprocess as sp
+
+        with sandbox_egress.isolated_network(timeout_s=60.0) as prefix:
+            assert prefix, "isolation must be in force for this test to mean anything"
+            out = sp.run(
+                [*prefix, "bash", "-c", probe],
+                capture_output=True, text=True, timeout=60,
+            ).stdout
+
         assert "public=301" in out or "public=200" in out, f"internet must work:\n{out}"
         assert "private=BLOCKED" in out or "private=000" in out, (
             f"private space must NOT be reachable:\n{out}"
@@ -143,7 +155,7 @@ class TestEvidenceRecording:
 class TestTheReportCannotClaimUnappliedFiltering:
     """Board round 2, BLOCKING: the filtering was never applied to a provider launch.
 
-    `enforcement_report()` was wired into the leg evidence and `run_in_isolated_network`
+    `enforcement_report()` was wired into the leg evidence and the isolation helper
     was never called from `panel_invoker`. So a seat's record said
     `sandbox_network_filtered=True` while nothing restricted that seat -- the exact
     fail-open this module exists to prevent, inside the module that prevents it.

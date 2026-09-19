@@ -33,12 +33,20 @@ from phase_loop_runtime import panel_invoker
 SPAWN_FUNCTIONS = frozenset({
     "subprocess.Popen", "subprocess.run", "subprocess.call", "subprocess.check_call",
     "subprocess.check_output", "subprocess.getoutput", "subprocess.getstatusoutput",
-    "os.execv", "os.execve", "os.execvp", "os.execvpe", "os.execl", "os.execlp",
-    "os.spawnv", "os.spawnvp", "os.posix_spawn", "os.posix_spawnp", "os.system",
-    "os.popen", "pty.spawn", "pty.fork",
+    "os.execv", "os.execve", "os.execvp", "os.execvpe",
+    "os.execl", "os.execle", "os.execlp", "os.execlpe",
+    "os.spawnv", "os.spawnve", "os.spawnvp", "os.spawnvpe",
+    "os.spawnl", "os.spawnle", "os.spawnlp", "os.spawnlpe",
+    "os.posix_spawn", "os.posix_spawnp", "os.system", "os.popen",
+    "os.fork", "os.forkpty",
+    "pty.spawn", "pty.fork",
+    "multiprocessing.Process",
     "asyncio.create_subprocess_exec", "asyncio.create_subprocess_shell",
 })
 
+# The bare attribute names above. A call we cannot RESOLVE but whose callee is spelled like
+# one of these is reported as unresolved rather than dropped -- see `_spawn_sites`.
+SPAWN_ATTRS = frozenset(name.rsplit(".", 1)[1] for name in SPAWN_FUNCTIONS)
 # Keywords each spawn accepts for its argv. `subprocess.Popen(args=cmd)` passes NO
 # positional argument, and an earlier version of this walker skipped any call with an
 # empty `node.args` -- so that evasion worked against the shipped instrument, not merely
@@ -50,6 +58,17 @@ PREFIX_EXPR = "_EGRESS_LAUNCH_PREFIX.get()"
 # Spawns that are the PARENT acting on its own host, not a reviewer executing. Keyed by the
 # argv expression as it appears in the source, so renaming or re-pointing one at a provider
 # drops it off the list and fails this test.
+# Calls whose NAME collides with a spawn but which start no process. Kept separate from
+# PARENT_SIDE_ALLOWLIST on purpose: that list means "the parent acting on its own host",
+# and folding a different justification into it would quietly destroy what it asserts.
+NOT_A_PROCESS_LAUNCH: dict[str, str] = {
+    "<unresolved:spawn>": (
+        "`spawn` is the injectable SpawnFn seam (panel_invoker.py:6547), not a process "
+        "call; in production it IS `_default_spawn`, whose real launches are the three "
+        "prefixed seams below it"
+    ),
+}
+
 PARENT_SIDE_ALLOWLIST: dict[str, str] = {
     "probe": "capability probe for the harness itself",
     "['claude', 'auth', 'status', '--json']": "parent checks ITS OWN credentials",
@@ -65,32 +84,92 @@ PARENT_SIDE_ALLOWLIST: dict[str, str] = {
 
 
 
-def _import_bindings(tree: ast.Module) -> tuple[dict[str, str], dict[str, str]]:
-    """Resolve what names in this module actually refer to.
+def _bindings(tree: ast.Module) -> tuple[dict[str, str], dict[str, str], list[str]]:
+    """What every name in this module actually refers to, and what we could not resolve.
 
-    `import subprocess as sp` and `from subprocess import Popen` both defeat a walker that
-    matches the literal text `subprocess.Popen`. Five of six evasions the board
-    demonstrated were of exactly this shape, so the names are resolved rather than matched.
+    Board round 6 found nine further evasions of the previous version, and demonstrated one
+    by adding a REAL unprefixed provider launch to `panel_invoker.py`:
+
+        _LAUNCH = subprocess.Popen
+        def _evil_provider_launch(cmd, cwd, env):
+            return _LAUNCH(cmd, cwd=cwd, env=env)
+
+    Site count stayed 12 and the coverage test passed. Two structural causes, both fixed
+    here: only import-bound names were resolvable at all, and `import os.path` bound
+    `modules["os"] = "os.path"`, so one innocuous import blinded every `os.*` spawn.
+
+    Assignments are now followed, so aliasing a spawn does not hide it; and anything that
+    cannot be resolved is RETURNED rather than dropped, because a launch we cannot read is
+    more dangerous than one we can, not less.
     """
-    modules: dict[str, str] = {}   # local alias -> module  ("sp" -> "subprocess")
-    direct: dict[str, str] = {}    # local name   -> dotted ("Popen" -> "subprocess.Popen")
+    modules: dict[str, str] = {}
+    direct: dict[str, str] = {}
+    unresolvable: list[str] = []
+
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                modules[alias.asname or alias.name.split(".")[0]] = alias.name
+                if alias.asname:
+                    modules[alias.asname] = alias.name
+                else:
+                    # `import os.path` binds the TOP-level name `os`, which still refers
+                    # to the `os` module. Binding it to "os.path" was the blinding bug.
+                    top = alias.name.split(".")[0]
+                    modules.setdefault(top, top)
         elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
             for alias in node.names:
+                if alias.name == "*":
+                    if any(fn.startswith(f"{node.module}.") for fn in SPAWN_FUNCTIONS):
+                        unresolvable.append(
+                            f"line {node.lineno}: `from {node.module} import *` makes every "
+                            f"spawn in {node.module} unresolvable by name"
+                        )
+                    continue
                 direct[alias.asname or alias.name] = f"{node.module}.{alias.name}"
-    return modules, direct
+
+    # Follow assignments that alias a spawn, at any nesting level: module, class body,
+    # or inside a function. `_LAUNCH = subprocess.Popen` must not hide a launch.
+    for _ in range(3):                       # chained aliases: A = Popen; B = A
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            value = node.value
+            if value is None:
+                continue
+            resolved = _resolve(value, modules, direct)
+            if resolved not in SPAWN_FUNCTIONS:
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    direct[target.id] = resolved
+                elif isinstance(target, ast.Attribute):
+                    direct[target.attr] = resolved
+    return modules, direct, unresolvable
 
 
 def _resolve(func: ast.expr, modules: dict[str, str], direct: dict[str, str]) -> str | None:
-    """The dotted name a call expression actually resolves to, or None."""
+    """The dotted name an expression resolves to, or None."""
     if isinstance(func, ast.Name):
         return direct.get(func.id)
-    if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
-        module = modules.get(func.value.id)
-        return f"{module}.{func.attr}" if module else None
+    if isinstance(func, ast.Attribute):
+        if isinstance(func.value, ast.Name):
+            module = modules.get(func.value.id)
+            if module:
+                return f"{module}.{func.attr}"
+            base = direct.get(func.value.id)
+            if base:
+                return f"{base}.{func.attr}"
+        return None
+    if isinstance(func, ast.Call):
+        # getattr(subprocess, "Popen")(cmd)
+        if getattr(func.func, "id", None) == "getattr" and len(func.args) >= 2:
+            owner = _resolve(func.args[0], modules, direct) or (
+                modules.get(getattr(func.args[0], "id", "")) or ""
+            )
+            attr = getattr(func.args[1], "value", None)
+            if owner and isinstance(attr, str):
+                return f"{owner}.{attr}"
     return None
 
 
@@ -106,28 +185,45 @@ def _argv_of(node: ast.Call) -> str | None:
 def _spawn_sites() -> list[tuple[int, str, str]]:
     source = Path(panel_invoker.__file__).read_text(encoding="utf-8")
     tree = ast.parse(source)
-    modules, direct = _import_bindings(tree)
-    sites = []
+    modules, direct, unresolvable = _bindings(tree)
+    sites: list[tuple[int, str, str]] = []
+
+    for note in unresolvable:
+        sites.append((0, "<unresolvable-import>", f"<{note}>"))
+
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
-        target, call = node, node
+        call = node
         resolved = _resolve(node.func, modules, direct)
+
+        if resolved is None and ast.unparse(node.func).endswith("functools.partial"):
+            resolved = "functools.partial"
         if resolved == "functools.partial" or ast.unparse(node.func) == "functools.partial":
-            # `functools.partial(subprocess.Popen, cmd)` defers the launch; the spawn is
-            # the first argument and the argv is what follows.
             if not node.args:
                 continue
-            resolved = _resolve(node.args[0], modules, direct) or ast.unparse(node.args[0])
+            inner = _resolve(node.args[0], modules, direct)
+            if inner not in SPAWN_FUNCTIONS:
+                continue
+            resolved = inner
             call = ast.Call(func=node.args[0], args=node.args[1:], keywords=node.keywords)
-        if resolved not in SPAWN_FUNCTIONS:
+
+        if resolved in SPAWN_FUNCTIONS:
+            argv = _argv_of(call)
+            sites.append((node.lineno, resolved, argv if argv is not None
+                          else f"<unreadable argv at line {node.lineno}>"))
             continue
-        argv = _argv_of(call)
-        if argv is None:
-            # A spawn we cannot read the argv of is MORE dangerous than one we can, not
-            # less: fail closed and make someone look at it.
-            argv = f"<unreadable argv at line {target.lineno}>"
-        sites.append((target.lineno, resolved, argv))
+
+        # FAIL CLOSED ON WHAT WE CANNOT RESOLVE. The previous walker returned None for any
+        # binding it did not understand and silently dropped the call; that is how a real
+        # `_LAUNCH = subprocess.Popen` shipped undetected. A callee SPELLED like a spawn
+        # but not resolvable is reported for a human to triage.
+        callee = ast.unparse(node.func)
+        leaf = callee.rsplit(".", 1)[-1]
+        if resolved is None and leaf in SPAWN_ATTRS:
+            argv = _argv_of(call) or "<no argv>"
+            sites.append((node.lineno, f"<unresolved:{callee}>", argv))
+
     return sites
 
 
@@ -140,7 +236,9 @@ def test_every_provider_launch_carries_the_egress_prefix():
     unprefixed = [
         (lineno, func, argv)
         for lineno, func, argv in _spawn_sites()
-        if PREFIX_EXPR not in argv and argv not in PARENT_SIDE_ALLOWLIST
+        if PREFIX_EXPR not in argv
+        and argv not in PARENT_SIDE_ALLOWLIST
+        and func not in NOT_A_PROCESS_LAUNCH
     ]
     assert not unprefixed, (
         "these spawns are neither egress-prefixed nor declared parent-side:\n"
@@ -247,6 +345,62 @@ class TestTheWalkerResistsTheEvasionsTheBoardDemonstrated:
             "import os\n"
             "def launch(cmd):\n"
             "    return os.posix_spawn(cmd[0], cmd, {})\n"
+        ),
+        # --- round 6: nine further evasions, all invisible to the previous walker ------
+        "os.path clobbers the os binding": (
+            "import os.path\n"
+            "def launch(cmd):\n"
+            "    return os.system(cmd)\n"
+        ),
+        "module-level alias assignment": (
+            "import subprocess\n"
+            "_LAUNCH = subprocess.Popen\n"
+            "def launch(cmd):\n"
+            "    return _LAUNCH(cmd)\n"
+        ),
+        "chained alias": (
+            "import subprocess\n"
+            "_A = subprocess.Popen\n"
+            "_B = _A\n"
+            "def launch(cmd):\n"
+            "    return _B(cmd)\n"
+        ),
+        "star import": (
+            "from subprocess import *\n"
+            "def launch(cmd):\n"
+            "    return Popen(cmd)\n"
+        ),
+        "getattr indirection": (
+            "import subprocess\n"
+            "def launch(cmd):\n"
+            "    return getattr(subprocess, 'Popen')(cmd)\n"
+        ),
+        "os.execle": (
+            "import os\n"
+            "def launch(cmd):\n"
+            "    return os.execle(cmd[0], *cmd, {})\n"
+        ),
+        "os.spawnve": (
+            "import os\n"
+            "def launch(cmd):\n"
+            "    return os.spawnve(os.P_NOWAIT, cmd[0], cmd, {})\n"
+        ),
+        "os.forkpty": (
+            "import os\n"
+            "def launch(cmd):\n"
+            "    return os.forkpty()\n"
+        ),
+        "multiprocessing.Process": (
+            "import multiprocessing\n"
+            "def launch(cmd):\n"
+            "    return multiprocessing.Process(target=cmd)\n"
+        ),
+        "class-attribute alias": (
+            "import subprocess\n"
+            "class Launcher:\n"
+            "    run = subprocess.Popen\n"
+            "def launch(cmd):\n"
+            "    return Launcher.run(cmd)\n"
         ),
     }
 

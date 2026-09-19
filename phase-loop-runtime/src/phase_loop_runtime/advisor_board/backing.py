@@ -350,6 +350,33 @@ def _send_frame(sock: socket.socket, payload: bytes) -> None:
     sock.sendall(struct.pack("!I", len(payload)) + payload)
 
 
+def start_context_carrying_thread(
+    target: "Callable[[], None]", *, daemon: bool
+) -> threading.Thread:
+    """Start a thread that INHERITS the caller's context, and return it.
+
+    This exists as a named function so the property can be tested by EXECUTION. The
+    previous guard asserted that the literal ``copy_context()`` appeared on the line that
+    built the thread, and a reviewer defeated it in one line while fully restoring the
+    defect::
+
+        threading.Thread(target=(lambda _ctx=copy_context(): serve()), ...)
+
+    ``copy_context()`` is present, its result is discarded, the serve thread gets a fresh
+    context, and all four tests passed. That is the same instrument class this branch has
+    now been caught by twice: a source-text check proves a mechanism is MENTIONED, never
+    that it WORKS. A helper you can call is the difference.
+
+    Why it matters here: ``serve`` launches the provider, and every ContextVar the parent
+    set -- ``_EGRESS_LAUNCH_PREFIX`` above all -- reads back as its default on a plain
+    thread, so the seat launches outside its network namespace while the parent records
+    that it was filtered (agent-harness#890 board rounds 5 and 6).
+    """
+    thread = threading.Thread(target=copy_context().run, args=(target,), daemon=daemon)
+    thread.start()
+    return thread
+
+
 class ParentUnixBroker:
     """One-request parent-owned AF_UNIX broker; child selects no provider action."""
     def __init__(
@@ -561,28 +588,9 @@ class ParentUnixBroker:
                     adapter, expected_pid=child[0][0].pid, expected_start=child[0][1]
                 )
             except BaseException as exc: error.append(exc)
-        # CARRY THE PARENT'S CONTEXT ACROSS THE THREAD BOUNDARY.
-        #
-        # `serve` calls `adapter.invoke()`, which is the real provider launch
-        # (`_parent_infer` -> `_exec_leg` -> the egress-prefixed `_popen` seams). A plain
-        # `threading.Thread` starts with a FRESH context, so every ContextVar the parent
-        # set reads back as its default here -- and `_EGRESS_LAUNCH_PREFIX` read back as
-        # `()`. Every brokered seat therefore launched OUTSIDE the network namespace while
-        # the parent thread, where the prefix was populated, recorded
-        # `network_filtered: true` into the seat's evidence.
-        #
-        # Found by the claude seat in agent-harness#890 board round 5 and observed live
-        # from inside its sandbox by grok ("on the host netns, full capability bounding
-        # set"). Proven:
-        #
-        #     parent thread prefix  : ('nsenter','--net','-t',...)
-        #     serve  thread prefix  : ()
-        #     argv actually launched: ['codex', 'exec', ...]
-        #     evidence would record : applied = True
-        #
-        # `copy_context()` is evaluated HERE, on the parent thread, and the snapshot is
-        # what the serve thread runs under.
-        thread=threading.Thread(target=copy_context().run, args=(serve,), daemon=False); thread.start()
+        # `serve` launches the provider; a plain thread would start with a FRESH
+        # context and lose the egress prefix. See `start_context_carrying_thread`.
+        thread = start_context_carrying_thread(serve, daemon=False)
         proc=subprocess.Popen(argv,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,env={"PATH":"/usr/bin","PYTHONNOUSERSITE":"1","PYTHONDONTWRITEBYTECODE":"1"},close_fds=True,start_new_session=True)
         _ppid, start = self._proc_stat(proc.pid)
         child.append((proc, start)); child_ready.set()

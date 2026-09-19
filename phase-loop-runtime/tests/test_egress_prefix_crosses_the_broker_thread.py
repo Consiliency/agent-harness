@@ -73,30 +73,58 @@ def test_a_context_carrying_thread_KEEPS_the_prefix():
         _EGRESS_LAUNCH_PREFIX.reset(token)
 
 
-def test_the_REAL_broker_starts_its_serve_thread_under_a_copied_context():
-    """Pin the mechanism where production uses it, not in a replica.
+def test_the_REAL_production_helper_carries_the_context():
+    """Execute the actual function production uses. Not a replica, not its source text.
 
-    Executing `run_credentialless_client` end to end needs bwrap, a broker socket and a
-    real provider, so this drives the one thing a replica cannot establish: that the
-    module actually building that thread carries the context. It is deliberately paired
-    with the behavioural tests above -- neither alone is sufficient, and the behavioural
-    pair alone was what let round 5 ship.
+    The previous version of this test asserted that the literal ``copy_context()``
+    appeared on the line building the thread. Board round 6 defeated it in one line while
+    fully restoring the defect::
+
+        threading.Thread(target=(lambda _ctx=copy_context(): serve()), daemon=False)
+
+    Four of four tests passed; the serve thread's prefix was ``()``. That is the second
+    time on this branch a source-text check certified a mechanism that did not work, so
+    the mechanism is now a callable and this RUNS it.
+    """
+    from phase_loop_runtime.advisor_board.backing import start_context_carrying_thread
+
+    seen: dict[str, tuple[str, ...]] = {}
+    token = _EGRESS_LAUNCH_PREFIX.set(PREFIX)
+    try:
+        thread = start_context_carrying_thread(
+            lambda: seen.__setitem__("prefix", _EGRESS_LAUNCH_PREFIX.get()), daemon=True,
+        )
+        thread.join(timeout=10)
+    finally:
+        _EGRESS_LAUNCH_PREFIX.reset(token)
+
+    assert seen.get("prefix") == PREFIX, (
+        "the production helper does NOT carry the caller's context; every brokered seat "
+        f"would launch unprefixed: {seen.get('prefix')!r}"
+    )
+
+
+def test_nothing_in_the_broker_bypasses_that_helper():
+    """The helper being correct is worthless if the launch path stops calling it.
+
+    This is the one assertion here that must read source, so it is framed as a NEGATIVE:
+    no raw thread construction anywhere in the module except inside the helper itself.
+    A bypass has to be written in, visibly, rather than merely slipping past a grep.
     """
     import inspect
     from phase_loop_runtime.advisor_board import backing
 
-    source = inspect.getsource(backing.ParentUnixBroker.run_credentialless_client)
-    assert "threading.Thread(" in source, "the serve thread moved; re-target this test"
-    started = [
-        line for line in source.splitlines()
-        if "threading.Thread(" in line and "start()" in line
-    ]
-    assert started, "could not locate the serve-thread construction"
-    assert all("copy_context()" in line for line in started), (
-        "the broker's serve thread starts with a FRESH context, so every ContextVar the "
-        "parent set -- including the egress launch prefix -- reads back as its default "
-        f"on the thread that launches the provider: {started}"
+    module_source = inspect.getsource(backing)
+    helper_source = inspect.getsource(backing.start_context_carrying_thread)
+    outside = module_source.replace(helper_source, "")
+
+    assert "threading.Thread(" not in outside, (
+        "a raw threading.Thread is constructed outside start_context_carrying_thread; "
+        "anything it runs begins with a FRESH context and loses the egress prefix"
     )
+    assert "start_context_carrying_thread(" in inspect.getsource(
+        backing.ParentUnixBroker.run_credentialless_client
+    ), "the brokered launch no longer routes through the context-carrying helper"
 
 
 def test_the_prefix_is_not_silently_global():
