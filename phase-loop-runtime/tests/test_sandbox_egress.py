@@ -111,7 +111,8 @@ class TestEvidenceRecording:
             fell_back=True, reason="ai unreachable within 5.0s",
         )
         panel_invoker._record_sandbox_facts(
-            choice, sandbox_egress.enforcement_report(True, applied=True)
+            choice, sandbox_egress.enforcement_report(True, applied=True),
+            staged_at=Path("/tmp/pl-panel-test/reviewed-tree"),
         )
         recorded = panel_invoker._sandbox_evidence()
 
@@ -127,7 +128,10 @@ class TestEvidenceRecording:
         choice = sandbox_policy.SandboxRootChoice(
             host=None, path=__import__("pathlib").Path("/tmp"), fell_back=False,
         )
-        panel_invoker._record_sandbox_facts(choice, sandbox_egress.enforcement_report(False))
+        panel_invoker._record_sandbox_facts(
+            choice, sandbox_egress.enforcement_report(False),
+            staged_at=Path("/tmp/pl-panel-test/reviewed-tree"),
+        )
         recorded = panel_invoker._sandbox_evidence()
 
         assert recorded["sandbox_network_filtered"] is False
@@ -267,25 +271,82 @@ class TestItFailsClosed:
                 pytest.fail("the body must never run unisolated")
 
     def test_rules_that_fail_to_install_refuse(self, monkeypatch):
-        """Failure three, and the worst: the namespace is up, so everything LOOKS isolated
-        while specific denies are missing."""
+        """Failure three, and the worst: the namespace is up, so everything LOOKS
+        isolated while specific denies are missing.
+
+        Everything outside the branch under test is stubbed. An earlier version of this
+        test needed a REAL namespace and skipped on `which(slirp4netns)`, which meant it
+        silently tested nothing in a container where the binaries exist but namespaces are
+        denied -- and then failed there, in Gate A, for the wrong reason: it reached the
+        "did not come up" branch instead of the rule-install branch it names.
+        """
         import subprocess as sp
         monkeypatch.delenv("PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL", raising=False)
         monkeypatch.setattr(sandbox_egress, "egress_isolation_available", lambda: True)
 
-        real_run = sp.run
+        class _Holder:
+            def __init__(self, *a, **k):
+                pass
 
-        def _fail_rules(argv, *a, **k):
-            if any("iptables" in str(part) for part in argv):
-                return sp.CompletedProcess(argv, 1, "", "iptables: permission denied")
-            return real_run(argv, *a, **k)
+            def terminate(self):
+                pass
 
-        monkeypatch.setattr(sandbox_egress.subprocess, "run", _fail_rules)
-        if not shutil.which("unshare") or not shutil.which("slirp4netns"):
-            pytest.skip("needs a real namespace to reach the rule-install branch")
+        # Bring the namespace "up" without one: the readiness file and pid the context
+        # manager polls for are the only things it needs from `unshare`/`slirp4netns`.
+        real_exists = sandbox_egress.os.path.exists
+        monkeypatch.setattr(sandbox_egress.subprocess, "Popen", _Holder)
+        monkeypatch.setattr(
+            sandbox_egress.os.path, "exists",
+            lambda pth: True if str(pth).endswith("ready") else real_exists(pth),
+        )
+        monkeypatch.setattr(
+            sandbox_egress.Path, "read_text", lambda self, **k: "12345",
+        )
+        monkeypatch.setattr(sandbox_egress.time, "sleep", lambda _s: None)
+        monkeypatch.setattr(
+            sandbox_egress.subprocess, "run",
+            lambda *a, **k: sp.CompletedProcess(
+                a[0] if a else [], 1, "", "iptables: permission denied"
+            ),
+        )
+
         with pytest.raises(sandbox_egress.EgressUnavailable, match="failed to install"):
             with sandbox_egress.isolated_network(timeout_s=5.0):
                 pytest.fail("a partial ruleset must not yield a prefix")
+
+    def test_a_partial_ruleset_is_tolerated_only_under_the_opt_out(self, monkeypatch):
+        """The falsifier: the refusal above must come from the POSTURE, not the stubs."""
+        import subprocess as sp
+        monkeypatch.setenv("PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL", "1")
+        monkeypatch.setattr(sandbox_egress, "egress_isolation_available", lambda: True)
+
+        class _Holder:
+            def __init__(self, *a, **k):
+                pass
+
+            def terminate(self):
+                pass
+
+        real_exists = sandbox_egress.os.path.exists
+        monkeypatch.setattr(sandbox_egress.subprocess, "Popen", _Holder)
+        monkeypatch.setattr(
+            sandbox_egress.os.path, "exists",
+            lambda pth: True if str(pth).endswith("ready") else real_exists(pth),
+        )
+        monkeypatch.setattr(
+            sandbox_egress.Path, "read_text", lambda self, **k: "12345",
+        )
+        monkeypatch.setattr(sandbox_egress.time, "sleep", lambda _s: None)
+        monkeypatch.setattr(
+            sandbox_egress.subprocess, "run",
+            lambda *a, **k: sp.CompletedProcess(
+                a[0] if a else [], 1, "", "iptables: permission denied"
+            ),
+        )
+
+        with pytest.warns(RuntimeWarning, match="failed to install"):
+            with sandbox_egress.isolated_network(timeout_s=5.0) as prefix:
+                assert prefix == (), "a partial ruleset must never yield a usable prefix"
 
 
 class TestTheOptOutIsOptionalNotDisable:
@@ -397,7 +458,8 @@ def test_round_facts_do_not_leak_between_legs():
 
     choice = sandbox_policy.SandboxRootChoice(host=None, path=Path("/tmp"), fell_back=False)
     panel_invoker._record_sandbox_facts(
-        choice, sandbox_egress.enforcement_report(True, applied=True)
+        choice, sandbox_egress.enforcement_report(True, applied=True),
+        staged_at=Path("/tmp/pl-panel-test/reviewed-tree"),
     )
     assert panel_invoker._sandbox_evidence()["sandbox_network_filtered"] is True
 
@@ -430,7 +492,8 @@ def test_round_facts_do_not_leak_to_the_NEXT_leg_on_the_same_thread():
 
     def leg_one() -> object:
         token = panel_invoker._record_sandbox_facts(
-            choice, sandbox_egress.enforcement_report(True, applied=True)
+            choice, sandbox_egress.enforcement_report(True, applied=True),
+            staged_at=Path("/tmp/pl-panel-test/reviewed-tree"),
         )
         assert token is not None, "the recorder must hand back something resettable"
         assert panel_invoker._sandbox_evidence()["sandbox_network_filtered"] is True
@@ -463,7 +526,8 @@ def test_a_leg_that_never_resets_DOES_leak(monkeypatch):
 
     def leg_one() -> None:
         panel_invoker._record_sandbox_facts(  # token deliberately discarded
-            choice, sandbox_egress.enforcement_report(True, applied=True)
+            choice, sandbox_egress.enforcement_report(True, applied=True),
+            staged_at=Path("/tmp/pl-panel-test/reviewed-tree"),
         )
 
     def leg_two() -> dict:
@@ -488,3 +552,71 @@ def test_the_launch_site_resets_the_facts_token():
     assert "_SANDBOX_ROUND_FACTS.reset" in source, (
         "the launch site records facts and never resets them"
     )
+
+
+class TestTheRecordSaysWhereTheSandboxACTUALLYIs:
+    """`select_sandbox_root` resolves a LOCATION; nothing consumes it for placement.
+
+    The stage is always `mkdtemp(prefix="pl-panel-")` on the local filesystem
+    (`panel_invoker.py:5857`), so setting `PHASE_LOOP_SANDBOX_ROOT=ai:/storage/sandboxes`
+    used to publish `sandbox_root_host: "ai"` into the review evidence for a sandbox that
+    never left this machine. Mechanism complete, activation absent, mechanism described as
+    the capability -- the fourteenth instance of that pattern on this branch, and the one
+    the board would have found in round 5.
+
+    Implementing co-location is agent-harness#896. Not lying about it is here.
+    """
+
+    def _choice(self, host, path):
+        from phase_loop_runtime import sandbox_policy
+        return sandbox_policy.SandboxRootChoice(
+            host=host, path=Path(path), fell_back=False,
+        )
+
+    def test_a_remote_selection_is_recorded_as_NOT_applied(self):
+        from phase_loop_runtime import panel_invoker
+
+        token = panel_invoker._record_sandbox_facts(
+            self._choice("ai", "/storage/sandboxes"),
+            sandbox_egress.enforcement_report(True, applied=True),
+            staged_at=Path("/tmp/pl-panel-abc/reviewed-tree"),
+        )
+        try:
+            facts = panel_invoker._sandbox_evidence()
+            assert facts["sandbox_root_applied"] is False
+            assert facts["sandbox_staged_at"] == "/tmp/pl-panel-abc/reviewed-tree"
+            assert "not implemented" in str(facts["sandbox_root_unapplied_reason"]) or \
+                   "NOT used for placement" in str(facts["sandbox_root_unapplied_reason"])
+        finally:
+            panel_invoker._SANDBOX_ROUND_FACTS.reset(token)
+
+    def test_a_local_root_that_really_is_the_parent_is_recorded_as_applied(self):
+        """The falsifier: `applied` must not be hardcoded False."""
+        from phase_loop_runtime import panel_invoker
+
+        token = panel_invoker._record_sandbox_facts(
+            self._choice(None, "/tmp/pl-panel-abc"),
+            sandbox_egress.enforcement_report(True, applied=True),
+            staged_at=Path("/tmp/pl-panel-abc/reviewed-tree"),
+        )
+        try:
+            facts = panel_invoker._sandbox_evidence()
+            assert facts["sandbox_root_applied"] is True
+            assert "sandbox_root_unapplied_reason" not in facts
+        finally:
+            panel_invoker._SANDBOX_ROUND_FACTS.reset(token)
+
+    def test_the_evidence_always_carries_where_it_is(self):
+        """`sandbox_staged_at` is the field a reader can act on; it must never be absent."""
+        from phase_loop_runtime import panel_invoker
+
+        for host, path in (("ai", "/storage/x"), (None, "/tmp/pl-panel-abc")):
+            token = panel_invoker._record_sandbox_facts(
+                self._choice(host, path),
+                sandbox_egress.enforcement_report(False),
+                staged_at=Path("/tmp/pl-panel-abc/reviewed-tree"),
+            )
+            try:
+                assert panel_invoker._sandbox_evidence()["sandbox_staged_at"]
+            finally:
+                panel_invoker._SANDBOX_ROUND_FACTS.reset(token)

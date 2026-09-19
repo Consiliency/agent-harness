@@ -123,6 +123,12 @@ def test_default_spawn_stages_the_tree_only_when_authorized(tmp_path, monkeypatc
     """
     from phase_loop_runtime import panel_invoker
 
+    # Staging mechanics, not egress. Egress fails closed, so on a host without user
+    # namespaces the leg refuses before it stages anything. Declared explicitly here
+    # rather than weakening the default; the unfilterable host is covered by
+    # `test_an_unauthorized_tree_is_refused_as_UNAUTHORIZED_on_an_unfilterable_host`.
+    monkeypatch.setenv("PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL", "1")
+
     repo = tmp_path / "reviewed-repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
@@ -162,6 +168,12 @@ def test_default_spawn_stages_the_tree_only_when_authorized(tmp_path, monkeypatc
 def test_default_spawn_removes_the_readonly_stage_on_the_way_out(tmp_path, monkeypatch):
     """A read-only stage defeats `rmtree(ignore_errors=True)`; it must not leak."""
     from phase_loop_runtime import panel_invoker
+
+    # Staging mechanics, not egress. Egress fails closed, so on a host without user
+    # namespaces the leg refuses before it stages anything. Declared explicitly here
+    # rather than weakening the default; the unfilterable host is covered by
+    # `test_an_unauthorized_tree_is_refused_as_UNAUTHORIZED_on_an_unfilterable_host`.
+    monkeypatch.setenv("PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL", "1")
 
     repo = tmp_path / "reviewed-repo"
     repo.mkdir()
@@ -216,3 +228,50 @@ def test_staging_a_tree_the_authorization_did_not_approve_is_refused(tmp_path, m
     )
     assert status == "DEGRADED"
     assert "staged tree does not match authorization" in detail
+
+
+def test_an_unauthorized_tree_is_refused_as_UNAUTHORIZED_on_an_unfilterable_host(
+    tmp_path, monkeypatch,
+):
+    """Order is the property: request-merit refusals precede host-capability refusals.
+
+    Acquiring the network namespace before revalidating meant an unfilterable host
+    answered "egress isolation unavailable" to a tree the authorization never approved.
+    Nothing unsafe ran -- both are refusals -- but the authorization check never executed,
+    and `test_staging_a_tree_the_authorization_did_not_approve_is_refused` stopped testing
+    authorization while still passing on a host that happens to have user namespaces. A
+    reason that is true but is not THE reason is how a real check goes quiet.
+
+    This is deliberately the ONE test in this file that keeps the fail-closed default, so
+    the posture declarations on its neighbours cannot hide the regression coming back.
+    """
+    from phase_loop_runtime import panel_invoker, sandbox_egress
+
+    monkeypatch.delenv("PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL", raising=False)
+    monkeypatch.setattr(sandbox_egress, "egress_isolation_available", lambda: False)
+
+    reviewed = tmp_path / "reviewed"
+    reviewed.mkdir()
+    subprocess.run(["git", "init", "-q", str(reviewed)], check=True)
+    (reviewed / "SOURCE.py").write_text("reviewed\n", encoding="utf-8")
+
+    other = tmp_path / "other"
+    other.mkdir()
+    subprocess.run(["git", "init", "-q", str(other)], check=True)
+    (other / "OTHER.py").write_text("not the reviewed tree\n", encoding="utf-8")
+
+    monkeypatch.setattr(panel_invoker, "_exec_leg",
+                        lambda *a, **k: (0, "ok review", "log"))
+
+    status, detail = panel_invoker._default_spawn(
+        "gemini", "REVIEW BUNDLE BODY", repo_dir=reviewed,
+        review_authorization=_authorization(
+            review_stage.review_tree_manifest_sha256(reviewed)
+        ),
+        canonical_repo_authority=other,
+    )
+
+    assert status == "DEGRADED"
+    assert "staged tree does not match authorization" in detail, (
+        f"the host-capability refusal shadowed the authorization check: {detail!r}"
+    )

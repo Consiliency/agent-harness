@@ -1839,23 +1839,44 @@ _SANDBOX_ROUND_FACTS: ContextVar[dict[str, object]] = ContextVar(
 
 
 def _record_sandbox_facts(
-    root_choice: "_sandbox_policy.SandboxRootChoice", enforcement: dict[str, object],
+    root_choice: "_sandbox_policy.SandboxRootChoice",
+    enforcement: dict[str, object],
+    *,
+    staged_at: Path,
 ):
     """Remember what this leg chose, and return a token the caller MUST reset.
 
     Returning the token is the point: an earlier version set this and never reset it, so a
     later launch on the same worker inherited the previous leg's isolation claim (board
     round 4).
+
+    ``staged_at`` is where the sandbox ACTUALLY is, which is not always what the policy
+    SELECTED. `select_sandbox_root` resolves a location -- including a remote `host:path`
+    -- but nothing consumes it for placement: the stage is always
+    `mkdtemp(prefix="pl-panel-")` on the local filesystem. Recording only the selection
+    would publish a remote host into the evidence for a sandbox that never left this
+    machine. Same shape as `enforcement_report`'s `available_but_unapplied`, and the same
+    rule: the record states what happened, never what was intended (agent-harness#896).
     """
-    return _SANDBOX_ROUND_FACTS.set({
+    applied = root_choice.host is None and Path(root_choice.path) == staged_at.parent
+    facts: dict[str, object] = {
         "sandbox_root_host": root_choice.host,
         "sandbox_root_path": str(root_choice.path),
         "sandbox_root_fell_back": root_choice.fell_back,
         "sandbox_root_reason": root_choice.reason or None,
+        "sandbox_staged_at": str(staged_at),
+        "sandbox_root_applied": applied,
         "sandbox_network_filtered": enforcement.get("network_filtered"),
         "sandbox_network_mechanism": enforcement.get("mechanism"),
         "sandbox_network_unfiltered_reason": enforcement.get("reason"),
-    })
+    }
+    if not applied:
+        facts["sandbox_root_unapplied_reason"] = (
+            "the selected root is recorded but NOT used for placement; remote "
+            "co-location is not implemented, so this sandbox was staged locally "
+            "(agent-harness#896)"
+        )
+    return _SANDBOX_ROUND_FACTS.set(facts)
 
 
 def _sandbox_evidence() -> dict[str, object]:
@@ -5864,6 +5885,9 @@ def _default_spawn(
         raise
     provider_output_dir: Path | None = out_dir if provider_authority is not None else None
     staged_tree_path: Path | None = None
+    # Set only when a sandbox was staged; it is what gates the egress acquisition after
+    # the revalidations, so the two decisions stay in one place each.
+    sandbox_root_choice: "_sandbox_policy.SandboxRootChoice | None" = None
     egress_stack = contextlib.ExitStack()
     try:
         if quiescence_latch is not None:
@@ -5893,35 +5917,9 @@ def _default_spawn(
                     floor_bytes=_sandbox_policy.floor_bytes(),
                     probe_timeout_s=_sandbox_policy.probe_timeout_s(),
                 )
-                # What was ACTUALLY enforced, not what was intended: a seat that believes
-                # it is network-isolated and is not would produce evidence nobody can trust.
-                # Open the filtered namespace for the whole leg. `applied=True` is passed
-                # ONLY from inside this block, so the evidence cannot claim a boundary that
-                # was not actually held open around the launch.
-                # Outlive the leg: the namespace must not expire under a long review.
-                egress_ctx = _sandbox_egress.isolated_network(
-                    timeout_s=float(_LEG_TIMEOUT_MAX_S) + 300.0,
-                )
-                egress_prefix = egress_stack.enter_context(egress_ctx)
-                if _sandbox_egress.egress_required() and not egress_prefix:
-                    # Belt and braces. `isolated_network(required=...)` raises on each of
-                    # its three degraded paths; this refuses a FOURTH that does not exist
-                    # yet -- an empty prefix reaching the launch means the seat runs
-                    # unfiltered while the evidence is assembled as if it did not.
-                    raise _sandbox_egress.EgressUnavailable(
-                        "egress isolation yielded an empty launch prefix"
-                    )
-                egress_token = _EGRESS_LAUNCH_PREFIX.set(tuple(egress_prefix))
-                egress_stack.callback(_EGRESS_LAUNCH_PREFIX.reset, egress_token)
-                sandbox_enforcement = _sandbox_egress.enforcement_report(
-                    applied=bool(egress_prefix),
-                )
-                # Reset the facts too. The recorder returns a token precisely because an
-                # earlier version set this and never reset it, so the NEXT leg on the same
-                # worker thread inherited this leg's isolation claim (board round 4). The
-                # recorder was fixed; the caller kept discarding the token.
-                facts_token = _record_sandbox_facts(root_choice, sandbox_enforcement)
-                egress_stack.callback(_SANDBOX_ROUND_FACTS.reset, facts_token)
+                # The namespace is acquired AFTER both revalidations, not here -- see
+                # `sandbox_root_choice` below.
+                sandbox_root_choice = root_choice
                 staged_tree = _review_stage.stage_review_tree(resolved_repo_dir, review_dir)
                 # Track the ACTUAL path across the ownership transfer. If the rename
                 # fails, the hardened tree is still under its `pl-panel-stage-*` name,
@@ -5961,6 +5959,52 @@ def _default_spawn(
                 mode=mode, staged_dir=review_dir,
                 canonical_repo_authority=resolved_repo_dir,
             )
+        if sandbox_root_choice is not None:
+            # ORDER IS THE POINT. A refusal on the merits of the REQUEST -- a staged tree
+            # the authorization never approved, artifact bytes that no longer bind -- must
+            # be reached before a refusal about the capabilities of this HOST. Acquiring
+            # the namespace first made an unfilterable host answer "egress isolation
+            # unavailable" to a tree nobody authorized: still a refusal, so nothing unsafe
+            # ran, but the security check never executed and its test stopped testing it.
+            # A reason that is true but not THE reason is how a real check goes quiet.
+            #
+            # It also means the namespace is not held open across the clone, and that
+            # every launch branch below -- brokered, claude TUI, and `_exec_leg` -- is
+            # downstream of this point, so all three inherit the prefix.
+            egress_ctx = _sandbox_egress.isolated_network(
+                # Outlive the leg: the namespace must not expire under a long review.
+                timeout_s=float(_LEG_TIMEOUT_MAX_S) + 300.0,
+            )
+            egress_prefix = egress_stack.enter_context(egress_ctx)
+            if _sandbox_egress.egress_required() and not egress_prefix:
+                # Belt and braces. `isolated_network(required=...)` raises on each of its
+                # three degraded paths; this refuses a FOURTH that does not exist yet --
+                # an empty prefix reaching the launch means the seat runs unfiltered while
+                # the evidence is assembled as if it did not.
+                raise _sandbox_egress.EgressUnavailable(
+                    "egress isolation yielded an empty launch prefix"
+                )
+            egress_token = _EGRESS_LAUNCH_PREFIX.set(tuple(egress_prefix))
+            egress_stack.callback(_EGRESS_LAUNCH_PREFIX.reset, egress_token)
+            # What was ACTUALLY enforced, not what was intended: a seat that believes it
+            # is network-isolated and is not produces evidence nobody can trust.
+            # `applied` is derived from the prefix we are about to launch with, never
+            # asserted, so the record cannot claim a boundary that was not held open.
+            sandbox_enforcement = _sandbox_egress.enforcement_report(
+                applied=bool(egress_prefix),
+            )
+            # Reset the facts too. The recorder returns a token precisely because an
+            # earlier version set this and never reset it, so the NEXT leg on the same
+            # worker thread inherited this leg's isolation claim (board round 4). The
+            # recorder was fixed; the caller kept discarding the token.
+            facts_token = _record_sandbox_facts(
+                sandbox_root_choice, sandbox_enforcement,
+                # WHERE IT IS, not where it was selected to go. `staged_tree_path` is the
+                # real stage; `sandbox_root_choice.path` is a policy decision nothing
+                # consumes for placement yet.
+                staged_at=staged_tree_path if staged_tree_path is not None else review_dir,
+            )
+            egress_stack.callback(_SANDBOX_ROUND_FACTS.reset, facts_token)
         capture_staged: dict[str, dict[str, object]] | None = None
         if agy_capture is not None:
             if leg == "gemini" and not seat_key:
