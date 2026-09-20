@@ -2,7 +2,7 @@
 
 - record kind: disposition (EC-REVIEWTRUTH-15 form: a committed document whose commit must be an ancestor of the landing commit's first parent, cited by full SHA in the landing commit message; the landing is a two-parent merge)
 - scope: the EARLY SLICE of v10 Phase 7 REVIEWTRUTH described in `plans/detailed-native-claude-seat-fill-396-20260920-1030.md` (Consiliency/agent-harness#918, ratified plan head `7946d7a5`) — EC-REVIEWTRUTH-14 ("Part of"; its EC-4 clause stays with the phase)
-- issues: Consiliency/agent-harness#396 (the ruling), #636 (the prose contradiction), #405 (implementation tracker; stays open), #906 (consumer: the train review)
+- issues: Consiliency/agent-harness#396 (the ruling), Consiliency/agent-harness#636 (the prose contradiction), Consiliency/agent-harness#405 (implementation tracker; stays open), Consiliency/agent-harness#906 (consumer: the train review)
 - ratified by: the maintainer (ViperJuice), 2026-09-20, in the driving Claude Code session that authored #918, restating the standing ruling ("use Claude native capabilities, not the TUI adapter") and choosing "Ratify an early REVIEWTRUTH slice" over running the phase in order; recorded the same day on Consiliency/agent-harness#396
 
 ## The ratified design (stated positively, per EC-REVIEWTRUTH-15 obligation (a))
@@ -14,7 +14,7 @@
 
 ## Gate waiver (scoped)
 
-This slice executes ahead of the phase's recorded SCHED/HARDEN ordering gates (Consiliency/agent-harness#396, 2026-08-19/20 notes). The waiver covers this slice only: PR-0 (this record), PR-1 (RED tests, zero production change, gated by `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH`), PR-2 (implementation, two-parent landing citing this record). The remainder of REVIEWTRUTH — including EC-REVIEWTRUTH-1/-4's delivery classifier (SL-4 `gate_posture.py`), SL-0's full capability record and SL-1's frozen RED set — stays behind its gates.
+This slice executes ahead of the phase's recorded SCHED/HARDEN ordering gates (the 2026-08-19/20 gate notes on Consiliency/agent-harness#396; the waiver itself is dated 2026-09-20 in the header). The waiver covers this slice only: PR-0 (this record), PR-1 (RED tests, zero production change, gated by `PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH`), PR-2 (implementation, two-parent landing citing this record). The remainder of REVIEWTRUTH — including EC-REVIEWTRUTH-1/-4's delivery classifier (SL-4 `gate_posture.py`), SL-0's full capability record and SL-1's frozen RED set — stays behind its gates.
 
 ## Conformance obligation (EC-REVIEWTRUTH-15 obligation (b))
 
