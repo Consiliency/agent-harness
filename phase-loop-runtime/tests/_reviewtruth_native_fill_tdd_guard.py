@@ -80,6 +80,7 @@ RED_ANCHORS: dict[str, str] = {
     "test_cli_emit_arm_writes_the_request_and_run_train_accepts_the_flags": ANCHOR_PREFIX + "cli_emit_arm_writes_the_request_and_run_train_accepts_the_flags",
     "test_observation_is_typed_incomplete_under_claude_code_without_a_fill_and_launches_nothing": ANCHOR_PREFIX + "observation_is_typed_incomplete_under_claude_code_without_a_fill_and_launches_nothing",
     "test_observation_is_typed_incomplete_outside_claude_code_and_never_launches_the_external_leg": ANCHOR_PREFIX + "observation_is_typed_incomplete_outside_claude_code_and_never_launches_the_external_leg",
+    "test_filled_observation_completes_and_classifies_resolved": ANCHOR_PREFIX + "filled_observation_completes_and_classifies_resolved",
     "test_assumption_probe_caller_fails_closed_on_an_incomplete_observation": ANCHOR_PREFIX + "assumption_probe_caller_fails_closed_on_an_incomplete_observation",
     "test_sidecar_capture_refuses_an_incomplete_observation_and_writes_nothing": ANCHOR_PREFIX + "sidecar_capture_refuses_an_incomplete_observation_and_writes_nothing",
 }

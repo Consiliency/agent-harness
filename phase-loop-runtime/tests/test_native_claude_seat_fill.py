@@ -46,6 +46,20 @@ def _seat(model: str = FABLE, harness: str = "claude") -> Seat:
     return Seat(model=model, effort="max", harness=harness, lens="correctness")
 
 
+def _default_seat(harness: str) -> Seat:
+    """The fleet-default seat for a vendor: its route is HARDEN-supported by construction."""
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_SEATS
+    return next(seat for seat in DEFAULT_SEATS if str(seat.harness).lower() == harness)
+
+
+def _four_vendor_board() -> Board:
+    return Board(name="four", purpose="premerge-review",
+                 seats=tuple(_default_seat(h) for h in ("claude", "codex", "gemini", "grok")))
+
+
+FILL_MARKER = "FILL-MARKER-7f3a"
+
+
 def _mixed_board() -> Board:
     return Board(name="mixed", purpose="premerge-review",
                  seats=(_seat(FABLE), _seat("gpt-5.6-sol", "codex"), _seat("grok-4.6", "grok")))
@@ -311,41 +325,41 @@ class TestIngestion:
 
     @activated
     def test_president_rules_on_the_bound_fill_on_both_deferral_paths(self, tmp_path):
-        """Matrix path: a four-vendor board under PRODUCTION_CODE (the tier that requires a
-        president and all four vendors) with the claude seat filled — the ruling must be made
-        over the FILLED board (the president's findings show the claude seat). Early path: a
-        claude-only board can never satisfy a president-requiring seat policy (that refusal is
-        pre-existing and correct), so the property there is that the fill is bound and usable
-        on the common tail, not that a president rules."""
+        """Matrix path: the fleet-default four-vendor board under PRODUCTION_CODE (the tier that
+        requires a president and all four vendors) with the claude seat filled — the president
+        must be shown the FILLED board: the prompt it receives carries the fill's own text
+        (a ruling made before the fill is bound cannot contain it). Early path: a claude-only
+        board can never satisfy a president-requiring seat policy (pre-existing, correct), so the
+        property there is that the fill is bound and usable on the common tail."""
         NativeLegFill = _fill_symbols()[0]
         n = "test_president_rules_on_the_bound_fill_on_both_deferral_paths"
         guard.require(n, NativeLegFill is not None, "NativeLegFill is absent")
         artifact = tmp_path / "bundle.md"
         artifact.write_text("review me\n")
-        four = Board(name="four", purpose="premerge-review", seats=(
-            _seat(FABLE), _seat("gpt-5.6-sol", "codex"), _seat("gemini-3.7-flash", "gemini"), _seat("grok-4.6", "grok")))
+        four = _four_vendor_board()
+        claude_seat = next(seat for seat in four.seats if str(seat.harness).lower() == "claude")
         seen: list = []
 
         def president(model, prompt):
             seen.append(prompt)
             return deferring_president(model, prompt)
 
+        fill = _fill(NativeLegFill, claude_seat, text=f"Reviewed carefully. {FILL_MARKER}\nAGREE")
         err, res = None, None
         try:
             res = invoke_sanctioned_review_transport(
                 four, "", spawn=_typed_deferral_spawn, artifact_ref=str(artifact), repo_dir=str(tmp_path), base_env=dict(CC),
-                landing_tier=ReviewLandingTier.PRODUCTION_CODE, president_invoke=president,
-                native_leg_fills=[_fill(NativeLegFill, four.seats[0])],
+                landing_tier=ReviewLandingTier.PRODUCTION_CODE, president_invoke=president, native_leg_fills=[fill],
             )
         except TypeError as exc:
             err = exc
         guard.require(n, err is None, f"matrix: invoke_board accepts no native_leg_fills: {err}")
         claude = next(l for l in res.legs if l.leg == "claude")
         guard.require(n, claude.usable, f"matrix: the bound fill is not usable ({claude.status}/{claude.detail})")
-        guard.require(n, res.president is not None and res.president_findings and seen,
+        guard.require(n, res.president is not None and res.president_findings and len(seen) >= 1,
                       "matrix: no ruling was made over the filled board")
-        guard.require(n, any("claude" in str(f).lower() or four.seats[0].seat_key in str(f) for f in res.president_findings),
-                      f"matrix: the president's findings never saw the claude seat: {res.president_findings}")
+        guard.require(n, any(FILL_MARKER in prompt for prompt in seen),
+                      "matrix: the president ruled BEFORE the fill was bound (its prompt never carried the fill's text)")
         solo = Board(name="claude-solo", purpose="premerge-review", seats=(_seat(),))
         err = None
         with unittest.mock.patch.object(pi, "_claude_code_support_status", return_value=(True, "supported")):
@@ -377,6 +391,9 @@ class TestProtocol:
         abc = Board(name="x", purpose="premerge-review", seats=(a, b, c))
         guard.require(n, digest(ab) == digest(ba), "digest depends on seat order or board name")
         guard.require(n, digest(ab) != digest(abc) and len(digest(ab)) == 64, "digest does not change with the seat set")
+        a2 = Seat(model=FABLE, effort="max", harness="claude", lens="adversarial")
+        ab2 = Board(name="x", purpose="premerge-review", seats=(a2, b))
+        guard.require(n, digest(ab) != digest(ab2), "digest ignores a seat's identity (same count, different lens)")
 
     @activated
     def test_request_payload_carries_the_binding(self):
@@ -449,27 +466,28 @@ class TestProtocol:
 
     @activated
     def test_run_train_refuses_a_stale_fill_before_spending_a_seat(self, tmp_path, monkeypatch):
+        """emit → load → invoke: a fill loaded from the EMITTED request reaches the review exactly
+        once (never refused as stale); the same fill against a moved train is refused as
+        native_fill_stale_request before anything is minted. A runner that refuses every fill,
+        or accepts every fill, fails one half."""
         from phase_loop_runtime.advisor_board import backing as backing_mod
         from phase_loop_runtime.train_roadmap import parse_train_roadmap
         from phase_loop_runtime.train_runner import run_train
         from test_train_prebuilt import PREBUILT_1NODE_MD
         from test_train_review_authorization import ADMITTED, _ledger, _pr_is_open_true, _preflight_pass
 
-        NativeLegFill = _fill_symbols()[0]
+        NativeLegFill, load, _, _ = _fill_symbols()
         n = "test_run_train_refuses_a_stale_fill_before_spending_a_seat"
-        guard.require(n, NativeLegFill is not None, "NativeLegFill is absent")
+        guard.require(n, NativeLegFill is not None and load is not None, "NativeLegFill / load_native_leg_fill absent")
         monkeypatch.setattr(comp_mod, "compose_review_board", lambda *a, **k: _mixed_board())
         monkeypatch.setenv("CLAUDECODE", "1")
-        mint = _Never("mint")
-        monkeypatch.setattr(backing_mod, "prepare_review_isolation_authorization", mint)
         roadmap = parse_train_roadmap(PREBUILT_1NODE_MD)
         ws_map = {node.node_id: tmp_path / node.repo for node in roadmap.nodes}
         publish, merge = _Never("publish"), _Never("merge")
-        stale = _fill(NativeLegFill, _mixed_board().seats[0], artifact_sha256="0" * 64)
-        result, err = None, None
-        try:
-            result = run_train(
-                roadmap, _ledger(tmp_path), run_mode="governed",
+
+        def _train(ledger, **extra):
+            return run_train(
+                roadmap, ledger, run_mode="governed",
                 resolve_workspace=lambda node: ws_map[node.node_id],
                 _run_loop=lambda *a, **kw: (None, []), _publish=publish,
                 _set_upstream_ref_fn=lambda *a, **kw: [], _preflight_fn=_preflight_pass,
@@ -478,13 +496,35 @@ class TestProtocol:
                 _prebuilt_owned_paths_fn=lambda ws, base: ["src/x.py"], _merge_phase_enabled=True,
                 review_only=True, _merge_pr_fn=merge,
                 _reverify_fn=lambda *a, **k: True, _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
-                native_leg_fills=[stale],
+                **extra,
             )
+
+        ledger = _ledger(tmp_path)
+        err, emitted = None, None
+        try:
+            emitted = _train(ledger, emit_native_request=True)
         except TypeError as exc:
             err = exc
-        guard.require(n, err is None, f"run_train accepts no native_leg_fills: {err}")
-        guard.require(n, result.get("status") == "review_halted" and result.get("reason") == "native_fill_stale_request",
-                      f"stale fill not refused as native_fill_stale_request: {result.get('status')}/{result.get('reason')}")
+        guard.require(n, err is None and emitted.get("status") == "native_fill_requested", f"emit arm: {err or emitted}")
+        request_path = Path(emitted["request_path"])
+        (request_path.parent / "claude.md").write_text("Reviewed the train.\nAGREE\n")
+        fill = load(request_path, request_path.parent / "claude.md")
+        review = _Spy(result=None)
+
+        def reviewing(artifact, run_mode, **kw):
+            from phase_loop_runtime.governed_premerge import LoopResult
+            review.calls.append((artifact, run_mode, kw))
+            return LoopResult(mergeable=True, ran=True, rounds=1)
+
+        ok = _train(ledger, native_leg_fills=[fill], _train_review_fn=reviewing)
+        guard.require(n, ok.get("status") == "review_approved" and len(review.calls) == 1,
+                      f"a fill loaded from the emitted request did not reach the review exactly once: {ok.get('status')} / {len(review.calls)}")
+        mint = _Never("mint")
+        monkeypatch.setattr(backing_mod, "prepare_review_isolation_authorization", mint)
+        stale = NativeLegFill(**{**fill.__dict__, "artifact_sha256": "0" * 64})
+        halted = _train(_ledger(tmp_path / "moved"), native_leg_fills=[stale])
+        guard.require(n, halted.get("status") == "review_halted" and halted.get("reason") == "native_fill_stale_request",
+                      f"stale fill not refused as native_fill_stale_request: {halted.get('status')}/{halted.get('reason')}")
         guard.require(n, mint.calls == 0 and publish.calls == 0 and merge.calls == 0, "a seat was minted or a merge attempted")
 
     @activated
@@ -566,6 +606,42 @@ class TestProbe:
         guard.require(n, not launched_without_marker, f"the external self-PTY leg was launched: {launched_without_marker}")
 
     @activated
+    def test_filled_observation_completes_and_classifies_resolved(self, tmp_path, monkeypatch):
+        """The resolved arm is PRODUCIBLE: with a fill, the observation runs the board (here a
+        governed gate whose panel carries four usable legs, the claude leg bound) and yields the
+        three fields the byte-identical flattener and classifier need to read `resolved`."""
+        from phase_loop_runtime import governed_review as gr_mod
+        observe, Incomplete = _observe()
+        NativeLegFill = _fill_symbols()[0]
+        n = "test_filled_observation_completes_and_classifies_resolved"
+        guard.require(n, observe is not None and Incomplete is not None and NativeLegFill is not None, "D5/D2 symbols absent")
+        repo = _canonical_repo(tmp_path)
+        monkeypatch.setenv("CLAUDECODE", "1")
+        four = _four_vendor_board()
+        claude_seat = next(seat for seat in four.seats if str(seat.harness).lower() == "claude")
+        fill = _fill(NativeLegFill, claude_seat)
+        legs = [pi.PanelLegResult(leg=str(seat.harness).lower(), status="OK", text="Reviewed.\nAGREE", seat_key=seat.seat_key)
+                for seat in four.seats if str(seat.harness).lower() != "claude"]
+        apply = _fill_symbols()[3]
+        bound = apply([_deferred_leg(claude_seat)], [fill]) if apply is not None else []
+        panel = pi.PanelResult(legs=tuple(bound + legs))
+        gate_calls = []
+
+        def fake_gate(**kw):
+            gate_calls.append(kw)
+            return gr_mod.GateResult(ran=True, promoted=True, panel=panel)
+
+        monkeypatch.setattr(gr_mod, "governed_board_gate", fake_gate)
+        out = observe(repo, SUBJECT, native_leg_fills=[fill], issue_snapshot={"state": "CLOSED", "stateReason": "completed"})
+        guard.require(n, isinstance(out, Mapping) and not isinstance(out, Incomplete), f"filled observation did not complete: {out!r}")
+        guard.require(n, gate_calls and gate_calls[-1].get("native_leg_fills"), "the board was not run with the fill")
+        flat = le._flatten_reviewtruth_observation(out)
+        guard.require(n, flat.get("native_fill_request") is True and flat.get("verdict_bound") is True and flat.get("seat_count") == "FULL",
+                      f"flattened observation lacks the resolved fields: {flat}")
+        guard.require(n, ra._classify_reviewtruth_transition({**flat, "issue_state": "CLOSED", "issue_disposition": "completed"}) == "resolved",
+                      f"the byte-identical classifier does not read resolved: {flat}")
+
+    @activated
     def test_assumption_probe_caller_fails_closed_on_an_incomplete_observation(self, tmp_path, monkeypatch):
         observe, Incomplete = _observe()
         n = "test_assumption_probe_caller_fails_closed_on_an_incomplete_observation"
@@ -592,7 +668,8 @@ class TestProbe:
         repo = _canonical_repo(tmp_path)
         run_dir = tmp_path / "run"
         run_dir.mkdir()
-        monkeypatch.setattr(le, "observe_reviewtruth_fable_transition", _Spy(result=Incomplete("fill_requested")))
+        observer = _Spy(result=Incomplete("fill_requested"))
+        monkeypatch.setattr(le, "observe_reviewtruth_fable_transition", observer)
         raised = None
         try:
             le.capture_fresh_process_verification_sidecar(
@@ -600,5 +677,6 @@ class TestProbe:
             )
         except le.LegibleSidecarError as exc:
             raised = exc
-        guard.require(n, raised is not None, "an incomplete observation was sealed into a sidecar (or a non-typed error escaped)")
+        guard.require(n, raised is not None and len(observer.calls) == 1,
+                      f"an incomplete observation was sealed into a sidecar, or the observer never ran ({len(observer.calls)} calls)")
         guard.require(n, not any(run_dir.iterdir()), f"bytes were written on refusal: {sorted(p.name for p in run_dir.iterdir())}")
