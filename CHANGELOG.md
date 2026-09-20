@@ -14,8 +14,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   new head, non-force exact-head push to the same branch, existing-PR reconciliation), and the
   ledger gains a new `pr_open` record after terminal evidence, keeping the old one. Remote drift
   (`remote_drift`) and a diverged candidate (`candidate_diverged`) are refused BEFORE any
-  admission. Execute nodes are unchanged. A live-head read failure on resume is now a typed
-  `blocked` return with a ledger row, never an uncaught escape (agent-harness#289).
+  admission, and a refusal is durable: its `blocked` row keeps the admitted head and PR, so a
+  plain retry re-enters the decision instead of publishing fresh over the refused drift.
+  Execute nodes are unchanged. A live-head read that RAISES on resume is now a typed `blocked`
+  return with a ledger row, never an uncaught escape (agent-harness#289); a read that returns
+  nothing refuses the refresh (`live_pr_head_unavailable`) rather than passing as "no drift".
 - **A sealed prior publish transaction no longer fails the whole train at preflight.** The
   broker seals a transaction on every terminal class, so "sealed" alone said nothing; a sealed
   transaction whose head the workspace has advanced past is now returned attached and never

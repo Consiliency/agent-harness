@@ -353,7 +353,15 @@ def _prebuilt_refresh_decision(
         live = live_pr_head_sha_fn(workspace, branch)
     except Exception as exc:  # agent-harness#289 discipline: typed, never uncaught
         return ("live_pr_head_read_failed", f"{type(exc).__name__}: {exc}")
-    if in_out_of_band or (live and live != admitted):
+    if not live:
+        # The refresh is about to push. A read that returned nothing is not "no drift";
+        # it is an unobserved remote, and the coordinator does not publish over one.
+        return (
+            "live_pr_head_unavailable",
+            f"{nid!r}: the live PR head could not be observed for branch {branch!r}; "
+            "refusing to refresh over an unobserved remote",
+        )
+    if in_out_of_band or live != admitted:
         return (
             "remote_drift",
             f"{nid!r}: live PR head {live!r} differs from the admitted head {admitted!r}; "
@@ -388,7 +396,7 @@ def _sealed_publish_disposition(workspace: Path, transaction) -> str:
     try:
         from .convergence.broker.evidence import BrokerEvidenceStore
         from .convergence.broker.live import repository_broker_namespace
-        from .convergence.contracts import publish_committed_branch_idempotency_key
+        from .convergence.contracts import BrokerVerb, publish_committed_branch_idempotency_key
         from .convergence.provider_contracts import TerminalOutcomeState
 
         base = publish_committed_branch_idempotency_key(
@@ -396,7 +404,9 @@ def _sealed_publish_disposition(workspace: Path, transaction) -> str:
             transaction.branch,
             transaction.committed_head_sha,
         )
-        key = f"publish_committed_branch\0{base}"
+        # Same shape as `BrokerService._dedup_key`: `<verb>\0<base>`, verb from the enum so
+        # a renamed verb cannot silently split the evidence namespace (PR #909 r1, claude).
+        key = f"{BrokerVerb.PUBLISH_COMMITTED_BRANCH.value}\0{base}"
         record = BrokerEvidenceStore(repository_broker_namespace(workspace)).replay().get(key)
     except Exception:
         return "unreadable"
@@ -2713,9 +2723,19 @@ def _run_train_unfenced(
     for node in topo_order:
         nid = node.node_id
         rec = ledger_state.get(nid)
-        if rec and rec.status in ("pr_open", "merged") and rec.branch and rec.pr_url:
+        # agent-harness#906 (PR #909 r1, codex): a REFUSED REFRESH appends `blocked` WITH the
+        # admitted head and PR URL, and is classified here like pr_open. Otherwise the
+        # last-wins fold would hide the prior admission, the next run would skip the
+        # refresh decision entirely, and a plain retry would publish fresh over the very
+        # drift that was refused. A `blocked` row without those fields (a publish failure,
+        # a stale-downstream block) keeps today's meaning: not a completed node.
+        refused_refresh = (
+            rec is not None and rec.status == "blocked"
+            and bool(rec.branch) and bool(rec.pr_url) and bool(rec.head_sha)
+        )
+        if rec and (rec.status in ("pr_open", "merged") or refused_refresh) and rec.branch and rec.pr_url:
             workspace = resolve_workspace(node)
-            if rec.status == "pr_open":
+            if rec.status == "pr_open" or refused_refresh:
                 if not pr_is_open_fn(workspace, rec.branch):
                     # In P4 mode: before dropping, check whether this PR was
                     # already merged on GitHub (crash window between the merge
@@ -2908,12 +2928,16 @@ def _run_train_unfenced(
                     continue
                 if decision != "advanced":
                     reason, message = decision
+                    # Durable refusal: keep the admitted head + PR on the row so the next
+                    # run re-enters this decision instead of publishing fresh (see Step 3).
                     append_record(
                         ledger_path,
                         LedgerRecord(
                             node_id=nid,
                             status="blocked",
                             branch=completed_nodes[nid].get("branch"),
+                            head_sha=completed_nodes[nid].get("admitted_head_sha"),
+                            pr_url=completed_nodes[nid].get("pr_url"),
                         ),
                     )
                     return {
