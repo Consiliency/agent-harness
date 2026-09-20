@@ -108,9 +108,32 @@ Data research tools. It disables Codex native web search/apps, derives success
 from the completed correlated audit rather than model prose, and emits only
 privacy-safe tool IDs, statuses, source hashes, and digests. Claude still runs
 only through the subscription TUI adapter—never an API, SDK, direct HTTP call,
-gateway backing, or native Task Agent. Gemini/agy, Grok, Omnigent, native-host,
+gateway backing, or this host's Task/subagent primitive (the native-subagent route
+belongs to the seat's OWN vendor harness; see Seat Routing below). Gemini/agy, Grok, Omnigent, native-host,
 and custom-spawn research seats fail closed as
 `research_profile_unenforceable`.
+
+## Seat Routing: Native Subagent For The Host's Own Vendor
+
+Routing keys on the harness-nativeness of a seat's VENDOR, never on model tier (maintainer
+rule, recorded on agent-harness#396 / agent-harness#525 and restated on agent-harness#924). A
+harness with a native subagent capability fills the seat of its OWN vendor with that subagent;
+every other seat runs through that vendor's non-native CLI, and the Claude seat on a non-Claude
+host runs through the subscription TUI adapter. No cell admits an API key, SDK, direct HTTP call,
+gateway backing or alternate endpoint; a native fill is data handed back to the runtime and counts
+only once its verdict is bound (EC-REVIEWTRUTH-14).
+
+| host ↓ / seat → | claude (Fable/Opus) | codex (GPT-6 Astra) | gemini | grok |
+|---|---|---|---|---|
+| Claude Code | native sub-agent (emit → fill → invoke) | `codex` CLI | `agy` CLI | `grok` CLI |
+| codex | TUI adapter (self-PTY) | native codex subagent | `agy` CLI | `grok` CLI |
+| gemini CLI | TUI adapter | `codex` CLI | native, where the CLI offers subagents | `grok` CLI |
+| opencode | TUI adapter | `codex` CLI | `agy` CLI | `grok` CLI |
+| standalone runner | TUI adapter | `codex` CLI | `agy` CLI | `grok` CLI |
+
+**Implemented today: only the Claude Code → claude cell** (agent-harness#921). The runtime
+detects no other host, so under codex, gemini or opencode the host's own vendor seat is still
+launched as a CLI subprocess; the remaining cells are tracked on agent-harness#924. On this host: the Claude seat is the TUI adapter's, never this host's Task/subagent primitive. The Astra seat is this host's own vendor and belongs to a native codex subagent once the runtime emits a request for it; until then it runs as the `codex` CLI subprocess and must not be hand-filled.
 
 1. Prefer the repo's governed phase-loop path when reviewing phase execution or pre-merge work.
 2. For a standalone smoke or diagnostic, run `phase-loop advisor-board <artifact>` (or, in-process, compose with `compose_review_board` and pass the material's path via `artifact_ref` to `phase_loop_runtime.panel_invoker.invoke_board`).
@@ -122,7 +145,7 @@ and custom-spawn research seats fail closed as
    - **No cancel-on-first-blocker.** Let every seat finish the round (a leg that reaches its bound has finished, with that status); collect all findings, then fix once.
    - **Blocking findings cite what they break.** A finding blocks only when it names the `EC-<ALIAS>-<N>` it claims is violated; for a change with no roadmap goal, the acceptance criteria or contract the change itself declares; or an existing invariant, published guarantee, or test the change regresses. A finding that names none of these is a suggestion and cannot become the round's new goal — and a defect is never dismissed because the goal it breaks was not written as a roadmap ID.
    - **Round cap → descope.** Write the cap into the PR body before round one (three is usual). When it trips: fix input-binding defects, carry findings that pin the change's own outputs to a follow-up, and descope the class the loop kept re-litigating — remove the scope that carries it from the change, leave its goal unclaimed and carried, and record the removal as an exception. Descope never means merging with a blocking finding waived; a blocker that survives the cap and cannot be removed with its scope halts the change for the operator. When each fix adds a new falsifiable number, cut the number and keep the rule.
-7. Every Fable or Opus seat requires the homebrew Claude Code self-PTY adapter after `claude auth status --json` proves a first-party `claude.ai` subscription. `tui_backing_required`, `subscription_auth_unproven`, and `tui_adapter_required` are unavailable seats, never invitations to substitute a gateway, API, or native Task Agent.
+7. Every Fable or Opus seat requires the homebrew Claude Code self-PTY adapter after `claude auth status --json` proves a first-party `claude.ai` subscription. `tui_backing_required`, `subscription_auth_unproven`, and `tui_adapter_required` are unavailable seats, never invitations to substitute a gateway, API, or this host's Task/subagent primitive.
 
 ## Claude Subscription TUI Boundary
 

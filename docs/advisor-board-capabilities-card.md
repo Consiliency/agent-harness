@@ -63,8 +63,8 @@ actionable message, before any subprocess is spawned. Source of truth:
 | `pi`       | `pi`           | subscription, api_key   | omnigent   |
 | `cursor`   | `cursor-agent` | subscription, api_key   | omnigent   |
 
-- **homebrew** = the built-3 native launch (claude native/TUI, codex, gemini) + the
-  native host leg. Byte-for-byte the legacy panel for the `default` board.
+- **homebrew** = the built-3 CLI-lane launch (claude TUI, codex, gemini) + the
+  in-process host leg. Byte-for-byte the legacy panel for the `default` board.
 - **omnigent** = harness breadth (opencode/pi, and cursor/amp when the live
   `GET /v1/harnesses` catalog reports them) routed through omniagent-plus →
   Omnigent v0.4.0, **opt-in and fail-closed** (an unavailable lane skips-with-warning,
@@ -115,6 +115,25 @@ HTTP path may fulfill those seats. Under Claude Code the seat defers as
 capability, so refusal-looking text never triggers fallback. The bounded future
 policy permits one Opus TUI retry only for typed classifier refusal plus an
 independent defensive-security attestation, then fails closed.
+
+**Seat routing keys on the vendor's harness-nativeness, never on model tier** (maintainer
+rule; agent-harness#396 / #525 / #924). A harness fills the seat of its OWN vendor with its
+native subagent; every other seat runs through that vendor's CLI lane, and the claude seat
+on a non-Claude host through the subscription TUI adapter. No cell admits an API key, SDK,
+direct HTTP call, gateway backing or alternate endpoint; a native fill counts only once its
+verdict is bound.
+
+| host ↓ / seat → | claude (Fable/Opus) | codex (GPT-6 Astra) | gemini | grok |
+|---|---|---|---|---|
+| Claude Code | native sub-agent (emit → fill → invoke) | `codex` CLI | `agy` CLI | `grok` CLI |
+| codex | TUI adapter (self-PTY) | native codex subagent | `agy` CLI | `grok` CLI |
+| gemini CLI | TUI adapter | `codex` CLI | native, where the CLI offers subagents | `grok` CLI |
+| opencode | TUI adapter | `codex` CLI | `agy` CLI | `grok` CLI |
+| standalone runner | TUI adapter | `codex` CLI | `agy` CLI | `grok` CLI |
+
+Implemented today: only the Claude Code → claude cell (agent-harness#921). Under codex,
+gemini or opencode the host's own vendor seat is still launched as a CLI subprocess; the
+remaining cells are tracked on agent-harness#924.
 
 ---
 

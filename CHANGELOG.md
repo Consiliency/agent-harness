@@ -6,6 +6,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Docs: the host×seat routing rule is stated where agents read it (agent-harness#924)
+
+- Every harness fills the seat of its OWN vendor with its native subagent; every other seat
+  runs through that vendor's CLI, and the claude seat on a non-Claude host through the
+  subscription TUI adapter. The matrix now appears in `advisor_board/CONTRACTS.md`, the
+  capabilities card and all four advisor-board skills, with the statement that only the
+  Claude Code → claude cell is implemented (the rest is agent-harness#924). The unconditional
+  "native Task/subagent fulfillment is forbidden" sentences are scoped to non-native hosts,
+  and "native" no longer names the CLI-lane subprocess launch. Prose only; no behaviour
+  change.
+
 ### Advisor board: the claude seat fills NATIVELY under Claude Code and is counted once bound (REVIEWTRUTH early slice, EC-REVIEWTRUTH-14; agent-harness#396, #636)
 
 - **Routing.** Under Claude Code every claude seat that is not backing-refused — TUI-policy models
