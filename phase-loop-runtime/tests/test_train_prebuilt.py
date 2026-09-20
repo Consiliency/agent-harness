@@ -945,7 +945,7 @@ class TestSealedPriorTransaction:
         with "publish transaction conflicted during all-repository preflight". Here the
         REAL inspector reads that REAL on-disk state through the REAL default preflight;
         only the evidence read (needs FABPUB receipts) and the publisher are seams."""
-        from test_publishing import _Broker, _fabpub_publish_authority, _make_repo, _git as _pgit
+        from test_publishing import _fabpub_publish_authority, _make_repo, _git as _pgit
         from phase_loop_runtime import publishing
         from phase_loop_runtime.convergence.broker import live
         from phase_loop_runtime.train_runner import _default_preflight
