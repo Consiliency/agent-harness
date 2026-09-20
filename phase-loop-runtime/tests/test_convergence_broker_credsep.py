@@ -1264,3 +1264,84 @@ def test_broker_and_coordinator_agree_byte_for_byte_on_cr_bearing_filename(tmp_p
         coordinator_paths = _prebuilt_owned_paths(tmp_path, "main")
 
     assert broker_paths == frozenset(coordinator_paths) == frozenset({cr_name})
+
+
+# --- agent-harness#906: refreshing an open PR at a NEW head (prebuilt refresh) ---
+
+class _SequencedRun(_FakeRun):
+    """Like _FakeRun, but a response may be a LIST of stdouts consumed in call order, so a
+    readback that lags GitHub (old head first, new head next) can be scripted."""
+
+    def __call__(self, args, **kwargs):
+        self.calls.append(list(args))
+        for response in self.responses:
+            tokens, stdout, rc, *rest = response
+            if all(tok in args for tok in tokens):
+                if isinstance(stdout, list):
+                    stdout = stdout.pop(0) if len(stdout) > 1 else stdout[0]
+                return SimpleNamespace(stdout=stdout, stderr=rest[0] if rest else "", returncode=rc)
+        raise AssertionError(f"unexpected command: {args!r}")
+
+
+def test_refresh_pushes_the_new_head_non_force_and_reconciles_the_same_open_pr(tmp_path, monkeypatch):
+    """The prebuilt-refresh shape: the branch already has an open PR at the ADMITTED head
+    (`_HEAD`); the workspace advanced to `new`; the broker pushes `new` non-force to the same
+    branch, `gh pr create` collides, and the readback pins the SAME PR at the NEW head --
+    even when GitHub's first listing still shows the old head. Deciding line: the
+    `pr_head == request.head_sha` check after the collision parse."""
+    new = "b" * 40
+    admission = AdmissionRequest("attempt", 1, "fence", "digest", "predicate", "scope", "key")
+    request = BrokerRequest(BrokerVerb.PUBLISH_COMMITTED_BRANCH, admission, "repo", _BRANCH, new, ("a.py",))
+    slept = []
+    monkeypatch.setattr("phase_loop_runtime.convergence.broker.credsep.sleep", lambda s: slept.append(s), raising=False)
+    monkeypatch.setattr("time.sleep", lambda s: slept.append(s))
+    run = _SequencedRun([
+        (("branch", "--show-current"), _BRANCH, 0),
+        (("rev-parse",), new, 0),
+        (("diff", "--name-only", "-z", "--no-renames"), b"a.py\0", 0),
+        (("log",), "commit subject line", 0),
+        (("get-url",), "https://github.com/owner/repo.git", 0),
+        (("push",), "", 0),
+        (("create",), "", 1, _existing_pr_diagnostic()),
+        (("ls-remote",), f"{new}\trefs/heads/{_BRANCH}", 0),
+        # GitHub lags one round: the open PR still reports the OLD admitted head, then the new one.
+        (("list",), [json.dumps([_same_repo_pr(head=_HEAD)]), json.dumps([_same_repo_pr(head=new)])], 0),
+    ])
+
+    result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(request)
+
+    assert evidence.terminal_state == "effect_terminal_observed"
+    assert result is not None
+    assert result.pr_url == "https://github.com/owner/repo/pull/9", "the SAME PR, not a new one"
+    assert result.head_sha == new, "pinned at the NEW head"
+    push = next(call for call in run.calls if call[:3] == ["git", "-C", str(tmp_path)] and "push" in call)
+    assert push[-1] == f"{new}:refs/heads/{_BRANCH}", "exact-head refspec"
+    assert not any(tok.startswith("--force") or tok == "-f" for tok in push), "non-force"
+    assert sum(1 for call in run.calls if call[:3] == ["gh", "pr", "list"]) == 2, "one stale round, then confirmed"
+    assert len(slept) == 1
+
+
+def test_refresh_readback_that_never_confirms_the_new_head_is_ambiguous_not_a_second_pr(tmp_path, monkeypatch):
+    """If the listed PR keeps reporting the OLD head, the broker fails closed as
+    ambiguous after its bounded rounds; it never opens another PR."""
+    new = "b" * 40
+    admission = AdmissionRequest("attempt", 1, "fence", "digest", "predicate", "scope", "key")
+    request = BrokerRequest(BrokerVerb.PUBLISH_COMMITTED_BRANCH, admission, "repo", _BRANCH, new, ("a.py",))
+    monkeypatch.setattr("phase_loop_runtime.convergence.broker.credsep.sleep", lambda s: None, raising=False)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    run = _FakeRun([
+        (("branch", "--show-current"), _BRANCH, 0),
+        (("rev-parse",), new, 0),
+        (("diff", "--name-only", "-z", "--no-renames"), b"a.py\0", 0),
+        (("log",), "commit subject line", 0),
+        (("get-url",), "https://github.com/owner/repo.git", 0),
+        (("push",), "", 0),
+        (("create",), "", 1, _existing_pr_diagnostic()),
+        (("ls-remote",), f"{new}\trefs/heads/{_BRANCH}", 0),
+        (("list",), json.dumps([_same_repo_pr(head=_HEAD)]), 0),
+    ])
+    result, evidence = GitHubBrokerAdapter(tmp_path, run=run).execute(request)
+    assert result is None
+    assert evidence.terminal_state == "outcome_ambiguous_blocked"
+    assert evidence.evidence_reference == "pr-head-unconfirmed"
+    assert sum(1 for call in run.calls if call[:3] == ["gh", "pr", "create"]) == 1, "never a second create"

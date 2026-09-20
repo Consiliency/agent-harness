@@ -6,6 +6,30 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Run Train: refresh an admitted prebuilt PR; land single-node prebuilt trains under `--governed` (agent-harness#906)
+
+- **A prebuilt node whose local candidate advanced past its admitted head is refreshed on
+  resume.** The pr_open skip now reads the workspace HEAD for prebuilt nodes: a fast-forward
+  advance falls through into the ordinary prebuilt publish arm (fresh broker admission at the
+  new head, non-force exact-head push to the same branch, existing-PR reconciliation), and the
+  ledger gains a new `pr_open` record after terminal evidence, keeping the old one. Remote drift
+  (`remote_drift`) and a diverged candidate (`candidate_diverged`) are refused BEFORE any
+  admission. Execute nodes are unchanged. A live-head read failure on resume is now a typed
+  `blocked` return with a ledger row, never an uncaught escape (agent-harness#289).
+- **A sealed prior publish transaction no longer fails the whole train at preflight.** The
+  broker seals a transaction on every terminal class, so "sealed" alone said nothing; a sealed
+  transaction whose head the workspace has advanced past is now returned attached and never
+  resumed, and the broker evidence store decides: an observed effect or proven no-effect lets a
+  fresh publish proceed, an ambiguous outcome (or no evidence) still fails at preflight with zero
+  PRs. A sealed transaction at the CURRENT head remains the crash-after-seal replay, unchanged.
+- **`--governed` refuses only prebuilt nodes that have an upstream edge** (order-only included,
+  because the P4 re-verify runs for every node with any upstream edge). A prebuilt node with no
+  upstream edge passes preflight, opens its draft, takes train review, and merges pinned to its
+  admitted head. The refusal message no longer instructs a manual merge. A prebuilt-aware
+  re-verify for upstream-bearing prebuilt nodes remains a follow-up.
+- Two new `run_train` seams for tests: `_workspace_head_fn` and `_is_ancestor_fn`, plus
+  `_sealed_disposition_fn`. Skill text for `run-train` documents the supported shapes.
+
 ### Review seats run in a writable sandbox with filtered egress (agent-harness#848)
 
 - **Launch-seam verification now observes, it no longer reads.** The three provider-launch

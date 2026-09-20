@@ -295,6 +295,123 @@ def _check_branch_ahead_of_base(
     return None
 
 
+def _workspace_head(workspace: Path) -> Optional[str]:
+    """The workspace's HEAD commit, or None when it cannot be read."""
+    completed = subprocess.run(
+        ["git", "-C", str(workspace), "rev-parse", "--verify", "HEAD^{commit}"],
+        capture_output=True, text=True, timeout=15,
+    )
+    if completed.returncode != 0:
+        return None
+    head = completed.stdout.strip()
+    return head or None
+
+
+def _is_ancestor(workspace: Path, ancestor: str, descendant: str) -> Optional[bool]:
+    """True/False from `git merge-base --is-ancestor`; None when git could not decide."""
+    completed = subprocess.run(
+        ["git", "-C", str(workspace), "merge-base", "--is-ancestor", ancestor, descendant],
+        capture_output=True, text=True, timeout=15,
+    )
+    if completed.returncode == 0:
+        return True
+    if completed.returncode == 1:
+        return False
+    return None
+
+
+def _prebuilt_refresh_decision(
+    nid: str,
+    workspace: Path,
+    completed: Dict[str, object],
+    *,
+    in_out_of_band: bool,
+    live_pr_head_sha_fn: Callable,
+    workspace_head_fn: Callable,
+    is_ancestor_fn: Callable,
+):
+    """Decide what resume does with a prebuilt node whose PR is already open.
+
+    agent-harness#906. Returns ``"unchanged"`` (skip, today's behaviour), ``"advanced"``
+    (fall through into the prebuilt publish arm: fresh admission at the new head), or a
+    ``(reason, message)`` pair for a ``blocked`` return. Every refusal happens BEFORE any
+    admission is minted:
+
+    * ``remote_drift`` -- the live PR head differs from the broker-ADMITTED head. This
+      is decided at OBSERVATION time, re-read here rather than trusted from Step 3.
+      Between this read and the broker's push there is a window (plan D2): a divergent
+      remote advance in it fails closed at the non-force exact-head push; a remote
+      fast-forward in it is absorbed (plan D9: non-force by maintainer decision).
+    * ``candidate_diverged`` -- HEAD is neither the admitted head nor its descendant; a
+      non-force push could never land it, so no idempotency key is minted for it.
+    """
+    admitted = completed.get("admitted_head_sha")
+    if not admitted:
+        return ("missing_admitted_head_sha", f"{nid!r}: pr_open record carries no admitted head")
+    branch = completed.get("branch")
+    try:
+        live = live_pr_head_sha_fn(workspace, branch)
+    except Exception as exc:  # agent-harness#289 discipline: typed, never uncaught
+        return ("live_pr_head_read_failed", f"{type(exc).__name__}: {exc}")
+    if in_out_of_band or (live and live != admitted):
+        return (
+            "remote_drift",
+            f"{nid!r}: live PR head {live!r} differs from the admitted head {admitted!r}; "
+            "the coordinator never publishes over an advance it did not admit",
+        )
+    head = workspace_head_fn(workspace)
+    if not head:
+        return ("workspace_head_unreadable", f"{nid!r}: could not read HEAD of {workspace}")
+    if head == admitted:
+        return "unchanged"
+    ancestry = is_ancestor_fn(workspace, admitted, head)
+    if ancestry is None:
+        return ("ancestry_unreadable", f"{nid!r}: could not relate {admitted!r} to HEAD {head!r}")
+    if not ancestry:
+        return (
+            "candidate_diverged",
+            f"{nid!r}: HEAD {head!r} does not descend from the admitted head {admitted!r}; "
+            "a non-force push cannot land it",
+        )
+    return "advanced"
+
+
+def _sealed_publish_disposition(workspace: Path, transaction) -> str:
+    """What the broker evidence store says about a SEALED publish transaction.
+
+    agent-harness#906. The broker seals a transaction on every terminal class, so the
+    sealed state alone says nothing about the outcome. Returns ``"complete"`` when the
+    evidence replayed for the transaction's idempotency key is an observed effect or a
+    proven no-effect (the attempt is over; a fresh publish may proceed), otherwise the
+    reason it is not: ``"ambiguous"``, ``"no"`` (no record), or ``"unreadable"``.
+    """
+    try:
+        from .convergence.broker.evidence import BrokerEvidenceStore
+        from .convergence.broker.live import repository_broker_namespace
+        from .convergence.contracts import publish_committed_branch_idempotency_key
+        from .convergence.provider_contracts import TerminalOutcomeState
+
+        base = publish_committed_branch_idempotency_key(
+            transaction.canonical_repository_identity,
+            transaction.branch,
+            transaction.committed_head_sha,
+        )
+        key = f"publish_committed_branch\0{base}"
+        record = BrokerEvidenceStore(repository_broker_namespace(workspace)).replay().get(key)
+    except Exception:
+        return "unreadable"
+    if record is None:
+        return "no"
+    if record.state in (
+        TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED,
+        TerminalOutcomeState.NO_EFFECT_TERMINAL_PROVEN,
+    ):
+        return "complete"
+    if record.state is TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED:
+        return "ambiguous"
+    return str(getattr(record.state, "value", record.state))
+
+
 def _prebuilt_owned_paths(
     workspace: Path, base: str = _DEFAULT_BASE
 ) -> List[str]:
@@ -2326,6 +2443,13 @@ def _run_train_unfenced(
     _pr_is_open: Optional[Callable] = None,
     _live_pr_head_sha_fn: Optional[Callable] = None,
     _preflight_fn: Optional[Callable] = None,
+    # agent-harness#906 prebuilt-refresh seams: (workspace) -> HEAD sha | None, and
+    # (workspace, ancestor, descendant) -> bool | None. Default to the git implementations.
+    _workspace_head_fn: Optional[Callable] = None,
+    _is_ancestor_fn: Optional[Callable] = None,
+    # agent-harness#906: (workspace, sealed_transaction) -> "complete" | <reason>; defaults
+    # to the broker evidence store read in `_sealed_publish_disposition`.
+    _sealed_disposition_fn: Optional[Callable] = None,
     # Prebuilt-node seam: derives a prebuilt branch's owned paths from its
     # committed diff vs base.  Defaults to the live git implementation.
     _prebuilt_owned_paths_fn: Optional[Callable] = None,
@@ -2431,6 +2555,11 @@ def _run_train_unfenced(
         _live_pr_head_sha_fn if _live_pr_head_sha_fn is not None else _live_pr_head_sha
     )
     preflight_fn = _preflight_fn if _preflight_fn is not None else _default_preflight
+    workspace_head_fn = _workspace_head_fn if _workspace_head_fn is not None else _workspace_head
+    is_ancestor_fn = _is_ancestor_fn if _is_ancestor_fn is not None else _is_ancestor
+    sealed_disposition_fn = (
+        _sealed_disposition_fn if _sealed_disposition_fn is not None else _sealed_publish_disposition
+    )
     prebuilt_owned_paths_fn = (
         _prebuilt_owned_paths_fn
         if _prebuilt_owned_paths_fn is not None
@@ -2463,23 +2592,33 @@ def _run_train_unfenced(
     # --- Step 1: Topo-sort (raises ValueError on cycle) --------------------
     topo_order = roadmap.topo_order()
 
-    # Prebuilt nodes stop at drafts_open; P4 governed merge for prebuilt nodes
-    # is out of scope (the re-verify path expects per-repo phase-loop state a
-    # prebuilt node need not carry).  Fail loud BEFORE any PR opens rather than
-    # emit a misleading reverify failure mid-merge.  Follow-up: a prebuilt-aware
-    # P4 re-verify (verify the committed branch against the merged upstream pin).
+    # agent-harness#906: a prebuilt node with NO upstream edge lands under --governed.
+    # The P4 re-verify path reads per-repo phase-loop state a prebuilt node does not
+    # carry, and it runs for EVERY node inside `if _upstream_edges_m:` in the merge
+    # loop -- the full `edges_for_downstream` list, order-only edges included (board
+    # PR #907 r1, all four seats). So the refusal keys on exactly that predicate: any
+    # upstream edge => refused at preflight, zero PRs opened; no upstream edge => the
+    # node never reaches `reverify_fn` and every other P4 step is mode-agnostic
+    # (train review, the admitted-head cross-check, `--match-head-commit`).
+    # Follow-up (not here): a prebuilt-aware re-verify for upstream-bearing nodes.
     if _merge_phase_enabled and run_mode == "governed":
-        prebuilt_ids = [
-            n.node_id for n in topo_order
-            if getattr(n, "mode", "execute") == "prebuilt"
-        ]
-        if prebuilt_ids:
+        unsupported: List[str] = []
+        for n in topo_order:
+            if getattr(n, "mode", "execute") != "prebuilt":
+                continue
+            upstream = roadmap.edges_for_downstream(n)
+            if upstream:
+                names = ", ".join(sorted(e.upstream.node_id for e in upstream))
+                unsupported.append(f"{n.node_id} (upstream: {names})")
+        if unsupported:
             return {
                 "status": "preflight_failed",
                 "errors": [
-                    "prebuilt node(s) are not supported under --governed (P4 merge): "
-                    f"{', '.join(prebuilt_ids)}; run without --governed to open draft "
-                    "PRs and stop at drafts_open, then merge the prebuilt PRs manually"
+                    "prebuilt node(s) with upstream edges are not supported under "
+                    "--governed (P4 re-verify needs phase-loop state a prebuilt node "
+                    f"does not carry): {'; '.join(unsupported)}. Prebuilt nodes with no "
+                    "upstream edge are supported. Run without --governed to open draft "
+                    "PRs and stop at drafts_open."
                 ],
             }
 
@@ -2506,6 +2645,25 @@ def _run_train_unfenced(
                 checkpoint_root=authority.checkpoint_root,
                 node_id=node.node_id,
             )
+            if (
+                candidate.transaction is not None
+                and candidate.state == "TERMINAL_SEALED"
+                and candidate.transaction.committed_head_sha != workspace_head_fn(workspace)
+            ):
+                # agent-harness#906: a sealed transaction for an OLD head is a COMPLETED prior
+                # attempt and is never a resume candidate (a sealed transaction for the
+                # CURRENT head is the crash-after-seal replay and is registered below as
+                # before). The broker seals on every terminal class, so the evidence store
+                # decides: an observed effect or a proven no-effect means the attempt is
+                # over and a fresh publish may proceed; an ambiguous outcome (or no evidence
+                # at all) fails the train HERE, before any PR opens.
+                disposition = sealed_disposition_fn(workspace, candidate.transaction)
+                if disposition != "complete":
+                    transaction_conflicts.append(
+                        f"{node.node_id}: sealed publish transaction has {disposition} "
+                        "terminal evidence during all-repository preflight"
+                    )
+                continue
             if candidate.transaction is not None and candidate.state == "CONFLICTED":
                 transaction_conflicts.append(
                     f"{node.node_id}: publish transaction conflicted during all-repository preflight"
@@ -2648,7 +2806,22 @@ def _run_train_unfenced(
                 # is the broker-ADMITTED SHA (the ledger record written at pr_open
                 # publish time) and is preserved separately, unmodified by any live
                 # OOB read, specifically for that merge-time pin.
-                live_sha = live_pr_head_sha_fn(workspace, rec.branch)
+                try:
+                    live_sha = live_pr_head_sha_fn(workspace, rec.branch)
+                except Exception as exc:  # agent-harness#289: a failed live read is a
+                    # typed blocked return with a ledger row, never an uncaught escape.
+                    append_record(
+                        ledger_path,
+                        LedgerRecord(node_id=nid, status="blocked", branch=rec.branch),
+                    )
+                    return {
+                        "status": "blocked",
+                        "node_id": nid,
+                        "detail": {
+                            "reason": "live_pr_head_read_failed",
+                            "message": f"{type(exc).__name__}: {exc}",
+                        },
+                    }
                 admitted_sha = rec.head_sha
                 head_sha = live_sha or rec.head_sha
                 # Detect out-of-band push: live SHA exists and differs from ledger.
@@ -2715,39 +2888,73 @@ def _run_train_unfenced(
                 )
             ]
             if not changed_upstreams:
-                continue
-            # An upstream changed and this node's draft PR is still open.
-            # Block so the user can close the stale PR and re-run.
-            change_reasons: List[str] = []
-            for edge in changed_upstreams:
-                uid = edge.upstream.node_id
-                if uid in rebuilt_this_run:
-                    change_reasons.append(f"upstream {uid!r} was rebuilt this run")
-                else:
-                    new_sha = completed_nodes.get(uid, {}).get("head_sha", "<unknown>")
-                    change_reasons.append(
-                        f"upstream {uid!r} advanced to {new_sha!r} (out-of-band push)"
+                if getattr(node, "mode", "execute") != "prebuilt":
+                    continue
+                # agent-harness#906: a prebuilt node whose LOCAL candidate advanced past
+                # the admitted head is refreshed -- it falls OUT of this block into the
+                # ordinary prebuilt publish arm below (fresh admission at the new head,
+                # non-force push to the same branch, existing-PR reconciliation). Remote
+                # drift and a diverged candidate are refused BEFORE any admission.
+                decision = _prebuilt_refresh_decision(
+                    nid,
+                    resolve_workspace(node),
+                    completed_nodes[nid],
+                    in_out_of_band=nid in out_of_band_upstreams,
+                    live_pr_head_sha_fn=live_pr_head_sha_fn,
+                    workspace_head_fn=workspace_head_fn,
+                    is_ancestor_fn=is_ancestor_fn,
+                )
+                if decision == "unchanged":
+                    continue
+                if decision != "advanced":
+                    reason, message = decision
+                    append_record(
+                        ledger_path,
+                        LedgerRecord(
+                            node_id=nid,
+                            status="blocked",
+                            branch=completed_nodes[nid].get("branch"),
+                        ),
                     )
-            detail_msg = (
-                "; ".join(change_reasons)
-                + "; close/supersede the stale downstream PR and re-run"
-            )
-            append_record(
-                ledger_path,
-                LedgerRecord(
-                    node_id=nid,
-                    status="blocked",
-                    branch=completed_nodes[nid].get("branch"),
-                ),
-            )
-            return {
-                "status": "blocked",
-                "node_id": nid,
-                "detail": {
-                    "reason": "upstream_changed_downstream_pr_open",
-                    "message": detail_msg,
-                },
-            }
+                    return {
+                        "status": "blocked",
+                        "node_id": nid,
+                        "detail": {"reason": reason, "message": message},
+                    }
+                # "advanced": fall through to the running append + prebuilt arm.
+            else:
+                  # An upstream changed and this node's draft PR is still open.
+              # Block so the user can close the stale PR and re-run.
+              change_reasons: List[str] = []
+              for edge in changed_upstreams:
+                  uid = edge.upstream.node_id
+                  if uid in rebuilt_this_run:
+                      change_reasons.append(f"upstream {uid!r} was rebuilt this run")
+                  else:
+                      new_sha = completed_nodes.get(uid, {}).get("head_sha", "<unknown>")
+                      change_reasons.append(
+                          f"upstream {uid!r} advanced to {new_sha!r} (out-of-band push)"
+                      )
+              detail_msg = (
+                  "; ".join(change_reasons)
+                  + "; close/supersede the stale downstream PR and re-run"
+              )
+              append_record(
+                  ledger_path,
+                  LedgerRecord(
+                      node_id=nid,
+                      status="blocked",
+                      branch=completed_nodes[nid].get("branch"),
+                  ),
+              )
+              return {
+                  "status": "blocked",
+                  "node_id": nid,
+                  "detail": {
+                      "reason": "upstream_changed_downstream_pr_open",
+                      "message": detail_msg,
+                  },
+              }
 
         workspace = resolve_workspace(node)
         upstream_edges = roadmap.edges_for_downstream(node)

@@ -663,3 +663,43 @@ def test_successful_publish_returns_if_0_p1_1_shape(tmp_path: Path, request):
     assert isinstance(result["head_sha"], str)
     assert len(result["head_sha"]) >= 7
     assert all(c in "0123456789abcdef" for c in result["head_sha"])
+
+
+# ---------------------------------------------------------------------------
+# agent-harness#906: a SEALED prior transaction and a prebuilt refresh
+
+
+def _commit_prebuilt_work(repo: Path, name: str) -> str:
+    (repo / name).write_text(f"{name}\n", encoding="utf-8")
+    _git(repo, "add", "--", name)
+    _git(repo, "commit", "-m", f"prebuilt {name}")
+    return _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+
+def test_sealed_prior_is_reported_attached_after_head_advances_and_a_refresh_publishes_new_head(tmp_path, monkeypatch):
+    from phase_loop_runtime import publishing
+    from phase_loop_runtime.convergence.broker import live
+    monkeypatch.setattr(live, "fabpub_capability_active", lambda: True)
+    repo = _make_repo(tmp_path)
+    first = _commit_prebuilt_work(repo, "owned.py")
+    authority = _fabpub_publish_authority(repo, tmp_path / "checkpoints")
+    kw = dict(prebuilt=True, broker_client=_Broker(), publish_authority=authority, checkpoint_root=authority.checkpoint_root)
+
+    assert publish_from_worktree(repo, ["owned.py"], **kw)["status"] == "published"
+    sealed = publishing.inspect_publish_resume_candidate(repo, checkpoint_root=authority.checkpoint_root, node_id="repo-a")
+    assert sealed.state == publishing.PublishTransactionState.TERMINAL_SEALED
+    assert sealed.transaction is not None and sealed.transaction.committed_head_sha == first
+
+    # The workspace advances past the admitted head: the sealed prior must NOT read as
+    # CONFLICTED (that failed the whole train at preflight) and must stay attached.
+    second = _commit_prebuilt_work(repo, "more.py")
+    after = publishing.inspect_publish_resume_candidate(repo, checkpoint_root=authority.checkpoint_root, node_id="repo-a")
+    assert after.state == publishing.PublishTransactionState.TERMINAL_SEALED
+    assert after.transaction is not None and after.transaction.committed_head_sha == first
+
+    # A refresh prepares a NEW transaction for the new head instead of resuming the old one.
+    result = publish_from_worktree(repo, ["owned.py", "more.py"], **kw)
+    assert result["status"] == "published" and result["head_sha"] == second
+    latest = publishing.inspect_publish_resume_candidate(repo, checkpoint_root=authority.checkpoint_root, node_id="repo-a")
+    assert latest.state == publishing.PublishTransactionState.TERMINAL_SEALED
+    assert latest.transaction.committed_head_sha == second
