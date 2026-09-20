@@ -311,40 +311,54 @@ class TestIngestion:
 
     @activated
     def test_president_rules_on_the_bound_fill_on_both_deferral_paths(self, tmp_path):
+        """Matrix path: a four-vendor board under PRODUCTION_CODE (the tier that requires a
+        president and all four vendors) with the claude seat filled — the ruling must be made
+        over the FILLED board (the president's findings show the claude seat). Early path: a
+        claude-only board can never satisfy a president-requiring seat policy (that refusal is
+        pre-existing and correct), so the property there is that the fill is bound and usable
+        on the common tail, not that a president rules."""
         NativeLegFill = _fill_symbols()[0]
         n = "test_president_rules_on_the_bound_fill_on_both_deferral_paths"
         guard.require(n, NativeLegFill is not None, "NativeLegFill is absent")
         artifact = tmp_path / "bundle.md"
         artifact.write_text("review me\n")
+        four = Board(name="four", purpose="premerge-review", seats=(
+            _seat(FABLE), _seat("gpt-5.6-sol", "codex"), _seat("gemini-3.7-flash", "gemini"), _seat("grok-4.6", "grok")))
         seen: list = []
 
         def president(model, prompt):
             seen.append(prompt)
             return deferring_president(model, prompt)
 
-        results = {}
-        for label, board, spawn in (
-            ("matrix", _mixed_board(), _typed_deferral_spawn),
-            ("early", Board(name="claude-solo", purpose="premerge-review", seats=(_seat(),)), None),
-        ):
-            fill = _fill(NativeLegFill, board.seats[0])
-            err = None
-            with unittest.mock.patch.object(pi, "_claude_code_support_status", return_value=(True, "supported")):
-                try:
-                    results[label] = invoke_sanctioned_review_transport(
-                        board, "", spawn=spawn, artifact_ref=str(artifact), repo_dir=str(tmp_path), base_env=dict(CC),
-                        landing_tier=ReviewLandingTier.PRODUCTION_CODE, president_invoke=president,
-                        native_leg_fills=[fill],
-                    )
-                except TypeError as exc:
-                    err = exc
-            guard.require(n, err is None, f"{label}: invoke_board accepts no native_leg_fills: {err}")
-            res = results[label]
-            claude = next(l for l in res.legs if l.leg == "claude")
-            guard.require(n, claude.usable, f"{label}: the bound fill is not usable ({claude.status}/{claude.detail})")
-            guard.require(n, res.president is not None and res.president_findings, f"{label}: no ruling was made over the filled board")
-            guard.require(n, any(board.seats[0].seat_key in str(f) or "claude" in str(f).lower() for f in res.president_findings),
-                          f"{label}: the president's findings never saw the claude seat: {res.president_findings}")
+        err, res = None, None
+        try:
+            res = invoke_sanctioned_review_transport(
+                four, "", spawn=_typed_deferral_spawn, artifact_ref=str(artifact), repo_dir=str(tmp_path), base_env=dict(CC),
+                landing_tier=ReviewLandingTier.PRODUCTION_CODE, president_invoke=president,
+                native_leg_fills=[_fill(NativeLegFill, four.seats[0])],
+            )
+        except TypeError as exc:
+            err = exc
+        guard.require(n, err is None, f"matrix: invoke_board accepts no native_leg_fills: {err}")
+        claude = next(l for l in res.legs if l.leg == "claude")
+        guard.require(n, claude.usable, f"matrix: the bound fill is not usable ({claude.status}/{claude.detail})")
+        guard.require(n, res.president is not None and res.president_findings and seen,
+                      "matrix: no ruling was made over the filled board")
+        guard.require(n, any("claude" in str(f).lower() or four.seats[0].seat_key in str(f) for f in res.president_findings),
+                      f"matrix: the president's findings never saw the claude seat: {res.president_findings}")
+        solo = Board(name="claude-solo", purpose="premerge-review", seats=(_seat(),))
+        err = None
+        with unittest.mock.patch.object(pi, "_claude_code_support_status", return_value=(True, "supported")):
+            try:
+                res = invoke_sanctioned_review_transport(
+                    solo, "", artifact_ref=str(artifact), repo_dir=str(tmp_path), base_env=dict(CC),
+                    native_leg_fills=[_fill(NativeLegFill, solo.seats[0])],
+                )
+            except TypeError as exc:
+                err = exc
+        guard.require(n, err is None, f"early: invoke_board accepts no native_leg_fills: {err}")
+        (leg,) = res.legs
+        guard.require(n, leg.usable and leg.status == "OK", f"early: the bound fill is not usable ({leg.status}/{leg.detail})")
 
 
 # ---------------------------------------------------------------------------
