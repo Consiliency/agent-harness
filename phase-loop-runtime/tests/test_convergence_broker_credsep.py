@@ -1293,8 +1293,11 @@ def test_refresh_pushes_the_new_head_non_force_and_reconciles_the_same_open_pr(t
     admission = AdmissionRequest("attempt", 1, "fence", "digest", "predicate", "scope", "key")
     request = BrokerRequest(BrokerVerb.PUBLISH_COMMITTED_BRANCH, admission, "repo", _BRANCH, new, ("a.py",))
     slept = []
-    monkeypatch.setattr("phase_loop_runtime.convergence.broker.credsep.sleep", lambda s: slept.append(s), raising=False)
-    monkeypatch.setattr("time.sleep", lambda s: slept.append(s))
+    # Stub ONLY the broker's own backoff (`credsep.sleep`, imported by name). A global
+    # `time.sleep` stub also captured `subprocess.Popen._wait`'s doubling busy-loop polls
+    # for the adapter's real `git rev-parse` (timeout=60), making the count below a
+    # measurement of host load (agent-harness#916: `assert 767 == 1` under contention).
+    monkeypatch.setattr("phase_loop_runtime.convergence.broker.credsep.sleep", lambda s: slept.append(s))
     run = _SequencedRun([
         (("branch", "--show-current"), _BRANCH, 0),
         (("rev-parse",), new, 0),
@@ -1327,8 +1330,7 @@ def test_refresh_readback_that_never_confirms_the_new_head_is_ambiguous_not_a_se
     new = "b" * 40
     admission = AdmissionRequest("attempt", 1, "fence", "digest", "predicate", "scope", "key")
     request = BrokerRequest(BrokerVerb.PUBLISH_COMMITTED_BRANCH, admission, "repo", _BRANCH, new, ("a.py",))
-    monkeypatch.setattr("phase_loop_runtime.convergence.broker.credsep.sleep", lambda s: None, raising=False)
-    monkeypatch.setattr("time.sleep", lambda s: None)
+    monkeypatch.setattr("phase_loop_runtime.convergence.broker.credsep.sleep", lambda s: None)
     run = _FakeRun([
         (("branch", "--show-current"), _BRANCH, 0),
         (("rev-parse",), new, 0),
