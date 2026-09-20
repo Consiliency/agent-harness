@@ -6,6 +6,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+## [0.7.15] - 2026-09-20
+
 ### Docs: the host×seat routing rule is stated where agents read it (agent-harness#924)
 
 - Every harness fills the seat of its OWN vendor with its native subagent; every other seat
@@ -1025,6 +1027,99 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - The repository-wide FABPUB decision remains in force: publish byte-neutrality
   is retracted because canonical publication intentionally renumbers shared
   admission epochs and writes its deterministic publication evidence.
+
+### Fixes and hardening merged without a changelog entry (v0.7.14..v0.7.15 sweep)
+
+Each `feat(`/`fix(`/`perf(`/`ci:` pull request merged between `v0.7.14` and this release was
+checked against the section above; these landed without an entry of their own and are recorded
+here. Plan, test-freeze, closeout and docs-only bookkeeping pull requests are deliberately not
+listed.
+
+- **The v10 convergence runtime substrate ships** (`Consiliency/agent-harness#719`). The
+  convergence JSONL event log is durable and replay-safe, Git/GitHub/provider/registry authority
+  is resolved fresh rather than cached, the Codex, Claude and outside-agent adapters are fenced,
+  and status is ledger-only. The completed runtime API is exported and its durability and
+  authority semantics are documented in `docs/phase-loop/convergence-runtime.md`.
+- **The SCHED lane scheduler lands its atomic runtime repair** (`Consiliency/agent-harness#706`,
+  `Consiliency/agent-harness#704`). Generation bytes and lease authority now survive retries,
+  failures, descendant processes, authenticated teardown and released-generation reclamation, and
+  a concurrent parent reduction requires both a trusted parsed closeout status and owned-path
+  authority before it runs.
+- **A closeout gate that did not run is no longer indistinguishable from one that passed**
+  (`Consiliency/agent-harness#787`; review items G-1, G-2, G-6). A crashing validator is logged
+  with its traceback and emits a `gate_crashed` finding at the review mode's severity; a built-in
+  gate module that fails to import is narrowed to `ImportError` and names the module in a warning
+  instead of vanishing from the registry. Behaviour change, scoped: under an explicitly requested
+  `PHASE_LOOP_REVIEW=block` posture a crashed gate now blocks rather than completing. Nothing in
+  the fleet or CI sets that variable, so the default `warn` path is unchanged.
+- **The closeout-time retry of a built-in validator runs inside the gate's exception boundary**
+  (`Consiliency/agent-harness#794`, follow-up to `Consiliency/agent-harness#787`). A retried
+  module raising anything other than `ImportError` used to propagate straight out of a gate that
+  is forbidden to break the closeout; it now emits `gate_crashed` and stays in the unavailable
+  record so the next closeout retries it. The severity rewrite moved inside the same boundary, so
+  a validator yielding a non-`ReviewFinding` can no longer escape it either. Loading a
+  present-but-broken built-in still fails loudly at load.
+- **An executor that exits without a completed turn is rejected instead of accepted**
+  (`Consiliency/agent-harness#786`, `Consiliency/agent-harness#785`). Native or legacy
+  `executing`-only output from an exited child is refused immediately as `contract_bug` with an
+  `executor_exited_without_closeout` diagnostic, and the real subprocess return code is persisted
+  in `launch.json` before any wrapper-success override. `executing` is excluded only from executor
+  final-response schemas; the shared lifecycle schema and legitimate handoffs are untouched.
+- **Progress relabelled `executed` is no longer falsely accepted, and a healthy executor is not
+  reaped** (`Consiliency/agent-harness#788`, `Consiliency/agent-harness#785`). Every Codex launch
+  now requests a fresh, initially absent `--output-last-message` file and only that file may
+  supply the closeout, so an interim turn cannot stand in for a completed one.
+- **FABPUB reconciles an already-open pull request only after an exact, request-bound diagnostic**
+  (`Consiliency/agent-harness#755`). The diagnostic and readback PR URLs must be byte-identical,
+  the remote head and base must match exactly, and the head must be owned by the same repository;
+  every malformed or ambiguous outcome stays permanently fail-closed.
+- **Publication no longer mistakes tracked Python implementation modules for credential
+  artifacts** (`Consiliency/agent-harness#894`, `Consiliency/agent-harness#893`). The exception
+  requires regular parent and staged source blobs, a successful AST classification and a complete
+  staged-blob scan with pinned offline detectors. No caller allowlist, inline suppression or
+  configuration override is introduced, and it is not a guarantee against obfuscated secrets.
+- **A train locks each Git common directory once** (`Consiliency/agent-harness#883`,
+  `Consiliency/agent-harness#807`). Linked worktrees and several directories in one repository
+  could deadlock a train by taking the same common-directory lock twice; each resolved repository
+  namespace is now acquired once in stable order, with per-worktree generation leases preserved
+  and every handle registered for cleanup before locking.
+- **Importing `publishing` no longer replaces the train runner's authority builder**
+  (`Consiliency/agent-harness#828`, `Consiliency/agent-harness#811`). The import-time installer is
+  removed, so the runner keeps its own finalized builder in either import order; the preimage
+  class and the compatibility helper remain available.
+- **The HARDEN evidence verifier bounds JSON nesting before decoding**
+  (`Consiliency/agent-harness#868`, `Consiliency/agent-harness#825`). It relied on CPython's
+  decoder recursion threshold, which let deeply nested documents through on Python 3.12 to 3.14
+  that its own self-test required it to reject. A maximum of 512 nested containers is now enforced
+  ahead of the decode, respecting strings and escapes. Documents deeper than 512 that were
+  previously accepted are now rejected; canonical, numeric, duplicate-key and byte limits are
+  unchanged.
+- **`phase-loop status` reports the whole pre-terminal space** (`Consiliency/agent-harness#832`,
+  `Consiliency/agent-harness#830`). Both operands of the manifest/snapshot reconciliation are now
+  derived from their own authoritative tables rather than restated as literals. `unknown` — the
+  label a phase wears on a dirty tree, exactly when resume and dispatch are about to act — was in
+  neither set and so was silently unreportable; a dirty-tree disagreement now prints.
+- **Two FAB docstrings no longer emit invalid-escape warnings on a cold import**
+  (`Consiliency/agent-harness#850`, `Consiliency/agent-harness#822`). Raw-string prefixes remove
+  both warning sites, which were failing three diagnostic tests. The complete AST, docstring
+  values included, is unchanged.
+- **The LEGIBLE live Fable transition probe is authorized under the HARDEN typed review
+  contract** (`Consiliency/agent-harness#768`). The asserted-host `tui_adapter_required`
+  observation is preserved while the separate external subscription Fable leg consumes the single
+  broker route, and the authorization is closed and the instruction digest reset on every exit.
+- **The process-liveness test helper treats a vanished `/proc/<pid>` entry as absence**
+  (`Consiliency/agent-harness#871`, `Consiliency/agent-harness#870`). A child exiting between the
+  open and the read raised `ProcessLookupError` and reddened CI; permission and I/O errors still
+  propagate. Test-support only — no production bytes changed.
+- **The PyPI publish job's build step is bounded at 25 minutes instead of 100**
+  (`Consiliency/agent-harness#757`). The rationale is recorded in
+  `docs/releases/publish-pypi-build-timeout.md`.
+- **`claude-plan-detailed` Step 2 no longer contradicts itself on reading versus delegating**
+  (`Consiliency/agent-harness#651`). "Skip reconnaissance when the context is already in session"
+  and "do not read source directly, that is the Explore teammates' job" left the common case — a
+  run holding most of its context but missing two nameable symbols — unaddressed. The test is now
+  what you can name rather than how much you already know, in the bundled skill and both skill
+  sources.
 
 ## [0.7.14] - 2026-08-24
 
