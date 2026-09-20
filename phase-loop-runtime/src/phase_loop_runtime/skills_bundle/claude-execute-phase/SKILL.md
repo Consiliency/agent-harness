@@ -1,6 +1,6 @@
 ---
 name: claude-execute-phase
-description: "Harness Code executor for a <harness>-plan-phase lane plan. Uses TeamCreate, worktree-isolated teammates, lane DAG ordering, verification gates, and retry-once failure handling."
+description: "Claude Code executor for a <harness>-plan-phase lane plan. Uses TeamCreate, worktree-isolated teammates, lane DAG ordering, verification gates, and retry-once failure handling."
 ---
 
 # <harness>-execute-phase

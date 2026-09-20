@@ -1,6 +1,6 @@
 ---
 name: phase-loop
-description: "Harness Code bridge for the repo-local phase-loop runner. Use when the user wants phase-loop status, resume, bounded run, dry-run, or monitor flows from Harness."
+description: "Claude Code bridge for the repo-local phase-loop runner. Use when the user wants phase-loop status, resume, bounded run, dry-run, or monitor flows from Harness."
 ---
 
 # Harness Phase Loop
@@ -107,7 +107,7 @@ Phase-loop handoffs and terminal closeouts must preserve one `spec_delta_closeou
 - `<harness>-phase-loop dry-run`: use `phase-loop dry-run --max-phases <N>`.
 - `<harness>-phase-loop sync-skills`: use `phase-loop sync-skills --check`, and use `--apply` only when the operator explicitly wants bridge repair.
 
-Harness Code uses the shared runner contract, but autonomous live dispatch is
+Claude Code uses the shared runner contract, but autonomous live dispatch is
 proof-blocked until the authenticated non-interactive planning smoke completes
 inside the runner timeout. Manual TUI reentry and manual-import closeout remain
 supported through `.phase-loop/` state. ThawedCode stays grouped with

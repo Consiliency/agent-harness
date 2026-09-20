@@ -1,12 +1,12 @@
 ---
 name: execute-detailed
-description: "Harness Code bounded-plan executor for one detailed implementation plan with verification, acceptance reduction, and mandatory reflection closeout."
+description: "Claude Code bounded-plan executor for one detailed implementation plan with verification, acceptance reduction, and mandatory reflection closeout."
 ---
 
 # Harness Execute Detailed
 
 Executes one detailed plan artifact produced by `<harness>-plan-detailed`.
-Use this for bounded implementation work where a single Harness Code thread can
+Use this for bounded implementation work where a single Claude Code thread can
 carry the change end to end without phase lanes, lane ownership, or worker
 worktrees.
 

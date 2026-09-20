@@ -1,6 +1,6 @@
 ---
 name: claude-task-contextualizer
-description: "Harness Code subagent briefing guide. Use before creating any Task tool call, especially for Explore or general-purpose subagents. Provides templates for task prompts that include necessary file paths, architecture context, and scope boundaries."
+description: "Claude Code subagent briefing guide. Use before creating any Task tool call, especially for Explore or general-purpose subagents. Provides templates for task prompts that include necessary file paths, architecture context, and scope boundaries."
 ---
 
 # Task Contextualizer

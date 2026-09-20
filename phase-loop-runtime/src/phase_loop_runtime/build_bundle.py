@@ -67,6 +67,10 @@ PRESERVE_LITERALS: tuple[str, ...] = (
     # to `Harness Opus 4.8` — a concrete model attribution corrupted into a name
     # that denotes nothing. One real model, no per-harness variant -> preserve.
     "Claude Opus 4.8",
+    # The host product name. Without this the brand collapse rewrites every
+    # "under Claude Code" / "Claude Code -> claude cell" in the Claude-authored
+    # skills to "Harness Code", which denotes nothing on any harness.
+    "Claude Code",
 )
 _PRESERVE_SENTINEL = "\x00PRESERVE{index}\x00"
 

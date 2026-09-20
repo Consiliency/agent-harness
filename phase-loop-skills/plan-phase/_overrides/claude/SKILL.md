@@ -1,6 +1,6 @@
 ---
 name: plan-phase
-description: "Harness Code phase planner for a versioned roadmap phase. Produces an interface-freeze + swim-lane document for parallel execution. Use in plan mode. Supports --consensus for multi-agent architectural consensus across named Plan teammates."
+description: "Claude Code phase planner for a versioned roadmap phase. Produces an interface-freeze + swim-lane document for parallel execution. Use in plan mode. Supports --consensus for multi-agent architectural consensus across named Plan teammates."
 ---
 
 # <harness>-plan-phase

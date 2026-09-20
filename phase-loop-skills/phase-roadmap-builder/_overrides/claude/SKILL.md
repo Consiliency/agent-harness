@@ -1,6 +1,6 @@
 ---
 name: phase-roadmap-builder
-description: "Harness Code roadmap planner. Produces or extends a multi-phase roadmap spec that <harness>-plan-phase can ingest, with phase dependencies and interface-freeze gates."
+description: "Claude Code roadmap planner. Produces or extends a multi-phase roadmap spec that <harness>-plan-phase can ingest, with phase dependencies and interface-freeze gates."
 ---
 
 # <harness>-phase-roadmap-builder
