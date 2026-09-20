@@ -24,6 +24,8 @@ from typing import Callable, Iterable, Mapping, Sequence
 
 from .advisor_board.schema import vendor_family, vendor_of_harness
 from .closeout_validators import ReviewFinding
+from pathlib import Path
+
 from .panel_invoker import PanelResult, available_panel_legs, invoke_panel, terminal_verdict
 
 
@@ -147,9 +149,14 @@ def _findings_from_panel(panel: PanelResult, reviewed_sha: str | None = None) ->
                     reviewed_sha=reviewed_sha,
                 ))
             else:
+                # agent-harness#906: keep the leg's DETAIL, not only its status. Without it
+                # a launch-boundary refusal ("missing HARDEN review authorization") could
+                # never reach the coordinator's diagnostic; four such refusals read only
+                # as `no_usable_review`.
+                detail = f": {leg.detail}" if leg.detail else ""
                 findings.append(ReviewFinding(
                     code="panel_leg_degraded",
-                    reason=f"panel leg {leg.leg} unusable ({leg.status})",
+                    reason=f"panel leg {leg.leg} unusable ({leg.status}{detail})",
                     severity="warn",
                     reviewed_sha=reviewed_sha,
                 ))
@@ -175,8 +182,21 @@ def _findings_from_panel(panel: PanelResult, reviewed_sha: str | None = None) ->
     return tuple(findings)
 
 
-def _block_result(reason: str, code: str, detail: str) -> GateResult:
-    """A fail-closed governed result: held (not promoted), non-degraded block."""
+def _block_result(
+    reason: str,
+    code: str,
+    detail: str,
+    *,
+    extra_findings: tuple[ReviewFinding, ...] = (),
+) -> GateResult:
+    """A fail-closed governed result: held (not promoted), non-degraded block.
+
+    ``extra_findings`` (agent-harness#906) carries the per-leg diagnostics behind a
+    structural hold so the reason each leg was unusable survives. ``panel`` stays
+    ``None`` on purpose: ``run_governed_premerge_loop``'s reviewer-floor guard keys on
+    ``gate.panel``, and attaching a zero-usable panel here would relabel the hold
+    ``below_reviewer_floor`` with the wrong remedy.
+    """
     return GateResult(
         ran=True,
         promoted=False,
@@ -187,7 +207,7 @@ def _block_result(reason: str, code: str, detail: str) -> GateResult:
             reason=detail,
             severity="block",
             blocker_class="review_gate_block",
-        ),),
+        ),) + tuple(extra_findings),
     )
 
 
@@ -262,14 +282,20 @@ def governed_planning_gate(
     if max_concurrency is not None:
         invoke_kwargs["max_concurrency"] = max_concurrency
     panel = invoke(artifact, pool, **invoke_kwargs)
+    return _gate_result_from_panel(panel, reviewed_sha=reviewed_sha)
+
+
+def _gate_result_from_panel(panel: PanelResult, *, reviewed_sha: str | None) -> GateResult:
     findings = _findings_from_panel(panel, reviewed_sha=reviewed_sha)
     if not panel.usable_legs:
         # Pool existed but no leg produced a usable, conforming review → the review
-        # did not actually happen. Fail closed, never silent-pass.
+        # did not actually happen. Fail closed, never silent-pass. The per-leg
+        # findings ride along (agent-harness#906) so the hold names each refusal.
         return _block_result(
             "no_usable_review",
             "governed_no_usable_review",
             f"no disjoint reviewer produced a usable verdict ({len(panel.legs)} leg(s) unusable); holding (non-human)",
+            extra_findings=findings,
         )
     has_block = any(f.severity == "block" for f in findings)
     return GateResult(
@@ -279,3 +305,164 @@ def governed_planning_gate(
         degraded=False,
         panel=panel,
     )
+
+
+_UNSET: object = object()  # "no digest bound" — distinct from any token value
+
+
+def governed_board_gate(
+    *,
+    artifact: str,
+    author_executor: str | None = None,
+    author_vendors: Iterable[str] | None = None,
+    run_mode: str,
+    available_legs: Sequence[str] | None = None,
+    spawn=None,
+    repo_dir=None,
+    max_concurrency: int | None = None,
+    reviewed_sha: str | None = None,
+    canonical_repo_authority: "Path | str | None" = None,
+    brief_ref: str | None = None,
+    compose: Callable[[], object] | None = None,
+    invoke: Callable[..., PanelResult] | None = None,
+) -> GateResult:
+    """A governed gate backed by the broker-AUTHORIZED review board (agent-harness#906).
+
+    Same ``GateResult`` contract and same keyword surface as ``governed_planning_gate``
+    (``run_governed_premerge_loop`` forwards ``available_legs``/``spawn``/``repo_dir``/
+    ``max_concurrency`` unconditionally), but the review is dispatched through
+    ``invoke_board`` with the typed HARDEN isolation authorization the review-mode
+    launch boundary requires -- the sequence the ``advisor-board`` CLI runs
+    (``cli.py``), verbatim and tierless:
+
+    composition authority -> ``compose_review_board()`` -> clear -> drop author-vendor
+    seats -> composition floor -> bind the instruction digest -> mint the isolation
+    authorization over the EXACT artifact bytes staged for the invoker -> ``invoke_board``
+    with a throwaway scratch ``repo_dir`` -> reset the digest on every exit.
+
+    Never passes ``landing_tier``/``president_invoke``/``mode``: ``invoke_board`` decides
+    the authority switch over ``repo_dir`` (scratch here, exactly as the CLI), so a
+    tierless call is never refused, while forcing a tier onto a live-composed board
+    would demand seats the composition may have backfilled (board PR #913 r1).
+    ``spawn`` is forwarded as received: production passes ``None``; a hermetic test
+    passes a callback that the invoker accepts only under the sanctioned
+    factory-replacement seam. The backing factory is resolved DYNAMICALLY at call time
+    for the same reason. ``available_legs`` is accepted for the loop's contract and
+    ignored: composition is the board's, not a leg list. Nothing here constructs a
+    leg authorization, a lease, a claim, or the seal.
+    """
+    import shutil
+    import subprocess
+    import tempfile
+    from dataclasses import replace as _replace
+
+    if run_mode != "governed":
+        return GateResult(ran=False, promoted=True)
+    if author_vendors is not None:
+        authors = frozenset(v for v in author_vendors if v)
+    else:
+        authors = frozenset({author_vendor_for_executor(author_executor or "")} - {""})
+    if not authors:
+        return _block_result(
+            "unknown_author",
+            "governed_unknown_author",
+            "governed mode could not determine the authoring vendor(s) for "
+            "reviewer≠author exclusion; holding (non-human) rather than risk a "
+            "self-review",
+        )
+    if canonical_repo_authority is None:
+        return _block_result(
+            "review_isolation_unavailable",
+            "governed_board_no_canonical_authority",
+            "authorized train review requires a canonical repository authority "
+            "(the coordinator's git toplevel or the first node's workspace); none was "
+            "resolved; holding (non-human)",
+        )
+    from . import panel_invoker as _pi
+    from .advisor_board import backing as _backing
+    from .advisor_board.composition import FLOOR_SEATS, compose_review_board
+
+    compose_fn = compose if compose is not None else compose_review_board
+    try:
+        _backing.prepare_review_composition_authorization()
+        try:
+            board = compose_fn()
+        finally:
+            _backing.clear_review_composition_authorization()
+    except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as exc:
+        return _block_result(
+            "review_isolation_unavailable",
+            "governed_board_composition_unavailable",
+            f"review board composition unavailable: {exc}; holding (non-human)",
+        )
+    seats = tuple(s for s in board.seats if getattr(s, "harness", None) not in authors)
+    dropped = tuple(s for s in board.seats if getattr(s, "harness", None) in authors)
+    if len(seats) < FLOOR_SEATS:
+        composed = sorted({getattr(s, "harness", "?") for s in seats})
+        excluded = sorted({getattr(s, "harness", "?") for s in dropped})
+        return _block_result(
+            "below_reviewer_floor" if seats else "no_disjoint_reviewer",
+            "governed_board_below_floor",
+            (
+                f"authorized review board composed {len(seats)} seat(s) {composed} "
+                f"disjoint from author vendor(s) {sorted(authors)} (excluded {excluded}); "
+                f"the composition floor is {FLOOR_SEATS}. Authenticate or install the "
+                f"missing vendor CLIs; holding (non-human)"
+            ),
+        )
+    if dropped:
+        board = _replace(board, seats=seats)
+    invoke_fn = invoke if invoke is not None else _pi.invoke_board
+    # Board r1 (agent-harness#914, codex): brief resolution, scratch allocation and the
+    # digest binding are PREPARATION and can fail like everything after them — an
+    # unreadable brief, a full tmpdir, a refused digest. They run inside the same
+    # guarded scope so every failure holds as ``review_isolation_unavailable`` and the
+    # ``finally`` undoes exactly what was set up (a digest bound without a scratch, a
+    # scratch allocated without a digest).
+    scratch: Path | None = None
+    token: object = _UNSET
+    try:
+        brief_text = _pi._resolve_brief("review", brief_ref)
+        scratch = Path(tempfile.mkdtemp(prefix="train-review-"))
+        token = _backing.set_review_instruction_digest(brief_text)
+        provider_scratch = scratch / "provider"
+        provider_scratch.mkdir()
+        artifact_path = scratch / "train-review-bundle.md"
+        artifact_path.write_text(artifact, encoding="utf-8")
+        # Mint over the READ-BACK staged text, as the CLI does: ``invoke_board`` resolves
+        # ``artifact_ref`` through ``read_text`` (universal newlines), so minting over the
+        # in-memory string would diverge on any CR and fail closed for no reason (board
+        # r1, agent-harness#914, claude). This is the "exact staged bytes" promise.
+        staged_artifact = artifact_path.read_text(encoding="utf-8")
+        # Dynamic lookup on purpose: the sanctioned hermetic seam replaces this factory
+        # and requires the invoker's own lookup to return the identical object.
+        authorization = _backing.prepare_review_isolation_authorization(
+            board,
+            staged_artifact,
+            mode="review",
+            canonical_repo_authority=canonical_repo_authority,
+        )
+        invoke_kwargs: dict[str, object] = {
+            "repo_dir": provider_scratch,
+            "artifact_ref": str(artifact_path),
+            "review_authorization": authorization,
+            "canonical_repo_authority": canonical_repo_authority,
+            "spawn": spawn,
+        }
+        if brief_ref is not None:
+            invoke_kwargs["brief_ref"] = brief_ref
+        if max_concurrency is not None:
+            invoke_kwargs["max_concurrency"] = max_concurrency
+        panel = invoke_fn(board, staged_artifact, **invoke_kwargs)
+    except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as exc:
+        return _block_result(
+            "review_isolation_unavailable",
+            "governed_board_isolation_unavailable",
+            f"review isolation unavailable: {exc}; holding (non-human)",
+        )
+    finally:
+        if token is not _UNSET:
+            _backing.reset_review_instruction_digest(token)
+        if scratch is not None:
+            shutil.rmtree(scratch, ignore_errors=True)
+    return _gate_result_from_panel(panel, reviewed_sha=reviewed_sha)

@@ -17,6 +17,16 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
 - Use the repo-local CLI: `phase-loop run-train --train <train-roadmap-file>`.
 - Pass `--governed` to enable the merge phase (train-level review + sequential
   merge + downstream re-verify). Omitting `--governed` stops at `drafts_open`.
+- Pass `--governed --review-only` to run the train-level review of the ADMITTED heads
+  and stop BEFORE any merge (`review_approved`): approval is recorded on the ledger and a
+  later `--governed` run merges without re-review. Review-only publishes nothing: a node
+  without an admitted open PR, or a prebuilt workspace whose HEAD moved past its admitted
+  head, is refused (`review_only_requires_admitted_prs`) before any board or publication; an admitted
+  head that no longer matches the live PR head halts as `review_halted` / `stale_head`.
+  `--review-only` without `--governed` is a usage error.
+- The train-level review runs through the broker-authorized review board (the same
+  authorization sequence as `advisor-board`); a held review names each reviewer leg's
+  refusal, never only `no_usable_review`.
 - Do NOT invoke `phase-loop run` on the train roadmap file — that is the
   per-repo loop and will not orchestrate a multi-repo train.
 - Do NOT merge, force-push, or close PRs outside the coordinator; the runtime
@@ -72,6 +82,10 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
   opened. Fix the reported issues and re-run.
 - `drafts_open`: draft PRs opened; merge phase not yet run. Pass `--governed`
   to continue to review and merge.
+- `review_approved`: train-level review approved under `--review-only`; ZERO merges.
+  Re-run with `--governed` to merge without re-review.
+- `review_only_requires_admitted_prs`: `--review-only` refused before any publication
+  (a node lacks an admitted open PR, or a prebuilt workspace HEAD is not its admitted head).
   Bounded-mode note: for a prebuilt node with upstream edges this is the terminal
   status under the coordinator today.
 - `review_halted`: the train-level panel did not approve; `terminal_blocker`
