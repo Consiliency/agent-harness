@@ -1,6 +1,6 @@
 ---
 type: detailed
-status: planned
+status: planned-awaiting-ratification
 owner_skill: claude-plan-detailed
 input_base_commit: eabfec6c0e4683eba6d5682d7783b92485d198c0
 issues: [agent-harness#906]
@@ -12,6 +12,21 @@ automation:
 ---
 
 # Detailed plan: refresh an admitted prebuilt PR on local advance; land single-node prebuilt trains under `--governed`
+
+**r3 (2026-09-20): reconciles board round 2 — gemini AGREE, claude PARTIALLY AGREE, codex
+DISAGREE, grok DISAGREE, all CONVERGING, all on ONE item: the Step 2 change in D1 was
+under-specified.** Verified against the code and taken: (1) the broker seals a transaction on
+EVERY terminal class (`verbs.py:600-606`), so "sealed = published" is false — the evidence
+store decides (claude, executed); (2) the post-accept path in `publish_from_worktree`
+(`publishing.py:1185-1195`) REQUIRES the sealed transaction to come back attached, and the
+publish entry (`:1165`) and Step 2 (`train_runner.py:2509-2515`) each key on
+`candidate.transaction`, so the contract has three consumer sites, not one (grok, executed;
+codex, gemini); (3) a closed-not-merged original PR is remote lifecycle drift, and "no duplicate
+PR" is now defined precisely (codex); (4) text sweep of the refuted "channel-carrying"
+predicate in the research summary, D8 and the tests bullet, and "zero publish calls" → "zero
+push/PR-creation effects" (all four). Round 2 was the pre-registered cap. **This revision is
+the proposed execution contract and awaits maintainer ratification of D1's Step 2 contract
+(below) before implementation.**
 
 **r2 (2026-09-20): reconciles board round 1 — four seats, all DISAGREE / CONVERGING.** Round 1
 found, and I verified against `eabfec6c`: (1) D5's "channel-carrying" carve-out was wrong — the
@@ -45,6 +60,10 @@ state, no weakened gate, no relabeling of prebuilt nodes, no manual merge of any
 Reconnaissance record: `/mnt/workspace/board-tools/ah906-recon.md` (file:line citations
 against `eabfec6c`). Load-bearing facts:
 
+- Corrected in r2/r3: the predicate that keeps a prebuilt node out of phase-loop
+  re-verification is "no upstream edge of ANY kind", because the P4 guard at
+  `train_runner.py:3302` tests the full `edges_for_downstream` list, order-only included; the
+  earlier "channel-carrying" reading in this section was wrong and is retracted.
 - A `pr_open` ledger record's `head_sha` IS the admitted head (written at publish,
   `train_runner.py:3105-3118`); `completed_nodes[nid]["admitted_head_sha"]` is set from it
   at `:3093-3100` and never from the live PR.
@@ -61,10 +80,10 @@ against `eabfec6c`). Load-bearing facts:
   and the readback (`:504+`) requires `ls-remote` head `== request.head_sha` and exactly
   one open PR whose `headRefOid`/`baseRefName`/owner match. Nothing today exercises that
   combination; this plan does, and its tests must prove it rather than assume it.
-- `reverify_fn` runs ONLY inside `if _upstream_edges_m:` (`train_runner.py:3302`). A
-  prebuilt node with no channel-carrying upstream edge never reaches it. The blanket
-  preflight rejection at `:2466-2483` therefore over-refuses the exact one-node shape in
-  the issue; every other P4 step it would traverse (ledger `merged_shas`, the live
+- `reverify_fn` runs ONLY inside `if _upstream_edges_m:` (`train_runner.py:3302`), and that
+  list includes order-only edges. A prebuilt node with NO upstream edge of any kind never
+  reaches it. The blanket preflight rejection at `:2466-2483` therefore over-refuses the
+  exact one-node shape in the issue; every other P4 step it would traverse (ledger `merged_shas`, the live
   cross-check keyed on `admitted_head_sha`, train review, `_live_merge_pr` with
   `--match-head-commit`) is mode-agnostic and already satisfied by a prebuilt node.
 - FABPUB transaction resume (`train_runner.py:2500-2535`, replay arm `:2766-2796`;
@@ -90,14 +109,37 @@ against `eabfec6c`). Load-bearing facts:
   `owned_paths` from `origin/<base>...HEAD`, takes a fresh admission at the new head, pushes
   non-force to the same branch and reconciles the existing PR. The upstream-changed RETURN
   is untouched. Execute nodes are out of scope.
-  **Step 2 prerequisite (r2):** a successful publish leaves the node's FABPUB transaction
-  pointer at `TERMINAL_SEALED`; `prepare_*_transaction` already treats a sealed transaction as
-  not active (`publishing.py:742`, `:804`) but `inspect_publish_resume_candidate` does not — it
-  validates the sealed transaction against the current HEAD and returns `CONFLICTED`, which
-  Step 2 (`train_runner.py:2508-2520`) turns into `preflight_failed` for the whole train. The
-  inspector must classify a `TERMINAL_SEALED` active transaction as a completed prior
-  publication (no resume candidate), consistent with the two `prepare_*` sites. This is a
-  `publishing.py` change with its own test, and it is what makes D1 reachable.
+  **Step 2 contract (r3) — three consumer sites, one predicate.** A completed publish
+  leaves the node's transaction pointer at `TERMINAL_SEALED`. Today
+  `inspect_publish_resume_candidate` validates that sealed transaction against the current
+  HEAD and returns `CONFLICTED`, which Step 2 turns into `preflight_failed` for the whole
+  train. The broker seals on EVERY terminal class (`verbs.py:600-606`:
+  `_advance_transaction(..., "TERMINAL_SEALED")` runs unconditionally; only the return tests
+  `EFFECT_TERMINAL_OBSERVED`), and the sealed payload carries no outcome field, so "sealed"
+  alone does not mean "published". The contract:
+  1. `inspect_publish_resume_candidate` (`publishing.py:~868-960`): a `TERMINAL_SEALED`
+     active transaction is returned as `PublishResumeCandidate(TERMINAL_SEALED, transaction)`
+     — ATTACHED, never `CONFLICTED`, and without the HEAD/parent checks that describe an
+     in-flight publication. Placed after the sibling-pointer guard (`:880-882`), which is
+     unchanged. It must stay attached because the post-accept path
+     (`publishing.py:1185-1195`) raises "broker accepted publish without a recoverable
+     transaction" when `candidate.transaction is None`.
+  2. Step 2 (`train_runner.py:2509-2515`): a `TERMINAL_SEALED` candidate is NEVER a resume
+     candidate. Its disposition comes from the broker evidence store replayed for the
+     transaction's idempotency key (`sha256(repo\0branch\0committed_head)`,
+     `contracts.py:21-23`; lookup `evidence_store.replay().get(key)`, `verbs.py:~611`):
+     `effect_terminal_observed` or `no_effect_terminal_proven` → completed prior
+     publication, no candidate, the loop proceeds to Step 3/4; `outcome_ambiguous_blocked`
+     → `preflight_failed` naming the node, preserving the zero-PRs guarantee at preflight
+     (the epoch is already poisoned; blocking late would only lose that guarantee).
+  3. `publish_from_worktree` entry (`publishing.py:1165`): a `TERMINAL_SEALED` candidate is
+     treated as no active transaction, so `prepare_*_transaction` prepares a NEW one for the
+     new head — the same treatment `prepare_*` already applies at `:742`/`:804`. Without this
+     the refresh would `resume()` head A's sealed transaction (branch, mode and authority all
+     match) instead of publishing head B.
+  The Step 4 replay arm (`:2766-2796`) needs no change: it only ever sees what Step 2
+  registered. Tests must include a SUCCESSFUL FABPUB prebuilt publish after the inspector
+  change (the post-accept regression), not only Step 2 with a sealed prior.
 - **D2. Refuse unknown remote drift before refreshing — at observation time.** If the live
   PR head differs from the admitted head (the node is in `out_of_band_upstreams` for ITSELF),
   append `blocked` with reason `remote_drift` and return. The live head is re-read
@@ -122,7 +164,12 @@ against `eabfec6c`). Load-bearing facts:
   transaction store (replay if a transaction was prepared, fresh otherwise), pushes to the same
   branch and reconciles the same open PR. That is correct and duplicate-free, and the test for
   it asserts exactly that: one open PR, no fabricated admission, the prior `pr_open` line still
-  present in the file. A refused or failed admission appends `blocked`; the previously
+  present in the file. **"No duplicate PR" defined (r3):** never a `gh pr create` while an open
+  PR exists on the branch, and never a second OPEN PR on the branch. If the original PR was
+  CLOSED (not merged) out of band before resume, that is remote lifecycle drift: the existing
+  Step 3 rule drops the node and it republishes as a NEW PR (`test_not_open_and_not_merged_still_drops`
+  pins this today). The refresh does not enforce same-PR identity across an operator's closure;
+  the ledger keeps both PR URLs, so the history is not lost. A refused or failed admission appends `blocked`; the previously
   admitted head remains recoverable from the file and from the live PR. No record is
   rewritten.
 - **D5. Narrow the governed rejection to the shape it actually protects (r2: ZERO upstream
@@ -143,10 +190,10 @@ against `eabfec6c`). Load-bearing facts:
   `CONFLICTED` at Step 2 → train-level `preflight_failed` naming the node (the existing
   behaviour at `:2508-2520`), never a silent replay of a stale head. The earlier wording
   (`blocked`/`publish_transaction_conflicted`) described the wrong status at the wrong stage.
-- **D8. Text reconciliation.** The preflight message no longer instructs a manual merge.
-  The run-train skill states: prebuilt nodes without channel-carrying upstreams land under
-  `--governed`; prebuilt nodes with such upstreams stop at `drafts_open` pending the
-  follow-up below; closing a stale PR is done by the operator only when the coordinator's
+- **D8. Text reconciliation (r3 wording).** The preflight message no longer instructs a
+  manual merge. The run-train skill states: prebuilt nodes with ZERO upstream edges land under
+  `--governed`; prebuilt nodes with any upstream edge, order-only included, stop at
+  `drafts_open` pending the follow-up below; closing a stale PR is done by the operator only when the coordinator's
   `blocked` reason says so.
 
 - **D9. Maintainer decision (r2): accept the D2 window, or close it with compare-and-swap.**
@@ -194,16 +241,26 @@ nodes; the tagged release and consumer re-pin that make this an INSTALLED fix.
   the REAL Step 2 inspection with a sealed prior transaction in the checkpoint root and
   FABPUB active (the round-1 blocker); add refresh cases: unchanged resume (zero publish calls, ledger unchanged), valid refresh (publish
   called once with the new head; new `pr_open` appended; prior record intact), remote drift
-  (`blocked`/`remote_drift`, zero publish calls), diverged candidate
-  (`blocked`/`candidate_diverged`, zero publish calls), rejected admission (`blocked`, latest
-  `pr_open` still the old head).
+  (`blocked`/`remote_drift`), diverged candidate (`blocked`/`candidate_diverged`), rejected
+  admission (`blocked`). "Zero effects" is asserted as zero push and zero PR-creation calls
+  at the broker seam, not as zero `publish_fn` calls: under FABPUB, admission happens INSIDE
+  `publish_from_worktree`, so a rejected admission necessarily enters it (r3, codex). The
+  drift and divergence refusals additionally assert `publish_fn` was never entered, since
+  they are decided before it. A rejected admission leaves the latest `pr_open` at the old
+  head.
 - `phase-loop-runtime/tests/test_train_merge.py` — modify — governed single-node prebuilt
   merges with `--match-head-commit` pinned to the refreshed admitted head; crash after the
   `running` append and before terminal evidence resumes to ONE open PR at HEAD with the prior
   `pr_open` line still in the file (D4); an out-of-band
   push after the refresh fails closed exactly as `test_oob_push_after_admission_merge_pinned_to_admitted_not_live` does today; interrupted refresh replays via the transaction arm and a
-  further-advanced workspace yields `blocked`/`publish_transaction_conflicted`; train review
+  further-advanced workspace yields train-level `preflight_failed` naming the node (D7, r3
+  wording); train review
   not approved → zero merges (unchanged assertion, re-run with a prebuilt node).
+- publishing transaction tests — modify — a SUCCESSFUL FABPUB prebuilt publish after the
+  inspector change (post-accept path at `publishing.py:1185-1195` still seals); a sealed
+  prior with `effect_terminal_observed` evidence → no resume candidate; a sealed prior with
+  `outcome_ambiguous_blocked` evidence → `preflight_failed` at Step 2; a sealed prior at the
+  publish entry → a NEW transaction is prepared for the new head.
 - `phase-loop-runtime/tests/test_train_invariants.py` — modify —
   `test_residual_pr_open_resume_live_head_failure` becomes a positive `blocked` assertion.
 - Broker-level: one test in the existing credsep suite proving a fast-forward push of a new
@@ -253,8 +310,9 @@ the candidate as an external check, mocked boundaries unchanged.
 - [ ] A prebuilt `pr_open` node whose workspace HEAD is a descendant of the admitted head is
   republished once at HEAD through fresh broker admission and non-force push; the ledger
   gains a new `pr_open` record with the new head and keeps the old one.
-- [ ] Unchanged resume, remote drift, diverged candidate and rejected admission each make
-  zero publish calls; the two refusals append `blocked` with the named reason.
+- [ ] Unchanged resume, remote drift, diverged candidate and rejected admission each cause
+  zero push and zero PR-creation effects; the two refusals append `blocked` with the named
+  reason and never enter `publish_fn`.
 - [ ] A single-node prebuilt train under `--governed` passes preflight, opens its draft,
   runs train review, and merges pinned to its latest admitted head; an upstream-bearing
   prebuilt train is still refused at preflight with zero PRs.
