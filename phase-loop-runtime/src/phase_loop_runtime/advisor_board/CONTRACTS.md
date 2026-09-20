@@ -43,9 +43,9 @@ equivalence is proven by a test (not asserted in prose).
   today.
 - **Host×seat routing rule (maintainer; agent-harness#396 / #525 / #924)** — a harness
   fills the seat of its OWN vendor with its native subagent; every other seat runs through
-  that vendor's CLI lane, and the claude seat on a non-Claude host runs through the
-  subscription TUI adapter. Routing keys on the vendor's harness-nativeness, never on
-  model tier. Implemented today only for the Claude Code → claude cell
+  that vendor's CLI lane, and the Anthropic seat on any host other than Claude Code runs
+  through the subscription TUI adapter. Routing keys on the vendor's harness-nativeness, never on
+  model tier. Implemented today only for the Claude Code → Anthropic cell
   (`under_claude_code` + `NativeAgentLegRequest`, the emit → fill → invoke protocol);
   no production caller constructs a `HostContext` yet, so the host leg above is
   identified only when a caller passes one, and the remaining cells are tracked on

@@ -1,6 +1,6 @@
 ---
 name: claude-skill-improvement-planner
-description: "Harness Code skill feedback aggregator. Reads workflow skill reflections, groups recurring recommendations, and writes an improvement plan for <harness>-skill-editor."
+description: "Claude Code skill feedback aggregator. Reads workflow skill reflections, groups recurring recommendations, and writes an improvement plan for <harness>-skill-editor."
 ---
 
 # <harness>-skill-improvement-planner

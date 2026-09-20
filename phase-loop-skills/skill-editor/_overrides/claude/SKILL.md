@@ -1,6 +1,6 @@
 ---
 name: skill-editor
-description: "Harness Code skill editor. Applies plans from <harness>-skill-improvement-planner, updates targeted skills, and archives consumed reflections after successful edits."
+description: "Claude Code skill editor. Applies plans from <harness>-skill-improvement-planner, updates targeted skills, and archives consumed reflections after successful edits."
 ---
 
 # <harness>-skill-editor

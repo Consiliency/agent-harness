@@ -1,6 +1,6 @@
 ---
 name: plan-detailed
-description: "Harness Code detailed planner for one bounded change. Researches the repo, writes an immediately implementable plan, documents verification, and records a handoff."
+description: "Claude Code detailed planner for one bounded change. Researches the repo, writes an immediately implementable plan, documents verification, and records a handoff."
 ---
 
 # <harness>-plan-detailed
@@ -282,7 +282,7 @@ Then the recommended next step depends on the Step 6 path:
 
 ## Consumer contract
 
-`<harness>-plan-detailed` has no paired executor skill — the "implementer" is typically a fresh Harness Code session launched after `/clear` (except on the continue-to-implementation path of Step 6, where Plan Mode was inactive and the operator asked to implement — then this same session implements the plan directly). The handoff is the only channel carrying pre-`/clear` context forward, so validation has to be self-serve. Every handoff this skill writes embeds the consumer-validation preamble (see the FILE 2 template above); a fresh implementer reading the file sees those instructions first and should apply them before acting on any downstream content:
+`<harness>-plan-detailed` has no paired executor skill — the "implementer" is typically a fresh Claude Code session launched after `/clear` (except on the continue-to-implementation path of Step 6, where Plan Mode was inactive and the operator asked to implement — then this same session implements the plan directly). The handoff is the only channel carrying pre-`/clear` context forward, so validation has to be self-serve. Every handoff this skill writes embeds the consumer-validation preamble (see the FILE 2 template above); a fresh implementer reading the file sees those instructions first and should apply them before acting on any downstream content:
 
 1. **`from:` check** — must be `<harness>-plan-detailed`. A mismatch means the file belongs to a different skill and should not be consumed as a <harness>-plan-detailed handoff.
 2. **Timestamp check** — must be within the last 7 days. Older handoffs are likely stale; the plan artifact may already be merged, abandoned, or superseded.

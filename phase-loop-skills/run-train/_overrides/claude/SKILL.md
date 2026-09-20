@@ -1,6 +1,6 @@
 ---
 name: run-train
-description: "Harness Code entry point for the cross-repo release-train coordinator. Use when the user wants to run, resume, or inspect a multi-repo train roadmap: draft PRs across all nodes in topo order, gather train-level review, then merge sequentially with downstream re-verification."
+description: "Claude Code entry point for the cross-repo release-train coordinator. Use when the user wants to run, resume, or inspect a multi-repo train roadmap: draft PRs across all nodes in topo order, gather train-level review, then merge sequentially with downstream re-verification."
 ---
 
 # Harness Run Train
@@ -24,7 +24,7 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
   head, is refused (`review_only_requires_admitted_prs`) before any board or publication; an admitted
   head that no longer matches the live PR head halts as `review_halted` / `stale_head`.
   `--review-only` without `--governed` is a usage error.
-- Under Harness Code the train review's <harness> seat is filled NATIVELY by this session (REVIEWTRUTH
+- Under Claude Code the train review's <harness> seat is filled NATIVELY by this session (REVIEWTRUTH
   early slice, EC-REVIEWTRUTH-14): run `--governed --review-only --emit-native-request` first (it
   stages the bundle and `request.json` under `<ledger-dir>/native-fill/<request_id>/` and spends
   nothing), spawn a native sub-agent with `instructions.md` as its brief over `artifact.md`, write its

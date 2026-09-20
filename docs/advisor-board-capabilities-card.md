@@ -118,21 +118,21 @@ independent defensive-security attestation, then fails closed.
 
 **Seat routing keys on the vendor's harness-nativeness, never on model tier** (maintainer
 rule; agent-harness#396 / #525 / #924). A harness fills the seat of its OWN vendor with its
-native subagent; every other seat runs through that vendor's CLI lane, and the claude seat
-on a non-Claude host through the subscription TUI adapter. No cell admits an API key, SDK,
+native subagent; every other seat runs through that vendor's CLI lane, and the Anthropic seat
+on any host other than Claude Code through the subscription TUI adapter. No cell admits an API key, SDK,
 direct HTTP call, gateway backing or alternate endpoint; a native fill counts only once its
 verdict is bound.
 
-| host ↓ / seat → | claude (Fable/Opus) | codex (GPT-6 Astra) | gemini | grok |
+| host ↓ / seat vendor → | Anthropic (`claude-fable-5-1` / Opus) | OpenAI (`gpt-6-astra`) | Google (`gemini-3.8-flash`) | xAI (`grok-4.6`) |
 |---|---|---|---|---|
 | Claude Code | native sub-agent (emit → fill → invoke) | `codex` CLI | `agy` CLI | `grok` CLI |
-| codex | TUI adapter (self-PTY) | native codex subagent | `agy` CLI | `grok` CLI |
-| gemini CLI | TUI adapter | `codex` CLI | native, where the CLI offers subagents | `grok` CLI |
-| opencode | TUI adapter | `codex` CLI | `agy` CLI | `grok` CLI |
+| `codex` | TUI adapter (self-PTY) | native `codex` subagent | `agy` CLI | `grok` CLI |
+| `agy` (Antigravity) | TUI adapter | `codex` CLI | native, where the CLI offers subagents | `grok` CLI |
+| `opencode` | TUI adapter | `codex` CLI | `agy` CLI | `grok` CLI |
 | standalone runner | TUI adapter | `codex` CLI | `agy` CLI | `grok` CLI |
 
-Implemented today: only the Claude Code → claude cell (agent-harness#921). Under codex,
-gemini or opencode the host's own vendor seat is still launched as a CLI subprocess; the
+Implemented today: only the Claude Code → Anthropic cell (agent-harness#921). Under `codex`,
+`agy` or `opencode` the host's own vendor seat is still launched as a CLI subprocess; the
 remaining cells are tracked on agent-harness#924.
 
 ---

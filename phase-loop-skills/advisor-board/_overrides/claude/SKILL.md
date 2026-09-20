@@ -108,7 +108,7 @@ Data research tools. It disables Codex native web search/apps, derives success
 from the completed correlated audit rather than model prose, and emits only
 privacy-safe tool IDs, statuses, source hashes, and digests. Harness still runs
 only through the subscription TUI adapter on non-native hosts—never an API, SDK,
-direct HTTP call, or gateway backing; under Harness Code the seat defers to the
+direct HTTP call, or gateway backing; under Claude Code the seat defers to the
 driving session's native fill instead (see Seat Routing below). Gemini/agy, Grok, Omnigent, native-host,
 and custom-spawn research seats fail closed as
 `research_profile_unenforceable`.
@@ -118,24 +118,24 @@ and custom-spawn research seats fail closed as
 Routing keys on the harness-nativeness of a seat's VENDOR, never on model tier (maintainer
 rule, recorded on agent-harness#396 / agent-harness#525 and restated on agent-harness#924). A
 harness with a native subagent capability fills the seat of its OWN vendor with that subagent;
-every other seat runs through that vendor's non-native CLI, and the Harness seat on a non-Harness
-host runs through the subscription TUI adapter. No cell admits an API key, SDK, direct HTTP call,
+every other seat runs through that vendor's non-native CLI, and the Anthropic seat on any host
+other than Claude Code runs through the subscription TUI adapter. No cell admits an API key, SDK, direct HTTP call,
 gateway backing or alternate endpoint; a native fill is data handed back to the runtime and counts
 only once its verdict is bound (EC-REVIEWTRUTH-14).
 
-| host ↓ / seat → | <harness> (Fable/Opus) | codex (GPT-6 Astra) | gemini | grok |
+| host ↓ / seat vendor → | Anthropic (`claude-fable-5-1` / Opus) | OpenAI (`gpt-6-astra`) | Google (`gemini-3.8-flash`) | xAI (`grok-4.6`) |
 |---|---|---|---|---|
-| Harness Code | native sub-agent (emit → fill → invoke) | `codex` CLI | `agy` CLI | `grok` CLI |
-| codex | TUI adapter (self-PTY) | native codex subagent | `agy` CLI | `grok` CLI |
-| gemini CLI | TUI adapter | `codex` CLI | native, where the CLI offers subagents | `grok` CLI |
-| opencode | TUI adapter | `codex` CLI | `agy` CLI | `grok` CLI |
+| Claude Code | native sub-agent (emit → fill → invoke) | `codex` CLI | `agy` CLI | `grok` CLI |
+| `codex` | TUI adapter (self-PTY) | native `codex` subagent | `agy` CLI | `grok` CLI |
+| `agy` (Antigravity) | TUI adapter | `codex` CLI | native, where the CLI offers subagents | `grok` CLI |
+| `opencode` | TUI adapter | `codex` CLI | `agy` CLI | `grok` CLI |
 | standalone runner | TUI adapter | `codex` CLI | `agy` CLI | `grok` CLI |
 
-**Implemented today: only the Harness Code → <harness> cell** (agent-harness#921). The runtime
-detects no other host, so under codex, gemini or opencode the host's own vendor seat is still
-launched as a CLI subprocess; the remaining cells are tracked on agent-harness#924. On this host: fill the <harness> seat natively with the protocol below; the Astra, gemini and grok seats run through their CLIs, launched by the runtime.
+**Implemented today: only the Claude Code → Anthropic cell** (agent-harness#921). The runtime
+detects no other host, so under `codex`, `agy` or `opencode` the host's own vendor seat is still
+launched as a CLI subprocess; the remaining cells are tracked on agent-harness#924. On this host: fill the Anthropic seat natively with the protocol below; the OpenAI, Google and xAI seats run through their CLIs, launched by the runtime.
 
-**Fable and Opus seats: the adapter drives them on non-native hosts; under Harness Code YOU fill them natively (REVIEWTRUTH early slice, EC-REVIEWTRUTH-14, agent-harness#396).** On a non-native host the runtime requires the homebrew self-PTY backing and rejects alternate backings before gateway access; it launches the exact requested model only after a metadata-only probe proves a logged-in first-party subscription, scrubs tokens, API helpers, custom request headers, alternate endpoints and cloud-provider selectors, and isolates user/project/local settings. Never add an API/SDK/direct-HTTP fallback. Inside Harness Code the runtime defers every <harness> seat that is not backing-refused (`tui_backing_required` stays a refusal) as `UNAVAILABLE/under_claude_code` carrying a `NativeAgentLegRequest`, and the driving session fills it with a native sub-agent under the read-only review posture in force — the fill is DATA handed back, never a launch, and it counts only once its verdict is bound to the exact staged artifact, resolved brief, board composition and seat.
+**Fable and Opus seats: the adapter drives them on non-native hosts; under Claude Code YOU fill them natively (REVIEWTRUTH early slice, EC-REVIEWTRUTH-14, agent-harness#396).** On a non-native host the runtime requires the homebrew self-PTY backing and rejects alternate backings before gateway access; it launches the exact requested model only after a metadata-only probe proves a logged-in first-party subscription, scrubs tokens, API helpers, custom request headers, alternate endpoints and cloud-provider selectors, and isolates user/project/local settings. Never add an API/SDK/direct-HTTP fallback. Inside Claude Code the runtime defers every <harness> seat that is not backing-refused (`tui_backing_required` stays a refusal) as `UNAVAILABLE/under_claude_code` carrying a `NativeAgentLegRequest`, and the driving session fills it with a native sub-agent under the read-only review posture in force — the fill is DATA handed back, never a launch, and it counts only once its verdict is bound to the exact staged artifact, resolved brief, board composition and seat.
 
 Today's TUI adapter has no typed classifier-refusal capability. Refusal-looking transcript text remains degraded/error evidence and cannot trigger fallback. A future typed adapter may allow one Opus TUI retry only for independently attested defensive-security work, then fails closed on a second refusal.
 
@@ -163,7 +163,7 @@ for leg in result.legs:
     print(leg.seat_key, leg.status)
 ```
 
-Under Harness Code the default Harness seat reports `UNAVAILABLE` with `detail="under_claude_code"` AND a native-fill request. Fill it with the emit → fill → invoke protocol (no re-spend, no mailbox):
+Under Claude Code the default Harness seat reports `UNAVAILABLE` with `detail="under_claude_code"` AND a native-fill request. Fill it with the emit → fill → invoke protocol (no re-spend, no mailbox):
 
 1. `phase-loop advisor-board <artifact> --emit-native-request [--native-fill-dir <dir>] --json` — composes the board, stages `native-fill/<request_id>/{request.json,artifact.md,instructions.md}` and returns without spending a seat.
 2. Spawn a native sub-agent (the Agent tool, `model: "opus"` or the seat's model) with `instructions.md` as its brief and `artifact.md` as the material; it must end with `AGREE` / `PARTIALLY AGREE` / `DISAGREE` on the LAST non-empty line. Write its review to `native-fill/<request_id>/review.md` (the file named by `request.json`'s `review_file`).
