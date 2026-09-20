@@ -57,16 +57,21 @@ SUBJECT = {"repository": "Consiliency/agent-harness", "issue": 396, "model": FAB
 
 
 def _code_digest(fn) -> str:
-    """SHA-256 of a function's AST with docstrings stripped: behaviour, not prose."""
+    """SHA-256 of a function's SOURCE TEXT with its docstring lines removed and trailing
+    whitespace normalised — behaviour, not prose, and identical across Python versions
+    (an ``ast.dump`` digest is not: node fields changed between 3.10 and 3.12; board r3, grok)."""
     import ast
     import textwrap
-    tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+    source = textwrap.dedent(inspect.getsource(fn))
+    tree = ast.parse(source)
+    drop: set[int] = set()
     for node in ast.walk(tree):
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Module)) and node.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.body:
             first = node.body[0]
             if isinstance(first, ast.Expr) and isinstance(getattr(first, "value", None), ast.Constant) and isinstance(first.value.value, str):
-                node.body = node.body[1:] or [ast.Pass()]
-    return hashlib.sha256(ast.dump(tree, include_attributes=False).encode()).hexdigest()
+                drop.update(range(first.lineno, (first.end_lineno or first.lineno) + 1))
+    kept = [line.rstrip() for i, line in enumerate(source.splitlines(), 1) if i not in drop]
+    return hashlib.sha256("\n".join(kept).encode()).hexdigest()
 
 
 def _seat(model: str = FABLE, harness: str = "claude") -> Seat:
@@ -207,12 +212,12 @@ class TestInvariantsThatSurviveTheSlice:
 
     def test_transition_classifier_and_flattener_are_byte_identical(self):
         # The instrument this slice is graded by: the two functions' CODE must not change. The
-        # digest is over the AST with docstrings stripped (a docstring-only edit — e.g. a seam
-        # rename mentioned in prose — is not a behaviour change; board r2, claude N1), pinned on
-        # the base this lane was authored against. PR-2 must leave both untouched.
+        # digest is over the source text with docstring lines removed (a docstring-only edit is
+        # not a behaviour change; board r2, claude N1) and is Python-version independent (board r3,
+        # grok), pinned on the base this lane was authored against. PR-2 must leave both untouched.
         assert (_code_digest(ra._classify_reviewtruth_transition), _code_digest(le._flatten_reviewtruth_observation)) == (
-            "73554cee0ba7dda61a49f9efa5c3663e777c410dafff95b7637cc5033204df21",
-            "07372f003a604aacda5f431a885011cff3ec7d1cd00de3cf4a70ef788f3cfc59",
+            "2f01ab2b1e577149200763d853381e6588eda3dcce3fcbd37f87443efadef436",
+            "b7655f87911452332ee0acf451b32f328f46a270ab2afa76245f21a51cb1c66c",
         )
 
 
