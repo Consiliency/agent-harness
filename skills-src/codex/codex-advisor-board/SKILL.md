@@ -128,7 +128,7 @@ and custom-spawn research seats fail closed as
 
 Fable and Opus have one execution route: the homebrew installed Claude Code TUI in a self-allocated PTY. An alternate backing fails before gateway access. The launch pins the exact requested model, disables fallback-model selection, supplies run-isolated settings with no API-key helper, and uses an environment scrubbed of credentials, custom request headers, alternate endpoints, and cloud-provider selectors. The auth probe accepts only a logged-in, first-party `claude.ai` subscription. Identity fields and raw probe output are not retained.
 
-On a headless non-Claude host, the self-PTY route remains valid. Inside Claude Code, where a nested TUI cannot be driven safely, the seat returns `UNAVAILABLE` with `detail="tui_adapter_required"`. Do not fill it through the host's Task/subagent primitive; retry the board from a host where the TUI adapter can run.
+On a headless non-Claude host, the self-PTY route remains valid. Inside Claude Code the seat defers as `UNAVAILABLE` with `detail="under_claude_code"` and a native-fill request that the driving Claude Code session fills natively (REVIEWTRUTH early slice, agent-harness#396); that is Claude Code's route, not this host's. Do not fill it through the host's Task/subagent primitive; retry the board from a host where the TUI adapter can run.
 
 Today's TUI adapter has no typed classifier-refusal capability, so refusal-looking text never triggers fallback. A future typed adapter may permit one Opus TUI retry only for independently attested defensive-security work; the result remains degraded/fallback-attributed, and a second refusal fails closed. The legacy native-fill descriptor remains only for explicitly custom, non-governed integrations.
 

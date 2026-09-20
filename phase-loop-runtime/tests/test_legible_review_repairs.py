@@ -826,6 +826,11 @@ def _operational_fixture(
 
 
 def test_legacy_fable_observation_without_external_status_remains_pending(tmp_path, monkeypatch):
+    # REVIEWTRUTH early slice: this is the LEGACY (non-native host) shape; pin the host so the
+    # patched adapter boundary is the one the observation crosses (under Claude Code the
+    # observation is the emit → fill → invoke protocol instead).
+    monkeypatch.delenv("CLAUDECODE", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
     raw = {
         "issue": {"number": 396, "state": "OPEN", "stateReason": None},
         "route": {"provider": "first-party-claude", "capability": "ok"},

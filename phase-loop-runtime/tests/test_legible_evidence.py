@@ -1085,7 +1085,15 @@ def test_verification_sidecar_runner_captures_bounded_redacted_fable_probe_evide
         monkeypatch.setattr(
             module, _FABLE_ADAPTER_BOUNDARY, lambda *args, **kwargs: _RAW_FABLE_OBSERVATION, raising=True,
         )
-    record = probe(repo, repository="Consiliency/agent-harness", issue=396, model="claude-fable-5")
+    try:
+        record = probe(repo, repository="Consiliency/agent-harness", issue=396, model="claude-fable-5")
+    except module.LegibleSidecarError as exc:
+        if canonical and getattr(exc, "code", "") == "observation_incomplete":
+            # REVIEWTRUTH early slice (D5): after the routing flip a live observation on this
+            # host is typed INCOMPLETE (non-native host, or Claude Code without a fill). Typed
+            # skip, never a pass: the live probe is an operator instrument run with a fill.
+            pytest.skip(f"live reviewtruth observation incomplete on this host: {exc}")
+        raise
     # Bounds.
     assert len(record.serialized_bytes) <= 16 * 1024
     assert record.response_byte_length <= 64 * 1024

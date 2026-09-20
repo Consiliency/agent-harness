@@ -656,6 +656,125 @@ _REVIEWTRUTH_PROBE_ARTIFACT = (
 )
 
 
+@dataclass(frozen=True)
+class FableObservationIncomplete:
+    """A typed INCOMPLETE observation (REVIEWTRUTH early slice, plan agent-harness#918 D5).
+
+    Never a classification and never a pass: every consumer either raises a typed error or
+    refuses to seal. ``reason`` is ``fill_requested`` (under Claude Code, the driving session
+    has not yet supplied the native fill; ``request_path`` says where the request was staged)
+    or ``native_fill_not_observable_on_host`` (a non-native host cannot bind a native fill).
+    """
+
+    reason: str
+    detail: str = ""
+    request_path: str | None = None
+
+
+REVIEWTRUTH_OBSERVATION_INCOMPLETE = "observation_incomplete"
+
+
+def _reviewtruth_issue_snapshot(subject: Mapping[str, Any], issue_snapshot: Mapping[str, Any] | None) -> tuple[Any, Any]:
+    """Metadata-only live GitHub issue snapshot (or the injected one for tests)."""
+    if issue_snapshot is not None:
+        return issue_snapshot.get("state"), issue_snapshot.get("stateReason")
+    try:
+        proc = subprocess.run(
+            ["gh", "issue", "view", str(subject["issue"]), "--repo", subject["repository"],
+             "--json", "state,stateReason"],
+            capture_output=True, text=True, timeout=20, check=False,
+        )
+        if proc.returncode == 0:
+            payload = json.loads(proc.stdout)
+            return payload.get("state"), payload.get("stateReason")
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        pass
+    return None, None
+
+
+def observe_reviewtruth_fable_transition(
+    repo: Path,
+    subject: Mapping[str, Any],
+    *,
+    native_leg_fills: "Sequence[Any] | None" = None,
+    issue_snapshot: Mapping[str, Any] | None = None,
+) -> "dict[str, Any] | FableObservationIncomplete":
+    """The ONE observation every consumer of the ``reviewtruth_fable_transition`` probe crosses
+    (the assumption-probe caller, the sidecar capture, the CLI probe).
+
+    Under Claude Code the observation is the emit → fill → invoke protocol on the fixed probe
+    artifact with the composed review board: without a fill it is INCOMPLETE (``fill_requested``
+    — the request is staged for the driving session; nothing is launched); with a fill the real
+    board runs and the observation carries ``native_fill_request`` / ``verdict_bound`` /
+    ``seat_count`` from that board. Outside Claude Code the adapter's marker run reports the
+    routing in force: once the claude seat defers as ``under_claude_code`` a non-native host
+    cannot bind a native fill, so the observation is INCOMPLETE
+    (``native_fill_not_observable_on_host``) and the external self-PTY leg is never launched;
+    before the flip the legacy adapter path is unchanged. The classifier and flattener are
+    never reached by an incomplete observation.
+    """
+    from .advisor_board.composition import DEFAULT_TARGET_SEATS
+    from .governed_review import governed_board_gate
+
+    allowed_keys = {"repository", "issue", "model", "source_anchor"}
+    if set(subject) - allowed_keys:
+        raise LegibleSidecarError(
+            "closed_subject_violation",
+            f"unexpected reviewtruth_fable_transition subject keys: {set(subject) - allowed_keys}",
+        )
+    repo = Path(repo)
+    issue_state, issue_reason = _reviewtruth_issue_snapshot(subject, issue_snapshot)
+
+    if panel_invoker._under_claude_code():
+        if not native_leg_fills:
+            out_root = Path(tempfile.mkdtemp(prefix="reviewtruth-probe-"))
+            emitted = governed_board_gate(
+                artifact=_REVIEWTRUTH_PROBE_ARTIFACT, author_executor="legible-probe", run_mode="governed",
+                canonical_repo_authority=repo, emit_native_request=True, native_fill_dir=out_root,
+            )
+            request_path = emitted.get("request_path") if isinstance(emitted, Mapping) else None
+            return FableObservationIncomplete(
+                "fill_requested",
+                "the claude seat is deferred to the driving Claude Code session; supply its native fill "
+                "with --native-leg and observe again",
+                request_path=str(request_path) if request_path else None,
+            )
+        started = time.monotonic()
+        gate = governed_board_gate(
+            artifact=_REVIEWTRUTH_PROBE_ARTIFACT, author_executor="legible-probe", run_mode="governed",
+            canonical_repo_authority=repo, native_leg_fills=tuple(native_leg_fills),
+        )
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        panel = getattr(gate, "panel", None)
+        legs = list(panel.legs) if panel is not None else []
+        claude = next((leg for leg in legs if leg.leg == "claude"), None)
+        usable = sum(1 for leg in legs if leg.usable)
+        verdict_bound = bool(claude is not None and claude.usable and claude.detail == panel_invoker.NATIVE_FILL_DETAIL)
+        return {
+            "issue": {"number": subject["issue"], "state": issue_state, "stateReason": issue_reason},
+            "route": {"provider": "first-party-claude", "native": True},
+            "leg": {
+                "status": claude.status if claude is not None else "UNAVAILABLE",
+                "final_verdict_token": None,
+                "external_status": claude.status if claude is not None else "UNAVAILABLE",
+                "elapsed_ms": elapsed_ms,
+                "native_fill_request": True,
+                "verdict_bound": verdict_bound,
+                "seat_count": "FULL" if verdict_bound and usable == DEFAULT_TARGET_SEATS else "degraded",
+            },
+            "bounds": {"activity_bound_s": 600, "hard_bound_s": 1800},
+            "response": {"text": claude.text if (claude is not None and claude.usable) else ""},
+        }
+
+    # Non-native host: cross the ONE fixed adapter boundary. After the routing flip its marker
+    # run reports ``under_claude_code`` and it short-circuits with a typed ``incomplete`` raw
+    # observation instead of launching the external leg; before the flip it is unchanged.
+    raw = _invoke_reviewtruth_fable_adapter(subject, repo=repo)
+    if isinstance(raw, Mapping) and raw.get("incomplete"):
+        return FableObservationIncomplete(str(raw["incomplete"]), str(raw.get("detail", "")))
+    return raw
+
+
 def _invoke_reviewtruth_fable_adapter(subject: Mapping[str, Any], *, repo: Path | None = None) -> dict[str, Any]:
     """The ONE fixed adapter boundary :func:`run_reviewtruth_fable_probe`
     crosses. Performs exactly the three closed live observations the plan
@@ -747,6 +866,16 @@ def _invoke_reviewtruth_fable_adapter(subject: Mapping[str, Any], *, repo: Path 
             review_authorization=authorization,
             canonical_repo_authority=repo,
         )
+        if marker_status == "UNAVAILABLE" and str(marker_text).strip() == panel_invoker._CLAUDE_LEG_DEFERRED_UNDER_CLAUDE_CODE:
+            # REVIEWTRUTH early slice (D5): the routing in force defers the claude seat to a
+            # driving Claude Code session. A non-native host cannot bind a native fill, so the
+            # observation is INCOMPLETE and the external self-PTY leg is never launched.
+            return {
+                "issue": {"number": subject["issue"], "state": issue_state, "stateReason": issue_reason},
+                "incomplete": "native_fill_not_observable_on_host",
+                "detail": ("the claude seat defers to a driving Claude Code session; this host cannot "
+                           "bind a native fill — run the probe from Claude Code with a fill"),
+            }
         started = time.monotonic()
         leg_result = panel_invoker._default_spawn(
             "claude",
@@ -821,7 +950,9 @@ def _flatten_reviewtruth_observation(raw: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def run_reviewtruth_fable_probe(repo: Path, *, repository: str, issue: int, model: str) -> FableProbeRecord:
+def run_reviewtruth_fable_probe(
+    repo: Path, *, repository: str, issue: int, model: str, native_leg_fills: "Sequence[Any] | None" = None
+) -> FableProbeRecord:
     """Bounded, redacted capture of the fixed ``reviewtruth_fable_transition``
     adapter's raw observation. Caps retained response metadata at 64 KiB and
     the serialized probe record at 16 KiB; raw auth JSON, account/subscription
@@ -829,7 +960,14 @@ def run_reviewtruth_fable_probe(repo: Path, *, repository: str, issue: int, mode
     retained regardless of what the raw observation carries."""
     repo = Path(repo)
     subject = {"repository": repository, "issue": issue, "model": model, "source_anchor": "agent-harness#396"}
-    raw = _invoke_reviewtruth_fable_adapter(subject, repo=repo)
+    raw = observe_reviewtruth_fable_transition(repo, subject, native_leg_fills=native_leg_fills)
+    if isinstance(raw, FableObservationIncomplete):
+        # Typed and fail-closed: never a classification, never a sealed sidecar.
+        raise LegibleSidecarError(
+            REVIEWTRUTH_OBSERVATION_INCOMPLETE,
+            f"reviewtruth_fable_transition observation incomplete: {raw.reason}: {raw.detail}"
+            + (f" (request: {raw.request_path})" if raw.request_path else ""),
+        )
 
     leg = raw.get("leg", {}) if isinstance(raw, Mapping) else {}
     route_info = raw.get("route", {}) if isinstance(raw, Mapping) else {}

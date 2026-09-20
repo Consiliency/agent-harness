@@ -974,7 +974,7 @@ def _finalize_research_result(
 _PROVIDER_REFUSAL_KINDS = frozenset({"classifier_refusal"})
 CLAUDE_TUI_TYPED_REFUSAL_SUPPORTED = False
 _TYPED_UNAVAILABLE_DETAILS = frozenset(
-    {"subscription_auth_unproven", "tui_adapter_required", "tui_backing_required"}
+    {"subscription_auth_unproven", "tui_adapter_required", "tui_backing_required", "under_claude_code"}
 )
 
 
@@ -4622,10 +4622,13 @@ def native_agent_leg_request(
     (#125 callers/tests unaffected).
     """
     resolved_model = model or DEFAULT_LEG_MODELS.get(leg, DEFAULT_LEG_MODELS["claude"])
-    if leg == "claude" and _claude_tui_policy_model(resolved_model):
+    if leg == "claude" and _claude_tui_policy_model(resolved_model) and not _under_claude_code(env):
+        # REVIEWTRUTH early slice (EC-REVIEWTRUTH-14, agent-harness#396): a TUI-policy model
+        # is driven by the self-PTY adapter on a NON-native host; under Claude Code the
+        # driving session fills it natively, so the request is built.
         raise ValueError(
-            "Fable and Opus seats require the Claude Code subscription TUI adapter; "
-            "native agent fulfillment is forbidden"
+            "Fable and Opus seats require the Claude Code subscription TUI adapter on a "
+            "non-native host; native agent fulfillment is available only under Claude Code"
         )
     reason, detail = _claude_leg_deferred_reason(env)
     verdict_required = mode != "advisory"
@@ -4648,6 +4651,251 @@ def native_agent_leg_request(
         artifact_ref=artifact_ref,
         brief_ref=brief_ref,
     )
+
+
+# ---------------------------------------------------------------------------
+# REVIEWTRUTH early slice (EC-REVIEWTRUTH-14; plan agent-harness#918): the native fill a driving
+# Claude Code session hands BACK for a seat the runtime deferred as ``under_claude_code``.
+# A fill is DATA from the first-party session — never a launch, never authority. It counts only
+# once bound to the exact staged artifact, resolved brief, board composition and seat, and only
+# when its last non-empty line is a conforming terminal verdict.
+# ---------------------------------------------------------------------------
+
+NATIVE_FILL_DETAIL = "native_fill"
+NATIVE_FILL_REQUEST_FILE = "request.json"
+NATIVE_FILL_REVIEW_FILE = "claude.md"
+NATIVE_FILL_ARTIFACT_FILE = "artifact.md"
+NATIVE_FILL_INSTRUCTIONS_FILE = "instructions.md"
+
+#: Typed preflight refusals (every one refuses BEFORE any reviewer launch).
+NATIVE_FILL_DUPLICATE_SEAT = "native_fill_duplicate_seat"
+NATIVE_FILL_SEAT_NOT_DEFERRED = "native_fill_seat_not_deferred"
+NATIVE_FILL_DIGEST_MISMATCH = "native_fill_digest_mismatch"
+NATIVE_FILL_COMPOSITION_DRIFT = "native_fill_composition_drift"
+NATIVE_FILL_STALE_REQUEST = "native_fill_stale_request"
+
+
+def content_sha256(text: str) -> str:
+    """Digest of CONTENT (never of a path): what every native-fill binding is over."""
+    return sha256(text.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class NativeLegFill:
+    """A natively produced review for one deferred seat, bound by the EMITTED request."""
+
+    seat_key: str
+    model: str
+    text: str
+    artifact_sha256: str
+    brief_sha256: str
+    composition_sha256: str
+    request_id: str
+    filled_by: str
+    filled_at: str
+
+
+@dataclass(frozen=True)
+class NativeFillRefusal:
+    """A typed, pre-launch refusal of a supplied fill."""
+
+    reason: str
+    detail: str
+    seat_key: str | None = None
+
+
+class NativeFillRefusalError(ValueError):
+    """Raised when a fill is applied outside the preflight contract (never silent)."""
+
+    def __init__(self, refusal: NativeFillRefusal) -> None:
+        super().__init__(f"{refusal.reason}: {refusal.detail}")
+        self.refusal = refusal
+
+
+def _native_fillable_seats(board: "Board", env: Mapping[str, str] | None) -> list["Seat"]:
+    """Seats the routing in force would DEFER to the driving session (fillable)."""
+    if not _under_claude_code(env):
+        return []
+    return [
+        seat for seat in board.seats
+        if (seat.harness or "").lower() == "claude"
+        and not (_claude_tui_policy_model(seat.model) and seat.backing != BACKING_HOMEBREW)
+    ]
+
+
+def native_fill_request_payload(
+    board: "Board",
+    artifact: str,
+    *,
+    brief_ref: str | None = None,
+    env: Mapping[str, str] | None = None,
+    mode: str = "review",
+    request_id: str | None = None,
+    artifact_path: str | None = None,
+    instructions_path: str | None = None,
+) -> dict[str, object]:
+    """The emit-side envelope (D3): a pure function of the composed board and staged bytes.
+
+    Spends nothing, mints nothing. Raises ``ValueError`` when the routing in force would not
+    defer any claude seat here (no fill is requestable), so an emit arm can never hand out a
+    request the invoke arm would refuse.
+    """
+    from .advisor_board.composition import composition_digest
+
+    seats = _native_fillable_seats(board, env)
+    if not seats:
+        raise ValueError("no claude seat is deferred to the driving session under this routing")
+    seat = seats[0]
+    instructions = _resolve_brief(mode, brief_ref)
+    request = native_agent_leg_request(
+        leg="claude", mode=mode, env=env, model=seat.model, seat_key=seat.seat_key,
+        effort=seat.effort, lens=seat.lens, artifact_ref=artifact_path, brief_ref=brief_ref,
+        instructions=instructions,
+    )
+    payload: dict[str, object] = {
+        "request_id": request_id or str(uuid.uuid4()),
+        "seat_key": seat.seat_key,
+        "model": seat.model,
+        "lens": seat.lens,
+        "effort": seat.effort,
+        "mode": mode,
+        "reason": request.reason,
+        "detail": request.detail,
+        "artifact_sha256": content_sha256(artifact),
+        "brief_sha256": content_sha256(instructions),
+        "composition_sha256": composition_digest(board),
+        "composition": sorted(s.seat_key for s in board.seats),
+        "instructions": instructions,
+        "verdict_contract": request.verdict_contract,
+        "artifact_path": artifact_path,
+        "instructions_path": instructions_path,
+        "review_file": NATIVE_FILL_REVIEW_FILE,
+    }
+    return payload
+
+
+def load_native_leg_fill(
+    request_json: "Path | str",
+    review_md: "Path | str",
+    *,
+    filled_by: str = "claude-code-native-agent",
+) -> NativeLegFill:
+    """Pair an EMITTED ``request.json`` with the session's review text.
+
+    Every digest comes from the emitted request — never recomputed from the current
+    invocation — so an old review can never be stamped with today's bytes.
+    """
+    import datetime as _dt
+
+    request = json.loads(Path(request_json).read_text(encoding="utf-8"))
+    missing = [k for k in ("request_id", "seat_key", "model", "artifact_sha256", "brief_sha256", "composition_sha256") if not request.get(k)]
+    if missing:
+        raise ValueError(f"native fill request is missing {missing}: {request_json}")
+    text = Path(review_md).read_text(encoding="utf-8")
+    return NativeLegFill(
+        seat_key=str(request["seat_key"]), model=str(request["model"]), text=text,
+        artifact_sha256=str(request["artifact_sha256"]), brief_sha256=str(request["brief_sha256"]),
+        composition_sha256=str(request["composition_sha256"]), request_id=str(request["request_id"]),
+        filled_by=filled_by,
+        filled_at=_dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+    )
+
+
+def load_native_leg_fills(spec: str) -> NativeLegFill:
+    """CLI form ``<seat>=<dir-or-request.json>``: the dir holds request.json + claude.md."""
+    if "=" not in spec:
+        raise ValueError(f"--native-leg expects <seat>=<dir-or-request.json>, got {spec!r}")
+    seat, _, where = spec.partition("=")
+    if seat.strip().lower() != "claude":
+        raise ValueError(f"only the claude seat is natively fillable, got {seat!r}")
+    target = Path(where)
+    request_json = target if target.is_file() else target / NATIVE_FILL_REQUEST_FILE
+    review_md = request_json.parent / NATIVE_FILL_REVIEW_FILE
+    if not request_json.is_file() or not review_md.is_file():
+        raise ValueError(f"native fill needs {request_json} and {review_md}")
+    return load_native_leg_fill(request_json, review_md)
+
+
+def preflight_native_leg_fills(
+    board: "Board",
+    fills: Sequence[NativeLegFill],
+    *,
+    artifact_sha256: str,
+    brief_sha256: str,
+    composition_sha256: str,
+    env: Mapping[str, str] | None = None,
+) -> NativeFillRefusal | None:
+    """Refuse an ineligible fill BEFORE any reviewer launch (D2 refusal timing).
+
+    Returns ``None`` when every fill is acceptable; otherwise the first typed refusal, in this
+    order: duplicate seat, seat not deferred under the routing in force (wrong seat/model, not
+    a claude seat, not under Claude Code, backing-refused), artifact digest, brief digest,
+    composition drift.
+    """
+    seen: set[str] = set()
+    fillable = {seat.seat_key: seat for seat in _native_fillable_seats(board, env)}
+    for fill in fills:
+        if fill.seat_key in seen:
+            return NativeFillRefusal(NATIVE_FILL_DUPLICATE_SEAT, f"a second fill was supplied for seat {fill.seat_key}", fill.seat_key)
+        seen.add(fill.seat_key)
+        seat = fillable.get(fill.seat_key)
+        if seat is None or (seat.model or "").lower() != (fill.model or "").lower():
+            return NativeFillRefusal(
+                NATIVE_FILL_SEAT_NOT_DEFERRED,
+                f"seat {fill.seat_key} (model {fill.model}) is not a claude seat the routing in force defers to the driving session",
+                fill.seat_key,
+            )
+        if fill.artifact_sha256 != artifact_sha256:
+            return NativeFillRefusal(NATIVE_FILL_DIGEST_MISMATCH, "the fill was emitted for a different staged artifact", fill.seat_key)
+        if fill.brief_sha256 != brief_sha256:
+            return NativeFillRefusal(NATIVE_FILL_DIGEST_MISMATCH, "the fill was emitted for a different review brief", fill.seat_key)
+        if fill.composition_sha256 != composition_sha256:
+            return NativeFillRefusal(NATIVE_FILL_COMPOSITION_DRIFT, "the board composition changed since the request was emitted", fill.seat_key)
+    return None
+
+
+def attach_native_fill_provenance(leg: PanelLegResult, fill: NativeLegFill) -> PanelLegResult:
+    """Metadata only (never a schema field): who filled, when, under which request."""
+    object.__setattr__(leg, "_native_fill", {
+        "request_id": fill.request_id, "filled_by": fill.filled_by, "filled_at": fill.filled_at,
+        "artifact_sha256": fill.artifact_sha256, "brief_sha256": fill.brief_sha256,
+        "composition_sha256": fill.composition_sha256,
+    })
+    return leg
+
+
+def apply_native_leg_fills(
+    legs: Sequence[PanelLegResult], fills: Sequence[NativeLegFill]
+) -> list[PanelLegResult]:
+    """Bind accepted fills onto DEFERRED legs (after every seat returned, before the president).
+
+    A fill lands only on a leg that is ``UNAVAILABLE/under_claude_code`` carrying a fill
+    request whose model matches; anything else raises ``NativeFillRefusalError`` (a runtime
+    result is never replaced). Status is OK iff the fill's last non-empty line is a conforming
+    terminal verdict, else DEGRADED — an unbound or verdict-less fill never counts.
+    """
+    out = list(legs)
+    for fill in fills:
+        idx = next((i for i, leg in enumerate(out) if leg.seat_key == fill.seat_key), None)
+        leg = out[idx] if idx is not None else None
+        request = leg.needs_native_agent if leg is not None else None
+        if (
+            leg is None or leg.status != "UNAVAILABLE" or leg.text.strip()
+            or leg.detail != _CLAUDE_LEG_DEFERRED_UNDER_CLAUDE_CODE or request is None
+            or (request.model or "").lower() != (fill.model or "").lower()
+        ):
+            raise NativeFillRefusalError(NativeFillRefusal(
+                NATIVE_FILL_SEAT_NOT_DEFERRED,
+                f"seat {fill.seat_key} did not defer as under_claude_code with a fill request",
+                fill.seat_key,
+            ))
+        conforming = terminal_verdict(fill.text) is not None
+        filled = PanelLegResult(
+            leg=leg.leg, status="OK" if conforming else "DEGRADED", text=fill.text,
+            detail=NATIVE_FILL_DETAIL, seat_key=leg.seat_key,
+        )
+        out[idx] = attach_native_fill_provenance(filled, fill)
+    return out
 
 
 def _under_claude_code(env: Mapping[str, str] | None = None) -> bool:
@@ -4799,10 +5047,12 @@ def _exec_claude_tui_leg(
     # Claude Code the nested self-PTY adapter is unavailable, so fail closed with a
     # typed reason. A caller may retry from a host where the TUI adapter can run.
     if _under_claude_code(env):
-        logging.getLogger(__name__).warning(
-            "advisor-panel claude leg unavailable [tui_adapter_required]"
+        # REVIEWTRUTH early slice: the seat is DEFERRED to the driving Claude Code session
+        # (a typed, fillable state) — the runtime must not spawn a second Claude TUI here.
+        logging.getLogger(__name__).info(
+            "advisor-panel claude leg deferred to the driving session [under_claude_code]"
         )
-        return "UNAVAILABLE", "tui_adapter_required"
+        return "UNAVAILABLE", "under_claude_code"
 
     output_file = out_dir / "panel-claude.txt"
     tui_cwd = out_dir.resolve() if brokered else out_dir
@@ -7034,8 +7284,15 @@ def invoke_board(
     review_authorization: ReviewIsolationAuthorization | None = None,
     canonical_repo_authority: Path | str | None = None,
     president_invoke: Callable[[str, str], Mapping[str, str]] | None = None,
+    native_leg_fills: Sequence[NativeLegFill] | None = None,
 ) -> PanelResult:
     """Run an Advisor Board's seats through the provider seam, fail-closed.
+
+    REVIEWTRUTH early slice (EC-REVIEWTRUTH-14): ``native_leg_fills`` are bound onto the seat
+    the runtime deferred as ``under_claude_code`` AFTER every seat has returned and BEFORE the
+    president rules, on both the early native-host deferral path and the per-seat matrix path
+    (``apply_native_leg_fills``). They are data, never a launch; an ineligible fill raises a
+    typed ``NativeFillRefusalError`` (callers preflight with ``preflight_native_leg_fills``).
 
     Each seat is routed per its ``backing`` (``select_backing``), rendered through
     the frozen per-harness effort mapping (``render_seat_invocation`` — so
@@ -7155,6 +7412,24 @@ def invoke_board(
             reset_review_instruction_digest(review_instruction_token)
             review_instruction_token = None
         return result
+    def _finalize_with_president(results_: list[PanelLegResult]) -> PanelResult:
+        """The common tail: the president rules AFTER every seat (incl. a bound fill)."""
+        panel_ = PanelResult(legs=tuple(results_))
+        if policy is not None and policy.requires_president:
+            assert president_invoke is not None
+            findings_ = president_findings_from_legs(board.seats, results_)
+            try:
+                ruling_ = invoke_president(
+                    findings=findings_, invoke=president_invoke,
+                    max_substantive_rounds=PRESIDENT_MAX_SUBSTANTIVE_ROUNDS,
+                )
+            except PresidentPolicyError as exc:
+                if exc.code not in _PRESIDENT_REFUSAL_CODES:
+                    raise
+                return replace(review_refusal(f"president_ruling_missing:{exc.code}"), president_findings=findings_)
+            panel_ = PanelResult(legs=tuple(results_), president=ruling_, president_findings=findings_)
+        return panel_
+
     def review_refusal(detail: str) -> PanelResult:
         return review_exit(PanelResult(tuple(
             PanelLegResult(
@@ -7337,16 +7612,16 @@ def invoke_board(
                     # A TUI-policy model on a non-homebrew backing is refused for
                     # its backing before any host/adapter question, exactly as the
                     # per-seat matrix below orders it (no omnigent catalog touch).
-                    detail = (
-                        "tui_backing_required"
-                        if tui_policy_seat and seat.backing != BACKING_HOMEBREW
-                        else "tui_adapter_required"
-                    )
+                    backing_refused = tui_policy_seat and seat.backing != BACKING_HOMEBREW
+                    detail = "tui_backing_required" if backing_refused else "under_claude_code"
                     result = PanelLegResult(
                         leg=leg, status="UNAVAILABLE", text="",
                         detail=detail, seat_key=seat.seat_key,
                     )
-                    if not tui_policy_seat:
+                    # REVIEWTRUTH early slice: every claude seat deferred under Claude Code
+                    # carries its fill request (TUI-policy models included); a backing
+                    # refusal is not a deferral and carries none.
+                    if not backing_refused:
                         attach_native_agent_request(
                             result,
                             native_agent_leg_request(
@@ -7357,6 +7632,11 @@ def invoke_board(
                             ),
                         )
                     deferred.append(result)
+                if native_leg_fills:
+                    deferred = apply_native_leg_fills(deferred, native_leg_fills)
+                    # A filled early-deferral board joins the common president tail instead
+                    # of returning before the ruling (plan agent-harness#918 D2).
+                    return review_exit(_finalize_with_president(deferred))
                 return review_exit(PanelResult(tuple(deferred)))
             # This validates a host/native pairing before a gateway catalog, support
             # check, or a capability probe can be reached.
@@ -7787,7 +8067,7 @@ def invoke_board(
                 attach_harden_isolation_evidence(result, broker_evidence)
             if (
                 leg == "claude"
-                and not _claude_tui_policy_model(seat.model)
+                and (not _claude_tui_policy_model(seat.model) or _under_claude_code(base_env))
                 and status == "UNAVAILABLE"
                 # ah#538: test text_value, NOT the raw `text`. The typed-detail branch
                 # above moves a typed token (`tui_adapter_required`, …) OUT of the body
@@ -7876,6 +8156,8 @@ def invoke_board(
                 observer.seat_started(seat)
                 observer.seat_result(seat, result)
             observer.board_completed(results)
+        if native_leg_fills:
+            results = apply_native_leg_fills(results, native_leg_fills)
         panel_result = PanelResult(legs=tuple(results))
         if policy is not None and policy.requires_president:
             # ah#736: the president rules AFTER every seat has returned and BEFORE
