@@ -13,6 +13,22 @@ automation:
 
 # Detailed plan: refresh an admitted prebuilt PR on local advance; land single-node prebuilt trains under `--governed`
 
+**r2 (2026-09-20): reconciles board round 1 — four seats, all DISAGREE / CONVERGING.** Round 1
+found, and I verified against `eabfec6c`: (1) D5's "channel-carrying" carve-out was wrong — the
+P4 guard `if _upstream_edges_m:` (`train_runner.py:3302`) is true for order-only edges too and
+`reverify_fn` (`:3333`) sits inside it, so D5 now admits only prebuilt nodes with ZERO upstream
+edges (all four seats); (2) D1's fall-through was unreachable on the live path — a successful
+publish leaves its FABPUB transaction pointer at `TERMINAL_SEALED`, which
+`inspect_publish_resume_candidate` then reports as `CONFLICTED` against the advanced HEAD and
+Step 2 turns into a train-level `preflight_failed` (claude seat, executed) — D1 now includes the
+Step 2 / `publishing.py` change and D7 is corrected; (3) the skip block ends in a `blocked`
+RETURN, not only a `continue`, so the refresh decision is placed in the no-upstream-change arm
+and the restructure is named (grok, codex); (4) the `running` record at `:2756` precedes
+publication and the ledger is last-wins, so D4's wording was false mid-refresh (grok, codex,
+gemini) — D4 now states the real crash-resume behaviour; (5) the pre-admission TOCTOU window is
+named, its fail-closed consequence stated, and the one alternative that would close it is
+recorded as a maintainer decision, D9 (all four seats).
+
 ## Task
 
 Repair the two Run Train continuation blockers in agent-harness#906, verified against
@@ -64,44 +80,83 @@ against `eabfec6c`). Load-bearing facts:
 
 ## Scope and decisions
 
-- **D1. Refresh = fall through into the existing prebuilt publish arm.** In the Step 4
-  skip block, for a `pr_open` node whose `mode == "prebuilt"`, read the workspace HEAD
-  before the `continue`. If `HEAD == admitted_head_sha` and no upstream changed: unchanged
-  resume, `continue` (today's behaviour). If HEAD advanced and the admitted head is an
-  ancestor of HEAD (`git merge-base --is-ancestor`): do NOT `continue`; the loop proceeds
-  into the prebuilt arm, which re-derives `owned_paths` from `origin/<base>...HEAD`, takes a
-  fresh admission at the new head, pushes non-force to the same branch and reconciles the
-  existing PR. No second publish path is written. Execute nodes are out of scope: their
-  workspace HEAD is coordinator-managed and a divergence there is a different defect class.
-- **D2. Refuse unknown remote drift before refreshing.** If the live PR head differs from
-  the admitted head (the node is in `out_of_band_upstreams` for ITSELF), append a `blocked`
-  record with reason `remote_drift` and return `blocked`. The coordinator never pushes over
-  an advance it did not admit.
+- **D1. Refresh = fall through into the existing prebuilt publish arm.** The Step 4 skip
+  block (`train_runner.py:2698-2750`) has two exits: a `blocked` RETURN when an upstream
+  changed, and a bare `continue` otherwise. The refresh decision replaces that bare
+  `continue`, for a `pr_open` node whose `mode == "prebuilt"` only: read the workspace HEAD;
+  if `HEAD == admitted_head_sha`, `continue` (unchanged resume, today's behaviour); if the
+  admitted head is an ancestor of HEAD, fall OUT of the `if nid in completed_nodes` block
+  into the existing `running` append and the prebuilt arm (`:2798-2853`), which re-derives
+  `owned_paths` from `origin/<base>...HEAD`, takes a fresh admission at the new head, pushes
+  non-force to the same branch and reconciles the existing PR. The upstream-changed RETURN
+  is untouched. Execute nodes are out of scope.
+  **Step 2 prerequisite (r2):** a successful publish leaves the node's FABPUB transaction
+  pointer at `TERMINAL_SEALED`; `prepare_*_transaction` already treats a sealed transaction as
+  not active (`publishing.py:742`, `:804`) but `inspect_publish_resume_candidate` does not — it
+  validates the sealed transaction against the current HEAD and returns `CONFLICTED`, which
+  Step 2 (`train_runner.py:2508-2520`) turns into `preflight_failed` for the whole train. The
+  inspector must classify a `TERMINAL_SEALED` active transaction as a completed prior
+  publication (no resume candidate), consistent with the two `prepare_*` sites. This is a
+  `publishing.py` change with its own test, and it is what makes D1 reachable.
+- **D2. Refuse unknown remote drift before refreshing — at observation time.** If the live
+  PR head differs from the admitted head (the node is in `out_of_band_upstreams` for ITSELF),
+  append `blocked` with reason `remote_drift` and return. The live head is re-read
+  immediately before falling through, not only in Step 3. **Named window (r2):** between that
+  read and the broker's push there is a TOCTOU window. A divergent remote advance in it fails
+  closed at the non-force exact-head push (`credsep.py:475`, `push-unconfirmed` →
+  `outcome_ambiguous_blocked`, which `credsep.py:437` documents as permanent and
+  epoch-poisoning; recovery is the existing ambiguous-block procedure, not a retry). A remote
+  FAST-FORWARD advance in the window is NOT refused: a non-force push of a descendant succeeds
+  over it. So D2 is observation-time detection; publication-time enforcement of "remote still
+  equals admitted" is not provided. The merge-time `--match-head-commit` pin does not cover
+  this window either; it pins the later merge to the new admitted head. See D9.
 - **D3. Refuse a diverged candidate.** If HEAD is neither the admitted head nor a descendant
   of it, `blocked` with reason `candidate_diverged`. Non-force push would fail anyway; refuse
   before admission so no idempotency key is minted for a head that cannot land.
-- **D4. Ledger head moves only on terminal evidence, append-only.** The existing success
-  epilogue appends a new `pr_open` record carrying the new `head_sha` after
-  `publish_result["status"] == "published"`. Prior records are preserved. A refused or
-  failed admission appends `blocked` and leaves the previously admitted head as the latest
-  `pr_open`. No record is rewritten, no admission is fabricated.
-- **D5. Narrow the governed rejection to the shape it actually protects.** Replace the
-  blanket prebuilt refusal at `:2466-2483` with: refuse a prebuilt node that has at least
-  one channel-carrying (non-`order-only`) upstream edge, with the same fail-at-preflight
-  property and a message that names the edge; admit prebuilt nodes with none. The merge of
-  an admitted prebuilt node then runs the unchanged P4 path, pinned by `--match-head-commit`
-  to the LATEST admitted head (the refreshed one when D1 ran).
+- **D4. Ledger head moves only on terminal evidence, append-only — with the `running`
+  record stated honestly (r2).** The success epilogue appends a new `pr_open` carrying the new
+  `head_sha` only after `publish_result["status"] == "published"`; prior lines are preserved.
+  But the existing `running` append (`train_runner.py:2756`) precedes publication and
+  `read_ledger` is last-wins, so mid-refresh the folded view shows `running`, not the prior
+  `pr_open`. A crash there resumes as "not pr_open": the node republishes at HEAD through the
+  transaction store (replay if a transaction was prepared, fresh otherwise), pushes to the same
+  branch and reconciles the same open PR. That is correct and duplicate-free, and the test for
+  it asserts exactly that: one open PR, no fabricated admission, the prior `pr_open` line still
+  present in the file. A refused or failed admission appends `blocked`; the previously
+  admitted head remains recoverable from the file and from the live PR. No record is
+  rewritten.
+- **D5. Narrow the governed rejection to the shape it actually protects (r2: ZERO upstream
+  edges).** Replace the blanket prebuilt refusal at `:2466-2483` with: refuse a prebuilt node
+  for which `roadmap.edges_for_downstream(node)` is non-empty — ANY upstream edge, order-only
+  included, because the P4 guard at `:3302` tests the full edge list and `reverify_fn` at
+  `:3333` runs for every node inside it — with the same fail-at-preflight property and a
+  message naming the edge; admit prebuilt nodes with no upstream edges. The predicate is
+  the same test P4 uses, so it cannot drift from it. The merge of an admitted prebuilt node
+  then runs the unchanged P4 path, pinned by `--match-head-commit` to the LATEST admitted
+  head. Extending this to prebuilt nodes WITH upstreams is the follow-up, not this plan.
 - **D6. Take agent-harness#289 deliberately.** Wrap the live-head read at `:2651` in the
   same `blocked` pattern the merge loop uses, because D2 depends on that read and a second
   unwrapped read beside it is the failure the issue names. Flip the residual test.
-- **D7. Reuse FABPUB transaction resume for an interrupted refresh.** No new marker. A
-  refresh interrupted after admission replays through the existing arm; a workspace that
-  advanced again in between yields `CONFLICTED` → `blocked`, never a silent replay.
+- **D7. Reuse FABPUB transaction resume for an interrupted refresh (r2: corrected).** No new
+  marker. A refresh interrupted after its transaction was prepared replays through the
+  existing Step 4 arm on the next run. A workspace that advanced AGAIN in between yields
+  `CONFLICTED` at Step 2 → train-level `preflight_failed` naming the node (the existing
+  behaviour at `:2508-2520`), never a silent replay of a stale head. The earlier wording
+  (`blocked`/`publish_transaction_conflicted`) described the wrong status at the wrong stage.
 - **D8. Text reconciliation.** The preflight message no longer instructs a manual merge.
   The run-train skill states: prebuilt nodes without channel-carrying upstreams land under
   `--governed`; prebuilt nodes with such upstreams stop at `drafts_open` pending the
   follow-up below; closing a stale PR is done by the operator only when the coordinator's
   `blocked` reason says so.
+
+- **D9. Maintainer decision (r2): accept the D2 window, or close it with compare-and-swap.**
+  `git push --force-with-lease=<branch>:<admitted_head>` would refuse ANY remote change in
+  the window, including a fast-forward, and is the only mechanism that enforces "remote still
+  equals admitted" at publication time. It is a `--force*` option, and the operator
+  requirement is non-force publication. Default for this plan: keep the non-force exact-head
+  push, accept the fast-forward window, and test the divergent case fails closed. If the
+  maintainer wants the window closed, that is a broker change with its own review, not a
+  silent flag flip.
 
 Out of scope (each gets a follow-up issue on landing, none is a TODO in code): a prebuilt
 reverify substitute for upstream-bearing prebuilt nodes (the follow-up the code names at
@@ -111,32 +166,41 @@ nodes; the tagged release and consumer re-pin that make this an INSTALLED fix.
 ## Changes
 
 ### `phase-loop-runtime/src/phase_loop_runtime/train_runner.py` (modify)
-- Step 4 skip block (`~2698-2718`) — modify — add the prebuilt local-advance decision (D1,
-  D2, D3) ahead of the existing `continue`; reuse `completed_nodes[nid]["admitted_head_sha"]`
-  and the node's own membership in `out_of_band_upstreams`; workspace HEAD via the same
-  git helper the prebuilt preflight uses.
+- Step 4 skip block (`~2698-2750`) — modify — replace the no-upstream-change `continue` with
+  the prebuilt local-advance decision (D1, D2, D3); reuse `completed_nodes[nid]["admitted_head_sha"]`,
+  re-read the live head, and read the workspace HEAD via the same git helper the prebuilt
+  preflight uses. The upstream-changed `blocked` return is unchanged.
 - Step 3 live read (`~2651`) — modify — wrap in the `blocked` pattern (D6).
 - Governed preflight rejection (`~2466-2483`) — modify — narrow per D5; message names the
   offending edge and no longer says "merge manually".
 - No change to the prebuilt publish arm, the success epilogue, `_live_merge_pr`, or the P4
   loop. If implementation finds one is needed, stop and amend this plan.
 
-### `phase-loop-runtime/src/phase_loop_runtime/publishing.py` (verify, expect no change)
+### `phase-loop-runtime/src/phase_loop_runtime/publishing.py` (modify)
+- `inspect_publish_resume_candidate` — modify — a `TERMINAL_SEALED` active transaction is a
+  completed prior publication: return no resume candidate (a dedicated state, not `None` and
+  not `CONFLICTED`), matching what `prepare_prebuilt_transaction` and its sibling already
+  assume at `:742`/`:804`. Nothing else in the store is touched; no tombstone is fabricated.
 - `publish_from_worktree(prebuilt=True)` against an existing branch/PR — verify by test —
   push fast-forwards, `gh pr create` collision reconciles to the same PR, readback pins the
-  new head. If any step refuses, the refusal is the finding; do not patch around it.
+  new head (`credsep.py:551`). If any step refuses, the refusal is the finding; do not patch
+  around it.
 
 ### Tests (create/modify)
 - `phase-loop-runtime/tests/test_train_prebuilt.py` — modify — split
-  `test_governed_prebuilt_opens_zero_prs` into "upstream-bearing prebuilt still refused at
-  preflight, zero PRs" and "single-node prebuilt admitted under --governed"; add refresh
-  cases: unchanged resume (zero publish calls, ledger unchanged), valid refresh (publish
+  `test_governed_prebuilt_opens_zero_prs` into "prebuilt with ANY upstream edge (one case
+  channel-carrying, one case ORDER-ONLY) still refused at preflight, zero PRs" and
+  "single-node prebuilt admitted under --governed"; add an end-to-end refresh case that runs
+  the REAL Step 2 inspection with a sealed prior transaction in the checkpoint root and
+  FABPUB active (the round-1 blocker); add refresh cases: unchanged resume (zero publish calls, ledger unchanged), valid refresh (publish
   called once with the new head; new `pr_open` appended; prior record intact), remote drift
   (`blocked`/`remote_drift`, zero publish calls), diverged candidate
   (`blocked`/`candidate_diverged`, zero publish calls), rejected admission (`blocked`, latest
   `pr_open` still the old head).
 - `phase-loop-runtime/tests/test_train_merge.py` — modify — governed single-node prebuilt
-  merges with `--match-head-commit` pinned to the refreshed admitted head; an out-of-band
+  merges with `--match-head-commit` pinned to the refreshed admitted head; crash after the
+  `running` append and before terminal evidence resumes to ONE open PR at HEAD with the prior
+  `pr_open` line still in the file (D4); an out-of-band
   push after the refresh fails closed exactly as `test_oob_push_after_admission_merge_pinned_to_admitted_not_live` does today; interrupted refresh replays via the transaction arm and a
   further-advanced workspace yields `blocked`/`publish_transaction_conflicted`; train review
   not approved → zero merges (unchanged assertion, re-run with a prebuilt node).
@@ -194,8 +258,10 @@ the candidate as an external check, mocked boundaries unchanged.
 - [ ] A single-node prebuilt train under `--governed` passes preflight, opens its draft,
   runs train review, and merges pinned to its latest admitted head; an upstream-bearing
   prebuilt train is still refused at preflight with zero PRs.
-- [ ] An interrupted refresh resumes through the existing transaction arm; a workspace that
-  advanced again yields `blocked`, never a replay of a stale head or a duplicate PR.
+- [ ] A sealed prior transaction does not block a refresh at preflight; an interrupted
+  refresh resumes through the existing transaction arm; a workspace that advanced again
+  yields train-level `preflight_failed` naming the node, never a replay of a stale head or a
+  duplicate PR.
 - [ ] A live-head read failure on resume yields `blocked`, not an uncaught exception.
 - [ ] Runtime message, skill sources and generated copies agree; parity test green.
 
