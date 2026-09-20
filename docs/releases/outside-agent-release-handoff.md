@@ -139,7 +139,8 @@ Measured on the prepared `0.7.15` build described above.
 
 ## Governed-Pipeline Pinning
 
-Governed-pipeline may consume this published runtime as an authoritative
+Once `0.7.15` is published (tag push → PyPI; this document records it as
+`prepared` until then), governed-pipeline may consume it as an authoritative
 validator by pinning `phase-loop-runtime==0.7.15`, then calling:
 
 ```bash
