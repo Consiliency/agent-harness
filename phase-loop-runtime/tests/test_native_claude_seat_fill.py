@@ -142,12 +142,16 @@ class TestRouting:
 
     @activated
     def test_matrix_path_attaches_a_request_for_the_fable_seat(self):
-        # A mixed board with an injected spawn for the non-claude seats and the PRODUCTION
-        # claude spawn: the per-seat matrix path, not the early return.
+        # A mixed board through the per-seat MATRIX path (not the early return): the injected
+        # spawn returns, for the claude seat, exactly the typed deferral the production leg
+        # emits under Claude Code. The matrix path must relocate that token into ``detail``
+        # (typed-detail normalisation) and attach the fill request for a TUI-policy seat.
+        # (An injected spawn cannot delegate to the production spawn: outside the sanctioned
+        # seam it refuses for missing HARDEN authorization, which is a different property.)
         def spawn(leg, artifact, **kw):
             if leg != "claude":
                 return "OK", "Reviewed.\nAGREE"
-            return pi._default_spawn(leg, artifact, **kw)
+            return "UNAVAILABLE", "under_claude_code"
 
         with tempfile.TemporaryDirectory() as td:
             artifact = Path(td) / "bundle.md"
@@ -308,12 +312,39 @@ class TestProtocol:
         guard.require(n, getattr(gate, "native_fill_request", None) is not None, "no request returned")
 
     @activated
-    def test_run_train_emit_arm_spends_nothing(self):
+    def test_run_train_emit_arm_spends_nothing(self, tmp_path):
+        # Behavioural (the public ``run_train`` is a generation-fenced wrapper, so its signature
+        # proves nothing): the emit arm returns ``native_fill_requested`` with the request and
+        # artifact paths and touches no board, publisher or merge.
+        from phase_loop_runtime.train_roadmap import parse_train_roadmap
         from phase_loop_runtime.train_runner import run_train
+        from test_train_prebuilt import PREBUILT_1NODE_MD, _make_prebuilt_publish_stub
+        from test_train_review_authorization import _ledger, _pr_is_open_true, _preflight_pass, ADMITTED
+
         n = "test_run_train_emit_arm_spends_nothing"
-        params = inspect.signature(run_train).parameters
-        guard.require(n, "emit_native_request" in params and "native_leg_fills" in params,
-                      f"run_train lacks the protocol parameters: {sorted(params)[:6]}…")
+        roadmap = parse_train_roadmap(PREBUILT_1NODE_MD)
+        ws_map = {node.node_id: tmp_path / node.repo for node in roadmap.nodes}
+        review, publish, merge = _Never(), _Never(), _Never()
+        result, err = None, None
+        try:
+            result = run_train(
+                roadmap, _ledger(tmp_path), run_mode="governed",
+                resolve_workspace=lambda node: ws_map[node.node_id],
+                _run_loop=lambda *a, **kw: (None, []), _publish=publish,
+                _set_upstream_ref_fn=lambda *a, **kw: [], _preflight_fn=_preflight_pass,
+                _pr_is_open=_pr_is_open_true, _live_pr_head_sha_fn=lambda ws, br: ADMITTED,
+                _workspace_head_fn=lambda ws: ADMITTED, _is_ancestor_fn=lambda ws, a, b: True,
+                _prebuilt_owned_paths_fn=lambda ws, base: ["src/x.py"], _merge_phase_enabled=True,
+                review_only=True, _train_review_fn=review, _merge_pr_fn=merge,
+                _reverify_fn=lambda *a, **k: True, _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
+                emit_native_request=True,
+            )
+        except TypeError as exc:  # no emit arm yet: recorded, asserted outside the except
+            err = exc
+        guard.require(n, err is None, f"run_train has no emit arm: {err}")
+        guard.require(n, result.get("status") == "native_fill_requested", f"status={result.get('status')!r}")
+        guard.require(n, Path(result["request_path"]).is_file() and Path(result["artifact_path"]).is_file(), "request/artifact not staged")
+        guard.require(n, review.calls == publish.calls == merge.calls == 0, "the emit arm spent a board, published or merged")
 
     @activated
     def test_cli_flags_parse_on_both_commands(self):
