@@ -164,6 +164,19 @@ def _fill(NativeLegFill, seat: Seat, text: str = "Reviewed.\nAGREE", **over):
     return NativeLegFill(**base)
 
 
+def _bound_fill(NativeLegFill, board: Board, seat: Seat, artifact_text: str, text: str = "Reviewed.\nAGREE"):
+    """A fill bound to the digests the INVOKER computes for this board and artifact: the staged
+    artifact text, the resolved review brief, the composition. The invoker validates these
+    itself (board r1 of the implementation PR), so a fixture with dummy digests is refused."""
+    digest = guard.symbol("phase_loop_runtime.advisor_board.composition", "composition_digest")
+    return _fill(
+        NativeLegFill, seat, text=text,
+        artifact_sha256=hashlib.sha256(artifact_text.encode()).hexdigest(),
+        brief_sha256=hashlib.sha256(pi._mode_instructions("review").encode()).hexdigest(),
+        composition_sha256=digest(board) if digest is not None else "c" * 64,
+    )
+
+
 def _deferred_leg(seat: Seat) -> pi.PanelLegResult:
     leg = pi.PanelLegResult(leg="claude", status="UNAVAILABLE", text="", detail="under_claude_code", seat_key=seat.seat_key)
     pi.attach_native_agent_request(leg, pi.native_agent_leg_request(leg="claude", mode="review", env=dict(CC), model=seat.model))
@@ -386,7 +399,7 @@ class TestIngestion:
             seen.append(prompt)
             return deferring_president(model, prompt)
 
-        fill = _fill(NativeLegFill, claude_seat, text=f"Reviewed carefully. {FILL_MARKER}\nAGREE")
+        fill = _bound_fill(NativeLegFill, four, claude_seat, "review me\n", text=f"Reviewed carefully. {FILL_MARKER}\nAGREE")
         err, res = None, None
         try:
             res = invoke_sanctioned_review_transport(
@@ -408,7 +421,7 @@ class TestIngestion:
             try:
                 res = invoke_sanctioned_review_transport(
                     solo, "", artifact_ref=str(artifact), repo_dir=str(tmp_path), base_env=dict(CC),
-                    native_leg_fills=[_fill(NativeLegFill, solo.seats[0])],
+                    native_leg_fills=[_bound_fill(NativeLegFill, solo, solo.seats[0], "review me\n")],
                 )
             except TypeError as exc:
                 err = exc
