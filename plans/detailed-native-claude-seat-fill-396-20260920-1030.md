@@ -1,6 +1,6 @@
 # Detailed plan: REVIEWTRUTH early slice — native claude seat under Claude Code, counted (EC-REVIEWTRUTH-14)
 
-- status: ratified (r7 — board converged: r4 gemini/codex/grok AGREE, r6 claude AGREE; maintainer ratified the early slice 2026-09-20; r7 folds two non-blocking wording residues)
+- status: ratified (r8 — r7 + one interface note from PR-1's board: the exact signatures and shapes are FROZEN by PR-1's tests under EC-REVIEWTRUTH-0; the Changes list below is descriptive and yields to them. In particular the emit arm returns the request as a Mapping — `GateResult` gains nothing, as D4 says — and `preflight_native_leg_fills` returns `None` or a typed refusal object.)
 - authority: v10 Phase 7 REVIEWTRUTH (`specs/phase-plans-v10.md`), lane plan `plans/phase-plan-v10-REVIEWTRUTH.md` (status committed). This slice executes AHEAD of the phase's recorded SCHED/HARDEN ordering gates under a maintainer waiver scoped to this slice only (recorded on Consiliency/agent-harness#396, 2026-09-20). The rest of REVIEWTRUTH stays behind its gates.
 - refs: Consiliency/agent-harness#396, #636, #906 (consumer: the train review of #914 runs 3 of 4 seats under Claude Code), #918 (this plan's PR)
 - execute: effort=high, reason=review-seat routing at the HARDEN launch boundary; a floor that gates merges; the phase's live assumption probe
@@ -39,6 +39,8 @@ Non-native hosts keep the self-PTY adapter route, byte-neutral.
 - **D6 Prose in lockstep.** `claude-advisor-board`, `claude-plan-phase`, `claude-execute-phase` (their governed-review paragraphs) and `claude-run-train` state the protocol; `codex-/gemini-/opencode-advisor-board` keep their ROUTE prose byte-identical but their DESCRIPTION of Claude Code ("no native-fill request") is corrected; `docs/advisor-board-capabilities-card.md` Claude Code row; CHANGELOG.
 
 ## Changes
+
+(Descriptive. The frozen interface is `phase-loop-runtime/tests/test_native_claude_seat_fill.py` + its guard, PR-1 — r8.)
 
 ### `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py` (SL-2, modify)
 - `native_agent_leg_request` — modify — raise for TUI-policy models only when `not _under_claude_code(env)`.
