@@ -1079,7 +1079,7 @@ def build_parser() -> argparse.ArgumentParser:
     advisor_board_sub.add_argument(
         "--native-leg", dest="native_legs", action="append", default=[], metavar="SEAT=DIR",
         help=("Supply a natively produced fill (claude=<dir-or-request.json>; the dir holds request.json + "
-              "claude.md). Preflighted against the staged artifact, brief and composition before any launch."),
+              "review.md). Preflighted against the staged artifact, brief and composition before any launch."),
     )  # ah#84
     advisor_board_sub.add_argument(
         "--agy-canary-private-board-name",
