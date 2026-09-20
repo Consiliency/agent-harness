@@ -3659,6 +3659,28 @@ def _run_train_unfenced(
                     )
                 ),
             }
+    # REVIEWTRUTH early slice (D3, train): a supplied fill that does not match the bundle the
+    # CURRENT ledger produces is refused typed BEFORE the approval short-circuit and before any
+    # review seam — an approval recorded for an earlier bundle never launders a stale fill.
+    if native_leg_fills:
+        _current_bundle = _build_train_review_bundle(roadmap, completed_nodes, topo_order)
+        # stale request — refused here, before ANY review seam is reached (never applied to
+        # new bytes, never spending a seat).
+        from .panel_invoker import content_sha256 as _content_sha256
+
+        _current = _content_sha256(_current_bundle)
+        _stale = [f for f in native_leg_fills if getattr(f, "artifact_sha256", None) != _current]
+        if _stale:
+            return {
+                "status": "review_halted",
+                "reason": "native_fill_stale_request",
+                "nodes": completed_nodes,
+                "findings": [{"code": "native_fill_stale_request", "severity": "block",
+                              "reason": "the native fill was emitted for a train bundle the current ledger no "
+                                        "longer produces; re-emit the request", "body": None}],
+                "terminal_blocker": {"human_required": False, "blocker_class": "review_gate_block",
+                                     "blocker_summary": "native fill stale: re-emit with --emit-native-request"},
+            }
     train_review_rec = p4_ledger_state.get(_TRAIN_REVIEW_NODE_ID)
     already_approved = (
         train_review_rec is not None
@@ -3669,25 +3691,6 @@ def _run_train_unfenced(
 
     if not already_approved:
         bundle_text = _build_train_review_bundle(roadmap, completed_nodes, topo_order)
-        if native_leg_fills:
-            # D3 (train): a fill emitted for a bundle the CURRENT ledger no longer produces is a
-            # stale request — refused here, before ANY review seam is reached (never applied to
-            # new bytes, never spending a seat).
-            from .panel_invoker import content_sha256 as _content_sha256
-
-            _current = _content_sha256(bundle_text)
-            _stale = [f for f in native_leg_fills if getattr(f, "artifact_sha256", None) != _current]
-            if _stale:
-                return {
-                    "status": "review_halted",
-                    "reason": "native_fill_stale_request",
-                    "nodes": completed_nodes,
-                    "findings": [{"code": "native_fill_stale_request", "severity": "block",
-                                  "reason": "the native fill was emitted for a train bundle the current ledger no "
-                                            "longer produces; re-emit the request", "body": None}],
-                    "terminal_blocker": {"human_required": False, "blocker_class": "review_gate_block",
-                                         "blocker_summary": "native fill stale: re-emit with --emit-native-request"},
-                }
         if emit_native_request:
             # D3 emit arm: stage the exact bundle and the fill request; spend nothing.
             emit_fn = _emit_native_fill_request_fn if _emit_native_fill_request_fn is not None else _default_emit_native_fill_request
