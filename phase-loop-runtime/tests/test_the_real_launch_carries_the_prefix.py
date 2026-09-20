@@ -39,13 +39,24 @@ from phase_loop_runtime import panel_invoker
 
 
 def _marker_prefix(marker: Path) -> tuple[str, ...]:
-    """A prefix that RUNS: it writes `marker`, then execs whatever follows it.
+    """A prefix that RUNS: it writes `marker` with its own PID, then execs what follows.
 
     Chosen over a recording shim deliberately. Anything that merely records an argv is
     another proxy -- it proves what was passed to a function, not what a kernel executed.
     The marker exists only if this wrapper actually ran in front of the real command.
+
+    The PID binds the two observations into one process: `exec` keeps the PID, so a payload
+    that reports the same PID ran IN the prefixed process. A launch that prefixed some
+    auxiliary command and started the provider separately would produce a marker and a
+    payload with different PIDs (board PR #904 round 1, codex).
     """
-    return ("/bin/sh", "-c", f'echo FIRED > {marker}; exec "$@"', "--")
+    return ("/bin/sh", "-c", f'echo FIRED $$ > {marker}; exec "$@"', "--")
+
+
+def _marker_pid(marker: Path) -> str:
+    fired, pid = marker.read_text(encoding="utf-8").split()
+    assert fired == "FIRED"
+    return pid
 
 
 class TestTheCLILegLaunch:
@@ -54,7 +65,7 @@ class TestTheCLILegLaunch:
         token = panel_invoker._EGRESS_LAUNCH_PREFIX.set(_marker_prefix(marker))
         try:
             run = panel_invoker._run_leg_with_liveness(
-                ["/bin/echo", "provider-output"],
+                ["/bin/sh", "-c", "echo provider-output pid=$$"],
                 cwd=tmp_path, env=dict(os.environ), deadline_s=60.0,
             )
         finally:
@@ -64,12 +75,15 @@ class TestTheCLILegLaunch:
             "the egress prefix did NOT execute in front of the provider; the launch "
             "reached the kernel without it, whatever the source says"
         )
-        assert marker.read_text(encoding="utf-8").strip() == "FIRED"
         assert run.returncode == 0
         stdout = run.stdout if isinstance(run.stdout, str) else run.stdout.decode()
         assert "provider-output" in stdout, (
             "the prefix ran but the real command did not; a wrapper that swallows its "
             "payload would pass the marker check while breaking every seat"
+        )
+        assert f"pid={_marker_pid(marker)}" in stdout, (
+            "the prefix and the provider ran in DIFFERENT processes: something prefixed "
+            "an auxiliary command and launched the provider separately"
         )
 
     def test_no_prefix_means_no_marker(self, tmp_path):
@@ -101,6 +115,7 @@ class TestTheHelpersThemselves:
         finally:
             panel_invoker._EGRESS_LAUNCH_PREFIX.reset(token)
         assert marker.exists(), "launch_provider did not execute the prefix"
+        assert _marker_pid(marker).isdigit()
         assert out.strip() == "hi"
 
     def test_run_provider_executes_the_prefix(self, tmp_path):
@@ -114,21 +129,157 @@ class TestTheHelpersThemselves:
         finally:
             panel_invoker._EGRESS_LAUNCH_PREFIX.reset(token)
         assert marker.exists(), "run_provider did not execute the prefix"
+        assert _marker_pid(marker).isdigit()
         assert done.stdout.strip() == "hi"
 
 
-def test_the_tui_seam_is_not_covered_here_and_says_so():
-    """An honest gap rather than a silent one.
+class TestTheTUILaunch:
+    """The SECOND seam: the Claude TUI leg launches under a PTY via `_run_claude_tui_session`.
 
-    codex asked for the TUI route to be included. It launches under a PTY with a real
-    provider binary, so driving it in a unit test would need a fake `claude` on PATH and a
-    pty pair. It is NOT covered by the marker probe above, and pretending otherwise is the
-    failure this file exists to end. Tracked as the remaining gap in agent-harness#890.
+    Until agent-harness#890 landed this seam was covered only by a SOURCE check that asserted
+    the string `launch_provider(` appeared in the function. That is the proxy pattern this
+    file exists to end. The provider here is a shell script that writes a terminal verdict
+    to the leg's output file and exits, so the session returns on the normal file-output
+    path; the prefix is the same marker wrapper the CLI-leg proof uses.
+    """
+
+    @staticmethod
+    def _provider(output_file: Path) -> list[str]:
+        return [
+            "/bin/sh", "-c",
+            f"printf 'Reviewed. pid=%s\\n\\nAGREE\\n' $$ > {output_file}; exit 0",
+        ]
+
+    def test_the_prefix_actually_executes_in_front_of_the_tui_provider(self, tmp_path):
+        marker = tmp_path / "TUI_PREFIX_RAN"
+        output_file = tmp_path / "panel-claude.txt"
+        token = panel_invoker._EGRESS_LAUNCH_PREFIX.set(_marker_prefix(marker))
+        try:
+            rc, text, status, tail = panel_invoker._run_claude_tui_session(
+                command=self._provider(output_file),
+                cwd=tmp_path,
+                prompt="review this",
+                output_file=output_file,
+                timeout_s=60,
+                env={"PATH": "/usr/bin:/bin"},
+                backstop_s=60,
+            )
+        finally:
+            panel_invoker._EGRESS_LAUNCH_PREFIX.reset(token)
+
+        assert marker.exists(), (
+            "the egress prefix did NOT execute in front of the TUI provider; the PTY "
+            f"launch reached the kernel without it (status={status!r} tail={tail!r})"
+        )
+        assert status == "claude_tui_file_output", (status, tail)
+        assert "AGREE" in text, (
+            "the prefix ran but the real provider did not write its verdict; a wrapper "
+            "that swallows its payload would pass the marker check while breaking the seat"
+        )
+        assert f"pid={_marker_pid(marker)}" in text, (
+            "the prefix and the TUI provider ran in DIFFERENT processes"
+        )
+
+    def test_no_prefix_means_no_marker_on_the_tui_seam(self, tmp_path):
+        """The falsifier for this seam."""
+        marker = tmp_path / "TUI_PREFIX_RAN"
+        output_file = tmp_path / "panel-claude.txt"
+        assert panel_invoker._EGRESS_LAUNCH_PREFIX.get() == ()
+        _rc, _text, status, _tail = panel_invoker._run_claude_tui_session(
+            command=self._provider(output_file),
+            cwd=tmp_path,
+            prompt="review this",
+            output_file=output_file,
+            timeout_s=60,
+            env={"PATH": "/usr/bin:/bin"},
+            backstop_s=60,
+        )
+        assert not marker.exists()
+        assert status == "claude_tui_file_output"
+
+
+class TestTheAgentViewLaunch:
+    """The THIRD seam: `_exec_claude_agent_view_attempt` launches the provider through
+    `run_provider`. It has no production caller today; it is proven anyway, because an
+    unwired seam that acquires a caller later is a silent hole.
+
+    The fake provider prints a payload and exits non-zero, so the attempt returns on the
+    launch-failure branch BEFORE the session-polling loop (which is not a launch seam and
+    would otherwise need a fake `claude agents` CLI). The marker proves the prefix executed
+    in front of the real launch; the payload in the returned log proves the launch itself
+    ran behind the prefix.
+    """
+
+    class _Adapter:
+        def launch_command(self, _prompt, **_kwargs):
+            return ["/bin/sh", "-c", "echo agent-view-payload pid=$$; exit 3"]
+
+    def test_the_prefix_actually_executes_in_front_of_the_agent_view_launch(self, tmp_path):
+        marker = tmp_path / "AGENT_VIEW_PREFIX_RAN"
+        token = panel_invoker._EGRESS_LAUNCH_PREFIX.set(_marker_prefix(marker))
+        try:
+            status, log = panel_invoker._exec_claude_agent_view_attempt(
+                self._Adapter(), review_dir=tmp_path, timeout_s=60, prompt="p",
+                env={"PATH": "/usr/bin:/bin"},
+            )
+        finally:
+            panel_invoker._EGRESS_LAUNCH_PREFIX.reset(token)
+
+        assert marker.exists(), (
+            "the egress prefix did NOT execute in front of the agent-view launch "
+            f"(status={status!r} log={log!r})"
+        )
+        assert "agent-view-payload" in log, (
+            "the prefix ran but the real launch did not; a wrapper that swallows its "
+            "payload would pass the marker check"
+        )
+        assert f"pid={_marker_pid(marker)}" in log, (
+            "the prefix and the agent-view launch ran in DIFFERENT processes"
+        )
+        assert status != "OK"
+
+    def test_no_prefix_means_no_marker_on_the_agent_view_seam(self, tmp_path):
+        marker = tmp_path / "AGENT_VIEW_PREFIX_RAN"
+        assert panel_invoker._EGRESS_LAUNCH_PREFIX.get() == ()
+        status, log = panel_invoker._exec_claude_agent_view_attempt(
+            self._Adapter(), review_dir=tmp_path, timeout_s=60, prompt="p",
+            env={"PATH": "/usr/bin:/bin"},
+        )
+        assert not marker.exists()
+        assert "agent-view-payload" in log
+
+
+def test_every_launch_site_has_a_marker_proof_above():
+    """A TRIPWIRE, not a proof: the count of conventionally spelled launch-interface call
+    sites in `panel_invoker` must equal the number of seams the marker proofs above drive.
+
+    It is spelling-sensitive by construction. `launch = launch_provider; launch(cmd)`, a
+    call with a space before the paren, a call placed in another module, or a call site
+    that appears in a docstring all evade or inflate it, and it associates no site with any
+    function -- it is a cardinality, nothing more. It does count every ordinary binding
+    form (`return`, assignment to any name, `with`, `yield`, a bare statement): the first
+    version admitted only two spellings, and the claude seat added a fourth site as
+    `handle = launch_provider(...)` and watched the count stay at three (board PR #904 r1). It
+    exists so that the ORDINARY way of adding a fourth seam trips a test that says "add a
+    marker proof", and for no stronger reason. It does not try to prove "nothing else
+    spawns" -- the AST walker that tried (`test_launch_seam_coverage.py`, agent-harness#890
+    rounds 7-11) was a Python-only self-scanner the board defeated five times on spelling,
+    and it was removed in favour of observing the launches that exist. A raw `subprocess`
+    launch of a provider is a review finding, not a test finding.
     """
     import inspect
+    import re
 
-    source = inspect.getsource(panel_invoker._run_claude_tui_session)
-    assert "launch_provider(" in source, (
-        "the TUI seam no longer routes through the interface, and nothing here would "
-        "have caught that -- this assertion is a SOURCE check and is labelled as one"
+    source = inspect.getsource(panel_invoker)
+    # Any binding form (`return x(`, `p = x(`, `with x(`, `yield x(`, a bare call) counts;
+    # only the two `def` lines are excluded. Not `\bname(`: `\b` would also match
+    # `other.launch_provider(`, which is a different attribute, hence the lookbehind.
+    sites = [
+        m for m in re.finditer(r"(?<![\w.])(?:launch_provider|run_provider)\(", source)
+        if not source[source.rfind("\n", 0, m.start()) + 1 : m.start()].lstrip().startswith("def ")
+    ]
+    proven = {"_run_leg_with_liveness", "_run_claude_tui_session", "_exec_claude_agent_view_attempt"}
+    assert len(sites) == len(proven), (
+        f"{len(sites)} launch-interface call sites in panel_invoker but marker proofs exist "
+        f"for {sorted(proven)}; add a marker proof for the new seam in this file"
     )
