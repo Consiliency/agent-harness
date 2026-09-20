@@ -8,8 +8,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Advisor board: the claude seat fills NATIVELY under Claude Code and is counted once bound (REVIEWTRUTH early slice, EC-REVIEWTRUTH-14; agent-harness#396, #636)
 
-- **Routing.** Under Claude Code every claude seat — TUI-policy models (Fable/Opus) included —
-  defers as `UNAVAILABLE/under_claude_code` AND carries a `NativeAgentLegRequest`, on both
+- **Routing.** Under Claude Code every claude seat that is not backing-refused — TUI-policy models
+  (Fable/Opus) included; `tui_backing_required` stays a refusal — defers as `UNAVAILABLE/under_claude_code` AND carries a `NativeAgentLegRequest`, on both
   `invoke_board` deferral paths. The driving session fills it with a native sub-agent under the
   read-only review posture in force; the TUI adapter remains the route only on non-native hosts,
   where `native_agent_leg_request` still refuses TUI-policy models. No `claude -p`, SDK, API-key or

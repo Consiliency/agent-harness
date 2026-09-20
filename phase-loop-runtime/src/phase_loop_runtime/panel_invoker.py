@@ -7439,6 +7439,28 @@ def invoke_board(
             for seat in board.seats
         )))
 
+    def _invoker_preflight_fills() -> PanelResult | None:
+        # REVIEWTRUTH early slice (D2; #921 board r1, codex): the INVOKER validates a supplied
+        # fill's binding — staged artifact, resolved brief, composed board, deferrable seat —
+        # BEFORE any launch, so a direct caller cannot count a fill the gate or CLI would refuse.
+        # In review mode this runs AFTER the HARDEN factory lookup + revalidation (the sanctioned
+        # control requires exactly one lookup before any exit) and before the first launch.
+        if not native_leg_fills:
+            return None
+        from .advisor_board.composition import composition_digest as _composition_digest
+        try:
+            _brief_text = _resolve_brief(mode, brief_ref)
+        except (OSError, UnicodeError, ValueError) as exc:
+            return review_refusal(f"native_fill_brief_unresolvable:{exc}")
+        _refusal = preflight_native_leg_fills(
+            board, tuple(native_leg_fills),
+            artifact_sha256=content_sha256(artifact), brief_sha256=content_sha256(_brief_text),
+            composition_sha256=_composition_digest(board), env=base_env,
+        )
+        if _refusal is not None:
+            return review_refusal(f"native_fill_refused:{_refusal.reason}:{_refusal.seat_key}")
+        return None
+
     governed_review_request = (
         review_authorization is not None or canonical_repo_authority is not None
     )
@@ -7598,6 +7620,9 @@ def invoke_board(
                     )
                 except ValueError as exc:
                     return review_refusal(str(exc))
+            _fill_refusal = _invoker_preflight_fills()
+            if _fill_refusal is not None:
+                return review_exit(_fill_refusal)
             # Native-host deferral is a typed data result, never a path to host
             # execution. It is reached only after the same factory/revalidation gate.
             if native_host_deferral_only and spawn is None:

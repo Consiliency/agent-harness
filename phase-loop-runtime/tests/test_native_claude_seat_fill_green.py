@@ -112,3 +112,42 @@ def test_negative_flag_validation_on_both_commands(tmp_path):
         with unittest.mock.patch("sys.stderr"):
             rc = cli_mod.main(["advisor-board", str(artifact), "--native-leg", "claude=/nowhere/at/all"])
         assert rc == 2
+
+
+def test_direct_invoker_refuses_a_fill_whose_binding_does_not_match(tmp_path):
+    """#921 board r1 (codex): a direct invoke_board caller cannot count a fill the gate/CLI would
+    have refused — the invoker validates the binding itself, typed, before any launch."""
+    artifact = tmp_path / "bundle.md"
+    artifact.write_text("review me\n")
+    board = _mixed_board()
+    mismatched = _fill(pi.NativeLegFill, board.seats[0], artifact_sha256="0" * 64)
+    launched = []
+
+    def spawn(leg, art, **kw):
+        launched.append(leg)
+        return _typed_deferral_spawn(leg, art, **kw)
+
+    result = invoke_sanctioned_review_transport(
+        board, "", spawn=spawn, artifact_ref=str(artifact), repo_dir=str(tmp_path), base_env=dict(CC),
+        native_leg_fills=[mismatched],
+    )
+    assert not result.usable_legs and launched == []
+    assert all(leg.status == "UNAVAILABLE" and "native_fill_refused:native_fill_digest_mismatch" in (leg.detail or "") for leg in result.legs)
+
+
+def test_gate_preflight_refuses_before_minting(tmp_path, monkeypatch):
+    """Deleting the gate's preflight block must not survive: a mismatched fill is refused before
+    the isolation authorization is minted (the invoker's own check would only fire after)."""
+    from phase_loop_runtime.advisor_board import backing as backing_mod
+    from test_train_review_authorization import _canonical_repo
+    repo = _canonical_repo(tmp_path)
+    monkeypatch.setenv("CLAUDECODE", "1")
+    mint = unittest.mock.Mock(side_effect=AssertionError("must not mint"))
+    monkeypatch.setattr(backing_mod, "prepare_review_isolation_authorization", mint)
+    board = _mixed_board()
+    gate = gr.governed_board_gate(
+        artifact="bundle\n", author_executor="train-coordinator", run_mode="governed", canonical_repo_authority=repo,
+        compose=lambda: board, invoke=unittest.mock.Mock(side_effect=AssertionError("must not invoke")),
+        native_leg_fills=[_fill(pi.NativeLegFill, board.seats[0], artifact_sha256="0" * 64)],
+    )
+    assert not gate.promoted and gate.reason == "native_fill_refused" and mint.call_count == 0
