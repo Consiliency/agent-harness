@@ -24,6 +24,13 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
   head, is refused (`review_only_requires_admitted_prs`) before any board or publication; an admitted
   head that no longer matches the live PR head halts as `review_halted` / `stale_head`.
   `--review-only` without `--governed` is a usage error.
+- Under Harness Code the train review's <harness> seat is filled NATIVELY by this session (REVIEWTRUTH
+  early slice, EC-REVIEWTRUTH-14): run `--governed --review-only --emit-native-request` first (it
+  stages the bundle and `request.json` under `<ledger-dir>/native-fill/<request_id>/` and spends
+  nothing), spawn a native sub-agent with `instructions.md` as its brief over `artifact.md`, write its
+  review (verdict on the LAST non-empty line) to `review.md` beside them, then re-run with
+  `--governed --review-only --native-leg claude=<that dir>`. A moved train refuses the fill as
+  `native_fill_stale_request` before any seat is spent; re-emit. The fill counts only once bound.
 - The train-level review runs through the broker-authorized review board (the same
   authorization sequence as `advisor-board`); a held review names each reviewer leg's
   refusal, never only `no_usable_review`.

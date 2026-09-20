@@ -19,6 +19,7 @@ stamping a same-vendor self-review as a pass.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Callable, Iterable, Mapping, Sequence
 
@@ -325,8 +326,20 @@ def governed_board_gate(
     brief_ref: str | None = None,
     compose: Callable[[], object] | None = None,
     invoke: Callable[..., PanelResult] | None = None,
-) -> GateResult:
+    native_leg_fills: Sequence[object] | None = None,
+    emit_native_request: bool = False,
+    native_fill_dir: "Path | str | None" = None,
+) -> "GateResult | dict[str, object]":
     """A governed gate backed by the broker-AUTHORIZED review board (agent-harness#906).
+
+    REVIEWTRUTH early slice (EC-REVIEWTRUTH-14, plan agent-harness#918): ``emit_native_request``
+    performs the same composition, author exclusion, floor and staging the invoke arm will
+    redo, writes ``request.json`` / ``artifact.md`` / ``instructions.md`` under
+    ``native_fill_dir`` (or a caller-owned scratch) and returns WITHOUT minting an
+    authorization or invoking any seat. ``native_leg_fills`` are preflighted against the
+    staged artifact, the resolved brief and the composed board BEFORE any launch (typed
+    refusal, zero launches) and then handed to ``invoke_board`` to be bound onto the deferred
+    seat after every seat has returned and before the president rules.
 
     Same ``GateResult`` contract and same keyword surface as ``governed_planning_gate``
     (``run_governed_premerge_loop`` forwards ``available_legs``/``spawn``/``repo_dir``/
@@ -413,6 +426,36 @@ def governed_board_gate(
     if dropped:
         board = _replace(board, seats=seats)
     invoke_fn = invoke if invoke is not None else _pi.invoke_board
+    from .advisor_board.composition import composition_digest
+
+    if emit_native_request:
+        # Emit arm: no authorization, no seat, no digest binding beyond the read-back bytes.
+        try:
+            brief_text = _pi._resolve_brief("review", brief_ref)
+            out_root = Path(native_fill_dir) if native_fill_dir is not None else Path(tempfile.mkdtemp(prefix="native-fill-"))
+            payload = _pi.native_fill_request_payload(board, artifact, brief_ref=brief_ref)
+            out_dir = out_root / "native-fill" / str(payload["request_id"])
+            out_dir.mkdir(parents=True, exist_ok=True)
+            artifact_path = out_dir / _pi.NATIVE_FILL_ARTIFACT_FILE
+            artifact_path.write_text(artifact, encoding="utf-8")
+            # Digest the READ-BACK text (universal newlines), exactly as the invoke arm stages it.
+            payload["artifact_sha256"] = _pi.content_sha256(artifact_path.read_text(encoding="utf-8"))
+            instructions_path = out_dir / _pi.NATIVE_FILL_INSTRUCTIONS_FILE
+            instructions_path.write_text(brief_text, encoding="utf-8")
+            payload["artifact_path"] = str(artifact_path)
+            payload["instructions_path"] = str(instructions_path)
+            request_path = out_dir / _pi.NATIVE_FILL_REQUEST_FILE
+            request_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            payload["request_path"] = str(request_path)
+        except (OSError, UnicodeError, ValueError) as exc:
+            return _block_result(
+                "native_fill_request_unavailable",
+                "governed_board_native_fill_request_unavailable",
+                f"native fill request could not be emitted: {exc}; holding (non-human)",
+            )
+        # The emit arm's result is the request envelope itself (a Mapping); ``GateResult``
+        # gains nothing (plan r8). Callers branch on ``emit_native_request``.
+        return payload
     # Board r1 (agent-harness#914, codex): brief resolution, scratch allocation and the
     # digest binding are PREPARATION and can fail like everything after them — an
     # unreadable brief, a full tmpdir, a refused digest. They run inside the same
@@ -434,6 +477,19 @@ def governed_board_gate(
         # in-memory string would diverge on any CR and fail closed for no reason (board
         # r1, agent-harness#914, claude). This is the "exact staged bytes" promise.
         staged_artifact = artifact_path.read_text(encoding="utf-8")
+        if native_leg_fills:
+            # D2 refusal timing: preflight BEFORE minting or launching anything.
+            refusal = _pi.preflight_native_leg_fills(
+                board, tuple(native_leg_fills),
+                artifact_sha256=_pi.content_sha256(staged_artifact),
+                brief_sha256=_pi.content_sha256(brief_text),
+                composition_sha256=composition_digest(board),
+            )
+            if refusal is not None:
+                return _block_result(
+                    "native_fill_refused", refusal.reason,
+                    f"native fill refused before any reviewer launch: {refusal.detail} (seat {refusal.seat_key}); holding (non-human)",
+                )
         # Dynamic lookup on purpose: the sanctioned hermetic seam replaces this factory
         # and requires the invoker's own lookup to return the identical object.
         authorization = _backing.prepare_review_isolation_authorization(
@@ -453,6 +509,8 @@ def governed_board_gate(
             invoke_kwargs["brief_ref"] = brief_ref
         if max_concurrency is not None:
             invoke_kwargs["max_concurrency"] = max_concurrency
+        if native_leg_fills:
+            invoke_kwargs["native_leg_fills"] = tuple(native_leg_fills)
         panel = invoke_fn(board, staged_artifact, **invoke_kwargs)
     except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as exc:
         return _block_result(

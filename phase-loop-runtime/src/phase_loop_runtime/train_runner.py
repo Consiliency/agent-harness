@@ -2319,7 +2319,11 @@ def _live_pr_merged_sha(
 
 
 def _default_train_review(
-    artifact: str, run_mode: str, *, canonical_repo_authority: "Path | str | None" = None
+    artifact: str,
+    run_mode: str,
+    *,
+    canonical_repo_authority: "Path | str | None" = None,
+    native_leg_fills: "Sequence[object] | None" = None,
 ) -> "LoopResult":
     """Train-level governed review: one-round bounded panel review.
 
@@ -2357,6 +2361,7 @@ def _default_train_review(
     # sequence (composition authority, compose, isolation authorization over the exact
     # staged bytes, `invoke_board`) and keeps the same GateResult contract.
     return run_governed_premerge_loop(
+        native_leg_fills=tuple(native_leg_fills) if native_leg_fills else None,
         artifact=artifact,
         author_executor="train-coordinator",
         run_mode=run_mode,
@@ -2366,6 +2371,27 @@ def _default_train_review(
             governed_board_gate, canonical_repo_authority=canonical_repo_authority
         ),
     )
+
+
+def _default_emit_native_fill_request(
+    artifact: str, *, canonical_repo_authority: "Path | str | None", native_fill_dir: "Path | str"
+) -> dict:
+    """The train's emit arm (D3): stage the bundle + request under ``<ledger-dir>/native-fill/``
+    without minting an authorization or spending a seat."""
+    from .governed_review import governed_board_gate
+
+    gate = governed_board_gate(
+        artifact=artifact, author_executor="train-coordinator", run_mode="governed",
+        canonical_repo_authority=canonical_repo_authority, emit_native_request=True,
+        native_fill_dir=native_fill_dir,
+    )
+    if not isinstance(gate, dict):
+        return {"status": "review_halted", "reason": gate.reason or "native_fill_request_unavailable",
+                "findings": [{"code": f.code, "reason": f.reason, "severity": f.severity} for f in gate.findings]}
+    payload = gate
+    return {"status": "native_fill_requested", "request_path": payload["request_path"],
+            "artifact_path": payload["artifact_path"], "instructions_path": payload["instructions_path"],
+            "seat_key": payload["seat_key"], "model": payload["model"], "request_id": payload["request_id"]}
 
 
 def _non_human_train_blocker(summary: str) -> Dict[str, object]:
@@ -2528,6 +2554,9 @@ def _run_train_unfenced(
     # agent-harness#906: review the ADMITTED heads and stop before any merge. Requires
     # governed mode with the merge phase enabled; never enters the publication step.
     review_only: bool = False,
+    emit_native_request: bool = False,
+    native_leg_fills: "Sequence[object] | None" = None,
+    _emit_native_fill_request_fn: Optional[Callable] = None,
     # P4 seams — unused when _merge_phase_enabled is False.
     _merge_pr_fn: Optional[Callable] = None,       # (workspace, branch, base, head_sha) → merged_sha
     _reverify_fn: Optional[Callable] = None,         # (workspace, roadmap_path, run_mode) → bool
@@ -3511,6 +3540,7 @@ def _run_train_unfenced(
             canonical_repo_authority=_train_canonical_repo_authority(
                 topo_order, resolve_workspace
             ),
+            native_leg_fills=tuple(native_leg_fills) if native_leg_fills else None,
         )
     pr_merged_sha_fn = (
         _pr_merged_sha_fn if _pr_merged_sha_fn is not None else _live_pr_merged_sha
@@ -3629,6 +3659,30 @@ def _run_train_unfenced(
                     )
                 ),
             }
+    # REVIEWTRUTH early slice (D3, train): a supplied fill that does not match the bundle the
+    # CURRENT ledger produces is refused typed BEFORE the approval short-circuit and before any
+    # review seam — an approval recorded for an earlier bundle never launders a stale fill.
+    if native_leg_fills:
+        _current_bundle = _build_train_review_bundle(roadmap, completed_nodes, topo_order)
+        # stale request — refused here, before ANY review seam is reached (never applied to
+        # new bytes, never spending a seat).
+        from .panel_invoker import content_sha256 as _content_sha256
+
+        # Digest the bundle as it would be READ BACK from disk (universal newlines), exactly as the
+        # emit arm digested the staged artifact — a CR in a roadmap title must not false-refuse.
+        _current = _content_sha256(_current_bundle.replace("\r\n", "\n").replace("\r", "\n"))
+        _stale = [f for f in native_leg_fills if getattr(f, "artifact_sha256", None) != _current]
+        if _stale:
+            return {
+                "status": "review_halted",
+                "reason": "native_fill_stale_request",
+                "nodes": completed_nodes,
+                "findings": [{"code": "native_fill_stale_request", "severity": "block",
+                              "reason": "the native fill was emitted for a train bundle the current ledger no "
+                                        "longer produces; re-emit the request", "body": None}],
+                "terminal_blocker": {"human_required": False, "blocker_class": "review_gate_block",
+                                     "blocker_summary": "native fill stale: re-emit with --emit-native-request"},
+            }
     train_review_rec = p4_ledger_state.get(_TRAIN_REVIEW_NODE_ID)
     already_approved = (
         train_review_rec is not None
@@ -3639,6 +3693,14 @@ def _run_train_unfenced(
 
     if not already_approved:
         bundle_text = _build_train_review_bundle(roadmap, completed_nodes, topo_order)
+        if emit_native_request:
+            # D3 emit arm: stage the exact bundle and the fill request; spend nothing.
+            emit_fn = _emit_native_fill_request_fn if _emit_native_fill_request_fn is not None else _default_emit_native_fill_request
+            return emit_fn(
+                bundle_text,
+                canonical_repo_authority=_train_canonical_repo_authority(topo_order, resolve_workspace),
+                native_fill_dir=ledger_path.parent,
+            )
         review_result = train_review_fn(bundle_text, run_mode)
 
         if not review_result.mergeable:

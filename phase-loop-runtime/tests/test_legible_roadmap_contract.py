@@ -1915,6 +1915,18 @@ def test_assumption_probe_mutation_and_positive_control(probe, tmp_path, monkeyp
     if _canonical_repo_ready():
         monkeypatch.undo()
         live = audit(REPO_ROOT, probe_ids=(probe["id"],))
+        _finding = getattr(live[probe["id"]], "finding", None)
+        if (
+            probe["kind"] == "reviewtruth_fable_transition"
+            and _finding is not None
+            and "observation incomplete" in str(_finding)
+        ):
+            # REVIEWTRUTH early slice (D5): after the routing flip the claude seat defers to a
+            # driving Claude Code session, so a non-native host — or a Claude Code host without
+            # a supplied fill — yields a TYPED incomplete observation. That is neither a pass
+            # nor a live contradiction of the contract: the live arm is an operator instrument
+            # run from Claude Code with a fill. Skip (typed), never pass.
+            pytest.skip(f"{probe['id']}: live observation incomplete on this host: {_finding}")
         assert live[probe["id"]].ok, (
             f"{probe['id']} positive control must pass against live state"
         )

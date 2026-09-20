@@ -297,3 +297,15 @@ __all__ = [
     "DEFAULT_TARGET_SEATS",
     "FLOOR_SEATS",
 ]
+
+
+def composition_digest(board: "Board") -> str:
+    """SHA-256 over the sorted ``seat_key``s of a composed board (REVIEWTRUTH early slice, D3).
+
+    Order-independent and content-only: it binds a native fill to the exact set of seats the
+    request was emitted for, so a peer seat lost or backfilled between the emit and invoke
+    commands is a typed refusal (``native_fill_composition_drift``), never a silent 1-of-3.
+    """
+    import hashlib
+
+    return hashlib.sha256("\n".join(sorted(seat.seat_key for seat in board.seats)).encode("utf-8")).hexdigest()

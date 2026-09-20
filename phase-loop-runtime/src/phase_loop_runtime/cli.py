@@ -887,6 +887,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     run_train_sub.add_argument(
+        "--emit-native-request", dest="emit_native_request", action="store_true", default=False,
+        help=("With --governed --review-only: stage the train bundle and the claude seat's native-fill "
+              "request under <ledger-dir>/native-fill/ and stop before any board (spends nothing)."),
+    )
+    run_train_sub.add_argument(
+        "--native-leg", dest="native_legs", action="append", default=[], metavar="SEAT=DIR",
+        help="With --governed --review-only: supply the natively produced fill (claude=<dir-or-request.json>).",
+    )
+    run_train_sub.add_argument(
         "--review-only",
         dest="review_only",
         action="store_true",
@@ -1055,7 +1064,23 @@ def build_parser() -> argparse.ArgumentParser:
         "artifact", metavar="artifact",
         help="Path to the review material staged into the board bundle.",
     )
-    advisor_board_sub.add_argument("--json", action="store_true", help="Emit the board verdicts as JSON.", default=argparse.SUPPRESS)  # ah#84
+    advisor_board_sub.add_argument("--json", action="store_true", help="Emit the board verdicts as JSON.", default=argparse.SUPPRESS)
+    # REVIEWTRUTH early slice (EC-REVIEWTRUTH-14): the native-fill protocol under Claude Code.
+    advisor_board_sub.add_argument(
+        "--emit-native-request", dest="emit_native_request", action="store_true", default=False,
+        help=("Compose and stage the board, write native-fill/<request_id>/{request.json,artifact.md,"
+              "instructions.md} for the claude seat the driving Claude Code session fills natively, and "
+              "return WITHOUT spending any seat."),
+    )
+    advisor_board_sub.add_argument(
+        "--native-fill-dir", dest="native_fill_dir", default=None,
+        help="Directory under which --emit-native-request writes native-fill/ (default: next to the artifact).",
+    )
+    advisor_board_sub.add_argument(
+        "--native-leg", dest="native_legs", action="append", default=[], metavar="SEAT=DIR",
+        help=("Supply a natively produced fill (claude=<dir-or-request.json>; the dir holds request.json + "
+              "review.md). Preflighted against the staged artifact, brief and composition before any launch."),
+    )  # ah#84
     advisor_board_sub.add_argument(
         "--agy-canary-private-board-name",
         help="Capture-only basename for the full board JSON inside the private evidence root.",
@@ -1899,6 +1924,61 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    # REVIEWTRUTH early slice (EC-REVIEWTRUTH-14): the emit arm — stage the request for the
+    # claude seat the driving Claude Code session fills natively; spend nothing.
+    if bool(getattr(args, "emit_native_request", False)):
+        from .panel_invoker import (
+            NATIVE_FILL_ARTIFACT_FILE, NATIVE_FILL_INSTRUCTIONS_FILE, NATIVE_FILL_REQUEST_FILE,
+            content_sha256, native_fill_request_payload,
+        )
+        try:
+            artifact_text = artifact_path.read_text(encoding="utf-8")
+            payload = native_fill_request_payload(board, artifact_text)
+            root = Path(getattr(args, "native_fill_dir", None) or artifact_path.resolve().parent)
+            out_dir = root / "native-fill" / str(payload["request_id"])
+            out_dir.mkdir(parents=True, exist_ok=True)
+            staged = out_dir / NATIVE_FILL_ARTIFACT_FILE
+            staged.write_text(artifact_text, encoding="utf-8")
+            payload["artifact_sha256"] = content_sha256(staged.read_text(encoding="utf-8"))
+            instructions = out_dir / NATIVE_FILL_INSTRUCTIONS_FILE
+            instructions.write_text(str(payload["instructions"]), encoding="utf-8")
+            payload["artifact_path"] = str(staged)
+            payload["instructions_path"] = str(instructions)
+            request = out_dir / NATIVE_FILL_REQUEST_FILE
+            request.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            payload["request_path"] = str(request)
+        except (OSError, UnicodeError, ValueError) as exc:
+            print(f"advisor-board: native fill request could not be emitted: {exc}", file=sys.stderr)
+            return 2
+        record = {"status": "native_fill_requested", "request_path": payload["request_path"],
+                  "artifact_path": payload["artifact_path"], "instructions_path": payload["instructions_path"],
+                  "seat_key": payload["seat_key"], "model": payload["model"], "request_id": payload["request_id"],
+                  "composition": payload["composition"]}
+        if bool(getattr(args, "json", False)):
+            print(json.dumps(record, indent=2, sort_keys=True))
+        else:
+            print(f"advisor-board: native fill requested for seat {record['seat_key']} — write the review to "
+                  f"{Path(record['request_path']).parent / 'review.md'} and re-run with --native-leg claude={Path(record['request_path']).parent}")
+        return 0
+    native_leg_fills: tuple = ()
+    native_leg_specs = list(getattr(args, "native_legs", []) or [])
+    if native_leg_specs:
+        from .advisor_board.composition import composition_digest
+        from .panel_invoker import content_sha256, load_native_leg_fills, preflight_native_leg_fills
+        try:
+            native_leg_fills = tuple(load_native_leg_fills(spec) for spec in native_leg_specs)
+            staged_text = artifact_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeError, ValueError) as exc:
+            print(f"advisor-board: --native-leg: {exc}", file=sys.stderr)
+            return 2
+        refusal = preflight_native_leg_fills(
+            board, native_leg_fills, artifact_sha256=content_sha256(staged_text),
+            brief_sha256=content_sha256(_mode_instructions("review")), composition_sha256=composition_digest(board),
+        )
+        if refusal is not None:
+            # Typed, before any reviewer launch.
+            print(f"advisor-board: native fill refused [{refusal.reason}]: {refusal.detail} (seat {refusal.seat_key})", file=sys.stderr)
+            return 2
     if capture is None:
         instruction_token = set_review_instruction_digest(
             _mode_instructions("review")
@@ -1925,6 +2005,7 @@ def _advisor_board_command(*, args: argparse.Namespace) -> int:
             invoke_kwargs: dict[str, object] = {
                 "artifact_ref": str(artifact_path.resolve()),
                 "repo_dir": scratch,
+                **({"native_leg_fills": native_leg_fills} if native_leg_fills else {}),
                 "agy_canary_capture": capture,
             }
             if review_authorization is not None:
@@ -4247,6 +4328,19 @@ def _run_train_command(*, parser: argparse.ArgumentParser, args: argparse.Namesp
     if review_only and run_mode != "governed":
         parser.error("--review-only requires --governed")
         return 1  # unreachable
+    emit_native_request = bool(getattr(args, "emit_native_request", False))
+    native_leg_specs = list(getattr(args, "native_legs", []) or [])
+    if (emit_native_request or native_leg_specs) and not review_only:
+        parser.error("--emit-native-request / --native-leg require --governed --review-only")
+        return 1  # unreachable
+    native_leg_fills = None
+    if native_leg_specs:
+        from .panel_invoker import load_native_leg_fills as _load_fill
+        try:
+            native_leg_fills = tuple(_load_fill(spec) for spec in native_leg_specs)
+        except (OSError, ValueError) as exc:
+            parser.error(f"--native-leg: {exc}")
+            return 1  # unreachable
 
     # Workspace resolution precedence (highest first):
     #   1. --workspace <repo>=<path> CLI override (arbitrary absolute paths)
@@ -4353,6 +4447,8 @@ def _run_train_command(*, parser: argparse.ArgumentParser, args: argparse.Namesp
             coordinator_runtime=coordinator_runtime,
             _merge_phase_enabled=True,  # P4 gate: autonomous→drafts_open, governed→merge
             review_only=review_only,
+            emit_native_request=emit_native_request,
+            native_leg_fills=native_leg_fills,
         )
     finally:
         try:
@@ -4397,9 +4493,20 @@ def _run_train_command(*, parser: argparse.ArgumentParser, args: argparse.Namesp
                 print(f"  {node_id}: {info.get('pr_url', '?')}")
         return 0
 
+    if result["status"] == "native_fill_requested":
+        # REVIEWTRUTH early slice: the emit arm staged the bundle + request; nothing was spent.
+        if not as_json:
+            print(
+                f"run-train: native fill requested for seat {result.get('seat_key')} — write the review to "
+                f"{Path(result['request_path']).parent / 'review.md'} and re-run with "
+                f"--governed --review-only --native-leg claude={Path(result['request_path']).parent}"
+            )
+        return 0
     if result["status"] == "review_approved":
         # agent-harness#906: --review-only terminal — approval recorded, ZERO merges.
         nodes = result.get("nodes", {})
+        if not as_json and emit_native_request:
+            print("run-train: the train review is already approved on the ledger; no native fill request was emitted.")
         if not as_json:
             print(
                 f"run-train: train-level review APPROVED — {len(nodes)} admitted PR(s), "

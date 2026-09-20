@@ -107,8 +107,10 @@ can't even be constructed holding an api-key seat without opting in.
 **Claude execution is TUI-only.** Fable and Opus require the homebrew backing and
 use the existing Claude Code self-PTY adapter with the exact requested model.
 An alternate backing reports `tui_backing_required` before gateway access. No API, SDK, Messages, direct
-HTTP, or native Task/subagent path may fulfill those seats. A host that cannot
-run the adapter reports `tui_adapter_required`; an unproven subscription reports
+HTTP path may fulfill those seats. Under Claude Code the seat defers as
+`under_claude_code` with a native-fill request the driving session fills natively
+(EC-REVIEWTRUTH-14); a non-native host that cannot run the adapter reports
+`tui_adapter_required`; an unproven subscription reports
 `subscription_auth_unproven`. Today's adapter has no typed classifier-refusal
 capability, so refusal-looking text never triggers fallback. The bounded future
 policy permits one Opus TUI retry only for typed classifier refusal plus an

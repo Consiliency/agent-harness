@@ -6,6 +6,35 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Advisor board: the claude seat fills NATIVELY under Claude Code and is counted once bound (REVIEWTRUTH early slice, EC-REVIEWTRUTH-14; agent-harness#396, #636)
+
+- **Routing.** Under Claude Code every claude seat that is not backing-refused — TUI-policy models
+  (Fable/Opus) included; `tui_backing_required` stays a refusal — defers as `UNAVAILABLE/under_claude_code` AND carries a `NativeAgentLegRequest`, on both
+  `invoke_board` deferral paths. The driving session fills it with a native sub-agent under the
+  read-only review posture in force; the TUI adapter remains the route only on non-native hosts,
+  where `native_agent_leg_request` still refuses TUI-policy models. No `claude -p`, SDK, API-key or
+  alternate-endpoint route is introduced: a fill is data handed back, never a launch.
+- **Emit → fill → invoke protocol.** `advisor-board <artifact> --emit-native-request
+  [--native-fill-dir <dir>]` stages `native-fill/<request_id>/{request.json,artifact.md,
+  instructions.md}` and spends nothing; `--native-leg claude=<dir>` preflights the fill
+  (duplicate seat, seat not deferred, artifact/brief digest mismatch, composition drift → typed
+  refusal, zero launches), runs the other seats once, binds the fill before the president rules,
+  and counts it as usable only when its last non-empty line is a conforming verdict. Every digest
+  is over CONTENT, never a path: the artifact digest over the staged text as read back from disk, the
+  brief digest over the resolved instructions, the composition digest over the sorted seat keys; the
+  train's rebuild comparison normalises newlines the same way. The review file is `review.md`. `run-train --governed --review-only` gains
+  the same two flags (`<ledger-dir>/native-fill/`; a train that moved between the two commands is
+  refused as `native_fill_stale_request` before any seat is spent).
+- **The LEGIBLE fable-transition probe** crosses one observation function; under Claude Code
+  without a fill, or on a non-native host after this change, the observation is typed INCOMPLETE
+  and every consumer fails closed (the assumption-probe caller raises, the sidecar capture writes
+  nothing); with a fill the observation carries `native_fill_request` / `verdict_bound` /
+  `seat_count` so the byte-identical classifier can read `resolved`. Production marker:
+  `phase_loop_runtime.reviewtruth_native_fill_capability` (slice-specific, not the phase-wide one).
+- Plan: `plans/detailed-native-claude-seat-fill-396-20260920-1030.md` (ratified; maintainer
+  waiver for an early REVIEWTRUTH slice recorded on agent-harness#396 and in
+  `docs/research/reviewtruth-early-slice-native-fill-ratification.md`).
+
 ### Run Train: broker-authorized train review, per-leg refusal diagnostics, `--review-only` (agent-harness#906)
 
 - **The coordinator's governed train review now runs through the broker-authorized review

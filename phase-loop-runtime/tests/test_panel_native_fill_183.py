@@ -66,10 +66,13 @@ class DeferredSeatSurfacesNativeFillRequest(unittest.TestCase):
         # No nested TUI and no native Task substitution.
         self.assertEqual(leg.status, "UNAVAILABLE")
         self.assertEqual(leg.text, "")
-        self.assertEqual(leg.detail, "tui_adapter_required")
+        self.assertEqual(leg.detail, "under_claude_code")
         session.assert_not_called()
-        self.assertIsNone(leg.needs_native_agent)
-        self.assertEqual(result.native_fill_requests, ())
+        # REVIEWTRUTH early slice (EC-REVIEWTRUTH-14): under Claude Code the TUI-policy seat
+        # defers WITH its fill request (the driving session fills it natively).
+        self.assertIsNotNone(leg.needs_native_agent)
+        # REVIEWTRUTH early slice: the board reports the fable seat's fill request loudly.
+        self.assertEqual(len(result.native_fill_requests), 1)
 
     def test_ok_board_has_no_native_request(self):
         result = invoke_sanctioned_review_transport(
@@ -97,7 +100,7 @@ class DeferredSeatSurfacesNativeFillRequest(unittest.TestCase):
                     repo_dir=str(scratch), base_env=base_env,
                 )
 
-    def test_under_claude_code_requires_tui_adapter_even_without_local_cli(self):
+    def test_under_claude_code_defers_with_a_fill_request_even_without_local_cli(self):
         result = self._board_with_support(
             (False, "claude_code_version_below_minimum:2.1.196"),
             {"CLAUDECODE": "1", "PATH": os.environ.get("PATH", "")},
@@ -105,8 +108,10 @@ class DeferredSeatSurfacesNativeFillRequest(unittest.TestCase):
         (leg,) = result.legs
         self.assertEqual(leg.status, "UNAVAILABLE")
         self.assertEqual(leg.text, "")
-        self.assertEqual(leg.detail, "tui_adapter_required")
-        self.assertIsNone(leg.needs_native_agent)
+        self.assertEqual(leg.detail, "under_claude_code")
+        # REVIEWTRUTH early slice (EC-REVIEWTRUTH-14): under Claude Code the TUI-policy seat
+        # defers WITH its fill request (the driving session fills it natively).
+        self.assertIsNotNone(leg.needs_native_agent)
 
     def test_non_claude_support_missing_is_not_a_fillable_seat(self):
         # A genuine "no claude here" on a NON-Claude host (support missing →
@@ -298,7 +303,7 @@ class NativeFillRequestSerializationSafety(unittest.TestCase):
         self.assertTrue(leg.fallback_used)
 
 
-class DefaultClaudeSeatNeverCarriesNativeFill(unittest.TestCase):
+class DefaultClaudeSeatCarriesNativeFillUnderClaudeCode(unittest.TestCase):
 
     def test_brief_ref_flows_into_the_request(self):
         session = unittest.mock.MagicMock()  # under Claude Code → never called
@@ -322,8 +327,10 @@ class DefaultClaudeSeatNeverCarriesNativeFill(unittest.TestCase):
                 )
         (leg,) = result.legs
         self.assertEqual(leg.status, "UNAVAILABLE")
-        self.assertEqual(leg.detail, "tui_adapter_required")
-        self.assertIsNone(leg.needs_native_agent)
+        self.assertEqual(leg.detail, "under_claude_code")
+        # REVIEWTRUTH early slice (EC-REVIEWTRUTH-14): under Claude Code the TUI-policy seat
+        # defers WITH its fill request (the driving session fills it natively).
+        self.assertIsNotNone(leg.needs_native_agent)
 
 
 class TypedDeferralReachesTheAttachGate(unittest.TestCase):
@@ -372,7 +379,7 @@ class TypedDeferralReachesTheAttachGate(unittest.TestCase):
         # reason relocated into detail.
         self.assertEqual(leg.status, "UNAVAILABLE")
         self.assertEqual(leg.text, "")
-        self.assertEqual(leg.detail, "tui_adapter_required")
+        self.assertEqual(leg.detail, "under_claude_code")
         # ...and therefore a fill request, carrying this seat's cognition so a
         # driving harness can honour it under the same acceptance contract.
         self.assertIsNotNone(leg.needs_native_agent)
@@ -382,14 +389,16 @@ class TypedDeferralReachesTheAttachGate(unittest.TestCase):
         self.assertEqual(req.lens, "correctness")
         self.assertEqual(len(result.native_fill_requests), 1)
 
-    def test_policy_seat_still_never_requests_a_native_fill(self):
-        # The other half of the gate is load-bearing SECURITY, not a nicety: a
-        # Fable/Opus seat is subscription-TUI only and must never be substituted by
-        # a native agent, even though its deferral has the identical typed shape.
+    def test_policy_seat_requests_a_native_fill_under_claude_code(self):
+        # REVIEWTRUTH early slice (EC-REVIEWTRUTH-14, agent-harness#396): the TUI-policy list
+        # governs how the runtime DRIVES a leg it drives itself, never whether a vacant seat is
+        # surfaced to the driving harness. Under Claude Code a Fable/Opus seat defers as
+        # under_claude_code AND carries its fill request, exactly like a non-policy seat.
         _result, leg = self._run("claude-fable-5-1")
         self.assertEqual(leg.status, "UNAVAILABLE")
-        self.assertEqual(leg.detail, "tui_adapter_required")
-        self.assertIsNone(leg.needs_native_agent)
+        self.assertEqual(leg.detail, "under_claude_code")
+        self.assertIsNotNone(leg.needs_native_agent)
+        self.assertEqual(leg.needs_native_agent.model, "claude-fable-5-1")
 
 
 if __name__ == "__main__":

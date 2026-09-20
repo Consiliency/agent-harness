@@ -775,7 +775,17 @@ def _observe_reviewtruth_fable_transition(repo: Path, subject: Mapping[str, Any]
         raise RoadmapAssumptionError(
             "closed_subject_violation", f"unexpected reviewtruth_fable_transition subject keys: {set(subject) - allowed_keys}"
         )
-    return _invoke_reviewtruth_fable_adapter(repo, subject)
+    # REVIEWTRUTH early slice (D5): every consumer crosses the ONE observation function; an
+    # incomplete observation is a typed error here, never returned to the classifier.
+    from . import legible_evidence as _le
+
+    observation = _le.observe_reviewtruth_fable_transition(repo, subject)
+    if isinstance(observation, _le.FableObservationIncomplete):
+        raise RoadmapAssumptionError(
+            "observation_incomplete",
+            f"reviewtruth_fable_transition observation incomplete: {observation.reason}: {observation.detail}",
+        )
+    return observation
 
 
 __all__ = [

@@ -349,6 +349,7 @@ def run_governed_premerge_loop(
     max_concurrency: int | None = None,
     fab_promotion_check: FabPromotionCheck | None = None,
     fab_equivalent_fn: Callable[..., EquivalenceResult] = fab_equivalent,
+    native_leg_fills: Sequence[object] | None = None,
 ) -> LoopResult:
     """Bounded governed pre-merge review loop — ALSO the FAB (Consiliency/
     agent-harness#191) design §4.4 promotion-time re-assertion host: this
@@ -414,6 +415,10 @@ def run_governed_premerge_loop(
         # (byte-neutral for the default path + a strict-signature custom ``invoke``).
         if max_concurrency is not None:
             invoke_kwargs["max_concurrency"] = max_concurrency
+        # REVIEWTRUTH early slice: forwarded ONLY when set (a strict-signature custom
+        # ``invoke`` stays unaffected; a fill is bound once, on the round it was emitted for).
+        if native_leg_fills and rnd == 1:
+            invoke_kwargs["native_leg_fills"] = tuple(native_leg_fills)
         gate = invoke(**invoke_kwargs)
         collected.extend(gate.findings)
         last_reason = gate.reason

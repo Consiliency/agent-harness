@@ -203,7 +203,7 @@ class ClaudeTuiLegTest(unittest.TestCase):
 
 
 class ClaudeLegUnavailableUnderClaudeCodeTest(unittest.TestCase):
-    """A governed Claude seat never bypasses the TUI through native Task fill."""
+    """Under Claude Code the runtime never spawns a second TUI: the seat DEFERS (typed) to the driving session."""
 
     def test_headless_degrades_without_spawning_tui(self):
         # env={"CLAUDECODE":"1"} injected through the guard's seam so the assertion
@@ -221,7 +221,8 @@ class ClaudeLegUnavailableUnderClaudeCodeTest(unittest.TestCase):
                     review_dir, out_dir, 600, "bundle", env={"CLAUDECODE": "1"}
                 )
         self.assertEqual(status, "UNAVAILABLE")
-        self.assertEqual(text, "tui_adapter_required")
+        # REVIEWTRUTH early slice: the typed deferral the driving Claude Code session fills natively.
+        self.assertEqual(text, "under_claude_code")
         run_tui.assert_not_called()  # no PTY, no deadline wait
 
     def test_under_claude_code_detection(self):
