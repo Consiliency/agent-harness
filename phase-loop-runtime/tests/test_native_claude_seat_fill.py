@@ -569,18 +569,18 @@ class TestProtocol:
                       f"the gate did not receive the loaded fill: {sorted(gate_calls[0].keys())}")
         mint = _Never("mint")
         monkeypatch.setattr(backing_mod, "prepare_review_isolation_authorization", mint)
-        # The SAME loaded fill (digests untouched) against a train that MOVED: the node's admitted
-        # head on this ledger is different, so the bundle the runner REBUILDS differs from the
-        # emitted one. A runner comparing against the saved emission instead of the rebuilt
-        # bundle would accept it.
+        # The SAME loaded fill (digests untouched) on the SAME ledger after the train MOVED: a new
+        # admission record for the node with a different head is appended to the ledger the request
+        # was emitted from, so the bundle the runner REBUILDS differs from the emitted one while the
+        # ledger's identity does not (board r5, codex: train movement, not ledger identity, must be
+        # the distinguishing input).
         from phase_loop_runtime.train_ledger import LedgerRecord, append_record
-        moved_ledger = tmp_path / "moved" / "train.ledger.jsonl"
-        append_record(moved_ledger, LedgerRecord(
+        append_record(ledger, LedgerRecord(
             node_id="repo-a/specs/plan-a.md", status="pr_open", branch="feat/train-repo-a",
             head_sha="sha-moved-b", pr_url="https://gh.com/repo-a/pr/1", merge_order=0,
         ))
         halted = run_train(
-            roadmap, moved_ledger, run_mode="governed",
+            roadmap, ledger, run_mode="governed",
             resolve_workspace=lambda node: ws_map[node.node_id],
             _run_loop=lambda *a, **kw: (None, []), _publish=publish,
             _set_upstream_ref_fn=lambda *a, **kw: [], _preflight_fn=_preflight_pass,
