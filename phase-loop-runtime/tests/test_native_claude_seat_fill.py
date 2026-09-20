@@ -295,6 +295,7 @@ class TestProtocol:
     def test_gate_emit_arm_returns_a_request_without_minting_or_invoking(self, tmp_path, monkeypatch):
         from phase_loop_runtime.advisor_board import backing as backing_mod
         n = "test_gate_emit_arm_returns_a_request_without_minting_or_invoking"
+        monkeypatch.setenv("CLAUDECODE", "1")  # the fable seat is deferrable (fillable) only here
         mint, invoke = _Never(), _Never()
         monkeypatch.setattr(backing_mod, "prepare_review_isolation_authorization", mint)
         board = Board(name="mixed", purpose="premerge-review",
@@ -312,7 +313,7 @@ class TestProtocol:
         guard.require(n, getattr(gate, "native_fill_request", None) is not None, "no request returned")
 
     @activated
-    def test_run_train_emit_arm_spends_nothing(self, tmp_path):
+    def test_run_train_emit_arm_spends_nothing(self, tmp_path, monkeypatch):
         # Behavioural (the public ``run_train`` is a generation-fenced wrapper, so its signature
         # proves nothing): the emit arm returns ``native_fill_requested`` with the request and
         # artifact paths and touches no board, publisher or merge.
@@ -322,6 +323,14 @@ class TestProtocol:
         from test_train_review_authorization import _ledger, _pr_is_open_true, _preflight_pass, ADMITTED
 
         n = "test_run_train_emit_arm_spends_nothing"
+        # The emit arm composes the board like the invoke arm; on a host with no vendor CLIs a
+        # live composition would fail the floor and mask the property, so composition is stubbed
+        # to a fixed three-seat board (a production symbol patched, not a new seam).
+        from phase_loop_runtime.advisor_board import composition as comp_mod
+        board = Board(name="train-review", purpose="code-review",
+                      seats=(_seat(FABLE), _seat("gpt-5.6-sol", "codex"), _seat("grok-4.6", "grok")))
+        monkeypatch.setattr(comp_mod, "compose_review_board", lambda *a, **k: board)
+        monkeypatch.setenv("CLAUDECODE", "1")
         roadmap = parse_train_roadmap(PREBUILT_1NODE_MD)
         ws_map = {node.node_id: tmp_path / node.repo for node in roadmap.nodes}
         review, publish, merge = _Never(), _Never(), _Never()
