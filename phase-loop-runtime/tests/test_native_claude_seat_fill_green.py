@@ -151,3 +151,51 @@ def test_gate_preflight_refuses_before_minting(tmp_path, monkeypatch):
         native_leg_fills=[_fill(pi.NativeLegFill, board.seats[0], artifact_sha256="0" * 64)],
     )
     assert not gate.promoted and gate.reason == "native_fill_refused" and mint.call_count == 0
+
+
+def test_cr_bearing_bundle_digests_agree_between_emit_and_train_rebuild(tmp_path, monkeypatch):
+    """#921 delta r2 (claude): the emit arm digests the READ-BACK staged text; the train's rebuild
+    comparison normalises newlines the same way, so a CR in a roadmap title never false-refuses."""
+    from phase_loop_runtime.advisor_board import composition as comp_mod
+    monkeypatch.setattr(comp_mod, "compose_review_board", lambda *a, **k: _mixed_board())
+    monkeypatch.setenv("CLAUDECODE", "1")
+    bundle = "# Train\r\n\r\ntitle with CR\r\nbundle\r\n"
+    out = gr.governed_board_gate(artifact=bundle, author_executor="train-coordinator", run_mode="governed",
+                                 canonical_repo_authority=tmp_path, emit_native_request=True, native_fill_dir=tmp_path)
+    assert isinstance(out, dict)
+    normalised = bundle.replace("\r\n", "\n").replace("\r", "\n")
+    assert out["artifact_sha256"] == pi.content_sha256(normalised) != pi.content_sha256(bundle)
+    assert pi.content_sha256(Path(out["artifact_path"]).read_text(encoding="utf-8")) == out["artifact_sha256"]
+
+
+def test_directory_form_accepts_the_legacy_review_filename(tmp_path):
+    import json
+    d = tmp_path / "native-fill" / "r1"
+    d.mkdir(parents=True)
+    (d / "request.json").write_text(json.dumps({"request_id": "r1", "seat_key": _seat().seat_key, "model": FABLE,
+                                                "artifact_sha256": "a" * 64, "brief_sha256": "b" * 64, "composition_sha256": "c" * 64}))
+    (d / "claude.md").write_text("Reviewed.\nAGREE\n")
+    fill = pi.load_native_leg_fills(f"claude={d}")
+    assert fill.text == "Reviewed.\nAGREE\n" and fill.request_id == "r1"
+    (d / "review.md").write_text("Preferred.\nAGREE\n")
+    assert pi.load_native_leg_fills(f"claude={d}").text == "Preferred.\nAGREE\n"
+
+
+def test_premerge_loop_forwards_fills_on_the_first_round_only():
+    from phase_loop_runtime.governed_premerge import run_governed_premerge_loop
+    from phase_loop_runtime.closeout_validators import ReviewFinding
+    seen: list = []
+    rounds = {"n": 0}
+
+    def invoke(**kw):
+        rounds["n"] += 1
+        seen.append(kw.get("native_leg_fills"))
+        if rounds["n"] == 1:  # first round blocks → a fix round follows without the fill
+            return gr.GateResult(ran=True, promoted=False, reason="block",
+                                 findings=(ReviewFinding(code="x", reason="fix me", severity="block", blocker_class="review_gate_block"),))
+        return gr.GateResult(ran=True, promoted=True)
+
+    fill = _fill(pi.NativeLegFill, _seat())
+    run_governed_premerge_loop(artifact="a", author_executor="codex", run_mode="governed", invoke=invoke,
+                               apply_fix=lambda rnd, art, findings: art + "\nfixed", max_rounds=2, native_leg_fills=[fill])
+    assert rounds["n"] == 2 and seen[0] == (fill,) and seen[1] is None

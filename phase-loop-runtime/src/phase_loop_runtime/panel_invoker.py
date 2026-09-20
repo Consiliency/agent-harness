@@ -4804,7 +4804,8 @@ def load_native_leg_fill(
 
 
 def load_native_leg_fills(spec: str) -> NativeLegFill:
-    """CLI form ``<seat>=<dir-or-request.json>``: the dir holds request.json + claude.md."""
+    """CLI form ``<seat>=<dir-or-request.json>``: the dir holds request.json + review.md
+    (``claude.md`` accepted as a legacy fallback)."""
     if "=" not in spec:
         raise ValueError(f"--native-leg expects <seat>=<dir-or-request.json>, got {spec!r}")
     seat, _, where = spec.partition("=")
@@ -7887,6 +7888,13 @@ def invoke_board(
 
         if observer is not None:
             observer.board_started()
+
+        # Common launch section (review AND advisory): the invoker-side fill preflight runs here
+        # too, before the first seat is spawned — idempotent with the review-path call above
+        # (#921 delta r2, claude: advisory mode must not apply an unvalidated fill).
+        _fill_refusal_common = _invoker_preflight_fills()
+        if _fill_refusal_common is not None:
+            return review_exit(_fill_refusal_common)
 
         def _run_seat(item: Seat | tuple[int, Seat]) -> PanelLegResult:
             # The full per-seat body — backing decision → skip / omnigent / homebrew →
