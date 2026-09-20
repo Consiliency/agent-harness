@@ -1,6 +1,6 @@
 ---
 type: detailed
-status: planned-awaiting-ratification
+status: ratified
 owner_skill: claude-plan-detailed
 input_base_commit: eabfec6c0e4683eba6d5682d7783b92485d198c0
 issues: [agent-harness#906]
