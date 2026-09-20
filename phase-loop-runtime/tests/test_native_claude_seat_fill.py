@@ -9,6 +9,20 @@ Positive controls and byte-identity pins are unguarded and must hold before AND 
 
 The exact interfaces these tests drive are the ones EC-REVIEWTRUTH-0 freezes for the slice;
 the ratified plan's Changes list is descriptive and yields to them (plan r8).
+
+NOT CLAIMED HERE (the plan's Tests bullets this RED lane deliberately leaves to PR-2's GREEN-side
+regressions, each named so nothing is silently dropped):
+- a ``tui_backing_required`` (non-homebrew backing) claude seat is NOT fillable — covered by the
+  preflight's "seat not deferred" arm only indirectly; PR-2 adds the explicit case.
+- a claude seat dropped by author-vendor exclusion cannot be restored by a fill (governed gate).
+- ``usable_reviewers`` stays at 3 on the premerge loop when the fill is dropped (the unbound
+  observation arm covers the probe's view of it; the loop's own count is PR-2's).
+- two of the four probe consumers, ``audit_roadmap_assumptions`` and ``_probe_response_finding``
+  (both fail-closed today; PR-2 routes them through the one observation function and regresses them).
+- the president on the EARLY deferral path (a claude-only board cannot satisfy a president-requiring
+  seat policy; only the bound-and-usable property is asserted here).
+- the live emit → fill → invoke run with real seats (an acceptance run from the driving session,
+  recorded on the implementation PR, not a unit falsifier).
 """
 from __future__ import annotations
 
