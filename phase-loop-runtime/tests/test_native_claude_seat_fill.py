@@ -42,6 +42,19 @@ activated = pytest.mark.skipif(not guard.active(), reason=guard.SKIP_REASON)
 SUBJECT = {"repository": "Consiliency/agent-harness", "issue": 396, "model": FABLE, "source_anchor": "test"}
 
 
+def _code_digest(fn) -> str:
+    """SHA-256 of a function's AST with docstrings stripped: behaviour, not prose."""
+    import ast
+    import textwrap
+    tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Module)) and node.body:
+            first = node.body[0]
+            if isinstance(first, ast.Expr) and isinstance(getattr(first, "value", None), ast.Constant) and isinstance(first.value.value, str):
+                node.body = node.body[1:] or [ast.Pass()]
+    return hashlib.sha256(ast.dump(tree, include_attributes=False).encode()).hexdigest()
+
+
 def _seat(model: str = FABLE, harness: str = "claude") -> Seat:
     return Seat(model=model, effort="max", harness=harness, lens="correctness")
 
@@ -179,13 +192,13 @@ class TestInvariantsThatSurviveTheSlice:
         assert all(leg.needs_native_agent is None for leg in result.legs)
 
     def test_transition_classifier_and_flattener_are_byte_identical(self):
-        # The instrument this slice is graded by: source digests on the base this lane was
-        # authored against; PR-2 must leave both untouched.
-        cls = hashlib.sha256(inspect.getsource(ra._classify_reviewtruth_transition).encode()).hexdigest()
-        flat = hashlib.sha256(inspect.getsource(le._flatten_reviewtruth_observation).encode()).hexdigest()
-        assert (cls, flat) == (
-            "34f258ab40013c3d3eb2489d8965901b8a442539a32b16d1b17e5bcd8bf445b6",
-            "8514b34f19c15b1767833fdad441b5f6274df57b9a9d9f1d235e44d50ee59b2e",
+        # The instrument this slice is graded by: the two functions' CODE must not change. The
+        # digest is over the AST with docstrings stripped (a docstring-only edit — e.g. a seam
+        # rename mentioned in prose — is not a behaviour change; board r2, claude N1), pinned on
+        # the base this lane was authored against. PR-2 must leave both untouched.
+        assert (_code_digest(ra._classify_reviewtruth_transition), _code_digest(le._flatten_reviewtruth_observation)) == (
+            "73554cee0ba7dda61a49f9efa5c3663e777c410dafff95b7637cc5033204df21",
+            "07372f003a604aacda5f431a885011cff3ec7d1cd00de3cf4a70ef788f3cfc59",
         )
 
 
