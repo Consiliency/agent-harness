@@ -1,6 +1,6 @@
 ---
 type: detailed
-status: planned
+status: planned-awaiting-ratification
 owner_skill: claude-plan-detailed
 input_base_commit: e33615a7ba284114f4d8831386754ca6437f92ee
 issues: [agent-harness#906]
@@ -12,6 +12,25 @@ automation:
 ---
 
 # Detailed plan: broker-authorized train review, per-leg refusal diagnostics, and a review-only stop before merge
+
+**r3 (2026-09-20): reconciles board round 2 — gemini AGREE, claude / codex / grok PARTIALLY
+AGREE, all CONVERGING.** D1 is now proven by execution under both the hermetic seam (four seats
+past the launch boundary, spawn fired 4/4) and production settings (accepted into the real
+launch path) (claude). Taken: (1) D4 — "every node has pr_open or merged" did not imply "no
+node publishes": on main since agent-harness#909 a prebuilt node with an admitted open PR and
+a fast-forwarded local head returns `advanced` from the refresh decision and falls into the
+publish arm, so a review-only run would publish (claude, EXECUTED, labelled NEW-BLOCKING; grok
+reached the same as a refinement). Review-only now SKIPS Step 4 entirely and keys its predicate
+on the live `completed_nodes` set after the Step 3 read, refusing an advanced local candidate
+by name; (2) D3 — `_findings_from_panel` keeps `leg.status` but discards `leg.detail`, so the
+"status and detail" promise needs `detail` preserved (codex, grok); (3) the r2 sweep left the
+landing tier in the research summary, the `president_builder` seam and test (a); all three
+removed — production never passes `landing_tier`/`president_invoke` (claude, codex, grok);
+(4) test notes: the hermetic factory must return the identical object on the invoker's second
+call; `_default_train_review` takes no `spawn`, the hermetic test injects it via the loop
+wrap; test (e) needs a sink node; a refused-refresh `blocked` row that is still open is in
+`completed_nodes` and counts as admitted (fail-closed, documented). Round 2 was the cap;
+item (1) goes to the maintainer for ratification.
 
 **r2 (2026-09-20): reconciles board round 1 — gemini PARTIALLY AGREE, claude DISAGREE, codex
 DISAGREE, grok DISAGREE, all CONVERGING.** The architecture was validated by execution (claude:
@@ -70,9 +89,10 @@ Load-bearing facts (all `origin/main` `e33615a7`):
   authority → `compose_review_board()` → clear → `set_review_instruction_digest(brief)` →
   `prepare_review_isolation_authorization(board, artifact_bytes, mode="review",
   canonical_repo_authority=repo)` → `invoke_board(board, artifact, repo_dir=<scratch>,
-  artifact_ref=..., review_authorization=..., canonical_repo_authority=repo, [+
-  landing_tier=PRODUCTION_CODE, president_invoke=build_president_invoke(...) iff
-  `_govlean_authority_switched(repo)`])` → reset digest in `finally`.
+  artifact_ref=..., review_authorization=..., canonical_repo_authority=repo)` → reset digest in
+  `finally`. (The runner additionally passes a landing tier and president seam when ITS
+  `repo_dir` — the canonical repo — is authority-switched; this gate uses a scratch `repo_dir`
+  like the CLI, so it is tierless: see D1.)
 - `run_governed_premerge_loop` exposes an `invoke: Callable[..., GateResult]` seam
   (`governed_premerge.py:337-351`, called keyword-only at `:417`); `governed_planning_gate`
   calls its `invoke(artifact, pool, **kw)` positionally in `invoke_panel`'s shape
@@ -89,7 +109,8 @@ Load-bearing facts (all `origin/main` `e33615a7`):
 - The `_train_review_fn(artifact, run_mode) -> LoopResult` seam has ~30 injection sites; its
   signature is frozen. `_default_train_review`'s implementation is free to change.
 - The chunker supplier repo is NOT authority-switched (`_govlean_authority_switched` False);
-  agent-harness is. Both paths must work: tierless pre-switch, tiered-with-president post-switch.
+  agent-harness is. Because `invoke_board` evaluates the switch over `repo_dir` (scratch here),
+  the gate is tierless for both; a switched CANONICAL repo changes nothing on this path.
 - `FLOOR_SEATS = 3` is the composition floor (`composition.py:114`); `_MIN_USABLE_REVIEWERS = 2`
   is the usable-verdict floor. Both stay.
 
@@ -139,17 +160,26 @@ Load-bearing facts (all `origin/main` `e33615a7`):
 - **D3. Per-leg diagnostics survive the hold (r2: findings only, never `panel`).** In BOTH
   gates, the `no_usable_review` result carries the aggregate blocking finding PLUS the per-leg
   `panel_leg_degraded`/`panel_nonconforming` findings; `_block_result` gains an optional
-  `extra_findings`. `panel` stays `None` on the zero-usable hold: `run_governed_premerge_loop`'s
+  `extra_findings`, and `_findings_from_panel` keeps `leg.detail` alongside `leg.status` in the
+  `panel_leg_degraded` reason (today it discards the detail, so "missing HARDEN review
+  authorization" could never have appeared). `panel` stays `None` on the zero-usable hold: `run_governed_premerge_loop`'s
   reviewer-floor guard (`governed_premerge.py:442-452`) keys on `gate.panel`, and attaching it
   would relabel the missing-authorization case `below_reviewer_floor` with the "add a reviewer"
   remedy. Tests assert the terminal `reason` as well as the diagnostics. `run_train`'s `review_halted` return
   includes `findings` (code, reason, leg status) in `detail`. The chunker's receipt would then
   have read "missing HARDEN review authorization" per leg instead of `no_usable_review`.
-- **D4. Review-only stop (r2: admitted PRs only).** `run_train(..., review_only: bool = False)`.
-  Review-only reviews ADMITTED heads: before Step 4, if any node lacks a `pr_open` or `merged`
-  record (after the Step 3 live check), return `{"status": "review_only_requires_admitted_prs",
-  "nodes": [...]}` with zero publication effects — it never publishes drafts on the operator's
-  behalf. Otherwise P4 runs the review, and immediately after the approval record is appended
+- **D4. Review-only stop (r3: Step 4 is skipped, predicate is the live completed set).**
+  `run_train(..., review_only: bool = False)`. Review-only reviews ADMITTED heads and executes
+  NO publication arm of any kind. After the Step 3 live read, if any topo-order node is absent
+  from `completed_nodes` (a closed unmerged PR is dropped there; a refused-refresh `blocked` row
+  whose PR is still open is present and counts as admitted), return
+  `{"status": "review_only_requires_admitted_prs", "nodes": [...]}`. Then, instead of entering
+  Step 4, for each prebuilt node compare the workspace HEAD to the admitted head with the same
+  helpers the refresh uses: a HEAD that differs (ahead or diverged) is refused as
+  `review_only_requires_admitted_prs` with reason `local_candidate_not_admitted` naming the
+  node and both heads — review-only never admits a new head on the operator's behalf. Step 4 is
+  never entered under review-only, so the prebuilt refresh arm, the execute arm and the
+  transaction replay arm are unreachable; P4 then runs the review, and immediately after the approval record is appended
   (and equally when `already_approved` short-circuits) returns `{"status": "review_approved",
   "nodes", "usable_reviewers", "review_policy_version"}` before the merge loop; non-approval
   keeps `review_halted`. CLI: `run-train --review-only` requires `--governed` (`parser.error`
@@ -176,7 +206,9 @@ issue); agent-harness#912; a heartbeat-only policy for the train board (agent-ha
 ## Changes
 
 ### `phase-loop-runtime/src/phase_loop_runtime/governed_review.py` (modify)
-- `governed_board_gate` — add — D1; seams `compose`, `invoke`, `president_builder` for tests.
+- `governed_board_gate` — add — D1; seams `compose`, `invoke` for tests (no president seam:
+  the gate never passes a landing tier).
+- `_findings_from_panel` — modify — keep `leg.detail` in the degraded-leg reason (D3).
 - `_block_result` — modify — accept `extra_findings` (never `panel`); `governed_planning_gate`
   and the new gate pass the per-leg findings on the `no_usable_review` path (D3).
 
@@ -196,8 +228,11 @@ issue); agent-harness#912; a heartbeat-only policy for the train board (agent-ha
   (a) ordering contract for the gate, mirroring the CLI test: composition authority before
   compose, compose called with no kwargs, isolation authorization after compose, `invoke_board`
   receives the identical authorization object and the canonical authority, `repo_dir` is not
-  the canonical repo, digest reset in `finally` on both success and raise; tierless when the
-  authority is unswitched, `landing_tier` + president seam when switched;
+  the canonical repo, digest reset in `finally` on both success and raise; tierless for BOTH an
+  unswitched and a switched canonical repo (the call carries no `landing_tier`, no
+  `president_invoke`, no `mode`); the hermetic factory returns the identical object on the
+  invoker's second call; `spawn` is injected through the loop's `spawn` seam (the
+  `_train_review_fn` surface takes none);
   (b) PRODUCTION WIRING (r2): enter through `_default_train_review("...", "governed")` with the
   REAL `invoke_board` and the REAL `prepare_review_isolation_authorization`, using the sanctioned
   factory-replacement seam (`factory_replaced and factory_marker is review_authorization`,
@@ -211,12 +246,15 @@ issue); agent-harness#912; a heartbeat-only policy for the train board (agent-ha
   (c) unavailable reviewers: compose below `FLOOR_SEATS` → block naming vendors, zero invoke;
   rejected reviewer: a DISAGREE leg → held with body; (d) D3: a held result's findings carry
   each leg's status and detail; (e) D5 stale head → `review_halted`/`stale_head`, zero invokes, and it fires even when an
-  `approved` record exists; (f) D4 review-only: approved → `review_approved`, `_merge_pr_fn`
+  `approved` record exists (use a SINK node with no open-PR downstream, otherwise the
+  stale-upstream block fires first); (f) D4 review-only: approved → `review_approved`, `_merge_pr_fn`
   never called, ledger `approved` record present; second run `--governed` merges with no
   re-board; review-only on an already-approved train → `review_approved` without re-board;
   rejected → `review_halted`, zero merges; a train with a node lacking an admitted PR →
-  `review_only_requires_admitted_prs`; the publish stub is never called anywhere in ANY
-  review-only invocation; `--review-only` without `--governed` is a parser error.
+  `review_only_requires_admitted_prs`; a prebuilt node whose workspace HEAD is a fast-forward
+  of the admitted head (the agent-harness#909 refresh shape, which publishes under a normal
+  run) → `review_only_requires_admitted_prs`/`local_candidate_not_admitted`, publish stub
+  NOT called; the publish stub is never called anywhere in ANY review-only invocation; `--review-only` without `--governed` is a parser error.
 - `test_train_merge.py` — modify — `test_crash_resume_review_not_re_invoked` and
   `test_crash_resume_stale_approval_without_floor_evidence_is_re_reviewed` must pass
   unchanged (the ledger shape is untouched).
