@@ -2,10 +2,13 @@
 
 PR-1 of the ratified plan agent-harness#918: the RED falsifiers, observed RED against the
 pre-implementation base with ``PHASE_LOOP_TDD_EXPECT_REVIEWTRUTH=1`` and skipped without it.
-Positive controls and byte-identity pins are unguarded and must pass before AND after.
+Every activated falsifier observes BEHAVIOUR (launch counts, bytes written or not, returned
+outcomes, what the president was shown), never a symbol's existence or a source substring, and
+fails with an AssertionError at its unique anchor (``_reviewtruth_native_fill_tdd_guard``).
+Positive controls and byte-identity pins are unguarded and must hold before AND after.
 
-Every activated falsifier fails with an AssertionError at its unique anchor
-(``_reviewtruth_native_fill_tdd_guard.RED_ANCHORS``), never with an ImportError.
+The exact interfaces these tests drive are the ones EC-REVIEWTRUTH-0 freezes for the slice;
+the ratified plan's Changes list is descriptive and yields to them (plan r8).
 """
 from __future__ import annotations
 
@@ -15,6 +18,7 @@ import inspect
 import os
 import tempfile
 import unittest.mock
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -26,19 +30,55 @@ from phase_loop_runtime import legible_evidence as le
 from phase_loop_runtime import panel_invoker as pi
 from phase_loop_runtime import roadmap_assumptions as ra
 from phase_loop_runtime.advisor_board import Board, Seat
+from phase_loop_runtime.advisor_board import composition as comp_mod
+from phase_loop_runtime.panel_invoker import ReviewLandingTier
+from president_fakes import deferring_president
+from test_train_review_authorization import _canonical_repo
 
 CC = {"CLAUDECODE": "1", "PATH": os.environ.get("PATH", "")}
 NOT_CC = {"PATH": os.environ.get("PATH", "")}
 FABLE = "claude-fable-5"
 activated = pytest.mark.skipif(not guard.active(), reason=guard.SKIP_REASON)
+SUBJECT = {"repository": "Consiliency/agent-harness", "issue": 396, "model": FABLE, "source_anchor": "test"}
 
 
 def _seat(model: str = FABLE, harness: str = "claude") -> Seat:
     return Seat(model=model, effort="max", harness=harness, lens="correctness")
 
 
+def _mixed_board() -> Board:
+    return Board(name="mixed", purpose="premerge-review",
+                 seats=(_seat(FABLE), _seat("gpt-5.6-sol", "codex"), _seat("grok-4.6", "grok")))
+
+
+def _typed_deferral_spawn(leg, artifact, **kw):
+    """The injected spawn for matrix-path tests: the non-claude seats review; the claude seat
+    returns exactly the typed deferral the production leg emits under Claude Code."""
+    if leg != "claude":
+        return "OK", "Reviewed.\nAGREE"
+    return "UNAVAILABLE", "under_claude_code"
+
+
+class _Never:
+    def __init__(self, what: str = "callable"):
+        self.what, self.calls = what, 0
+
+    def __call__(self, *a, **k):
+        self.calls += 1
+        raise AssertionError(f"{self.what} must not be called")
+
+
+class _Spy:
+    def __init__(self, result=None):
+        self.result, self.calls = result, []
+
+    def __call__(self, *a, **k):
+        self.calls.append((a, k))
+        return self.result
+
+
 def _run_claude_solo(model: str):
-    """The 183 harness: a claude-only board under Claude Code, production spawn."""
+    """The 183 harness: a claude-only board under Claude Code, PRODUCTION spawn (early path)."""
     with tempfile.TemporaryDirectory() as td:
         artifact = Path(td) / "bundle.md"
         artifact.write_text("review me\n")
@@ -51,6 +91,27 @@ def _run_claude_solo(model: str):
             )
     (leg,) = result.legs
     return result, leg
+
+
+def _fill_symbols():
+    return (guard.symbol("phase_loop_runtime.panel_invoker", "NativeLegFill"),
+            guard.symbol("phase_loop_runtime.panel_invoker", "load_native_leg_fill"),
+            guard.symbol("phase_loop_runtime.panel_invoker", "preflight_native_leg_fills"),
+            guard.symbol("phase_loop_runtime.panel_invoker", "apply_native_leg_fills"))
+
+
+def _fill(NativeLegFill, seat: Seat, text: str = "Reviewed.\nAGREE", **over):
+    base = dict(seat_key=seat.seat_key, model=seat.model, text=text, artifact_sha256="a" * 64,
+                brief_sha256="b" * 64, composition_sha256="c" * 64, request_id="r1",
+                filled_by="claude-code", filled_at="t")
+    base.update(over)
+    return NativeLegFill(**base)
+
+
+def _deferred_leg(seat: Seat) -> pi.PanelLegResult:
+    leg = pi.PanelLegResult(leg="claude", status="UNAVAILABLE", text="", detail="under_claude_code", seat_key=seat.seat_key)
+    pi.attach_native_agent_request(leg, pi.native_agent_leg_request(leg="claude", mode="review", env=dict(CC), model=seat.model))
+    return leg
 
 
 # ---------------------------------------------------------------------------
@@ -76,6 +137,8 @@ class TestGuardControls:
         here = Path(__file__).read_text()
         for name in guard.RED_ANCHORS:
             assert f"def {name}(" in here, name
+        activated_defs = here.count("@activated\n    def ")
+        assert activated_defs == len(guard.RED_ANCHORS), (activated_defs, len(guard.RED_ANCHORS))
 
     def test_marker_module_absent_is_not_a_collection_error(self):
         assert guard.symbol(guard.MARKER_MODULE, guard.MARKER_ATTRIBUTE) is None or guard.marker_version() == guard.MARKER_VERSION
@@ -90,13 +153,20 @@ class TestInvariantsThatSurviveTheSlice:
         with pytest.raises(ValueError):
             pi.native_agent_leg_request(leg="claude", mode="review", env=dict(NOT_CC), model=FABLE)
 
-    def test_no_request_for_a_board_without_a_claude_seat(self):
-        board = Board(name="no-claude", purpose="premerge-review", seats=(_seat("gpt-5.6-sol", "codex"),))
-        assert not any((s.harness or "").lower() == "claude" for s in board.seats)
+    def test_a_board_without_a_claude_seat_emits_no_fill_request_under_claude_code(self, tmp_path):
+        artifact = tmp_path / "bundle.md"
+        artifact.write_text("review me\n")
+        board = Board(name="no-claude", purpose="premerge-review",
+                      seats=(_seat("gpt-5.6-sol", "codex"), _seat("grok-4.6", "grok")))
+        result = invoke_sanctioned_review_transport(
+            board, "", spawn=_typed_deferral_spawn, artifact_ref=str(artifact), repo_dir=str(tmp_path), base_env=dict(CC),
+        )
+        assert result.native_fill_requests == ()
+        assert all(leg.needs_native_agent is None for leg in result.legs)
 
     def test_transition_classifier_and_flattener_are_byte_identical(self):
-        # The instrument this slice is graded by. Digests of the source on the base this lane
-        # was authored against; PR-2 must leave both untouched.
+        # The instrument this slice is graded by: source digests on the base this lane was
+        # authored against; PR-2 must leave both untouched.
         cls = hashlib.sha256(inspect.getsource(ra._classify_reviewtruth_transition).encode()).hexdigest()
         flat = hashlib.sha256(inspect.getsource(le._flatten_reviewtruth_observation).encode()).hexdigest()
         assert (cls, flat) == (
@@ -111,71 +181,60 @@ class TestInvariantsThatSurviveTheSlice:
 
 class TestRouting:
     @activated
-    def test_fable_seat_request_is_built_under_claude_code(self):
-        try:
-            req = pi.native_agent_leg_request(leg="claude", mode="review", env=dict(CC), model=FABLE)
-        except ValueError as exc:
-            req = None
-            detail = str(exc)
-        else:
-            detail = ""
-        n = "test_fable_seat_request_is_built_under_claude_code"
-        guard.require(n, req is not None, f"builder raised for the default fable seat under Claude Code: {detail}")
-        guard.require(n, req.reason == "under_claude_code", f"reason={req.reason!r}")
-        guard.require(n, req.model == FABLE and req.instructions, "request must carry model + the effective brief")
+    def test_claude_seat_request_is_built_under_claude_code_for_every_claude_model(self):
+        n = "test_claude_seat_request_is_built_under_claude_code_for_every_claude_model"
+        for model in (FABLE, "claude-opus-5", "claude-sonnet-5"):
+            req, detail = None, ""
+            try:
+                req = pi.native_agent_leg_request(leg="claude", mode="review", env=dict(CC), model=model)
+            except ValueError as exc:
+                detail = str(exc)
+            guard.require(n, req is not None, f"builder raised for {model} under Claude Code: {detail}")
+            guard.require(n, req.reason == "under_claude_code" and req.model == model and bool(req.instructions),
+                          f"{model}: reason={req.reason!r} model={req.model!r}")
 
     @activated
     def test_under_claude_code_is_a_typed_unavailable_detail(self):
-        guard.require("test_under_claude_code_is_a_typed_unavailable_detail",
-                      "under_claude_code" in pi._TYPED_UNAVAILABLE_DETAILS,
-                      f"typed details: {sorted(pi._TYPED_UNAVAILABLE_DETAILS)}")
-
-    @activated
-    def test_early_deferral_path_attaches_a_request_for_the_fable_seat(self):
-        # spawn=None + claude-only board = the `native_host_deferral_only` early return.
-        result, leg = _run_claude_solo(FABLE)
-        n = "test_early_deferral_path_attaches_a_request_for_the_fable_seat"
-        guard.require(n, leg.status == "UNAVAILABLE" and leg.text == "", f"{leg.status}/{leg.text!r}")
-        guard.require(n, leg.detail == "under_claude_code", f"detail={leg.detail!r}")
-        guard.require(n, leg.needs_native_agent is not None, "no NativeAgentLegRequest attached on the early path")
-        guard.require(n, len(result.native_fill_requests) == 1, "board reports no fill request")
-
-    @activated
-    def test_matrix_path_attaches_a_request_for_the_fable_seat(self):
-        # A mixed board through the per-seat MATRIX path (not the early return): the injected
-        # spawn returns, for the claude seat, exactly the typed deferral the production leg
-        # emits under Claude Code. The matrix path must relocate that token into ``detail``
-        # (typed-detail normalisation) and attach the fill request for a TUI-policy seat.
-        # (An injected spawn cannot delegate to the production spawn: outside the sanctioned
-        # seam it refuses for missing HARDEN authorization, which is a different property.)
-        def spawn(leg, artifact, **kw):
-            if leg != "claude":
-                return "OK", "Reviewed.\nAGREE"
-            return "UNAVAILABLE", "under_claude_code"
-
+        # Behavioural: a leg whose spawn returned the typed token has it RELOCATED into
+        # ``detail`` with an empty body (the deferral signature every consumer keys on).
+        leg = pi.PanelLegResult(leg="claude", status="UNAVAILABLE", text="under_claude_code")
         with tempfile.TemporaryDirectory() as td:
             artifact = Path(td) / "bundle.md"
             artifact.write_text("review me\n")
-            board = Board(name="mixed", purpose="premerge-review",
-                          seats=(_seat(FABLE), _seat("gpt-5.6-sol", "codex"), _seat("grok-4.6", "grok")))
             result = invoke_sanctioned_review_transport(
-                board, "", spawn=spawn, artifact_ref=str(artifact.resolve()), repo_dir=td, base_env=dict(CC),
+                _mixed_board(), "", spawn=_typed_deferral_spawn, artifact_ref=str(artifact), repo_dir=td, base_env=dict(CC),
+            )
+        claude = next(l for l in result.legs if l.leg == "claude")
+        guard.require("test_under_claude_code_is_a_typed_unavailable_detail",
+                      claude.status == "UNAVAILABLE" and claude.text == "" and claude.detail == "under_claude_code",
+                      f"{claude.status}/{claude.text!r}/{claude.detail!r} (raw leg text stays {leg.text!r} when untyped)")
+
+    @activated
+    def test_early_deferral_path_attaches_a_request_for_the_fable_seat(self):
+        result, leg = _run_claude_solo(FABLE)
+        n = "test_early_deferral_path_attaches_a_request_for_the_fable_seat"
+        guard.require(n, leg.status == "UNAVAILABLE" and leg.text == "" and leg.detail == "under_claude_code",
+                      f"{leg.status}/{leg.text!r}/{leg.detail!r}")
+        guard.require(n, leg.needs_native_agent is not None and len(result.native_fill_requests) == 1,
+                      "no NativeAgentLegRequest attached on the early path")
+
+    @activated
+    def test_matrix_path_attaches_a_request_for_the_fable_seat(self):
+        with tempfile.TemporaryDirectory() as td:
+            artifact = Path(td) / "bundle.md"
+            artifact.write_text("review me\n")
+            result = invoke_sanctioned_review_transport(
+                _mixed_board(), "", spawn=_typed_deferral_spawn, artifact_ref=str(artifact), repo_dir=td, base_env=dict(CC),
             )
         claude = next(l for l in result.legs if l.leg == "claude")
         n = "test_matrix_path_attaches_a_request_for_the_fable_seat"
-        guard.require(n, claude.detail == "under_claude_code", f"detail={claude.detail!r}")
-        guard.require(n, claude.needs_native_agent is not None, "no request attached on the matrix path")
+        guard.require(n, claude.needs_native_agent is not None and claude.needs_native_agent.model == FABLE,
+                      f"no request attached on the matrix path (detail={claude.detail!r})")
+        guard.require(n, len(result.native_fill_requests) == 1, "board reports no fill request")
 
 
 # ---------------------------------------------------------------------------
 # D2 — ingestion contract
-
-
-def _fill_symbols():
-    return (guard.symbol("phase_loop_runtime.panel_invoker", "NativeLegFill"),
-            guard.symbol("phase_loop_runtime.panel_invoker", "load_native_leg_fill"),
-            guard.symbol("phase_loop_runtime.panel_invoker", "preflight_native_leg_fills"),
-            guard.symbol("phase_loop_runtime.panel_invoker", "apply_native_leg_fills"))
 
 
 class TestIngestion:
@@ -184,156 +243,174 @@ class TestIngestion:
         NativeLegFill = _fill_symbols()[0]
         n = "test_native_leg_fill_is_a_frozen_record_with_the_binding_fields"
         guard.require(n, NativeLegFill is not None, "panel_invoker.NativeLegFill is absent")
-        fields = set(getattr(NativeLegFill, "__dataclass_fields__", {}))
-        need = {"seat_key", "model", "text", "artifact_sha256", "brief_sha256", "composition_sha256", "request_id", "filled_by", "filled_at"}
-        guard.require(n, need <= fields, f"missing fields: {sorted(need - fields)}")
-        guard.require(n, getattr(NativeLegFill, "__dataclass_params__", None) and NativeLegFill.__dataclass_params__.frozen, "not frozen")
+        fill = _fill(NativeLegFill, _seat())
+        with pytest.raises(Exception):  # frozen: no field is assignable after construction
+            setattr(fill, "text", "mutated")
+        guard.require(n, fill.text == "Reviewed.\nAGREE" and fill.artifact_sha256 == "a" * 64, "record does not carry its fields")
 
     @activated
     def test_loader_takes_digests_from_the_emitted_request_only(self, tmp_path):
         load = _fill_symbols()[1]
         n = "test_loader_takes_digests_from_the_emitted_request_only"
         guard.require(n, load is not None, "panel_invoker.load_native_leg_fill is absent")
-        req = tmp_path / "request.json"
-        req.write_text('{"request_id": "r1", "seat_key": "claude:claude-fable-5:max:correctness", "model": "claude-fable-5", '
-                       '"artifact_sha256": "a" * 64, "brief_sha256": "b" * 64, "composition_sha256": "c" * 64}'.replace('"a" * 64', '"' + "a" * 64 + '"').replace('"b" * 64', '"' + "b" * 64 + '"').replace('"c" * 64', '"' + "c" * 64 + '"'))
+        import json
+        (tmp_path / "request.json").write_text(json.dumps({
+            "request_id": "r1", "seat_key": _seat().seat_key, "model": FABLE,
+            "artifact_sha256": "a" * 64, "brief_sha256": "b" * 64, "composition_sha256": "c" * 64}))
         (tmp_path / "claude.md").write_text("Reviewed.\nAGREE\n")
-        fill = load(req, tmp_path / "claude.md")
-        guard.require(n, (fill.artifact_sha256, fill.brief_sha256, fill.composition_sha256) == ("a" * 64, "b" * 64, "c" * 64),
-                      "loader must carry the EMITTED digests, never recompute them")
+        fill = load(tmp_path / "request.json", tmp_path / "claude.md")
+        guard.require(n, (fill.artifact_sha256, fill.brief_sha256, fill.composition_sha256) == ("a" * 64, "b" * 64, "c" * 64)
+                      and fill.text == "Reviewed.\nAGREE\n", "loader must carry the EMITTED digests and the review text, never recompute")
 
     @activated
-    def test_preflight_refuses_each_ineligible_fill_with_a_typed_reason(self):
+    def test_preflight_refuses_each_ineligible_fill_with_a_typed_reason_and_accepts_an_eligible_one(self):
         NativeLegFill, _, preflight, _ = _fill_symbols()
-        n = "test_preflight_refuses_each_ineligible_fill_with_a_typed_reason"
+        n = "test_preflight_refuses_each_ineligible_fill_with_a_typed_reason_and_accepts_an_eligible_one"
         guard.require(n, preflight is not None and NativeLegFill is not None, "preflight_native_leg_fills is absent")
-        board = Board(name="mixed", purpose="premerge-review",
-                      seats=(_seat(FABLE), _seat("gpt-5.6-sol", "codex"), _seat("grok-4.6", "grok")))
-        claude_key = board.seats[0].seat_key
-        ok = dict(seat_key=claude_key, model=FABLE, text="Reviewed.\nAGREE", artifact_sha256="a" * 64,
-                  brief_sha256="b" * 64, composition_sha256="c" * 64, request_id="r1", filled_by="claude-code", filled_at="t")
+        board = _mixed_board()
+        claude = board.seats[0]
         staged = dict(artifact_sha256="a" * 64, brief_sha256="b" * 64, composition_sha256="c" * 64)
+        ok = _fill(NativeLegFill, claude)
         cases = {
-            "native_fill_duplicate_seat": ([NativeLegFill(**ok), NativeLegFill(**ok)], staged, dict(CC)),
-            "native_fill_seat_not_deferred": ([NativeLegFill(**ok)], staged, dict(NOT_CC)),
-            "native_fill_digest_mismatch": ([NativeLegFill(**{**ok, "artifact_sha256": "d" * 64})], staged, dict(CC)),
-            "native_fill_composition_drift": ([NativeLegFill(**{**ok, "composition_sha256": "d" * 64})], staged, dict(CC)),
+            "native_fill_duplicate_seat": ([ok, ok], dict(CC)),
+            "native_fill_seat_not_deferred": ([ok], dict(NOT_CC)),
+            "native_fill_seat_not_deferred (wrong seat)": ([_fill(NativeLegFill, board.seats[1])], dict(CC)),
+            "native_fill_digest_mismatch (artifact)": ([_fill(NativeLegFill, claude, artifact_sha256="d" * 64)], dict(CC)),
+            "native_fill_digest_mismatch (brief)": ([_fill(NativeLegFill, claude, brief_sha256="d" * 64)], dict(CC)),
+            "native_fill_composition_drift": ([_fill(NativeLegFill, claude, composition_sha256="d" * 64)], dict(CC)),
         }
-        for reason, (fills, digests, env) in cases.items():
-            refusal = preflight(board, fills, env=env, **digests)
-            guard.require(n, refusal is not None and getattr(refusal, "reason", refusal) == reason,
-                          f"expected typed refusal {reason!r}, got {refusal!r}")
-        accepted = preflight(board, [NativeLegFill(**ok)], env=dict(CC), **staged)
-        guard.require(n, accepted is None, f"an eligible fill must pass preflight, got {accepted!r}")
+        for label, (fills, env) in cases.items():
+            reason = label.split(" ")[0]
+            refusal = preflight(board, fills, env=env, **staged)
+            got = getattr(refusal, "reason", refusal)
+            guard.require(n, refusal is not None and got == reason, f"{label}: expected {reason!r}, got {got!r}")
+        guard.require(n, preflight(board, [ok], env=dict(CC), **staged) is None, "an eligible fill must pass preflight")
 
     @activated
     def test_apply_counts_only_a_bound_conforming_fill(self):
         NativeLegFill, _, _, apply = _fill_symbols()
         n = "test_apply_counts_only_a_bound_conforming_fill"
         guard.require(n, apply is not None and NativeLegFill is not None, "apply_native_leg_fills is absent")
-        seat = _seat(FABLE)
-        deferred = pi.PanelLegResult(leg="claude", status="UNAVAILABLE", text="", detail="under_claude_code", seat_key=seat.seat_key)
-        pi.attach_native_agent_request(deferred, pi.native_agent_leg_request(leg="claude", mode="review", env=dict(CC), model=FABLE))
-        base = dict(seat_key=seat.seat_key, model=FABLE, artifact_sha256="a" * 64, brief_sha256="b" * 64,
-                    composition_sha256="c" * 64, request_id="r1", filled_by="claude-code", filled_at="t")
-        good = apply([deferred], [NativeLegFill(text="Reviewed.\nAGREE", **base)])
-        guard.require(n, len(good) == 1 and good[0].usable and good[0].detail == "native_fill", f"bound conforming fill not usable: {good}")
-        bad = apply([deferred], [NativeLegFill(text="I looked at it but reached no verdict.", **base)])
-        guard.require(n, len(bad) == 1 and not bad[0].usable and bad[0].status == "DEGRADED", f"non-conforming fill counted: {bad}")
+        seat = _seat()
+        good = apply([_deferred_leg(seat)], [_fill(NativeLegFill, seat)])
+        guard.require(n, len(good) == 1 and good[0].usable and good[0].status == "OK", f"bound conforming fill not usable: {good}")
+        bad = apply([_deferred_leg(seat)], [_fill(NativeLegFill, seat, text="I looked but reached no verdict.")])
+        guard.require(n, len(bad) == 1 and not bad[0].usable, f"a fill without a conforming verdict was counted: {bad}")
 
     @activated
     def test_apply_never_replaces_a_runtime_leg(self):
         NativeLegFill, _, _, apply = _fill_symbols()
         n = "test_apply_never_replaces_a_runtime_leg"
         guard.require(n, apply is not None and NativeLegFill is not None, "apply_native_leg_fills is absent")
-        seat = _seat(FABLE)
+        seat = _seat()
         runtime = pi.PanelLegResult(leg="claude", status="OK", text="Runtime.\nDISAGREE", seat_key=seat.seat_key)
-        fill = NativeLegFill(seat_key=seat.seat_key, model=FABLE, text="Reviewed.\nAGREE", artifact_sha256="a" * 64,
-                             brief_sha256="b" * 64, composition_sha256="c" * 64, request_id="r1", filled_by="claude-code", filled_at="t")
-        with pytest.raises(Exception) as excinfo:
-            apply([runtime], [fill])
-        guard.require(n, "native_fill_seat_not_deferred" in str(excinfo.value), f"runtime leg replaced or untyped: {excinfo.value}")
+        legs = [runtime]
+        with pytest.raises(Exception):
+            apply(legs, [_fill(NativeLegFill, seat)])
+        guard.require(n, legs[0] is runtime and runtime.text == "Runtime.\nDISAGREE", "the runtime leg was replaced")
+
+    @activated
+    def test_president_rules_on_the_bound_fill_on_both_deferral_paths(self, tmp_path):
+        NativeLegFill = _fill_symbols()[0]
+        n = "test_president_rules_on_the_bound_fill_on_both_deferral_paths"
+        guard.require(n, NativeLegFill is not None, "NativeLegFill is absent")
+        artifact = tmp_path / "bundle.md"
+        artifact.write_text("review me\n")
+        seen: list = []
+
+        def president(model, prompt):
+            seen.append(prompt)
+            return deferring_president(model, prompt)
+
+        results = {}
+        for label, board, spawn in (
+            ("matrix", _mixed_board(), _typed_deferral_spawn),
+            ("early", Board(name="claude-solo", purpose="premerge-review", seats=(_seat(),)), None),
+        ):
+            fill = _fill(NativeLegFill, board.seats[0])
+            err = None
+            with unittest.mock.patch.object(pi, "_claude_code_support_status", return_value=(True, "supported")):
+                try:
+                    results[label] = invoke_sanctioned_review_transport(
+                        board, "", spawn=spawn, artifact_ref=str(artifact), repo_dir=str(tmp_path), base_env=dict(CC),
+                        landing_tier=ReviewLandingTier.PRODUCTION_CODE, president_invoke=president,
+                        native_leg_fills=[fill],
+                    )
+                except TypeError as exc:
+                    err = exc
+            guard.require(n, err is None, f"{label}: invoke_board accepts no native_leg_fills: {err}")
+            res = results[label]
+            claude = next(l for l in res.legs if l.leg == "claude")
+            guard.require(n, claude.usable, f"{label}: the bound fill is not usable ({claude.status}/{claude.detail})")
+            guard.require(n, res.president is not None and res.president_findings, f"{label}: no ruling was made over the filled board")
+            guard.require(n, any(board.seats[0].seat_key in str(f) or "claude" in str(f).lower() for f in res.president_findings),
+                          f"{label}: the president's findings never saw the claude seat: {res.president_findings}")
 
 
 # ---------------------------------------------------------------------------
 # D3 — emit → fill → invoke protocol
 
 
-class _Never:
-    def __init__(self):
-        self.calls = 0
-
-    def __call__(self, *a, **k):
-        self.calls += 1
-        raise AssertionError("must not be called")
-
-
 class TestProtocol:
     @activated
-    def test_composition_digest_is_over_sorted_seat_keys(self):
+    def test_composition_digest_is_content_only_and_order_independent(self):
         digest = guard.symbol("phase_loop_runtime.advisor_board.composition", "composition_digest")
-        n = "test_composition_digest_is_over_sorted_seat_keys"
+        n = "test_composition_digest_is_content_only_and_order_independent"
         guard.require(n, digest is not None, "composition.composition_digest is absent")
-        a, b = _seat(FABLE), _seat("gpt-5.6-sol", "codex")
-        b1 = Board(name="x", purpose="premerge-review", seats=(a, b))
-        b2 = Board(name="x", purpose="premerge-review", seats=(b, a))
-        expected = hashlib.sha256("\n".join(sorted([a.seat_key, b.seat_key])).encode()).hexdigest()
-        guard.require(n, digest(b1) == digest(b2) == expected, "digest must be order-independent and over seat_keys")
+        a, b, c = _seat(FABLE), _seat("gpt-5.6-sol", "codex"), _seat("grok-4.6", "grok")
+        ab = Board(name="x", purpose="premerge-review", seats=(a, b))
+        ba = Board(name="y", purpose="premerge-review", seats=(b, a))
+        abc = Board(name="x", purpose="premerge-review", seats=(a, b, c))
+        guard.require(n, digest(ab) == digest(ba), "digest depends on seat order or board name")
+        guard.require(n, digest(ab) != digest(abc) and len(digest(ab)) == 64, "digest does not change with the seat set")
 
     @activated
     def test_request_payload_carries_the_binding(self):
         payload = guard.symbol("phase_loop_runtime.panel_invoker", "native_fill_request_payload")
         n = "test_request_payload_carries_the_binding"
         guard.require(n, payload is not None, "panel_invoker.native_fill_request_payload is absent")
-        board = Board(name="mixed", purpose="premerge-review", seats=(_seat(FABLE), _seat("gpt-5.6-sol", "codex")))
-        out = payload(board, "bundle text\n", brief_ref=None, env=dict(CC))
-        need = {"request_id", "seat_key", "model", "lens", "effort", "artifact_sha256", "brief_sha256", "composition_sha256", "instructions"}
-        guard.require(n, need <= set(out), f"missing keys: {sorted(need - set(out))}")
-        guard.require(n, out["artifact_sha256"] == hashlib.sha256(b"bundle text\n").hexdigest(), "artifact digest must be over the staged content")
+        out = payload(_mixed_board(), "bundle text\n", brief_ref=None, env=dict(CC))
+        need = {"request_id", "seat_key", "model", "lens", "effort", "artifact_sha256", "brief_sha256", "composition_sha256"}
+        guard.require(n, isinstance(out, Mapping) and need <= set(out), f"missing keys: {sorted(need - set(out or {}))}")
+        guard.require(n, out["artifact_sha256"] == hashlib.sha256(b"bundle text\n").hexdigest() and out["model"] == FABLE,
+                      "artifact digest must be over the staged content and the seat must be the claude seat")
 
     @activated
-    def test_gate_emit_arm_returns_a_request_without_minting_or_invoking(self, tmp_path, monkeypatch):
+    def test_gate_emit_arm_returns_the_request_without_minting_or_invoking(self, tmp_path, monkeypatch):
         from phase_loop_runtime.advisor_board import backing as backing_mod
-        n = "test_gate_emit_arm_returns_a_request_without_minting_or_invoking"
-        monkeypatch.setenv("CLAUDECODE", "1")  # the fable seat is deferrable (fillable) only here
-        mint, invoke = _Never(), _Never()
+        n = "test_gate_emit_arm_returns_the_request_without_minting_or_invoking"
+        monkeypatch.setenv("CLAUDECODE", "1")
+        mint, invoke = _Never("mint"), _Never("invoke")
         monkeypatch.setattr(backing_mod, "prepare_review_isolation_authorization", mint)
-        board = Board(name="mixed", purpose="premerge-review",
-                      seats=(_seat(FABLE), _seat("gpt-5.6-sol", "codex"), _seat("grok-4.6", "grok")))
-        gate, err = None, None
+        out, err = None, None
         try:
-            gate = gr.governed_board_gate(
-                artifact="bundle", author_executor="train-coordinator", run_mode="governed",
-                canonical_repo_authority=tmp_path, compose=lambda: board, invoke=invoke, emit_native_request=True,
+            out = gr.governed_board_gate(
+                artifact="bundle\n", author_executor="train-coordinator", run_mode="governed",
+                canonical_repo_authority=tmp_path, compose=_mixed_board, invoke=invoke,
+                emit_native_request=True, native_fill_dir=tmp_path,
             )
-        except TypeError as exc:  # no emit arm yet: recorded, asserted OUTSIDE the except (no chained traceback)
+        except TypeError as exc:
             err = exc
         guard.require(n, err is None, f"governed_board_gate has no emit arm: {err}")
         guard.require(n, mint.calls == 0 and invoke.calls == 0, "the emit arm minted or invoked")
-        guard.require(n, getattr(gate, "native_fill_request", None) is not None, "no request returned")
+        req = out if isinstance(out, Mapping) else getattr(out, "native_fill_request", None)
+        guard.require(n, isinstance(req, Mapping) and req.get("artifact_sha256") == hashlib.sha256(b"bundle\n").hexdigest(),
+                      f"no request with the staged digest was returned: {req}")
+        guard.require(n, Path(str(req.get("request_path", ""))).is_file(), "request.json was not written")
 
     @activated
     def test_run_train_emit_arm_spends_nothing(self, tmp_path, monkeypatch):
-        # Behavioural (the public ``run_train`` is a generation-fenced wrapper, so its signature
-        # proves nothing): the emit arm returns ``native_fill_requested`` with the request and
-        # artifact paths and touches no board, publisher or merge.
         from phase_loop_runtime.train_roadmap import parse_train_roadmap
         from phase_loop_runtime.train_runner import run_train
-        from test_train_prebuilt import PREBUILT_1NODE_MD
-        from test_train_review_authorization import _ledger, _pr_is_open_true, _preflight_pass, ADMITTED
+        from test_train_prebuilt import PREBUILT_1NODE_MD, _make_prebuilt_publish_stub
+        from test_train_review_authorization import ADMITTED, _ledger, _pr_is_open_true, _preflight_pass
 
         n = "test_run_train_emit_arm_spends_nothing"
-        # The emit arm composes the board like the invoke arm; on a host with no vendor CLIs a
-        # live composition would fail the floor and mask the property, so composition is stubbed
-        # to a fixed three-seat board (a production symbol patched, not a new seam).
-        from phase_loop_runtime.advisor_board import composition as comp_mod
-        board = Board(name="train-review", purpose="code-review",
-                      seats=(_seat(FABLE), _seat("gpt-5.6-sol", "codex"), _seat("grok-4.6", "grok")))
-        monkeypatch.setattr(comp_mod, "compose_review_board", lambda *a, **k: board)
+        monkeypatch.setattr(comp_mod, "compose_review_board", lambda *a, **k: _mixed_board())
         monkeypatch.setenv("CLAUDECODE", "1")
         roadmap = parse_train_roadmap(PREBUILT_1NODE_MD)
         ws_map = {node.node_id: tmp_path / node.repo for node in roadmap.nodes}
-        review, publish, merge = _Never(), _Never(), _Never()
+        review, publish, merge = _Never("review"), _Never("publish"), _Never("merge")
         result, err = None, None
         try:
             result = run_train(
@@ -348,59 +425,166 @@ class TestProtocol:
                 _reverify_fn=lambda *a, **k: True, _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
                 emit_native_request=True,
             )
-        except TypeError as exc:  # no emit arm yet: recorded, asserted outside the except
+        except TypeError as exc:
             err = exc
         guard.require(n, err is None, f"run_train has no emit arm: {err}")
         guard.require(n, result.get("status") == "native_fill_requested", f"status={result.get('status')!r}")
         guard.require(n, Path(result["request_path"]).is_file() and Path(result["artifact_path"]).is_file(), "request/artifact not staged")
         guard.require(n, review.calls == publish.calls == merge.calls == 0, "the emit arm spent a board, published or merged")
+        _ = _make_prebuilt_publish_stub  # imported for fixture parity with the train suites
 
     @activated
-    def test_cli_flags_parse_on_both_commands(self):
-        from phase_loop_runtime.cli import build_parser  # noqa: F401  (probed below)
-        n = "test_cli_flags_parse_on_both_commands"
+    def test_run_train_refuses_a_stale_fill_before_spending_a_seat(self, tmp_path, monkeypatch):
+        from phase_loop_runtime.advisor_board import backing as backing_mod
+        from phase_loop_runtime.train_roadmap import parse_train_roadmap
+        from phase_loop_runtime.train_runner import run_train
+        from test_train_prebuilt import PREBUILT_1NODE_MD
+        from test_train_review_authorization import ADMITTED, _ledger, _pr_is_open_true, _preflight_pass
+
+        NativeLegFill = _fill_symbols()[0]
+        n = "test_run_train_refuses_a_stale_fill_before_spending_a_seat"
+        guard.require(n, NativeLegFill is not None, "NativeLegFill is absent")
+        monkeypatch.setattr(comp_mod, "compose_review_board", lambda *a, **k: _mixed_board())
+        monkeypatch.setenv("CLAUDECODE", "1")
+        mint = _Never("mint")
+        monkeypatch.setattr(backing_mod, "prepare_review_isolation_authorization", mint)
+        roadmap = parse_train_roadmap(PREBUILT_1NODE_MD)
+        ws_map = {node.node_id: tmp_path / node.repo for node in roadmap.nodes}
+        publish, merge = _Never("publish"), _Never("merge")
+        stale = _fill(NativeLegFill, _mixed_board().seats[0], artifact_sha256="0" * 64)
+        result, err = None, None
+        try:
+            result = run_train(
+                roadmap, _ledger(tmp_path), run_mode="governed",
+                resolve_workspace=lambda node: ws_map[node.node_id],
+                _run_loop=lambda *a, **kw: (None, []), _publish=publish,
+                _set_upstream_ref_fn=lambda *a, **kw: [], _preflight_fn=_preflight_pass,
+                _pr_is_open=_pr_is_open_true, _live_pr_head_sha_fn=lambda ws, br: ADMITTED,
+                _workspace_head_fn=lambda ws: ADMITTED, _is_ancestor_fn=lambda ws, a, b: True,
+                _prebuilt_owned_paths_fn=lambda ws, base: ["src/x.py"], _merge_phase_enabled=True,
+                review_only=True, _merge_pr_fn=merge,
+                _reverify_fn=lambda *a, **k: True, _pr_merged_sha_fn=lambda ws, br, base=None, head_sha=None: None,
+                native_leg_fills=[stale],
+            )
+        except TypeError as exc:
+            err = exc
+        guard.require(n, err is None, f"run_train accepts no native_leg_fills: {err}")
+        guard.require(n, result.get("status") == "review_halted" and result.get("reason") == "native_fill_stale_request",
+                      f"stale fill not refused as native_fill_stale_request: {result.get('status')}/{result.get('reason')}")
+        guard.require(n, mint.calls == 0 and publish.calls == 0 and merge.calls == 0, "a seat was minted or a merge attempted")
+
+    @activated
+    def test_cli_emit_arm_writes_the_request_and_run_train_accepts_the_flags(self, tmp_path, monkeypatch, capsys):
+        from phase_loop_runtime import cli as cli_mod
+        n = "test_cli_emit_arm_writes_the_request_and_run_train_accepts_the_flags"
+        monkeypatch.setattr(comp_mod, "compose_review_board", lambda *a, **k: _mixed_board())
+        monkeypatch.setenv("CLAUDECODE", "1")
+        artifact = tmp_path / "bundle.md"
+        artifact.write_text("review me\n")
+        rc, err = None, None
+        try:
+            with unittest.mock.patch("sys.stderr"):
+                rc = cli_mod.main(["advisor-board", str(artifact), "--emit-native-request", "--native-fill-dir", str(tmp_path), "--json"])
+        except SystemExit as exc:
+            err = exc
+        guard.require(n, err is None and rc == 0, f"advisor-board --emit-native-request failed: rc={rc} err={err}")
+        written = list((tmp_path / "native-fill").glob("*/request.json")) if (tmp_path / "native-fill").is_dir() else []
+        guard.require(n, len(written) == 1, f"request.json not written under native-fill/: {written}")
         parser = guard.symbol("phase_loop_runtime.cli", "build_parser")
         guard.require(n, parser is not None, "cli.build_parser is absent")
-        p = parser()
         rejected = []
-        for argv in (["advisor-board", "--artifact", "x.md", "--emit-native-request"],
-                     ["advisor-board", "--artifact", "x.md", "--native-leg", "claude=/tmp/fill"],
-                     ["run-train", "--train", "t.md", "--governed", "--review-only", "--emit-native-request"],
+        for argv in (["run-train", "--train", "t.md", "--governed", "--review-only", "--emit-native-request"],
                      ["run-train", "--train", "t.md", "--governed", "--review-only", "--native-leg", "claude=/tmp/fill"]):
             try:
                 with unittest.mock.patch("sys.stderr"):
-                    p.parse_args(argv)
+                    parser().parse_args(argv)
             except (SystemExit, argparse.ArgumentError):
                 rejected.append(argv)
-        guard.require(n, not rejected, f"rejected: {rejected}")
+        guard.require(n, not rejected, f"run-train rejects the protocol flags: {rejected}")
 
 
 # ---------------------------------------------------------------------------
-# D5 — the phase's live probe: one observation function, typed incompleteness
+# D5 — the phase's live probe: one observation function, typed incompleteness, fail-closed
+
+
+def _observe():
+    return (guard.symbol("phase_loop_runtime.legible_evidence", "observe_reviewtruth_fable_transition"),
+            guard.symbol("phase_loop_runtime.legible_evidence", "FableObservationIncomplete"))
 
 
 class TestProbe:
     @activated
-    def test_one_observation_function_exists_with_a_typed_incomplete_result(self):
-        n = "test_one_observation_function_exists_with_a_typed_incomplete_result"
-        observe = guard.symbol("phase_loop_runtime.legible_evidence", "observe_reviewtruth_fable_transition")
-        incomplete = guard.symbol("phase_loop_runtime.legible_evidence", "FableObservationIncomplete")
-        guard.require(n, observe is not None and incomplete is not None, "observe_reviewtruth_fable_transition / FableObservationIncomplete absent")
-        params = inspect.signature(observe).parameters
-        guard.require(n, {"native_leg_fills", "issue_snapshot"} <= set(params), f"missing keyword parameters: {sorted(params)}")
+    def test_observation_is_typed_incomplete_under_claude_code_without_a_fill_and_launches_nothing(self, tmp_path, monkeypatch):
+        observe, Incomplete = _observe()
+        n = "test_observation_is_typed_incomplete_under_claude_code_without_a_fill_and_launches_nothing"
+        guard.require(n, observe is not None and Incomplete is not None, "observe_reviewtruth_fable_transition / FableObservationIncomplete absent")
+        repo = _canonical_repo(tmp_path)
+        monkeypatch.setattr(comp_mod, "compose_review_board", lambda *a, **k: _mixed_board())
+        monkeypatch.setenv("CLAUDECODE", "1")
+        spawn = _Never("any provider launch")
+        monkeypatch.setattr(pi, "_default_spawn", spawn)
+        out = observe(repo, SUBJECT, native_leg_fills=None, issue_snapshot={"state": "OPEN", "stateReason": None})
+        guard.require(n, isinstance(out, Incomplete) and getattr(out, "reason", None) == "fill_requested",
+                      f"expected Incomplete('fill_requested'), got {out!r}")
+        guard.require(n, spawn.calls == 0, "a provider leg was launched by an unfilled observation")
 
     @activated
-    def test_assumption_probe_caller_delegates_to_the_one_function(self):
-        n = "test_assumption_probe_caller_delegates_to_the_one_function"
-        # A NAME REFERENCE, not a substring of the caller's own def line (which contains it).
-        names = set(ra._observe_reviewtruth_fable_transition.__code__.co_names)
-        guard.require(n, "observe_reviewtruth_fable_transition" in names and "_invoke_reviewtruth_fable_adapter" not in names,
-                      f"roadmap_assumptions still calls the adapter directly: co_names={sorted(names)}")
+    def test_observation_is_typed_incomplete_outside_claude_code_and_never_launches_the_external_leg(self, tmp_path, monkeypatch):
+        observe, Incomplete = _observe()
+        n = "test_observation_is_typed_incomplete_outside_claude_code_and_never_launches_the_external_leg"
+        guard.require(n, observe is not None and Incomplete is not None, "observe_reviewtruth_fable_transition / FableObservationIncomplete absent")
+        repo = _canonical_repo(tmp_path)
+        monkeypatch.delenv("CLAUDECODE", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
+        launched_without_marker = []
+
+        def spawn(leg, artifact, **kw):
+            env = kw.get("env") or {}
+            if str(env.get("CLAUDECODE", "")).strip() != "1":
+                launched_without_marker.append(leg)
+                return "UNAVAILABLE", "external leg must not be launched"
+            return "UNAVAILABLE", "under_claude_code"  # the marker run: the routing in force post-flip
+
+        monkeypatch.setattr(pi, "_default_spawn", spawn)
+        out = observe(repo, SUBJECT, native_leg_fills=None, issue_snapshot={"state": "OPEN", "stateReason": None})
+        guard.require(n, isinstance(out, Incomplete) and getattr(out, "reason", None) == "native_fill_not_observable_on_host",
+                      f"expected Incomplete('native_fill_not_observable_on_host'), got {out!r}")
+        guard.require(n, not launched_without_marker, f"the external self-PTY leg was launched: {launched_without_marker}")
 
     @activated
-    def test_sidecar_capture_refuses_an_incomplete_observation(self):
-        n = "test_sidecar_capture_refuses_an_incomplete_observation"
-        incomplete = guard.symbol("phase_loop_runtime.legible_evidence", "FableObservationIncomplete")
-        guard.require(n, incomplete is not None, "FableObservationIncomplete absent")
-        src = inspect.getsource(le.capture_fresh_process_verification_sidecar)
-        guard.require(n, "FableObservationIncomplete" in src, "the sealing path does not refuse an incomplete observation")
+    def test_assumption_probe_caller_fails_closed_on_an_incomplete_observation(self, tmp_path, monkeypatch):
+        observe, Incomplete = _observe()
+        n = "test_assumption_probe_caller_fails_closed_on_an_incomplete_observation"
+        guard.require(n, observe is not None and Incomplete is not None, "observe_reviewtruth_fable_transition / FableObservationIncomplete absent")
+        spy = _Spy(result=Incomplete("fill_requested"))
+        monkeypatch.setattr(le, "observe_reviewtruth_fable_transition", spy)
+        classify, flatten = _Never("classifier"), _Never("flattener")
+        monkeypatch.setattr(ra, "_classify_reviewtruth_transition", classify)
+        monkeypatch.setattr(le, "_flatten_reviewtruth_observation", flatten)
+        raised = None
+        try:
+            ra.observe_assumption_probe(tmp_path, {"kind": "reviewtruth_fable_transition", "subject": dict(SUBJECT)})
+        except Exception as exc:  # the caller must fail CLOSED with a typed error, never return
+            raised = exc
+        guard.require(n, raised is not None, "an incomplete observation was returned to the caller instead of raising")
+        guard.require(n, len(spy.calls) == 1 and classify.calls == 0 and flatten.calls == 0,
+                      f"delegation={len(spy.calls)} classifier={classify.calls} flattener={flatten.calls}")
+
+    @activated
+    def test_sidecar_capture_refuses_an_incomplete_observation_and_writes_nothing(self, tmp_path, monkeypatch):
+        observe, Incomplete = _observe()
+        n = "test_sidecar_capture_refuses_an_incomplete_observation_and_writes_nothing"
+        guard.require(n, observe is not None and Incomplete is not None, "observe_reviewtruth_fable_transition / FableObservationIncomplete absent")
+        repo = _canonical_repo(tmp_path)
+        run_dir = tmp_path / "run"
+        run_dir.mkdir()
+        monkeypatch.setattr(le, "observe_reviewtruth_fable_transition", _Spy(result=Incomplete("fill_requested")))
+        raised = None
+        try:
+            le.capture_fresh_process_verification_sidecar(
+                repo, run_dir=run_dir, stage="verification", expected_head="0" * 40, process_start_token="tok",
+            )
+        except le.LegibleSidecarError as exc:
+            raised = exc
+        guard.require(n, raised is not None, "an incomplete observation was sealed into a sidecar (or a non-typed error escaped)")
+        guard.require(n, not any(run_dir.iterdir()), f"bytes were written on refusal: {sorted(p.name for p in run_dir.iterdir())}")
