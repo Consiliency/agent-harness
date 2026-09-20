@@ -7899,31 +7899,42 @@
         {
           "at": "2026-09-20T10:58:24Z",
           "by": "claude-plan-detailed",
-          "status": "proposed",
+          "transition": "committed",
           "metadata": {
             "plan_sha256": "7e0461988c1ed459d67797776be941b47d237c847af0e6faefb89916c80afd95",
             "issues": [
               "Consiliency/agent-harness#396",
               "Consiliency/agent-harness#636"
-            ]
+            ],
+            "planning_artifact_only": true,
+            "recorded_as": "proposed",
+            "repair_note": "original event used a non-vocabulary literal under a `status` key; rewritten to the runtime vocabulary by Consiliency/agent-harness#922"
           }
         },
         {
-          "at": "2026-09-20T12:02:56Z",
-          "by": "claude-plan-detailed",
-          "status": "ratified",
-          "metadata": {
-            "plan_sha256": "7e0461988c1ed459d67797776be941b47d237c847af0e6faefb89916c80afd95",
-            "issues": [
-              "Consiliency/agent-harness#396",
-              "Consiliency/agent-harness#636"
-            ]
-          }
-        },
-        {
-          "at": "2026-09-20T16:33:32Z",
+          "at": "2026-09-20T12:37:03Z",
           "by": "claude-execute-detailed",
-          "status": "completed",
+          "transition": "executing",
+          "metadata": {
+            "plan_sha256": "7e0461988c1ed459d67797776be941b47d237c847af0e6faefb89916c80afd95",
+            "issues": [
+              "Consiliency/agent-harness#396",
+              "Consiliency/agent-harness#636"
+            ],
+            "maintainer_ratified_at": "2026-09-20T12:02:56Z",
+            "recorded_as": "ratified",
+            "ratification_record_commit": "5c15b85049df8e5d715bfe68292117311adfc28a",
+            "plan_pr": "Consiliency/agent-harness#918",
+            "record_pr": "Consiliency/agent-harness#919",
+            "red_lane_pr": "Consiliency/agent-harness#920",
+            "implementation_pr": "Consiliency/agent-harness#921",
+            "repair_note": "the ratification was recorded under a `status` key with a non-vocabulary literal; execution began when PR 921 was opened"
+          }
+        },
+        {
+          "at": "2026-09-20T16:39:04Z",
+          "by": "claude-execute-detailed",
+          "transition": "completed",
           "metadata": {
             "plan_sha256": "7e0461988c1ed459d67797776be941b47d237c847af0e6faefb89916c80afd95",
             "issues": [
@@ -7934,7 +7945,9 @@
               "pr": "Consiliency/agent-harness#921",
               "commit": "dddc0231c3ae58d240d691971b8cfc3f23025c7f",
               "record_commit": "5c15b85049df8e5d715bfe68292117311adfc28a"
-            }
+            },
+            "final_review_four_vendor_agree": true,
+            "residuals": "Consiliency/agent-harness#915 items 3-7"
           }
         }
       ],
@@ -7946,7 +7959,7 @@
       "status": "completed",
       "task_summary": "REVIEWTRUTH early slice (maintainer-ratified 2026-09-20): native claude seat under Claude Code, counted (EC-REVIEWTRUTH-14)",
       "type": "detailed",
-      "updated_at": "2026-09-20T16:33:32Z"
+      "updated_at": "2026-09-20T16:39:04Z"
     }
   ],
   "schema_version": 1
