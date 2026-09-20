@@ -3269,12 +3269,18 @@ def _run_train_unfenced(
             # Node blocked by the publish primitive (e.g. push rejected, dirty
             # worktree, publication_blocked).  Record in ledger and halt.
             # Prior nodes' draft PRs remain open; the train is resumable.
+            # agent-harness#906: when this was a REFRESH of an admitted PR, keep the prior
+            # admission on the row so the next run re-enters the refresh decision (and its
+            # drift check) instead of publishing fresh.
+            _prior = completed_nodes.get(nid) or {}
             append_record(
                 ledger_path,
                 LedgerRecord(
                     node_id=nid,
                     status="blocked",
-                    branch=publish_result.get("branch"),
+                    branch=publish_result.get("branch") or _prior.get("branch"),
+                    head_sha=_prior.get("admitted_head_sha"),
+                    pr_url=_prior.get("pr_url"),
                 ),
             )
             return {

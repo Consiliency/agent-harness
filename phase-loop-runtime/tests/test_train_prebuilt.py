@@ -659,6 +659,21 @@ class TestPrebuiltRefresh:
         assert sum('"pr_open"' in ln for ln in lines) == 1, "no new pr_open was fabricated"
         assert any(ADMITTED in ln and '"pr_open"' in ln for ln in lines)
 
+    def test_rejected_refresh_then_drift_is_still_refused_on_retry(self, tmp_path: Path):
+        """A rejected refresh must not erase the admission either: a later retry that meets
+        drift re-enters the decision and refuses (PR #909 r3 follow-through)."""
+        ledger = self._ledger_with_open_pr(tmp_path)
+
+        def _publish_refused(workspace, owned_paths, **kw):
+            return {"status": "blocked", "reason": "admission_rejected", "branch": "feat/train-repo-a"}
+
+        first = self._run(tmp_path, ledger, {}, head="sha-new-a", publish=_publish_refused)
+        assert first["status"] == "blocked"
+        published: dict = {}
+        second = self._run(tmp_path, ledger, published, head="sha-new-a", live="sha-oob-a")
+        assert second["status"] == "blocked" and second["detail"]["reason"] == "remote_drift"
+        assert published == {}
+
     def test_live_head_read_failure_is_a_typed_block_not_an_escape(self, tmp_path: Path):
         """agent-harness#289, taken deliberately: the refresh's drift check reads the live
         head, so a failed read must be a blocked return with a ledger row."""
