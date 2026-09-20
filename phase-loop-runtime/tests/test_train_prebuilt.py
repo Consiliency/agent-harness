@@ -824,6 +824,15 @@ class TestRefreshGitHelpers:
         assert published == {}
 
 
+def publish_from_worktree_real(repo, owned_paths, authority) -> str:
+    from test_publishing import _Broker
+    from phase_loop_runtime.publishing import publish_from_worktree
+    return publish_from_worktree(
+        repo, owned_paths, prebuilt=True, broker_client=_Broker(),
+        publish_authority=authority, checkpoint_root=authority.checkpoint_root,
+    )["status"]
+
+
 class TestSealedPriorTransaction:
     """agent-harness#906 Step 2: a TERMINAL_SEALED prior transaction is never a resume
     candidate; the evidence store decides whether the attempt is over."""
@@ -927,6 +936,68 @@ class TestSealedPriorTransaction:
             _merge_phase_enabled=True,
         )
         return result, published
+
+    def test_exact_chunker_checkpoint_state_sealed_s25_workspace_at_s26_pr_closed(self, tmp_path, monkeypatch):
+        """The treesitter-chunker continuation state, verbatim (agent-harness#906 handoff):
+        the checkpoint store's active pointer selects a TERMINAL_SEALED transaction whose
+        expected commit is the OLD admitted head; the workspace branch has advanced one
+        commit; the old PR is closed. Runtime 0.7.14 failed the whole train at preflight
+        with "publish transaction conflicted during all-repository preflight". Here the
+        REAL inspector reads that REAL on-disk state through the REAL default preflight;
+        only the evidence read (needs FABPUB receipts) and the publisher are seams."""
+        from test_publishing import _Broker, _fabpub_publish_authority, _make_repo, _git as _pgit
+        from phase_loop_runtime import publishing
+        from phase_loop_runtime.convergence.broker import live
+        from phase_loop_runtime.train_runner import _default_preflight
+
+        monkeypatch.setattr(live, "fabpub_capability_active", lambda: True)
+        repo = _make_repo(tmp_path)  # on feat/p1-test
+        # an origin so the prebuilt preflight's ahead-of-base check has something to compare
+        origin = tmp_path / "origin.git"; _pgit(tmp_path, "init", "-q", "--bare", str(origin))
+        _pgit(repo, "remote", "add", "origin", str(origin)); _pgit(repo, "push", "-q", "origin", "HEAD:refs/heads/main")
+        _pgit(repo, "fetch", "-q", "origin")
+        (repo / "owned.py").write_text("s25\n"); _pgit(repo, "add", "owned.py"); _pgit(repo, "commit", "-q", "-m", "S25")
+        authority = _fabpub_publish_authority(repo, tmp_path / "checkpoints")
+        # S25: a real publish through the transaction store -> TERMINAL_SEALED on disk
+        assert publish_from_worktree_real(repo, ["owned.py"], authority) == "published"
+        sealed = publishing.PublishTransactionStore(authority.checkpoint_root, "repo-a").load_active()
+        assert sealed is not None, "active pointer still selects the S25 transaction"
+        # S26: the workspace advances one commit; the store is untouched
+        (repo / "owned.py").write_text("s26\n"); _pgit(repo, "add", "owned.py"); _pgit(repo, "commit", "-q", "-m", "S26")
+        s26 = _pgit(repo, "rev-parse", "HEAD").stdout.strip()
+        # the REAL inspector on the REAL state: sealed, attached, not CONFLICTED
+        cand = publishing.inspect_publish_resume_candidate(repo, checkpoint_root=authority.checkpoint_root, node_id="repo-a")
+        assert cand.state == publishing.PublishTransactionState.TERMINAL_SEALED and cand.transaction is not None
+
+        roadmap = parse_train_roadmap(PREBUILT_1NODE_MD)
+        ledger = tmp_path / "ledger" / "train.ledger.jsonl"
+        append_record(ledger, LedgerRecord(  # the production ledger still says pr_open at S25
+            node_id="repo-a/specs/plan-a.md", status="pr_open", branch="feat/p1-test",
+            head_sha=cand.transaction.committed_head_sha, pr_url="https://gh.com/repo-a/pr/96", merge_order=0,
+        ))
+        published: dict = {}
+        broker = type("B", (), {"requires_gh_auth_preflight": False})()
+        result = run_train(
+            roadmap, ledger, run_mode="autonomous",
+            resolve_workspace=lambda n: repo,
+            coordinator_runtime=_make_runtime(broker),
+            _run_loop=lambda *a, **kw: (None, []),
+            _publish=_make_prebuilt_publish_stub(published),
+            _set_upstream_ref_fn=lambda *a, **kw: [],
+            _preflight_fn=_default_preflight,          # REAL preflight, incl. Step 2 inspection
+            _pr_is_open=_pr_is_open_false,             # #96 closed as superseded
+            _live_pr_head_sha_fn=lambda ws, br: None,
+            _publish_authority_fn=lambda *a, **k: authority,
+            _sealed_disposition_fn=lambda ws, tx: "complete",  # the broker observed the S25 effect
+            _merge_phase_enabled=True,
+        )
+        assert result["status"] == "drafts_open", result
+        assert published["repo"]["prebuilt"] is True, "republished once at S26 through the prebuilt arm"
+        assert read_ledger(ledger)["repo-a/specs/plan-a.md"].head_sha == "sha-COMMITTED-repo"
+        assert _pgit(repo, "rev-parse", "HEAD").stdout.strip() == s26, "the workspace was not touched"
+        assert publishing.PublishTransactionStore(authority.checkpoint_root, "repo-a").load_active() is not None, (
+            "the sealed S25 checkpoint was not deleted or rewritten to get past preflight"
+        )
 
     def test_sealed_prior_with_observed_effect_does_not_block_preflight(self, tmp_path, monkeypatch):
         result, published = self._run_step2(tmp_path, monkeypatch, "complete")
